@@ -1,0 +1,593 @@
+diff --git a/include/system/crucible-hot-fork-coordinator.h b/include/system/crucible-hot-fork-coordinator.h
+index 32b6ede2b..70760fc78 100644
+--- a/include/system/crucible-hot-fork-coordinator.h
++++ b/include/system/crucible-hot-fork-coordinator.h
+@@ -32,11 +32,15 @@ typedef struct QemuCrucibleHotForkMainLoopOperation {
+     QemuCrucibleHotForkChild child;
+     void *opaque;
+     /*
+-     * Optional Linux cgroup-v2 directory for clone3(CLONE_INTO_CGROUP).
+-     * Production hot-fork requests always provide it; -1 remains available
+-     * only to focused coordinator tests that own no attempt cgroup.
++     * Optional Linux cgroup-v2 placement.  The directory authenticates the
++     * target; the child's first instruction writes itself into the
++     * supervisor-opened cgroup.procs descriptor, which the kernel authorizes
++     * with the opener's credentials.  Production hot-fork requests always
++     * provide both; -1 remains available only to focused coordinator tests
++     * that own no attempt cgroup.
+      */
+     int child_cgroup_fd;
++    int child_cgroup_procs_fd;
+ } QemuCrucibleHotForkMainLoopOperation;
+ 
+ typedef enum QemuCrucibleHotForkChildProcessPhase {
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 9e5fc330b..4241e3cd2 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -468,11 +468,14 @@ typedef struct CrucibleHotForkChildProcessContractStage {
+     bool staged;
+     bool consumed;
+     int cgroup_fd;
++    int cgroup_procs_fd;
+     int cancellation_fd;
+     char *cgroup_fdname;
++    char *cgroup_procs_fdname;
+     char *cancellation_fdname;
+     uint64_t cgroup_device;
+     uint64_t cgroup_inode;
++    uint64_t cgroup_procs_inode;
+     uint64_t cancellation_eventfd_id;
+     uint64_t maximum_file_bytes;
+     uint64_t template_generation;
+@@ -544,6 +547,7 @@ typedef struct CrucibleHotForkOperation {
+     uint64_t child_process_contract_generation;
+     uint64_t child_files_generation;
+     int child_process_cgroup_fd;
++    int child_process_cgroup_procs_fd;
+     int child_process_cancellation_fd;
+     uint64_t maximum_file_bytes;
+     QemuBlockHotForkChildFiles *child_files;
+@@ -902,6 +906,71 @@ static bool crucible_hot_fork_cgroup_directory_identity(
+ #endif
+ }
+ 
++/*
++ * Authenticate one writable descriptor as the cgroup.procs control file of
++ * the exact authenticated cgroup directory.
++ *
++ * The source QEMU runs under attempt credentials that need not be able to
++ * traverse the supervisor-owned cgroup directory, so the file is not looked
++ * up beneath the directory.  Both descriptors are resolved through this
++ * process's own /proc/self/fd links instead, which needs no permission on
++ * the cgroup hierarchy, and the file must sit directly beneath the directory
++ * on the same cgroup-v2 filesystem.
++ */
++static bool crucible_hot_fork_cgroup_procs_identity(
++    int procs_fd, int cgroup_fd, uint64_t *inode, Error **errp)
++{
++#ifdef CONFIG_LINUX
++    g_autofree char *procs_link = g_strdup_printf("/proc/self/fd/%d", procs_fd);
++    g_autofree char *cgroup_link =
++        g_strdup_printf("/proc/self/fd/%d", cgroup_fd);
++    g_autofree char *expected_path = NULL;
++    char procs_path[PATH_MAX];
++    char cgroup_path[PATH_MAX];
++    struct stat status;
++    struct stat directory;
++    struct statfs filesystem;
++    ssize_t procs_length;
++    ssize_t cgroup_length;
++    int flags = fcntl(procs_fd, F_GETFL);
++
++    if (flags < 0 || fstat(procs_fd, &status) < 0 ||
++        fstat(cgroup_fd, &directory) < 0 ||
++        fstatfs(procs_fd, &filesystem) < 0) {
++        error_setg_errno(errp, errno,
++                         "Could not inspect Crucible hot-fork cgroup.procs");
++        return false;
++    }
++    procs_length = readlink(procs_link, procs_path, sizeof(procs_path) - 1);
++    cgroup_length = readlink(cgroup_link, cgroup_path, sizeof(cgroup_path) - 1);
++    if (procs_length < 0 || cgroup_length < 0) {
++        error_setg_errno(errp, errno,
++                         "Could not resolve Crucible hot-fork cgroup.procs");
++        return false;
++    }
++    procs_path[procs_length] = '\0';
++    cgroup_path[cgroup_length] = '\0';
++    expected_path = g_strdup_printf("%s/cgroup.procs", cgroup_path);
++    if (!S_ISREG(status.st_mode) ||
++        filesystem.f_type != CGROUP2_SUPER_MAGIC ||
++        ((flags & O_ACCMODE) != O_WRONLY && (flags & O_ACCMODE) != O_RDWR) ||
++        status.st_dev != directory.st_dev || status.st_ino == 0 ||
++        strcmp(procs_path, expected_path) != 0) {
++        error_setg(errp, "Crucible hot-fork process contract requires the "
++                   "writable cgroup.procs of its cgroup-v2 directory");
++        return false;
++    }
++    *inode = status.st_ino;
++    return true;
++#else
++    (void)procs_fd;
++    (void)cgroup_fd;
++    (void)inode;
++    error_setg(errp, "Crucible hot-fork cgroup placement requires Linux");
++    return false;
++#endif
++}
++
+ static bool crucible_hot_fork_nonblocking_eventfd_identity(
+     int fd, uint64_t *eventfd_id, Error **errp)
+ {
+@@ -925,15 +994,19 @@ static bool crucible_hot_fork_child_process_contract_bound(void)
+         &crucible_hot_fork_child_process_contract_stage;
+     uint64_t device = 0;
+     uint64_t inode = 0;
++    uint64_t procs_inode = 0;
+     uint64_t eventfd_id = 0;
+ 
+     return stage->staged && !stage->consumed &&
+         stage->template_generation == crucible_hot_fork_template_generation &&
+         crucible_hot_fork_cgroup_directory_identity(
+             stage->cgroup_fd, &device, &inode, NULL) &&
++        crucible_hot_fork_cgroup_procs_identity(
++            stage->cgroup_procs_fd, stage->cgroup_fd, &procs_inode, NULL) &&
+         crucible_hot_fork_nonblocking_eventfd_identity(
+             stage->cancellation_fd, &eventfd_id, NULL) &&
+         device == stage->cgroup_device && inode == stage->cgroup_inode &&
++        procs_inode == stage->cgroup_procs_inode &&
+         eventfd_id == stage->cancellation_eventfd_id &&
+         stage->maximum_file_bytes != 0;
+ }
+@@ -4327,6 +4400,8 @@ static int crucible_hot_fork_prepare_operation(void *opaque)
+         &operation->console_basis;
+     operation->child_process_cgroup_fd =
+         crucible_hot_fork_child_process_contract_stage.cgroup_fd;
++    operation->child_process_cgroup_procs_fd =
++        crucible_hot_fork_child_process_contract_stage.cgroup_procs_fd;
+     operation->child_process_cancellation_fd =
+         crucible_hot_fork_child_process_contract_stage.cancellation_fd;
+     operation->maximum_file_bytes =
+@@ -4481,6 +4556,7 @@ static int crucible_hot_fork_apply_child_process_contract(
+     int result = 0;
+ 
+     if (operation->child_process_cgroup_fd < 0 ||
++        operation->child_process_cgroup_procs_fd < 0 ||
+         operation->child_process_cancellation_fd < 0 ||
+         operation->maximum_file_bytes == 0 ||
+         operation->maximum_file_bytes == UINT64_MAX) {
+@@ -4497,8 +4573,10 @@ static int crucible_hot_fork_apply_child_process_contract(
+         result = -errno;
+     }
+     close(operation->child_process_cgroup_fd);
++    close(operation->child_process_cgroup_procs_fd);
+     close(operation->child_process_cancellation_fd);
+     operation->child_process_cgroup_fd = -1;
++    operation->child_process_cgroup_procs_fd = -1;
+     operation->child_process_cancellation_fd = -1;
+     return result;
+ }
+@@ -4651,6 +4729,7 @@ CrucibleHotForkState *qmp_crucible_hot_fork(
+             child_process_contract_generation,
+         .child_files_generation = child_files_generation,
+         .child_process_cgroup_fd = -1,
++        .child_process_cgroup_procs_fd = -1,
+         .child_process_cancellation_fd = -1,
+         .parent_identity = { .parent_pid = -1, .parent_pidfd = -1 },
+     };
+@@ -4660,6 +4739,7 @@ CrucibleHotForkState *qmp_crucible_hot_fork(
+         .child = crucible_hot_fork_finish_child_operation,
+         .opaque = &operation,
+         .child_cgroup_fd = -1,
++        .child_cgroup_procs_fd = -1,
+     };
+     CrucibleHotForkState *report;
+     pid_t child_pid = -1;
+@@ -4697,6 +4777,8 @@ CrucibleHotForkState *qmp_crucible_hot_fork(
+     operation.monitor_basis_verified = true;
+     request.child_cgroup_fd =
+         crucible_hot_fork_child_process_contract_stage.cgroup_fd;
++    request.child_cgroup_procs_fd =
++        crucible_hot_fork_child_process_contract_stage.cgroup_procs_fd;
+     crucible_hot_fork_operation_active = true;
+     g_mutex_unlock(&crucible_hot_fork_template_lock);
+ 
+@@ -4754,36 +4836,43 @@ crucible_hot_fork_child_process_contract_report(void)
+     CrucibleHotForkChildProcessContractState *report =
+         g_new0(CrucibleHotForkChildProcessContractState, 1);
+ 
+-    report->schema_version = 1;
++    report->schema_version = 2;
+     report->generation = stage->generation;
+     report->template_generation = stage->template_generation;
+     report->staged = stage->staged;
+     report->consumed = stage->consumed;
+     if (stage->staged) {
+         report->cgroup_fdname = g_strdup(stage->cgroup_fdname);
++        report->cgroup_procs_fdname = g_strdup(stage->cgroup_procs_fdname);
+         report->cancellation_fdname = g_strdup(stage->cancellation_fdname);
+     }
+     report->cgroup_device = stage->cgroup_device;
+     report->cgroup_inode = stage->cgroup_inode;
++    report->cgroup_procs_inode = stage->cgroup_procs_inode;
+     report->cancellation_eventfd_id = stage->cancellation_eventfd_id;
+     report->maximum_file_bytes = stage->maximum_file_bytes;
+-    report->clone_into_cgroup = stage->staged;
++    report->cgroup_placement_bound = stage->staged;
+     return report;
+ }
+ 
+ static bool crucible_hot_fork_child_process_contract_matches(
+-    const char *cgroup_fdname, const char *cancellation_fdname,
++    const char *cgroup_fdname, const char *cgroup_procs_fdname,
++    const char *cancellation_fdname,
+     uint64_t cgroup_device, uint64_t cgroup_inode,
++    uint64_t cgroup_procs_inode,
+     uint64_t cancellation_eventfd_id, uint64_t maximum_file_bytes)
+ {
+     CrucibleHotForkChildProcessContractStage *stage =
+         &crucible_hot_fork_child_process_contract_stage;
+ 
+-    return stage->staged && cgroup_fdname && cancellation_fdname &&
++    return stage->staged && cgroup_fdname && cgroup_procs_fdname &&
++        cancellation_fdname &&
+         strcmp(stage->cgroup_fdname, cgroup_fdname) == 0 &&
++        strcmp(stage->cgroup_procs_fdname, cgroup_procs_fdname) == 0 &&
+         strcmp(stage->cancellation_fdname, cancellation_fdname) == 0 &&
+         stage->cgroup_device == cgroup_device &&
+         stage->cgroup_inode == cgroup_inode &&
++        stage->cgroup_procs_inode == cgroup_procs_inode &&
+         stage->cancellation_eventfd_id == cancellation_eventfd_id &&
+         stage->maximum_file_bytes == maximum_file_bytes;
+ }
+@@ -4791,9 +4880,12 @@ static bool crucible_hot_fork_child_process_contract_matches(
+ CrucibleHotForkChildProcessContractState *
+ qmp_crucible_hot_fork_child_process_contract(
+     CrucibleHotForkChildProcessContractAction action,
+-    const char *cgroup_fdname, const char *cancellation_fdname,
++    const char *cgroup_fdname, const char *cgroup_procs_fdname,
++    const char *cancellation_fdname,
+     bool has_expected_cgroup_device, uint64_t expected_cgroup_device,
+     bool has_expected_cgroup_inode, uint64_t expected_cgroup_inode,
++    bool has_expected_cgroup_procs_inode,
++    uint64_t expected_cgroup_procs_inode,
+     bool has_expected_cancellation_eventfd_id,
+     uint64_t expected_cancellation_eventfd_id,
+     bool has_maximum_file_bytes, uint64_t maximum_file_bytes,
+@@ -4806,20 +4898,28 @@ qmp_crucible_hot_fork_child_process_contract(
+     struct rlimit file_limit;
+     uint64_t observed_device = 0;
+     uint64_t observed_inode = 0;
++    uint64_t observed_procs_inode = 0;
+     uint64_t observed_eventfd_id = 0;
+     int cgroup_candidate = -1;
++    int cgroup_procs_candidate = -1;
+     int cancellation_candidate = -1;
+ 
+     g_mutex_lock(&crucible_hot_fork_template_lock);
+     switch (action) {
+     case CRUCIBLE_HOT_FORK_CHILD_PROCESS_CONTRACT_ACTION_STAGE:
+-        if (!cgroup_fdname || !cancellation_fdname ||
++        if (!cgroup_fdname || !cgroup_procs_fdname || !cancellation_fdname ||
+             strcmp(cgroup_fdname, cancellation_fdname) == 0 ||
++            strcmp(cgroup_fdname, cgroup_procs_fdname) == 0 ||
++            strcmp(cgroup_procs_fdname, cancellation_fdname) == 0 ||
+             !crucible_hot_fork_private_ring_fd_name_valid(cgroup_fdname) ||
++            !crucible_hot_fork_private_ring_fd_name_valid(
++                cgroup_procs_fdname) ||
+             !crucible_hot_fork_private_ring_fd_name_valid(
+                 cancellation_fdname) ||
+             !has_expected_cgroup_device || expected_cgroup_device == 0 ||
+             !has_expected_cgroup_inode || expected_cgroup_inode == 0 ||
++            !has_expected_cgroup_procs_inode ||
++            expected_cgroup_procs_inode == 0 ||
+             !has_expected_cancellation_eventfd_id ||
+             expected_cancellation_eventfd_id == 0 ||
+             !has_maximum_file_bytes || maximum_file_bytes == 0 ||
+@@ -4853,6 +4953,11 @@ qmp_crucible_hot_fork_child_process_contract(
+         if (cgroup_candidate < 0) {
+             goto out;
+         }
++        cgroup_procs_candidate = monitor_dup_fd(
++            monitor_cur(), cgroup_procs_fdname, errp);
++        if (cgroup_procs_candidate < 0) {
++            goto out;
++        }
+         cancellation_candidate = monitor_dup_fd(
+             monitor_cur(), cancellation_fdname, errp);
+         /*
+@@ -4867,12 +4972,16 @@ qmp_crucible_hot_fork_child_process_contract(
+         if (cancellation_candidate < 0 ||
+             !crucible_hot_fork_cgroup_directory_identity(
+                 cgroup_candidate, &observed_device, &observed_inode, errp) ||
++            !crucible_hot_fork_cgroup_procs_identity(
++                cgroup_procs_candidate, cgroup_candidate,
++                &observed_procs_inode, errp) ||
+             !crucible_hot_fork_nonblocking_eventfd_identity(
+                 cancellation_candidate, &observed_eventfd_id, errp)) {
+             goto out;
+         }
+         if (observed_device != expected_cgroup_device ||
+             observed_inode != expected_cgroup_inode ||
++            observed_procs_inode != expected_cgroup_procs_inode ||
+             observed_eventfd_id != expected_cancellation_eventfd_id) {
+             error_setg(errp, "Crucible hot-fork child process contract "
+                        "descriptor identity mismatch");
+@@ -4880,8 +4989,9 @@ qmp_crucible_hot_fork_child_process_contract(
+         }
+         if (stage->staged) {
+             if (!crucible_hot_fork_child_process_contract_matches(
+-                    cgroup_fdname, cancellation_fdname,
++                    cgroup_fdname, cgroup_procs_fdname, cancellation_fdname,
+                     expected_cgroup_device, expected_cgroup_inode,
++                    expected_cgroup_procs_inode,
+                     expected_cancellation_eventfd_id,
+                     maximum_file_bytes) || stage->consumed ||
+                 stage->template_generation !=
+@@ -4902,12 +5012,16 @@ qmp_crucible_hot_fork_child_process_contract(
+         stage->consumed = false;
+         stage->cgroup_fd = cgroup_candidate;
+         cgroup_candidate = -1;
++        stage->cgroup_procs_fd = cgroup_procs_candidate;
++        cgroup_procs_candidate = -1;
+         stage->cancellation_fd = cancellation_candidate;
+         cancellation_candidate = -1;
+         stage->cgroup_fdname = g_strdup(cgroup_fdname);
++        stage->cgroup_procs_fdname = g_strdup(cgroup_procs_fdname);
+         stage->cancellation_fdname = g_strdup(cancellation_fdname);
+         stage->cgroup_device = expected_cgroup_device;
+         stage->cgroup_inode = expected_cgroup_inode;
++        stage->cgroup_procs_inode = expected_cgroup_procs_inode;
+         stage->cancellation_eventfd_id =
+             expected_cancellation_eventfd_id;
+         stage->maximum_file_bytes = maximum_file_bytes;
+@@ -4916,8 +5030,9 @@ qmp_crucible_hot_fork_child_process_contract(
+         report = crucible_hot_fork_child_process_contract_report();
+         break;
+     case CRUCIBLE_HOT_FORK_CHILD_PROCESS_CONTRACT_ACTION_QUERY:
+-        if (cgroup_fdname || cancellation_fdname ||
++        if (cgroup_fdname || cgroup_procs_fdname || cancellation_fdname ||
+             has_expected_cgroup_device || has_expected_cgroup_inode ||
++            has_expected_cgroup_procs_inode ||
+             has_expected_cancellation_eventfd_id || has_maximum_file_bytes) {
+             error_setg(errp, "Crucible hot-fork child process contract query "
+                        "accepts no descriptor basis");
+@@ -4926,13 +5041,15 @@ qmp_crucible_hot_fork_child_process_contract(
+         report = crucible_hot_fork_child_process_contract_report();
+         break;
+     case CRUCIBLE_HOT_FORK_CHILD_PROCESS_CONTRACT_ACTION_RELEASE:
+-        if (!cgroup_fdname || !cancellation_fdname ||
++        if (!cgroup_fdname || !cgroup_procs_fdname || !cancellation_fdname ||
+             !has_expected_cgroup_device || !has_expected_cgroup_inode ||
++            !has_expected_cgroup_procs_inode ||
+             !has_expected_cancellation_eventfd_id ||
+             !has_maximum_file_bytes ||
+             !crucible_hot_fork_child_process_contract_matches(
+-                cgroup_fdname, cancellation_fdname,
++                cgroup_fdname, cgroup_procs_fdname, cancellation_fdname,
+                 expected_cgroup_device, expected_cgroup_inode,
++                expected_cgroup_procs_inode,
+                 expected_cancellation_eventfd_id, maximum_file_bytes)) {
+             error_setg(errp, "Crucible hot-fork child process contract "
+                        "release requires the exact retained basis");
+@@ -4944,15 +5061,19 @@ qmp_crucible_hot_fork_child_process_contract(
+             goto out;
+         }
+         close(stage->cgroup_fd);
++        close(stage->cgroup_procs_fd);
+         close(stage->cancellation_fd);
+         g_clear_pointer(&stage->cgroup_fdname, g_free);
++        g_clear_pointer(&stage->cgroup_procs_fdname, g_free);
+         g_clear_pointer(&stage->cancellation_fdname, g_free);
+         stage->staged = false;
+         stage->consumed = false;
+         stage->cgroup_fd = -1;
++        stage->cgroup_procs_fd = -1;
+         stage->cancellation_fd = -1;
+         stage->cgroup_device = 0;
+         stage->cgroup_inode = 0;
++        stage->cgroup_procs_inode = 0;
+         stage->cancellation_eventfd_id = 0;
+         stage->maximum_file_bytes = 0;
+         stage->template_generation = 0;
+@@ -4963,6 +5084,7 @@ qmp_crucible_hot_fork_child_process_contract(
+     }
+ out:
+     close(cgroup_candidate);
++    close(cgroup_procs_candidate);
+     close(cancellation_candidate);
+     g_free(plugin_barrier);
+     g_mutex_unlock(&crucible_hot_fork_template_lock);
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index f5bd86a2d..054e56862 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1991,8 +1991,9 @@
+ #
+ # Operation over one target attempt's child-process containment descriptors.
+ #
+-# @stage: authenticate and retain one cgroup-v2 directory plus cancellation
+-#     eventfd imported with standard QMP getfd
++# @stage: authenticate and retain one cgroup-v2 directory, its cgroup.procs
++#     write descriptor, plus cancellation eventfd imported with standard QMP
++#     getfd
+ #
+ # @query: observe the retained one-shot contract
+ #
+@@ -2007,11 +2008,14 @@
+ # @CrucibleHotForkChildProcessContractState:
+ #
+ # Exact one-shot process-containment contract for a future hot-fork child.
+-# clone3(CLONE_INTO_CGROUP) places the child in the retained cgroup from its
+-# first instruction, and the child checks the sticky cancellation event before
+-# any runtime reconstruction.
++# The child's first instruction writes itself into the retained cgroup.procs
++# descriptor; the kernel authorizes that write with the credentials of the
++# supervisor that opened the descriptor, which clone3(CLONE_INTO_CGROUP)
++# cannot do for an unprivileged source QEMU across a delegated root.  The
++# child then checks the sticky cancellation event before any runtime
++# reconstruction.
+ #
+-# @schema-version: process-contract status version, currently 1
++# @schema-version: process-contract status version, currently 2
+ #
+ # @generation: monotonically increasing source-QEMU contract generation
+ #
+@@ -2023,6 +2027,9 @@
+ #
+ # @cgroup-fdname: standard-QMP name for the cgroup directory while staged
+ #
++# @cgroup-procs-fdname: standard-QMP name for the cgroup.procs write
++#     descriptor while staged
++#
+ # @cancellation-fdname: standard-QMP name for the cancellation eventfd while
+ #     staged
+ #
+@@ -2030,11 +2037,14 @@
+ #
+ # @cgroup-inode: authenticated cgroup directory st_ino
+ #
++# @cgroup-procs-inode: authenticated st_ino of the directory's cgroup.procs
++#
+ # @cancellation-eventfd-id: authenticated Linux eventfd-id
+ #
+ # @maximum-file-bytes: exact child RLIMIT_FSIZE ceiling
+ #
+-# @clone-into-cgroup: whether birth-time cgroup placement is bound
++# @cgroup-placement-bound: whether first-instruction cgroup placement through
++#     the retained cgroup.procs descriptor is bound
+ #
+ # Since: 10.0 (Crucible downstream extension)
+ ##
+@@ -2045,31 +2055,39 @@
+             'staged': 'bool',
+             'consumed': 'bool',
+             '*cgroup-fdname': 'str',
++            '*cgroup-procs-fdname': 'str',
+             '*cancellation-fdname': 'str',
+             'cgroup-device': 'uint64',
+             'cgroup-inode': 'uint64',
++            'cgroup-procs-inode': 'uint64',
+             'cancellation-eventfd-id': 'uint64',
+             'maximum-file-bytes': 'uint64',
+-            'clone-into-cgroup': 'bool' } }
++            'cgroup-placement-bound': 'bool' } }
+ 
+ ##
+ # @crucible-hot-fork-child-process-contract:
+ #
+ # Stages, observes, or releases the one-shot target-attempt process contract.
+-# Stage authenticates the exact cgroup-v2 directory identity, a nonblocking
+-# eventfd identity, and a nonzero file-size ceiling. Release requires the same
++# Stage authenticates the exact cgroup-v2 directory identity, the writable
++# cgroup.procs descriptor of that same directory, a nonblocking eventfd
++# identity, and a nonzero file-size ceiling. Release requires the same
+ # complete basis. A consumed contract cannot be reused for another child.
+ #
+ # @action: stage, query, or release the process contract
+ #
+ # @cgroup-fdname: standard-QMP name of the target cgroup-v2 directory
+ #
++# @cgroup-procs-fdname: standard-QMP name of the directory's cgroup.procs
++#     descriptor, opened for writing by the supervisor
++#
+ # @cancellation-fdname: standard-QMP name of the sticky cancellation eventfd
+ #
+ # @expected-cgroup-device: expected cgroup-directory st_dev identity
+ #
+ # @expected-cgroup-inode: expected cgroup-directory st_ino identity
+ #
++# @expected-cgroup-procs-inode: expected st_ino identity of cgroup.procs
++#
+ # @expected-cancellation-eventfd-id: expected Linux eventfd-id
+ #
+ # @maximum-file-bytes: nonzero child RLIMIT_FSIZE ceiling
+@@ -2081,9 +2099,11 @@
+ { 'command': 'crucible-hot-fork-child-process-contract',
+   'data': { 'action': 'CrucibleHotForkChildProcessContractAction',
+             '*cgroup-fdname': 'str',
++            '*cgroup-procs-fdname': 'str',
+             '*cancellation-fdname': 'str',
+             '*expected-cgroup-device': 'uint64',
+             '*expected-cgroup-inode': 'uint64',
++            '*expected-cgroup-procs-inode': 'uint64',
+             '*expected-cancellation-eventfd-id': 'uint64',
+             '*maximum-file-bytes': 'uint64' },
+   'returns': 'CrucibleHotForkChildProcessContractState',
+diff --git a/system/crucible-hot-fork-coordinator.c b/system/crucible-hot-fork-coordinator.c
+index 0bc663019..38566eaed 100644
+--- a/system/crucible-hot-fork-coordinator.c
++++ b/system/crucible-hot-fork-coordinator.c
+@@ -55,24 +55,32 @@ typedef struct QemuCrucibleHotForkCoordinator {
+ 
+ static QemuCrucibleHotForkCoordinator crucible_hot_fork_coordinator;
+ 
+-static pid_t crucible_hot_fork_clone_into_cgroup(int cgroup_fd)
++/*
++ * Create the child and place it in the target cgroup.
++ *
++ * clone3(CLONE_INTO_CGROUP) checks the caller's own credentials against the
++ * destination and the common ancestor of source and destination, so an
++ * unprivileged source QEMU cannot use it across a supervisor-owned root.  A
++ * cgroup.procs write is instead authorized with the credentials of the
++ * process that opened the descriptor, so the child migrates itself through
++ * the supervisor-opened descriptor as its first instruction; nothing else
++ * runs in the child before that write completes.
++ */
++static pid_t crucible_hot_fork_create_child(int cgroup_procs_fd)
+ {
+-    if (cgroup_fd < 0) {
+-        return fork();
+-    }
+-#if defined(CONFIG_LINUX) && defined(SYS_clone3) && \
+-    defined(CLONE_INTO_CGROUP)
+-    struct clone_args arguments = {
+-        .flags = CLONE_INTO_CGROUP,
+-        .exit_signal = SIGCHLD,
+-        .cgroup = cgroup_fd,
+-    };
++    pid_t child = fork();
+ 
+-    return syscall(SYS_clone3, &arguments, sizeof(arguments));
+-#else
+-    errno = ENOSYS;
+-    return -1;
+-#endif
++    if (child == 0 && cgroup_procs_fd >= 0) {
++        ssize_t written;
++
++        do {
++            written = write(cgroup_procs_fd, "0", 1);
++        } while (written < 0 && errno == EINTR);
++        if (written != 1) {
++            _exit(EXIT_FAILURE);
++        }
++    }
++    return child;
+ }
+ 
+ static int crucible_hot_fork_reserve_child_locked(
+@@ -177,8 +185,8 @@ static void crucible_hot_fork_execute_main_loop_request(void)
+         return;
+     }
+ 
+-    child_pid = crucible_hot_fork_clone_into_cgroup(
+-        operation.child_cgroup_fd);
++    child_pid = crucible_hot_fork_create_child(
++        operation.child_cgroup_procs_fd);
+     if (child_pid == 0) {
+         /*
+          * The copied waiter and notifier are parent-only.  Close the raw wake
+diff --git a/tests/unit/test-crucible-hot-fork-coordinator.c b/tests/unit/test-crucible-hot-fork-coordinator.c
+index d06a64ab3..d66ad7c92 100644
+--- a/tests/unit/test-crucible-hot-fork-coordinator.c
++++ b/tests/unit/test-crucible-hot-fork-coordinator.c
+@@ -118,6 +118,7 @@ static void test_main_loop_owns_fork(void)
+             .parent = coordinator_parent,
+             .child = coordinator_child,
+             .child_cgroup_fd = -1,
++            .child_cgroup_procs_fd = -1,
+         },
+         .source_process_id = getpid(),
+         .main_thread_id = qemu_get_thread_id(),

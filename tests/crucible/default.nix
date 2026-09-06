@@ -1764,6 +1764,11 @@ in rec {
       attrPath = "checks.crucible.phase6.qemuHotForkReadiness";
       taskIds = [];
     };
+    qemuHotForkChildVm = import ./phase6-qemu-hot-fork-child-vm.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase6.qemuHotForkChildVm";
+      taskIds = ["T-CAM-6.3"];
+    };
     advancedDependencyLadder = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.advancedDependencyLadder";
       gate = import ./phase6-advanced-dependency-ladder.nix {

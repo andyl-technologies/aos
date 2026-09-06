@@ -3385,6 +3385,380 @@
         '';
       };
     }
+    {
+      patch = "0204-crucible-allow-out-of-band-descriptor-transfer.patch";
+      check = certifyExactPatch {
+        patchName = "0204-crucible-allow-out-of-band-descriptor-transfer.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "out-of-band-descriptor-transfer";
+        liveEvidence = ''
+          grep -Fxq 'patch=0204-crucible-allow-out-of-band-descriptor-transfer.patch' "$live_result"
+          grep -Fxq 'stock_getfd_rejects_out_of_band=true' "$live_result"
+          grep -Fxq 'getfd_out_of_band_dispatch=true' "$live_result"
+          grep -Fxq 'closefd_out_of_band_dispatch=true' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0205-crucible-round-source-mapping-extents.patch";
+      check = certifyExactPatch {
+        patchName = "0205-crucible-round-source-mapping-extents.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "page-rounded-source-mapping-extents";
+        liveEvidence = ''
+          grep -Fxq 'patch=0205-crucible-round-source-mapping-extents.patch' "$live_result"
+          grep -Fxq 'retained_template_fork_rejects_unprepared=true' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0206-crucible-report-plugin-child-plan-blockers.patch";
+      check = certifyExactPatch {
+        patchName = "0206-crucible-report-plugin-child-plan-blockers.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "plugin-child-plan-blocker-diagnostics";
+        liveEvidence = ''
+          grep -Fxq 'patch=0206-crucible-report-plugin-child-plan-blockers.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0207-crucible-validate-child-plan-mapping-extents.patch";
+      check = certifyExactPatch {
+        patchName = "0207-crucible-validate-child-plan-mapping-extents.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "child-plan-mapping-extent-validation";
+        liveEvidence = ''
+          grep -Fxq 'patch=0207-crucible-validate-child-plan-mapping-extents.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0208-crucible-restore-nonblocking-cancellation-eventfd.patch";
+      check = certifyExactPatch {
+        patchName = "0208-crucible-restore-nonblocking-cancellation-eventfd.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "nonblocking-cancellation-eventfd-restore";
+        liveEvidence = ''
+          grep -Fxq 'patch=0208-crucible-restore-nonblocking-cancellation-eventfd.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0209-crucible-report-fork-preparation-blockers.patch";
+      check = certifyExactPatch {
+        patchName = "0209-crucible-report-fork-preparation-blockers.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "fork-preparation-blocker-diagnostics";
+        liveEvidence = ''
+          grep -Fxq 'patch=0209-crucible-report-fork-preparation-blockers.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0210-crucible-verify-monitor-basis-before-fork.patch";
+      check = certifyExactPatch {
+        patchName = "0210-crucible-verify-monitor-basis-before-fork.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "monitor-basis-verified-before-submission";
+        liveEvidence = ''
+          grep -Fxq 'patch=0210-crucible-verify-monitor-basis-before-fork.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0211-crucible-report-runtime-transaction-blockers.patch";
+      check = certifyExactPatch {
+        patchName = "0211-crucible-report-runtime-transaction-blockers.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "runtime-transaction-blocker-diagnostics";
+        liveEvidence = ''
+          grep -Fxq 'patch=0211-crucible-report-runtime-transaction-blockers.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0212-crucible-carry-parked-mutexes-across-fork.patch";
+      check = certifyExactPatch {
+        patchName = "0212-crucible-carry-parked-mutexes-across-fork.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "carried-fork-mutexes";
+        liveEvidence = ''
+          grep -Fxq 'patch=0212-crucible-carry-parked-mutexes-across-fork.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0213-crucible-restart-rr-vcpu-thread-in-child.patch";
+      check = certifyExactPatch {
+        patchName = "0213-crucible-restart-rr-vcpu-thread-in-child.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "rr-vcpu-thread-restart";
+        liveEvidence = ''
+          grep -Fxq 'patch=0213-crucible-restart-rr-vcpu-thread-in-child.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0214-crucible-place-child-through-cgroup-procs.patch";
+      check = certifyExactPatch {
+        patchName = "0214-crucible-place-child-through-cgroup-procs.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "cgroup-procs-child-placement";
+        liveEvidence = ''
+          grep -Fxq 'patch=0214-crucible-place-child-through-cgroup-procs.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0215-crucible-release-registry-before-parent-locks.patch";
+      check = certifyExactPatch {
+        patchName = "0215-crucible-release-registry-before-parent-locks.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "fork-parent-registry-release-order";
+        liveEvidence = ''
+          grep -Fxq 'patch=0215-crucible-release-registry-before-parent-locks.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0216-crucible-complete-child-placement-before-return.patch";
+      check = certifyExactPatch {
+        patchName = "0216-crucible-complete-child-placement-before-return.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "child-placement-before-fork-return";
+        liveEvidence = ''
+          grep -Fxq 'patch=0216-crucible-complete-child-placement-before-return.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0217-crucible-identify-failed-child-step-in-exit-status.patch";
+      check = certifyExactPatch {
+        patchName = "0217-crucible-identify-failed-child-step-in-exit-status.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "child-step-exit-status";
+        liveEvidence = ''
+          grep -Fxq 'patch=0217-crucible-identify-failed-child-step-in-exit-status.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0218-crucible-identify-failed-resource-plan-substep.patch";
+      check = certifyExactPatch {
+        patchName = "0218-crucible-identify-failed-resource-plan-substep.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "child-resource-plan-substep-status";
+        liveEvidence = ''
+          grep -Fxq 'patch=0218-crucible-identify-failed-resource-plan-substep.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0219-crucible-admit-mapping-into-backing-partial-page.patch";
+      check = certifyExactPatch {
+        patchName = "0219-crucible-admit-mapping-into-backing-partial-page.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "mapping-backing-partial-page";
+        liveEvidence = ''
+          grep -Fxq 'patch=0219-crucible-admit-mapping-into-backing-partial-page.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0220-crucible-bound-child-iothread-start.patch";
+      check = certifyExactPatch {
+        patchName = "0220-crucible-bound-child-iothread-start.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "child-iothread-start-bound";
+        liveEvidence = ''
+          grep -Fxq 'patch=0220-crucible-bound-child-iothread-start.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0221-crucible-report-child-failure-result.patch";
+      check = certifyExactPatch {
+        patchName = "0221-crucible-report-child-failure-result.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "child-failure-result-report";
+        liveEvidence = ''
+          grep -Fxq 'patch=0221-crucible-report-child-failure-result.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0222-crucible-wait-for-plugin-child-workers.patch";
+      check = certifyExactPatch {
+        patchName = "0222-crucible-wait-for-plugin-child-workers.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "plugin-child-worker-settle";
+        liveEvidence = ''
+          grep -Fxq 'patch=0222-crucible-wait-for-plugin-child-workers.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0223-crucible-name-failing-qmp-child-stage.patch";
+      check = certifyExactPatch {
+        patchName = "0223-crucible-name-failing-qmp-child-stage.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qmp-child-stage-report";
+        liveEvidence = ''
+          grep -Fxq 'patch=0223-crucible-name-failing-qmp-child-stage.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0224-crucible-drop-inherited-monitor-fd-names.patch";
+      check = certifyExactPatch {
+        patchName = "0224-crucible-drop-inherited-monitor-fd-names.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "child-monitor-fd-names";
+        liveEvidence = ''
+          grep -Fxq 'patch=0224-crucible-drop-inherited-monitor-fd-names.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0225-crucible-rebuild-child-monitor-iothread-context.patch";
+      check = certifyExactPatch {
+        patchName = "0225-crucible-rebuild-child-monitor-iothread-context.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "child-monitor-iothread-context";
+        liveEvidence = ''
+          grep -Fxq 'patch=0225-crucible-rebuild-child-monitor-iothread-context.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0226-crucible-idle-rebuilt-dispatcher-in-child.patch";
+      check = certifyExactPatch {
+        patchName = "0226-crucible-idle-rebuilt-dispatcher-in-child.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "child-dispatcher-idle";
+        liveEvidence = ''
+          grep -Fxq 'patch=0226-crucible-idle-rebuilt-dispatcher-in-child.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0227-crucible-name-failing-console-child-stage.patch";
+      check = certifyExactPatch {
+        patchName = "0227-crucible-name-failing-console-child-stage.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "console-child-stage-report";
+        liveEvidence = ''
+          grep -Fxq 'patch=0227-crucible-name-failing-console-child-stage.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0228-crucible-admit-default-console-context.patch";
+      check = certifyExactPatch {
+        patchName = "0228-crucible-admit-default-console-context.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "console-child-default-context";
+        liveEvidence = ''
+          grep -Fxq 'patch=0228-crucible-admit-default-console-context.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0229-crucible-admit-idle-active-plugin-workers.patch";
+      check = certifyExactPatch {
+        patchName = "0229-crucible-admit-idle-active-plugin-workers.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "active-plugin-child-workers";
+        liveEvidence = ''
+          grep -Fxq 'patch=0229-crucible-admit-idle-active-plugin-workers.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0230-crucible-report-child-file-install-failure.patch";
+      check = certifyExactPatch {
+        patchName = "0230-crucible-report-child-file-install-failure.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "child-file-install-report";
+        liveEvidence = ''
+          grep -Fxq 'patch=0230-crucible-report-child-file-install-failure.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0231-crucible-name-unsettled-source-descriptor.patch";
+      check = certifyExactPatch {
+        patchName = "0231-crucible-name-unsettled-source-descriptor.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "unsettled-source-descriptor-report";
+        liveEvidence = ''
+          grep -Fxq 'patch=0231-crucible-name-unsettled-source-descriptor.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0232-crucible-retain-child-file-plan-descriptors.patch";
+      check = certifyExactPatch {
+        patchName = "0232-crucible-retain-child-file-plan-descriptors.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "child-file-plan-descriptors-retained";
+        liveEvidence = ''
+          grep -Fxq 'patch=0232-crucible-retain-child-file-plan-descriptors.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0233-crucible-drop-inherited-current-monitor.patch";
+      check = certifyExactPatch {
+        patchName = "0233-crucible-drop-inherited-current-monitor.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "child-current-monitor-bindings";
+        liveEvidence = ''
+          grep -Fxq 'patch=0233-crucible-drop-inherited-current-monitor.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0234-crucible-forkable-template-ram.patch";
+      check = certifyExactPatch {
+        patchName = "0234-crucible-forkable-template-ram.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "forkable-template-ram";
+        liveEvidence = ''
+          grep -Fxq 'patch=0234-crucible-forkable-template-ram.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

@@ -180,7 +180,8 @@ CrucibleHotForkThreadInventory {
                 unclassified |
                 rcu-restart |
                 monitor-restart |
-                unclassified-aio,
+                unclassified-aio |
+                vcpu-restart,
         },
     ],
 }
@@ -200,19 +201,74 @@ through a cleanup handler. Threads created by linked libraries or raw pthread
 calls are not silently treated as QEMU-owned.
 
 Schema version 4 assigns the `call_rcu` worker to `rcu-restart`, the exact
-internal QMP IOThread to `monitor-restart`, and every other QEMU `IOThread` to
+internal QMP IOThread to `monitor-restart`, the single round-robin TCG vCPU
+thread to `vcpu-restart`, and every other QEMU `IOThread` to
 `unclassified-aio` through calls made by the owning subsystems, not by matching
 diagnostic names. The runtime transaction admits exactly one coordinator, one
-RCU worker, and one monitor worker. It discards both inherited workers in the
-child, registers one fresh callback worker after RCU reconstruction, and leaves
-the already-bound child-QMP reinitializer to start the replacement monitor
-worker while input remains held. Generic and other AIO workers remain fork
+RCU worker, one monitor worker, and at most one vCPU thread. It discards the
+inherited workers in the child, registers one fresh callback worker after RCU
+reconstruction, leaves the already-bound child-QMP reinitializer to start the
+replacement monitor worker while input remains held, and restarts the vCPU
+thread from its retained VM-stop park once the plugin child is active: the
+replacement adopts the sole TCG context and the guest random stream the parent
+thread published at its park, announces itself under the BQL, and parks again
+on the inherited stop before any guest work can run.
+
+Registered mutexes are carried by classification rather than required to be
+free. The coordinator forks while it owns the BQL, the dispatching QMP
+IOThread waits inside `crucible-hot-fork` holding its recursive parser lock
+and parked on the coordinator's completion condition, and the vCPU thread is
+the sole condition waiter on the BQL. Every `QemuMutex` therefore records its
+sole condition waiter; the registry transaction admits a mutex that is
+unlocked, owned by the coordinator, or parked on one discard-and-restart
+thread (held at depth one or awaited as the sole condition waiter), records
+the carried set, and rejects every other owner or waiter. The child re-verifies
+each carried mutex, rebinds coordinator-owned mutexes to its thread ID,
+reinitializes the pthread state of mutexes a vanished thread held, forgets
+vanished waiters, and requires the whole registry to be quiescent or
+child-owned before it adopts the surviving coordinator record. Generic and other AIO workers remain fork
 blockers and are counted in `unclassified-threads`; neither these
 classifications nor the transaction acknowledges readiness bit 8. Plain
 `unclassified` remains the fail-closed value for every other
 `qemu_thread_create()` caller. Earlier schema versions are rejected rather than
 silently interpreting their smaller disposition registry under version-4
 semantics.
+
+The child's monitor reconstruction repairs what the vanished monitor thread
+left behind. The source registered the process contract and child-file
+descriptors with `getfd`, and those names survive the fork while the child's
+descriptor transaction has already disposed of their numbers, so the child
+drops the names without closing anything before it judges the monitor's
+local state. The inherited GLib main context records the vanished thread as
+its owner and GLib lets no other thread acquire it, so the rebuilt monitor
+IOThread runs a fresh context and loop, the AioContext's GSource moves into
+it, and the held monitor socket follows before any input source is attached.
+The rebuilt QMP dispatcher coroutine is driven to its idle wait before the
+greeting, because the child's main thread is still inside its reconstruction
+and would not otherwise run it. The current-monitor table bound the vanished
+thread's leader coroutine, whose stack and thread-local storage the C library
+hands to the replacement thread, so every binding is dropped. The console
+chardev runs on GLib's default main context, recorded as a NULL context, which
+the child's main thread still owns as the continuation of the forking thread.
+The plugin's replacement workers park behind the retained hold from their own
+threads after its synchronous child initialization returns, so both the
+plugin API's status validation and the QEMU reinitializer treat the readiness
+flag as tracking the parked mask and query, bounded at ten seconds, until it
+is set; an active child's idle workers park at their receive safe point, so
+activation constrains only the phase, flags, and identity. The child-file
+plan's pinned source and prepared descriptors stay in the child's retained
+table, since adoption queries each source before closing it and reopens each
+replacement.
+
+QEMU marks guest RAM `MADV_DONTFORK` at RAM block creation so helper forks
+never duplicate it. A template makes every RAM block forkable before it holds
+its barriers and restores the protection when it completes; the change is
+refused under KVM, which needs `MADV_DONTFORK`, so a KVM-accelerated QEMU
+cannot retain a template. Every failure on the child's reconstruction path
+names its step in the child's exit status and writes its stage, result, and
+the state it compared against to the child's stderr, which descriptor
+application has routed to the branch-private diagnostics stream the host
+retains.
 
 Patched QEMU also exposes the bounded observational RCU inventory used to
 define the next subsystem-owned barrier:
@@ -633,7 +689,9 @@ their descriptor, never through the parent's launch pathname.
 The coordinator binds that primitive through `crucible-hot-fork-child-files`,
 an out-of-band one-shot stage/query/release command shaped like the process
 contract. The host opens one empty destination per originally writable native
-root, transfers each through standard `getfd`, and stages the list with the
+root, transfers each through out-of-band `getfd` (a retained template parks
+main-loop dispatch, so patched QEMU admits `getfd` and `closefd` out of band
+for every branch-private transfer), and stages the list with the
 root's backend name or parentless node name, the expected destination identity,
 and an aggregate byte budget. QEMU duplicates and authenticates every
 destination and binds the plan to the retained template generation.
@@ -644,6 +702,19 @@ descriptors are excluded from child descriptor disposition; the immediate child
 installs the plan after block release; the parent frees its copy and marks the
 plan consumed. A plan without native roots or native roots without a plan fail
 before process creation.
+
+The daemon's Linux fork launch owns that plan for production children. It
+provisions the target attempt's run directory under the launch resource
+profile the retained template recorded from its own launcher, lends the
+directory's provisioned empty VMState container as the sole destination,
+stages the plan against the template generation QEMU reports, and only then
+stages the process contract and forks. An explicit pre-fork rejection releases
+the plan with the contract; ambiguous or post-fork failures keep both staged
+in the quarantined source. The reconciliation owner retains the pinned run
+directory for the child's lifetime, drops it before the target guard's storage
+cleanup, and releases the consumed plan together with the process contract
+once the child's outcome is reconciled, so the source can stage a fresh plan
+for its next child.
 
 An active transaction acknowledges proof bit 5 exactly while the complete
 immutable-root binding and frozen-source proof are retained. The binding does not create the
@@ -2323,9 +2394,11 @@ number of simultaneously runnable children remains a resource-policy decision.
 
 The supported launch profile optimizes the complete child-ready path:
 
-- guest RAM uses private forkable mappings; a shared writable RAM backend is
-  rejected or converted at template preparation into an authenticated immutable
-  backing mapped privately by the template and children;
+- guest RAM uses private forkable mappings, which the template establishes by
+  advising every RAM block `MADV_DOFORK` while it is retained; a shared
+  writable RAM backend is rejected or converted at template preparation into
+  an authenticated immutable backing mapped privately by the template and
+  children;
 - QEMU marks reconstructible non-semantic scratch mappings `MADV_DONTFORK` when
   the platform supports it and recreates them before child readiness;
 - the live source protocol-ring mapping is now frozen and marked

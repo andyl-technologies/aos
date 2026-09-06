@@ -887,6 +887,130 @@
       kind = "recorded";
       symbols = [];
     };
+    "0204-crucible-allow-out-of-band-descriptor-transfer.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0205-crucible-round-source-mapping-extents.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0206-crucible-report-plugin-child-plan-blockers.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0207-crucible-validate-child-plan-mapping-extents.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0208-crucible-restore-nonblocking-cancellation-eventfd.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0209-crucible-report-fork-preparation-blockers.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0210-crucible-verify-monitor-basis-before-fork.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0211-crucible-report-runtime-transaction-blockers.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0212-crucible-carry-parked-mutexes-across-fork.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0213-crucible-restart-rr-vcpu-thread-in-child.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0214-crucible-place-child-through-cgroup-procs.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0215-crucible-release-registry-before-parent-locks.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0216-crucible-complete-child-placement-before-return.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0217-crucible-identify-failed-child-step-in-exit-status.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0218-crucible-identify-failed-resource-plan-substep.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0219-crucible-admit-mapping-into-backing-partial-page.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0220-crucible-bound-child-iothread-start.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0221-crucible-report-child-failure-result.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0222-crucible-wait-for-plugin-child-workers.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0223-crucible-name-failing-qmp-child-stage.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0224-crucible-drop-inherited-monitor-fd-names.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0225-crucible-rebuild-child-monitor-iothread-context.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0226-crucible-idle-rebuilt-dispatcher-in-child.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0227-crucible-name-failing-console-child-stage.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0228-crucible-admit-default-console-context.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0229-crucible-admit-idle-active-plugin-workers.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0230-crucible-report-child-file-install-failure.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0231-crucible-name-unsettled-source-descriptor.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0232-crucible-retain-child-file-plan-descriptors.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0233-crucible-drop-inherited-current-monitor.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0234-crucible-forkable-template-ram.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

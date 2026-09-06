@@ -3546,9 +3546,11 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Enforces:** [HFORK-3], [HFORK-4], [HFORK-11], [HFORK-22].
 - **Mechanism:** a generation-bound QMP transaction retains an authenticated
   cgroup-v2 directory, sticky nonblocking cancellation eventfd, and file-size
-  ceiling. The coordinator uses `clone3(CLONE_INTO_CGROUP)`, and the immediate
-  child checks cancellation and installs `RLIMIT_FSIZE` before reconstructing
-  runtime state.
+  ceiling. The coordinator used `clone3(CLONE_INTO_CGROUP)` until
+  `crucible-cgroup-procs-child-placement` replaced it with first-instruction
+  self-placement through the supervisor-opened `cgroup.procs` descriptor; the
+  immediate child then checks cancellation and installs `RLIMIT_FSIZE` before
+  reconstructing runtime state.
 - **Micro-test:** the live readiness flight proves the command is absent from
   stock QEMU and checks the exact empty initial state. Coordinator tests cover
   the birth-time process contract, and exact drop-one attribution binds the
@@ -3771,6 +3773,584 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Inertness:** the command is rejected outside a retained template; an
   absent plan leaves the existing empty-graph fork path unchanged except for
   the additional required generation argument.
+- **Risk:** F.
+
+### crucible-out-of-band-descriptor-transfer — allow out-of-band descriptor transfer
+
+- **Patch:** `0204-crucible-allow-out-of-band-descriptor-transfer.patch`.
+- **Enforces:** [HFORK-9], [HFORK-22].
+- **Mechanism:** standard `getfd` and `closefd` gain `allow-oob`. A retained
+  hot-fork template parks main-loop dispatch behind the asynchronous-source
+  barrier, so every branch-private descriptor transfer (private ring,
+  diagnostics, child QMP, child console, plugin endpoints, process contract,
+  child-private files) must execute on the monitor thread like the Crucible
+  stage commands that consume the transferred names. Both handlers touch only
+  the chardev `SCM_RIGHTS` stash and the monitor-locked descriptor list, so
+  their semantics are unchanged; the Rust client now issues both through
+  `exec-oob`.
+- **Micro-test:** the readiness gate proves stock QEMU rejects out-of-band
+  `getfd`, while patched QEMU dispatches out-of-band `getfd` and `closefd`
+  and reports the missing descriptor or unknown name. The first live guarded
+  fork flight timed out on main-loop `getfd` under retained barriers before
+  this change.
+- **Inertness:** commands executed with `execute` keep their ordinary
+  main-loop dispatch; only the additional out-of-band form is admitted.
+- **Risk:** F.
+
+### crucible-source-mapping-page-extents — round source mapping extents to pages
+
+- **Patch:** `0205-crucible-round-source-mapping-extents.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** setup-region lengths are exact protocol byte counts aligned
+  to ring headers, while the kernel maps whole pages. The source-mapping
+  lookup now accepts the exact length, binds the single writable shared VMA
+  that spans its page-rounded extent, and reports that extent. The
+  retained-template coordinator compares the private-ring source length
+  against the page-rounded manifest length when sealing plugin endpoints and
+  when building the child plan; the plugin and the typed host client compare
+  the same rounded extent, so no protocol value changes.
+- **Micro-test:** `test-crucible-hot-fork-child` binds a page-plus-one-byte
+  region to its two-page VMA, rejects a shorter declared length as ambiguous,
+  and rejects a zero length. The first live guarded fork flight was rejected
+  at private-ring staging with `EINVAL` before this change.
+- **Inertness:** page-multiple regions bind exactly as before.
+- **Risk:** F.
+
+### crucible-plugin-child-plan-blockers — report plugin child plan blockers
+
+- **Patch:** `0206-crucible-report-plugin-child-plan-blockers.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the plugin child plan is built only when every retained
+  basis holds. A named blocker function now checks the same preconditions in
+  order (template phase, barrier quiescence, inventory completeness, process
+  generation, endpoint identities, private-ring staging and template binding,
+  descriptor identity, length, aliasing, source mapping extent, endpoint
+  distinctness, worker mask, and parked workers) and the plugin endpoint
+  stage reports the first blocker in its QMP error. Plan construction and
+  every readiness proof are unchanged.
+- **Micro-test:** the readiness gate keeps proving the endpoint stage rejects
+  binding without a retained template. The live guarded fork flight needed
+  the blocker text because the descriptor-bearing client poisons its stream
+  after any staging failure and cannot query the retained state afterwards.
+- **Inertness:** diagnostics only; no accepted or rejected basis changes.
+- **Risk:** F.
+
+### crucible-child-plan-mapping-extents — validate child plan mapping extents
+
+- **Patch:** `0207-crucible-validate-child-plan-mapping-extents.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the plugin child plan carries the exact setup-region length
+  and the page-rounded source mapping extent. Plan validation now requires
+  the extent to be the page-rounded length (at least the length, less than
+  one page beyond it) instead of exact equality, while still requiring a
+  page-aligned start and extent, zero offset, and a bounded address range.
+- **Micro-test:** the readiness gate keeps proving the endpoint stage rejects
+  binding without a retained template. The live guarded fork flight was
+  blocked at plan construction with every named precondition satisfied
+  before this change.
+- **Inertness:** page-multiple regions validate exactly as before.
+- **Risk:** F.
+
+### crucible-nonblocking-cancellation-eventfd — restore nonblocking cancellation eventfd
+
+- **Patch:** `0208-crucible-restore-nonblocking-cancellation-eventfd.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** `io/channel-socket.c` clears `O_NONBLOCK` on every
+  descriptor received over `SCM_RIGHTS`, and that status flag belongs to the
+  open file description the host still shares for its sticky-cancellation
+  polling. Staging the child process contract now restores nonblocking mode
+  on the retained duplicate before authenticating it, so both processes keep
+  the nonblocking contract the host validated at construction.
+- **Micro-test:** the readiness gate keeps proving the initial contract state
+  is exactly absent. The live guarded fork flight was rejected at contract
+  staging with a blocking eventfd before this change; every earlier stage of
+  the same flight passed.
+- **Inertness:** only the contract stage touches the flag, and only on a
+  descriptor the host already created nonblocking.
+- **Risk:** F.
+
+### crucible-fork-preparation-blockers — report fork preparation blockers
+
+- **Patch:** `0209-crucible-report-fork-preparation-blockers.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the main-loop fork preparation admits a request only when
+  every retained basis holds. A named blocker function now checks the same
+  conditions in order and the operation records the first blocker; later
+  preparation steps (native worker and source retirement, the child-private
+  file plan) record their own. `crucible-hot-fork` reports the blocker with
+  the errno-style status. Admission and preparation semantics are unchanged.
+- **Micro-test:** the readiness gate keeps proving the zero-generation fork
+  fails closed. The live guarded fork flight reached this command and was
+  rejected with only `ESTALE` before this change.
+- **Inertness:** diagnostics only; no accepted or rejected basis changes.
+- **Risk:** F.
+
+### crucible-monitor-basis-verified-before-fork — verify child monitor basis before fork
+
+- **Patch:** `0210-crucible-verify-monitor-basis-before-fork.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** an out-of-band QMP command runs on the monitor thread under
+  that monitor's recursive parser lock, and the monitor thread then blocks
+  inside `crucible-hot-fork` until the main-loop transaction completes. The
+  main-loop preparation therefore cannot take the parser lock and previously
+  counted the dispatching monitor as unstable. The command now verifies the
+  staged child monitor basis before submitting the operation and records the
+  verdict; preparation and its blocker report consume the recorded verdict.
+  Nothing else can change monitor state while the monitor thread is blocked.
+- **Micro-test:** the readiness gate keeps proving the zero-generation fork
+  fails closed before submission. The live guarded fork flight was rejected
+  at preparation with "child monitor basis changed" before this change.
+- **Inertness:** the same basis predicate runs, one thread earlier.
+- **Risk:** F.
+
+### crucible-runtime-transaction-blockers — report runtime transaction blockers
+
+- **Patch:** `0211-crucible-report-runtime-transaction-blockers.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the retained runtime transaction composes the thread
+  registry, RCU, and asynchronous-source transactions. Each now records a
+  static description of the basis that blocked it (the registry reports its
+  forkability counts or the first registered mutex that is not quiescent
+  with its owner thread, recursion depth, and waiters; RCU reports a missing
+  retained barrier or an unregistered coordinator reader; the asynchronous
+  source reports its barrier state), the composition records the failing
+  step, and `crucible-hot-fork` reports the composed text with the
+  errno-style status. Admission and transaction semantics are unchanged.
+- **Micro-test:** the readiness gate keeps proving the zero-generation fork
+  fails closed before submission. The live guarded fork flight reached the
+  runtime transaction and was rejected with only `EBUSY` before this change.
+- **Inertness:** diagnostics only; no accepted or rejected basis changes.
+- **Risk:** F.
+
+### crucible-carried-fork-mutexes — carry coordinator-owned and parked mutexes
+
+- **Patch:** `0212-crucible-carry-parked-mutexes-across-fork.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the dispatching QMP IOThread waits inside
+  `crucible-hot-fork` holding its recursive parser lock and parked on the
+  coordinator's completion condition, and the main-loop coordinator forks
+  while it owns the BQL. The registry transaction previously required every
+  registered mutex to be unlocked and waiter-free, so a live fork was
+  impossible. Each mutex now records its sole condition waiter; the
+  transaction classifies every mutex as quiescent, coordinator-owned, parked
+  on one discard-and-restart thread, or blocked, and records the carried set.
+  The child re-verifies each carried mutex against the parent's
+  classification, rebinds coordinator-owned mutexes to its thread ID,
+  reinitializes the pthread mutex a vanished thread held, forgets vanished
+  waiters, and then requires the whole registry to be quiescent or
+  child-owned.
+- **Micro-test:** `/crucible/hot-fork-child/registry-coordinator-owned-mutex`
+  forks with a coordinator-held mutex and cycles it in the child;
+  `registry-parked-restart-mutexes` forks with a monitor-restart worker
+  holding a recursive lock and waiting on a condition and locks both in the
+  child; `registry-deeply-held-mutex` rejects a depth-two hold with the named
+  blocker. The live guarded fork flight was rejected at this transaction
+  before this change.
+- **Inertness:** mutexes held or awaited by any other thread still block the
+  fork; coordinator-owned and parked mutexes were previously rejected and are
+  now carried.
+- **Risk:** F.
+
+### crucible-rr-vcpu-thread-restart — restart the round-robin vCPU thread in the child
+
+- **Patch:** `0213-crucible-restart-rr-vcpu-thread-in-child.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the round-robin vCPU thread was a plain `unclassified`
+  fork blocker, so the live flight stopped at the registry transaction with
+  four threads where three were admitted. The thread now assigns itself
+  `vcpu-restart`, and the registry admits exactly one such thread alongside
+  the coordinator, RCU, and monitor workers. Before every VM-stop park the
+  thread publishes a copy of its deterministic guest random stream. In the
+  immediate child, after the plugin child is active and before the block
+  barrier releases, the coordinator calls the accelerator's restart hook: it
+  reinitializes the shared halt condition (the copied one still counts the
+  vanished waiter), clears creation state, and creates a replacement thread
+  that re-registers with RCU and the registry, adopts the process's sole TCG
+  context instead of claiming a new one, adopts the published random stream,
+  announces itself under the BQL, and enters the steady-state loop, which
+  parks on the inherited VM stop before any guest work can run.
+- **Micro-test:** `/crucible/hot-fork-child/registry-vcpu-restart-worker`
+  admits one `vcpu-restart` worker and rejects a second with the named
+  blocker; the readiness gate requires exactly one `ALL CPUs/TCG` thread with
+  the new disposition. The live guarded fork flight is the acceptance
+  evidence for the restart itself.
+- **Inertness:** the parent thread's behaviour is unchanged apart from the
+  disposition and the random-stream copy at VM-stop parks; multi-threaded TCG
+  and other accelerators expose no restart hook and remain fork blockers.
+- **Risk:** F.
+
+### crucible-cgroup-procs-child-placement — place the fork child through cgroup.procs
+
+- **Patch:** `0214-crucible-place-child-through-cgroup-procs.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the kernel checks `CLONE_INTO_CGROUP` with the calling
+  process's credentials: it must be able to write `cgroup.procs` in both the
+  destination and the common ancestor of source and destination. A source
+  QEMU running under attempt credentials cannot satisfy that across a
+  supervisor-owned delegated root, so the first live guarded fork was
+  rejected with `EPERM`. A `cgroup.procs` write is instead authorized with the
+  credentials of the process that opened the descriptor. The process contract
+  therefore also imports the supervisor's writable `cgroup.procs` descriptor,
+  authenticates it as the control file of the exact retained directory (same
+  device, the inode of `cgroup.procs` beneath the directory, write access, and
+  cgroup-v2 filesystem), and reports it in schema 2. The coordinator forks and
+  the child's first instruction writes `0` into that descriptor, migrating
+  itself before any other work; a failed write ends the child.
+- **Micro-test:** the readiness gate checks the exact empty schema-2 initial
+  state; the crucible-qemu suite covers the three-descriptor stage, release,
+  and strict state parsing; the live guarded fork flight is the acceptance
+  evidence for placement.
+- **Inertness:** without a staged contract the coordinator forks exactly as
+  the focused coordinator tests exercise it; no cgroup write happens.
+- **Risk:** F.
+
+### crucible-fork-parent-registry-release-order — release the registry before the fork parent locks
+
+- **Patch:** `0215-crucible-release-registry-before-parent-locks.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the registry transaction retains the registered-mutex
+  guard from before `fork()` until the parent releases it. The coordinator
+  retained the child, which locks the coordinator's own registered `QemuMutex`,
+  before invoking the parent callback that performs that release, so the
+  first fork that ever succeeded left the parent deadlocked on its own guard
+  and the `crucible-hot-fork` command timed out. The parent callback now runs
+  first and releases the runtime transaction before it frees the child-file
+  plan; the coordinator retains the child afterwards. The guard also keeps a
+  thread-local held flag and aborts with a named message on re-entrant use.
+- **Micro-test:** `/crucible/hot-fork-child/registry-retained-guard-abort`
+  locks a registered mutex inside a retained registry transaction in a
+  subprocess and asserts the named abort. The live guarded fork flight is the
+  acceptance evidence for the parent completing.
+- **Inertness:** the parent callback's inputs and the retained child slot are
+  unchanged; only their order and the guard's failure mode change.
+- **Risk:** F.
+
+### crucible-child-placement-before-fork-return — complete child placement before the fork returns
+
+- **Patch:** `0216-crucible-complete-child-placement-before-return.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the child's first instruction migrates it into the target
+  cgroup, but the parent previously completed the fork as soon as `fork()`
+  returned, so a supervisor could authenticate the child's cgroup membership
+  before the child had run at all. The coordinator now creates one
+  close-on-exec pipe before `fork()`; the child writes one byte after its
+  placement write and closes both ends before returning into its own path,
+  and the parent polls the read end for at most ten seconds before it runs
+  the parent callback and retains the child. A missing report becomes the
+  fork's parent status (`-ECHILD` on early exit, `-ETIMEDOUT` otherwise) with
+  the child still retained for reaping.
+- **Micro-test:** the coordinator unit test exercises the handshake with no
+  cgroup descriptor; the live guarded fork flight is the acceptance evidence
+  for placement ordering.
+- **Inertness:** the child's work and the parent callback are unchanged; the
+  parent only waits for the report before proceeding.
+- **Risk:** F.
+
+### crucible-child-step-exit-status — identify the failed child step in the exit status
+
+- **Patch:** `0217-crucible-identify-failed-child-step-in-exit-status.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the child's reconstruction runs fifteen ordered steps and
+  previously ended with a bare `EXIT_FAILURE` on any error. Under guarded
+  launch the child's stderr is closed, so the first live child that failed
+  left only a zombie with no cause. Each step now increments a counter and a
+  failure terminates the child with 64 plus that counter, documented on the
+  child-process status field; the source reaps the child and reports the
+  status through `crucible-hot-fork-child-process`.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact empty and unknown-generation behaviour; the live guarded fork flight
+  reports the reaped child's status when retention fails.
+- **Inertness:** successful reconstruction is unchanged; only the exit
+  status of a failed child changes.
+- **Risk:** F.
+
+### crucible-child-resource-plan-substep-status — identify the failed resource plan sub-step
+
+- **Patch:** `0218-crucible-identify-failed-resource-plan-substep.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the runtime resource plan application is one composite
+  step of the child's reconstruction: descriptor replacement, child runtime
+  start, plugin, QMP, and console reinitialization, runtime finish, mapping
+  verification, and diagnostics-target authentication. The first live child
+  died there with only the composite step's status. Each sub-step now records
+  itself before it runs, and a failure inside the composite step exits with
+  96 plus that record, documented on the child-process status field.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact empty and unknown-generation behaviour; the live guarded fork flight
+  reports the reaped child's status when retention fails.
+- **Inertness:** successful reconstruction is unchanged; only the exit
+  status of a child that fails inside the composite step changes.
+- **Risk:** F.
+
+### crucible-mapping-backing-partial-page — admit shared mappings into a backing partial page
+
+- **Patch:** `0219-crucible-admit-mapping-into-backing-partial-page.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** protocol regions carry exact lengths while the VMA that
+  maps them spans whole pages (`crucible-source-mapping-extents`), and the
+  private ring memfd keeps the exact ring-aligned size. The child's shared
+  mapping table check still required `offset + length` to fit the backing's
+  exact byte size, so the first child to reach the resource plan application
+  exited at its preconditions. The check now bounds the mapping by the
+  backing's page-rounded size; the kernel zero-fills that tail.
+- **Micro-test:** `/crucible/hot-fork-child/mapping-table-partial-page` maps
+  two pages of a backing one byte longer than a page: three pages are
+  rejected, two are admitted by the table check.
+- **Inertness:** mappings that fit the exact size are accepted as before.
+- **Risk:** F.
+
+### crucible-child-iothread-start-bound — bound the child monitor iothread start
+
+- **Patch:** `0220-crucible-bound-child-iothread-start.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the child rebuilds its monitor iothread and waited without
+  bound on the start semaphore; the live flight found the coordinator parked
+  there with no replacement thread among the child's tasks. The wait is now
+  bounded, a timeout records detail 70 unless the replacement recorded
+  progress, and the replacement notes each start step in the child detail
+  so the child's exit status (96 plus the detail) names where it stopped.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight reports the reaped child's
+  status.
+- **Inertness:** a replacement that starts promptly behaves as before; the
+  parent's own iothread creation records nothing.
+- **Risk:** F.
+
+### crucible-child-failure-result-report — report the failing child result on its diagnostics stream
+
+- **Patch:** `0221-crucible-report-child-failure-result.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the child's exit status names the failing step or detail
+  but not the result that failed it. The exit helper now takes that result
+  and writes "crucible hot-fork child failed: step S detail D result R" to
+  stderr, which the child resource plan has already replaced with the
+  branch-private diagnostics stream, before it exits.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight quotes the retained
+  diagnostics stream in its failure report.
+- **Inertness:** a child that completes its reconstruction writes nothing;
+  the parent never reaches the exit helper.
+- **Risk:** F.
+
+### crucible-plugin-child-worker-settle — wait for the plugin child workers to park
+
+- **Patch:** `0222-crucible-wait-for-plugin-child-workers.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the plugin's child initialization spawns its replacement
+  workers and returns; each worker parks behind the retained hold from its
+  own thread. The reinitializer demanded the complete held status from the
+  initialization result and failed with EPROTO whenever a worker had not
+  parked yet. It now separates the status identity from its readiness,
+  queries the runtime while only readiness is outstanding, and bounds that
+  wait; the plugin API's status validation ties the readiness flag to the
+  parked mask instead of the held phase, and names a rejected action on the
+  child's diagnostics stream.
+- **Micro-test:** the child unit test's fake runtime withholds readiness for
+  a configurable number of reports and proves the reinitializer queries
+  through them, and that any other mismatch still fails at once.
+- **Inertness:** a runtime that reports readiness immediately never queries;
+  the parent never reaches the reinitializer.
+- **Risk:** F.
+
+### crucible-qmp-child-stage-report — name the failing child QMP reconstruction stage
+
+- **Patch:** `0223-crucible-name-failing-qmp-child-stage.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the child's QMP reinitializer, the monitor's protocol
+  reconstruction (including which retained-basis precondition went stale),
+  the socket chardev's replacement attachment, and the iothread restart each
+  write one line naming the failing stage and its result to stderr before
+  returning it; the exit status names only the resource plan sub-step.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight quotes the diagnostics
+  stream in its failure report.
+- **Inertness:** a reconstruction that succeeds writes nothing; the parent
+  never reaches these stages.
+- **Risk:** F.
+
+### crucible-child-monitor-fd-names — drop inherited monitor descriptor names in the child
+
+- **Patch:** `0224-crucible-drop-inherited-monitor-fd-names.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the source registers the process contract and child-file
+  descriptors with `getfd`, and those names survive the fork in the
+  monitor's per-monitor list while the child's descriptor table transaction
+  closes or replaces their numbers. The child's protocol reconstruction
+  required that list to be empty and found it stale. The child now drops
+  the inherited names, leaving the table to the transaction, before the
+  local-state precondition is evaluated, and reports each local-state
+  predicate when the precondition still fails.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight exercises the drop.
+- **Inertness:** the parent never reaches the child reconstruction; a child
+  whose source registered no names drops nothing.
+- **Risk:** F.
+
+### crucible-child-monitor-iothread-context — rebuild the monitor iothread GLib context in the child
+
+- **Patch:** `0225-crucible-rebuild-child-monitor-iothread-context.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the inherited GMainContext's owner is the vanished parent
+  thread, so the replacement's thread-default push failed and its main loop
+  waited forever for a release that cannot come. The child now creates a
+  fresh context and loop, clears the AioContext GSource's context link (part
+  of GLib's public embedded layout) and attaches it to the fresh context so
+  its poll descriptors follow, abandons the dead copy rather than
+  unreferencing it, and re-homes the held monitor socket and the basis to
+  the fresh context while no source is attached.
+- **Micro-test:** the chardev unit test's forked child re-homes the held
+  socket to a fresh context and proves that release attaches to it and that
+  a stale inherited context is rejected; the live guarded fork flight
+  exercises the iothread rebuild.
+- **Inertness:** the parent never reaches the child reconstruction; the
+  chardev's ordinary connection paths are untouched.
+- **Risk:** F.
+
+### crucible-child-dispatcher-idle — run the rebuilt dispatcher to its idle wait in the child
+
+- **Patch:** `0226-crucible-idle-rebuilt-dispatcher-in-child.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the rebuilt dispatcher coroutine is scheduled on the
+  iohandler context with the busy flag set and clears it only when it runs
+  to its idle wait. The child's main thread is still inside its
+  reconstruction, so nothing ran it before the greeting transition checked
+  for an idle dispatcher and found it busy. The rebuild now polls the
+  iohandler context until the busy flag clears and re-verifies the
+  dispatcher under the monitor lock before reporting the replacement.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight exercises the greeting.
+- **Inertness:** the parent never rebuilds its dispatcher; ordinary
+  dispatcher creation at startup is untouched.
+- **Risk:** F.
+
+### crucible-console-child-stage-report — name the failing console child stage
+
+- **Patch:** `0227-crucible-name-failing-console-child-stage.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the console child runtime names a stale stage
+  precondition and a failed reconstruction or release, and the socket
+  chardev reports the state a stale inherited or held basis was compared
+  against, each as one stderr line before the result is returned; the exit
+  status names only the resource plan sub-step.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight quotes the diagnostics
+  stream in its failure report.
+- **Inertness:** a reconstruction that succeeds writes nothing; the parent
+  never reaches these stages.
+- **Risk:** F.
+
+### crucible-console-child-default-context — admit the default main context for the console child
+
+- **Patch:** `0228-crucible-admit-default-console-context.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the console basis is prepared with the chardev's context,
+  which is NULL for a chardev on the default main context, and the child
+  runtime rejected a NULL context as stale. The requirement is dropped: the
+  socket reconstruction and release compare the basis context with the
+  chardev's exactly, and the default context's owner is the child's own
+  main thread.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight exercises the console
+  reconstruction.
+- **Inertness:** a console chardev bound to a private context is checked as
+  before; the parent never reaches the child runtime.
+- **Risk:** F.
+
+### crucible-active-plugin-child-workers — admit idle parked workers in an active plugin child
+
+- **Patch:** `0229-crucible-admit-idle-active-plugin-workers.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the status matcher demanded an empty parked mask for an
+  active child, but an idle released worker legitimately parks at its
+  receive safe point, so activation failed on every child. The worker
+  constraints now apply to the held state only; the active state requires
+  the phase, flags, and identity, and the activation reports a failed
+  release or mismatched status.
+- **Micro-test:** the child unit test's fake runtime reports every released
+  worker idle and proves activation succeeds once and is one-shot.
+- **Inertness:** a runtime that reports no parked workers after release
+  activates as before; the parent never reaches activation.
+- **Risk:** F.
+
+### crucible-child-file-install-report — report a failed child-file install on the diagnostics stream
+
+- **Patch:** `0230-crucible-report-child-file-install-failure.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the child passed no error object to the block layer's
+  child-file installation and empty-child release, so their detailed
+  diagnostics were discarded. The child now collects the error and writes
+  its pretty form as one stderr line before it exits.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight quotes the diagnostics
+  stream in its failure report.
+- **Inertness:** a successful installation writes nothing; the parent never
+  reaches these steps.
+- **Risk:** F.
+
+### crucible-unsettled-source-descriptor-report — name the node and check behind an unsettled source descriptor
+
+- **Patch:** `0231-crucible-name-unsettled-source-descriptor.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the file driver's source query evaluates its
+  settled-descriptor conditions one by one and reports the node name and
+  each condition's outcome in the error it sets; the check itself is
+  unchanged.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight quotes the diagnostics
+  stream in its failure report.
+- **Inertness:** a settled descriptor produces no error; only the error
+  text changed.
+- **Risk:** F.
+
+### crucible-child-file-plan-descriptors-retained — retain the child-file plan descriptors instead of closing them
+
+- **Patch:** `0232-crucible-retain-child-file-plan-descriptors.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the operation added every plan descriptor to its excluded
+  set, which the child's descriptor transaction closes, so adoption found
+  the pinned source descriptor already closed. The plan descriptors are now
+  left to the retained table, which keeps every live descriptor not
+  excluded or replaced, and a plan descriptor already excluded blocks the
+  fork with a named blocker.
+- **Micro-test:** the block-backend unit test keeps proving child adoption
+  against live descriptors; the live guarded fork flight exercises the
+  retained table.
+- **Inertness:** the inherited monitor and console sockets are excluded as
+  before; nothing else changes in the parent.
+- **Risk:** F.
+
+### crucible-child-current-monitor-bindings — drop the inherited current-monitor bindings in the child
+
+- **Patch:** `0233-crucible-drop-inherited-current-monitor.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the current-monitor table maps a coroutine, or a thread's
+  leader coroutine, to the monitor it is dispatching for. The source's
+  monitor thread was inside the out-of-band fork command, so its leader is
+  bound; the replacement thread receives the vanished thread's stack and
+  thread-local storage and therefore the same leader address. No coroutine
+  in the child is inside a command, so the reconstruction removes every
+  binding under the monitor lock.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight dispatches out-of-band and
+  in-band commands to the child.
+- **Inertness:** the parent never reaches the child reconstruction; the
+  table is rebuilt by ordinary dispatch afterwards.
+- **Risk:** F.
+
+### crucible-forkable-template-ram — make guest RAM forkable while a template is retained
+
+- **Patch:** `0234-crucible-forkable-template-ram.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** QEMU marks guest RAM `MADV_DONTFORK` at RAM block
+  creation so helper forks never duplicate it, which left a hot-fork
+  child with no guest RAM at all. A new physmem helper advises every RAM
+  block with host memory, refusing under KVM; the template applies it as
+  it transitions to holding its barriers and reverts it when it completes.
+- **Micro-test:** the readiness gate keeps proving template retention on a
+  machine-less QEMU, where the helper visits no block; the live guarded
+  fork flight saves VMState through the child's inherited RAM.
+- **Inertness:** without a retained template RAM stays `MADV_DONTFORK`; a
+  KVM-accelerated QEMU cannot retain a template at all.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

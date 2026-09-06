@@ -103,6 +103,9 @@ where
     }
 
     fn release_target(&mut self) -> Result<(), Self::Error> {
+        // The child's pinned run-directory descriptors go first so the target
+        // guard's storage cleanup never races an authority this owner holds.
+        self.run_directory = None;
         self.target.finish().map_err(Into::into)
     }
 
@@ -125,6 +128,15 @@ where
         if state.staged()
             || state.consumed()
             || state.generation() != self.basis.request().child_process_contract_generation()
+        {
+            return Err(LinuxQemuHotForkReconciliationError::BasisMismatch);
+        }
+        // The consumed child-file plan is released with the contract so the
+        // source can stage a fresh plan for its next child.
+        let files = self.with_source_mut(QemuNode::release_hot_fork_child_files)?;
+        if files.staged()
+            || files.consumed()
+            || files.generation() != self.basis.request().child_files_generation()
         {
             return Err(LinuxQemuHotForkReconciliationError::BasisMismatch);
         }

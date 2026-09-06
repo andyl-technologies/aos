@@ -286,6 +286,36 @@ impl QemuPreparedRunDirectory {
         &self.path
     }
 
+    /// Lends the provisioned empty VMState container as a hot-fork destination.
+    ///
+    /// The retained source copies its frozen VMState bytes into this file
+    /// during the fork and the child adopts it as its private container. The
+    /// container must still be the empty file this authority pinned at
+    /// provisioning; a materialized or replaced container is not a valid
+    /// destination.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when the container was materialized for a
+    /// fresh launch, its pinned identity changed, or it is no longer empty.
+    pub fn hot_fork_child_file_destination(
+        &self,
+    ) -> Result<std::os::fd::BorrowedFd<'_>, QemuSpawnError> {
+        if self.vmstate_materialization != PreparedVmStateMaterialization::Provisioned {
+            return Err(QemuSpawnError::PreparedVmStateNotReady {
+                path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+            });
+        }
+        let retained = self.revalidate_identity()?;
+        if retained.st_size != 0 {
+            return Err(invalid_input(
+                "lend prepared exact-VMState container",
+                "prepared exact-VMState container is not empty",
+            ));
+        }
+        Ok(std::os::fd::AsFd::as_fd(&self.vmstate))
+    }
+
     fn revalidate(&self) -> Result<(), QemuSpawnError> {
         if self.vmstate_materialization == PreparedVmStateMaterialization::Updating {
             return Err(QemuSpawnError::PreparedVmStateNotReady {
@@ -755,9 +785,11 @@ impl QemuChildProcessContract {
         }
     }
 
+    /// Duplicates the cgroup directory, its `cgroup.procs`, and the
+    /// cancellation eventfd for one hot-fork contract stage, in that order.
     pub(crate) fn duplicate_hot_fork_descriptors(
         &self,
-    ) -> Result<(OwnedFd, OwnedFd), QemuSpawnError> {
+    ) -> Result<(OwnedFd, OwnedFd, OwnedFd), QemuSpawnError> {
         let cgroup_directory = self
             .cgroup_directory
             .as_ref()
@@ -773,6 +805,13 @@ impl QemuChildProcessContract {
                 operation: "duplicate hot-fork cgroup directory",
                 source,
             })?;
+        let cgroup_procs = self
+            .cgroup_procs
+            .try_clone()
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "duplicate hot-fork cgroup.procs descriptor",
+                source,
+            })?;
         let cancellation_event =
             self.cancellation_event
                 .try_clone()
@@ -780,7 +819,7 @@ impl QemuChildProcessContract {
                     operation: "duplicate hot-fork cancellation eventfd",
                     source,
                 })?;
-        Ok((cgroup_directory, cancellation_event))
+        Ok((cgroup_directory, cgroup_procs, cancellation_event))
     }
 
     pub(crate) const fn maximum_writable_bytes(&self) -> u64 {

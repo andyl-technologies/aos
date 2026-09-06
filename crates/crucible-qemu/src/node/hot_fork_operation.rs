@@ -475,7 +475,8 @@ impl QemuNode {
             && retained.private_ring.length() == ring_identity.length()
             && retained.private_ring.shrink_sealed()
             && retained.private_ring.source_mapping_bound()
-            && retained.private_ring.source_length() == ring.source_setup_region().length()
+            && retained.private_ring.source_length()
+                == crate::qmp::source_mapping_extent(ring.source_setup_region().length())
             && resource.private_ring_staged();
         if !ring_matches {
             return Err(hot_fork_request_basis_mismatch(

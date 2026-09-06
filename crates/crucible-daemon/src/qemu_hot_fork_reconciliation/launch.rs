@@ -1,6 +1,51 @@
 //! Failure-retaining single-node and aggregate-world fork transactions.
+//!
+//! Every fork provisions the target attempt's run directory first and lends
+//! its empty VMState container to the source as the child's private copy, so
+//! the child never shares a writable native file with the retained template.
+
+use crucible_qemu::{
+    DEFAULT_VMSTATE_NODE_NAME, QemuChildProcessContract, QemuHotForkChildFileDestination,
+    QemuLaunchResourceRequirements, QemuPreparedRunDirectory, QmpHotForkChildFileRoot,
+};
 
 use super::*;
+
+/// Forks `source` into `target` with the target's provisioned VMState container
+/// as the child's private copy.
+///
+/// The source-byte budget is the admitted minimum writable size of the launch
+/// profile, which already bounds the retained source container.
+fn fork_with_private_files<O, F>(
+    source: &mut QemuNode,
+    run_directory: &QemuPreparedRunDirectory,
+    launch_resources: QemuLaunchResourceRequirements,
+    target: &mut O,
+    contract_for: F,
+) -> Result<QemuHotForkChildLaunch<O::Authority>, QemuHotForkLaunchError>
+where
+    O: QemuHotForkChildProcessOwner,
+    F: for<'a> FnOnce(&'a O) -> Result<&'a QemuChildProcessContract, QemuNodeChannelError>,
+{
+    let rejected = |operation: &'static str, message: String| QemuHotForkLaunchError::Rejected {
+        source: QemuNodeChannelError::new(operation, message),
+    };
+    let vmstate_root = QmpHotForkChildFileRoot::node_name(DEFAULT_VMSTATE_NODE_NAME)
+        .map_err(|source| rejected("select hot-fork VMState root", source.to_string()))?;
+    let destination = run_directory
+        .hot_fork_child_file_destination()
+        .map_err(|source| rejected("lend target VMState container", source.to_string()))?;
+    let destinations = [QemuHotForkChildFileDestination::new(
+        &vmstate_root,
+        destination,
+    )];
+    source.fork_prepared_hot_fork_template_with_files_into(
+        target,
+        contract_for,
+        &destinations,
+        launch_resources.minimum_writable_bytes(),
+    )
+}
 
 /// Launch failure retaining the reusable source and target attempt owner.
 pub struct LinuxQemuHotForkAttemptLaunchError<G> {
@@ -156,14 +201,40 @@ where
         world_assembly: Option<QemuHotForkWorldAssemblyToken>,
     ) -> Result<Self, LinuxQemuHotForkAttemptLaunchError<G>> {
         let (mut source_node, template_identity) = template.into_parts();
-        match source_node.fork_prepared_hot_fork_template_into(&mut target, |target| {
-            target.child_process_contract().map_err(|source| {
-                QemuNodeChannelError::new(
-                    "obtain target hot-fork process contract",
-                    source.to_string(),
-                )
-            })
-        }) {
+        let run_directory =
+            match target.prepare_generation_run_directory(template_identity.launch_resources()) {
+                Ok(run_directory) => run_directory,
+                Err(source) => {
+                    return Err(LinuxQemuHotForkAttemptLaunchError {
+                        source: Box::new(QemuHotForkLaunchError::Rejected {
+                            source: QemuNodeChannelError::new(
+                                "prepare target hot-fork run directory",
+                                source.to_string(),
+                            ),
+                        }),
+                        template: Box::new(QemuPreparedHotForkTemplate::from_reconciled_parts(
+                            source_node,
+                            template_identity,
+                        )),
+                        target: Box::new(target),
+                    });
+                }
+            };
+        let launched = fork_with_private_files(
+            &mut source_node,
+            &run_directory,
+            template_identity.launch_resources(),
+            &mut target,
+            |target| {
+                target.child_process_contract().map_err(|source| {
+                    QemuNodeChannelError::new(
+                        "obtain target hot-fork process contract",
+                        source.to_string(),
+                    )
+                })
+            },
+        );
+        match launched {
             Ok(launch) => Ok(Self::new(
                 attempt,
                 LinuxQemuHotForkReconciliationBackend::from_launch(
@@ -173,6 +244,7 @@ where
                     world_assembly,
                     target,
                     launch,
+                    run_directory,
                 ),
             )),
             Err(source) => Err(LinuxQemuHotForkAttemptLaunchError {
@@ -228,17 +300,33 @@ where
             }
         };
         let (mut source_node, template_identity) = template.into_parts();
+        let launch_resources = template_identity.launch_resources();
         let launched = target.with_guard_mut(|guard| {
-            source_node.fork_prepared_hot_fork_template_into(guard, |guard| {
-                guard.child_process_contract().map_err(|source| {
-                    QemuNodeChannelError::new(
-                        "obtain aggregate target hot-fork process contract",
+            let run_directory = guard
+                .prepare_generation_run_directory(launch_resources)
+                .map_err(|source| QemuHotForkLaunchError::Rejected {
+                    source: QemuNodeChannelError::new(
+                        "prepare aggregate target hot-fork run directory",
                         source.to_string(),
-                    )
-                })
-            })
+                    ),
+                })?;
+            let launch = fork_with_private_files(
+                &mut source_node,
+                &run_directory,
+                launch_resources,
+                guard,
+                |guard| {
+                    guard.child_process_contract().map_err(|source| {
+                        QemuNodeChannelError::new(
+                            "obtain aggregate target hot-fork process contract",
+                            source.to_string(),
+                        )
+                    })
+                },
+            )?;
+            Ok((launch, run_directory))
         });
-        let launch = match launched {
+        let (launch, run_directory) = match launched {
             Ok(Ok(launch)) => launch,
             Ok(Err(source @ QemuHotForkLaunchError::Rejected { .. })) => {
                 let failure = match node_target.abort_without_child() {
@@ -305,6 +393,7 @@ where
                 Some(world_assembly),
                 node_target,
                 launch,
+                run_directory,
             ),
         ))
     }

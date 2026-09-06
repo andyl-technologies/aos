@@ -1,0 +1,30 @@
+diff --git a/monitor/qmp.c b/monitor/qmp.c
+index 4042807d9..54db90b98 100644
+--- a/monitor/qmp.c
++++ b/monitor/qmp.c
+@@ -492,6 +492,25 @@ int monitor_qmp_hot_fork_rebuild_dispatcher_held(
+     fresh = qemu_coroutine_create(monitor_qmp_dispatcher_co, NULL);
+     qmp_dispatcher_co = fresh;
+     aio_co_schedule(iohandler_get_aio_context(), fresh);
++    qemu_mutex_unlock(&monitor_lock);
++
++    /*
++     * The child's main thread is still inside its reconstruction and will
++     * not return to the main loop before the greeting, so the scheduled
++     * coroutine would never run to its idle wait on its own.  Drive the
++     * iohandler context here until it does; every later transition
++     * requires an idle dispatcher, and an idle one has no request queued.
++     */
++    AIO_WAIT_WHILE_UNLOCKED(NULL,
++                   (aio_poll(iohandler_get_aio_context(), false),
++                    qatomic_read(&qmp_dispatcher_co_busy)));
++
++    qemu_mutex_lock(&monitor_lock);
++    if (qmp_dispatcher_co != fresh || qmp_dispatcher_co_shutdown ||
++        qatomic_read(&qmp_dispatcher_co_busy)) {
++        qemu_mutex_unlock(&monitor_lock);
++        return -EPROTO;
++    }
+     *replacement = fresh;
+     qemu_mutex_unlock(&monitor_lock);
+     return 0;

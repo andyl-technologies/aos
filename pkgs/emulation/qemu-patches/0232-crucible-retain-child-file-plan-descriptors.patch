@@ -1,0 +1,59 @@
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 765b5b50a..1201150a6 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -4119,6 +4119,21 @@ static int crucible_hot_fork_operation_add_excluded_fd(
+     return 0;
+ }
+ 
++/* Whether the child has already been told to close @descriptor. */
++static bool crucible_hot_fork_operation_excludes_fd(
++    const CrucibleHotForkOperation *operation, int descriptor)
++{
++    for (size_t index = 0; index < operation->excluded_fd_count; index++) {
++        if (operation->excluded_fds[index] == descriptor) {
++            return true;
++        }
++        if (operation->excluded_fds[index] > descriptor) {
++            break;
++        }
++    }
++    return false;
++}
++
+ static bool crucible_hot_fork_child_files_bound(void)
+ {
+     CrucibleHotForkChildFilesStage *stage =
+@@ -4225,12 +4240,20 @@ static int crucible_hot_fork_prepare_child_files(
+         operation->blocker = "child-private file copies could not be prepared";
+         return -EIO;
+     }
++    /*
++     * The plan lists every descriptor the child must inherit: the pinned
++     * source descriptors its graph still references, which adoption
++     * queries before it closes them, and the prepared replacements it
++     * reopens.  The child retains every live descriptor it is not told to
++     * close, so nothing is added here; a plan descriptor that an earlier
++     * exclusion would close is a contradiction the fork must not start.
++     */
+     descriptors = g_new0(int, QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS);
+     count = qemu_block_hot_fork_child_files_descriptors(
+         plan, descriptors, QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS);
+     for (index = 0; count >= 0 && index < (size_t)count; index++) {
+-        if (crucible_hot_fork_operation_add_excluded_fd(
+-                operation, descriptors[index]) != 0) {
++        if (crucible_hot_fork_operation_excludes_fd(
++                operation, descriptors[index])) {
+             count = -1;
+         }
+     }
+@@ -4238,7 +4261,8 @@ static int crucible_hot_fork_prepare_child_files(
+         if (!qemu_block_hot_fork_child_files_free(plan, &local_err)) {
+             error_free(local_err);
+         }
+-        operation->blocker = "child file descriptors exceed the retained bound";
++        operation->blocker = "child file descriptors exceed the retained "
++                             "bound or collide with a closed descriptor";
+         return -E2BIG;
+     }
+     operation->child_files = plan;

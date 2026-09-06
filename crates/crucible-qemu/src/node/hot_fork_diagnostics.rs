@@ -136,6 +136,15 @@ impl QemuHotForkChildDiagnosticConsumer {
         self.template_generation
     }
 
+    /// Returns every diagnostic byte retained so far, in arrival order.
+    ///
+    /// The bytes stay owned by the consumer until ordered release captures
+    /// them; this view lets a failure report quote what the child wrote.
+    #[must_use]
+    pub fn retained(&self) -> &[u8] {
+        &self.retained
+    }
+
     /// Drains every diagnostic byte currently available without blocking.
     ///
     /// The consumer retains one complete prefix bounded by
@@ -644,6 +653,36 @@ impl QemuNode {
             self.lifecycle_state = crate::QemuNodeLifecycleState::Quarantined;
             QemuNodeChannelError::new("drain hot-fork child diagnostics", source.to_string())
         })
+    }
+
+    /// Returns the child diagnostics retained by this node so far.
+    ///
+    /// Unlike [`Self::drain_hot_fork_child_diagnostics`], this reads in every
+    /// lifecycle state: a failed fork quarantines the node, and the child's
+    /// last words on its diagnostics stream are the evidence a failure report
+    /// needs. Available bytes are drained first; the node state is otherwise
+    /// untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when no acknowledged diagnostics stage
+    /// exists, its consumer was transferred to a child owner, or reading the
+    /// stream fails.
+    pub fn retained_hot_fork_child_diagnostics(&mut self) -> Result<Vec<u8>, QemuNodeChannelError> {
+        let consumer = match self.hot_fork_child_diagnostic_stage.as_mut() {
+            Some(QemuHotForkChildDiagnosticStage::Installed(endpoint)) => {
+                endpoint.consumer.as_mut()
+            }
+            Some(QemuHotForkChildDiagnosticStage::TransferUncertain(_)) | None => None,
+        };
+        let Some(consumer) = consumer else {
+            return Err(QemuNodeChannelError::new(
+                "read retained hot-fork child diagnostics",
+                "node retains no child diagnostics consumer",
+            ));
+        };
+        consumer.drain_available()?;
+        Ok(consumer.retained().to_vec())
     }
 
     /// Releases one acknowledged diagnostics stage in exact ownership order.

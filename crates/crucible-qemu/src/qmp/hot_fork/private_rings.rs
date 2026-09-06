@@ -4,6 +4,21 @@ use serde_json::Value;
 
 use crate::qmp::{QmpCommandKind, QmpDescriptorName, QmpError};
 
+/// Returns the whole-page extent a shared mapping of `length` bytes spans.
+///
+/// Protocol region lengths are exact byte counts; the kernel maps whole
+/// pages, so QEMU reports and verifies the page-rounded VMA extent. A length
+/// that cannot be rounded saturates so it never matches a real mapping.
+#[must_use]
+pub(crate) fn source_mapping_extent(length: u64) -> u64 {
+    let page = u64::try_from(rustix::param::page_size())
+        .unwrap_or(4096)
+        .max(1);
+    length
+        .checked_add(page - 1)
+        .map_or(u64::MAX, |rounded| rounded - rounded % page)
+}
+
 /// QMP command that retains or releases one authenticated private-ring descriptor.
 pub const QMP_HOT_FORK_PRIVATE_RINGS_COMMAND: &str = "crucible-hot-fork-private-rings";
 /// Version of the retained private-ring descriptor contract.
@@ -62,7 +77,7 @@ impl QmpHotForkPrivateRingState {
         state.template_generation = template_generation;
         state.source_mapping_bound = true;
         state.source_start = 4096;
-        state.source_length = length;
+        state.source_length = source_mapping_extent(length);
         state
     }
 
@@ -248,7 +263,9 @@ pub(crate) fn parse_hot_fork_private_ring_state(
                 && shrink_sealed
                 && (source_mapping_bound == (template_generation != 0))
                 && if source_mapping_bound {
-                    source_start != 0 && source_length == length && source_offset == 0
+                    source_start != 0
+                        && source_length == source_mapping_extent(length)
+                        && source_offset == 0
                 } else {
                     source_start == 0 && source_length == 0 && source_offset == 0
                 }
@@ -287,7 +304,16 @@ pub(crate) fn parse_hot_fork_private_ring_state(
 mod tests {
     use serde_json::json;
 
-    use super::parse_hot_fork_private_ring_state;
+    use super::{parse_hot_fork_private_ring_state, source_mapping_extent};
+
+    #[test]
+    fn source_mapping_extent_rounds_exact_lengths_to_whole_pages() {
+        let page = u64::try_from(rustix::param::page_size()).unwrap_or(4096);
+        assert_eq!(source_mapping_extent(page), page);
+        assert_eq!(source_mapping_extent(page + 1), 2 * page);
+        assert_eq!(source_mapping_extent(1), page);
+        assert_eq!(source_mapping_extent(u64::MAX), u64::MAX);
+    }
 
     fn template_stage() -> serde_json::Value {
         json!({
