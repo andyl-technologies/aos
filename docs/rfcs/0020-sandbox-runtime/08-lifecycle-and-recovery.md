@@ -271,6 +271,14 @@ recipe instead retains the resource generation it created, allowing a newly
 authorized release to identify and drain that older generation without
 misstating it as current desired state.
 
+The controller's current-attachment planner samples the protected wall clock
+only after rechecking desired state, authenticated Mount inventory, and live
+namespace authority. Before issue time it waits; at or after exclusive expiry
+it plans the same ordered detach/release drain as an explicit release tombstone.
+An empty expired realization reports expiry rather than readiness. Planning is
+non-authorizing and rechecks all three inputs before returning, so expiry cannot
+turn stale inventory or a replaced desired generation into cleanup authority.
+
 Lease expiry begins draining. It does not delete a backing object until active
 kernel/open pins are reconciled. FUSE worker failure can leave an attachment
 faulted; the reconciler freezes the consumer when its required filesystem

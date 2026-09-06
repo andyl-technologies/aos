@@ -726,6 +726,19 @@ with no local attempt are reported separately as untracked residuals. These are
 planning observations, not permission to retry, adopt, detach, or clean up;
 every effect still requires fresh catalog and signed authority.
 
+Current attachment planning then rechecks one exact durable desired generation,
+the fresh inventory commitment that includes the complete desired-state
+namespace, and the retained live namespace target. It compares every physical
+recipe field and separates the desired generation authorizing teardown from the
+older resource generation being drained. The closed result selects at most one
+prepare, install, replace, post-attach verify, detach, or release step, or
+reports an exact pending operation, Mount fault, lease wait/expiry, residual
+conflict, or completed release. A same-slot resource owned by another
+attachment, a stale namespace, a non-advancing replacement fence, an untracked
+intermediate transition, or a recipe substitution stops planning. The result
+retains evidence for the next recheck but carries no catalog descriptor, signed
+plan, or broker effect authority.
+
 Caller role derives from peer credentials, socket activation, and the expected
 service-unit identity; a serialized role is descriptive only. Unknown
 operations, features, or FD roles fail before effects. An exact request replay

@@ -11,6 +11,8 @@
 //! privileged broker implementations deliberately live outside this crate.
 
 #[cfg(target_os = "linux")]
+pub mod attachment_reconciliation;
+#[cfg(target_os = "linux")]
 pub mod attachment_state;
 pub mod authority;
 pub mod controller;
@@ -42,6 +44,11 @@ pub mod runtime_authority;
 #[cfg(target_os = "linux")]
 pub mod runtime_scope;
 
+#[cfg(target_os = "linux")]
+pub use attachment_reconciliation::{
+    AttachmentReconciliationActionV1, AttachmentReconciliationConflictV1,
+    AttachmentReconciliationError, CurrentAttachmentReconciliationV1,
+};
 #[cfg(target_os = "linux")]
 pub use attachment_state::{
     AttachmentDesiredCommitOutcomeV1, AttachmentDesiredMutationV1, AttachmentDesiredPresenceV1,

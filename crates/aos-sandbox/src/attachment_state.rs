@@ -593,6 +593,18 @@ pub(crate) fn get(
         .map(|record| DurableAttachmentDesiredStateV1 { record }))
 }
 
+pub(crate) fn recheck_current(
+    journal: &Journal,
+    state: &DurableAttachmentDesiredStateV1,
+) -> Result<(), AttachmentDesiredStateError> {
+    let history = History::load(journal)?;
+    if history.records.get(&state.record.intent.id()) != Some(&state.record) {
+        return Err(AttachmentDesiredStateError::Conflict);
+    }
+
+    Ok(())
+}
+
 pub(crate) fn validate_namespace(journal: &Journal) -> Result<(), AttachmentDesiredStateError> {
     History::load(journal).map(|_| ())
 }
@@ -796,6 +808,29 @@ mod tests {
                 .presence(),
             AttachmentDesiredPresenceV1::Released
         );
+    }
+
+    #[test]
+    fn current_state_recheck_rejects_a_superseded_generation() {
+        let (_directory, mut journal) = journal();
+        let first = mutation(AttachmentDesiredPresenceV1::Present, intent(1, 2, 1), None);
+        commit_without_target(&mut journal, &first);
+        let first_state = get(&journal, first.attachment_id()).unwrap().unwrap();
+        recheck_current(&journal, &first_state).unwrap();
+
+        let replacement = mutation(
+            AttachmentDesiredPresenceV1::Present,
+            intent(1, 2, 2),
+            Some(first_state.record_digest()),
+        );
+        commit_without_target(&mut journal, &replacement);
+
+        assert!(matches!(
+            recheck_current(&journal, &first_state),
+            Err(AttachmentDesiredStateError::Conflict)
+        ));
+        let current = get(&journal, replacement.attachment_id()).unwrap().unwrap();
+        recheck_current(&journal, &current).unwrap();
     }
 
     #[test]

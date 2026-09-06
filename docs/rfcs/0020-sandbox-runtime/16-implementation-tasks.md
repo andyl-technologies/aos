@@ -2830,3 +2830,37 @@ release CLI and ran 4,519 workspace tests: 4,518 passed and the unrelated
 `aos-hub` OCI cancellation test timed out in its retry window. That exact test
 passed in isolation in 1.95 seconds; the timeout is retained as a visible gate
 caveat rather than represented as a successful full gate.
+
+### Plan exact current attachment realization
+
+The controller now combines one exact current attachment desired generation
+with a fresh authenticated Mount inventory and retained live namespace target.
+It rechecks the desired head and inventory commitment on both sides of
+planning, projects durable attempts with their attachment, slot, desired, and
+resource generations, and returns one closed next-step description. Present
+state can prepare a detached resource, install it, atomically replace a
+strictly older fenced predecessor, or require post-attach verification.
+Released or expired state drains prepared and replacement-predecessor resources
+before detaching an installed generation and never rewrites the resource
+generation as current desired state.
+
+Exact pending attempts produce a wait observation, and Mount faults preserve
+their phase and sanitized digest. Same-slot foreign resources, substituted
+recipes, stale namespaces, non-advancing predecessor fences, competing
+operations, released-generation resurrection, and untracked intermediate
+transitions report closed conflicts rather than guessed effects. Transactional
+service projections are explicitly routed away from native Mount planning.
+Lease issue and exclusive expiry times are evaluated from the protected clock;
+an expired empty realization cannot be reported ready.
+
+This planner is descriptive and retains no descriptor, catalog commitment,
+signed plan, or cleanup authority. The next increment must make Mount
+preparation consume this exact plan, add exact pending-attempt replay, and
+durably record post-attach verification before any attachment becomes `Ready`.
+
+Validation passes all 316 sandbox unit tests, its downstream public API test,
+and 14 doctests with one test thread. The focused reconciliation regressions
+also substitute every mutable physical recipe field through the real inventory
+decoder. Strict all-target/all-feature Clippy, Rust formatting, and diff checks
+pass. The hermetic `checks.eval` gate passes the release build, full workspace
+test phase, configuration evaluation, and system-structure checks.

@@ -60,6 +60,10 @@ pub enum MountAttemptInventoryStatusV1 {
 pub struct MountAttemptInventoryObservationV1 {
     request_id: [u8; 16],
     action: MountAction,
+    attachment_id: [u8; 16],
+    destination_slot_id: [u8; 16],
+    desired_attachment_generation: u64,
+    resource_attachment_generation: u64,
     mount_handle: [u8; 32],
     status: MountAttemptInventoryStatusV1,
 }
@@ -75,6 +79,30 @@ impl MountAttemptInventoryObservationV1 {
     #[must_use]
     pub const fn action(self) -> MountAction {
         self.action
+    }
+
+    /// Returns the logical attachment named by the exact Apply body.
+    #[must_use]
+    pub const fn attachment_id(self) -> [u8; 16] {
+        self.attachment_id
+    }
+
+    /// Returns the broker-owned destination slot named by the exact Apply body.
+    #[must_use]
+    pub const fn destination_slot_id(self) -> [u8; 16] {
+        self.destination_slot_id
+    }
+
+    /// Returns the desired generation that authorized the exact attempt.
+    #[must_use]
+    pub const fn desired_attachment_generation(self) -> u64 {
+        self.desired_attachment_generation
+    }
+
+    /// Returns the physical resource generation created or addressed by the attempt.
+    #[must_use]
+    pub const fn resource_attachment_generation(self) -> u64 {
+        self.resource_attachment_generation
     }
 
     /// Returns the stable resource handle selected by the action.
@@ -135,6 +163,20 @@ impl CurrentMountInventoryReconciliationV1 {
     pub fn into_target(self) -> CurrentNamespaceTarget {
         self.target
     }
+
+    pub(crate) fn recheck<T>(
+        &self,
+        journal: &mut Journal,
+        clock: &mut T,
+    ) -> Result<(), MountAttemptError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.target.recheck(journal, clock)?;
+        self.snapshot.recheck(journal)?;
+        self.target.recheck(journal, clock)?;
+        Ok(())
+    }
 }
 
 pub(crate) fn reconcile_current<T>(
@@ -180,6 +222,10 @@ where
         attempts.push(MountAttemptInventoryObservationV1 {
             request_id: record.request_id,
             action: request.action(),
+            attachment_id: *request.attachment_id(),
+            destination_slot_id: *request.destination_slot_id(),
+            desired_attachment_generation: request.desired_attachment_generation(),
+            resource_attachment_generation: request.resource_attachment_generation(),
             mount_handle: handle,
             status,
         });

@@ -751,6 +751,39 @@ where
         )
     }
 
+    /// Plans one attachment's next step from current intent and Mount inventory.
+    ///
+    /// The desired generation, complete authenticated inventory, exact durable
+    /// attempt classifications, attachment lease time, and retained namespace
+    /// target are rechecked before and after planning. The result is descriptive:
+    /// prepare, install, replace, verify, detach, release, wait, fault, conflict,
+    /// and terminal observations do not themselves authorize a broker effect.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale desired state, target or inventory evidence; corrupt
+    /// cross-references; fixed-bound exhaustion; and protected-clock failure.
+    #[cfg(target_os = "linux")]
+    pub fn reconcile_current_attachment<T>(
+        &mut self,
+        desired: crate::DurableAttachmentDesiredStateV1,
+        inventory: crate::CurrentMountInventoryReconciliationV1,
+        clock: &mut T,
+    ) -> Result<crate::CurrentAttachmentReconciliationV1, crate::AttachmentReconciliationError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::attachment_reconciliation::reconcile_current(
+            self.reconciler.journal_mut(),
+            desired,
+            inventory,
+            clock,
+        )
+    }
+
     /// Issues a local holder channel from an acquired current-runtime scope.
     ///
     /// The complete Host and payload proof moves into the live session. Scope
