@@ -346,6 +346,18 @@ pub struct QemuHotForkTemplateIdentity {
 }
 
 impl QemuHotForkTemplateIdentity {
+    pub(crate) fn new_prepared(
+        configuration: ContentHash,
+        event_log: EventLog,
+        launch_resources: crate::QemuLaunchResourceRequirements,
+    ) -> Self {
+        Self {
+            configuration,
+            event_log,
+            launch_resources,
+        }
+    }
+
     /// Returns the exact configuration realized by the retained source.
     #[must_use]
     pub const fn configuration(&self) -> ContentHash {
@@ -1278,11 +1290,11 @@ where
         let event_log = std::mem::replace(&mut self.event_log, EventLog::new());
         Ok(QemuPreparedHotForkTemplate {
             node,
-            identity: QemuHotForkTemplateIdentity {
+            identity: QemuHotForkTemplateIdentity::new_prepared(
                 configuration,
                 event_log,
-                launch_resources: self.launcher.launch_resources(),
-            },
+                self.launcher.launch_resources(),
+            ),
         })
     }
 

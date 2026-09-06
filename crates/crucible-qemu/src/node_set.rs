@@ -12,6 +12,8 @@ use crucible::{
     FingerprintSample, GdbAttachInfo, GdbListen, Icount, NodeId, ObservableEvent,
     SimulationBackend, StepObservation, VirtualTime,
 };
+#[cfg(target_os = "linux")]
+use crucible::{ContentHash, EventLog};
 use crucible_protocol::SelectionReply;
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
@@ -19,9 +21,12 @@ use crucible_shmem::{
     DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1, MAX_FRAME_DELIVERY_ATTEMPTS,
 };
 
-#[cfg(target_os = "linux")]
-use crate::QemuProcessIdentity;
 use crate::QemuVmSnapshot;
+#[cfg(target_os = "linux")]
+use crate::{
+    QemuHotForkTemplateIdentity, QemuHotForkTemplatePreparer, QemuLaunchResourceRequirements,
+    QemuProcessIdentity,
+};
 use crate::{QemuNode, QemuNodeError, QemuNodeIdleState};
 
 #[cfg(target_os = "linux")]
@@ -39,6 +44,67 @@ pub use block_boundary::QemuNodeSetBlockBoundaryCheckpoint;
 pub struct QemuNodeTerminalReplacementPlan {
     nodes: Vec<NodeId>,
     retired: Vec<(NodeId, QemuNode)>,
+}
+
+/// Exact prepared state minted while an authoritative node set still owns QEMU.
+///
+/// The private fields prevent callers from substituting a configuration,
+/// event prefix, resource profile, or source process after preparation.
+#[cfg(target_os = "linux")]
+#[must_use = "extract the matching prepared source or abort its QEMU transaction"]
+pub struct QemuNodeSetPreparedHotForkTemplate {
+    node: NodeId,
+    source_process: QemuProcessIdentity,
+    template_generation: u64,
+    identity: QemuHotForkTemplateIdentity,
+}
+
+#[cfg(target_os = "linux")]
+impl std::fmt::Debug for QemuNodeSetPreparedHotForkTemplate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QemuNodeSetPreparedHotForkTemplate")
+            .field("node", &self.node)
+            .field("source_process", &self.source_process)
+            .field("template_generation", &self.template_generation)
+            .field("configuration", &self.identity.configuration())
+            .field("event_log_offset", &self.identity.event_log().offset())
+            .field("launch_resources", &self.identity.launch_resources())
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl QemuNodeSetPreparedHotForkTemplate {
+    /// Returns the exact node whose retained transaction minted this token.
+    #[must_use]
+    pub const fn node(&self) -> &NodeId {
+        &self.node
+    }
+
+    /// Returns the QMP transaction generation bound during preparation.
+    #[must_use]
+    pub const fn template_generation(&self) -> u64 {
+        self.template_generation
+    }
+
+    /// Returns the exact configuration authenticated during preparation.
+    #[must_use]
+    pub const fn configuration(&self) -> ContentHash {
+        self.identity.configuration()
+    }
+
+    /// Returns the unified event prefix authenticated during preparation.
+    #[must_use]
+    pub const fn event_log(&self) -> &EventLog {
+        self.identity.event_log()
+    }
+
+    /// Returns the source launch-resource profile bound during preparation.
+    #[must_use]
+    pub const fn launch_resources(&self) -> QemuLaunchResourceRequirements {
+        self.identity.launch_resources()
+    }
 }
 
 /// One node-qualified guest selectable request retained at a paused boundary.
@@ -149,6 +215,185 @@ impl QemuNodeSet {
     /// node into the authoritative lifecycle at the same configuration.
     pub fn take(&mut self, node: &NodeId) -> Option<QemuNode> {
         self.nodes.remove(node)
+    }
+
+    /// Prepares one installed paused node as a retained hot-fork template.
+    ///
+    /// The node remains installed in this authoritative set. Callers can thus
+    /// prepare a complete world before moving any process authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent, permanently failed, or
+    /// cannot establish the complete retained-template transaction.
+    #[cfg(target_os = "linux")]
+    pub fn prepare_retained_hot_fork_template(
+        &mut self,
+        node: &NodeId,
+        configuration: ContentHash,
+        event_log: EventLog,
+        launch_resources: QemuLaunchResourceRequirements,
+        block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
+        maximum_ring_image_bytes: usize,
+    ) -> Result<QemuNodeSetPreparedHotForkTemplate, BackendError> {
+        let source_process = self.process_identity(node)?;
+        let prepared = self
+            .node_mut(node)?
+            .prepare_retained_hot_fork_template(block_snapshot_bindings, maximum_ring_image_bytes)
+            .map_err(|error| BackendError::Rejected {
+                message: format!("prepare retained hot-fork template: {error}"),
+            });
+        prepared?;
+        let after = self.process_identity(node)?;
+        if after != source_process {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "prepared hot-fork source process for `{}` changed incarnation",
+                    node.name
+                ),
+            });
+        }
+        let state = self
+            .node_mut(node)?
+            .query_hot_fork_template()
+            .map_err(|error| BackendError::Rejected {
+                message: format!("query prepared hot-fork template: {error}"),
+            })?;
+        if !state.ready() || !state.transaction_active() || state.rollback_complete() {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` did not retain an exact prepared hot-fork transaction",
+                    node.name
+                ),
+            });
+        }
+        Ok(QemuNodeSetPreparedHotForkTemplate {
+            node: node.clone(),
+            source_process,
+            template_generation: state.generation(),
+            identity: QemuHotForkTemplateIdentity::new_prepared(
+                configuration,
+                event_log,
+                launch_resources,
+            ),
+        })
+    }
+
+    /// Advances rollback for one installed retained hot-fork template.
+    ///
+    /// A `false` result means QEMU still owns draining rollback work and the
+    /// caller must retain the stopped source and call this method again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or the QMP rollback
+    /// exchange fails.
+    #[cfg(target_os = "linux")]
+    pub fn abort_retained_hot_fork_template(
+        &mut self,
+        node: &NodeId,
+        expected_generation: Option<u64>,
+    ) -> Result<bool, BackendError> {
+        let backend = self.node_mut(node)?;
+        let state = backend
+            .query_hot_fork_template()
+            .map_err(|error| BackendError::Rejected {
+                message: format!("query retained hot-fork rollback state: {error}"),
+            })?;
+        if let Some(expected) = expected_generation
+            && state.generation() != expected
+        {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "retained hot-fork transaction for `{}` changed generation",
+                    node.name
+                ),
+            });
+        }
+        let host_stages_present = backend.hot_fork_plugin_endpoint_stage().is_some()
+            || backend.hot_fork_child_console_stage().is_some()
+            || backend.hot_fork_child_qmp_stage().is_some()
+            || backend.hot_fork_child_diagnostic_stage().is_some()
+            || backend.hot_fork_private_ring_stage().is_some();
+        if state.rollback_complete() && !state.transaction_active() {
+            return if host_stages_present {
+                Err(BackendError::Rejected {
+                    message: format!(
+                        "QEMU node `{}` rolled back before host-side hot-fork resources were released",
+                        node.name
+                    ),
+                })
+            } else {
+                Ok(true)
+            };
+        }
+        // Child-private host resources are released in reverse dependency
+        // order before the QEMU barriers. Each release retains its stage on
+        // error, so a later retry or quarantine still owns every descriptor.
+        if backend.hot_fork_plugin_endpoint_stage().is_some() {
+            backend
+                .release_hot_fork_plugin_endpoints()
+                .map_err(|error| BackendError::Rejected {
+                    message: format!("release retained hot-fork plugin endpoints: {error}"),
+                })?;
+        }
+        if backend.hot_fork_child_console_stage().is_some() {
+            backend
+                .release_hot_fork_child_console()
+                .map_err(|error| BackendError::Rejected {
+                    message: format!("release retained hot-fork child console: {error}"),
+                })?;
+        }
+        if backend.hot_fork_child_qmp_stage().is_some() {
+            backend
+                .release_hot_fork_child_qmp()
+                .map_err(|error| BackendError::Rejected {
+                    message: format!("release retained hot-fork child QMP: {error}"),
+                })?;
+        }
+        if backend.hot_fork_child_diagnostic_stage().is_some() {
+            let _diagnostics = backend
+                .release_hot_fork_child_diagnostics()
+                .map_err(|error| BackendError::Rejected {
+                    message: format!("release retained hot-fork diagnostics: {error}"),
+                })?;
+        }
+        if backend.hot_fork_private_ring_stage().is_some() {
+            let _private_ring =
+                backend
+                    .release_hot_fork_private_ring_mapping()
+                    .map_err(|error| BackendError::Rejected {
+                        message: format!("release retained hot-fork private ring: {error}"),
+                    })?;
+        }
+        backend
+            .abort_hot_fork_template()
+            .map(|state| state.rollback_complete())
+            .map_err(|error| BackendError::Rejected {
+                message: format!("abort retained hot-fork template: {error}"),
+            })
+    }
+
+    /// Revalidates an installed source against its opaque preparation token.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node disappeared, changed process or
+    /// QMP transaction generation, or no longer reports a complete prepared
+    /// transaction.
+    #[cfg(target_os = "linux")]
+    pub fn validate_retained_hot_fork_template(
+        &mut self,
+        prepared: &QemuNodeSetPreparedHotForkTemplate,
+    ) -> Result<(), BackendError> {
+        let current_process = self.process_identity(&prepared.node)?;
+        let state = self
+            .node_mut(&prepared.node)?
+            .query_hot_fork_template()
+            .map_err(|error| BackendError::Rejected {
+                message: format!("query retained hot-fork template: {error}"),
+            })?;
+        validate_prepared_hot_fork_token(prepared, &current_process, &state)
     }
 
     /// Stops and removes one intended-crash runtime.
@@ -807,6 +1052,35 @@ impl QemuNodeSet {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn validate_prepared_hot_fork_token(
+    prepared: &QemuNodeSetPreparedHotForkTemplate,
+    current_process: &QemuProcessIdentity,
+    state: &crate::QmpHotForkTemplateState,
+) -> Result<(), BackendError> {
+    if current_process != &prepared.source_process {
+        return Err(BackendError::Rejected {
+            message: format!(
+                "prepared hot-fork source process for `{}` changed incarnation",
+                prepared.node.name
+            ),
+        });
+    }
+    if state.generation() != prepared.template_generation
+        || !state.ready()
+        || !state.transaction_active()
+        || state.rollback_complete()
+    {
+        return Err(BackendError::Rejected {
+            message: format!(
+                "QEMU node `{}` no longer owns the exact prepared hot-fork transaction",
+                prepared.node.name
+            ),
+        });
+    }
+    Ok(())
+}
+
 impl Default for QemuNodeSet {
     fn default() -> Self {
         Self::new()
@@ -1155,5 +1429,230 @@ mod tests {
                 .expect("request survives failed delivery"),
             first
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stale_preparation_token_cannot_authorize_a_new_qmp_transaction() {
+        let process = QemuProcessIdentity {
+            process_id: 41,
+            start_time_ticks: 73,
+            executable: std::path::PathBuf::from("qemu-system-test"),
+        };
+        let token = QemuNodeSetPreparedHotForkTemplate {
+            node: NodeId {
+                name: String::from("node-a"),
+            },
+            source_process: process.clone(),
+            template_generation: 1,
+            identity: QemuHotForkTemplateIdentity::new_prepared(
+                ContentHash::from_bytes(b"configuration-a"),
+                EventLog::new(),
+                QemuLaunchResourceRequirements::from_vm_shape(128, 1, true),
+            ),
+        };
+        let replacement = crate::QmpHotForkTemplateState::one_prepared(
+            crate::QmpHotForkRequest::for_test(2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2),
+        );
+
+        let error = validate_prepared_hot_fork_token(&token, &process, &replacement)
+            .expect_err("a token from the prior transaction must be stale");
+
+        assert!(
+            error
+                .to_string()
+                .contains("exact prepared hot-fork transaction")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn preparation_token_cannot_move_to_a_reused_process_id() {
+        let source_process = QemuProcessIdentity {
+            process_id: 41,
+            start_time_ticks: 73,
+            executable: std::path::PathBuf::from("qemu-system-test"),
+        };
+        let replacement_process = QemuProcessIdentity {
+            process_id: 41,
+            start_time_ticks: 74,
+            executable: std::path::PathBuf::from("qemu-system-test"),
+        };
+        let token = QemuNodeSetPreparedHotForkTemplate {
+            node: NodeId {
+                name: String::from("node-a"),
+            },
+            source_process,
+            template_generation: 1,
+            identity: QemuHotForkTemplateIdentity::new_prepared(
+                ContentHash::from_bytes(b"configuration-a"),
+                EventLog::new(),
+                QemuLaunchResourceRequirements::from_vm_shape(128, 1, true),
+            ),
+        };
+        let prepared = crate::QmpHotForkTemplateState::one_prepared(
+            crate::QmpHotForkRequest::for_test(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1),
+        );
+
+        let error = validate_prepared_hot_fork_token(&token, &replacement_process, &prepared)
+            .expect_err("PID reuse must not preserve a source token");
+
+        assert!(error.to_string().contains("changed incarnation"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn authoritative_node_set_prepares_and_rolls_back_two_real_source_owners() {
+        let mut nodes = QemuNodeSet::new();
+        let first = NodeId {
+            name: String::from("node-a"),
+        };
+        let second = NodeId {
+            name: String::from("node-b"),
+        };
+        nodes.insert(
+            first.clone(),
+            crate::node::tests::node_set_hot_fork_source(false)
+                .expect("first scripted QEMU source"),
+        );
+        nodes.insert(
+            second.clone(),
+            crate::node::tests::node_set_hot_fork_source(false)
+                .expect("second scripted QEMU source"),
+        );
+        let configuration = ContentHash::from_bytes(b"two-node-source-world");
+        let resources = QemuLaunchResourceRequirements::from_vm_shape(128, 1, true);
+
+        let first_token = nodes
+            .prepare_retained_hot_fork_template(
+                &first,
+                configuration,
+                EventLog::new(),
+                resources,
+                &[],
+                64 * 1024 * 1024,
+            )
+            .expect("prepare first source");
+        let second_token = nodes
+            .prepare_retained_hot_fork_template(
+                &second,
+                configuration,
+                EventLog::new(),
+                resources,
+                &[],
+                64 * 1024 * 1024,
+            )
+            .expect("prepare second source");
+
+        nodes
+            .validate_retained_hot_fork_template(&first_token)
+            .expect("first token remains exact");
+        nodes
+            .validate_retained_hot_fork_template(&second_token)
+            .expect("second token remains exact");
+        assert!(
+            nodes
+                .abort_retained_hot_fork_template(
+                    &second,
+                    Some(second_token.template_generation()),
+                )
+                .expect("rollback second source")
+        );
+        assert!(
+            nodes
+                .abort_retained_hot_fork_template(&first, Some(first_token.template_generation()),)
+                .expect("rollback first source")
+        );
+        for node in [&first, &second] {
+            let source = nodes.nodes.get(node).expect("source remains installed");
+            assert!(source.hot_fork_private_ring_stage().is_none());
+            assert!(source.hot_fork_child_diagnostic_stage().is_none());
+            assert!(source.hot_fork_child_qmp_stage().is_none());
+            assert!(source.hot_fork_child_console_stage().is_none());
+            assert!(source.hot_fork_plugin_endpoint_stage().is_none());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn partial_source_preparation_failure_releases_transferred_host_resources() {
+        let mut nodes = QemuNodeSet::new();
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+        nodes.insert(
+            node.clone(),
+            crate::node::tests::node_set_hot_fork_source(true)
+                .expect("scripted failing QEMU source"),
+        );
+
+        let error = nodes
+            .prepare_retained_hot_fork_template(
+                &node,
+                ContentHash::from_bytes(b"partial-source-world"),
+                EventLog::new(),
+                QemuLaunchResourceRequirements::from_vm_shape(128, 1, true),
+                &[],
+                64 * 1024 * 1024,
+            )
+            .expect_err("descriptor installation should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("prepare retained hot-fork template")
+        );
+
+        assert!(
+            nodes
+                .abort_retained_hot_fork_template(&node, None)
+                .expect("rollback partially prepared source")
+        );
+        let source = nodes.nodes.get(&node).expect("source remains installed");
+        assert!(source.hot_fork_private_ring_stage().is_none());
+        assert!(source.hot_fork_child_diagnostic_stage().is_none());
+        assert!(source.hot_fork_child_qmp_stage().is_none());
+        assert!(source.hot_fork_child_console_stage().is_none());
+        assert!(source.hot_fork_plugin_endpoint_stage().is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn qmp_abort_cannot_hide_retained_host_side_template_resources() {
+        let mut nodes = QemuNodeSet::new();
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+        nodes.insert(
+            node.clone(),
+            crate::node::tests::node_set_hot_fork_source(false).expect("scripted QEMU source"),
+        );
+        let token = nodes
+            .prepare_retained_hot_fork_template(
+                &node,
+                ContentHash::from_bytes(b"externally-aborted-source"),
+                EventLog::new(),
+                QemuLaunchResourceRequirements::from_vm_shape(128, 1, true),
+                &[],
+                64 * 1024 * 1024,
+            )
+            .expect("prepare source");
+        nodes
+            .nodes
+            .get_mut(&node)
+            .expect("source remains installed")
+            .abort_hot_fork_template()
+            .expect("simulate an external QMP abort");
+
+        let error = nodes
+            .abort_retained_hot_fork_template(&node, Some(token.template_generation()))
+            .expect_err("host-side stages must prevent a false reusable result");
+
+        assert!(error.to_string().contains("host-side hot-fork resources"));
+        let source = nodes.nodes.get(&node).expect("source remains installed");
+        assert!(source.hot_fork_private_ring_stage().is_some());
+        assert!(source.hot_fork_child_diagnostic_stage().is_some());
+        assert!(source.hot_fork_child_qmp_stage().is_some());
+        assert!(source.hot_fork_child_console_stage().is_some());
+        assert!(source.hot_fork_plugin_endpoint_stage().is_some());
     }
 }
