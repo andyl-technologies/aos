@@ -66,6 +66,29 @@ in {
       wantedBy = ["multi-user.target"];
       requires = ["systemd-tmpfiles-setup.service"];
       after = ["systemd-tmpfiles-setup.service"];
+      # The network driver selects its firewall backend by searching PATH at
+      # daemon startup. Keep the complete helper set visible to all drivers;
+      # package runtime dependencies retain the tools in the closure but do
+      # not add their bin and sbin directories to a systemd service's PATH.
+      path = [
+        pkgs.bridge-utils
+        pkgs.coreutils
+        pkgs.dbus
+        pkgs.dnsmasq
+        pkgs.iproute2
+        pkgs.iptables
+        pkgs.nftables
+        pkgs.numactl
+        pkgs.numad
+        pkgs.parted
+        pkgs.passt
+        pkgs.pm-utils
+        pkgs.qemu
+        pkgs.swtpm
+        pkgs.systemd
+        pkgs.util-linux
+        pkgs.zfs
+      ];
       serviceConfig.ExecReload = [
         ""
         "${pkgs.coreutils}/bin/kill -HUP $MAINPID"
