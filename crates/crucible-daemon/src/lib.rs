@@ -167,7 +167,7 @@ pub use assignment_ledger::{
     AssignmentRetentionInventoryError, AssignmentRetentionRoot, AssignmentRetentionSummary,
     AssignmentRetentionVisitorError, AttemptExecutionKey, AttemptExecutionOrigin,
     AttemptRuntimeState, AttemptStateCas, CheckpointPromotionExecutionBasis,
-    DirectoryAssignmentLedger, MemoryAssignmentLedger,
+    DirectoryAssignmentLedger, MemoryAssignmentLedger, visit_directory_attempt_states_bounded,
 };
 pub use campaign_attachment::{
     AttachedCanonicalCampaignRuntime, CanonicalCampaignRuntimeConfig,

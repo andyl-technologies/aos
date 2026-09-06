@@ -896,6 +896,7 @@ mod request_budget;
 
 use planner_scan_index::planner_scan_index_anchor_key;
 mod retention;
+mod status;
 mod supervisor;
 mod transactions;
 

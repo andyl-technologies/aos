@@ -223,6 +223,7 @@ impl CampaignLocalServiceMode {
                 | CampaignServiceOperation::AttachCampaignRuntime => false,
                 CampaignServiceOperation::ListCampaigns
                 | CampaignServiceOperation::GetCampaign
+                | CampaignServiceOperation::GetCampaignStatus
                 | CampaignServiceOperation::GetCampaignSnapshot
                 | CampaignServiceOperation::WatchCampaign
                 | CampaignServiceOperation::QueryCampaignGraph
@@ -933,6 +934,12 @@ impl PreparedCampaignLocalService {
             Arc::new(CampaignLocalAuthorizer { policy, mode }),
             server_config,
         )?;
+        if let Some(operational_status) = executor
+            .as_ref()
+            .map(AttachedPackagedQemuExecutor::operational_status_provider)
+        {
+            server = server.with_operational_status(operational_status);
+        }
         let packaged_scope = executor.as_ref().map(|executor| {
             (
                 executor.endpoint().to_owned(),

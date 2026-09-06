@@ -74,6 +74,8 @@ crucible.campaign.derive-campaign-request	1	crucible-campaign::campaign_service	
 crucible.campaign.derive-campaign-response	1	crucible-campaign::campaign_service	component-message	gate:component-contract
 crucible.campaign.get-campaign-request	1	crucible-campaign::campaign_service	component-message	gate:component-contract
 crucible.campaign.get-campaign-response	1	crucible-campaign::campaign_service	component-message	gate:component-contract
+crucible.campaign.get-campaign-status-request	1	crucible-campaign::campaign_service	component-message	gate:component-contract
+crucible.campaign.get-campaign-status-response	1	crucible-campaign::campaign_service	component-message	gate:component-contract
 crucible.campaign.list-campaigns-request	1	crucible-campaign::campaign_service	component-message	gate:component-contract
 crucible.campaign.list-campaigns-response	1	crucible-campaign::campaign_service	component-message	gate:component-contract
 crucible.campaign.get-campaign-snapshot-request	1	crucible-campaign::campaign_service	component-message	gate:component-contract

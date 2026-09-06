@@ -17,7 +17,9 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crucible_campaign::{CampaignPrincipalAuthorizer, CampaignRepository};
+use crucible_campaign::{
+    CampaignOperationalStatusProvider, CampaignPrincipalAuthorizer, CampaignRepository,
+};
 
 use crate::CampaignRuntimeControlService;
 use crate::campaign_endpoint::{LocalEndpointGuard, ManagedCampaignLoopbackListener};
@@ -25,7 +27,6 @@ use crate::campaign_loopback::{
     DEFAULT_CAMPAIGN_REQUESTS_PER_CONNECTION, LoopbackCampaignServerError,
     LoopbackCampaignTimeouts, MAX_CAMPAIGN_REQUESTS_PER_CONNECTION,
     UnixPeerCampaignPrincipalResolver,
-    serve_authenticated_repository_campaign_connection_with_runtime_control_limits,
 };
 
 const DEFAULT_CONNECTION_WORKERS: usize = 8;
@@ -222,6 +223,7 @@ pub struct CampaignLoopbackServer<R: ?Sized, A: ?Sized> {
     principal_resolver: Arc<R>,
     authorizer: Arc<A>,
     runtime_control: Option<Arc<dyn CampaignRuntimeControlService>>,
+    operational_status: Option<Arc<dyn CampaignOperationalStatusProvider>>,
     config: CampaignLoopbackServerConfig,
     state: Arc<CampaignLoopbackServerState>,
 }
@@ -304,6 +306,7 @@ where
             principal_resolver,
             authorizer,
             runtime_control: None,
+            operational_status: None,
             config,
             state: Arc::new(CampaignLoopbackServerState::default()),
         })
@@ -327,6 +330,20 @@ where
         runtime_control: Arc<dyn CampaignRuntimeControlService>,
     ) -> Self {
         self.runtime_control = Some(runtime_control);
+        self
+    }
+
+    /// Installs one generation-bound packaged-executor status provider.
+    ///
+    /// The provider is shared only with authenticated connection workers. A
+    /// server without this capability reports operational status as
+    /// unavailable while preserving snapshot-derived semantic status.
+    #[must_use]
+    pub fn with_operational_status(
+        mut self,
+        operational_status: Arc<dyn CampaignOperationalStatusProvider>,
+    ) -> Self {
+        self.operational_status = Some(operational_status);
         self
     }
 
@@ -355,6 +372,7 @@ where
             principal_resolver: Arc::clone(&self.principal_resolver),
             authorizer: Arc::clone(&self.authorizer),
             runtime_control: self.runtime_control.as_ref().map(Arc::clone),
+            operational_status: self.operational_status.as_ref().map(Arc::clone),
             config: self.config,
             state: Arc::clone(&self.state),
         });
@@ -522,6 +540,7 @@ struct ConnectionWorkerContext<R: ?Sized, A: ?Sized> {
     principal_resolver: Arc<R>,
     authorizer: Arc<A>,
     runtime_control: Option<Arc<dyn CampaignRuntimeControlService>>,
+    operational_status: Option<Arc<dyn CampaignOperationalStatusProvider>>,
     config: CampaignLoopbackServerConfig,
     state: Arc<CampaignLoopbackServerState>,
 }
@@ -572,12 +591,13 @@ fn connection_worker_loop<R, A>(
                 continue;
             }
         };
-        let result = serve_authenticated_repository_campaign_connection_with_runtime_control_limits(
+        let result = crate::campaign_loopback::serve_authenticated_repository_campaign_connection_with_controls_limits(
             &mut stream,
             &context.repository,
             context.principal_resolver.as_ref(),
             context.authorizer.as_ref(),
             context.runtime_control.as_deref(),
+            context.operational_status.as_deref(),
             context.config.exchange_timeouts,
             context.config.maximum_requests_per_connection,
         );

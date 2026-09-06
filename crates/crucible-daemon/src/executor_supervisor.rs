@@ -262,6 +262,18 @@ pub struct QueuedAttempt {
 }
 
 impl QueuedAttempt {
+    #[cfg(test)]
+    pub(crate) fn from_test_parts(execution: ExecutionId, request: SubmitAttemptRequest) -> Self {
+        Self {
+            execution,
+            request,
+            origin: AttemptExecutionOrigin::Initial,
+            cancellation: ExecutionCancellation::default(),
+            checkpoint_request: ExecutionCheckpointRequest::default(),
+            checkpoint_handoff: None,
+        }
+    }
+
     /// Returns the local execution incarnation allocated by the supervisor.
     #[must_use]
     pub const fn execution(&self) -> ExecutionId {
@@ -706,6 +718,16 @@ struct ActiveExecution {
     worker_in_flight: bool,
 }
 
+/// One current process-owned execution observed under the supervisor actor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LocalExecutionActivity {
+    pub(crate) execution: ExecutionId,
+    pub(crate) worker_in_flight: bool,
+    pub(crate) cancellation_requested: bool,
+    pub(crate) completion_pending: bool,
+    pub(crate) cancellation_pending: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PendingCompletion {
     key: AttemptExecutionKey,
@@ -789,6 +811,20 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
     #[must_use]
     pub fn active_count(&self) -> usize {
         self.active.len()
+    }
+
+    /// Copies the bounded process-owned activity needed by status projection.
+    pub(crate) fn operational_activity_snapshot(&self) -> Vec<LocalExecutionActivity> {
+        self.active
+            .iter()
+            .map(|(execution, active)| LocalExecutionActivity {
+                execution: *execution,
+                worker_in_flight: active.worker_in_flight,
+                cancellation_requested: active.cancellation.is_canceled(),
+                completion_pending: self.pending_completions.contains_key(execution),
+                cancellation_pending: self.pending_cancellations.contains_key(execution),
+            })
+            .collect()
     }
 
     /// Returns aggregate capacity remaining after current reservations.

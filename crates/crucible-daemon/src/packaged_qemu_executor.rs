@@ -21,14 +21,20 @@ use crucible::ScenarioDefForm;
 use crucible_api::ProductionVmLifecycleConfig;
 use crucible_campaign::{
     AttemptResourceLimits, CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignName,
-    CampaignRepository, CampaignRepositoryError, DaemonEpoch, ExecutionRetentionIntent,
-    ExecutorCapabilitySet, ExecutorCompatibilityProfile, ExecutorDescription,
-    ExecutorMaterializationCapability, ExecutorRejection, ObservationId, ScenarioArtifactId,
-    SubmitAttemptRequest,
+    CampaignOperationalStatusProvider, CampaignRepository, CampaignRepositoryError, DaemonEpoch,
+    ExecutionRetentionIntent, ExecutorCapabilitySet, ExecutorCompatibilityProfile,
+    ExecutorDescription, ExecutorMaterializationCapability, ExecutorRejection, ObservationId,
+    ScenarioArtifactId, SubmitAttemptRequest,
 };
 use crucible_cas::content_store::ImmutableBlobBackend;
 use crucible_qemu::{LinuxQemuAttemptHostConfig, QemuVmRealizationError};
 
+#[cfg(test)]
+use crate::assignment_ledger::AttemptRuntimeState;
+#[cfg(test)]
+use crate::executor_pool::LocalExecutorOperationalSnapshot;
+#[cfg(test)]
+use crate::executor_supervisor::LocalExecutionActivity;
 use crate::{
     AssignmentLedgerError, AttemptAdmissionValidator, AttemptExecutionContext,
     CompletionValidationFailure, ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError,
@@ -50,12 +56,21 @@ use crate::{
 };
 
 mod exact_pin_materializer;
+mod status;
 #[cfg(test)]
 mod tests;
 
 pub use exact_pin_materializer::PackagedExactPinMaterializerError;
 use exact_pin_materializer::{
     PackagedExactPinMaterializerOwner, prepare_packaged_exact_pin_materializer,
+};
+#[cfg(test)]
+use status::{
+    OperationalPhase, PackagedWorldLifecyclePhase, operational_phase, successive_actor_snapshots,
+};
+use status::{
+    PackagedQemuOperationalStatusProvider, PackagedStatusAttemptWorker,
+    PackagedStatusLifecycleFactory, PackagedWorldLifecycleTracker,
 };
 
 /// Maximum aggregate canonical bytes in one packaged scenario catalog.
@@ -211,6 +226,7 @@ pub struct PackagedQemuExecutor {
     endpoint: PathBuf,
     service: ExecutorLocalService<DirectoryAssignmentLedger, PackagedAttemptAdmission>,
     exact_pin_materializer: PackagedExactPinMaterializerOwner,
+    operational_status: Arc<dyn CampaignOperationalStatusProvider>,
 }
 
 /// Running packaged executor-pool thread coupled to one daemon service lifecycle.
@@ -218,6 +234,7 @@ pub struct AttachedPackagedQemuExecutor {
     repository_identity: Arc<CampaignRepository>,
     admitted_scenarios: BTreeSet<ScenarioArtifactId>,
     endpoint: PathBuf,
+    operational_status: Arc<dyn CampaignOperationalStatusProvider>,
     shutdown: ExecutorLocalServiceShutdown<DirectoryAssignmentLedger, PackagedAttemptAdmission>,
     completion: Arc<(Mutex<bool>, Condvar)>,
     thread: Option<JoinHandle<Result<ExecutorLocalServiceReport, PackagedQemuExecutorJoinError>>>,
@@ -237,6 +254,7 @@ impl AttachedPackagedQemuExecutor {
             endpoint,
             service,
             exact_pin_materializer,
+            operational_status,
         } = service;
         let shutdown = service.shutdown_handle();
         let completion = Arc::new((Mutex::new(false), Condvar::new()));
@@ -259,6 +277,7 @@ impl AttachedPackagedQemuExecutor {
             repository_identity,
             admitted_scenarios,
             endpoint,
+            operational_status,
             shutdown,
             completion,
             thread: Some(thread),
@@ -285,6 +304,11 @@ impl AttachedPackagedQemuExecutor {
     /// Returns the exact managed endpoint served by this pool.
     pub(crate) fn endpoint(&self) -> &Path {
         &self.endpoint
+    }
+
+    /// Returns generation-bound operational status for the packaged pool.
+    pub(crate) fn operational_status_provider(&self) -> Arc<dyn CampaignOperationalStatusProvider> {
+        Arc::clone(&self.operational_status)
     }
 
     /// Requests sticky listener and semantic-worker shutdown.
@@ -687,6 +711,8 @@ where
         usize,
     ) -> Vec<P>,
 {
+    let campaigns = config.campaigns.clone();
+    let ledger_root = config.ledger_root.clone();
     let ledger = DirectoryAssignmentLedger::open(&config.ledger_root)?;
     reconcile_packaged_native_catalogs(config.lifecycle.run_state_root())?;
     let checkpoints = Arc::new(ExactCheckpointStore::new(
@@ -741,6 +767,7 @@ where
         config.capacity,
     );
     let executor = LocalExecutorCapabilityService::new(supervisor, description)?;
+    let lifecycles = PackagedWorldLifecycleTracker::new();
 
     let workers = (0..config.worker_count)
         .map(|slot| {
@@ -748,14 +775,20 @@ where
                 .lifecycle
                 .clone()
                 .with_run_state_root(worker_state_root.join(format!("worker-{slot:03}")));
-            let fresh_lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
-                lifecycle.clone(),
-                ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
-            );
-            let resume_lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
-                lifecycle,
-                ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
-            );
+            let fresh_lifecycles = PackagedStatusLifecycleFactory {
+                inner: QemuAttemptProductionVmLifecycleFactory::new(
+                    lifecycle.clone(),
+                    ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
+                ),
+                lifecycles: lifecycles.clone(),
+            };
+            let resume_lifecycles = PackagedStatusLifecycleFactory {
+                inner: QemuAttemptProductionVmLifecycleFactory::new(
+                    lifecycle,
+                    ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
+                ),
+                lifecycles: lifecycles.clone(),
+            };
             let fresh = QemuFreshExecutionRunner::new(fresh_lifecycles, QemuFreshModeledDriver);
             let resume = QemuProductionExactResumeExecutionRunner::new(
                 Arc::clone(&checkpoints),
@@ -764,7 +797,10 @@ where
             );
             let runner = QemuAttemptExecutionRouter::new(fresh, resume);
             let model = CrucibleExecutionModel::new(store.clone(), runner);
-            RepositoryAttemptWorker::new(store.clone(), model)
+            PackagedStatusAttemptWorker {
+                inner: RepositoryAttemptWorker::new(store.clone(), model),
+                lifecycles: lifecycles.clone(),
+            }
         })
         .collect();
     let pool = if promotion_enabled {
@@ -785,8 +821,18 @@ where
             checkpoint_observer,
         )?
     };
+    let pool_status = pool.service();
     let pool_shutdown = pool.shutdown_handle();
     let exact_pin_materializer = prepared_exact_pins.start(move || pool_shutdown.shutdown())?;
+    let operational_status: Arc<dyn CampaignOperationalStatusProvider> =
+        Arc::new(PackagedQemuOperationalStatusProvider {
+            repository: Arc::clone(&repository),
+            campaigns,
+            ledger_root,
+            pool: pool_status,
+            lifecycles,
+            materializer: exact_pin_materializer.status_handle(),
+        });
     let endpoint = config.endpoint.path().to_owned();
     let listener = config.endpoint.bind()?;
     let service = ExecutorLocalService::from_managed_listener(
@@ -804,6 +850,7 @@ where
         endpoint,
         service,
         exact_pin_materializer,
+        operational_status,
     })
 }
 
