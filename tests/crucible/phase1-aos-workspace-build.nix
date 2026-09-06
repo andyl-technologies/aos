@@ -22,7 +22,7 @@
   packages =
     if attrFailures == []
     then {
-      inherit (pkgs) crucible crucible-controller crucible-qemu-plugin qemu-crucible qemu-crucible-source;
+      inherit (pkgs) crucible crucible-controller crucible-qemu-plugin gdb qemu-crucible qemu-crucible-source;
     }
     else {};
   nativeQemuSystemBinary =

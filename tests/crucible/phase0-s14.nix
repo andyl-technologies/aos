@@ -3,9 +3,15 @@
     path = ../../pkgs;
     name = "aos-pkgs";
   };
+  # Only source enters the store: a developer worktree's cargo target
+  # directory would otherwise be hashed and copied in full.
   cratesSource = builtins.path {
     path = ../../crates;
     name = "aos-crates";
+    filter = path: _type: let
+      base = baseNameOf path;
+    in
+      base != "target" && base != "result" && base != ".git";
   };
   rfcDocs = builtins.path {
     path = ../../docs/rfcs/0010-crucible;
