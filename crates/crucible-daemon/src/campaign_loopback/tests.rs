@@ -12,32 +12,32 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 
 use crucible_campaign::{
-    ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, BooleanDomain, BranchBudget,
-    BranchPointId, BranchRequest, BranchRequestCause, BranchRequestResult, CampaignChoiceEntry,
-    CampaignChoiceObject, CampaignChoiceObjectKind, CampaignClient, CampaignCommandId,
-    CampaignCommandResult, CampaignControlAction, CampaignDerivationResult, CampaignHash,
-    CampaignLineage, CampaignLineageId, CampaignMode, CampaignName, CampaignPolicy,
-    CampaignPolicyId, CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignRepository,
-    CampaignRoots, CampaignSeed, CampaignService, CampaignServiceOperation, CampaignSnapshot,
-    CampaignSnapshotId, CampaignState, CandidateSource, ChoiceClassContext, ChoiceCoordinate,
-    ChoiceDomain, ChoiceDomainId, ChoiceOpportunity, ChoiceOpportunityId, ChoiceSource,
-    ChoiceValue, ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId,
-    ContinuationProjection, ContinuationState, ControlRequest, CreateCampaignRequest,
-    CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse, ExactRational,
-    ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse, ExplorerPolicy, FairnessPolicy,
-    GetCampaignChoiceObjectRequest, GetCampaignChoiceObjectResponse,
-    GetCampaignFindingObjectRequest, GetCampaignFindingObjectResponse,
-    GetCampaignFrontierObjectRequest, GetCampaignFrontierObjectResponse,
-    GetCampaignGraphObjectRequest, GetCampaignGraphObjectResponse,
-    GetCampaignPlannerRankingsRequest, GetCampaignPlannerRankingsResponse, GetCampaignRequest,
-    GetCampaignResponse, GetCampaignSnapshotRequest, GetCampaignSnapshotResponse,
-    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, MerkleMap, ObjectEnvelope, PinCampaignRequest,
-    PinCampaignResponse, PinChange, PinRequest, PinRetention, ProgressiveWideningPolicy,
-    PuctPolicy, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
-    QueryCampaignFindingsRequest, QueryCampaignFindingsResponse, QueryCampaignFrontierRequest,
-    QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
-    RepositoryCampaignService, RetentionPolicy, ScenarioArtifactId, ScenarioDefId,
-    SelectableDeclaration, StopCondition, SubmitCampaignBranchRequest,
+    ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, BooleanDomain,
+    BranchAcceptanceCount, BranchAcceptanceSummary, BranchBudget, BranchPointId, BranchRequest,
+    BranchRequestCause, BranchRequestResult, CampaignChoiceEntry, CampaignChoiceObject,
+    CampaignChoiceObjectKind, CampaignClient, CampaignCommandId, CampaignCommandResult,
+    CampaignControlAction, CampaignDerivationResult, CampaignFact, CampaignHash, CampaignLineage,
+    CampaignLineageId, CampaignMode, CampaignName, CampaignPolicy, CampaignPolicyId,
+    CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignRepository, CampaignRoots,
+    CampaignSeed, CampaignService, CampaignServiceOperation, CampaignSnapshot, CampaignSnapshotId,
+    CampaignState, CandidateSource, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
+    ChoiceDomainId, ChoiceOpportunity, ChoiceOpportunityId, ChoiceSource, ChoiceValue,
+    ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, ContinuationProjection,
+    ContinuationState, ControlRequest, CreateCampaignRequest, CreateCampaignResponse,
+    DeriveCampaignRequest, DeriveCampaignResponse, ExactRational, ExplainCampaignAttemptRequest,
+    ExplainCampaignAttemptResponse, ExplorerPolicy, FairnessPolicy, GetCampaignChoiceObjectRequest,
+    GetCampaignChoiceObjectResponse, GetCampaignFindingObjectRequest,
+    GetCampaignFindingObjectResponse, GetCampaignFrontierObjectRequest,
+    GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
+    GetCampaignGraphObjectResponse, GetCampaignPlannerRankingsRequest,
+    GetCampaignPlannerRankingsResponse, GetCampaignRequest, GetCampaignResponse,
+    GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
+    MerkleMap, ObjectEnvelope, PinCampaignRequest, PinCampaignResponse, PinChange, PinRequest,
+    PinRetention, ProgressiveWideningPolicy, PuctPolicy, QueryCampaignChoicesRequest,
+    QueryCampaignChoicesResponse, QueryCampaignFindingsRequest, QueryCampaignFindingsResponse,
+    QueryCampaignFrontierRequest, QueryCampaignFrontierResponse, QueryCampaignGraphRequest,
+    QueryCampaignGraphResponse, RepositoryCampaignService, RetentionPolicy, ScenarioArtifactId,
+    ScenarioDefId, SelectableDeclaration, StopCondition, SubmitCampaignBranchRequest,
     SubmitCampaignBranchResponse, WatchCampaignRequest, WatchCampaignResponse,
 };
 use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
@@ -390,12 +390,49 @@ impl CampaignService for FixedCampaignService {
         &self,
         request: &SubmitCampaignBranchRequest,
     ) -> Result<SubmitCampaignBranchResponse, Self::Error> {
+        let branch_request = request.request();
+        let summary = BranchAcceptanceSummary::new(
+            BranchAcceptanceCount::Exact(1),
+            BranchAcceptanceCount::Exact(0),
+            BranchAcceptanceCount::Exact(1),
+            branch_request.budget().maximum_proposals(),
+            branch_request.budget().maximum_attempts(),
+        )
+        .expect("branch acceptance summary");
+        let request_id = branch_request.id().expect("branch request ID");
+        let acceptance_fact = CampaignFact::BranchRequestAccepted {
+            request: request_id,
+            summary,
+        };
+        let root = ContentId::for_bytes(ObjectKind::MerkleNode, 1, b"branch-response-root");
+        let snapshot = CampaignSnapshot::successor(
+            request.expected_snapshot(),
+            lineage("branch-response"),
+            policy("branch-response"),
+            CampaignRoots {
+                graph: root,
+                exploration: root,
+                observations: root,
+                corpus: root,
+                coverage: root,
+                findings: root,
+                pins: root,
+                accounting: root,
+                coordination: root,
+            },
+            acceptance_fact.id().expect("acceptance fact ID"),
+        )
+        .expect("accepted branch snapshot");
         Ok(SubmitCampaignBranchResponse::new(
             request,
             BranchRequestResult {
                 prior_snapshot: request.expected_snapshot(),
-                new_snapshot: snapshot("branch-next"),
-                request: request.request().id().expect("branch request id"),
+                new_snapshot: snapshot.id().expect("accepted snapshot ID"),
+                request: request_id,
+                summary,
+                snapshot,
+                acceptance_fact,
+                summary_recorded: true,
                 replayed: false,
             },
         )

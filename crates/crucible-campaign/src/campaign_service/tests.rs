@@ -11,13 +11,18 @@ use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend
 
 use super::*;
 use crate::{
-    BranchBudget, BranchPointId, BranchRequestCause, CampaignCommandId, CampaignControlAction,
-    CandidateSource, ChoiceDomainId, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId,
-    ConfigurationId, PinChange, PinRequest, PinRetention, StopCondition,
+    BranchAcceptanceCount, BranchAcceptanceSummary, BranchBudget, BranchPointId,
+    BranchRequestCause, CampaignCommandId, CampaignControlAction, CampaignRoots, CandidateSource,
+    ChoiceDomainId, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId, ConfigurationId,
+    PinChange, PinRequest, PinRetention, StopCondition,
 };
 
 fn hash(label: &str) -> CampaignHash {
     CampaignHash::derive("campaign-service-test", label.as_bytes())
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn snapshot(label: &str) -> CampaignSnapshotId {
@@ -867,12 +872,47 @@ fn branch_messages_are_canonical_and_bind_the_exact_request() {
             .expect("decode request"),
         request
     );
+    let summary = BranchAcceptanceSummary::new(
+        BranchAcceptanceCount::Exact(1),
+        BranchAcceptanceCount::Exact(0),
+        BranchAcceptanceCount::Exact(1),
+        1,
+        1,
+    )
+    .expect("acceptance summary");
+    let acceptance_fact = CampaignFact::BranchRequestAccepted {
+        request: request.request().id().expect("request id"),
+        summary,
+    };
+    let root = ContentId::for_bytes(ObjectKind::MerkleNode, 1, b"branch-response-root");
+    let accepted_snapshot = CampaignSnapshot::successor(
+        snapshot("prior"),
+        lineage("branch-response"),
+        policy("branch-response"),
+        CampaignRoots {
+            graph: root,
+            exploration: root,
+            observations: root,
+            corpus: root,
+            coverage: root,
+            findings: root,
+            pins: root,
+            accounting: root,
+            coordination: root,
+        },
+        acceptance_fact.id().expect("acceptance fact id"),
+    )
+    .expect("accepted snapshot");
     let response = SubmitCampaignBranchResponse::new(
         &request,
         BranchRequestResult {
             prior_snapshot: snapshot("prior"),
-            new_snapshot: snapshot("next"),
+            new_snapshot: accepted_snapshot.id().expect("accepted snapshot id"),
             request: request.request().id().expect("request id"),
+            summary,
+            snapshot: accepted_snapshot,
+            acceptance_fact,
+            summary_recorded: true,
             replayed: false,
         },
     )
@@ -883,6 +923,81 @@ fn branch_messages_are_canonical_and_bind_the_exact_request() {
         response
     );
     response.validate_for(&request).expect("request binding");
+    assert_eq!(
+        encode_hex(&response.canonical_bytes()),
+        include_str!("testdata/submit-branch-response-v2.hex").trim()
+    );
+
+    let mut malformed_schema = response.canonical_bytes();
+    malformed_schema[..std::mem::size_of::<u32>()].copy_from_slice(&1_u32.to_be_bytes());
+    assert!(SubmitCampaignBranchResponse::from_canonical_bytes(&malformed_schema).is_err());
+    let mut truncated = response.canonical_bytes();
+    truncated.pop();
+    assert!(SubmitCampaignBranchResponse::from_canonical_bytes(&truncated).is_err());
+    let mut trailing = response.canonical_bytes();
+    trailing.push(0);
+    assert!(SubmitCampaignBranchResponse::from_canonical_bytes(&trailing).is_err());
+
+    let different_summary = BranchAcceptanceSummary::new(
+        BranchAcceptanceCount::Exact(1),
+        BranchAcceptanceCount::Exact(1),
+        BranchAcceptanceCount::Exact(0),
+        1,
+        1,
+    )
+    .expect("different acceptance summary");
+    let mut mismatched_fact = response.clone();
+    mismatched_fact.summary = different_summary;
+    assert!(mismatched_fact.validate_for(&request).is_err());
+
+    let different_budget = BranchAcceptanceSummary::new(
+        BranchAcceptanceCount::Exact(2),
+        BranchAcceptanceCount::Exact(0),
+        BranchAcceptanceCount::Exact(2),
+        2,
+        1,
+    )
+    .expect("different acceptance budget");
+    let mut mismatched_budget = response.clone();
+    mismatched_budget.summary = different_budget;
+    mismatched_budget.acceptance_fact = CampaignFact::BranchRequestAccepted {
+        request: mismatched_budget.request,
+        summary: different_budget,
+    };
+    assert!(mismatched_budget.validate_for(&request).is_err());
+
+    let mut unrecorded_new_response = response.clone();
+    unrecorded_new_response.summary_recorded = false;
+    assert!(unrecorded_new_response.validate_for(&request).is_err());
+
+    let legacy_fact = CampaignFact::BranchRequestIssued(response.request());
+    let legacy_snapshot = CampaignSnapshot::successor(
+        response.prior_snapshot(),
+        response.snapshot.lineage(),
+        response.snapshot.active_policy(),
+        response.snapshot.roots(),
+        legacy_fact.id().expect("legacy acceptance fact ID"),
+    )
+    .expect("legacy acceptance snapshot");
+    let legacy_response = SubmitCampaignBranchResponse::new(
+        &request,
+        BranchRequestResult {
+            prior_snapshot: response.prior_snapshot(),
+            new_snapshot: legacy_snapshot.id().expect("legacy acceptance snapshot ID"),
+            request: response.request(),
+            summary,
+            snapshot: legacy_snapshot,
+            acceptance_fact: legacy_fact,
+            summary_recorded: false,
+            replayed: true,
+        },
+    )
+    .expect("legacy replay response");
+    assert!(legacy_response.replayed());
+    assert!(!legacy_response.summary_recorded());
+    legacy_response
+        .validate_for(&request)
+        .expect("legacy replay provenance");
 
     let changed = SubmitCampaignBranchRequest::new(
         request.principal().clone(),
@@ -904,7 +1019,7 @@ fn branch_messages_are_canonical_and_bind_the_exact_request() {
         ],
         [
             String::from("486e4c887f7964b881d511ccff736e871bc9ffde2b69d576f9874710f63ee118"),
-            String::from("0f327b8933afa03c6f8a172f7db2f8683aba5f0d4a64e910621ca28a0ddcf455"),
+            String::from("e697616cbd6b01366d36226fa116bf20daa1199ecbf489a0c5c6f37dcc791ce5"),
         ]
     );
 }

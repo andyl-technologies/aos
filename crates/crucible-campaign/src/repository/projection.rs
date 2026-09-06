@@ -196,7 +196,7 @@ pub(super) enum CandidateSourceProfile {
 }
 
 impl CandidateSourceProfile {
-    const fn count(self) -> Option<u64> {
+    pub(super) const fn count(self) -> Option<u64> {
         match self {
             Self::Static { count, .. } | Self::ProgressiveInteger { count, .. } => Some(count),
             Self::CorpusMutation => None,
@@ -810,6 +810,122 @@ impl CampaignRepository {
             }
             _ => Ok(None),
         }
+    }
+
+    /// Resolves one bounded prefix without repeating source traversal or generation.
+    pub(super) fn static_candidate_prefix(
+        &self,
+        request: &BranchRequest,
+        domain: &ChoiceDomain,
+        limit: u64,
+    ) -> Result<Vec<ChoiceValue>, CampaignRepositoryError> {
+        let limit = usize::try_from(limit)
+            .map_err(|_| integrity("static-candidate-prefix-limit-overflow"))?;
+        if let Some(values) = request.source().finite_values() {
+            return Ok(values.iter().take(limit).cloned().collect());
+        }
+
+        let generator = request
+            .source()
+            .generator()
+            .ok_or_else(|| integrity("candidate-source-kind-is-invalid"))?;
+        let spec = self.read_generator(generator.content_id())?;
+        let ordinals = || {
+            u64::try_from(limit)
+                .map(|limit| 1..=limit)
+                .map_err(|_| integrity("static-candidate-prefix-limit-overflow"))
+        };
+        let candidates = match (spec.algorithm(), spec.implementation_version(), domain) {
+            (
+                CandidateGeneratorAlgorithm::All,
+                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_),
+            ) => [ChoiceValue::Boolean(false), ChoiceValue::Boolean(true)]
+                .into_iter()
+                .take(limit)
+                .collect(),
+            (
+                CandidateGeneratorAlgorithm::All,
+                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Discrete(discrete),
+            ) => discrete
+                .alternatives()
+                .keys()
+                .take(limit)
+                .copied()
+                .map(ChoiceValue::Discrete)
+                .collect(),
+            (
+                CandidateGeneratorAlgorithm::WeightedCategorical { weights },
+                crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Discrete(discrete),
+            ) => self
+                .weighted_categorical_candidates(request, discrete, weights)?
+                .into_iter()
+                .take(limit)
+                .map(ChoiceValue::Discrete)
+                .collect(),
+            (
+                CandidateGeneratorAlgorithm::OrderedMixture { components },
+                crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
+                _,
+            ) => self
+                .ordered_mixture_candidates(request, domain, components)?
+                .ok_or_else(|| integrity("generated-proposal-owner-is-not-implemented"))?
+                .into_iter()
+                .take(limit)
+                .collect(),
+            (
+                CandidateGeneratorAlgorithm::BoundaryInteger,
+                crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => self
+                .boundary_integer_candidates(request, integer)?
+                .into_iter()
+                .take(limit)
+                .map(ChoiceValue::Integer)
+                .collect(),
+            (
+                CandidateGeneratorAlgorithm::StratifiedInteger { strata },
+                crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => ordinals()?
+                .map(|ordinal| {
+                    stratified_integer_candidate(*strata, integer, ordinal)
+                        .map(ChoiceValue::Integer)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            (
+                CandidateGeneratorAlgorithm::LogInteger { base },
+                crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => log_integer_candidates(*base, integer)?
+                .into_iter()
+                .take(limit)
+                .map(ChoiceValue::Integer)
+                .collect(),
+            (
+                CandidateGeneratorAlgorithm::PermutedInteger,
+                crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => ordinals()?
+                .map(|ordinal| {
+                    permuted_integer_candidate(request, integer, ordinal).map(ChoiceValue::Integer)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            (
+                CandidateGeneratorAlgorithm::PermutedInteger,
+                crate::MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) if matches!(request.source(), CandidateSource::ModeledGenerated(_)) => ordinals()?
+                .map(|ordinal| {
+                    modeled_uniform_integer_candidate(request, integer, ordinal)
+                        .map(ChoiceValue::Integer)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            _ => return Err(integrity("static-candidate-prefix-is-not-implemented")),
+        };
+        Ok(candidates)
     }
 
     pub(super) fn candidate_at_with_feedback(

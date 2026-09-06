@@ -62,6 +62,25 @@ fn corpus_mutation_generator_tracks_retained_values_by_portable_proposal_set() {
         "corpus-mutation",
         8,
     );
+    let mutation_summary = repository
+        .branch_acceptance_summary(
+            repository
+                .head("generated-corpus-mutation")
+                .expect("corpus-mutation campaign head")
+                .snapshot()
+                .roots()
+                .graph,
+            &mutation_request,
+        )
+        .expect("history-sensitive acceptance summary");
+    assert_eq!(
+        mutation_summary.validated_cardinality(),
+        BranchAcceptanceCount::between(0, 11).expect("source cardinality bounds")
+    );
+    assert_eq!(
+        mutation_summary.remaining_lazy_candidates(),
+        BranchAcceptanceCount::between(0, 8).expect("proposal-window bounds")
+    );
     let seed_request = BranchRequest::new(
         mutation_request.branch_point(),
         mutation_request.parent(),
@@ -1854,6 +1873,62 @@ fn permuted_integer_generator_is_keyed_bijective_and_restart_stable() {
             .expect("maximum ordinal"),
         Some(ChoiceValue::Integer(IntegerValue::Unsigned(_)))
     ));
+    let maximum_summary = repository
+        .branch_acceptance_summary(
+            repository
+                .head("generated-permuted")
+                .expect("permuted campaign head")
+                .snapshot()
+                .roots()
+                .graph,
+            &maximum_request,
+        )
+        .expect("maximum-cardinality acceptance summary");
+    assert_eq!(
+        maximum_summary.validated_cardinality(),
+        BranchAcceptanceCount::Exact(u64::MAX)
+    );
+    assert_eq!(
+        maximum_summary.deduplicated_existing_edges(),
+        BranchAcceptanceCount::Exact(0)
+    );
+    assert_eq!(
+        maximum_summary.remaining_lazy_candidates(),
+        BranchAcceptanceCount::Exact(1)
+    );
+
+    let (_, bounded_inspection_request) = generated_integer_request(
+        &repository,
+        &lineage,
+        maximum.clone(),
+        IntegerValue::Unsigned(1),
+        generator_id,
+        "permuted-bounded-inspection",
+        65_537,
+    );
+    let bounded_summary = repository
+        .branch_acceptance_summary(
+            repository
+                .head("generated-permuted")
+                .expect("permuted campaign head")
+                .snapshot()
+                .roots()
+                .graph,
+            &bounded_inspection_request,
+        )
+        .expect("bounded large acceptance summary");
+    assert_eq!(
+        bounded_summary.validated_cardinality(),
+        BranchAcceptanceCount::Exact(u64::MAX)
+    );
+    assert_eq!(
+        bounded_summary.deduplicated_existing_edges(),
+        BranchAcceptanceCount::between(0, 1).expect("deduplication range")
+    );
+    assert_eq!(
+        bounded_summary.remaining_lazy_candidates(),
+        BranchAcceptanceCount::between(65_536, 65_537).expect("remaining range")
+    );
 
     let legacy = CandidateGeneratorSpec::new(
         crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,

@@ -304,6 +304,7 @@ impl CampaignRepository {
             CampaignFact::CampaignDerived(_)
             | CampaignFact::ChoiceOpportunityDiscovered { .. }
             | CampaignFact::BranchRequestIssued(_)
+            | CampaignFact::BranchRequestAccepted { .. }
             | CampaignFact::AttemptAdmitted(_)
             | CampaignFact::AttemptClosed { .. }
             | CampaignFact::ObservationPublished(_)

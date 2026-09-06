@@ -33,7 +33,7 @@ impl CampaignRepository {
             return Ok(0);
         }
         let requests = match fact {
-            CampaignFact::BranchRequestIssued(_) => 1,
+            CampaignFact::BranchRequestIssued(_) | CampaignFact::BranchRequestAccepted { .. } => 1,
             CampaignFact::PlannerAdvanced(step) => {
                 match self.read_planner_step(step.content_id())?.disposition() {
                     PlannerDisposition::Issue {

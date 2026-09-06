@@ -12,8 +12,8 @@ use thiserror::Error;
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::policy::{MAX_IDENTIFIER_BYTES, validate_identifier};
 use crate::{
-    BranchRequest, BranchRequestResult, CampaignCodecError, CampaignCommandResult, CampaignHash,
-    CampaignLineageId, CampaignPolicyId, CampaignRecordKind, CampaignRepository,
+    BranchRequest, BranchRequestResult, CampaignCodecError, CampaignCommandResult, CampaignFact,
+    CampaignHash, CampaignLineageId, CampaignPolicyId, CampaignRecordKind, CampaignRepository,
     CampaignRepositoryError, CampaignSnapshot, CampaignSnapshotId, CampaignState,
     ChoiceOpportunityId, ControlRequest, MerkleMap, MerkleMapLookupProof, MerkleMapPageProof,
     ObjectEnvelope,
@@ -59,6 +59,7 @@ use repository::{repository_service_failure, store_service_failure};
 pub use watch::{WatchCampaignRequest, WatchCampaignResponse};
 
 const CAMPAIGN_SERVICE_SCHEMA_VERSION: u32 = 1;
+const SUBMIT_CAMPAIGN_BRANCH_RESPONSE_SCHEMA_VERSION: u32 = 2;
 
 /// Maximum canonical bytes accepted for one campaign-service message.
 pub const MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
@@ -1241,6 +1242,10 @@ pub struct SubmitCampaignBranchResponse {
     prior_snapshot: CampaignSnapshotId,
     new_snapshot: CampaignSnapshotId,
     request: crate::BranchRequestId,
+    summary: crate::BranchAcceptanceSummary,
+    snapshot: CampaignSnapshot,
+    acceptance_fact: CampaignFact,
+    summary_recorded: bool,
     replayed: bool,
 }
 
@@ -1261,13 +1266,18 @@ impl SubmitCampaignBranchResponse {
             });
         }
         let response = Self {
-            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            schema_version: SUBMIT_CAMPAIGN_BRANCH_RESPONSE_SCHEMA_VERSION,
             request_digest: request.request_digest(),
             prior_snapshot: result.prior_snapshot,
             new_snapshot: result.new_snapshot,
             request: result.request,
+            summary: result.summary,
+            snapshot: result.snapshot,
+            acceptance_fact: result.acceptance_fact,
+            summary_recorded: result.summary_recorded,
             replayed: result.replayed,
         };
+        response.validate_for(request)?;
         ensure_message_size(&response, "submit-campaign-branch-response-encoded-bytes")?;
         Ok(response)
     }
@@ -1290,6 +1300,21 @@ impl SubmitCampaignBranchResponse {
         self.request
     }
 
+    /// Returns the immutable candidate and budget summary at acceptance.
+    #[must_use]
+    pub const fn summary(&self) -> crate::BranchAcceptanceSummary {
+        self.summary
+    }
+
+    /// Returns whether the accepting transition recorded the summary.
+    ///
+    /// `false` identifies a legacy transition whose summary was owner-recomputed
+    /// from its immutable original snapshot during replay.
+    #[must_use]
+    pub const fn summary_recorded(&self) -> bool {
+        self.summary_recorded
+    }
+
     /// Returns whether the service observed an idempotent replay.
     #[must_use]
     pub const fn replayed(&self) -> bool {
@@ -1307,13 +1332,48 @@ impl SubmitCampaignBranchResponse {
         request: &SubmitCampaignBranchRequest,
     ) -> Result<(), CampaignCodecError> {
         validate_request_digest(self.request_digest, request.request_digest())?;
-        if self.request == request.request.id()? {
-            Ok(())
-        } else {
+        if self.request != request.request.id()? {
             Err(CampaignCodecError::InvalidValue {
                 reason: "campaign branch response names another request",
             })
+        } else if !self.replayed && self.prior_snapshot != request.expected_snapshot {
+            Err(CampaignCodecError::InvalidValue {
+                reason: "new campaign branch response has the wrong prior snapshot",
+            })
+        } else if !self.summary_recorded && !self.replayed {
+            Err(CampaignCodecError::InvalidValue {
+                reason: "new campaign branch response has an unrecorded summary",
+            })
+        } else if self.summary.maximum_proposals() != request.request.budget().maximum_proposals()
+            || self.summary.maximum_attempts() != request.request.budget().maximum_attempts()
+        {
+            Err(CampaignCodecError::InvalidValue {
+                reason: "campaign branch response has the wrong request budget",
+            })
+        } else {
+            self.validate_acceptance_binding()
         }
+    }
+
+    fn validate_acceptance_binding(&self) -> Result<(), CampaignCodecError> {
+        if self.snapshot.id()? != self.new_snapshot
+            || self.snapshot.parent() != Some(self.prior_snapshot)
+            || self.snapshot.transition() != Some(self.acceptance_fact.id()?)
+            || if self.summary_recorded {
+                self.acceptance_fact
+                    != (CampaignFact::BranchRequestAccepted {
+                        request: self.request,
+                        summary: self.summary,
+                    })
+            } else {
+                self.acceptance_fact != CampaignFact::BranchRequestIssued(self.request)
+            }
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign branch summary is not bound to its accepting transition",
+            });
+        }
+        Ok(())
     }
 
     /// Returns strict canonical component-message bytes.
@@ -1340,17 +1400,29 @@ impl Canonical for SubmitCampaignBranchResponse {
         self.prior_snapshot.encode(encoder);
         self.new_snapshot.encode(encoder);
         self.request.encode(encoder);
+        self.summary.encode(encoder);
+        self.snapshot.encode(encoder);
+        self.acceptance_fact.encode(encoder);
+        self.summary_recorded.encode(encoder);
         self.replayed.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_service_version(u32::decode(decoder)?)?;
+        if u32::decode(decoder)? != SUBMIT_CAMPAIGN_BRANCH_RESPONSE_SCHEMA_VERSION {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported campaign branch response schema version",
+            });
+        }
         let response = Self {
-            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            schema_version: SUBMIT_CAMPAIGN_BRANCH_RESPONSE_SCHEMA_VERSION,
             request_digest: CampaignHash::decode(decoder)?,
             prior_snapshot: CampaignSnapshotId::decode(decoder)?,
             new_snapshot: CampaignSnapshotId::decode(decoder)?,
             request: crate::BranchRequestId::decode(decoder)?,
+            summary: crate::BranchAcceptanceSummary::decode(decoder)?,
+            snapshot: CampaignSnapshot::decode(decoder)?,
+            acceptance_fact: CampaignFact::decode(decoder)?,
+            summary_recorded: bool::decode(decoder)?,
             replayed: bool::decode(decoder)?,
         };
         ensure_message_size(&response, "submit-campaign-branch-response-encoded-bytes")?;

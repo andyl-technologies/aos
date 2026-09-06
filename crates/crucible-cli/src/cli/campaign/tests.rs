@@ -41,6 +41,79 @@ struct GraphPageService {
     attempt_proposal: Proposal,
 }
 
+fn fixed_branch_response(
+    request: &SubmitCampaignBranchRequest,
+    label: &str,
+) -> SubmitCampaignBranchResponse {
+    let budget = request.request().budget();
+    let cardinality = request
+        .request()
+        .source()
+        .finite_values()
+        .map_or_else(
+            || BranchAcceptanceCount::between(0, budget.maximum_proposals()),
+            |values| {
+                u64::try_from(values.len())
+                    .map(BranchAcceptanceCount::Exact)
+                    .map_err(|_| CampaignCodecError::LimitExceeded {
+                        limit: "test-branch-cardinality",
+                    })
+            },
+        )
+        .expect("branch cardinality");
+    let remaining = match cardinality.exact() {
+        Some(count) => BranchAcceptanceCount::Exact(count.min(budget.maximum_proposals())),
+        None => BranchAcceptanceCount::between(0, budget.maximum_proposals())
+            .expect("branch remaining bounds"),
+    };
+    let summary = BranchAcceptanceSummary::new(
+        cardinality,
+        BranchAcceptanceCount::Exact(0),
+        remaining,
+        budget.maximum_proposals(),
+        budget.maximum_attempts(),
+    )
+    .expect("branch acceptance summary");
+    let acceptance_fact = CampaignFact::BranchRequestAccepted {
+        request: request.request().id().expect("branch request ID"),
+        summary,
+    };
+    let root = ContentId::for_bytes(ObjectKind::MerkleNode, 1, label.as_bytes());
+    let accepted = CampaignSnapshot::successor(
+        request.expected_snapshot(),
+        lineage(label),
+        policy(label),
+        CampaignRoots {
+            graph: root,
+            exploration: root,
+            observations: root,
+            corpus: root,
+            coverage: root,
+            findings: root,
+            pins: root,
+            accounting: root,
+            coordination: root,
+        },
+        acceptance_fact.id().expect("acceptance fact ID"),
+    )
+    .expect("accepted snapshot");
+
+    SubmitCampaignBranchResponse::new(
+        request,
+        BranchRequestResult {
+            prior_snapshot: request.expected_snapshot(),
+            new_snapshot: accepted.id().expect("accepted snapshot ID"),
+            request: request.request().id().expect("branch request ID"),
+            summary,
+            snapshot: accepted,
+            acceptance_fact,
+            summary_recorded: true,
+            replayed: false,
+        },
+    )
+    .expect("fixed branch response")
+}
+
 impl CampaignService for FixedHeadService {
     type Error = Infallible;
 
@@ -256,16 +329,7 @@ impl CampaignService for FixedHeadService {
         &self,
         request: &SubmitCampaignBranchRequest,
     ) -> Result<SubmitCampaignBranchResponse, Self::Error> {
-        Ok(SubmitCampaignBranchResponse::new(
-            request,
-            BranchRequestResult {
-                prior_snapshot: request.expected_snapshot(),
-                new_snapshot: snapshot("branched"),
-                request: request.request().id().expect("branch request ID"),
-                replayed: false,
-            },
-        )
-        .expect("fixed branch response"))
+        Ok(fixed_branch_response(request, "branched"))
     }
 }
 
@@ -653,16 +717,7 @@ impl CampaignService for GraphPageService {
         &self,
         request: &SubmitCampaignBranchRequest,
     ) -> Result<SubmitCampaignBranchResponse, Self::Error> {
-        Ok(SubmitCampaignBranchResponse::new(
-            request,
-            BranchRequestResult {
-                prior_snapshot: request.expected_snapshot(),
-                new_snapshot: snapshot("graph-page-branched"),
-                request: request.request().id().expect("branch request ID"),
-                replayed: false,
-            },
-        )
-        .expect("fixed graph-page branch response"))
+        Ok(fixed_branch_response(request, "graph-page-branched"))
     }
 }
 
@@ -756,6 +811,17 @@ fn campaign_acceptance_reports_render_exact_idempotent_results() {
                 .to_string(),
             prior_snapshot: snapshot("prior").to_string(),
             new_snapshot: snapshot("next").to_string(),
+            summary: CampaignBranchAcceptanceSummaryReport::new(
+                BranchAcceptanceSummary::new(
+                    BranchAcceptanceCount::Exact(1),
+                    BranchAcceptanceCount::Exact(0),
+                    BranchAcceptanceCount::Exact(1),
+                    1,
+                    1,
+                )
+                .expect("acceptance summary"),
+                true,
+            ),
             replayed: false,
         },
     ];
@@ -777,6 +843,15 @@ fn campaign_acceptance_reports_render_exact_idempotent_results() {
                 snapshot("started").to_string()
             );
         }
+        if matches!(&report, CampaignAcceptanceReport::Branch { .. }) {
+            assert_eq!(decoded["validated_cardinality"]["kind"], "exact");
+            assert_eq!(decoded["validated_cardinality"]["count"], 1);
+            assert_eq!(decoded["deduplicated_existing_edges"]["count"], 0);
+            assert_eq!(decoded["remaining_lazy_candidates"]["count"], 1);
+            assert_eq!(decoded["budget"]["maximum_proposals"], 1);
+            assert_eq!(decoded["budget"]["maximum_attempts"], 1);
+            assert_eq!(decoded["summary_provenance"], "recorded");
+        }
 
         let table = render_campaign_acceptance(&report, OutputFormat::Table).expect("table report");
         assert!(table.contains("operation"));
@@ -785,6 +860,12 @@ fn campaign_acceptance_reports_render_exact_idempotent_results() {
             assert!(table.contains("start_command"));
             assert!(table.contains("start_snapshot"));
         }
+        if matches!(&report, CampaignAcceptanceReport::Branch { .. }) {
+            assert!(table.contains("validated_cardinality 1"));
+            assert!(table.contains("deduplicated_edges 0"));
+            assert!(table.contains("remaining_candidates 1"));
+            assert!(table.contains("summary_provenance recorded"));
+        }
         let markdown =
             render_campaign_acceptance(&report, OutputFormat::Markdown).expect("Markdown report");
         assert!(markdown.contains("| replayed |"));
@@ -792,7 +873,57 @@ fn campaign_acceptance_reports_render_exact_idempotent_results() {
             assert!(markdown.contains("| start_prior_snapshot |"));
             assert!(markdown.contains("| start_replayed |"));
         }
+        if matches!(&report, CampaignAcceptanceReport::Branch { .. }) {
+            assert!(markdown.contains("| validated_cardinality | 1 |"));
+            assert!(markdown.contains("| summary_provenance | recorded |"));
+        }
     }
+}
+
+#[test]
+fn campaign_branch_acceptance_summary_json_has_exact_and_range_goldens() {
+    let exact = CampaignBranchAcceptanceSummaryReport::new(
+        BranchAcceptanceSummary::new(
+            BranchAcceptanceCount::Exact(3),
+            BranchAcceptanceCount::Exact(1),
+            BranchAcceptanceCount::Exact(2),
+            3,
+            2,
+        )
+        .expect("exact acceptance summary"),
+        true,
+    );
+    assert_eq!(
+        serde_json::to_string(&exact).expect("exact summary JSON"),
+        r#"{"validated_cardinality":{"kind":"exact","count":3},"deduplicated_existing_edges":{"kind":"exact","count":1},"remaining_lazy_candidates":{"kind":"exact","count":2},"budget":{"maximum_proposals":3,"maximum_attempts":2},"summary_provenance":"recorded"}"#
+    );
+
+    let ranged = CampaignBranchAcceptanceSummaryReport::new(
+        BranchAcceptanceSummary::new(
+            BranchAcceptanceCount::between(4, 8).expect("cardinality range"),
+            BranchAcceptanceCount::between(0, 2).expect("deduplication range"),
+            BranchAcceptanceCount::between(2, 4).expect("remaining range"),
+            4,
+            1,
+        )
+        .expect("ranged acceptance summary"),
+        false,
+    );
+    assert_eq!(
+        serde_json::to_string(&ranged).expect("ranged summary JSON"),
+        r#"{"validated_cardinality":{"kind":"range","minimum":4,"maximum":8},"deduplicated_existing_edges":{"kind":"range","minimum":0,"maximum":2},"remaining_lazy_candidates":{"kind":"range","minimum":2,"maximum":4},"budget":{"maximum_proposals":4,"maximum_attempts":1},"summary_provenance":"legacy-recomputed"}"#
+    );
+    assert_eq!(
+        ranged.human_fields(),
+        vec![
+            ("validated_cardinality", "4..=8".to_owned()),
+            ("deduplicated_edges", "0..=2".to_owned()),
+            ("remaining_candidates", "2..=4".to_owned()),
+            ("maximum_proposals", "4".to_owned()),
+            ("maximum_attempts", "1".to_owned()),
+            ("summary_provenance", "legacy-recomputed".to_owned()),
+        ]
+    );
 }
 
 #[test]
@@ -1638,8 +1769,10 @@ fn campaign_create_derive_and_branch_use_checked_loopback_transport() {
     );
     assert!(matches!(
         branch,
-        CampaignAcceptanceReport::Branch { new_snapshot, replayed: false, .. }
-            if new_snapshot == snapshot("branched").to_string()
+        CampaignAcceptanceReport::Branch {
+            replayed: false,
+            ..
+        }
     ));
 }
 
