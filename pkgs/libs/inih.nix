@@ -6,12 +6,12 @@
   stdenv,
 }: let
   upstream = mkGithubUpstream {
-    unitId = "inih-58";
+    unitId = "inih";
     family = "inih";
-    stream = "58";
+    stream = "rolling";
     owner = "pkgs/libs/inih.nix";
-    version = "58";
-    upstreamId = "r58";
+    version = "62";
+    upstreamId = "r62";
     repository = "benhoyt/inih";
     provider = "github-releases";
     tagPrefix = "r";
@@ -37,7 +37,7 @@
           ];
         }
       ];
-      hash = "sha256-55IWJg1d/+gJvahAvkirDux3N7K7nwLSJ1wbRjROp7c=";
+      hash = "sha256-nBX6dRu4CT0ELa4bnxJetFGYwyxnBM1UgczeRg1PgVE=";
     };
   };
   inherit (upstream) version;

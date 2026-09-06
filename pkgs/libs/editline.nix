@@ -6,16 +6,16 @@
   ncurses,
 }: let
   upstream = mkGithubUpstream {
-    unitId = "editline-1";
+    unitId = "editline-2";
     family = "editline";
-    stream = "1";
+    stream = "2";
     owner = "pkgs/libs/editline.nix";
-    version = "1.17.1";
-    upstreamId = "1.17.1";
+    version = "2.1.0";
+    upstreamId = "2.1.0";
     repository = "troglobit/editline";
     provider = "github-releases";
     tagPrefix = "";
-    major = 1;
+    major = 2;
     source = {
       authority = "github.com";
       path = [
@@ -42,11 +42,11 @@
                 field = "comparisonVersion";
               };
             }
-            {literal = ".tar.xz";}
+            {literal = ".tar.gz";}
           ];
         }
       ];
-      hash = "sha256-3yI7MzOlRf3bxntJ3tPSQsZvrfegS+s62iCVf80f/A4=";
+      hash = "sha256-GJ4XklPAky0VzpT1Pozeegw4OD858R87ktQM0Yg5Z48=";
     };
   };
   inherit (upstream) version;
