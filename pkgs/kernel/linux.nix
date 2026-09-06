@@ -132,6 +132,19 @@ in
 
           # Finalize — fill in defaults for any new symbols
           make olddefconfig ARCH=${kernelArch.karch}
+
+          # These fragments describe runtime contracts rather than preferences.
+          # Kconfig may silently discard an unavailable value, so fail the build
+          # when a required symbol does not survive dependency resolution.
+          for frag in "$configDir"/required-*.config "$configDir/${kernelArch.karch}"/required-*.config; do
+            [ -e "$frag" ] || continue
+            sed -n '/^CONFIG_[A-Z0-9_]*=[ym]$/p' "$frag" | while read -r requirement; do
+              if ! grep -qx "$requirement" .config; then
+                echo "required kernel setting was not resolved: $requirement" >&2
+                exit 1
+              fi
+            done
+          done
         '';
       }
       {
