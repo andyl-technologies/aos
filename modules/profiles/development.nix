@@ -79,6 +79,7 @@
     pkgs.libpcap
     pkgs.libpng
     pkgs.libpsl
+    pkgs.libssh2
     pkgs.libunistring
     pkgs.libuv
     pkgs.libxml2
