@@ -119,7 +119,7 @@ in
 
           ln -s ${containerd}/bin/containerd "$out/libexec/docker/containerd"
           ln -s ${containerd}/bin/containerd-shim-runc-v2 "$out/libexec/docker/containerd-shim-runc-v2"
-          ln -s ${runc}/bin/runc "$out/libexec/docker/runc"
+          ln -s ${runc}/sbin/runc "$out/libexec/docker/runc"
           ln -s ${tini}/bin/tini-static "$out/libexec/docker/docker-init"
 
           cat > "$out/bin/dockerd" <<'EOF_WRAPPER'
