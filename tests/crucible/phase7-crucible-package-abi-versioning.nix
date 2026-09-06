@@ -50,6 +50,7 @@
   shmemHeaderHash = builtins.hashFile "sha256" ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
   qemuPackageMetadataProbe = import ../../pkgs/emulation/qemu.nix {
     inherit lib;
+    inherit (pkgs) buildPackages stdenv libcap-ng libusb1 libgcrypt gnutls fuse3;
     pname = "qemu-crucible";
     enablePlugins = true;
     applyCruciblePatches = true;
