@@ -255,6 +255,78 @@ fn protected_reopen_derives_exact_current_request_and_verified_lease() {
 }
 
 #[test]
+fn prelaunch_assignment_target_requires_no_host_observation() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let selection = activate(&mut reconciler, 1, bind(None), false);
+    let target =
+        prepare_assignment(reconciler.journal_mut(), selection, policy(), clock(150)).unwrap();
+
+    target
+        .recheck_at(reconciler.journal_mut(), clock(150))
+        .unwrap();
+    assert_eq!(target.sandbox(), selection.sandbox);
+    assert_eq!(
+        target.incarnation(),
+        target.binding().manifest().manifest().incarnation()
+    );
+    assert_eq!(
+        target.namespace_generation(),
+        target
+            .binding()
+            .manifest()
+            .manifest()
+            .namespace_generation()
+            .get()
+    );
+    assert_eq!(
+        target.sandbox_spec(),
+        target.binding().manifest().manifest().sandbox_spec()
+    );
+    assert_eq!(target.deadline_boottime_nanoseconds(), 30_000_001_000);
+}
+
+#[test]
+fn prelaunch_target_allows_only_uninterrupted_same_holder_renewal() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let selection = activate(&mut reconciler, 1, bind(None), false);
+    let origin =
+        prepare_assignment(reconciler.journal_mut(), selection, policy(), clock(150)).unwrap();
+    let reference = origin.durable_reference();
+
+    activate(&mut reconciler, 2, bind(Some(1)), false);
+    origin
+        .recheck_at(reconciler.journal_mut(), clock(150))
+        .unwrap();
+    let renewed =
+        prepare_assignment(reconciler.journal_mut(), selection, policy(), clock(150)).unwrap();
+    renewed
+        .validate_durable_reference(reconciler.journal_mut(), reference)
+        .unwrap();
+
+    activate(
+        &mut reconciler,
+        3,
+        RuntimeAuthorityIntentV1::revoke(Some(2)).unwrap(),
+        false,
+    );
+    assert!(
+        origin
+            .recheck_at(reconciler.journal_mut(), clock(150))
+            .is_err()
+    );
+    activate(&mut reconciler, 4, bind(Some(3)), false);
+    let rebound =
+        prepare_assignment(reconciler.journal_mut(), selection, policy(), clock(150)).unwrap();
+    assert!(
+        rebound
+            .validate_durable_reference(reconciler.journal_mut(), reference)
+            .is_err()
+    );
+}
+
+#[test]
 fn mismatched_holder_node_and_revoked_head_fail_before_host_io() {
     let directory = tempfile::tempdir().unwrap();
     let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);

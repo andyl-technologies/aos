@@ -3332,3 +3332,50 @@ not yet install the broker-owned attachment anchor into a payload root,
 materialize source handles, schedule attachment-lease expiry, or resolve
 stale ready destination slots after a host reboot. Live namespace VM
 qualification and an end-to-end attachment lifecycle also remain.
+
+### Pre-launch assignment-bound destination slots
+
+Destination-slot creation and materialization no longer require an already
+running payload. The controller can acquire a short-lived
+`CurrentAssignmentTarget` directly from the protected bound-holder decision,
+current authority publication, verified ownership lease, and paired clock. It
+derives the sandbox, incarnation, reserved namespace generation, and canonical
+sandbox-specification descriptor exclusively from the signed assignment. The
+target carries no Host process, root, cgroup, or namespace observation and
+therefore cannot claim runtime readiness.
+
+Logical slot admission and signed Mount 1.3 destination-slot effects now
+consume that assignment target. Their pre- and post-commit checks preserve one
+fixed deadline while allowing only an uninterrupted same-holder renewal chain
+with the identical canonical assignment. Revocation, holder replacement,
+same-holder rebind after revocation, assignment substitution, clock divergence,
+or expiry invalidates the live target. A caller that already holds a live
+runtime or namespace proof may deliberately discard its execution evidence and
+retain only the more limited assignment target.
+
+Durable destination-slot attempts use the new `AOSDSE02` record. It replaces
+the impossible pre-launch namespace-allocation reference with an exact
+runtime-authority binding revision and digest. Startup validates the complete
+runtime-authority namespace, requires the retained origin to be a bound holder,
+and cross-checks its incarnation, epoch, desired generation, assignment digest,
+reserved namespace generation, and sandbox specification against the exact
+request. Recovery reacquires fresh assignment authority and proves an
+uninterrupted origin-to-current chain; durable bytes never reconstruct live
+authority. Existing `AOSDSE01` rows require migration rather than being
+reinterpreted under the stronger format.
+
+Focused tests cover acquisition without Host I/O, fixed assignment-derived
+identities, same-holder renewal, revocation and rebind rejection, the complete
+version-two attempt codec, and the downstream public slot API. All 377 sandbox
+unit tests, seven downstream integration tests, and 15 doctests pass. Strict
+all-target/all-feature crate-local Clippy, warnings-as-errors rustdoc, targeted
+Rust formatting, and diff checks pass. The hermetic
+`nix-build -A checks.eval --cores 8` gate passes the release build, complete
+workspace test phase, configuration evaluation, and system-structure checks.
+
+This removes the circular dependency that previously required payload
+observation before creating the attachment anchor that must precede payload
+launch. It does not yet install the broker-owned anchor read-only into the
+payload root or materialize a source pin. Host launch-resource integration,
+source-handle resolution, lease-expiry scheduling, stale-ready recovery, live
+namespace VM qualification, and end-to-end attachment reconciliation remain.

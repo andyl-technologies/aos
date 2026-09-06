@@ -58,9 +58,12 @@ mod namespace_target;
 mod tests;
 mod transport;
 
-pub(crate) use current::acquire as acquire_current_runtime;
 pub use current::{
-    CurrentRuntimeScope, CurrentRuntimeScopeError, CurrentRuntimeScopePolicy, RuntimeScopeHolder,
+    CurrentAssignmentTarget, CurrentRuntimeScope, CurrentRuntimeScopeError,
+    CurrentRuntimeScopePolicy, RuntimeScopeHolder,
+};
+pub(crate) use current::{
+    acquire as acquire_current_runtime, acquire_assignment as acquire_current_assignment,
 };
 pub(crate) use generation::validate_namespace as validate_generation_namespace;
 pub use generation::{CurrentRuntimeGeneration, RuntimeGenerationError};

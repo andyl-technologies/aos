@@ -675,6 +675,60 @@ pub(crate) fn binding_in_validated_namespace(
     Ok(binding)
 }
 
+/// Names one immutable runtime-authority binding without granting current authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DurableRuntimeAuthorityReferenceV1 {
+    sandbox: SandboxId,
+    revision: u64,
+    binding_digest: ObjectDigest,
+}
+
+impl DurableRuntimeAuthorityReferenceV1 {
+    pub(crate) fn from_binding(binding: &RuntimeAuthorityBindingV1) -> Self {
+        Self {
+            sandbox: binding.sandbox(),
+            revision: binding.revision(),
+            binding_digest: binding.digest(),
+        }
+    }
+
+    pub(crate) const fn from_parts(
+        sandbox: SandboxId,
+        revision: u64,
+        binding_digest: ObjectDigest,
+    ) -> Self {
+        Self {
+            sandbox,
+            revision,
+            binding_digest,
+        }
+    }
+
+    pub(crate) const fn sandbox(self) -> SandboxId {
+        self.sandbox
+    }
+
+    pub(crate) const fn revision(self) -> u64 {
+        self.revision
+    }
+
+    pub(crate) const fn binding_digest(self) -> ObjectDigest {
+        self.binding_digest
+    }
+}
+
+/// Resolves one immutable runtime-authority reference after namespace validation.
+pub(crate) fn binding_for_durable_reference_in_validated_namespace(
+    journal: &Journal,
+    reference: DurableRuntimeAuthorityReferenceV1,
+) -> Result<RuntimeAuthorityBindingV1, RuntimeAuthorityError> {
+    let binding = binding_in_validated_namespace(journal, reference.sandbox, reference.revision)?;
+    if binding.digest() != reference.binding_digest {
+        return Err(RuntimeAuthorityError::CorruptState);
+    }
+    Ok(binding)
+}
+
 fn pending_key(operation: OperationId) -> Vec<u8> {
     let mut key = Vec::with_capacity(PENDING_KEY_BYTES);
     key.extend_from_slice(PENDING_PREFIX);

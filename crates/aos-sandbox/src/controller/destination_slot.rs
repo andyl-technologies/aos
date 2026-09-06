@@ -14,16 +14,17 @@ where
     ///
     /// The protocol body is assembled only from protected logical state,
     /// authenticated inventory, retained canonical specification bytes, and the
-    /// supplied live namespace target. The result grants no broker authority.
+    /// supplied current assignment target. No live payload is required, and the
+    /// result grants no broker authority.
     ///
     /// # Errors
     ///
-    /// Rejects stale reconciliation or namespace authority, missing canonical
+    /// Rejects stale reconciliation or assignment authority, missing canonical
     /// state, a non-effect action, or an invalid protocol 1.3 request.
     pub fn prepare_current_destination_slot<T>(
         &mut self,
         reconciliation: crate::CurrentDestinationSlotReconciliationV1,
-        target: crate::runtime_scope::CurrentNamespaceTarget,
+        target: crate::runtime_scope::CurrentAssignmentTarget,
         clock: &mut T,
     ) -> Result<crate::PreparedCurrentDestinationSlotV1, crate::DestinationSlotEffectError>
     where
@@ -44,8 +45,8 @@ where
     ///
     /// # Errors
     ///
-    /// Rejects changed logical, inventory, specification, assignment, namespace,
-    /// or deadline state.
+    /// Rejects changed logical, inventory, specification, assignment, or
+    /// deadline state.
     pub fn recheck_current_destination_slot_preparation<T>(
         &mut self,
         prepared: &crate::PreparedCurrentDestinationSlotV1,
@@ -108,7 +109,7 @@ where
     /// Durably admits an exact signed destination-slot packet before Mount I/O.
     ///
     /// Admission intentionally invalidates the planning inventory snapshot. The
-    /// returned live token instead retains current logical and namespace guards.
+    /// returned live token instead retains current logical and assignment guards.
     ///
     /// # Errors
     ///
@@ -146,7 +147,7 @@ where
     pub fn prepare_current_destination_slot_resume<T>(
         &mut self,
         reconciliation: crate::CurrentDestinationSlotReconciliationV1,
-        target: crate::runtime_scope::CurrentNamespaceTarget,
+        target: crate::runtime_scope::CurrentAssignmentTarget,
         clock: &mut T,
     ) -> Result<crate::PreparedCurrentDestinationSlotResumeV1, crate::DestinationSlotEffectError>
     where
@@ -260,7 +261,7 @@ where
     ///
     /// # Errors
     ///
-    /// Rejects stale logical or namespace authority, substituted durable bytes,
+    /// Rejects stale logical or assignment authority, substituted durable bytes,
     /// changed signed authority, or an elapsed deadline.
     pub fn recheck_current_destination_slot_attempt<T>(
         &mut self,

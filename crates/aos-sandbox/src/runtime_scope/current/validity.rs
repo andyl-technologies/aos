@@ -44,6 +44,20 @@ impl ObservationValidity {
         )
     }
 
+    pub(super) fn for_lease(
+        initial: RawPairedClockSample,
+        lease: &SignedOwnershipLease,
+        maximum_seconds: u32,
+    ) -> Result<Self, CurrentRuntimeScopeError> {
+        Self::from_bounds(
+            initial,
+            lease.authority_expires_seconds(),
+            lease.maximum_clock_skew_seconds(),
+            i64::MAX,
+            maximum_seconds,
+        )
+    }
+
     fn from_bounds(
         initial: RawPairedClockSample,
         lease_expires: i64,

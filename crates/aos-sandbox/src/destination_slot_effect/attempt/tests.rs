@@ -354,13 +354,10 @@ fn record(action: DestinationSlotAction) -> Record {
     let (_, sandbox_spec) = sandbox_specification();
     let mut record = Record {
         request_id: operation_id(action),
-        namespace_target: DurableNamespaceTargetReferenceV1::from_parts(
+        assignment_target: DurableRuntimeAuthorityReferenceV1::from_parts(
             assignment.sandbox(),
-            assignment.incarnation(),
             7,
-            [58; 32],
-            NAMESPACE_GENERATION,
-            [59; 32],
+            ObjectDigest::from_bytes([59; 32]),
         ),
         slot_id: SLOT_ID,
         sandbox_spec_digest: *sandbox_spec.digest().as_bytes(),
@@ -511,13 +508,10 @@ fn recomputed_digest_cannot_hide_attempt_field_substitution() {
         match substitution {
             0 => changed.request_id[0] ^= 1,
             1 => {
-                changed.namespace_target = DurableNamespaceTargetReferenceV1::from_parts(
+                changed.assignment_target = DurableRuntimeAuthorityReferenceV1::from_parts(
                     SandboxId::from_bytes([60; 16]),
-                    IncarnationId::from_bytes(INCARNATION_ID),
                     7,
-                    [58; 32],
-                    NAMESPACE_GENERATION,
-                    [59; 32],
+                    ObjectDigest::from_bytes([59; 32]),
                 )
             }
             2 => changed.slot_id[0] ^= 1,

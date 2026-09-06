@@ -5,8 +5,8 @@
 //! reap must preserve:
 //!
 //! ```text
-//! AOSDSE01 | flags:1 | action:1 | reserved:2 | request-id:16 |
-//! namespace-target:112 | slot-id:16 | spec-digest:32 | spec-size:8 |
+//! AOSDSE02 | flags:1 | action:1 | reserved:2 | request-id:16 |
+//! assignment-target:56 | slot-id:16 | spec-digest:32 | spec-size:8 |
 //! assignment:48 | semantic-digest:32 | plan-digest:32 |
 //! template-digest:32 | lease-digest:32 | lease-generation:8 | deadline:8 |
 //! ready-resource:120 | template-size:4 | body-size:4 | packet-size:4 |
@@ -41,9 +41,9 @@ use crate::dispatch::{
     template_digest_from_parts, validate_durable_attempt_body, validate_durable_deadline_free_body,
 };
 use crate::ownership_authority::ProtectedOwnershipClockError;
-use crate::runtime_scope::{
-    DurableNamespaceTargetReferenceV1, validate_durable_reference_in_validated_namespace,
-    validate_namespace_target_namespace,
+use crate::runtime_authority::{
+    DurableRuntimeAuthorityReferenceV1, RuntimeAuthorityLimits, RuntimeAuthorityStateV1,
+    RuntimeAuthorityStore, binding_for_durable_reference_in_validated_namespace,
 };
 use crate::{
     BrokerDispatchTemplateV1, Journal, JournalRecord, JournalTransaction, RecordNamespace,
@@ -53,10 +53,10 @@ use crate::{
 mod tests;
 
 const NAMESPACE: RecordNamespace = RecordNamespace::DestinationSlotAttempt;
-const MAGIC: &[u8; 8] = b"AOSDSE01";
-const RECORD_DOMAIN: &[u8] = b"aos.sandbox.destination-slot-attempt.v1\0";
-const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.destination-slot-attempt.transaction.v1\0";
-const FIXED_RECORD_BYTES: usize = 552;
+const MAGIC: &[u8; 8] = b"AOSDSE02";
+const RECORD_DOMAIN: &[u8] = b"aos.sandbox.destination-slot-attempt.v2\0";
+const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.destination-slot-attempt.transaction.v2\0";
+const FIXED_RECORD_BYTES: usize = 496;
 const MAXIMUM_ATTEMPTS: usize = 16_384;
 const MAXIMUM_NAMESPACE_BYTES: usize = 256 * 1024 * 1024;
 const MAXIMUM_RECORD_BYTES: usize = 3 * MAXIMUM_REQUEST_BYTES + FIXED_RECORD_BYTES;
@@ -83,7 +83,7 @@ pub struct DurableCurrentDestinationSlotAttemptV1 {
 
 struct LiveDispatch {
     slot: crate::DurableAttachmentSlotV1,
-    target: crate::runtime_scope::CurrentNamespaceTarget,
+    target: crate::runtime_scope::CurrentAssignmentTarget,
     template: BrokerDispatchTemplateV1,
 }
 
@@ -182,15 +182,12 @@ impl LiveDispatch {
         attachment_slot_state::recheck_current(journal, &self.slot)?;
         self.target.recheck(journal, clock)?;
         validate_target(&self.slot, &self.target)?;
-        self.target
-            .runtime_generation()
-            .scope()
-            .verify_mount_plan_version(
-                journal,
-                self.template.signed_plan(),
-                CARRIER_VERSION,
-                clock,
-            )?;
+        self.target.verify_mount_plan_version(
+            journal,
+            self.template.signed_plan(),
+            CARRIER_VERSION,
+            clock,
+        )?;
         attachment_slot_state::recheck_current(journal, &self.slot)?;
         self.target.recheck(journal, clock)?;
         Ok(())
@@ -200,7 +197,7 @@ impl LiveDispatch {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Record {
     request_id: [u8; 16],
-    namespace_target: DurableNamespaceTargetReferenceV1,
+    assignment_target: DurableRuntimeAuthorityReferenceV1,
     slot_id: [u8; 16],
     sandbox_spec_digest: [u8; 32],
     sandbox_spec_size: u64,
@@ -232,7 +229,7 @@ impl Record {
         let assignment = plan.assignment();
         let mut record = Self {
             request_id: *request.header().request_id(),
-            namespace_target: live.target.durable_reference(),
+            assignment_target: live.target.durable_reference(),
             slot_id: *request.destination_slot_id(),
             sandbox_spec_digest: *request.sandbox_spec().digest().as_bytes(),
             sandbox_spec_size: request.sandbox_spec().encoded_size(),
@@ -261,8 +258,8 @@ impl Record {
         self.request_id
     }
 
-    pub(super) const fn namespace_target(&self) -> DurableNamespaceTargetReferenceV1 {
-        self.namespace_target
+    pub(super) const fn assignment_target(&self) -> DurableRuntimeAuthorityReferenceV1 {
+        self.assignment_target
     }
 
     pub(super) const fn plan_digest(&self) -> ObjectDigest {
@@ -319,7 +316,7 @@ impl Record {
 
     fn matches_resumed_record(&self, candidate: &Self) -> bool {
         self.request_id == candidate.request_id
-            && self.namespace_target == candidate.namespace_target
+            && self.assignment_target == candidate.assignment_target
             && self.slot_id == candidate.slot_id
             && self.sandbox_spec_digest == candidate.sandbox_spec_digest
             && self.sandbox_spec_size == candidate.sandbox_spec_size
@@ -341,6 +338,9 @@ impl Record {
 
     fn validate_contents(&self) -> Result<(), DestinationSlotEffectError> {
         if self.request_id == [0; 16]
+            || self.assignment_target.sandbox().as_bytes() == &[0; 16]
+            || self.assignment_target.revision() == 0
+            || self.assignment_target.binding_digest().as_bytes() == &[0; 32]
             || self.slot_id == [0; 16]
             || self.sandbox_spec_digest == [0; 32]
             || self.sandbox_spec_size == 0
@@ -412,10 +412,7 @@ impl Record {
             || request.destination_slot_id() != &self.slot_id
             || request.sandbox_spec().digest().as_bytes() != &self.sandbox_spec_digest
             || request.sandbox_spec().encoded_size() != self.sandbox_spec_size
-            || request.namespace_generation() != self.namespace_target.target_generation()
-            || request.binding_fence().sandbox_id() != self.namespace_target.sandbox().as_bytes()
-            || request.binding_fence().incarnation_id()
-                != self.namespace_target.incarnation().as_bytes()
+            || request.binding_fence().sandbox_id() != self.assignment_target.sandbox().as_bytes()
             || fence.assignment_epoch() != self.assignment_epoch
             || fence.desired_generation() != self.desired_generation
             || fence.assignment_digest() != &self.assignment_digest
@@ -459,8 +456,8 @@ impl Record {
         if plan.audience() != BrokerAudience::Mount
             || plan.protocol() != aos_sandbox_core::ProtocolId::MountBroker
             || plan.protocol_version() != CARRIER_VERSION
-            || assignment.sandbox() != self.namespace_target.sandbox()
-            || assignment.incarnation() != self.namespace_target.incarnation()
+            || assignment.sandbox() != self.assignment_target.sandbox()
+            || assignment.incarnation().as_bytes() != request.binding_fence().incarnation_id()
             || assignment.epoch().get() != self.assignment_epoch
             || assignment.desired_generation().get() != self.desired_generation
             || assignment.digest().as_bytes() != &self.assignment_digest
@@ -552,7 +549,7 @@ impl Record {
         bytes.push(self.action as i32 as u8);
         bytes.extend_from_slice(&[0; 2]);
         bytes.extend_from_slice(&self.request_id);
-        encode_namespace_target(&mut bytes, self.namespace_target);
+        encode_assignment_target(&mut bytes, self.assignment_target);
         bytes.extend_from_slice(&self.slot_id);
         bytes.extend_from_slice(&self.sandbox_spec_digest);
         bytes.extend_from_slice(&self.sandbox_spec_size.to_be_bytes());
@@ -599,7 +596,7 @@ impl Record {
             return Err(DestinationSlotEffectError::CorruptState);
         }
         let request_id = decoder.array()?;
-        let namespace_target = decode_namespace_target(&mut decoder)?;
+        let assignment_target = decode_assignment_target(&mut decoder)?;
         let slot_id = decoder.array()?;
         let sandbox_spec_digest = decoder.array()?;
         let sandbox_spec_size = decoder.u64()?;
@@ -625,7 +622,7 @@ impl Record {
         }
         let record = Self {
             request_id,
-            namespace_target,
+            assignment_target,
             slot_id,
             sandbox_spec_digest,
             sandbox_spec_size,
@@ -702,7 +699,7 @@ impl History {
 
         if !decoded.is_empty() {
             attachment_slot_state::validate_namespace(journal)?;
-            validate_namespace_target_namespace(journal)?;
+            RuntimeAuthorityStore::load(journal, RuntimeAuthorityLimits::default())?;
         }
         for record in decoded {
             let request = decode_request(&record.body, record.deadline_boottime_nanoseconds)
@@ -716,7 +713,23 @@ impl History {
             if spec.canonical_bytes() != request.sandbox_spec_bytes() {
                 return Err(DestinationSlotEffectError::CorruptState);
             }
-            validate_durable_reference_in_validated_namespace(journal, record.namespace_target)?;
+            let binding = binding_for_durable_reference_in_validated_namespace(
+                journal,
+                record.assignment_target,
+            )?;
+            let manifest = binding.manifest().manifest();
+            let fence = request.binding_fence();
+            if binding.state() != RuntimeAuthorityStateV1::Bound
+                || binding.holder().is_none()
+                || manifest.incarnation().as_bytes() != fence.incarnation_id()
+                || manifest.epoch().get() != fence.assignment_epoch()
+                || manifest.desired_generation().get() != fence.desired_generation()
+                || binding.assignment_digest().as_bytes() != fence.assignment_digest()
+                || manifest.namespace_generation().get() != request.namespace_generation()
+                || manifest.sandbox_spec() != request.sandbox_spec()
+            {
+                return Err(DestinationSlotEffectError::CorruptState);
+            }
             if history.records.insert(record.request_id, record).is_some() {
                 return Err(DestinationSlotEffectError::CorruptState);
             }
@@ -785,18 +798,13 @@ where
         return Err(DestinationSlotEffectError::Deadline);
     }
     let history = History::load(journal)?;
-    let attempt = prepared
-        .operation
-        .target
-        .runtime_generation()
-        .scope()
-        .prepare_mount_attempt_version(
-            journal,
-            &prepared.template,
-            deadline_boottime_nanoseconds,
-            CARRIER_VERSION,
-            clock,
-        )?;
+    let attempt = prepared.operation.target.prepare_mount_attempt_version(
+        journal,
+        &prepared.template,
+        deadline_boottime_nanoseconds,
+        CARRIER_VERSION,
+        clock,
+    )?;
     crate::mount_preparation::check_mount_deadline(attempt.deadline_boottime_nanoseconds())?;
     let slot = prepared.operation.reconciliation.slot().clone();
     let ready = prepared.operation.ready;
@@ -845,18 +853,13 @@ where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
     prepared.recheck(journal, clock)?;
-    let attempt = prepared
-        .operation
-        .target
-        .runtime_generation()
-        .scope()
-        .prepare_mount_attempt_version(
-            journal,
-            &prepared.template,
-            prepared.record.deadline_boottime_nanoseconds,
-            CARRIER_VERSION,
-            clock,
-        )?;
+    let attempt = prepared.operation.target.prepare_mount_attempt_version(
+        journal,
+        &prepared.template,
+        prepared.record.deadline_boottime_nanoseconds,
+        CARRIER_VERSION,
+        clock,
+    )?;
     let slot = prepared.operation.reconciliation.slot().clone();
     let evidence = prepared.operation.reconciliation;
     let live = LiveDispatch {
@@ -896,7 +899,10 @@ pub(super) fn recheck_resume_record(
 ) -> Result<(), DestinationSlotEffectError> {
     let history = History::load(journal)?;
     if history.records.get(&record.request_id) != Some(record)
-        || record.namespace_target != operation.target.durable_reference()
+        || operation
+            .target
+            .validate_durable_reference(journal, record.assignment_target)
+            .is_err()
         || record.template_body != operation.body_without_deadline
         || record.ready != operation.ready
         || super::completion::contains(journal, record.request_id)?
@@ -990,25 +996,19 @@ fn artifact_descriptor(
     Ok(descriptor_for_bytes(media_type, bytes))
 }
 
-fn encode_namespace_target(bytes: &mut Vec<u8>, target: DurableNamespaceTargetReferenceV1) {
+fn encode_assignment_target(bytes: &mut Vec<u8>, target: DurableRuntimeAuthorityReferenceV1) {
     bytes.extend_from_slice(target.sandbox().as_bytes());
-    bytes.extend_from_slice(target.incarnation().as_bytes());
-    bytes.extend_from_slice(&target.observed_generation().to_be_bytes());
-    bytes.extend_from_slice(&target.observed_audit_digest());
-    bytes.extend_from_slice(&target.target_generation().to_be_bytes());
-    bytes.extend_from_slice(&target.allocation_digest());
+    bytes.extend_from_slice(&target.revision().to_be_bytes());
+    bytes.extend_from_slice(target.binding_digest().as_bytes());
 }
 
-fn decode_namespace_target(
+fn decode_assignment_target(
     decoder: &mut Decoder<'_>,
-) -> Result<DurableNamespaceTargetReferenceV1, DestinationSlotEffectError> {
-    Ok(DurableNamespaceTargetReferenceV1::from_parts(
+) -> Result<DurableRuntimeAuthorityReferenceV1, DestinationSlotEffectError> {
+    Ok(DurableRuntimeAuthorityReferenceV1::from_parts(
         aos_sandbox_core::SandboxId::from_bytes(decoder.array()?),
-        aos_sandbox_core::IncarnationId::from_bytes(decoder.array()?),
         decoder.u64()?,
-        decoder.array()?,
-        decoder.u64()?,
-        decoder.array()?,
+        ObjectDigest::from_bytes(decoder.array()?),
     ))
 }
 

@@ -210,6 +210,16 @@ impl CurrentNamespaceTarget {
         &self.generation
     }
 
+    /// Discards the observed namespace allocation and retains assignment authority.
+    ///
+    /// This conversion is useful when a caller already has a live proof but the
+    /// next operation, such as pre-launch slot materialization, intentionally
+    /// must not depend on a payload descriptor.
+    #[must_use]
+    pub fn into_assignment_target(self) -> super::CurrentAssignmentTarget {
+        self.generation.into_assignment_target()
+    }
+
     pub(crate) fn durable_reference(&self) -> DurableNamespaceTargetReferenceV1 {
         let identity = self.allocation.identity;
         DurableNamespaceTargetReferenceV1 {

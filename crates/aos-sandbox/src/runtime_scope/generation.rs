@@ -97,6 +97,12 @@ impl CurrentRuntimeGeneration {
         &self.scope
     }
 
+    /// Discards live execution evidence while retaining current assignment authority.
+    #[must_use]
+    pub fn into_assignment_target(self) -> super::CurrentAssignmentTarget {
+        self.scope.into_assignment_target()
+    }
+
     pub(crate) fn track<T>(
         scope: CurrentRuntimeScope,
         journal: &mut Journal,

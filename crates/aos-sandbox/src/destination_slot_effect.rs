@@ -5,7 +5,7 @@
 //! plan, and records the exact lease-bound packet before broker I/O:
 //!
 //! ```text
-//! logical slot + authenticated inventory + current namespace authority
+//! logical slot + authenticated inventory + current assignment authority
 //!     -> exact portable slot body -> signed Mount plan
 //!     -> durable attempt -> authenticated durable completion
 //! ```
@@ -39,7 +39,7 @@ use crate::destination_slot_inventory::{
 use crate::dispatch::{BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1};
 use crate::mount_preparation::{self, MountCatalogPreparationError};
 use crate::ownership_authority::ProtectedOwnershipClockError;
-use crate::runtime_scope::CurrentNamespaceTarget;
+use crate::runtime_scope::CurrentAssignmentTarget;
 use crate::{Journal, SignedBrokerPlan};
 
 mod attempt;
@@ -75,10 +75,10 @@ pub enum DestinationSlotEffectError {
     /// The retained canonical sandbox specification is missing or malformed.
     #[error(transparent)]
     Specification(#[from] crate::SandboxSpecStateError),
-    /// Current signed runtime or namespace authority changed or expired.
+    /// Protected runtime-assignment history is missing or inconsistent.
     #[error(transparent)]
-    Current(#[from] crate::runtime_scope::NamespaceTargetError),
-    /// The current runtime rejected the selected signed Mount plan or lease.
+    Authority(#[from] crate::runtime_authority::RuntimeAuthorityError),
+    /// Current assignment authority, its signed Mount plan, or lease is invalid.
     #[error(transparent)]
     Runtime(#[from] crate::runtime_scope::CurrentRuntimeScopeError),
     /// The signed plan does not bind the exact destination-slot semantics.
@@ -147,7 +147,7 @@ pub struct PreparedCurrentDestinationSlotResumeDispatchV1 {
 
 struct PreparedOperation {
     reconciliation: CurrentDestinationSlotReconciliationV1,
-    target: CurrentNamespaceTarget,
+    target: CurrentAssignmentTarget,
     body_without_deadline: Vec<u8>,
     semantics: BrokerDispatchSemanticIdentityV1,
     valid_until_boottime_nanoseconds: u64,
@@ -231,7 +231,7 @@ impl PreparedCurrentDestinationSlotV1 {
         &self.operation.body_without_deadline
     }
 
-    /// Returns the exclusive lifetime inherited from current namespace authority.
+    /// Returns the exclusive lifetime inherited from current assignment authority.
     #[must_use]
     pub const fn valid_until_boottime_nanoseconds(&self) -> u64 {
         self.operation.valid_until_boottime_nanoseconds
@@ -355,7 +355,7 @@ impl PreparedOperation {
 pub(crate) fn prepare_current<T>(
     journal: &mut Journal,
     reconciliation: CurrentDestinationSlotReconciliationV1,
-    target: CurrentNamespaceTarget,
+    target: CurrentAssignmentTarget,
     clock: &mut T,
 ) -> Result<PreparedCurrentDestinationSlotV1, DestinationSlotEffectError>
 where
@@ -381,7 +381,7 @@ where
 pub(crate) fn prepare_current_resume<T>(
     journal: &mut Journal,
     reconciliation: CurrentDestinationSlotReconciliationV1,
-    target: CurrentNamespaceTarget,
+    target: CurrentAssignmentTarget,
     clock: &mut T,
 ) -> Result<PreparedCurrentDestinationSlotResumeV1, DestinationSlotEffectError>
 where
@@ -510,7 +510,7 @@ type ControllerStateRecord = ([u8; 16], [u8; 32]);
 fn build_operation(
     journal: &mut Journal,
     reconciliation: CurrentDestinationSlotReconciliationV1,
-    target: CurrentNamespaceTarget,
+    target: CurrentAssignmentTarget,
     action: DestinationSlotReconciliationActionV1,
 ) -> Result<PreparedOperation, DestinationSlotEffectError> {
     let slot = reconciliation.slot();
@@ -544,13 +544,10 @@ fn build_operation(
         }
         _ => return Err(DestinationSlotEffectError::NotPreparable),
     };
-    let deadline = target
-        .runtime_generation()
-        .scope()
-        .deadline_boottime_nanoseconds();
+    let deadline = target.deadline_boottime_nanoseconds();
     let mut request = ApplyDestinationSlotRequest {
         header: Some(request_header(request_id, deadline)).into(),
-        fence: Some(mount_preparation::current_fence(&target)).into(),
+        fence: Some(current_fence(&target)).into(),
         resource_fence: resource_fence.into(),
         action: wire_action.into(),
         namespace_generation: slot.namespace_generation(),
@@ -586,12 +583,10 @@ fn build_operation(
 fn build_replay_operation(
     journal: &mut Journal,
     reconciliation: CurrentDestinationSlotReconciliationV1,
-    target: CurrentNamespaceTarget,
+    target: CurrentAssignmentTarget,
     record: &attempt::Record,
 ) -> Result<PreparedOperation, DestinationSlotEffectError> {
-    if record.namespace_target() != target.durable_reference() {
-        return Err(DestinationSlotEffectError::Conflict);
-    }
+    target.validate_durable_reference(journal, record.assignment_target())?;
     let request_bytes = crate::dispatch::durable_attempt_body(
         record.body_without_deadline(),
         record.deadline_boottime_nanoseconds(),
@@ -627,8 +622,6 @@ where
 {
     operation
         .target
-        .runtime_generation()
-        .scope()
         .verify_mount_plan_version(journal, &signed_plan, CARRIER_VERSION, clock)?;
     Ok(BrokerDispatchTemplateV1::new(
         signed_plan,
@@ -655,11 +648,12 @@ where
     {
         return Err(DestinationSlotEffectError::Conflict);
     }
-    operation
-        .target
-        .runtime_generation()
-        .scope()
-        .verify_mount_plan_version(journal, template.signed_plan(), CARRIER_VERSION, clock)?;
+    operation.target.verify_mount_plan_version(
+        journal,
+        template.signed_plan(),
+        CARRIER_VERSION,
+        clock,
+    )?;
     Ok(())
 }
 
@@ -736,21 +730,28 @@ fn request_matches_action(
 
 fn validate_target(
     slot: &DurableAttachmentSlotV1,
-    target: &CurrentNamespaceTarget,
+    target: &CurrentAssignmentTarget,
 ) -> Result<(), DestinationSlotEffectError> {
-    let manifest = target
-        .runtime_generation()
-        .scope()
-        .binding()
-        .manifest()
-        .manifest();
-    if manifest.sandbox() != slot.sandbox()
-        || manifest.incarnation() != slot.incarnation()
-        || target.target_generation() != slot.namespace_generation()
+    if target.sandbox() != slot.sandbox()
+        || target.incarnation() != slot.incarnation()
+        || target.namespace_generation() != slot.namespace_generation()
+        || target.sandbox_spec() != slot.sandbox_spec()
     {
         return Err(DestinationSlotEffectError::Conflict);
     }
     Ok(())
+}
+
+fn current_fence(target: &CurrentAssignmentTarget) -> AssignmentFence {
+    let manifest = target.binding().manifest().manifest();
+    AssignmentFence {
+        sandbox_id: manifest.sandbox().as_bytes().to_vec(),
+        incarnation_id: manifest.incarnation().as_bytes().to_vec(),
+        assignment_epoch: manifest.epoch().get(),
+        desired_generation: manifest.desired_generation().get(),
+        assignment_digest: target.binding().assignment_digest().as_bytes().to_vec(),
+        ..Default::default()
+    }
 }
 
 fn resume_request_id(

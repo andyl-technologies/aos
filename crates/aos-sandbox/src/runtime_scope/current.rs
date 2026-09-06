@@ -1,9 +1,12 @@
-//! Protected holder/publication selection joined to a fresh Host observation.
+//! Protected holder and publication selection for assignment and runtime work.
 //!
-//! The journal remains exclusively borrowed across selection, cryptographic
-//! verification, Host exchange, and post-exchange checks. No caller can attach
-//! arbitrary holder claims to an independently acquired observation. Retained
-//! proofs are short-lived, exact-revision evidence, not endpoint grants.
+//! A pre-launch assignment target joins protected current state, cryptographic
+//! authority, and a paired clock without claiming a live payload. A runtime
+//! scope additionally authenticates a fresh Host observation. The journal
+//! remains exclusively borrowed across each selection and its surrounding
+//! checks, so callers cannot attach arbitrary holder claims to independently
+//! acquired evidence. Every retained target is short-lived and grants no
+//! endpoint access by itself.
 
 use aos_proto::aos::sandbox::local::v1::{
     AssignmentFence, ObservePayloadScopeRequest, RequestHeader,
@@ -61,7 +64,7 @@ pub struct CurrentRuntimeScopePolicy {
     pub broker_anchor: BrokerPlanTrustAnchor,
 }
 
-/// Reports failure to join protected current state with live runtime evidence.
+/// Reports failure to establish or use current assignment or runtime evidence.
 #[derive(Debug, thiserror::Error)]
 pub enum CurrentRuntimeScopeError {
     /// The selector, node, clock provenance, or lifetime bound is invalid.
@@ -120,6 +123,30 @@ pub struct CurrentRuntimeScope {
     policy: CurrentRuntimeScopePolicy,
     binding: RuntimeAuthorityBindingV1,
     observed: ObservedPayloadScope,
+    validity: ObservationValidity,
+}
+
+/// Retains current signed assignment authority without requiring a live payload.
+///
+/// Destination slots and their shared attachment anchor must exist before the
+/// payload starts. This target therefore binds the protected holder,
+/// assignment, publication, ownership lease, and paired-clock window without
+/// claiming that Host has observed a runtime. It can authorize only operations
+/// whose broker plan is independently verified on every use.
+///
+/// Restart cannot reconstruct this value from journal bytes. A caller resumes
+/// durable work by acquiring a fresh target and proving uninterrupted
+/// same-holder authority from the retained origin binding.
+///
+/// ```compile_fail
+/// use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
+/// fn requires_clone<T: Clone>() {}
+/// requires_clone::<CurrentAssignmentTarget>();
+/// ```
+pub struct CurrentAssignmentTarget {
+    selection: RuntimeScopeHolder,
+    policy: CurrentRuntimeScopePolicy,
+    binding: RuntimeAuthorityBindingV1,
     validity: ObservationValidity,
 }
 
@@ -193,6 +220,20 @@ impl CurrentRuntimeScope {
         self.validity.check(read_clock(&self.policy, clock)?)?;
         transport::check_deadline(self.validity.deadline())?;
         Ok(())
+    }
+
+    /// Discards the live Host observation while retaining current assignment authority.
+    ///
+    /// The result is suitable for pre-launch destination-slot work, but it no
+    /// longer proves any payload process, root, or namespace descriptor.
+    #[must_use]
+    pub fn into_assignment_target(self) -> CurrentAssignmentTarget {
+        CurrentAssignmentTarget {
+            selection: self.selection,
+            policy: self.policy,
+            binding: self.binding,
+            validity: self.validity,
+        }
     }
 
     pub(crate) fn authorize_mount_scope<T>(
@@ -357,6 +398,216 @@ impl CurrentRuntimeScope {
     }
 }
 
+impl CurrentAssignmentTarget {
+    /// Returns the sandbox named by current assignment authority.
+    #[must_use]
+    pub const fn sandbox(&self) -> SandboxId {
+        self.binding.sandbox()
+    }
+
+    /// Returns the incarnation whose next payload consumes the prepared anchor.
+    #[must_use]
+    pub const fn incarnation(&self) -> aos_sandbox_core::IncarnationId {
+        self.binding.manifest().manifest().incarnation()
+    }
+
+    /// Returns the namespace generation reserved by the signed assignment.
+    #[must_use]
+    pub const fn namespace_generation(&self) -> u64 {
+        self.binding
+            .manifest()
+            .manifest()
+            .namespace_generation()
+            .get()
+    }
+
+    /// Borrows the canonical specification selected by the signed assignment.
+    #[must_use]
+    pub const fn sandbox_spec(&self) -> &aos_sandbox_core::ObjectDescriptor {
+        self.binding.manifest().manifest().sandbox_spec()
+    }
+
+    /// Returns the exclusive BOOTTIME bound for this non-renewable selection.
+    #[must_use]
+    pub const fn deadline_boottime_nanoseconds(&self) -> u64 {
+        self.validity.deadline()
+    }
+
+    pub(crate) const fn binding(&self) -> &RuntimeAuthorityBindingV1 {
+        &self.binding
+    }
+
+    pub(crate) fn durable_reference(
+        &self,
+    ) -> crate::runtime_authority::DurableRuntimeAuthorityReferenceV1 {
+        crate::runtime_authority::DurableRuntimeAuthorityReferenceV1::from_binding(&self.binding)
+    }
+
+    pub(crate) fn recheck<T>(
+        &self,
+        journal: &mut Journal,
+        clock: &mut T,
+    ) -> Result<(), CurrentRuntimeScopeError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        transport::check_deadline(self.validity.deadline())?;
+        let fresh = read_clock(&self.policy, clock)?;
+        self.recheck_at(journal, fresh)?;
+
+        self.validity.check(read_clock(&self.policy, clock)?)?;
+        transport::check_deadline(self.validity.deadline())?;
+        Ok(())
+    }
+
+    fn recheck_at(
+        &self,
+        journal: &mut Journal,
+        fresh: RawPairedClockSample,
+    ) -> Result<(), CurrentRuntimeScopeError> {
+        self.validity.check(fresh)?;
+        let (current, publication) = select_current(journal, self.selection, &self.policy)?;
+        RuntimeAuthorityStore::load(journal, self.policy.runtime_limits)?
+            .validate_continuity(&self.binding, &current)?;
+        verify_lease(journal, &current, &publication, &self.policy, fresh)?;
+        Ok(())
+    }
+
+    pub(crate) fn verify_mount_plan_version<T>(
+        &self,
+        journal: &mut Journal,
+        signed: &SignedBrokerPlan,
+        protocol_version: aos_sandbox_core::ProtocolVersion,
+        clock: &mut T,
+    ) -> Result<(), CurrentRuntimeScopeError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.recheck(journal, clock)?;
+        self.verified_mount_lease(
+            journal,
+            signed,
+            protocol_version,
+            read_clock(&self.policy, clock)?,
+        )?;
+        self.recheck(journal, clock)
+    }
+
+    pub(crate) fn prepare_mount_attempt_version<T>(
+        &self,
+        journal: &mut Journal,
+        template: &crate::BrokerDispatchTemplateV1,
+        deadline_boottime_nanoseconds: u64,
+        protocol_version: aos_sandbox_core::ProtocolVersion,
+        clock: &mut T,
+    ) -> Result<crate::BrokerDispatchAttemptV1, CurrentRuntimeScopeError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.recheck(journal, clock)?;
+        let fresh = read_clock(&self.policy, clock)?;
+        let lease =
+            self.verified_mount_lease(journal, template.signed_plan(), protocol_version, fresh)?;
+        let attempt = crate::BrokerDispatchAttemptV1::new(
+            template,
+            &lease,
+            deadline_boottime_nanoseconds,
+            fresh,
+        )?;
+        self.recheck(journal, clock)?;
+        Ok(attempt)
+    }
+
+    fn verified_mount_lease(
+        &self,
+        journal: &mut Journal,
+        signed: &SignedBrokerPlan,
+        protocol_version: aos_sandbox_core::ProtocolVersion,
+        fresh: RawPairedClockSample,
+    ) -> Result<SignedOwnershipLease, CurrentRuntimeScopeError> {
+        let (current, publication) = select_current(journal, self.selection, &self.policy)?;
+        RuntimeAuthorityStore::load(journal, self.policy.runtime_limits)?
+            .validate_continuity(&self.binding, &current)?;
+        let lease = verify_lease(journal, &current, &publication, &self.policy, fresh)?;
+        let signature = decode_signature(signed.canonical_signature(), DecodeLimits::default())
+            .map_err(aos_sandbox_core::BrokerPlanVerificationError::from)?;
+        let verified = verify_broker_plan(
+            signed.canonical_plan(),
+            &signature,
+            &self.policy.broker_anchor,
+            BrokerPlanExpectation {
+                audience: BrokerAudience::Mount,
+                protocol: aos_sandbox_core::ProtocolId::MountBroker,
+                protocol_version,
+                assignment: current
+                    .manifest()
+                    .broker_assignment()
+                    .map_err(|_| CurrentRuntimeScopeError::CurrentMismatch)?,
+                node: self.policy.node,
+                now_seconds: fresh.wall_seconds(),
+            },
+            DecodeLimits::default(),
+        )?;
+        if verified.plan().ownership_authority() != lease.signer() {
+            return Err(CurrentRuntimeScopeError::CurrentMismatch);
+        }
+        Ok(lease)
+    }
+
+    pub(crate) fn validate_durable_reference(
+        &self,
+        journal: &mut Journal,
+        reference: crate::runtime_authority::DurableRuntimeAuthorityReferenceV1,
+    ) -> Result<(), CurrentRuntimeScopeError> {
+        let origin =
+            crate::runtime_authority::binding_for_durable_reference_in_validated_namespace(
+                journal, reference,
+            )?;
+        RuntimeAuthorityStore::load(journal, self.policy.runtime_limits)?
+            .validate_continuity(&origin, &self.binding)?;
+        if origin.manifest() != self.binding.manifest() || origin.holder() != self.binding.holder()
+        {
+            return Err(CurrentRuntimeScopeError::CurrentMismatch);
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn acquire_assignment<T>(
+    journal: &mut Journal,
+    selection: RuntimeScopeHolder,
+    policy: CurrentRuntimeScopePolicy,
+    clock: &mut T,
+) -> Result<CurrentAssignmentTarget, CurrentRuntimeScopeError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    validate_selection_and_policy(selection, &policy)?;
+    let initial = read_clock(&policy, clock)?;
+    let target = prepare_assignment(journal, selection, policy, initial)?;
+    target.recheck(journal, clock)?;
+    Ok(target)
+}
+
+fn prepare_assignment(
+    journal: &mut Journal,
+    selection: RuntimeScopeHolder,
+    policy: CurrentRuntimeScopePolicy,
+    initial: RawPairedClockSample,
+) -> Result<CurrentAssignmentTarget, CurrentRuntimeScopeError> {
+    validate_selection_and_policy(selection, &policy)?;
+    let (binding, publication) = select_current(journal, selection, &policy)?;
+    let lease = verify_lease(journal, &binding, &publication, &policy, initial)?;
+    let validity =
+        ObservationValidity::for_lease(initial, &lease, policy.maximum_validity_seconds)?;
+    Ok(CurrentAssignmentTarget {
+        selection,
+        policy,
+        binding,
+        validity,
+    })
+}
+
 pub(crate) fn acquire<T>(
     journal: &mut Journal,
     selection: RuntimeScopeHolder,
@@ -367,14 +618,7 @@ pub(crate) fn acquire<T>(
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
-    if selection.sandbox.as_bytes() == &[0; 16]
-        || selection.holder.as_bytes() == &[0; 16]
-        || policy.node.as_bytes() == &[0; 16]
-        || policy.clock_provenance == [0; 16]
-        || !(1..=30).contains(&policy.maximum_validity_seconds)
-    {
-        return Err(CurrentRuntimeScopeError::Configuration);
-    }
+    validate_selection_and_policy(selection, &policy)?;
     let initial = read_clock(&policy, clock)?;
     let prepared = prepare(journal, selection, &policy, initial)?;
     let observed = client.observe(
@@ -395,6 +639,21 @@ where
     };
     result.recheck(journal, clock)?;
     Ok(result)
+}
+
+fn validate_selection_and_policy(
+    selection: RuntimeScopeHolder,
+    policy: &CurrentRuntimeScopePolicy,
+) -> Result<(), CurrentRuntimeScopeError> {
+    if selection.sandbox.as_bytes() == &[0; 16]
+        || selection.holder.as_bytes() == &[0; 16]
+        || policy.node.as_bytes() == &[0; 16]
+        || policy.clock_provenance == [0; 16]
+        || !(1..=30).contains(&policy.maximum_validity_seconds)
+    {
+        return Err(CurrentRuntimeScopeError::Configuration);
+    }
+    Ok(())
 }
 
 /// Holds non-authorizing request inputs; only the real exchange constructs a scope.

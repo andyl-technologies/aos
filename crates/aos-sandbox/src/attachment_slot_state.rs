@@ -27,7 +27,7 @@ use aos_sandbox_core::{
 use sha2::{Digest as _, Sha256};
 
 use crate::ownership_authority::ProtectedOwnershipClockError;
-use crate::runtime_scope::{CurrentNamespaceTarget, NamespaceTargetError};
+use crate::runtime_scope::{CurrentAssignmentTarget, CurrentNamespaceTarget, NamespaceTargetError};
 use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
 const MAGIC: &[u8; 8] = b"AOSSLT02";
@@ -211,6 +211,39 @@ pub struct CommittedCurrentAttachmentSlotV1 {
     outcome: AttachmentSlotCommitOutcomeV1,
 }
 
+/// Retains pre-launch assignment authority beside a committed destination slot.
+pub struct CommittedCurrentAssignmentAttachmentSlotV1 {
+    target: CurrentAssignmentTarget,
+    slot: DurableAttachmentSlotV1,
+    outcome: AttachmentSlotCommitOutcomeV1,
+}
+
+impl CommittedCurrentAssignmentAttachmentSlotV1 {
+    /// Borrows the assignment target that remained current across the commit.
+    #[must_use]
+    pub const fn target(&self) -> &CurrentAssignmentTarget {
+        &self.target
+    }
+
+    /// Borrows the exact durable destination-slot state.
+    #[must_use]
+    pub const fn slot(&self) -> &DurableAttachmentSlotV1 {
+        &self.slot
+    }
+
+    /// Reports whether this call recorded or replayed the exact mutation.
+    #[must_use]
+    pub const fn outcome(&self) -> AttachmentSlotCommitOutcomeV1 {
+        self.outcome
+    }
+
+    /// Recovers assignment authority for signed pre-launch materialization.
+    #[must_use]
+    pub fn into_target(self) -> CurrentAssignmentTarget {
+        self.target
+    }
+}
+
 impl CommittedCurrentAttachmentSlotV1 {
     /// Borrows the target that remained current across the slot commit.
     #[must_use]
@@ -255,6 +288,9 @@ pub enum AttachmentSlotStateError {
     /// The consumer namespace target is no longer current.
     #[error(transparent)]
     CurrentTarget(#[from] NamespaceTargetError),
+    /// Pre-launch assignment authority is no longer current.
+    #[error(transparent)]
+    CurrentAssignment(#[from] crate::runtime_scope::CurrentRuntimeScopeError),
     /// The durable journal rejected the transaction.
     #[error(transparent)]
     Journal(#[from] JournalError),
@@ -279,6 +315,14 @@ impl SlotBinding {
             sandbox: manifest.sandbox(),
             incarnation: manifest.incarnation(),
             namespace_generation: target.target_generation(),
+        }
+    }
+
+    fn from_assignment(target: &CurrentAssignmentTarget) -> Self {
+        Self {
+            sandbox: target.sandbox(),
+            incarnation: target.incarnation(),
+            namespace_generation: target.namespace_generation(),
         }
     }
 
@@ -638,6 +682,27 @@ where
     target.recheck(journal, clock)?;
 
     Ok(CommittedCurrentAttachmentSlotV1 {
+        target,
+        slot: DurableAttachmentSlotV1 { record },
+        outcome,
+    })
+}
+
+pub(crate) fn commit_current_assignment<T>(
+    journal: &mut Journal,
+    target: CurrentAssignmentTarget,
+    mutation: AttachmentSlotMutationV1,
+    clock: &mut T,
+) -> Result<CommittedCurrentAssignmentAttachmentSlotV1, AttachmentSlotStateError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    target.recheck(journal, clock)?;
+    let binding = SlotBinding::from_assignment(&target);
+    let (record, outcome) = commit_bound(journal, &mutation, binding, target.sandbox_spec())?;
+    target.recheck(journal, clock)?;
+
+    Ok(CommittedCurrentAssignmentAttachmentSlotV1 {
         target,
         slot: DurableAttachmentSlotV1 { record },
         outcome,

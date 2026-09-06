@@ -71,7 +71,8 @@ pub use attachment_reconciliation::{
 #[cfg(target_os = "linux")]
 pub use attachment_slot_state::{
     AttachmentSlotCommitOutcomeV1, AttachmentSlotMutationV1, AttachmentSlotPresenceV1,
-    AttachmentSlotStateError, CommittedCurrentAttachmentSlotV1, DurableAttachmentSlotV1,
+    AttachmentSlotStateError, CommittedCurrentAssignmentAttachmentSlotV1,
+    CommittedCurrentAttachmentSlotV1, DurableAttachmentSlotV1,
 };
 #[cfg(target_os = "linux")]
 pub use attachment_state::{

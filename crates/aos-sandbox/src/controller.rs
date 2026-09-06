@@ -249,6 +249,43 @@ where
         PublisherPolicyStore::load(self.reconciler.journal_mut(), limits)
     }
 
+    /// Acquires current assignment authority without requiring a live payload.
+    ///
+    /// This pre-launch target derives its sandbox, incarnation, namespace
+    /// generation, specification, lease, and node from protected current state.
+    /// It carries no process, root, or namespace descriptor and cannot establish
+    /// runtime readiness. Destination-slot preparation uses it before Host starts
+    /// the payload.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent, revoked, rebound, or malformed holder state, invalid
+    /// signatures or clocks, an unavailable current publication, and an empty
+    /// fixed validity window.
+    #[cfg(target_os = "linux")]
+    pub fn acquire_current_assignment_target<T>(
+        &mut self,
+        holder: crate::runtime_scope::RuntimeScopeHolder,
+        policy: crate::runtime_scope::CurrentRuntimeScopePolicy,
+        clock: &mut T,
+    ) -> Result<
+        crate::runtime_scope::CurrentAssignmentTarget,
+        crate::runtime_scope::CurrentRuntimeScopeError,
+    >
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::runtime_scope::acquire_current_assignment(
+            self.reconciler.journal_mut(),
+            holder,
+            policy,
+            clock,
+        )
+    }
+
     /// Observes the protected current runtime of an authenticated holder.
     ///
     /// Trusted deployment supplies the Host connection, trust anchors, and
@@ -467,6 +504,39 @@ where
         let journal = self.reconciler.journal_mut();
         journal.ensure_healthy()?;
         crate::sandbox_spec_state::get(journal, descriptor)
+    }
+
+    /// Commits a destination-slot creation or release before payload launch.
+    ///
+    /// The controller derives the immutable sandbox, incarnation, reserved
+    /// namespace generation, and portable specification from current signed
+    /// assignment authority. Creation requires the published specification to
+    /// declare the slot. No live Host observation is required or implied.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale assignment authority, sentinel mutation metadata, a stale
+    /// resource version, operation equivocation, undrained attachment or Mount
+    /// state, corrupt history, capacity exhaustion, and failed commits.
+    #[cfg(target_os = "linux")]
+    pub fn commit_current_assignment_attachment_slot<T>(
+        &mut self,
+        target: crate::runtime_scope::CurrentAssignmentTarget,
+        mutation: crate::AttachmentSlotMutationV1,
+        clock: &mut T,
+    ) -> Result<crate::CommittedCurrentAssignmentAttachmentSlotV1, crate::AttachmentSlotStateError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::attachment_slot_state::commit_current_assignment(
+            self.reconciler.journal_mut(),
+            target,
+            mutation,
+            clock,
+        )
     }
 
     /// Commits one destination-slot creation or release while its target is current.
