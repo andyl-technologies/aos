@@ -10,7 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{
     AssignmentEpoch, AttachmentId, AttachmentSlotId, DesiredGeneration, FeatureRef, IncarnationId,
     LeaseId, NamespaceGeneration, NodeId, ObjectDescriptor, ObjectDigest, ResourceVector, Revision,
-    SandboxId, ViewId,
+    SandboxId, ViewId, validate_descriptor_role,
 };
 
 use super::ViewMutation;
@@ -33,6 +33,12 @@ pub enum InvalidDomainModel {
     /// Lease expiry is not later than its issue time.
     #[error("attachment lease expiry must be later than issue time")]
     InvalidLeaseInterval,
+    /// An attachment identity, generation, or lease uses its zero sentinel.
+    #[error("attachment intent contains an unspecified identity, generation, or lease")]
+    UnspecifiedAttachment,
+    /// The attachment's view descriptor is not a registered view revision.
+    #[error("attachment view descriptor is invalid")]
+    InvalidAttachmentView,
     /// Mount attributes would broaden the selected mutation mode.
     #[error("mount attributes are incompatible with attachment mutation semantics")]
     IncompatibleMountAttributes,
@@ -336,6 +342,7 @@ pub struct MountAttributes {
     no_exec: bool,
     no_suid: bool,
     no_dev: bool,
+    no_atime: bool,
     recursive: bool,
 }
 
@@ -347,6 +354,7 @@ impl MountAttributes {
         no_exec: bool,
         no_suid: bool,
         no_dev: bool,
+        no_atime: bool,
         recursive: bool,
     ) -> Self {
         Self {
@@ -354,6 +362,7 @@ impl MountAttributes {
             no_exec,
             no_suid,
             no_dev,
+            no_atime,
             recursive,
         }
     }
@@ -380,6 +389,12 @@ impl MountAttributes {
     #[must_use]
     pub const fn no_dev(self) -> bool {
         self.no_dev
+    }
+
+    /// Reports whether access-time updates are disabled.
+    #[must_use]
+    pub const fn no_atime(self) -> bool {
+        self.no_atime
     }
 
     /// Reports whether source submounts are included.
@@ -421,14 +436,17 @@ impl AttachmentLease {
     ///
     /// # Errors
     ///
-    /// Returns [`InvalidDomainModel::InvalidLeaseInterval`] unless expiry is
-    /// later than issue time.
+    /// Returns [`InvalidDomainModel::UnspecifiedAttachment`] for the reserved
+    /// zero lease identity, or [`InvalidDomainModel::InvalidLeaseInterval`]
+    /// unless expiry is later than issue time.
     pub const fn new(
         id: LeaseId,
         issued_seconds: i64,
         expires_seconds: i64,
     ) -> Result<Self, InvalidDomainModel> {
-        if expires_seconds <= issued_seconds {
+        if u128::from_be_bytes(*id.as_bytes()) == 0 {
+            Err(InvalidDomainModel::UnspecifiedAttachment)
+        } else if expires_seconds <= issued_seconds {
             Err(InvalidDomainModel::InvalidLeaseInterval)
         } else {
             Ok(Self {
@@ -527,8 +545,10 @@ impl AttachmentIntent {
     ///
     /// # Errors
     ///
-    /// Returns an error if read-only mutation lacks a read-only mount or source
-    /// incarnation presence differs from the local-live consistency contract.
+    /// Returns an error for zero identities or generations, a descriptor that
+    /// is not a filesystem-view revision, mount attributes that widen the
+    /// mutation mode or enable set-ID/device interpretation, or source
+    /// incarnation presence that differs from the local-live contract.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: AttachmentId,
@@ -546,7 +566,25 @@ impl AttachmentIntent {
         mount_attributes: MountAttributes,
         lease: AttachmentLease,
     ) -> Result<Self, InvalidDomainModel> {
-        if mutation == ViewMutation::ReadOnly && !mount_attributes.read_only() {
+        if id.as_bytes() == &[0; 16]
+            || desired_generation.get() == 0
+            || consumer_sandbox.as_bytes() == &[0; 16]
+            || consumer_incarnation.as_bytes() == &[0; 16]
+            || expected_namespace_generation.get() == 0
+            || source_view.as_bytes() == &[0; 16]
+            || source_view_revision.get() == 0
+            || source_incarnation.is_some_and(|value| value.as_bytes() == &[0; 16])
+            || destination_slot.as_bytes() == &[0; 16]
+        {
+            return Err(InvalidDomainModel::UnspecifiedAttachment);
+        }
+        if validate_descriptor_role(crate::DescriptorRole::FilesystemViewRevision, &view).is_err() {
+            return Err(InvalidDomainModel::InvalidAttachmentView);
+        }
+        if mount_attributes.read_only() != (mutation == ViewMutation::ReadOnly)
+            || !mount_attributes.no_suid()
+            || !mount_attributes.no_dev()
+        {
             return Err(InvalidDomainModel::IncompatibleMountAttributes);
         }
         let requires_source_incarnation = consistency == AttachmentConsistency::LocalLive;
@@ -686,6 +724,14 @@ mod tests {
     }
 
     #[test]
+    fn attachment_lease_rejects_the_reserved_identity() {
+        assert_eq!(
+            AttachmentLease::new(LeaseId::from_bytes([0; 16]), 10, 20),
+            Err(InvalidDomainModel::UnspecifiedAttachment)
+        );
+    }
+
+    #[test]
     fn local_live_attachment_requires_source_incarnation() {
         let result = AttachmentIntent::new(
             AttachmentId::from_bytes([1; 16]),
@@ -700,7 +746,7 @@ mod tests {
             AttachmentSlotId::from_bytes([5; 16]),
             AttachmentConsistency::LocalLive,
             ViewMutation::ReadOnly,
-            MountAttributes::new(true, true, true, true, false),
+            MountAttributes::new(true, true, true, true, true, false),
             lease(),
         );
 
@@ -725,7 +771,29 @@ mod tests {
             AttachmentSlotId::from_bytes([5; 16]),
             AttachmentConsistency::ImmutableRevision,
             ViewMutation::ReadOnly,
-            MountAttributes::new(false, true, true, true, false),
+            MountAttributes::new(false, true, true, true, true, false),
+            lease(),
+        );
+
+        assert_eq!(result, Err(InvalidDomainModel::IncompatibleMountAttributes));
+    }
+
+    #[test]
+    fn writable_semantics_reject_read_only_mounts() {
+        let result = AttachmentIntent::new(
+            AttachmentId::from_bytes([1; 16]),
+            DesiredGeneration::new(1),
+            SandboxId::from_bytes([2; 16]),
+            IncarnationId::from_bytes([3; 16]),
+            NamespaceGeneration::new(1),
+            ViewId::from_bytes([4; 16]),
+            Revision::new(1),
+            None,
+            descriptor(),
+            AttachmentSlotId::from_bytes([5; 16]),
+            AttachmentConsistency::ImmutableRevision,
+            ViewMutation::ReadWrite,
+            MountAttributes::new(true, true, true, true, true, false),
             lease(),
         );
 

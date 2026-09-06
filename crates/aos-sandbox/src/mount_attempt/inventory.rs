@@ -48,7 +48,7 @@ const MAXIMUM_QUERY_BYTES: usize = 4 * 1024;
 const MAXIMUM_RECORD_BYTES: usize = 16 * 1024 * 1024 - 1024;
 const KEY: &[u8] = b"latest";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.transaction.v1\0";
-const CONTROLLER_STATE_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.controller-state.v2\0";
+const CONTROLLER_STATE_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.controller-state.v3\0";
 
 /// Reports whether an authenticated inventory snapshot committed or replayed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -418,8 +418,12 @@ pub(crate) fn validate_namespace(journal: &mut Journal) -> Result<(), MountAttem
     SnapshotHistory::load(journal).map(|_| ())
 }
 
-fn controller_state_digest(journal: &mut Journal) -> Result<[u8; 32], MountAttemptError> {
+pub(crate) fn controller_state_digest(
+    journal: &mut Journal,
+) -> Result<[u8; 32], MountAttemptError> {
     validate_namespace_target_namespace(journal)?;
+    crate::attachment_state::validate_namespace(journal)
+        .map_err(|_| MountAttemptError::CorruptState)?;
     let attempts = AttemptHistory::load(journal)?;
     let completions = CompletionHistory::load(journal)?;
     let target_count = u32::try_from(journal.records(RecordNamespace::NamespaceTarget).count())
@@ -428,6 +432,9 @@ fn controller_state_digest(journal: &mut Journal) -> Result<[u8; 32], MountAttem
         u32::try_from(attempts.records.len()).map_err(|_| MountAttemptError::Capacity)?;
     let completion_count =
         u32::try_from(completions.records.len()).map_err(|_| MountAttemptError::Capacity)?;
+    let attachment_count =
+        u32::try_from(journal.records(RecordNamespace::AttachmentDesired).count())
+            .map_err(|_| MountAttemptError::Capacity)?;
     let mut digest = Sha256::new();
     digest.update(CONTROLLER_STATE_DOMAIN);
     digest.update(target_count.to_be_bytes());
@@ -456,6 +463,21 @@ fn controller_state_digest(journal: &mut Journal) -> Result<[u8; 32], MountAttem
         digest.update(b"completion\0");
         digest.update(request_id);
         digest.update(record.digest);
+    }
+    digest.update(attachment_count.to_be_bytes());
+    for (key, value) in journal.records(RecordNamespace::AttachmentDesired) {
+        digest.update(
+            u32::try_from(key.len())
+                .map_err(|_| MountAttemptError::Capacity)?
+                .to_be_bytes(),
+        );
+        digest.update(key);
+        digest.update(
+            u32::try_from(value.len())
+                .map_err(|_| MountAttemptError::Capacity)?
+                .to_be_bytes(),
+        );
+        digest.update(value);
     }
     Ok(digest.finalize().into())
 }

@@ -10,6 +10,8 @@
 //! Raw Linux syscalls and
 //! privileged broker implementations deliberately live outside this crate.
 
+#[cfg(target_os = "linux")]
+pub mod attachment_state;
 pub mod authority;
 pub mod controller;
 pub mod dispatch;
@@ -40,6 +42,12 @@ pub mod runtime_authority;
 #[cfg(target_os = "linux")]
 pub mod runtime_scope;
 
+#[cfg(target_os = "linux")]
+pub use attachment_state::{
+    AttachmentDesiredCommitOutcomeV1, AttachmentDesiredMutationV1, AttachmentDesiredPresenceV1,
+    AttachmentDesiredStateError, CommittedCurrentAttachmentDesiredStateV1,
+    DurableAttachmentDesiredStateV1,
+};
 pub use authority::{
     AuthorizationArtifactQuartet, AuthorizationArtifacts, AuthorizationPreparation,
     AuthorizationPreparationError, BrokerPlanPreparation, PreparedSigningRequest,

@@ -2741,3 +2741,44 @@ Validation passes all 301 sandbox unit tests, its downstream public API test,
 and 14 doctests. Strict all-target/all-feature Clippy passes for the changed
 crate. The hermetic `checks.eval` gate passes the release build, full workspace
 tests, configuration evaluation, and system structure checks.
+
+### Generation-fenced attachment desired state
+
+The controller can now persist one complete attachment intent while retaining
+and rechecking the exact current namespace target on both sides of the commit.
+Creation requires expected absence and generation 1. Replacement and release
+require the exact predecessor record digest and the next generation; consumer
+identity and destination slot remain stable, released identities cannot be
+recreated, and two present attachments cannot occupy one slot in the same
+consumer namespace generation. Operation IDs are unique across the retained
+attachment history, while an exact operation, request digest, predecessor, and
+intent replay is idempotent.
+
+Journal namespace 16 retains every generation as a bounded, immutable
+`AOSATD01` record. Each record carries canonical attachment CBOR, the normalized
+request digest, operation identity, presence or release state, and the exact
+predecessor digest in its own hash preimage. Replay validates the full chain,
+record keys, canonical semantic decoding, current slot uniqueness, a 65,536
+generation ceiling, and a 256 MiB retained-byte ceiling. Corruption blocks
+ordinary reconciliation before executor access, and compaction/restart retains
+release tombstones.
+
+The portable attachment codec now covers every identity and generation, source
+view and optional live incarnation, descriptor, destination slot, consistency,
+mutation, closed mount attributes, and lease. Construction and decoding reject
+zero sentinels, wrong descriptor roles, mutation/read-only mismatches, missing
+`nosuid` or `nodev`, and invalid lease intervals. Mount inventory controller
+commitments advance to domain v3 and include the exact attachment desired-state
+namespace, so any later desired mutation makes a pre-mutation snapshot stale.
+
+This advances `SBX-VIEW-01` but does not complete it: durable source handles,
+view-revision publication, lease-expiry scheduling, realization planning,
+atomic Mount replacement, post-attach verification, cleanup, and reboot replay
+remain separate work. Desired state is not effect authority and does not mark
+an attachment ready.
+
+Validation passes all 264 sandbox unit tests, its downstream public API test,
+and 14 doctests; all 186 core unit tests and its 3 doctests also pass. Strict
+all-target/all-feature Clippy passes for both changed crates. The hermetic
+`checks.eval` gate passes its release build, full workspace tests,
+configuration evaluation, and system structure checks.

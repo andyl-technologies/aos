@@ -7,6 +7,7 @@
 //! keys, excess nesting, or an allocation claim beyond caller limits.
 
 mod assignment;
+mod attachment;
 mod broker_authorization;
 mod cbor;
 mod ownership_lease;
@@ -24,6 +25,7 @@ use sha2::{Digest, Sha256};
 use crate::{MediaType, ObjectDescriptor, ObjectDigest};
 
 pub use assignment::{decode_assignment_manifest_v1, encode_assignment_manifest_v1};
+pub use attachment::{decode_attachment_intent_v1, encode_attachment_intent_v1};
 pub use broker_authorization::{
     decode_broker_authorization_plan, encode_broker_authorization_plan,
 };

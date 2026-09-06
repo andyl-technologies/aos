@@ -428,6 +428,59 @@ where
         target.recheck(self.reconciler.journal_mut(), clock)
     }
 
+    /// Commits one generation-fenced attachment intent while its target is current.
+    ///
+    /// The desired generation and its normalized operation digest become
+    /// durable before any Mount effect may be prepared or dispatched. The
+    /// retained target is checked on both sides of the commit. Success records
+    /// intent only; it does not authorize Mount or claim attachment readiness.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale namespace authority, a target/intent mismatch, a stale
+    /// resource version, attachment or slot conflicts, corrupt history,
+    /// capacity exhaustion, and failed protected commits.
+    #[cfg(target_os = "linux")]
+    pub fn commit_current_attachment_desired_state<T>(
+        &mut self,
+        target: crate::runtime_scope::CurrentNamespaceTarget,
+        mutation: crate::AttachmentDesiredMutationV1,
+        clock: &mut T,
+    ) -> Result<crate::CommittedCurrentAttachmentDesiredStateV1, crate::AttachmentDesiredStateError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::attachment_state::commit_current(
+            self.reconciler.journal_mut(),
+            target,
+            mutation,
+            clock,
+        )
+    }
+
+    /// Loads the validated current desired generation for one attachment.
+    ///
+    /// Released attachments remain visible as tombstones. The result is
+    /// durable intent only and carries no live namespace or broker authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed, discontinuous, conflicting, or over-limit attachment
+    /// history and journal health failures observed while replaying it.
+    #[cfg(target_os = "linux")]
+    pub fn attachment_desired_state(
+        &mut self,
+        attachment_id: aos_sandbox_core::AttachmentId,
+    ) -> Result<Option<crate::DurableAttachmentDesiredStateV1>, crate::AttachmentDesiredStateError>
+    {
+        let journal = self.reconciler.journal_mut();
+        journal.ensure_healthy()?;
+        crate::attachment_state::get(journal, attachment_id)
+    }
+
     /// Resolves one fence-free Mount intent against a live payload scope.
     ///
     /// The controller derives the current assignment and namespace generation,

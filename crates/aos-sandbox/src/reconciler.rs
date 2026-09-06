@@ -511,6 +511,10 @@ pub enum ReconcileOutcome {
 /// Reports admission, ledger, journal, or executor-contract failures.
 #[derive(Debug, thiserror::Error)]
 pub enum ReconcilerError {
+    /// Protected attachment desired-state history could not be validated.
+    #[cfg(target_os = "linux")]
+    #[error("attachment desired state failed: {0}")]
+    AttachmentDesired(#[source] Box<crate::AttachmentDesiredStateError>),
     /// Protected Mount-attempt history could not be validated.
     #[cfg(target_os = "linux")]
     #[error("mount attempt failed: {0}")]
@@ -1179,6 +1183,20 @@ where
                 #[cfg(not(target_os = "linux"))]
                 return Err(ReconcilerError::CorruptLedger(
                     "namespace targets require Linux validation",
+                ));
+            }
+            if self
+                .journal
+                .records(RecordNamespace::AttachmentDesired)
+                .next()
+                .is_some()
+            {
+                #[cfg(target_os = "linux")]
+                crate::attachment_state::validate_namespace(&self.journal)
+                    .map_err(|error| ReconcilerError::AttachmentDesired(Box::new(error)))?;
+                #[cfg(not(target_os = "linux"))]
+                return Err(ReconcilerError::CorruptLedger(
+                    "attachment desired state requires Linux validation",
                 ));
             }
             if self
