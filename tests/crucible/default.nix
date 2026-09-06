@@ -1792,6 +1792,11 @@ in rec {
       attrPath = "checks.crucible.phase6.qemuPatchLicenseLedger";
       taskIds = ["T-CAM-6.8"];
     };
+    qemuHotForkChildWorldVm = import ./phase6-qemu-hot-fork-child-world-vm.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase6.qemuHotForkChildWorldVm";
+      taskIds = ["T-CAM-7.4"];
+    };
     qemuHotForkChildStressVm = import ./phase6-qemu-hot-fork-child-stress-vm.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase6.qemuHotForkChildStressVm";

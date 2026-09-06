@@ -526,6 +526,27 @@ fn fork_one_child(
     })
 }
 
+/// Where one source of a flight lives: its own cgroup and project-quota
+/// namespace, its own project-id range, and its own run root, so several
+/// sources can share a flight without sharing any resource authority.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct SourcePlacement<'a> {
+    pub(super) namespace: &'a str,
+    pub(super) first_project_id: u32,
+    pub(super) run_root: &'a Path,
+}
+
+impl<'a> SourcePlacement<'a> {
+    /// The single-source flight's placement under `run_root`.
+    pub(super) const fn flight(run_root: &'a Path) -> Self {
+        Self {
+            namespace: FLIGHT_NAMESPACE,
+            first_project_id: FIRST_PROJECT_ID,
+            run_root,
+        }
+    }
+}
+
 /// A guarded source launched for a hot-fork flight, still running.
 pub(super) struct GuardedSource {
     pub(super) factory: LinuxQemuAttemptHostFactory,
@@ -542,11 +563,20 @@ pub(super) fn launch_guarded_source(
     cgroup_root: &Path,
     run_root: &Path,
 ) -> Result<GuardedSource, QemuLiveNodeStepGateError> {
+    launch_guarded_source_placed(config, cgroup_root, SourcePlacement::flight(run_root))
+}
+
+/// Launches one source at the given placement; see [`launch_guarded_source`].
+pub(super) fn launch_guarded_source_placed(
+    config: &QemuLiveNodeStepGateConfig,
+    cgroup_root: &Path,
+    placement: SourcePlacement<'_>,
+) -> Result<GuardedSource, QemuLiveNodeStepGateError> {
     let host = LinuxQemuAttemptHostConfig::new(
         cgroup_root,
-        run_root,
-        FLIGHT_NAMESPACE,
-        FIRST_PROJECT_ID,
+        placement.run_root,
+        placement.namespace,
+        placement.first_project_id,
         PROJECT_ID_COUNT,
         CHILD_USER_ID,
         CHILD_GROUP_ID,

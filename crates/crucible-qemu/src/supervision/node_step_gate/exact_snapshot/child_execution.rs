@@ -11,20 +11,26 @@
 //! must report the same execution fingerprint and round-robin sample. This is
 //! the child-side half of the RFC's exact-restore and thin-replay comparison,
 //! run against the same guest the child-file flight uses.
+//!
+//! The flight is three phases, each a value the next consumes: a captured
+//! source, an installed child, and the executed comparison. The single-source
+//! gate chains them once; the world flight holds several sources at each
+//! phase so every child is alive at the same time.
 
 use std::fs;
 use std::os::fd::AsFd as _;
 use std::os::unix::process::ExitStatusExt as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::child_files::{
     ChildDebuggerWatch, GuardedSource, MAXIMUM_RING_IMAGE_BYTES, SOURCE_BUSY_CEILING,
-    attempt_disk_bytes, attempt_memory_bytes, describe_child_diagnostics, describe_forked_child,
-    describe_reaped_child, describe_retained_child_diagnostics, file_identity, invariant,
-    launch_guarded_source, qmp_operation, realization, verify_child_placement, wait_for_child_exit,
+    SourcePlacement, attempt_disk_bytes, attempt_memory_bytes, describe_child_diagnostics,
+    describe_forked_child, describe_reaped_child, describe_retained_child_diagnostics,
+    file_identity, invariant, launch_guarded_source_placed, qmp_operation, realization,
+    verify_child_placement, wait_for_child_exit,
 };
 use super::child_measure::{elapsed_milliseconds, monotonic_nanoseconds};
 use super::{
@@ -32,10 +38,12 @@ use super::{
     fingerprint_sample_mismatch_components, source_set::require_vmstate_source, *,
 };
 use crate::{
-    DEFAULT_VMSTATE_FILE_NAME, DEFAULT_VMSTATE_NODE_NAME, LinuxQemuHotForkChildProcessAuthority,
-    QemuChildWait, QemuCrashDetector, QemuHotForkChildFileDestination, QemuHotForkLaunchError,
-    QemuNodeExternalProcessControl, QemuReap, QemuShutdownRung, QemuShutdownTargetError,
-    QmpHotForkChildFileRoot, QmpHotForkChildProcessPhase, QmpHotForkOutcome,
+    DEFAULT_VMSTATE_FILE_NAME, DEFAULT_VMSTATE_NODE_NAME, LinuxQemuAttemptHostFactory,
+    LinuxQemuAttemptHostOwner, LinuxQemuHotForkChildProcessAuthority, QemuChildWait,
+    QemuCrashDetector, QemuHotForkChildDiagnosticConsumer, QemuHotForkChildFileDestination,
+    QemuHotForkLaunchError, QemuNodeExternalProcessControl, QemuPreparedRunDirectory, QemuReap,
+    QemuShutdownRung, QemuShutdownTargetError, QmpHotForkChildFileRoot,
+    QmpHotForkChildProcessPhase, QmpHotForkOutcome,
 };
 
 /// Instructions the child executes past the captured boundary before the
@@ -239,31 +247,74 @@ fn with_source<T>(
     Ok(operation(&mut node))
 }
 
-/// Forks a retained template into a child, runs a quantum in the child, and
-/// proves an exact restore of the same checkpoint reproduces it.
-///
-/// # Errors
-///
-/// Returns [`QemuLiveNodeStepGateError`] when the configuration carries a
-/// disk or mediated block device, or any launch, capture, fork, child
-/// installation, execution, restore, comparison, or cleanup step fails.
-pub fn run_qemu_live_hot_fork_child_execution_gate(
+/// A source paused at its captured boundary with its template retained.
+pub(super) struct CapturedSource {
+    factory: LinuxQemuAttemptHostFactory,
+    source_owner: LinuxQemuAttemptHostOwner,
+    source_directory: QemuPreparedRunDirectory,
+    node: QemuNode,
+    /// Run root of this source's placement; the oracles launch under it.
+    run_root: PathBuf,
+    capture_icount: u64,
+    snapshot: crate::QemuVmSnapshot,
+    capture_fingerprint: crucible::ContentHash,
+    capture_sample: crucible_shmem::FingerprintSample,
+    source_vmstate_bytes: u64,
+    restore_directory: PathBuf,
+    template_generation: u64,
+}
+
+/// A child forked from a captured source, installed as a scheduler node and
+/// proven to stand at the captured boundary.
+pub(super) struct InstalledChild {
+    factory: LinuxQemuAttemptHostFactory,
+    source_owner: LinuxQemuAttemptHostOwner,
+    source_directory: QemuPreparedRunDirectory,
+    source: Arc<Mutex<QemuNode>>,
+    child: QemuNode,
+    diagnostics: QemuHotForkChildDiagnosticConsumer,
+    private_file: fs::File,
+    target_directory: QemuPreparedRunDirectory,
+    target_owner: LinuxQemuAttemptHostOwner,
+    run_root: PathBuf,
+    snapshot: crate::QemuVmSnapshot,
+    restore_directory: PathBuf,
+    template_generation: u64,
+    child_process_id: u32,
+    child_generation: u64,
+    capture_icount: u64,
+    child_boundary_icount: u64,
+    fork_ready_ms: u64,
+}
+
+impl InstalledChild {
+    /// Returns the child's process identifier.
+    pub(super) const fn child_process_id(&self) -> u32 {
+        self.child_process_id
+    }
+}
+
+/// Launches a source, advances it to the busy ceiling, captures the exact
+/// boundary, copies the container for the exact-restore oracle, and retains
+/// the template with child resources staged.
+pub(super) fn capture_source(
     config: &QemuLiveNodeStepGateConfig,
     cgroup_root: &Path,
-    run_root: &Path,
-) -> Result<QemuLiveHotForkChildExecutionReport, QemuLiveNodeStepGateError> {
+    placement: SourcePlacement<'_>,
+) -> Result<CapturedSource, QemuLiveNodeStepGateError> {
     if config.root_image.is_some() || config.shmem_block.is_some() {
         return Err(invariant(
             "hot-fork child execution flight requires only the native VMState graph",
         ));
     }
+    let run_root = placement.run_root.to_path_buf();
     let GuardedSource {
-        mut factory,
-        mut source_owner,
+        factory,
+        source_owner,
         source_directory,
         mut node,
         source_vmstate_path,
-    } = launch_guarded_source(config, cgroup_root, run_root)?;
+    } = launch_guarded_source_placed(config, cgroup_root, placement)?;
     let identity = node_id(GATE_NODE);
 
     // Capture: the source pauses at an exact boundary and records what any
@@ -312,6 +363,45 @@ pub fn run_qemu_live_hot_fork_child_execution_gate(
         )));
     }
 
+    Ok(CapturedSource {
+        factory,
+        source_owner,
+        source_directory,
+        node,
+        run_root,
+        capture_icount,
+        snapshot,
+        capture_fingerprint,
+        capture_sample,
+        source_vmstate_bytes: source_before.length,
+        restore_directory,
+        template_generation,
+    })
+}
+
+/// Stages a private VMState destination, forks the retained template into a
+/// child in its target cgroup, installs the child as a scheduler node, and
+/// proves it stands at the captured boundary.
+pub(super) fn fork_and_install_child(
+    captured: CapturedSource,
+    config: &QemuLiveNodeStepGateConfig,
+    cgroup_root: &Path,
+) -> Result<InstalledChild, QemuLiveNodeStepGateError> {
+    let CapturedSource {
+        mut factory,
+        source_owner,
+        source_directory,
+        mut node,
+        run_root,
+        capture_icount,
+        snapshot,
+        capture_fingerprint,
+        capture_sample,
+        source_vmstate_bytes,
+        restore_directory,
+        template_generation,
+    } = captured;
+
     let mut target_owner = factory
         .begin(1, attempt_memory_bytes(config), attempt_disk_bytes(config))
         .map_err(|source| realization("create target attempt owner", source))?;
@@ -336,7 +426,7 @@ pub fn run_qemu_live_hot_fork_child_execution_gate(
     let plan = node
         .stage_hot_fork_child_files(
             &destinations,
-            source_before.length.saturating_mul(4).max(1 << 20),
+            source_vmstate_bytes.saturating_mul(4).max(1 << 20),
             template_generation,
         )
         .map_err(|source| qmp_operation("stage child-private VMState destination", source))?;
@@ -454,6 +544,55 @@ pub fn run_qemu_live_hot_fork_child_execution_gate(
             capture_fingerprint.to_hex(),
         )));
     }
+
+    Ok(InstalledChild {
+        factory,
+        source_owner,
+        source_directory,
+        source,
+        child,
+        diagnostics,
+        private_file,
+        target_directory,
+        target_owner,
+        run_root,
+        snapshot,
+        restore_directory,
+        template_generation,
+        child_process_id,
+        child_generation,
+        capture_icount,
+        child_boundary_icount,
+        fork_ready_ms,
+    })
+}
+
+/// Executes the child's observable suffix, proves the exact-restore and
+/// genesis-replay oracles reproduce it, and tears everything down.
+pub(super) fn execute_and_compare(
+    installed: InstalledChild,
+    config: &QemuLiveNodeStepGateConfig,
+) -> Result<QemuLiveHotForkChildExecutionReport, QemuLiveNodeStepGateError> {
+    let InstalledChild {
+        factory: _factory,
+        mut source_owner,
+        source_directory,
+        source,
+        mut child,
+        mut diagnostics,
+        private_file,
+        target_directory,
+        mut target_owner,
+        run_root,
+        snapshot,
+        restore_directory,
+        template_generation,
+        child_process_id,
+        child_generation,
+        capture_icount,
+        child_boundary_icount,
+        fork_ready_ms,
+    } = installed;
 
     // The child executes an observable suffix under the debugger's watch.
     let requested_suffix = capture_icount
@@ -638,4 +777,23 @@ pub fn run_qemu_live_hot_fork_child_execution_gate(
         exact_restore_ms,
         genesis_replay_ms,
     })
+}
+
+/// Forks a retained template into a child, runs a quantum in the child, and
+/// proves an exact restore and a genesis replay of the same boundary
+/// reproduce it.
+///
+/// # Errors
+///
+/// Returns [`QemuLiveNodeStepGateError`] when the configuration carries a
+/// disk or mediated block device, or any launch, capture, fork, child
+/// installation, execution, restore, comparison, or cleanup step fails.
+pub fn run_qemu_live_hot_fork_child_execution_gate(
+    config: &QemuLiveNodeStepGateConfig,
+    cgroup_root: &Path,
+    run_root: &Path,
+) -> Result<QemuLiveHotForkChildExecutionReport, QemuLiveNodeStepGateError> {
+    let captured = capture_source(config, cgroup_root, SourcePlacement::flight(run_root))?;
+    let installed = fork_and_install_child(captured, config, cgroup_root)?;
+    execute_and_compare(installed, config)
 }
