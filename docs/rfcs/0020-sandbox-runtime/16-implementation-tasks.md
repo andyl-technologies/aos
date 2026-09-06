@@ -2864,3 +2864,46 @@ also substitute every mutable physical recipe field through the real inventory
 decoder. Strict all-target/all-feature Clippy, Rust formatting, and diff checks
 pass. The hermetic `checks.eval` gate passes the release build, full workspace
 test phase, configuration evaluation, and system-structure checks.
+
+### Execute exact attachment Mount actions
+
+The controller can now consume one current attachment reconciliation result and
+prepare its exact native Mount effect without accepting a caller-authored
+protobuf. CREATE fields come from current desired state. INSTALL and REPLACE
+address the exact inventoried resource recipe. DETACH and RELEASE reproduce the
+older physical recipe while carrying the current desired generation and lease,
+so cleanup neither rewrites history nor borrows authority from inventory. Only
+the five Mount effect actions are accepted; observations, conflicts, faults,
+waits, and transactional-service routing fail closed at this boundary.
+
+The workflow retains desired state, the complete authenticated inventory
+snapshot, the selected action, and live namespace authority through descriptor
+catalog preparation and separate signed-plan binding. It re-runs the exact
+planner and all currentness checks immediately before durable admission.
+Admission necessarily advances the controller-state commitment and makes that
+older inventory snapshot stale. The non-cloneable admitted token therefore
+retains the desired generation, lease mode, lower-level Mount token, and live
+namespace authority through dispatch. A concurrent desired-state change after
+broker I/O cannot erase evidence: the exact successful receipt is committed
+before a stale live completion is withheld.
+
+RELEASE now has an explicit catalogless path. It derives its fence and lifetime
+from the current target and must match a separately signed Mount plan, but it
+does not ask Host or Mount to reacquire namespace descriptors. Durable Mount
+attempts advance to `AOSMTA02`; a flag distinguishes the required catalog
+commitment on CREATE, INSTALL, REPLACE, and DETACH from the required all-zero
+catalog field on RELEASE. The codec, canonical-semantics check, and success
+receipt validation reject action/catalog substitution and legacy `AOSMTA01`
+records rather than silently reinterpreting them.
+
+This closes action derivation and first-issue execution, not attachment
+readiness or crash replay. A pending exact attempt still needs authenticated
+query/resume policy after restart, and an installed resource still requires a
+durable post-attach kernel verification record before the attachment or sandbox
+can become `Ready`.
+
+Validation passes all 321 sandbox unit tests, its downstream public API test,
+and 14 doctests with one test thread. Strict all-target/all-feature Clippy,
+warnings-as-errors rustdoc, targeted Rust formatting, and diff checks pass. The
+hermetic `checks.eval` gate passes the release build, full workspace test phase,
+configuration evaluation, and system-structure checks.

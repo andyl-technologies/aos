@@ -1,7 +1,7 @@
 //! Length-delimited codec for durable controller Mount attempts.
 //!
 //! ```text
-//! AOSMTA01 | state:1 | flags:1 | reserved:2 | request-id:16 |
+//! AOSMTA02 | state:1 | flags:1 | reserved:2 | request-id:16 |
 //! namespace-target-reference:112 | assignment-epoch:8 |
 //! desired-generation:8 | assignment-digest:32 | catalog:32 |
 //! semantics:32 | plan:32 | template:32 | lease:32 |
@@ -9,17 +9,20 @@
 //! body-bytes:4 | packet-bytes:4 | template-body | body | packet | digest:32
 //! ```
 //!
-//! Integers and lengths are big endian. The final SHA-256 digest covers a
-//! domain separator and every preceding byte, including all variable bytes.
+//! Integers and lengths are big endian. Flag bit zero states that the catalog
+//! field is present; release clears it and requires 32 zero bytes. The final
+//! SHA-256 digest covers a domain separator and every preceding byte, including
+//! all variable bytes.
 
 use sha2::{Digest as _, Sha256};
 
 use super::{DurableNamespaceTargetReferenceV1, MountAttemptError, Record};
 use aos_sandbox_core::{IncarnationId, SandboxId};
 
-const MAGIC: &[u8; 8] = b"AOSMTA01";
-const DOMAIN: &[u8] = b"aos.sandbox.mount-attempt.v1\0";
+const MAGIC: &[u8; 8] = b"AOSMTA02";
+const DOMAIN: &[u8] = b"aos.sandbox.mount-attempt.v2\0";
 const STATE_ADMITTED: u8 = 1;
+const HAS_CATALOG: u8 = 1 << 0;
 const PREFIX_BYTES: usize = 376;
 const DIGEST_BYTES: usize = 32;
 pub(super) const FIXED_RECORD_BYTES: usize = PREFIX_BYTES + DIGEST_BYTES;
@@ -29,7 +32,7 @@ impl Record {
         let mut bytes = Vec::with_capacity(self.encoded_len());
         bytes.extend_from_slice(MAGIC);
         bytes.push(STATE_ADMITTED);
-        bytes.push(0);
+        bytes.push(self.catalog_commitment.map_or(0, |_| HAS_CATALOG));
         bytes.extend_from_slice(&0_u16.to_be_bytes());
         bytes.extend_from_slice(&self.request_id);
         bytes.extend_from_slice(self.namespace_target.sandbox().as_bytes());
@@ -41,7 +44,7 @@ impl Record {
         bytes.extend_from_slice(&self.assignment_epoch.to_be_bytes());
         bytes.extend_from_slice(&self.desired_generation.to_be_bytes());
         bytes.extend_from_slice(&self.assignment_digest);
-        bytes.extend_from_slice(&self.catalog_commitment);
+        bytes.extend_from_slice(&self.catalog_commitment.unwrap_or([0; 32]));
         bytes.extend_from_slice(&self.semantic_digest);
         bytes.extend_from_slice(&self.plan_digest);
         bytes.extend_from_slice(&self.template_digest);
@@ -86,10 +89,11 @@ impl Record {
         if bytes.len() < FIXED_RECORD_BYTES || take::<8>(&mut bytes)? != *MAGIC {
             return Err(MountAttemptError::CorruptState);
         }
-        if take::<1>(&mut bytes)? != [STATE_ADMITTED]
-            || take::<1>(&mut bytes)? != [0]
-            || take::<2>(&mut bytes)? != [0; 2]
-        {
+        if take::<1>(&mut bytes)? != [STATE_ADMITTED] {
+            return Err(MountAttemptError::CorruptState);
+        }
+        let flags = take::<1>(&mut bytes)?[0];
+        if flags & !HAS_CATALOG != 0 || take::<2>(&mut bytes)? != [0; 2] {
             return Err(MountAttemptError::CorruptState);
         }
 
@@ -105,7 +109,14 @@ impl Record {
         let assignment_epoch = u64::from_be_bytes(take(&mut bytes)?);
         let desired_generation = u64::from_be_bytes(take(&mut bytes)?);
         let assignment_digest = take(&mut bytes)?;
-        let catalog_commitment = take(&mut bytes)?;
+        let catalog_bytes = take(&mut bytes)?;
+        let catalog_commitment = if flags & HAS_CATALOG != 0 {
+            Some(catalog_bytes)
+        } else if catalog_bytes == [0; 32] {
+            None
+        } else {
+            return Err(MountAttemptError::CorruptState);
+        };
         let semantic_digest = take(&mut bytes)?;
         let plan_digest = take(&mut bytes)?;
         let template_digest = take(&mut bytes)?;

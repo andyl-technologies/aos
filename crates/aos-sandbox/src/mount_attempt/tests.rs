@@ -87,7 +87,8 @@ fn signing_authority(key: &SigningKey) -> SigningAuthority {
     .unwrap()
 }
 
-fn request(assignment: BrokerAssignment, deadline: u64) -> ApplyMountRequest {
+fn request(assignment: BrokerAssignment, deadline: u64, action: MountAction) -> ApplyMountRequest {
+    let creates = action == MountAction::MOUNT_ACTION_CREATE_DETACHED;
     ApplyMountRequest {
         header: Some(RequestHeader {
             protocol_major: 1,
@@ -108,29 +109,32 @@ fn request(assignment: BrokerAssignment, deadline: u64) -> ApplyMountRequest {
             ..Default::default()
         })
         .into(),
-        action: MountAction::MOUNT_ACTION_CREATE_DETACHED.into(),
+        action: action.into(),
         attachment_id: vec![3; 16],
         destination_slot_id: vec![4; 16],
-        view_revision: Some(Descriptor {
-            media_type: "application/vnd.aos.sandbox.view.v1+cbor".to_owned(),
-            sha256: vec![5; 32],
-            encoded_size: 64,
-            ..Default::default()
-        })
-        .into(),
-        attributes: Some(MountAttributes {
-            read_only: true,
-            no_exec: true,
-            no_suid: true,
-            no_device: true,
-            no_atime: true,
-            ..Default::default()
-        })
-        .into(),
+        view_revision: creates
+            .then(|| Descriptor {
+                media_type: "application/vnd.aos.sandbox.view.v1+cbor".to_owned(),
+                sha256: vec![5; 32],
+                encoded_size: 64,
+                ..Default::default()
+            })
+            .into(),
+        detached_mount_handle: if creates { Vec::new() } else { vec![20; 32] },
+        attributes: creates
+            .then(|| MountAttributes {
+                read_only: true,
+                no_exec: true,
+                no_suid: true,
+                no_device: true,
+                no_atime: true,
+                ..Default::default()
+            })
+            .into(),
         source_generation: 7,
         namespace_generation: 9,
         desired_attachment_generation: 10,
-        resource_attachment_generation: 10,
+        resource_attachment_generation: if creates { 10 } else { 9 },
         source_view_id: vec![11; 16],
         source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
             .into(),
@@ -142,6 +146,10 @@ fn request(assignment: BrokerAssignment, deadline: u64) -> ApplyMountRequest {
 }
 
 pub(super) fn record() -> Record {
+    record_for_action(MountAction::MOUNT_ACTION_CREATE_DETACHED)
+}
+
+fn record_for_action(action: MountAction) -> Record {
     let broker_key = SigningKey::from_bytes(&[42; 32]);
     let lease_key = SigningKey::from_bytes(&[43; 32]);
     let lease_authority =
@@ -155,9 +163,10 @@ pub(super) fn record() -> Record {
     )
     .unwrap();
     let deadline = 2_000;
-    let catalog = ObjectDigest::from_bytes([12; 32]);
+    let catalog =
+        (action != MountAction::MOUNT_ACTION_RELEASE).then(|| ObjectDigest::from_bytes([12; 32]));
 
-    let template_body = request(assignment, 0).encode_to_vec();
+    let template_body = request(assignment, 0, action).encode_to_vec();
     let body = crate::dispatch::durable_attempt_body(&template_body, deadline).unwrap();
     assert!(validate_durable_attempt_body(
         &template_body,
@@ -167,7 +176,10 @@ pub(super) fn record() -> Record {
     let decoded = decode_attempt_body(&body, deadline).unwrap();
     let canonical = canonical_mount_semantics_v1(
         &decoded,
-        Some(MountCatalogBindingV1::from_verified_digest(catalog).unwrap()),
+        catalog
+            .map(MountCatalogBindingV1::from_verified_digest)
+            .transpose()
+            .unwrap(),
         &[],
     )
     .unwrap();
@@ -280,7 +292,7 @@ pub(super) fn record() -> Record {
         assignment_epoch: assignment.epoch().get(),
         desired_generation: assignment.desired_generation().get(),
         assignment_digest: *assignment.digest().as_bytes(),
-        catalog_commitment: *catalog.as_bytes(),
+        catalog_commitment: catalog.map(|value| *value.as_bytes()),
         semantic_digest: *semantic_identity_digest(semantics).as_bytes(),
         plan_digest: *signed_plan.digest().as_bytes(),
         template_digest: *template_digest_from_parts(
@@ -320,8 +332,29 @@ fn journal() -> (tempfile::TempDir, Journal) {
 
 fn successful_receipt(record: &Record) -> Vec<u8> {
     let request = decode_attempt_body(&record.body, record.deadline_boottime_nanoseconds).unwrap();
-    let request_digest = Sha256::digest(&record.body);
-    let detached_handle = aos_sandbox_protocol::detached_mount_handle_v1(request_digest.into());
+    let (detached_mount_handle, installed_mount_handle, state) = match request.action() {
+        MountAction::MOUNT_ACTION_CREATE_DETACHED => {
+            let request_digest = Sha256::digest(&record.body);
+            let handle = aos_sandbox_protocol::detached_mount_handle_v1(request_digest.into());
+            (
+                handle.to_vec(),
+                Vec::new(),
+                MountState::MOUNT_STATE_DETACHED,
+            )
+        }
+        MountAction::MOUNT_ACTION_INSTALL | MountAction::MOUNT_ACTION_REPLACE => (
+            Vec::new(),
+            request.detached_mount_handle().unwrap().to_vec(),
+            MountState::MOUNT_STATE_INSTALLED,
+        ),
+        MountAction::MOUNT_ACTION_DETACH => {
+            (Vec::new(), Vec::new(), MountState::MOUNT_STATE_REVOKED)
+        }
+        MountAction::MOUNT_ACTION_RELEASE => {
+            (Vec::new(), Vec::new(), MountState::MOUNT_STATE_ABSENT)
+        }
+        MountAction::MOUNT_ACTION_UNSPECIFIED => unreachable!("validated request has an action"),
+    };
     let view_revision = request.view_revision().map(|descriptor| Descriptor {
         media_type: descriptor.media_type().as_str().to_owned(),
         sha256: descriptor.digest().as_bytes().to_vec(),
@@ -330,7 +363,8 @@ fn successful_receipt(record: &Record) -> Vec<u8> {
     });
     MountResult {
         attachment_id: request.attachment_id().to_vec(),
-        detached_mount_handle: detached_handle.to_vec(),
+        detached_mount_handle,
+        installed_mount_handle,
         view_revision: view_revision.into(),
         source_generation: request.source_generation(),
         desired_attachment_generation: request.desired_attachment_generation(),
@@ -343,7 +377,7 @@ fn successful_receipt(record: &Record) -> Vec<u8> {
         attachment_lease_id: request.attachment_lease_id().to_vec(),
         attachment_lease_issued_seconds: request.attachment_lease_issued_seconds(),
         attachment_lease_expires_seconds: request.attachment_lease_expires_seconds(),
-        state: MountState::MOUNT_STATE_DETACHED.into(),
+        state: state.into(),
         ..Default::default()
     }
     .encode_to_vec()
@@ -358,6 +392,54 @@ fn codec_preserves_one_exact_self_consistent_attempt() {
     assert_eq!(encoded.len(), record.encoded_len());
     assert_eq!(Record::decode(&encoded).unwrap(), record);
     assert_eq!(record.key(), [vec![b'a'], vec![10; 16]].concat());
+}
+
+#[test]
+fn catalogless_release_has_an_explicit_version_two_record_shape() {
+    let release = record_for_action(MountAction::MOUNT_ACTION_RELEASE);
+    release.validate_contents().unwrap();
+    let encoded = release.encode();
+
+    assert_eq!(release.catalog_commitment, None);
+    assert_eq!(encoded[9], 0);
+    assert_eq!(Record::decode(&encoded).unwrap(), release);
+    assert_eq!(
+        decode_attempt_body(&release.body, release.deadline_boottime_nanoseconds)
+            .unwrap()
+            .action(),
+        MountAction::MOUNT_ACTION_RELEASE
+    );
+
+    let create = record();
+    assert_eq!(create.encode()[9], 1);
+
+    let mut release_with_catalog = release.clone();
+    release_with_catalog.catalog_commitment = Some([12; 32]);
+    release_with_catalog.digest = release_with_catalog.compute_digest();
+    assert!(release_with_catalog.validate_contents().is_err());
+
+    let mut create_without_catalog = create;
+    create_without_catalog.catalog_commitment = None;
+    create_without_catalog.digest = create_without_catalog.compute_digest();
+    assert!(create_without_catalog.validate_contents().is_err());
+
+    let mut legacy_magic = encoded;
+    legacy_magic[..8].copy_from_slice(b"AOSMTA01");
+    assert!(Record::decode(&legacy_magic).is_err());
+}
+
+#[test]
+fn catalogless_release_receipt_binds_to_the_exact_attempt() {
+    let attempt = record_for_action(MountAction::MOUNT_ACTION_RELEASE);
+    let receipt = successful_receipt(&attempt);
+    let (completion, result) =
+        completion::CompletionRecord::from_attempt(&attempt, receipt).unwrap();
+
+    assert_eq!(result.state(), MountState::MOUNT_STATE_ABSENT);
+    assert_eq!(
+        completion::CompletionRecord::decode(&completion.encode()).unwrap(),
+        completion
+    );
 }
 
 #[test]
@@ -383,7 +465,7 @@ fn recomputed_record_digest_cannot_hide_cross_field_substitution() {
             0 => changed.assignment_epoch += 1,
             1 => changed.desired_generation += 1,
             2 => changed.assignment_digest[0] ^= 1,
-            3 => changed.catalog_commitment[0] ^= 1,
+            3 => changed.catalog_commitment.as_mut().unwrap()[0] ^= 1,
             4 => changed.semantic_digest[0] ^= 1,
             5 => changed.plan_digest[0] ^= 1,
             6 => changed.template_digest[0] ^= 1,
@@ -422,7 +504,7 @@ fn request_identity_replays_only_byte_exact_attempts() {
     );
 
     let mut conflicting = record;
-    conflicting.catalog_commitment[0] ^= 1;
+    conflicting.catalog_commitment.as_mut().unwrap()[0] ^= 1;
     conflicting.digest = conflicting.compute_digest();
     assert!(matches!(
         history.admission_outcome(&conflicting),

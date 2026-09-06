@@ -647,7 +647,9 @@ authorized Host 1.3 `ObserveMountScope` envelope. The outer request, prospective
 Apply, and Host query must use the same request ID, deadline, and assignment
 fence; the Host query remains separately bound to the RootMount audience,
 runtime handle, and opaque payload-scope handle. A release action cannot be
-prepared because it requires no catalog resolution.
+sent to `PrepareMountCatalog` because it requires no catalog resolution. The
+controller prepares release locally from the current namespace target and still
+requires its exact catalogless semantics in a separately signed Mount plan.
 
 Mount performs the Host exchange itself and retains the returned scope in a
 bounded, memory-only registry. For the exact assignment and namespace
@@ -682,9 +684,29 @@ lease, attenuates a local deadline, and commits the exact deadline-free template
 body, deadline-bearing Apply body, authorization packet, catalog commitment,
 and immutable namespace-allocation reference before returning a dispatch token.
 The token retains the live proof and cannot be cloned or recreated from journal
-bytes. On restart, authenticated inventory and a new catalog preparation are
-required before replay; a durable packet or catalog digest alone is never
-descriptor authority.
+bytes. On restart, authenticated inventory and fresh action preparation are
+required before replay; catalog-backed actions reacquire their catalog, and a
+durable packet or catalog digest alone is never descriptor authority.
+
+For attachment reconciliation, the caller does not supply even that fence-free
+body. The controller consumes one closed action with its current desired record,
+complete authenticated inventory snapshot, and live target. It derives CREATE
+from desired state, derives INSTALL and REPLACE from the addressed inventory
+recipe, and reproduces an older inventoried recipe for DETACH and RELEASE while
+carrying the current desired generation and lease. These inputs are rechecked
+through preparation and signed-plan binding and once more immediately before
+admission. The admitted record invalidates the pre-attempt inventory snapshot;
+the live dispatch token retains the exact desired generation, lease mode, and
+namespace target instead.
+
+Mount attempts use digest-protected `AOSMTA02` records. Flag bit zero marks a
+present 32-byte catalog commitment. It is set for CREATE, INSTALL, REPLACE, and
+DETACH; RELEASE clears it and requires the catalog field to be all zeroes.
+Validation requires catalog absence if and only if the exact Apply action is
+RELEASE and reconstructs portable semantics with the corresponding optional
+binding. The previous `AOSMTA01` record is rejected instead of being interpreted
+under this stronger shape. A catalogless release remains durable-before-I/O and
+receipt-bound; only descriptor acquisition is omitted.
 
 The controller's Apply client negotiates Mount 1.2 with the signed-plan/lease
 feature and authenticates both the hello and result writers against the pinned

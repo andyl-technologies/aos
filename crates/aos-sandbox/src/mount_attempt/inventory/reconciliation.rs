@@ -164,6 +164,16 @@ impl CurrentMountInventoryReconciliationV1 {
         self.target
     }
 
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        CurrentNamespaceTarget,
+        DurableMountInventorySnapshotV1,
+        Vec<MountAttemptInventoryObservationV1>,
+    ) {
+        (self.target, self.snapshot, self.attempts)
+    }
+
     pub(crate) fn recheck<T>(
         &self,
         journal: &mut Journal,
@@ -615,7 +625,7 @@ mod tests {
             assignment_epoch: 3,
             desired_generation: 4,
             assignment_digest: [5; 32],
-            catalog_commitment: [1; 32],
+            catalog_commitment: Some([1; 32]),
             semantic_digest: [1; 32],
             plan_digest: [1; 32],
             template_digest: [1; 32],

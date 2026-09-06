@@ -11,6 +11,8 @@
 //! privileged broker implementations deliberately live outside this crate.
 
 #[cfg(target_os = "linux")]
+pub mod attachment_mount;
+#[cfg(target_os = "linux")]
 pub mod attachment_reconciliation;
 #[cfg(target_os = "linux")]
 pub mod attachment_state;
@@ -44,6 +46,12 @@ pub mod runtime_authority;
 #[cfg(target_os = "linux")]
 pub mod runtime_scope;
 
+#[cfg(target_os = "linux")]
+pub use attachment_mount::{
+    AttachmentMountError, AttachmentMountPreparationInputV1,
+    CompletedCurrentAttachmentMountAttemptV1, DurableCurrentAttachmentMountAttemptV1,
+    PreparedCurrentAttachmentMountDispatchV1, PreparedCurrentAttachmentMountV1,
+};
 #[cfg(target_os = "linux")]
 pub use attachment_reconciliation::{
     AttachmentReconciliationActionV1, AttachmentReconciliationConflictV1,

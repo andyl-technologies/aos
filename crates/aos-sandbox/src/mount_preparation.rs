@@ -1,10 +1,10 @@
-//! Binds one current namespace target to Mount's descriptor-backed catalog.
+//! Prepares one current namespace target for an exact Mount operation.
 //!
-//! Callers supply only fence-free Mount intent. The controller derives the
-//! current assignment, namespace generation, Host runtime and payload-scope
+//! Namespace operations use a fence-free Mount intent. The controller derives
+//! the current assignment, namespace generation, Host runtime and payload-scope
 //! handles, one request identity, and the existing current authorization
-//! quartet. Mount acquires all root and namespace descriptors directly from
-//! Host and returns only an opaque catalog commitment:
+//! quartet. Mount acquires all root and namespace descriptors directly from Host
+//! and returns only an opaque catalog commitment:
 //!
 //! ```text
 //! CurrentNamespaceTarget + Mount intent
@@ -13,9 +13,11 @@
 //!     -> opaque commitment + unchanged exclusive deadline
 //! ```
 //!
-//! The result retains the live target and cannot survive restart. It is not a
-//! Mount effect permit; a separately signed Mount Apply plan must bind the
-//! returned commitment before dispatch.
+//! Release bypasses catalog acquisition because it removes only broker custody,
+//! but still derives its fence and deadline from the same live target. Either
+//! result cannot survive restart and is not an effect permit; a separately
+//! signed Mount Apply plan must bind its exact portable semantics before
+//! dispatch.
 
 use std::os::fd::OwnedFd;
 
@@ -122,37 +124,7 @@ impl MountCatalogIntentV1 {
     /// report invalid action shapes, IDs, descriptors, attributes, and source
     /// generations.
     pub fn new(request: ApplyMountRequest) -> Result<Self, MountCatalogPreparationError> {
-        if request.header.as_option().is_some()
-            || request.fence.as_option().is_some()
-            || request.namespace_generation != 0
-        {
-            return Err(MountCatalogPreparationError::InvalidIntent);
-        }
-
-        let mut probe = request.clone();
-        probe.header = Some(request_header(
-            MOUNT_VERSION,
-            Audience::AUDIENCE_NODE_CONTROLLER,
-            [1; 16],
-            2,
-        ))
-        .into();
-        probe.fence = Some(validation_fence()).into();
-        probe.namespace_generation = 1;
-        let validated = decode_mount_request(
-            &probe.encode_to_vec(),
-            PeerCredentials {
-                uid: 1,
-                gid: 1,
-                pid: Some(1),
-            },
-            PeerPolicy {
-                uid: 1,
-                gid: Some(1),
-                audience: Audience::AUDIENCE_NODE_CONTROLLER,
-            },
-            1,
-        )?;
+        let validated = validate_fence_free_intent(&request)?;
         if validated.action()
             == aos_proto::aos::sandbox::local::v1::MountAction::MOUNT_ACTION_RELEASE
         {
@@ -297,6 +269,24 @@ pub struct PreparedCurrentMountDispatchV1 {
     template: BrokerDispatchTemplateV1,
 }
 
+/// Retains one current catalogless Mount release operation.
+///
+/// Release removes broker custody only after an installed resource has already
+/// become detached or draining. It therefore needs current assignment authority
+/// but no Host namespace descriptors or Mount catalog commitment.
+pub(crate) struct PreparedCurrentMountReleaseV1 {
+    target: CurrentNamespaceTarget,
+    body_without_deadline: Vec<u8>,
+    semantics: BrokerDispatchSemanticIdentityV1,
+    valid_until_boottime_nanoseconds: u64,
+}
+
+/// Retains a current catalogless release and its verified signed Mount plan.
+pub(crate) struct PreparedCurrentMountReleaseDispatchV1 {
+    release: PreparedCurrentMountReleaseV1,
+    template: BrokerDispatchTemplateV1,
+}
+
 impl PreparedCurrentMountDispatchV1 {
     /// Borrows the volatile catalog preparation and live namespace target.
     #[must_use]
@@ -350,6 +340,57 @@ impl PreparedCurrentMountCatalogV1 {
     /// Returns the exact portable grant identity including the catalog commitment.
     #[must_use]
     pub const fn semantics(&self) -> BrokerDispatchSemanticIdentityV1 {
+        self.semantics
+    }
+
+    pub(crate) fn recheck<T>(
+        &self,
+        journal: &mut Journal,
+        clock: &mut T,
+    ) -> Result<(), MountCatalogPreparationError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.target.recheck(journal, clock)?;
+        transport::check_deadline(self.valid_until_boottime_nanoseconds)
+    }
+}
+
+impl PreparedCurrentMountReleaseDispatchV1 {
+    pub(crate) const fn release(&self) -> &PreparedCurrentMountReleaseV1 {
+        &self.release
+    }
+
+    pub(crate) const fn template(&self) -> &BrokerDispatchTemplateV1 {
+        &self.template
+    }
+
+    pub(crate) fn recheck<T>(
+        &self,
+        journal: &mut Journal,
+        clock: &mut T,
+    ) -> Result<(), MountCatalogPreparationError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.release.recheck(journal, clock)
+    }
+}
+
+impl PreparedCurrentMountReleaseV1 {
+    pub(crate) const fn target(&self) -> &CurrentNamespaceTarget {
+        &self.target
+    }
+
+    pub(crate) const fn valid_until_boottime_nanoseconds(&self) -> u64 {
+        self.valid_until_boottime_nanoseconds
+    }
+
+    pub(crate) fn body_without_deadline(&self) -> &[u8] {
+        &self.body_without_deadline
+    }
+
+    pub(crate) const fn semantics(&self) -> BrokerDispatchSemanticIdentityV1 {
         self.semantics
     }
 
@@ -491,6 +532,72 @@ where
     Ok(prepared)
 }
 
+pub(crate) fn prepare_current_release<T>(
+    journal: &mut Journal,
+    target: CurrentNamespaceTarget,
+    request: ApplyMountRequest,
+    clock: &mut T,
+) -> Result<PreparedCurrentMountReleaseV1, MountCatalogPreparationError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    target.recheck(journal, clock)?;
+    let validated_probe = validate_fence_free_intent(&request)?;
+    if validated_probe.action()
+        != aos_proto::aos::sandbox::local::v1::MountAction::MOUNT_ACTION_RELEASE
+    {
+        return Err(MountCatalogPreparationError::InvalidIntent);
+    }
+
+    let deadline = target
+        .runtime_generation()
+        .scope()
+        .deadline_boottime_nanoseconds();
+    let request_id = request_id()?;
+    let mut request = request;
+    request.header = Some(request_header(
+        MOUNT_VERSION,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        request_id,
+        deadline,
+    ))
+    .into();
+    request.fence = Some(current_fence(&target)).into();
+    request.namespace_generation = target.target_generation();
+
+    let credentials = local_credentials();
+    let request_body = request.encode_to_vec();
+    let validated = decode_mount_request(
+        &request_body,
+        credentials,
+        PeerPolicy {
+            uid: credentials.uid,
+            gid: Some(credentials.gid),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        },
+        transport::boottime()?,
+    )?;
+    let canonical = canonical_mount_semantics_v1(&validated, None, &[])?;
+    let semantics = BrokerDispatchSemanticIdentityV1::new(
+        canonical.verb(),
+        canonical.target(),
+        canonical.commitment(),
+    );
+
+    request
+        .header
+        .get_or_insert_default()
+        .deadline_boottime_nanoseconds = 0;
+    let prepared = PreparedCurrentMountReleaseV1 {
+        target,
+        body_without_deadline: request.encode_to_vec(),
+        semantics,
+        valid_until_boottime_nanoseconds: deadline,
+    };
+    prepared.recheck(journal, clock)?;
+    Ok(prepared)
+}
+
 pub(crate) fn bind_signed_mount_plan<T>(
     journal: &mut Journal,
     catalog: PreparedCurrentMountCatalogV1,
@@ -515,6 +622,34 @@ where
     )?;
 
     let prepared = PreparedCurrentMountDispatchV1 { catalog, template };
+    prepared.recheck(journal, clock)?;
+    Ok(prepared)
+}
+
+pub(crate) fn bind_signed_mount_release_plan<T>(
+    journal: &mut Journal,
+    release: PreparedCurrentMountReleaseV1,
+    signed_plan: SignedBrokerPlan,
+    clock: &mut T,
+) -> Result<PreparedCurrentMountReleaseDispatchV1, MountCatalogPreparationError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    release.recheck(journal, clock)?;
+    release
+        .target
+        .runtime_generation()
+        .scope()
+        .verify_mount_plan(journal, &signed_plan, clock)?;
+    let template = BrokerDispatchTemplateV1::new(
+        signed_plan,
+        BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+        release.body_without_deadline.clone(),
+        Vec::new(),
+        release.semantics,
+    )?;
+
+    let prepared = PreparedCurrentMountReleaseDispatchV1 { release, template };
     prepared.recheck(journal, clock)?;
     Ok(prepared)
 }
@@ -582,6 +717,43 @@ pub(crate) fn local_credentials() -> PeerCredentials {
         gid: rustix::process::getegid().as_raw(),
         pid: Some(std::process::id()),
     }
+}
+
+fn validate_fence_free_intent(
+    request: &ApplyMountRequest,
+) -> Result<aos_sandbox_protocol::ValidatedMountRequest, MountCatalogPreparationError> {
+    if request.header.as_option().is_some()
+        || request.fence.as_option().is_some()
+        || request.namespace_generation != 0
+    {
+        return Err(MountCatalogPreparationError::InvalidIntent);
+    }
+
+    let mut probe = request.clone();
+    probe.header = Some(request_header(
+        MOUNT_VERSION,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        [1; 16],
+        2,
+    ))
+    .into();
+    probe.fence = Some(validation_fence()).into();
+    probe.namespace_generation = 1;
+    decode_mount_request(
+        &probe.encode_to_vec(),
+        PeerCredentials {
+            uid: 1,
+            gid: 1,
+            pid: Some(1),
+        },
+        PeerPolicy {
+            uid: 1,
+            gid: Some(1),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        },
+        1,
+    )
+    .map_err(Into::into)
 }
 
 pub(crate) struct ServiceExecution {

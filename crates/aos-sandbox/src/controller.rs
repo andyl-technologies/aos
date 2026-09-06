@@ -784,6 +784,172 @@ where
         )
     }
 
+    /// Derives and prepares the exact Mount action selected by reconciliation.
+    ///
+    /// No protobuf intent comes from the caller. Create and publication fields
+    /// derive from current desired state; teardown reproduces the inventoried
+    /// physical recipe while carrying the current desired generation and lease.
+    /// Catalog-backed actions require the supplied Mount channel, while release
+    /// is explicitly catalogless. The result remains non-authorizing.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale or non-effect reconciliation, an action/input mismatch,
+    /// changed lease time, invalid derived semantics, or failed Mount catalog
+    /// exchange and live-target validation.
+    #[cfg(target_os = "linux")]
+    pub fn prepare_current_attachment_mount<T>(
+        &mut self,
+        reconciliation: crate::CurrentAttachmentReconciliationV1,
+        input: crate::AttachmentMountPreparationInputV1,
+        clock: &mut T,
+    ) -> Result<crate::PreparedCurrentAttachmentMountV1, crate::AttachmentMountError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::attachment_mount::prepare_current(
+            self.reconciler.journal_mut(),
+            reconciliation,
+            input,
+            clock,
+        )
+    }
+
+    /// Rechecks a plan-derived Mount preparation without binding authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed desired state, inventory, lease time, live target, or
+    /// catalog lifetime.
+    #[cfg(target_os = "linux")]
+    pub fn recheck_current_attachment_mount<T>(
+        &mut self,
+        prepared: &crate::PreparedCurrentAttachmentMountV1,
+        clock: &mut T,
+    ) -> Result<(), crate::AttachmentMountError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        prepared.recheck(self.reconciler.journal_mut(), clock)
+    }
+
+    /// Binds a separately signed Mount plan to the exact reconciler-derived action.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale reconciliation evidence, a substituted or unauthorized
+    /// plan, changed ownership authority, or an expired preparation.
+    #[cfg(target_os = "linux")]
+    pub fn bind_current_attachment_mount_plan<T>(
+        &mut self,
+        prepared: crate::PreparedCurrentAttachmentMountV1,
+        signed_plan: crate::SignedBrokerPlan,
+        clock: &mut T,
+    ) -> Result<crate::PreparedCurrentAttachmentMountDispatchV1, crate::AttachmentMountError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::attachment_mount::bind_signed_plan(
+            self.reconciler.journal_mut(),
+            prepared,
+            signed_plan,
+            clock,
+        )
+    }
+
+    /// Durably admits the exact plan-derived Mount attempt before broker I/O.
+    ///
+    /// Admission rechecks desired state, the planning inventory, lease time,
+    /// signed authority, and the live target before committing. The new attempt
+    /// intentionally makes that older inventory snapshot stale. The returned
+    /// token keeps the desired generation and lease as dispatch guards.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale evidence, deadline or authority mismatch, conflicting
+    /// replay, corrupt cross-references, capacity, and failed durable commit.
+    #[cfg(target_os = "linux")]
+    pub fn admit_current_attachment_mount_attempt<T>(
+        &mut self,
+        prepared: crate::PreparedCurrentAttachmentMountDispatchV1,
+        deadline_boottime_nanoseconds: u64,
+        clock: &mut T,
+    ) -> Result<crate::DurableCurrentAttachmentMountAttemptV1, crate::AttachmentMountError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::attachment_mount::admit_current(
+            self.reconciler.journal_mut(),
+            prepared,
+            deadline_boottime_nanoseconds,
+            clock,
+        )
+    }
+
+    /// Rechecks an admitted attachment Mount attempt without dispatching it.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed desired state or lease status, stale live authority,
+    /// substituted durable bytes, and expired deadlines.
+    #[cfg(target_os = "linux")]
+    pub fn recheck_current_attachment_mount_attempt<T>(
+        &mut self,
+        attempt: &crate::DurableCurrentAttachmentMountAttemptV1,
+        clock: &mut T,
+    ) -> Result<(), crate::AttachmentMountError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        attempt.recheck(self.reconciler.journal_mut(), clock)
+    }
+
+    /// Dispatches one durable plan-derived Mount attempt and records its receipt.
+    ///
+    /// The desired generation and lease are rechecked around the existing
+    /// authenticated Mount exchange. A successful effect is recorded before a
+    /// concurrent stale guard can withhold the live completion token.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale desired or live authority, service identity and protocol
+    /// failures, substituted results, conflicting completion, and journal errors.
+    #[cfg(target_os = "linux")]
+    pub fn dispatch_current_attachment_mount_attempt<T>(
+        &mut self,
+        attempt: crate::DurableCurrentAttachmentMountAttemptV1,
+        client: crate::mount_attempt::MountDispatchClient,
+        clock: &mut T,
+    ) -> Result<crate::CompletedCurrentAttachmentMountAttemptV1, crate::AttachmentMountError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::attachment_mount::dispatch_current(
+            self.reconciler.journal_mut(),
+            attempt,
+            client,
+            clock,
+        )
+    }
+
     /// Issues a local holder channel from an acquired current-runtime scope.
     ///
     /// The complete Host and payload proof moves into the live session. Scope

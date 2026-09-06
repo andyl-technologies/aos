@@ -1,20 +1,22 @@
-//! Durably admits one current, catalog-bound Mount dispatch attempt.
+//! Durably admits one current Mount dispatch attempt.
 //!
-//! Mount catalog preparation and signed-plan binding retain live descriptor
-//! authority only in memory. This module consumes that volatile proof, derives
-//! one exact lease- and deadline-bound packet, and synchronously records the
-//! packet before returning it:
+//! Catalog preparation and signed-plan binding retain live descriptor authority
+//! only in memory for namespace operations. Release instead retains a current
+//! catalogless target because it removes broker custody after namespace work is
+//! complete. This module consumes either volatile proof, derives one exact
+//! lease- and deadline-bound packet, and synchronously records the packet before
+//! returning it:
 //!
 //! ```text
-//! live namespace target + prepared catalog + signed Mount plan
+//! live namespace target + prepared operation + signed Mount plan
 //!     -> reverify current lease and attenuate deadline
 //!     -> commit exact request, packet, and namespace audit reference
 //!     -> return a non-cloneable live dispatch token
 //! ```
 //!
 //! The durable record is audit and crash-correlation state, not reconstructed
-//! authority. Restart loses the token and Mount's descriptor catalog, so the
-//! controller must authenticate inventory and repeat catalog preparation before
+//! authority. Restart loses the token and any Mount descriptor catalog, so the
+//! controller must authenticate inventory and repeat action preparation before
 //! issuing another effect.
 
 use std::collections::BTreeMap;
@@ -42,7 +44,10 @@ use crate::dispatch::{
     template_digest_from_parts, validate_durable_attempt_body, validate_durable_deadline_free_body,
 };
 use crate::mount_preparation::check_mount_deadline;
-use crate::mount_preparation::{MountCatalogPreparationError, PreparedCurrentMountDispatchV1};
+use crate::mount_preparation::{
+    MountCatalogPreparationError, PreparedCurrentMountDispatchV1,
+    PreparedCurrentMountReleaseDispatchV1,
+};
 use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::runtime_scope::{
     CurrentRuntimeScopeError, DurableNamespaceTargetReferenceV1, NamespaceTargetError,
@@ -95,8 +100,8 @@ pub enum MountAttemptError {
     /// The fixed attempt-count or retained-byte ceiling is exhausted.
     #[error("mount attempt capacity is exhausted")]
     Capacity,
-    /// The requested attempt deadline exceeds the prepared catalog lifetime.
-    #[error("mount attempt deadline exceeds the prepared catalog lifetime")]
+    /// The requested attempt deadline exceeds the prepared operation lifetime.
+    #[error("mount attempt deadline exceeds the prepared operation lifetime")]
     Deadline,
     /// The responding process is not the configured live Mount service execution.
     #[error("Mount response does not match the pinned Mount service")]
@@ -118,7 +123,7 @@ pub enum MountAttemptError {
     /// Kernel service identity or cgroup validation failed.
     #[error(transparent)]
     Kernel(#[from] aos_sandbox_linux::Error),
-    /// Volatile catalog preparation is stale, expired, or otherwise invalid.
+    /// Volatile operation preparation is stale, expired, or otherwise invalid.
     #[error(transparent)]
     Preparation(#[from] MountCatalogPreparationError),
     /// Current signed plan, ownership lease, or attempt attenuation failed.
@@ -145,8 +150,8 @@ pub enum MountAttemptAdmissionOutcomeV1 {
 ///
 /// This token cannot be reconstructed from the journal or cloned. Its packet
 /// remains non-authorizing input until Mount independently verifies every
-/// signature, fence, catalog fact, protected clock bound, and durable broker
-/// admission rule.
+/// signature, fence, catalog-backed or catalogless semantics, protected clock
+/// bound, and durable broker admission rule.
 ///
 /// ```compile_fail
 /// use aos_sandbox::mount_attempt::DurableCurrentMountAttemptV1;
@@ -154,10 +159,59 @@ pub enum MountAttemptAdmissionOutcomeV1 {
 /// requires_clone::<DurableCurrentMountAttemptV1>();
 /// ```
 pub struct DurableCurrentMountAttemptV1 {
-    prepared: PreparedCurrentMountDispatchV1,
+    prepared: PreparedMountDispatch,
     attempt: BrokerDispatchAttemptV1,
     record: Record,
     outcome: MountAttemptAdmissionOutcomeV1,
+}
+
+enum PreparedMountDispatch {
+    Catalog(PreparedCurrentMountDispatchV1),
+    Release(PreparedCurrentMountReleaseDispatchV1),
+}
+
+impl PreparedMountDispatch {
+    fn target(&self) -> &crate::runtime_scope::CurrentNamespaceTarget {
+        match self {
+            Self::Catalog(prepared) => prepared.catalog().target(),
+            Self::Release(prepared) => prepared.release().target(),
+        }
+    }
+
+    fn template(&self) -> &crate::BrokerDispatchTemplateV1 {
+        match self {
+            Self::Catalog(prepared) => prepared.template(),
+            Self::Release(prepared) => prepared.template(),
+        }
+    }
+
+    fn catalog_commitment(&self) -> Option<ObjectDigest> {
+        match self {
+            Self::Catalog(prepared) => Some(prepared.catalog().catalog_commitment()),
+            Self::Release(_) => None,
+        }
+    }
+
+    fn valid_until_boottime_nanoseconds(&self) -> u64 {
+        match self {
+            Self::Catalog(prepared) => prepared.catalog().valid_until_boottime_nanoseconds(),
+            Self::Release(prepared) => prepared.release().valid_until_boottime_nanoseconds(),
+        }
+    }
+
+    fn recheck<T>(
+        &self,
+        journal: &mut Journal,
+        clock: &mut T,
+    ) -> Result<(), MountCatalogPreparationError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        match self {
+            Self::Catalog(prepared) => prepared.recheck(journal, clock),
+            Self::Release(prepared) => prepared.recheck(journal, clock),
+        }
+    }
 }
 
 impl DurableCurrentMountAttemptV1 {
@@ -180,9 +234,11 @@ impl DurableCurrentMountAttemptV1 {
     }
 
     /// Returns the exact catalog commitment authorized by the signed Mount plan.
+    ///
+    /// Catalogless release attempts return `None`.
     #[must_use]
-    pub const fn catalog_commitment(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(self.record.catalog_commitment)
+    pub fn catalog_commitment(&self) -> Option<ObjectDigest> {
+        self.record.catalog_commitment.map(ObjectDigest::from_bytes)
     }
 
     /// Returns the signed namespace generation retained by the live target.
@@ -230,13 +286,47 @@ pub(crate) fn admit_current<T>(
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
+    admit_prepared(
+        journal,
+        PreparedMountDispatch::Catalog(prepared),
+        deadline_boottime_nanoseconds,
+        clock,
+    )
+}
+
+pub(crate) fn admit_current_release<T>(
+    journal: &mut Journal,
+    prepared: PreparedCurrentMountReleaseDispatchV1,
+    deadline_boottime_nanoseconds: u64,
+    clock: &mut T,
+) -> Result<DurableCurrentMountAttemptV1, MountAttemptError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    admit_prepared(
+        journal,
+        PreparedMountDispatch::Release(prepared),
+        deadline_boottime_nanoseconds,
+        clock,
+    )
+}
+
+fn admit_prepared<T>(
+    journal: &mut Journal,
+    prepared: PreparedMountDispatch,
+    deadline_boottime_nanoseconds: u64,
+    clock: &mut T,
+) -> Result<DurableCurrentMountAttemptV1, MountAttemptError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
     prepared.recheck(journal, clock)?;
-    if deadline_boottime_nanoseconds > prepared.catalog().valid_until_boottime_nanoseconds() {
+    if deadline_boottime_nanoseconds > prepared.valid_until_boottime_nanoseconds() {
         return Err(MountAttemptError::Deadline);
     }
 
     let history = History::load(journal)?;
-    let target = prepared.catalog().target();
+    let target = prepared.target();
     let attempt = target.runtime_generation().scope().prepare_mount_attempt(
         journal,
         prepared.template(),
@@ -284,7 +374,7 @@ struct Record {
     assignment_epoch: u64,
     desired_generation: u64,
     assignment_digest: [u8; 32],
-    catalog_commitment: [u8; 32],
+    catalog_commitment: Option<[u8; 32]>,
     semantic_digest: [u8; 32],
     plan_digest: [u8; 32],
     template_digest: [u8; 32],
@@ -299,18 +389,20 @@ struct Record {
 
 impl Record {
     fn from_attempt(
-        prepared: &PreparedCurrentMountDispatchV1,
+        prepared: &PreparedMountDispatch,
         attempt: &BrokerDispatchAttemptV1,
     ) -> Result<Self, MountAttemptError> {
         let decoded = decode_attempt_body(attempt.body(), attempt.deadline_boottime_nanoseconds())?;
         let assignment = prepared.template().signed_plan().plan().assignment();
         let mut record = Self {
             request_id: *decoded.header().request_id(),
-            namespace_target: prepared.catalog().target().durable_reference(),
+            namespace_target: prepared.target().durable_reference(),
             assignment_epoch: assignment.epoch().get(),
             desired_generation: assignment.desired_generation().get(),
             assignment_digest: *assignment.digest().as_bytes(),
-            catalog_commitment: *prepared.catalog().catalog_commitment().as_bytes(),
+            catalog_commitment: prepared
+                .catalog_commitment()
+                .map(|commitment| *commitment.as_bytes()),
             semantic_digest: *semantic_identity_digest(prepared.template().semantics()).as_bytes(),
             plan_digest: *prepared.template().signed_plan().digest().as_bytes(),
             template_digest: *attempt.template_digest().as_bytes(),
@@ -360,7 +452,7 @@ impl Record {
 
     fn matches_attempt(
         &self,
-        prepared: &PreparedCurrentMountDispatchV1,
+        prepared: &PreparedMountDispatch,
         attempt: &BrokerDispatchAttemptV1,
     ) -> Result<bool, MountAttemptError> {
         Ok(self == &Self::from_attempt(prepared, attempt)?)
@@ -371,7 +463,7 @@ impl Record {
             || self.assignment_epoch == 0
             || self.desired_generation == 0
             || self.assignment_digest == [0; 32]
-            || self.catalog_commitment == [0; 32]
+            || self.catalog_commitment == Some([0; 32])
             || self.semantic_digest == [0; 32]
             || self.plan_digest == [0; 32]
             || self.template_digest == [0; 32]
@@ -424,7 +516,8 @@ impl Record {
             || request.header().deadline_boottime_nanoseconds()
                 != self.deadline_boottime_nanoseconds
             || request.header().maximum_response_bytes() != MAXIMUM_RESPONSE_BYTES
-            || request.action() == MountAction::MOUNT_ACTION_RELEASE
+            || (request.action() == MountAction::MOUNT_ACTION_RELEASE)
+                != self.catalog_commitment.is_none()
             || fence.sandbox_id() != self.namespace_target.sandbox().as_bytes()
             || fence.incarnation_id() != self.namespace_target.incarnation().as_bytes()
             || fence.assignment_epoch() != self.assignment_epoch
@@ -497,11 +590,13 @@ impl Record {
             return Err(MountAttemptError::CorruptState);
         }
 
-        let catalog = MountCatalogBindingV1::from_verified_digest(ObjectDigest::from_bytes(
-            self.catalog_commitment,
-        ))
-        .map_err(|_| MountAttemptError::CorruptState)?;
-        let canonical = canonical_mount_semantics_v1(request, Some(catalog), &[])
+        let catalog = self
+            .catalog_commitment
+            .map(ObjectDigest::from_bytes)
+            .map(MountCatalogBindingV1::from_verified_digest)
+            .transpose()
+            .map_err(|_| MountAttemptError::CorruptState)?;
+        let canonical = canonical_mount_semantics_v1(request, catalog, &[])
             .map_err(|_| MountAttemptError::CorruptState)?;
         let semantics = BrokerDispatchSemanticIdentityV1::new(
             canonical.verb(),

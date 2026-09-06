@@ -279,6 +279,20 @@ An empty expired realization reports expiry rather than readiness. Planning is
 non-authorizing and rechecks all three inputs before returning, so expiry cannot
 turn stale inventory or a replaced desired generation into cleanup authority.
 
+The attachment effect path consumes that closed decision rather than accepting
+a caller-authored Mount body. It derives creation from the current desired
+recipe, derives install and replacement from the exact inventoried resource,
+and derives detach and release from the older physical recipe while retaining
+the current desired generation and lease. Desired state, the complete inventory
+snapshot, the selected action, and live namespace authority are rechecked
+through catalog preparation, signed-plan binding, and immediately before
+durable attempt admission. Admission changes controller history and therefore
+makes the older snapshot stale by construction; the admitted live token instead
+retains the exact desired generation, lease mode, and namespace authority around
+dispatch. Release is catalogless because it removes only broker custody, but it
+still requires current authority, an exact signed plan, durable-before-I/O
+admission, and a validated success receipt.
+
 Lease expiry begins draining. It does not delete a backing object until active
 kernel/open pins are reconciled. FUSE worker failure can leave an attachment
 faulted; the reconciler freezes the consumer when its required filesystem

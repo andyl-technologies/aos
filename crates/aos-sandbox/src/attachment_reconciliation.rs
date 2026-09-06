@@ -137,6 +137,13 @@ pub struct CurrentAttachmentReconciliationV1 {
     action: AttachmentReconciliationActionV1,
 }
 
+pub(crate) struct AttachmentReconciliationEvidenceV1 {
+    desired: DurableAttachmentDesiredStateV1,
+    snapshot: crate::mount_attempt::DurableMountInventorySnapshotV1,
+    attempts: Vec<MountAttemptInventoryObservationV1>,
+    action: AttachmentReconciliationActionV1,
+}
+
 impl CurrentAttachmentReconciliationV1 {
     /// Borrows the current durable desired attachment generation.
     #[must_use]
@@ -164,6 +171,83 @@ impl CurrentAttachmentReconciliationV1 {
     pub fn into_target(self) -> CurrentNamespaceTarget {
         self.inventory.into_target()
     }
+
+    pub(crate) fn into_evidence_and_target(
+        self,
+    ) -> (AttachmentReconciliationEvidenceV1, CurrentNamespaceTarget) {
+        let (target, snapshot, attempts) = self.inventory.into_parts();
+        let evidence = AttachmentReconciliationEvidenceV1 {
+            desired: self.desired,
+            snapshot,
+            attempts,
+            action: self.action,
+        };
+        (evidence, target)
+    }
+}
+
+impl AttachmentReconciliationEvidenceV1 {
+    pub(crate) const fn desired(&self) -> &DurableAttachmentDesiredStateV1 {
+        &self.desired
+    }
+
+    pub(crate) const fn snapshot(&self) -> &crate::mount_attempt::DurableMountInventorySnapshotV1 {
+        &self.snapshot
+    }
+
+    pub(crate) const fn action(&self) -> AttachmentReconciliationActionV1 {
+        self.action
+    }
+
+    pub(crate) fn recheck<T>(
+        &self,
+        journal: &mut Journal,
+        target: &CurrentNamespaceTarget,
+        clock: &mut T,
+    ) -> Result<(), AttachmentReconciliationError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        target
+            .recheck(journal, clock)
+            .map_err(MountAttemptError::from)?;
+        self.snapshot.recheck(journal)?;
+        attachment_state::recheck_current(journal, &self.desired)?;
+
+        let now = clock()?.wall_seconds();
+        let target_facts = TargetFacts::from_target(target);
+        let resources = self
+            .snapshot
+            .inventory()
+            .mounts()
+            .iter()
+            .map(|resource| project_resource(resource, self.desired.intent(), target_facts))
+            .collect::<Vec<_>>();
+        let attempts = self
+            .attempts
+            .iter()
+            .copied()
+            .map(project_attempt)
+            .collect::<Vec<_>>();
+        let action = decide(
+            self.desired.presence(),
+            self.desired.intent(),
+            now,
+            target_facts,
+            &resources,
+            &attempts,
+        );
+        if action != self.action {
+            return Err(AttachmentReconciliationError::ActionChanged);
+        }
+
+        attachment_state::recheck_current(journal, &self.desired)?;
+        self.snapshot.recheck(journal)?;
+        target
+            .recheck(journal, clock)
+            .map_err(MountAttemptError::from)?;
+        Ok(())
+    }
 }
 
 /// Reports stale evidence, corrupt history, or protected-clock failure.
@@ -178,6 +262,9 @@ pub enum AttachmentReconciliationError {
     /// The protected clock adapter could not produce a planning observation.
     #[error(transparent)]
     Clock(#[from] ProtectedOwnershipClockError),
+    /// Lease time or another rechecked input now selects a different action.
+    #[error("attachment reconciliation action changed before use")]
+    ActionChanged,
 }
 
 #[derive(Clone, Copy)]
