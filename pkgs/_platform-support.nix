@@ -138,6 +138,7 @@ let
     "gnutls"
     "gptfdisk"
     "icu"
+    "inetutils"
     "ipmitool"
     "iperf3"
     "jemalloc"
@@ -222,7 +223,9 @@ let
     "tcpdump"
     "tpm2-tools"
     "tpm2-tss"
+    "vim"
     "wget"
+    "zsh"
     "xorg-stubs"
   ];
 
@@ -494,6 +497,7 @@ let
     "semodule-utils"
     "setools"
     "strace"
+    "sudo"
     "systemd"
     "tmux"
     "util-linux"
