@@ -253,7 +253,7 @@ async fn canonical_management_links_serve_one_authenticated_shell() {
         "/-/org/acme/projects",
         "/-/org/acme/caches/build/garbage-collection",
         "/acme/main/-/settings",
-        "/acme/infra/prod/cdn/-/settings/images",
+        "/acme/infra/prod/cdn/-/settings/placements",
     ] {
         let response = send(&app, "GET", path, Some(&cookie), None).await;
         assert_eq!(response.status, StatusCode::OK, "{path}");
