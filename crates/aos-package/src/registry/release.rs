@@ -169,6 +169,10 @@ pub struct RegistryReleaseTransaction {
     pub entries: Vec<RegistryReleaseEntry>,
     /// Expected identities of all authored registry surfaces.
     pub expected: RegistrySurfaceDigests,
+    /// The release's own `[support]` tables, applied to `registry.toml` before
+    /// the policy surface is digested; absent when the contract states none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support: Option<super::support::SupportSectionWrite>,
 }
 
 /// Auditable result of a successfully prepared registry tree.
@@ -418,6 +422,16 @@ impl RegistryReleaseTransaction {
         set_container_release(&isolated, container_release)?;
         require_head(&isolated, &self.base_commit)
             .context("container sidecar selection moved the isolated registry ref")?;
+        // Support is section-owned: the release writes its own train's table
+        // (and the default only from the newest train) and nothing else, so
+        // several source lines can publish into one registry without one
+        // rewriting another's promise.
+        if let Some(support) = &self.support {
+            super::support::apply_support_section(&isolated, support)
+                .context("applying the release's support policy tables")?;
+            require_head(&isolated, &self.base_commit)
+                .context("support policy write moved the isolated registry ref")?;
+        }
 
         validate_materialized_entries(&isolated, &self.entries)?;
         StoreMap::load(&isolated).context("validating prepared registry store graph")?;
@@ -1216,6 +1230,7 @@ mod tests {
                 store_graph: empty_digest.clone(),
                 policy: empty_digest,
             },
+            support: None,
         }
     }
 
@@ -1266,6 +1281,64 @@ mod tests {
         assert!(!output.exists());
         require_head(&source, &base)?;
         require_clean(&Repository::open(&source)?)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn support_tables_are_applied_before_the_policy_surface_is_digested() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let source = temporary.path().join("source");
+        fs::create_dir(&source)?;
+        let base = initialize_registry(&source)?;
+        let mut transaction = transaction(base.clone());
+        let support = super::super::support::SupportSectionWrite {
+            train: "2026.1".to_string(),
+            entry: aos_registry_surface::support::SupportTrain {
+                kind: aos_registry_surface::support::SupportKind::Lts,
+                supported_until: Some("2028-01-31".to_string()),
+            },
+            default: Some(aos_registry_surface::support::SupportDefault::default()),
+        };
+        transaction.support = Some(support.clone());
+
+        // An operator computes the expected digests over the intended result,
+        // which includes the support tables the release owns.
+        let expected_clone = temporary.path().join("expected");
+        Repository::clone(
+            source.to_str().context("test path encoding")?,
+            &expected_clone,
+        )?;
+        let mut expected_author = WritesPackageEntry;
+        for entry in &transaction.entries {
+            expected_author.author_entry(&expected_clone, entry).await?;
+        }
+        super::super::support::apply_support_section(&expected_clone, &support)?;
+        transaction.expected = registry_surface_digests(&expected_clone)?;
+        fs::remove_dir_all(&expected_clone)?;
+
+        let output = temporary.path().join("prepared");
+        transaction
+            .prepare(&source, &output, &mut WritesPackageEntry)
+            .await?;
+        let config: aos_registry_surface::manifest::RegistryRootConfig =
+            toml::from_str(&fs::read_to_string(output.join("registry.toml"))?)?;
+        let policy = config
+            .support
+            .context("prepared tree carries the support policy")?;
+        assert_eq!(
+            policy.kind((2026, 1)),
+            aos_registry_surface::support::SupportKind::Lts
+        );
+
+        // A transaction whose digests omit the tables fails closed.
+        let stale = temporary.path().join("stale");
+        let mut without = transaction.clone();
+        without.support = None;
+        let error = without
+            .prepare(&source, &stale, &mut WritesPackageEntry)
+            .await
+            .expect_err("policy digest must include the support tables");
+        assert!(format!("{error:#}").contains("surface digests do not match"));
         Ok(())
     }
 

@@ -68,6 +68,10 @@
             ];
           };
         };
+        qualification.support.trains."2026.9" = {
+          kind = "lts";
+          supported_until = "2028-09-30";
+        };
         qualification.claims.fixture-reviewed = {
           target = "fixture";
           requirements = ["container-lifecycle"];
@@ -96,6 +100,23 @@ in
   assert builtins.length contract.targets == 4;
   assert builtins.all (target: builtins.length target.environment.layers == 2) contract.targets;
   assert builtins.length contract.claims == 8;
+  assert contract.support.default
+  == {
+    kind = "standard";
+    superseded_after_trains = 2;
+  };
+  assert contract.support.trains == {};
+  assert composed.config.qualification.export.support.trains
+  == {
+    "2026.9" = {
+      kind = "lts";
+      supported_until = "2028-09-30";
+    };
+  };
+  assert rejects {qualification.support.trains."2026.09" = {};};
+  assert rejects {qualification.support.trains."2026.9".supported_until = "2028-13-01";};
+  assert rejects {qualification.support.trains."2026.9".kind = "lts";};
+  assert rejects {qualification.support.default.superseded_after_trains = 0;};
   assert builtins.all (claim: claim.blocks_release && builtins.elem claim.minimum_assurance ["A2" "A3"]) contract.claims;
   assert composed.options.qualification.targets._type == "option";
   assert configured.requirements.image-installation.measurements.reboot_cycles.minimum == 12;
