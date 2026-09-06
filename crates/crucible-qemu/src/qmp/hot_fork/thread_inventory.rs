@@ -80,7 +80,7 @@ pub struct QmpHotForkThreadInventory {
 }
 
 impl QmpHotForkThreadInventory {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn one_coordinator(thread_id: u32) -> Self {
         Self {
             generation: 1,

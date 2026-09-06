@@ -501,6 +501,7 @@ pub use qemu_hot_fork_pool::{
 pub use qemu_hot_fork_reconciliation::{
     LinuxQemuHotForkAttemptLaunchError, LinuxQemuHotForkLiveChild,
     LinuxQemuHotForkReconciliationBackend, LinuxQemuHotForkReconciliationError,
+    LinuxQemuHotForkSourceWorldAttemptLaunchError, LinuxQemuHotForkSourceWorldFailureOwner,
     LinuxQemuHotForkWorldAttemptLaunchError, LinuxQemuHotForkWorldAttemptLaunchFailure,
     QemuHotForkAttemptBasis, QemuHotForkAttemptReconciliation,
     QemuHotForkAttemptReconciliationError, QemuHotForkChildDisposition,

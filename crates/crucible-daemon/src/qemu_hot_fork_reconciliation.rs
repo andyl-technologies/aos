@@ -24,6 +24,7 @@ use std::time::Duration;
 use crucible::{ContentHash, EventLog, EventLogOffset, NodeId};
 // crucible-lint: allow host-nondeterminism-state -- node generations authenticate exact process ownership and carry no host timing into execution.
 use crucible_api::ProductionVmNodeGeneration;
+use crucible_api::vm_lifecycle::ProductionVmHotForkSourceWorld;
 use crucible_campaign::{ExactCheckpointId, ObservationId};
 use crucible_qemu::{
     LinuxQemuHotForkChildProcessAuthority, QemuAsyncDriverPolicy, QemuChildWait, QemuCrashDetector,
@@ -31,9 +32,9 @@ use crucible_qemu::{
     QemuHotForkChildProcessBasis, QemuHotForkChildProcessOwner, QemuHotForkChildQmpHandshakeError,
     QemuHotForkHostContinuation, QemuHotForkLaunchError, QemuHotForkSchedulerNodeContinuation,
     QemuHotForkTemplateIdentity, QemuNode, QemuNodeChannelError, QemuNodeExternalProcessControl,
-    QemuPreparedHotForkTemplate, QemuProcessIdentity, QemuReap, QemuShutdownPolicy,
-    QemuShutdownRung, QemuShutdownTargetError, QemuVmRealizationError, QmpHotForkChildProcessPhase,
-    QmpHotForkChildProcessState,
+    QemuNodeSetPreparedHotForkSource, QemuPreparedHotForkTemplate, QemuProcessIdentity, QemuReap,
+    QemuShutdownPolicy, QemuShutdownRung, QemuShutdownTargetError, QemuVmRealizationError,
+    QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
 };
 use thiserror::Error;
 
@@ -405,7 +406,8 @@ mod linux;
 mod state;
 
 pub use launch::{
-    LinuxQemuHotForkAttemptLaunchError, LinuxQemuHotForkWorldAttemptLaunchError,
+    LinuxQemuHotForkAttemptLaunchError, LinuxQemuHotForkSourceWorldAttemptLaunchError,
+    LinuxQemuHotForkSourceWorldFailureOwner, LinuxQemuHotForkWorldAttemptLaunchError,
     LinuxQemuHotForkWorldAttemptLaunchFailure,
 };
 pub use linux::{

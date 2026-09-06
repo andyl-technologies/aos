@@ -50,6 +50,67 @@ impl ProductionVmHotForkSourceWorld {
             .map(QemuNodeSetPreparedHotForkTemplate::node)
     }
 
+    /// Mints a process-neutral continuation for one child world.
+    ///
+    /// The retained sources and their enclosing production lifecycle remain
+    /// owned by this source-world capability. The returned continuation has no
+    /// process, descriptor, run-directory, lease, or resource-guard authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when any retained source no longer matches
+    /// its process incarnation or exact prepared transaction generation, or
+    /// when the copied continuation fails its complete-state validation.
+    pub fn fork_continuation(
+        &mut self,
+    ) -> Result<ProductionVmHotForkWorldContinuation, SchedulerError> {
+        self.validate_source_ownership()?;
+
+        let continuation = self.continuation.try_clone_for_branch()?;
+        continuation.validate_complete_internal_state()?;
+        Ok(continuation)
+    }
+
+    /// Borrows one retained source through a narrow operational capability.
+    ///
+    /// The source stays installed in the complete lifecycle. The loan exposes
+    /// only fork and ordered source-side child reconciliation operations, and
+    /// every QMP exchange revalidates the source process and transaction
+    /// generation bound during preparation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when `node` was not prepared, the lifecycle
+    /// owner is unavailable, or the exact source identity cannot be validated.
+    pub fn prepared_source(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<QemuNodeSetPreparedHotForkSource<'_>, SchedulerError> {
+        let prepared = self
+            .prepared
+            .iter()
+            .find(|prepared| prepared.node() == node)
+            .ok_or_else(|| {
+                hot_fork_boundary_error(format!(
+                    "production hot-fork source world has no prepared node `{}`",
+                    node.name
+                ))
+            })?;
+        let lifecycle = self.lifecycle.as_deref_mut().ok_or_else(|| {
+            hot_fork_boundary_error("production hot-fork source world lost its lifecycle owner")
+        })?;
+        lifecycle
+            .inner
+            .backend_mut()
+            .prepared_hot_fork_source(prepared)
+            .map_err(|error| {
+                hot_fork_boundary_error(format!(
+                    "authenticate retained hot-fork source `{}`: {error}",
+                    node.name
+                ))
+            })
+    }
+
     /// Aborts every retained-template transaction and recovers the lifecycle.
     ///
     /// # Errors
@@ -402,6 +463,35 @@ pub struct ProductionVmHotForkWorldContinuation {
 }
 
 impl ProductionVmHotForkWorldContinuation {
+    fn try_clone_for_branch(&self) -> Result<Self, SchedulerError> {
+        let fault_checkpoint = self.fault_checkpoint.try_clone().map_err(|error| {
+            hot_fork_boundary_error(format!("clone production fault continuation: {error}"))
+        })?;
+
+        Ok(Self {
+            config: self.config.clone(),
+            configuration: self.configuration.clone(),
+            scheduler: self.scheduler.clone(),
+            event_log_objects: self.event_log_objects.clone(),
+            signal_artifact_objects: self.signal_artifact_objects.clone(),
+            trigger_state: self.trigger_state.clone(),
+            assertion_state: self.assertion_state.clone(),
+            terminal_verdict: self.terminal_verdict.clone(),
+            terminal_cause: self.terminal_cause.clone(),
+            initial_lifecycle_observations_pending: self.initial_lifecycle_observations_pending,
+            branch: self.branch.clone(),
+            recorded_controls: self.recorded_controls.clone(),
+            selectable_catalog_plans: self.selectable_catalog_plans.clone(),
+            fault_checkpoint,
+            node_generations: self.node_generations.clone(),
+            node_service_states: self.node_service_states.clone(),
+            immutable_root_images: self.immutable_root_images.clone(),
+            block_bindings: self.block_bindings.clone(),
+            ninep_bindings: self.ninep_bindings.clone(),
+            nodes: self.nodes.clone(),
+        })
+    }
+
     /// Returns the exact modeled configuration inherited by every child.
     #[must_use]
     pub const fn configuration(&self) -> &Configuration {
@@ -1037,6 +1127,11 @@ fn hot_fork_boundary_error(message: impl Into<String>) -> SchedulerError {
         message: message.into(),
     }
 }
+
+#[cfg(feature = "test-support")]
+mod test_support;
+#[cfg(feature = "test-support")]
+pub use test_support::prepared_hot_fork_source_world_for_test;
 
 #[cfg(test)]
 #[path = "hot_fork/tests.rs"]

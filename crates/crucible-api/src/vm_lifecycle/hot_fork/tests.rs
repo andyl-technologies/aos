@@ -166,6 +166,71 @@ fn permanently_failed_world_prepares_without_source_processes() {
 }
 
 #[test]
+fn source_world_forks_independent_process_neutral_continuations() {
+    let (_source, lifecycle) = permanently_failed_loop();
+    let mut source_world = lifecycle
+        .prepare_hot_fork_source_world()
+        .unwrap_or_else(|error| panic!("permanently failed world should prepare: {error}"));
+
+    let mut sibling = source_world
+        .fork_continuation()
+        .unwrap_or_else(|error| panic!("process-neutral continuation should fork: {error}"));
+    let node = sibling
+        .nodes
+        .first()
+        .unwrap_or_else(|| panic!("fixture should contain a World node"))
+        .node
+        .clone();
+    let original_generation = source_world
+        .continuation()
+        .node_generations
+        .get(&node)
+        .copied();
+    sibling.node_generations.insert(node.clone(), 99);
+
+    assert_eq!(
+        source_world
+            .continuation()
+            .node_generations
+            .get(&node)
+            .copied(),
+        original_generation
+    );
+    assert_eq!(
+        sibling.fault_checkpoint_identity(),
+        source_world.continuation().fault_checkpoint_identity()
+    );
+    assert!(source_world.recover().is_ok());
+}
+
+#[test]
+fn child_held_source_world_reference_prevents_lifecycle_recovery() {
+    struct ChildSourceOwner {
+        _source_world: std::sync::Arc<std::sync::Mutex<ProductionVmHotForkSourceWorld>>,
+    }
+
+    let (_source, lifecycle) = permanently_failed_loop();
+    let source_world = lifecycle
+        .prepare_hot_fork_source_world()
+        .unwrap_or_else(|error| panic!("permanently failed world should prepare: {error}"));
+    let source_world = std::sync::Arc::new(std::sync::Mutex::new(source_world));
+    let child = ChildSourceOwner {
+        _source_world: std::sync::Arc::clone(&source_world),
+    };
+
+    let source_world = std::sync::Arc::try_unwrap(source_world)
+        .err()
+        .unwrap_or_else(|| panic!("child reference must retain the source world"));
+    drop(child);
+    let source_world = std::sync::Arc::try_unwrap(source_world)
+        .unwrap_or_else(|_source_world| panic!("source world should recover after child release"))
+        .into_inner()
+        .unwrap_or_else(|_source_world| panic!("source-world lock should remain usable"));
+
+    assert!(source_world.recover().is_ok());
+}
+
+#[test]
 fn retained_service_state_without_process_authority_fails_before_preparation() {
     let (_source, mut lifecycle) = permanently_failed_loop();
     let node = lifecycle

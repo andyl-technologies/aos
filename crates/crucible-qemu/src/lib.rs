@@ -197,7 +197,7 @@ pub use launch::{
     QemuLaunchCommandError, QemuLaunchInheritedFds, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
     QemuLaunchResourceError, QemuLaunchResourceRequirements, QemuPreSpawnLaunchValidation,
     QemuPreSpawnLaunchValidationError, QemuQmpChannelConfig, QemuRootImageFormat,
-    QemuVmLaunchConfig, QemuWhiteboxSetupError, QemuWhiteboxSetupValidation,
+    QemuVmLaunchConfig, QemuWhiteboxSetupError, QemuWhiteboxSetupValidation, ROOT_DRIVE_ID,
     probe_x86_whitebox_setup, qemu_fault_target_hash, validate_aarch64_whitebox_setup,
     validate_pre_spawn_qemu_launch_args, validate_x86_whitebox_hmp_mtree,
 };
@@ -262,6 +262,8 @@ pub use node::{
 };
 #[cfg(target_os = "linux")]
 pub use node::{QemuProcessIdentity, linux_process_identity, quarantine_orphaned_qemu_process};
+#[cfg(all(target_os = "linux", feature = "test-support"))]
+pub use node::{QemuTestHotForkOutcome, scripted_hot_fork_source_for_test};
 #[cfg(target_os = "linux")]
 pub use node_factory::{
     QemuNodeFactoryError, QemuNodeFactoryRuntime, QemuNodeRestoreAdmission, QemuNodeRestorePlan,
@@ -270,10 +272,12 @@ pub use node_factory::{
     build_qemu_node_from_restored_checkpoint_paused, spawn_setup_and_restore_qemu_node,
 };
 #[cfg(target_os = "linux")]
-pub use node_set::{QemuNodeSetBlockBoundaryCheckpoint, QemuNodeSetPreparedHotForkTemplate};
+pub use node_set::QemuNodeSetPreparedHotForkSource;
 pub use node_set::{
     QemuNodeSelectablePendingRequest, QemuNodeSet, QemuNodeTerminalReplacementPlan,
 };
+#[cfg(target_os = "linux")]
+pub use node_set::{QemuNodeSetBlockBoundaryCheckpoint, QemuNodeSetPreparedHotForkTemplate};
 pub use production_fault_runtime::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint,
     ProductionFaultRuntimeCheckpointCodecError, ProductionFaultRuntimeError,
