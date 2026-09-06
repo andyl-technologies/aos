@@ -2018,11 +2018,6 @@ fn build_live_node_with_authority(
                     prepared: prepared.path().to_path_buf(),
                 });
             }
-            if config.whitebox == QemuLaunchPluginSwitch::On
-                && config.architecture == LivePluginGuestArchitecture::X86_64
-            {
-                return Err(QemuLiveNodeStepGateError::GuardedWhiteboxProbeUnavailable);
-            }
         }
     }
     let debug_guest_activation_listener = (config.whitebox == QemuLaunchPluginSwitch::On)
@@ -2065,7 +2060,22 @@ fn build_live_node_with_authority(
     let qmp_config = QemuQmpChannelConfig::new(GATE_QMP_SOCKET_FILE_NAME)
         .map_err(|source| QemuLiveNodeStepGateError::QmpChannelConfig { source })?;
     let vm = vm_launch_config(config, identity.node);
-    let plugin = live_node_plugin_config(config, &profile, &vm, run_directory, identity.node)?;
+    let guarded_probe = match &spawn_authority {
+        LiveNodeSpawnAuthority::Uncontained => None,
+        LiveNodeSpawnAuthority::Guarded {
+            run_directory,
+            process_contract,
+            ..
+        } => Some((*run_directory, *process_contract)),
+    };
+    let plugin = live_node_plugin_config(
+        config,
+        &profile,
+        &vm,
+        run_directory,
+        identity.node,
+        guarded_probe,
+    )?;
     let mut command = match (
         &config.fault_capabilities,
         &config.exact_gate_fault_manifests,

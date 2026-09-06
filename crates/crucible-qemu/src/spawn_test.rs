@@ -5,7 +5,7 @@ use std::error::Error;
 use std::io::{self, Read, Write};
 use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,6 +26,9 @@ const ENV_CLEAR_PARENT_PROBE: &str = "CRUCIBLE_QEMU_SPAWN_ENV_CLEAR_PARENT_PROBE
 const ENV_CLEAR_CHILD_PROBE: &str = "CRUCIBLE_QEMU_SPAWN_ENV_CLEAR_CHILD_PROBE";
 const INHERITED_ENV_SENTINEL: &str = "CRUCIBLE_QEMU_SPAWN_INHERITED_SENTINEL";
 const EXPLICIT_ENV_SENTINEL: &str = "CRUCIBLE_QEMU_SPAWN_EXPLICIT_SENTINEL";
+const DESCENDANT_SUPERVISOR_ENV: &str = "CRUCIBLE_QEMU_DESCENDANT_SUPERVISOR";
+const GUARDED_PROBE_CHILD_MARKER: &str = "guarded-probe-child";
+const GUARDED_PROBE_DESCENDANT_PID: &str = "guarded-probe-descendant.pid";
 static TEMP_DIR_SUFFIX: AtomicU64 = AtomicU64::new(0);
 
 fn pipe_pair() -> io::Result<(OwnedFd, OwnedFd)> {
@@ -235,6 +238,122 @@ fn guarded_image_helper_observes_sticky_cancellation_before_exec() -> Result<(),
     std::fs::File::from(cgroup_read).read_exact(&mut placements)?;
     assert_eq!(&placements, b"0\n0\n");
     Ok(())
+}
+
+#[test]
+fn guarded_probe_times_out_and_reaps_a_live_child() -> Result<(), Box<dyn Error>> {
+    let fixture = GuardedProbeFixture::new(
+        "spawn::tests::guarded_probe_timeout_child",
+        ProbeChildDirectoryAccess::ReadOnly,
+    )?;
+    let error = fixture.run(1024, Duration::from_millis(100))?;
+
+    assert!(matches!(
+        error.source,
+        QemuSpawnError::GuardedQemuProbeTimeout
+    ));
+    assert!(error.child.is_none());
+    Ok(())
+}
+
+#[test]
+fn guarded_probe_bounds_a_flooding_output_stream() -> Result<(), Box<dyn Error>> {
+    let fixture = GuardedProbeFixture::new(
+        "spawn::tests::guarded_probe_flood_child",
+        ProbeChildDirectoryAccess::ReadOnly,
+    )?;
+    let error = fixture.run(1024, Duration::from_secs(2))?;
+
+    assert!(matches!(
+        error.source,
+        QemuSpawnError::GuardedQemuProbeOutputLimit {
+            maximum_bytes: 1024
+        }
+    ));
+    assert!(error.child.is_none());
+    Ok(())
+}
+
+#[test]
+fn guarded_probe_deadline_survives_descendant_held_output_pipes() -> Result<(), Box<dyn Error>> {
+    if env::var_os(DESCENDANT_SUPERVISOR_ENV).is_none() {
+        let current_executable = env::current_exe()?;
+        let output = Command::new(current_executable)
+            .arg("--exact")
+            .arg("spawn::tests::guarded_probe_deadline_survives_descendant_held_output_pipes")
+            .env(DESCENDANT_SUPERVISOR_ENV, "1")
+            .output()?;
+        assert!(
+            output.status.success(),
+            "descendant supervisor failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return Ok(());
+    }
+
+    // The exact-test subprocess is dedicated to this regression, so adopting
+    // its orphaned helper cannot capture unrelated children.
+    rustix::process::set_child_subreaper(Some(rustix::process::Pid::INIT))?;
+    let fixture = GuardedProbeFixture::new(
+        "spawn::tests::guarded_probe_descendant_launcher_child",
+        ProbeChildDirectoryAccess::WritablePidFile,
+    )?;
+    let error = fixture.run(1024, Duration::from_millis(100))?;
+    let descendant_pid = fixture.descendant_pid()?;
+    let descendant = AdoptedDescendant::new(descendant_pid);
+
+    assert!(matches!(
+        error.source,
+        QemuSpawnError::GuardedQemuProbeTimeout
+    ));
+    assert!(error.child.is_none());
+    descendant.terminate_and_reap()?;
+    Ok(())
+}
+
+#[test]
+fn guarded_probe_timeout_child() -> Result<(), Box<dyn Error>> {
+    if probe_child_is_active() {
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    Ok(())
+}
+
+#[test]
+fn guarded_probe_flood_child() -> Result<(), Box<dyn Error>> {
+    if probe_child_is_active() {
+        io::stdout().write_all(&[b'x'; 4096])?;
+    }
+    Ok(())
+}
+
+#[test]
+fn guarded_probe_descendant_launcher_child() -> Result<(), Box<dyn Error>> {
+    if !probe_child_is_active() {
+        return Ok(());
+    }
+
+    let descendant = Command::new(env::current_exe()?)
+        .arg("--exact")
+        .arg("spawn::tests::guarded_probe_descendant_pipe_holder_child")
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+    std::fs::write(GUARDED_PROBE_DESCENDANT_PID, descendant.id().to_string())?;
+    Ok(())
+}
+
+#[test]
+fn guarded_probe_descendant_pipe_holder_child() -> Result<(), Box<dyn Error>> {
+    if probe_child_is_active() {
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    Ok(())
+}
+
+fn probe_child_is_active() -> bool {
+    Path::new(GUARDED_PROBE_CHILD_MARKER).is_file()
 }
 
 #[test]
@@ -1204,6 +1323,128 @@ fn unique_temp_run_directory(prefix: &str) -> Result<PathBuf, Box<dyn Error>> {
     ));
     std::fs::create_dir(&path)?;
     Ok(path)
+}
+
+struct GuardedProbeFixture {
+    directory: tempfile::TempDir,
+    _cgroup_read: OwnedFd,
+    command: QemuLaunchCommand,
+    contract: QemuChildProcessContract,
+    prepared: QemuPreparedRunDirectory,
+    args: Vec<String>,
+}
+
+impl GuardedProbeFixture {
+    fn new(
+        child_test: &str,
+        directory_access: ProbeChildDirectoryAccess,
+    ) -> Result<Self, Box<dyn Error>> {
+        let executable = env::current_exe()?;
+        let command = guarded_resource_test_command()?
+            .with_test_executable(executable.to_string_lossy().into_owned());
+        let (cgroup_read, cgroup_write) = pipe_pair()?;
+        let cancellation = event_fd_for_test()?;
+        let contract = QemuChildProcessContract::for_test(
+            cgroup_write,
+            cancellation,
+            current_file_size_limit()?,
+        );
+        let directory = tempfile::tempdir()?;
+        std::fs::File::create(directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
+        std::fs::File::create(directory.path().join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME))?;
+        std::fs::File::create(directory.path().join(GUARDED_PROBE_CHILD_MARKER))?;
+        if directory_access == ProbeChildDirectoryAccess::WritablePidFile {
+            let pid_file = directory.path().join(GUARDED_PROBE_DESCENDANT_PID);
+            std::fs::File::create(&pid_file)?;
+            std::fs::set_permissions(pid_file, std::fs::Permissions::from_mode(0o666))?;
+        }
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o711))?;
+        let prepared =
+            QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
+        let args = vec![String::from("--exact"), child_test.to_owned()];
+        Ok(Self {
+            directory,
+            _cgroup_read: cgroup_read,
+            command,
+            contract,
+            prepared,
+            args,
+        })
+    }
+
+    fn run(
+        &self,
+        maximum_output_bytes: usize,
+        timeout: Duration,
+    ) -> Result<QemuGuardedImagePreparationError, Box<dyn Error>> {
+        match run_guarded_qemu_setup_probe(
+            &self.command,
+            &self.args,
+            &[],
+            maximum_output_bytes,
+            timeout,
+            &self.prepared,
+            &self.contract,
+        ) {
+            Err(error) => Ok(error),
+            Ok(output) => Err(format!(
+                "guarded probe unexpectedly succeeded with status {}",
+                output.status
+            )
+            .into()),
+        }
+    }
+
+    fn descendant_pid(&self) -> Result<rustix::process::Pid, Box<dyn Error>> {
+        let pid =
+            std::fs::read_to_string(self.directory.path().join(GUARDED_PROBE_DESCENDANT_PID))?;
+        let pid = pid.parse::<i32>()?;
+        rustix::process::Pid::from_raw(pid).ok_or_else(|| "descendant reported PID zero".into())
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProbeChildDirectoryAccess {
+    ReadOnly,
+    WritablePidFile,
+}
+
+struct AdoptedDescendant {
+    pid: Option<rustix::process::Pid>,
+}
+
+impl AdoptedDescendant {
+    const fn new(pid: rustix::process::Pid) -> Self {
+        Self { pid: Some(pid) }
+    }
+
+    fn terminate_and_reap(mut self) -> rustix::io::Result<()> {
+        if let Some(pid) = self.pid.take() {
+            terminate_and_reap_adopted_descendant(pid)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for AdoptedDescendant {
+    fn drop(&mut self) {
+        if let Some(pid) = self.pid.take() {
+            let _ = terminate_and_reap_adopted_descendant(pid);
+        }
+    }
+}
+
+fn terminate_and_reap_adopted_descendant(pid: rustix::process::Pid) -> rustix::io::Result<()> {
+    if let Err(error) = rustix::process::kill_process(pid, rustix::process::Signal::KILL)
+        && error != rustix::io::Errno::SRCH
+    {
+        return Err(error);
+    }
+
+    match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty())? {
+        Some((waited, _status)) if waited == pid => Ok(()),
+        _ => Err(rustix::io::Errno::CHILD),
+    }
 }
 
 fn wide_test_process_contract() -> Result<QemuChildProcessContract, Box<dyn Error>> {
