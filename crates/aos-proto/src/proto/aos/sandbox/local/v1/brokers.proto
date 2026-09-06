@@ -371,6 +371,8 @@ message ApplyMountRequest {
   uint64 source_generation = 10; // Nonzero for every action.
   // Exact payload mount-namespace generation; changes across internal reboot.
   uint64 namespace_generation = 11; // Nonzero for every action.
+  // Exact desired attachment generation; distinguishes recipe-identical replacements.
+  uint64 attachment_generation = 12; // Nonzero for every action.
 }
 
 // Mount 1.2 read-only preparation. The nested Mount request selects the exact
@@ -396,6 +398,7 @@ message MountResult {
   uint64 source_generation = 5;
   MountState state = 6;
   BrokerError error = 7;
+  uint64 attachment_generation = 8;
 }
 
 enum MountState {
@@ -424,6 +427,7 @@ message MountRecipe {
   Descriptor view_revision = 3;
   uint64 source_generation = 4;
   MountAttributes attributes = 5;
+  uint64 attachment_generation = 6;
 }
 
 // Kernel identity observed for an installed mount. Paths are raw, NUL-free

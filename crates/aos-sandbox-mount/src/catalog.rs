@@ -120,6 +120,7 @@ struct MountCatalogEntry {
     view_revision: ObjectDescriptor,
     source_generation: u64,
     namespace_generation: u64,
+    attachment_generation: u64,
     source_path: String,
     mount_namespace_path: String,
     user_namespace_path: String,
@@ -446,7 +447,7 @@ fn catalog_authorization_commitment(
 ) -> Result<MountCatalogCommitmentV1> {
     let bytes = catalog_authorization_bytes(
         b"AOSMCAT1",
-        1,
+        2,
         generation,
         entry,
         &[],
@@ -472,7 +473,7 @@ fn prepared_catalog_authorization_commitment(
     host_binding.extend_from_slice(&binding.payload_scope_handle);
     let bytes = catalog_authorization_bytes(
         b"AOSMCAT2",
-        2,
+        3,
         generation,
         entry,
         &host_binding,
@@ -518,6 +519,7 @@ fn catalog_authorization_bytes(
     bytes.extend_from_slice(&entry.destination_slot_id);
     bytes.extend_from_slice(&entry.source_generation.to_be_bytes());
     bytes.extend_from_slice(&entry.namespace_generation.to_be_bytes());
+    bytes.extend_from_slice(&entry.attachment_generation.to_be_bytes());
     bytes.extend_from_slice(&media_length.to_be_bytes());
     bytes.extend_from_slice(media_type);
     bytes.extend_from_slice(entry.view_revision.digest().as_bytes());
@@ -605,6 +607,7 @@ impl MountCatalogEntry {
             || self.destination_slot_id == [0; 16]
             || self.source_generation == 0
             || self.namespace_generation == 0
+            || self.attachment_generation == 0
         {
             return Err(MountError::State(
                 "mount catalog entry contains a sentinel".to_owned(),
@@ -655,6 +658,7 @@ impl MountCatalogEntry {
                 .is_none_or(|revision| revision == &self.view_revision)
             && self.source_generation == request.source_generation()
             && self.namespace_generation == request.namespace_generation()
+            && self.attachment_generation == request.attachment_generation()
     }
 }
 
@@ -747,6 +751,7 @@ mod tests {
             view_revision: descriptor,
             source_generation: 1,
             namespace_generation: 1,
+            attachment_generation: 1,
             source_path: "pins/source".to_owned(),
             mount_namespace_path: "pins/mntns".to_owned(),
             user_namespace_path: "pins/userns".to_owned(),
@@ -809,6 +814,21 @@ mod tests {
             catalog_authorization_commitment(
                 1,
                 &changed_path,
+                directory(1, 1),
+                namespace(1, 2),
+                namespace(1, 3),
+                directory(1, 4),
+                directory(1, 5),
+            )
+            .unwrap(),
+            commitment
+        );
+        let mut changed_attachment_generation = entry.clone();
+        changed_attachment_generation.attachment_generation += 1;
+        assert_ne!(
+            catalog_authorization_commitment(
+                1,
+                &changed_attachment_generation,
                 directory(1, 1),
                 namespace(1, 2),
                 namespace(1, 3),

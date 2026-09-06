@@ -596,6 +596,7 @@ mod tests {
             })
             .into(),
             source_generation: 11,
+            attachment_generation: 12,
             attributes: Some(MountAttributes {
                 read_only: true,
                 no_exec: true,

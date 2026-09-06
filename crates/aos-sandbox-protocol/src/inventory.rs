@@ -99,6 +99,7 @@ pub struct ValidatedMountRecipe {
     view_revision: ObjectDescriptor,
     source_generation: u64,
     attributes: ValidatedMountAttributes,
+    attachment_generation: u64,
 }
 
 impl ValidatedMountRecipe {
@@ -130,6 +131,12 @@ impl ValidatedMountRecipe {
     #[must_use]
     pub const fn attributes(&self) -> ValidatedMountAttributes {
         self.attributes
+    }
+
+    /// Returns the desired attachment generation that created this resource.
+    #[must_use]
+    pub const fn attachment_generation(&self) -> u64 {
+        self.attachment_generation
     }
 }
 
@@ -864,6 +871,10 @@ fn validate_recipe(value: &MountRecipe) -> Result<ValidatedMountRecipe, Protocol
         value.source_generation,
         "inventory.recipe.source_generation",
     )?;
+    let attachment_generation = nonzero(
+        value.attachment_generation,
+        "inventory.recipe.attachment_generation",
+    )?;
     let attributes = validate_mount_attributes(value.attributes.as_option().ok_or(
         ProtocolValidationError::MissingField("inventory.recipe.attributes"),
     )?)?;
@@ -873,6 +884,7 @@ fn validate_recipe(value: &MountRecipe) -> Result<ValidatedMountRecipe, Protocol
         view_revision,
         source_generation,
         attributes,
+        attachment_generation,
     })
 }
 
@@ -1133,6 +1145,7 @@ mod tests {
             destination_slot_id: vec![10; 16],
             view_revision: Some(revision).into(),
             source_generation: 11,
+            attachment_generation: 13,
             attributes: Some(attributes).into(),
             ..Default::default()
         };
@@ -1228,6 +1241,7 @@ mod tests {
         assert_eq!(record.binding().fence().assignment_epoch(), 3);
         assert_eq!(record.binding().namespace_generation(), 6);
         assert_eq!(record.recipe().attachment_id(), &[9; 16]);
+        assert_eq!(record.recipe().attachment_generation(), 13);
         assert_eq!(record.resource_kernel_boot_id(), &[16; 16]);
         assert_eq!(record.detached_unique_mount_id(), Some(101));
         assert_eq!(

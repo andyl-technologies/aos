@@ -10,7 +10,7 @@
 //! The serialized value is a versioned JSON envelope:
 //!
 //! ```text
-//! {"version":1,"resource":{...}}
+//! {"version":2,"resource":{...}}
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::{MountError, Result};
 
 const KEY_PREFIX: &[u8] = b"aos.mount.resource.v1\0";
-const FORMAT_VERSION: u16 = 1;
+const FORMAT_VERSION: u16 = 2;
 
 /// Opaque, stable identity of one broker-owned mount resource.
 pub(crate) type MountHandleV1 = [u8; 32];
@@ -192,6 +192,7 @@ pub(crate) struct MountRecipeV1 {
     pub(crate) destination_slot_id: [u8; 16],
     pub(crate) view_revision: ObjectDescriptorV1,
     pub(crate) source_generation: u64,
+    pub(crate) attachment_generation: u64,
     pub(crate) policy: MountPolicyV1,
 }
 
@@ -730,6 +731,7 @@ impl MountResourceV1 {
             || self.recipe.attachment_id == [0; 16]
             || self.recipe.destination_slot_id == [0; 16]
             || self.recipe.source_generation == 0
+            || self.recipe.attachment_generation == 0
         {
             return Err(state_error("mount resource contains a sentinel identity"));
         }
@@ -1582,6 +1584,7 @@ mod tests {
                     encoded_size: 10,
                 },
                 source_generation: 11,
+                attachment_generation: 12,
                 policy: policy(),
             },
             state: MountResourceStateV1::Allocated {
@@ -2229,6 +2232,14 @@ mod tests {
         let mut sentinel_key = resource(50, 4, None);
         sentinel_key.fd_store_key = [0; 32];
         assert!(table.plan_allocate(&sentinel_key).is_err());
+    }
+
+    #[test]
+    fn attachment_generation_is_nonzero_durable_identity() {
+        let mut sentinel_generation = resource(51, 4, None);
+        sentinel_generation.recipe.attachment_generation = 0;
+
+        assert!(table().plan_allocate(&sentinel_generation).is_err());
     }
 
     #[test]

@@ -416,6 +416,7 @@ fn compile_plan(
         roles: DescriptorRoles::for_action(action),
         source_generation: request.source_generation(),
         namespace_generation: request.namespace_generation(),
+        attachment_generation: request.attachment_generation(),
         attachment_id: *request.attachment_id(),
         destination_slot_id: *request.destination_slot_id(),
         request_digest,

@@ -235,6 +235,7 @@ fn validate_resource_matches_request(
         || recipe.attachment_id() != request.attachment_id()
         || recipe.destination_slot_id() != request.destination_slot_id()
         || recipe.source_generation() != request.source_generation()
+        || recipe.attachment_generation() != request.attachment_generation()
         || request
             .view_revision()
             .is_some_and(|revision| recipe.view_revision() != revision)
@@ -496,6 +497,7 @@ mod tests {
                 .into(),
             source_generation: 11,
             namespace_generation: 6,
+            attachment_generation: 12,
             ..Default::default()
         };
         let bytes = wire.encode_to_vec();
@@ -594,6 +596,7 @@ mod tests {
             })
             .into(),
             source_generation: 11,
+            attachment_generation: 12,
             attributes: Some(MountAttributes {
                 read_only: true,
                 no_exec: true,
@@ -827,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn resource_identity_substitution_fails_before_classification() {
+    fn attachment_generation_substitution_fails_before_classification() {
         let (body, validated) = request(MountAction::MOUNT_ACTION_INSTALL);
         let resource = resource(
             validated.action(),
@@ -836,7 +839,7 @@ mod tests {
             true,
         );
         let mut wire = ApplyMountRequest::decode_from_slice(&body).unwrap();
-        wire.source_generation += 1;
+        wire.attachment_generation += 1;
         let changed = wire.encode_to_vec();
         let wrong_request = decode_mount_request(
             &changed,

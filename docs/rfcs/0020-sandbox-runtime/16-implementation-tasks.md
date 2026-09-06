@@ -2782,3 +2782,31 @@ and 14 doctests; all 186 core unit tests and its 3 doctests also pass. Strict
 all-target/all-feature Clippy passes for both changed crates. The hermetic
 `checks.eval` gate passes its release build, full workspace tests,
 configuration evaluation, and system structure checks.
+
+### Attachment-generation Mount fence
+
+Every Mount operation and broker-owned resource now carries the nonzero desired
+attachment generation independently from the source-view and payload-namespace
+generations. The generation is part of request validation, portable signed
+semantics, root-owned catalog matching and commitments, the broker's immutable
+durable recipe, sealed helper plans, success receipts, authoritative inventory,
+and controller attempt correlation. A replacement that deliberately keeps the
+same view, source revision, slot, and mount attributes therefore remains
+distinguishable from its predecessor after controller or broker restart.
+
+The changed canonical Mount semantics, static and Host-backed catalog
+commitments, sealed helper plans, and durable broker-resource envelope advance
+their embedded format versions. Zero generations and request/result/inventory
+substitution fail closed, and older durable resource envelopes are not silently
+decoded under the stronger schema. This corrects the Mount 1.2 schema on this
+unmerged implementation branch; it does not claim a migration path from an
+already deployed Mount resource journal.
+
+Validation passes all 264 sandbox unit tests, its downstream public API test,
+and 14 doctests; all 63 Mount unit tests, its helper-spawn integration test, and
+2 doctests; and all 73 protocol unit tests and its doctest. Strict
+all-target/all-feature Clippy passes for all three changed crates. The hermetic
+`checks.eval` build completed the release and test compilation and ran all
+4,514 workspace tests, with 4,513 passing. Its only failure was the unrelated
+OCI distribution upload-cancellation retry-window test; that exact test passes
+when rerun alone, and this increment does not change Hub or OCI code.

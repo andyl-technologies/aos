@@ -13,7 +13,7 @@ use aos_sandbox_core::{
 use crate::{ValidatedMountAttributes, ValidatedMountRequest};
 
 const FORMAT_MAGIC: &[u8; 8] = b"AOSMSEM1";
-const FORMAT_VERSION: u16 = 1;
+const FORMAT_VERSION: u16 = 2;
 const MAXIMUM_DESCRIPTOR_ROLES: usize = 16;
 const MAXIMUM_CANONICAL_BYTES: usize = 2 * 1024;
 
@@ -137,6 +137,7 @@ pub fn canonical_mount_semantics_v1(
         request.replacement_mount_handle().map(<[u8; 32]>::as_slice),
     )?;
     encoder.roles(18, descriptor_roles)?;
+    encoder.field(19, &request.attachment_generation().to_be_bytes())?;
     let bytes = encoder.finish();
     Ok(CanonicalMountSemanticsV1 {
         commitment: BrokerArgumentCommitment::for_canonical_bytes(&bytes),

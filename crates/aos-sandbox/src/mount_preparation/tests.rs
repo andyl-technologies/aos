@@ -34,6 +34,7 @@ fn create_intent() -> ApplyMountRequest {
         })
         .into(),
         source_generation: 7,
+        attachment_generation: 8,
         ..Default::default()
     }
 }
@@ -92,6 +93,7 @@ fn intent_rejects_release_and_invalid_mount_shapes() {
         destination_slot_id: vec![4; 16],
         detached_mount_handle: vec![6; 32],
         source_generation: 7,
+        attachment_generation: 8,
         ..Default::default()
     };
     assert!(matches!(

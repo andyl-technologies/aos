@@ -764,6 +764,7 @@ fn allocated_resource(
             destination_slot_id: *request.destination_slot_id(),
             view_revision: ObjectDescriptorV1::from_runtime(descriptor)?,
             source_generation: request.source_generation(),
+            attachment_generation: request.attachment_generation(),
             policy: mount_policy(attributes),
         },
         state: MountResourceStateV1::Allocated { creation },
@@ -839,6 +840,7 @@ fn validate_request_resource(
         || resource.recipe.attachment_id != *request.attachment_id()
         || resource.recipe.destination_slot_id != *request.destination_slot_id()
         || resource.recipe.source_generation != request.source_generation()
+        || resource.recipe.attachment_generation != request.attachment_generation()
         || !attributes_match
         || !view_matches
     {
@@ -1284,6 +1286,7 @@ fn encode_result(
             )
             .into(),
         source_generation: request.source_generation(),
+        attachment_generation: request.attachment_generation(),
         state: observation.state.into(),
         ..Default::default()
     };
@@ -1571,6 +1574,7 @@ fn inventory_recipe(value: &MountRecipeV1) -> MountRecipe {
         })
         .into(),
         source_generation: value.source_generation,
+        attachment_generation: value.attachment_generation,
         attributes: Some(MountAttributes {
             read_only: value
                 .policy
@@ -2399,6 +2403,7 @@ mod tests {
             .into(),
             source_generation: 1,
             namespace_generation: 1,
+            attachment_generation: 1,
             ..Default::default()
         }
         .encode_to_vec()
@@ -2578,7 +2583,7 @@ mod tests {
 
     #[test]
     fn signed_authority_rejects_wrong_signature_body_and_catalog_substitution() {
-        for attack in ["signature", "body", "catalog"] {
+        for attack in ["signature", "body", "attachment-generation", "catalog"] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join(format!("{attack}.journal"));
             let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
@@ -2593,6 +2598,10 @@ mod tests {
             let presented = if attack == "body" {
                 let mut substituted = ApplyMountRequest::decode_from_slice(&original).unwrap();
                 substituted.source_generation += 1;
+                substituted.encode_to_vec()
+            } else if attack == "attachment-generation" {
+                let mut substituted = ApplyMountRequest::decode_from_slice(&original).unwrap();
+                substituted.attachment_generation += 1;
                 substituted.encode_to_vec()
             } else {
                 original

@@ -27,6 +27,7 @@ pub struct ValidatedMountResult {
     installed_mount_handle: Option<[u8; 32]>,
     view_revision: Option<ObjectDescriptor>,
     source_generation: u64,
+    attachment_generation: u64,
     state: MountState,
 }
 
@@ -61,6 +62,12 @@ impl ValidatedMountResult {
         self.source_generation
     }
 
+    /// Returns the desired attachment generation reproduced by Mount.
+    #[must_use]
+    pub const fn attachment_generation(&self) -> u64 {
+        self.attachment_generation
+    }
+
     /// Returns the action-dependent state observed by the broker.
     #[must_use]
     pub const fn state(&self) -> MountState {
@@ -79,7 +86,7 @@ impl ValidatedMountResult {
 ///
 /// Returns [`ProtocolValidationError`] for oversized or malformed bytes,
 /// unknown fields or enums, an inner method error, Apply-body substitution,
-/// mismatched attachment/view/source fields, or an invalid action-specific
+/// mismatched attachment/view/source/generation fields, or an invalid action-specific
 /// handle and state shape.
 pub fn decode_mount_result_for_apply(
     bytes: &[u8],
@@ -124,6 +131,7 @@ pub fn decode_mount_result_for_apply(
     if attachment_id != *request.attachment_id()
         || view_revision.as_ref() != request.view_revision()
         || result.source_generation != request.source_generation()
+        || result.attachment_generation != request.attachment_generation()
     {
         return Err(ProtocolValidationError::InvalidField(
             "mount result request binding",
@@ -144,6 +152,7 @@ pub fn decode_mount_result_for_apply(
         installed_mount_handle,
         view_revision,
         source_generation: result.source_generation,
+        attachment_generation: result.attachment_generation,
         state,
     })
 }
@@ -307,6 +316,7 @@ mod tests {
                 .into(),
             source_generation: 13,
             namespace_generation: 14,
+            attachment_generation: 15,
             ..Default::default()
         };
         let bytes = request.encode_to_vec();
@@ -366,6 +376,7 @@ mod tests {
                 })
                 .into(),
             source_generation: 13,
+            attachment_generation: 15,
             state: state.into(),
             ..Default::default()
         }
@@ -386,6 +397,7 @@ mod tests {
 
             assert_eq!(decoded.attachment_id(), &[7; 16]);
             assert_eq!(decoded.source_generation(), 13);
+            assert_eq!(decoded.attachment_generation(), 15);
         }
     }
 
@@ -403,6 +415,8 @@ mod tests {
         wrong_view.view_revision.get_or_insert_default().sha256 = vec![24; 32];
         let mut wrong_generation = baseline.clone();
         wrong_generation.source_generation = 25;
+        let mut wrong_attachment_generation = baseline.clone();
+        wrong_attachment_generation.attachment_generation = 26;
         let mut wrong_state = baseline;
         wrong_state.state = MountState::MOUNT_STATE_INSTALLED.into();
 
@@ -411,6 +425,7 @@ mod tests {
             wrong_handle,
             wrong_view,
             wrong_generation,
+            wrong_attachment_generation,
             wrong_state,
         ] {
             assert!(

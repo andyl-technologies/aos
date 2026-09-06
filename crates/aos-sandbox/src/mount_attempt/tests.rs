@@ -129,6 +129,7 @@ fn request(assignment: BrokerAssignment, deadline: u64) -> ApplyMountRequest {
         .into(),
         source_generation: 7,
         namespace_generation: 9,
+        attachment_generation: 10,
         ..Default::default()
     }
 }
@@ -325,6 +326,7 @@ fn successful_receipt(record: &Record) -> Vec<u8> {
         detached_mount_handle: detached_handle.to_vec(),
         view_revision: view_revision.into(),
         source_generation: request.source_generation(),
+        attachment_generation: request.attachment_generation(),
         state: MountState::MOUNT_STATE_DETACHED.into(),
         ..Default::default()
     }
