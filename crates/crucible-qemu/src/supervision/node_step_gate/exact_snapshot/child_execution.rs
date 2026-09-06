@@ -24,6 +24,7 @@ use super::child_files::{
     describe_retained_child_diagnostics, file_identity, invariant, launch_guarded_source,
     qmp_operation, realization, verify_child_placement, wait_for_child_exit,
 };
+use super::child_measure::{elapsed_milliseconds, monotonic_nanoseconds};
 use super::{
     advance_to_observable_suffix, copy_exact_gate_artifact, exact_gate_checkpoint,
     fingerprint_sample_mismatch_components, source_set::require_vmstate_source, *,
@@ -60,6 +61,12 @@ pub struct QemuLiveHotForkChildExecutionReport {
     pub child_suffix_fingerprint: String,
     /// Execution fingerprint the exact restore reported at the same boundary.
     pub restore_suffix_fingerprint: String,
+    /// Milliseconds from the fork call until the child stood installed at the
+    /// captured boundary with its fingerprint read.
+    pub fork_ready_ms: u64,
+    /// Milliseconds the fresh process took to launch and restore the same
+    /// snapshot to the captured boundary.
+    pub exact_restore_ms: u64,
 }
 
 /// Process control for a flight-owned child whose status the source reaps.
@@ -326,6 +333,7 @@ pub fn run_qemu_live_hot_fork_child_execution_gate(
         )
         .map_err(|source| qmp_operation("stage child-private VMState destination", source))?;
 
+    let fork_started = monotonic_nanoseconds();
     let forked = node.fork_prepared_hot_fork_template_into(&mut target_owner, |owner| {
         owner.process_contract().map_err(|source| {
             QemuNodeChannelError::new(
@@ -408,6 +416,7 @@ pub fn run_qemu_live_hot_fork_child_execution_gate(
     // A child that dies here leaves its last words on the diagnostics
     // stream, so every read reports through it.
     let boundary = read_child_boundary(&mut child);
+    let fork_ready_ms = elapsed_milliseconds(fork_started);
     let (child_boundary_icount, child_boundary_fingerprint, child_boundary_sample) = match boundary
     {
         Ok((icount, fingerprint, sample)) => (icount, fingerprint.hash, sample),
@@ -472,6 +481,7 @@ pub fn run_qemu_live_hot_fork_child_execution_gate(
     // Oracle: a fresh process restores the captured snapshot and advances to
     // the child's suffix boundary.
     let restore_config = config.clone().with_run_directory(&restore_directory);
+    let restore_started = monotonic_nanoseconds();
     let mut restored = launch_qemu_live_node_exact_snapshot(
         &restore_config,
         &restore_directory,
@@ -484,6 +494,7 @@ pub fn run_qemu_live_hot_fork_child_execution_gate(
         .current_icount()
         .map_err(|source| QemuLiveNodeStepGateError::node_op("read restored icount", source))?
         .retired;
+    let exact_restore_ms = elapsed_milliseconds(restore_started);
     if restored_icount != capture_icount {
         return Err(invariant(&format!(
             "exact restore boundary {restored_icount} differs from capture {capture_icount}"
@@ -567,5 +578,7 @@ pub fn run_qemu_live_hot_fork_child_execution_gate(
         suffix_icount,
         child_suffix_fingerprint: child_suffix_fingerprint.to_hex(),
         restore_suffix_fingerprint: restore_suffix_fingerprint.to_hex(),
+        fork_ready_ms,
+        exact_restore_ms,
     })
 }

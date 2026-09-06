@@ -60,6 +60,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("source_vmstate_unchanged=true");
     println!("children_forked={}", report.children_forked);
+    println!("source_threads={}", report.source_threads);
+    println!("source_descriptors={}", report.source_descriptors);
+    println!("source_threads_leaked={}", report.source_threads_leaked);
+    println!(
+        "source_descriptors_leaked={}",
+        report.source_descriptors_leaked
+    );
+    println!(
+        "source_private_dirty_growth_kib={}",
+        report.source_private_dirty_growth_kib
+    );
+    println!("max_fork_ms={}", report.max_fork_ms);
+    println!("max_ready_ms={}", report.max_ready_ms);
+    println!("child_threads={}", report.child_threads);
+    println!("child_descriptors={}", report.child_descriptors);
+    println!("child_private_dirty_kib={}", report.child_private_dirty_kib);
     println!("whole_world_child_handoff=false");
     Ok(())
 }
