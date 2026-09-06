@@ -3759,6 +3759,18 @@
         '';
       };
     }
+    {
+      patch = "0235-crucible-release-stages-under-retained-template.patch";
+      check = certifyExactPatch {
+        patchName = "0235-crucible-release-stages-under-retained-template.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "stage-release-under-retained-template";
+        liveEvidence = ''
+          grep -Fxq 'patch=0235-crucible-release-stages-under-retained-template.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

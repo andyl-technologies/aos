@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "6d89269105267e0bfac7ad4bc8e738a57efe9d0142e8586d54aaa59d5ec26196";
+  patchBranchBundleSha256 = "11acd6fdb46b85b871e9666b55dd999074c20a3e627263e0925238c816b50734";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "662508040ae24c244d9852c41c1ded3a24c1f236";
+  patchBranchHeadCommit = "dc7ec30f2cbd79726aef9bdc20d8da018fc746bf";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -2275,6 +2275,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-22";
       capability = "a hot-fork template marks every RAM block's host memory MADV_DOFORK before it holds its barriers, so a fork child inherits guest RAM as private copy-on-write pages, and restores the MADV_DONTFORK that RAM block creation applies when the template completes; the change is refused under KVM, which needs MADV_DONTFORK, and skipped for a qtest server, which never applied it; the live guarded fork flight lost the child to a fault on the first guest page its VMState save read before this change";
+    }
+    {
+      file = "0235-crucible-release-stages-under-retained-template.patch";
+      branchSubject = "crucible: admit child stage release while a template is retained";
+      branchCommit = "dc7ec30f2cbd79726aef9bdc20d8da018fc746bf";
+      branchTree = "011894bd61b1457716ab56bdd55f3608ceaa6cad";
+      catalogName = "crucible-stage-release-under-retained-template";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the private-ring, diagnostics, child-QMP, child-console, and plugin endpoint stages may be released while a template is retained at its barrier phase and no fork operation is active, so a stage the last fork consumed gives way to the next child's and an unconsumed one can be withdrawn; release during a fork operation or a transitional template phase still fails closed, and the ordering rules between stages are unchanged; the live guarded fork flight could not release the plugin endpoints for a second child before this change";
     }
   ];
   catalogOnlyCapabilities = [

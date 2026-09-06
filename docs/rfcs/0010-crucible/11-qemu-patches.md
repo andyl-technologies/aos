@@ -4353,6 +4353,24 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   KVM-accelerated QEMU cannot retain a template at all.
 - **Risk:** F.
 
+### crucible-stage-release-under-retained-template — admit child stage release while a template is retained
+
+- **Patch:** `0235-crucible-release-stages-under-retained-template.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** every child stage release refused any retained template,
+  which admitted exactly one child per template. One helper now refuses a
+  release only during a fork operation or a transitional template phase;
+  a template retained at its barrier phase lets a consumed or unconsumed
+  stage go, and the template's readiness proofs recompute from the stages
+  that remain, returning it to the exact state the next child's staging
+  requires.
+- **Micro-test:** the readiness gate keeps proving the stage ordering
+  rejections; the live guarded fork flight forks three children in sequence
+  from one template.
+- **Inertness:** a source with no retained template releases as before; the
+  ordering between stages is unchanged.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

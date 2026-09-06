@@ -131,6 +131,7 @@ in
       grep -Fxq child_holds_private_vmstate_inode=true /tmp/hot-fork-child-result
       grep -Fxq child_released_source_vmstate_inode=true /tmp/hot-fork-child-result
       grep -Fxq source_vmstate_unchanged=true /tmp/hot-fork-child-result
+      grep -Fxq children_forked=3 /tmp/hot-fork-child-result
       grep -Fxq whole_world_child_handoff=false /tmp/hot-fork-child-result
       printf '%s\n' 'check=${attrPath}' \
         'tasks=${builtins.concatStringsSep "," taskIds}' >> /tmp/hot-fork-child-result
