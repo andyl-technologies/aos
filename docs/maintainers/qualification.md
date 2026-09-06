@@ -449,6 +449,48 @@ runner checks these bindings and retains response bytes, stdout,
 stderr, and failures. Coordinator attempts retain each request and returned
 response, including rejected results. Never overwrite a failed attempt.
 
+Scenario programs can delegate the request binding and canonical response
+assembly to the installed CLI. Write a canonical report in the attempt
+directory, then run:
+
+```sh
+aos release qualification respond \
+  --request request.json \
+  --scenarios scenario-registry.json \
+  --report scenario-report.json \
+  --identity linux-x86-v1
+```
+
+The report uses the common fields below and may retain additional
+scenario-specific measurements and diagnostics. `checks` must contain every and
+only the case's required checks. Release-wide and package reports use an
+unscoped, non-sensitive `environment` inventory. Target reports use the typed
+environment inventory and reviewed assessment described above. Assessment-only
+A1 reports omit `environment`.
+
+```json
+{
+  "schema_version": "aos.release.qualification-scenario-report/v1",
+  "started_at": "2026-09-06T18:00:00Z",
+  "finished_at": "2026-09-06T18:02:00Z",
+  "observed_seconds": 120,
+  "checks": {
+    "anonymous-download": {
+      "passed": true,
+      "detail": "Verified the retained public object inventory."
+    }
+  },
+  "operations": {"verified_objects": 3},
+  "environment": {"runner": "qualification-host-01"}
+}
+```
+
+`qualification respond` derives the request, case, executor, environment,
+report, subject, predecessor, authority and nonce bindings. It rejects an
+unknown registry mapping, wrong check set, empty check details, malformed UTC
+times, an observation longer than its execution interval, or an environment
+shape that does not match the case.
+
 A fixture gate proves regression behavior only. The native Hub fleet uses
 visibly synthetic observations and timing to test admission mechanics; those
 records cannot establish release workload duration or physical reliability.

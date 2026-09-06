@@ -68,6 +68,8 @@ pub enum ReleaseQualificationCommand {
     Cases(ReleaseQualificationCasesArgs),
     /// Download exact public objects and run a configured scenario
     Execute(ReleaseQualificationExecuteArgs),
+    /// Bind one scenario report to its exact executor request
+    Respond(ReleaseQualificationRespondArgs),
 }
 
 #[derive(Args)]
@@ -97,6 +99,22 @@ pub struct ReleaseQualificationExecuteArgs {
     /// Maximum duration of a scenario in seconds
     #[arg(long, default_value_t = 1800)]
     pub timeout_seconds: u64,
+}
+
+#[derive(Args)]
+pub struct ReleaseQualificationRespondArgs {
+    /// Canonical executor request retained by the native runner
+    #[arg(long)]
+    pub request: PathBuf,
+    /// Canonical scenario registry retained by the native runner
+    #[arg(long)]
+    pub scenarios: PathBuf,
+    /// Canonical report produced by the scenario exercise
+    #[arg(long)]
+    pub report: PathBuf,
+    /// Public executor identity expected by the coordinator
+    #[arg(long)]
+    pub identity: String,
 }
 
 #[derive(Args)]

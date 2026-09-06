@@ -16,16 +16,26 @@ use anyhow::{Context as _, Result, bail};
 use aos_core::output::Printer;
 use aos_release::Sha256Digest;
 use aos_release::canonical;
-use aos_release::evidence::QualificationExecutorRequestV1;
+use aos_release::evidence::{
+    EvidenceRecord, GateResult, QUALIFICATION_EXECUTOR_RESPONSE_V1, QualificationExecutorRequestV1,
+    QualificationExecutorResponseV1,
+};
 use aos_release::manifest::{ManifestEnvelopeV1, ReleaseManifestV1};
 use aos_release::plan::ReleasePlanV1;
 use aos_release::platform::Platform;
 use aos_release::qualification::QualificationPhase;
+use aos_release::qualification::claims::CompatibilityAssessment;
+use aos_release::qualification::environment::EnvironmentInventory;
+use aos_release::qualification_evidence::{CheckObservation, QualificationObservation};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use super::{capture, qualification_run};
-use crate::cli::{ReleaseQualificationCommand, ReleaseQualificationExecuteArgs};
+use crate::cli::{
+    ReleaseQualificationCommand, ReleaseQualificationExecuteArgs, ReleaseQualificationRespondArgs,
+};
+
+const SCENARIO_REPORT_V1: &str = "aos.release.qualification-scenario-report/v1";
 
 /// Immutable executable selection, produced by `mkQualificationExecutor`.
 #[derive(Deserialize, Serialize)]
@@ -36,9 +46,32 @@ struct ScenarioRegistry {
     scenarios: BTreeMap<String, String>,
 }
 
+/// Common evidence fields embedded in every canonical native scenario report.
+#[derive(Deserialize)]
+struct ScenarioReport {
+    schema_version: String,
+    started_at: String,
+    finished_at: String,
+    observed_seconds: u64,
+    checks: BTreeMap<String, CheckObservation>,
+    operations: BTreeMap<String, u64>,
+    #[serde(default)]
+    environment: Option<serde_json::Value>,
+    #[serde(default)]
+    assessment: Option<CompatibilityAssessment>,
+    #[serde(default)]
+    capabilities: Option<aos_release::qualification::capabilities::CapabilityEvidence>,
+}
+
 pub(super) fn inspect(command: &ReleaseQualificationCommand, printer: &Printer) -> Result<()> {
     let ReleaseQualificationCommand::Cases(args) = command else {
-        bail!("qualification execution requires the asynchronous dispatcher");
+        return match command {
+            ReleaseQualificationCommand::Respond(args) => respond(args),
+            ReleaseQualificationCommand::Execute(_) => {
+                bail!("qualification execution requires the asynchronous dispatcher")
+            }
+            ReleaseQualificationCommand::Cases(_) => unreachable!(),
+        };
     };
     let plan: ReleasePlanV1 = canonical::from_slice(
         &capture::control_file(&args.plan, "qualification plan")?,
@@ -72,7 +105,157 @@ pub(super) async fn run(command: &ReleaseQualificationCommand, printer: &Printer
     match command {
         ReleaseQualificationCommand::Cases(_) => inspect(command, printer),
         ReleaseQualificationCommand::Execute(args) => execute(args).await,
+        ReleaseQualificationCommand::Respond(_) => inspect(command, printer),
     }
+}
+
+fn respond(args: &ReleaseQualificationRespondArgs) -> Result<()> {
+    let request_bytes = capture::control_file(&args.request, "qualification request")?;
+    canonical::require_canonical(&request_bytes, "qualification request")?;
+    let request: QualificationExecutorRequestV1 =
+        canonical::from_slice(&request_bytes, "qualification request")?;
+    request.validate()?;
+
+    let registry_bytes = capture::control_file(&args.scenarios, "scenario registry")?;
+    canonical::require_canonical(&registry_bytes, "scenario registry")?;
+    let registry: ScenarioRegistry = canonical::from_slice(&registry_bytes, "scenario registry")?;
+    select(&registry, &request)?;
+
+    let report_bytes = capture::control_file(&args.report, "scenario report")?;
+    canonical::require_canonical(&report_bytes, "scenario report")?;
+    let report: serde_json::Value = canonical::from_slice(&report_bytes, "scenario report")?;
+    let fields: ScenarioReport = serde_json::from_value(report.clone())?;
+    let response = build_response(
+        &request,
+        &registry_bytes,
+        &report_bytes,
+        report,
+        fields,
+        &args.identity,
+    )?;
+    std::io::stdout().write_all(&canonical::to_vec(&response)?)?;
+    Ok(())
+}
+
+fn build_response(
+    request: &QualificationExecutorRequestV1,
+    registry_bytes: &[u8],
+    report_bytes: &[u8],
+    report: serde_json::Value,
+    fields: ScenarioReport,
+    identity: &str,
+) -> Result<QualificationExecutorResponseV1> {
+    let case = request
+        .qualification_case
+        .as_ref()
+        .context("native scenario response requires a shared-contract case")?;
+    validate_report_fields(case, &fields)?;
+
+    let environment = match (&case.target, fields.environment.as_ref()) {
+        (Some(_), Some(value)) => Some(serde_json::from_value::<EnvironmentInventory>(
+            value.clone(),
+        )?),
+        _ => None,
+    };
+    let environment_digest = if let Some(environment) = &environment {
+        environment.digest()?
+    } else if let Some(assessment) = &fields.assessment {
+        assessment.scope_digest
+    } else {
+        let value = fields
+            .environment
+            .as_ref()
+            .context("scenario report lacks its execution environment inventory")?;
+        Sha256Digest::of_bytes(&canonical::canonical_json(value)?)
+    };
+    let passed = fields.checks.values().all(|check| check.passed);
+    let evidence = EvidenceRecord {
+        qualification: Some(QualificationObservation {
+            capabilities: fields.capabilities,
+            environment,
+            assessment: fields.assessment,
+            case_digest: case.digest()?,
+            executor_digest: Sha256Digest::of_bytes(&registry_bytes),
+            environment_digest,
+            checks: fields.checks,
+            observed_seconds: fields.observed_seconds,
+            operations: fields.operations,
+            predecessor: case.predecessor.clone(),
+        }),
+        id: format!("qualification/{}", case.id),
+        policy_id: request.policy_id.clone(),
+        policy_digest: request.policy_digest,
+        platform: case.platform,
+        subjects: request.subjects.clone(),
+        result: if passed {
+            GateResult::Passed
+        } else {
+            GateResult::Failed
+        },
+        report_digest: Sha256Digest::of_bytes(&report_bytes),
+        authority_id: identity.to_owned(),
+        nonce: Some(request.nonce.clone()),
+        started_at: fields.started_at,
+        finished_at: fields.finished_at,
+    };
+    evidence.validate()?;
+    let response = QualificationExecutorResponseV1 {
+        schema_version: QUALIFICATION_EXECUTOR_RESPONSE_V1.to_owned(),
+        request_digest: request.digest()?,
+        evidence,
+        report,
+    };
+    qualification_run::verify_executor_response(request, identity, &response)?;
+    Ok(response)
+}
+
+fn validate_report_fields(
+    case: &aos_release::qualification_evidence::QualificationCase,
+    report: &ScenarioReport,
+) -> Result<()> {
+    if report.schema_version != SCENARIO_REPORT_V1 {
+        bail!("unsupported qualification scenario report schema");
+    }
+    let required = case
+        .checks
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual = report
+        .checks
+        .keys()
+        .collect::<std::collections::BTreeSet<_>>();
+    if actual != required
+        || report
+            .checks
+            .values()
+            .any(|check| check.detail.trim().is_empty())
+    {
+        bail!("scenario report checks differ from the exact qualification case");
+    }
+    let start = humantime::parse_rfc3339(&report.started_at)?;
+    let finish = humantime::parse_rfc3339(&report.finished_at)?;
+    if !report.started_at.ends_with('Z')
+        || !report.finished_at.ends_with('Z')
+        || start > finish
+        || report.observed_seconds > finish.duration_since(start)?.as_secs()
+    {
+        bail!("scenario report has inconsistent execution times");
+    }
+    match (&case.target, &report.environment, &report.assessment) {
+        (Some(_), Some(_), Some(_)) => {}
+        (Some(_), None, Some(_))
+            if case.claim.as_ref().is_some_and(|claim| {
+                claim.minimum_assurance == aos_release::qualification::claims::AssuranceLevel::A1
+            }) => {}
+        (Some(_), _, _) => {
+            bail!("target scenario report lacks its environment or compatibility assessment")
+        }
+        (None, Some(_), None) => {}
+        (None, _, _) => {
+            bail!("release and package reports require an unscoped environment inventory")
+        }
+    }
+    Ok(())
 }
 
 async fn execute(args: &ReleaseQualificationExecuteArgs) -> Result<()> {
@@ -244,6 +427,75 @@ fn select<'a>(
 mod tests {
     use super::*;
 
+    fn package_case() -> aos_release::qualification_evidence::QualificationCase {
+        aos_release::qualification_evidence::QualificationCase {
+            schema_version: Some("aos.release.qualification-case/v2".into()),
+            claim: None,
+            measurements: BTreeMap::new(),
+            minimum_observed_seconds: None,
+            id: "package-function/example/x86_64-linux".into(),
+            requirement_id: "package-function".into(),
+            policy_digest: Sha256Digest::of_bytes(b"policy"),
+            plan_digest: Sha256Digest::of_bytes(b"plan"),
+            subjects_digest: Sha256Digest::of_bytes(b"subjects"),
+            phase: QualificationPhase::Staging,
+            platform: Some(Platform::X86_64Linux),
+            package_role: Some(aos_release::qualification::PackageRole::GeneralCatalog),
+            target: None,
+            subjects: vec!["package/example/x86_64-linux".into()],
+            checks: vec!["anonymous-download".into(), "functional-behavior".into()],
+            method: aos_release::qualification::QualificationMethod::Automated,
+            predecessor: None,
+        }
+    }
+
+    fn package_request() -> Result<QualificationExecutorRequestV1> {
+        let case = package_case();
+        Ok(QualificationExecutorRequestV1 {
+            schema_version: "aos.release.qualification-executor-request/v2".into(),
+            qualification_case: Some(case.clone()),
+            registry: "andyl/testing".into(),
+            release_id: "release-2026.9.0".into(),
+            staging_receipt_digest: Sha256Digest::of_bytes(b"receipt"),
+            manifest_digest: Sha256Digest::of_bytes(b"manifest"),
+            policy_id: case.requirement_id,
+            policy_digest: case.policy_digest,
+            platform: Platform::X86_64Linux,
+            subjects: case.subjects,
+            objects: vec![aos_release::evidence::QualificationObjectV1 {
+                artifact_id: "package/example/x86_64-linux".into(),
+                url: "https://aos.staging.andyl.org/andyl/testing/packages/example.nar.zst".into(),
+                size_bytes: 42,
+                sha256: Sha256Digest::of_bytes(b"nar"),
+            }],
+            nonce: "a".repeat(64),
+        })
+    }
+
+    fn package_report() -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": SCENARIO_REPORT_V1,
+            "started_at": "2026-09-06T18:00:00Z",
+            "finished_at": "2026-09-06T18:01:00Z",
+            "observed_seconds": 60,
+            "checks": {
+                "anonymous-download": {
+                    "passed": true,
+                    "detail": "Retained objects match the signed public inventory."
+                },
+                "functional-behavior": {
+                    "passed": true,
+                    "detail": "The package-specific primary and error operations passed."
+                }
+            },
+            "operations": {"error_cases": 1, "primary_operations": 1},
+            "environment": {
+                "host": "qualification-host-01",
+                "platform": "x86_64-linux"
+            }
+        })
+    }
+
     #[test]
     fn scenario_registry_rejects_unknown_platform_and_mutable_executables() -> Result<()> {
         let registry = ScenarioRegistry {
@@ -280,6 +532,69 @@ mod tests {
             ..registry
         };
         assert!(select(&mutable, &request).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn scenario_report_is_bound_to_the_exact_request_and_executor() -> Result<()> {
+        let request = package_request()?;
+        request.validate()?;
+        let report = package_report();
+        let report_bytes = canonical::to_vec(&report)?;
+        let fields: ScenarioReport = serde_json::from_value(report.clone())?;
+        let registry_bytes = br#"{"schema_version":"aos.release.qualification-scenarios/v1"}"#;
+
+        let response = build_response(
+            &request,
+            registry_bytes,
+            &report_bytes,
+            report,
+            fields,
+            "linux-x86-v1",
+        )?;
+        let observation = response
+            .evidence
+            .qualification
+            .as_ref()
+            .context("test response lacks its observation")?;
+
+        assert_eq!(response.request_digest, request.digest()?);
+        assert_eq!(
+            observation.executor_digest,
+            Sha256Digest::of_bytes(registry_bytes)
+        );
+        assert_eq!(
+            response.evidence.report_digest,
+            Sha256Digest::of_bytes(&report_bytes)
+        );
+        assert_eq!(response.evidence.authority_id, "linux-x86-v1");
+        assert_eq!(
+            response.evidence.nonce.as_deref(),
+            Some(request.nonce.as_str())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scenario_report_rejects_check_time_and_environment_drift() -> Result<()> {
+        let case = package_case();
+        let report = package_report();
+        let mut fields: ScenarioReport = serde_json::from_value(report.clone())?;
+        fields.checks.remove("functional-behavior");
+        assert!(validate_report_fields(&case, &fields).is_err());
+
+        let mut report = package_report();
+        report["finished_at"] = serde_json::json!("2026-09-06T17:59:00Z");
+        let fields: ScenarioReport = serde_json::from_value(report)?;
+        assert!(validate_report_fields(&case, &fields).is_err());
+
+        let mut report = package_report();
+        report
+            .as_object_mut()
+            .context("test report is not an object")?
+            .remove("environment");
+        let fields: ScenarioReport = serde_json::from_value(report)?;
+        assert!(validate_report_fields(&case, &fields).is_err());
         Ok(())
     }
 }
