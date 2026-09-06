@@ -3190,3 +3190,44 @@ scope to the materialized destination identity. Controller-side catalog
 publication, read-only attachment-anchor installation before payload launch,
 lease-expiry scheduling, source-handle resolution, live namespace VM
 qualification, and end-to-end attachment reconciliation remain.
+
+### Atomic Host-backed Mount catalog publication
+
+Mount catalog preparation can now publish the missing protected JSON entry
+inside the root broker after it verifies the complete resource tuple. Source
+pins use a fixed path derived from the source view, source generation,
+consistency scope, optional live incarnation, and exact view-revision digest.
+The destination pin and payload path are derived independently from sandbox,
+incarnation, namespace generation, and slot identity. No controller path or
+descriptor enters the request.
+
+The broker first prefers an exact existing entry and fails closed if any of its
+recorded identities changed. If no entry matches, it resolves the derived
+source, proves that the Host-root destination is the same inode as the
+broker-owned slot, binds the retained Host runtime and payload-scope handles,
+root identity, mount namespace, and user namespace, and atomically replaces
+`catalog.json` through a write, file sync, rename, and directory sync. Exact
+publication replay leaves the generation unchanged; replacement advances it
+and therefore changes the catalog commitment. The single-threaded Mount service
+serializes preparation with destination-slot and native Mount mutations.
+
+Host scope custody is now keyed by sandbox, incarnation, and namespace
+generation rather than assignment generation. Both the volatile registry and
+the published entry reject a changed runtime handle, payload-scope handle,
+root, mount namespace, or user namespace under the same namespace generation,
+including across same-node assignment advancement and broker restart. Legacy
+static path-backed entries remain readable, while newly published entries
+explicitly omit reopenable Host namespace and root paths.
+
+Focused tests cover deterministic source naming, static/prepared schema
+separation, stable ordered upsert, interrupted-next-file replacement, exact
+readback, private file mode, and catalog commitment changes. All 80
+host-runnable Mount unit tests and strict all-target/all-feature Clippy pass.
+
+This closes catalog entry publication once both physical endpoints already
+exist. It deliberately does not create or authorize the source pin, install the
+broker-owned attachment anchor into the payload root, or solve the pre-launch
+ordering needed to make that anchor available before workload execution.
+Source-handle resolution/materialization, anchor installation, controller
+destination-slot lifecycle dispatch, lease-expiry scheduling, live namespace
+VM qualification, and end-to-end reconciliation remain.
