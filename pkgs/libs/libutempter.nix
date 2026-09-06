@@ -31,6 +31,9 @@ in
         name = "patch";
         script = ''
           sed -i 's/-m2711/-m0711/' Makefile
+          sed -i \
+            's|LIBEXECDIR "/utempter/utempter"|"/run/wrappers/bin/utempter"|' \
+            iface.c
         '';
       }
       {
