@@ -10,8 +10,8 @@
     family = "xz";
     stream = "5";
     owner = "pkgs/compression/xz.nix";
-    version = "5.8.2";
-    upstreamId = "v5.8.2";
+    version = "5.8.3";
+    upstreamId = "v5.8.3";
     repository = "tukaani-project/xz";
     provider = "github-releases";
     tagPrefix = "v";
@@ -47,7 +47,7 @@
           ];
         }
       ];
-      hash = "sha256-iQlm7D9dXMFRB3h54VfAWTUApSL0E6xQuibSKpoUUhQ=";
+      hash = "sha256-//H/zysNqE0wihTeUToaoj1OmqNGTRfmS5cUv90Lv7Y=";
     };
   };
   inherit (upstream) version;

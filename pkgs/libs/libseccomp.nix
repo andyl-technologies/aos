@@ -10,8 +10,8 @@
     family = "libseccomp";
     stream = "2";
     owner = "pkgs/libs/libseccomp.nix";
-    version = "2.6.0";
-    upstreamId = "v2.6.0";
+    version = "2.6.1";
+    upstreamId = "v2.6.1";
     repository = "seccomp/libseccomp";
     provider = "github-releases";
     tagPrefix = "v";
@@ -48,7 +48,7 @@
           ];
         }
       ];
-      hash = "sha256-g7YIUjLRWIw3ncm5yuR7s3QHzyYubnSZPGG6ctKnhNw=";
+      hash = "sha256-UB9mxmciXVN5G5fh18+Fq3ZMKX0EiB9g849FHEsO4b4=";
     };
   };
   inherit (upstream) version;

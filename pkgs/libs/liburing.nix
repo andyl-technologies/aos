@@ -9,8 +9,8 @@
     family = "liburing";
     stream = "2";
     owner = "pkgs/libs/liburing.nix";
-    version = "2.12";
-    upstreamId = "liburing-2.12";
+    version = "2.15";
+    upstreamId = "liburing-2.15";
     repository = "axboe/liburing";
     provider = "github-releases";
     tagPrefix = "liburing-";
@@ -37,7 +37,7 @@
           ];
         }
       ];
-      hash = "sha256-8dEMsFjJfJU7TAxEaxHpF36MizKlqIswnyP904niY3A=";
+      hash = "sha256-jQUvJiLcs2eMuu5f9YKodXJnKmwKVlM83aW2XLY2Ego=";
     };
   };
   inherit (upstream) version;

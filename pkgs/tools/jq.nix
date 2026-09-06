@@ -14,8 +14,8 @@
     family = "jq";
     stream = "1";
     owner = "pkgs/tools/jq.nix";
-    version = "1.8.1";
-    upstreamId = "jq-1.8.1";
+    version = "1.8.2";
+    upstreamId = "jq-1.8.2";
     repository = "jqlang/jq";
     provider = "github-releases";
     tagPrefix = "jq-";
@@ -51,7 +51,7 @@
           ];
         }
       ];
-      hash = "sha256-K+ZOcSnOyxHVkGKQ66EK9pT7nj5/n8IIoxHcM8qDfrA=";
+      hash = "sha256-cbjW6PX+gfbG0NEQ44kiUfbOdu0JWr0xXibm4Rk6868=";
     };
   };
   inherit (upstream) version;
