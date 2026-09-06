@@ -1054,17 +1054,6 @@ impl StateStore {
         Ok(OperationLease { _file: file })
     }
 
-    /// Records an immutable provider identity's earliest observed time.
-    pub(super) fn record_first_observed(&self, identity: &str, observed_at: u64) -> Result<u64> {
-        let identity = identity.to_string();
-        let values =
-            self.record_first_observed_batch(std::slice::from_ref(&identity), observed_at)?;
-        values
-            .get(&identity)
-            .copied()
-            .ok_or_else(|| anyhow::anyhow!("provider first-observed identity was not recorded"))
-    }
-
     /// Records a provider response's identities with one atomic index update.
     pub(super) fn record_first_observed_batch(
         &self,
