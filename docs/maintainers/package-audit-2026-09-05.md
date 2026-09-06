@@ -2,26 +2,24 @@
 
 This point-in-time audit records non-authoritative package-index signals from the complete `aos maintain scan --repology-fallback --repology-limit 400` sweep. Repology findings prioritize maintainer review; a declared direct provider, source hash, signature policy, and package gates still authorize each update.
 
-The scan used inventory envelope `sha256:83ddb6bdba6b6837f31974b35dfe1cb4696d10c180fe522e7ad6a5632ccaca42` and discovery snapshot `sha256:bf8189f47bd0f4a6b1787ec11556855f8cc7b6c8de17d7e5d06e16c6f9765851`.
+The final scan used inventory envelope `sha256:108764c882e7129a3137d23970b48cc7396d718982ad630d95eca936715c8cab` and discovery snapshot `sha256:02c106ca4fad04bcbaaa5cb56b37e97abe4fe745ef0253d786bde7c84696f29c`.
 
 ## Coverage
 
 | Metric | Count |
 | --- | ---: |
 | Update units | 371 |
-| Provider observations | 356 |
-| Same-name Repology fallback observations | 327 |
-| Newer-version signals | 152 |
-| Current-version vulnerability signals | 37 |
+| Provider observations | 361 |
+| Same-name Repology fallback observations | 332 |
+| Newer-version signals | 155 |
+| Current-version vulnerability signals | 39 |
 | Corroborated license-set changes | 0 |
 
 A vulnerability signal means at least one Repology repository marks the exact current version vulnerable. It is a triage trigger rather than a confirmed repository-wide CVE assessment. Same-name mappings can collide, and version spelling can differ across package managers.
 
 ## Remediation started
 
-The aligned zlib signals were verified against the declared `madler/zlib` release provider. The repository package was updated from `1.3.1` to `1.3.2`, including the exact upstream identity and fetched-source hash. Its package build passed for `aarch64-darwin`, `aarch64-linux`, `x86_64-darwin`, and `x86_64-linux` in the maintainer candidate worktree.
-
-A post-update scan used inventory envelope `sha256:108764c882e7129a3137d23970b48cc7396d718982ad630d95eca936715c8cab` and discovery snapshot `sha256:8aa462b70da398cf5f7d913bb46ffdb79069cb25c87feaa1e05cd807e785d1c6`. It reported 151 newer-version and 36 current-version vulnerability signals; zlib was absent from both sets.
+The initial snapshot `sha256:bf8189f47bd0f4a6b1787ec11556855f8cc7b6c8de17d7e5d06e16c6f9765851` aligned zlib newer-version and vulnerability signals with the declared `madler/zlib` release provider. The repository package was updated from `1.3.1` to `1.3.2`, including the exact upstream identity and fetched-source hash. Its package build passed for `aarch64-darwin`, `aarch64-linux`, `x86_64-darwin`, and `x86_64-linux` in the maintainer candidate worktree. Zlib is absent from both finding sets below.
 
 ## Vulnerability signals
 
@@ -37,6 +35,7 @@ A post-update scan used inventory envelope `sha256:108764c882e7129a3137d23970b48
 | `expat` | `2.7.4` | `expat` |
 | `flex` | `2.6.4` | `flex` |
 | `freetype` | `2.13.3` | `freetype` |
+| `gcc` | `14.3.0` | `gcc` |
 | `git` | `2.48.1` | `git` |
 | `gnutls` | `3.8.5` | `gnutls` |
 | `go` | `1.26.0` | `go` |
@@ -46,6 +45,7 @@ A post-update scan used inventory envelope `sha256:108764c882e7129a3137d23970b48
 | `libtpms` | `0.10.0` | `libtpms` |
 | `libxml2` | `2.12.9` | `libxml2` |
 | `libxslt` | `1.1.42` | `libxslt` |
+| `linux-6.18` | `6.18.33` | `linux` |
 | `nghttp2-1` | `1.68.0` | `nghttp2` |
 | `openssh` | `10.3p1` | `openssh` |
 | `openssl` | `3.4.1` | `openssl` |
@@ -53,6 +53,7 @@ A post-update scan used inventory envelope `sha256:108764c882e7129a3137d23970b48
 | `perl` | `5.40.1` | `perl` |
 | `postgresql` | `18.4` | `postgresql` |
 | `protobuf` | `29.5` | `protobuf` |
+| `qemu` | `10.0.0` | `qemu` |
 | `rsync` | `3.4.1` | `rsync` |
 | `runc` | `1.4.0` | `runc` |
 | `socat` | `1.8.0.3` | `socat` |
@@ -63,7 +64,6 @@ A post-update scan used inventory envelope `sha256:108764c882e7129a3137d23970b48
 | `util-linux` | `2.42.1` | `util-linux` |
 | `xz-5` | `5.8.2` | `xz` |
 | `zip` | `3.0` | `zip` |
-| `zlib-1` | `1.3.1` | `zlib` |
 
 ## Newer-version signals
 
@@ -115,6 +115,7 @@ A post-update scan used inventory envelope `sha256:108764c882e7129a3137d23970b48
 | `fontconfig` | `2.15.0` | `2.18.3` | `fontconfig` |
 | `freetype` | `2.13.3` | `2.14.3` | `freetype` |
 | `gawk` | `5.3.1` | `5.4.1` | `gawk` |
+| `gcc` | `14.3.0` | `16.2, 16.2.0` | `gcc` |
 | `getent` | `2.39.0` | `2.18.90` | `getent` |
 | `git` | `2.48.1` | `2.55.0` | `git` |
 | `glib` | `2.82.4` | `2.88.3` | `glib` |
@@ -163,6 +164,8 @@ A post-update scan used inventory envelope `sha256:108764c882e7129a3137d23970b48
 | `libusb-1` | `1.0.29` | `1.0.30` | `libusb` |
 | `libxml2` | `2.12.9` | `2.15.4` | `libxml2` |
 | `libxslt` | `1.1.42` | `1.1.45` | `libxslt` |
+| `linux-6.18` | `6.18.33` | `7.2.3` | `linux` |
+| `llvm` | `22.1.0` | `23.1.0` | `llvm` |
 | `lowdown` | `1.2.0` | `3.1.1` | `lowdown` |
 | `lsof` | `4.99.4` | `4.99.7` | `lsof` |
 | `lvm2` | `2.03.28` | `2.03.42` | `lvm2` |
@@ -192,6 +195,7 @@ A post-update scan used inventory envelope `sha256:108764c882e7129a3137d23970b48
 | `postgresql` | `18.4` | `18.6, 18.6.0` | `postgresql` |
 | `protobuf` | `29.5` | `36.1` | `protobuf` |
 | `pyrefly` | `0.64.0` | `1.2.0` | `pyrefly` |
+| `qemu` | `10.0.0` | `11.1.1` | `qemu` |
 | `readline` | `8.3` | `8.3_p3, 8.3p003, 8.3p3` | `readline` |
 | `refpolicy` | `2.20240916` | `2.20260804` | `refpolicy` |
 | `rsync` | `3.4.1` | `3.5.0` | `rsync` |
@@ -220,7 +224,6 @@ A post-update scan used inventory envelope `sha256:108764c882e7129a3137d23970b48
 | `xz-5` | `5.8.2` | `5.8.3` | `xz` |
 | `zfs` | `2.4.0` | `2.4.4` | `zfs` |
 | `zip` | `3.0` | `3.0, 3.00` | `zip` |
-| `zlib-1` | `1.3.1` | `1.3.2` | `zlib` |
 
 ## License signals
 
