@@ -214,6 +214,16 @@ A new upstream major never causes the updater to replace or remove an older AOS
 package. Stream introduction, default-alias changes, and retirement are
 human-planned source changes with their own dependency impact.
 
+The series constraint is package policy, rather than a universal interpretation
+of version punctuation. Most SemVer packages declare only `series.major`, so an
+ordinary scan can select minor and patch releases within that compatibility
+line. A package whose minor component denotes a compatibility or language line
+also declares `series.minor`; Go, for example, can hold `1.27` while still
+receiving `1.27.x` fixes. Moving either declared component is an explicit Nix
+change made as part of the corresponding AOS upgrade cycle. Packages with
+concurrently supported lines continue to use separate units instead of moving
+an existing unit across those lines.
+
 ## Independently versioned components
 
 A component has its own current upstream/comparison identities, primary and

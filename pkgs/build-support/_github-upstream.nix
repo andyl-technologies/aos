@@ -12,7 +12,8 @@
   provider ? "github-tags",
   tagPrefix ? "",
   repology ? null,
-  major,
+  major ? null,
+  minor ? null,
   versionScheme ? "semver",
   minimumAgeDays ? 3,
   source,
@@ -59,13 +60,29 @@
           };
           inherit advisors;
         };
-        releasePolicy = {
-          strategy = "latest-in-series";
-          inherit versionScheme;
-          series.major = major;
-          allowPrerelease = false;
-          inherit minimumAgeDays;
-        };
+        releasePolicy =
+          {
+            strategy = "latest-in-series";
+            inherit versionScheme;
+            allowPrerelease = false;
+            inherit minimumAgeDays;
+          }
+          // (
+            if major == null
+            then
+              if minor == null
+              then {}
+              else throw "mkGithubUpstream: minor series requires a major series"
+            else {
+              series =
+                {inherit major;}
+                // (
+                  if minor == null
+                  then {}
+                  else {inherit minor;}
+                );
+            }
+          );
         sources.source = {
           fetcher = "fetchurl";
           urlTemplates =
