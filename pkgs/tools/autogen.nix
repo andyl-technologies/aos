@@ -11,6 +11,7 @@
   file,
   guile,
   libxml2,
+  zlib,
 }: let
   version = "5.18.16";
   guile3Patch = fetchurl {
@@ -32,8 +33,17 @@ in
     };
 
     buildDeps = [gnumake autoconf automake pkg-config perl which file];
-    runtimeDeps = [guile libxml2];
-    propagatedDeps = [guile libxml2];
+    runtimeDeps = [guile libxml2 zlib];
+    propagatedDeps = [guile libxml2 zlib];
+
+    # Output specifications end in the classic struct-hack member
+    # `char os_sfx[1]`, with the allocation extended for the actual suffix.
+    # Strict level 3 makes fortify treat that member as exactly one byte and
+    # abort valid writes while opening generated outputs.  Level 1 preserves
+    # the intended trailing-array convention while retaining fortify3 and the
+    # remaining hardening flags.
+    hardeningDisable = ["strictflexarrays3"];
+    hardeningEnable = ["strictflexarrays1"];
 
     phases = [
       {
@@ -47,7 +57,10 @@ in
         name = "patch";
         script = ''
           patch -p1 < ${guile3Patch}
-          sed -i 's|/usr/bin/file|${file}/bin/file|g' configure
+          patch -p1 < ${./autogen-patches/0001-handle-overlapping-path-copies.patch}
+          patch -p1 < ${./autogen-patches/0002-fix-sprintf-buffer-sizes.patch}
+          patch -p1 < ${./autogen-patches/0003-fix-definition-buffer-growth.patch}
+          sed -i 's|/usr/bin/file|${file}/bin/file|g' configure config/libtool.m4
         '';
       }
       {
@@ -75,7 +88,12 @@ in
       }
       {
         name = "check";
-        script = ''make check'';
+        script = ''
+          if ! make -j1 check; then
+            find . -name test-suite.log -exec cat {} \;
+            exit 1
+          fi
+        '';
       }
       {
         name = "install";
