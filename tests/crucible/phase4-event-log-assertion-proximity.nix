@@ -7,11 +7,17 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libSource = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
-  catalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
+  catalog = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/event_catalog.rs;
+  };
   catalogTest = builtins.readFile ../../crates/crucible/tests/event_kind_catalog.rs;
   proximityTest = builtins.readFile ../../crates/crucible/tests/event_log_assertion_proximity.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;

@@ -39,7 +39,12 @@
     (lib.removePrefix prefix (firstLineWith label prefix content));
 
   shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
-  guestHostProtocolVersion = sourceConst "guest-host protocol version" "pub const CONTROL_PROTOCOL_VERSION: u32 = " protocolLib;
+  guestHostProtocolVersionSource = sourceConst "guest-host protocol version" "pub const CONTROL_PROTOCOL_VERSION: u32 = " protocolLib;
+  # The constant includes a version file shared with the package build.
+  guestHostProtocolVersion =
+    if lib.hasPrefix "include!(" guestHostProtocolVersionSource
+    then lib.trim (builtins.readFile ../../crates/crucible-protocol/src/control_protocol_version.in)
+    else guestHostProtocolVersionSource;
   rpcProtocolMajor = sourceConst "RPC ABI major version" "pub const RPC_PROTOCOL_MAJOR: u16 = " apiRpcAbi;
   rpcProtocolMinor = sourceConst "RPC ABI minor version" "pub const RPC_PROTOCOL_MINOR: u16 = " apiRpcAbi;
   rpcProtocolPatch = sourceConst "RPC ABI patch version" "pub const RPC_PROTOCOL_PATCH: u16 = " apiRpcAbi;
@@ -287,7 +292,7 @@
     ++ failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
       {
         label = "guest-host protocol version constant";
-        needle = "pub const CONTROL_PROTOCOL_VERSION: u32 = ${guestHostProtocolVersion};";
+        needle = "pub const CONTROL_PROTOCOL_VERSION: u32 = ${guestHostProtocolVersionSource};";
       }
       {
         label = "guest-host handshake loud ABI mismatch";

@@ -332,7 +332,7 @@
       safeWrapperContract = [
         "Unsafe boundary discipline:"
         "public callers use safe setup descriptor handover wrappers"
-        "validate the fixed two-fd order and descriptor count"
+        "validate the fixed three-fd order and descriptor count"
       ];
     }
     {
@@ -409,6 +409,28 @@
     }
     {
       package = "crucible-harness";
+      root = "src/lib.rs";
+      unsafeBoundary = false;
+      safeWrapperContract = [];
+    }
+    {
+      package = "crucible-campaign";
+      root = "src/lib.rs";
+      unsafeBoundary = false;
+      safeWrapperContract = [];
+    }
+    {
+      package = "crucible-linux-resource";
+      root = "src/lib.rs";
+      unsafeBoundary = true;
+      safeWrapperContract = [
+        "Unsafe boundary discipline:"
+        "public callers use safe quota capability types"
+        "validate pinned filesystem and syscall invariants"
+      ];
+    }
+    {
+      package = "crucible-s3-store";
       root = "src/lib.rs";
       unsafeBoundary = false;
       safeWrapperContract = [];

@@ -66,7 +66,8 @@ implemented and an adversarial review confirms the gate exercises that behavior.
   Phase 0  De-risk          spikes that can reshape the design       gate: Phase-0 blockers pass
   Phase 1  Determinism core L0 runtime, decision RNG, time, harness  gate:harness-lint, gate:license-boundary,
                             licensing boundary                            gate:layer0-determinism,
-                            content-addressed store, the test double        gate:content-address, gate:replay-oracle (sim),
+                            content-addressed store, the test double        gate:content-address, gate:campaign-model,
+                                                                            gate:replay-oracle (sim),
                                                                             gate:single-vm-fingerprint (double), gate:divergence-bisect
   Phase 2  Transport+QEMU   shmem ABI, protocol, patch series,       gate:abi-conformance, gate:layer1-injection,
                             host QEMU + plugin, single-VM determinism       gate:patch-microtests, gate:qemu-inert,

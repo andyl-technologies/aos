@@ -7,7 +7,10 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libSource = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   catalog = import ./_rust-module-source.nix {
     inherit lib;
@@ -119,7 +122,7 @@
     ++ failuresFor "crates/crucible/src/event_catalog.rs" catalog [
       {
         label = "catalog version";
-        needle = "pub const EVENT_KIND_CATALOG_VERSION: u32 = 5;";
+        needle = "pub const EVENT_KIND_CATALOG_VERSION: u32 = 7;";
       }
       {
         label = "catalog entry type";
