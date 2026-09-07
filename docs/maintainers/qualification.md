@@ -566,7 +566,9 @@ Package roles describe consequences: `system-integrity`, `qualified-workload`,
 or `general-catalog`. Dependencies inherit the obligations of the root that
 uses them. The authenticated runtime closure is the source of dependency
 membership. A library used by boot or recovery cannot avoid those tests by
-being listed as a general catalog package.
+being listed as a general catalog package. `qualification cases` reports the
+strongest effective role inherited through the signed package-NAR relationship
+graph for each package cell.
 
 Public status is separate: qualified for testing, preview, blocked, or not
 applicable. A reference target in the contract is a requirement, not a passing

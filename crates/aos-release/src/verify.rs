@@ -886,6 +886,117 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn package_cases_inherit_the_strongest_runtime_consumer_role() -> anyhow::Result<()> {
+        use crate::qualification::{PackageRole, PackageRule, QualificationPhase};
+
+        let (mut plan, mut manifest) = qualification_fixture()?;
+        let dependency_name = "dependency";
+        let dependency_id = |platform| format!("package/{dependency_name}/{platform}");
+
+        let mut dependency_plan = plan.packages[0].clone();
+        dependency_plan.name = dependency_name.to_owned();
+        dependency_plan.platforms = Platform::ALL
+            .into_iter()
+            .map(|platform| PlatformCell {
+                platform,
+                decision: MatrixCell::Artifact {
+                    artifact: planned(&[dependency_id(platform)]),
+                },
+            })
+            .collect();
+        plan.packages.push(dependency_plan);
+        plan.packages
+            .sort_by(|left, right| left.name.cmp(&right.name));
+
+        let dependency_result = PackageResult {
+            name: dependency_name.to_owned(),
+            platforms: Platform::ALL
+                .into_iter()
+                .map(|platform| PlatformCell {
+                    platform,
+                    decision: MatrixCell::Artifact {
+                        artifact: final_set(&[dependency_id(platform)]),
+                    },
+                })
+                .collect(),
+        };
+        manifest.packages.push(dependency_result);
+        manifest
+            .packages
+            .sort_by(|left, right| left.name.cmp(&right.name));
+
+        for platform in Platform::ALL {
+            let id = dependency_id(platform);
+            let (artifact, _) = artifact(
+                id.clone(),
+                ArtifactKind::PackageNar,
+                Some(platform),
+                None,
+                vec![
+                    ArtifactRelationship {
+                        relation: ArtifactRelation::AuthenticatedBy,
+                        target: "cache/example.narinfo".to_owned(),
+                    },
+                    ArtifactRelationship {
+                        relation: ArtifactRelation::CorrespondingSource,
+                        target: "source/example".to_owned(),
+                    },
+                    ArtifactRelationship {
+                        relation: ArtifactRelation::LicensedBy,
+                        target: "license/example".to_owned(),
+                    },
+                ],
+            )?;
+            manifest.artifacts.push(artifact);
+            manifest
+                .artifacts
+                .iter_mut()
+                .find(|artifact| artifact.id == package_id(platform))
+                .unwrap()
+                .relationships
+                .push(ArtifactRelationship {
+                    relation: ArtifactRelation::Contains,
+                    target: id,
+                });
+        }
+
+        let policy = plan.qualification.as_mut().unwrap();
+        policy.package_rules = vec![
+            PackageRule {
+                name: dependency_name.to_owned(),
+                role: PackageRole::GeneralCatalog,
+                inherit_dependency_obligations: true,
+            },
+            PackageRule {
+                name: "example".to_owned(),
+                role: PackageRole::SystemIntegrity,
+                inherit_dependency_obligations: true,
+            },
+        ];
+        plan.gates = policy.gates(plan.release_class)?;
+        plan.public_evidence_policy_digest = policy.digest()?;
+
+        let cases =
+            crate::qualification_evidence::cases(&plan, &manifest, QualificationPhase::Staging)?;
+        let dependency_cases = cases
+            .iter()
+            .filter(|case| {
+                case.id
+                    .starts_with(&format!("package-function/{dependency_name}/"))
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(dependency_cases.len(), Platform::ALL.len());
+        assert!(
+            dependency_cases
+                .iter()
+                .all(|case| case.package_role == Some(PackageRole::SystemIntegrity))
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn qualification_binds_private_plan_without_requesting_it_as_a_public_object()
     -> anyhow::Result<()> {
         use crate::qualification::QualificationPhase;
