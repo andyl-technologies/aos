@@ -1,16 +1,18 @@
 //! Durable, self-authenticating bytes for a prepared semantic attempt result.
 //!
-//! The result body retains the complete [`ObservationCandidate`] followed by
-//! the optional prepared finding closure. Every member uses its campaign
-//! record's strict canonical bytes. Decoding reconstructs the aggregate values
-//! through their checked constructors, so a journal cannot bypass either the
-//! observation-choice or finding-closure invariants.
+//! The result body retains the complete [`ObservationCandidate`], every raw
+//! measurement replay leaf required by that observation or a finding replay,
+//! and the optional prepared finding closure. Every member uses its strict
+//! canonical bytes. Decoding reconstructs the aggregate values through their
+//! checked constructors, so a journal cannot bypass observation-choice,
+//! measurement-ownership, or finding-closure invariants.
 //!
 //! ```text
-//! magic
+//! v2-magic
 //! observation-child, measurements, properties, coverage
 //! discovered-choice-count, discovered-choice records
 //! produced-selection-count, selection records, observation
+//! measurement-replay-evidence-count, measurement-replay-evidence records
 //! finding-present
 //! [discovery-path, minimization-seed, scenario, original configuration,
 //!  original reproduction, minimized configuration, minimized reproduction,
@@ -20,6 +22,14 @@
 //! Every record is a u32-length-prefixed canonical body. Counts and indexes are
 //! u32 values. Decoding caps the complete payload at 1 GiB, each record at 64
 //! MiB, and replay reconstruction by both record and referenced-byte budgets.
+//!
+//! Raw-leaf validation here proves structural ownership: exact trace identity,
+//! singleton measurement edge, and scenario, configuration, and definition
+//! bindings. This codec does not possess authenticated scenario measurement
+//! definitions and therefore does not replay the leaf or compare the retained
+//! evaluation payload. Production preparation and recovery must call
+//! [`crate::verify_crucible_measurement_publication`] for the observation and
+//! every finding replay before any child-first publication.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,8 +47,13 @@ use super::{
     PreparedCrucibleFindingCandidate, RecordedFindingReplay, prepare_minimized_reproduction,
     prepare_original_reproduction, replay_recorded_signature_pass,
 };
+use crate::{
+    CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2, CrucibleMeasurementError,
+    CrucibleMeasurementReplayEvidence,
+};
 
-const PREPARED_RESULT_MAGIC: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v1\0";
+const PREPARED_RESULT_MAGIC_V1: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v1\0";
+const PREPARED_RESULT_MAGIC_V2: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v2\0";
 const MAX_PREPARED_RESULT_RECORDS: usize = 200_000;
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REPLAY_VALIDATION_REFERENCES: usize = 4 * 1024 * 1024;
@@ -50,6 +65,7 @@ pub const MAX_PREPARED_SEMANTIC_RESULT_BYTES: usize = 1024 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreparedSemanticAttemptResult {
     observation: ObservationCandidate,
+    measurement_replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
     finding: Option<PreparedCrucibleFindingCandidate>,
 }
 
@@ -65,9 +81,39 @@ impl PreparedSemanticAttemptResult {
         observation: ObservationCandidate,
         finding: Option<PreparedCrucibleFindingCandidate>,
     ) -> Result<Self, PreparedSemanticResultCodecError> {
+        Self::new_with_measurement_replay_evidence(observation, Vec::new(), finding)
+    }
+
+    /// Binds an observation and finding to all required raw measurement leaves.
+    ///
+    /// The leaves are retained in content-identity order, and duplicates are
+    /// rejected. The supplied set must exactly cover every Crucible measurement
+    /// payload v2 referenced by the observation and both finding replay passes.
+    /// This authenticates closure ownership only; callers must separately run
+    /// [`crate::verify_crucible_measurement_publication`] with the authenticated
+    /// scenario definitions before publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreparedSemanticResultCodecError`] when a leaf is duplicated,
+    /// unowned, absent, or bound to a different scenario, configuration, or
+    /// measurement definition, or when the finding does not belong to the
+    /// observation.
+    pub fn new_with_measurement_replay_evidence(
+        observation: ObservationCandidate,
+        measurement_replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
+        finding: Option<PreparedCrucibleFindingCandidate>,
+    ) -> Result<Self, PreparedSemanticResultCodecError> {
+        validate_measurement_evidence_order(&measurement_replay_evidence)?;
         validate_pair(&observation, finding.as_ref())?;
+        validate_measurement_evidence(
+            &observation,
+            &measurement_replay_evidence,
+            finding.as_ref(),
+        )?;
         Ok(Self {
             observation,
+            measurement_replay_evidence,
             finding,
         })
     }
@@ -76,6 +122,12 @@ impl PreparedSemanticAttemptResult {
     #[must_use]
     pub const fn observation(&self) -> &ObservationCandidate {
         &self.observation
+    }
+
+    /// Returns raw measurement leaves in content-identity order.
+    #[must_use]
+    pub fn measurement_replay_evidence(&self) -> &[CrucibleMeasurementReplayEvidence] {
+        &self.measurement_replay_evidence
     }
 
     /// Returns the prepared finding closure, when execution found one.
@@ -107,8 +159,9 @@ impl PreparedSemanticAttemptResult {
         validate_pair(&self.observation, self.finding.as_ref())?;
 
         let mut encoder = Encoder::new(maximum_bytes.min(MAX_PREPARED_SEMANTIC_RESULT_BYTES));
-        encoder.raw(PREPARED_RESULT_MAGIC)?;
+        encoder.raw(PREPARED_RESULT_MAGIC_V2)?;
         encode_observation(&mut encoder, &self.observation)?;
+        encode_measurement_evidence(&mut encoder, &self.measurement_replay_evidence)?;
         match &self.finding {
             Some(finding) => {
                 encoder.byte(1)?;
@@ -118,8 +171,13 @@ impl PreparedSemanticAttemptResult {
         }
         let bytes = encoder.finish()?;
 
-        // Enforce the caller's operational byte ceiling before replay
-        // reconstruction can clone any retained evidence records.
+        // Enforce the caller's operational byte ceiling before hashing raw
+        // trace tables or reconstructing retained finding replay records.
+        validate_measurement_evidence(
+            &self.observation,
+            &self.measurement_replay_evidence,
+            self.finding.as_ref(),
+        )?;
         if let Some(finding) = &self.finding {
             validate_finding(finding)?;
         }
@@ -151,9 +209,15 @@ impl PreparedSemanticAttemptResult {
             return Err(PreparedSemanticResultCodecError::LimitExceeded);
         }
 
+        let version = PreparedSemanticResultVersion::from_payload(bytes)
+            .unwrap_or(PreparedSemanticResultVersion::V2);
         let mut decoder = Decoder::new(bytes);
-        decoder.magic(PREPARED_RESULT_MAGIC)?;
+        decoder.magic(version.magic())?;
         let observation = decode_observation(&mut decoder)?;
+        let measurement_replay_evidence = match version {
+            PreparedSemanticResultVersion::V1 => Vec::new(),
+            PreparedSemanticResultVersion::V2 => decode_measurement_evidence(&mut decoder)?,
+        };
         let finding = match decoder.byte()? {
             0 => None,
             1 => Some(decode_finding(&mut decoder)?),
@@ -161,8 +225,18 @@ impl PreparedSemanticAttemptResult {
         };
         decoder.finish()?;
 
-        let value = Self::new(observation, finding)?;
-        if value.canonical_bytes_with_limit(maximum_bytes)? != bytes {
+        let value = Self::new_with_measurement_replay_evidence(
+            observation,
+            measurement_replay_evidence,
+            finding,
+        )?;
+        let canonical = match version {
+            PreparedSemanticResultVersion::V1 => {
+                value.canonical_v1_bytes_with_limit(maximum_bytes)?
+            }
+            PreparedSemanticResultVersion::V2 => value.canonical_bytes_with_limit(maximum_bytes)?,
+        };
+        if canonical != bytes {
             return Err(PreparedSemanticResultCodecError::NonCanonical);
         }
         Ok(value)
@@ -174,9 +248,75 @@ impl PreparedSemanticAttemptResult {
         self,
     ) -> (
         ObservationCandidate,
+        Vec<CrucibleMeasurementReplayEvidence>,
         Option<PreparedCrucibleFindingCandidate>,
     ) {
-        (self.observation, self.finding)
+        (
+            self.observation,
+            self.measurement_replay_evidence,
+            self.finding,
+        )
+    }
+
+    /// Returns the legacy v1 encoding for journal compatibility checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreparedSemanticResultCodecError`] when this result owns raw
+    /// measurement evidence, is inconsistent, or exceeds `maximum_bytes`.
+    pub(crate) fn canonical_v1_bytes_with_limit(
+        &self,
+        maximum_bytes: usize,
+    ) -> Result<Vec<u8>, PreparedSemanticResultCodecError> {
+        if !self.measurement_replay_evidence.is_empty() {
+            return Err(PreparedSemanticResultCodecError::Inconsistent {
+                component: "v1 measurement replay evidence",
+            });
+        }
+        validate_pair(&self.observation, self.finding.as_ref())?;
+
+        let mut encoder = Encoder::new(maximum_bytes.min(MAX_PREPARED_SEMANTIC_RESULT_BYTES));
+        encoder.raw(PREPARED_RESULT_MAGIC_V1)?;
+        encode_observation(&mut encoder, &self.observation)?;
+        match &self.finding {
+            Some(finding) => {
+                encoder.byte(1)?;
+                encode_finding(&mut encoder, finding)?;
+            }
+            None => encoder.byte(0)?,
+        }
+        let bytes = encoder.finish()?;
+        validate_measurement_evidence(&self.observation, &[], self.finding.as_ref())?;
+        Ok(bytes)
+    }
+}
+
+/// Declared prepared-result payload version used by local journal recovery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PreparedSemanticResultVersion {
+    /// Legacy observation/finding closure without owned raw measurement leaves.
+    V1,
+    /// Closure with exact raw measurement replay-leaf ownership.
+    V2,
+}
+
+impl PreparedSemanticResultVersion {
+    /// Detects the declared version of a complete prepared-result payload.
+    pub(crate) fn from_payload(bytes: &[u8]) -> Option<Self> {
+        if bytes.starts_with(PREPARED_RESULT_MAGIC_V1) {
+            Some(Self::V1)
+        } else if bytes.starts_with(PREPARED_RESULT_MAGIC_V2) {
+            Some(Self::V2)
+        } else {
+            None
+        }
+    }
+
+    const fn magic(self) -> &'static [u8] {
+        match self {
+            Self::V1 => PREPARED_RESULT_MAGIC_V1,
+            Self::V2 => PREPARED_RESULT_MAGIC_V2,
+        }
     }
 }
 
@@ -189,6 +329,9 @@ pub enum PreparedSemanticResultCodecError {
     /// Crucible replay or artifact validation rejected the closure.
     #[error(transparent)]
     Artifact(#[from] CrucibleArtifactError),
+    /// Crucible rejected a raw measurement replay leaf.
+    #[error(transparent)]
+    Measurement(#[from] CrucibleMeasurementError),
     /// The payload ended before one declared value was complete.
     #[error("prepared semantic result is truncated")]
     Truncated,
@@ -283,6 +426,160 @@ fn validate_pair(
     Ok(())
 }
 
+fn validate_measurement_evidence_order(
+    evidence: &[CrucibleMeasurementReplayEvidence],
+) -> Result<(), PreparedSemanticResultCodecError> {
+    let mut previous = None;
+    for leaf in evidence {
+        let id = leaf.id()?;
+        if previous == Some(id) {
+            return Err(inconsistent("duplicate measurement replay evidence"));
+        }
+        if previous.is_some_and(|previous| previous > id) {
+            return Err(inconsistent("measurement replay evidence order"));
+        }
+        previous = Some(id);
+    }
+    Ok(())
+}
+
+fn validate_measurement_evidence(
+    observation: &ObservationCandidate,
+    evidence: &[CrucibleMeasurementReplayEvidence],
+    finding: Option<&PreparedCrucibleFindingCandidate>,
+) -> Result<(), PreparedSemanticResultCodecError> {
+    let observation_requires_evidence =
+        measurement_requires_replay_evidence(observation.measurements());
+    let finding_requires_evidence = finding.is_some_and(|finding| {
+        finding
+            .replay_records
+            .measurements
+            .iter()
+            .any(measurement_requires_replay_evidence)
+    });
+    if evidence.is_empty() && !observation_requires_evidence && !finding_requires_evidence {
+        return Ok(());
+    }
+
+    let evidence_by_id = evidence
+        .iter()
+        .map(|leaf| leaf.id().map(|id| (id, leaf)))
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    if evidence_by_id.len() != evidence.len() {
+        return Err(inconsistent("duplicate measurement replay evidence"));
+    }
+
+    let mut owned = BTreeSet::new();
+    validate_measurement_record(
+        observation.measurements(),
+        observation.child().scenario(),
+        observation.child().configuration(),
+        &evidence_by_id,
+        &mut owned,
+    )?;
+
+    if let Some(finding) = finding {
+        let referenced_measurements = finding
+            .minimization_replays
+            .iter()
+            .chain(&finding.verification_replays)
+            .map(|replay| replay.measurements)
+            .collect::<BTreeSet<_>>();
+        for measurement in &finding.replay_records.measurements {
+            if measurement_requires_replay_evidence(measurement)
+                && !referenced_measurements.contains(&measurement.id()?)
+            {
+                return Err(inconsistent(
+                    "unreferenced finding replay measurement record",
+                ));
+            }
+        }
+
+        let configurations = finding
+            .replay_records
+            .configurations
+            .iter()
+            .map(|record| record.id().map(|id| (id, record)))
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let measurements = finding
+            .replay_records
+            .measurements
+            .iter()
+            .map(|record| record.id().map(|id| (id, record)))
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+
+        for replay in finding
+            .minimization_replays
+            .iter()
+            .chain(&finding.verification_replays)
+        {
+            let measurement = measurements
+                .get(&replay.measurements)
+                .ok_or_else(|| inconsistent("finding replay measurement record"))?;
+            if !measurement_requires_replay_evidence(measurement) {
+                continue;
+            }
+            let configuration = configurations
+                .get(&replay.configuration)
+                .ok_or_else(|| inconsistent("finding replay measurement configuration"))?;
+            validate_measurement_record(
+                measurement,
+                configuration.scenario(),
+                configuration.configuration(),
+                &evidence_by_id,
+                &mut owned,
+            )?;
+        }
+    }
+
+    if owned.len() != evidence_by_id.len() {
+        return Err(inconsistent("unowned measurement replay evidence"));
+    }
+    Ok(())
+}
+
+fn measurement_requires_replay_evidence(measurement: &MeasurementSet) -> bool {
+    measurement.evaluation().is_some_and(|evaluation| {
+        evaluation.payload_schema() == CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
+    })
+}
+
+fn validate_measurement_record(
+    measurement: &MeasurementSet,
+    scenario: crucible_campaign::ScenarioDefId,
+    configuration: crucible_campaign::ConfigurationId,
+    evidence_by_id: &BTreeMap<
+        crucible_cas::content_store::ContentId,
+        &CrucibleMeasurementReplayEvidence,
+    >,
+    owned: &mut BTreeSet<crucible_cas::content_store::ContentId>,
+) -> Result<(), PreparedSemanticResultCodecError> {
+    let Some(evaluation) = measurement.evaluation() else {
+        return Ok(());
+    };
+    if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
+        return Ok(());
+    }
+    if evaluation.evidence().len() != 1 {
+        return Err(inconsistent("measurement replay evidence edge"));
+    }
+    let evidence_id = *evaluation
+        .evidence()
+        .first()
+        .ok_or_else(|| inconsistent("measurement replay evidence edge"))?;
+    let leaf = evidence_by_id
+        .get(&evidence_id)
+        .ok_or_else(|| inconsistent("missing measurement replay evidence"))?;
+    if leaf.scenario() != scenario
+        || leaf.configuration() != configuration
+        || leaf.definitions() != evaluation.definitions()
+    {
+        return Err(inconsistent("measurement replay evidence binding"));
+    }
+    owned.insert(evidence_id);
+    Ok(())
+}
+
 const fn inconsistent(component: &'static str) -> PreparedSemanticResultCodecError {
     PreparedSemanticResultCodecError::Inconsistent { component }
 }
@@ -307,6 +604,49 @@ fn encode_observation(
     }
     encoder.record(&value.observation().canonical_bytes())?;
     Ok(())
+}
+
+fn encode_measurement_evidence(
+    encoder: &mut Encoder,
+    evidence: &[CrucibleMeasurementReplayEvidence],
+) -> Result<(), PreparedSemanticResultCodecError> {
+    encoder.count(evidence.len())?;
+    for leaf in evidence {
+        encoder.record(&leaf.canonical_bytes()?)?;
+    }
+    Ok(())
+}
+
+fn decode_measurement_evidence(
+    decoder: &mut Decoder<'_>,
+) -> Result<Vec<CrucibleMeasurementReplayEvidence>, PreparedSemanticResultCodecError> {
+    let count = decoder.count()?;
+    decoder.preflight_collection(count, size_of::<u32>())?;
+    let mut evidence = Vec::with_capacity(count);
+    for _ in 0..count {
+        evidence.push(CrucibleMeasurementReplayEvidence::from_canonical_bytes(
+            decoder.record()?,
+        )?);
+    }
+    Ok(evidence)
+}
+
+#[cfg(test)]
+pub(super) fn encode_v1_without_measurement_evidence_for_test(
+    observation: &ObservationCandidate,
+    finding: Option<&PreparedCrucibleFindingCandidate>,
+) -> Result<Vec<u8>, PreparedSemanticResultCodecError> {
+    let mut encoder = Encoder::new(MAX_PREPARED_SEMANTIC_RESULT_BYTES);
+    encoder.raw(PREPARED_RESULT_MAGIC_V1)?;
+    encode_observation(&mut encoder, observation)?;
+    match finding {
+        Some(finding) => {
+            encoder.byte(1)?;
+            encode_finding(&mut encoder, finding)?;
+        }
+        None => encoder.byte(0)?,
+    }
+    encoder.finish()
 }
 
 fn decode_observation(

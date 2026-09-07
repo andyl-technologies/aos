@@ -406,7 +406,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         let record = rows
             .get(schema)
             .unwrap_or_else(|| panic!("missing prepared-result schema {schema}"));
-        assert_eq!(record[1], "1");
+        assert_eq!(record[1], "2");
         assert_eq!(record[2], owner);
         assert_eq!(record[3], "operational-record");
     }
