@@ -28,6 +28,7 @@
   systemd,
   mtools,
   qemu-img,
+  remove-references-to,
   sqlite,
   tpm2-tools,
   util-linux,
@@ -82,6 +83,8 @@
   apmRuntimeTools =
     apmPortableRuntimeTools
     ++ lib.optionals (!isDarwinCross) [systemd util-linux];
+  referenceRemovalArguments = dependencies:
+    builtins.concatStringsSep " \\\n            " (map (dependency: "-t ${dependency}") dependencies);
   runtimeBinPath = tools:
     lib.concatStringsSep ":" (
       [(lib.makeBinPath tools)]
@@ -227,7 +230,7 @@ in
     # the `aos` runtime closure because maintainer commands create, inspect,
     # commit, and publish isolated Git worktrees without host tools.
     buildDeps =
-      [buildPerl buildPkgConfig openssl sqlite buildProtobuf buildCmake libssh2 buildGitMinimal buildOpenSsh buildZstd]
+      [buildPerl buildPkgConfig openssl sqlite buildProtobuf buildCmake libssh2 buildGitMinimal buildOpenSsh buildZstd remove-references-to]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
       [openssl sqlite zlib]
@@ -415,6 +418,18 @@ in
               fi
             done
           fi
+
+          # Cargo links all four command surfaces in one build environment, so
+          # cross linkers can retain target tool paths from sibling binaries
+          # even after stripping. Remove each policy-forbidden reference before
+          # the general derivation scrub preserves the union of every output's
+          # runtime dependencies.
+          remove-references-to \
+            ${referenceRemovalArguments aosForbiddenRuntimeDeps} \
+            "$out/bin/.aos-unwrapped"
+          remove-references-to \
+            ${referenceRemovalArguments aprForbiddenRuntimeDeps} \
+            "$apr/bin/.apr-unwrapped"
 
           # Exercise the installed wrapper, not the pre-install Cargo binary.
           # The wrapper must exec .aos-unwrapped so current_exe() materializes
