@@ -7,7 +7,8 @@
 //! repository accepts the observation.
 
 use crucible::{
-    FingerprintSample, NodeId, QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry,
+    Configuration, FingerprintSample, NodeId, QuantumTerminalVerdict, SchedulerError,
+    SchedulerEventLogEntry, SelectionDecision,
 };
 
 // crucible-lint: allow host-nondeterminism-state -- the observer forwards scheduler-owned quantum requests and records successful outcomes without selecting modeled state.
@@ -112,12 +113,16 @@ where
         self.lifecycle.drain_pending_selectable_requests()
     }
 
-    fn enqueue_selectable_reply(
+    fn apply_selectable_reply(
         &mut self,
+        parent: &Configuration,
+        decision: SelectionDecision,
+        selected: &Configuration,
         pending: &QemuNodeSelectablePendingRequest,
         reply: &SelectionReply,
-    ) -> Result<(), SchedulerError> {
-        self.lifecycle.enqueue_selectable_reply(pending, reply)
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        self.lifecycle
+            .apply_selectable_reply(parent, decision, selected, pending, reply)
     }
 
     fn capture_attempt_checkpoint(

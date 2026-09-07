@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 
 // crucible-lint: allow host-nondeterminism-state -- The lifecycle owns canonical scheduler progress; host observations only govern process cleanup and never select modeled transitions.
 use crucible::{
-    NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, SchedulerError,
-    SchedulerEventLogEntry, SchedulerOperationalFailureClass,
+    Configuration, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
+    SchedulerError, SchedulerEventLogEntry, SchedulerOperationalFailureClass, SelectionDecision,
 };
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmHotForkNodeServiceState,
@@ -251,12 +251,16 @@ where
         self.lifecycle.drain_pending_selectable_requests()
     }
 
-    fn enqueue_selectable_reply(
+    fn apply_selectable_reply(
         &mut self,
+        parent: &Configuration,
+        decision: SelectionDecision,
+        selected: &Configuration,
         pending: &QemuNodeSelectablePendingRequest,
         reply: &SelectionReply,
-    ) -> Result<(), SchedulerError> {
-        self.lifecycle.enqueue_selectable_reply(pending, reply)
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        self.lifecycle
+            .apply_selectable_reply(parent, decision, selected, pending, reply)
     }
 
     fn capture_attempt_checkpoint(

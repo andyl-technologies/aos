@@ -4,8 +4,10 @@ use std::collections::BTreeSet;
 
 use crucible_protocol::selectable_catalog_plan::{
     SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
-    SelectablePlanLimits, SelectablePlanPhase, SelectablePlanPresence,
+    SelectablePlanLimits, SelectablePlanPendingRequest, SelectablePlanPhase,
+    SelectablePlanPresence,
 };
+use crucible_protocol::{SelectionReply, SelectionRequest};
 
 use super::*;
 
@@ -23,6 +25,60 @@ fn node() -> NodeId {
     NodeId {
         name: String::from("vm-a"),
     }
+}
+
+#[test]
+fn selectable_reply_pairing_rejects_another_valid_selection() {
+    use crucible::{AppRandomDecision, AppRandomSelectable, RngStreamId};
+
+    let scenario = ScenarioDef::from_canonical_material(
+        "crucible.test.vm-lifecycle.selectable-pairing",
+        "scenario=selectable-pairing",
+    );
+    let parent = Configuration::genesis(scenario);
+    let live = AppRandomDecision {
+        node: node(),
+        stream: RngStreamId::from_name("app-random/node:4:vm-a/stream:7:pairing"),
+        request_id: 19,
+        width: 64,
+        value: 7,
+    };
+    let selectable = AppRandomSelectable::from_decision(&parent.def, &live)
+        .unwrap_or_else(|error| panic!("selectable should reconstruct: {error}"));
+    let selected = selectable
+        .branch_selection(&parent, 7)
+        .unwrap_or_else(|error| panic!("first selection should be valid: {error}"));
+    let another = selectable
+        .branch_selection(&parent, 8)
+        .unwrap_or_else(|error| panic!("second selection should be valid: {error}"));
+    let pending = SelectablePlanPendingRequest::new(
+        SelectionRequest::new(23, "app.random", "pairing", None, 256)
+            .unwrap_or_else(|error| panic!("pending request should encode: {error}")),
+        41,
+        0,
+        0x1000,
+    );
+    let reply = SelectionReply::selected(
+        pending.request().sequence(),
+        selected.opportunity().content_id().digest(),
+        selected.domain().content_id().digest(),
+        selected.value().canonical_bytes(),
+    )
+    .unwrap_or_else(|error| panic!("selected reply should encode: {error}"));
+
+    assert_eq!(
+        validate_selectable_reply_pairing(&SelectionDecision::new(&selected), &pending, &reply),
+        Ok(())
+    );
+    let error = match validate_selectable_reply_pairing(
+        &SelectionDecision::new(&another),
+        &pending,
+        &reply,
+    ) {
+        Ok(()) => panic!("another valid selection must not authenticate the reply"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
 }
 
 fn checkpoint_selectable_plan(continuation: SelectablePlanContinuation) -> SelectableCatalogPlan {

@@ -294,6 +294,76 @@ impl SingleScheduler {
         Ok((configuration, append))
     }
 
+    /// Appends one externally resolved selection at the current scheduler boundary.
+    ///
+    /// Guest selectables are resolved outside the scheduler after QEMU publishes a
+    /// typed pending request. This boundary authenticates the parent, the typed
+    /// selection decision, and its claimed child before the scheduler advances.
+    /// It records no quantum boundary because resolving a paused guest request does
+    /// not consume execution progress.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `parent` is not the
+    /// current scheduler configuration or `selected` is not the exact result of
+    /// applying `decision`, when event-log append fails, or when `publish`
+    /// rejects the external transport operation. A publisher error restores the
+    /// exact prior event-log state before it is returned.
+    ///
+    /// # Panics
+    ///
+    /// Propagates a panic from `publish` after restoring the prior event log.
+    pub fn apply_external_selection<F>(
+        &mut self,
+        parent: &Configuration,
+        decision: SelectionDecision,
+        selected: &Configuration,
+        publish: F,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError>
+    where
+        F: FnOnce() -> Result<(), SchedulerError>,
+    {
+        if self.configuration != *parent {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "external selection parent is not the current scheduler configuration",
+                ),
+            });
+        }
+
+        let configuration = step(parent, Decision::Selection(decision.clone()));
+        if configuration != *selected {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "external selection child is inconsistent with its typed decision",
+                ),
+            });
+        }
+
+        let at = SimInstant {
+            nanos: self
+                .frontier
+                .ticks
+                .max(self.event_log.condition_prefix().point().at().ticks),
+        };
+        let previous_event_log = self.event_log.clone();
+        let append =
+            self.emit_quantum_event_log(&[], &[Decision::Selection(decision)], &[], at, false)?;
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(publish)) {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                self.event_log = previous_event_log;
+                return Err(error);
+            }
+            Err(payload) => {
+                self.event_log = previous_event_log;
+                std::panic::resume_unwind(payload);
+            }
+        }
+        self.configuration = configuration;
+        Ok(append)
+    }
+
     pub(super) fn emit_quantum_decisions(
         &mut self,
         resolved_events: &[ScheduledEvent],

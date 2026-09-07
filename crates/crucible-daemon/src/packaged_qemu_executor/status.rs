@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 // crucible-lint: allow host-nondeterminism-state -- immutable scheduler inputs are forwarded through lifecycle ownership while status remains operational-only.
-use crucible::{Configuration, ScenarioDef};
+use crucible::{Configuration, ScenarioDef, SelectionDecision};
 use crucible::{ScenarioDefForm, SchedulerError, SchedulerEventLogEntry};
 // crucible-lint: allow host-nondeterminism-state -- These engine types are forwarded only through scheduler-owned lifecycle traits; operational observations never influence engine state.
 use crucible::{QuantumOutcome, QuantumRequest, QuantumTerminalVerdict};
@@ -493,12 +493,16 @@ where
         self.inner.drain_pending_selectable_requests()
     }
 
-    fn enqueue_selectable_reply(
+    fn apply_selectable_reply(
         &mut self,
+        parent: &Configuration,
+        decision: SelectionDecision,
+        selected: &Configuration,
         pending: &QemuNodeSelectablePendingRequest,
         reply: &SelectionReply,
-    ) -> Result<(), SchedulerError> {
-        self.inner.enqueue_selectable_reply(pending, reply)
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        self.inner
+            .apply_selectable_reply(parent, decision, selected, pending, reply)
     }
 
     fn capture_attempt_checkpoint(

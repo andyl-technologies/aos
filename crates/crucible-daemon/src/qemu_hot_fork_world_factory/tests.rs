@@ -437,17 +437,20 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
         Ok(self.pending_guest_request.take().into_iter().collect())
     }
 
-    fn enqueue_selectable_reply(
+    fn apply_selectable_reply(
         &mut self,
+        _parent: &crucible::Configuration,
+        _decision: crucible::SelectionDecision,
+        _selected: &crucible::Configuration,
         _pending: &QemuNodeSelectablePendingRequest,
         reply: &crucible_protocol::SelectionReply,
-    ) -> Result<(), crucible::SchedulerError> {
+    ) -> Result<Vec<crucible::SchedulerEventLogEntry>, crucible::SchedulerError> {
         self.observations
             .guest_replies
             .lock()
             .expect("branch replay guest replies")
             .push(reply.clone());
-        Ok(())
+        Ok(Vec::new())
     }
 
     fn capture_attempt_checkpoint(
@@ -608,12 +611,15 @@ impl QemuFreshAttemptLifecycleOwner for InheritedBoundaryLifecycle {
         Ok(Vec::new())
     }
 
-    fn enqueue_selectable_reply(
+    fn apply_selectable_reply(
         &mut self,
+        _parent: &crucible::Configuration,
+        _decision: crucible::SelectionDecision,
+        _selected: &crucible::Configuration,
         _pending: &QemuNodeSelectablePendingRequest,
         _reply: &crucible_protocol::SelectionReply,
-    ) -> Result<(), crucible::SchedulerError> {
-        Ok(())
+    ) -> Result<Vec<crucible::SchedulerEventLogEntry>, crucible::SchedulerError> {
+        Ok(Vec::new())
     }
 
     fn capture_attempt_checkpoint(
