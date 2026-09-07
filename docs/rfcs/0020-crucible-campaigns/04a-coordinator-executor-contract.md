@@ -2103,6 +2103,13 @@ narrowed domain, rejects any widening or default exclusion, and derives the
 language-neutral guest opportunity coordinates from RFC 02. A `NextChoice`
 attempt retains the complete declaration/domain/opportunity discovery without
 replying. Other discovery execution records and returns the declared default.
+Those executor-produced selections are published with the observation candidate
+and bound as schema-v3 or schema-v4 observation children. Candidate validation
+requires each selection to resolve against one exact opportunity discovered by
+the same attempt, rejects repeated opportunity selection, and enforces the
+existing aggregate choice-record byte bound before publication. This makes the
+selection closure reachable through the accepted observation before a later
+thin replay resolves the recorded IDs.
 Thin start replay consumes an authenticated default, locked, or campaign-branch
 selection only when the reconstructed opportunity and domain match; branch
 replay also re-derives the edge from the exact current parent before publishing

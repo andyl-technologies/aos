@@ -57,10 +57,6 @@ impl CampaignRepository {
     ) -> Result<ObservationId, CampaignRepositoryError> {
         self.validate_observation_candidate(candidate)?;
 
-        let child = self.put_configuration_artifact(candidate.child())?;
-        let measurements = self.put_measurement_set(candidate.measurements())?;
-        let properties = self.put_property_verdict_set(candidate.properties())?;
-        let coverage = self.put_coverage_projection(candidate.coverage())?;
         for discovery in candidate.discovered_choices() {
             let domain = self.publish_choice_domain(discovery.domain())?;
             let declaration = self.publish_selectable(discovery.declaration())?;
@@ -72,6 +68,15 @@ impl CampaignRepository {
                 return Err(integrity("observation-choice-publication-id-mismatch"));
             }
         }
+        for selection in candidate.produced_selections() {
+            if self.put_selection(selection)? != selection.id()?.content_id() {
+                return Err(integrity("observation-selection-publication-id-mismatch"));
+            }
+        }
+        let child = self.put_configuration_artifact(candidate.child())?;
+        let measurements = self.put_measurement_set(candidate.measurements())?;
+        let properties = self.put_property_verdict_set(candidate.properties())?;
+        let coverage = self.put_coverage_projection(candidate.coverage())?;
         let observation = self.put_observation(candidate.observation())?;
 
         if child != candidate.observation().child_content().content_id()
@@ -922,6 +927,42 @@ impl CampaignRepository {
         Ok(())
     }
 
+    pub(super) fn validate_observation_produced_selections(
+        &self,
+        observation: &Observation,
+        child: &ConfigurationArtifact,
+    ) -> Result<(), CampaignRepositoryError> {
+        let selection_ids = observation
+            .produced_selections()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        if !selection_ids.is_empty()
+            && matches!(
+                observation.stop(),
+                StopOutcome::Reached(StopCondition::NextChoice)
+            )
+        {
+            return Err(integrity("next-choice-observation-has-produced-selection"));
+        }
+        let mut selected_opportunities = BTreeSet::new();
+        for resolved in self.resolve_selections(&selection_ids)? {
+            if !observation
+                .discovered_choices()
+                .contains(&resolved.selection().opportunity())
+                || resolved.opportunity().scenario() != child.scenario()
+            {
+                return Err(integrity("observation-produced-selection-choice-mismatch"));
+            }
+            if !selected_opportunities.insert(resolved.selection().opportunity()) {
+                return Err(integrity(
+                    "observation-produced-selection-opportunity-duplicate",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn validate_observation_candidate(
         &self,
         candidate: &ObservationCandidate,
@@ -990,6 +1031,23 @@ impl CampaignRepository {
                 return Err(integrity("observation-choice-scenario-mismatch"));
             }
         }
+        let mut produced_selection_ids = BTreeSet::new();
+        let mut selected_opportunities = BTreeSet::new();
+        for selection in candidate.produced_selections() {
+            if !produced_selection_ids.insert(selection.id()?)
+                || !selected_opportunities.insert(selection.opportunity())
+            {
+                return Err(integrity("observation-produced-selection-bundle-duplicate"));
+            }
+            let discovery = choice_bodies.get(&selection.opportunity()).ok_or_else(|| {
+                integrity("observation-produced-selection-opportunity-is-not-discovered")
+            })?;
+            selection.validate_resolved_references(discovery.opportunity(), discovery.domain())?;
+            virtual_choice_records.insert(selection.id()?.content_id());
+        }
+        if produced_selection_ids != *observation.produced_selections() {
+            return Err(integrity("observation-produced-selection-bundle-mismatch"));
+        }
         if matches!(
             observation.stop(),
             StopOutcome::Reached(StopCondition::NextChoice)
@@ -1009,7 +1067,7 @@ impl CampaignRepository {
 
         // The final observation closure contains five fixed not-yet-published
         // records plus every unique discovered declaration, domain, and
-        // opportunity. Traverse every already-published dependency in one
+        // opportunity and produced selection. Traverse every already-published dependency in one
         // shared walk so independently valid evidence trees cannot exceed the
         // global closure bound only after writes begin.
         let roots = std::iter::once(observation.attempt().content_id())

@@ -10,7 +10,7 @@ use crate::{
     FindingMinimizationEvidence, FindingSignature, FindingTarget, GetAttemptExecutionDisposition,
     GetAttemptExecutionRequest, GetAttemptExecutionResponse, Objective, ObjectiveGoal,
     ObjectiveValue, ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
-    ResumeAttemptExecutionResponse, evaluate_objectives,
+    ResumeAttemptExecutionResponse, SelectionOrigin, evaluate_objectives,
 };
 
 struct CompletingExecutor {
@@ -1425,6 +1425,61 @@ fn executor_candidate_publishes_fresh_choices_with_shared_contract_records() {
     assert!(Arc::ptr_eq(
         &candidate.discovered_choices()[0].domain,
         &candidate.discovered_choices()[1].domain,
+    ));
+    let selection_observation = Observation::new(
+        candidate.observation().attempt(),
+        candidate.observation().child(),
+        candidate.observation().child_content(),
+        candidate.observation().path(),
+        StopOutcome::Reached(StopCondition::Terminal),
+        candidate.observation().measurements(),
+        candidate.observation().properties(),
+        candidate.observation().coverage(),
+        candidate.observation().discovered_choices().clone(),
+    )
+    .expect("produced-selection observation");
+    let selection_candidate = ObservationCandidate::new(
+        candidate.child().clone(),
+        candidate.measurements().clone(),
+        candidate.properties().clone(),
+        candidate.coverage().clone(),
+        candidate.discovered_choices().to_vec(),
+        selection_observation,
+    )
+    .expect("produced-selection candidate");
+    let produced_selection = Selection::new(
+        &fresh,
+        candidate.discovered_choices()[0].domain(),
+        ChoiceValue::Discrete(alternative),
+        SelectionOrigin::Default,
+    )
+    .expect("produced default selection");
+    let produced_candidate = selection_candidate
+        .with_produced_selections(vec![produced_selection.clone()])
+        .expect("candidate with produced selection");
+    assert_eq!(
+        produced_candidate.observation().produced_selections(),
+        &BTreeSet::from([produced_selection.id().expect("produced selection id")])
+    );
+    assert!(matches!(
+        produced_candidate.with_produced_selections(Vec::new()),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "observation candidate already carries produced selections"
+        })
+    ));
+    let mut mismatched_candidate = candidate.clone();
+    mismatched_candidate.observation = mismatched_candidate
+        .observation
+        .clone()
+        .with_produced_selections(BTreeSet::from([produced_selection
+            .id()
+            .expect("produced selection id")]))
+        .expect("mismatched candidate observation");
+    assert!(matches!(
+        repository.validate_observation_candidate(&mismatched_candidate),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "observation-produced-selection-bundle-mismatch"
+        })
     ));
 
     repository
