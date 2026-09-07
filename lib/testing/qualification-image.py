@@ -713,9 +713,18 @@ class Scenario:
             raise RuntimeError("baked registry does not carry the required trust anchor")
         lines = source.splitlines()
         url_lines = [index for index, line in enumerate(lines) if line.startswith("url = ")]
-        if len(url_lines) != 1:
-            raise RuntimeError("baked andyl/testing registry has an unexpected URL declaration")
+        channel_lines = [
+            index for index, line in enumerate(lines) if line.startswith("channel = ")
+        ]
+        tag_lines = [index for index, line in enumerate(lines) if line.startswith("tag = ")]
+        if len(url_lines) != 1 or len(channel_lines) != 1 or tag_lines:
+            raise RuntimeError(
+                "baked registry does not have the expected URL and channel selector"
+            )
         lines[url_lines[0]] = f"url = {json.dumps(self.staging_url)}"
+
+        # Canonical registry finalization signs the release version as its exact Git tag.
+        lines[channel_lines[0]] = f"tag = {json.dumps(self.candidate_version)}"
 
         overlay = self.work / f"{self.registry_client}.toml"
         overlay.write_text("\n".join(lines) + "\n", encoding="utf-8")
