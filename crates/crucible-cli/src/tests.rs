@@ -110,3 +110,19 @@ fn malformed_streamed_coverage_fails_loudly() {
 
     assert!(error.to_string().contains("block_len"));
 }
+
+#[test]
+fn joined_campaign_failure_survives_lifecycle_shutdown_error() {
+    let lifecycle = Err(serve_error("campaign service stopped unexpectedly"));
+    let campaign = Err(serve_error(
+        "campaign service error: terminal attempt evaluation failed",
+    ));
+
+    let error = combine_lifecycle_and_campaign_results(lifecycle, campaign)
+        .expect_err("both joined service failures should propagate");
+
+    assert_eq!(
+        error.to_string(),
+        "campaign service stopped unexpectedly; campaign service error: terminal attempt evaluation failed"
+    );
+}
