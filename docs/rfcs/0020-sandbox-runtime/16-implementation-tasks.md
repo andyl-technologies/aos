@@ -3640,3 +3640,38 @@ allocation evidence or publish a production launch catalog. Source-handle
 materialization, native attachment replay, lease-expiry scheduling,
 internal-reboot anchor handoff, and live namespace VM qualification remain
 open.
+
+### Shared Host launch-catalog payload schema
+
+The complete Host launch-catalog payload now lives in the node-local protocol
+crate shared by the unprivileged controller and root Host broker. Workspace,
+network, identity-allocation, attachment-anchor, and allocation-tombstone
+records retain the same strict compact JSON representation and sixteen-MiB
+bound. Constructors and canonical decoding enforce fixed publisher paths,
+assignment and physical-identity completeness, strict handle ordering,
+nonoverlapping subordinate identity ranges, and Mount-derived anchor paths.
+Read-only accessors let either process inspect those validated semantics without
+exposing mutable fields or linking the controller against the privileged Host
+implementation.
+
+Host continues to own all privileged behavior: root-directory protection,
+generation continuity, identity-allocation tombstone continuity, atomic
+publication, physical pin reopening, and launch-time identity verification.
+The shared module contains no filesystem access, descriptor acquisition, or
+authority minting. Host maps its validation failures into the existing catalog
+error surface and re-exports the moved record types, preserving its public Rust
+API while the sealed-memfd wire bytes remain compatible.
+
+Focused validation covers canonical shared-schema round trips, unknown and
+noncanonical JSON rejection, handle ordering and identity overlap, derived
+attachment-anchor paths, the existing Host publication transition suite, and
+the existing Host service publication path. Protocol and Host all-target,
+all-feature compilation, strict crate-local Clippy without dependency linting,
+warnings-as-errors rustdoc, Rust formatting, and diff checks pass.
+
+This removes the implementation-crate dependency that previously blocked
+controller-side catalog projection and advances `SBX-BPROTO-04`, `SBX-CTRL-03`,
+and `SBX-HOST-01`. It does not claim combined production publication: Storage
+and Network still need authoritative current-resource inventories, and the
+controller still needs durable whole-catalog generation and tombstone
+reconciliation before it can schedule the existing Host 1.4 dispatch.

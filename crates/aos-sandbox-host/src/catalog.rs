@@ -16,512 +16,22 @@ use std::io::{Read as _, Write as _};
 use std::os::fd::AsFd as _;
 use std::path::Path;
 
-use aos_sandbox_core::ObjectDescriptor;
 use aos_sandbox_linux::path::BeneathRoot;
 use aos_sandbox_protocol::host_catalog::MAXIMUM_HOST_CATALOG_BYTES;
+pub use aos_sandbox_protocol::{
+    AttachmentAnchorCatalogEntry, CatalogAssignment, CatalogIdentityAllocation,
+    HostCatalogSnapshot, NetworkCatalogEntry, WorkspaceCatalogEntry,
+};
 use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedRuntimePlan};
-use serde::{Deserialize, Serialize};
 
 use crate::plan::{
-    ATTACHMENT_ANCHOR_PIN_PREFIX, HostCatalog, NETWORK_PIN_PREFIX, OpaqueHandle,
-    ResolvedAttachmentAnchor, ResolvedIdentityAllocation, ResolvedLaunchResources, ResolvedNetwork,
-    ResolvedWorkspace, WORKSPACE_PIN_PREFIX, validate_attachment_anchor_path,
-    validate_published_pin,
+    HostCatalog, OpaqueHandle, ResolvedAttachmentAnchor, ResolvedIdentityAllocation,
+    ResolvedLaunchResources, ResolvedNetwork, ResolvedWorkspace,
 };
 use crate::{HostError, Result};
 
 const CATALOG_FILE: &str = "catalog.json";
 const CATALOG_NEXT_FILE: &str = "catalog.next";
-const MAXIMUM_ENTRIES: usize = 16_384;
-const MAXIMUM_ATTACHMENTS: usize = 256;
-const MINIMUM_IDENTITY_RANGE: u32 = 65_536;
-
-/// Records one incarnation-bound, nonoverlapping subordinate identity range.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct CatalogIdentityAllocation {
-    range_start: u32,
-    range_size: u32,
-    catalog_generation: u64,
-}
-
-impl CatalogIdentityAllocation {
-    /// Constructs a catalog-backed private user-namespace allocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for host identity zero, fewer than 65,536 identities,
-    /// range overflow, or missing allocation-generation evidence.
-    pub fn new(range_start: u32, range_size: u32, catalog_generation: u64) -> Result<Self> {
-        let value = Self {
-            range_start,
-            range_size,
-            catalog_generation,
-        };
-        value.validate()?;
-        Ok(value)
-    }
-
-    fn validate(self) -> Result<()> {
-        if self.range_start == 0
-            || self.range_size < MINIMUM_IDENTITY_RANGE
-            || self.range_start.checked_add(self.range_size).is_none()
-            || self.catalog_generation == 0
-        {
-            return Err(HostError::Catalog(
-                "catalog identity allocation is invalid".to_owned(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn end(self) -> u32 {
-        self.range_start + self.range_size
-    }
-
-    fn matches(self, plan: &ValidatedRuntimePlan) -> bool {
-        self.range_start == plan.uid_range_start() && self.range_size == plan.uid_range_size()
-    }
-}
-
-/// Binds one catalog entry to exact assignment semantics.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct CatalogAssignment {
-    sandbox_id: [u8; 16],
-    incarnation_id: [u8; 16],
-    assignment_epoch: u64,
-    desired_generation: u64,
-    assignment_digest: [u8; 32],
-}
-
-impl CatalogAssignment {
-    /// Constructs an exact nonportable catalog assignment tuple.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`HostError::Catalog`] when an identifier/digest is zero or a
-    /// generation is zero.
-    pub fn new(
-        sandbox_id: [u8; 16],
-        incarnation_id: [u8; 16],
-        assignment_epoch: u64,
-        desired_generation: u64,
-        assignment_digest: [u8; 32],
-    ) -> Result<Self> {
-        let value = Self {
-            sandbox_id,
-            incarnation_id,
-            assignment_epoch,
-            desired_generation,
-            assignment_digest,
-        };
-        value.validate()?;
-        Ok(value)
-    }
-
-    fn validate(self) -> Result<()> {
-        if self.sandbox_id == [0; 16]
-            || self.incarnation_id == [0; 16]
-            || self.assignment_epoch == 0
-            || self.desired_generation == 0
-            || self.assignment_digest == [0; 32]
-        {
-            return Err(HostError::Catalog(
-                "catalog assignment contains a sentinel".to_owned(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn matches(self, fence: &ValidatedAssignmentFence) -> bool {
-        self.sandbox_id == *fence.sandbox_id()
-            && self.incarnation_id == *fence.incarnation_id()
-            && self.assignment_epoch == fence.assignment_epoch()
-            && self.desired_generation == fence.desired_generation()
-            && self.assignment_digest == *fence.assignment_digest()
-    }
-}
-
-/// Publishes one assembled workspace root and its installed attachments.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorkspaceCatalogEntry {
-    handle: OpaqueHandle,
-    assignment: CatalogAssignment,
-    root_image: ObjectDescriptor,
-    root_directory: String,
-    device: u64,
-    inode: u64,
-    identity: CatalogIdentityAllocation,
-    attachment_handles: Vec<OpaqueHandle>,
-}
-
-impl WorkspaceCatalogEntry {
-    /// Constructs one assignment-bound workspace catalog record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a zero handle, unsafe path, too many attachments,
-    /// or attachment handles that are not strictly byte ordered.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the constructor mirrors one closed, serialized catalog record"
-    )]
-    pub fn new(
-        handle: OpaqueHandle,
-        assignment: CatalogAssignment,
-        root_image: ObjectDescriptor,
-        root_directory: String,
-        device: u64,
-        inode: u64,
-        identity: CatalogIdentityAllocation,
-        attachment_handles: Vec<OpaqueHandle>,
-    ) -> Result<Self> {
-        let value = Self {
-            handle,
-            assignment,
-            root_image,
-            root_directory,
-            device,
-            inode,
-            identity,
-            attachment_handles,
-        };
-        value.validate()?;
-        Ok(value)
-    }
-
-    fn validate(&self) -> Result<()> {
-        self.assignment.validate()?;
-        validate_handle(self.handle, "workspace")?;
-        validate_published_pin(&self.root_directory, WORKSPACE_PIN_PREFIX, "workspace root")
-            .map_err(|error| HostError::Catalog(error.to_string()))?;
-        if self.device == 0 || self.inode == 0 {
-            return Err(HostError::Catalog(
-                "workspace pin identity contains a sentinel".to_owned(),
-            ));
-        }
-        self.identity.validate()?;
-        if self.attachment_handles.len() > MAXIMUM_ATTACHMENTS
-            || !strictly_ordered(&self.attachment_handles)
-            || self.attachment_handles.contains(&[0; 32])
-        {
-            return Err(HostError::Catalog(
-                "workspace attachment handles are not canonical".to_owned(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// Publishes one prepared default-drop network namespace.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct NetworkCatalogEntry {
-    handle: OpaqueHandle,
-    assignment: CatalogAssignment,
-    namespace_path: String,
-    device: u64,
-    inode: u64,
-}
-
-/// Publishes one Mount-owned destination anchor for a payload namespace generation.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AttachmentAnchorCatalogEntry {
-    handle: OpaqueHandle,
-    assignment: CatalogAssignment,
-    namespace_generation: u64,
-    directory: String,
-    device: u64,
-    inode: u64,
-    mount_id: u64,
-}
-
-impl AttachmentAnchorCatalogEntry {
-    /// Constructs one assignment-bound attachment-anchor catalog record.
-    ///
-    /// The path is not caller-selected. It must exactly reproduce Mount's
-    /// namespace-generation anchor beneath its fixed private runtime root.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a sentinel, a noncanonical path, or missing
-    /// physical identity.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the constructor mirrors one closed, serialized catalog record"
-    )]
-    pub fn new(
-        handle: OpaqueHandle,
-        assignment: CatalogAssignment,
-        namespace_generation: u64,
-        directory: String,
-        device: u64,
-        inode: u64,
-        mount_id: u64,
-    ) -> Result<Self> {
-        let value = Self {
-            handle,
-            assignment,
-            namespace_generation,
-            directory,
-            device,
-            inode,
-            mount_id,
-        };
-        value.validate()?;
-        Ok(value)
-    }
-
-    fn validate(&self) -> Result<()> {
-        self.assignment.validate()?;
-        validate_handle(self.handle, "attachment anchor")?;
-        if self.namespace_generation == 0
-            || self.device == 0
-            || self.inode == 0
-            || self.mount_id == 0
-            || self.directory != self.expected_directory()
-        {
-            return Err(HostError::Catalog(
-                "attachment-anchor catalog record is invalid".to_owned(),
-            ));
-        }
-        validate_attachment_anchor_path(&self.directory)
-            .map_err(|error| HostError::Catalog(error.to_string()))
-    }
-
-    fn expected_directory(&self) -> String {
-        format!(
-            "{ATTACHMENT_ANCHOR_PIN_PREFIX}{}/{}/{:016x}",
-            encode_hex(&self.assignment.sandbox_id),
-            encode_hex(&self.assignment.incarnation_id),
-            self.namespace_generation,
-        )
-    }
-}
-
-impl NetworkCatalogEntry {
-    /// Constructs one assignment-bound network catalog record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a zero handle or unsafe namespace path.
-    pub fn new(
-        handle: OpaqueHandle,
-        assignment: CatalogAssignment,
-        namespace_path: String,
-        device: u64,
-        inode: u64,
-    ) -> Result<Self> {
-        let value = Self {
-            handle,
-            assignment,
-            namespace_path,
-            device,
-            inode,
-        };
-        value.validate()?;
-        Ok(value)
-    }
-
-    fn validate(&self) -> Result<()> {
-        self.assignment.validate()?;
-        validate_handle(self.handle, "network")?;
-        validate_published_pin(
-            &self.namespace_path,
-            NETWORK_PIN_PREFIX,
-            "network namespace",
-        )
-        .map_err(|error| HostError::Catalog(error.to_string()))?;
-        if self.device == 0 || self.inode == 0 {
-            return Err(HostError::Catalog(
-                "network pin identity contains a sentinel".to_owned(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// Contains one atomic root-owned catalog generation.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct HostCatalogSnapshot {
-    generation: u64,
-    workspaces: Vec<WorkspaceCatalogEntry>,
-    networks: Vec<NetworkCatalogEntry>,
-    #[serde(default)]
-    attachment_anchors: Vec<AttachmentAnchorCatalogEntry>,
-    retired_identity_allocations: Vec<CatalogIdentityAllocation>,
-}
-
-impl HostCatalogSnapshot {
-    /// Constructs a canonical catalog snapshot for atomic publication.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for generation zero, excessive collections, invalid
-    /// entries, or entries not strictly ordered by opaque handle.
-    pub fn new(
-        generation: u64,
-        workspaces: Vec<WorkspaceCatalogEntry>,
-        networks: Vec<NetworkCatalogEntry>,
-    ) -> Result<Self> {
-        let value = Self {
-            generation,
-            workspaces,
-            networks,
-            attachment_anchors: Vec::new(),
-            retired_identity_allocations: Vec::new(),
-        };
-        value.validate()?;
-        Ok(value)
-    }
-
-    /// Adds the canonical Mount-owned attachment anchors published in this generation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for excessive, invalid, or unordered entries.
-    pub fn with_attachment_anchors(
-        mut self,
-        anchors: Vec<AttachmentAnchorCatalogEntry>,
-    ) -> Result<Self> {
-        self.attachment_anchors = anchors;
-        self.validate()?;
-        Ok(self)
-    }
-
-    /// Adds bounded publisher-asserted allocation tombstones that block reuse.
-    ///
-    /// The catalog publisher, not this snapshot decoder, owns continuity with
-    /// prior generations and removal only after cleanup is proven.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a tombstone is invalid, newer than the snapshot,
-    /// overlaps another tombstone, or overlaps a live allocation.
-    pub fn with_retired_identity_allocations(
-        mut self,
-        allocations: Vec<CatalogIdentityAllocation>,
-    ) -> Result<Self> {
-        self.retired_identity_allocations = allocations;
-        self.validate()?;
-        Ok(self)
-    }
-
-    /// Encodes the strict node-local snapshot for an atomic root-owned write.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when JSON encoding fails or exceeds sixteen MiB.
-    pub fn encode(&self) -> Result<Vec<u8>> {
-        self.validate()?;
-        let bytes =
-            serde_json::to_vec(self).map_err(|error| HostError::Catalog(error.to_string()))?;
-        if bytes.len() > MAXIMUM_HOST_CATALOG_BYTES {
-            return Err(HostError::Catalog(
-                "encoded host catalog exceeds sixteen MiB".to_owned(),
-            ));
-        }
-        Ok(bytes)
-    }
-
-    /// Decodes an exact canonical Host catalog encoding.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for malformed JSON, unknown fields, invalid catalog
-    /// semantics, an oversized encoding, or bytes that are not the unique
-    /// compact encoding produced by [`Self::encode`].
-    pub fn decode_canonical(bytes: &[u8]) -> Result<Self> {
-        Self::decode(bytes)
-    }
-
-    /// Returns the nonzero publication generation.
-    #[must_use]
-    pub const fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() > MAXIMUM_HOST_CATALOG_BYTES {
-            return Err(HostError::Catalog(
-                "encoded host catalog exceeds sixteen MiB".to_owned(),
-            ));
-        }
-        let value: Self =
-            serde_json::from_slice(bytes).map_err(|error| HostError::Catalog(error.to_string()))?;
-        value.validate()?;
-        let canonical =
-            serde_json::to_vec(&value).map_err(|error| HostError::Catalog(error.to_string()))?;
-        if canonical != bytes {
-            return Err(HostError::Catalog(
-                "host catalog encoding is not canonical".to_owned(),
-            ));
-        }
-        Ok(value)
-    }
-
-    fn validate(&self) -> Result<()> {
-        if self.generation == 0
-            || self.workspaces.len() > MAXIMUM_ENTRIES
-            || self.networks.len() > MAXIMUM_ENTRIES
-            || self.attachment_anchors.len() > MAXIMUM_ENTRIES
-            || self.retired_identity_allocations.len() > MAXIMUM_ENTRIES
-            || !strictly_ordered_by(&self.workspaces, |entry| entry.handle)
-            || !strictly_ordered_by(&self.networks, |entry| entry.handle)
-            || !strictly_ordered_by(&self.attachment_anchors, |entry| entry.handle)
-            || !strictly_ordered(&self.retired_identity_allocations)
-        {
-            return Err(HostError::Catalog(
-                "host catalog header or entry ordering is invalid".to_owned(),
-            ));
-        }
-        for workspace in &self.workspaces {
-            workspace.validate()?;
-        }
-        for network in &self.networks {
-            network.validate()?;
-        }
-        for anchor in &self.attachment_anchors {
-            anchor.validate()?;
-        }
-        let mut allocations = self
-            .workspaces
-            .iter()
-            .map(|workspace| workspace.identity)
-            .collect::<Vec<_>>();
-        if allocations
-            .iter()
-            .any(|allocation| allocation.catalog_generation != self.generation)
-        {
-            return Err(HostError::Catalog(
-                "catalog identity allocation has a stale generation".to_owned(),
-            ));
-        }
-        for retired in &self.retired_identity_allocations {
-            retired.validate()?;
-            if retired.catalog_generation > self.generation {
-                return Err(HostError::Catalog(
-                    "retired identity allocation is from a future generation".to_owned(),
-                ));
-            }
-        }
-        allocations.extend(self.retired_identity_allocations.iter().copied());
-        allocations.sort_unstable_by_key(|allocation| allocation.range_start);
-        if allocations
-            .windows(2)
-            .any(|pair| pair[0].end() > pair[1].range_start)
-        {
-            return Err(HostError::Catalog(
-                "catalog identity allocations overlap".to_owned(),
-            ));
-        }
-        Ok(())
-    }
-}
 
 /// Resolves one fixed catalog file beneath a pre-opened private directory.
 ///
@@ -580,7 +90,7 @@ impl FileHostCatalog {
             .open_regular(Path::new(CATALOG_FILE))
             .and_then(|file| file.read_bounded(MAXIMUM_HOST_CATALOG_BYTES))
             .map_err(|error| HostError::Catalog(error.to_string()))?;
-        HostCatalogSnapshot::decode(&bytes)
+        HostCatalogSnapshot::decode_canonical(&bytes).map_err(Into::into)
     }
 }
 
@@ -613,13 +123,12 @@ impl FileHostCatalogPublisher {
     /// current or proposed catalog is invalid, the transition loses identity
     /// continuity, or atomic persistence and exact readback fail.
     pub fn publish(&self, snapshot: &HostCatalogSnapshot) -> Result<HostCatalogPublicationOutcome> {
-        snapshot.validate()?;
         let encoded = snapshot.encode()?;
         let _publication_lock = lock_catalog_root(&self.root)?;
         let current = read_catalog_snapshot(&self.root)?;
 
         if let Some((current_snapshot, current_bytes)) = current.as_ref() {
-            if current_snapshot.generation == snapshot.generation && current_bytes == &encoded {
+            if current_snapshot.generation() == snapshot.generation() && current_bytes == &encoded {
                 return Ok(HostCatalogPublicationOutcome::Replay);
             }
             validate_catalog_transition(current_snapshot, snapshot)?;
@@ -647,79 +156,82 @@ impl HostCatalog for FileHostCatalog {
     ) -> Result<ResolvedLaunchResources> {
         let snapshot = self.snapshot()?;
         let workspace = snapshot
-            .workspaces
-            .binary_search_by_key(plan.workspace_handle(), |entry| entry.handle)
+            .workspaces()
+            .binary_search_by_key(plan.workspace_handle(), |entry| *entry.handle())
             .ok()
-            .map(|index| &snapshot.workspaces[index])
+            .map(|index| &snapshot.workspaces()[index])
             .ok_or_else(|| HostError::Catalog("unknown workspace handle".to_owned()))?;
         let network = snapshot
-            .networks
-            .binary_search_by_key(plan.network_handle(), |entry| entry.handle)
+            .networks()
+            .binary_search_by_key(plan.network_handle(), |entry| *entry.handle())
             .ok()
-            .map(|index| &snapshot.networks[index])
+            .map(|index| &snapshot.networks()[index])
             .ok_or_else(|| HostError::Catalog("unknown network handle".to_owned()))?;
-        if !workspace.assignment.matches(fence)
-            || !network.assignment.matches(fence)
-            || workspace.root_image != *plan.root_image()
-            || workspace.attachment_handles != plan.attachment_handles()
-            || !workspace.identity.matches(plan)
+        if !workspace.assignment().matches_fence(fence)
+            || !network.assignment().matches_fence(fence)
+            || workspace.root_image() != plan.root_image()
+            || workspace.attachment_handles() != plan.attachment_handles()
+            || !workspace.identity().matches_runtime_plan(plan)
         {
             return Err(HostError::Catalog(
                 "catalog resources do not bind the exact launch assignment".to_owned(),
             ));
         }
-        let workspace_pin =
-            verify_workspace_pin(&workspace.root_directory, workspace.device, workspace.inode)?;
+        let workspace_pin = verify_workspace_pin(
+            workspace.root_directory(),
+            workspace.device(),
+            workspace.inode(),
+        )?;
         let network_pin =
-            verify_network_pin(&network.namespace_path, network.device, network.inode)?;
+            verify_network_pin(network.namespace_path(), network.device(), network.inode())?;
         let attachment_anchor = plan
             .attachment_anchor_handle()
             .map(|handle| {
                 let anchor = snapshot
-                    .attachment_anchors
-                    .binary_search_by_key(handle, |entry| entry.handle)
+                    .attachment_anchors()
+                    .binary_search_by_key(handle, |entry| *entry.handle())
                     .ok()
-                    .map(|index| &snapshot.attachment_anchors[index])
+                    .map(|index| &snapshot.attachment_anchors()[index])
                     .ok_or_else(|| {
                         HostError::Catalog("unknown attachment-anchor handle".to_owned())
                     })?;
-                if !anchor.assignment.matches(fence) {
+                if !anchor.assignment().matches_fence(fence) {
                     return Err(HostError::Catalog(
                         "attachment anchor does not bind the exact launch assignment".to_owned(),
                     ));
                 }
                 let pin = verify_attachment_anchor_pin(
-                    &anchor.directory,
-                    anchor.device,
-                    anchor.inode,
-                    anchor.mount_id,
+                    anchor.directory(),
+                    anchor.device(),
+                    anchor.inode(),
+                    anchor.mount_id(),
                 )?;
                 ResolvedAttachmentAnchor::from_pinned(
-                    anchor.directory.clone(),
-                    anchor.device,
-                    anchor.inode,
-                    anchor.mount_id,
+                    anchor.directory().to_owned(),
+                    anchor.device(),
+                    anchor.inode(),
+                    anchor.mount_id(),
                     pin,
                 )
             })
             .transpose()?;
         Ok(ResolvedLaunchResources {
             workspace: ResolvedWorkspace::from_pinned(
-                workspace.root_directory.clone(),
-                workspace.device,
-                workspace.inode,
+                workspace.root_directory().to_owned(),
+                workspace.device(),
+                workspace.inode(),
                 workspace_pin,
             )?,
             network: ResolvedNetwork::from_pinned(
-                network.namespace_path.clone(),
-                network.device,
-                network.inode,
+                network.namespace_path().to_owned(),
+                network.device(),
+                network.inode(),
                 network_pin,
             )?,
             identity: ResolvedIdentityAllocation {
-                range_start: workspace.identity.range_start,
-                range_size: workspace.identity.range_size,
-                catalog_generation: workspace.identity.catalog_generation,
+                range_start: workspace.identity().range_start(),
+                range_size: workspace.identity().range_size(),
+                catalog_generation: workspace.identity().catalog_generation(),
             },
             attachment_anchor,
         })
@@ -822,7 +334,7 @@ fn read_catalog_snapshot(root: &BeneathRoot) -> Result<Option<(HostCatalogSnapsh
             "host catalog changed while being read".to_owned(),
         ));
     }
-    let snapshot = HostCatalogSnapshot::decode(&bytes)?;
+    let snapshot = HostCatalogSnapshot::decode_canonical(&bytes)?;
     Ok(Some((snapshot, bytes)))
 }
 
@@ -830,20 +342,20 @@ fn validate_catalog_transition(
     current: &HostCatalogSnapshot,
     proposed: &HostCatalogSnapshot,
 ) -> Result<()> {
-    if proposed.generation <= current.generation {
+    if proposed.generation() <= current.generation() {
         return Err(HostError::Catalog(
             "host catalog generation rolled back or equivocated".to_owned(),
         ));
     }
-    if current.generation.checked_add(1) != Some(proposed.generation) {
+    if current.generation().checked_add(1) != Some(proposed.generation()) {
         return Err(HostError::Catalog(
             "host catalog generation skipped its immediate successor".to_owned(),
         ));
     }
 
-    for retired in &current.retired_identity_allocations {
+    for retired in current.retired_identity_allocations() {
         if proposed
-            .retired_identity_allocations
+            .retired_identity_allocations()
             .binary_search(retired)
             .is_err()
         {
@@ -853,18 +365,18 @@ fn validate_catalog_transition(
         }
     }
     let mut proposed_bindings = proposed
-        .workspaces
+        .workspaces()
         .iter()
         .map(identity_binding)
         .collect::<Vec<_>>();
     proposed_bindings.sort_unstable();
-    for workspace in &current.workspaces {
-        let allocation = workspace.identity;
+    for workspace in current.workspaces() {
+        let allocation = workspace.identity();
         let retained_by_same_incarnation = proposed_bindings
             .binary_search(&identity_binding(workspace))
             .is_ok();
         let retired_exactly = proposed
-            .retired_identity_allocations
+            .retired_identity_allocations()
             .binary_search(&allocation)
             .is_ok();
         if !retained_by_same_incarnation && !retired_exactly {
@@ -880,11 +392,11 @@ fn identity_binding(
     workspace: &WorkspaceCatalogEntry,
 ) -> (u32, u32, OpaqueHandle, [u8; 16], [u8; 16]) {
     (
-        workspace.identity.range_start,
-        workspace.identity.range_size,
-        workspace.handle,
-        workspace.assignment.sandbox_id,
-        workspace.assignment.incarnation_id,
+        workspace.identity().range_start(),
+        workspace.identity().range_size(),
+        *workspace.handle(),
+        *workspace.assignment().sandbox_id(),
+        *workspace.assignment().incarnation_id(),
     )
 }
 
@@ -934,13 +446,6 @@ fn publish_catalog_bytes(root: &BeneathRoot, bytes: &[u8]) -> Result<()> {
 
 fn catalog_error(error: rustix::io::Errno) -> HostError {
     HostError::Catalog(error.to_string())
-}
-
-fn validate_handle(handle: OpaqueHandle, label: &str) -> Result<()> {
-    if handle == [0; 32] {
-        return Err(HostError::Catalog(format!("{label} handle is zero")));
-    }
-    Ok(())
 }
 
 fn verify_workspace_pin(path: &str, device: u64, inode: u64) -> Result<std::os::fd::OwnedFd> {
@@ -1039,22 +544,16 @@ fn current_network_namespace_identity() -> Result<aos_sandbox_linux::pidfd::Name
     Ok(host.identity())
 }
 
-fn strictly_ordered<T: Ord>(values: &[T]) -> bool {
-    values.windows(2).all(|pair| pair[0] < pair[1])
-}
-
-fn strictly_ordered_by<T>(values: &[T], key: impl Fn(&T) -> OpaqueHandle) -> bool {
-    values.windows(2).all(|pair| key(&pair[0]) < key(&pair[1]))
-}
-
+#[cfg(test)]
 pub(crate) fn encode_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
+
+    let mut encoded = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        output.push(char::from(HEX[usize::from(byte >> 4)]));
-        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
-    output
+    encoded
 }
 
 #[cfg(test)]
@@ -1064,6 +563,7 @@ mod tests {
     use aos_proto::aos::sandbox::local::v1::{
         ApplyRuntimeRequest, Audience, Feature, ResourceLimit, RuntimeAction,
     };
+    use aos_sandbox_core::ObjectDescriptor;
     use aos_sandbox_protocol::{PeerCredentials, PeerPolicy, decode_runtime_request};
     use buffa::Message as _;
 
@@ -1238,11 +738,15 @@ mod tests {
             .unwrap(),
         ])
         .unwrap();
-        let decoded = HostCatalogSnapshot::decode(&snapshot.encode().unwrap()).unwrap();
+        let decoded = HostCatalogSnapshot::decode_canonical(&snapshot.encode().unwrap()).unwrap();
         assert_eq!(decoded, snapshot);
-        assert!(decoded.workspaces[0].identity.matches(plan));
-        assert!(decoded.workspaces[0].assignment.matches(fence));
-        assert_eq!(decoded.attachment_anchors[0].handle, [12; 32]);
+        assert!(
+            decoded.workspaces()[0]
+                .identity()
+                .matches_runtime_plan(plan)
+        );
+        assert!(decoded.workspaces()[0].assignment().matches_fence(fence));
+        assert_eq!(*decoded.attachment_anchors()[0].handle(), [12; 32]);
     }
 
     #[test]
@@ -1340,7 +844,7 @@ mod tests {
         let partial_overlap = workspace_snapshot(3, 10, 2, 3, 98_304);
         assert!(publisher.publish(&partial_overlap).is_err());
 
-        let retired_allocation = retained.workspaces[0].identity;
+        let retired_allocation = retained.workspaces()[0].identity();
         let retired = empty_snapshot(3)
             .with_retired_identity_allocations(vec![retired_allocation])
             .unwrap();
@@ -1379,8 +883,9 @@ mod tests {
             "03".repeat(16),
         );
         let anchor =
-            AttachmentAnchorCatalogEntry::new([12; 32], assignment, 7, path, 15, 16, 17).unwrap();
-        assert_eq!(anchor.expected_directory(), anchor.directory);
+            AttachmentAnchorCatalogEntry::new([12; 32], assignment, 7, path.clone(), 15, 16, 17)
+                .unwrap();
+        assert_eq!(anchor.directory(), path);
 
         assert!(
             AttachmentAnchorCatalogEntry::new(

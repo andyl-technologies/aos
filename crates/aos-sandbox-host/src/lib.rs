@@ -77,5 +77,11 @@ pub enum HostError {
     },
 }
 
+impl From<aos_sandbox_protocol::HostCatalogSnapshotError> for HostError {
+    fn from(error: aos_sandbox_protocol::HostCatalogSnapshotError) -> Self {
+        Self::Catalog(error.to_string())
+    }
+}
+
 /// Convenience result type for host broker operations.
 pub type Result<T> = std::result::Result<T, HostError>;

@@ -11,6 +11,7 @@
 
 pub mod fencing;
 pub mod host_catalog;
+pub mod host_catalog_snapshot;
 pub mod inventory;
 pub mod mount_catalog;
 pub mod mount_destination_slot;
@@ -20,6 +21,12 @@ pub mod payload_scope;
 pub mod semantics;
 pub mod session;
 
+pub use host_catalog_snapshot::{
+    ATTACHMENT_ANCHOR_PIN_PREFIX, AttachmentAnchorCatalogEntry, CatalogAssignment,
+    CatalogIdentityAllocation, HostCatalogHandle, HostCatalogSnapshot, HostCatalogSnapshotError,
+    MAXIMUM_HOST_CATALOG_ATTACHMENTS, MAXIMUM_HOST_CATALOG_ENTRIES, MINIMUM_HOST_IDENTITY_RANGE,
+    NETWORK_PIN_PREFIX, NetworkCatalogEntry, WORKSPACE_PIN_PREFIX, WorkspaceCatalogEntry,
+};
 pub use inventory::{
     MAXIMUM_MOUNT_INVENTORY_RECORDS, ValidatedMountAssignmentBinding,
     ValidatedMountFaultCorrelation, ValidatedMountInventory, ValidatedMountInventoryRecord,
