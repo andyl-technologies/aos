@@ -245,6 +245,20 @@
     modules = [./systems/server.nix];
     systemName = "server";
   };
+  # Single-VM checks use a writable ext4 test disk assembled by
+  # lib/testing/vm.nix. Evaluate their system with the matching root contract;
+  # the production server system remains EROFS + dm-verity and is exercised by
+  # the image and fleet checks that construct its authenticated partition set.
+  serverVmSystem = mkSystem {
+    modules = [
+      ./systems/server.nix
+      {
+        aos.filesystems.rootFsType = lib.mkForce "ext4";
+        aos.security.verity.enable = lib.mkForce false;
+      }
+    ];
+    systemName = "server-vm";
+  };
   containerImages = discoverSystems.server.build.containers;
   containerDefinitions = lib.mapAttrs (_: image: image.definition) containerImages;
 
@@ -1403,7 +1417,7 @@ in {
     lint = import ./lib/testing/package-lint.nix {inherit pkgs lib;};
     # Module-level VM checks (from server system, for backwards compat)
     vm =
-      serverSystem.config.system.build.checks
+      serverVmSystem.config.system.build.checks
       // {
         apm = apmTests;
         hub-native-operations = hubNativeOperationsTest;

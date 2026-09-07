@@ -1,4 +1,4 @@
-##! fuse3 — Low-level Filesystem in Userspace library
+##! aos-fuse3 — Restricted low-level Filesystem in Userspace library
 ##!
 ##! Upstream does not split its low- and high-level APIs into separate shared
 ##! objects, so this package ships the complete dynamically linked libfuse3

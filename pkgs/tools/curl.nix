@@ -9,7 +9,12 @@
   perl,
   openssl,
   zlib,
+  zstd,
+  brotli,
   nghttp2,
+  libidn2,
+  libpsl,
+  libssh2,
   ca-certificates,
   bash,
   stdenv,
@@ -37,7 +42,12 @@ in
       [
         openssl
         zlib
+        zstd
+        brotli
         nghttp2
+        libidn2
+        libpsl
+        libssh2
         ca-certificates
       ]
       ++ (
@@ -48,7 +58,12 @@ in
     propagatedDeps = [
       openssl
       zlib
+      zstd
+      brotli
       nghttp2
+      libidn2
+      libpsl
+      libssh2
     ];
 
     # Guard: keep the autotools build toolchain out of curl's
@@ -76,15 +91,18 @@ in
             --prefix=$out \
             --with-openssl=${openssl} \
             --with-zlib=${zlib} \
+            --with-zstd=${zstd} \
+            --with-brotli=${brotli} \
             --with-nghttp2=${nghttp2} \
+            --with-libidn2=${libidn2} \
+            --with-libpsl=${libpsl} \
+            --with-libssh2=${libssh2} \
             --with-ca-bundle=${ca-certificates}/etc/ssl/certs/ca-certificates.crt \
             --enable-shared \
             --disable-static \
             --disable-ldap \
             --disable-ldaps \
             --without-librtmp \
-            --without-libpsl \
-            --without-libidn2 \
             --enable-threaded-resolver \
             --enable-ipv6 \
             --disable-docs \

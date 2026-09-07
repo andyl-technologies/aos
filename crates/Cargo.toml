@@ -124,7 +124,7 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"] }
 # Still used by aos-package, aos-server, and aos-hub-worker; the registry
 # hub moved off it to sqlx (RFC-0004 Phase 5 step 3b).
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = "0.32"
 jsonwebtoken = "9"
 uuid = { version = "1", features = ["v4", "serde"] }
 rand = "0.9"

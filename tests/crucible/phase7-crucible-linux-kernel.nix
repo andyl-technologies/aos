@@ -14,7 +14,7 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
-  linuxWithMetadataProbe = extraConfig: let
+  linuxFixtureWithMetadataProbe = extraConfig: let
     base = {
       pname = "linux";
       version = "6.18.33";
@@ -31,7 +31,7 @@
   linuxCrucibleMetadata = import ../../pkgs/kernel/linux-crucible.nix {
     inherit lib;
     stdenv.hostPlatform.system = pkgs.stdenv.hostPlatform.system;
-    linuxWith = linuxWithMetadataProbe;
+    linuxFixtureWith = linuxFixtureWithMetadataProbe;
   };
   linuxCrucibleExtraConfig =
     if linuxCrucibleMetadata ? passthru && linuxCrucibleMetadata.passthru ? crucibleExtraConfig
@@ -193,8 +193,8 @@
     ]
     ++ failuresFor "pkgs/kernel/linux-crucible.nix" linuxCrucibleNix [
       {
-        label = "linuxWith package construction";
-        needle = "(linuxWith extraConfig).overrideAttrs";
+        label = "linuxFixtureWith package construction";
+        needle = "(linuxFixtureWith extraConfig).overrideAttrs";
       }
       {
         label = "distinct package name";

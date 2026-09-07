@@ -9,7 +9,7 @@
 {
   lib,
   mkDerivation,
-  fuse3,
+  aos-fuse3,
   linux-headers,
   sed,
 }: let
@@ -21,7 +21,7 @@ in
 
     src = source;
     buildDeps = [linux-headers sed];
-    runtimeDeps = [fuse3];
+    runtimeDeps = [aos-fuse3];
     propagatedDeps = [];
 
     outputChecks = {
@@ -44,9 +44,9 @@ in
         script = ''
           $CC -std=c17 -O2 -fPIC \
             -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
-            -I. -I${fuse3}/include/fuse3 \
+            -I. -I${aos-fuse3}/include/fuse3 \
             -shared -Wl,-soname,libaos-fuse-transport.so.1 \
-            transport.c -L${fuse3}/lib -lfuse3 \
+            transport.c -L${aos-fuse3}/lib -lfuse3 \
             -o libaos-fuse-transport.so.1.0.0
         '';
       }
@@ -87,7 +87,7 @@ in
         # This executable requires inherited real mount descriptors; its test
         # runs below inside the VM rather than in the package build sandbox.
         doCheck = false;
-        buildDeps = [pkgs.pkg-config pkgs.fuse3];
+        buildDeps = [pkgs.pkg-config pkgs.aos-fuse3];
         runtimeDeps = [self];
         cargoEnv.RUSTFLAGS = "-C link-arg=-Wl,-rpath,${self}/lib";
       };
@@ -146,7 +146,7 @@ in
         version = "0";
         src = source;
         buildDeps = [pkgs.linux-headers];
-        runtimeDeps = [pkgs.fuse3];
+        runtimeDeps = [pkgs.aos-fuse3];
         propagatedDeps = [];
         phases = [
           {
@@ -163,8 +163,8 @@ in
               $CC -std=c17 -O2 \
                 -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
                 -DAOS_FUSE_TRANSPORT_TESTING \
-                -I. -I${pkgs.fuse3}/include/fuse3 \
-                transport.c test.c -L${pkgs.fuse3}/lib -lfuse3 \
+                -I. -I${pkgs.aos-fuse3}/include/fuse3 \
+                transport.c test.c -L${pkgs.aos-fuse3}/lib -lfuse3 \
                 -o transport-test
               ./transport-test > result
               grep -Fxq \
@@ -240,7 +240,7 @@ in
 
               if ! jq -e \
                 --arg self ${self} \
-                --arg fuse3 ${pkgs.fuse3} \
+                --arg fuse3 ${pkgs.aos-fuse3} \
                 --arg glibc ${pkgs.glibc} \
                 '([.runtime[].path] | sort) == ([$self, $fuse3, $glibc] | sort)' \
                 "$NIX_ATTRS_JSON_FILE" >/dev/null; then
