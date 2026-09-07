@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::artifact::ArtifactKind;
+use crate::artifact::{ArtifactKind, ArtifactRecord, ArtifactRelation};
 use crate::digest::Sha256Digest;
 use crate::evidence::{EvidenceRecord, GateResult};
 use crate::manifest::ReleaseManifestV1;
@@ -74,7 +74,7 @@ pub struct QualificationCase {
     pub phase: QualificationPhase,
     /// Exact target platform, or none for release-wide evidence.
     pub platform: Option<Platform>,
-    /// Direct package criticality; runtime dependencies inherit their consumers' obligations.
+    /// Effective package criticality after runtime dependency inheritance.
     pub package_role: Option<crate::qualification::PackageRole>,
     /// Public reference machine/runtime configuration, where applicable.
     pub target: Option<QualificationTarget>,
@@ -170,6 +170,7 @@ pub fn cases(
         .ok_or_else(|| anyhow::anyhow!("archival plan has no shared qualification contract"))?;
     let current = contract.schema_version == CONTRACT_V2;
     let qualification_snapshot = plan.is_qualification_snapshot();
+    let package_roles = inherited_package_roles(contract, manifest)?;
     let mut requirements: Vec<_> = contract
         .selected(plan.release_class)
         .filter(|gate| gate.phase == phase)
@@ -276,16 +277,22 @@ pub fn cases(
                 let (name, _) = suffix
                     .rsplit_once('/')
                     .ok_or_else(|| anyhow::anyhow!("invalid package case identity"))?;
-                Some(
-                    contract
-                        .package_rules
-                        .iter()
-                        .find(|rule| rule.name == name)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("package case lacks its criticality classification")
-                        })?
-                        .role,
-                )
+                let direct = contract
+                    .package_rules
+                    .iter()
+                    .find(|rule| rule.name == name)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("package case lacks its criticality classification")
+                    })?
+                    .role;
+                let inherited = subjects
+                    .iter()
+                    .filter_map(|subject| package_roles.get(subject))
+                    .copied()
+                    .max()
+                    .unwrap_or(direct);
+
+                Some(direct.max(inherited))
             } else {
                 None
             };
@@ -444,6 +451,66 @@ pub fn cases(
     }
     result.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(result)
+}
+
+fn inherited_package_roles(
+    contract: &crate::qualification::QualificationContract,
+    manifest: &ReleaseManifestV1,
+) -> Result<BTreeMap<String, crate::qualification::PackageRole>> {
+    let artifacts = manifest
+        .artifacts
+        .iter()
+        .map(|artifact| (artifact.id.as_str(), artifact))
+        .collect::<BTreeMap<_, _>>();
+    let rules = contract
+        .package_rules
+        .iter()
+        .map(|rule| (rule.name.as_str(), rule.role))
+        .collect::<BTreeMap<_, _>>();
+    let mut roles = BTreeMap::new();
+
+    for package in &manifest.packages {
+        let role = rules
+            .get(package.name.as_str())
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("package case lacks its criticality classification"))?;
+        for cell in &package.platforms {
+            let MatrixCell::Artifact { artifact } = &cell.decision else {
+                continue;
+            };
+            propagate_package_role(&artifacts, &artifact.artifact_ids, role, &mut roles)?;
+        }
+    }
+
+    Ok(roles)
+}
+
+fn propagate_package_role(
+    artifacts: &BTreeMap<&str, &ArtifactRecord>,
+    roots: &[String],
+    role: crate::qualification::PackageRole,
+    roles: &mut BTreeMap<String, crate::qualification::PackageRole>,
+) -> Result<()> {
+    let mut pending = roots.to_vec();
+
+    while let Some(id) = pending.pop() {
+        if roles.get(&id).is_some_and(|current| *current >= role) {
+            continue;
+        }
+        let artifact = artifacts
+            .get(id.as_str())
+            .ok_or_else(|| anyhow::anyhow!("package closure references missing artifact {id}"))?;
+        roles.insert(id, role);
+        pending.extend(
+            artifact
+                .relationships
+                .iter()
+                .filter(|relationship| relationship.relation == ArtifactRelation::Contains)
+                .map(|relationship| relationship.target.clone()),
+        );
+    }
+
+    Ok(())
 }
 
 /// Validates complete, fresh observations for one exact release hold point.
