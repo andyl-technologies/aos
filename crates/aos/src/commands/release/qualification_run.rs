@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use aos_core::output::Printer;
+use aos_release::artifact::ArtifactRecord;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::evidence::{
@@ -419,11 +420,16 @@ fn public_objects(
 ) -> Result<Vec<QualificationObjectV1>> {
     let base = url::Url::parse(&format!("{origin}/{registry}/"))?;
     let subjects = subjects.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let artifact_ids = related_artifact_ids(&manifest.payload.artifacts, &subjects)?;
+    const MANIFEST_ENVELOPE_ID: &str = "control/release-manifest-envelope";
+    if artifact_ids.contains(MANIFEST_ENVELOPE_ID) {
+        bail!("manifest artifact id collides with the qualification control object");
+    }
     let mut objects = manifest
         .payload
         .artifacts
         .iter()
-        .filter(|artifact| subjects.contains(artifact.id.as_str()))
+        .filter(|artifact| artifact_ids.contains(artifact.id.as_str()))
         .map(|artifact| {
             Ok(QualificationObjectV1 {
                 artifact_id: artifact.id.clone(),
@@ -437,11 +443,13 @@ fn public_objects(
         .iter()
         .map(|object| object.artifact_id.as_str())
         .collect::<BTreeSet<_>>();
-    if resolved != subjects {
-        bail!("qualification subjects do not resolve to the signed release artifacts");
+    if resolved.len() != artifact_ids.len()
+        || !artifact_ids.iter().all(|id| resolved.contains(id.as_str()))
+    {
+        bail!("qualification artifact graph does not resolve to the signed release artifacts");
     }
     objects.push(QualificationObjectV1 {
-        artifact_id: "control/release-manifest-envelope".to_owned(),
+        artifact_id: MANIFEST_ENVELOPE_ID.to_owned(),
         url: base
             .join(&format!(
                 "releases/{}/{}/release-manifest.json",
@@ -454,6 +462,38 @@ fn public_objects(
     });
     objects.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
     Ok(objects)
+}
+
+fn related_artifact_ids(
+    artifacts: &[ArtifactRecord],
+    subjects: &BTreeSet<&str>,
+) -> Result<BTreeSet<String>> {
+    let by_id = artifacts
+        .iter()
+        .map(|artifact| (artifact.id.as_str(), artifact))
+        .collect::<BTreeMap<_, _>>();
+    let mut pending = subjects
+        .iter()
+        .map(|subject| (*subject).to_owned())
+        .collect::<Vec<_>>();
+    let mut related = BTreeSet::new();
+
+    while let Some(id) = pending.pop() {
+        if !related.insert(id.clone()) {
+            continue;
+        }
+        let artifact = by_id
+            .get(id.as_str())
+            .with_context(|| format!("qualification subject or relationship {id} is absent"))?;
+        pending.extend(
+            artifact
+                .relationships
+                .iter()
+                .map(|relationship| relationship.target.clone()),
+        );
+    }
+
+    Ok(related)
 }
 
 pub(super) fn verify_executor_response(
@@ -841,6 +881,57 @@ pub(super) fn report_filename(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aos_release::artifact::{
+        ArtifactKind, ArtifactRelation, ArtifactRelationship, BundlePath, Compression,
+    };
+
+    fn artifact(id: &str, targets: &[&str]) -> ArtifactRecord {
+        ArtifactRecord {
+            id: id.to_owned(),
+            kind: ArtifactKind::PackageNar,
+            platform: Some(Platform::X86_64Linux),
+            system_variant: None,
+            path: BundlePath::parse(format!("objects/{id}")).unwrap(),
+            size_bytes: 1,
+            sha256: Sha256Digest::of_bytes(id.as_bytes()),
+            media_type: "application/x-nix-nar".to_owned(),
+            compression: Compression::None,
+            derivation: None,
+            output: None,
+            store_path: None,
+            nar_hash: None,
+            relationships: targets
+                .iter()
+                .map(|target| ArtifactRelationship {
+                    relation: ArtifactRelation::Contains,
+                    target: (*target).to_owned(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn qualification_objects_close_transitive_manifest_relationships() -> Result<()> {
+        let artifacts = [
+            artifact("package/root", &["package/dependency", "source/root"]),
+            artifact("package/dependency", &["narinfo/dependency"]),
+            artifact("narinfo/dependency", &[]),
+            artifact("source/root", &[]),
+            artifact("unrelated", &[]),
+        ];
+        let subjects = BTreeSet::from(["package/root"]);
+
+        assert_eq!(
+            related_artifact_ids(&artifacts, &subjects)?,
+            BTreeSet::from([
+                "narinfo/dependency".to_owned(),
+                "package/dependency".to_owned(),
+                "package/root".to_owned(),
+                "source/root".to_owned(),
+            ])
+        );
+        Ok(())
+    }
 
     #[test]
     fn platform_configuration_is_closed() -> Result<()> {

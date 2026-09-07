@@ -435,8 +435,11 @@ anonymous HTTPS download's size and SHA-256, retains it under a hashed name,
 and writes `request.json`, `scenario-registry.json`, and `objects.json` in a
 private attempt directory. The configured scenario receives the request on
 stdin and runs in that directory with no inherited environment. `objects.json`
-maps artifact IDs to the verified local paths. Scenarios use AOS-built tools
-and the published image's normal provisioning and serial/SSH interfaces.
+maps artifact IDs to the verified local paths. The object set contains each
+case subject and the complete transitive graph named by its manifest
+relationships, including signed narinfo and dependency artifacts. Scenarios
+use AOS-built tools and the published image's normal provisioning and
+serial/SSH interfaces.
 
 The scenario emits `QualificationExecutorResponseV1`. Its observation must
 contain the exact case digest, acceptance checks, numeric measurements, assessment

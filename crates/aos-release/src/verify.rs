@@ -511,6 +511,10 @@ pub(crate) mod tests {
                 None,
                 vec![
                     ArtifactRelationship {
+                        relation: ArtifactRelation::AuthenticatedBy,
+                        target: "cache/example.narinfo".to_owned(),
+                    },
+                    ArtifactRelationship {
                         relation: ArtifactRelation::CorrespondingSource,
                         target: "source/example".to_owned(),
                     },
@@ -1035,6 +1039,27 @@ pub(crate) mod tests {
             evidence: Vec::new(),
             recorded_at: "2026-09-03T00:00:00Z".to_owned(),
         }
+    }
+
+    #[test]
+    fn package_artifact_requires_its_exact_signed_narinfo() -> anyhow::Result<()> {
+        let fixture = release_fixture()?;
+        let plan: ReleasePlanV1 = canonical::from_slice(&fixture.plan, "fixture plan")?;
+        let envelope: ManifestEnvelopeV1 =
+            canonical::from_slice(&fixture.envelope, "fixture manifest")?;
+        let mut manifest = envelope.payload;
+        for artifact in manifest
+            .artifacts
+            .iter_mut()
+            .filter(|artifact| artifact.kind == ArtifactKind::PackageNar)
+        {
+            artifact
+                .relationships
+                .retain(|relationship| relationship.relation != ArtifactRelation::AuthenticatedBy);
+        }
+
+        assert!(manifest.validate(&plan).is_err());
+        Ok(())
     }
 
     #[test]

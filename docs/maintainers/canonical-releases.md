@@ -468,6 +468,11 @@ source and license material, SBOM and gate evidence, and both finalized Linux
 image sets. It must not contain `release-plan.json`, `release-manifest.json`, a
 link, alias, or special file.
 
+Every `package-nar` record must point to its exact signed `narinfo` record with
+an `authenticated-by` relationship. Its outbound relationship graph also names
+the dependency NARs and their narinfos needed for public closure verification;
+qualification downloads that complete transitive graph from the public Hub.
+
 ```sh
 aos release finalize \
   --plan release-plan.json \
