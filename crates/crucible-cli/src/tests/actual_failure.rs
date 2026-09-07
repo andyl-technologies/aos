@@ -44,6 +44,7 @@ fn cli_non_passing_run_artifact_captures_actual_run_evidence() -> Result<(), Box
     let expected_decisions = terminal_configuration.schedule.len();
     let report = RunWorkflowReport {
         status: BackendCommandStatus::Failed,
+        execution_owner: RunExecutionOwner::Session,
         created_state: String::from("paused"),
         final_state: String::from("stopped"),
         outcome: Some(OutcomeKind::Failed),

@@ -18,6 +18,7 @@ use crate::{
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
+const SCENARIO_FAILURE_OBSERVATION_SCHEMA_VERSION: u32 = 2;
 const MEASUREMENT_SET_SCHEMA_VERSION: u32 = 2;
 const MAX_RECORD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_MEASUREMENT_EVALUATION_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
@@ -25,6 +26,9 @@ const MAX_MEASUREMENT_SET_RECORD_BYTES: usize = 33 * 1024 * 1024;
 const MAX_MEASUREMENTS: usize = 4096;
 const MAX_SAMPLES_PER_MEASUREMENT: usize = 65_536;
 const MAX_PROPERTIES: usize = 4096;
+const MAX_SCENARIO_FAILURE_REASONS: usize = 4096;
+const MAX_SCENARIO_FAILURE_REASON_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SCENARIO_FAILURE_REASONS_BYTES: usize = MAX_RECORD_BYTES;
 const MAX_EVIDENCE_OBJECTS: usize = 4096;
 const MAX_COVERAGE_IDENTITIES: usize = 1_000_000;
 // The generic content envelope permits 65,536 children. Observation reserves
@@ -812,6 +816,8 @@ pub enum StopOutcome {
     GuestCrash(String),
     /// A named stable property assertion failed.
     AssertionFailure(String),
+    /// Scenario actions declared failure with reasons in firing order.
+    ScenarioFailure(Vec<String>),
 }
 
 impl StopOutcome {
@@ -823,6 +829,7 @@ impl StopOutcome {
             Self::AssertionFailure(property) => {
                 validate_identifier(property, "assertion property is invalid")
             }
+            Self::ScenarioFailure(reasons) => validate_scenario_failure_reasons(reasons),
             Self::TerminalSuccess => Ok(()),
         }
     }
@@ -848,6 +855,10 @@ impl Canonical for StopOutcome {
                 encoder.u8(4);
                 property.encode(encoder);
             }
+            Self::ScenarioFailure(reasons) => {
+                encoder.u8(5);
+                reasons.encode(encoder);
+            }
         }
     }
 
@@ -864,6 +875,16 @@ impl Canonical for StopOutcome {
             4 => Self::AssertionFailure(
                 decoder.string_bounded(MAX_IDENTIFIER_BYTES, "assertion-property-bytes")?,
             ),
+            5 => Self::ScenarioFailure(decoder.sequence_bounded(
+                MAX_SCENARIO_FAILURE_REASONS,
+                "scenario-failure-reason-count",
+                |decoder| {
+                    decoder.string_bounded(
+                        MAX_SCENARIO_FAILURE_REASON_BYTES,
+                        "scenario-failure-reason-bytes",
+                    )
+                },
+            )?),
             tag => {
                 return Err(CampaignCodecError::UnknownTag {
                     kind: "stop-outcome",
@@ -874,6 +895,44 @@ impl Canonical for StopOutcome {
         outcome.validate()?;
         Ok(outcome)
     }
+}
+
+fn validate_scenario_failure_reasons(reasons: &[String]) -> Result<(), CampaignCodecError> {
+    if reasons.is_empty() || reasons.len() > MAX_SCENARIO_FAILURE_REASONS {
+        return Err(CampaignCodecError::LimitExceeded {
+            limit: "scenario-failure-reason-count",
+        });
+    }
+    let mut encoded_bytes = std::mem::size_of::<u64>();
+    for reason in reasons {
+        if reason.len() > MAX_SCENARIO_FAILURE_REASON_BYTES {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "scenario-failure-reason-bytes",
+            });
+        }
+        codec::validate_nfc(reason)?;
+        encoded_bytes = encoded_bytes
+            .checked_add(std::mem::size_of::<u64>())
+            .and_then(|total| total.checked_add(reason.len()))
+            .ok_or(CampaignCodecError::LimitExceeded {
+                limit: "scenario-failure-reasons-bytes",
+            })?;
+        if encoded_bytes > MAX_SCENARIO_FAILURE_REASONS_BYTES {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "scenario-failure-reasons-bytes",
+            });
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn scenario_failure_hash(reasons: &[String]) -> CampaignHash {
+    let mut encoder = Encoder::new();
+    encoder.sequence(reasons, |encoder, reason| reason.encode(encoder));
+    CampaignHash::derive(
+        "crucible.campaign.scenario-failure-reasons.v1",
+        &encoder.finish(),
+    )
 }
 
 /// Canonical modeled result of one admitted attempt.
@@ -911,14 +970,13 @@ impl Observation {
         coverage: CoverageProjectionId,
         discovered_choices: BTreeSet<ChoiceOpportunityId>,
     ) -> Result<Self, CampaignCodecError> {
-        stop.validate()?;
-        if discovered_choices.len() > MAX_DISCOVERED_CHOICES {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "observation-discovered-choice-count",
-            });
-        }
-        let value = Self {
-            schema_version: RECORD_SCHEMA_VERSION,
+        let schema_version = if matches!(stop, StopOutcome::ScenarioFailure(_)) {
+            SCENARIO_FAILURE_OBSERVATION_SCHEMA_VERSION
+        } else {
+            RECORD_SCHEMA_VERSION
+        };
+        Self::from_versioned(Self {
+            schema_version,
             attempt,
             child,
             child_content,
@@ -928,7 +986,28 @@ impl Observation {
             properties,
             coverage,
             discovered_choices,
+        })
+    }
+
+    fn from_versioned(value: Self) -> Result<Self, CampaignCodecError> {
+        value.stop.validate()?;
+        if value.discovered_choices.len() > MAX_DISCOVERED_CHOICES {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "observation-discovered-choice-count",
+            });
+        }
+        let compatible = match value.schema_version {
+            RECORD_SCHEMA_VERSION => !matches!(&value.stop, StopOutcome::ScenarioFailure(_)),
+            SCENARIO_FAILURE_OBSERVATION_SCHEMA_VERSION => {
+                matches!(&value.stop, StopOutcome::ScenarioFailure(_))
+            }
+            _ => false,
         };
+        if !compatible {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported observation schema or stop outcome",
+            });
+        }
         codec::ensure_encoded_size(&value, MAX_RECORD_BYTES, "observation-encoded-bytes")?;
         Ok(value)
     }
@@ -1009,8 +1088,9 @@ impl Observation {
     /// Returns an error if envelope construction fails.
     pub fn id(&self) -> Result<ObservationId, CampaignCodecError> {
         ObservationId::from_content_id(
-            crate::ObjectEnvelope::for_record(
+            crate::ObjectEnvelope::for_record_versioned(
                 crate::CampaignRecordKind::Observation,
+                self.schema_version,
                 crate::object::content_children(self.content_children())?,
                 self.canonical_bytes(),
             )?
@@ -1040,6 +1120,10 @@ impl Observation {
         );
         children
     }
+
+    pub(crate) const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
 }
 
 impl Canonical for Observation {
@@ -1057,21 +1141,22 @@ impl Canonical for Observation {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_schema(u32::decode(decoder)?)?;
-        Self::new(
-            AttemptId::decode(decoder)?,
-            ConfigurationId::decode(decoder)?,
-            ConfigurationArtifactId::decode(decoder)?,
-            BranchPathId::decode(decoder)?,
-            StopOutcome::decode(decoder)?,
-            MeasurementSetId::decode(decoder)?,
-            PropertyVerdictSetId::decode(decoder)?,
-            CoverageProjectionId::decode(decoder)?,
-            decoder.set_bounded(
+        let schema_version = u32::decode(decoder)?;
+        Self::from_versioned(Self {
+            schema_version,
+            attempt: AttemptId::decode(decoder)?,
+            child: ConfigurationId::decode(decoder)?,
+            child_content: ConfigurationArtifactId::decode(decoder)?,
+            path: BranchPathId::decode(decoder)?,
+            stop: StopOutcome::decode(decoder)?,
+            measurements: MeasurementSetId::decode(decoder)?,
+            properties: PropertyVerdictSetId::decode(decoder)?,
+            coverage: CoverageProjectionId::decode(decoder)?,
+            discovered_choices: decoder.set_bounded(
                 MAX_DISCOVERED_CHOICES,
                 "observation-discovered-choice-count",
             )?,
-        )
+        })
     }
 }
 

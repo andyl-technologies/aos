@@ -703,6 +703,15 @@ pub struct Observation {
 }
 ```
 
+`Observation` schema v1 retains stop-outcome tags 0 through 4 for a reached
+boundary, terminal success, modeled timeout, guest crash, or named assertion
+failure. Schema v2 is written only for `ScenarioFailure(Vec<String>)`, encoded
+as stop-outcome tag 5 followed by one nonempty bounded vector of NFC failure
+reasons in scheduler firing order. Existing outcomes remain v1 and retain
+their exact historical body and envelope identities. A v1 body containing the
+new tag or a v2 body without it is invalid, and an unsupported reader fails
+closed on the v2 envelope before accepting campaign evidence.
+
 `BranchRequest` schema v1 encodes a uniform finite source as candidate-source
 tag 0 and a generated source as tag 1. Schema v2 preserves both encodings and
 adds tag 2 for an explicitly weighted finite source encoded as a canonical map

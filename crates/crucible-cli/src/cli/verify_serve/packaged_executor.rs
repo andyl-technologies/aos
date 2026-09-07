@@ -16,6 +16,9 @@ const PACKAGED_EXECUTOR_VERSION: u32 = 1;
 const MAX_PACKAGED_EXECUTOR_CONFIG_BYTES: usize = 64 * 1024;
 const OS_ENTROPY_DEVICE: &str = "/dev/urandom";
 const DEFAULT_PACKAGED_RUN_INTERVAL_ICOUNT: u64 = 1_000_000;
+const GUARDED_RUN_QEMU_PROFILE: &str = "deterministic-tcg-v1";
+const CAMPAIGN_DEPLOYMENT_ENV: &str = "CRUCIBLE_CAMPAIGN_DEPLOYMENT";
+const DEFAULT_CAMPAIGN_DEPLOYMENT_PATH: &str = "/etc/crucible/packaged-executor.toml";
 
 /// Keeps packaged campaign RUNs bounded without reducing the terminal ceiling.
 pub(super) fn production_rendezvous_interval(
@@ -55,6 +58,100 @@ struct PackagedExecutorDeployment {
     qemu_profile: String,
 }
 
+/// Guarded host capability loaded for one campaign-backed legacy command.
+pub(crate) struct GuardedCampaignRunDeployment {
+    pub(crate) host: crucible_daemon::LinuxQemuAttemptHostConfig,
+    pub(crate) resources: crucible_campaign::AttemptResourceLimits,
+}
+
+/// Resolves the operator-provisioned capability for local campaign execution.
+///
+/// Explicit CLI configuration takes precedence over the environment. When
+/// neither is present, an installed system deployment is discovered at the
+/// documented default path. The strict loader authenticates the selected file
+/// before any host resource is acquired.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when no deployment capability is configured or the
+/// environment value is empty.
+// crucible-lint: allow host-nondeterminism-state -- deployment discovery selects operational host authority and never enters modeled campaign identity.
+pub(crate) fn resolve_guarded_campaign_deployment_path(
+    explicit: Option<&Path>,
+) -> Result<PathBuf, CliError> {
+    let environment = std::env::var_os(CAMPAIGN_DEPLOYMENT_ENV);
+    resolve_campaign_deployment_path(explicit, environment.as_deref(), |path| path.is_file())
+}
+
+fn resolve_campaign_deployment_path(
+    explicit: Option<&Path>,
+    environment: Option<&std::ffi::OsStr>,
+    default_exists: impl FnOnce(&Path) -> bool,
+) -> Result<PathBuf, CliError> {
+    if let Some(path) = explicit {
+        return Ok(path.to_path_buf());
+    }
+    if let Some(value) = environment {
+        if value.is_empty() {
+            return Err(serve_error(format!(
+                "{CAMPAIGN_DEPLOYMENT_ENV} is empty; set it to an owner-only packaged-executor deployment file",
+            )));
+        }
+        return Ok(PathBuf::from(value));
+    }
+
+    let default = Path::new(DEFAULT_CAMPAIGN_DEPLOYMENT_PATH);
+    if default_exists(default) {
+        return Ok(default.to_path_buf());
+    }
+    Err(serve_error(format!(
+        "local QEMU execution requires guarded campaign host authority; pass --campaign-deployment PATH, set {CAMPAIGN_DEPLOYMENT_ENV}, or provision {DEFAULT_CAMPAIGN_DEPLOYMENT_PATH}",
+    )))
+}
+
+/// Loads the exact process and storage ceilings for a guarded legacy run.
+///
+/// The deployment uses the same strict schema, ownership, cgroup, and project
+/// quota policy as the packaged executor. The returned host config still opens
+/// and authenticates both kernel resource namespaces before guest launch.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the deployment file or its resource policy is
+/// malformed, mutable by another user, or outside the supported bounds.
+pub(crate) fn load_guarded_campaign_run_deployment(
+    path: &Path,
+) -> Result<GuardedCampaignRunDeployment, CliError> {
+    let deployment = load_validated_deployment(path)?;
+    if deployment.host_architecture != std::env::consts::ARCH {
+        return Err(serve_error(format!(
+            "campaign deployment host architecture `{}` does not match this `{}` host",
+            deployment.host_architecture,
+            std::env::consts::ARCH,
+        )));
+    }
+    if deployment.qemu_profile != GUARDED_RUN_QEMU_PROFILE {
+        return Err(serve_error(format!(
+            "campaign deployment QEMU profile `{}` is unsupported; guarded run requires `{GUARDED_RUN_QEMU_PROFILE}`",
+            deployment.qemu_profile,
+        )));
+    }
+    // Worker and checkpoint fields remain part of the shared, strictly
+    // validated schema, although this ephemeral path owns one synchronous slot
+    // and does not publish checkpoints.
+    let host = deployment_host(&deployment)?;
+    let capacity = deployment_capacity(&deployment)?;
+    let resources = crucible_campaign::AttemptResourceLimits::new(
+        capacity.maximum_vcpus(),
+        capacity.maximum_resident_bytes(),
+        capacity.maximum_disk_bytes(),
+        capacity.maximum_execution_quanta(),
+    )
+    .map_err(|error| serve_error(format!("campaign executor resource limits error: {error}")))?;
+
+    Ok(GuardedCampaignRunDeployment { host, resources })
+}
+
 pub(super) fn prepare_cli_packaged_executor(
     prepared: &crucible_daemon::PreparedCampaignLocalService,
     args: &ServeArgs,
@@ -63,31 +160,9 @@ pub(super) fn prepare_cli_packaged_executor(
     deployment_path: &Path,
     lifecycle: &crucible_api::ProductionVmLifecycleConfig,
 ) -> Result<crucible_daemon::AttachedPackagedQemuExecutor, CliError> {
-    let deployment = load_deployment(deployment_path)?;
-    if deployment.schema != PACKAGED_EXECUTOR_SCHEMA
-        || deployment.version != PACKAGED_EXECUTOR_VERSION
-    {
-        return Err(serve_error(
-            "campaign packaged-executor deployment has an unsupported schema or version",
-        ));
-    }
-    if deployment.project_id_count < deployment.maximum_slots {
-        return Err(serve_error(
-            "campaign packaged-executor project-ID count is below its slot ceiling",
-        ));
-    }
-    if deployment.maximum_checkpoint_bytes > deployment.maximum_disk_bytes {
-        return Err(serve_error(
-            "campaign packaged-executor checkpoint ceiling exceeds writable-disk capacity",
-        ));
-    }
-    let finish_timeout = Duration::from_millis(deployment.finish_timeout_ms);
-    if finish_timeout.is_zero() || finish_timeout > Duration::from_secs(60 * 60) {
-        return Err(serve_error(
-            "campaign packaged-executor finish timeout is outside 1ms..=1h",
-        ));
-    }
-
+    let deployment = load_validated_deployment(deployment_path)?;
+    let host = deployment_host(&deployment)?;
+    let capacity = deployment_capacity(&deployment)?;
     let user_id = rustix::process::geteuid().as_raw();
     let group_id = rustix::process::getegid().as_raw();
     let endpoint = crucible_daemon::ExecutorLoopbackEndpointConfig::new(
@@ -97,27 +172,6 @@ pub(super) fn prepare_cli_packaged_executor(
         0o600,
     )
     .map_err(|error| serve_error(format!("campaign executor endpoint error: {error}")))?;
-    let host = crucible_daemon::LinuxQemuAttemptHostConfig::new(
-        deployment.cgroup_root,
-        deployment.run_root,
-        deployment.attempt_namespace,
-        deployment.first_project_id,
-        deployment.project_id_count,
-        deployment.child_user_id,
-        deployment.child_group_id,
-        deployment.maximum_tasks,
-        deployment.maximum_inodes,
-        finish_timeout,
-    )
-    .map_err(|error| serve_error(format!("campaign executor host policy error: {error}")))?;
-    let capacity = crucible_daemon::ExecutorCapacity::new(
-        deployment.maximum_slots,
-        deployment.maximum_vcpus,
-        deployment.maximum_resident_bytes,
-        deployment.maximum_disk_bytes,
-        deployment.maximum_execution_quanta,
-    )
-    .map_err(|error| serve_error(format!("campaign executor capacity error: {error}")))?;
     let state = args
         .campaign_state
         .as_ref()
@@ -150,6 +204,79 @@ pub(super) fn prepare_cli_packaged_executor(
         })?;
     crucible_daemon::AttachedPackagedQemuExecutor::start(executor)
         .map_err(|error| serve_error(format!("campaign executor startup error: {error}")))
+}
+
+fn load_validated_deployment(path: &Path) -> Result<PackagedExecutorDeployment, CliError> {
+    let deployment = load_deployment(path)?;
+    if deployment.schema != PACKAGED_EXECUTOR_SCHEMA
+        || deployment.version != PACKAGED_EXECUTOR_VERSION
+    {
+        return Err(serve_error(
+            "campaign packaged-executor deployment has an unsupported schema or version",
+        ));
+    }
+    if deployment.project_id_count < deployment.maximum_slots {
+        return Err(serve_error(
+            "campaign packaged-executor project-ID count is below its slot ceiling",
+        ));
+    }
+    if deployment.maximum_checkpoint_bytes > deployment.maximum_disk_bytes {
+        return Err(serve_error(
+            "campaign packaged-executor checkpoint ceiling exceeds writable-disk capacity",
+        ));
+    }
+    if deployment.maximum_checkpoint_bytes == 0 {
+        return Err(serve_error(
+            "campaign packaged-executor checkpoint byte ceiling is zero",
+        ));
+    }
+    if deployment.worker_count == 0
+        || deployment.worker_count > usize::try_from(deployment.maximum_slots).unwrap_or(usize::MAX)
+    {
+        return Err(serve_error(
+            "campaign packaged-executor worker count is outside its slot ceiling",
+        ));
+    }
+    let finish_timeout = Duration::from_millis(deployment.finish_timeout_ms);
+    if finish_timeout.is_zero() || finish_timeout > Duration::from_secs(60 * 60) {
+        return Err(serve_error(
+            "campaign packaged-executor finish timeout is outside 1ms..=1h",
+        ));
+    }
+
+    Ok(deployment)
+}
+
+fn deployment_host(
+    deployment: &PackagedExecutorDeployment,
+) -> Result<crucible_daemon::LinuxQemuAttemptHostConfig, CliError> {
+    let finish_timeout = Duration::from_millis(deployment.finish_timeout_ms);
+    crucible_daemon::LinuxQemuAttemptHostConfig::new(
+        deployment.cgroup_root.clone(),
+        deployment.run_root.clone(),
+        deployment.attempt_namespace.clone(),
+        deployment.first_project_id,
+        deployment.project_id_count,
+        deployment.child_user_id,
+        deployment.child_group_id,
+        deployment.maximum_tasks,
+        deployment.maximum_inodes,
+        finish_timeout,
+    )
+    .map_err(|error| serve_error(format!("campaign executor host policy error: {error}")))
+}
+
+fn deployment_capacity(
+    deployment: &PackagedExecutorDeployment,
+) -> Result<crucible_daemon::ExecutorCapacity, CliError> {
+    crucible_daemon::ExecutorCapacity::new(
+        deployment.maximum_slots,
+        deployment.maximum_vcpus,
+        deployment.maximum_resident_bytes,
+        deployment.maximum_disk_bytes,
+        deployment.maximum_execution_quanta,
+    )
+    .map_err(|error| serve_error(format!("campaign executor capacity error: {error}")))
 }
 
 /// Keeps nested startup causes visible without unbounded diagnostic traversal.
@@ -317,6 +444,10 @@ host_architecture = "x86_64"
 qemu_profile = "deterministic-tcg-v1"
 "#,
         )
+        .replace(
+            "host_architecture = \"x86_64\"",
+            &format!("host_architecture = \"{}\"", std::env::consts::ARCH),
+        )
     }
 
     #[test]
@@ -329,10 +460,90 @@ qemu_profile = "deterministic-tcg-v1"
         let deployment = load_deployment(&path).expect("load deployment");
         assert_eq!(deployment.schema, PACKAGED_EXECUTOR_SCHEMA);
         assert_eq!(deployment.worker_count, 2);
+        let guarded =
+            load_guarded_campaign_run_deployment(&path).expect("load guarded run deployment");
+        assert_eq!(guarded.resources.maximum_vcpus(), 4);
+        assert_eq!(guarded.resources.maximum_disk_bytes(), 2_147_483_648);
 
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
             .expect("weaken deployment mode");
         assert!(load_deployment(&path).is_err());
+    }
+
+    #[test]
+    fn guarded_campaign_run_rejects_an_unsupported_qemu_profile() {
+        let directory = tempfile::tempdir().expect("deployment directory");
+        let path = directory.path().join("executor.toml");
+        let deployment = authored().replace(
+            "qemu_profile = \"deterministic-tcg-v1\"",
+            "qemu_profile = \"nondeterministic-host-v1\"",
+        );
+        fs::write(&path, deployment).expect("write deployment");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("secure deployment");
+
+        let error = load_guarded_campaign_run_deployment(&path)
+            .err()
+            .expect("unsupported guarded QEMU profile");
+        assert!(
+            error
+                .to_string()
+                .contains("QEMU profile `nondeterministic-host-v1` is unsupported")
+        );
+    }
+
+    #[test]
+    fn guarded_campaign_run_rejects_a_mismatched_host_architecture() {
+        let directory = tempfile::tempdir().expect("deployment directory");
+        let path = directory.path().join("executor.toml");
+        let deployment = authored().replace(
+            &format!("host_architecture = \"{}\"", std::env::consts::ARCH),
+            "host_architecture = \"incompatible-test-host\"",
+        );
+        fs::write(&path, deployment).expect("write deployment");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("secure deployment");
+
+        let error = load_guarded_campaign_run_deployment(&path)
+            .err()
+            .expect("mismatched guarded host architecture");
+        assert!(
+            error
+                .to_string()
+                .contains("host architecture `incompatible-test-host` does not match")
+        );
+    }
+
+    #[test]
+    fn campaign_deployment_resolution_has_explicit_environment_and_system_precedence() {
+        let explicit = Path::new("/explicit/campaign.toml");
+        let environment = std::ffi::OsStr::new("/environment/campaign.toml");
+        assert_eq!(
+            resolve_campaign_deployment_path(Some(explicit), Some(environment), |_| true)
+                .expect("explicit deployment"),
+            explicit
+        );
+        assert_eq!(
+            resolve_campaign_deployment_path(None, Some(environment), |_| true)
+                .expect("environment deployment"),
+            Path::new("/environment/campaign.toml")
+        );
+        assert_eq!(
+            resolve_campaign_deployment_path(None, None, |_| true).expect("system deployment"),
+            Path::new(DEFAULT_CAMPAIGN_DEPLOYMENT_PATH)
+        );
+
+        let missing = resolve_campaign_deployment_path(None, None, |_| false)
+            .expect_err("missing host authority");
+        assert!(missing.to_string().contains("--campaign-deployment PATH"));
+        assert!(missing.to_string().contains(CAMPAIGN_DEPLOYMENT_ENV));
+        assert!(
+            missing
+                .to_string()
+                .contains(DEFAULT_CAMPAIGN_DEPLOYMENT_PATH)
+        );
+        assert!(
+            resolve_campaign_deployment_path(None, Some(std::ffi::OsStr::new("")), |_| true,)
+                .is_err()
+        );
     }
 
     #[test]

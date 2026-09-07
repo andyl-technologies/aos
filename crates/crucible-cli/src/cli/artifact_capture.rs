@@ -432,6 +432,7 @@ pub(crate) fn verify_reproduction_artifact_bytes_with_components(
 pub(crate) fn run_failure_reproduction_artifact_bytes(
     seed: u64,
     backend: Option<&ResolvedLocalBackend>,
+    producer: &str,
     run_plan: &RunInvocationPlan,
     report: &RunWorkflowReport,
     canonical_log: &[CanonicalLogEntry],
@@ -464,7 +465,7 @@ pub(crate) fn run_failure_reproduction_artifact_bytes(
     if matches!(backend, Some(ResolvedLocalBackend::Qemu { .. })) {
         let live_evidence = live_qemu_artifact_evidence_from_run(
             LiveQemuArtifactRecipe {
-                producer: "run",
+                producer,
                 terminal_condition: run_plan.terminal_condition,
                 max_virtual_time_ticks: run_plan.max_virtual_time_ticks,
                 max_quanta: run_plan.max_quanta,

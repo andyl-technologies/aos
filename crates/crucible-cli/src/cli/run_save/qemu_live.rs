@@ -684,6 +684,7 @@ fn qemu_fuzz_iteration_plan(sequence: u64, form: crucible::ScenarioDefForm) -> R
     RunInvocationPlan {
         request_seed: Some(scenario.seed()),
         save_store_root: None,
+        campaign_deployment: None,
         scenario: RunScenarioRef::BuiltInExample {
             name: format!("fuzz-iteration-{sequence}"),
             form,
@@ -716,31 +717,6 @@ fn qemu_fuzz_iteration_plan(sequence: u64, form: crucible::ScenarioDefForm) -> R
 mod search;
 
 pub(crate) use search::*;
-/// Runs one local scenario through the packaged QEMU backend.
-pub(crate) fn run_local_qemu_workflow(
-    backend: &ResolvedLocalBackend,
-    thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    run_plan: &RunInvocationPlan,
-) -> Result<BackendCommandOutcome, CliError> {
-    let mut run_plan = run_plan.clone();
-    run_plan.collect_execution_fingerprints = true;
-    let config = production_qemu_lifecycle_config(backend)?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let control_plane = production_qemu_control_plane(config, run_plan.scenario.scenario_form());
-    let client = InProcessLifecycleClient::new(control_plane);
-    let report = if matches!(run_plan.execution_mode, RunExecutionMode::Interactive) {
-        runtime.block_on(run_control_client_workflow_stdin_async(
-            &client, &run_plan, false,
-        ))?
-    } else {
-        runtime.block_on(run_control_client_workflow_async(&client, &run_plan, &[]))?
-    };
-    finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, &run_plan, report)
-}
 
 #[path = "qemu_live/replay.rs"]
 mod replay;
