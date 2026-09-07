@@ -995,6 +995,7 @@ mod execution;
 mod executor_driver;
 mod fact_references;
 mod finding;
+mod finding_candidate;
 mod objective;
 mod observation;
 mod planner_driver;
