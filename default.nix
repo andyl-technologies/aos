@@ -319,6 +319,14 @@
         identity = qualificationExecutorIdentity;
       }
     else null;
+  imageLifecycleScenario =
+    if hostPlatform.isLinux
+    then
+      testing.mkQualificationImageScenario {
+        name = "aos-qualification-${hostPlatform.system}-image-lifecycle";
+        identity = qualificationExecutorIdentity;
+      }
+    else null;
   qualificationTargetIds = map (target: target.id) (
     builtins.filter (target: target.platform == hostPlatform.system) releaseQualification.targets
   );
@@ -347,6 +355,7 @@
     qualificationScenarioIds);
   qualificationAutomatedScenarios = lib.optionalAttrs hostPlatform.isLinux {
     "claim-container-${hostPlatform.system}-functional" = "${containerLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-container-lifecycle";
+    "claim-disk-${hostPlatform.system}-functional" = "${imageLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-image-lifecycle";
   };
   releaseQualificationExecutor = testing.mkQualificationExecutor {
     name = "aos-qualification-${hostPlatform.system}";
@@ -360,6 +369,7 @@
         production-recovery = "${productionRecoveryScenario}/bin/aos-qualification-production-recovery";
       };
     workRoot = "/var/lib/aos-release/qualification/${hostPlatform.system}";
+    timeoutSeconds = 21600;
   };
 
   prefixAttrs = prefix: attrs:
