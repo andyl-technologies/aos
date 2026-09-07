@@ -326,7 +326,7 @@ pub enum CampaignRuntimeStartError {
 pub enum CampaignRuntimeJoinError<E> {
     /// One bounded driver step failed and stopped the runtime.
     #[error("campaign runtime driver failed")]
-    Driver(E),
+    Driver(#[source] E),
     /// The fixed runtime thread escaped through an invariant panic.
     #[error("campaign runtime thread panicked")]
     ThreadPanicked,

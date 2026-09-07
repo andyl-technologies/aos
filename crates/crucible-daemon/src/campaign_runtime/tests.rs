@@ -40,6 +40,14 @@ enum FakeError {
     Failed,
 }
 
+impl std::fmt::Display for FakeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("fake campaign runtime driver failed")
+    }
+}
+
+impl std::error::Error for FakeError {}
+
 struct FakeDriver {
     steps: Arc<Mutex<VecDeque<Result<CampaignRuntimeStepDisposition, FakeError>>>>,
     entered: Sender<()>,
@@ -166,10 +174,17 @@ fn driver_failure_stops_and_is_returned_to_the_owner() {
     completion.wait();
     assert!(completion.is_finished());
 
+    let error = runtime
+        .shutdown_and_join()
+        .expect_err("driver failure should reach the runtime owner");
     assert!(matches!(
-        runtime.shutdown_and_join(),
-        Err(CampaignRuntimeJoinError::Driver(FakeError::Failed))
+        &error,
+        CampaignRuntimeJoinError::Driver(FakeError::Failed)
     ));
+    assert_eq!(
+        std::error::Error::source(&error).and_then(|source| source.downcast_ref::<FakeError>()),
+        Some(&FakeError::Failed)
+    );
 }
 
 #[test]
