@@ -9,8 +9,8 @@ use std::thread;
 use std::time::Duration;
 
 use crucible_campaign::{
-    AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId, ExecutionRetentionIntent,
-    ExecutorClient, FindingCandidateBundleId, SubmitAttemptDisposition,
+    AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId, ConfigurationArtifactId,
+    ExecutionRetentionIntent, ExecutorClient, FindingCandidateBundleId, SubmitAttemptDisposition,
 };
 
 use super::*;
@@ -316,6 +316,135 @@ fn checkpoint_request_stages_a_gc_root_and_releases_only_after_pause() {
             execution,
             checkpoint: root,
         }
+    );
+}
+
+#[test]
+fn materialized_start_capture_is_durable_and_prelatched_before_dispatch() {
+    let first_epoch = daemon_epoch(0x61);
+    let capacity = ExecutorCapacity::new(1, 2, 4096, 8192, 64).expect("capacity");
+    let mut first = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        first_epoch,
+        capacity,
+    );
+    let start_configuration = configuration(0x91);
+    let first_request = capture_request(
+        0x61,
+        0x71,
+        first_epoch,
+        resources(1, 2048, 4096),
+        start_configuration,
+    );
+    let first_execution = accepted_execution(
+        &first
+            .submit_attempt(&first_request)
+            .expect("admit materialized-start capture"),
+    );
+
+    assert!(matches!(
+        first
+            .ledger()
+            .load_attempt(execution_key(&first_request))
+            .expect("load durable capture request"),
+        Some(AttemptRuntimeState::CheckpointRequested { .. })
+    ));
+    let first_queued = first
+        .next_queued()
+        .expect("capture queued for materialization");
+    assert_eq!(first_queued.execution(), first_execution);
+    assert!(first_queued.checkpoint_request().is_requested());
+
+    let second_epoch = daemon_epoch(0x62);
+    let mut second = LocalExecutorSupervisor::new(
+        first.into_ledger(),
+        AllowAllAttemptAdmission,
+        second_epoch,
+        capacity,
+    );
+    let recovery_request = capture_request(
+        0x62,
+        0x71,
+        second_epoch,
+        resources(1, 2048, 4096),
+        start_configuration,
+    );
+    let recovery_execution = accepted_execution(
+        &second
+            .submit_attempt(&recovery_request)
+            .expect("recover materialized-start capture"),
+    );
+    let recovery_queued = second
+        .next_queued()
+        .expect("recovered capture queued for materialization");
+    assert_eq!(recovery_queued.execution(), recovery_execution);
+    assert!(recovery_queued.checkpoint_request().is_requested());
+
+    let mismatched_configuration = capture_request(
+        0x63,
+        0x71,
+        second_epoch,
+        resources(1, 2048, 4096),
+        configuration(0x92),
+    );
+    assert_eq!(
+        second
+            .submit_attempt(&mismatched_configuration)
+            .expect("reject changed authenticated start")
+            .disposition(),
+        SubmitAttemptDisposition::Rejected {
+            reason: ExecutorRejection::Incompatible,
+        }
+    );
+
+    let root = checkpoint(0x93);
+    assert_eq!(
+        second
+            .stage_checkpoint_publication(&recovery_queued, root)
+            .expect("stage captured start"),
+        CheckpointPublicationOutcome::Staged
+    );
+    assert_eq!(
+        second
+            .complete_checkpoint(&recovery_queued, root)
+            .expect("complete captured start"),
+        CheckpointCompletionOutcome::Paused
+    );
+
+    let resumed_assignment = request(0x64, 0x71, second_epoch, resources(1, 2048, 4096));
+    let legacy_resume =
+        ResumeAttemptExecutionRequest::new(&resumed_assignment, recovery_execution, root)
+            .expect("legacy resume request");
+    assert_eq!(
+        second
+            .resume_attempt_execution(&legacy_resume)
+            .expect("legacy resume response")
+            .disposition(),
+        ResumeAttemptExecutionDisposition::NotCurrent
+    );
+
+    let resume = ResumeAttemptExecutionRequest::new_from_materialized_start(
+        &resumed_assignment,
+        recovery_execution,
+        root,
+        start_configuration,
+    )
+    .expect("capture-aware resume request");
+    let resumed_execution = match second
+        .resume_attempt_execution(&resume)
+        .expect("resume captured start")
+        .disposition()
+    {
+        ResumeAttemptExecutionDisposition::Accepted { execution } => execution,
+        other => panic!("unexpected capture resume disposition: {other:?}"),
+    };
+    let resumed = second.next_queued().expect("resumed capture token");
+    assert_eq!(resumed.execution(), resumed_execution);
+    assert_eq!(resumed.origin().checkpoint(), Some(root));
+    assert_eq!(
+        resumed.request().start_mode(),
+        crucible_campaign::AttemptStartMode::Execute
     );
 }
 
@@ -1774,6 +1903,25 @@ fn request_in_lineage(
     .expect("request")
 }
 
+fn capture_request(
+    assignment_byte: u8,
+    attempt_byte: u8,
+    epoch: DaemonEpoch,
+    resources: AttemptResourceLimits,
+    configuration: ConfigurationArtifactId,
+) -> SubmitAttemptRequest {
+    SubmitAttemptRequest::new_capture_materialized_start(
+        AssignmentId::from_bytes([assignment_byte; 16]).expect("assignment"),
+        epoch,
+        lineage(0x11),
+        attempt(attempt_byte),
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        configuration,
+    )
+    .expect("capture request")
+}
+
 fn lineage(byte: u8) -> CampaignLineageId {
     CampaignLineageId::parse(&typed_id(
         "crucible.campaign.lineage",
@@ -1790,6 +1938,15 @@ fn attempt(byte: u8) -> AttemptId {
         byte,
     ))
     .expect("attempt")
+}
+
+fn configuration(byte: u8) -> ConfigurationArtifactId {
+    ConfigurationArtifactId::parse(&typed_id(
+        "crucible.campaign.configuration-artifact",
+        "configuration",
+        byte,
+    ))
+    .expect("configuration")
 }
 
 fn resources(vcpus: u32, resident: u64, disk: u64) -> AttemptResourceLimits {

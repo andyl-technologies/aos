@@ -23,17 +23,17 @@ use crucible_api::vm_lifecycle::{
     prepared_multi_node_hot_fork_source_world_for_test, reset_hot_fork_adoption_count_for_test,
 };
 use crucible_campaign::{
-    AlternativeId, AssignmentId, Attempt, AttemptResourceLimits, AttemptStart, BooleanDomain,
-    BranchPath, BranchPathSegment, BudgetGrant, CampaignCommandId, CampaignControlAction,
-    CampaignExecutorStore, CampaignHash, CampaignLineage, CampaignMode, CampaignPolicy,
-    CampaignRepository, CampaignSeed, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
-    ChoiceSource, ChoiceValue, ConfigurationId, ControlRequest, CoverageProjection, DaemonEpoch,
-    DiscreteAlternative, DiscreteDomain, ExactCheckpointId, ExactRational, ExecutionId,
-    ExecutionRetentionIntent, ExecutorCompatibilityProfile, ExecutorService, ExplorerPolicy,
-    FairnessPolicy, IntegerDomain, IntegerRepresentation, IntegerValue, MeasurementSet,
-    Observation, ObservationCandidate, ProgressiveWideningPolicy, PropertyVerdictSet, PuctPolicy,
-    RetentionPolicy, SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
-    SubmitAttemptDisposition, SubmitAttemptRequest,
+    AlternativeId, AssignmentId, Attempt, AttemptResourceLimits, AttemptStart, AttemptStartMode,
+    BooleanDomain, BranchPath, BranchPathSegment, BudgetGrant, CampaignCommandId,
+    CampaignControlAction, CampaignExecutorStore, CampaignHash, CampaignLineage, CampaignMode,
+    CampaignPolicy, CampaignRepository, CampaignSeed, ChoiceClassContext, ChoiceCoordinate,
+    ChoiceDomain, ChoiceSource, ChoiceValue, ConfigurationId, ControlRequest, CoverageProjection,
+    DaemonEpoch, DiscreteAlternative, DiscreteDomain, ExactCheckpointId, ExactRational,
+    ExecutionId, ExecutionRetentionIntent, ExecutorCompatibilityProfile, ExecutorService,
+    ExplorerPolicy, FairnessPolicy, IntegerDomain, IntegerRepresentation, IntegerValue,
+    MeasurementSet, Observation, ObservationCandidate, ProgressiveWideningPolicy,
+    PropertyVerdictSet, PuctPolicy, RetentionPolicy, SelectableDeclaration, Selection,
+    SelectionOrigin, StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
 };
 use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, MemoryBlobBackend,
@@ -2085,7 +2085,7 @@ fn target_world_resource_preflight_rejects_before_source_checkout_or_guard_insta
 }
 
 #[test]
-fn hot_first_router_falls_back_only_after_decline_and_bypasses_hot_fork_for_resume() {
+fn hot_first_router_falls_back_only_after_decline_and_bypasses_hot_fork_for_resume_and_capture() {
     let (_repository, _store, _lineage, _attempt, candidate, _scenario) =
         repository_execution_fixture();
     let input = execution_input();
@@ -2161,4 +2161,26 @@ fn hot_first_router_falls_back_only_after_decline_and_bypasses_hot_fork_for_resu
         AttemptExecutionReconciliationStep::Complete
     );
     assert_eq!(reconciliations.load(Ordering::SeqCst), 2);
+
+    let AttemptStart::Discover { configuration } = input.attempt().start() else {
+        panic!("router fixture must be a discovery attempt")
+    };
+    let capture_context = execution_context(&input, 0x83)
+        .with_start_mode(AttemptStartMode::CaptureMaterializedStart { configuration });
+    let captured = router
+        .execute(&input, &capture_context)
+        .expect("materialized-start capture uses fallback directly");
+    assert_eq!(
+        captured.materialization(),
+        CrucibleMaterializationTier::ThinReplay
+    );
+    assert_eq!(checkouts.load(Ordering::SeqCst), 1);
+    assert_eq!(fallback_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        router
+            .reconcile_execution(AttemptExecutionDisposition::Canceled)
+            .expect("reconcile capture fallback"),
+        AttemptExecutionReconciliationStep::Complete
+    );
+    assert_eq!(reconciliations.load(Ordering::SeqCst), 3);
 }

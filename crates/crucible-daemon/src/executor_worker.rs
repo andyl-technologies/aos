@@ -9,10 +9,10 @@
 
 use crucible::ContentHash;
 use crucible_campaign::{
-    Attempt, AttemptResourceLimits, AttemptStart, BranchPath, CampaignExecutorStore,
-    CampaignLineage, CampaignRepositoryError, ConfigurationArtifact, ExactCheckpointId,
-    ExecutionId, ExecutionRetentionIntent, ExecutorRejection, ObservationCandidate, ObservationId,
-    ResolvedSelection, ScenarioArtifact, SubmitAttemptRequest,
+    Attempt, AttemptResourceLimits, AttemptStart, AttemptStartMode, BranchPath,
+    CampaignExecutorStore, CampaignLineage, CampaignRepositoryError, ConfigurationArtifact,
+    ExactCheckpointId, ExecutionId, ExecutionRetentionIntent, ExecutorRejection,
+    ObservationCandidate, ObservationId, ResolvedSelection, ScenarioArtifact, SubmitAttemptRequest,
 };
 
 use crate::exact_checkpoint_store::AttemptCheckpointResultState;
@@ -193,6 +193,7 @@ pub fn resolve_attempt_execution_input(
 #[derive(Clone, Debug)]
 pub struct AttemptExecutionContext {
     runtime_basis: Option<AttemptExecutionRuntimeBasis>,
+    start_mode: AttemptStartMode,
     resources: AttemptResourceLimits,
     retention: ExecutionRetentionIntent,
     cancellation: ExecutionCancellation,
@@ -213,6 +214,7 @@ impl AttemptExecutionContext {
     ) -> Self {
         Self {
             runtime_basis: None,
+            start_mode: AttemptStartMode::Execute,
             resources,
             retention,
             cancellation,
@@ -228,6 +230,19 @@ impl AttemptExecutionContext {
     pub(crate) const fn with_runtime_basis(mut self, basis: AttemptExecutionRuntimeBasis) -> Self {
         self.runtime_basis = Some(basis);
         self
+    }
+
+    /// Attaches the authenticated behavior requested at start materialization.
+    #[must_use]
+    pub(crate) const fn with_start_mode(mut self, start_mode: AttemptStartMode) -> Self {
+        self.start_mode = start_mode;
+        self
+    }
+
+    /// Returns the authenticated behavior requested at start materialization.
+    #[must_use]
+    pub const fn start_mode(&self) -> AttemptStartMode {
+        self.start_mode
     }
 
     /// Returns the process-local reservation basis when this is worker work.
@@ -327,6 +342,7 @@ impl AttemptExecutionContext {
     #[must_use]
     pub fn matches(&self, other: &Self) -> bool {
         self.runtime_basis == other.runtime_basis
+            && self.start_mode == other.start_mode
             && self.resources == other.resources
             && self.retention == other.retention
             && self.resume_checkpoint == other.resume_checkpoint
@@ -608,6 +624,15 @@ where
         let input = self
             .resolve_input(queued.request())
             .map_err(repository_worker_failure)?;
+        let capture_validation =
+            capture_start_validation_reason(input.start(), queued.request().start_mode())
+                .map_err(CampaignRepositoryError::from)
+                .map_err(repository_worker_failure)?;
+        if let Some(reason) = capture_validation {
+            return Err(AttemptWorkerFailure::Terminal(
+                RepositoryAttemptWorkerError::IncompatibleResult { reason },
+            ));
+        }
         let expected_scenario = ContentHash {
             bytes: input.lineage().scenario().as_hash().as_bytes(),
         };
@@ -617,6 +642,7 @@ where
             queued.cancellation().clone(),
             queued.checkpoint_request().clone(),
         )
+        .with_start_mode(queued.request().start_mode())
         .with_runtime_basis(AttemptExecutionRuntimeBasis::new(
             crate::AttemptExecutionKey::new(queued.request().lineage(), queued.request().attempt()),
             queued.execution(),
@@ -676,6 +702,29 @@ where
             crate::AttemptExecutionKey::new(request.lineage(), request.attempt()),
         )
     }
+}
+
+fn capture_start_validation_reason(
+    start: &ResolvedAttemptStart,
+    start_mode: AttemptStartMode,
+) -> Result<Option<&'static str>, crucible_campaign::CampaignCodecError> {
+    let AttemptStartMode::CaptureMaterializedStart { configuration } = start_mode else {
+        return Ok(None);
+    };
+    let ResolvedAttemptStart::Discover {
+        configuration: resolved,
+    } = start
+    else {
+        return Ok(Some(
+            "materialized-start capture requires a discovery attempt",
+        ));
+    };
+    if resolved.id()? != configuration {
+        return Ok(Some(
+            "materialized-start capture configuration differs from resolved discovery start",
+        ));
+    }
+    Ok(None)
 }
 
 impl<M> LocalAttemptWorker for RepositoryAttemptWorker<M>
