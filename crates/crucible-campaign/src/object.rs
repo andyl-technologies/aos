@@ -18,10 +18,10 @@ use crate::{
     Attempt, AttemptAdmission, BranchPath, BranchRequest, CampaignCodecError,
     CampaignControlAction, CampaignFact, CampaignLineage, CampaignPlanningView, CampaignPolicy,
     CampaignSnapshot, ConfigurationArtifact, ContinuationProjection, CoverageProjection,
-    ExpansionCredit, ExpansionState, Finding, MeasurementSet, ObjectiveEvaluation, Observation,
-    PlannerEngine, PlannerInvocation, PlannerRequest, PlannerState, PlannerStep, PolicyArtifact,
-    PropertyVerdictSet, Proposal, RankingExplanation, ReproductionArtifact, ScenarioArtifact,
-    SurvivorSelection,
+    ExpansionCredit, ExpansionState, Finding, FindingCandidateBundle, MeasurementSet,
+    ObjectiveEvaluation, Observation, PlannerEngine, PlannerInvocation, PlannerRequest,
+    PlannerState, PlannerStep, PolicyArtifact, PropertyVerdictSet, Proposal, RankingExplanation,
+    ReproductionArtifact, ScenarioArtifact, SurvivorSelection,
 };
 
 pub use crucible_cas::content_envelope::ContentChild as ChildReference;
@@ -111,11 +111,13 @@ pub enum CampaignRecordKind {
     BudgetLedger,
     /// Snapshot-bound budget eligibility for one exact planner offer.
     PlannerCandidateBudget,
+    /// Durable executor-produced finding candidate handoff.
+    FindingCandidateBundle,
 }
 
 impl CampaignRecordKind {
     /// Every campaign record schema admitted by this crate.
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 41] = [
         Self::Lineage,
         Self::Policy,
         Self::Snapshot,
@@ -156,6 +158,7 @@ impl CampaignRecordKind {
         Self::PlannerCandidateGuidance,
         Self::BudgetLedger,
         Self::PlannerCandidateBudget,
+        Self::FindingCandidateBundle,
     ];
 
     /// Returns the globally registered canonical schema name.
@@ -202,6 +205,7 @@ impl CampaignRecordKind {
             Self::PlannerCandidateGuidance => "crucible.campaign.planner-candidate-guidance",
             Self::BudgetLedger => "crucible.campaign.budget-ledger",
             Self::PlannerCandidateBudget => "crucible.campaign.planner-candidate-budget",
+            Self::FindingCandidateBundle => "crucible.campaign.finding-candidate-bundle",
         }
     }
 
@@ -220,7 +224,9 @@ impl CampaignRecordKind {
             Self::MeasurementSet => 2,
             Self::Observation => 4,
             Self::ObjectiveEvaluation | Self::RankingExplanation => 2,
-            Self::ReproductionArtifact | Self::Finding => 2,
+            Self::ReproductionArtifact => 2,
+            Self::Finding => 3,
+            Self::FindingCandidateBundle => RECORD_SCHEMA_VERSION,
             Self::PlannerCandidateGuidance | Self::PlannerCandidateBudget | Self::BudgetLedger => 2,
             _ => RECORD_SCHEMA_VERSION,
         }
@@ -256,7 +262,9 @@ impl CampaignRecordKind {
             | Self::PropertyVerdictSet
             | Self::Observation
             | Self::ObjectiveEvaluation => ObjectKind::Observation,
-            Self::ReproductionArtifact | Self::Finding => ObjectKind::Finding,
+            Self::ReproductionArtifact | Self::Finding | Self::FindingCandidateBundle => {
+                ObjectKind::Finding
+            }
             Self::Lineage
             | Self::BudgetLedger
             | Self::Fact
@@ -322,6 +330,7 @@ impl Canonical for CampaignRecordKind {
             Self::PlannerCandidateGuidance => 37,
             Self::BudgetLedger => 38,
             Self::PlannerCandidateBudget => 39,
+            Self::FindingCandidateBundle => 40,
         });
     }
 
@@ -367,6 +376,7 @@ impl Canonical for CampaignRecordKind {
             37 => Ok(Self::PlannerCandidateGuidance),
             38 => Ok(Self::BudgetLedger),
             39 => Ok(Self::PlannerCandidateBudget),
+            40 => Ok(Self::FindingCandidateBundle),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-record-kind",
                 tag,
@@ -661,11 +671,12 @@ impl ObjectEnvelope {
                 record_kind,
                 CampaignRecordKind::MeasurementSet
                     | CampaignRecordKind::ReproductionArtifact
-                    | CampaignRecordKind::Finding
                     | CampaignRecordKind::PlannerCandidateGuidance
                     | CampaignRecordKind::PlannerCandidateBudget
                     | CampaignRecordKind::BudgetLedger
-            ) && envelope.schema_version() == 1;
+            ) && envelope.schema_version() == 1
+            || record_kind == CampaignRecordKind::Finding
+                && matches!(envelope.schema_version(), 1..=2);
         if !version_supported {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported campaign record schema version",
@@ -693,6 +704,7 @@ impl ObjectEnvelope {
                 | CampaignRecordKind::RankingExplanation
                 | CampaignRecordKind::ReproductionArtifact
                 | CampaignRecordKind::Finding
+                | CampaignRecordKind::FindingCandidateBundle
                 | CampaignRecordKind::PlannerCandidateGuidance
         ) {
             let version = self
@@ -865,6 +877,10 @@ fn expected_children(
         }
         CampaignRecordKind::Finding => {
             let value = Finding::from_canonical_bytes(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::FindingCandidateBundle => {
+            let value = FindingCandidateBundle::from_canonical_bytes(body)?;
             content_children(value.content_children())
         }
         CampaignRecordKind::PlannerCandidateGuidance => {
