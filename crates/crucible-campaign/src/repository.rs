@@ -1017,6 +1017,7 @@ pub use budget::CampaignBudgetProjection;
 use attempt_closure::non_modeled_attempt_key;
 use finding::finding_occurrence_key;
 pub(crate) use finding::finding_signature_key;
+pub use finding_candidate::AuthenticatedFindingCandidateIncorporation;
 
 pub use attempt_closure::NonModeledAttemptResult;
 pub use executor_driver::{

@@ -2,16 +2,17 @@
 
 use super::*;
 use crate::{
-    CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
+    CampaignRecordKind, CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
     CancelAttemptExecutionResponse, CheckpointAttemptExecutionDisposition,
     CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, ExactCheckpointId,
     ExecutorClient, ExecutorControlService, ExecutorResumeService, ExecutorService,
-    ExecutorStatusService, FindingCandidateBundle, FindingExactPins, FindingKind,
-    FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
-    FindingSignatureMinimizationEvidence, FindingTarget, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse, Objective, ObjectiveGoal,
-    ObjectiveValue, ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
-    ResumeAttemptExecutionResponse, SelectionOrigin, evaluate_objectives,
+    ExecutorStatusService, Finding, FindingCandidateBundle, FindingExactPins, FindingKind,
+    FindingMinimizationAttempt, FindingMinimizationEvidence, FindingOccurrenceSet,
+    FindingSignature, FindingSignatureMinimizationEvidence, FindingTarget,
+    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
+    Objective, ObjectiveGoal, ObjectiveValue, ResumeAttemptExecutionDisposition,
+    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, SelectionOrigin,
+    evaluate_objectives,
 };
 
 struct CompletingExecutor {
@@ -1357,6 +1358,7 @@ fn minimized_finding_retains_trace_and_complete_observation_evidence() {
 #[test]
 fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
     let (repository, lineage, policy, blobs) = counted_fixture();
+    let campaign = CampaignName::new("finding-candidate-incorporation").expect("campaign name");
     let (_, admitted, observation) = admitted_observation_fixture(
         &repository,
         &lineage,
@@ -1480,6 +1482,71 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
         )
         .expect("incorporate finding candidate");
     assert!(!incorporated.replayed);
+    let orphaned =
+        CampaignRepository::new(repository.blobs.clone(), Arc::new(MemoryRefBackend::new()));
+    assert!(
+        orphaned
+            .authenticate_current_finding_candidate_incorporation(
+                &campaign,
+                incorporated.finding,
+                bundle_id,
+            )
+            .is_err(),
+        "a well-formed but unrooted snapshot must not acknowledge the candidate",
+    );
+    let retained_finding = repository
+        .read_finding(incorporated.finding.content_id())
+        .expect("load incorporated finding");
+    let unrelated_finding = Finding::new_with_retention(
+        retained_finding.signature().clone(),
+        retained_finding.observation(),
+        retained_finding.reproduction(),
+        retained_finding.first_seen_snapshot(),
+        FindingOccurrenceSet::new(
+            retained_finding.occurrences(),
+            retained_finding.occurrence_count(),
+            retained_finding.latest_occurrence(),
+        )
+        .expect("unrelated finding occurrences"),
+        retained_finding.minimized(),
+        retained_finding.exact_pin_retention().clone(),
+    )
+    .expect("unrelated finding");
+    let unrelated_finding_id = unrelated_finding.id().expect("unrelated finding ID");
+    let stored_unrelated = repository
+        .put_envelope(
+            ObjectEnvelope::for_record_versioned(
+                CampaignRecordKind::Finding,
+                unrelated_finding.schema_version(),
+                crate::object::content_children(unrelated_finding.content_children())
+                    .expect("unrelated finding children"),
+                unrelated_finding.canonical_bytes(),
+            )
+            .expect("unrelated finding envelope"),
+        )
+        .expect("store unrelated finding");
+    assert_eq!(stored_unrelated, unrelated_finding_id.content_id());
+    assert!(
+        repository
+            .authenticate_current_finding_candidate_incorporation(
+                &campaign,
+                unrelated_finding_id,
+                bundle_id,
+            )
+            .is_err(),
+        "the exact bundle paired with an unrelated finding must be rejected",
+    );
+    let incorporation = repository
+        .authenticate_current_finding_candidate_incorporation(
+            &campaign,
+            incorporated.finding,
+            bundle_id,
+        )
+        .expect("authenticate finding candidate incorporation");
+    assert_eq!(incorporation.campaign(), &campaign);
+    assert_eq!(incorporation.bundle(), bundle_id);
+    assert_eq!(incorporation.finding(), incorporated.finding);
+    assert_eq!(incorporation.snapshot(), incorporated.new_snapshot);
     assert_eq!(
         repository
             .read_finding(incorporated.finding.content_id())
@@ -1551,6 +1618,16 @@ fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
     assert!(restarted_replay.replayed);
     assert_eq!(restarted_replay.finding, incorporated.finding);
     assert_eq!(restarted_replay.new_snapshot, incorporated.new_snapshot);
+    assert_eq!(
+        restarted
+            .authenticate_current_finding_candidate_incorporation(
+                &campaign,
+                restarted_replay.finding,
+                bundle_id,
+            )
+            .expect("authenticate incorporation after restart"),
+        incorporation,
+    );
 }
 
 #[test]
