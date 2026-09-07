@@ -16,10 +16,11 @@ use crucible_campaign::{
     CampaignCodecError, CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignName,
     CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignRepository,
     CampaignRepositoryError, CampaignSupervisor, CampaignSupervisorConfigError,
-    CampaignSupervisorError, CanonicalPuctPlanner, ExecutionRetentionIntent, ExecutorClient,
-    ExecutorClientError, MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
-    MAX_PLANNER_SCAN_PAGE_ITEMS, PlannerAuthorityKey, PlannerClient, PlanningBudget,
-    ScenarioArtifactId,
+    CampaignSupervisorError, CanonicalFrontierPlanner, CanonicalPuctPlanner,
+    ExecutionRetentionIntent, ExecutorClient, ExecutorClientError, ExplorerPolicy,
+    MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
+    MAX_PLANNER_SCAN_PAGE_ITEMS, PlannerAuthorityKey, PlannerClient, PlannerRequest,
+    PlannerResponse, PlannerService, PlanningBudget, ScenarioArtifactId,
 };
 
 use crate::{
@@ -214,13 +215,37 @@ pub enum CanonicalCampaignRuntimeConfigError {
     Codec(CampaignCodecError),
 }
 
-type CanonicalPlannerService =
+type AuthorizedCanonicalFrontierPlanner =
+    AuthorizedPlannerService<CanonicalFrontierPlanner, CanonicalPlannerProcessSupervisor>;
+type AuthorizedCanonicalPuctPlanner =
     AuthorizedPlannerService<CanonicalPuctPlanner, CanonicalPlannerProcessSupervisor>;
+type CanonicalPlannerServiceError =
+    AuthorizedPlannerServiceError<CampaignCodecError, CanonicalPlannerProcessError>;
+
+enum CanonicalPlannerService {
+    Frontier(AuthorizedCanonicalFrontierPlanner),
+    Puct(AuthorizedCanonicalPuctPlanner),
+}
+
+impl PlannerService for CanonicalPlannerService {
+    type Error = CanonicalPlannerServiceError;
+
+    fn plan(&mut self, request: &PlannerRequest) -> Result<PlannerResponse, Self::Error> {
+        match (self, request.policy().explorer()) {
+            (Self::Frontier(service), ExplorerPolicy::Exhaustive { .. }) => service.plan(request),
+            (Self::Puct(service), ExplorerPolicy::TreeSearch { .. }) => service.plan(request),
+            _ => Err(AuthorizedPlannerServiceError::InvalidOutput(
+                CampaignCodecError::InvalidValue {
+                    reason: "active campaign explorer policy changed after planner attachment",
+                },
+            )),
+        }
+    }
+}
+
 type CanonicalSupervisor = CampaignSupervisor<CanonicalPlannerService, LoopbackExecutorService>;
-type CanonicalSupervisorFailure = CampaignSupervisorError<
-    AuthorizedPlannerServiceError<CampaignCodecError, CanonicalPlannerProcessError>,
-    LoopbackExecutorProtocolError,
->;
+type CanonicalSupervisorFailure =
+    CampaignSupervisorError<CanonicalPlannerServiceError, LoopbackExecutorProtocolError>;
 
 /// Prepared coordinator that has not started its long-lived thread.
 #[must_use = "prepared campaign runtime must be started or explicitly dropped"]
@@ -343,8 +368,8 @@ pub fn prepare_canonical_campaign_runtime(
         .describe_executor()
         .map_err(CanonicalCampaignRuntimeError::ExecutorDescription)?;
 
-    let head = repository
-        .head(config.campaign().as_str())
+    let (head, policy) = repository
+        .head_with_policy(config.campaign().as_str())
         .map_err(CanonicalCampaignRuntimeError::Repository)?;
     let lineage = repository
         .load_lineage(head.snapshot().lineage())
@@ -370,26 +395,71 @@ pub fn prepare_canonical_campaign_runtime(
         return Err(CanonicalCampaignRuntimeError::ExecutorSlotsExceedCeiling);
     }
 
-    let basis = repository
-        .publish_canonical_puct_planner_basis()
-        .map_err(CanonicalCampaignRuntimeError::Repository)?;
-    let (planner_supervisor, planner_cancellation) =
-        CanonicalPlannerProcessSupervisor::new(config.planner_process().clone());
-    let planner_service = AuthorizedPlannerService::new(
-        CanonicalPuctPlanner,
-        planner_supervisor,
-        planner_authority.clone(),
-    );
+    let (engine, artifact, initial_state, planner_service, planner_cancellation) =
+        match policy.explorer() {
+            ExplorerPolicy::TreeSearch { .. } => {
+                let basis = repository
+                    .publish_canonical_puct_planner_basis()
+                    .map_err(CanonicalCampaignRuntimeError::Repository)?;
+                let (engine, artifact, initial_state) = basis.into_parts();
+                let (supervisor, cancellation) =
+                    CanonicalPlannerProcessSupervisor::new(config.planner_process().clone());
+                let service = AuthorizedPlannerService::new(
+                    CanonicalPuctPlanner,
+                    supervisor,
+                    planner_authority.clone(),
+                );
+
+                (
+                    engine,
+                    artifact,
+                    initial_state,
+                    CanonicalPlannerService::Puct(service),
+                    cancellation,
+                )
+            }
+            ExplorerPolicy::Exhaustive { .. } => {
+                let basis = repository
+                    .publish_canonical_frontier_planner_basis()
+                    .map_err(CanonicalCampaignRuntimeError::Repository)?;
+                let (engine, artifact, initial_state) = basis.into_parts();
+                let (supervisor, cancellation) =
+                    CanonicalPlannerProcessSupervisor::new(config.planner_process().clone());
+                let service = AuthorizedPlannerService::new(
+                    CanonicalFrontierPlanner,
+                    supervisor,
+                    planner_authority.clone(),
+                );
+
+                (
+                    engine,
+                    artifact,
+                    initial_state,
+                    CanonicalPlannerService::Frontier(service),
+                    cancellation,
+                )
+            }
+            ExplorerPolicy::Beam { .. } => {
+                return Err(CanonicalCampaignRuntimeError::UnsupportedExplorerPolicy);
+            }
+        };
     let planner = CampaignPlannerDriver::new(
         Arc::clone(&repository),
         PlannerClient::new(planner_service, planner_authority),
-        basis.engine().clone(),
-        basis.artifact().clone(),
-        basis.initial_state().clone(),
+        engine,
+        artifact,
+        initial_state,
         config.planner_scan_limit(),
         config.planning_budget(),
     )
     .map_err(CanonicalCampaignRuntimeError::PlannerDriver)?;
+    let planner = match policy.explorer() {
+        ExplorerPolicy::TreeSearch { .. } => planner.require_tree_search_policy(),
+        ExplorerPolicy::Exhaustive { .. } => planner.require_exhaustive_policy(),
+        ExplorerPolicy::Beam { .. } => {
+            return Err(CanonicalCampaignRuntimeError::UnsupportedExplorerPolicy);
+        }
+    };
     let executor = CampaignExecutorDriver::new(
         Arc::clone(&repository),
         executor,
@@ -447,6 +517,9 @@ pub enum CanonicalCampaignRuntimeError {
     /// Requested worker slots exceed the executor's immutable slot ceiling.
     #[error("canonical campaign worker slots exceed the executor ceiling")]
     ExecutorSlotsExceedCeiling,
+    /// The active policy selects an explorer without a packaged planner.
+    #[error("canonical campaign explorer policy is not supported by the packaged planner")]
+    UnsupportedExplorerPolicy,
     /// The canonical planner driver could not be configured.
     #[error("canonical campaign planner driver configuration failed")]
     PlannerDriver(#[source] CampaignPlannerDriverConfigError),
