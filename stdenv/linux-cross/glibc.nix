@@ -110,6 +110,11 @@ buildStdenv.mkDerivation {
           fi
         done
 
+        # Locale recipes execute build-side localedef against source data from
+        # this target libc. Keep that data in the bin output, as native glibc does.
+        mkdir -p "$bin/share"
+        mv "$out/share/i18n" "$bin/share/i18n"
+
         if test -f "$out/bin/getent"; then
           mv "$out/bin/getent" "$getent/bin/getent"
         fi
@@ -129,6 +134,8 @@ buildStdenv.mkDerivation {
         test -f "$out/lib/${hostPlatform.dynamicLinker}"
         test -f "$dev/include/stdio.h"
         test -f "$static/lib/libc.a"
+        test -f "$bin/share/i18n/charmaps/UTF-8.gz"
+        test -f "$bin/share/i18n/locales/C"
       '';
     }
   ];

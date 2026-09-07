@@ -118,6 +118,11 @@
     meta = {license = "probe";};
   };
   linuxPackages = support.targetPackageNames "x86_64-linux" packageNames;
+  allPackagesSupportX86 =
+    builtins.all (
+      support.supportsArchitecture "x86_64-linux"
+    )
+    packageNames;
   packageByName = name:
     builtins.head (builtins.filter (package: package.name == name) releaseInventory.packages);
   decisionFor = name: platform:
@@ -143,6 +148,9 @@ in
   assert builtins.attrNames publicationMatrix == builtins.sort builtins.lessThan support.canonicalSystems;
   assert x86LinuxPackages == support.targetPackageNames "x86_64-linux" packageNames;
   assert armLinuxPackages == support.targetPackageNames "aarch64-linux" packageNames;
+  assert allPackagesSupportX86;
+  assert builtins.elem "darling" x86LinuxPackages;
+  assert !(builtins.elem "darling" armLinuxPackages);
   assert builtins.all (
     package: builtins.length package.platforms == 4
   )
@@ -153,6 +161,7 @@ in
   assert (decisionFor "darwin-runtimes" "x86_64-linux").state == "not-applicable";
   assert (decisionFor "aos-hub-e2e" "x86_64-linux").state == "not-applicable";
   assert (decisionFor "go-1_4" "aarch64-linux").state == "not-applicable";
+  assert (decisionFor "darling" "aarch64-linux").state == "not-applicable";
     pkgs.mkDerivation {
       pname = "package-platform-support-check";
       version = "0";

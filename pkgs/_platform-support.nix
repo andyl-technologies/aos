@@ -674,6 +674,7 @@ let
   };
 
   architectureOverrides = {
+    darling = ["x86_64"];
     "go-1_4" = ["x86_64"];
     "openjdk-7" = ["x86_64"];
     "openjdk-8" = ["x86_64"];
@@ -800,15 +801,19 @@ in rec {
     packageInventory.${name}
     or (throw "package platform support: unclassified package '${name}'");
 
+  supportsArchitecture = system: name:
+    builtins.elem (systemCpu system) (packageSupport name).architectures;
+
   supportsTarget = system: name: let
     entry = packageSupport name;
+    architectureSupported = supportsArchitecture system name;
   in
     if isLinux system
-    then entry.disposition != "darwin-only"
+    then entry.disposition != "darwin-only" && architectureSupported
     else if isDarwin system
     then
       builtins.elem entry.disposition ["target" "independent" "darwin-only"]
-      && builtins.elem (systemCpu system) entry.architectures
+      && architectureSupported
     else throw "package platform support: unsupported target system '${system}'";
 
   targetPackageNames = system: names: builtins.filter (supportsTarget system) names;

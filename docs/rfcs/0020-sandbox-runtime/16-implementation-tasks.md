@@ -4345,3 +4345,55 @@ increment. The next audit must reconcile Linux architecture classifications
 with the frozen base-library package set before measuring the build plan or
 running the TCG guest proof. No production service or base-library behavior was
 stubbed to bypass this boundary. `SBX-P0-04` and `SBX-P0-05` remain open.
+
+### Architecture-aware inventory and target-data qualification
+
+The frozen base-library inventory now applies the authoritative architecture
+policy to registered package names before it evaluates package derivations.
+This keeps architecture-incompatible thunks out of the target inventory while
+preserving compatible packages, derivation aliases, metadata, and the legacy
+behavior of callers without an architecture policy. Linux target selection now
+honors the same architecture list already enforced for Darwin, including
+Darling's explicit x86_64-only classification.
+
+Two target-data paths no longer try to execute AArch64 programs on the x86_64
+builder. `glibc-locales` runs build-side `localedef` against the matching target
+glibc locale sources, and cross glibc retains those sources in its `bin` output
+just like native glibc. `passt` takes its compile-time page size from the AOS
+target-platform contract instead of running target `getconf`, and its install
+phase executes the produced binary only for native builds. The Linux platform
+contract records the 4 KiB page size used by every supported AOS kernel,
+including `ARM64_4K_PAGES` on AArch64.
+
+Focused verification passed the following checks:
+
+- The systemd inventory and package-platform regression checks passed at
+  `/nix/store/lk9jjq9vj34p0j2hc3r5iqkzmf0di0m7-systemd-lib-check-0` and
+  `/nix/store/xm6yfq3j5f15jz2lpa7fy2x8i992ylv7-package-platform-support-check-0`.
+- The direct AArch64 `glibc-locales` build passed at
+  `/nix/store/j30ivhbvzl3slf6jwanbvnghrvxdvhnp-glibc-locales-2.39.0`.
+  The cross smoke check also verified the target locale sources, build-side
+  tool dependency, target platform, scheduler, and 4 KiB page-size contract at
+  `/nix/store/zpacnaqvd7llqdnr7didx6vxarb40n00-linux-cross-smoke-aarch64-0`.
+- Native and AArch64 `passt` builds passed at
+  `/nix/store/0n9k6scaap5v07nhsv06s40w9kiy0ilm-passt-2026_07_28.f8df3f1`
+  and
+  `/nix/store/dbyfssshnx5id0p3lxrrxz00r7vd8saw-passt-2026_07_28.f8df3f1`.
+  The target binary is a little-endian AArch64 ELF, and the build used
+  `PAGE_SIZE=4096` with AArch64 seccomp syscall definitions.
+- The native `sandbox-nspawn-platform-proof` booted the full guest and checked
+  the guest-reported page size plus both `passt` and `pasta` versions. All tests
+  passed at
+  `/nix/store/2zr7k5s5s920jzkllkp0rfzrm5jqiymm-aos-fleet-test-sandbox-nspawn-platform-proof-0`.
+- Alejandra checks passed for the ten scoped Nix files, and `git diff --check`
+  passed for the integration worktree.
+
+The AArch64 fleet expression now advances beyond Darling, locale generation,
+and `passt`, but it still cannot instantiate the complete guest. PostgreSQL
+currently treats target `clang` as a build executable and fails the derivation
+contract because it cannot execute on the x86_64 builder. PostgreSQL's broader
+host-tool/target-library split, cross configure tuple, language configuration,
+JIT inputs, and installed PGXS metadata need a feature-preserving audit before
+the AArch64 VM can run. No PostgreSQL feature was disabled or bypassed here.
+The AArch64 guest proof remains unqualified, so `SBX-P0-04` and `SBX-P0-05`
+remain open.

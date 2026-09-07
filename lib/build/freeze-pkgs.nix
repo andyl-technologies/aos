@@ -79,7 +79,29 @@
 in {
   ## Stage-1: serialise the frozen form of `pkgs` (top-level derivations only).
   ## Forces the store paths; run inside the base-lib builder.
-  freezeToJSON = pkgs:
+  freezeToJSON = pkgs: let
+    knownPackageNames = pkgs.allPackageNames or [];
+    platformSupport = pkgs.platformSupport or null;
+    targetSystem = pkgs.stdenv.hostPlatform.system or null;
+    hasArchitecturePolicy =
+      platformSupport
+      != null
+      && platformSupport ? supportsArchitecture
+      && targetSystem != null;
+    unsupportedArchitectureNames =
+      if hasArchitecturePolicy
+      then
+        builtins.filter
+        (name: !platformSupport.supportsArchitecture targetSystem name)
+        knownPackageNames
+      else [];
+
+    # Remove authoritative package names before inspecting their values. An
+    # unsupported package may throw as soon as its derivation is forced. Names
+    # outside allPackageNames remain candidates so derivation aliases and
+    # non-package outputs retain the existing frozen interface.
+    candidates = builtins.removeAttrs pkgs unsupportedArchitectureNames;
+  in
     builtins.toJSON (lib.filterAttrs (_: v: v != null) (
       builtins.mapAttrs (
         name: v:
@@ -87,7 +109,7 @@ in {
           then freezeDrv name v
           else null
       )
-      pkgs
+      candidates
     ));
 
   ## Stage-2: rebuild the string-coercible frozen `pkgs` from the JSON. The

@@ -4,6 +4,8 @@
   pkgs,
   ...
 }: let
+  passtVersion = pkgs.passt.version;
+
   probe = pkgs.mkDerivation {
     pname = "aos-nspawn-platform-probe";
     version = "1";
@@ -155,9 +157,11 @@
     ../../systems/server-test.nix
     {
       environment.systemPackages = [
+        pkgs.glibc.bin
         pkgs.iproute2
         pkgs.jq
         pkgs.nftables
+        pkgs.passt
         pkgs.systemd
       ];
 
@@ -323,6 +327,9 @@ in {
 
     version = vm.succeed("${pkgs.systemd}/bin/systemd-nspawn --version")
     assert version.splitlines()[0] == "systemd 259 (259.8)", version
+    assert vm.succeed("${pkgs.glibc.bin}/bin/getconf PAGE_SIZE").strip() == "${toString pkgs.stdenv.hostPlatform.pageSize}"
+    assert "${passtVersion}" in vm.succeed("${pkgs.passt}/bin/passt --version 2>&1")
+    assert "${passtVersion}" in vm.succeed("${pkgs.passt}/bin/pasta --version 2>&1")
     vm.fail("test -e /run/systemd/machines/aos-proof")
 
     pinned_inode = int(vm.succeed("stat -Lc %i /run/netns/aos-proof").strip())

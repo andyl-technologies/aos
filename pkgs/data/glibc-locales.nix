@@ -1,6 +1,7 @@
 ##! glibc-locales — UTF-8 locale data for AOS programs
 {
   mkDerivation,
+  buildPackages,
   glibc,
 }: let
   version = glibc.version;
@@ -9,7 +10,7 @@ in
     pname = "glibc-locales";
     inherit version;
 
-    buildDeps = [glibc.bin];
+    buildDeps = [buildPackages.glibc.bin];
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -18,8 +19,10 @@ in
         name = "install";
         script = ''
           mkdir -p "$out/lib/locale"
+          # localedef executes on the build host; its matching i18n source data
+          # comes from the target libc whose locale files this output supplies.
           I18NPATH="${glibc.bin}/share/i18n" \
-            "${glibc.bin}/bin/localedef" \
+            "${buildPackages.glibc.bin}/bin/localedef" \
               --no-archive \
               --inputfile=C \
               --charmap=UTF-8 \
