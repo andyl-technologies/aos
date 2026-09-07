@@ -23,6 +23,34 @@ mod verify_dispatch;
 use graph_support::*;
 use surface::*;
 
+#[derive(Debug)]
+struct TerminalCampaignFailure;
+
+impl fmt::Display for TerminalCampaignFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("terminal attempt evaluation failed")
+    }
+}
+
+impl Error for TerminalCampaignFailure {}
+
+#[derive(Debug)]
+struct JoinedCampaignFailure {
+    source: TerminalCampaignFailure,
+}
+
+impl fmt::Display for JoinedCampaignFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("canonical campaign runtime stopped unexpectedly")
+    }
+}
+
+impl Error for JoinedCampaignFailure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
 fn coverage_event_frame(
     sequence: u64,
     kind: &str,
@@ -114,15 +142,15 @@ fn malformed_streamed_coverage_fails_loudly() {
 #[test]
 fn joined_campaign_failure_survives_lifecycle_shutdown_error() {
     let lifecycle = Err(serve_error("campaign service stopped unexpectedly"));
-    let campaign = Err(serve_error(
-        "campaign service error: terminal attempt evaluation failed",
-    ));
+    let campaign = Err(campaign_service_join_error(&JoinedCampaignFailure {
+        source: TerminalCampaignFailure,
+    }));
 
     let error = combine_lifecycle_and_campaign_results(lifecycle, campaign)
         .expect_err("both joined service failures should propagate");
 
     assert_eq!(
         error.to_string(),
-        "campaign service stopped unexpectedly; campaign service error: terminal attempt evaluation failed"
+        "campaign service stopped unexpectedly; campaign service error: canonical campaign runtime stopped unexpectedly; caused by: terminal attempt evaluation failed"
     );
 }
