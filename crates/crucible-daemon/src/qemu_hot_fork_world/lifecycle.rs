@@ -241,6 +241,13 @@ where
         QuantumLoop::terminal_verdict_for_stop(&mut self.lifecycle)
     }
 
+    fn prepare_terminal_checkpoint(
+        &mut self,
+        cause: crucible::CheckpointTerminalCause,
+    ) -> Result<(), SchedulerError> {
+        QuantumLoop::prepare_terminal_checkpoint(&mut self.lifecycle, cause)
+    }
+
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         self.lifecycle.exact_checkpoint_ready()
     }
