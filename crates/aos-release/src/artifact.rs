@@ -193,15 +193,17 @@ pub enum ArtifactRelation {
     Finalizes,
     /// Delivery encoding reconstructs this logical disk.
     Encodes,
+    /// The target is signed Nix cache metadata authenticating this NAR.
+    AuthenticatedBy,
     /// Evidence verifies this artifact.
     Verifies,
     /// Artifact contains this dependency or source.
     Contains,
     /// Artifact is distributed under the target license record.
     LicensedBy,
-    /// Artifact is corresponding source for the target.
+    /// The target is complete corresponding source for this artifact.
     CorrespondingSource,
-    /// Artifact documents the target.
+    /// The target documents this artifact.
     Documents,
 }
 

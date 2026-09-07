@@ -351,9 +351,30 @@ fn validate_artifacts(artifacts: &[ArtifactRecord]) -> Result<BTreeMap<&str, &Ar
     }
     for artifact in artifacts {
         for relationship in &artifact.relationships {
-            if !ids.contains_key(relationship.target.as_str()) {
+            let Some(target) = ids.get(relationship.target.as_str()) else {
                 bail!("artifact {} has a dangling relationship", artifact.id);
+            };
+            if relationship.relation == crate::artifact::ArtifactRelation::AuthenticatedBy
+                && target.kind != ArtifactKind::NarInfo
+            {
+                bail!(
+                    "artifact {} has an authentication relationship to a non-narinfo artifact",
+                    artifact.id
+                );
             }
+        }
+        if artifact.kind == ArtifactKind::PackageNar
+            && !artifact.relationships.iter().any(|relationship| {
+                relationship.relation == crate::artifact::ArtifactRelation::AuthenticatedBy
+                    && ids
+                        .get(relationship.target.as_str())
+                        .is_some_and(|target| target.kind == ArtifactKind::NarInfo)
+            })
+        {
+            bail!(
+                "package artifact {} lacks its exact signed narinfo",
+                artifact.id
+            );
         }
     }
     Ok(ids)
