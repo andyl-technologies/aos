@@ -133,6 +133,8 @@ pub mod hot_checkpoint_manager;
 pub mod hot_checkpoint_retention;
 #[cfg(target_os = "linux")]
 pub mod managed_hot_checkpoint_pool;
+#[cfg(target_os = "linux")]
+pub mod managed_qemu_hot_fork_source_world_pool;
 pub mod packaged_qemu_executor;
 #[cfg(target_os = "linux")]
 pub mod paused_checkpoint_promotion;
@@ -418,6 +420,16 @@ pub use managed_hot_checkpoint_pool::{
     ManagedHotCheckpointStartError, ManagedQemuHotForkTemplatePool,
     ManagedQemuHotForkTemplatePoolConstructionError,
 };
+#[cfg(target_os = "linux")]
+pub use managed_qemu_hot_fork_source_world_pool::{
+    AuthenticatedCanonicalQemuHotForkSource, ManagedQemuHotForkAuthenticatedAdmissionFailure,
+    ManagedQemuHotForkSourceWorld, ManagedQemuHotForkSourceWorldAdmissionError,
+    ManagedQemuHotForkSourceWorldAdmissionFailure, ManagedQemuHotForkSourceWorldBindingError,
+    ManagedQemuHotForkSourceWorldBindingFailure, ManagedQemuHotForkSourceWorldCheckoutError,
+    ManagedQemuHotForkSourceWorldDemotionError, ManagedQemuHotForkSourceWorldPool,
+    ManagedQemuHotForkSourceWorldPoolConstructionError, ManagedQemuHotForkSourceWorldReleaseError,
+    QemuHotForkSourceWorldDemoter, QemuHotForkSourceWorldDemotionError,
+};
 pub use packaged_qemu_executor::{
     AttachedPackagedQemuExecutor, MAX_PACKAGED_SCENARIO_CATALOG_BYTES,
     PackagedExactPinMaterializerError, PackagedQemuExecutor, PackagedQemuExecutorCompletion,
@@ -530,14 +542,15 @@ pub use qemu_hot_fork_world::{
     QemuHotForkWorldChildAdmissionFailure, QemuHotForkWorldIncomplete,
     QemuProductionHotForkWorldLifecycle,
 };
+#[cfg(all(target_os = "linux", test))]
+pub use qemu_hot_fork_world_factory::QemuSingleHotForkSourceWorldProvider;
 #[cfg(target_os = "linux")]
 pub use qemu_hot_fork_world_factory::{
-    QemuHotForkSourceWorldProvider, QemuHotForkWorldExecutionAttempt,
+    QemuHotForkSourceWorldKey, QemuHotForkSourceWorldProvider, QemuHotForkWorldExecutionAttempt,
     QemuHotForkWorldExecutionRunner, QemuHotForkWorldExecutionRunnerError,
     QemuHotForkWorldLifecycleFactory, QemuHotForkWorldLifecycleOwner,
     QemuHotForkWorldLifecycleStart, QemuProductionHotForkWorldLifecycleFactory,
-    QemuProductionHotForkWorldLifecycleFactoryError, QemuSingleHotForkSourceWorldProvider,
-    QemuUnavailableHotForkSourceWorldProvider,
+    QemuProductionHotForkWorldLifecycleFactoryError, QemuUnavailableHotForkSourceWorldProvider,
 };
 #[cfg(target_os = "linux")]
 pub use qemu_hot_fork_world_resource::{QemuHotForkWorldNodeTarget, QemuHotForkWorldResourceOwner};

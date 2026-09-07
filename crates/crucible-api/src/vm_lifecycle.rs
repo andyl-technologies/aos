@@ -83,7 +83,7 @@ mod hot_fork;
 pub use hot_fork::{
     ProductionVmHotForkNodeBoundary, ProductionVmHotForkNodeServiceState,
     ProductionVmHotForkSourceWorld, ProductionVmHotForkSourceWorldPreparationFailure,
-    ProductionVmHotForkWorldContinuation,
+    ProductionVmHotForkSourceWorldResourceUsage, ProductionVmHotForkWorldContinuation,
 };
 #[cfg(all(target_os = "linux", feature = "test-support"))]
 pub use hot_fork::{

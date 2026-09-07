@@ -1242,10 +1242,32 @@ fn materialize_fresh_start<F, D>(
     context: &AttemptExecutionContext,
 ) -> Result<QemuFreshStartMaterialization, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
 {
-    let mut replay = QemuFreshStartMaterialization::genesis();
-    let mut current = Configuration::genesis(target.def.clone());
+    materialize_start_from(
+        lifecycle,
+        input,
+        Configuration::genesis(target.def.clone()),
+        target,
+        context,
+        QemuFreshStartMaterialization::genesis(),
+    )
+}
+
+pub(crate) fn materialize_start_from<F, D>(
+    lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
+    input: &CrucibleAttemptExecution,
+    mut current: Configuration,
+    target: &Configuration,
+    context: &AttemptExecutionContext,
+    mut replay: QemuFreshStartMaterialization,
+) -> Result<QemuFreshStartMaterialization, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
+{
     if current == *target {
         return Ok(replay);
+    }
+    if replay.terminal_verdict.is_some() {
+        return Err(AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Terminated),
+        ));
     }
 
     for _ in 0..context.resources().maximum_execution_quanta() {

@@ -822,6 +822,7 @@ where
             return Ok(());
         };
         for _ in 0..32 {
+            // crucible-lint: allow host-nondeterminism-state -- Reconciliation polls source-owned process cleanup only; the result cannot alter modeled execution.
             match reconciliation.reconcile_step().map_err(|error| {
                 hot_fork_adoption_error(format!(
                     "reconcile reaped adopted child `{}`: {error}",

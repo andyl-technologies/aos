@@ -9,6 +9,9 @@
 
 use super::*;
 
+mod resource_usage;
+pub use resource_usage::ProductionVmHotForkSourceWorldResourceUsage;
+
 const MAXIMUM_HOT_FORK_RING_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAXIMUM_HOT_FORK_ROLLBACK_POLLS_PER_NODE: usize = 100;
 const HOT_FORK_ROLLBACK_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -61,6 +64,16 @@ impl ProductionVmHotForkSourceWorld {
             .ok_or_else(|| loop_factory_error("test immutable-root node is absent"))?;
         *retained = root;
         Ok(())
+    }
+
+    /// Marks the source as having crossed its canonical initial boundary.
+    ///
+    /// This simulates a later pause with the same decision schedule so
+    /// cross-crate admission tests can prove that configuration identity alone
+    /// does not authorize source reuse.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn mark_reuse_boundary_advanced_for_test(&mut self) {
+        self.continuation.initial_lifecycle_observations_pending = false;
     }
 
     /// Returns the canonically ordered prepared retained-source nodes.
@@ -230,6 +243,31 @@ impl ProductionVmHotForkSourceWorld {
                 rollback,
             ),
         )
+    }
+
+    /// Reaps every retained source and releases the complete production world.
+    ///
+    /// This is the irreversible hot-to-exact/thin demotion boundary. Prepared
+    /// transactions are first rolled back, then the ordinary production
+    /// lifecycle shutdown attests process reap, lease release, launcher
+    /// release, and clean run-state persistence. A lifecycle whose shutdown
+    /// cannot be attested is retained for the daemon process lifetime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when source rollback or production
+    /// lifecycle shutdown cannot be authenticated as complete.
+    pub fn retire(self) -> Result<(), LifecycleApiError> {
+        let mut lifecycle = self
+            .recover()
+            .map_err(|failure| loop_factory_error(failure.to_string()))?;
+        if let Err(error) = lifecycle.shutdown() {
+            let _retained_for_process_lifetime = Box::leak(Box::new(lifecycle));
+            return Err(loop_factory_error(format!(
+                "retire production hot-fork source world: {error}"
+            )));
+        }
+        Ok(())
     }
 
     fn validate_source_ownership(&mut self) -> Result<(), SchedulerError> {
