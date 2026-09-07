@@ -95,6 +95,15 @@
     semodule-utils
   ];
   nonAosLinuxRuntimeDeps = builtins.filter (dependency: dependency != aos-landlock) linuxRuntimeDeps;
+  aosForbiddenRuntimeDeps =
+    [sbsigntools mtools tpm2-tools which]
+    ++ lib.optionals (!isDarwinCross) ([systemd] ++ nonAosLinuxRuntimeDeps);
+  aprForbiddenRuntimeDeps =
+    [tpm2-tools which]
+    ++ lib.optionals (!isDarwinCross) (
+      [systemd util-linux]
+      ++ lib.subtractLists [checkpolicy semodule-utils] linuxRuntimeDeps
+    );
   linuxToolEnvironment = ''
     export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
     export AOS_UNSHARE="${util-linux}/bin/unshare"
@@ -183,6 +192,14 @@ in
     inherit version src;
 
     outputs = ["out" "apm" "apr" "packageRuntime" "testSupport"];
+
+    # Enforce command-surface separation after fixup and reference scrubbing.
+    # Cross-linkers can leave build-environment paths in intermediate binaries;
+    # the scrub phase removes those paths before Nix applies these checks.
+    outputChecks = {
+      out.disallowedReferences = aosForbiddenRuntimeDeps;
+      apr.disallowedReferences = aprForbiddenRuntimeDeps;
+    };
 
     cargoFlags = "-p aos";
 
@@ -359,6 +376,19 @@ in
           mkdir -p "$testSupport/bin"
           mv "$out/bin/aos-release-fleet-fixture" "$testSupport/bin/"
 
+          # The common fixup phase visits only the primary output. Strip every
+          # shipped executable here so the split-output closure checks inspect
+          # the same bytes that are ultimately published. In particular,
+          # cross-link debug records can retain tools used only by sibling
+          # command surfaces.
+          for binary in \
+            "$out/bin/.aos-unwrapped" \
+            "$apm/bin/.apm-unwrapped" \
+            "$apr/bin/.apr-unwrapped" \
+            "$packageRuntime/bin/.aos-package-runtime-unwrapped"; do
+            strip -s "$binary"
+          done
+
           # Cargo links the binaries before they are distributed among the
           # named outputs, so its default install-prefix RPATH names $out/lib.
           # No output ships Rust shared libraries. Remove that nonexistent
@@ -380,29 +410,6 @@ in
               fi
             done
           fi
-
-          reject_output_reference() {
-            output=$1
-            dependency=$2
-            if grep -R -aFq "$dependency" "$output"; then
-              echo "$output unexpectedly references $dependency" >&2
-              exit 1
-            fi
-          }
-          for dependency in \
-            ${sbsigntools} ${mtools} ${tpm2-tools} ${which} \
-            ${lib.optionalString (!isDarwinCross) "${systemd} ${builtins.concatStringsSep " " (map toString nonAosLinuxRuntimeDeps)}"}; do
-            reject_output_reference "$out" "$dependency"
-          done
-          # APR validates package-owned SELinux modules at publication time,
-          # so its compiler and module packager are intentional APR runtime
-          # dependencies. The remaining host-enforcement helpers belong only
-          # to APM/runtime.
-          for dependency in \
-            ${tpm2-tools} ${which} \
-            ${lib.optionalString (!isDarwinCross) "${systemd} ${util-linux} ${builtins.concatStringsSep " " (map toString (lib.subtractLists [checkpolicy semodule-utils] linuxRuntimeDeps))}"}; do
-            reject_output_reference "$apr" "$dependency"
-          done
 
           # Exercise the installed wrapper, not the pre-install Cargo binary.
           # The wrapper must exec .aos-unwrapped so current_exe() materializes
