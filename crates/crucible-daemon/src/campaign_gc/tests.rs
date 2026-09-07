@@ -9,7 +9,17 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use crucible::ContentHash;
-use crucible_campaign::{CampaignLineageId, CampaignRepository, ConfigurationId, ScenarioDefId};
+use crucible_campaign::{
+    AssignmentId, AttemptId, AttemptResourceLimits, BudgetGrant, CampaignCommandId,
+    CampaignControlAction, CampaignLineage, CampaignLineageId, CampaignMode, CampaignPolicy,
+    CampaignRepository, CampaignSeed, ConfigurationId, ControlRequest, CoverageProjection,
+    DaemonEpoch, ExecutionId, ExecutionRetentionIntent, ExplorerPolicy, FairnessPolicy,
+    FindingCandidateBundle, FindingCandidateBundleId, FindingExactPins, FindingKind,
+    FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
+    FindingSignatureMinimizationEvidence, FindingTarget, MeasurementSet, Observation,
+    ObservationId, PropertyVerdictSet, RetentionPolicy, ScenarioDefId, StopOutcome,
+    SubmitAttemptRequest,
+};
 use crucible_cas::content_envelope::ContentEnvelope;
 use crucible_cas::content_store::{
     BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
@@ -26,10 +36,11 @@ use super::{
     plan_single_host_campaign_gc_with_physical as plan_single_host_campaign_gc,
 };
 use crate::{
-    AssignmentRetentionAdmin, AssignmentRetentionFence, AssignmentRetentionGeneration,
-    AssignmentRetentionInventoryError, AssignmentRetentionRoot, AssignmentRetentionSummary,
-    AssignmentRetentionVisitorError, DirectoryAssignmentLedger, HotCheckpointFallback,
-    HotCheckpointFallbackRecord, HotCheckpointFallbackRetentionCas,
+    AssignmentLedger, AssignmentRetentionAdmin, AssignmentRetentionFence,
+    AssignmentRetentionGeneration, AssignmentRetentionInventoryError, AssignmentRetentionRoot,
+    AssignmentRetentionSummary, AssignmentRetentionVisitorError, AttemptExecutionKey,
+    AttemptExecutionOrigin, AttemptRuntimeState, AttemptStateCas, DirectoryAssignmentLedger,
+    HotCheckpointFallback, HotCheckpointFallbackRecord, HotCheckpointFallbackRetentionCas,
     HotCheckpointFallbackRetentionStore, HotCheckpointFallbackSlot, MemoryAssignmentLedger,
     MemoryHotCheckpointFallbackRetentionStore, QemuHotForkTemplateKey,
 };
@@ -38,6 +49,242 @@ mod s3;
 
 fn hash(domain: &str, byte: u8) -> CampaignHash {
     CampaignHash::derive(domain, &[byte])
+}
+
+fn pending_finding_request(lineage: CampaignLineageId, attempt: AttemptId) -> SubmitAttemptRequest {
+    SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x54; 16]).expect("assignment"),
+        DaemonEpoch::from_bytes([0x55; 16]).expect("daemon epoch"),
+        lineage,
+        attempt,
+        AttemptResourceLimits::new(1, 4096, 8192, 64).expect("resources"),
+        ExecutionRetentionIntent::RetainOnFailure,
+    )
+    .expect("pending finding request")
+}
+
+fn publish_pending_finding_fixture(
+    repository: &CampaignRepository,
+) -> (
+    CampaignLineageId,
+    AttemptId,
+    ObservationId,
+    FindingCandidateBundleId,
+) {
+    const CAMPAIGN: &str = "pending-finding-gc-fixture";
+
+    let scenario = ScenarioDefId::from_hash(hash("crucible.test.pending-finding.scenario", 0x11));
+    let genesis =
+        ConfigurationId::from_hash(hash("crucible.test.pending-finding.configuration", 0x12));
+    let scenario_artifact = repository
+        .publish_scenario_artifact(scenario, 1, b"pending finding scenario".to_vec())
+        .expect("publish pending finding scenario");
+    let genesis_artifact = repository
+        .publish_configuration_artifact(
+            scenario,
+            scenario_artifact,
+            genesis,
+            1,
+            b"pending finding genesis".to_vec(),
+        )
+        .expect("publish pending finding genesis");
+    let lineage = CampaignLineage::new(
+        scenario,
+        scenario_artifact,
+        genesis,
+        genesis_artifact,
+        "crucible-pending-finding-test",
+        "qemu-pending-finding-test",
+        BTreeMap::from([(String::from("control"), 1)]),
+        1,
+        1,
+    )
+    .expect("pending finding lineage");
+    let policy = CampaignPolicy::new(
+        scenario,
+        CampaignSeed::from_bytes([0x13; 32]),
+        CampaignMode::Strict,
+        ExplorerPolicy::Exhaustive {
+            maximum_cardinality: 1,
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeSet::new(),
+        FairnessPolicy::new(0, 0).expect("pending finding fairness"),
+        RetentionPolicy::new(true, 1, true, true),
+        true,
+    )
+    .expect("pending finding policy");
+    let created = repository
+        .create(CAMPAIGN, &lineage, &policy, &BTreeMap::new())
+        .expect("create pending finding campaign");
+    let resumed = repository
+        .apply_control(
+            CAMPAIGN,
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(hash(
+                    "crucible.test.pending-finding.command",
+                    0x14,
+                )),
+                expected_snapshot: created.snapshot_id(),
+                action: CampaignControlAction::Resume,
+            },
+        )
+        .expect("resume pending finding campaign");
+    let funded = repository
+        .apply_control(
+            CAMPAIGN,
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(hash(
+                    "crucible.test.pending-finding.command",
+                    0x15,
+                )),
+                expected_snapshot: resumed.new_snapshot,
+                action: CampaignControlAction::GrantBudget(
+                    BudgetGrant::new(0, 1).expect("pending finding attempt budget"),
+                ),
+            },
+        )
+        .expect("fund pending finding campaign");
+    assert_eq!(
+        repository
+            .head(CAMPAIGN)
+            .expect("pending finding funded head")
+            .snapshot_id(),
+        funded.new_snapshot
+    );
+
+    let attempt = repository
+        .admit_initial_discovery_if_ready(CAMPAIGN)
+        .expect("admit pending finding discovery")
+        .expect("pending finding discovery attempt");
+    let attempt_record = repository
+        .load_attempt(attempt)
+        .expect("load pending finding attempt");
+    let child =
+        ConfigurationId::from_hash(hash("crucible.test.pending-finding.configuration", 0x16));
+    let child_artifact = repository
+        .publish_configuration_artifact(
+            scenario,
+            scenario_artifact,
+            child,
+            1,
+            b"pending finding child".to_vec(),
+        )
+        .expect("publish pending finding child");
+    let measurements = repository
+        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
+        .expect("publish pending finding measurements");
+    let properties = repository
+        .publish_property_verdict_set(
+            &PropertyVerdictSet::new(BTreeMap::new()).expect("properties"),
+        )
+        .expect("publish pending finding properties");
+    let coverage = repository
+        .publish_coverage_projection(
+            &CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage"),
+        )
+        .expect("publish pending finding coverage");
+    let observation_record = Observation::new(
+        attempt,
+        child,
+        child_artifact,
+        attempt_record.path(),
+        StopOutcome::TerminalSuccess,
+        measurements,
+        properties,
+        coverage,
+        BTreeSet::new(),
+    )
+    .expect("pending finding observation");
+    let observed = repository
+        .publish_observation(
+            CAMPAIGN,
+            repository
+                .head(CAMPAIGN)
+                .expect("pending finding admission head")
+                .snapshot_id(),
+            &observation_record,
+        )
+        .expect("publish pending finding observation");
+
+    let fingerprint = hash("crucible.test.pending-finding.fingerprint", 0x17);
+    let original = repository
+        .publish_reproduction_artifact(
+            scenario,
+            scenario_artifact,
+            child,
+            child_artifact,
+            fingerprint,
+            1,
+            b"pending finding original reproduction".to_vec(),
+        )
+        .expect("publish pending finding reproduction");
+    let replayed_state = hash("crucible.test.pending-finding.replayed-state", 0x18);
+    let minimization = FindingMinimizationEvidence::new(
+        original,
+        1,
+        b"pending finding deterministic minimizer".to_vec(),
+        vec![FindingMinimizationAttempt::new(
+            0,
+            hash("crucible.test.pending-finding.candidate-artifact", 0x19),
+            hash("crucible.test.pending-finding.candidate-schedule", 0x1a),
+            replayed_state,
+            Some(fingerprint),
+            true,
+        )],
+        replayed_state,
+    )
+    .expect("pending finding minimization evidence");
+    let minimized = repository
+        .publish_minimized_reproduction_artifact(
+            scenario,
+            scenario_artifact,
+            child,
+            child_artifact,
+            fingerprint,
+            1,
+            b"pending finding minimized reproduction".to_vec(),
+            minimization.clone(),
+        )
+        .expect("publish pending finding minimized reproduction");
+    let signature = FindingSignature::new(
+        FindingKind::Divergence,
+        fingerprint,
+        None,
+        String::from("qemu.pending-finding-divergence"),
+        Some(FindingTarget::Configuration(child_artifact)),
+        BTreeSet::new(),
+    )
+    .expect("pending finding signature");
+    let replay_pass = vec![Some(signature.clone()), Some(signature.clone())];
+    let signature_minimization = FindingSignatureMinimizationEvidence::new(
+        &signature,
+        &minimization,
+        replay_pass.clone(),
+        replay_pass,
+    )
+    .expect("pending finding signature minimization");
+    let bundle = FindingCandidateBundle::new(
+        observed.observation,
+        signature,
+        original,
+        minimized,
+        signature_minimization,
+        FindingExactPins::default(),
+    )
+    .expect("pending finding candidate bundle");
+    let candidate = repository
+        .publish_finding_candidate_bundle(&bundle)
+        .expect("publish pending finding candidate bundle");
+
+    (
+        lineage.id().expect("pending finding lineage identity"),
+        attempt,
+        observed.observation,
+        candidate,
+    )
 }
 
 fn basis(
@@ -72,6 +319,7 @@ fn plan_with(
             4,
             2,
             1,
+            0,
         ),
         CampaignGcCandidateSetSummary::new(
             CampaignGcCandidateSetId::from_hash(hash("crucible.test.gc.candidates.v1", 3)),
@@ -144,6 +392,7 @@ fn plan_rejects_unordered_excessive_and_inconsistent_summaries() {
                 4,
                 2,
                 1,
+                0,
             ),
             candidates,
             vec![basis("z", 1, 10, 100), basis("a", 2, 10, 100)],
@@ -165,6 +414,7 @@ fn plan_rejects_unordered_excessive_and_inconsistent_summaries() {
                 4,
                 2,
                 1,
+                0,
             ),
             candidates,
             excessive,
@@ -183,6 +433,7 @@ fn plan_rejects_unordered_excessive_and_inconsistent_summaries() {
                 2,
                 2,
                 1,
+                0,
             ),
             candidates,
             vec![basis("durable", 1, 10, 100)],
@@ -201,6 +452,7 @@ fn plan_rejects_unordered_excessive_and_inconsistent_summaries() {
                 4,
                 2,
                 1,
+                0,
             ),
             CampaignGcCandidateSetSummary::new(
                 CampaignGcCandidateSetId::from_hash(hash("crucible.test.gc.candidates.v1", 3,)),
@@ -378,6 +630,133 @@ fn planner_authenticates_roots_and_selects_only_unreachable_placements() {
         prepared.plan().candidates(),
         prepared.candidates().summary()
     );
+}
+
+#[test]
+fn pending_finding_candidate_closure_survives_gc_and_ledger_restart() {
+    let blobs = Arc::new(MemoryBlobBackend::new(
+        "pending-finding-gc",
+        8 * 1024 * 1024,
+    ));
+    let fixture_repository =
+        CampaignRepository::new(blobs.clone(), Arc::new(MemoryRefBackend::new()));
+    let (lineage, attempt, observation, candidate) =
+        publish_pending_finding_fixture(&fixture_repository);
+
+    // The executor ledger is the only root owner in this flight. Campaign
+    // construction records not referenced by the handoff remain collectible.
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let expected_closure = repository
+        .authenticated_closure_ids([candidate.content_id(), observation.content_id()])
+        .expect("authenticate pending finding closure");
+
+    let orphan_bytes = b"unreachable pending-finding neighbor".to_vec();
+    let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, &orphan_bytes);
+    blobs
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes))
+        .expect("store orphan");
+
+    let ledger_root = tempfile::tempdir().expect("assignment ledger directory");
+    let request = pending_finding_request(lineage, attempt);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let completed = AttemptRuntimeState::Completed {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution: ExecutionId::from_bytes([0x64; 16]).expect("execution"),
+        observation,
+        finding_candidate: Some(candidate),
+    };
+    {
+        let mut ledger =
+            DirectoryAssignmentLedger::open(ledger_root.path()).expect("open assignment ledger");
+        assert_eq!(
+            ledger
+                .compare_exchange_attempt(key, None, Some(completed))
+                .expect("retain pending finding"),
+            AttemptStateCas::Advanced
+        );
+    }
+
+    let mut ledger =
+        DirectoryAssignmentLedger::open(ledger_root.path()).expect("reopen assignment ledger");
+    assert_eq!(
+        ledger.load_attempt(key).expect("reload pending finding"),
+        Some(completed)
+    );
+    let graph = hash("crucible.test.pending-finding-gc-graph.v1", 0x75);
+    let physical =
+        CampaignGcPhysicalStore::new("pending-finding-gc", blobs.as_ref()).expect("physical store");
+    let prepared = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        graph,
+        &[physical],
+    )
+    .expect("plan pending finding GC");
+    let retained = prepared.roots().iter().collect::<BTreeSet<_>>();
+    assert_eq!(
+        retained,
+        BTreeSet::from([observation.content_id(), candidate.content_id()])
+    );
+    assert_eq!(
+        prepared.reachable_objects(),
+        u64::try_from(expected_closure.len()).expect("pending finding closure count")
+    );
+    assert!(
+        prepared
+            .candidates()
+            .iter()
+            .any(|candidate| candidate.id() == orphan)
+    );
+
+    let journal_root = tempfile::tempdir().expect("GC journal directory");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(journal_root.path().join("journal"), &prepared)
+            .expect("create pending finding GC journal");
+    let report = apply_single_host_campaign_gc(
+        &mut journal,
+        CampaignGcApplySources::new(&repository, refs.as_ref(), &mut ledger, None, None),
+        graph,
+        &[physical],
+    )
+    .expect("apply pending finding GC");
+    assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
+    assert!(!blobs.contains(orphan).expect("orphan deleted"));
+    for object in &expected_closure {
+        assert!(
+            blobs
+                .contains(*object)
+                .expect("pending finding object retained")
+        );
+    }
+
+    drop(ledger);
+    let mut restarted_ledger = DirectoryAssignmentLedger::open(ledger_root.path())
+        .expect("restart assignment ledger after GC");
+    let restarted_repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    restarted_repository
+        .load_finding_candidate_bundle(candidate)
+        .expect("load retained finding candidate after restart");
+    let restarted = plan_single_host_campaign_gc(
+        &restarted_repository,
+        refs.as_ref(),
+        &mut restarted_ledger,
+        None,
+        None,
+        graph,
+        &[physical],
+    )
+    .expect("plan after pending finding restart");
+    assert_eq!(
+        restarted.reachable_objects(),
+        u64::try_from(expected_closure.len()).expect("restarted pending finding closure count")
+    );
+    assert!(restarted.candidates().is_empty());
 }
 
 #[test]
@@ -1606,6 +1985,7 @@ impl AssignmentRetentionFence for SyntheticRetentionFence {
     {
         Ok(AssignmentRetentionSummary::new(
             AssignmentRetentionGeneration::from_bytes([self.generation; 32]),
+            0,
             0,
             0,
             0,

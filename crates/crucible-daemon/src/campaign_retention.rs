@@ -9,7 +9,7 @@
 
 use crucible_campaign::{
     CampaignName, CampaignPinRetentionRecord, CampaignPinRetentionSummary, CampaignRepository,
-    CampaignRepositoryError, ObservationId,
+    CampaignRepositoryError, FindingCandidateBundleId, ObservationId,
 };
 use thiserror::Error;
 
@@ -27,6 +27,8 @@ pub enum LocalCampaignRetentionRoot {
     Observation(ObservationId),
     /// One in-progress or paused exact-checkpoint publication.
     ExactCheckpoint(ExactCheckpointId),
+    /// One executor-produced finding candidate awaiting incorporation acknowledgement.
+    FindingCandidate(FindingCandidateBundleId),
 }
 
 /// Terminal evidence that one local retention inventory completed.
@@ -36,6 +38,7 @@ pub struct LocalCampaignRetentionSummary {
     ledger_generation: AssignmentRetentionGeneration,
     observation_roots: u64,
     checkpoint_roots: u64,
+    finding_candidate_roots: u64,
 }
 
 impl LocalCampaignRetentionSummary {
@@ -62,6 +65,12 @@ impl LocalCampaignRetentionSummary {
     pub const fn checkpoint_roots(self) -> u64 {
         self.checkpoint_roots
     }
+
+    /// Returns the number of operational finding-candidate roots visited.
+    #[must_use]
+    pub const fn finding_candidate_roots(self) -> u64 {
+        self.finding_candidate_roots
+    }
 }
 
 /// Failure to complete one local campaign retention inventory.
@@ -83,11 +92,12 @@ pub enum LocalCampaignRetentionError<E> {
 
 /// Streams one campaign's semantic roots and the supplied local ledger's roots.
 ///
-/// Semantic pins are emitted first, followed by observation and exact
-/// checkpoint roots from the operational ledger. Assignment-ledger records are
-/// lineage-qualified rather than campaign-name-qualified, so they are a
-/// host-local root set and are not attributed to the named campaign. A caller
-/// aggregating several campaign refs should enumerate that ledger only once.
+/// Semantic pins are emitted first, followed by observation, exact-checkpoint,
+/// and finding-candidate roots from the operational ledger. Assignment-ledger
+/// records are lineage-qualified rather than campaign-name-qualified, so they
+/// are a host-local root set and are not attributed to the named campaign. A
+/// caller aggregating several campaign refs should enumerate that ledger only
+/// once.
 /// The ledger may name the same immutable root from more than one runtime
 /// record; visitors that construct a physical retain set should deduplicate by
 /// content identity.
@@ -134,6 +144,9 @@ where
                 AssignmentRetentionRoot::ExactCheckpoint(checkpoint) => {
                     visitor(LocalCampaignRetentionRoot::ExactCheckpoint(checkpoint));
                 }
+                AssignmentRetentionRoot::FindingCandidate(candidate) => {
+                    visitor(LocalCampaignRetentionRoot::FindingCandidate(candidate));
+                }
             }
             Ok(())
         })
@@ -153,6 +166,7 @@ where
         ledger_generation: operational.generation(),
         observation_roots: operational.observation_roots(),
         checkpoint_roots: operational.checkpoint_roots(),
+        finding_candidate_roots: operational.finding_candidate_roots(),
     })
 }
 

@@ -447,6 +447,7 @@ impl CampaignGcPlan {
                 attempt_records,
                 observation_roots,
                 checkpoint_roots,
+                0,
             ),
             CampaignGcCandidateSetSummary::new(candidate_id, candidate_count, candidate_bytes),
             physical,
