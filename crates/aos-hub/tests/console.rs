@@ -287,6 +287,20 @@ async fn canonical_management_links_serve_one_authenticated_shell() {
         );
     }
 
+    let catalog = send(
+        &app,
+        "GET",
+        "/acme/infra/prod/cdn/-/settings/images",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(catalog.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        catalog.location.as_deref(),
+        Some("/acme/infra/prod/cdn/-/images")
+    );
+
     let post = send(&app, "POST", "/-/org/acme/projects", Some(&cookie), None).await;
     assert_eq!(post.status, StatusCode::METHOD_NOT_ALLOWED);
     assert_eq!(post.allow.as_deref(), Some("GET"));

@@ -29,15 +29,15 @@
   version = "0.1.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   buildRustDev =
-    if isDarwinCross
+    if stdenv.isCross
     then buildPackages.rust.dev
     else rust.dev;
   buildPkgConfig =
-    if isDarwinCross
+    if stdenv.isCross
     then buildPackages.pkg-config
     else pkg-config;
   buildProtobuf =
-    if isDarwinCross
+    if stdenv.isCross
     then buildPackages.protobuf
     else protobuf;
   nativeQemuSystemBinary =
@@ -153,7 +153,7 @@
   };
   debugGatewayArtifactContract = {
     family = "crucible-gpl-debug-gateway-release-and-test";
-    nativeInputs = map toString [rust.dev];
+    nativeInputs = map toString [buildRustDev];
     licenseScope = "GPL-2.0-only";
   };
   debugGatewayArtifacts = mkCargoArtifacts {
@@ -170,7 +170,7 @@
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-debug-gateway"
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-debug-gateway"
     ];
-    buildDeps = [rust.dev];
+    buildDeps = [buildRustDev];
   };
   controller = mkCargoPackage {
     pname = "crucible-controller";
@@ -373,7 +373,7 @@
     cargoFlags = "-p crucible-debug-gateway";
     cargoTestFlags = "-p crucible-debug-gateway";
     doCheck = true;
-    buildDeps = [rust.dev];
+    buildDeps = [buildRustDev];
     runtimeDeps = [];
 
     postInstall = ''

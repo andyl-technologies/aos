@@ -2,25 +2,27 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use aos_oci_types::Sha256Digest;
 use uuid::Uuid;
 
-pub use super::plan_model::{ApplyOciGc, PlanOciGc};
 use super::plan_model::{
-    EffectivePolicy, FrozenAction, FrozenCandidate, FrozenPlacement, FrozenRoot, PlanBlocker,
     canonical_digest, digest_json, oci_gc_snapshot_guard_statement, policy_guard_statement,
-    validate_apply_input, validate_plan_input,
+    validate_apply_input, validate_plan_input, EffectivePolicy, FrozenAction, FrozenCandidate,
+    FrozenPlacement, FrozenRoot, PlanBlocker,
 };
+pub use super::plan_model::{ApplyOciGc, PlanOciGc};
 use super::{
-    OCI_GC_MAX_ACTIONS, OCI_GC_MAX_DEPTH, OCI_GC_MAX_EDGES, OCI_GC_MAX_INVENTORY_AGE_SECONDS,
-    OCI_GC_MAX_OBJECTS, OCI_GC_MAX_PLACEMENTS, OCI_GC_PLAN_TTL_SECONDS, OciGcGenerationRecord,
+    OciGcGenerationRecord, OCI_GC_MAX_ACTIONS, OCI_GC_MAX_DEPTH, OCI_GC_MAX_EDGES,
+    OCI_GC_MAX_INVENTORY_AGE_SECONDS, OCI_GC_MAX_OBJECTS, OCI_GC_MAX_PLACEMENTS,
+    OCI_GC_PLAN_TTL_SECONDS,
 };
 use crate::backend::Statement;
 use crate::db::{
-    Database, OCI_RETENTION_DEFAULT_DELETED_TAG_HISTORY_SECONDS,
+    sanitize_log_text, Database, OciRetentionPolicyRecord,
+    OCI_RETENTION_DEFAULT_DELETED_TAG_HISTORY_SECONDS,
     OCI_RETENTION_DEFAULT_RECENT_MANUAL_TAG_REVISIONS, OCI_RETENTION_DEFAULT_RETAIN_REFERRERS,
-    OCI_RETENTION_DEFAULT_UNTAGGED_GRACE_SECONDS, OciRetentionPolicyRecord, sanitize_log_text,
+    OCI_RETENTION_DEFAULT_UNTAGGED_GRACE_SECONDS,
 };
 
 /// Qualifies a catalog-owned root source within its repository.

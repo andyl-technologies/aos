@@ -232,6 +232,7 @@
           aos.pkgs.bootstrapTools
           aos.pkgs.perl
           aos.pkgs.pkg-config
+          aos.pkgs.aos-fuse-transport
           aos.pkgs.openssl
           aos.pkgs.sqlite
           aos.pkgs.protobuf
@@ -280,14 +281,14 @@
               export OPENSSL_DIR="${aos.pkgs.openssl}"
               export OPENSSL_NO_VENDOR=1
               export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
-              export PKG_CONFIG_PATH="${aos.pkgs.sqlite}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+              export PKG_CONFIG_PATH="${aos.pkgs.aos-fuse-transport}/lib/pkgconfig:${aos.pkgs.sqlite}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
               # OPENSSL_DIR above only lets `openssl-sys` *link* against the AOS
               # OpenSSL and pkg-config above only let native crates link against
               # the AOS libraries; the resulting binary still records SONAMEs.
-              # Bake both library directories into native cargo binaries so
+              # Bake all three library directories into native cargo binaries so
               # they run directly without an LD_LIBRARY_PATH that would poison
               # the `nix` subprocesses they launch.
-              export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.sqlite}/lib"
+              export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.sqlite}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.aos-fuse-transport}/lib"
             '';
         };
       }

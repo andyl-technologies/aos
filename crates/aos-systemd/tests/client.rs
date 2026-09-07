@@ -3,10 +3,30 @@
 
 mod common;
 
+use std::os::fd::AsFd as _;
 use std::time::Duration;
 
-use aos_systemd::{Error, JobResult};
+use aos_systemd::{
+    Error, JobResult, ListUnitsEntry, SandboxDescriptorPath, SandboxDiscoveryOutcome,
+    SandboxNspawnCommand, SandboxResolvedPaths, SandboxResources, SandboxUnitName, SandboxUnitSpec,
+};
 use common::Harness;
+use zbus::zvariant::OwnedObjectPath;
+
+fn discovery_entry(name: &str, path: &str) -> ListUnitsEntry {
+    ListUnitsEntry {
+        name: name.to_owned(),
+        description: "sandbox".to_owned(),
+        load_state: "loaded".to_owned(),
+        active_state: "active".to_owned(),
+        sub_state: "running".to_owned(),
+        followed: String::new(),
+        object_path: OwnedObjectPath::try_from(path).unwrap(),
+        job_id: 0,
+        job_type: String::new(),
+        job_object_path: OwnedObjectPath::try_from("/").unwrap(),
+    }
+}
 
 /// Cap every client await so a logic bug surfaces as a fast failure rather
 /// than a hung test.
@@ -210,4 +230,338 @@ async fn reset_failed_calls_through() {
     let h = Harness::new().await;
     with_timeout(h.client.reset_failed()).await.unwrap();
     assert!(h.calls().contains(&"reset_failed".to_string()));
+}
+
+#[tokio::test]
+async fn transient_sandbox_uses_typed_exact_transport() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([0x42; 16]);
+    let resources = SandboxResources::new(512, 1024, 64, 100).unwrap();
+    let executable = std::fs::File::open("/proc/self/exe").unwrap();
+    let root = std::fs::File::open("/").unwrap();
+    let network = std::fs::File::open("/proc/self/ns/net").unwrap();
+    let spec = SandboxUnitSpec::new_nspawn(
+        name.clone(),
+        SandboxNspawnCommand::private_user_descriptor_v1(
+            SandboxDescriptorPath::for_current_process(executable.as_fd()).unwrap(),
+            [0x42; 16],
+            65_536,
+            65_536,
+        )
+        .unwrap(),
+        SandboxResolvedPaths::from_descriptors(
+            SandboxDescriptorPath::for_current_process(root.as_fd()).unwrap(),
+            SandboxDescriptorPath::for_current_process(network.as_fd()).unwrap(),
+        ),
+        resources,
+        Duration::from_secs(30),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+
+    let outcome = with_timeout(h.client.start_sandbox_unit(&spec))
+        .await
+        .unwrap();
+    assert_eq!(outcome.result, JobResult::Done);
+
+    let request = h.state.transient_request.lock().unwrap().clone().unwrap();
+    assert_eq!(request.0, name.as_str());
+    assert_eq!(request.1, "fail");
+    assert!(request.2.contains(&("ExecStart".into(), "a(sasb)".into())));
+    assert!(request.2.contains(&("BindsTo".into(), "as".into())));
+    assert!(request.2.contains(&("MemoryMax".into(), "t".into())));
+}
+
+#[tokio::test]
+async fn sandbox_freeze_and_thaw_use_manager_methods() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([7; 16]);
+    with_timeout(h.client.freeze_sandbox_unit(&name))
+        .await
+        .unwrap();
+    with_timeout(h.client.thaw_sandbox_unit(&name))
+        .await
+        .unwrap();
+
+    let calls = h.calls();
+    assert!(calls.contains(&"freeze_unit".to_string()));
+    assert!(calls.contains(&"thaw_unit".to_string()));
+}
+
+#[tokio::test]
+async fn sandbox_stop_and_kill_remain_typed() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([9; 16]);
+    let outcome = with_timeout(h.client.stop_sandbox_unit(&name))
+        .await
+        .unwrap();
+    assert_eq!(outcome.result, JobResult::Done);
+    with_timeout(h.client.kill_sandbox_unit(&name))
+        .await
+        .unwrap();
+
+    let calls = h.calls();
+    assert!(calls.contains(&"stop_unit".to_string()));
+    assert!(calls.contains(&"kill_unit".to_string()));
+}
+
+#[tokio::test]
+async fn sandbox_observation_reads_typed_live_properties() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([7; 16]);
+    let observation = with_timeout(h.client.observe_sandbox_unit(&name))
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(observation.active_state, "active");
+    assert_eq!(observation.sub_state, "running");
+    assert_eq!(observation.supervisor_pid.unwrap().get(), 4242);
+    assert_eq!(observation.invocation_id, Some([9; 16]));
+    assert_eq!(
+        observation.cgroup.unwrap().as_str(),
+        format!("/aos.slice/aos-sandboxes.slice/{}", name.as_str())
+    );
+}
+
+#[tokio::test]
+async fn sandbox_discovery_returns_stable_complete_snapshot_and_quarantine_evidence() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([7; 16]);
+    h.set_discovery_units(vec![discovery_entry(
+        name.as_str(),
+        "/org/freedesktop/systemd1/unit/aos_2dsandbox",
+    )]);
+
+    let outcome = with_timeout(h.client.discover_sandbox_units())
+        .await
+        .unwrap();
+    let SandboxDiscoveryOutcome::Complete(snapshot) = outcome else {
+        panic!("stable fake response was not complete");
+    };
+    assert_eq!(snapshot.units.len(), 1);
+    assert_eq!(snapshot.units[0].unit, name);
+    let comparison = snapshot.compare_expected(&[]).unwrap();
+    assert_eq!(comparison.quarantine.len(), 1);
+    assert!(comparison.matched.is_empty());
+}
+
+#[tokio::test]
+async fn sandbox_discovery_quarantines_prefix_lookalike() {
+    let h = Harness::new().await;
+    let entry = discovery_entry(
+        "aos-sandbox-not-an-incarnation.service",
+        "/org/freedesktop/systemd1/unit/lookalike",
+    );
+    h.set_discovery_units(vec![entry.clone()]);
+    let outcome = with_timeout(h.client.discover_sandbox_units())
+        .await
+        .unwrap();
+    let SandboxDiscoveryOutcome::Complete(snapshot) = outcome else {
+        panic!("stable lookalike evidence was not complete");
+    };
+    assert!(snapshot.units.is_empty());
+    assert_eq!(snapshot.conflicts.len(), 1);
+    assert_eq!(
+        snapshot.conflicts[0].object_path,
+        "/org/freedesktop/systemd1/unit/lookalike"
+    );
+
+    let mut with_job = entry;
+    with_job.job_id = 17;
+    with_job.job_type = "start".to_owned();
+    with_job.job_object_path = OwnedObjectPath::try_from("/job/17").unwrap();
+    h.set_discovery_units(vec![with_job]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+}
+
+#[tokio::test]
+async fn sandbox_discovery_detects_changed_lookalike_row_between_passes() {
+    let h = Harness::new().await;
+    let name = "aos-sandbox-not-an-incarnation.service";
+    let first = discovery_entry(name, "/org/freedesktop/systemd1/unit/lookalike_1");
+    let mut second = discovery_entry(name, "/org/freedesktop/systemd1/unit/lookalike_2");
+    second.description = "changed".to_owned();
+    second.active_state = "inactive".to_owned();
+    h.set_discovery_sequence(vec![first], vec![second]);
+
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+}
+
+#[tokio::test]
+async fn sandbox_discovery_rejects_duplicate_and_path_substitution() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([8; 16]);
+    let entry = discovery_entry(
+        name.as_str(),
+        "/org/freedesktop/systemd1/unit/aos_2dsandbox",
+    );
+    h.set_discovery_units(vec![entry.clone(), entry]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+
+    h.set_discovery_units(vec![discovery_entry(
+        name.as_str(),
+        "/org/freedesktop/systemd1/unit/substituted",
+    )]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+
+    let other = SandboxUnitName::from_incarnation([10; 16]);
+    h.set_discovery_units(vec![
+        discovery_entry(
+            name.as_str(),
+            "/org/freedesktop/systemd1/unit/aos_2dsandbox",
+        ),
+        discovery_entry(
+            other.as_str(),
+            "/org/freedesktop/systemd1/unit/aos_2dsandbox",
+        ),
+    ]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+}
+
+#[tokio::test]
+async fn sandbox_discovery_rejects_unit_id_and_filter_substitution() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([11; 16]);
+    h.set_discovery_units(vec![discovery_entry(
+        name.as_str(),
+        "/org/freedesktop/systemd1/unit/aos_2dsandbox",
+    )]);
+    h.set_unit_id_override("aos-sandbox-00000000000000000000000000000000.service");
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+
+    h.set_discovery_units(vec![discovery_entry(
+        "sshd.service",
+        "/org/freedesktop/systemd1/unit/sshd",
+    )]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+}
+
+#[tokio::test]
+async fn sandbox_discovery_rejects_list_property_substitution_and_unit_ceiling() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([9; 16]);
+    let mut entry = discovery_entry(
+        name.as_str(),
+        "/org/freedesktop/systemd1/unit/aos_2dsandbox",
+    );
+    entry.active_state = "inactive".to_owned();
+    h.set_discovery_units(vec![entry.clone()]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+
+    entry.active_state = "active".to_owned();
+    entry.followed = "alias-target.service".to_owned();
+    h.set_discovery_units(vec![entry.clone()]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+
+    entry.followed.clear();
+    entry.job_id = 17;
+    entry.job_type = "start".to_owned();
+    entry.job_object_path = OwnedObjectPath::try_from("/job/17").unwrap();
+    h.set_discovery_units(vec![entry.clone()]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+
+    h.set_discovery_units(vec![entry; 1025]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+
+    let mut oversized = discovery_entry(
+        name.as_str(),
+        "/org/freedesktop/systemd1/unit/aos_2dsandbox",
+    );
+    oversized.description = "x".repeat(4097);
+    h.set_discovery_units(vec![oversized]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+}
+
+#[tokio::test]
+async fn sandbox_discovery_is_indeterminate_during_daemon_reload() {
+    let h = Harness::new().await;
+    h.emit_reloading(true).await;
+    wait_until(|| h.client.is_reloading()).await;
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+    assert!(!h.calls().contains(&"list_units_by_patterns".to_owned()));
+}
+
+#[tokio::test]
+async fn sandbox_discovery_is_indeterminate_when_membership_changes_between_passes() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([12; 16]);
+    h.set_discovery_sequence(
+        Vec::new(),
+        vec![discovery_entry(
+            name.as_str(),
+            "/org/freedesktop/systemd1/unit/aos_2dsandbox",
+        )],
+    );
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
 }

@@ -1,0 +1,627 @@
+diff --git a/src/nspawn/meson.build b/src/nspawn/meson.build
+index 0def05c..61c5fa7 100644
+--- a/src/nspawn/meson.build
++++ b/src/nspawn/meson.build
+@@ -9,6 +9,7 @@ nspawn_sources = files(
+         'nspawn-bind-user.c',
+         'nspawn-cgroup.c',
+         'nspawn-lifecycle.c',
++        'nspawn-lifecycle-cgroup.c',
+         'nspawn-register.c',
+         'nspawn-root-fd.c',
+         'nspawn-seccomp.c',
+@@ -58,7 +59,7 @@ executables += [
+                 'sources' : files('test-nspawn-tables.c'),
+         },
+         nspawn_test_template + {
+-                'sources' : files('test-nspawn-lifecycle.c', 'nspawn-lifecycle.c'),
++                'sources' : files('test-nspawn-lifecycle.c', 'nspawn-lifecycle.c', 'nspawn-lifecycle-cgroup.c'),
+         },
+         nspawn_test_template + {
+                 'sources' : files('test-nspawn-root-fd.c', 'nspawn-root-fd.c'),
+diff --git a/src/nspawn/nspawn-lifecycle-cgroup.c b/src/nspawn/nspawn-lifecycle-cgroup.c
+new file mode 100644
+index 0000000..f6d7949
+--- /dev/null
++++ b/src/nspawn/nspawn-lifecycle-cgroup.c
+@@ -0,0 +1,195 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++#include <dirent.h>
++#include <fcntl.h>
++#include <linux/magic.h>
++#include <sys/stat.h>
++#include <sys/vfs.h>
++#include <unistd.h>
++
++#include "alloc-util.h"
++#include "cgroup-util.h"
++#include "errno-util.h"
++#include "fd-util.h"
++#include "fileio.h"
++#include "nspawn-lifecycle-cgroup.h"
++#include "path-util.h"
++#include "string-util.h"
++#include "strv.h"
++#include "time-util.h"
++
++typedef struct AosCgroupResetBudget {
++        unsigned directories;
++        unsigned entries;
++        size_t name_bytes;
++        usec_t deadline;
++} AosCgroupResetBudget;
++
++int aos_payload_cgroup_is_empty(const char *events) {
++        _cleanup_strv_free_ char **lines = NULL;
++        bool populated_seen = false;
++
++        assert(events);
++
++        if (strlen(events) > 512)
++                return -E2BIG;
++
++        lines = strv_split_newlines(events);
++        if (!lines)
++                return -ENOMEM;
++
++        STRV_FOREACH(line, lines) {
++                const char *value = startswith(*line, "populated ");
++
++                if (!value) {
++                        if (startswith(*line, "populated"))
++                                return -EBADMSG;
++                        continue; /* Future unrelated kernel fields do not change this decision. */
++                }
++
++                if (populated_seen)
++                        return -EBADMSG;
++                populated_seen = true;
++                if (streq(value, "1"))
++                        return -EBUSY;
++                if (!streq(value, "0"))
++                        return -EBADMSG;
++        }
++
++        return populated_seen ? 0 : -EBADMSG;
++}
++
++static int verify_cgroup_directory(int fd, dev_t *ret_device) {
++        struct statfs fs;
++        struct stat st;
++
++        if (fstatfs(fd, &fs) < 0 || fstat(fd, &st) < 0)
++                return -errno;
++        if (fs.f_type != CGROUP2_SUPER_MAGIC || !S_ISDIR(st.st_mode))
++                return -ENODEV;
++
++        *ret_device = st.st_dev;
++        return 0;
++}
++
++static int remove_empty_cgroup_at(int parent_fd, const char *name, dev_t device, unsigned depth, AosCgroupResetBudget *budget) {
++        _cleanup_close_ int fd = -EBADF;
++        _cleanup_closedir_ DIR *directory = NULL;
++        dev_t actual_device;
++        int r;
++
++        /* Charge before opening or descending. Depth bounds retained descriptors/stack, while global
++         * counters bound breadth and total work; an adversarial hierarchy never becomes a work queue. */
++        if (depth > 64 || budget->directories >= 4096 || now(CLOCK_BOOTTIME) >= budget->deadline)
++                return -E2BIG;
++        budget->directories++;
++
++        fd = openat(parent_fd, name, O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
++        if (fd < 0)
++                return -errno;
++        r = verify_cgroup_directory(fd, &actual_device);
++        if (r < 0)
++                return r;
++        if (actual_device != device)
++                return -EXDEV;
++
++        directory = take_fdopendir(&fd);
++        if (!directory)
++                return -errno;
++
++        for (;;) {
++                struct dirent *entry;
++                struct stat st;
++                size_t length;
++
++                if (budget->entries >= 524288 || now(CLOCK_BOOTTIME) >= budget->deadline)
++                        return -E2BIG;
++                errno = 0;
++                entry = readdir(directory);
++                if (!entry) {
++                        if (errno != 0)
++                                return -errno;
++                        break;
++                }
++                budget->entries++;
++                length = strlen(entry->d_name);
++                if (length > 16U*1024U*1024U - budget->name_bytes)
++                        return -E2BIG;
++                budget->name_bytes += length;
++
++                if (dot_or_dot_dot(entry->d_name))
++                        continue;
++                if (fstatat(dirfd(directory), entry->d_name, &st, AT_SYMLINK_NOFOLLOW) < 0)
++                        return -errno;
++                if (st.st_dev != device)
++                        return -EXDEV;
++
++                if (S_ISREG(st.st_mode))
++                        continue; /* Kernel control files disappear with their directory; never unlink them. */
++                if (!S_ISDIR(st.st_mode))
++                        return -EBADMSG;
++
++                r = remove_empty_cgroup_at(dirfd(directory), entry->d_name, device, depth + 1, budget);
++                if (r < 0)
++                        return r;
++        }
++
++        if (now(CLOCK_BOOTTIME) >= budget->deadline)
++                return -E2BIG;
++        return RET_NERRNO(unlinkat(parent_fd, name, AT_REMOVEDIR));
++}
++
++int aos_payload_cgroup_reset_at(int unit_fd) {
++        _cleanup_close_ int payload_fd = -EBADF;
++        _cleanup_free_ char *events = NULL;
++        AosCgroupResetBudget budget = { .deadline = now(CLOCK_BOOTTIME) + 5*USEC_PER_SEC };
++        dev_t device, payload_device;
++        int r;
++
++        r = verify_cgroup_directory(unit_fd, &device);
++        if (r < 0)
++                return r;
++        payload_fd = openat(unit_fd, "payload", O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
++        if (payload_fd < 0)
++                return -errno;
++        r = verify_cgroup_directory(payload_fd, &payload_device);
++        if (r < 0)
++                return r;
++        if (payload_device != device)
++                return -EXDEV;
++
++        /* populated includes all descendants. PID namespace teardown must already have killed them;
++         * do not kill unknown tasks or attempt a new boot when this precondition is not proven. */
++        r = read_full_file_full(payload_fd, "cgroup.events", UINT64_MAX, 512,
++                               READ_FULL_FILE_FAIL_WHEN_LARGER|READ_FULL_FILE_VERIFY_REGULAR,
++                               NULL, &events, NULL);
++        if (r < 0)
++                return r;
++        r = aos_payload_cgroup_is_empty(events);
++        if (r < 0)
++                return r;
++
++        /* Remove the root too, so guest-written limits and subtree controllers cannot survive a boot.
++         * Any failure leaves the supervisor to fail closed; the caller must not retry launch. */
++        return remove_empty_cgroup_at(unit_fd, "payload", device, 0, &budget);
++}
++
++int aos_payload_cgroup_reset(void) {
++        _cleanup_free_ char *path = NULL;
++        _cleanup_close_ int unit_fd = -EBADF;
++        char *suffix;
++        int r;
++
++        r = cg_pid_get_path(0, &path);
++        if (r < 0)
++                return r;
++        suffix = endswith(path, "/supervisor");
++        if (!suffix || suffix == path)
++                return -EINVAL;
++        *suffix = 0;
++
++        unit_fd = cg_path_open(path);
++        if (unit_fd < 0)
++                return unit_fd;
++        return aos_payload_cgroup_reset_at(unit_fd);
++}
+diff --git a/src/nspawn/nspawn-lifecycle-cgroup.h b/src/nspawn/nspawn-lifecycle-cgroup.h
+new file mode 100644
+index 0000000..543e112
+--- /dev/null
++++ b/src/nspawn/nspawn-lifecycle-cgroup.h
+@@ -0,0 +1,12 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#pragma once
++
++/* Parses bounded kernel cgroup.events content; only an unambiguous populated=0 is empty. */
++int aos_payload_cgroup_is_empty(const char *events);
++
++/* Removes only the empty payload subtree of a caller-owned, pinned unit cgroup. The caller must
++ * have reaped the old payload PID 1 and exclude any concurrent payload launch or host migration. */
++int aos_payload_cgroup_reset_at(int unit_fd);
++
++/* Resolves the current supervisor's unit cgroup, then performs the bounded reset above. */
++int aos_payload_cgroup_reset(void);
+diff --git a/src/nspawn/nspawn-lifecycle.h b/src/nspawn/nspawn-lifecycle.h
+index 6e838b8..ddb1472 100644
+--- a/src/nspawn/nspawn-lifecycle.h
++++ b/src/nspawn/nspawn-lifecycle.h
+@@ -3,6 +3,8 @@
+ 
+ #include <stdbool.h>
+ 
++#define AOS_NSPAWN_LIFECYCLE_PROFILE_V1 "aos-sandbox-lifecycle-v1"
++
+ /* A fresh instance belongs to exactly one payload PID 1. Never carry this state across boots. */
+ typedef enum AosShutdownIntent {
+         AOS_SHUTDOWN_NONE,
+diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
+index 2190b37..3c17e60 100644
+--- a/src/nspawn/nspawn.c
++++ b/src/nspawn/nspawn.c
+@@ -75,6 +75,8 @@
+ #include "nspawn-bind-user.h"
+ #include "nspawn-cgroup.h"
+ #include "nspawn-expose-ports.h"
++#include "nspawn-lifecycle.h"
++#include "nspawn-lifecycle-cgroup.h"
+ #include "nspawn-mount.h"
+ #include "nspawn-network.h"
+ #include "nspawn-oci.h"
+@@ -226,6 +228,8 @@ static VeritySettings arg_verity_settings = VERITY_SETTINGS_DEFAULT;
+ static char **arg_syscall_allow_list = NULL;
+ static char **arg_syscall_deny_list = NULL;
+ static const char *arg_aos_payload_seccomp_profile = NULL;
++static bool arg_aos_lifecycle_profile = false;
++static bool aos_stop_requested = false;
+ #if HAVE_SECCOMP
+ static scmp_filter_ctx arg_seccomp = NULL;
+ #endif
+@@ -468,6 +472,8 @@ static int help(void) {
+                "                            Permit/prohibit specific system calls\n"
+                "     --aos-payload-seccomp-profile=PROFILE\n"
+                "                            Apply a compiled AOS payload filter before exec\n"
++               "     --aos-lifecycle-profile=PROFILE\n"
++               "                            Retain the supervisor across authenticated payload reboots\n"
+                "     --aos-root-mount-fd=NAME\n"
+                "                            Consume the named AOS supervisor-only root mount\n"
+                "  -Z --selinux-context=SECLABEL\n"
+@@ -724,6 +730,7 @@ static int parse_argv(int argc, char *argv[]) {
+                 ARG_VERITY_DATA,
+                 ARG_SYSTEM_CALL_FILTER,
+                 ARG_AOS_PAYLOAD_SECCOMP_PROFILE,
++                ARG_AOS_LIFECYCLE_PROFILE,
+                 ARG_AOS_ROOT_DIRECTORY_FD,
+                 ARG_RLIMIT,
+                 ARG_HOSTNAME,
+@@ -807,6 +814,7 @@ static int parse_argv(int argc, char *argv[]) {
+                 { "verity-data",            required_argument, NULL, ARG_VERITY_DATA            },
+                 { "system-call-filter",     required_argument, NULL, ARG_SYSTEM_CALL_FILTER     },
+                 { "aos-payload-seccomp-profile", required_argument, NULL, ARG_AOS_PAYLOAD_SECCOMP_PROFILE },
++                { "aos-lifecycle-profile", required_argument, NULL, ARG_AOS_LIFECYCLE_PROFILE },
+                 { "aos-root-mount-fd", required_argument, NULL, ARG_AOS_ROOT_DIRECTORY_FD },
+                 { "rlimit",                 required_argument, NULL, ARG_RLIMIT                 },
+                 { "oom-score-adjust",       required_argument, NULL, ARG_OOM_SCORE_ADJUST       },
+@@ -1417,6 +1425,12 @@ static int parse_argv(int argc, char *argv[]) {
+                         arg_aos_root_directory_fd = true;
+                         break;
+ 
++                case ARG_AOS_LIFECYCLE_PROFILE:
++                        if (arg_aos_lifecycle_profile || !streq(optarg, AOS_NSPAWN_LIFECYCLE_PROFILE_V1))
++                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid or repeated AOS lifecycle profile.");
++                        arg_aos_lifecycle_profile = true;
++                        break;
++
+                 case ARG_RLIMIT: {
+                         const char *eq;
+                         _cleanup_free_ char *name = NULL;
+@@ -2967,7 +2981,7 @@ static int recursive_chown(const char *directory, uid_t shift, uid_t range) {
+  * That is, success is indicated by a return value of zero, and an
+  * error is indicated by a non-zero value.
+  */
+-static int wait_for_container(PidRef *pid, ContainerStatus *container) {
++static int wait_for_container(PidRef *pid, ContainerStatus *container, bool *ret_clean_exit) {
+         siginfo_t status;
+         int r;
+ 
+@@ -2979,6 +2993,10 @@ static int wait_for_container(PidRef *pid, ContainerStatus *container) {
+ 
+         pidref_done(pid);
+ 
++        /* Upstream also maps namespace reboot/poweroff signals to success. The closed lifecycle
++         * profile requires an actual successful exit, not that broader status normalization. */
++        *ret_clean_exit = status.si_code == CLD_EXITED && status.si_status == 0;
++
+         switch (status.si_code) {
+ 
+         case CLD_EXITED:
+@@ -3018,6 +3036,9 @@ static int on_orderly_shutdown(sd_event_source *s, const struct signalfd_siginfo
+ 
+         assert(si);
+ 
++        if (arg_aos_lifecycle_profile)
++                aos_stop_requested = true;
++
+         if (pidref_is_set(pid))
+                 if (pidref_kill(pid, arg_kill_signal) >= 0) {
+                         log_info("Trying to halt container by sending %s to container PID 1. Send SIGTERM again to trigger immediate termination.",
+@@ -3065,6 +3086,9 @@ static int on_request_stop(sd_bus_message *m, void *userdata, sd_bus_error *erro
+ 
+         assert(m);
+ 
++        if (arg_aos_lifecycle_profile)
++                aos_stop_requested = true;
++
+         if (arg_kill_signal > 0) {
+                 log_info("Container termination requested. Attempting to halt container.");
+                 (void) pidref_kill(pid, arg_kill_signal);
+@@ -4637,11 +4661,16 @@ static int setup_uid_map(
+         return 0;
+ }
+ 
+-static int nspawn_dispatch_notify_fd(sd_event_source *source, int fd, uint32_t revents, void *userdata) {
+-        PidRef *inner_child_pid = ASSERT_PTR(userdata);
++typedef struct NspawnNotifyContext {
++        PidRef *pid;
++        AosShutdownIntent intent;
++} NspawnNotifyContext;
++
++/* Returns one for a consumed record, including an unauthenticated record, and zero only when drained. */
++static int nspawn_receive_notify(int fd, NspawnNotifyContext *context) {
+         int r;
+ 
+-        assert(userdata);
++        assert(context);
+ 
+         _cleanup_(pidref_done) PidRef sender_pid = PIDREF_NULL;
+         _cleanup_strv_free_ char **tags = NULL;
+@@ -4651,11 +4680,14 @@ static int nspawn_dispatch_notify_fd(sd_event_source *source, int fd, uint32_t r
+         if (r < 0)
+                 return r;
+ 
+-        if (!pidref_equal(&sender_pid, inner_child_pid)) {
++        if (!pidref_equal(&sender_pid, context->pid)) {
+                 log_debug("Received notify message from process that is not the payload's PID 1. Ignoring.");
+-                return 0;
++                return 1;
+         }
+ 
++        if (arg_aos_lifecycle_profile)
++                aos_shutdown_intent_observe(&context->intent, tags);
++
+         if (DEBUG_LOGGING) {
+                 _cleanup_free_ char *joined = strv_join(tags, " ");
+ 
+@@ -4680,16 +4712,41 @@ static int nspawn_dispatch_notify_fd(sd_event_source *source, int fd, uint32_t r
+                         (void) sd_notifyf(/* unset_environment= */ false, "STATUS=Container running.");
+         }
+ 
+-        return 0;
++        return 1;
++}
++
++static int nspawn_dispatch_notify_fd(sd_event_source *source, int fd, uint32_t revents, void *userdata) {
++        return MIN(nspawn_receive_notify(fd, ASSERT_PTR(userdata)), 0);
++}
++
++static int aos_drain_notify(int fd, NspawnNotifyContext *context) {
++        /* SIGCHLD can win the dispatch race. Drain while the exited PID 1 is still pinned and unreaped,
++         * so a final notification cannot be lost or authenticated against a reused numeric PID. */
++        for (unsigned n = 0; n < 64; n++) {
++                int r = nspawn_receive_notify(fd, context);
++                if (r <= 0)
++                        return r;
++        }
++        return -E2BIG;
++}
++
++static bool aos_stop_pending(void) {
++        sigset_t pending;
++
++        if (aos_stop_requested)
++                return true;
++        if (sigpending(&pending) < 0)
++                return true; /* Uncertainty cannot authorize a new payload. */
++        return sigismember(&pending, SIGTERM) > 0 || sigismember(&pending, SIGINT) > 0;
+ }
+ 
+-static int setup_notify_parent(sd_event *event, int fd, PidRef *inner_child_pid, sd_event_source **notify_event_source) {
++static int setup_notify_parent(sd_event *event, int fd, NspawnNotifyContext *context, sd_event_source **notify_event_source) {
+         int r;
+ 
+         if (fd < 0)
+                 return 0;
+ 
+-        r = sd_event_add_io(event, notify_event_source, fd, EPOLLIN, nspawn_dispatch_notify_fd, inner_child_pid);
++        r = sd_event_add_io(event, notify_event_source, fd, EPOLLIN, nspawn_dispatch_notify_fd, context);
+         if (r < 0)
+                 return log_error_errno(r, "Failed to allocate notify event source: %m");
+ 
+@@ -5222,6 +5279,8 @@ static int run_container(
+         _cleanup_close_ int notify_socket = -EBADF, mntns_fd = -EBADF, fd_kmsg_fifo = -EBADF;
+         _cleanup_(barrier_destroy) Barrier barrier = BARRIER_NULL;
+         _cleanup_(sd_event_source_unrefp) sd_event_source *notify_event_source = NULL;
++        _cleanup_(sd_event_source_unrefp) sd_event_source *stop_int_source = NULL, *stop_term_source = NULL;
++        NspawnNotifyContext notify_context = { .pid = pid };
+         _cleanup_(umount_and_rmdir_and_freep) char *unix_export_host_dir = NULL;
+         _cleanup_(sd_event_unrefp) sd_event *event = NULL;
+         _cleanup_(pty_forward_freep) PTYForward *forward = NULL;
+@@ -5695,7 +5754,7 @@ static int run_container(
+                         return log_error_errno(r, "Failed to attach user bus to event loop: %m");
+         }
+ 
+-        r = setup_notify_parent(event, notify_socket, pid, &notify_event_source);
++        r = setup_notify_parent(event, notify_socket, &notify_context, &notify_event_source);
+         if (r < 0)
+                 return r;
+ 
+@@ -5738,7 +5797,20 @@ static int run_container(
+          * signals to be block continuously, even if we destroy the event loop and allocate a new one on
+          * container reboot. */
+ 
+-        if (arg_kill_signal > 0) {
++        if (arg_aos_lifecycle_profile) {
++                r = sd_event_add_signal(event, &stop_int_source, SIGINT, on_orderly_shutdown, pid);
++                if (r < 0)
++                        return r;
++                r = sd_event_add_signal(event, &stop_term_source, SIGTERM, on_orderly_shutdown, pid);
++                if (r < 0)
++                        return r;
++                r = sd_event_source_set_priority(stop_int_source, SD_EVENT_PRIORITY_IMPORTANT);
++                if (r < 0)
++                        return r;
++                r = sd_event_source_set_priority(stop_term_source, SD_EVENT_PRIORITY_IMPORTANT);
++                if (r < 0)
++                        return r;
++        } else if (arg_kill_signal > 0) {
+                 /* Try to kill the init system on SIGINT or SIGTERM */
+                 (void) sd_event_add_signal(event, NULL, SIGINT, on_orderly_shutdown, pid);
+                 (void) sd_event_add_signal(event, NULL, SIGTERM, on_orderly_shutdown, pid);
+@@ -5856,7 +5928,10 @@ static int run_container(
+                         return r;
+         }
+ 
+-        r = wait_for_container(pid, &container_status);
++        int notify_result = arg_aos_lifecycle_profile ? aos_drain_notify(notify_socket, &notify_context) : 0;
++
++        bool clean_exit = false;
++        r = wait_for_container(pid, &container_status, &clean_exit);
+ 
+         /* Tell machined that we are gone. */
+         if (registered_system)
+@@ -5867,6 +5942,12 @@ static int run_container(
+         if (r < 0)
+                 /* We failed to wait for the container, or the container exited abnormally. */
+                 return r;
++        if (notify_result < 0)
++                return log_error_errno(notify_result, "Failed to drain AOS payload shutdown notifications: %m");
++
++        if (arg_aos_lifecycle_profile)
++                container_status = aos_shutdown_intent_allows_reboot(notify_context.intent, clean_exit, aos_stop_pending()) ?
++                        CONTAINER_REBOOTED : CONTAINER_TERMINATED;
+         if (r > 0 || container_status == CONTAINER_TERMINATED) {
+                 /* r > 0 → The container exited with a non-zero status.
+                  *         As a special case, we need to replace 133 with a different value,
+@@ -5881,6 +5962,17 @@ static int run_container(
+ 
+         /* CONTAINER_REBOOTED, loop again */
+ 
++        if (arg_aos_lifecycle_profile) {
++                r = aos_payload_cgroup_reset();
++                if (r < 0)
++                        return log_error_errno(r, "Failed to reset empty AOS payload cgroup: %m");
++                if (aos_stop_pending()) {
++                        *ret = 0;
++                        return 0;
++                }
++                return 1;
++        }
++
+         if (arg_keep_unit) {
+                 /* Special handling if we are running as a service: instead of simply
+                  * restarting the machine we want to restart the entire service, so let's
+@@ -6148,6 +6240,23 @@ static int run(int argc, char *argv[]) {
+         if (r < 0)
+                 goto finish;
+ 
++        if (arg_aos_lifecycle_profile &&
++            (!arg_privileged || arg_start_mode != START_BOOT || !arg_keep_unit || !arg_machine ||
++             arg_register || arg_background || arg_cleanup || !FLAGS_SET(arg_settings_mask, _SETTINGS_MASK_ALL) ||
++             !arg_aos_payload_seccomp_profile || !arg_no_new_privileges ||
++             arg_userns_mode != USER_NAMESPACE_FIXED || arg_uid_shift == 0 || arg_uid_range < 65536 ||
++             arg_userns_ownership != USER_NAMESPACE_OWNERSHIP_MAP ||
++             !arg_use_cgns || arg_clone_ns_flags != (CLONE_NEWIPC|CLONE_NEWPID|CLONE_NEWUTS) ||
++             FLAGS_SET(arg_caps_retain, UINT64_C(1) << CAP_SYS_BOOT) ||
++             arg_image || arg_template || arg_oci_bundle || arg_ephemeral ||
++             arg_pivot_root_new || arg_pivot_root_old || arg_volatile_mode != VOLATILE_NO ||
++             arg_private_network || arg_network_namespace_path || arg_network_interfaces ||
++             arg_network_macvlan || arg_network_ipvlan || arg_network_veth || arg_network_veth_extra ||
++             arg_network_bridge || arg_network_zone || arg_expose_ports)) {
++                r = log_error_errno(SYNTHETIC_ERRNO(EINVAL), "AOS lifecycle profile requires the closed namespace configuration without CAP_SYS_BOOT.");
++                goto finish;
++        }
++
+         r = resolve_network_interface_names(arg_network_interfaces);
+         if (r < 0)
+                 goto finish;
+@@ -6604,6 +6713,11 @@ static int run(int argc, char *argv[]) {
+         for (;;) {
+                 _cleanup_close_ int aos_mount_fd = -EBADF;
+ 
++                if (arg_aos_lifecycle_profile && aos_stop_pending()) {
++                        r = ret = 0;
++                        break;
++                }
++
+                 if (arg_aos_root_directory_fd) {
+                         /* Import a detached tree from the privileged publisher.
+                          * Keep a fresh detached replacement for another boot;
+@@ -6619,6 +6733,11 @@ static int run(int argc, char *argv[]) {
+                                 goto finish;
+                 }
+ 
++                if (arg_aos_lifecycle_profile && aos_stop_pending()) {
++                        r = ret = 0;
++                        break;
++                }
++
+                 r = run_container(
+                                 rootdir,
+                                 arg_aos_root_directory_fd ? aos_mount_fd : mount_fd,
+diff --git a/src/nspawn/test-nspawn-lifecycle.c b/src/nspawn/test-nspawn-lifecycle.c
+index 55a7095..40bf8fe 100644
+--- a/src/nspawn/test-nspawn-lifecycle.c
++++ b/src/nspawn/test-nspawn-lifecycle.c
+@@ -1,8 +1,17 @@
+ /* SPDX-License-Identifier: LGPL-2.1-or-later */
+ 
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include "alloc-util.h"
++#include "fd-util.h"
+ #include "nspawn-lifecycle.h"
++#include "nspawn-lifecycle-cgroup.h"
++#include "rm-rf.h"
+ #include "strv.h"
+ #include "tests.h"
++#include "tmpfile-util.h"
+ 
+ TEST(shutdown_metadata) {
+         static const struct {
+@@ -73,4 +82,38 @@ TEST(intent_cannot_replace_exit_status_or_override_host_stop) {
+         ASSERT_FALSE(aos_shutdown_intent_allows_reboot(second, true, false));
+ }
+ 
++TEST(cgroup_empty_requires_kernel_evidence) {
++        ASSERT_OK(aos_payload_cgroup_is_empty("populated 0\nfrozen 0\n"));
++        ASSERT_OK(aos_payload_cgroup_is_empty("future 1\npopulated 0\nfrozen 1\n"));
++        ASSERT_ERROR(aos_payload_cgroup_is_empty("populated 1\nfrozen 0\n"), EBUSY);
++        ASSERT_ERROR(aos_payload_cgroup_is_empty(""), EBADMSG);
++        ASSERT_ERROR(aos_payload_cgroup_is_empty("frozen 0\n"), EBADMSG);
++        ASSERT_ERROR(aos_payload_cgroup_is_empty("populated\n"), EBADMSG);
++        ASSERT_ERROR(aos_payload_cgroup_is_empty("populated\t0\n"), EBADMSG);
++        ASSERT_ERROR(aos_payload_cgroup_is_empty("populated 00\n"), EBADMSG);
++        ASSERT_ERROR(aos_payload_cgroup_is_empty("populated 0 \n"), EBADMSG);
++        ASSERT_ERROR(aos_payload_cgroup_is_empty("populated 0\npopulated 0\n"), EBADMSG);
++        ASSERT_ERROR(aos_payload_cgroup_is_empty("populated 0\npopulated 1\n"), EBADMSG);
++
++        char oversized[514];
++        memset(oversized, 'x', sizeof(oversized) - 1);
++        oversized[sizeof(oversized) - 1] = 0;
++        ASSERT_ERROR(aos_payload_cgroup_is_empty(oversized), E2BIG);
++}
++
++TEST(cgroup_reset_refuses_ordinary_filesystem_without_mutation) {
++        _cleanup_(rm_rf_physical_and_freep) char *path = NULL;
++        _cleanup_close_ int unit_fd = -EBADF;
++        struct stat st;
++
++        ASSERT_OK(mkdtemp_malloc("/tmp/test-nspawn-lifecycle-cgroup.XXXXXX", &path));
++        ASSERT_OK_ERRNO(unit_fd = open(path, O_RDONLY|O_DIRECTORY|O_CLOEXEC));
++        ASSERT_OK_ERRNO(mkdirat(unit_fd, "payload", 0700));
++        ASSERT_OK_ERRNO(mkdirat(unit_fd, "supervisor", 0700));
++        ASSERT_ERROR(aos_payload_cgroup_reset_at(unit_fd), ENODEV);
++        ASSERT_OK_ERRNO(fstatat(unit_fd, "payload", &st, AT_SYMLINK_NOFOLLOW));
++        ASSERT_OK_ERRNO(fstatat(unit_fd, "supervisor", &st, AT_SYMLINK_NOFOLLOW));
++        ASSERT_ERROR(aos_payload_cgroup_reset_at(-1), EBADF);
++}
++
+ DEFINE_TEST_MAIN(LOG_DEBUG);

@@ -29,6 +29,22 @@ members = [
     "aos-hub-console",
     "aos-profile",
     "aos-systemd",
+    "aos-filesystem-view",
+    "aos-filesystem-fuse",
+    "aos-filesystem-fuse/tests/fixtures/kernel-worker",
+    "aos-filesystem-fuse/tests/fixtures/link-consumer",
+    "aos-sandbox-core",
+    "aos-sandbox-ownership-protocol",
+    "aos-sandbox-protocol",
+    "aos-sandbox",
+    "aos-sandbox/tests/fixtures/service-journal",
+    "aos-sandbox-linux",
+    "aos-sandbox-linux/tests/fixtures/verity-backing",
+    "aos-sandbox-broker",
+    "aos-sandbox-host",
+    "aos-sandbox-mount",
+    "aos-sandbox-network",
+    "aos-sandbox-storage",
     "crucible-cas",
     "crucible-sim",
     "crucible-assert",
@@ -223,6 +239,18 @@ aos-release = { path = "aos-release" }
 aos-image-finalizer = { path = "aos-image-finalizer" }
 aos-profile = { path = "aos-profile" }
 aos-systemd = { path = "aos-systemd" }
+aos-filesystem-view = { path = "aos-filesystem-view" }
+aos-filesystem-fuse = { path = "aos-filesystem-fuse" }
+aos-sandbox-core = { path = "aos-sandbox-core" }
+aos-sandbox-ownership-protocol = { path = "aos-sandbox-ownership-protocol" }
+aos-sandbox-protocol = { path = "aos-sandbox-protocol" }
+aos-sandbox = { path = "aos-sandbox" }
+aos-sandbox-broker = { path = "aos-sandbox-broker" }
+aos-sandbox-mount = { path = "aos-sandbox-mount" }
+aos-sandbox-network = { path = "aos-sandbox-network" }
+aos-sandbox-storage = { path = "aos-sandbox-storage" }
+aos-sandbox-linux = { path = "aos-sandbox-linux" }
+aos-sandbox-host = { path = "aos-sandbox-host" }
 
 [workspace.lints.clippy]
 all = "deny"

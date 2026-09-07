@@ -1,0 +1,19 @@
+[package]
+name = "aos-filesystem-fuse"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-filesystem-view.workspace = true
+libc.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+pkg-config = "0.3"
+
+[dev-dependencies]
+aos-sandbox-core.workspace = true
+
+[lints]
+workspace = true

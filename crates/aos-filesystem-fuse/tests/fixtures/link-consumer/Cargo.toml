@@ -1,0 +1,8 @@
+[package]
+name = "aos-filesystem-fuse-link-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+aos-filesystem-fuse.workspace = true

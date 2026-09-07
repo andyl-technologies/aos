@@ -32,7 +32,35 @@
   pkgs,
   lib,
 }: let
+  # Fleet systems and their runtime closures come from `pkgs`, whose host
+  # platform is the guest architecture during a cross build. Everything that
+  # executes in the derivation sandbox must instead come from buildPackages.
+  hostPkgs = pkgs.buildPackages;
   vmLib = import ./vm.nix {inherit pkgs lib;};
+
+  guestArchitecture = pkgs.stdenv.hostPlatform.constraints.cpu;
+  qemuPlatforms = {
+    x86_64 = {
+      qemuBinary = "qemu-system-x86_64";
+      machineType = "q35";
+      acceleration = "kvm";
+      cpuModel = "host";
+      console = "ttyS0";
+    };
+    aarch64 = {
+      qemuBinary = "qemu-system-aarch64";
+      machineType = "virt";
+      acceleration = "tcg";
+      # This Armv8.0 baseline is already used by the repository's packaged
+      # AArch64 QEMU execution gates. Later ISA extensions remain optional.
+      cpuModel = "cortex-a57";
+      console = "ttyAMA0";
+    };
+  };
+  qemuPlatform =
+    if builtins.hasAttr guestArchitecture qemuPlatforms
+    then builtins.getAttr guestArchitecture qemuPlatforms
+    else throw "fleet: unsupported guest architecture '${guestArchitecture}'";
   # ── MAC scheme (mirrors NixOS qemu-common.nix) ─────────────────────
   # 52:54:00:12:<vlan>:<machine>. The fleet's primary mcast NIC uses
   # vlan byte 0 (in keeping with the original convention here). The
@@ -152,7 +180,7 @@
   }: let
     agentPackage = config.aos.packages.aos-test-agent.package or pkgs.aos-test-agent;
     agentPath = "${agentPackage}/share/aos-test-agent/aos-test-agent";
-    runtimeAgentUnit = pkgs.writeTextFile {
+    runtimeAgentUnit = hostPkgs.writeTextFile {
       name = "aos-fleet-test-agent-runtime-unit";
       destination = "/aos-test-agent.service";
       text = ''
@@ -298,8 +326,8 @@
         compressedImage = effectiveSystem.config.system.build.image.raw;
         compressedImageName = "aos-${effectiveSystem.config.aos.system.name}.img.zst";
         imageDisk =
-          pkgs.runCommand "aos-fleet-${m.name}-image-disk" {
-            buildDeps = [pkgs.zstd];
+          hostPkgs.runCommand "aos-fleet-${m.name}-image-disk" {
+            buildDeps = [hostPkgs.zstd];
           } ''
             mkdir -p "$out"
             zstd -d --sparse --no-progress \
@@ -315,7 +343,7 @@
           builtins.map
           (name: {
             inherit name;
-            source = pkgs.writeTextFile {
+            source = hostPkgs.writeTextFile {
               name = "aos-fleet-${m.name}-metadata-${name}";
               text = m.metadata.${name};
               destination = "/value";
@@ -334,15 +362,15 @@
           else if metadataFiles == []
           then null
           else
-            pkgs.runCommand "aos-fleet-${m.name}-metadata" {
-              buildDeps = [pkgs.libisoburn];
+            hostPkgs.runCommand "aos-fleet-${m.name}-metadata" {
+              buildDeps = [hostPkgs.libisoburn];
             } ''
               mkdir -p "$out/tree"
               ${lib.concatMapStringsSep "\n" (file: ''
                   cp ${file.source}/value "$out/tree/${file.name}"
                 '')
                 metadataFiles}
-              ${pkgs.libisoburn}/bin/xorriso -as mkisofs \
+              ${hostPkgs.libisoburn}/bin/xorriso -as mkisofs \
                 -V aos-metadata \
                 -o "$out/metadata.iso" \
                 "$out/tree"
@@ -397,6 +425,18 @@
     machinesWithIndex = mkMachinesWithIndex machines;
     hostsEntries = mkHostsEntries machinesWithIndex;
     machineBuilds = mkMachineBuilds {inherit machinesWithIndex hostsEntries;};
+    validateMachinePlatform = machine:
+      if
+        guestArchitecture
+        == "aarch64"
+        && (machine.bootMode == "image" || machine.tpm)
+      then
+        throw ''
+          fleet: the aarch64 QEMU profile supports direct-kernel, TPM-less
+          functional tests only. Persistent UEFI/TPM qualification remains a
+          separate release gate.
+        ''
+      else machine;
 
     # Driver manifest. One entry per fleet machine; transport pinned to
     # qemu. The driver consumes this JSON and starts each VM in order,
@@ -419,6 +459,12 @@
               {
                 inherit (mb) name mac ip;
                 transport = "qemu";
+                architecture = guestArchitecture;
+                qemu_binary = qemuPlatform.qemuBinary;
+                machine_type = qemuPlatform.machineType;
+                acceleration = qemuPlatform.acceleration;
+                cpu_model = qemuPlatform.cpuModel;
+                console = qemuPlatform.console;
                 memory_mib = mb.memoryMiB;
                 vcpu_count = 2;
                 # vTPM (RFC-0006 phase 3): when set, the driver launches a
@@ -427,7 +473,7 @@
                 expect_agent = mb.expectAgent;
                 extra_disks = mb.extraDisks;
                 host_store_mount = mb.hostStoreMount;
-                swtpm_bin = "${pkgs.swtpm}/bin/swtpm";
+                swtpm_bin = "${hostPkgs.swtpm}/bin/swtpm";
               }
               // (
                 if mb.bootMode == "image"
@@ -463,14 +509,14 @@
                   })
               )
           )
-          machineBuilds;
+          (builtins.map validateMachinePlatform machineBuilds);
       };
-    manifestFile = pkgs.writeTextFile {
+    manifestFile = hostPkgs.writeTextFile {
       name = "aos-fleet-test-${name}-manifest.json";
       text = builtins.toJSON manifest;
       destination = "/manifest.json";
     };
-    testPyFile = pkgs.writeTextFile {
+    testPyFile = hostPkgs.writeTextFile {
       name = "aos-fleet-test-${name}-test.py";
       text = testScript;
       destination = "/test.py";
@@ -489,7 +535,7 @@
       cp ${manifestFile}/manifest.json "$TMPDIR/manifest.json"
       cp ${testPyFile}/test.py         "$TMPDIR/test.py"
 
-      ${pkgs.aos-test-driver}/bin/aos-test-driver \
+      ${hostPkgs.aos-test-driver}/bin/aos-test-driver \
         --manifest "$TMPDIR/manifest.json" \
         --test     "$TMPDIR/test.py"
 
@@ -500,20 +546,20 @@
       echo PASS > "$out/result"
     '';
 
-    testDrv = pkgs.mkDerivation {
+    testDrv = hostPkgs.mkDerivation {
       pname = "aos-fleet-test-${name}";
       version = "0";
       src = null;
 
       buildDeps = [
-        pkgs.coreutils
-        pkgs.qemu
-        pkgs.socat
-        pkgs.python3
-        pkgs.aos-test-driver
+        hostPkgs.coreutils
+        hostPkgs.qemu
+        hostPkgs.socat
+        hostPkgs.python3
+        hostPkgs.aos-test-driver
         # sgdisk — the driver relocates the GPT backup header after
         # growing an image-boot machine's per-run disk copy.
-        pkgs.gptfdisk
+        hostPkgs.gptfdisk
       ];
 
       phases = [
@@ -523,7 +569,7 @@
         }
       ];
 
-      requiredSystemFeatures = ["kvm"];
+      requiredSystemFeatures = lib.optional (qemuPlatform.acceleration == "kvm") "kvm";
     };
   in
     # Attach `driverInteractive` as a function on the test derivation —
@@ -534,7 +580,13 @@
     testDrv
     // {
       driverInteractive = sshAuthorizedKey:
-        mkFleetTestInteractive {inherit spec sshAuthorizedKey;};
+        if guestArchitecture != "x86_64"
+        then
+          throw ''
+            fleet: interactive mode supports only x86_64; the aarch64 profile
+            is a sandboxed direct-kernel TCG qualification path
+          ''
+        else mkFleetTestInteractive {inherit spec sshAuthorizedKey;};
     };
 
   # ============================================================

@@ -1,0 +1,69 @@
+# Exact source declarations that form the aos.sandbox.v1 compatibility floor.
+# Additive fields and RPCs are allowed. Removing, renaming, or renumbering any
+# line below requires a new API package rather than an edit to this fixture.
+
+package aos.sandbox.v1;
+message MutationContext {
+bytes idempotency_key = 1;
+bytes expected_resource_version = 2;
+bytes expected_incarnation_id = 3;
+Duration operation_timeout = 4;
+repeated Feature required_features = 5;
+message Operation {
+bytes operation_id = 1;
+bytes resource_version = 2;
+OperationPhase phase = 4;
+uint64 accepted_generation = 5;
+RetryClass retry_class = 7;
+bool cancelable = 13;
+message WatchRequest {
+WatchCursor resume_after = 4;
+message Event {
+bytes event_id = 1;
+uint64 sequence = 2;
+bytes resume_cursor = 9;
+bytes bootstrap_watermark = 10;
+service SandboxService {
+rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
+rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
+rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
+rpc ListChildren(ListChildrenRequest) returns (ListChildrenResponse);
+rpc ListAncestors(ListAncestorsRequest) returns (ListAncestorsResponse);
+rpc ListDescendants(ListDescendantsRequest) returns (ListDescendantsResponse);
+rpc PlanPolicy(PlanSandboxPolicyRequest) returns (PlanSandboxPolicyResponse);
+rpc UpdatePolicy(UpdateSandboxPolicyRequest) returns (UpdateSandboxPolicyResponse);
+rpc Start(SandboxLifecycleRequest) returns (SandboxLifecycleResponse);
+rpc Stop(SandboxLifecycleRequest) returns (SandboxLifecycleResponse);
+rpc Suspend(SandboxLifecycleRequest) returns (SandboxLifecycleResponse);
+rpc Resume(SandboxLifecycleRequest) returns (SandboxLifecycleResponse);
+rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
+service ExecutionService {
+rpc CreateExecution(CreateExecutionRequest) returns (CreateExecutionResponse);
+rpc GetExecution(GetExecutionRequest) returns (GetExecutionResponse);
+rpc ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse);
+rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse);
+service FilesystemViewService {
+rpc CreateView(CreateViewRequest) returns (CreateViewResponse);
+rpc GetView(GetViewRequest) returns (GetViewResponse);
+rpc ListViews(ListViewsRequest) returns (ListViewsResponse);
+rpc AttachView(AttachViewRequest) returns (AttachViewResponse);
+rpc ReplaceAttachment(ReplaceAttachmentRequest) returns (ReplaceAttachmentResponse);
+rpc DetachView(DetachViewRequest) returns (DetachViewResponse);
+rpc ReleaseView(ReleaseViewRequest) returns (ReleaseViewResponse);
+service SnapshotService {
+rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
+rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
+rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
+rpc RestoreSnapshot(RestoreSnapshotRequest) returns (RestoreSnapshotResponse);
+rpc ForkSnapshot(ForkSnapshotRequest) returns (ForkSnapshotResponse);
+rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
+service CapabilityService {
+rpc Attenuate(AttenuateCapabilityRequest) returns (AttenuateCapabilityResponse);
+rpc Inspect(InspectCapabilityRequest) returns (InspectCapabilityResponse);
+rpc Renew(RenewCapabilityRequest) returns (RenewCapabilityResponse);
+rpc Revoke(RevokeCapabilityRequest) returns (RevokeCapabilityResponse);
+service OperationService {
+rpc GetOperation(GetOperationRequest) returns (GetOperationResponse);
+rpc CancelOperation(CancelOperationRequest) returns (CancelOperationResponse);
+rpc Watch(WatchRequest) returns (stream Event);
+rpc GetNodeCapabilities(GetNodeCapabilitiesRequest) returns (GetNodeCapabilitiesResponse);

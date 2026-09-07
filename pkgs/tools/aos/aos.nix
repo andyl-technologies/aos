@@ -12,6 +12,7 @@
   perl,
   openssl,
   aos-landlock,
+  aos-fuse-transport,
   aos-service-root,
   aos-selinux-run,
   aos-verity-root-guard,
@@ -118,6 +119,8 @@
     "aos-core"
     "aos-doc"
     "aos-doc-model"
+    "aos-filesystem-view"
+    "aos-filesystem-fuse"
     "aos-hub"
     "aos-hub-core"
     "aos-hub-worker"
@@ -133,6 +136,12 @@
     "aos-registry-surface"
     "aos-release"
     "aos-remote"
+    "aos-sandbox-core"
+    "aos-sandbox-ownership-protocol"
+    "aos-sandbox-protocol"
+    "aos-sandbox"
+    "aos-sandbox-linux"
+    "aos-sandbox-host"
     "aos-server"
     "aos-systemd"
   ];
@@ -148,7 +157,10 @@
   cargoArtifactContract = {
     family = "aos-native-release-and-test";
     checkType = "debug";
-    nativeInputs = map toString [openssl sqlite buildProtobuf buildCmake libssh2];
+    nativeInputs = map toString (
+      [openssl sqlite buildProtobuf buildCmake libssh2]
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport]
+    );
   };
   cargoEnv = {
     OPENSSL_DIR = "${openssl}";
@@ -174,8 +186,12 @@
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
     ];
     inherit cargoEnv;
-    buildDeps = [buildPerl buildPkgConfig openssl sqlite buildProtobuf buildCmake libssh2];
-    runtimeDeps = [openssl sqlite zlib];
+    buildDeps =
+      [buildPerl buildPkgConfig openssl sqlite buildProtobuf buildCmake libssh2]
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
+    runtimeDeps =
+      [openssl sqlite zlib]
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
   };
 in
   mkCargoPackage {
@@ -189,6 +205,9 @@ in
     inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
+    # Preserve failing-test details in retained Nix build directories, even
+    # when the terminal reporter only emits a generic test-run failure.
+    nextestFlags = "--profile ci";
     # Compilation still uses every allocated build core. Bound concurrent test
     # processes separately so loopback servers and SQLite workers retain enough
     # scheduler time to satisfy their production-sized deadlines on large hosts.
@@ -206,12 +225,14 @@ in
     # inspect, commit, and publish isolated Git worktrees without host tools.
     buildDeps =
       [buildPerl buildPkgConfig openssl sqlite buildProtobuf buildCmake libssh2 buildGitMinimal buildOpenSsh]
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
       [openssl sqlite zlib]
       ++ aosRuntimeTools
       ++ aprRuntimeTools
       ++ apmRuntimeTools
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport]
       ++ lib.optionals (!isDarwinCross) linuxRuntimeDeps;
 
     # mkDerivation normally constructs one RPATH from every runtimeDep. That

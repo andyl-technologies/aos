@@ -36,7 +36,7 @@
   python3-pefile,
   python3-pyelftools,
 }: let
-  version = "259.1";
+  version = "259.8";
 
   # PYTHONPATH that makes `import pefile` / `import elftools` succeed
   # when ukify runs (both also needed during meson configure — see
@@ -57,7 +57,7 @@ in
       urls = [
         "https://github.com/systemd/systemd/archive/refs/tags/v${version}.tar.gz"
       ];
-      hash = "sha256-evTzbbUSrS8PdJoPmIY3Dt6yu1EoAU/EfN9zcCx+GRE=";
+      hash = "sha256-eECOyN7Dwn6XphbzUNXFLZYBbUuflXbpv1ghHw2ZZLc=";
     };
 
     # Patches applied after unpack (via mkDerivation's built-in patch phase):
@@ -76,6 +76,16 @@ in
     #          rejects the dm-verity signed-key activation.
     #   0006 — Keep an embedded signed UKI command line authoritative over
     #          addon and SMBIOS fragments that run before initrd validation.
+    #   0007 — Add the closed AOS payload seccomp profile to nspawn and install
+    #          it after container setup, immediately before payload execution.
+    #   0008 — Consume a named supervisor-only root descriptor without
+    #          reopening its pathname or forwarding it to the payload.
+    #   0009 — Test fail-closed shutdown-intent state for retained-supervisor
+    #          reboot support. Runtime integration is a separate step.
+    #   0010 — Authenticate per-boot shutdown intent and reset the empty payload
+    #          cgroup while retaining the AOS supervisor and unit invocation.
+    #   0011 — Install a broker-owned attachment anchor from an exact named
+    #          descriptor with the target idmap and hard read-only attributes.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -83,6 +93,11 @@ in
       ./patches/0004-skip-runtime-dir-for-test-run-manager.patch
       ./patches/0005-fail-closed-on-roothash-signature-rejection.patch
       ./patches/0006-ignore-external-cmdline-for-embedded-uki.patch
+      ./patches/0007-nspawn-aos-payload-seccomp-profile.patch
+      ./patches/0008-nspawn-owned-root-descriptor.patch
+      ./patches/0009-nspawn-shutdown-intent-state.patch
+      ./patches/0010-nspawn-retained-supervisor-reboot.patch
+      ./patches/0011-nspawn-attachment-anchor-descriptor.patch
     ];
 
     buildDeps = [
@@ -392,6 +407,89 @@ in
             [ "$grepStatus" -eq 1 ] || exit "$grepStatus"
           fi
           rm -f "$nativePythonRefs"
+        '';
+      }
+      {
+        name = "check";
+        script = ''
+          version_output="$($out/lib/systemd/systemd --version)"
+          version_line="$(echo "$version_output" | head -n 1)"
+          if [ "$version_line" != "systemd 259 (${version})" ]; then
+            echo "ERROR: unexpected systemd version: $version_line" >&2
+            exit 1
+          fi
+
+          for required_feature in +PAM +AUDIT +SELINUX +SECCOMP +OPENSSL \
+            +ACL +BLKID +KMOD +LIBCRYPTSETUP +TPM2; do
+            if ! echo "$version_output" | grep -F -q -- "$required_feature"; then
+              echo "ERROR: systemd lacks required feature $required_feature" >&2
+              exit 1
+            fi
+          done
+
+          for executable in systemctl systemd-analyze systemd-nspawn; do
+            if [ ! -x "$out/bin/$executable" ]; then
+              echo "ERROR: systemd did not install $executable" >&2
+              exit 1
+            fi
+            "$out/bin/$executable" --version > /dev/null
+          done
+
+          if ! "$out/bin/systemd-nspawn" --help | grep -F -q -- \
+            '--aos-payload-seccomp-profile=PROFILE'; then
+            echo "ERROR: systemd-nspawn lacks the AOS payload seccomp option" >&2
+            exit 1
+          fi
+
+          if "$out/bin/systemd-nspawn" \
+            --aos-payload-seccomp-profile=not-a-profile \
+            --directory=/nonexistent > /dev/null 2>&1; then
+            echo "ERROR: systemd-nspawn accepted an unknown AOS payload profile" >&2
+            exit 1
+          fi
+
+          ./test-nspawn-seccomp
+          ./test-nspawn-root-fd
+          ./test-nspawn-lifecycle
+
+          if ! "$out/bin/systemd-nspawn" --help | grep -F -q -- \
+            '--aos-lifecycle-profile=PROFILE'; then
+            echo "ERROR: systemd-nspawn lacks the AOS lifecycle option" >&2
+            exit 1
+          fi
+          if "$out/bin/systemd-nspawn" --aos-lifecycle-profile=unknown \
+            > /dev/null 2>&1; then
+            echo "ERROR: systemd-nspawn accepted an unknown lifecycle profile" >&2
+            exit 1
+          fi
+          if "$out/bin/systemd-nspawn" \
+            --aos-lifecycle-profile=aos-sandbox-lifecycle-v1 \
+            --aos-lifecycle-profile=aos-sandbox-lifecycle-v1 \
+            > /dev/null 2>&1; then
+            echo "ERROR: systemd-nspawn accepted a repeated lifecycle profile" >&2
+            exit 1
+          fi
+
+          if ! "$out/bin/systemd-nspawn" --help | grep -F -q -- \
+            '--aos-root-mount-fd=NAME'; then
+            echo "ERROR: systemd-nspawn lacks the AOS root descriptor option" >&2
+            exit 1
+          fi
+          if "$out/bin/systemd-nspawn" --aos-root-mount-fd=unknown \
+            > /dev/null 2>&1; then
+            echo "ERROR: systemd-nspawn accepted an unknown root descriptor role" >&2
+            exit 1
+          fi
+          if ! "$out/bin/systemd-nspawn" --help | grep -F -q -- \
+            '--aos-attachment-anchor-fd=NAME'; then
+            echo "ERROR: systemd-nspawn lacks the AOS attachment-anchor option" >&2
+            exit 1
+          fi
+          if "$out/bin/systemd-nspawn" --aos-attachment-anchor-fd=unknown \
+            > /dev/null 2>&1; then
+            echo "ERROR: systemd-nspawn accepted an unknown attachment-anchor descriptor role" >&2
+            exit 1
+          fi
         '';
       }
       {

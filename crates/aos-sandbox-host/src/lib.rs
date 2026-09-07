@@ -1,0 +1,87 @@
+//! Root-only fixed-function host broker for AOS sandbox runtimes.
+//!
+//! The broker accepts only semantically validated local runtime requests,
+//! durably fences assignment generations and request replays, resolves opaque
+//! workspace/network/attachment handles through a trusted node catalog, and
+//! invokes one short-lived typed systemd worker transaction. It never accepts
+//! a caller-selected path, command, unit name, D-Bus property, or signal.
+//!
+//! Modules divide the privilege boundary as follows:
+//!
+//! - [`activation`] adopts the sole systemd-owned broker socket;
+//! - [`authorization`] exposes the shared CTRL-03/host semantic compiler and
+//!   owns host-audience admission;
+//! - [`plan`] resolves catalog handles and compiles the fixed nspawn launch;
+//! - [`catalog`] resolves launch resources from one atomic root-owned snapshot;
+//! - [`peer`] pins the controller process to its exact service cgroup;
+//! - [`recovery`] joins authenticated runtime authority with bounded discovery;
+//! - [`service`] serves one bounded request per verified connection;
+//! - [`state`] persists fences, pending effects, and replay receipts;
+//! - [`transport`] validates systemd-activated local packet sockets;
+//! - [`worker`] performs idempotent typed systemd and pidfd operations;
+//! - [`broker`] orders validation, durability, effects, and replies.
+
+pub mod activation;
+pub mod authorization;
+pub mod broker;
+pub mod catalog;
+mod observation;
+pub mod peer;
+pub mod plan;
+pub mod recovery;
+pub mod service;
+pub mod state;
+pub mod transport;
+pub mod worker;
+
+pub(crate) const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
+
+/// Errors returned by the fixed host broker.
+#[derive(Debug, thiserror::Error)]
+pub enum HostError {
+    /// Hostile or unauthorized local protocol input was rejected.
+    #[error("host protocol rejected request: {0}")]
+    Protocol(#[from] aos_sandbox_protocol::ProtocolValidationError),
+    /// The trusted catalog could not resolve an exact opaque handle tuple.
+    #[error("host catalog rejected launch: {0}")]
+    Catalog(String),
+    /// An opaque runtime handle or exact durable assignment is unknown.
+    #[error("host runtime handle is unavailable")]
+    UnknownHandle,
+    /// A complete bounded response cannot represent current durable state.
+    #[error("host runtime inventory exceeds its fixed bound")]
+    ResourceExhausted,
+    /// A resolved launch plan violates the fixed backend profile.
+    #[error("invalid resolved host launch plan: {0}")]
+    InvalidPlan(String),
+    /// Durable host fence or replay state is corrupt or unavailable.
+    #[error("host durable state failure: {0}")]
+    State(String),
+    /// A request is stale or contradicts durable host state.
+    #[error("host request fence conflict: {0}")]
+    Fence(&'static str),
+    /// Signed plan, ownership lease, or authenticated local authority failed.
+    #[error("host authority rejected request: {0}")]
+    Authority(#[from] aos_sandbox_broker::BrokerAdmissionError),
+    /// The fixed systemd worker could not complete or verify an effect.
+    #[error("host worker failure: {0}")]
+    Worker(String),
+    /// A retained kernel descriptor could not be duplicated for a bounded reply.
+    #[error("host descriptor operation {operation} failed: {source}")]
+    Descriptor {
+        /// Fixed operation label, without caller-selected paths or handles.
+        operation: &'static str,
+        /// Original descriptor error retained for local diagnostics.
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+impl From<aos_sandbox_protocol::HostCatalogSnapshotError> for HostError {
+    fn from(error: aos_sandbox_protocol::HostCatalogSnapshotError) -> Self {
+        Self::Catalog(error.to_string())
+    }
+}
+
+/// Convenience result type for host broker operations.
+pub type Result<T> = std::result::Result<T, HostError>;

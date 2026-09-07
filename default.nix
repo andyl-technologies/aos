@@ -366,9 +366,37 @@
   # ---------------------------------------------------------------------------
   fleetHarness = import ./lib/testing/fleet.nix {inherit pkgs lib;};
 
-  discoverFleetTests = let
-    fleetSpec = import ./lib/testing/fleet-spec.nix {inherit lib pkgs;};
+  fleetSpec = import ./lib/testing/fleet-spec.nix {inherit lib pkgs;};
+  loadFleetSpec = filename: let
+    specModule = import (./tests/fleet + "/${filename}");
+    availableArgs = {
+      inherit lib pkgs mkSystem;
+      inherit (testing) dataUrl mkDarlingFleetSpec mkDarlingFleetSuite;
+      systems = discoverSystems;
+      # Fleet checks consume the exact local-platform production subject and
+      # unsigned signing inputs without importing flake self recursively.
+      containerPublicationInputs =
+        if containerPublicationInputsOverride != null
+        then containerPublicationInputsOverride
+        else containerImages.aos.publicationInputs;
+    };
+    raw = specModule (
+      lib.filterAttrs (name: _: builtins.hasAttr name (builtins.functionArgs specModule))
+      availableArgs
+    );
+    eval = lib.evalModules {
+      modules = [
+        {options.spec = lib.mkOption {type = fleetSpec.fleetSpecType;};}
+        {config.spec = raw;}
+      ];
+    };
+  in
+    eval.config.spec;
 
+  mkFleetTestFromFile = filename:
+    fleetHarness.mkFleetTest (loadFleetSpec filename);
+
+  discoverFleetTests = let
     entries = builtins.readDir ./tests/fleet;
     fleetFiles = builtins.filter (
       n:
@@ -377,37 +405,11 @@
         && builtins.match ".*\\.nix" n != null
         && builtins.substring 0 1 n != "_"
     ) (builtins.attrNames entries);
-
-    loadSpec = filename: let
-      specModule = import (./tests/fleet + "/${filename}");
-      availableArgs = {
-        inherit lib pkgs mkSystem;
-        inherit (testing) dataUrl mkDarlingFleetSpec mkDarlingFleetSuite;
-        systems = discoverSystems;
-        # Fleet checks consume the exact local-platform production subject and
-        # unsigned signing inputs without importing flake self recursively.
-        containerPublicationInputs =
-          if containerPublicationInputsOverride != null
-          then containerPublicationInputsOverride
-          else containerImages.aos.publicationInputs;
-      };
-      raw = specModule (
-        lib.filterAttrs (name: _: builtins.hasAttr name (builtins.functionArgs specModule))
-        availableArgs
-      );
-      eval = lib.evalModules {
-        modules = [
-          {options.spec = lib.mkOption {type = fleetSpec.fleetSpecType;};}
-          {config.spec = raw;}
-        ];
-      };
-    in
-      eval.config.spec;
   in
     builtins.listToAttrs (
       map (filename: {
         name = lib.removeSuffix ".nix" filename;
-        value = fleetHarness.mkFleetTest (loadSpec filename);
+        value = mkFleetTestFromFile filename;
       })
       fleetFiles
     );
@@ -1086,7 +1088,7 @@
       referenceIntegrity = crucibleReferenceIntegrity;
     };
 in {
-  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions;
+  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem mkFleetTestFromFile packagesWithExpose containerImages containerDefinitions;
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
   # this value with strict JSON evaluation before resolving any derivation.
@@ -1177,6 +1179,7 @@ in {
       gcc-config-shell = import ./tests/build/mk-gcc-config-shell.nix {inherit pkgs lib;};
       hardening-probe = import ./tests/build/hardening-probe.nix {inherit pkgs lib;};
       kernel-config = import ./tests/build/kernel-config.nix {inherit pkgs lib;};
+      sandbox-linux-uapi = import ./tests/build/sandbox-linux-uapi.nix {inherit pkgs;};
       linux-cross-smoke = import ./tests/build/linux-cross-smoke.nix {
         pkgs = buildPackages;
       };
@@ -1191,7 +1194,7 @@ in {
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in
       {
-        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-smoke package-platform-support package-root-image systemd-verity golden-image-budgets;
+        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-smoke package-platform-support package-root-image sandbox-linux-uapi systemd-verity golden-image-budgets;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
           pname = "aos-build-checks-all";
@@ -1203,7 +1206,7 @@ in {
               then [bootstrap-seed]
               else []
             )
-            ++ [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config package-platform-support package-root-image systemd-verity]
+            ++ [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config package-platform-support package-root-image sandbox-linux-uapi systemd-verity]
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues golden-image-budgets;
           phases = [
@@ -1247,6 +1250,12 @@ in {
     registry-hub = import ./lib/testing/registry-hub.nix {
       inherit pkgs lib mkSystem;
       serverModule = ./systems/server.nix;
+    };
+    sandbox-broker-credentials = import ./lib/testing/sandbox-broker-credentials.nix {
+      inherit pkgs lib mkSystem;
+    };
+    sandbox-network-broker = import ./lib/testing/sandbox-network-broker.nix {
+      inherit pkgs lib mkSystem;
     };
     aos-registry-server-config = import ./lib/testing/aos-registry-server-config.nix {
       inherit pkgs lib;
@@ -1333,6 +1342,7 @@ in {
           package-expose
           aos-registry-server-config
           registry-hub
+          sandbox-broker-credentials
           nginx-config
           k3s-config
           integration.envoy-config-module-contract
@@ -1417,6 +1427,15 @@ in {
         apm = apmTests;
         hub-native-operations = hubNativeOperationsTest;
         hub-settings = hubSettingsTest;
+        sandbox-filesystem-capability = import ./tests/vm/sandbox-filesystem-capability.nix {
+          inherit testing pkgs lib;
+        };
+        sandbox-service-journal = import ./tests/vm/sandbox-service-journal.nix {
+          inherit testing pkgs lib;
+        };
+        sandbox-local-identity = import ./tests/vm/sandbox-local-identity.nix {
+          inherit testing pkgs lib;
+        };
         apm-install-at-boot = apmInstallAtBootCheck;
         package-expose-lifecycle = packageExposeLifecycleCheck;
         package-preset = packagePresetCheck;

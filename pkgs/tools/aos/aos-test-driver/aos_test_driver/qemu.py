@@ -23,6 +23,23 @@ from .machine import Machine
 
 log: logging.Logger = logging.getLogger(__name__)
 
+QEMU_PLATFORM_PROFILES: dict[str, dict[str, str]] = {
+    "x86_64": {
+        "qemu_binary": "qemu-system-x86_64",
+        "machine_type": "q35",
+        "acceleration": "kvm",
+        "cpu_model": "host",
+        "console": "ttyS0",
+    },
+    "aarch64": {
+        "qemu_binary": "qemu-system-aarch64",
+        "machine_type": "virt",
+        "acceleration": "tcg",
+        "cpu_model": "cortex-a57",
+        "console": "ttyAMA0",
+    },
+}
+
 
 def _mcast_endpoint() -> tuple[str, int]:
     """Pick a per-driver-process multicast group + port for the fleet L2.
@@ -76,6 +93,12 @@ class QemuMachine(Machine):
     transport: ClassVar[Driver] = "qemu"
 
     boot: str
+    architecture: str
+    qemu_binary: str
+    machine_type: str
+    acceleration: str
+    cpu_model: str
+    console: str
     kernel_pkg: str | None
     initrd_path: str | None
     disk_src: str
@@ -119,6 +142,12 @@ class QemuMachine(Machine):
         ip: str,
         tmpdir: str,
         boot: str = "kernel",
+        architecture: str = "x86_64",
+        qemu_binary: str | None = None,
+        machine_type: str | None = None,
+        acceleration: str | None = None,
+        cpu_model: str | None = None,
+        console: str | None = None,
         kernel: str | None = None,
         initrd: str | None = None,
         metadata: str | None = None,
@@ -132,7 +161,46 @@ class QemuMachine(Machine):
         tpm: bool = False,
         swtpm_bin: str | None = None,
     ) -> None:
+        profile = QEMU_PLATFORM_PROFILES.get(architecture)
+        if profile is None:
+            raise RuntimeError(
+                f"[{name}] unsupported qemu architecture {architecture!r}"
+            )
+        if architecture == "aarch64" and boot == "image":
+            raise RuntimeError(
+                f"[{name}] image boot is not implemented for"
+                f" architecture {architecture}"
+            )
+        if architecture == "aarch64" and tpm:
+            raise RuntimeError(
+                f"[{name}] TPM attachment is not implemented for"
+                f" architecture {architecture}"
+            )
+
+        platform_fields = {
+            "qemu_binary": qemu_binary,
+            "machine_type": machine_type,
+            "acceleration": acceleration,
+            "cpu_model": cpu_model,
+            "console": console,
+        }
+        normalized_platform: dict[str, str] = {}
+        for field, supplied in platform_fields.items():
+            expected = profile[field]
+            if supplied is not None and supplied != expected:
+                raise RuntimeError(
+                    f"[{name}] qemu {architecture} profile requires"
+                    f" {field}={expected!r} (got {supplied!r})"
+                )
+            normalized_platform[field] = expected
+
         self.boot = boot
+        self.architecture = architecture
+        self.qemu_binary = normalized_platform["qemu_binary"]
+        self.machine_type = normalized_platform["machine_type"]
+        self.acceleration = normalized_platform["acceleration"]
+        self.cpu_model = normalized_platform["cpu_model"]
+        self.console = normalized_platform["console"]
         self.kernel_pkg = kernel
         self.initrd_path = initrd
         self.disk_src = disk
@@ -402,6 +470,24 @@ class QemuMachine(Machine):
                 )
             time.sleep(0.05)
 
+    def _base_qemu_argv(self) -> list[str]:
+        """Builds the reviewed architecture-specific QEMU command prefix."""
+        # The current image boot path is the x86_64 SB+SMM OVMF contract.
+        # Direct-kernel boots use the architecture's plain machine type.
+        machine_options = [self.machine_type]
+        if self.boot == "image":
+            machine_options.append("smm=on")
+        machine_options.append(f"accel={self.acceleration}")
+        machine = ",".join(machine_options)
+        return [
+            self.qemu_binary,
+            "-machine", machine,
+            "-cpu", self.cpu_model,
+            "-m", str(self.memory_mib),
+            "-smp", str(self.vcpu_count),
+            "-nographic",
+        ]
+
     # ------------------------------------------------------------------
     def _launch(self) -> None:
         """Start the QEMU process against the prepared per-run artifacts.
@@ -409,6 +495,10 @@ class QemuMachine(Machine):
         Split out of start() so reboot() can relaunch against the same
         disk/NVRAM state without re-running the prep (copy/grow/sgdisk).
         """
+        # Construct and validate the platform prefix before starting helper
+        # processes or opening the serial bridge.
+        argv = self._base_qemu_argv()
+
         # vTPM must be up before QEMU connects to its socket — on the reboot
         # leg swtpm died with the previous QEMU, so (re)launch it here.
         self._ensure_swtpm()
@@ -416,20 +506,6 @@ class QemuMachine(Machine):
         # bridge on every launch so relaunch-based recovery and rejected-input
         # tests retain both their transcript and interactive console.
         self._start_serial_bridge()
-
-        # Image boot uses the SB+SMM OVMF, which requires the q35 SMM
-        # machine. Kernel boot keeps the plain machine.
-        machine = (
-            "q35,smm=on,accel=kvm" if self.boot == "image" else "q35,accel=kvm"
-        )
-        argv: list[str] = [
-            "qemu-system-x86_64",
-            "-machine", machine,
-            "-cpu", "host",
-            "-m", str(self.memory_mib),
-            "-smp", str(self.vcpu_count),
-            "-nographic",
-        ]
 
         if self.boot == "image":
             # UEFI image boot: OVMF code (read-only) + per-run vars on
@@ -464,7 +540,7 @@ class QemuMachine(Machine):
                 "-initrd", initrd,
                 "-append",
                 (
-                    "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro "
+                    f"console={self.console} reboot=k panic=1 root=/dev/vda2 ro "
                     "systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 "
                     "systemd.journald.forward_to_console=1 enforcing=0 "
                     "net.ifnames=0"
@@ -578,8 +654,8 @@ class QemuMachine(Machine):
             "-chardev",
             f"socket,id=agent,path={self.agent.socket_path},server=on,wait=off",
             "-chardev",
-            f"socket,id=ttyS0,path={self.serial_socket},server=off",
-            "-serial", "chardev:ttyS0",
+            f"socket,id={self.console},path={self.serial_socket},server=off",
+            "-serial", f"chardev:{self.console}",
             "-netdev",
             f"socket,id=net0,mcast={MCAST_GROUP}:{MCAST_PORT},localaddr=127.0.0.1",
             "-device", f"virtio-net-pci,netdev=net0,mac={self.mac}",

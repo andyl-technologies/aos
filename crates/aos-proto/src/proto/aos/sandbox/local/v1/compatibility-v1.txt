@@ -1,0 +1,20 @@
+# Exact node-local V1 declarations that are now compatibility semantics.
+# Additive fields and methods are allowed; these lines may not be removed,
+# renamed, or renumbered within aos.sandbox.local.v1.
+
+package aos.sandbox.local.v1;
+BROKER_METHOD_HOST_APPLY_RUNTIME = 1;
+BROKER_METHOD_HOST_OBSERVE_RUNTIME = 2;
+BROKER_METHOD_HOST_INVENTORY_RUNTIME = 3;
+BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT = 11;
+message QueryRuntimeEffectRequest {
+RequestHeader header = 1;
+bytes original_apply_request = 2;
+enum RuntimeEffectStatus {
+RUNTIME_EFFECT_STATUS_ABSENT = 1;
+RUNTIME_EFFECT_STATUS_PENDING = 2;
+RUNTIME_EFFECT_STATUS_COMPLETE = 3;
+message QueryRuntimeEffectResponse {
+RuntimeEffectStatus status = 1;
+bytes receipt = 2;
+rpc QueryRuntimeEffect(QueryRuntimeEffectRequest) returns (QueryRuntimeEffectResponse);
