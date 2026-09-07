@@ -21,23 +21,31 @@ use std::path::Path;
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::model::{NetworkKind, NetworkProfile, SandboxSpec};
 use aos_sandbox_core::{
-    BrokerAssignment, CanonicalAssignmentManifestV1, DecodeLimits, NodeId, ObjectDigest,
-    decode_sandbox_spec, descriptor_for_bytes, encode_sandbox_spec,
+    BrokerAssignment, CanonicalAssignmentManifestV1, DecodeLimits, NetworkEndpointId, NodeId,
+    ObjectDigest, decode_sandbox_spec, descriptor_for_bytes, encode_sandbox_spec,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use crate::allocation::{
+    NetworkAddressPoolV1, NetworkAllocationPolicyV1, NetworkNamespacePlanV1,
+    NetworkProgramCommitmentsV1,
+};
 use crate::authorization::NetworkAuthorityV1;
 use crate::catalog::{
     AuthenticatedNetworkPreparationV1, ResolvedEndpointV1, ResolvedNetworkPreparationV1,
 };
-use crate::policy::NetworkPolicyProgramV1;
+use crate::policy::{NetworkIpPrefixV1, NetworkPolicyProgramV1, program_digest_from_commitments};
 
 const PREPARATION_JOURNAL_FILE: &str = "network-preparations.journal";
 const HEAD_KEY: &[u8] = b"aos.network.preparation.head.v1\0";
+const ALLOCATION_HEAD_KEY: &[u8] = b"aos.network.allocation.head.v1\0";
 const RECORD_KEY_PREFIX: &[u8] = b"aos.network.preparation.v1\0";
+const ALLOCATION_KEY_PREFIX: &[u8] = b"aos.network.allocation.v1\0";
 const RECORD_FORMAT_VERSION: u16 = 1;
 const POLICY_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.policy-catalog.v1\0";
+const PROFILE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.profile-selection.v1\0";
+const LEGACY_ALLOCATION_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.legacy-allocation-set.v1\0";
 const RESERVATION_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.preparation-reservation.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.network.preparation-transaction.v1\0";
 const MAXIMUM_PROFILES: usize = 256;
@@ -79,26 +87,31 @@ pub enum NetworkPreparationCatalogError {
 pub struct NetworkPolicyProfileV1 {
     portable_profile: NetworkProfile,
     program: NetworkPolicyProgramV1,
+    allocation: NetworkAllocationPolicyV1,
+    profile_digest: ObjectDigest,
     endpoints: Vec<ResolvedEndpointV1>,
 }
 
 impl NetworkPolicyProfileV1 {
     /// Constructs one complete root-configured policy selection.
     ///
-    /// The typed program must implement the portable profile's network kind and
-    /// reproduce its endpoint IDs in exact canonical order. Profile and
-    /// endpoint digests are derived from that program rather than accepted as
-    /// opaque caller assertions.
+    /// The typed packet program and allocation policy must implement the
+    /// portable profile's network kind, and the program must reproduce its
+    /// endpoint IDs in exact canonical order. Profile and endpoint digests are
+    /// derived from those typed objects rather than accepted as opaque caller
+    /// assertions.
     ///
     /// # Errors
     ///
-    /// Returns [`NetworkPreparationCatalogError::InvalidPolicy`] for a kind or
-    /// endpoint mismatch.
+    /// Returns [`NetworkPreparationCatalogError::InvalidPolicy`] for a kind,
+    /// allocation-shape, or endpoint mismatch.
     pub fn new(
         portable_profile: NetworkProfile,
         program: NetworkPolicyProgramV1,
+        allocation: NetworkAllocationPolicyV1,
     ) -> Result<Self, NetworkPreparationCatalogError> {
         if portable_profile.kind() != program.kind()
+            || !allocation.compatible_with_kind(portable_profile.kind())
             || !portable_profile.endpoint_ids().iter().copied().eq(program
                 .endpoints()
                 .iter()
@@ -114,10 +127,13 @@ impl NetworkPolicyProfileV1 {
             })
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| NetworkPreparationCatalogError::InvalidPolicy)?;
+        let profile_digest = profile_digest(&program, &allocation);
 
         Ok(Self {
             portable_profile,
             program,
+            allocation,
+            profile_digest,
             endpoints,
         })
     }
@@ -131,13 +147,19 @@ impl NetworkPolicyProfileV1 {
     /// Returns the protected local policy-program digest.
     #[must_use]
     pub const fn profile_digest(&self) -> ObjectDigest {
-        self.program.digest()
+        self.profile_digest
     }
 
     /// Returns the complete typed local policy program.
     #[must_use]
     pub const fn program(&self) -> &NetworkPolicyProgramV1 {
         &self.program
+    }
+
+    /// Returns the complete node-local address and link allocation policy.
+    #[must_use]
+    pub const fn allocation_policy(&self) -> &NetworkAllocationPolicyV1 {
+        &self.allocation
     }
 
     /// Returns canonical logical-endpoint to local-policy bindings.
@@ -192,6 +214,16 @@ impl NetworkPolicyCatalogV1 {
                 return Err(NetworkPreparationCatalogError::InvalidPolicy);
             }
             portable_profiles.push(profile.portable_profile());
+        }
+        for (index, profile) in profiles.iter().enumerate() {
+            for other in &profiles[index + 1..] {
+                if allocation_pools_conflict(
+                    profile.allocation_policy().address_pools(),
+                    other.allocation_policy().address_pools(),
+                ) {
+                    return Err(NetworkPreparationCatalogError::InvalidPolicy);
+                }
+            }
         }
 
         let digest = policy_catalog_digest(node, generation, &profiles)?;
@@ -324,6 +356,7 @@ pub struct NetworkPreparationCatalogV1 {
     journal: Journal,
     policy: NetworkPolicyCatalogV1,
     records: BTreeMap<[u8; 32], PreparationRecordV1>,
+    plans: BTreeMap<[u8; 32], NetworkNamespacePlanV1>,
 }
 
 impl NetworkPreparationCatalogV1 {
@@ -349,7 +382,35 @@ impl NetworkPreparationCatalogV1 {
             PREPARATION_JOURNAL_FILE,
             preparation_journal_limits(),
         )?;
-        Self::recover(journal, policy, minimum_generation)
+        Self::recover(journal, policy, minimum_generation, false)
+    }
+
+    /// Explicitly marks every pre-allocation reservation as legacy.
+    ///
+    /// This one-time migration accepts a pre-feature journal only when it has
+    /// retained preparation records but no allocation marker or allocation
+    /// records. It durably commits the exact legacy handle set; those handles
+    /// remain ineligible for implicit allocation and must be settled before an
+    /// effect can begin. The supplied upgrade policy must retain the original
+    /// typed packet program and endpoint commitments for every legacy profile
+    /// until migration completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkPreparationCatalogError`] for unsafe filesystem state,
+    /// a non-legacy or malformed snapshot, identity conflicts, or policy
+    /// rollback. Ordinary startup must use [`Self::open_root_owned`].
+    pub fn migrate_legacy_root_owned(
+        directory: &Path,
+        policy: NetworkPolicyCatalogV1,
+        minimum_generation: u64,
+    ) -> Result<Self, NetworkPreparationCatalogError> {
+        let (journal, _) = Journal::open_protected_at(
+            directory,
+            PREPARATION_JOURNAL_FILE,
+            preparation_journal_limits(),
+        )?;
+        Self::recover(journal, policy, minimum_generation, true)
     }
 
     #[cfg(test)]
@@ -362,23 +423,56 @@ impl NetworkPreparationCatalogV1 {
             directory.join(PREPARATION_JOURNAL_FILE),
             preparation_journal_limits(),
         )?;
-        Self::recover(journal, policy, minimum_generation)
+        Self::recover(journal, policy, minimum_generation, false)
+    }
+
+    #[cfg(test)]
+    fn migrate_legacy_for_test(
+        directory: &Path,
+        policy: NetworkPolicyCatalogV1,
+        minimum_generation: u64,
+    ) -> Result<Self, NetworkPreparationCatalogError> {
+        let (journal, _) = Journal::open(
+            directory.join(PREPARATION_JOURNAL_FILE),
+            preparation_journal_limits(),
+        )?;
+        Self::recover(journal, policy, minimum_generation, true)
     }
 
     fn recover(
         mut journal: Journal,
         policy: NetworkPolicyCatalogV1,
         minimum_generation: u64,
+        allow_legacy_migration: bool,
     ) -> Result<Self, NetworkPreparationCatalogError> {
         if policy.generation() < minimum_generation {
             return Err(NetworkPreparationCatalogError::Rollback);
         }
 
         let mut head = None;
+        let mut allocation_head = None;
         let mut records = BTreeMap::new();
+        let mut plans = BTreeMap::new();
         for (key, value) in journal.records(RecordNamespace::NetworkResourceInventory) {
             if key == HEAD_KEY {
                 if head.replace(decode_head(value)?).is_some() {
+                    return Err(NetworkPreparationCatalogError::CorruptRecord);
+                }
+                continue;
+            }
+            if key == ALLOCATION_HEAD_KEY {
+                if allocation_head
+                    .replace(decode_allocation_head(value)?)
+                    .is_some()
+                {
+                    return Err(NetworkPreparationCatalogError::CorruptRecord);
+                }
+                continue;
+            }
+            if key.starts_with(ALLOCATION_KEY_PREFIX) {
+                let handle = decode_allocation_key(key)?;
+                let plan = decode_allocation_record(value)?;
+                if plan.network_handle() != &handle || plans.insert(handle, plan).is_some() {
                     return Err(NetworkPreparationCatalogError::CorruptRecord);
                 }
                 continue;
@@ -410,6 +504,21 @@ impl NetworkPreparationCatalogV1 {
         // Validate the recovered snapshot against its durable head before a
         // trusted policy roll-forward can publish any new state.
         validate_record_set(&records, policy.node(), stored_generation)?;
+        validate_plan_set(&records, &plans)?;
+        match allocation_head {
+            Some(head) if allow_legacy_migration => {
+                return Err(NetworkPreparationCatalogError::CorruptRecord);
+            }
+            Some(head) => validate_allocation_head(&head, policy.node(), &records, &plans)?,
+            None if records.is_empty() && plans.is_empty() && !allow_legacy_migration => {
+                initialize_allocation_head(&mut journal, policy.node(), &records, &plans)?;
+            }
+            None if !records.is_empty() && plans.is_empty() && allow_legacy_migration => {
+                validate_legacy_record_set(&records, &policy)?;
+                initialize_allocation_head(&mut journal, policy.node(), &records, &plans)?;
+            }
+            None => return Err(NetworkPreparationCatalogError::CorruptRecord),
+        }
 
         match head {
             None => initialize_head(&mut journal, &policy)?,
@@ -422,6 +531,7 @@ impl NetworkPreparationCatalogV1 {
             journal,
             policy,
             records,
+            plans,
         })
     }
 
@@ -483,6 +593,25 @@ impl NetworkPreparationCatalogV1 {
         if self.records.contains_key(&network_handle) {
             return Err(NetworkPreparationCatalogError::IdentityConflict);
         }
+        let allocation_generation = u64::try_from(self.records.len())
+            .ok()
+            .and_then(|count| count.checked_add(1))
+            .ok_or(NetworkPreparationCatalogError::ResourceExhausted)?;
+        let plan = NetworkNamespacePlanV1::derive(
+            network_handle,
+            allocation_generation,
+            profile.profile_digest(),
+            profile.program(),
+            profile.allocation_policy(),
+        )
+        .map_err(|_| NetworkPreparationCatalogError::InvalidPolicy)?;
+        if self
+            .plans
+            .values()
+            .any(|existing| allocation_plans_conflict(existing, &plan))
+        {
+            return Err(NetworkPreparationCatalogError::IdentityConflict);
+        }
 
         let resolution = ResolvedNetworkPreparationV1::new(
             self.policy.generation(),
@@ -506,16 +635,25 @@ impl NetworkPreparationCatalogV1 {
         record.validate()?;
 
         let bytes = encode_record(&record)?;
+        let allocation_bytes = encode_allocation_record(&plan, profile.allocation_policy())?;
         let transaction = JournalTransaction::new(
             transaction_id(b"reserve", &network_handle, self.policy.generation()),
-            vec![JournalRecord::put(
-                RecordNamespace::NetworkResourceInventory,
-                record_key(&network_handle),
-                bytes,
-            )],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::NetworkResourceInventory,
+                    record_key(&network_handle),
+                    bytes,
+                ),
+                JournalRecord::put(
+                    RecordNamespace::NetworkResourceInventory,
+                    allocation_key(&network_handle),
+                    allocation_bytes,
+                ),
+            ],
         )?;
         self.journal.commit(&transaction)?;
         self.records.insert(network_handle, record);
+        self.plans.insert(network_handle, plan);
 
         let preparation = authority
             .authenticate_protected_catalog_for_assignment(resolution, reservation.assignment)
@@ -579,6 +717,39 @@ impl NetworkPreparationCatalogV1 {
 
         Ok(profile.program())
     }
+
+    /// Resolves one retained preparation to its durable namespace allocation.
+    ///
+    /// The plan was committed atomically with a new reservation and remains
+    /// stable across trusted policy roll-forward. Legacy reservations without
+    /// an allocation record require an explicit pre-effect migration and do
+    /// not receive a plan implicitly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkPreparationCatalogError::InvalidCandidate`] when the
+    /// handle and retained resolution are not exact or no durable allocation
+    /// exists for that reservation.
+    pub fn plan_for_resolution(
+        &self,
+        network_handle: [u8; 32],
+        resolution: &ResolvedNetworkPreparationV1,
+    ) -> Result<&NetworkNamespacePlanV1, NetworkPreparationCatalogError> {
+        let record = self
+            .records
+            .get(&network_handle)
+            .ok_or(NetworkPreparationCatalogError::InvalidCandidate)?;
+        if record.resolution()? != *resolution {
+            return Err(NetworkPreparationCatalogError::InvalidCandidate);
+        }
+        let plan = self
+            .plans
+            .get(&network_handle)
+            .filter(|plan| plan.profile_digest().as_bytes() == &record.profile_digest)
+            .ok_or(NetworkPreparationCatalogError::InvalidCandidate)?;
+
+        Ok(plan)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -594,6 +765,21 @@ struct CatalogHeadV1 {
 struct VersionedHeadV1 {
     version: u16,
     head: CatalogHeadV1,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AllocationHeadV1 {
+    node: [u8; 16],
+    legacy_count: u32,
+    legacy_digest: [u8; 32],
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct VersionedAllocationHeadV1 {
+    version: u16,
+    head: AllocationHeadV1,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -675,6 +861,44 @@ struct PreparationRecordV1 {
 struct VersionedRecordV1 {
     version: u16,
     record: PreparationRecordV1,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AllocationPolicyWireV1 {
+    mtu: Option<u32>,
+    mac_prefix: Option<[u8; 3]>,
+    address_pools: Vec<IpPrefixWireV1>,
+    route_prefixes: Vec<IpPrefixWireV1>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct IpPrefixWireV1 {
+    family: u8,
+    network: [u8; 16],
+    prefix_length: u8,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AllocationRecordV1 {
+    network_handle: [u8; 32],
+    allocation_generation: u64,
+    kind: u8,
+    profile_digest: [u8; 32],
+    packet_program_digest: [u8; 32],
+    enforcement_program_digest: [u8; 32],
+    lease_gate_program_digest: Option<[u8; 32]>,
+    allocation_policy: AllocationPolicyWireV1,
+    plan_digest: [u8; 32],
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct VersionedAllocationRecordV1 {
+    version: u16,
+    allocation: AllocationRecordV1,
 }
 
 impl PreparationRecordV1 {
@@ -800,6 +1024,146 @@ impl PreparationRecordV1 {
     }
 }
 
+impl AllocationPolicyWireV1 {
+    fn from_policy(policy: &NetworkAllocationPolicyV1) -> Self {
+        Self {
+            mtu: policy.mtu(),
+            mac_prefix: policy.mac_prefix(),
+            address_pools: policy
+                .address_pools()
+                .iter()
+                .map(|pool| IpPrefixWireV1::from_prefix(pool.prefix()))
+                .collect(),
+            route_prefixes: policy
+                .route_prefixes()
+                .iter()
+                .copied()
+                .map(IpPrefixWireV1::from_prefix)
+                .collect(),
+        }
+    }
+
+    fn policy(&self) -> Result<NetworkAllocationPolicyV1, NetworkPreparationCatalogError> {
+        let address_pools = self
+            .address_pools
+            .iter()
+            .map(|prefix| {
+                NetworkAddressPoolV1::new(prefix.prefix()?)
+                    .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let route_prefixes = self
+            .route_prefixes
+            .iter()
+            .map(IpPrefixWireV1::prefix)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        match (self.mtu, self.mac_prefix) {
+            (None, None) if address_pools.is_empty() && route_prefixes.is_empty() => {
+                Ok(NetworkAllocationPolicyV1::isolated())
+            }
+            (Some(mtu), Some(mac_prefix)) => {
+                NetworkAllocationPolicyV1::veth(mtu, mac_prefix, address_pools, route_prefixes)
+                    .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)
+            }
+            _ => Err(NetworkPreparationCatalogError::CorruptRecord),
+        }
+    }
+}
+
+impl IpPrefixWireV1 {
+    fn from_prefix(prefix: NetworkIpPrefixV1) -> Self {
+        match prefix {
+            NetworkIpPrefixV1::Ipv4 {
+                network,
+                prefix_length,
+            } => {
+                let mut padded = [0; 16];
+                padded[..4].copy_from_slice(&network);
+                Self {
+                    family: 4,
+                    network: padded,
+                    prefix_length,
+                }
+            }
+            NetworkIpPrefixV1::Ipv6 {
+                network,
+                prefix_length,
+            } => Self {
+                family: 6,
+                network,
+                prefix_length,
+            },
+        }
+    }
+
+    fn prefix(&self) -> Result<NetworkIpPrefixV1, NetworkPreparationCatalogError> {
+        match self.family {
+            4 if self.network[4..] == [0; 12] => NetworkIpPrefixV1::ipv4(
+                self.network[..4]
+                    .try_into()
+                    .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)?,
+                self.prefix_length,
+            )
+            .map_err(|_| NetworkPreparationCatalogError::CorruptRecord),
+            6 => NetworkIpPrefixV1::ipv6(self.network, self.prefix_length)
+                .map_err(|_| NetworkPreparationCatalogError::CorruptRecord),
+            _ => Err(NetworkPreparationCatalogError::CorruptRecord),
+        }
+    }
+}
+
+impl AllocationRecordV1 {
+    fn from_plan(plan: &NetworkNamespacePlanV1, policy: &NetworkAllocationPolicyV1) -> Self {
+        Self {
+            network_handle: *plan.network_handle(),
+            allocation_generation: plan.allocation_generation(),
+            kind: network_kind_code(plan.kind()),
+            profile_digest: *plan.profile_digest().as_bytes(),
+            packet_program_digest: *plan.packet_program_digest().as_bytes(),
+            enforcement_program_digest: *plan.enforcement_program_digest().as_bytes(),
+            lease_gate_program_digest: plan
+                .lease_gate_program_digest()
+                .map(|digest| *digest.as_bytes()),
+            allocation_policy: AllocationPolicyWireV1::from_policy(policy),
+            plan_digest: *plan.digest().as_bytes(),
+        }
+    }
+
+    fn plan(
+        &self,
+    ) -> Result<(NetworkNamespacePlanV1, NetworkAllocationPolicyV1), NetworkPreparationCatalogError>
+    {
+        let policy = self.allocation_policy.policy()?;
+        let packet_program_digest = ObjectDigest::from_bytes(self.packet_program_digest);
+        if profile_digest_from_commitments(packet_program_digest, &policy).as_bytes()
+            != &self.profile_digest
+        {
+            return Err(NetworkPreparationCatalogError::CorruptRecord);
+        }
+        let program = NetworkProgramCommitmentsV1::new(
+            decode_network_kind(self.kind)?,
+            packet_program_digest,
+            ObjectDigest::from_bytes(self.enforcement_program_digest),
+            self.lease_gate_program_digest.map(ObjectDigest::from_bytes),
+        )
+        .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)?;
+        let plan = NetworkNamespacePlanV1::derive_from_commitments(
+            self.network_handle,
+            self.allocation_generation,
+            ObjectDigest::from_bytes(self.profile_digest),
+            program,
+            &policy,
+        )
+        .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)?;
+        if plan.digest().as_bytes() != &self.plan_digest {
+            return Err(NetworkPreparationCatalogError::CorruptRecord);
+        }
+
+        Ok((plan, policy))
+    }
+}
+
 fn policy_catalog_digest(
     node: NodeId,
     generation: u64,
@@ -848,6 +1212,36 @@ fn policy_catalog_digest(
     Ok(ObjectDigest::from_bytes(digest.finalize().into()))
 }
 
+fn profile_digest(
+    program: &NetworkPolicyProgramV1,
+    allocation: &NetworkAllocationPolicyV1,
+) -> ObjectDigest {
+    profile_digest_from_commitments(program.digest(), allocation)
+}
+
+fn profile_digest_from_commitments(
+    packet_program_digest: ObjectDigest,
+    allocation: &NetworkAllocationPolicyV1,
+) -> ObjectDigest {
+    let digest = Sha256::new()
+        .chain_update(PROFILE_DIGEST_DOMAIN)
+        .chain_update(packet_program_digest.as_bytes())
+        .chain_update(allocation.digest().as_bytes())
+        .finalize();
+    ObjectDigest::from_bytes(digest.into())
+}
+
+fn allocation_pools_conflict(
+    left: &[NetworkAddressPoolV1],
+    right: &[NetworkAddressPoolV1],
+) -> bool {
+    left.iter().any(|left_pool| {
+        right
+            .iter()
+            .any(|right_pool| left_pool != right_pool && left_pool.overlaps(*right_pool))
+    })
+}
+
 const fn network_kind_code(kind: NetworkKind) -> u8 {
     match kind {
         NetworkKind::Isolated => 1,
@@ -855,6 +1249,17 @@ const fn network_kind_code(kind: NetworkKind) -> u8 {
         NetworkKind::Outbound => 3,
         NetworkKind::Published => 4,
         NetworkKind::Host => 5,
+    }
+}
+
+fn decode_network_kind(code: u8) -> Result<NetworkKind, NetworkPreparationCatalogError> {
+    match code {
+        1 => Ok(NetworkKind::Isolated),
+        2 => Ok(NetworkKind::Project),
+        3 => Ok(NetworkKind::Outbound),
+        4 => Ok(NetworkKind::Published),
+        5 => Ok(NetworkKind::Host),
+        _ => Err(NetworkPreparationCatalogError::CorruptRecord),
     }
 }
 
@@ -922,6 +1327,130 @@ fn validate_record_set(
     Ok(())
 }
 
+fn validate_legacy_record_set(
+    records: &BTreeMap<[u8; 32], PreparationRecordV1>,
+    policy: &NetworkPolicyCatalogV1,
+) -> Result<(), NetworkPreparationCatalogError> {
+    for record in records.values() {
+        let sandbox_spec = decode_sandbox_spec(&record.sandbox_spec_bytes, DecodeLimits::default())
+            .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)?;
+        let resolution = record.resolution()?;
+        let profile = policy
+            .resolve(sandbox_spec.network_profile())
+            .filter(|profile| {
+                profile.program().digest() == resolution.profile_digest()
+                    && profile.endpoints() == resolution.endpoints()
+            })
+            .ok_or(NetworkPreparationCatalogError::CorruptRecord)?;
+        if profile.profile_digest() == resolution.profile_digest() {
+            return Err(NetworkPreparationCatalogError::CorruptRecord);
+        }
+    }
+    Ok(())
+}
+
+fn validate_plan_set(
+    records: &BTreeMap<[u8; 32], PreparationRecordV1>,
+    plans: &BTreeMap<[u8; 32], NetworkNamespacePlanV1>,
+) -> Result<(), NetworkPreparationCatalogError> {
+    if plans.len() > records.len() {
+        return Err(NetworkPreparationCatalogError::CorruptRecord);
+    }
+
+    let mut generations = BTreeSet::new();
+    let mut interface_names = BTreeSet::new();
+    let mut mac_addresses = BTreeSet::new();
+    let mut ip_addresses = BTreeSet::new();
+    for (handle, plan) in plans {
+        let record = records
+            .get(handle)
+            .filter(|record| &record.profile_digest == plan.profile_digest().as_bytes())
+            .ok_or(NetworkPreparationCatalogError::CorruptRecord)?;
+        let sandbox_spec = decode_sandbox_spec(&record.sandbox_spec_bytes, DecodeLimits::default())
+            .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)?;
+        let expected_packet_program_digest = program_digest_from_commitments(
+            plan.kind(),
+            plan.enforcement_program_digest(),
+            plan.lease_gate_program_digest(),
+            record.endpoints.iter().map(|endpoint| {
+                (
+                    NetworkEndpointId::from_bytes(endpoint.id),
+                    ObjectDigest::from_bytes(endpoint.policy_digest),
+                )
+            }),
+        );
+        if plan.network_handle() != handle
+            || plan.allocation_generation() > records.len() as u64
+            || record.resolution()?.reserved_network_handle() != handle
+            || sandbox_spec.network_profile().kind() != plan.kind()
+            || expected_packet_program_digest != plan.packet_program_digest()
+        {
+            return Err(NetworkPreparationCatalogError::CorruptRecord);
+        }
+        if !generations.insert(plan.allocation_generation()) {
+            return Err(NetworkPreparationCatalogError::IdentityConflict);
+        }
+        for name in [plan.host_interface_name(), plan.sandbox_interface_name()]
+            .into_iter()
+            .flatten()
+        {
+            if !interface_names.insert(name.as_str()) {
+                return Err(NetworkPreparationCatalogError::IdentityConflict);
+            }
+        }
+        for mac in [plan.host_mac(), plan.sandbox_mac()].into_iter().flatten() {
+            if !mac_addresses.insert(mac) {
+                return Err(NetworkPreparationCatalogError::IdentityConflict);
+            }
+        }
+        for address in plan
+            .address_pairs()
+            .iter()
+            .flat_map(|pair| [pair.host(), pair.sandbox()])
+        {
+            if !ip_addresses.insert(address) {
+                return Err(NetworkPreparationCatalogError::IdentityConflict);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn allocation_plans_conflict(
+    left: &NetworkNamespacePlanV1,
+    right: &NetworkNamespacePlanV1,
+) -> bool {
+    left.allocation_generation() == right.allocation_generation()
+        || optional_names_match(left.host_interface_name(), right.host_interface_name())
+        || optional_names_match(
+            left.sandbox_interface_name(),
+            right.sandbox_interface_name(),
+        )
+        || optional_values_match(left.host_mac(), right.host_mac())
+        || optional_values_match(left.sandbox_mac(), right.sandbox_mac())
+        || left.address_pairs().iter().any(|left_pair| {
+            right.address_pairs().iter().any(|right_pair| {
+                [left_pair.host(), left_pair.sandbox()]
+                    .into_iter()
+                    .any(|left_address| {
+                        [right_pair.host(), right_pair.sandbox()].contains(&left_address)
+                    })
+            })
+        })
+}
+
+fn optional_names_match(
+    left: Option<&crate::allocation::NetworkInterfaceNameV1>,
+    right: Option<&crate::allocation::NetworkInterfaceNameV1>,
+) -> bool {
+    left.zip(right)
+        .is_some_and(|(left, right)| left.as_str() == right.as_str())
+}
+
+fn optional_values_match<T: Eq>(left: Option<T>, right: Option<T>) -> bool {
+    left.zip(right).is_some_and(|(left, right)| left == right)
+}
+
 fn initialize_head(
     journal: &mut Journal,
     policy: &NetworkPolicyCatalogV1,
@@ -981,6 +1510,90 @@ fn decode_head(bytes: &[u8]) -> Result<CatalogHeadV1, NetworkPreparationCatalogE
     Ok(value.head)
 }
 
+fn initialize_allocation_head(
+    journal: &mut Journal,
+    node: NodeId,
+    records: &BTreeMap<[u8; 32], PreparationRecordV1>,
+    plans: &BTreeMap<[u8; 32], NetworkNamespacePlanV1>,
+) -> Result<(), NetworkPreparationCatalogError> {
+    let (legacy_count, legacy_digest) = legacy_allocation_identity(records, plans)?;
+    let head = AllocationHeadV1 {
+        node: *node.as_bytes(),
+        legacy_count,
+        legacy_digest,
+    };
+    let transaction = JournalTransaction::new(
+        transaction_id(b"allocation-head", &legacy_digest, u64::from(legacy_count)),
+        vec![JournalRecord::put(
+            RecordNamespace::NetworkResourceInventory,
+            ALLOCATION_HEAD_KEY.to_vec(),
+            encode_allocation_head(&head)?,
+        )],
+    )?;
+    journal.commit(&transaction)?;
+    Ok(())
+}
+
+fn validate_allocation_head(
+    head: &AllocationHeadV1,
+    node: NodeId,
+    records: &BTreeMap<[u8; 32], PreparationRecordV1>,
+    plans: &BTreeMap<[u8; 32], NetworkNamespacePlanV1>,
+) -> Result<(), NetworkPreparationCatalogError> {
+    let (legacy_count, legacy_digest) = legacy_allocation_identity(records, plans)?;
+    if head.node != *node.as_bytes()
+        || head.legacy_count != legacy_count
+        || head.legacy_digest != legacy_digest
+    {
+        return Err(NetworkPreparationCatalogError::CorruptRecord);
+    }
+    Ok(())
+}
+
+fn legacy_allocation_identity(
+    records: &BTreeMap<[u8; 32], PreparationRecordV1>,
+    plans: &BTreeMap<[u8; 32], NetworkNamespacePlanV1>,
+) -> Result<(u32, [u8; 32]), NetworkPreparationCatalogError> {
+    let mut count = 0_u32;
+    let mut digest = Sha256::new();
+    digest.update(LEGACY_ALLOCATION_DIGEST_DOMAIN);
+    for handle in records.keys().filter(|handle| !plans.contains_key(*handle)) {
+        count = count
+            .checked_add(1)
+            .ok_or(NetworkPreparationCatalogError::CorruptRecord)?;
+        digest.update(handle);
+    }
+    Ok((count, digest.finalize().into()))
+}
+
+fn encode_allocation_head(
+    head: &AllocationHeadV1,
+) -> Result<Vec<u8>, NetworkPreparationCatalogError> {
+    serde_json::to_vec(&VersionedAllocationHeadV1 {
+        version: RECORD_FORMAT_VERSION,
+        head: head.clone(),
+    })
+    .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)
+}
+
+fn decode_allocation_head(
+    bytes: &[u8],
+) -> Result<AllocationHeadV1, NetworkPreparationCatalogError> {
+    if bytes.len() > MAXIMUM_RECORD_BYTES {
+        return Err(NetworkPreparationCatalogError::CorruptRecord);
+    }
+    let value: VersionedAllocationHeadV1 =
+        serde_json::from_slice(bytes).map_err(|_| NetworkPreparationCatalogError::CorruptRecord)?;
+    if value.version != RECORD_FORMAT_VERSION
+        || value.head.node == [0; 16]
+        || value.head.legacy_digest == [0; 32]
+        || encode_allocation_head(&value.head)? != bytes
+    {
+        return Err(NetworkPreparationCatalogError::CorruptRecord);
+    }
+    Ok(value.head)
+}
+
 fn encode_record(record: &PreparationRecordV1) -> Result<Vec<u8>, NetworkPreparationCatalogError> {
     let bytes = serde_json::to_vec(&VersionedRecordV1 {
         version: RECORD_FORMAT_VERSION,
@@ -1006,6 +1619,37 @@ fn decode_record(bytes: &[u8]) -> Result<PreparationRecordV1, NetworkPreparation
     Ok(value.record)
 }
 
+fn encode_allocation_record(
+    plan: &NetworkNamespacePlanV1,
+    policy: &NetworkAllocationPolicyV1,
+) -> Result<Vec<u8>, NetworkPreparationCatalogError> {
+    let bytes = serde_json::to_vec(&VersionedAllocationRecordV1 {
+        version: RECORD_FORMAT_VERSION,
+        allocation: AllocationRecordV1::from_plan(plan, policy),
+    })
+    .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)?;
+    if bytes.len() > MAXIMUM_RECORD_BYTES {
+        return Err(NetworkPreparationCatalogError::CorruptRecord);
+    }
+    Ok(bytes)
+}
+
+fn decode_allocation_record(
+    bytes: &[u8],
+) -> Result<NetworkNamespacePlanV1, NetworkPreparationCatalogError> {
+    if bytes.len() > MAXIMUM_RECORD_BYTES {
+        return Err(NetworkPreparationCatalogError::CorruptRecord);
+    }
+    let value: VersionedAllocationRecordV1 =
+        serde_json::from_slice(bytes).map_err(|_| NetworkPreparationCatalogError::CorruptRecord)?;
+    let (plan, policy) = value.allocation.plan()?;
+    if value.version != RECORD_FORMAT_VERSION || encode_allocation_record(&plan, &policy)? != bytes
+    {
+        return Err(NetworkPreparationCatalogError::CorruptRecord);
+    }
+    Ok(plan)
+}
+
 fn record_key(handle: &[u8; 32]) -> Vec<u8> {
     let mut key = Vec::with_capacity(RECORD_KEY_PREFIX.len() + handle.len());
     key.extend_from_slice(RECORD_KEY_PREFIX);
@@ -1015,6 +1659,20 @@ fn record_key(handle: &[u8; 32]) -> Vec<u8> {
 
 fn decode_record_key(key: &[u8]) -> Result<[u8; 32], NetworkPreparationCatalogError> {
     key.strip_prefix(RECORD_KEY_PREFIX)
+        .and_then(|suffix| suffix.try_into().ok())
+        .filter(|handle| handle != &[0; 32])
+        .ok_or(NetworkPreparationCatalogError::CorruptRecord)
+}
+
+fn allocation_key(handle: &[u8; 32]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(ALLOCATION_KEY_PREFIX.len() + handle.len());
+    key.extend_from_slice(ALLOCATION_KEY_PREFIX);
+    key.extend_from_slice(handle);
+    key
+}
+
+fn decode_allocation_key(key: &[u8]) -> Result<[u8; 32], NetworkPreparationCatalogError> {
+    key.strip_prefix(ALLOCATION_KEY_PREFIX)
         .and_then(|suffix| suffix.try_into().ok())
         .filter(|handle| handle != &[0; 32])
         .ok_or(NetworkPreparationCatalogError::CorruptRecord)
@@ -1035,11 +1693,11 @@ const fn preparation_journal_limits() -> JournalLimits {
         maximum_journal_bytes: 512 * 1024 * 1024,
         maximum_record_bytes: MAXIMUM_RECORD_BYTES,
         maximum_key_bytes: 96,
-        maximum_records_per_transaction: 1,
-        maximum_transaction_bytes: MAXIMUM_RECORD_BYTES,
+        maximum_records_per_transaction: 2,
+        maximum_transaction_bytes: MAXIMUM_RECORD_BYTES * 2,
         maximum_transactions: 65_536,
-        maximum_materialized_bytes: MAXIMUM_RECORD_BYTES * (MAXIMUM_RESERVATIONS + 1),
-        maximum_materialized_records: MAXIMUM_RESERVATIONS + 1,
+        maximum_materialized_bytes: MAXIMUM_RECORD_BYTES * (MAXIMUM_RESERVATIONS * 2 + 2),
+        maximum_materialized_records: MAXIMUM_RESERVATIONS * 2 + 2,
     }
 }
 
@@ -1063,6 +1721,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::allocation::{NetworkAddressPoolV1, NetworkAllocationPolicyV1};
     use crate::policy::{
         NetworkEndpointPolicyV1, NetworkFlowDirectionV1, NetworkFlowPolicyV1, NetworkIpPrefixV1,
         NetworkPortRangeV1, NetworkTransportProtocolV1,
@@ -1235,7 +1894,36 @@ mod tests {
         NetworkPolicyCatalogV1::new(
             node,
             generation,
-            vec![NetworkPolicyProfileV1::new(portable_profile, program).unwrap()],
+            vec![
+                NetworkPolicyProfileV1::new(
+                    portable_profile.clone(),
+                    program,
+                    allocation_policy(&portable_profile, profile_marker),
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn allocation_policy(
+        portable_profile: &NetworkProfile,
+        profile_marker: u8,
+    ) -> NetworkAllocationPolicyV1 {
+        if portable_profile.kind() == NetworkKind::Isolated {
+            return NetworkAllocationPolicyV1::isolated();
+        }
+
+        NetworkAllocationPolicyV1::veth(
+            1_500,
+            [0x02, profile_marker, 0],
+            vec![
+                NetworkAddressPoolV1::new(
+                    NetworkIpPrefixV1::ipv4([10, profile_marker, 0, 0], 17).unwrap(),
+                )
+                .unwrap(),
+            ],
+            vec![NetworkIpPrefixV1::ipv4([0; 4], 0).unwrap()],
         )
         .unwrap()
     }
@@ -1318,6 +2006,13 @@ mod tests {
                 .unwrap(),
             policy.profiles()[0].program()
         );
+        let first_plan = catalog
+            .plan_for_resolution(handle, first.preparation().resolution())
+            .unwrap()
+            .clone();
+        assert_eq!(first_plan.allocation_generation(), 1);
+        assert_eq!(first_plan.network_handle(), &handle);
+        assert!(first_plan.host_interface_name().is_none());
         let substituted = ResolvedNetworkPreparationV1::new(
             2,
             handle,
@@ -1338,6 +2033,10 @@ mod tests {
             Err(NetworkPreparationCatalogError::InvalidCandidate)
         ));
         assert!(matches!(
+            catalog.plan_for_resolution(handle, &substituted),
+            Err(NetworkPreparationCatalogError::InvalidCandidate)
+        ));
+        assert!(matches!(
             catalog.reserve(reservation.clone(), &authority).unwrap(),
             NetworkPreparationCatalogOutcomeV1::Replay(_)
         ));
@@ -1349,6 +2048,12 @@ mod tests {
         assert_eq!(
             replay.preparation().resolution().reserved_network_handle(),
             &handle
+        );
+        assert_eq!(
+            recovered
+                .plan_for_resolution(handle, replay.preparation().resolution())
+                .unwrap(),
+            &first_plan
         );
         assert!(recovered.journal_sequence() > 1);
     }
@@ -1420,6 +2125,58 @@ mod tests {
     }
 
     #[test]
+    fn veth_allocations_are_generation_fenced_and_never_alias() {
+        let directory = TempDir::new().unwrap();
+        let profile = project_profile(&[7]);
+        let policy = policy_catalog(1, profile.clone(), 81);
+        let first_spec = sandbox_spec(profile.clone());
+        let second_spec = sandbox_spec(profile);
+        let first_manifest = manifest(&first_spec, 2, 5);
+        let second_manifest = manifest(&second_spec, 9, 5);
+        let authority = authority();
+        let mut catalog =
+            NetworkPreparationCatalogV1::open_for_test(directory.path(), policy, 1).unwrap();
+
+        let first = catalog
+            .reserve(
+                NetworkPreparationReservationV1::new(&first_manifest, &first_spec).unwrap(),
+                &authority,
+            )
+            .unwrap();
+        let second = catalog
+            .reserve(
+                NetworkPreparationReservationV1::new(&second_manifest, &second_spec).unwrap(),
+                &authority,
+            )
+            .unwrap();
+        let first_plan = catalog
+            .plan_for_resolution(
+                *first.preparation().resolution().reserved_network_handle(),
+                first.preparation().resolution(),
+            )
+            .unwrap();
+        let second_plan = catalog
+            .plan_for_resolution(
+                *second.preparation().resolution().reserved_network_handle(),
+                second.preparation().resolution(),
+            )
+            .unwrap();
+
+        assert_eq!(first_plan.allocation_generation(), 1);
+        assert_eq!(second_plan.allocation_generation(), 2);
+        assert_ne!(
+            first_plan.host_interface_name(),
+            second_plan.host_interface_name()
+        );
+        assert_ne!(first_plan.host_mac(), second_plan.host_mac());
+        assert_ne!(first_plan.address_pairs(), second_plan.address_pairs());
+        assert_eq!(
+            first_plan.routes()[0].gateway(),
+            first_plan.address_pairs()[0].host()
+        );
+    }
+
+    #[test]
     fn policy_head_and_reservations_cannot_move_between_nodes() {
         let directory = TempDir::new().unwrap();
         let foreign_node = NodeId::from_bytes([32; 16]);
@@ -1451,7 +2208,14 @@ mod tests {
             NetworkPolicyCatalogV1::new(
                 NodeId::from_bytes([0; 16]),
                 1,
-                vec![NetworkPolicyProfileV1::new(isolated, isolated_program).unwrap()],
+                vec![
+                    NetworkPolicyProfileV1::new(
+                        isolated,
+                        isolated_program,
+                        NetworkAllocationPolicyV1::isolated(),
+                    )
+                    .unwrap(),
+                ],
             ),
             Err(NetworkPreparationCatalogError::InvalidPolicy)
         ));
@@ -1514,6 +2278,13 @@ mod tests {
             advanced.program_for_resolution(handle, &resolution),
             Err(NetworkPreparationCatalogError::InvalidCandidate)
         ));
+        assert_eq!(
+            advanced
+                .plan_for_resolution(handle, &resolution)
+                .unwrap()
+                .profile_digest(),
+            resolution.profile_digest()
+        );
     }
 
     #[test]
@@ -1617,7 +2388,11 @@ mod tests {
         let project = project_profile(&[7, 8]);
         let incomplete = project_profile(&[7]);
         assert!(matches!(
-            NetworkPolicyProfileV1::new(project.clone(), policy_program(&incomplete, 81)),
+            NetworkPolicyProfileV1::new(
+                project.clone(),
+                policy_program(&incomplete, 81),
+                allocation_policy(&project, 81),
+            ),
             Err(NetworkPreparationCatalogError::InvalidPolicy)
         ));
 
@@ -1680,5 +2455,417 @@ mod tests {
         let without_feature = policy_catalog(1, project_profile(&[7]), 81).digest();
         assert_ne!(original, changed_policy);
         assert_ne!(original, without_feature);
+    }
+
+    #[test]
+    fn profile_digest_commits_allocation_and_overlapping_pools_fail_closed() {
+        let first_profile = project_profile(&[7]);
+        let second_profile = project_profile(&[8]);
+        let first_program = policy_program(&first_profile, 81);
+        let changed_mac_allocation = NetworkAllocationPolicyV1::veth(
+            1_500,
+            [0x02, 99, 0],
+            vec![
+                NetworkAddressPoolV1::new(NetworkIpPrefixV1::ipv4([10, 81, 0, 0], 17).unwrap())
+                    .unwrap(),
+            ],
+            vec![NetworkIpPrefixV1::ipv4([0; 4], 0).unwrap()],
+        )
+        .unwrap();
+        let original = NetworkPolicyProfileV1::new(
+            first_profile.clone(),
+            first_program.clone(),
+            allocation_policy(&first_profile, 81),
+        )
+        .unwrap();
+        let changed = NetworkPolicyProfileV1::new(
+            first_profile.clone(),
+            first_program,
+            changed_mac_allocation,
+        )
+        .unwrap();
+        assert_ne!(original.profile_digest(), changed.profile_digest());
+
+        let broad_allocation = NetworkAllocationPolicyV1::veth(
+            1_500,
+            [0x02, 81, 0],
+            vec![
+                NetworkAddressPoolV1::new(NetworkIpPrefixV1::ipv4([10, 80, 0, 0], 16).unwrap())
+                    .unwrap(),
+            ],
+            Vec::new(),
+        )
+        .unwrap();
+        let nested_allocation = NetworkAllocationPolicyV1::veth(
+            1_500,
+            [0x02, 82, 0],
+            vec![
+                NetworkAddressPoolV1::new(NetworkIpPrefixV1::ipv4([10, 80, 0, 0], 17).unwrap())
+                    .unwrap(),
+            ],
+            Vec::new(),
+        )
+        .unwrap();
+        let mut profiles = vec![
+            NetworkPolicyProfileV1::new(
+                first_profile.clone(),
+                policy_program(&first_profile, 81),
+                broad_allocation,
+            )
+            .unwrap(),
+            NetworkPolicyProfileV1::new(
+                second_profile.clone(),
+                policy_program(&second_profile, 82),
+                nested_allocation,
+            )
+            .unwrap(),
+        ];
+        profiles.sort_by(|left, right| {
+            left.profile_digest()
+                .as_bytes()
+                .cmp(right.profile_digest().as_bytes())
+        });
+        assert!(matches!(
+            NetworkPolicyCatalogV1::new(NODE, 1, profiles),
+            Err(NetworkPreparationCatalogError::InvalidPolicy)
+        ));
+    }
+
+    #[test]
+    fn allocation_record_is_canonical_and_plan_digest_authenticated() {
+        let profile = project_profile(&[7]);
+        let program = policy_program(&profile, 81);
+        let allocation = allocation_policy(&profile, 81);
+        let profile_digest = profile_digest(&program, &allocation);
+        let plan =
+            NetworkNamespacePlanV1::derive([9; 32], 1, profile_digest, &program, &allocation)
+                .unwrap();
+        let bytes = encode_allocation_record(&plan, &allocation).unwrap();
+        assert_eq!(decode_allocation_record(&bytes).unwrap(), plan);
+
+        let mut record = AllocationRecordV1::from_plan(&plan, &allocation);
+        record.plan_digest = [0; 32];
+        let corrupted = serde_json::to_vec(&VersionedAllocationRecordV1 {
+            version: RECORD_FORMAT_VERSION,
+            allocation: record,
+        })
+        .unwrap();
+        assert!(matches!(
+            decode_allocation_record(&corrupted),
+            Err(NetworkPreparationCatalogError::CorruptRecord)
+        ));
+
+        let changed_allocation = NetworkAllocationPolicyV1::veth(
+            1_500,
+            [0x02, 99, 0],
+            allocation.address_pools().to_vec(),
+            allocation.route_prefixes().to_vec(),
+        )
+        .unwrap();
+        let changed_plan = NetworkNamespacePlanV1::derive(
+            [9; 32],
+            1,
+            profile_digest,
+            &program,
+            &changed_allocation,
+        )
+        .unwrap();
+        let substituted = serde_json::to_vec(&VersionedAllocationRecordV1 {
+            version: RECORD_FORMAT_VERSION,
+            allocation: AllocationRecordV1::from_plan(&changed_plan, &changed_allocation),
+        })
+        .unwrap();
+        assert!(matches!(
+            decode_allocation_record(&substituted),
+            Err(NetworkPreparationCatalogError::CorruptRecord)
+        ));
+    }
+
+    #[test]
+    fn recovered_plan_authenticates_every_program_commitment() {
+        let directory = TempDir::new().unwrap();
+        let profile = project_profile(&[7]);
+        let policy = policy_catalog(1, profile.clone(), 81);
+        let allocation = policy.profiles()[0].allocation_policy().clone();
+        let spec = sandbox_spec(profile);
+        let manifest = manifest(&spec, 2, 5);
+        let authority = authority();
+        let mut catalog =
+            NetworkPreparationCatalogV1::open_for_test(directory.path(), policy.clone(), 1)
+                .unwrap();
+        let result = catalog
+            .reserve(
+                NetworkPreparationReservationV1::new(&manifest, &spec).unwrap(),
+                &authority,
+            )
+            .unwrap();
+        let resolution = result.preparation().resolution();
+        let plan = catalog
+            .plan_for_resolution(*resolution.reserved_network_handle(), resolution)
+            .unwrap();
+        let substituted_program = NetworkProgramCommitmentsV1::new(
+            plan.kind(),
+            plan.packet_program_digest(),
+            ObjectDigest::from_bytes([99; 32]),
+            plan.lease_gate_program_digest(),
+        )
+        .unwrap();
+        let substituted_plan = NetworkNamespacePlanV1::derive_from_commitments(
+            *plan.network_handle(),
+            plan.allocation_generation(),
+            plan.profile_digest(),
+            substituted_program,
+            &allocation,
+        )
+        .unwrap();
+        let handle = *plan.network_handle();
+        drop(catalog);
+
+        let (mut journal, _) = Journal::open(
+            directory.path().join(PREPARATION_JOURNAL_FILE),
+            preparation_journal_limits(),
+        )
+        .unwrap();
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [91; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::NetworkResourceInventory,
+                        allocation_key(&handle),
+                        encode_allocation_record(&substituted_plan, &allocation).unwrap(),
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        drop(journal);
+
+        assert!(matches!(
+            NetworkPreparationCatalogV1::open_for_test(directory.path(), policy, 1),
+            Err(NetworkPreparationCatalogError::CorruptRecord)
+        ));
+    }
+
+    #[test]
+    fn allocation_head_separates_explicit_legacy_migration_from_current_plans() {
+        let current_directory = TempDir::new().unwrap();
+        let profile = isolated_profile();
+        let current_policy = policy_catalog(1, profile.clone(), 81);
+        let spec = sandbox_spec(profile.clone());
+        let manifest = manifest(&spec, 2, 5);
+        let reservation = NetworkPreparationReservationV1::new(&manifest, &spec).unwrap();
+        let authority = authority();
+        let mut catalog = NetworkPreparationCatalogV1::open_for_test(
+            current_directory.path(),
+            current_policy.clone(),
+            1,
+        )
+        .unwrap();
+        let result = catalog.reserve(reservation.clone(), &authority).unwrap();
+        let handle = *result.preparation().resolution().reserved_network_handle();
+        drop(catalog);
+
+        let (mut journal, _) = Journal::open(
+            current_directory.path().join(PREPARATION_JOURNAL_FILE),
+            preparation_journal_limits(),
+        )
+        .unwrap();
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [92; 16],
+                    vec![JournalRecord::delete(
+                        RecordNamespace::NetworkResourceInventory,
+                        allocation_key(&handle),
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        drop(journal);
+        assert!(matches!(
+            NetworkPreparationCatalogV1::open_for_test(
+                current_directory.path(),
+                current_policy.clone(),
+                1,
+            ),
+            Err(NetworkPreparationCatalogError::CorruptRecord)
+        ));
+        assert!(matches!(
+            NetworkPreparationCatalogV1::migrate_legacy_for_test(
+                current_directory.path(),
+                current_policy,
+                1,
+            ),
+            Err(NetworkPreparationCatalogError::CorruptRecord)
+        ));
+
+        let (mut journal, _) = Journal::open(
+            current_directory.path().join(PREPARATION_JOURNAL_FILE),
+            preparation_journal_limits(),
+        )
+        .unwrap();
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [96; 16],
+                    vec![JournalRecord::delete(
+                        RecordNamespace::NetworkResourceInventory,
+                        ALLOCATION_HEAD_KEY.to_vec(),
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        drop(journal);
+        assert!(matches!(
+            NetworkPreparationCatalogV1::migrate_legacy_for_test(
+                current_directory.path(),
+                policy_catalog(2, profile.clone(), 81),
+                1,
+            ),
+            Err(NetworkPreparationCatalogError::CorruptRecord)
+        ));
+
+        let legacy_directory = TempDir::new().unwrap();
+        let legacy_policy = policy_catalog(1, profile.clone(), 81);
+        let mut catalog = NetworkPreparationCatalogV1::open_for_test(
+            legacy_directory.path(),
+            legacy_policy.clone(),
+            1,
+        )
+        .unwrap();
+        let result = catalog.reserve(reservation.clone(), &authority).unwrap();
+        let current_handle = *result.preparation().resolution().reserved_network_handle();
+        drop(catalog);
+
+        let (mut journal, _) = Journal::open(
+            legacy_directory.path().join(PREPARATION_JOURNAL_FILE),
+            preparation_journal_limits(),
+        )
+        .unwrap();
+        let mut legacy_profile = legacy_policy.profiles()[0].clone();
+        legacy_profile.profile_digest = legacy_profile.program().digest();
+        let legacy_policy_digest =
+            policy_catalog_digest(NODE, 1, &[legacy_profile.clone()]).unwrap();
+        let legacy_policy_catalog = NetworkPolicyCatalogV1 {
+            node: NODE,
+            generation: 1,
+            digest: legacy_policy_digest,
+            profiles: vec![legacy_profile.clone()],
+        };
+        let handle_preimage =
+            reservation_preimage(&reservation, &legacy_policy_catalog, &legacy_profile).unwrap();
+        let legacy_handle = authority
+            .mint_network_handle(reservation.assignment, &handle_preimage)
+            .unwrap();
+        let mut legacy_record = decode_record(
+            journal
+                .get(
+                    RecordNamespace::NetworkResourceInventory,
+                    &record_key(&current_handle),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        legacy_record.network_handle = legacy_handle;
+        legacy_record.profile_digest = *legacy_profile.program().digest().as_bytes();
+        let legacy_resolution = ResolvedNetworkPreparationV1::new(
+            1,
+            legacy_handle,
+            legacy_profile.program().digest(),
+            legacy_profile.endpoints().to_vec(),
+        )
+        .unwrap();
+        legacy_record.resolution_digest = *legacy_resolution.binding().digest().as_bytes();
+        legacy_record.reservation_digest = legacy_record.derive_digest().unwrap();
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [93; 16],
+                    vec![
+                        JournalRecord::delete(
+                            RecordNamespace::NetworkResourceInventory,
+                            record_key(&current_handle),
+                        ),
+                        JournalRecord::delete(
+                            RecordNamespace::NetworkResourceInventory,
+                            allocation_key(&current_handle),
+                        ),
+                    ],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [94; 16],
+                    vec![
+                        JournalRecord::put(
+                            RecordNamespace::NetworkResourceInventory,
+                            record_key(&legacy_handle),
+                            encode_record(&legacy_record).unwrap(),
+                        ),
+                        JournalRecord::put(
+                            RecordNamespace::NetworkResourceInventory,
+                            HEAD_KEY.to_vec(),
+                            encode_head(&CatalogHeadV1 {
+                                node: *NODE.as_bytes(),
+                                generation: 1,
+                                digest: *legacy_policy_digest.as_bytes(),
+                            })
+                            .unwrap(),
+                        ),
+                    ],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [95; 16],
+                    vec![JournalRecord::delete(
+                        RecordNamespace::NetworkResourceInventory,
+                        ALLOCATION_HEAD_KEY.to_vec(),
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        drop(journal);
+
+        assert!(matches!(
+            NetworkPreparationCatalogV1::open_for_test(
+                legacy_directory.path(),
+                legacy_policy.clone(),
+                1,
+            ),
+            Err(NetworkPreparationCatalogError::Rollback)
+        ));
+        let upgraded_policy = policy_catalog(2, profile, 81);
+        assert!(matches!(
+            NetworkPreparationCatalogV1::open_for_test(
+                legacy_directory.path(),
+                upgraded_policy.clone(),
+                1,
+            ),
+            Err(NetworkPreparationCatalogError::CorruptRecord)
+        ));
+        let legacy = NetworkPreparationCatalogV1::migrate_legacy_for_test(
+            legacy_directory.path(),
+            upgraded_policy.clone(),
+            1,
+        )
+        .unwrap();
+        assert!(matches!(
+            legacy.plan_for_resolution(legacy_handle, &legacy_resolution),
+            Err(NetworkPreparationCatalogError::InvalidCandidate)
+        ));
+        drop(legacy);
+        NetworkPreparationCatalogV1::open_for_test(legacy_directory.path(), upgraded_policy, 1)
+            .unwrap();
     }
 }

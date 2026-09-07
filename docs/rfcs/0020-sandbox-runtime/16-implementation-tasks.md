@@ -32,12 +32,17 @@ they gate any affected runtime backend.
   of a service-manager-selected default-drop network namespace, and places a
   hostile matching `.nspawn` file behind `--settings=no`. The test emits the
   versioned `aos.sandbox.nspawn-platform-proof/v1` JSON record even on a failed
-  capability assertion. These tasks remain open until the same gate also
-  covers payload-leader discovery, internal reboot, the production transient
-  unit compiler, cgroup identity, and both supported architectures. The first
-  execution attempt and the existing `boot-basics` control both timed out at
-  the pre-test guest-agent readiness boundary, so the build/evaluation result
-  does not yet count as runtime evidence.
+  capability assertion.
+
+  The current x86_64 qualification passes at
+  `/nix/store/69n613487p93gz9zhv4g6lrrhiy4rh7h-aos-fleet-test-sandbox-nspawn-platform-proof-0`.
+  It reaches payload startup in the prepared namespace, observes the payload
+  leader, and completes two internal reboots with namespace generations 2 and
+  3. This is runtime evidence for those platform contracts, but its source
+  snapshot is `e0f4e011` plus the initial uncommitted allocation work rather
+  than this increment's final integrated tree. `SBX-P0-04` and `SBX-P0-05`
+  remain open pending the aarch64 qualification and the remaining complete
+  production transient-unit, cgroup-identity, and integration gates.
 - [ ] **SBX-P0-06** Prove the tc-BPF `CLOCK_BOOTTIME` lease gate fails closed
   across daemon death and host suspend/resume (`SBX-P0-05`).
 - [ ] **SBX-P0-07** Package OpenZFS 2.4 and prove snapshot, hold, clone, quota,
@@ -1383,6 +1388,10 @@ completes. The Git history remains authoritative for code details.
   irreversible retirement state, with each transition bound to an exact typed
   helper-reported postcondition and lease tuple. Kernel mutation dispatch and
   guardian scheduling remain open.
+- `e0f4e011e` — foundation toward `SBX-NET-01`, `SBX-POL-01`, and
+  `SBX-NET-02`: Network preparation retains bounded typed packet programs,
+  canonical endpoint flows, and fixed enforcement and lease-gate artifact
+  commitments. Address and link allocation and kernel effects remain open.
 
 The headless `checks.vm.sandbox-filesystem-capability` gate now passes on
 x86_64 AOS Linux 6.18.33, independently of full-system services. It qualifies
@@ -4213,3 +4222,59 @@ addresses or routes, derive link/MAC/ifindex identity, execute or observe
 netlink, nftables, or BPF state, implement service discovery or quota, advertise
 Apply, schedule the guardian, prove the `CLOCK_BOOTTIME` gate required by
 `SBX-P0-06`, or orchestrate the controller lifecycle.
+
+### Durable Network namespace allocation plans
+
+Network preparation now resolves each isolated or veth-backed policy profile
+to a complete durable pre-effect namespace plan. Root configuration supplies a
+bounded MTU, locally administered unicast MAC prefix, at most one canonical
+IPv4 and IPv6 pair-allocation pool, and canonical route destinations. The
+append-only preparation catalog assigns one global lifetime allocation
+generation and deterministically derives fixed 15-byte creation labels,
+distinct host and sandbox MACs, `/31` IPv4 or `/127` IPv6 point-to-point pairs,
+and each route's matching host-peer gateway. Isolated profiles retain an exact
+loopback-only plan. Overlapping nonidentical pools across profiles are rejected,
+and recovered generations, labels, MACs, and IP addresses must remain unique.
+
+The profile commitment now binds both the complete typed packet program and
+the allocation policy. A reservation and its allocation record commit
+atomically in the protected journal; the allocation row retains the exact
+policy inputs and program artifacts needed to reconstruct and authenticate the
+plan after restart. Recovery rederives the packet-program digest from the
+retained Network kind, enforcement and lease-gate artifacts, and ordered
+endpoint commitments, verifies the plan kind against the retained portable
+specification, and rejects allocation-policy, program-artifact, plan-digest,
+identity, or route substitution.
+
+A separate allocation head commits the operator-selected legacy handle set and
+thereafter distinguishes those rows from a current journal whose plan was
+removed. Ordinary startup never invents a plan for an old reservation. The
+explicit one-time operator migration accepts structurally valid retained
+reservations only when they reproduce the program-only profile commitment and
+the journal has no allocation rows or allocation head. This validates the
+migration shape, not external historical provenance. Because the allocation-
+aware profile changes the trusted catalog digest, the upgrade policy generation
+must advance; supplying it at the historical generation is a policy fork and
+fails closed. The upgrade policy must retain every original typed packet
+program and endpoint commitment until migration completes. Migrated legacy
+handles retain no plan and remain ineligible for implicit execution.
+
+Focused validation covers IPv4 and IPv6 pool capacity, direct public-enum
+attempts to bypass canonical prefix construction, MTU and MAC policy, exact
+generation-derived labels/MACs/addresses/routes, isolated shape, overlapping
+pools, cross-reservation uniqueness, canonical record recovery, allocation and
+program substitution, missing-plan tamper detection, and a fixture reproducing
+the historical pre-allocation journal shape. All 58 locally runnable Network
+tests and the binary target pass. The all-feature-only real-cgroup
+qualification test cannot create its root-level temporary directory on this
+managed read-only root filesystem. Strict all-target/all-feature crate-local
+Clippy without dependency linting, warnings-as-errors rustdoc, Rust formatting,
+and diff checks pass. The full hermetic evaluation gate was not rerun for this
+increment.
+
+This advances `SBX-NET-01` and `SBX-RT-03` through deterministic durable
+allocation planning without claiming either task complete. No namespace,
+veth, address, route, firewall, or lease-gate kernel effect is executed or
+observed. Apply dispatch, kernel ifindex/peer/postcondition identity, address
+reuse, service discovery, quota, anti-spoof enforcement, guardian scheduling,
+controller orchestration, and the `SBX-P0-06` live lease-gate proof remain open.

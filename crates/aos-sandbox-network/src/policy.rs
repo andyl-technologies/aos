@@ -96,6 +96,19 @@ impl NetworkIpPrefixV1 {
             prefix_length,
         })
     }
+
+    pub(crate) fn is_canonical(self) -> bool {
+        match self {
+            Self::Ipv4 {
+                network,
+                prefix_length,
+            } => prefix_length <= 32 && canonical_ipv4_network(network, prefix_length),
+            Self::Ipv6 {
+                network,
+                prefix_length,
+            } => prefix_length <= 128 && canonical_ipv6_network(network, prefix_length),
+        }
+    }
 }
 
 /// Carries one inclusive nonzero destination-port range.
@@ -150,8 +163,8 @@ impl NetworkFlowPolicyV1 {
     ///
     /// # Errors
     ///
-    /// Returns [`NetworkPolicyProgramError`] when protocol, address family,
-    /// and port shape disagree.
+    /// Returns [`NetworkPolicyProgramError`] when the prefix is noncanonical or
+    /// protocol, address family, and port shape disagree.
     pub fn new(
         direction: NetworkFlowDirectionV1,
         protocol: NetworkTransportProtocolV1,
@@ -174,7 +187,7 @@ impl NetworkFlowPolicyV1 {
                 None
             )
         );
-        if !valid {
+        if !remote_prefix.is_canonical() || !valid {
             return Err(NetworkPolicyProgramError);
         }
 
@@ -398,6 +411,24 @@ fn program_digest(
     lease_gate_program_digest: Option<ObjectDigest>,
     endpoints: &[NetworkEndpointPolicyV1],
 ) -> ObjectDigest {
+    program_digest_from_commitments(
+        kind,
+        enforcement_program_digest,
+        lease_gate_program_digest,
+        endpoints
+            .iter()
+            .map(|endpoint| (endpoint.endpoint_id, endpoint.digest)),
+    )
+}
+
+pub(crate) fn program_digest_from_commitments(
+    kind: NetworkKind,
+    enforcement_program_digest: ObjectDigest,
+    lease_gate_program_digest: Option<ObjectDigest>,
+    endpoints: impl ExactSizeIterator<Item = (NetworkEndpointId, ObjectDigest)>,
+) -> ObjectDigest {
+    // Callers validate the endpoint ceiling before narrowing its length to the
+    // format's fixed two-byte count.
     let mut digest = Sha256::new();
     digest.update(PROGRAM_DIGEST_DOMAIN);
     digest.update([network_kind_code(kind)]);
@@ -410,9 +441,9 @@ fn program_digest(
         None => digest.update([0]),
     }
     digest.update((endpoints.len() as u16).to_be_bytes());
-    for endpoint in endpoints {
-        digest.update(endpoint.endpoint_id.as_bytes());
-        digest.update(endpoint.digest.as_bytes());
+    for (endpoint_id, endpoint_digest) in endpoints {
+        digest.update(endpoint_id.as_bytes());
+        digest.update(endpoint_digest.as_bytes());
     }
     ObjectDigest::from_bytes(digest.finalize().into())
 }
@@ -525,6 +556,18 @@ mod tests {
         assert!(NetworkIpPrefixV1::ipv4([10, 20, 1, 0], 16).is_err());
         assert!(NetworkIpPrefixV1::ipv4([0; 4], 33).is_err());
         assert!(NetworkIpPrefixV1::ipv6([1; 16], 64).is_err());
+        assert!(
+            NetworkFlowPolicyV1::new(
+                NetworkFlowDirectionV1::Egress,
+                NetworkTransportProtocolV1::Tcp,
+                NetworkIpPrefixV1::Ipv4 {
+                    network: [10, 20, 1, 0],
+                    prefix_length: 16,
+                },
+                Some(NetworkPortRangeV1::new(443, 443).unwrap()),
+            )
+            .is_err()
+        );
         assert!(NetworkPortRangeV1::new(0, 1).is_err());
         assert!(NetworkPortRangeV1::new(81, 80).is_err());
         assert!(

@@ -1,6 +1,8 @@
 //! Root network-broker preparation and recovery foundation.
 //!
-//! [`policy`] closes node-local endpoint policy into bounded typed packet flows.
+//! [`policy`] closes node-local endpoint policy into bounded typed packet flows,
+//! while [`allocation`] resolves durable address, route, link, and generation
+//! plans.
 //! [`catalog`] models protected preparation-profile, endpoint-policy, and
 //! reserved-handle allocation. [`preparation_catalog`] binds those inputs to an
 //! exact portable assignment, mints the opaque handle, and retains reservations
@@ -17,6 +19,7 @@
 //! explicit Apply-readiness prerequisites.
 
 pub mod activation;
+pub mod allocation;
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
@@ -26,6 +29,11 @@ pub mod preparation_catalog;
 pub mod service;
 pub mod state;
 
+pub use allocation::{
+    NetworkAddressPairV1, NetworkAddressPoolV1, NetworkAllocationError, NetworkAllocationPolicyV1,
+    NetworkInterfaceNameV1, NetworkIpAddressV1, NetworkMacAddressV1, NetworkNamespacePlanV1,
+    NetworkRouteV1,
+};
 pub use authorization::{NetworkAdmissionError, NetworkAuthorityV1};
 pub use broker::{
     NetworkAdmissionCoordinator, NetworkAdmissionOutcome, NetworkBrokerError,
