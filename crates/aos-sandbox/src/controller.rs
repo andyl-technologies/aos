@@ -1047,6 +1047,79 @@ where
         crate::resource_inventory::record_network_snapshot(self.reconciler.journal_mut(), client)
     }
 
+    /// Projects mutually current broker snapshots into a durable Host catalog.
+    ///
+    /// The complete protected current-assignment set is joined with exact
+    /// Storage, Network, Mount, and destination-anchor observations. Unchanged
+    /// resources return the confirmed catalog; a changed snapshot becomes a
+    /// durable pending effect before any Host I/O. An existing pending effect
+    /// must be recovered and dispatched first.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale or cross-boot snapshots, incomplete previously published
+    /// assignments, unverified attachments, ambiguous broker resources,
+    /// generation or durable-size exhaustion, corrupt protected state, and
+    /// failed commits.
+    #[cfg(target_os = "linux")]
+    pub fn prepare_host_catalog(
+        &mut self,
+        storage: crate::DurableStorageResourceInventorySnapshotV1,
+        network: crate::DurableNetworkResourceInventorySnapshotV1,
+        mounts: crate::mount_attempt::DurableMountInventorySnapshotV1,
+        destinations: crate::DurableDestinationSlotInventorySnapshotV1,
+    ) -> Result<crate::HostCatalogReconciliationV1, crate::HostCatalogReconciliationError> {
+        crate::host_catalog_reconciliation::prepare(
+            self.reconciler.journal_mut(),
+            storage,
+            network,
+            mounts,
+            destinations,
+        )
+    }
+
+    /// Recovers the exact durable Host catalog whose effect remains pending.
+    ///
+    /// Recovery returns the original canonical bytes without reconstructing
+    /// them from newer controller or broker state. `None` means there is no
+    /// indeterminate Host publication to resolve.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed, conflicting, or unhealthy durable catalog state.
+    #[cfg(target_os = "linux")]
+    pub fn pending_host_catalog(
+        &mut self,
+    ) -> Result<Option<crate::DurablePendingHostCatalogV1>, crate::HostCatalogReconciliationError>
+    {
+        crate::host_catalog_reconciliation::recover_pending(self.reconciler.journal_mut())
+    }
+
+    /// Publishes one exact durable pending catalog and records Host confirmation.
+    ///
+    /// A lost or rejected exchange leaves the pending record unchanged. The
+    /// caller may reacquire the configured Host channel and retry the recovered
+    /// bytes; Host publication and exact replay are both successful outcomes.
+    ///
+    /// # Errors
+    ///
+    /// Rejects substituted pending state, Host identity or protocol failure,
+    /// mismatched receipts, elapsed deadlines, and failed confirmation commits.
+    #[cfg(target_os = "linux")]
+    pub fn dispatch_host_catalog(
+        &mut self,
+        pending: crate::DurablePendingHostCatalogV1,
+        client: crate::host_catalog_publication::HostCatalogPublicationClient,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<crate::DurableCurrentHostCatalogV1, crate::HostCatalogReconciliationError> {
+        crate::host_catalog_reconciliation::dispatch(
+            self.reconciler.journal_mut(),
+            pending,
+            client,
+            deadline_boottime_nanoseconds,
+        )
+    }
+
     /// Reconciles one current logical slot with fresh complete broker state.
     ///
     /// Exact sandbox, incarnation, namespace, specification, and logical

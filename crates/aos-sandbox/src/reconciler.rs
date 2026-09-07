@@ -541,6 +541,10 @@ pub enum ReconcilerError {
     #[cfg(target_os = "linux")]
     #[error("broker resource inventory failed: {0}")]
     ResourceInventory(#[source] Box<crate::ResourceInventoryError>),
+    /// Durable Host catalog projection or publication state could not be validated.
+    #[cfg(target_os = "linux")]
+    #[error("Host catalog reconciliation failed: {0}")]
+    HostCatalogReconciliation(#[source] Box<crate::HostCatalogReconciliationError>),
     /// Protected destination-slot effect history could not be validated.
     #[cfg(target_os = "linux")]
     #[error("destination-slot effect failed: {0}")]
@@ -1372,6 +1376,20 @@ where
                 #[cfg(not(target_os = "linux"))]
                 return Err(ReconcilerError::CorruptLedger(
                     "attachment verification requires Linux validation",
+                ));
+            }
+            if self
+                .journal
+                .records(RecordNamespace::HostCatalogReconciliation)
+                .next()
+                .is_some()
+            {
+                #[cfg(target_os = "linux")]
+                crate::host_catalog_reconciliation::validate_namespace(&mut self.journal)
+                    .map_err(|error| ReconcilerError::HostCatalogReconciliation(Box::new(error)))?;
+                #[cfg(not(target_os = "linux"))]
+                return Err(ReconcilerError::CorruptLedger(
+                    "Host catalog reconciliation requires Linux validation",
                 ));
             }
             self.ledger_validated = true;

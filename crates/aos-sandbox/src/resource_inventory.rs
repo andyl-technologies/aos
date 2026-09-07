@@ -846,6 +846,7 @@ fn controller_state_digest(journal: &mut Journal) -> Result<[u8; 32], ResourceIn
         RecordNamespace::DestinationSlotInventory,
         RecordNamespace::DestinationSlotAttempt,
         RecordNamespace::DestinationSlotCompletion,
+        RecordNamespace::HostCatalogReconciliation,
     ];
     let mut digest = Sha256::new();
     digest.update(CONTROLLER_STATE_DOMAIN);

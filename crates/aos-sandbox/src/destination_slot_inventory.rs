@@ -326,7 +326,7 @@ impl DurableDestinationSlotInventorySnapshotV1 {
             .map(|index| &self.inventory.attachment_anchors()[index])
     }
 
-    fn recheck(&self, journal: &mut Journal) -> Result<(), MountAttemptError> {
+    pub(crate) fn recheck(&self, journal: &mut Journal) -> Result<(), MountAttemptError> {
         let history = SnapshotHistory::load(journal)?;
         if history.record.as_ref().map(|value| &value.0) != Some(&self.record)
             || mount_controller_state_digest(journal)? != self.record.controller_state_digest

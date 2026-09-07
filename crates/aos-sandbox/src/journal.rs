@@ -132,6 +132,8 @@ pub enum RecordNamespace {
     StorageResourceInventory = 25,
     /// Latest authenticated complete Network namespace-resource inventory.
     NetworkResourceInventory = 26,
+    /// Durable pending and confirmed complete Host launch catalogs.
+    HostCatalogReconciliation = 27,
 }
 
 impl RecordNamespace {
@@ -163,6 +165,7 @@ impl RecordNamespace {
             24 => Ok(Self::DestinationSlotCompletion),
             25 => Ok(Self::StorageResourceInventory),
             26 => Ok(Self::NetworkResourceInventory),
+            27 => Ok(Self::HostCatalogReconciliation),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -1932,13 +1935,14 @@ mod tests {
             RecordNamespace::DestinationSlotCompletion,
             RecordNamespace::StorageResourceInventory,
             RecordNamespace::NetworkResourceInventory,
+            RecordNamespace::HostCatalogReconciliation,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 27, 255] {
+        for code in [0, 28, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }

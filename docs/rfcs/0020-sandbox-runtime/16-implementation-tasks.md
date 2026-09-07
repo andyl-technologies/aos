@@ -3759,3 +3759,56 @@ snapshots with exact current assignment, Mount attachment, identity-tombstone,
 and Host generation evidence and atomically dispatch the resulting shared
 catalog. Storage and Network still need root-side authoritative snapshot
 producers backed by their protected journals and verified kernel resources.
+
+### Crash-recoverable controller projection of the Host catalog
+
+The unprivileged controller now projects its complete protected current-binding
+set through mutually current Storage, Network, Mount, and destination-slot
+snapshots into the shared Host catalog schema. Each launchable assignment must
+have one exact workspace, one launchable network namespace, every declared
+destination slot Ready under the current boot, the corresponding Mount-owned
+attachment anchor, and every currently desired attachment backed by unchanged
+durable installed-resource verification. An incomplete new assignment is
+omitted, while loss of resources for a published current incarnation blocks a
+successor instead of retiring its live subordinate identity allocation.
+
+Catalog publication is now an explicit durable effect. The controller commits
+the complete canonical successor as an `AOSHCR01` pending record before Host
+I/O, including its source snapshot commitments and predecessor catalog digest.
+Recovery returns those exact bytes without consulting newer broker state. Only
+an authenticated Host 1.4 published-or-replayed receipt for the same generation
+and SHA-256 digest atomically advances the pending record to current. Changed,
+missing, malformed, unrelated-predecessor, generation-skipping, and oversized
+history fails closed during controller startup. The durable payload ceiling
+reserves the reconciliation wrapper, key, and journal framing beneath the
+journal's fixed sixteen-MiB record limit.
+
+Successor generation is skipped when projection reproduces the current catalog
+exactly. Real successors retain all prior identity tombstones, retire every
+removed workspace allocation, and regenerate live allocation evidence for the
+new catalog generation. An assignment update within the same incarnation must
+first supply complete resources under the existing workspace handle and range;
+otherwise the controller keeps the prior catalog rather than creating a
+tombstone that would make the live range unusable.
+
+Focused validation covers closed record decoding, byte corruption, durable
+framing capacity, predecessor substitution, exact unchanged projection,
+identity retirement and tombstone continuity, complete broker joins,
+incomplete-resource retention across both unchanged and successor assignments,
+exact pending recovery, and confirmation-only current advancement. The
+complete all-feature controller suite passes all 400 library tests, eight
+downstream API tests, and 15 doctests. Strict all-target/all-feature
+crate-local Clippy without dependency linting, warnings-as-errors rustdoc,
+Rust formatting, and diff checks pass. The hermetic `nix-build -A checks.eval
+--cores 8 --no-out-link` gate passes the complete workspace build and test
+closure plus every system-structure check at
+`/nix/store/4hqcpkp0dv78i1dv6d6zdvpjazamqszl-aos-eval-and-system-structure-checks-0`.
+
+This closes the controller-side whole-catalog projection and scheduling gap in
+`SBX-CTRL-03` without claiming that production brokers can yet populate it.
+Storage still needs an authoritative workspace producer backed by verified ZFS
+postconditions and root pins; Network still needs its kernel effect, protected
+lifecycle index, and authoritative namespace producer. Cleanup-authorized
+identity reclamation, source-handle materialization, native attachment replay,
+lease-expiry scheduling, internal-reboot anchor handoff, and live namespace VM
+qualification also remain open.

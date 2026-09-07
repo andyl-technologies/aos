@@ -30,6 +30,8 @@ pub mod dispatch;
 pub mod filesystem_view_state;
 #[cfg(target_os = "linux")]
 pub mod host_catalog_publication;
+#[cfg(target_os = "linux")]
+pub mod host_catalog_reconciliation;
 pub mod journal;
 #[cfg(target_os = "linux")]
 mod local_channel;
@@ -121,6 +123,11 @@ pub use filesystem_view_state::{
     DurableFilesystemViewRevisionV1, FilesystemViewRevisionCommitOutcomeV1,
     FilesystemViewRevisionMutationV1, FilesystemViewRevisionPresenceV1,
     FilesystemViewRevisionStateError,
+};
+#[cfg(target_os = "linux")]
+pub use host_catalog_reconciliation::{
+    DurableCurrentHostCatalogV1, DurablePendingHostCatalogV1, HostCatalogReconciliationError,
+    HostCatalogReconciliationV1,
 };
 pub use journal::{
     CommitResult, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,

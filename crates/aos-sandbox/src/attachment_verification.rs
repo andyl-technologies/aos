@@ -30,6 +30,7 @@ use crate::attachment_state::{
     self, AttachmentDesiredPresenceV1, AttachmentDesiredStateError, DurableAttachmentDesiredStateV1,
 };
 use crate::ownership_authority::ProtectedOwnershipClockError;
+use crate::runtime_authority::RuntimeAuthorityBindingV1;
 use crate::runtime_scope::{
     CurrentNamespaceTarget, DurableNamespaceTargetReferenceV1, NamespaceTargetError,
     validate_durable_reference_in_validated_namespace, validate_namespace_target_namespace,
@@ -344,6 +345,43 @@ impl Record {
             })
     }
 
+    fn matches_assignment_resource(
+        &self,
+        desired: &DurableAttachmentDesiredStateV1,
+        binding: &RuntimeAuthorityBindingV1,
+        resource: &ValidatedMountInventoryRecord,
+    ) -> bool {
+        let assignment = binding.manifest().manifest();
+        let resource_binding = resource.binding();
+        let resource_fence = resource_binding.fence();
+
+        self.attachment_id == desired.intent().id()
+            && self.desired_generation == desired.intent().desired_generation().get()
+            && self.desired_record_digest == *desired.record_digest().as_bytes()
+            && self.namespace_target.sandbox() == assignment.sandbox()
+            && self.namespace_target.incarnation() == assignment.incarnation()
+            && self.namespace_target.target_generation() == assignment.namespace_generation().get()
+            && self.assignment_epoch == assignment.epoch().get()
+            && self.assignment_generation == assignment.desired_generation().get()
+            && self.assignment_digest == *binding.assignment_digest().as_bytes()
+            && self.assignment_epoch == resource_fence.assignment_epoch()
+            && self.assignment_generation == resource_fence.desired_generation()
+            && self.assignment_digest == *resource_fence.assignment_digest()
+            && assignment.sandbox().as_bytes() == resource_fence.sandbox_id()
+            && assignment.incarnation().as_bytes() == resource_fence.incarnation_id()
+            && self.namespace_target.target_generation() == resource_binding.namespace_generation()
+            && self.mount_handle == *resource.mount_handle()
+            && self.resource_revision == resource.resource_revision()
+            && self.resource_kernel_boot_id == *resource.resource_kernel_boot_id()
+            && self.recipe_digest == desired_recipe_digest(desired.intent())
+            && self.recipe_digest == mount_recipe_digest(resource)
+            && resource.lifecycle() == MountLifecycle::MOUNT_LIFECYCLE_INSTALLED
+            && self.resource_digest == mount_resource_digest(resource)
+            && resource.installed_observation().is_some_and(|observation| {
+                self.observation == ObservationRecord::from_validated(observation)
+            })
+    }
+
     fn transaction(&self) -> Result<JournalTransaction, AttachmentVerificationError> {
         let mut transaction_id: [u8; 16] = Sha256::new()
             .chain_update(TRANSACTION_DOMAIN)
@@ -515,6 +553,71 @@ pub(crate) fn current_record(
         ))
         .filter(|record| record.desired_record_digest == *desired.record_digest().as_bytes())
         .cloned())
+}
+
+/// Resolves every currently desired, durably verified installed mount handle.
+///
+/// The current broker snapshot may postdate the snapshot that originally
+/// supplied verification. Exact resource identity must remain unchanged, and
+/// an installed row for this assignment without matching current desired state
+/// is rejected instead of being silently added to a launch catalog.
+pub(crate) fn verified_handles_for_current_assignment(
+    journal: &mut Journal,
+    binding: &RuntimeAuthorityBindingV1,
+    inventory: &aos_sandbox_protocol::ValidatedMountInventory,
+) -> Result<Vec<[u8; 32]>, AttachmentVerificationError> {
+    let assignment = binding.manifest().manifest();
+    let desired = attachment_state::current_for_consumer(
+        journal,
+        assignment.sandbox(),
+        assignment.incarnation(),
+        assignment.namespace_generation().get(),
+    )?;
+    let history = History::load(journal)?;
+    let mut handles = Vec::with_capacity(desired.len());
+
+    for desired in &desired {
+        let record = history
+            .records
+            .get(&(
+                desired.intent().id(),
+                desired.intent().desired_generation().get(),
+            ))
+            .filter(|record| record.desired_record_digest == *desired.record_digest().as_bytes())
+            .ok_or(AttachmentVerificationError::NotVerifiable)?;
+        let resource = inventory
+            .mounts()
+            .iter()
+            .find(|resource| resource.mount_handle() == &record.mount_handle)
+            .ok_or(AttachmentVerificationError::NotVerifiable)?;
+        if !record.matches_assignment_resource(desired, binding, resource) {
+            return Err(AttachmentVerificationError::Conflict);
+        }
+
+        handles.push(record.mount_handle);
+    }
+
+    handles.sort_unstable();
+    if handles.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(AttachmentVerificationError::CorruptState);
+    }
+
+    let has_unexpected_installed_resource = inventory.mounts().iter().any(|resource| {
+        let fence = resource.binding().fence();
+        fence.sandbox_id() == assignment.sandbox().as_bytes()
+            && fence.incarnation_id() == assignment.incarnation().as_bytes()
+            && fence.assignment_epoch() == assignment.epoch().get()
+            && fence.desired_generation() == assignment.desired_generation().get()
+            && fence.assignment_digest() == binding.assignment_digest().as_bytes()
+            && resource.binding().namespace_generation() == assignment.namespace_generation().get()
+            && resource.lifecycle() == MountLifecycle::MOUNT_LIFECYCLE_INSTALLED
+            && handles.binary_search(resource.mount_handle()).is_err()
+    });
+    if has_unexpected_installed_resource {
+        return Err(AttachmentVerificationError::Conflict);
+    }
+
+    Ok(handles)
 }
 
 pub(crate) fn validate_namespace(journal: &mut Journal) -> Result<(), AttachmentVerificationError> {

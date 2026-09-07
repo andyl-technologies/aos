@@ -149,6 +149,24 @@ impl<'journal> RuntimeAuthorityStore<'journal> {
         current_from_journal(self.journal, sandbox)
     }
 
+    /// Returns every protected current binding in sandbox-identity order.
+    ///
+    /// The result is complete structural state, not live authorization. It is
+    /// used when a node-local projection must prove that it did not silently
+    /// retain or remove resources for an omitted current assignment.
+    pub(crate) fn current_bindings(
+        &self,
+    ) -> Result<Vec<RuntimeAuthorityBindingV1>, RuntimeAuthorityError> {
+        self.journal.ensure_protected_authority()?;
+
+        self.journal
+            .records(RecordNamespace::RuntimeAuthority)
+            .filter(|(key, _)| key.starts_with(CURRENT_PREFIX))
+            .map(|(key, _)| current_from_journal(self.journal, sandbox_from_current_key(key)?))
+            .map(|binding| binding?.ok_or(RuntimeAuthorityError::CorruptState))
+            .collect()
+    }
+
     /// Checks an uninterrupted holder/assignment chain, not live execution authority.
     ///
     /// Both endpoints must match protected records and the latter must be the
@@ -727,6 +745,32 @@ pub(crate) fn binding_for_durable_reference_in_validated_namespace(
         return Err(RuntimeAuthorityError::CorruptState);
     }
     Ok(binding)
+}
+
+#[cfg(test)]
+pub(crate) fn binding_for_catalog_test(
+    manifest: aos_sandbox_core::CanonicalAssignmentManifestV1,
+    state: RuntimeAuthorityStateV1,
+) -> RuntimeAuthorityBindingV1 {
+    let mut binding = RuntimeAuthorityBindingV1 {
+        operation: OperationId::from_bytes([201; 16]),
+        request_digest: [202; 32],
+        state,
+        holder: (state == RuntimeAuthorityStateV1::Bound)
+            .then_some(aos_sandbox_core::PrincipalId::from_bytes([203; 16])),
+        revision: 1,
+        predecessor_digest: None,
+        manifest,
+        source_draft_digest: ObjectDigest::from_bytes([204; 32]),
+        publication_digest: ObjectDigest::from_bytes([205; 32]),
+        lease_generation: 1,
+        lease_digest: ObjectDigest::from_bytes([206; 32]),
+        digest: ObjectDigest::from_bytes([0; 32]),
+    };
+    let encoded = encode_binding(&binding)
+        .unwrap_or_else(|error| panic!("catalog test binding encoding failed: {error}"));
+    binding.digest = binding_digest(&encoded);
+    binding
 }
 
 fn pending_key(operation: OperationId) -> Vec<u8> {

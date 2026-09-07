@@ -35,8 +35,31 @@ mod tests {
         clippy::unwrap_used,
         reason = "Kernel fixture failures intentionally panic."
     )]
+    #![allow(
+        clippy::disallowed_methods,
+        reason = "Host monotonic time only bounds a kernel fixture wait, not runtime state."
+    )]
 
     use super::*;
+
+    fn wait_for_peer_close(socket: &SeqpacketSocket) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+
+        // Readiness notification can trail the final descriptor drop briefly
+        // when the kernel test suite is heavily parallelized.
+        while std::time::Instant::now() < deadline {
+            match check_connected(socket) {
+                Err(SeqpacketError::Closed) => return,
+                Ok(()) => std::thread::yield_now(),
+                Err(error) => panic!("unexpected liveness-probe failure: {error}"),
+            }
+        }
+
+        assert!(matches!(
+            check_connected(socket),
+            Err(SeqpacketError::Closed)
+        ));
+    }
 
     #[test]
     fn queued_record_is_not_consumed_and_last_endpoint_close_is_observed() {
@@ -47,9 +70,6 @@ mod tests {
         check_connected(&receiver).unwrap();
         assert_eq!(receiver.receive(16).unwrap().payload(), b"queued");
         sender.close();
-        assert!(matches!(
-            check_connected(&receiver),
-            Err(SeqpacketError::Closed)
-        ));
+        wait_for_peer_close(&receiver);
     }
 }

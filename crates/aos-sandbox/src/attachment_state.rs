@@ -641,6 +641,28 @@ pub(crate) fn get_generation(
         .map(|record| DurableAttachmentDesiredStateV1 { record }))
 }
 
+/// Returns current desired attachments for one exact consumer generation.
+pub(crate) fn current_for_consumer(
+    journal: &Journal,
+    sandbox: aos_sandbox_core::SandboxId,
+    incarnation: aos_sandbox_core::IncarnationId,
+    namespace_generation: u64,
+) -> Result<Vec<DurableAttachmentDesiredStateV1>, AttachmentDesiredStateError> {
+    let history = History::load(journal)?;
+
+    Ok(history
+        .records
+        .values()
+        .filter(|record| {
+            record.presence == AttachmentDesiredPresenceV1::Present
+                && record.intent.consumer() == (sandbox, incarnation)
+                && record.intent.expected_namespace_generation().get() == namespace_generation
+        })
+        .cloned()
+        .map(|record| DurableAttachmentDesiredStateV1 { record })
+        .collect())
+}
+
 pub(crate) fn recheck_current(
     journal: &Journal,
     state: &DurableAttachmentDesiredStateV1,
