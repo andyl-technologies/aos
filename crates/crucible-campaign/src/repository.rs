@@ -443,8 +443,10 @@ fn charge_choice_discovery_record(
 /// The bundle keeps the child configuration and modeled evidence values beside
 /// the observation that names them. Newly discovered choices carry their exact
 /// declaration and domain so a dynamic producer never needs ambient immutable
-/// publication authority. A repository validates the complete bundle and every
-/// already-published evidence dependency before writing any member.
+/// publication authority. Selections produced while continuing through those
+/// discoveries are carried beside the child schedule that names them. A
+/// repository validates the complete bundle and every already-published
+/// evidence dependency before writing any member.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObservationCandidate {
     child: ConfigurationArtifact,
@@ -452,6 +454,8 @@ pub struct ObservationCandidate {
     properties: PropertyVerdictSet,
     coverage: CoverageProjection,
     discovered_choices: Vec<ChoiceDiscovery>,
+    produced_selections: Vec<Selection>,
+    choice_material_bytes: usize,
     observation: Observation,
 }
 
@@ -542,14 +546,99 @@ impl ObservationCandidate {
                 reason: "observation candidate choice bodies differ from observation IDs",
             });
         }
+        if !observation.produced_selections().is_empty() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "observation candidate must carry produced selection bodies",
+            });
+        }
         Ok(Self {
             child,
             measurements,
             properties,
             coverage,
             discovered_choices,
+            produced_selections: Vec::new(),
+            choice_material_bytes: charged_bytes,
             observation,
         })
+    }
+
+    /// Attaches selections produced from discoveries during this execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after a nonempty attachment, at a `NextChoice`
+    /// boundary, for duplicate selections, for a selection without its exact
+    /// discovered opportunity and domain, for invalid provenance, or for
+    /// choice material beyond the observation count or aggregate-byte bound.
+    pub fn with_produced_selections(
+        mut self,
+        selections: Vec<Selection>,
+    ) -> Result<Self, CampaignCodecError> {
+        if !self.produced_selections.is_empty() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "observation candidate already carries produced selections",
+            });
+        }
+        if !selections.is_empty()
+            && matches!(
+                self.observation.stop(),
+                StopOutcome::Reached(StopCondition::NextChoice)
+            )
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "next-choice observation cannot carry produced selections",
+            });
+        }
+        if selections.len() > MAX_OBSERVATION_CHOICE_DISCOVERIES {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "observation candidate has too many produced selections",
+            });
+        }
+        let discoveries = self
+            .discovered_choices
+            .iter()
+            .map(|discovery| {
+                discovery
+                    .opportunity()
+                    .id()
+                    .map(|opportunity| (opportunity, discovery))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let mut selection_ids = BTreeSet::new();
+        let mut selected_opportunities = BTreeSet::new();
+        for selection in &selections {
+            if !selection_ids.insert(selection.id()?) {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "observation candidate contains duplicate produced selections",
+                });
+            }
+            if !selected_opportunities.insert(selection.opportunity()) {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "observation candidate selects one discovered opportunity more than once",
+                });
+            }
+            let discovery = discoveries.get(&selection.opportunity()).ok_or(
+                CampaignCodecError::InvalidValue {
+                    reason: "produced selection has no matching discovered opportunity",
+                },
+            )?;
+            selection.validate_resolved_references(discovery.opportunity(), discovery.domain())?;
+            self.choice_material_bytes = self
+                .choice_material_bytes
+                .checked_add(selection.canonical_bytes().len())
+                .ok_or(CampaignCodecError::LimitExceeded {
+                    limit: "observation-choice-discovery-bytes",
+                })?;
+            if self.choice_material_bytes > MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES {
+                return Err(CampaignCodecError::LimitExceeded {
+                    limit: "observation-choice-discovery-bytes",
+                });
+            }
+        }
+        self.observation = self.observation.with_produced_selections(selection_ids)?;
+        self.produced_selections = selections;
+        Ok(self)
     }
 
     /// Returns the exact child configuration artifact.
@@ -581,6 +670,12 @@ impl ObservationCandidate {
     #[must_use]
     pub fn discovered_choices(&self) -> &[ChoiceDiscovery] {
         &self.discovered_choices
+    }
+
+    /// Returns selections produced while continuing through discovered choices.
+    #[must_use]
+    pub fn produced_selections(&self) -> &[Selection] {
+        &self.produced_selections
     }
 
     /// Returns the canonical observation that binds every bundle member.

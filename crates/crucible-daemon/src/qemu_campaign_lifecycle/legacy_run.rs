@@ -26,12 +26,15 @@ use crucible_campaign::{
     CampaignPrincipalAuthorizer, CampaignRepository, CampaignRepositoryError, CampaignSeed,
     CampaignServiceOperation, CampaignSnapshotId, CampaignState, CampaignSupervisor,
     CampaignSupervisorConfigError, CampaignSupervisorStepOutcome, CandidateSource,
-    CreateCampaignRequest, DaemonEpoch, DebuggerAuthorityKey, ExecutionRetentionIntent,
-    ExecutorCompatibilityProfile, ExplorerPolicy, FairnessPolicy, Observation, ObservationId,
-    PlannerAuthorityKey, PlannerClient, PlannerService, PlanningBudget, RepositoryCampaignService,
-    RetentionPolicy, StopOutcome, SubmitCampaignBranchRequest,
+    CreateCampaignRequest, DaemonEpoch, DebuggerAuthorityKey, DiscoveryRequest,
+    ExecutionRetentionIntent, ExecutorCompatibilityProfile, ExplorerPolicy, FairnessPolicy,
+    Observation, ObservationId, PlannerAuthorityKey, PlannerClient, PlannerService, PlanningBudget,
+    RepositoryCampaignService, RetentionPolicy, StopCondition, StopOutcome,
+    SubmitCampaignBranchRequest, SubmitCampaignDiscoveryRequest,
 };
-use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
+use crucible_cas::content_store::{
+    ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend, MutableRefBackend,
+};
 use thiserror::Error;
 
 use super::{
@@ -90,6 +93,7 @@ pub struct GuardedDefaultCampaignRunRequest {
     resources: AttemptResourceLimits,
     initial_schedule: Schedule,
     initial_replay_closure: Option<GuardedCampaignReplayClosure>,
+    discovery_stop: StopCondition,
 }
 
 impl GuardedDefaultCampaignRunRequest {
@@ -114,6 +118,7 @@ impl GuardedDefaultCampaignRunRequest {
             resources,
             initial_schedule: Schedule::empty(),
             initial_replay_closure: None,
+            discovery_stop: StopCondition::NextChoice,
         }
     }
 
@@ -130,6 +135,17 @@ impl GuardedDefaultCampaignRunRequest {
     ) -> Self {
         self.initial_schedule = schedule;
         self.initial_replay_closure = Some(closure);
+        self
+    }
+
+    /// Uses an explicit semantic stop for the initial campaign discovery.
+    ///
+    /// The request is admitted through [`crucible_campaign::CampaignService`]
+    /// after the campaign is funded and running, before its supervisor can
+    /// perform automatic discovery.
+    #[must_use]
+    pub fn with_discovery_stop(mut self, stop: StopCondition) -> Self {
+        self.discovery_stop = stop;
         self
     }
 }
@@ -289,9 +305,6 @@ pub enum GuardedDefaultCampaignInvariantError {
     /// More reached choices were accepted than the fixed compatibility bound.
     #[error("scenario-default choice count exceeded its fixed bound")]
     ChoiceLimit,
-    /// An accepted choice was not paired with the required next-choice stop.
-    #[error("a choice was accepted outside the next-choice boundary")]
-    ChoiceOutsideBoundary,
     /// A nonterminal observation contained no choice to continue.
     #[error("a nonterminal observation contained no authenticated choice")]
     MissingChoice,
@@ -354,22 +367,31 @@ where
     R: CrucibleExecutionRunner,
     R::Error: Error + Send + Sync + 'static,
 {
-    let planner_authority = PlannerAuthorityKey::from_bytes([0x31; 32])
-        .map_err(GuardedDefaultCampaignRunError::Codec)?;
-    let debugger_authority = DebuggerAuthorityKey::from_bytes([0x47; 32])
-        .map_err(GuardedDefaultCampaignRunError::Codec)?;
-    let repository = Arc::new(
-        CampaignRepository::with_component_authorities(
-            Arc::new(MemoryBlobBackend::new(
-                "legacy-run-campaign",
-                DEFAULT_RUN_REPOSITORY_BYTES,
-            )),
-            Arc::new(MemoryRefBackend::new()),
-            planner_authority.clone(),
-            debugger_authority,
-        )
-        .map_err(GuardedDefaultCampaignRunError::Repository)?,
-    );
+    run_guarded_default_campaign_with_store(
+        request,
+        runner,
+        execution_evidence,
+        Arc::new(MemoryBlobBackend::new(
+            "legacy-run-campaign",
+            DEFAULT_RUN_REPOSITORY_BYTES,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    )
+}
+
+fn run_guarded_default_campaign_with_store<R>(
+    request: GuardedDefaultCampaignRunRequest,
+    runner: R,
+    execution_evidence: QemuAttemptExecutionEvidence,
+    blobs: Arc<dyn ImmutableBlobBackend>,
+    refs: Arc<dyn MutableRefBackend>,
+) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError>
+where
+    R: CrucibleExecutionRunner,
+    R::Error: Error + Send + Sync + 'static,
+{
+    let (repository, planner_authority) = default_run_repository(blobs, refs)?;
+    let repository = Arc::new(repository);
     if let Some(closure) = &request.initial_replay_closure {
         closure
             .publish(&repository, &request.scenario, &request.initial_schedule)
@@ -387,7 +409,7 @@ where
     }
     .map_err(GuardedDefaultCampaignRunError::Artifact)?;
     let lineage = default_run_lineage(&request, scenario_content, genesis_content)?;
-    let policy = default_run_policy(&lineage, request.seed)?;
+    let policy = default_run_policy(&lineage, request.seed, &request.discovery_stop)?;
     let campaign = CampaignName::new(format!(
         "legacy-run-{:016x}",
         request.seed.decision_rng_root_seed()
@@ -427,7 +449,7 @@ where
                 .map_err(GuardedDefaultCampaignRunError::Codec)?,
         ),
     )?;
-    apply_campaign_control(
+    let running = apply_campaign_control(
         &client,
         &principal,
         &campaign,
@@ -438,6 +460,25 @@ where
     let running_state = repository
         .state(campaign.as_str())
         .map_err(GuardedDefaultCampaignRunError::Repository)?;
+
+    // Admit the caller's exact starting configuration and stop before the
+    // supervisor can manufacture its automatic NextChoice discovery.
+    let discovery = DiscoveryRequest::new(
+        CampaignCommandId::from_hash(CampaignHash::derive(
+            "crucible.daemon.legacy-run-discovery.v1",
+            &[],
+        )),
+        running,
+        genesis_content,
+        request.discovery_stop.clone(),
+    )
+    .map_err(GuardedDefaultCampaignRunError::Codec)?;
+    client
+        .submit_discovery_request(
+            &SubmitCampaignDiscoveryRequest::new(principal.clone(), campaign.clone(), discovery)
+                .map_err(GuardedDefaultCampaignRunError::Codec)?,
+        )
+        .map_err(GuardedDefaultCampaignRunError::Service)?;
 
     let store = CampaignExecutorStore::new(Arc::clone(&repository));
     let model = CrucibleExecutionModel::new(store.clone(), runner);
@@ -512,6 +553,24 @@ where
     )
 }
 
+fn default_run_repository(
+    blobs: Arc<dyn ImmutableBlobBackend>,
+    refs: Arc<dyn MutableRefBackend>,
+) -> Result<(CampaignRepository, PlannerAuthorityKey), GuardedDefaultCampaignRunError> {
+    let planner_authority = PlannerAuthorityKey::from_bytes([0x31; 32])
+        .map_err(GuardedDefaultCampaignRunError::Codec)?;
+    let debugger_authority = DebuggerAuthorityKey::from_bytes([0x47; 32])
+        .map_err(GuardedDefaultCampaignRunError::Codec)?;
+    let repository = CampaignRepository::with_component_authorities(
+        blobs,
+        refs,
+        planner_authority.clone(),
+        debugger_authority,
+    )
+    .map_err(GuardedDefaultCampaignRunError::Repository)?;
+    Ok((repository, planner_authority))
+}
+
 fn default_run_lineage(
     request: &GuardedDefaultCampaignRunRequest,
     scenario_content: crucible_campaign::ScenarioArtifactId,
@@ -566,7 +625,15 @@ fn validate_initial_replay(
 fn default_run_policy(
     lineage: &CampaignLineage,
     seed: Seed,
+    discovery_stop: &StopCondition,
 ) -> Result<crucible_campaign::CampaignPolicy, GuardedDefaultCampaignRunError> {
+    let stop_conditions = match discovery_stop {
+        StopCondition::NamedBoundary(name) => BTreeSet::from([name.clone()]),
+        StopCondition::NextChoice
+        | StopCondition::VirtualTimeNanoseconds(_)
+        | StopCondition::EventCount(_)
+        | StopCondition::Terminal => BTreeSet::new(),
+    };
     crucible_campaign::CampaignPolicy::new(
         lineage.scenario(),
         CampaignSeed::from_bytes(seed.bytes()),
@@ -578,7 +645,7 @@ fn default_run_policy(
         BTreeMap::new(),
         BTreeMap::new(),
         BTreeMap::new(),
-        BTreeSet::new(),
+        stop_conditions,
         FairnessPolicy::new(0, 0).map_err(GuardedDefaultCampaignRunError::Codec)?,
         RetentionPolicy::new(true, 1, true, true),
         true,
@@ -684,12 +751,13 @@ where
             virtual_time_ticks,
         });
 
-        if let Some(opportunity_id) = observation.discovered_choices().iter().next().copied() {
-            if observation.stop()
-                != &StopOutcome::Reached(crucible_campaign::StopCondition::NextChoice)
-            {
-                return Err(GuardedDefaultCampaignInvariantError::ChoiceOutsideBoundary.into());
-            }
+        if observation.stop() == &StopOutcome::Reached(StopCondition::NextChoice) {
+            let opportunity_id = observation
+                .discovered_choices()
+                .iter()
+                .next()
+                .copied()
+                .ok_or(GuardedDefaultCampaignInvariantError::MissingChoice)?;
             if branch_request_count >= DEFAULT_RUN_MAX_CHOICES as usize {
                 return Err(GuardedDefaultCampaignInvariantError::ChoiceLimit.into());
             }
@@ -706,7 +774,7 @@ where
                     .map_err(GuardedDefaultCampaignRunError::Codec)?,
                 BranchRequestCause::ScenarioDefault(context.policy),
                 BranchBudget::new(1, 1).map_err(GuardedDefaultCampaignRunError::Codec)?,
-                crucible_campaign::StopCondition::NextChoice,
+                StopCondition::NextChoice,
             )
             .map_err(GuardedDefaultCampaignRunError::Codec)?;
             let submission = SubmitCampaignBranchRequest::new(
@@ -722,10 +790,6 @@ where
                 .map_err(GuardedDefaultCampaignRunError::Service)?;
             branch_request_count += 1;
             continue;
-        }
-
-        if matches!(observation.stop(), StopOutcome::Reached(_)) {
-            return Err(GuardedDefaultCampaignInvariantError::MissingChoice.into());
         }
 
         let command_ordinal = 2_u64

@@ -3234,6 +3234,41 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
         envelope
     );
 
+    let produced_selection = stored_id!(
+        SelectionId,
+        ObjectKind::CampaignFact,
+        "observation produced selection"
+    );
+    let selection_observation = observation
+        .clone()
+        .with_produced_selections(BTreeSet::from([produced_selection]))
+        .expect("selection observation");
+    assert_eq!(selection_observation.schema_version(), 3);
+    assert_eq!(
+        Observation::from_canonical_bytes(&selection_observation.canonical_bytes())
+            .expect("canonical selection observation"),
+        selection_observation
+    );
+    let mut alternate_empty_selection_observation = observation.canonical_bytes();
+    alternate_empty_selection_observation[..4].copy_from_slice(&3_u32.to_be_bytes());
+    alternate_empty_selection_observation.extend_from_slice(&0_u64.to_be_bytes());
+    assert!(Observation::from_canonical_bytes(&alternate_empty_selection_observation).is_err());
+    assert_eq!(
+        selection_observation
+            .id()
+            .expect("selection observation id")
+            .content_id()
+            .schema_version(),
+        3
+    );
+    assert!(
+        selection_observation
+            .content_children()
+            .iter()
+            .any(|(role, child)| role == "produced-selection.0000"
+                && *child == produced_selection.content_id())
+    );
+
     let scenario_failure = Observation::new(
         observation.attempt(),
         observation.child(),
@@ -3262,6 +3297,22 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
             .content_id()
             .schema_version(),
         2
+    );
+    let failure_selection_observation = scenario_failure
+        .clone()
+        .with_produced_selections(BTreeSet::from([produced_selection]))
+        .expect("scenario failure selection observation");
+    assert_eq!(failure_selection_observation.schema_version(), 4);
+    assert_eq!(
+        Observation::from_canonical_bytes(&failure_selection_observation.canonical_bytes())
+            .expect("canonical scenario failure selection observation"),
+        failure_selection_observation
+    );
+    let mut alternate_empty_failure_selection_observation = scenario_failure.canonical_bytes();
+    alternate_empty_failure_selection_observation[..4].copy_from_slice(&4_u32.to_be_bytes());
+    alternate_empty_failure_selection_observation.extend_from_slice(&0_u64.to_be_bytes());
+    assert!(
+        Observation::from_canonical_bytes(&alternate_empty_failure_selection_observation).is_err()
     );
     let mut downgraded_failure = scenario_failure.canonical_bytes();
     downgraded_failure[..4].copy_from_slice(&1_u32.to_be_bytes());

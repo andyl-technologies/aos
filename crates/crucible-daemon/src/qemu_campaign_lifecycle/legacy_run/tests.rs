@@ -3,7 +3,7 @@
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for failure localization.
 #![allow(clippy::expect_used)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::io;
 use std::sync::{
@@ -24,13 +24,19 @@ use crucible_campaign::{
     AttemptResourceLimits, BooleanDomain, CampaignState, ChoiceClassContext, ChoiceDomain,
     ChoiceSource, ChoiceValue, SelectableDeclaration, StopOutcome,
 };
+use crucible_cas::content_store::{
+    BlobHandle, DirectoryRefBackend, ImmutableBlobBackend, MutableRefBackend, ObjectKind,
+    StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
+};
 use crucible_protocol::SelectionRequest;
 use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
 
 use super::*;
 use crate::{
     AttemptExecutionContext, AttemptWorkerFailure, CapturedAttemptCheckpoint,
-    QemuFreshAttemptLifecycleFactory, QemuFreshAttemptLifecycleOwner,
+    DirectoryAssignmentLedger, DirectoryCampaignGcJournal, QemuFreshAttemptLifecycleFactory,
+    QemuFreshAttemptLifecycleOwner, apply_single_host_campaign_gc,
+    decode_crucible_scenario_artifact, plan_single_host_campaign_gc,
 };
 
 const TEST_EFFECT_TRACE: &[u8] = b"guarded-default-run-effect-trace";
@@ -415,6 +421,198 @@ fn selected_schedule_replays_through_a_fresh_authenticated_repository() {
 }
 
 #[test]
+fn explicit_terminal_discovery_precedes_supervisor_automatic_discovery() {
+    let (request, node) = selectable_request();
+    let request = request.with_discovery_stop(StopCondition::Terminal);
+    let starts = Arc::new(AtomicUsize::new(0));
+
+    let completed = run_selectable_campaign(request, node, Arc::clone(&starts));
+
+    assert_eq!(starts.load(Ordering::Relaxed), 1);
+    assert_eq!(completed.branch_request_count(), 0);
+    assert_eq!(completed.terminal_configuration().schedule.len(), 1);
+    assert!(matches!(
+        completed.terminal_configuration().schedule.decisions(),
+        [crucible::Decision::Selection(_)]
+    ));
+    assert_eq!(
+        completed.terminal().observation().stop(),
+        &StopOutcome::TerminalSuccess
+    );
+}
+
+#[test]
+fn terminal_discovery_selection_survives_gc_restart_and_replay() {
+    let temp = tempfile::TempDir::new().expect("temporary campaign store");
+    let blob_root = temp.path().join("blobs");
+    let ref_root = temp.path().join("refs");
+    let ledger_root = temp.path().join("ledger");
+    let journal_root = temp.path().join("gc-journal");
+    let store_node = StoreNodeId::new("legacy-run-directory").expect("store node");
+    let graph_config = || StoreGraphConfig {
+        root: store_node.clone(),
+        admitted_kinds: campaign_object_kinds(),
+        nodes: BTreeMap::from([(
+            store_node.clone(),
+            StoreNodeSpec::Directory {
+                root: blob_root.clone(),
+            },
+        )]),
+    };
+
+    let (graph, admin) = StoreGraph::build_with_admin(graph_config()).expect("campaign graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let (request, node) = selectable_request();
+    let scenario = request.scenario.clone();
+    let request = request.with_discovery_stop(StopCondition::Terminal);
+    let starts = Arc::new(AtomicUsize::new(0));
+    let completed = try_selectable_campaign_with_store(
+        request,
+        node,
+        Arc::clone(&starts),
+        graph.clone(),
+        refs.clone(),
+    )
+    .expect("terminal discovery campaign");
+
+    assert_eq!(starts.load(Ordering::Relaxed), 1);
+    let campaign = completed.campaign().clone();
+    let observation_id = completed.terminal().id();
+    let selection_id = completed
+        .terminal()
+        .observation()
+        .produced_selections()
+        .iter()
+        .next()
+        .copied()
+        .expect("terminal observation selection");
+    let expected_configuration = completed.terminal_configuration().clone();
+    let orphan_bytes = b"legacy-run-unreachable-after-terminal";
+    let orphan =
+        crucible_cas::content_store::ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
+    graph
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes.to_vec()))
+        .expect("publish GC control object");
+    drop(completed);
+
+    let (repository, _) = default_run_repository(graph.clone(), refs.clone())
+        .expect("reopen campaign repository for GC planning");
+    let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("open assignment ledger");
+    let prepared =
+        plan_single_host_campaign_gc(&repository, refs.as_ref(), &mut ledger, None, None, &admin)
+            .expect("plan campaign GC");
+    assert!(
+        prepared
+            .candidates()
+            .iter()
+            .any(|candidate| candidate.id() == orphan)
+    );
+    assert!(
+        prepared
+            .candidates()
+            .iter()
+            .all(|candidate| candidate.id() != selection_id.content_id())
+    );
+    let planned_candidates =
+        u64::try_from(prepared.candidates().len()).expect("planned candidate count");
+    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared)
+        .expect("persist campaign GC plan");
+    drop(journal);
+    drop(ledger);
+    drop(repository);
+    drop(refs);
+    drop(graph);
+    drop(admin);
+
+    let (graph, admin) =
+        StoreGraph::build_with_admin(graph_config()).expect("reopen campaign graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let (repository, _) = default_run_repository(graph.clone(), refs.clone())
+        .expect("reopen campaign repository for GC apply");
+    let mut ledger =
+        DirectoryAssignmentLedger::open(&ledger_root).expect("reopen assignment ledger");
+    let mut journal =
+        DirectoryCampaignGcJournal::open(&journal_root).expect("reopen campaign GC journal");
+    let report = apply_single_host_campaign_gc(
+        &mut journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        &admin,
+    )
+    .expect("apply campaign GC after restart");
+    assert_eq!(report.candidates(), planned_candidates);
+    assert!(!graph.contains(orphan).expect("orphan placement"));
+    assert!(
+        graph
+            .contains(selection_id.content_id())
+            .expect("selection placement")
+    );
+    drop(journal);
+    drop(ledger);
+    drop(repository);
+    drop(refs);
+    drop(graph);
+    drop(admin);
+
+    let (graph, _admin) =
+        StoreGraph::build_with_admin(graph_config()).expect("reopen collected campaign graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let (repository, _) = default_run_repository(graph.clone(), refs.clone())
+        .expect("reopen collected campaign repository");
+    let observation = repository
+        .load_observation(observation_id)
+        .expect("load terminal observation after GC");
+    let head = repository
+        .head(campaign.as_str())
+        .expect("load campaign head after GC");
+    let lineage = repository
+        .load_lineage(head.snapshot().lineage())
+        .expect("load campaign lineage after GC");
+    let scenario_artifact = repository
+        .load_scenario_artifact(lineage.scenario_content())
+        .expect("load campaign scenario after GC");
+    let authenticated_scenario = decode_crucible_scenario_artifact(&scenario_artifact)
+        .expect("decode campaign scenario after GC");
+    let configuration_artifact = repository
+        .load_configuration_artifact(observation.child_content())
+        .expect("load terminal configuration after GC");
+    let store = CampaignExecutorStore::new(Arc::new(repository));
+    let decoded = decode_crucible_configuration_artifact_with_selections(
+        &authenticated_scenario,
+        &scenario_artifact,
+        &configuration_artifact,
+        &store,
+    )
+    .expect("resolve terminal configuration after GC");
+    assert_eq!(decoded, expected_configuration);
+
+    let closure = GuardedCampaignReplayClosure::collect(&store, &scenario, &decoded.schedule)
+        .expect("collect replay closure after GC");
+    let (mut replay_request, replay_node) = selectable_request();
+    replay_request.seed = Seed::from_u64(0x7265_706c_6179_6564);
+    let replay_request = replay_request
+        .with_initial_replay(decoded.schedule.clone(), closure)
+        .with_discovery_stop(StopCondition::Terminal);
+    let replay_starts = Arc::new(AtomicUsize::new(0));
+    let replayed = try_selectable_campaign_with_store(
+        replay_request,
+        replay_node,
+        Arc::clone(&replay_starts),
+        graph,
+        refs,
+    )
+    .expect("replay terminal configuration after GC");
+    assert_eq!(replay_starts.load(Ordering::Relaxed), 1);
+    assert_eq!(replayed.terminal_configuration(), &expected_configuration);
+}
+
+#[test]
 fn replay_closure_rejects_missing_extra_duplicate_and_tampered_records_before_start() {
     let (request, node) = selectable_request();
     let starts = Arc::new(AtomicUsize::new(0));
@@ -648,6 +846,25 @@ fn selectable_request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
     )
 }
 
+fn campaign_object_kinds() -> BTreeSet<ObjectKind> {
+    BTreeSet::from([
+        ObjectKind::CampaignFact,
+        ObjectKind::CampaignSnapshot,
+        ObjectKind::MerkleNode,
+        ObjectKind::Scenario,
+        ObjectKind::Configuration,
+        ObjectKind::Policy,
+        ObjectKind::ExactManifest,
+        ObjectKind::RamExtent,
+        ObjectKind::DiskExtent,
+        ObjectKind::DeviceState,
+        ObjectKind::Observation,
+        ObjectKind::Finding,
+        ObjectKind::Projection,
+        ObjectKind::Trace,
+    ])
+}
+
 fn pending_guest_request(node: NodeId) -> crucible_qemu::QemuNodeSelectablePendingRequest {
     let request = SelectionRequest::new(9, "product.recovery", "routing-epoch-7", None, 256)
         .expect("guest selection request");
@@ -678,4 +895,20 @@ fn try_selectable_campaign(
         });
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
     run_guarded_default_campaign_with_runner(request, runner, evidence)
+}
+
+fn try_selectable_campaign_with_store(
+    request: GuardedDefaultCampaignRunRequest,
+    node: NodeId,
+    starts: Arc<AtomicUsize>,
+    blobs: Arc<dyn ImmutableBlobBackend>,
+    refs: Arc<dyn MutableRefBackend>,
+) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError> {
+    let (factory, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(SelectableLifecycleFactory {
+            node,
+            starts,
+        });
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+    run_guarded_default_campaign_with_store(request, runner, evidence, blobs, refs)
 }

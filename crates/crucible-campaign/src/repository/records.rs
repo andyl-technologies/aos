@@ -2226,6 +2226,7 @@ impl CampaignRepository {
                 return Err(integrity("observation-choice-scenario-mismatch"));
             }
         }
+        self.validate_observation_produced_selections(observation, &child)?;
         if matches!(
             observation.stop(),
             StopOutcome::Reached(StopCondition::NextChoice)
