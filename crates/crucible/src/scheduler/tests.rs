@@ -1418,6 +1418,84 @@ fn single_scheduler_checkpoint_round_trips_complete_device_and_event_state() {
 }
 
 #[test]
+fn scheduler_checkpoint_restores_absolute_quantum_coordinate() {
+    const CHECKPOINT_QUANTA: u64 = 2;
+    const STOP_QUANTA: u64 = 4;
+
+    let nodes = ["a", "b", "c", "d"]
+        .into_iter()
+        .map(|name| {
+            test_scenario_node(
+                name,
+                0,
+                SchedulerNodeActivity::Runnable,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::NoArmedTimer,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut uninterrupted = test_scheduler(nodes.clone(), Vec::new());
+    let mut checkpointed = test_scheduler(nodes.clone(), Vec::new());
+
+    for _ in 0..CHECKPOINT_QUANTA {
+        let request = QuantumRequest {
+            configuration: checkpointed.configuration().clone(),
+            control: Vec::new(),
+        };
+        checkpointed
+            .drive_quantum(request)
+            .unwrap_or_else(|error| panic!("checkpoint prefix quantum should drive: {error}"));
+    }
+    let encoded = checkpointed
+        .checkpoint()
+        .and_then(|checkpoint| checkpoint.canonical_bytes())
+        .unwrap_or_else(|error| panic!("scheduler checkpoint should encode: {error}"));
+    let decoded = SingleSchedulerCheckpoint::from_canonical_bytes(&encoded)
+        .unwrap_or_else(|error| panic!("scheduler checkpoint should decode: {error}"));
+    assert_eq!(decoded.quanta(), CHECKPOINT_QUANTA);
+
+    let mut restored = test_scheduler(nodes, Vec::new());
+    decoded
+        .restore_into(&mut restored)
+        .unwrap_or_else(|error| panic!("scheduler checkpoint should restore: {error}"));
+    assert_eq!(restored.quanta(), CHECKPOINT_QUANTA);
+
+    let mut suffix_calls = 0;
+    while restored.quanta() < STOP_QUANTA {
+        let request = QuantumRequest {
+            configuration: restored.configuration().clone(),
+            control: Vec::new(),
+        };
+        restored
+            .drive_quantum(request)
+            .unwrap_or_else(|error| panic!("restored suffix quantum should drive: {error}"));
+        suffix_calls += 1;
+    }
+    assert_eq!(suffix_calls, STOP_QUANTA - CHECKPOINT_QUANTA);
+    assert_eq!(restored.quanta(), STOP_QUANTA);
+
+    for _ in 0..STOP_QUANTA {
+        let request = QuantumRequest {
+            configuration: uninterrupted.configuration().clone(),
+            control: Vec::new(),
+        };
+        uninterrupted
+            .drive_quantum(request)
+            .unwrap_or_else(|error| panic!("uninterrupted quantum should drive: {error}"));
+    }
+    assert_eq!(
+        restored
+            .checkpoint()
+            .and_then(|checkpoint| checkpoint.canonical_bytes())
+            .unwrap_or_else(|error| panic!("restored result should encode: {error}")),
+        uninterrupted
+            .checkpoint()
+            .and_then(|checkpoint| checkpoint.canonical_bytes())
+            .unwrap_or_else(|error| panic!("uninterrupted result should encode: {error}"))
+    );
+}
+
+#[test]
 fn live_backend_event_log_suffix_is_adopted_atomically() {
     let mut scheduler = test_scheduler(Vec::new(), Vec::new());
     let before = scheduler.event_log().offset();

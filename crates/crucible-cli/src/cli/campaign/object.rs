@@ -414,6 +414,13 @@ pub(super) fn campaign_stop_condition_label(stop: &StopCondition) -> String {
         StopCondition::VirtualTimeNanoseconds(value) => format!("virtual-time-ns:{value}"),
         StopCondition::EventCount(value) => format!("events:{value}"),
         StopCondition::Terminal => String::from("terminal"),
+        StopCondition::ExecutionQuanta(value) => format!("execution-quanta:{value}"),
+        StopCondition::VirtualTimeOrExecutionQuanta {
+            virtual_time_nanoseconds,
+            execution_quanta,
+        } => format!(
+            "virtual-time-or-execution-quanta:{virtual_time_nanoseconds}:{execution_quanta}"
+        ),
     }
 }
 

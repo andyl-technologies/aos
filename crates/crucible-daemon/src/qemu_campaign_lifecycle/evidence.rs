@@ -34,7 +34,8 @@ const MAX_EXECUTION_FINGERPRINT_SAMPLES: usize = MAX_QEMU_ATTEMPT_GENERATION_NOD
 /// substitutes for the attempt's process or storage guard.
 pub struct QemuObservedFreshAttemptLifecycle<L> {
     lifecycle: L,
-    driven_quanta: u64,
+    initial_fingerprints_recorded: bool,
+    post_first_quantum_fingerprints_recorded: bool,
     fingerprint_nodes: Vec<NodeId>,
     evidence: QemuAttemptExecutionEvidence,
 }
@@ -47,7 +48,8 @@ impl<L> QemuObservedFreshAttemptLifecycle<L> {
     ) -> Self {
         Self {
             lifecycle,
-            driven_quanta: 0,
+            initial_fingerprints_recorded: false,
+            post_first_quantum_fingerprints_recorded: false,
             fingerprint_nodes,
             evidence,
         }
@@ -64,24 +66,36 @@ where
 
     // crucible-lint: allow host-nondeterminism-state -- quantum authority remains with the wrapped scheduler lifecycle; this wrapper retains its successful result.
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
-        if self.driven_quanta == 0 {
+        if !self.initial_fingerprints_recorded {
             self.record_fingerprints()?;
+            self.initial_fingerprints_recorded = true;
         }
 
+        let prior_quanta = self.lifecycle.completed_quanta();
         // crucible-lint: allow host-nondeterminism-state -- the wrapped lifecycle remains the sole quantum driver.
         let outcome = self.lifecycle.drive_quantum(request)?;
-        self.driven_quanta = self.driven_quanta.checked_add(1).ok_or_else(|| {
-            evidence_limit("observed-qemu-quanta", self.driven_quanta, 1, u64::MAX)
-        })?;
+        let completed_quanta = self.lifecycle.completed_quanta();
+        if completed_quanta < prior_quanta {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "observed scheduler quantum coordinate regressed from {prior_quanta} to {completed_quanta}"
+                ),
+            });
+        }
         self.evidence.record(
-            self.driven_quanta,
+            completed_quanta,
             outcome.frontier,
             &outcome.event_log_entries,
         )?;
-        if self.driven_quanta == 1 {
+        if completed_quanta > prior_quanta && !self.post_first_quantum_fingerprints_recorded {
             self.record_fingerprints()?;
+            self.post_first_quantum_fingerprints_recorded = true;
         }
         Ok(outcome)
+    }
+
+    fn completed_quanta(&self) -> u64 {
+        self.lifecycle.completed_quanta()
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
@@ -160,7 +174,6 @@ where
 }
 
 mod store;
-use store::evidence_limit;
 pub use store::{QemuAttemptExecutionEvidence, QemuAttemptExecutionEvidenceSnapshot};
 
 /// Adds bounded process-local evidence capture to any fresh lifecycle factory.

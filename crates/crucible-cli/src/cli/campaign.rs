@@ -1401,7 +1401,7 @@ fn parse_campaign_stop_condition(value: &str) -> Result<StopCondition, CliError>
         _ => {
             let (kind, body) = value.split_once(':').ok_or_else(|| {
                 usage_error(
-                    "campaign stop must be next-choice, terminal, boundary:NAME, virtual-time-ns:N, or events:N",
+                    "campaign stop must be next-choice, terminal, boundary:NAME, virtual-time-ns:N, events:N, execution-quanta:N, or virtual-time-or-execution-quanta:TIME:QUANTA",
                 )
             })?;
             match kind {
@@ -1414,6 +1414,27 @@ fn parse_campaign_stop_condition(value: &str) -> Result<StopCondition, CliError>
                     .parse::<u64>()
                     .map(StopCondition::EventCount)
                     .map_err(|error| usage_error(format!("invalid event-count stop: {error}"))),
+                "execution-quanta" => body
+                    .parse::<u64>()
+                    .map(StopCondition::ExecutionQuanta)
+                    .map_err(|error| {
+                        usage_error(format!("invalid execution-quanta stop: {error}"))
+                    }),
+                "virtual-time-or-execution-quanta" => {
+                    let (virtual_time, execution_quanta) = body.split_once(':').ok_or_else(|| {
+                        usage_error(
+                            "combined campaign stop must be virtual-time-or-execution-quanta:TIME:QUANTA",
+                        )
+                    })?;
+                    Ok(StopCondition::VirtualTimeOrExecutionQuanta {
+                        virtual_time_nanoseconds: virtual_time.parse::<u64>().map_err(|error| {
+                            usage_error(format!("invalid combined virtual-time stop: {error}"))
+                        })?,
+                        execution_quanta: execution_quanta.parse::<u64>().map_err(|error| {
+                            usage_error(format!("invalid combined execution-quanta stop: {error}"))
+                        })?,
+                    })
+                }
                 _ => Err(usage_error("unknown campaign stop-condition kind")),
             }
         }

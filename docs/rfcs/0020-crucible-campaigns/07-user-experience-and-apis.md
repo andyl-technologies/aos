@@ -337,7 +337,10 @@ crucible campaign branch NAME --expected SNAPSHOT \
 The ordinary `branch` forms publish an additive finite or generated
 `BranchRequest` with an exact operator command cause. Values use the closed
 `true`, `false`, `i64:N`, `u64:N`, or `discrete:ALTERNATIVE_ID` grammar. Stop conditions use
-`next-choice`, `terminal`, `boundary:NAME`, `virtual-time-ns:N`, or `events:N`.
+`next-choice`, `terminal`, `boundary:NAME`, `virtual-time-ns:N`, `events:N`,
+`execution-quanta:N`, or
+`virtual-time-or-execution-quanta:TIME_NANOSECONDS:QUANTA`. Both execution-
+quanta forms use a nonzero absolute scheduler coordinate from scenario genesis.
 The request carries exact parent-artifact, opportunity, domain, and semantic
 branch-point IDs so repository admission can authenticate the complete basis.
 `--generator` names one already imported canonical generator and requires an

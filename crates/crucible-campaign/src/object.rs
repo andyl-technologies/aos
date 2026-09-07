@@ -218,11 +218,12 @@ impl CampaignRecordKind {
             Self::PlannerInvocation => 2,
             Self::PlannerStep => 4,
             Self::ExpansionState => 2,
-            Self::BranchRequest => 5,
+            Self::BranchRequest => 6,
             Self::BranchPath => 2,
+            Self::Attempt => 2,
             Self::AttemptAdmission => 2,
             Self::MeasurementSet => 2,
-            Self::Observation => 4,
+            Self::Observation => 8,
             Self::ObjectiveEvaluation | Self::RankingExplanation => 2,
             Self::ReproductionArtifact => 2,
             Self::Finding => 3,
@@ -655,14 +656,15 @@ impl ObjectEnvelope {
         let version_supported = envelope.schema_version() == record_kind.schema_version()
             || record_kind == CampaignRecordKind::Snapshot && envelope.schema_version() == 2
             || record_kind == CampaignRecordKind::Fact
-                && matches!(envelope.schema_version(), 2..=8)
+                && matches!(envelope.schema_version(), 2..=9)
             || record_kind == CampaignRecordKind::BranchPath && envelope.schema_version() == 1
             || record_kind == CampaignRecordKind::BranchRequest
-                && matches!(envelope.schema_version(), 1..=4)
+                && matches!(envelope.schema_version(), 1..=5)
+            || record_kind == CampaignRecordKind::Attempt && envelope.schema_version() == 1
             || record_kind == CampaignRecordKind::AttemptAdmission
                 && envelope.schema_version() == 1
             || record_kind == CampaignRecordKind::Observation
-                && matches!(envelope.schema_version(), 1..=4)
+                && matches!(envelope.schema_version(), 1..=7)
             || matches!(
                 record_kind,
                 CampaignRecordKind::ObjectiveEvaluation | CampaignRecordKind::RankingExplanation
@@ -697,6 +699,7 @@ impl ObjectEnvelope {
                 | CampaignRecordKind::PlannerCandidateBudget
                 | CampaignRecordKind::BranchPath
                 | CampaignRecordKind::BranchRequest
+                | CampaignRecordKind::Attempt
                 | CampaignRecordKind::AttemptAdmission
                 | CampaignRecordKind::MeasurementSet
                 | CampaignRecordKind::Observation

@@ -107,6 +107,25 @@ pub enum QemuHotForkChildExitPolicyError {
 /// capabilities stay inside the reconciliation owner and reach modeled code
 /// only after they have been assembled into the process-neutral lifecycle.
 pub trait QemuHotForkLiveExecution: QemuAttemptOperationalBoundary {
+    /// Takes the exact source boundary reconstructed before child driving.
+    ///
+    /// The materialization carries the complete retained event prefix,
+    /// authoritative scheduler-quantum coordinate, quiescence, and terminal
+    /// verdict. A count-only substitute is not sufficient for absolute stops.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when the child has no authenticated
+    /// source materialization.
+    fn take_start_materialization(
+        &mut self,
+    ) -> Result<crate::QemuFreshStartMaterialization, QemuVmRealizationError> {
+        Err(QemuVmRealizationError::Executor {
+            operation: "take hot-fork start materialization",
+            message: String::from("branch-private exact start materialization is unavailable"),
+        })
+    }
+
     /// Borrows the assembled process-owner-neutral scheduler lifecycle.
     ///
     /// Raw child channels do not imply modeled execution readiness. The Linux

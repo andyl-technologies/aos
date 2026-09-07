@@ -290,19 +290,19 @@ GetCampaignFindingObjectRequestV1 = version | principal | campaign | snapshot |
 GetCampaignFindingObjectResponseV1 = version | request_digest |
                                      CampaignSnapshotV2OrV3 | FindingV1 |
                                      FindingObjectV1 | MerkleLookupProofV1
-FindingObjectV1 = 0 ObservationV1 |
-                  1 latest ObservationV1 |
+FindingObjectV1 = 0 ObservationV1-through-V8 |
+                  1 latest ObservationV1-through-V8 |
                   2 ReproductionArtifactV1 |
                   3 minimized ReproductionArtifactV1
 
 ExplainCampaignAttemptRequestV1 = version | principal | campaign | snapshot |
                                   AttemptId
 ExplainCampaignAttemptResponseV2 = version | request_digest |
-                                   CampaignSnapshotV2OrV3 | AttemptV1 |
+                                   CampaignSnapshotV2OrV3 | AttemptV1-or-V2 |
                                    AttemptAdmissionV1-or-V2 | BranchPathV2 |
                                    optional SelectionV2 | optional ProposalV1 |
                                    optional PlannerStepV4 |
-                                   optional ObservationV1 |
+                                   optional ObservationV1-through-V8 |
                                    MerkleLookupProofV1 attempt_proof |
                                    MerkleLookupProofV1 admission_proof |
                                    optional MerkleLookupProofV1 proposal_proof |
@@ -365,7 +365,7 @@ GetCampaignFrontierObjectRequestV1 = version | principal | campaign |
 GetCampaignFrontierObjectResponseV1 = version | request_digest |
                                       CampaignSnapshotV2OrV3 |
                                       ContinuationProjectionV1 |
-                                     BranchRequestV1-through-V5 |
+                                     BranchRequestV1-through-V6 |
                                       MerkleLookupProofV1 |
                                       MerkleLookupProofV1
 
@@ -388,14 +388,14 @@ PinCampaignResponseV1 = version | request_digest | prior_snapshot |
                         new_snapshot | replayed
 
 DiscoveryRequestV1 = command | expected_snapshot | configuration_artifact |
-                     StopConditionV1
-SubmitCampaignDiscoveryRequestV1 = version | principal | campaign |
-                                   DiscoveryRequestV1
+                     StopConditionV1-or-V2
+SubmitCampaignDiscoveryRequestV1-or-V2 = version | principal | campaign |
+                                         DiscoveryRequestV1
 SubmitCampaignDiscoveryResponseV1 = version | request_digest | prior_snapshot |
                                     new_snapshot | attempt | admission | replayed
 
 SubmitCampaignBranchRequestV1 = version | principal | campaign |
-                                expected_snapshot | BranchRequestV1-through-V5
+                                expected_snapshot | BranchRequestV1-through-V6
 SubmitCampaignBranchResponseV1 = version | request_digest | prior_snapshot |
                                  new_snapshot | branch_request | replayed
 
@@ -532,7 +532,7 @@ pin_request_digest =
   H("crucible.campaign-service.pin-campaign.v1", PinCampaignRequestV1)
 discovery_request_digest =
   H("crucible.campaign-service.submit-campaign-discovery.v1",
-    SubmitCampaignDiscoveryRequestV1)
+    SubmitCampaignDiscoveryRequestV1-or-V2)
 branch_request_digest =
   H("crucible.campaign-service.submit-branch-request.v1",
     SubmitCampaignBranchRequestV1)
@@ -725,10 +725,10 @@ does not grant evidence bodies, checkpoint bytes, or any other child closure.
 
 `ExplainCampaignAttempt` is the separately authorized provenance view for one
 exact attempt in the current authenticated snapshot. Two minimal accounting
-lookup proofs bind the complete `AttemptV1` body and its unique execution-basis
+lookup proofs bind the complete `AttemptV1-or-V2` body and its unique execution-basis
 `AttemptAdmissionV1-or-V2`; a third proof binds the execution-basis `ProposalV1` in
 the exploration root for branch attempts, and an observations-root proof binds
-either the canonical `ObservationV1` or authenticated absence. The response
+either the canonical `ObservationV1-through-V8` or authenticated absence. The response
 also carries the exact content-addressed `BranchPathV2` and, for a branch,
 `SelectionV2`. A checked reader reconstructs every typed ID, requires the
 attempt path and optional observation path to agree, requires the admission to
@@ -817,7 +817,7 @@ before generated work is advertised as executable.
 `GetFrontierObject` is the separately authorized body read for one exact
 `BranchRequestId` returned by `QueryFrontier`. The response repeats the
 authenticated projection and returns the strict `BranchRequestV1` through
-`BranchRequestV5` body. The
+`BranchRequestV6` body. The
 first minimal lookup proof authenticates the fixed frontier-index anchor; the
 second authenticates the request-keyed projection ID inside that index. A
 checked client reconstructs both the projection and request content IDs,
@@ -863,6 +863,19 @@ and the finite singleton shape. The version-1
 so accepting v5 leaves the outer framing, outer schema, and digest algorithm
 unchanged. Historical outer requests retain their exact bytes; a new request
 that embeds a v5 body naturally has new full-message bytes and a new digest.
+
+Stop-condition tags 5 and 6 encode a nonzero absolute scheduler-quantum
+coordinate and a flat nonzero virtual-time-or-scheduler-quantum pair. They use
+`AttemptV2`, `BranchRequestV6`, `ObservationV5-through-V8`, version-9
+`DiscoveryRequested`, and `SubmitCampaignDiscoveryRequestV2`. Every enclosing
+decoder requires the exact old-or-new version pairing. The scheduler coordinate
+comes from `SingleSchedulerCheckpointV2.quanta`; discovery-only calls that make
+no scheduler progress do not consume it. Exact resume evaluates the restored
+coordinate before driving and charges only the remaining suffix. Terminal and
+assertion outcomes precede either budget boundary. Restored virtual-time
+evaluation uses the authenticated scheduler frontier rather than the last
+retained event timestamp, which may be earlier. Virtual time has reporting
+priority if both members cross on the same scheduler quantum.
 
 The checked local porcelain exposes these proof-bearing reads through
 `campaign graph-object`, `campaign choice-object`, and
@@ -958,13 +971,15 @@ kind = 1 (GetCampaignRequestV1) |
       41 (AttachCampaignRuntimeResponseV1) |
       42 (GetCampaignStatusRequestV1) |
       43 (GetCampaignStatusResponseV1) |
-      44 (SubmitCampaignDiscoveryRequestV1) |
+      44 (SubmitCampaignDiscoveryRequestV1-or-V2) |
       45 (SubmitCampaignDiscoveryResponseV1)
 ```
 
-An accepted explicit discovery request is a version-8 `CampaignFact` whose
+An accepted explicit discovery request is a version-8 or version-9 `CampaignFact` whose
 canonical payload contains the command, exact parent snapshot, exact
-campaign-owned configuration artifact, and stop condition. The repository admits it only while the
+campaign-owned configuration artifact, and stop condition. Version 9 is used
+only for either execution-quanta stop tag; all established stops remain version
+8. The repository admits it only while the
 campaign is `Running`, the frontier and admission sequence are empty, the
 active policy permits a named boundary, and campaign attempt budget remains.
 It publishes the empty branch path, semantic attempt, admission, command index,
@@ -1663,13 +1678,13 @@ resource_limits = maximum_vcpus | maximum_resident_bytes |
                   maximum_disk_bytes | maximum_execution_quanta
 
 SubmitAttemptResponseV2/V3 = version | assignment_id | daemon_epoch | attempt_id |
-                          request_digest | disposition
+                             request_digest | disposition
 
 GetAttemptExecutionRequestV2 = version | daemon_epoch | lineage_id | attempt_id |
                                execution_id | execution_basis_digest
 
-GetAttemptExecutionResponseV2/V3 = version | daemon_epoch | attempt_id | execution_id |
-                                request_digest | disposition
+GetAttemptExecutionResponseV2/V3 = version | daemon_epoch | attempt_id |
+                                   execution_id | request_digest | disposition
 
 ResumeAttemptExecutionRequestV2 = version | assignment_id | daemon_epoch |
                                   lineage_id | attempt_id | prior_execution_id |
@@ -1677,9 +1692,9 @@ ResumeAttemptExecutionRequestV2 = version | assignment_id | daemon_epoch |
                                   retention_intent
 
 ResumeAttemptExecutionResponseV2/V3 = version | assignment_id | daemon_epoch |
-                                   attempt_id | prior_execution_id |
-                                   exact_checkpoint_id | request_digest |
-                                   disposition
+                                      attempt_id | prior_execution_id |
+                                      exact_checkpoint_id | request_digest |
+                                      disposition
 
 CheckpointAttemptExecutionRequestV2 = version | daemon_epoch | lineage_id |
                                       attempt_id | execution_id |
@@ -1701,8 +1716,7 @@ disposition. Version 3 of the submit and resume responses adds the matching
 durable quarantine. The executor records that state in attempt-state record v7
 when a non-retryable worker failure stops an execution. The coordinator closes
 the admitted ordinal with `AttemptClosed(TerminalWorkerFailure)` in campaign
-fact v10. Campaign fact version 9 remains reserved for the extended-stop
-addition. This operational classification does not synthesize a guest
+fact v10. This operational classification does not synthesize a guest
 observation or modeled stop outcome. Every older response disposition and
 campaign closure reason retains its prior schema version and bytes.
 
@@ -1735,7 +1749,9 @@ original response. Reusing that ID with any changed canonical field returns
 from the prior request. Retrying transient backpressure or unavailable input
 uses a fresh assignment ID. Incompatible, unauthorized, and conflicting
 assignments require changed compatibility, authority, or caller state rather
-than a blind retry.
+than a blind retry. A terminal failure names an existing durable worker
+quarantine; the coordinator closes that admitted ordinal without another
+assignment.
 
 `GetAttemptExecution` is the read-only completion-poll operation. Its request
 digest is
@@ -1744,14 +1760,16 @@ the response repeats the exact epoch, attempt, and execution and is rejected if
 any echo or the digest differs. Its closed disposition vocabulary is
 `running | checkpoint-requested | checkpoint-publishing(exact-checkpoint ID) |
 paused(exact-checkpoint ID) | completed(observation ID) | canceled |
-not-current`. The executor returns `running` for exact durable `running` or
+terminal-failure | not-current`. The executor returns `running` for exact durable `running` or
 observation-`publishing` state,
 `checkpoint-publishing(promoted)` for the internal replay-validation
 `checkpoint-promoting(source,promoted)` state,
-`completed` only for exact durable completion, and `canceled` only for exact
-durable cancellation. Absence or any epoch, lineage, attempt, execution, or
+`completed` only for exact durable completion, `canceled` only for exact
+durable cancellation, and `terminal-failure` only for the exact durable worker
+quarantine. Absence or any epoch, lineage, attempt, execution, or
 execution-basis mismatch is `not-current`. This operation reads the direct
-lineage-qualified attempt-state record and MUST NOT create an assignment record.
+lineage-qualified attempt-state record and MUST NOT create an assignment
+record.
 
 `CheckpointAttemptExecution` is the exact-basis, idempotent pause request. Its
 request digest is
@@ -1811,7 +1829,7 @@ operational terms. Its closed disposition vocabulary is
 `accepted(new execution ID) | already-running(new execution ID) |
 already-completed(observation ID) | already-canceled | not-current |
 rejected(incompatible | backpressure | unavailable-input | unauthorized |
-conflicting-assignment)`. The response repeats the assignment, new daemon
+conflicting-assignment | terminal-failure)`. The response repeats the assignment, new daemon
 epoch, attempt, prior execution, checkpoint, and exact request digest. Absence
 or any paused-root, prior-execution, lineage, attempt, or basis mismatch is
 `not-current` and MUST NOT launch a guest. Exact retry reproduces the same new

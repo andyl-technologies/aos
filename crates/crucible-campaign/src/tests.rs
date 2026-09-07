@@ -334,10 +334,10 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         let message = rows
             .get(schema)
             .unwrap_or_else(|| panic!("missing campaign service schema {schema}"));
-        let expected_version = if schema == "crucible.campaign.explain-campaign-attempt-response" {
-            "2"
-        } else {
-            "1"
+        let expected_version = match schema {
+            "crucible.campaign.explain-campaign-attempt-response"
+            | "crucible.campaign.submit-campaign-discovery-request" => "2",
+            _ => "1",
         };
         assert_eq!(message[1], expected_version);
         assert_eq!(message[2], "crucible-campaign::campaign_service");
@@ -1131,14 +1131,6 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
     let mut terminal_as_v2 = terminal_bytes;
     terminal_as_v2[..4].copy_from_slice(&2_u32.to_be_bytes());
     assert!(CampaignFact::from_canonical_bytes(&terminal_as_v2).is_err());
-    let mut terminal_as_v9 = terminal.canonical_bytes();
-    terminal_as_v9[..4].copy_from_slice(&9_u32.to_be_bytes());
-    assert_eq!(
-        CampaignFact::from_canonical_bytes(&terminal_as_v9),
-        Err(CampaignCodecError::InvalidValue {
-            reason: "unsupported campaign object schema version"
-        })
-    );
     let mut cancelled_as_v10 = cancelled.canonical_bytes();
     cancelled_as_v10[..4].copy_from_slice(&10_u32.to_be_bytes());
     assert!(CampaignFact::from_canonical_bytes(&cancelled_as_v10).is_err());

@@ -594,6 +594,8 @@ pub struct ProductionVmLifecycleLoop {
 pub struct ProductionVmLifecycleResumeState {
     event_log: Vec<SchedulerEventLogEntry>,
     event_log_base_events: u64,
+    scheduler_quanta: u64,
+    scheduler_frontier: VirtualTime,
     scheduler_quiescence: SchedulerQuiescence,
     terminal_verdict: Option<QuantumTerminalVerdict>,
 }
@@ -609,15 +611,31 @@ impl ProductionVmLifecycleResumeState {
     pub fn new(
         event_log: Vec<SchedulerEventLogEntry>,
         event_log_base_events: u64,
+        scheduler_quanta: u64,
+        scheduler_frontier: VirtualTime,
         scheduler_quiescence: SchedulerQuiescence,
         terminal_verdict: Option<QuantumTerminalVerdict>,
     ) -> Self {
         Self {
             event_log,
             event_log_base_events,
+            scheduler_quanta,
+            scheduler_frontier,
             scheduler_quiescence,
             terminal_verdict,
         }
+    }
+
+    /// Returns the absolute scheduler-quantum coordinate at the restored boundary.
+    #[must_use]
+    pub const fn scheduler_quanta(&self) -> u64 {
+        self.scheduler_quanta
+    }
+
+    /// Returns the absolute virtual-time coordinate at the restored boundary.
+    #[must_use]
+    pub const fn scheduler_frontier(&self) -> VirtualTime {
+        self.scheduler_frontier
     }
 
     /// Consumes the state into its exact retained evidence and stop boundary.
@@ -627,12 +645,16 @@ impl ProductionVmLifecycleResumeState {
     ) -> (
         Vec<SchedulerEventLogEntry>,
         u64,
+        u64,
+        VirtualTime,
         SchedulerQuiescence,
         Option<QuantumTerminalVerdict>,
     ) {
         (
             self.event_log,
             self.event_log_base_events,
+            self.scheduler_quanta,
+            self.scheduler_frontier,
             self.scheduler_quiescence,
             self.terminal_verdict,
         )

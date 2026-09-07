@@ -56,6 +56,10 @@ impl QemuFreshAttemptLifecycleOwner for FakeResumeLifecycle {
         })
     }
 
+    fn completed_quanta(&self) -> u64 {
+        self.state.scheduler_quanta()
+    }
+
     fn terminal_verdict_for_stop(&mut self) -> Option<crucible::QuantumTerminalVerdict> {
         None
     }
@@ -151,6 +155,8 @@ struct FakeResumeDriver {
 struct ObservedResume {
     events: Vec<SchedulerEventLogEntry>,
     bytes: usize,
+    completed_quanta: u64,
+    frontier: VirtualTime,
     quiescence: Option<SchedulerQuiescence>,
     final_events: Vec<SchedulerEventLogEntry>,
 }
@@ -167,10 +173,13 @@ impl QemuFreshAttemptDriver for FakeResumeDriver {
         materialization: QemuFreshStartMaterialization,
     ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>> {
         self.calls.drives.fetch_add(1, Ordering::SeqCst);
-        let (events, bytes, quiescence, _terminal) = materialization.into_parts();
+        let (events, bytes, completed_quanta, frontier, quiescence, _terminal) =
+            materialization.into_parts();
         *self.observed.lock().expect("resume observation") = Some(ObservedResume {
             events,
             bytes,
+            completed_quanta,
+            frontier,
             quiescence,
             final_events: Vec::new(),
         });
@@ -200,7 +209,14 @@ fn resume_runner_rejects_missing_root_before_factory_invocation() {
     let mut runner = resume_runner(
         Arc::clone(&calls),
         Arc::clone(&observed),
-        ProductionVmLifecycleResumeState::new(Vec::new(), 0, SchedulerQuiescence::default(), None),
+        ProductionVmLifecycleResumeState::new(
+            Vec::new(),
+            0,
+            0,
+            VirtualTime::default(),
+            SchedulerQuiescence::default(),
+            None,
+        ),
         Vec::new(),
     );
 
@@ -234,6 +250,8 @@ fn resume_runner_preserves_exact_event_prefix_and_final_drain() {
         ProductionVmLifecycleResumeState::new(
             prefix.clone(),
             0,
+            4,
+            VirtualTime { ticks: 17 },
             SchedulerQuiescence::default(),
             None,
         ),
@@ -260,6 +278,8 @@ fn resume_runner_preserves_exact_event_prefix_and_final_drain() {
         .expect("driver should retain resume evidence");
     assert_eq!(observed.events, prefix);
     assert_eq!(observed.bytes, expected_bytes);
+    assert_eq!(observed.completed_quanta, 4);
+    assert_eq!(observed.frontier, VirtualTime { ticks: 17 });
     assert_eq!(observed.quiescence, Some(SchedulerQuiescence::default()));
     assert_eq!(observed.final_events, final_events);
     assert_eq!(calls.starts.load(Ordering::SeqCst), 1);
@@ -278,6 +298,8 @@ fn resume_runner_rejects_suffix_only_evidence_and_still_cleans_up() {
         ProductionVmLifecycleResumeState::new(
             vec![event(7, 21, "retained-suffix")],
             7,
+            9,
+            VirtualTime { ticks: 21 },
             SchedulerQuiescence::default(),
             None,
         ),
