@@ -4106,11 +4106,16 @@ Network namespace inventory can now represent the complete closed lifecycle
 instead of only initial default-drop publication. A helper-verified transition
 compare-and-swaps the exact prior resource digest, opaque handle, Linux boot,
 namespace device/inode, and complete postcondition observation before the
-protected catalog advances. Arm installs only a strictly newer ownership-lease
-generation; renew requires an already armed row and advances the same
-high-water fence. Guardian fencing retains the last active lease tuple as
-containment evidence, while disarm returns Armed or Fenced state to
-default-drop without erasing the generation fence.
+protected catalog advances. The observation carries a closed helper-reported
+state: Arm and renew require Armed with the exact requested lease tuple;
+guardian fencing requires Fenced with the exact retained active tuple; disarm
+requires DefaultDrop; and destroy requires Absent. Both this typed state and
+the opaque complete-observation digest enter the transition commitment. Arm
+installs only a strictly newer ownership-lease generation; renew requires an
+already armed row and advances the same high-water fence. Guardian fencing
+retains the last active lease tuple as containment evidence, while disarm
+returns Armed or Fenced state to default-drop without erasing the generation
+fence.
 
 Destroy is irreversible and requires the fixed handle-derived pin to be
 absent. On the current boot, only DefaultDrop or Fenced state can retire, so a
@@ -4133,14 +4138,15 @@ Focused validation covers arm, monotonic renewal, guardian fence, disarm,
 stale-generation rejection, same-boot Armed retirement rejection, cross-boot
 retirement, permanent tombstones, exact replay and restart, typed-pin loss,
 request reuse, stale compare-and-swap evidence, corrupt lease high-water state,
-and byte-exact format-one recovery and upgrade. All 45 locally runnable Network
+action/postcondition substitution, exact observed lease-tuple matching, and
+byte-exact format-one recovery and upgrade. All 46 locally runnable Network
 library tests and its doctests pass; the all-feature root qualification test is
 unchanged and requires a writable root filesystem unavailable in the managed
 worktree. Strict all-target/all-feature crate-local Clippy,
 warnings-as-errors rustdoc, Rust formatting, and diff checks pass. The full
 `nix-build -A checks.eval --cores 8 --no-out-link` gate passes the complete
 workspace test phase, configuration evaluation, and system-structure checks at
-`/nix/store/m583bgalh4hz7w25lnnah9snv0sml53a-aos-eval-and-system-structure-checks-0`.
+`/nix/store/4bvc4ywxlnqh2pw1kmg2wgwwk8az5hi6-aos-eval-and-system-structure-checks-0`.
 
 This advances `SBX-NET-01` and `SBX-LIFE-06` through durable namespace state
 transitions without claiming kernel effects. Network Apply remains

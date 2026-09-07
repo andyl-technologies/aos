@@ -47,7 +47,8 @@ mod lifecycle;
 pub use lifecycle::{
     NetworkNamespaceIdentityV1, NetworkNamespaceLifecycleActionV1,
     NetworkNamespaceLifecycleObservationV1, NetworkNamespaceLifecycleOutcomeV1,
-    NetworkNamespaceLifecycleTransitionV1,
+    NetworkNamespaceLifecycleTransitionV1, NetworkNamespaceObservedStateKindV1,
+    NetworkNamespaceObservedStateV1,
 };
 
 const NAMESPACE_JOURNAL_FILE: &str = "network-namespaces.journal";
@@ -1237,6 +1238,7 @@ mod tests {
         handle: u8,
         request_marker: u8,
         observation_marker: u8,
+        observed_state: NetworkNamespaceObservedStateV1,
     ) -> NetworkNamespaceLifecycleObservationV1 {
         let current = network(catalog, handle);
         let identity = NetworkNamespaceIdentityV1::new(
@@ -1251,9 +1253,35 @@ mod tests {
             [request_marker; 16],
             ObjectDigest::from_bytes(*current.resource_digest()),
             identity,
+            observed_state,
             ObjectDigest::from_bytes([observation_marker; 32]),
         )
         .unwrap()
+    }
+
+    fn armed_observation(
+        catalog: &NetworkNamespaceCatalogV1,
+        handle: u8,
+        request_marker: u8,
+        observation_marker: u8,
+        lease_marker: u8,
+        lease_generation: u64,
+        fail_stop_boottime_nanoseconds: u64,
+    ) -> NetworkNamespaceLifecycleObservationV1 {
+        let observed_state = NetworkNamespaceObservedStateV1::armed(
+            ObjectDigest::from_bytes([lease_marker; 32]),
+            lease_generation,
+            fail_stop_boottime_nanoseconds,
+        )
+        .unwrap();
+
+        lifecycle_observation(
+            catalog,
+            handle,
+            request_marker,
+            observation_marker,
+            observed_state,
+        )
     }
 
     #[test]
@@ -1333,7 +1361,7 @@ mod tests {
             .unwrap();
 
         let arm = NetworkNamespaceLifecycleTransitionV1::arm(
-            lifecycle_observation(&catalog, 1, 41, 51),
+            armed_observation(&catalog, 1, 41, 51, 61, 7, 1_000),
             ObjectDigest::from_bytes([61; 32]),
             7,
             1_000,
@@ -1353,7 +1381,7 @@ mod tests {
         assert_eq!(armed.fail_stop_boottime_nanoseconds(), 1_000);
 
         let renew = NetworkNamespaceLifecycleTransitionV1::renew(
-            lifecycle_observation(&catalog, 1, 42, 52),
+            armed_observation(&catalog, 1, 42, 52, 62, 8, 2_000),
             ObjectDigest::from_bytes([62; 32]),
             8,
             2_000,
@@ -1365,8 +1393,15 @@ mod tests {
         assert_eq!(renewed.lease_generation(), 8);
         assert_eq!(renewed.fail_stop_boottime_nanoseconds(), 2_000);
 
+        let fenced_state =
+            NetworkNamespaceObservedStateV1::fenced(ObjectDigest::from_bytes([62; 32]), 8, 2_000)
+                .unwrap();
         let fence = NetworkNamespaceLifecycleTransitionV1::fence(lifecycle_observation(
-            &catalog, 1, 43, 53,
+            &catalog,
+            1,
+            43,
+            53,
+            fenced_state,
         ))
         .unwrap();
         catalog.apply_lifecycle_transition(fence).unwrap();
@@ -1376,7 +1411,11 @@ mod tests {
         assert_eq!(fenced.fail_stop_boottime_nanoseconds(), 2_000);
 
         let disarm = NetworkNamespaceLifecycleTransitionV1::disarm(lifecycle_observation(
-            &catalog, 1, 44, 54,
+            &catalog,
+            1,
+            44,
+            54,
+            NetworkNamespaceObservedStateV1::default_drop(),
         ))
         .unwrap();
         catalog.apply_lifecycle_transition(disarm).unwrap();
@@ -1389,7 +1428,7 @@ mod tests {
         assert_eq!(default_drop.fail_stop_boottime_nanoseconds(), 0);
 
         let stale_arm = NetworkNamespaceLifecycleTransitionV1::arm(
-            lifecycle_observation(&catalog, 1, 45, 55),
+            armed_observation(&catalog, 1, 45, 55, 63, 8, 3_000),
             ObjectDigest::from_bytes([63; 32]),
             8,
             3_000,
@@ -1400,7 +1439,13 @@ mod tests {
             Err(NetworkNamespaceCatalogError::LifecycleConflict)
         ));
 
-        let destroy_observation = lifecycle_observation(&catalog, 1, 46, 56);
+        let destroy_observation = lifecycle_observation(
+            &catalog,
+            1,
+            46,
+            56,
+            NetworkNamespaceObservedStateV1::absent(),
+        );
         fs::remove_file(fixture.pin_path(1)).unwrap();
         let destroy = NetworkNamespaceLifecycleTransitionV1::destroy(destroy_observation).unwrap();
         assert_eq!(
@@ -1422,6 +1467,100 @@ mod tests {
         assert!(matches!(
             fixture.open([81; 16]),
             Err(NetworkNamespaceCatalogError::NamespacePin(_))
+        ));
+    }
+
+    #[test]
+    fn lifecycle_observations_bind_actions_and_exact_lease_state() {
+        let fixture = Fixture::new();
+        fixture.create_pin(1);
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        catalog
+            .publish(fixture.publication(1, 1, [81; 16]))
+            .unwrap();
+
+        let lease_digest = ObjectDigest::from_bytes([61; 32]);
+        assert!(matches!(
+            NetworkNamespaceObservedStateV1::armed(ObjectDigest::from_bytes([0; 32]), 7, 1_000),
+            Err(NetworkNamespaceCatalogError::InvalidCandidate)
+        ));
+        assert!(matches!(
+            NetworkNamespaceObservedStateV1::armed(lease_digest, 0, 1_000),
+            Err(NetworkNamespaceCatalogError::InvalidCandidate)
+        ));
+        assert!(matches!(
+            NetworkNamespaceObservedStateV1::fenced(lease_digest, 7, 0),
+            Err(NetworkNamespaceCatalogError::InvalidCandidate)
+        ));
+
+        let default_drop = lifecycle_observation(
+            &catalog,
+            1,
+            41,
+            51,
+            NetworkNamespaceObservedStateV1::default_drop(),
+        );
+        assert!(matches!(
+            NetworkNamespaceLifecycleTransitionV1::arm(default_drop, lease_digest, 7, 1_000),
+            Err(NetworkNamespaceCatalogError::InvalidCandidate)
+        ));
+
+        let wrong_lease = armed_observation(&catalog, 1, 42, 52, 62, 7, 1_000);
+        assert!(matches!(
+            NetworkNamespaceLifecycleTransitionV1::arm(wrong_lease, lease_digest, 7, 1_000),
+            Err(NetworkNamespaceCatalogError::InvalidCandidate)
+        ));
+
+        let absent = lifecycle_observation(
+            &catalog,
+            1,
+            43,
+            53,
+            NetworkNamespaceObservedStateV1::absent(),
+        );
+        assert!(matches!(
+            NetworkNamespaceLifecycleTransitionV1::disarm(absent),
+            Err(NetworkNamespaceCatalogError::InvalidCandidate)
+        ));
+        assert!(matches!(
+            NetworkNamespaceLifecycleTransitionV1::fence(absent),
+            Err(NetworkNamespaceCatalogError::InvalidCandidate)
+        ));
+        assert!(matches!(
+            NetworkNamespaceLifecycleTransitionV1::destroy(default_drop),
+            Err(NetworkNamespaceCatalogError::InvalidCandidate)
+        ));
+
+        let armed_state = NetworkNamespaceObservedStateV1::armed(lease_digest, 7, 1_000).unwrap();
+        assert_eq!(
+            armed_state.kind(),
+            NetworkNamespaceObservedStateKindV1::Armed
+        );
+        assert_eq!(armed_state.lease(), Some((lease_digest, 7, 1_000)));
+
+        let arm = NetworkNamespaceLifecycleTransitionV1::arm(
+            armed_observation(&catalog, 1, 44, 54, 61, 7, 1_000),
+            lease_digest,
+            7,
+            1_000,
+        )
+        .unwrap();
+        catalog.apply_lifecycle_transition(arm).unwrap();
+
+        let wrong_fenced_state =
+            NetworkNamespaceObservedStateV1::fenced(ObjectDigest::from_bytes([62; 32]), 7, 1_000)
+                .unwrap();
+        let wrong_fence = NetworkNamespaceLifecycleTransitionV1::fence(lifecycle_observation(
+            &catalog,
+            1,
+            45,
+            55,
+            wrong_fenced_state,
+        ))
+        .unwrap();
+        assert!(matches!(
+            catalog.apply_lifecycle_transition(wrong_fence),
+            Err(NetworkNamespaceCatalogError::LifecycleConflict)
         ));
     }
 
@@ -1480,7 +1619,7 @@ mod tests {
             &legacy.resource_digest
         );
         let arm = NetworkNamespaceLifecycleTransitionV1::arm(
-            lifecycle_observation(&catalog, 1, 41, 51),
+            armed_observation(&catalog, 1, 41, 51, 61, 7, 1_000),
             ObjectDigest::from_bytes([61; 32]),
             7,
             1_000,
@@ -1509,14 +1648,14 @@ mod tests {
             .unwrap();
 
         let stale = NetworkNamespaceLifecycleTransitionV1::arm(
-            lifecycle_observation(&catalog, 1, 41, 51),
+            armed_observation(&catalog, 1, 41, 51, 61, 7, 1_000),
             ObjectDigest::from_bytes([61; 32]),
             7,
             1_000,
         )
         .unwrap();
         let renew_before_arm = NetworkNamespaceLifecycleTransitionV1::renew(
-            lifecycle_observation(&catalog, 1, 42, 52),
+            armed_observation(&catalog, 1, 42, 52, 62, 8, 2_000),
             ObjectDigest::from_bytes([62; 32]),
             8,
             2_000,
@@ -1528,7 +1667,7 @@ mod tests {
         ));
 
         let arm = NetworkNamespaceLifecycleTransitionV1::arm(
-            lifecycle_observation(&catalog, 1, 43, 53),
+            armed_observation(&catalog, 1, 43, 53, 63, 9, 3_000),
             ObjectDigest::from_bytes([63; 32]),
             9,
             3_000,
@@ -1541,7 +1680,7 @@ mod tests {
         ));
 
         let reused_request = NetworkNamespaceLifecycleTransitionV1::arm(
-            lifecycle_observation(&catalog, 2, 43, 54),
+            armed_observation(&catalog, 2, 43, 54, 64, 10, 4_000),
             ObjectDigest::from_bytes([64; 32]),
             10,
             4_000,
@@ -1570,13 +1709,20 @@ mod tests {
         catalog
             .publish(fixture.publication(1, 1, [81; 16]))
             .unwrap();
-        let stale_boot_observation = lifecycle_observation(&catalog, 1, 41, 51);
+        let stale_arm_observation = armed_observation(&catalog, 1, 41, 51, 61, 7, 1_000);
+        let stale_destroy_observation = lifecycle_observation(
+            &catalog,
+            1,
+            42,
+            52,
+            NetworkNamespaceObservedStateV1::absent(),
+        );
         drop(catalog);
 
         fs::remove_file(fixture.pin_path(1)).unwrap();
         let mut later_boot = fixture.open([82; 16]).unwrap();
         let stale_arm = NetworkNamespaceLifecycleTransitionV1::arm(
-            stale_boot_observation,
+            stale_arm_observation,
             ObjectDigest::from_bytes([61; 32]),
             7,
             1_000,
@@ -1588,7 +1734,7 @@ mod tests {
         ));
 
         let stale_destroy =
-            NetworkNamespaceLifecycleTransitionV1::destroy(stale_boot_observation).unwrap();
+            NetworkNamespaceLifecycleTransitionV1::destroy(stale_destroy_observation).unwrap();
         later_boot
             .apply_lifecycle_transition(stale_destroy)
             .unwrap();
@@ -1599,7 +1745,7 @@ mod tests {
         let mut live = live_fixture.open([81; 16]).unwrap();
         live.publish(live_fixture.publication(2, 2, [81; 16]))
             .unwrap();
-        let arm_observation = lifecycle_observation(&live, 2, 42, 52);
+        let arm_observation = armed_observation(&live, 2, 42, 52, 62, 8, 2_000);
         fs::remove_file(live_fixture.pin_path(2)).unwrap();
         let arm = NetworkNamespaceLifecycleTransitionV1::arm(
             arm_observation,
@@ -1624,7 +1770,7 @@ mod tests {
             .unwrap();
 
         let arm = NetworkNamespaceLifecycleTransitionV1::arm(
-            lifecycle_observation(&catalog, 1, 41, 51),
+            armed_observation(&catalog, 1, 41, 51, 61, 7, 1_000),
             ObjectDigest::from_bytes([61; 32]),
             7,
             1_000,
@@ -1632,7 +1778,13 @@ mod tests {
         .unwrap();
         catalog.apply_lifecycle_transition(arm).unwrap();
 
-        let destroy_observation = lifecycle_observation(&catalog, 1, 42, 52);
+        let destroy_observation = lifecycle_observation(
+            &catalog,
+            1,
+            42,
+            52,
+            NetworkNamespaceObservedStateV1::absent(),
+        );
         fs::remove_file(fixture.pin_path(1)).unwrap();
         let destroy = NetworkNamespaceLifecycleTransitionV1::destroy(destroy_observation).unwrap();
         assert!(matches!(

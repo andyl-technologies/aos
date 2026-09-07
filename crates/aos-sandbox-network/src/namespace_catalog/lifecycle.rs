@@ -79,12 +79,141 @@ impl NetworkNamespaceIdentityV1 {
     }
 }
 
+/// Names the closed kernel state reported after a lifecycle effect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetworkNamespaceObservedStateKindV1 {
+    /// The namespace is present under verified local default-drop policy.
+    DefaultDrop,
+    /// The namespace is present and its verified lease gate is armed.
+    Armed,
+    /// The namespace is present under guardian-applied fail-stop containment.
+    Fenced,
+    /// The namespace pin and all helper-owned kernel objects are absent.
+    Absent,
+}
+
+/// Carries the closed lifecycle and lease tuple observed by the helper.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetworkNamespaceObservedStateV1 {
+    kind: NetworkNamespaceObservedStateKindV1,
+    ownership_lease_digest: [u8; 32],
+    lease_generation: u64,
+    fail_stop_boottime_nanoseconds: u64,
+}
+
+impl NetworkNamespaceObservedStateV1 {
+    /// Constructs a present verified default-drop observation.
+    #[must_use]
+    pub const fn default_drop() -> Self {
+        Self::without_lease(NetworkNamespaceObservedStateKindV1::DefaultDrop)
+    }
+
+    /// Constructs an absent verified-destruction observation.
+    #[must_use]
+    pub const fn absent() -> Self {
+        Self::without_lease(NetworkNamespaceObservedStateKindV1::Absent)
+    }
+
+    /// Constructs a present verified armed observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceCatalogError::InvalidCandidate`] when the
+    /// lease digest, generation, or deadline uses its reserved zero value.
+    pub fn armed(
+        ownership_lease_digest: ObjectDigest,
+        lease_generation: u64,
+        fail_stop_boottime_nanoseconds: u64,
+    ) -> Result<Self, NetworkNamespaceCatalogError> {
+        Self::with_lease(
+            NetworkNamespaceObservedStateKindV1::Armed,
+            ownership_lease_digest,
+            lease_generation,
+            fail_stop_boottime_nanoseconds,
+        )
+    }
+
+    /// Constructs a present verified fail-stop observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceCatalogError::InvalidCandidate`] when the
+    /// retained lease digest, generation, or deadline is zero.
+    pub fn fenced(
+        ownership_lease_digest: ObjectDigest,
+        lease_generation: u64,
+        fail_stop_boottime_nanoseconds: u64,
+    ) -> Result<Self, NetworkNamespaceCatalogError> {
+        Self::with_lease(
+            NetworkNamespaceObservedStateKindV1::Fenced,
+            ownership_lease_digest,
+            lease_generation,
+            fail_stop_boottime_nanoseconds,
+        )
+    }
+
+    /// Returns the closed observed lifecycle state.
+    #[must_use]
+    pub const fn kind(self) -> NetworkNamespaceObservedStateKindV1 {
+        self.kind
+    }
+
+    /// Returns the observed lease tuple for Armed or Fenced state.
+    #[must_use]
+    pub const fn lease(self) -> Option<(ObjectDigest, u64, u64)> {
+        if matches!(
+            self.kind,
+            NetworkNamespaceObservedStateKindV1::Armed
+                | NetworkNamespaceObservedStateKindV1::Fenced
+        ) {
+            Some((
+                ObjectDigest::from_bytes(self.ownership_lease_digest),
+                self.lease_generation,
+                self.fail_stop_boottime_nanoseconds,
+            ))
+        } else {
+            None
+        }
+    }
+
+    const fn without_lease(kind: NetworkNamespaceObservedStateKindV1) -> Self {
+        Self {
+            kind,
+            ownership_lease_digest: [0; 32],
+            lease_generation: 0,
+            fail_stop_boottime_nanoseconds: 0,
+        }
+    }
+
+    fn with_lease(
+        kind: NetworkNamespaceObservedStateKindV1,
+        ownership_lease_digest: ObjectDigest,
+        lease_generation: u64,
+        fail_stop_boottime_nanoseconds: u64,
+    ) -> Result<Self, NetworkNamespaceCatalogError> {
+        if ownership_lease_digest.as_bytes() == &[0; 32]
+            || lease_generation == 0
+            || fail_stop_boottime_nanoseconds == 0
+        {
+            return Err(NetworkNamespaceCatalogError::InvalidCandidate);
+        }
+
+        Ok(Self {
+            kind,
+            ownership_lease_digest: *ownership_lease_digest.as_bytes(),
+            lease_generation,
+            fail_stop_boottime_nanoseconds,
+        })
+    }
+}
+
 /// Carries one helper-observed lifecycle result and its prior-state CAS.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NetworkNamespaceLifecycleObservationV1 {
     request_id: [u8; 16],
     prior_resource_digest: ObjectDigest,
     namespace: NetworkNamespaceIdentityV1,
+    observed_state: NetworkNamespaceObservedStateV1,
     observation_digest: ObjectDigest,
 }
 
@@ -102,6 +231,7 @@ impl NetworkNamespaceLifecycleObservationV1 {
         request_id: [u8; 16],
         prior_resource_digest: ObjectDigest,
         namespace: NetworkNamespaceIdentityV1,
+        observed_state: NetworkNamespaceObservedStateV1,
         observation_digest: ObjectDigest,
     ) -> Result<Self, NetworkNamespaceCatalogError> {
         if request_id == [0; 16]
@@ -115,6 +245,7 @@ impl NetworkNamespaceLifecycleObservationV1 {
             request_id,
             prior_resource_digest,
             namespace,
+            observed_state,
             observation_digest,
         })
     }
@@ -135,6 +266,12 @@ impl NetworkNamespaceLifecycleObservationV1 {
     #[must_use]
     pub const fn namespace(self) -> NetworkNamespaceIdentityV1 {
         self.namespace
+    }
+
+    /// Returns the helper's closed observed lifecycle and lease state.
+    #[must_use]
+    pub const fn observed_state(self) -> NetworkNamespaceObservedStateV1 {
+        self.observed_state
     }
 
     /// Returns the helper's complete postcondition commitment.
@@ -175,8 +312,9 @@ impl NetworkNamespaceLifecycleTransitionV1 {
     ///
     /// # Errors
     ///
-    /// Returns [`NetworkNamespaceCatalogError::InvalidCandidate`] for a zero
-    /// lease digest, generation, deadline, or derived transition digest.
+    /// Returns [`NetworkNamespaceCatalogError::InvalidCandidate`] when the
+    /// observation does not report Armed with the exact nonzero lease tuple or
+    /// the derived transition digest uses its reserved zero value.
     pub fn arm(
         observation: NetworkNamespaceLifecycleObservationV1,
         ownership_lease_digest: ObjectDigest,
@@ -196,8 +334,9 @@ impl NetworkNamespaceLifecycleTransitionV1 {
     ///
     /// # Errors
     ///
-    /// Returns [`NetworkNamespaceCatalogError::InvalidCandidate`] for a zero
-    /// lease digest, generation, deadline, or derived transition digest.
+    /// Returns [`NetworkNamespaceCatalogError::InvalidCandidate`] when the
+    /// observation does not report Armed with the exact nonzero lease tuple or
+    /// the derived transition digest uses its reserved zero value.
     pub fn renew(
         observation: NetworkNamespaceLifecycleObservationV1,
         ownership_lease_digest: ObjectDigest,
@@ -217,11 +356,16 @@ impl NetworkNamespaceLifecycleTransitionV1 {
     ///
     /// # Errors
     ///
-    /// Returns [`NetworkNamespaceCatalogError::InvalidCandidate`] only if the
-    /// derived transition digest uses its reserved zero value.
+    /// Returns [`NetworkNamespaceCatalogError::InvalidCandidate`] when the
+    /// observation does not report DefaultDrop or the derived transition
+    /// digest uses its reserved zero value.
     pub fn disarm(
         observation: NetworkNamespaceLifecycleObservationV1,
     ) -> Result<Self, NetworkNamespaceCatalogError> {
+        require_observed_state(
+            observation,
+            NetworkNamespaceObservedStateKindV1::DefaultDrop,
+        )?;
         Self::without_lease(observation, NetworkNamespaceLifecycleActionV1::Disarm)
     }
 
@@ -229,11 +373,13 @@ impl NetworkNamespaceLifecycleTransitionV1 {
     ///
     /// # Errors
     ///
-    /// Returns [`NetworkNamespaceCatalogError::InvalidCandidate`] only if the
-    /// derived transition digest uses its reserved zero value.
+    /// Returns [`NetworkNamespaceCatalogError::InvalidCandidate`] when the
+    /// observation does not report Fenced or the derived transition digest
+    /// uses its reserved zero value.
     pub fn fence(
         observation: NetworkNamespaceLifecycleObservationV1,
     ) -> Result<Self, NetworkNamespaceCatalogError> {
+        require_observed_state(observation, NetworkNamespaceObservedStateKindV1::Fenced)?;
         Self::without_lease(observation, NetworkNamespaceLifecycleActionV1::Fence)
     }
 
@@ -241,11 +387,13 @@ impl NetworkNamespaceLifecycleTransitionV1 {
     ///
     /// # Errors
     ///
-    /// Returns [`NetworkNamespaceCatalogError::InvalidCandidate`] only if the
-    /// derived transition digest uses its reserved zero value.
+    /// Returns [`NetworkNamespaceCatalogError::InvalidCandidate`] when the
+    /// observation does not report Absent or the derived transition digest
+    /// uses its reserved zero value.
     pub fn destroy(
         observation: NetworkNamespaceLifecycleObservationV1,
     ) -> Result<Self, NetworkNamespaceCatalogError> {
+        require_observed_state(observation, NetworkNamespaceObservedStateKindV1::Absent)?;
         Self::without_lease(observation, NetworkNamespaceLifecycleActionV1::Destroy)
     }
 
@@ -288,6 +436,22 @@ impl NetworkNamespaceLifecycleTransitionV1 {
         if ownership_lease_digest.as_bytes() == &[0; 32]
             || lease_generation == 0
             || fail_stop_boottime_nanoseconds == 0
+        {
+            return Err(NetworkNamespaceCatalogError::InvalidCandidate);
+        }
+        if !matches!(
+            action,
+            NetworkNamespaceLifecycleActionV1::Arm | NetworkNamespaceLifecycleActionV1::Renew
+        ) {
+            return Err(NetworkNamespaceCatalogError::InvalidCandidate);
+        }
+        require_observed_state(observation, NetworkNamespaceObservedStateKindV1::Armed)?;
+        if observation.observed_state.lease()
+            != Some((
+                ownership_lease_digest,
+                lease_generation,
+                fail_stop_boottime_nanoseconds,
+            ))
         {
             return Err(NetworkNamespaceCatalogError::InvalidCandidate);
         }
@@ -342,6 +506,20 @@ impl NetworkNamespaceLifecycleTransitionV1 {
             .chain_update(namespace.kernel_boot_id)
             .chain_update(namespace.namespace_device.to_be_bytes())
             .chain_update(namespace.namespace_inode.to_be_bytes())
+            .chain_update([observed_state_code(self.observation.observed_state.kind)])
+            .chain_update(self.observation.observed_state.ownership_lease_digest)
+            .chain_update(
+                self.observation
+                    .observed_state
+                    .lease_generation
+                    .to_be_bytes(),
+            )
+            .chain_update(
+                self.observation
+                    .observed_state
+                    .fail_stop_boottime_nanoseconds
+                    .to_be_bytes(),
+            )
             .chain_update(self.ownership_lease_digest)
             .chain_update(self.lease_generation.to_be_bytes())
             .chain_update(self.fail_stop_boottime_nanoseconds.to_be_bytes())
@@ -430,6 +608,15 @@ impl NetworkNamespaceCatalogV1 {
             }
             NetworkNamespaceLifecycleActionV1::Fence => {
                 require_lifecycle(&next, NamespaceLifecycleV1::Armed)?;
+                if observation.observed_state.lease()
+                    != Some((
+                        ObjectDigest::from_bytes(next.highest_lease_digest),
+                        next.lease_generation,
+                        next.fail_stop_boottime_nanoseconds,
+                    ))
+                {
+                    return Err(NetworkNamespaceCatalogError::LifecycleConflict);
+                }
                 next.lifecycle = NamespaceLifecycleV1::Fenced;
             }
             NetworkNamespaceLifecycleActionV1::Destroy => {
@@ -510,6 +697,26 @@ fn require_lifecycle(
         Ok(())
     } else {
         Err(NetworkNamespaceCatalogError::LifecycleConflict)
+    }
+}
+
+fn require_observed_state(
+    observation: NetworkNamespaceLifecycleObservationV1,
+    expected: NetworkNamespaceObservedStateKindV1,
+) -> Result<(), NetworkNamespaceCatalogError> {
+    if observation.observed_state.kind == expected {
+        Ok(())
+    } else {
+        Err(NetworkNamespaceCatalogError::InvalidCandidate)
+    }
+}
+
+const fn observed_state_code(state: NetworkNamespaceObservedStateKindV1) -> u8 {
+    match state {
+        NetworkNamespaceObservedStateKindV1::DefaultDrop => 1,
+        NetworkNamespaceObservedStateKindV1::Armed => 2,
+        NetworkNamespaceObservedStateKindV1::Fenced => 3,
+        NetworkNamespaceObservedStateKindV1::Absent => 4,
     }
 }
 
