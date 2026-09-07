@@ -17,7 +17,7 @@ use crucible_api::vm_lifecycle::ProductionVmHotForkNodeBoundary;
 use crucible_api::{
     ProductionVmHotForkNodeServiceState, ProductionVmHotForkSourceWorld, ProductionVmNodeGeneration,
 };
-use crucible_campaign::{CampaignLineageId, ExecutorCompatibilityProfile};
+use crucible_campaign::{CampaignCodecError, CampaignLineageId, ExecutorCompatibilityProfile};
 use crucible_qemu::{
     LinuxQemuHotForkChildProcessAuthority, QemuAsyncDriverPolicy, QemuCrashDetector,
     QemuHotForkChildProcessOwner, QemuShutdownPolicy, QemuVmRealizationError,
@@ -44,6 +44,17 @@ pub struct QemuHotForkSourceWorldKey {
     template: crate::QemuHotForkTemplateKey,
     scenario: ContentHash,
     profile: ExecutorCompatibilityProfile,
+}
+
+/// Failure while deriving the exact retained-source lookup key for an attempt.
+#[derive(Debug, thiserror::Error)]
+pub enum QemuHotForkSourceWorldKeyError {
+    /// The authenticated campaign lineage could not produce its canonical ID.
+    #[error("derive hot-fork source lineage")]
+    Lineage(#[source] CampaignCodecError),
+    /// The operational runtime basis belongs to another campaign lineage.
+    #[error("hot-fork runtime lineage differs from the authenticated attempt lineage")]
+    RuntimeLineageMismatch,
 }
 
 impl QemuHotForkSourceWorldKey {
@@ -89,15 +100,13 @@ impl QemuHotForkSourceWorldKey {
     fn for_execution(
         input: &CrucibleAttemptExecution,
         runtime_basis: crate::AttemptExecutionRuntimeBasis,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, QemuHotForkSourceWorldKeyError> {
         let lineage = input
             .lineage()
             .id()
-            .map_err(|error| format!("derive hot-fork source lineage: {error}"))?;
+            .map_err(QemuHotForkSourceWorldKeyError::Lineage)?;
         if runtime_basis.key().lineage() != lineage {
-            return Err(String::from(
-                "hot-fork runtime lineage differs from the authenticated attempt lineage",
-            ));
+            return Err(QemuHotForkSourceWorldKeyError::RuntimeLineageMismatch);
         }
         let configuration = match input.start() {
             crate::CrucibleResolvedAttemptStart::Discover { configuration } => configuration.id(),
@@ -408,8 +417,8 @@ pub enum QemuProductionHotForkWorldLifecycleFactoryError<P> {
     #[error("check out production hot-fork source world")]
     SourceProvider(#[source] P),
     /// The attempt could not produce one exact retained-source lookup key.
-    #[error("authenticate production hot-fork source-world key: {0}")]
-    SourceKey(String),
+    #[error("authenticate production hot-fork source-world key")]
+    SourceKey(#[source] QemuHotForkSourceWorldKeyError),
     /// The supervisor omitted its exact runtime incarnation.
     #[error("production hot-fork world requires an exact worker runtime basis")]
     MissingRuntimeBasis,
