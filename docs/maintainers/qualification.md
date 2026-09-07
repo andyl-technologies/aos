@@ -251,6 +251,24 @@ do not disable features to simplify the build or label a broken basic operation
 as preview. Existing non-Linux package eligibility remains separate from Linux
 OS/runtime support and still requires its own native package tests.
 
+Package probes are immutable declarative programs built with
+`mkQualificationPackageProbe`. Each probe names the package and contains a
+primary operation plus a bad-input operation. An operation records its input,
+the command or public API being exercised, the expected result, regular input
+files, ordered command steps, and exact output-file assertions. Primary steps
+must expect success. The bad-input operation must observe a nonzero status or
+mark an exact stdout/stderr assertion as the rejection result.
+
+Commands use explicit paths. `@profile-out@` and
+`@profile-output:<name>@` address the APM-installed output, while `@out@` and
+`@output:<name>@` address the corresponding imported output. `@cc@`, `@cxx@`,
+`@python@`, and `@bash@` are the only harness commands. The runner rejects an
+executable outside the signed package closure, installed profile roots, and
+those named harness tools. It also requires exact stdout or stderr assertions
+where a successful command claims to have observed rejection. This keeps a
+probe from silently consulting a host tool or reporting an unobserved error
+path.
+
 ## Inspect and freeze the contract
 
 ```sh

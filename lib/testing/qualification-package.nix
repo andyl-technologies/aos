@@ -25,7 +25,7 @@
     text = builtins.readFile ./qualification-package.py;
     checkPhase = ''
       PYTHONPYCACHEPREFIX=$TMPDIR/qualification-package-pycache \
-        ${pkgs.python3}/bin/python3 -m py_compile \
+        ${pkgs.buildPackages.python3}/bin/python3 -m py_compile \
         $out/share/aos-release/qualification-package.py
     '';
   };
