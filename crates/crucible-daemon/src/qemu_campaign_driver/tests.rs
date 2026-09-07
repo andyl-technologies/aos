@@ -867,6 +867,51 @@ fn named_boundary_requires_the_exact_guest_marker() {
 }
 
 #[test]
+fn virtual_time_boundary_stops_after_the_first_quantum_crossing_the_deadline() {
+    let deadline = 2_000_000;
+    let completed_frontier = deadline + 17;
+    let input = input(StopCondition::VirtualTimeNanoseconds(deadline));
+    let configuration = starting_configuration(&input);
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([
+            Ok(outcome(
+                configuration.clone(),
+                Vec::new(),
+                EventLogOffset::default(),
+                deadline - 1,
+            )),
+            Ok(outcome(
+                configuration,
+                Vec::new(),
+                EventLogOffset::default(),
+                completed_frontier,
+            )),
+        ]),
+        terminal: None,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+
+    let pending = expect_observation(
+        QemuFreshModeledDriver::new()
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+            )
+            .expect("virtual-time boundary"),
+    );
+
+    assert_eq!(owner.drives, 2);
+    assert!(matches!(
+        pending.stop,
+        ModeledStop::Reached(StopCondition::VirtualTimeNanoseconds(value)) if value == deadline
+    ));
+    assert_eq!(pending.terminal_at.ticks, completed_frontier);
+}
+
+#[test]
 fn scheduler_operational_class_survives_the_concrete_driver() {
     let input = input(StopCondition::Terminal);
     let mut owner = FakeLifecycle {
