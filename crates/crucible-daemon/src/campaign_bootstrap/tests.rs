@@ -13,13 +13,14 @@ use std::time::Duration;
 
 use crucible_api::ProductionVmLifecycleConfig;
 use crucible_campaign::{
-    AttemptResourceLimits, CampaignClient, CampaignClientError, CampaignLineage, CampaignMode,
-    CampaignName, CampaignPolicy, CampaignPrincipal, CampaignSeed, CampaignServiceFailure,
-    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse, CandidateGeneratorAlgorithm,
-    CandidateGeneratorSpec, CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse,
-    ConfigurationId, DaemonEpoch, ExecutorCapabilityService, ExecutorCapabilitySet,
-    ExecutorCapacityReport, ExecutorCompatibilityProfile, ExecutorControlService,
-    ExecutorDescription, ExecutorMaterializationCapability, ExecutorResumeService, ExecutorService,
+    AttemptResourceLimits, CampaignClient, CampaignClientError, CampaignExecutorStore,
+    CampaignLineage, CampaignLineageId, CampaignMode, CampaignName, CampaignPolicy,
+    CampaignPrincipal, CampaignSeed, CampaignServiceFailure, CancelAttemptExecutionRequest,
+    CancelAttemptExecutionResponse, CandidateGeneratorAlgorithm, CandidateGeneratorSpec,
+    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, ConfigurationId,
+    DaemonEpoch, ExecutorCapabilityService, ExecutorCapabilitySet, ExecutorCapacityReport,
+    ExecutorCompatibilityProfile, ExecutorControlService, ExecutorDescription,
+    ExecutorMaterializationCapability, ExecutorResumeService, ExecutorService,
     ExecutorStatusService, ExplorerPolicy, FairnessPolicy, GetAttemptExecutionRequest,
     GetAttemptExecutionResponse, GetCampaignRequest, ProgressiveWideningPolicy, PuctPolicy,
     ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, RetentionPolicy, ScenarioDefId,
@@ -42,12 +43,14 @@ use tempfile::tempdir;
 
 use crate::{
     AllowAllAttemptAdmission, AttachCampaignRuntimeRequest, CampaignRuntimeAttachmentDisposition,
-    CanonicalPlannerProcessConfig, ExecutorCapacity, ExecutorLoopbackEndpointConfig,
-    ExecutorLoopbackServerConfig, LocalExecutorCapabilityService, LocalExecutorSupervisor,
+    CanonicalPlannerProcessConfig, DirectoryHotCheckpointFallbackRetentionStore, ExecutorCapacity,
+    ExecutorLoopbackEndpointConfig, ExecutorLoopbackServerConfig,
+    HotCheckpointFallbackRetentionStore, LocalExecutorCapabilityService, LocalExecutorSupervisor,
     LoopbackCampaignService, LoopbackCampaignServiceError, LoopbackCampaignTimeouts,
     LoopbackExecutorTimeouts, MAX_EXECUTOR_REQUESTS_PER_CONNECTION, MemoryAssignmentLedger,
     PackagedQemuExecutorConfig, QemuAttemptCancellationSignal, QemuAttemptHostResourceFactory,
-    QemuAttemptHostResourceOwner, serve_loopback_executor_component_connection_with_limits,
+    QemuAttemptHostResourceOwner, QemuHotForkTemplateKey,
+    serve_loopback_executor_component_connection_with_limits,
     serve_loopback_executor_component_once,
 };
 
@@ -1347,6 +1350,122 @@ fn prepared_store_gc_authority_plans_journals_and_applies_under_one_owner() {
     assert_eq!(report.status(), crate::CampaignGcApplyStatus::Applied);
     assert_eq!(journal.phase(), crate::CampaignGcJournalPhase::Complete);
     assert!(!graph.contains(orphan).expect("check deleted orphan"));
+}
+
+#[test]
+fn prepared_store_gc_automatically_retains_durable_hot_fallbacks_across_restart() {
+    let (directory, config) = fixture();
+    let (store, graph) = external_graph_store(&directory);
+    let prepared = config
+        .prepare_with_store(store)
+        .expect("prepare hot-fallback GC owner");
+    let scenario = crucible::happy_path_scenario()
+        .expect("happy-path scenario")
+        .scenario;
+    let configuration = prepared
+        .import_configuration(&scenario, &crucible::Schedule::empty())
+        .expect("import retained configuration");
+    let orphan_bytes = b"unreachable object beside durable hot fallback";
+    let orphan = ContentId::for_bytes(ObjectKind::Scenario, 1, orphan_bytes);
+    graph
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes.to_vec()))
+        .expect("publish unreachable object beside hot fallback");
+    let lineage = CampaignLineageId::parse(&format!(
+        "crucible.campaign.lineage@campaign-fact.1.{}",
+        "71".repeat(32)
+    ))
+    .expect("hot-fallback lineage");
+    let record = crate::HotCheckpointFallbackRecord::new(
+        QemuHotForkTemplateKey::new(lineage, scenario.scenario_def().id()),
+        crate::HotCheckpointFallback::Thin(configuration),
+    );
+    let slot = crate::HotCheckpointFallbackSlot::new(3).expect("hot-fallback slot");
+
+    drop(prepared);
+    drop(graph);
+    let retention = DirectoryHotCheckpointFallbackRetentionStore::open(
+        config.state_directory().join(HOT_FORK_FALLBACK_DIRECTORY),
+    )
+    .expect("open canonical hot-fallback catalog");
+    assert_eq!(
+        retention
+            .compare_exchange_fallback(slot, None, Some(record))
+            .expect("retain hot fallback"),
+        crate::HotCheckpointFallbackRetentionCas::Advanced
+    );
+    drop(retention);
+
+    let (restarted_store, restarted_graph) = external_graph_store(&directory);
+    let restarted = config
+        .prepare_with_store(restarted_store)
+        .expect("restart hot-fallback GC owner");
+    let mut ledger = MemoryAssignmentLedger::default();
+    let planned = restarted
+        .store_gc_authority()
+        .expect("borrow restarted GC authority")
+        .plan(&mut ledger, None)
+        .expect("plan restarted GC with fallback");
+    assert!(
+        planned
+            .roots()
+            .iter()
+            .any(|root| root == configuration.content_id())
+    );
+    assert!(
+        planned
+            .candidates()
+            .iter()
+            .any(|candidate| candidate.id() == orphan)
+    );
+    let (mut journal, disposition) = crate::DirectoryCampaignGcJournal::create(
+        directory.path().join("hot-fallback-restart-gc-journal"),
+        &planned,
+    )
+    .expect("persist restarted hot-fallback GC journal");
+    assert_eq!(
+        disposition,
+        crate::CampaignGcJournalCreateDisposition::Created
+    );
+
+    let report = restarted
+        .store_gc_authority()
+        .expect("borrow restarted GC authority for apply")
+        .apply(&mut journal, &mut ledger, None)
+        .expect("apply restarted GC with hot fallback");
+    assert_eq!(report.status(), crate::CampaignGcApplyStatus::Applied);
+    assert!(
+        !restarted_graph
+            .contains(orphan)
+            .expect("check deleted orphan")
+    );
+    assert!(
+        restarted_graph
+            .contains(configuration.content_id())
+            .expect("check retained configuration")
+    );
+    let executor_store = CampaignExecutorStore::new(Arc::clone(&restarted.repository));
+    let retained_configuration = executor_store
+        .load_configuration_artifact(configuration)
+        .expect("load retained configuration after GC apply");
+    let retained_scenario = executor_store
+        .load_scenario_artifact(retained_configuration.scenario_artifact())
+        .expect("load retained configuration scenario after GC apply");
+    assert_eq!(
+        retained_configuration
+            .id()
+            .expect("derive retained configuration identity"),
+        configuration
+    );
+    assert_eq!(
+        retained_scenario.scenario(),
+        retained_configuration.scenario()
+    );
+    assert_eq!(
+        retained_scenario
+            .id()
+            .expect("derive retained scenario artifact identity"),
+        retained_configuration.scenario_artifact()
+    );
 }
 
 #[test]

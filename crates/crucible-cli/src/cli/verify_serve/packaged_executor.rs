@@ -56,6 +56,24 @@ struct PackagedExecutorDeployment {
     worker_count: usize,
     host_architecture: String,
     qemu_profile: String,
+    hot_fork: Option<PackagedHotForkDeployment>,
+}
+
+/// Optional retained-source policy; absence keeps hot-fork execution disabled.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackagedHotForkDeployment {
+    maximum_templates: usize,
+    maximum_template_bytes: u64,
+    maximum_expected_private_dirty_bytes: u64,
+    maximum_processes: u32,
+    maximum_virtual_cpus: u32,
+    maximum_descriptors: u32,
+    maximum_overlays: u32,
+    maximum_forks_per_window: u32,
+    fork_rate_window_ms: u64,
+    shutdown_step_timeout_ms: u64,
+    host_io_timeout_ms: u64,
 }
 
 /// Guarded host capability loaded for one campaign-backed legacy command.
@@ -178,7 +196,8 @@ pub(super) fn prepare_cli_packaged_executor(
         .ok_or_else(|| serve_error("campaign packaged executor has no state directory"))?;
     let store_namespace = packaged_store_namespace(state);
     let daemon_epoch = fresh_daemon_epoch()?;
-    let config = crucible_daemon::PackagedQemuExecutorConfig::new(
+    let hot_fork = deployment_hot_fork_policy(&deployment, lifecycle)?;
+    let mut config = crucible_daemon::PackagedQemuExecutorConfig::new(
         campaigns,
         endpoint,
         crucible_daemon::ExecutorLoopbackServerConfig::default(),
@@ -194,6 +213,9 @@ pub(super) fn prepare_cli_packaged_executor(
         host,
     )
     .map_err(|error| serve_error(format!("campaign executor configuration error: {error}")))?;
+    if let Some(hot_fork) = hot_fork {
+        config = config.with_hot_fork_sources(hot_fork);
+    }
     let executor = prepared
         .prepare_packaged_executor(config)
         .map_err(|error| {
@@ -204,6 +226,58 @@ pub(super) fn prepare_cli_packaged_executor(
         })?;
     crucible_daemon::AttachedPackagedQemuExecutor::start(executor)
         .map_err(|error| serve_error(format!("campaign executor startup error: {error}")))
+}
+
+fn deployment_hot_fork_policy(
+    deployment: &PackagedExecutorDeployment,
+    lifecycle: &crucible_api::ProductionVmLifecycleConfig,
+) -> Result<Option<crucible_daemon::PackagedQemuHotForkConfig>, CliError> {
+    let Some(policy) = deployment.hot_fork.as_ref() else {
+        return Ok(None);
+    };
+    let maximum_resources = crucible_daemon::HotCheckpointResourceProfile::new(
+        policy.maximum_template_bytes,
+        policy.maximum_expected_private_dirty_bytes,
+        policy.maximum_processes,
+        policy.maximum_virtual_cpus,
+        policy.maximum_descriptors,
+        policy.maximum_overlays,
+    )
+    .map_err(|error| serve_error(format!("campaign hot-fork resource policy error: {error}")))?;
+    let fork_rate_window_nanos = policy
+        .fork_rate_window_ms
+        .checked_mul(1_000_000)
+        .ok_or_else(|| serve_error("campaign hot-fork rate window overflows nanoseconds"))?;
+    let limits = crucible_daemon::HotCheckpointLimits::new(
+        policy.maximum_templates,
+        maximum_resources,
+        policy.maximum_forks_per_window,
+        fork_rate_window_nanos,
+    )
+    .map_err(|error| serve_error(format!("campaign hot-fork limit policy error: {error}")))?;
+    let shutdown_wait =
+        deployment_timeout("hot-fork shutdown step", policy.shutdown_step_timeout_ms)?;
+    let host_io_timeout = deployment_timeout("hot-fork host I/O", policy.host_io_timeout_ms)?;
+    let hot_fork = crucible_daemon::PackagedQemuHotForkConfig::authenticate(
+        lifecycle,
+        limits,
+        crucible_daemon::HotCheckpointHotnessSignals::new(),
+        shutdown_wait,
+        host_io_timeout,
+    )
+    .map_err(|error| serve_error(format!("campaign hot-fork policy error: {error}")))?;
+
+    Ok(Some(hot_fork))
+}
+
+fn deployment_timeout(role: &str, milliseconds: u64) -> Result<Duration, CliError> {
+    let timeout = Duration::from_millis(milliseconds);
+    if timeout.is_zero() || timeout > Duration::from_secs(60 * 60) {
+        return Err(serve_error(format!(
+            "campaign {role} timeout is outside 1ms..=1h"
+        )));
+    }
+    Ok(timeout)
 }
 
 fn load_validated_deployment(path: &Path) -> Result<PackagedExecutorDeployment, CliError> {
@@ -450,6 +524,72 @@ qemu_profile = "deterministic-tcg-v1"
         )
     }
 
+    fn authored_hot_fork() -> String {
+        format!(
+            "{}\n[hot_fork]\n\
+             maximum_templates = 2\n\
+             maximum_template_bytes = 1073741824\n\
+             maximum_expected_private_dirty_bytes = 536870912\n\
+             maximum_processes = 8\n\
+             maximum_virtual_cpus = 8\n\
+             maximum_descriptors = 4096\n\
+             maximum_overlays = 16\n\
+             maximum_forks_per_window = 8\n\
+             fork_rate_window_ms = 1000\n\
+             shutdown_step_timeout_ms = 1000\n\
+             host_io_timeout_ms = 30000\n",
+            authored()
+        )
+    }
+
+    fn hot_fork_artifacts(directory: &Path) -> crucible_api::ProductionVmLifecycleConfig {
+        let qemu = directory.join("bin/qemu-system-x86_64");
+        let plugin = directory.join("lib/libcrucible-qemu-plugin.so");
+        let qemu_marker = directory.join("share/aos/crucible/qemu-build-identity.env");
+        let plugin_marker = directory.join("nix-support/crucible-qemu-plugin-build-info");
+        for path in [&qemu, &plugin, &qemu_marker, &plugin_marker] {
+            fs::create_dir_all(path.parent().expect("artifact parent"))
+                .expect("create artifact parent");
+        }
+        fs::write(&qemu, b"qemu").expect("write QEMU artifact");
+        fs::write(&plugin, b"plugin").expect("write plugin artifact");
+        let abi_version = crucible::SHMEM_ABI_VERSION;
+        let abi = format!("crucible-shmem-abi-v{abi_version}");
+        fs::write(
+            qemu_marker,
+            format!(
+                "qemu_sim_capability=qemu-crucible\n\
+                 qemu_crucible_patches_applied=true\n\
+                 qemu_plugins_enabled=true\n\
+                 qemu_build_id=qemu-build-v1\n\
+                 qemu_patch_series_hash=sha256:patch\n\
+                 qemu_shmem_abi_version={abi_version}\n\
+                 qemu_shmem_abi={abi}\n\
+                 qemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\n\
+                 qemu_shmem_header_hash=sha256:header\n"
+            ),
+        )
+        .expect("write QEMU marker");
+        fs::write(
+            plugin_marker,
+            format!(
+                "plugin_abi={abi}\n\
+                 qemu_build_id=qemu-build-v1\n\
+                 shmem_abi_version={abi_version}\n\
+                 shmem_abi={abi}\n\
+                 shmem_generated_header_hash=sha256:header\n"
+            ),
+        )
+        .expect("write plugin marker");
+        crucible_api::ProductionVmLifecycleConfig::new(
+            &qemu,
+            &plugin,
+            directory.join("kernel"),
+            directory.join("root"),
+            directory.join("run-state"),
+        )
+    }
+
     #[test]
     fn packaged_executor_deployment_is_strict_and_owner_only() {
         let directory = tempfile::tempdir().expect("deployment directory");
@@ -468,6 +608,25 @@ qemu_profile = "deterministic-tcg-v1"
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
             .expect("weaken deployment mode");
         assert!(load_deployment(&path).is_err());
+    }
+
+    #[test]
+    fn packaged_hot_fork_policy_authenticates_artifacts_and_explicit_limits() {
+        let directory = tempfile::tempdir().expect("hot-fork deployment directory");
+        let path = directory.path().join("executor.toml");
+        fs::write(&path, authored_hot_fork()).expect("write hot-fork deployment");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .expect("secure hot-fork deployment");
+        let deployment = load_validated_deployment(&path).expect("load hot-fork deployment");
+        let lifecycle = hot_fork_artifacts(directory.path());
+
+        let policy = deployment_hot_fork_policy(&deployment, &lifecycle)
+            .expect("authenticate hot-fork policy")
+            .expect("hot-fork policy present");
+
+        assert_eq!(policy.limits().maximum_templates(), 2);
+        assert_eq!(policy.limits().maximum_forks_per_window(), 8);
+        assert_eq!(policy.limits().fork_rate_window_nanos(), 1_000_000_000);
     }
 
     #[test]

@@ -41,6 +41,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+mod artifact_identity;
 mod async_driver;
 #[cfg(target_os = "linux")]
 mod block_realization_gate;
@@ -107,6 +108,9 @@ mod storage_fault_resolver;
 mod supervision;
 mod unix_socket_path;
 
+pub use artifact_identity::{
+    QemuLaunchArtifactIdentity, QemuLaunchArtifactIdentityError, normalize_qemu_build_id,
+};
 pub use async_driver::{
     QemuAdvanceCompletionFence, QemuAsyncCrashEscalationTarget, QemuAsyncDriverError,
     QemuAsyncDriverOperation, QemuAsyncDriverPolicy, QemuAsyncDriverRuntimeError,

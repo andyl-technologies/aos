@@ -983,7 +983,13 @@ where
         ))
     }
 
-    /// Reconciles one bounded publication phase for the pending child world.
+    /// Reconciles one bounded publication phase and recovers its source world.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified retryable or terminal failure when no lifecycle
+    /// awaits reconciliation, child reconciliation fails, or source recovery
+    /// cannot be completed or quarantined.
     pub fn reconcile_execution(
         &mut self,
         disposition: AttemptExecutionDisposition,
