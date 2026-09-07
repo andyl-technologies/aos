@@ -758,10 +758,13 @@
   if (!browser || !window.fetch) return;
   var base = browser.getAttribute("data-doc-base");
   var release = browser.getAttribute("data-doc-release");
+  var packageEntry = browser.getAttribute("data-doc-package") || "";
+  var legacyPath = browser.hasAttribute("data-doc-legacy") ? location.pathname : null;
   function nodeUrl(key, children, cursor) {
     var url = new URL(base + (children ? "/children" : ""), location.origin);
     url.searchParams.set("release", release);
     url.searchParams.set("root", key);
+    if (packageEntry) url.searchParams.set("package_entry", packageEntry);
     if (cursor) url.searchParams.set("cursor", cursor);
     return url;
   }
@@ -833,7 +836,9 @@
   var reader = browser.querySelector("[data-doc-reader]");
   var crumbs = browser.querySelector(".doc-breadcrumbs");
   function isDocPage(url) {
-    return url.origin === location.origin && url.pathname === base;
+    if (url.origin !== location.origin) return false;
+    if (legacyPath && url.pathname === legacyPath) return true;
+    return url.pathname === base && (url.searchParams.get("package_entry") || "") === packageEntry;
   }
   function markCurrent(key) {
     browser.querySelectorAll(".doc-tree [aria-current]").forEach(function (row) { row.removeAttribute("aria-current"); });
@@ -855,6 +860,7 @@
         var nextCrumbs = page.querySelector(".doc-breadcrumbs");
         var nextBrowser = page.querySelector("[data-doc-browser]");
         if (!next || !nextCrumbs || !nextBrowser) throw new Error("Unexpected page");
+        if ((nextBrowser.getAttribute("data-doc-package") || "") !== packageEntry) throw new Error("Different package scope");
         reader.innerHTML = next.innerHTML;
         crumbs.innerHTML = nextCrumbs.innerHTML;
         var root = nextBrowser.getAttribute("data-doc-root");
@@ -893,6 +899,7 @@
   window.addEventListener("popstate", function () {
     var url = new URL(location.href);
     if (isDocPage(url) && url.searchParams.get("release") === release) swap(url, false);
+    else location.reload();
   });
   history.replaceState({docs: true}, "", location.href);
 

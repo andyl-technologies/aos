@@ -362,6 +362,8 @@ pub struct BrowseQuery {
     pub status: Option<String>,
     /// Exact documented option or guide variant.
     pub entry: Option<String>,
+    /// Exact package guide entry anchoring document-scoped navigation.
+    pub package_entry: Option<String>,
     /// Search scope: release (default) or subtree.
     pub scope: Option<String>,
     /// Opaque cursor for additional variants at the selected node.
@@ -470,6 +472,7 @@ impl BrowseQuery {
                 "minor" => out.minor = Some(value.into_owned()),
                 "status" => out.status = Some(value.into_owned()),
                 "entry" => out.entry = Some(value.into_owned()),
+                "package_entry" => out.package_entry = Some(value.into_owned()),
                 "scope" => out.scope = Some(value.into_owned()),
                 "variant_cursor" => out.variant_cursor = Some(value.into_owned()),
                 "q" => out.q = Some(value.into_owned()),
