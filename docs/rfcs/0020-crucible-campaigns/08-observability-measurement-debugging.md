@@ -403,6 +403,31 @@ complete raw measurement-event retention. Wiring live QEMU results through the
 prepared-result journal and child-first publication, plus automatic finding-pin
 policy, remains T-CAM-3.5 work.
 
+The daemon's local prepared-publication formats use this closed registry:
+
+| Schema name | Current version | Contract |
+|---|---:|---|
+| `crucible.executor.prepared-semantic-attempt-result` | 2 | Contains the observation, content-ordered raw measurement replay leaves, and optional finding closure. |
+| `crucible.executor.prepared-result-journal-state` | 2 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, payload limit, length, and hash. |
+
+Readers also support version 1 of both schemas for local journal recovery.
+Prepared-result version 1 contains the observation and optional finding closure
+without raw leaves; a version-1 body containing a Crucible measurement payload
+schema 2 is invalid. Journal-state version 1 omits the raw-leaf count and set
+hash. A state file and its result payload must use the same exact version;
+cross-version pairs fail closed and are never rewritten in place.
+
+The prepared-result codec validates raw-leaf closure ownership without claiming
+measurement semantics. It checks each singleton edge and its trace ID, scenario,
+configuration, and measurement-definition bindings. It cannot compare the
+retained evaluation payload with `replay(raw, definitions)` because the journal
+does not own authenticated scenario definitions. Production preparation and
+recovery must resolve those definitions from the admitted semantic closure and
+invoke `verify_crucible_measurement_publication` for the observation and every
+finding replay before publishing any leaf or parent. The current version-2
+codec and journal establish the durable representation and version migration;
+they do not by themselves claim production recovery or publication wiring.
+
 The observation stores both `ConfigurationId` and
 `ConfigurationArtifactId`. The former is semantic graph identity; the latter is
 the exact replayable child evidence. Coverage storage adds immutable projection

@@ -26,6 +26,7 @@ pub use finding_replay::{CrucibleFindingReplayEvidence, CrucibleFindingReplayTra
 use finding_replay::{
     PreparedFindingReplayRecords, RecordedFindingReplay, validate_recorded_replay_configuration,
 };
+pub(crate) use prepared_result::PreparedSemanticResultVersion;
 pub use prepared_result::{
     MAX_PREPARED_SEMANTIC_RESULT_BYTES, PreparedSemanticAttemptResult,
     PreparedSemanticResultCodecError,
@@ -1634,6 +1635,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::sync::Arc;
 
+    use crucible::model::{MeasurementDefinitions, MeasurementTerminalState};
     use crucible::{
         ContentHash, Decision, DeliveryOrderDecision, FindingDiscoveryPath, SelectionDecision,
         VirtualTime,
@@ -1658,12 +1660,79 @@ mod tests {
         AllowAllAttemptAdmission, AssignmentLedger, AttemptExecutionKey, AttemptExecutionProduct,
         AttemptResultStageOutcome, AttemptRuntimeState, AttemptWorkResult,
         AttemptWorkerReconcileOutcome, CompletedFindingCandidate, CompletionOutcome,
-        ExactCheckpointStore, ExecutorCapacity, LocalExecutorError, LocalExecutorSupervisor,
-        MemoryAssignmentLedger, PreparedAttemptWorkResult,
+        CrucibleMeasurementPublication, CrucibleMeasurementReplayEvidence, ExactCheckpointStore,
+        ExecutorCapacity, LocalExecutorError, LocalExecutorSupervisor,
+        MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, MemoryAssignmentLedger,
+        PreparedAttemptWorkResult, evaluate_crucible_measurement_publication,
         incorporate_and_acknowledge_finding_candidate, prepare_attempt_result,
         publish_prepared_attempt_result, reconcile_published_attempt_result,
         stage_prepared_attempt_result,
     };
+
+    fn empty_measurement_publication(
+        scenario: ScenarioDefId,
+        configuration: ConfigurationId,
+    ) -> CrucibleMeasurementPublication {
+        evaluate_crucible_measurement_publication(
+            scenario,
+            configuration,
+            &MeasurementDefinitions::empty(),
+            Vec::new(),
+            MeasurementTerminalState {
+                scenario_ready_at: None,
+                at: VirtualTime { ticks: 0 },
+                node_icounts: BTreeMap::new(),
+                scheduler_quiescent: true,
+            },
+            MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
+        )
+        .expect("empty measurement publication")
+    }
+
+    fn observation_with_measurements(
+        candidate: &ObservationCandidate,
+        measurements: MeasurementSet,
+    ) -> ObservationCandidate {
+        let retained = candidate.observation();
+        assert!(retained.produced_selections().is_empty());
+        let observation = Observation::new(
+            retained.attempt(),
+            retained.child(),
+            retained.child_content(),
+            retained.path(),
+            retained.stop().clone(),
+            measurements.id().expect("replacement measurement ID"),
+            retained.properties(),
+            retained.coverage(),
+            retained.discovered_choices().clone(),
+        )
+        .expect("observation with replacement measurements");
+        ObservationCandidate::new(
+            candidate.child().clone(),
+            measurements,
+            candidate.properties().clone(),
+            candidate.coverage().clone(),
+            candidate.discovered_choices().to_vec(),
+            observation,
+        )
+        .expect("candidate with replacement measurements")
+    }
+
+    fn measurement_with_evidence(
+        template: &MeasurementSet,
+        evidence: &CrucibleMeasurementReplayEvidence,
+        definitions: CampaignHash,
+    ) -> MeasurementSet {
+        let retained = template.evaluation().expect("measurement evaluation");
+        MeasurementSet::from_evaluation(
+            definitions,
+            retained.payload_schema(),
+            retained.evaluation(),
+            retained.payload().to_vec(),
+            BTreeSet::from([evidence.id().expect("measurement evidence ID")]),
+        )
+        .expect("measurement with replacement evidence")
+    }
 
     fn selection_decision(scenario: ScenarioDefId) -> Decision {
         let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("Boolean domain"));
@@ -2576,6 +2645,222 @@ mod tests {
                 .any(|attempt| !attempt.accepted()),
             "the reduced empty schedule must be rejected by the concrete target"
         );
+
+        let observation_publication =
+            empty_measurement_publication(scenario_record.scenario(), child.configuration());
+        let (observation_evidence, _, observation_measurements) =
+            observation_publication.into_parts();
+        let observation_candidate_v2 =
+            observation_with_measurements(&observation_candidate, observation_measurements);
+        let observation_v2 = observation_candidate_v2
+            .observation()
+            .id()
+            .expect("v2 observation ID");
+        let mut measurement_evidence = BTreeMap::from([(
+            observation_evidence.id().expect("observation evidence ID"),
+            observation_evidence,
+        )]);
+        let mut v2_transcript = CrucibleFindingReplayTranscript::new();
+        for pass in [
+            FindingReplayPass::Minimization,
+            FindingReplayPass::Verification,
+        ] {
+            minimize_signature_preserving_finding(
+                &finding,
+                &signature,
+                seed,
+                pass,
+                &mut v2_transcript,
+                |candidate| {
+                    let candidate_scenario =
+                        encode_crucible_scenario_artifact(candidate.artifact.scenario_form())
+                            .expect("v2 candidate scenario");
+                    let candidate_configuration = encode_crucible_configuration_artifact(
+                        &candidate_scenario,
+                        candidate.artifact.schedule(),
+                    )
+                    .expect("v2 candidate configuration");
+                    let observed = if candidate.artifact.schedule() == finding.artifact.schedule() {
+                        signature.clone()
+                    } else {
+                        FindingSignature::new(
+                            FindingKind::Divergence,
+                            CampaignHash::derive("test", b"v2-reduced-candidate-divergence"),
+                            None,
+                            String::from("qemu.different-v2-replay-divergence"),
+                            Some(FindingTarget::Configuration(
+                                candidate_configuration.id().expect("v2 candidate target"),
+                            )),
+                            BTreeSet::from([property.content_id()]),
+                        )
+                        .expect("v2 rejected candidate signature")
+                    };
+                    let publication = empty_measurement_publication(
+                        candidate_scenario.scenario(),
+                        candidate_configuration.configuration(),
+                    );
+                    let (evidence, _, measurements) = publication.into_parts();
+                    measurement_evidence
+                        .insert(evidence.id().expect("v2 replay evidence ID"), evidence);
+                    Ok(CrucibleFindingReplayEvidence::new(
+                        Some(observed),
+                        candidate_configuration,
+                        measurements,
+                        properties.clone(),
+                        CoverageProjection::new(BTreeSet::new(), BTreeSet::new())
+                            .expect("v2 replay coverage"),
+                        Vec::new(),
+                        Vec::new(),
+                    )
+                    .expect("v2 replay evidence"))
+                },
+            )
+            .expect("v2 finding replay pass");
+        }
+        let prepared_v2 = prepare_signature_preserving_minimized_finding_candidate(
+            signature.clone(),
+            observation_v2,
+            &finding,
+            FindingExactPins::default(),
+            seed,
+            v2_transcript,
+        )
+        .expect("prepare v2 finding candidate");
+        let measurement_evidence = measurement_evidence.into_values().collect::<Vec<_>>();
+        assert!(measurement_evidence.len() >= 2);
+        assert!(
+            measurement_evidence
+                .iter()
+                .any(|evidence| evidence.configuration() != child.configuration())
+        );
+        let v2_result = PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
+            observation_candidate_v2.clone(),
+            measurement_evidence.clone(),
+            Some(prepared_v2.clone()),
+        )
+        .expect("bind v2 prepared semantic result");
+        let v2_bytes = v2_result
+            .canonical_bytes()
+            .expect("encode v2 prepared result");
+        assert_eq!(
+            PreparedSemanticAttemptResult::from_canonical_bytes(&v2_bytes)
+                .expect("decode v2 prepared result"),
+            v2_result
+        );
+
+        let mut unordered_evidence = measurement_evidence.clone();
+        unordered_evidence.reverse();
+        assert!(matches!(
+            PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
+                observation_candidate_v2.clone(),
+                unordered_evidence,
+                Some(prepared_v2.clone()),
+            ),
+            Err(PreparedSemanticResultCodecError::Inconsistent {
+                component: "measurement replay evidence order"
+            })
+        ));
+
+        let unused_publication = empty_measurement_publication(
+            scenario_record.scenario(),
+            ConfigurationId::from_hash(CampaignHash::derive(
+                "test",
+                b"unused-replay-measurement-configuration",
+            )),
+        );
+        let (unused_evidence, _, unused_measurements) = unused_publication.into_parts();
+        let mut evidence_with_extra = measurement_evidence
+            .iter()
+            .cloned()
+            .map(|evidence| (evidence.id().expect("retained evidence ID"), evidence))
+            .collect::<BTreeMap<_, _>>();
+        evidence_with_extra.insert(
+            unused_evidence.id().expect("unused evidence ID"),
+            unused_evidence.clone(),
+        );
+        assert!(matches!(
+            PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
+                observation_candidate_v2.clone(),
+                evidence_with_extra.values().cloned().collect(),
+                Some(prepared_v2.clone()),
+            ),
+            Err(PreparedSemanticResultCodecError::Inconsistent {
+                component: "unowned measurement replay evidence"
+            })
+        ));
+        let mut finding_with_unused_measurement = prepared_v2.clone();
+        finding_with_unused_measurement
+            .replay_records
+            .measurements
+            .push(unused_measurements);
+        assert!(matches!(
+            PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
+                observation_candidate_v2.clone(),
+                evidence_with_extra.into_values().collect(),
+                Some(finding_with_unused_measurement),
+            ),
+            Err(PreparedSemanticResultCodecError::Inconsistent {
+                component: "unreferenced finding replay measurement record"
+            })
+        ));
+
+        for (wrong_scenario, wrong_configuration, wrong_definitions) in [
+            (
+                ScenarioDefId::from_hash(CampaignHash::derive("test", b"wrong-scenario")),
+                child.configuration(),
+                None,
+            ),
+            (
+                scenario_record.scenario(),
+                ConfigurationId::from_hash(CampaignHash::derive("test", b"wrong-configuration")),
+                None,
+            ),
+            (
+                scenario_record.scenario(),
+                child.configuration(),
+                Some(CampaignHash::derive("test", b"wrong-definitions")),
+            ),
+        ] {
+            let wrong_publication =
+                empty_measurement_publication(wrong_scenario, wrong_configuration);
+            let (wrong_evidence, _, _) = wrong_publication.into_parts();
+            let definitions = wrong_definitions.unwrap_or_else(|| {
+                observation_candidate_v2
+                    .measurements()
+                    .evaluation()
+                    .expect("v2 measurement evaluation")
+                    .definitions()
+            });
+            let wrong_measurements = measurement_with_evidence(
+                observation_candidate_v2.measurements(),
+                &wrong_evidence,
+                definitions,
+            );
+            let wrong_candidate =
+                observation_with_measurements(&observation_candidate_v2, wrong_measurements);
+            assert!(matches!(
+                PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
+                    wrong_candidate,
+                    vec![wrong_evidence],
+                    None,
+                ),
+                Err(PreparedSemanticResultCodecError::Inconsistent {
+                    component: "measurement replay evidence binding"
+                })
+            ));
+        }
+
+        let smuggled_v1 = prepared_result::encode_v1_without_measurement_evidence_for_test(
+            &observation_candidate_v2,
+            None,
+        )
+        .expect("encode invalid legacy v1 payload");
+        assert!(matches!(
+            PreparedSemanticAttemptResult::from_canonical_bytes(&smuggled_v1),
+            Err(PreparedSemanticResultCodecError::Inconsistent {
+                component: "missing measurement replay evidence"
+            })
+        ));
 
         let expected = prepared.id().expect("prepared candidate ID");
         let expected_bundle = prepared.bundle().clone();
