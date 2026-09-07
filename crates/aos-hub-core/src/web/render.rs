@@ -56,7 +56,7 @@ pub(crate) fn masthead(
     if !tagline.is_empty() {
         let _ = write!(html, "<span class=\"tagline\">{}</span>", escape(tagline));
     }
-    let _ = write!(html, "</div>{session}</div>");
+    html.push_str("</div>");
 
     if !crumbs.is_empty() {
         html.push_str("<nav class=\"crumbs\" aria-label=\"Breadcrumb\"><ol>");
@@ -80,7 +80,7 @@ pub(crate) fn masthead(
         html.push_str("</ol></nav>");
     }
 
-    html.push_str("</header>");
+    let _ = write!(html, "{session}</div></header>");
     html
 }
 

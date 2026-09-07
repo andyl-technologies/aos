@@ -179,6 +179,12 @@ fn ManagementShell(
                         <a class="brand" href="/">{brand}</a>
                         {(!tagline.is_empty()).then(|| view! { <span class="tagline">{tagline}</span> })}
                     </div>
+                    <nav class="crumbs" aria-label="Breadcrumb">
+                        <ol>
+                            <li><a href=route.base_path.clone()>{context.clone()}</a></li>
+                            <li><span aria-current="page">{page_label}</span></li>
+                        </ol>
+                    </nav>
                     <nav class="session" aria-label="Account navigation">
                         {AUTHENTICATED_PRIMARY_NAVIGATION.iter().map(|item| view! {
                             <a href=item.href>{item.label}</a>
@@ -187,12 +193,6 @@ fn ManagementShell(
                         <a href="/logout">"log out"</a>
                     </nav>
                 </div>
-                <nav class="crumbs" aria-label="Breadcrumb">
-                    <ol>
-                        <li><a href=route.base_path.clone()>{context.clone()}</a></li>
-                        <li><span aria-current="page">{page_label}</span></li>
-                    </ol>
-                </nav>
             </header>
             {(!announcement.is_empty()).then(|| view! { <div class="announce">{announcement}</div> })}
             <div class="settings">
