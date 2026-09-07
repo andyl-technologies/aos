@@ -361,6 +361,7 @@ impl QemuFreshAttemptLifecycleFactory for TerminalLifecycleFactory {
 #[test]
 fn shared_owner_authenticates_completion_and_retains_terminal_evidence() {
     let (request, node) = request();
+    let request = request.with_watch_frames();
     let (factory, evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(TerminalLifecycleFactory {
             node: node.clone(),
@@ -380,6 +381,39 @@ fn shared_owner_authenticates_completion_and_retains_terminal_evidence() {
             CampaignState::Completed,
         ]
     );
+    let watch_frames = completed.watch_frames();
+    assert_eq!(watch_frames.len(), 4);
+    assert_eq!(
+        watch_frames
+            .iter()
+            .map(GuardedDefaultCampaignWatchFrame::state)
+            .collect::<Vec<_>>(),
+        [
+            CampaignState::Created,
+            CampaignState::Running,
+            CampaignState::Running,
+            CampaignState::Completed,
+        ]
+    );
+    assert!(
+        watch_frames
+            .iter()
+            .all(|frame| frame.campaign() == completed.campaign())
+    );
+    assert_eq!(watch_frames[0].frontier(), VirtualTime::default());
+    assert_eq!(watch_frames[0].quanta(), 0);
+    assert_eq!(watch_frames[1].frontier(), VirtualTime::default());
+    assert_eq!(watch_frames[1].quanta(), 0);
+    assert_eq!(watch_frames[2].frontier(), VirtualTime { ticks: 7 });
+    assert_eq!(watch_frames[2].quanta(), 1);
+    assert_eq!(
+        watch_frames[2].observation(),
+        Some(completed.terminal().id())
+    );
+    assert_eq!(watch_frames[3].snapshot(), completed.final_snapshot());
+    assert_eq!(watch_frames[3].frontier(), VirtualTime { ticks: 7 });
+    assert_eq!(watch_frames[3].quanta(), 1);
+    assert_eq!(watch_frames[3].observation(), None);
     assert_eq!(completed.observations().len(), 1);
     assert_eq!(completed.observations()[0].virtual_time_ticks(), 7);
     assert_eq!(completed.branch_request_count(), 0);
