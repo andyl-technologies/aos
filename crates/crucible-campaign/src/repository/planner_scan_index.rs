@@ -187,7 +187,11 @@ impl CampaignRepository {
         limit: usize,
         positions: &mut BTreeMap<PlanningScanPosition, u64>,
     ) -> Result<(), CampaignRepositoryError> {
-        let versions = self.merkle.scan(root, None, 4)?;
+        let versions = self.merkle.scan(
+            root,
+            None,
+            crate::exploration::BRANCH_REQUEST_SCHEMA_VERSION as usize,
+        )?;
         if versions.entries().is_empty() || versions.next_after().is_some() {
             return Err(integrity("planner-scan-index-schema-set"));
         }
@@ -235,7 +239,7 @@ fn schema_key(version: u32) -> CampaignHash {
 }
 
 fn schema_from_key(key: CampaignHash) -> Result<u32, CampaignRepositoryError> {
-    for version in 1..=4 {
+    for version in 1..=crate::exploration::BRANCH_REQUEST_SCHEMA_VERSION {
         if key == schema_key(version) {
             return Ok(version);
         }

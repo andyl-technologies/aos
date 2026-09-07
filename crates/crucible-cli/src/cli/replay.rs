@@ -170,7 +170,32 @@ fn replay_live_qemu_evidence(
     )?
     .map(decode_signal_artifact_bundle)
     .transpose()?;
+    let campaign_replay_closure_bytes = optional_single_component_payload(
+        artifact,
+        CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE,
+        "campaign replay closure",
+    )?;
     let contract = LiveQemuReplayContract::decode(contract_bytes)?;
+    let campaign_replay_closure = match (
+        contract.producer.as_str(),
+        campaign_replay_closure_bytes,
+    ) {
+        ("campaign-run", Some(bytes)) => Some(
+            crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(bytes)
+                .map_err(|error| artifact_error(format!("decode campaign replay closure: {error}")))?,
+        ),
+        ("campaign-run", None) => {
+            return Err(artifact_error(
+                "campaign-run replay requires exactly one campaign replay closure component",
+            ));
+        }
+        (_, Some(_)) => {
+            return Err(artifact_error(
+                "a session-owned replay artifact cannot carry a campaign replay closure component",
+            ));
+        }
+        (_, None) => None,
+    };
     let top_level_fingerprints =
         verify_fingerprint_stream_bytes(&artifact_fingerprint_samples(artifact));
     if top_level_fingerprints != expected_fingerprints {
@@ -227,6 +252,13 @@ fn replay_live_qemu_evidence(
             scenario.id().to_hex()
         )));
     }
+    if let Some(closure) = &campaign_replay_closure {
+        closure
+            .validate_for_schedule(&scenario, model.schedule())
+            .map_err(|error| {
+                artifact_error(format!("validate campaign replay closure: {error}"))
+            })?;
+    }
     let terminal_configuration = crucible::Configuration {
         def: scenario.scenario_def(),
         schedule: model.schedule().clone(),
@@ -267,8 +299,11 @@ fn replay_live_qemu_evidence(
         scenario,
         model.schedule(),
         &contract,
-        resolved_effect_trace,
-        signal_artifact_bundle,
+        LiveQemuReplayResources {
+            campaign_closure: campaign_replay_closure,
+            effect_trace: resolved_effect_trace,
+            signal_artifacts: signal_artifact_bundle,
+        },
     )?;
     let expected_execution_owner = expected_live_qemu_execution_owner(&contract.producer);
     if report.execution_owner != expected_execution_owner {

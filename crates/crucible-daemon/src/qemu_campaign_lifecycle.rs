@@ -319,6 +319,7 @@ pub use evidence::{
 
 mod legacy_run;
 pub use legacy_run::{
+    GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
     GuardedDefaultCampaignInvariantError, GuardedDefaultCampaignObservation,
     GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError, GuardedDefaultCampaignRunRequest,
     GuardedDefaultCampaignSupervisorError, run_guarded_default_campaign,
