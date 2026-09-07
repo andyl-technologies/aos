@@ -1372,12 +1372,32 @@ where
     )
     .await;
     campaign_shutdown.shutdown();
-    let campaign_result = tokio::task::spawn_blocking(move || campaign_thread.join())
-        .await
-        .map_err(|error| serve_error(format!("campaign service join error: {error}")))?
-        .map_err(|_| serve_error("campaign service thread panicked"))?
-        .map_err(|error| serve_error(format!("campaign service error: {error}")));
-    lifecycle_result.and(campaign_result.map(|_| ()))
+    let campaign_result = match tokio::task::spawn_blocking(move || campaign_thread.join()).await {
+        Err(error) => Err(serve_error(format!("campaign service join error: {error}"))),
+        Ok(Err(_)) => Err(serve_error("campaign service thread panicked")),
+        Ok(Ok(Err(error))) => Err(serve_error(format!("campaign service error: {error}"))),
+        Ok(Ok(Ok(_))) => Ok(()),
+    };
+    combine_lifecycle_and_campaign_results(lifecycle_result, campaign_result)
+}
+
+/// Combines the joined lifecycle and campaign service results without hiding either failure.
+///
+/// # Errors
+///
+/// Returns the sole service failure, or one serve error containing both causes
+/// when both services failed while shutting each other down.
+pub(super) fn combine_lifecycle_and_campaign_results(
+    lifecycle_result: Result<(), CliError>,
+    campaign_result: Result<(), CliError>,
+) -> Result<(), CliError> {
+    match (lifecycle_result, campaign_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(lifecycle_error), Err(campaign_error)) => {
+            Err(serve_error(format!("{lifecycle_error}; {campaign_error}")))
+        }
+    }
 }
 
 async fn run_bound_lifecycle_server<L, F, S>(
