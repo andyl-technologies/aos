@@ -182,13 +182,13 @@ pub(super) fn page(
     html.push_str("<nav class=\"doc-breadcrumbs\" aria-label=\"Configuration path\">");
     let _ = write!(
         html,
-        "<a href=\"{}\">Configuration</a>",
+        "<a class=\"doc-root\" href=\"{}\" aria-label=\"Configuration root\" title=\"Configuration root\">/</a>",
         escape(&node_href(slug, release, &documentation_node_key(&[])))
     );
     for depth in 1..=node.path.len() {
         let _ = write!(
             html,
-            "<span>/</span><a href=\"{}\">{}</a>",
+            "<span aria-hidden=\"true\">›</span><a href=\"{}\">{}</a>",
             escape(&node_href(
                 slug,
                 release,
