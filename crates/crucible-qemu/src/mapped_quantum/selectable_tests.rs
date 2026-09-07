@@ -13,7 +13,10 @@ use crucible_protocol::selectable_transport::{
     SelectablePendingTransportRecord, WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED,
     WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING,
 };
-use crucible_protocol::{SelectionReply, SelectionRequest};
+use crucible_protocol::{
+    SelectionReply, SelectionRequest, WhiteboxLifecycleMarkerEvent, WhiteboxMarkerPayload,
+    encode_whitebox_marker_payload_body,
+};
 use crucible_shmem::{RegionAllocation, RegionConfig, WhiteboxMarkerEntry, mmap_setup_region};
 
 use super::*;
@@ -141,6 +144,16 @@ fn mapped_marker_yields_one_exact_pending_request() -> Result<(), Box<dyn std::e
     {
         let mut producer = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
         let ring = producer.whitebox_marker_ring_mut(0)?;
+        let setup = WhiteboxMarkerPayload::Lifecycle(WhiteboxLifecycleMarkerEvent::SetupComplete);
+        ring.header.enqueue_whitebox_marker(
+            ring.entries,
+            WhiteboxMarkerEntry::new(
+                0,
+                0,
+                setup.kind().wire_value(),
+                &encode_whitebox_marker_payload_body(&setup)?,
+            )?,
+        )?;
         ring.header.enqueue_whitebox_marker(
             ring.entries,
             WhiteboxMarkerEntry::new(
@@ -161,9 +174,8 @@ fn mapped_marker_yields_one_exact_pending_request() -> Result<(), Box<dyn std::e
     );
     let mut hot_path = QemuMappedQuantumShmemHotPath::new(config, region, AllowMappedTestSends)?;
 
-    // An observational drain may consume the shared marker queue first, but it
-    // must retain the typed causal request for its dedicated authority boundary.
-    assert!(hot_path.drain_observable_events()?.is_empty());
+    // A causal drain consumes the shared marker queue, but it must retain the
+    // preceding observational setup marker for its dedicated event boundary.
     let pending = hot_path.drain_pending_selectable_requests()?;
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].request(), &request);
@@ -171,6 +183,7 @@ fn mapped_marker_yields_one_exact_pending_request() -> Result<(), Box<dyn std::e
     assert_eq!(pending[0].vcpu_index(), 3);
     assert_eq!(pending[0].guest_virtual_address(), 0xfeed_4000);
     assert!(hot_path.drain_pending_selectable_requests()?.is_empty());
+    assert_eq!(hot_path.drain_observable_events()?.len(), 1);
     Ok(())
 }
 

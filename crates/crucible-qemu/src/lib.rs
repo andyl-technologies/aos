@@ -268,8 +268,10 @@ pub use node::{
 pub use node::{QemuProcessIdentity, linux_process_identity, quarantine_orphaned_qemu_process};
 #[cfg(all(target_os = "linux", feature = "test-support"))]
 pub use node::{
-    QemuTestHotForkOutcome, QemuTestHotForkSourceError, scripted_hot_fork_source_for_test,
+    QemuTestHotForkOutcome, QemuTestHotForkSourceError, QemuTestQuantumBoundary,
+    scripted_hot_fork_source_for_test,
     scripted_hot_fork_source_with_observations_for_test,
+    scripted_hot_fork_source_with_script_for_test,
     scripted_hot_fork_source_with_state_for_test,
 };
 #[cfg(target_os = "linux")]
