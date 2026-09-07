@@ -1365,7 +1365,8 @@ fn completion_validation_failure(error: CampaignRepositoryError) -> CompletionVa
         ExecutorRejection::Unauthorized => CompletionValidationFailure::Unauthorized,
         ExecutorRejection::Incompatible
         | ExecutorRejection::Backpressure
-        | ExecutorRejection::ConflictingAssignment => CompletionValidationFailure::Incompatible,
+        | ExecutorRejection::ConflictingAssignment
+        | ExecutorRejection::TerminalFailure => CompletionValidationFailure::Incompatible,
     }
 }
 

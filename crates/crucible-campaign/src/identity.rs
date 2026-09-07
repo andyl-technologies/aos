@@ -458,9 +458,9 @@ content_object_id!(
 content_object_id!(
     CampaignFactId,
     ObjectKind::CampaignFact,
-    [2, 3, 4, 5, 6, 7, 8],
+    [2, 3, 4, 5, 6, 7, 8, 10],
     "crucible.campaign.fact",
-    "Identifies one immutable campaign fact; versions 2 through 7 remain decodable for history compatibility."
+    "Identifies one immutable campaign fact; versions 2 through 8 and version 10 are decodable; version 9 is reserved."
 );
 semantic_id!(
     CampaignCommandId,

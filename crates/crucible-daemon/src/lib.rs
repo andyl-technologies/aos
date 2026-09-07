@@ -361,7 +361,7 @@ pub use executor_supervisor::{
     CompletionValidationFailure, ExecutionCancellation, ExecutionCheckpointRequest,
     ExecutorAvailability, ExecutorCapacity, ExecutorCapacityError, LocalExecutorError,
     LocalExecutorSupervisor, ObservationPublicationOutcome, PausedCheckpointPromotionRecovery,
-    QueuedAttempt,
+    QueuedAttempt, TerminalFailureOutcome,
 };
 pub use executor_worker::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionInput,

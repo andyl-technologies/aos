@@ -6,19 +6,19 @@
 //! ```text
 //! SubmitAttemptRequestV2 = version | assignment | daemon-epoch | lineage |
 //!                          attempt | resource-limits | retention-intent
-//! SubmitAttemptResponseV2 = version | assignment | daemon-epoch | attempt |
-//!                           request-digest | disposition
+//! SubmitAttemptResponseV2/V3 = version | assignment | daemon-epoch | attempt |
+//!                              request-digest | disposition
 //! GetAttemptExecutionRequestV2 = version | daemon-epoch | lineage | attempt |
 //!                                execution | execution-basis-digest
-//! GetAttemptExecutionResponseV2 = version | daemon-epoch | attempt | execution |
-//!                                 request-digest | disposition
+//! GetAttemptExecutionResponseV2/V3 = version | daemon-epoch | attempt |
+//!                                    execution | request-digest | disposition
 //! ResumeAttemptExecutionRequestV2 = version | assignment | daemon-epoch |
 //!                                    lineage | attempt | prior-execution |
 //!                                    checkpoint | resource-limits |
 //!                                    retention-intent
-//! ResumeAttemptExecutionResponseV2 = version | assignment | daemon-epoch |
-//!                                     attempt | prior-execution | checkpoint |
-//!                                     request-digest | disposition
+//! ResumeAttemptExecutionResponseV2/V3 = version | assignment | daemon-epoch |
+//!                                        attempt | prior-execution | checkpoint |
+//!                                        request-digest | disposition
 //! CheckpointAttemptExecutionRequestV2 = version | daemon-epoch | lineage |
 //!                                       attempt | execution |
 //!                                       execution-basis-digest
@@ -45,6 +45,9 @@ use crate::{
 };
 
 const EXECUTOR_MESSAGE_SCHEMA_VERSION: u32 = 2;
+const SUBMIT_ATTEMPT_RESPONSE_SCHEMA_VERSION: u32 = 3;
+const GET_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION: u32 = 3;
+const RESUME_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION: u32 = 3;
 
 /// Maximum canonical bytes in one executor component message.
 pub const MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES: usize = 4 * 1024;
@@ -540,6 +543,8 @@ pub enum ExecutorRejection {
     Unauthorized,
     /// One assignment identity was reused with different canonical request bytes.
     ConflictingAssignment,
+    /// A prior non-retryable worker failure durably quarantined the attempt.
+    TerminalFailure,
 }
 
 impl ExecutorRejection {
@@ -563,6 +568,7 @@ impl Canonical for ExecutorRejection {
             Self::UnavailableInput => 2,
             Self::Unauthorized => 3,
             Self::ConflictingAssignment => 4,
+            Self::TerminalFailure => 5,
         });
     }
 
@@ -573,6 +579,7 @@ impl Canonical for ExecutorRejection {
             2 => Ok(Self::UnavailableInput),
             3 => Ok(Self::Unauthorized),
             4 => Ok(Self::ConflictingAssignment),
+            5 => Ok(Self::TerminalFailure),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "executor-rejection",
                 tag,
@@ -669,6 +676,17 @@ impl Canonical for SubmitAttemptDisposition {
     }
 }
 
+impl SubmitAttemptDisposition {
+    const fn uses_terminal_failure_schema(self) -> bool {
+        matches!(
+            self,
+            Self::Rejected {
+                reason: ExecutorRejection::TerminalFailure
+            }
+        )
+    }
+}
+
 /// Strict response bound to the exact assignment, epoch, and attempt request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubmitAttemptResponse {
@@ -692,7 +710,11 @@ impl SubmitAttemptResponse {
         disposition: SubmitAttemptDisposition,
     ) -> Result<Self, CampaignCodecError> {
         let response = Self {
-            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            schema_version: if disposition.uses_terminal_failure_schema() {
+                SUBMIT_ATTEMPT_RESPONSE_SCHEMA_VERSION
+            } else {
+                EXECUTOR_MESSAGE_SCHEMA_VERSION
+            },
             assignment: request.assignment,
             daemon_epoch: request.daemon_epoch,
             attempt: request.attempt,
@@ -810,20 +832,34 @@ impl Canonical for SubmitAttemptResponse {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_executor_message_version(u32::decode(decoder)?)?;
+        let schema_version = u32::decode(decoder)?;
+        if schema_version != EXECUTOR_MESSAGE_SCHEMA_VERSION
+            && schema_version != SUBMIT_ATTEMPT_RESPONSE_SCHEMA_VERSION
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported submit attempt response schema version",
+            });
+        }
         let assignment = AssignmentId::decode(decoder)?;
         let daemon_epoch = DaemonEpoch::decode(decoder)?;
         let attempt = AttemptId::decode(decoder)?;
         let request_digest = CampaignHash::decode(decoder)?;
         let disposition = SubmitAttemptDisposition::decode(decoder)?;
         let response = Self {
-            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            schema_version,
             assignment,
             daemon_epoch,
             attempt,
             request_digest,
             disposition,
         };
+        if response.disposition.uses_terminal_failure_schema()
+            != (schema_version == SUBMIT_ATTEMPT_RESPONSE_SCHEMA_VERSION)
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "submit attempt response schema/disposition mismatch",
+            });
+        }
         codec::ensure_encoded_size(
             &response,
             MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
@@ -979,6 +1015,8 @@ pub enum GetAttemptExecutionDisposition {
     },
     /// Durable cancellation won before completion.
     Canceled,
+    /// A non-retryable worker failure durably stopped this incarnation.
+    TerminalFailure,
     /// No current runtime record matches the complete query basis.
     NotCurrent,
 }
@@ -1002,6 +1040,7 @@ impl Canonical for GetAttemptExecutionDisposition {
                 encoder.u8(6);
                 checkpoint.encode(encoder);
             }
+            Self::TerminalFailure => encoder.u8(7),
         }
     }
 
@@ -1020,6 +1059,7 @@ impl Canonical for GetAttemptExecutionDisposition {
             6 => Ok(Self::Paused {
                 checkpoint: ExactCheckpointId::decode(decoder)?,
             }),
+            7 => Ok(Self::TerminalFailure),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "get-attempt-execution-disposition",
                 tag,
@@ -1050,7 +1090,11 @@ impl GetAttemptExecutionResponse {
         disposition: GetAttemptExecutionDisposition,
     ) -> Result<Self, CampaignCodecError> {
         let response = Self {
-            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            schema_version: if disposition == GetAttemptExecutionDisposition::TerminalFailure {
+                GET_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION
+            } else {
+                EXECUTOR_MESSAGE_SCHEMA_VERSION
+            },
             daemon_epoch: request.daemon_epoch(),
             attempt: request.attempt(),
             execution: request.execution(),
@@ -1159,15 +1203,29 @@ impl Canonical for GetAttemptExecutionResponse {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_executor_message_version(u32::decode(decoder)?)?;
+        let schema_version = u32::decode(decoder)?;
+        if schema_version != EXECUTOR_MESSAGE_SCHEMA_VERSION
+            && schema_version != GET_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported get attempt execution response schema version",
+            });
+        }
         let response = Self {
-            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            schema_version,
             daemon_epoch: DaemonEpoch::decode(decoder)?,
             attempt: AttemptId::decode(decoder)?,
             execution: ExecutionId::decode(decoder)?,
             request_digest: CampaignHash::decode(decoder)?,
             disposition: GetAttemptExecutionDisposition::decode(decoder)?,
         };
+        if (response.disposition == GetAttemptExecutionDisposition::TerminalFailure)
+            != (schema_version == GET_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION)
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "get attempt execution response schema/disposition mismatch",
+            });
+        }
         codec::ensure_encoded_size(
             &response,
             MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
@@ -1435,6 +1493,17 @@ impl Canonical for ResumeAttemptExecutionDisposition {
     }
 }
 
+impl ResumeAttemptExecutionDisposition {
+    const fn uses_terminal_failure_schema(self) -> bool {
+        matches!(
+            self,
+            Self::Rejected {
+                reason: ExecutorRejection::TerminalFailure
+            }
+        )
+    }
+}
+
 /// Strict response bound to one exact paused-execution resume request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResumeAttemptExecutionResponse {
@@ -1459,7 +1528,11 @@ impl ResumeAttemptExecutionResponse {
         disposition: ResumeAttemptExecutionDisposition,
     ) -> Result<Self, CampaignCodecError> {
         let response = Self {
-            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            schema_version: if disposition.uses_terminal_failure_schema() {
+                RESUME_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION
+            } else {
+                EXECUTOR_MESSAGE_SCHEMA_VERSION
+            },
             assignment: request.assignment(),
             daemon_epoch: request.daemon_epoch(),
             attempt: request.attempt(),
@@ -1586,9 +1659,16 @@ impl Canonical for ResumeAttemptExecutionResponse {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_executor_message_version(u32::decode(decoder)?)?;
+        let schema_version = u32::decode(decoder)?;
+        if schema_version != EXECUTOR_MESSAGE_SCHEMA_VERSION
+            && schema_version != RESUME_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported resume attempt execution response schema version",
+            });
+        }
         let response = Self {
-            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            schema_version,
             assignment: AssignmentId::decode(decoder)?,
             daemon_epoch: DaemonEpoch::decode(decoder)?,
             attempt: AttemptId::decode(decoder)?,
@@ -1597,6 +1677,13 @@ impl Canonical for ResumeAttemptExecutionResponse {
             request_digest: CampaignHash::decode(decoder)?,
             disposition: ResumeAttemptExecutionDisposition::decode(decoder)?,
         };
+        if response.disposition.uses_terminal_failure_schema()
+            != (schema_version == RESUME_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION)
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "resume attempt execution response schema/disposition mismatch",
+            });
+        }
         codec::ensure_encoded_size(
             &response,
             MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,

@@ -20,7 +20,7 @@ crucible.content-store.pack-repack-plan	1	crucible-cas::content_store	administra
 crucible.campaign.lineage	1	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.policy	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
 crucible.campaign.snapshot	3	crucible-campaign::object	campaign-snapshot	gate:campaign-model,gate:content-address
-crucible.campaign.fact	8	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
+crucible.campaign.fact	10	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.budget-ledger	2	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.planning-view	1	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.planner-engine	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
@@ -55,11 +55,11 @@ crucible.campaign.planner-response	1	crucible-campaign::planner_service	componen
 crucible.campaign.retained-planner-request	1	crucible-campaign::object	policy	gate:component-contract,gate:content-address
 crucible.campaign.debugger-submission	1	crucible-campaign::authority	component-message	gate:component-contract
 crucible.campaign.submit-attempt-request	2	crucible-campaign::execution	component-message	gate:component-contract
-crucible.campaign.submit-attempt-response	2	crucible-campaign::execution	component-message	gate:component-contract
+crucible.campaign.submit-attempt-response	3	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.get-attempt-execution-request	2	crucible-campaign::execution	component-message	gate:component-contract
-crucible.campaign.get-attempt-execution-response	2	crucible-campaign::execution	component-message	gate:component-contract
+crucible.campaign.get-attempt-execution-response	3	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.resume-attempt-execution-request	2	crucible-campaign::execution	component-message	gate:component-contract
-crucible.campaign.resume-attempt-execution-response	2	crucible-campaign::execution	component-message	gate:component-contract
+crucible.campaign.resume-attempt-execution-response	3	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.cancel-attempt-execution-request	2	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.cancel-attempt-execution-response	2	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.checkpoint-attempt-execution-request	2	crucible-campaign::execution	component-message	gate:component-contract
@@ -116,7 +116,7 @@ crucible.campaign.gc-root-manifest	1	crucible-daemon::campaign_gc	administrative
 crucible.campaign.gc-candidate-manifest	1	crucible-daemon::campaign_gc	administrative-record	gate:campaign-store-composition
 crucible.campaign.gc-journal-state	1	crucible-daemon::campaign_gc	administrative-record	gate:campaign-store-composition
 crucible.executor.assignment-record	1	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
-crucible.executor.attempt-state-record	6	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
+crucible.executor.attempt-state-record	7	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
 crucible.executor.assignment-retention-state	1	crucible-daemon::assignment_ledger	administrative-record	gate:campaign-store-composition
 crucible.executor.exact-pin-materialization-selection	1	crucible-daemon::exact_pin_retention	administrative-record	gate:campaign-store-composition
 crucible.executor.hot-checkpoint-fallback	1	crucible-daemon::hot_checkpoint_retention	operational-record	gate:campaign-store-composition

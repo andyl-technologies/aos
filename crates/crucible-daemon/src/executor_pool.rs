@@ -1781,7 +1781,11 @@ fn reconcile_worker_failure<L, V, W>(
                 shared.ready.notify_one();
                 return;
             }
-            Err(AttemptWorkerReconcileError::Stopped { .. }) | Ok(()) => {
+            Err(
+                AttemptWorkerReconcileError::Stopped { .. }
+                | AttemptWorkerReconcileError::TerminalStopped { .. },
+            )
+            | Ok(()) => {
                 increment(&shared.counters.terminal_stops);
                 return;
             }

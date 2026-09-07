@@ -32,14 +32,16 @@ use crucible_campaign::{
 use rustix::fs::{FlockOperation, flock};
 
 const ASSIGNMENT_MAGIC: &[u8] = b"crucible.executor.assignment-record.v1\0";
-const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v6\0";
+const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v7\0";
+const ATTEMPT_STATE_MAGIC_V6: &[u8] = b"crucible.executor.attempt-state-record.v6\0";
 const ATTEMPT_STATE_MAGIC_V5: &[u8] = b"crucible.executor.attempt-state-record.v5\0";
 const ATTEMPT_STATE_MAGIC_V4: &[u8] = b"crucible.executor.attempt-state-record.v4\0";
 const ATTEMPT_STATE_MAGIC_V3: &[u8] = b"crucible.executor.attempt-state-record.v3\0";
 const ATTEMPT_STATE_MAGIC_V2: &[u8] = b"crucible.executor.attempt-state-record.v2\0";
 const ATTEMPT_STATE_MAGIC_V1: &[u8] = b"crucible.executor.attempt-state-record.v1\0";
 const ASSIGNMENT_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-record.v1";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v6";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v7";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN_V6: &str = "crucible.executor.attempt-state-record.v6";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V5: &str = "crucible.executor.attempt-state-record.v5";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V4: &str = "crucible.executor.attempt-state-record.v4";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V3: &str = "crucible.executor.attempt-state-record.v3";
@@ -287,6 +289,17 @@ pub enum AttemptRuntimeState {
         /// Process-local execution identity.
         execution: ExecutionId,
     },
+    /// A non-retryable worker failure stopped this execution.
+    TerminalFailure {
+        /// Digest of lineage, attempt, resources, and retention.
+        execution_basis: CampaignHash,
+        /// Initial-start or exact-checkpoint execution origin.
+        origin: AttemptExecutionOrigin,
+        /// Daemon incarnation that admitted the failed execution.
+        daemon_epoch: DaemonEpoch,
+        /// Process-local execution identity.
+        execution: ExecutionId,
+    },
 }
 
 impl AttemptRuntimeState {
@@ -317,6 +330,9 @@ impl AttemptRuntimeState {
             }
             | Self::Canceled {
                 execution_basis, ..
+            }
+            | Self::TerminalFailure {
+                execution_basis, ..
             } => execution_basis,
         }
     }
@@ -332,7 +348,8 @@ impl AttemptRuntimeState {
             | Self::CheckpointPromoting { origin, .. }
             | Self::Publishing { origin, .. }
             | Self::Completed { origin, .. }
-            | Self::Canceled { origin, .. } => origin,
+            | Self::Canceled { origin, .. }
+            | Self::TerminalFailure { origin, .. } => origin,
         }
     }
 
@@ -347,7 +364,8 @@ impl AttemptRuntimeState {
             | Self::CheckpointPromoting { daemon_epoch, .. }
             | Self::Publishing { daemon_epoch, .. }
             | Self::Completed { daemon_epoch, .. }
-            | Self::Canceled { daemon_epoch, .. } => daemon_epoch,
+            | Self::Canceled { daemon_epoch, .. }
+            | Self::TerminalFailure { daemon_epoch, .. } => daemon_epoch,
         }
     }
 
@@ -362,7 +380,8 @@ impl AttemptRuntimeState {
             | Self::CheckpointPromoting { execution, .. }
             | Self::Publishing { execution, .. }
             | Self::Completed { execution, .. }
-            | Self::Canceled { execution, .. } => execution,
+            | Self::Canceled { execution, .. }
+            | Self::TerminalFailure { execution, .. } => execution,
         }
     }
 
@@ -378,7 +397,8 @@ impl AttemptRuntimeState {
             | Self::CheckpointPublishing { .. }
             | Self::Paused { .. }
             | Self::CheckpointPromoting { .. }
-            | Self::Canceled { .. } => None,
+            | Self::Canceled { .. }
+            | Self::TerminalFailure { .. } => None,
         }
     }
 
@@ -397,7 +417,8 @@ impl AttemptRuntimeState {
             | Self::CheckpointRequested { .. }
             | Self::Publishing { .. }
             | Self::Completed { .. }
-            | Self::Canceled { .. } => None,
+            | Self::Canceled { .. }
+            | Self::TerminalFailure { .. } => None,
         }
     }
 
@@ -420,7 +441,8 @@ impl AttemptRuntimeState {
             | Self::Paused { .. }
             | Self::Publishing { .. }
             | Self::Completed { .. }
-            | Self::Canceled { .. } => None,
+            | Self::Canceled { .. }
+            | Self::TerminalFailure { .. } => None,
         }
     }
 
@@ -445,7 +467,8 @@ impl AttemptRuntimeState {
             | Self::CheckpointPromoting { .. }
             | Self::Publishing { .. }
             | Self::Completed { .. }
-            | Self::Canceled { .. } => None,
+            | Self::Canceled { .. }
+            | Self::TerminalFailure { .. } => None,
         };
         let promotion_source = self.promotion_source_checkpoint();
         let origin = self.origin_checkpoint().filter(|checkpoint| {
@@ -1468,6 +1491,15 @@ fn encode_attempt_state(key: AttemptExecutionKey, state: AttemptRuntimeState) ->
             payload.extend_from_slice(&daemon_epoch.as_bytes());
             payload.extend_from_slice(&execution.as_bytes());
         }
+        AttemptRuntimeState::TerminalFailure {
+            daemon_epoch,
+            execution,
+            ..
+        } => {
+            payload.push(8);
+            payload.extend_from_slice(&daemon_epoch.as_bytes());
+            payload.extend_from_slice(&execution.as_bytes());
+        }
     }
     seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN)
 }
@@ -1477,6 +1509,8 @@ fn decode_attempt_state(
 ) -> Result<(AttemptExecutionKey, AttemptRuntimeState), AssignmentLedgerError> {
     let (payload, magic) = if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN) {
         (payload, ATTEMPT_STATE_MAGIC)
+    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V6) {
+        (payload, ATTEMPT_STATE_MAGIC_V6)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V5) {
         (payload, ATTEMPT_STATE_MAGIC_V5)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V4) {
@@ -1497,6 +1531,7 @@ fn decode_attempt_state(
     let attempt = parse_typed(cursor.bytes()?, AttemptId::parse)?;
     let execution_basis = CampaignHash::from_bytes(cursor.fixed()?);
     let origin = if magic == ATTEMPT_STATE_MAGIC
+        || magic == ATTEMPT_STATE_MAGIC_V6
         || magic == ATTEMPT_STATE_MAGIC_V5
         || magic == ATTEMPT_STATE_MAGIC_V4
     {
@@ -1527,7 +1562,14 @@ fn decode_attempt_state(
             daemon_epoch,
             execution,
         },
+        8 if magic == ATTEMPT_STATE_MAGIC => AttemptRuntimeState::TerminalFailure {
+            execution_basis,
+            origin,
+            daemon_epoch,
+            execution,
+        },
         3 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V6
             || magic == ATTEMPT_STATE_MAGIC_V5
             || magic == ATTEMPT_STATE_MAGIC_V4
             || magic == ATTEMPT_STATE_MAGIC_V3
@@ -1542,6 +1584,7 @@ fn decode_attempt_state(
             }
         }
         4 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V6
             || magic == ATTEMPT_STATE_MAGIC_V5
             || magic == ATTEMPT_STATE_MAGIC_V4
             || magic == ATTEMPT_STATE_MAGIC_V3 =>
@@ -1554,6 +1597,7 @@ fn decode_attempt_state(
             }
         }
         5 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V6
             || magic == ATTEMPT_STATE_MAGIC_V5
             || magic == ATTEMPT_STATE_MAGIC_V4
             || magic == ATTEMPT_STATE_MAGIC_V3 =>
@@ -1567,6 +1611,7 @@ fn decode_attempt_state(
             }
         }
         6 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V6
             || magic == ATTEMPT_STATE_MAGIC_V5
             || magic == ATTEMPT_STATE_MAGIC_V4
             || magic == ATTEMPT_STATE_MAGIC_V3 =>
@@ -1577,14 +1622,18 @@ fn decode_attempt_state(
                 daemon_epoch,
                 execution,
                 checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-                promotion_basis: if magic == ATTEMPT_STATE_MAGIC {
+                promotion_basis: if magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V6
+                {
                     decode_checkpoint_promotion_basis(&mut cursor)?
                 } else {
                     None
                 },
             }
         }
-        7 if magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V5 => {
+        7 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V6
+            || magic == ATTEMPT_STATE_MAGIC_V5 =>
+        {
             AttemptRuntimeState::CheckpointPromoting {
                 execution_basis,
                 origin,
@@ -1592,7 +1641,8 @@ fn decode_attempt_state(
                 execution,
                 source_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
                 promoted_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-                promotion_basis: if magic == ATTEMPT_STATE_MAGIC {
+                promotion_basis: if magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V6
+                {
                     decode_checkpoint_promotion_basis(&mut cursor)?
                 } else {
                     None
@@ -1613,7 +1663,8 @@ fn decode_attempt_state(
         | AttemptRuntimeState::CheckpointPublishing { .. }
         | AttemptRuntimeState::Publishing { .. }
         | AttemptRuntimeState::Completed { .. }
-        | AttemptRuntimeState::Canceled { .. } => None,
+        | AttemptRuntimeState::Canceled { .. }
+        | AttemptRuntimeState::TerminalFailure { .. } => None,
     };
     if let Some(promotion_basis) = promotion_basis
         && attempt_execution_basis_digest(

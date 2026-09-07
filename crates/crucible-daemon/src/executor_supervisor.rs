@@ -677,6 +677,17 @@ pub enum CancellationOutcome {
     NotCurrent,
 }
 
+/// Idempotent result of durably stopping one non-retryable worker failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalFailureOutcome {
+    /// This call durably recorded the terminal failure.
+    Failed,
+    /// The exact execution was already durably terminal.
+    AlreadyFailed,
+    /// The supplied execution is not the attempt's current execution.
+    NotCurrent,
+}
+
 /// Failure from local executor ledger or internal state coordination.
 #[derive(Debug, thiserror::Error)]
 pub enum LocalExecutorError<E> {
@@ -1122,7 +1133,10 @@ where
             | AttemptRuntimeState::CheckpointPromoting { .. }
             | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
-            | AttemptRuntimeState::Canceled { .. } => Ok(CheckpointRequestOutcome::NotCurrent),
+            | AttemptRuntimeState::Canceled { .. }
+            | AttemptRuntimeState::TerminalFailure { .. } => {
+                Ok(CheckpointRequestOutcome::NotCurrent)
+            }
         }
     }
 
@@ -1232,7 +1246,10 @@ where
             | AttemptRuntimeState::CheckpointPromoting { .. }
             | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
-            | AttemptRuntimeState::Canceled { .. } => Ok(CheckpointPublicationOutcome::NotCurrent),
+            | AttemptRuntimeState::Canceled { .. }
+            | AttemptRuntimeState::TerminalFailure { .. } => {
+                Ok(CheckpointPublicationOutcome::NotCurrent)
+            }
         }
     }
 
@@ -1300,7 +1317,10 @@ where
             | AttemptRuntimeState::CheckpointPromoting { .. }
             | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
-            | AttemptRuntimeState::Canceled { .. } => Ok(CheckpointCompletionOutcome::NotCurrent),
+            | AttemptRuntimeState::Canceled { .. }
+            | AttemptRuntimeState::TerminalFailure { .. } => {
+                Ok(CheckpointCompletionOutcome::NotCurrent)
+            }
         }
     }
 
@@ -1394,7 +1414,10 @@ where
             | AttemptRuntimeState::CheckpointPromoting { .. }
             | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
-            | AttemptRuntimeState::Canceled { .. } => Ok(ObservationPublicationOutcome::NotCurrent),
+            | AttemptRuntimeState::Canceled { .. }
+            | AttemptRuntimeState::TerminalFailure { .. } => {
+                Ok(ObservationPublicationOutcome::NotCurrent)
+            }
         }
     }
 
@@ -1500,6 +1523,23 @@ where
         }
         self.mark_worker_finished(execution);
         self.stage_cancellation(key, execution)
+    }
+
+    /// Durably records a non-retryable worker failure and releases capacity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalExecutorError`] when the token does not match the current
+    /// execution or the operational ledger cannot commit the terminal state.
+    pub fn stage_and_reconcile_terminal_failure(
+        &mut self,
+        queued: &QueuedAttempt,
+    ) -> Result<TerminalFailureOutcome, LocalExecutorError<L::Error>> {
+        self.validate_pending_basis(queued)?;
+        self.mark_worker_finished(queued.execution);
+
+        let key = AttemptExecutionKey::new(queued.request.lineage(), queued.request.attempt());
+        self.fail_execution_terminally(key, queued.execution)
     }
 
     fn stage_cancellation(
@@ -1609,6 +1649,12 @@ where
                     ..
                 }
                 | AttemptRuntimeState::Canceled {
+                    execution_basis,
+                    daemon_epoch,
+                    execution,
+                    ..
+                }
+                | AttemptRuntimeState::TerminalFailure {
                     execution_basis,
                     daemon_epoch,
                     execution,
@@ -1744,7 +1790,8 @@ where
             | AttemptRuntimeState::CheckpointPromoting { .. }
             | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
-            | AttemptRuntimeState::Canceled { .. } => Ok(CompletionOutcome::NotCurrent),
+            | AttemptRuntimeState::Canceled { .. }
+            | AttemptRuntimeState::TerminalFailure { .. } => Ok(CompletionOutcome::NotCurrent),
         }
     }
 
@@ -1847,7 +1894,93 @@ where
             | AttemptRuntimeState::CheckpointPromoting { .. }
             | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
-            | AttemptRuntimeState::Canceled { .. } => Ok(CancellationOutcome::NotCurrent),
+            | AttemptRuntimeState::Canceled { .. }
+            | AttemptRuntimeState::TerminalFailure { .. } => Ok(CancellationOutcome::NotCurrent),
+        }
+    }
+
+    fn fail_execution_terminally(
+        &mut self,
+        key: AttemptExecutionKey,
+        execution: ExecutionId,
+    ) -> Result<TerminalFailureOutcome, LocalExecutorError<L::Error>> {
+        let current = self
+            .ledger
+            .load_attempt(key)
+            .map_err(LocalExecutorError::Ledger)?;
+        let Some(current) = current else {
+            return Ok(TerminalFailureOutcome::NotCurrent);
+        };
+        match current {
+            AttemptRuntimeState::TerminalFailure {
+                execution: current_execution,
+                ..
+            } if current_execution == execution => {
+                self.release_active_if_idle(execution)?;
+                Ok(TerminalFailureOutcome::AlreadyFailed)
+            }
+            AttemptRuntimeState::Running {
+                execution_basis,
+                origin,
+                daemon_epoch,
+                execution: current_execution,
+            }
+            | AttemptRuntimeState::CheckpointRequested {
+                execution_basis,
+                origin,
+                daemon_epoch,
+                execution: current_execution,
+            }
+            | AttemptRuntimeState::CheckpointPublishing {
+                execution_basis,
+                origin,
+                daemon_epoch,
+                execution: current_execution,
+                ..
+            }
+            | AttemptRuntimeState::Paused {
+                execution_basis,
+                origin,
+                daemon_epoch,
+                execution: current_execution,
+                ..
+            }
+            | AttemptRuntimeState::CheckpointPromoting {
+                execution_basis,
+                origin,
+                daemon_epoch,
+                execution: current_execution,
+                ..
+            }
+            | AttemptRuntimeState::Publishing {
+                execution_basis,
+                origin,
+                daemon_epoch,
+                execution: current_execution,
+                ..
+            } if daemon_epoch == self.daemon_epoch && current_execution == execution => {
+                let next = AttemptRuntimeState::TerminalFailure {
+                    execution_basis,
+                    origin,
+                    daemon_epoch,
+                    execution,
+                };
+                let advance = self.advance_attempt(key, current, Some(next))?;
+                self.release_active_if_idle(execution)?;
+                if let AttemptAdvance::CommittedAfterError(error) = advance {
+                    return Err(LocalExecutorError::Ledger(error));
+                }
+                Ok(TerminalFailureOutcome::Failed)
+            }
+            AttemptRuntimeState::Running { .. }
+            | AttemptRuntimeState::CheckpointRequested { .. }
+            | AttemptRuntimeState::CheckpointPublishing { .. }
+            | AttemptRuntimeState::Paused { .. }
+            | AttemptRuntimeState::CheckpointPromoting { .. }
+            | AttemptRuntimeState::Publishing { .. }
+            | AttemptRuntimeState::Completed { .. }
+            | AttemptRuntimeState::Canceled { .. }
+            | AttemptRuntimeState::TerminalFailure { .. } => Ok(TerminalFailureOutcome::NotCurrent),
         }
     }
 
@@ -1980,6 +2113,15 @@ where
                     )
                     .map_err(Into::into);
                 }
+                AttemptRuntimeState::TerminalFailure { .. } => {
+                    return ResumeAttemptExecutionResponse::new(
+                        request,
+                        ResumeAttemptExecutionDisposition::Rejected {
+                            reason: ExecutorRejection::TerminalFailure,
+                        },
+                    )
+                    .map_err(Into::into);
+                }
                 AttemptRuntimeState::Running { execution, .. }
                 | AttemptRuntimeState::CheckpointRequested { execution, .. }
                 | AttemptRuntimeState::CheckpointPublishing { execution, .. }
@@ -2057,7 +2199,8 @@ where
                         AttemptRuntimeState::Paused { .. }
                         | AttemptRuntimeState::CheckpointPromoting { .. }
                         | AttemptRuntimeState::Completed { .. }
-                        | AttemptRuntimeState::Canceled { .. } => {
+                        | AttemptRuntimeState::Canceled { .. }
+                        | AttemptRuntimeState::TerminalFailure { .. } => {
                             return Err(LocalExecutorError::LedgerInvariant {
                                 reason: "resume recovery phase changed during classification",
                             });
@@ -2076,7 +2219,8 @@ where
                         AttemptRuntimeState::Paused { .. }
                         | AttemptRuntimeState::CheckpointPromoting { .. }
                         | AttemptRuntimeState::Completed { .. }
-                        | AttemptRuntimeState::Canceled { .. } => {
+                        | AttemptRuntimeState::Canceled { .. }
+                        | AttemptRuntimeState::TerminalFailure { .. } => {
                             return Err(LocalExecutorError::LedgerInvariant {
                                 reason: "resume recovery produced a terminal phase",
                             });
@@ -2520,6 +2664,14 @@ where
                     },
                 );
             }
+            Some(AttemptRuntimeState::TerminalFailure { .. }) => {
+                return self.persist_response(
+                    request,
+                    SubmitAttemptDisposition::Rejected {
+                        reason: ExecutorRejection::TerminalFailure,
+                    },
+                );
+            }
             Some(AttemptRuntimeState::CheckpointRequested { .. })
             | Some(AttemptRuntimeState::CheckpointPublishing { .. })
             | Some(AttemptRuntimeState::Paused { .. })
@@ -2872,6 +3024,9 @@ where
                     }
                     AttemptRuntimeState::Canceled { .. } => {
                         GetAttemptExecutionDisposition::Canceled
+                    }
+                    AttemptRuntimeState::TerminalFailure { .. } => {
+                        GetAttemptExecutionDisposition::TerminalFailure
                     }
                 }
             }
