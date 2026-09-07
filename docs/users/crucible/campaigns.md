@@ -46,14 +46,20 @@ to-completion path. The deployment capability is resolved in this order:
 The selected packaged-executor file still passes the strict ownership, mode,
 cgroup, project-quota, and resource-limit checks described below. If no
 capability is available, the command fails before launching QEMU and names all
-three configuration methods. Stop overrides, save, watch, and interactive
-execution are not yet accepted by this compatibility path.
+three configuration methods. Save and interactive execution are not yet
+accepted by this compatibility path.
 
 A failure artifact produced by this path records `campaign-run` as its typed
 producer. Replaying that artifact resolves the deployment capability again and
-re-materializes its authenticated schedule through the campaign owner. Older
-`run`, `verify`, `search`, `fuzz`, and `fork` artifacts retain their existing
-session replay behavior.
+re-materializes its authenticated schedule through the campaign owner. An
+older unattended `run` artifact also uses the campaign owner when it records
+the standard startup/query controls, uses a non-property terminal mode without
+coverage, and its schedule contains only delivery-order, RNG-draw, and
+preemption decisions. This exact subset needs no separate choice records, so
+replay synthesizes the canonical empty choice closure. Older `run` contracts
+with session-specific controls, property or coverage semantics, overrides,
+legacy application randomness, or typed selections retain session replay, as
+do `verify`, `search`, `fuzz`, and `fork` artifacts.
 
 ## Build and validate inputs
 

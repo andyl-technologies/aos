@@ -665,8 +665,16 @@ global `--campaign-deployment` option, then
 `/etc/crucible/packaged-executor.toml` deployment. Absence is an actionable,
 fail-closed error before QEMU launch. Its reproduction artifacts carry the
 typed producer `campaign-run`, so replay uses the same campaign owner and
-authenticated recorded schedule. Existing `run`, `verify`, `search`, `fuzz`,
-and `fork` artifacts continue to select their session replay contracts.
+authenticated recorded schedule. A historical unattended `run` artifact also
+selects the campaign owner when its contract records the standard startup/query
+controls, a non-property terminal mode without coverage, and an authenticated
+schedule containing only delivery-order, RNG-draw, and preemption decisions.
+That subset has no typed selections and therefore admits the canonical empty
+choice closure. Historical `run` contracts with session-specific controls,
+property or coverage semantics, overrides, legacy application randomness, or
+typed selections continue through their compatible session replay path.
+Existing `verify`, `search`, `fuzz`, and `fork` artifacts also retain their
+session replay contracts.
 
 The `run` compatibility path must record each discovered choice as a schema-v5
 `ScenarioDefault` request tied to the active policy. Repository admission

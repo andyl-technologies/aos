@@ -190,18 +190,19 @@ pub(crate) fn run_live_qemu_artifact_replay(
     if let Some(trace) = resources.effect_trace {
         config = config.with_fault_replay(trace);
     }
-    let report = if matches!(
-        expected_live_qemu_execution_owner(&contract.producer),
-        RunExecutionOwner::Campaign
-    ) {
+    let execution_owner = expected_live_qemu_execution_owner(contract, schedule);
+    let report = if matches!(execution_owner, RunExecutionOwner::Campaign) {
+        let replay_closure = campaign_owner_replay_closure(
+            &contract.producer,
+            schedule,
+            resources.campaign_closure,
+        )?;
         crate::cli_verify_serve::run_local_qemu_campaign_replay(
             backend,
             &run_plan,
             config,
             schedule.clone(),
-            resources.campaign_closure.ok_or_else(|| {
-                artifact_error("campaign-run replay requires its authenticated choice closure")
-            })?,
+            replay_closure,
         )?
     } else {
         if resources.campaign_closure.is_some() {
@@ -256,11 +257,83 @@ pub(crate) fn run_live_qemu_artifact_replay(
     Ok((run_plan, report))
 }
 
-pub(crate) fn expected_live_qemu_execution_owner(producer: &str) -> RunExecutionOwner {
-    if producer == "campaign-run" {
+pub(crate) fn expected_live_qemu_execution_owner(
+    contract: &LiveQemuReplayContract,
+    schedule: &crucible::Schedule,
+) -> RunExecutionOwner {
+    if contract.producer == "campaign-run"
+        || (contract.producer == "run" && legacy_run_campaign_replay_eligible(contract, schedule))
+    {
         RunExecutionOwner::Campaign
     } else {
         RunExecutionOwner::Session
+    }
+}
+
+fn legacy_run_campaign_replay_eligible(
+    contract: &LiveQemuReplayContract,
+    schedule: &crucible::Schedule,
+) -> bool {
+    let standard_startup =
+        replay_control_commands(&contract.startup_controls) == ["start", "continue"];
+    let standard_initial = replay_control_commands(&contract.initial_controls) == ["query"];
+    let unattended_controls = contract.controls.iter().all(|control| {
+        matches!(
+            control.command.as_str(),
+            "query" | "continue" | "step-quantum" | "stop"
+        )
+    });
+    let supported_terminal = matches!(
+        contract.terminal_condition.as_str(),
+        "quiescence" | "virtual-time" | "stopped"
+    ) && (contract.terminal_condition != "virtual-time"
+        || contract.max_virtual_time_ticks.is_some());
+    let supported_schedule = schedule.decisions().iter().all(|decision| {
+        matches!(
+            decision,
+            crucible::Decision::DeliveryOrder(_)
+                | crucible::Decision::RngDraw(_)
+                | crucible::Decision::Preemption(_)
+        )
+    });
+
+    standard_startup
+        && standard_initial
+        && unattended_controls
+        && supported_terminal
+        && !contract.coverage
+        && contract.fingerprint_scope == LiveQemuFingerprintScope::FullExecution
+        && matches!(contract.branch, LiveQemuReplayBranch::None)
+        && supported_schedule
+}
+
+fn replay_control_commands(controls: &[LiveQemuReplayControl]) -> Vec<&str> {
+    controls
+        .iter()
+        .map(|control| control.command.as_str())
+        .collect()
+}
+
+fn campaign_owner_replay_closure(
+    producer: &str,
+    schedule: &crucible::Schedule,
+    embedded: Option<crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure>,
+) -> Result<crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure, CliError> {
+    match (producer, embedded) {
+        ("campaign-run", Some(closure)) => Ok(closure),
+        ("campaign-run", None) => Err(artifact_error(
+            "campaign-run replay requires its authenticated choice closure",
+        )),
+        ("run", None) => {
+            crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty_for_selection_free_schedule(schedule)
+                .map_err(|error| artifact_error(format!("build legacy run replay closure: {error}")))
+        }
+        ("run", Some(_)) => Err(artifact_error(
+            "legacy run replay cannot carry a campaign replay closure",
+        )),
+        (_, _) => Err(artifact_error(
+            "only campaign-run and eligible legacy run artifacts use campaign replay",
+        )),
     }
 }
 
@@ -327,6 +400,42 @@ fn replay_indexed_network_choices(
 mod tests {
     use super::*;
 
+    fn legacy_run_contract() -> LiveQemuReplayContract {
+        LiveQemuReplayContract {
+            producer: String::from("run"),
+            terminal_condition: String::from("quiescence"),
+            terminal_status: String::from("failed"),
+            terminal_outcome: String::from("failed"),
+            terminal_configuration: String::from("blake3:terminal"),
+            final_frontier_ticks: 1,
+            final_quanta: 1,
+            budget_timed_out: false,
+            max_virtual_time_ticks: None,
+            max_quanta: None,
+            run_ceiling_icount: Some(PRODUCTION_CLI_RUN_CEILING_ICOUNT),
+            lifecycle_quantum_budget: Some(PRODUCTION_CLI_QUANTUM_BUDGET),
+            coverage: false,
+            fingerprint_scope: LiveQemuFingerprintScope::FullExecution,
+            branch: LiveQemuReplayBranch::None,
+            network_choice_indices: Vec::new(),
+            startup_controls: vec![
+                LiveQemuReplayControl {
+                    sequence: 0,
+                    command: String::from("start"),
+                },
+                LiveQemuReplayControl {
+                    sequence: 1,
+                    command: String::from("continue"),
+                },
+            ],
+            initial_controls: vec![LiveQemuReplayControl {
+                sequence: 0,
+                command: String::from("query"),
+            }],
+            controls: Vec::new(),
+        }
+    }
+
     #[test]
     fn replay_requires_an_exact_network_choice_stream_when_branching() {
         assert!(!replay_has_exact_branch_choices(&[]));
@@ -334,18 +443,106 @@ mod tests {
     }
 
     #[test]
-    fn only_campaign_run_artifacts_route_to_the_campaign_owner() {
+    fn campaign_and_supported_legacy_run_artifacts_route_to_the_campaign_owner() {
+        let supported = Schedule::from_decisions([crucible::Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: VirtualTime { ticks: 1 },
+                order: Vec::new(),
+            },
+        )]);
+        let legacy_run = legacy_run_contract();
+        let mut campaign_run = legacy_run.clone();
+        campaign_run.producer = String::from("campaign-run");
         assert_eq!(
-            expected_live_qemu_execution_owner("campaign-run"),
+            expected_live_qemu_execution_owner(&campaign_run, &supported),
             RunExecutionOwner::Campaign
         );
-        for producer in ["run", "verify", "search", "fuzz", "fork"] {
+        assert_eq!(
+            expected_live_qemu_execution_owner(&legacy_run, &supported),
+            RunExecutionOwner::Campaign,
+        );
+        let synthesized = match campaign_owner_replay_closure("run", &supported, None) {
+            Ok(closure) => closure,
+            Err(error) => panic!("supported legacy run should synthesize a closure: {error}"),
+        };
+        let encoded = match synthesized.to_canonical_bytes() {
+            Ok(encoded) => encoded,
+            Err(error) => panic!("empty legacy replay closure should encode: {error}"),
+        };
+        assert_eq!(encoded, b"CCRC\0\0\0\x01\0\0\0\0");
+        for producer in ["verify", "search", "fuzz", "fork"] {
+            let mut contract = legacy_run.clone();
+            contract.producer = producer.to_string();
             assert_eq!(
-                expected_live_qemu_execution_owner(producer),
+                expected_live_qemu_execution_owner(&contract, &supported),
                 RunExecutionOwner::Session,
                 "legacy producer {producer} must retain session replay semantics",
             );
         }
+    }
+
+    #[test]
+    fn campaign_run_replay_still_requires_its_embedded_closure() {
+        let error = match campaign_owner_replay_closure("campaign-run", &Schedule::empty(), None) {
+            Ok(_) => panic!("campaign-run replay without its closure must fail closed"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires its authenticated choice closure")
+        );
+    }
+
+    #[test]
+    fn legacy_run_override_replay_retains_the_compatible_session_owner() {
+        let contract = legacy_run_contract();
+        let unsupported =
+            Schedule::from_decisions([crucible::Decision::Override(crucible::OverrideDecision {
+                point: crucible::SchedulingPoint {
+                    key: String::from("legacy-run/choice"),
+                },
+                choice: crucible::ChoiceTag {
+                    name: String::from("alternate"),
+                },
+            })]);
+
+        assert_eq!(
+            expected_live_qemu_execution_owner(&contract, &unsupported),
+            RunExecutionOwner::Session,
+            "an uncovered legacy override cannot enter fresh campaign replay",
+        );
+    }
+
+    #[test]
+    fn legacy_run_session_control_and_property_contracts_retain_the_session_owner() {
+        let schedule = Schedule::empty();
+
+        let mut property = legacy_run_contract();
+        property.terminal_condition = String::from("property");
+        assert_eq!(
+            expected_live_qemu_execution_owner(&property, &schedule),
+            RunExecutionOwner::Session,
+        );
+
+        let mut interactive = legacy_run_contract();
+        interactive.startup_controls.pop();
+        interactive.controls.push(LiveQemuReplayControl {
+            sequence: 0,
+            command: String::from("pause"),
+        });
+        assert_eq!(
+            expected_live_qemu_execution_owner(&interactive, &schedule),
+            RunExecutionOwner::Session,
+        );
+
+        let mut coverage = legacy_run_contract();
+        coverage.coverage = true;
+        assert_eq!(
+            expected_live_qemu_execution_owner(&coverage, &schedule),
+            RunExecutionOwner::Session,
+        );
     }
 
     #[test]

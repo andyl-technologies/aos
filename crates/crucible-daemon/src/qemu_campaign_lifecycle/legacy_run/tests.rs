@@ -795,10 +795,23 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
 
 #[test]
 fn replay_closure_rejects_missing_extra_duplicate_and_tampered_records_before_start() {
+    let empty = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&Schedule::empty())
+        .expect("selection-free schedule should admit the exact empty closure");
+    assert_eq!(
+        empty
+            .to_canonical_bytes()
+            .expect("canonical empty replay closure"),
+        b"CCRC\0\0\0\x01\0\0\0\0",
+    );
+
     let (request, node) = selectable_request();
     let starts = Arc::new(AtomicUsize::new(0));
     let completed = run_selectable_campaign(request, node, starts);
     let schedule = completed.terminal_configuration().schedule.clone();
+    assert!(
+        GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule).is_err(),
+        "a selected schedule must require its authenticated record closure",
+    );
     let closure = completed.replay_closure().clone();
     let closure_bytes = closure
         .to_canonical_bytes()
