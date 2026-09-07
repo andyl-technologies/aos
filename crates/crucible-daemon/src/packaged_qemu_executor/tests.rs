@@ -28,9 +28,9 @@ use crucible_cas::content_store::{
 };
 use crucible_protocol::SelectionReply;
 use crucible_qemu::{
-    QemuChildProcessContract, QemuLaunchResourceRequirements, QemuNodeChild,
-    QemuNodeSelectablePendingRequest, QemuPreparedRunDirectory, QemuReplayOracleValidation,
-    QemuVmSnapshot,
+    QemuChildProcessContract, QemuLaunchArtifactIdentityError, QemuLaunchResourceRequirements,
+    QemuNodeChild, QemuNodeSelectablePendingRequest, QemuPreparedRunDirectory,
+    QemuReplayOracleValidation, QemuVmSnapshot,
 };
 
 use super::*;
@@ -38,8 +38,8 @@ use crate::{
     AttemptExecutionContext, AttemptExecutionKey, AttemptExecutionRuntimeBasis, AttemptWorkResult,
     AttemptWorkerFailure, DirectoryAssignmentLedger, DirectoryExactPinMaterializationStore,
     EXACT_PIN_MATERIALIZATION_DIRECTORY, ExactCheckpointStore, ExactPinMaterializationSelection,
-    ExactPinRetentionAdmin, LocalAttemptWorker, LoopbackExecutorService,
-    QemuAttemptCancellationSignal, QemuFreshAttemptLifecycleFactory,
+    ExactPinRetentionAdmin, HotCheckpointResourceProfile, LocalAttemptWorker,
+    LoopbackExecutorService, QemuAttemptCancellationSignal, QemuFreshAttemptLifecycleFactory,
     QemuFreshAttemptLifecycleOwner, QueuedAttempt,
 };
 
@@ -187,6 +187,13 @@ fn config(directory: &tempfile::TempDir, worker_count: usize) -> PackagedQemuExe
     .expect("packaged executor config")
 }
 
+fn hot_fork_retention(
+    directory: &tempfile::TempDir,
+) -> DirectoryHotCheckpointFallbackRetentionStore {
+    DirectoryHotCheckpointFallbackRetentionStore::open(directory.path().join("hot-fallbacks"))
+        .expect("open test hot-fallback catalog")
+}
+
 #[test]
 fn packaged_executor_serves_the_exact_composed_description_and_joins() {
     let directory = tempfile::tempdir().expect("packaged executor directory");
@@ -259,6 +266,7 @@ fn packaged_executor_advertises_exact_restore_with_one_owner_per_worker() {
         PackagedCampaignBasis {
             profile: profile(),
             scenarios: BTreeSet::from([scenario_artifact()]),
+            sources: BTreeMap::new(),
         },
         config,
         UnusedHostFactory,
@@ -308,6 +316,37 @@ fn packaged_executor_config_rejects_workers_beyond_slots() {
     )
     .expect_err("worker count should exceed slots");
     assert_eq!(error, PackagedQemuExecutorConfigError::WorkersExceedSlots);
+}
+
+#[test]
+fn packaged_hot_fork_config_preserves_launch_authentication_source() {
+    let directory = tempfile::tempdir().expect("authentication source directory");
+    let lifecycle = ProductionVmLifecycleConfig::new(
+        directory.path().join("missing-qemu"),
+        directory.path().join("missing-plugin"),
+        directory.path().join("kernel"),
+        directory.path().join("root"),
+        directory.path().join("run-state"),
+    );
+    let maximum_resources =
+        HotCheckpointResourceProfile::new(1, 0, 1, 1, 1, 0).expect("hot-fork resource profile");
+    let limits = HotCheckpointLimits::new(1, maximum_resources, 1, 1).expect("hot-fork limits");
+
+    let error = PackagedQemuHotForkConfig::authenticate(
+        &lifecycle,
+        limits,
+        HotCheckpointHotnessSignals::new(),
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+    )
+    .expect_err("missing launch artifact must fail authentication");
+    let source = std::error::Error::source(&error).expect("typed authentication source");
+
+    assert!(
+        source
+            .downcast_ref::<QemuLaunchArtifactIdentityError>()
+            .is_some()
+    );
 }
 
 #[test]
@@ -984,7 +1023,7 @@ fn packaged_campaign_basis_is_order_independent_and_exact() {
         CampaignName::new("beta").expect("beta campaign"),
         CampaignName::new("alpha").expect("alpha campaign"),
     ]);
-    let basis = authenticate_packaged_campaigns(&repository, &campaigns)
+    let basis = authenticate_packaged_campaigns(&repository, &campaigns, false)
         .expect("shared packaged campaign basis");
     let alpha = repository.head("alpha").expect("alpha head");
     let lineage = repository
@@ -995,13 +1034,14 @@ fn packaged_campaign_basis_is_order_independent_and_exact() {
         BTreeSet::from([lineage.scenario_content()])
     );
     assert!(basis.profile.admits(&lineage));
+    assert!(basis.sources.is_empty());
 
     let incompatible = repository_with_campaigns(&[
         ("alpha", b"shared", "qemu-test"),
         ("beta", b"shared", "different-qemu"),
     ]);
     assert!(matches!(
-        authenticate_packaged_campaigns(&incompatible, &campaigns),
+        authenticate_packaged_campaigns(&incompatible, &campaigns, false),
         Err(PackagedQemuExecutorError::CampaignCompatibilityMismatch { campaign })
             if campaign.as_str() == "beta"
     ));
@@ -1010,7 +1050,7 @@ fn packaged_campaign_basis_is_order_independent_and_exact() {
         ("alpha", b"alpha-scenario", "qemu-test"),
         ("beta", b"beta-scenario", "qemu-test"),
     ]);
-    let basis = authenticate_packaged_campaigns(&multiple_scenarios, &campaigns)
+    let basis = authenticate_packaged_campaigns(&multiple_scenarios, &campaigns, false)
         .expect("one packaged pool admits a bounded scenario catalog");
     assert_eq!(basis.scenarios.len(), 2);
     for campaign in ["alpha", "beta"] {
@@ -1020,6 +1060,16 @@ fn packaged_campaign_basis_is_order_independent_and_exact() {
             .expect("campaign lineage");
         assert!(basis.scenarios.contains(&lineage.scenario_content()));
     }
+}
+
+#[test]
+fn valid_noncanonical_lineage_declines_genesis_hot_capture() {
+    let source = admit_packaged_hot_fork_source_basis(Err(
+        AuthenticatedQemuHotForkSourceBasisError::NonCanonicalGenesis,
+    ))
+    .expect("noncanonical source basis routes to a lower materialization tier");
+
+    assert!(source.is_none());
 }
 
 #[test]
@@ -1040,7 +1090,12 @@ fn invalid_campaign_fails_before_operational_owner_mutation() {
         "invalid-campaign-checkpoints",
         1024 * 1024,
     ));
-    let error = match prepare_packaged_qemu_executor(repository, checkpoint_backend, config) {
+    let error = match prepare_packaged_qemu_executor(
+        repository,
+        checkpoint_backend,
+        hot_fork_retention(&directory),
+        config,
+    ) {
         Ok(_) => panic!("missing campaign must fail before executor preparation"),
         Err(error) => error,
     };
@@ -1060,7 +1115,12 @@ fn unsupported_closure_version_fails_before_catalog_or_host_acquisition() {
     // must precede even catalog decoding, let alone privileged host mutation.
     let repository = repository_with_closure_schema(&[("legacy", b"scenario", "qemu-test")], 2);
     let backend = Arc::new(MemoryBlobBackend::new("legacy-checkpoints", 1024 * 1024));
-    let error = match prepare_packaged_qemu_executor(repository, backend, config) {
+    let error = match prepare_packaged_qemu_executor(
+        repository,
+        backend,
+        hot_fork_retention(&directory),
+        config,
+    ) {
         Ok(_) => panic!("legacy closure version must not be advertised by a version-four writer"),
         Err(error) => error,
     };
@@ -1088,7 +1148,12 @@ fn invalid_scenario_fails_before_operational_owner_mutation() {
         "invalid-scenario-checkpoints",
         1024 * 1024,
     ));
-    let error = match prepare_packaged_qemu_executor(repository, checkpoint_backend, config) {
+    let error = match prepare_packaged_qemu_executor(
+        repository,
+        checkpoint_backend,
+        hot_fork_retention(&directory),
+        config,
+    ) {
         Ok(_) => panic!("invalid scenario must fail before executor preparation"),
         Err(error) => error,
     };

@@ -46,6 +46,7 @@ use crate::{
 const STATE_LOCK_FILE: &str = ".crucible-campaign-repository.lock";
 const OBJECT_DIRECTORY: &str = "objects";
 const REF_DIRECTORY: &str = "refs";
+const HOT_FORK_FALLBACK_DIRECTORY: &str = "hot-checkpoint-fallbacks";
 const MAX_DEPLOYMENT_PATH_BYTES: usize = 4_095;
 const CAMPAIGN_REPOSITORY_OBJECT_KINDS: [ObjectKind; 14] = [
     ObjectKind::CampaignFact,
@@ -455,6 +456,10 @@ impl CampaignLocalServiceConfig {
         component_authorities: CampaignComponentAuthorities,
     ) -> Result<PreparedCampaignLocalService, CampaignLocalServiceError> {
         let (blobs, refs, maintenance) = store.into_parts();
+        let hot_fork_retention =
+            Arc::new(crate::DirectoryHotCheckpointFallbackRetentionStore::open(
+                self.state_directory.join(HOT_FORK_FALLBACK_DIRECTORY),
+            )?);
         let (repository, planner_authority) = match component_authorities {
             Some((planner, debugger)) => {
                 let retained_planner = planner.clone();
@@ -481,6 +486,7 @@ impl CampaignLocalServiceConfig {
             maintenance,
             maintenance_config: None,
             runtime_control_planner: None,
+            hot_fork_retention,
         })
     }
 
@@ -515,6 +521,7 @@ pub struct PreparedCampaignLocalService {
     maintenance: Option<CampaignLocalRepositoryMaintenance>,
     maintenance_config: Option<CampaignStoreMaintenanceConfig>,
     runtime_control_planner: Option<CanonicalPlannerProcessConfig>,
+    hot_fork_retention: Arc<crate::DirectoryHotCheckpointFallbackRetentionStore>,
 }
 
 /// Borrowed destructive-maintenance authority for one stopped local service.
@@ -526,6 +533,7 @@ pub struct PreparedCampaignLocalService {
 pub struct CampaignLocalStoreGcAuthority<'a> {
     repository: &'a CampaignRepository,
     maintenance: &'a CampaignLocalRepositoryMaintenance,
+    hot_fallbacks: Arc<dyn crate::HotCheckpointFallbackRetentionAdmin>,
 }
 
 impl CampaignLocalStoreGcAuthority<'_> {
@@ -550,12 +558,19 @@ impl CampaignLocalStoreGcAuthority<'_> {
         L: crate::AssignmentRetentionAdmin,
         L::Error: StdError + Send + Sync + 'static,
     {
-        crate::plan_single_host_campaign_gc(
+        let roots = match exact_pins {
+            Some(exact_pins) => crate::CampaignGcHotCheckpointRoots::with_exact_pins(
+                exact_pins,
+                self.hot_fallbacks.as_ref(),
+            ),
+            None => crate::CampaignGcHotCheckpointRoots::new(self.hot_fallbacks.as_ref()),
+        };
+        crate::plan_single_host_campaign_gc_with_hot_checkpoints(
             self.repository,
             self.maintenance.refs.as_ref(),
             ledger,
             Some(self.maintenance.store.as_ref()),
-            exact_pins,
+            roots,
             &self.maintenance.graph,
         )
     }
@@ -582,13 +597,20 @@ impl CampaignLocalStoreGcAuthority<'_> {
         L: crate::AssignmentRetentionAdmin,
         L::Error: StdError + Send + Sync + 'static,
     {
-        crate::apply_single_host_campaign_gc(
+        let roots = match exact_pins {
+            Some(exact_pins) => crate::CampaignGcHotCheckpointRoots::with_exact_pins(
+                exact_pins,
+                self.hot_fallbacks.as_ref(),
+            ),
+            None => crate::CampaignGcHotCheckpointRoots::new(self.hot_fallbacks.as_ref()),
+        };
+        crate::apply_single_host_campaign_gc_with_hot_checkpoints(
             journal,
             self.repository,
             self.maintenance.refs.as_ref(),
             ledger,
             Some(self.maintenance.store.as_ref()),
-            exact_pins,
+            roots,
             &self.maintenance.graph,
         )
     }
@@ -616,6 +638,7 @@ impl PreparedCampaignLocalService {
         Ok(CampaignLocalStoreGcAuthority {
             repository: self.repository.as_ref(),
             maintenance,
+            hot_fallbacks: self.hot_fork_retention.clone(),
         })
     }
 
@@ -697,12 +720,14 @@ impl PreparedCampaignLocalService {
             .as_ref()
             .ok_or(CampaignLocalServiceError::StoreMaintenanceUnavailable)?;
         let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = maintenance.store.clone();
-        crate::packaged_qemu_executor::prepare_packaged_qemu_executor(
+        let executor = crate::packaged_qemu_executor::prepare_packaged_qemu_executor(
             Arc::clone(&self.repository),
             checkpoint_backend,
+            self.hot_fork_retention.as_ref().clone(),
             config,
         )
-        .map_err(Into::into)
+        .map_err(CampaignLocalServiceError::from)?;
+        Ok(executor)
     }
 
     /// Discovers the complete bounded set of authenticated campaign heads.
@@ -924,6 +949,7 @@ impl PreparedCampaignLocalService {
             maintenance,
             maintenance_config,
             runtime_control_planner,
+            hot_fork_retention: _hot_fork_retention,
         } = self;
         let endpoint_owner_user_id = endpoint.owner_user_id();
         let endpoint_owner_group_id = endpoint.owner_group_id();
@@ -1131,6 +1157,9 @@ pub enum CampaignLocalServiceError {
     /// Store maintenance was requested without retained graph administration.
     #[error("campaign service repository store has no maintenance authority")]
     StoreMaintenanceUnavailable,
+    /// The canonical durable hot-fallback catalog could not be opened.
+    #[error(transparent)]
+    HotForkRetention(#[from] crate::HotCheckpointFallbackRetentionError),
     /// Store maintenance was requested through a read-only service profile.
     #[error("campaign store maintenance is unavailable in read-only mode")]
     StoreMaintenanceReadOnly,

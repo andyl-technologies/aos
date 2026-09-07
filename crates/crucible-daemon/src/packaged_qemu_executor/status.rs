@@ -8,11 +8,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use crucible::{
-    // crucible-lint: allow host-nondeterminism-state -- These engine types are forwarded only through scheduler-owned lifecycle traits; operational observations never influence engine state.
-    Configuration, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ScenarioDef,
-    ScenarioDefForm, SchedulerError, SchedulerEventLogEntry,
-};
+// crucible-lint: allow host-nondeterminism-state -- immutable scheduler inputs are forwarded through lifecycle ownership while status remains operational-only.
+use crucible::{Configuration, ScenarioDef};
+use crucible::{ScenarioDefForm, SchedulerError, SchedulerEventLogEntry};
+// crucible-lint: allow host-nondeterminism-state -- These engine types are forwarded only through scheduler-owned lifecycle traits; operational observations never influence engine state.
+use crucible::{QuantumOutcome, QuantumRequest, QuantumTerminalVerdict};
 // crucible-lint: allow host-nondeterminism-state -- The wrapper preserves the validated production lifecycle boundary and observes only ownership phases.
 use crucible_api::{
     ProductionFaultEvidenceSnapshot, ProductionVmLifecycleResumeState,
@@ -38,7 +38,8 @@ use crate::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionReconciliationStep,
     AttemptWorkResult, AttemptWorkerFailure, CapturedAttemptCheckpoint, DirectoryAssignmentLedger,
     ExactCheckpointStore, LocalAttemptWorker, QemuFreshAttemptLifecycleFactory,
-    QemuFreshAttemptLifecycleOwner, QemuProductionExactResumeLifecycleFactory,
+    QemuFreshAttemptLifecycleOwner, QemuHotForkWorldLifecycleFactory,
+    QemuHotForkWorldLifecycleStart, QemuProductionExactResumeLifecycleFactory,
     QemuProductionExactResumeLifecycleOwner, QueuedAttempt,
 };
 
@@ -91,6 +92,11 @@ pub(super) struct PackagedStatusAttemptWorker<W> {
 }
 
 pub(super) struct PackagedStatusLifecycleFactory<F> {
+    pub(super) inner: F,
+    pub(super) lifecycles: PackagedWorldLifecycleTracker,
+}
+
+pub(super) struct PackagedStatusHotForkFactory<F> {
     pub(super) inner: F,
     pub(super) lifecycles: PackagedWorldLifecycleTracker,
 }
@@ -331,6 +337,38 @@ where
             execution: context.runtime_basis().map(|basis| basis.execution()),
             shutdown_finished: false,
         })
+    }
+}
+
+impl<F> QemuHotForkWorldLifecycleFactory for PackagedStatusHotForkFactory<F>
+where
+    F: QemuHotForkWorldLifecycleFactory,
+{
+    type Lifecycle = F::Lifecycle;
+    type Error = F::Error;
+
+    fn try_start(
+        &mut self,
+        input: &crate::CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<QemuHotForkWorldLifecycleStart<Self::Lifecycle>, AttemptWorkerFailure<Self::Error>>
+    {
+        let started = self.inner.try_start(input, context)?;
+        if matches!(started, QemuHotForkWorldLifecycleStart::Started(_)) {
+            match context.runtime_basis() {
+                Some(basis) => self.lifecycles.running(basis.execution()),
+                None => self.lifecycles.invalidate(),
+            }
+        }
+        Ok(started)
+    }
+
+    fn recover(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Lifecycle> {
+        self.inner.recover(lifecycle)
+    }
+
+    fn quarantine(&mut self, lifecycle: Self::Lifecycle) {
+        self.inner.quarantine(lifecycle);
     }
 }
 

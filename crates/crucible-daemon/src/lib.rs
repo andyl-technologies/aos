@@ -157,6 +157,8 @@ pub mod qemu_hot_fork_reconciliation;
 #[cfg(target_os = "linux")]
 pub mod qemu_hot_fork_runner;
 #[cfg(target_os = "linux")]
+pub mod qemu_hot_fork_source_capture;
+#[cfg(target_os = "linux")]
 pub mod qemu_hot_fork_world;
 #[cfg(target_os = "linux")]
 pub mod qemu_hot_fork_world_factory;
@@ -422,19 +424,25 @@ pub use managed_hot_checkpoint_pool::{
 };
 #[cfg(target_os = "linux")]
 pub use managed_qemu_hot_fork_source_world_pool::{
-    AuthenticatedCanonicalQemuHotForkSource, ManagedQemuHotForkAuthenticatedAdmissionFailure,
+    ManagedQemuHotForkAuthenticatedAdmissionError, ManagedQemuHotForkAuthenticatedAdmissionFailure,
     ManagedQemuHotForkSourceWorld, ManagedQemuHotForkSourceWorldAdmissionError,
     ManagedQemuHotForkSourceWorldAdmissionFailure, ManagedQemuHotForkSourceWorldBindingError,
     ManagedQemuHotForkSourceWorldBindingFailure, ManagedQemuHotForkSourceWorldCheckoutError,
     ManagedQemuHotForkSourceWorldDemotionError, ManagedQemuHotForkSourceWorldPool,
     ManagedQemuHotForkSourceWorldPoolConstructionError, ManagedQemuHotForkSourceWorldReleaseError,
-    QemuHotForkSourceWorldDemoter, QemuHotForkSourceWorldDemotionError,
+    ManagedQemuHotForkSourceWorldShutdownError, QemuHotForkSourceWorldDemoter,
+    QemuHotForkSourceWorldDemotionError, SharedManagedQemuHotForkSourceWorldPool,
+    SharedManagedQemuHotForkSourceWorldShutdownError, SharedQemuHotForkSourceWorldProvider,
+    SharedQemuHotForkSourceWorldProviderConstructionError,
+    SharedQemuHotForkSourceWorldProviderError,
 };
 pub use packaged_qemu_executor::{
     AttachedPackagedQemuExecutor, MAX_PACKAGED_SCENARIO_CATALOG_BYTES,
     PackagedExactPinMaterializerError, PackagedQemuExecutor, PackagedQemuExecutorCompletion,
     PackagedQemuExecutorConfig, PackagedQemuExecutorConfigError, PackagedQemuExecutorError,
-    PackagedQemuExecutorJoinError, PackagedQemuExecutorStartError,
+    PackagedQemuExecutorJoinError, PackagedQemuExecutorJoinFailures,
+    PackagedQemuExecutorStartError, PackagedQemuHotForkConfig,
+    PackagedQemuHotForkConfigError, PackagedQemuHotForkSourceShutdownError,
 };
 #[cfg(target_os = "linux")]
 pub use paused_checkpoint_promotion::{
@@ -534,6 +542,12 @@ pub use qemu_hot_fork_runner::{
     QemuHotForkAttemptLifecycleFactory, QemuHotForkAttemptLifecycleRecoveryError,
     QemuHotForkChildExitPolicy, QemuHotForkChildExitPolicyError, QemuHotForkExecutionRunner,
     QemuHotForkExecutionRunnerError, QemuHotForkLiveExecution,
+};
+#[cfg(target_os = "linux")]
+pub use qemu_hot_fork_source_capture::{
+    AuthenticatedCanonicalQemuHotForkSource, AuthenticatedQemuHotForkSourceBasis,
+    AuthenticatedQemuHotForkSourceBasisError, ProductionQemuHotForkSourceCaptureError,
+    ProductionQemuHotForkSourceFactory,
 };
 #[cfg(target_os = "linux")]
 pub use qemu_hot_fork_world::{

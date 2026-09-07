@@ -6,7 +6,7 @@ use super::ManagedQemuHotForkSourceWorld;
 use crate::{
     DurableHotCheckpointCatalogError, HotCheckpointAdmissionCommitError,
     HotCheckpointAdmissionRejection, HotCheckpointDemotion, HotCheckpointFallbackRetentionError,
-    HotCheckpointFallbackSlot, HotCheckpointInventoryError,
+    HotCheckpointFallbackSlot, HotCheckpointInventoryError, QemuHotForkTemplateKey,
 };
 
 /// Invalid managed source-world pool construction.
@@ -156,4 +156,61 @@ pub enum ManagedQemuHotForkSourceWorldReleaseError {
     /// The durable catalog rejected the exact removal.
     #[error("release source-world fallback")]
     Catalog(#[source] DurableHotCheckpointCatalogError),
+}
+
+/// Complete failure report from orderly process-wide source shutdown.
+#[derive(Debug)]
+pub struct ManagedQemuHotForkSourceWorldShutdownError<E> {
+    failures: Vec<(
+        QemuHotForkTemplateKey,
+        ManagedQemuHotForkSourceWorldDemotionError<E>,
+    )>,
+}
+
+impl<E> ManagedQemuHotForkSourceWorldShutdownError<E> {
+    pub(super) fn new(
+        failures: Vec<(
+            QemuHotForkTemplateKey,
+            ManagedQemuHotForkSourceWorldDemotionError<E>,
+        )>,
+    ) -> Self {
+        Self { failures }
+    }
+
+    /// Returns every exact source key and its shutdown failure.
+    #[must_use]
+    pub fn failures(
+        &self,
+    ) -> &[(
+        QemuHotForkTemplateKey,
+        ManagedQemuHotForkSourceWorldDemotionError<E>,
+    )] {
+        &self.failures
+    }
+}
+
+impl<E> std::fmt::Display for ManagedQemuHotForkSourceWorldShutdownError<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} managed QEMU source world(s) could not be shut down",
+            self.failures.len()
+        )
+    }
+}
+
+impl<E: std::fmt::Debug> std::error::Error for ManagedQemuHotForkSourceWorldShutdownError<E> {}
+
+/// Failure while shutting down a shared process-wide source owner.
+#[derive(Debug, Error)]
+pub enum SharedManagedQemuHotForkSourceWorldShutdownError<E>
+where
+    E: std::fmt::Debug,
+{
+    /// A prior operation panicked while holding the process-wide pool lock.
+    #[error("shared source-world pool lock is poisoned during shutdown")]
+    Poisoned,
+    /// One or more retained source worlds could not be demoted and reaped.
+    #[error(transparent)]
+    Sources(#[from] ManagedQemuHotForkSourceWorldShutdownError<E>),
 }
