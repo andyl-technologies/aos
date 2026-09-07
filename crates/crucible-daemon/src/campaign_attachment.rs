@@ -27,7 +27,7 @@ use crate::{
     CampaignRuntime, CampaignRuntimeCompletion, CampaignRuntimeConfig, CampaignRuntimeJoinError,
     CampaignRuntimeReport, CampaignRuntimeStartError, CanonicalPlannerProcessCancellation,
     CanonicalPlannerProcessConfig, CanonicalPlannerProcessError, CanonicalPlannerProcessSupervisor,
-    LoopbackExecutorProtocolError, LoopbackExecutorService,
+    ExecutorLoopbackEndpointConfig, LoopbackExecutorProtocolError, LoopbackExecutorService,
 };
 
 /// Maximum number of canonical campaign runtimes attached to one daemon.
@@ -363,6 +363,36 @@ pub fn prepare_canonical_campaign_runtime(
 ) -> Result<PreparedCanonicalCampaignRuntime, CanonicalCampaignRuntimeError> {
     let service = LoopbackExecutorService::new(executor_stream)
         .map_err(CanonicalCampaignRuntimeError::ExecutorProtocol)?;
+    prepare_canonical_campaign_runtime_with_service(repository, planner_authority, service, config)
+}
+
+/// Prepares one canonical runtime with a reconnectable executor endpoint.
+///
+/// The endpoint is authenticated for the initial connection and retained for
+/// one bounded transport retry. Capability negotiation latches the exact
+/// daemon epoch and immutable capability digest before the runtime can start.
+///
+/// # Errors
+///
+/// Returns [`CanonicalCampaignRuntimeError`] for endpoint, transport,
+/// repository, compatibility, resource, driver, or supervisor failure.
+pub fn prepare_canonical_campaign_runtime_endpoint(
+    repository: Arc<CampaignRepository>,
+    planner_authority: PlannerAuthorityKey,
+    endpoint: ExecutorLoopbackEndpointConfig,
+    config: &CanonicalCampaignRuntimeConfig,
+) -> Result<PreparedCanonicalCampaignRuntime, CanonicalCampaignRuntimeError> {
+    let service = LoopbackExecutorService::connect(endpoint)
+        .map_err(CanonicalCampaignRuntimeError::ExecutorProtocol)?;
+    prepare_canonical_campaign_runtime_with_service(repository, planner_authority, service, config)
+}
+
+fn prepare_canonical_campaign_runtime_with_service(
+    repository: Arc<CampaignRepository>,
+    planner_authority: PlannerAuthorityKey,
+    service: LoopbackExecutorService,
+    config: &CanonicalCampaignRuntimeConfig,
+) -> Result<PreparedCanonicalCampaignRuntime, CanonicalCampaignRuntimeError> {
     let mut executor = ExecutorClient::new(service);
     let description = executor
         .describe_executor()

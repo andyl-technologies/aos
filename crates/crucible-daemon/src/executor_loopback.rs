@@ -6,17 +6,20 @@
 //! ```text
 //! ExecutorLoopbackFrameV5 = magic[8] | kind:u8 | reserved[3] |
 //!                           body_length:u32be | canonical_body[body_length]
-//! kind = 1 (SubmitAttemptRequestV2) | 2 (SubmitAttemptResponseV2) |
-//!        3 (DescribeExecutorRequestV1) | 4 (ExecutorDescriptionV1) |
-//!        5 (WatchExecutorCapacityRequestV1) | 6 (ExecutorCapacityReportV1) |
-//!        7 (GetAttemptExecutionRequestV2) | 8 (GetAttemptExecutionResponseV2) |
-//!        9 (CancelAttemptExecutionRequestV2) |
-//!       10 (CancelAttemptExecutionResponseV2) |
-//!       11 (CheckpointAttemptExecutionRequestV2) |
-//!       12 (CheckpointAttemptExecutionResponseV2) |
-//!       13 (ResumeAttemptExecutionRequestV2) |
-//!       14 (ResumeAttemptExecutionResponseV2)
+//! kind = 1 (SubmitAttemptRequest) | 2 (SubmitAttemptResponse) |
+//!        3 (DescribeExecutorRequest) | 4 (ExecutorDescription) |
+//!        5 (WatchExecutorCapacityRequest) | 6 (ExecutorCapacityReport) |
+//!        7 (GetAttemptExecutionRequest) | 8 (GetAttemptExecutionResponse) |
+//!        9 (CancelAttemptExecutionRequest) |
+//!       10 (CancelAttemptExecutionResponse) |
+//!       11 (CheckpointAttemptExecutionRequest) |
+//!       12 (CheckpointAttemptExecutionResponse) |
+//!       13 (ResumeAttemptExecutionRequest) |
+//!       14 (ResumeAttemptExecutionResponse)
 //! ```
+//!
+//! Each nested canonical message family carries and validates its own schema
+//! version independently from the framing version.
 //!
 //! Both sides enforce the same 4-KiB component-message bound before allocation.
 //! The coordinator still wraps [`LoopbackExecutorService`] in the shared
@@ -29,14 +32,17 @@ use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 use crucible_campaign::{
-    CampaignCodecError, CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
-    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, DescribeExecutorRequest,
+    CampaignCodecError, CampaignHash, CancelAttemptExecutionRequest,
+    CancelAttemptExecutionResponse, CheckpointAttemptExecutionRequest,
+    CheckpointAttemptExecutionResponse, DaemonEpoch, DescribeExecutorRequest,
     ExecutorCapabilityService, ExecutorCapacityReport, ExecutorControlService, ExecutorDescription,
     ExecutorResumeService, ExecutorService, ExecutorStatusService, GetAttemptExecutionRequest,
     GetAttemptExecutionResponse, MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
     ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, SubmitAttemptRequest,
     SubmitAttemptResponse, WatchExecutorCapacityRequest,
 };
+
+use crate::campaign_endpoint::{ExecutorLoopbackEndpointConfig, ExecutorLoopbackEndpointError};
 
 const FRAME_MAGIC: &[u8; 8] = b"CRUCEX05";
 const FRAME_HEADER_BYTES: usize = 16;
@@ -108,10 +114,18 @@ impl Default for LoopbackExecutorTimeouts {
     }
 }
 
-/// Coordinator-side executor service over one connected Unix stream.
+/// Coordinator-side executor service over a stream or retained endpoint.
 pub struct LoopbackExecutorService {
     stream: UnixStream,
     timeouts: LoopbackExecutorTimeouts,
+    reconnect_endpoint: Option<ExecutorLoopbackEndpointConfig>,
+    expected_incarnation: Option<ExecutorIncarnation>,
+}
+
+#[derive(Clone, Copy)]
+struct ExecutorIncarnation {
+    daemon_epoch: DaemonEpoch,
+    capability_digest: CampaignHash,
 }
 
 impl LoopbackExecutorService {
@@ -134,13 +148,146 @@ impl LoopbackExecutorService {
         timeouts: LoopbackExecutorTimeouts,
     ) -> Result<Self, LoopbackExecutorProtocolError> {
         configure_stream(&stream, timeouts)?;
-        Ok(Self { stream, timeouts })
+        Ok(Self {
+            stream,
+            timeouts,
+            reconnect_endpoint: None,
+            expected_incarnation: None,
+        })
+    }
+
+    /// Connects through one authenticated endpoint with default deadlines.
+    ///
+    /// The endpoint capability is retained for one bounded reconnect after a
+    /// transport turnover. Callers must obtain and latch the initial executor
+    /// description before dispatching any request other than description.
+    ///
+    /// # Errors
+    ///
+    /// Returns an endpoint or socket-configuration error when the initial
+    /// authenticated connection cannot be established.
+    pub fn connect(
+        endpoint: ExecutorLoopbackEndpointConfig,
+    ) -> Result<Self, LoopbackExecutorProtocolError> {
+        Self::connect_with_timeouts(endpoint, LoopbackExecutorTimeouts::default())
+    }
+
+    /// Connects through one authenticated endpoint with explicit deadlines.
+    ///
+    /// # Errors
+    ///
+    /// Returns an endpoint or socket-configuration error when the initial
+    /// authenticated connection cannot be established.
+    pub fn connect_with_timeouts(
+        endpoint: ExecutorLoopbackEndpointConfig,
+        timeouts: LoopbackExecutorTimeouts,
+    ) -> Result<Self, LoopbackExecutorProtocolError> {
+        let stream = endpoint.connect()?;
+        configure_stream(&stream, timeouts)?;
+        Ok(Self {
+            stream,
+            timeouts,
+            reconnect_endpoint: Some(endpoint),
+            expected_incarnation: None,
+        })
     }
 
     /// Returns the owned stream after the executor client shuts down.
     #[must_use]
     pub fn into_stream(self) -> UnixStream {
         self.stream
+    }
+
+    fn require_initial_description(&self) -> Result<(), LoopbackExecutorProtocolError> {
+        if self.reconnect_endpoint.is_some() && self.expected_incarnation.is_none() {
+            return Err(LoopbackExecutorProtocolError::InitialDescriptionRequired);
+        }
+        Ok(())
+    }
+
+    fn latch_description(
+        &mut self,
+        description: &ExecutorDescription,
+    ) -> Result<(), LoopbackExecutorProtocolError> {
+        let observed = ExecutorIncarnation {
+            daemon_epoch: description.daemon_epoch(),
+            capability_digest: description.capabilities().digest(),
+        };
+        let Some(expected) = self.expected_incarnation else {
+            self.expected_incarnation = Some(observed);
+            return Ok(());
+        };
+        if observed.daemon_epoch != expected.daemon_epoch {
+            return Err(LoopbackExecutorProtocolError::ExecutorIncarnationChanged {
+                expected: expected.daemon_epoch,
+                observed: observed.daemon_epoch,
+            });
+        }
+        if observed.capability_digest != expected.capability_digest {
+            return Err(LoopbackExecutorProtocolError::ExecutorCapabilitiesChanged {
+                expected: expected.capability_digest,
+                observed: observed.capability_digest,
+            });
+        }
+        Ok(())
+    }
+
+    fn exchange(
+        &mut self,
+        request_kind: u8,
+        response_kind: u8,
+        request: &[u8],
+    ) -> Result<Vec<u8>, LoopbackExecutorProtocolError> {
+        match exchange_once(
+            &mut self.stream,
+            self.timeouts,
+            request_kind,
+            response_kind,
+            request,
+        ) {
+            Ok(response) => Ok(response),
+            Err(error) if error.is_transport_turnover() && self.reconnect_endpoint.is_some() => {
+                let _ = self.stream.shutdown(Shutdown::Both);
+                self.reconnect_and_revalidate()?;
+                let result = exchange_once(
+                    &mut self.stream,
+                    self.timeouts,
+                    request_kind,
+                    response_kind,
+                    request,
+                );
+                if result.is_err() {
+                    let _ = self.stream.shutdown(Shutdown::Both);
+                }
+                result
+            }
+            Err(error) => {
+                let _ = self.stream.shutdown(Shutdown::Both);
+                Err(error)
+            }
+        }
+    }
+
+    fn reconnect_and_revalidate(&mut self) -> Result<(), LoopbackExecutorProtocolError> {
+        let endpoint = self
+            .reconnect_endpoint
+            .as_ref()
+            .ok_or(LoopbackExecutorProtocolError::ReconnectUnavailable)?;
+        let mut stream = endpoint.connect()?;
+        configure_stream(&stream, self.timeouts)?;
+
+        let request = DescribeExecutorRequest::new().canonical_bytes();
+        let response = exchange_once(
+            &mut stream,
+            self.timeouts,
+            DESCRIBE_EXECUTOR_REQUEST_KIND,
+            EXECUTOR_DESCRIPTION_KIND,
+            &request,
+        )?;
+        let description = ExecutorDescription::from_canonical_bytes(&response)?;
+        self.latch_description(&description)?;
+        self.stream = stream;
+        Ok(())
     }
 }
 
@@ -151,17 +298,13 @@ impl ExecutorService for LoopbackExecutorService {
         &mut self,
         request: &SubmitAttemptRequest,
     ) -> Result<SubmitAttemptResponse, Self::Error> {
+        self.require_initial_description()?;
+        let request_bytes = request.canonical_bytes();
         let result = (|| {
-            write_frame(
-                &mut self.stream,
+            let response = self.exchange(
                 SUBMIT_ATTEMPT_REQUEST_KIND,
-                &request.canonical_bytes(),
-                self.timeouts.write,
-            )?;
-            let response = read_frame(
-                &mut self.stream,
                 SUBMIT_ATTEMPT_RESPONSE_KIND,
-                self.timeouts.read,
+                &request_bytes,
             )?;
             SubmitAttemptResponse::from_canonical_bytes_for(request, &response).map_err(Into::into)
         })();
@@ -174,19 +317,16 @@ impl ExecutorService for LoopbackExecutorService {
 
 impl ExecutorCapabilityService for LoopbackExecutorService {
     fn describe_executor(&mut self) -> Result<ExecutorDescription, Self::Error> {
+        let request = DescribeExecutorRequest::new().canonical_bytes();
         let result = (|| {
-            write_frame(
-                &mut self.stream,
+            let response = self.exchange(
                 DESCRIBE_EXECUTOR_REQUEST_KIND,
-                &DescribeExecutorRequest::new().canonical_bytes(),
-                self.timeouts.write,
-            )?;
-            let response = read_frame(
-                &mut self.stream,
                 EXECUTOR_DESCRIPTION_KIND,
-                self.timeouts.read,
+                &request,
             )?;
-            ExecutorDescription::from_canonical_bytes(&response).map_err(Into::into)
+            let description = ExecutorDescription::from_canonical_bytes(&response)?;
+            self.latch_description(&description)?;
+            Ok(description)
         })();
         if result.is_err() {
             let _ = self.stream.shutdown(Shutdown::Both);
@@ -198,17 +338,13 @@ impl ExecutorCapabilityService for LoopbackExecutorService {
         &mut self,
         request: &WatchExecutorCapacityRequest,
     ) -> Result<ExecutorCapacityReport, Self::Error> {
+        self.require_initial_description()?;
+        let request_bytes = request.canonical_bytes();
         let result = (|| {
-            write_frame(
-                &mut self.stream,
+            let response = self.exchange(
                 WATCH_CAPACITY_REQUEST_KIND,
-                &request.canonical_bytes(),
-                self.timeouts.write,
-            )?;
-            let response = read_frame(
-                &mut self.stream,
                 EXECUTOR_CAPACITY_REPORT_KIND,
-                self.timeouts.read,
+                &request_bytes,
             )?;
             ExecutorCapacityReport::from_canonical_bytes(&response).map_err(Into::into)
         })();
@@ -224,17 +360,13 @@ impl ExecutorStatusService for LoopbackExecutorService {
         &mut self,
         request: &GetAttemptExecutionRequest,
     ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        self.require_initial_description()?;
+        let request_bytes = request.canonical_bytes();
         let result = (|| {
-            write_frame(
-                &mut self.stream,
+            let response = self.exchange(
                 GET_ATTEMPT_EXECUTION_REQUEST_KIND,
-                &request.canonical_bytes(),
-                self.timeouts.write,
-            )?;
-            let response = read_frame(
-                &mut self.stream,
                 GET_ATTEMPT_EXECUTION_RESPONSE_KIND,
-                self.timeouts.read,
+                &request_bytes,
             )?;
             GetAttemptExecutionResponse::from_canonical_bytes_for(request, &response)
                 .map_err(Into::into)
@@ -251,17 +383,13 @@ impl ExecutorControlService for LoopbackExecutorService {
         &mut self,
         request: &CheckpointAttemptExecutionRequest,
     ) -> Result<CheckpointAttemptExecutionResponse, Self::Error> {
+        self.require_initial_description()?;
+        let request_bytes = request.canonical_bytes();
         let result = (|| {
-            write_frame(
-                &mut self.stream,
+            let response = self.exchange(
                 CHECKPOINT_ATTEMPT_EXECUTION_REQUEST_KIND,
-                &request.canonical_bytes(),
-                self.timeouts.write,
-            )?;
-            let response = read_frame(
-                &mut self.stream,
                 CHECKPOINT_ATTEMPT_EXECUTION_RESPONSE_KIND,
-                self.timeouts.read,
+                &request_bytes,
             )?;
             CheckpointAttemptExecutionResponse::from_canonical_bytes_for(request, &response)
                 .map_err(Into::into)
@@ -276,17 +404,13 @@ impl ExecutorControlService for LoopbackExecutorService {
         &mut self,
         request: &CancelAttemptExecutionRequest,
     ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
+        self.require_initial_description()?;
+        let request_bytes = request.canonical_bytes();
         let result = (|| {
-            write_frame(
-                &mut self.stream,
+            let response = self.exchange(
                 CANCEL_ATTEMPT_EXECUTION_REQUEST_KIND,
-                &request.canonical_bytes(),
-                self.timeouts.write,
-            )?;
-            let response = read_frame(
-                &mut self.stream,
                 CANCEL_ATTEMPT_EXECUTION_RESPONSE_KIND,
-                self.timeouts.read,
+                &request_bytes,
             )?;
             CancelAttemptExecutionResponse::from_canonical_bytes_for(request, &response)
                 .map_err(Into::into)
@@ -303,17 +427,13 @@ impl ExecutorResumeService for LoopbackExecutorService {
         &mut self,
         request: &ResumeAttemptExecutionRequest,
     ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        self.require_initial_description()?;
+        let request_bytes = request.canonical_bytes();
         let result = (|| {
-            write_frame(
-                &mut self.stream,
+            let response = self.exchange(
                 RESUME_ATTEMPT_EXECUTION_REQUEST_KIND,
-                &request.canonical_bytes(),
-                self.timeouts.write,
-            )?;
-            let response = read_frame(
-                &mut self.stream,
                 RESUME_ATTEMPT_EXECUTION_RESPONSE_KIND,
-                self.timeouts.read,
+                &request_bytes,
             )?;
             ResumeAttemptExecutionResponse::from_canonical_bytes_for(request, &response)
                 .map_err(Into::into)
@@ -573,12 +693,37 @@ pub enum LoopbackExecutorProtocolError {
     /// The Unix stream could not complete a bounded frame operation.
     #[error("executor loopback I/O failed")]
     Io(#[from] std::io::Error),
+    /// An authenticated executor endpoint could not be connected.
+    #[error(transparent)]
+    Endpoint(#[from] ExecutorLoopbackEndpointError),
     /// Canonical request or response bytes failed strict validation.
     #[error(transparent)]
     Codec(#[from] CampaignCodecError),
     /// A caller attempted to disable a required finite deadline.
     #[error("executor loopback read/write timeout must be between 1ns and 1h")]
     InvalidTimeout,
+    /// A reconnectable client attempted work before capability negotiation.
+    #[error("executor loopback requires an initial description before dispatch")]
+    InitialDescriptionRequired,
+    /// A raw connected stream has no retained endpoint reconnect capability.
+    #[error("executor loopback reconnect endpoint is unavailable")]
+    ReconnectUnavailable,
+    /// A reconnected endpoint belongs to another executor daemon incarnation.
+    #[error("executor loopback daemon incarnation changed during reconnect")]
+    ExecutorIncarnationChanged {
+        /// Daemon epoch authenticated before dispatch began.
+        expected: DaemonEpoch,
+        /// Daemon epoch reported by the reconnected endpoint.
+        observed: DaemonEpoch,
+    },
+    /// A reconnected endpoint advertises another immutable capability set.
+    #[error("executor loopback capabilities changed during reconnect")]
+    ExecutorCapabilitiesChanged {
+        /// Capability digest authenticated before dispatch began.
+        expected: CampaignHash,
+        /// Capability digest reported by the reconnected endpoint.
+        observed: CampaignHash,
+    },
     /// The peer closed cleanly between complete request frames.
     #[error("executor loopback peer closed the connection")]
     ConnectionClosed,
@@ -591,6 +736,12 @@ pub enum LoopbackExecutorProtocolError {
         /// Stable framing failure category.
         reason: &'static str,
     },
+}
+
+impl LoopbackExecutorProtocolError {
+    fn is_transport_turnover(&self) -> bool {
+        matches!(self, Self::Io(_) | Self::ConnectionClosed)
+    }
 }
 
 fn configure_stream(
@@ -607,6 +758,17 @@ fn configure_stream(
     stream.set_read_timeout(Some(timeouts.read))?;
     stream.set_write_timeout(Some(timeouts.write))?;
     Ok(())
+}
+
+fn exchange_once(
+    stream: &mut UnixStream,
+    timeouts: LoopbackExecutorTimeouts,
+    request_kind: u8,
+    response_kind: u8,
+    request: &[u8],
+) -> Result<Vec<u8>, LoopbackExecutorProtocolError> {
+    write_frame(stream, request_kind, request, timeouts.write)?;
+    read_frame(stream, response_kind, timeouts.read)
 }
 
 /// Failure while serving one loopback executor exchange.

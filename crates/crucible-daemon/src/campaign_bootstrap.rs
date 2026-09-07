@@ -36,11 +36,12 @@ use crate::{
     CampaignLoopbackEndpointError, CampaignLoopbackListenerError, CampaignLoopbackServer,
     CampaignLoopbackServerConfig, CampaignLoopbackServerReport, CampaignLoopbackServerShutdown,
     CanonicalCampaignRuntimeConfig, CanonicalCampaignRuntimeError, CanonicalPlannerProcessConfig,
-    CrucibleArtifactError, CrucibleCampaignArtifactStore, MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES,
-    MAX_CAMPAIGN_POLICY_BYTES, PackagedQemuExecutor, PackagedQemuExecutorConfig,
-    PackagedQemuExecutorError, PackagedQemuExecutorJoinError, PackagedQemuExecutorStartError,
-    PreparedCanonicalCampaignRuntime, UnixPeerCampaignPolicy, UnixPeerCampaignPolicyLoadError,
-    prepare_canonical_campaign_runtime,
+    CrucibleArtifactError, CrucibleCampaignArtifactStore, ExecutorLoopbackEndpointConfig,
+    MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES, MAX_CAMPAIGN_POLICY_BYTES, PackagedQemuExecutor,
+    PackagedQemuExecutorConfig, PackagedQemuExecutorError, PackagedQemuExecutorJoinError,
+    PackagedQemuExecutorStartError, PreparedCanonicalCampaignRuntime, UnixPeerCampaignPolicy,
+    UnixPeerCampaignPolicyLoadError, prepare_canonical_campaign_runtime,
+    prepare_canonical_campaign_runtime_endpoint,
 };
 
 const STATE_LOCK_FILE: &str = ".crucible-campaign-repository.lock";
@@ -828,6 +829,40 @@ impl PreparedCampaignLocalService {
             Arc::clone(&self.repository),
             planner_authority.clone(),
             executor_stream,
+            config,
+        )
+        .map_err(Into::into)
+    }
+
+    /// Prepares one named runtime with a reconnectable executor endpoint.
+    ///
+    /// The endpoint is authenticated for the initial connection and retained
+    /// by the runtime for one bounded transport retry. Immutable executor
+    /// identity is negotiated before the runtime can start.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError::RuntimeReadOnly`] in read-only
+    /// mode, [`CampaignLocalServiceError::RuntimeAuthorityUnavailable`] when
+    /// no component-authority file was configured, or
+    /// [`CampaignLocalServiceError::Runtime`] for endpoint or attachment
+    /// failure.
+    pub fn prepare_runtime_endpoint(
+        &self,
+        endpoint: ExecutorLoopbackEndpointConfig,
+        config: &CanonicalCampaignRuntimeConfig,
+    ) -> Result<PreparedCanonicalCampaignRuntime, CampaignLocalServiceError> {
+        if self.mode == CampaignLocalServiceMode::ReadOnly {
+            return Err(CampaignLocalServiceError::RuntimeReadOnly);
+        }
+        let planner_authority = self
+            .planner_authority
+            .as_ref()
+            .ok_or(CampaignLocalServiceError::RuntimeAuthorityUnavailable)?;
+        prepare_canonical_campaign_runtime_endpoint(
+            Arc::clone(&self.repository),
+            planner_authority.clone(),
+            endpoint,
             config,
         )
         .map_err(Into::into)

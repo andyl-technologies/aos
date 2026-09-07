@@ -2754,12 +2754,14 @@ pub(super) fn cli_campaign_executor_socket_requires_exact_owner_mode_and_identit
     let listener = UnixListener::bind(&socket).expect("executor listener");
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))
         .expect("owner-only executor socket");
-    let stream = connect_campaign_executor(&socket).expect("authenticated executor socket");
+    let endpoint = campaign_executor_endpoint(&socket).expect("executor endpoint config");
+    let stream = endpoint.connect().expect("authenticated executor socket");
     drop(stream);
 
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o660))
         .expect("broaden executor socket mode");
-    assert!(connect_campaign_executor(&socket).is_err());
+    let endpoint = campaign_executor_endpoint(&socket).expect("executor endpoint config");
+    assert!(endpoint.connect().is_err());
     drop(listener);
 
     let target = directory.path().join("target.sock");
@@ -2768,13 +2770,15 @@ pub(super) fn cli_campaign_executor_socket_requires_exact_owner_mode_and_identit
         .expect("owner-only target socket");
     let redirected = directory.path().join("redirected.sock");
     symlink(&target, &redirected).expect("executor socket symlink");
-    assert!(connect_campaign_executor(&redirected).is_err());
+    let endpoint = campaign_executor_endpoint(&redirected).expect("executor endpoint config");
+    assert!(endpoint.connect().is_err());
 
     let regular = directory.path().join("not-a-socket");
     fs::write(&regular, b"not a socket").expect("regular file");
     fs::set_permissions(&regular, fs::Permissions::from_mode(0o600))
         .expect("owner-only regular file");
-    assert!(connect_campaign_executor(&regular).is_err());
+    let endpoint = campaign_executor_endpoint(&regular).expect("executor endpoint config");
+    assert!(endpoint.connect().is_err());
 }
 
 #[test]

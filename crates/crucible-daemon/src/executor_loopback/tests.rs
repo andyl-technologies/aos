@@ -5,7 +5,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
+use std::net::Shutdown;
+use std::os::unix::net::UnixListener;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -20,6 +24,12 @@ use crucible_campaign::{
     GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
     ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
     ResumeAttemptExecutionResponse, SubmitAttemptDisposition,
+};
+use tempfile::TempDir;
+
+use crate::{
+    ExecutorCapacity, LocalExecutorCapabilityService, LocalExecutorSupervisor,
+    MemoryAssignmentLedger,
 };
 
 use super::*;
@@ -365,6 +375,435 @@ fn direct_and_loopback_resume_requests_are_identical() {
     server.join().expect("server thread");
 
     assert_eq!(loopback, direct);
+}
+
+#[test]
+fn reconnects_after_the_server_fairness_ceiling() {
+    let (_directory, endpoint, listener, _guard) = bound_executor_endpoint("fairness-reconnect");
+    let (description, report) = capability_fixture();
+    let server_description = description.clone();
+    let server = thread::spawn(move || {
+        let mut service = CapabilityExecutor {
+            description: server_description,
+            report,
+        };
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().expect("accept reconnecting client");
+            serve_loopback_executor_component_connection_with_limits(
+                &mut stream,
+                &mut service,
+                LoopbackExecutorTimeouts::default(),
+                3,
+            )
+            .expect("serve fairness-bounded connection");
+        }
+    });
+
+    let assignment = request(0x1d);
+    let status_request = GetAttemptExecutionRequest::new(
+        &assignment,
+        ExecutionId::from_bytes([0x75; 16]).expect("execution"),
+    )
+    .expect("status request");
+    let checkpoint_request = CheckpointAttemptExecutionRequest::new(
+        &assignment,
+        ExecutionId::from_bytes([0x75; 16]).expect("execution"),
+    )
+    .expect("checkpoint request");
+    let mut client = ExecutorClient::new(
+        LoopbackExecutorService::connect(endpoint).expect("connect executor endpoint"),
+    );
+    let negotiated = client.describe_executor().expect("initial description");
+    client
+        .get_attempt_execution(&status_request)
+        .expect("status before fairness close");
+    client
+        .checkpoint_attempt_execution(&checkpoint_request)
+        .expect("checkpoint at fairness close");
+    let submitted = client
+        .submit_attempt(&assignment)
+        .expect("submit after authenticated reconnect");
+    drop(client);
+    server.join().expect("join reconnecting executor server");
+
+    assert_eq!(negotiated, description);
+    assert!(matches!(
+        submitted.disposition(),
+        SubmitAttemptDisposition::Rejected {
+            reason: ExecutorRejection::Backpressure
+        }
+    ));
+}
+
+#[test]
+fn reconnectable_client_requires_initial_description_before_dispatch() {
+    let (_directory, endpoint, listener, _guard) = bound_executor_endpoint("initial-description");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept initial connection");
+        let deadlines =
+            LoopbackExecutorTimeouts::new(Duration::from_millis(250), Duration::from_millis(250))
+                .expect("short close deadline");
+        assert!(matches!(
+            read_frame(&mut stream, SUBMIT_ATTEMPT_REQUEST_KIND, deadlines.read()),
+            Err(LoopbackExecutorProtocolError::Io(_))
+                | Err(LoopbackExecutorProtocolError::ConnectionClosed)
+        ));
+    });
+
+    let mut service =
+        LoopbackExecutorService::connect(endpoint).expect("connect executor endpoint");
+    assert!(matches!(
+        service.submit_attempt(&request(0x20)),
+        Err(LoopbackExecutorProtocolError::InitialDescriptionRequired)
+    ));
+    drop(service);
+    server.join().expect("join initial-description server");
+}
+
+#[test]
+fn one_request_ceiling_exhausts_the_single_retry() {
+    let (_directory, endpoint, listener, _guard) = bound_executor_endpoint("retry-exhaustion");
+    let (description, report) = capability_fixture();
+    let server_description = description.clone();
+    let server = thread::spawn(move || {
+        let mut service = CapabilityExecutor {
+            description: server_description,
+            report,
+        };
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().expect("accept bounded connection");
+            serve_loopback_executor_component_connection_with_limits(
+                &mut stream,
+                &mut service,
+                LoopbackExecutorTimeouts::default(),
+                1,
+            )
+            .expect("serve one description");
+        }
+        assert_no_new_connection(&listener);
+    });
+
+    let mut service =
+        LoopbackExecutorService::connect(endpoint).expect("connect executor endpoint");
+    assert_eq!(
+        service.describe_executor().expect("initial description"),
+        description
+    );
+    assert!(matches!(
+        service.submit_attempt(&request(0x21)),
+        Err(LoopbackExecutorProtocolError::Io(_))
+            | Err(LoopbackExecutorProtocolError::ConnectionClosed)
+    ));
+    drop(service);
+    server.join().expect("join retry-exhaustion server");
+}
+
+#[test]
+fn response_loss_replays_exact_bytes_without_duplicate_admission() {
+    let (_directory, endpoint, listener, _guard) = bound_executor_endpoint("response-loss");
+    let epoch = DaemonEpoch::from_bytes([0x31; 16]).expect("daemon epoch");
+    let (basis, _) = capability_fixture();
+    let description =
+        ExecutorDescription::new(epoch, basis.capabilities().clone()).expect("description");
+    let validations = Arc::new(AtomicUsize::new(0));
+    let validation_counter = Arc::clone(&validations);
+    let validator = move |_request: &SubmitAttemptRequest| {
+        validation_counter.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    };
+    let supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        validator,
+        epoch,
+        ExecutorCapacity::new(4, 4, 4096, 8192, 64).expect("executor capacity"),
+    );
+    let mut local = LocalExecutorCapabilityService::new(supervisor, description.clone())
+        .expect("capability service");
+    let server = thread::spawn(move || {
+        let (mut first, _) = listener.accept().expect("accept initial connection");
+        serve_loopback_executor_component_once(
+            &mut first,
+            &mut local,
+            LoopbackExecutorTimeouts::default(),
+        )
+        .expect("serve initial description");
+        let first_request = read_frame(
+            &mut first,
+            SUBMIT_ATTEMPT_REQUEST_KIND,
+            DEFAULT_LOOPBACK_TIMEOUT,
+        )
+        .expect("read first submit");
+        let first_typed = SubmitAttemptRequest::from_canonical_bytes(&first_request)
+            .expect("decode first submit");
+        let first_response = local
+            .submit_attempt(&first_typed)
+            .expect("admit first submit");
+        first.shutdown(Shutdown::Both).expect("drop first response");
+
+        let (mut second, _) = listener.accept().expect("accept retry connection");
+        serve_loopback_executor_component_once(
+            &mut second,
+            &mut local,
+            LoopbackExecutorTimeouts::default(),
+        )
+        .expect("serve reconnect description");
+        let second_request = read_frame(
+            &mut second,
+            SUBMIT_ATTEMPT_REQUEST_KIND,
+            DEFAULT_LOOPBACK_TIMEOUT,
+        )
+        .expect("read retried submit");
+        let second_typed = SubmitAttemptRequest::from_canonical_bytes(&second_request)
+            .expect("decode retried submit");
+        let second_response = local
+            .submit_attempt(&second_typed)
+            .expect("replay admitted submit");
+        write_frame(
+            &mut second,
+            SUBMIT_ATTEMPT_RESPONSE_KIND,
+            &second_response.canonical_bytes(),
+            DEFAULT_LOOPBACK_TIMEOUT,
+        )
+        .expect("write replay response");
+        (
+            first_request,
+            second_request,
+            first_response,
+            second_response,
+        )
+    });
+
+    let request = request(0x1e);
+    let mut client = ExecutorClient::new(
+        LoopbackExecutorService::connect(endpoint).expect("connect executor endpoint"),
+    );
+    assert_eq!(
+        client.describe_executor().expect("initial description"),
+        description
+    );
+    let response = client
+        .submit_attempt(&request)
+        .expect("recover response-lost submit");
+    drop(client);
+    let (first_bytes, second_bytes, first_response, second_response) =
+        server.join().expect("join response-loss server");
+
+    assert_eq!(first_bytes, request.canonical_bytes());
+    assert_eq!(second_bytes, first_bytes);
+    assert_eq!(second_response, first_response);
+    assert_eq!(response, first_response);
+    assert_eq!(validations.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn reconnect_refuses_a_changed_daemon_epoch_before_resend() {
+    let (_directory, endpoint, listener, _guard) = bound_executor_endpoint("changed-epoch");
+    let (initial, initial_report) = capability_fixture();
+    let changed_epoch = DaemonEpoch::from_bytes([0x72; 16]).expect("changed epoch");
+    let changed = ExecutorDescription::new(changed_epoch, initial.capabilities().clone())
+        .expect("changed description");
+    let changed_report = ExecutorCapacityReport::new(
+        changed_epoch,
+        changed.capabilities().digest(),
+        11,
+        2,
+        2,
+        2048,
+        4096,
+        BTreeSet::new(),
+    )
+    .expect("changed capacity");
+    let server_initial = initial.clone();
+    let server = thread::spawn(move || {
+        let (mut first, _) = listener.accept().expect("accept initial connection");
+        let mut initial_service = CapabilityExecutor {
+            description: server_initial,
+            report: initial_report,
+        };
+        serve_loopback_executor_component_once(
+            &mut first,
+            &mut initial_service,
+            LoopbackExecutorTimeouts::default(),
+        )
+        .expect("serve initial description");
+        first
+            .shutdown(Shutdown::Both)
+            .expect("close old incarnation");
+
+        let (mut second, _) = listener.accept().expect("accept reconnect");
+        let mut changed_service = CapabilityExecutor {
+            description: changed,
+            report: changed_report,
+        };
+        serve_loopback_executor_component_once(
+            &mut second,
+            &mut changed_service,
+            LoopbackExecutorTimeouts::default(),
+        )
+        .expect("serve changed description");
+        let deadlines =
+            LoopbackExecutorTimeouts::new(Duration::from_millis(250), Duration::from_millis(250))
+                .expect("short close deadline");
+        assert!(matches!(
+            read_frame(&mut second, SUBMIT_ATTEMPT_REQUEST_KIND, deadlines.read()),
+            Err(LoopbackExecutorProtocolError::Io(_))
+                | Err(LoopbackExecutorProtocolError::ConnectionClosed)
+        ));
+    });
+
+    let mut service =
+        LoopbackExecutorService::connect(endpoint).expect("connect executor endpoint");
+    assert_eq!(
+        service.describe_executor().expect("initial description"),
+        initial
+    );
+    let error = service
+        .submit_attempt(&request(0x1f))
+        .expect_err("changed daemon epoch must refuse resend");
+    assert!(matches!(
+        error,
+        LoopbackExecutorProtocolError::ExecutorIncarnationChanged {
+            expected,
+            observed,
+        } if expected == initial.daemon_epoch() && observed == changed_epoch
+    ));
+    server.join().expect("join changed-incarnation server");
+}
+
+#[test]
+fn reconnect_refuses_changed_capabilities_before_resend() {
+    let (_directory, endpoint, listener, _guard) = bound_executor_endpoint("changed-capabilities");
+    let (initial, initial_report) = capability_fixture();
+    let initial_capabilities = initial.capabilities();
+    let changed_capabilities = ExecutorCapabilitySet::new(
+        initial_capabilities.compatibility().clone(),
+        initial_capabilities.host_architecture(),
+        BTreeSet::from([
+            String::from("deterministic-tcg-v1"),
+            String::from("deterministic-tcg-v2"),
+        ]),
+        initial_capabilities.materialization().clone(),
+        initial_capabilities.maximum_slots(),
+        initial_capabilities.resource_ceiling(),
+        initial_capabilities.store_namespaces().clone(),
+    )
+    .expect("changed capabilities");
+    let changed = ExecutorDescription::new(initial.daemon_epoch(), changed_capabilities)
+        .expect("changed description");
+    let changed_digest = changed.capabilities().digest();
+    let changed_report = ExecutorCapacityReport::new(
+        changed.daemon_epoch(),
+        changed_digest,
+        11,
+        2,
+        2,
+        2048,
+        4096,
+        BTreeSet::new(),
+    )
+    .expect("changed capacity");
+    let server_initial = initial.clone();
+    let server = thread::spawn(move || {
+        let (mut first, _) = listener.accept().expect("accept initial connection");
+        let mut initial_service = CapabilityExecutor {
+            description: server_initial,
+            report: initial_report,
+        };
+        serve_loopback_executor_component_once(
+            &mut first,
+            &mut initial_service,
+            LoopbackExecutorTimeouts::default(),
+        )
+        .expect("serve initial description");
+        first
+            .shutdown(Shutdown::Both)
+            .expect("close old capabilities");
+
+        let (mut second, _) = listener.accept().expect("accept reconnect");
+        let mut changed_service = CapabilityExecutor {
+            description: changed,
+            report: changed_report,
+        };
+        serve_loopback_executor_component_once(
+            &mut second,
+            &mut changed_service,
+            LoopbackExecutorTimeouts::default(),
+        )
+        .expect("serve changed description");
+        let deadlines =
+            LoopbackExecutorTimeouts::new(Duration::from_millis(250), Duration::from_millis(250))
+                .expect("short close deadline");
+        assert!(matches!(
+            read_frame(&mut second, SUBMIT_ATTEMPT_REQUEST_KIND, deadlines.read()),
+            Err(LoopbackExecutorProtocolError::Io(_))
+                | Err(LoopbackExecutorProtocolError::ConnectionClosed)
+        ));
+    });
+
+    let mut service =
+        LoopbackExecutorService::connect(endpoint).expect("connect executor endpoint");
+    assert_eq!(
+        service.describe_executor().expect("initial description"),
+        initial
+    );
+    let error = service
+        .submit_attempt(&request(0x22))
+        .expect_err("changed capabilities must refuse resend");
+    assert!(matches!(
+        error,
+        LoopbackExecutorProtocolError::ExecutorCapabilitiesChanged {
+            expected,
+            observed,
+        } if expected == initial.capabilities().digest() && observed == changed_digest
+    ));
+    server.join().expect("join changed-capabilities server");
+}
+
+#[test]
+fn invalid_typed_response_does_not_reconnect() {
+    let (_directory, endpoint, listener, _guard) = bound_executor_endpoint("invalid-response");
+    let (description, report) = capability_fixture();
+    let server_description = description.clone();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept initial connection");
+        let mut service = CapabilityExecutor {
+            description: server_description,
+            report,
+        };
+        serve_loopback_executor_component_once(
+            &mut stream,
+            &mut service,
+            LoopbackExecutorTimeouts::default(),
+        )
+        .expect("serve initial description");
+        read_frame(
+            &mut stream,
+            SUBMIT_ATTEMPT_REQUEST_KIND,
+            DEFAULT_LOOPBACK_TIMEOUT,
+        )
+        .expect("read submit request");
+        write_frame(
+            &mut stream,
+            SUBMIT_ATTEMPT_RESPONSE_KIND,
+            &[0],
+            DEFAULT_LOOPBACK_TIMEOUT,
+        )
+        .expect("write invalid typed response");
+        assert_no_new_connection(&listener);
+    });
+
+    let mut service =
+        LoopbackExecutorService::connect(endpoint).expect("connect executor endpoint");
+    assert_eq!(
+        service.describe_executor().expect("initial description"),
+        description
+    );
+    assert!(matches!(
+        service.submit_attempt(&request(0x24)),
+        Err(LoopbackExecutorProtocolError::Codec(_))
+    ));
+    drop(service);
+    server.join().expect("join invalid-response server");
 }
 
 #[test]
@@ -816,6 +1255,44 @@ fn capability_fixture() -> (ExecutorDescription, ExecutorCapacityReport) {
     )
     .expect("capacity");
     (description, report)
+}
+
+fn bound_executor_endpoint(
+    socket_name: &str,
+) -> (
+    TempDir,
+    ExecutorLoopbackEndpointConfig,
+    UnixListener,
+    crate::campaign_endpoint::LocalEndpointGuard,
+) {
+    let directory = tempfile::tempdir().expect("executor endpoint directory");
+    let endpoint = ExecutorLoopbackEndpointConfig::new(
+        directory.path().join(socket_name),
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+        0o600,
+    )
+    .expect("executor endpoint config");
+    let (listener, guard) = endpoint
+        .bind()
+        .expect("bind executor endpoint")
+        .into_parts();
+    (directory, endpoint, listener, guard)
+}
+
+fn assert_no_new_connection(listener: &UnixListener) {
+    listener
+        .set_nonblocking(true)
+        .expect("make listener nonblocking");
+    for _ in 0..50 {
+        match listener.accept() {
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Ok(_) => panic!("client opened an unexpected additional connection"),
+            Err(error) => panic!("unexpected listener failure: {error}"),
+        }
+    }
 }
 
 fn typed_id(tag: &str, kind: &str, byte: u8) -> String {
