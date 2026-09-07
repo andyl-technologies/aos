@@ -340,6 +340,42 @@ async fn execute(args: &ReleaseQualificationExecuteArgs) -> Result<()> {
     fs::write(directory.join("request.json"), &input)?;
     fs::write(directory.join("scenario-registry.json"), &registry_bytes)?;
     let attempt = async {
+        if let Some(retained) = &request.retained_predecessor {
+            let captured = capture::bundle(Path::new(&retained.bundle_path))?;
+            let trusted_keys = retained
+                .trusted_keys
+                .iter()
+                .map(|key| {
+                    aos_release::signing::TrustedEd25519Key::from_encoded(
+                        &key.key_id,
+                        &hex::decode(&key.public_key_hex)?,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let summary = aos_release::verify::verify_release(
+                &captured.plan_bytes,
+                &captured.manifest_bytes,
+                &captured.files,
+                &trusted_keys,
+            )?;
+            let expected = case
+                .predecessor
+                .as_ref()
+                .context("retained predecessor lacks an update case")?;
+            let manifest: aos_release::manifest::ManifestEnvelopeV1 =
+                canonical::from_slice(&captured.manifest_bytes, "retained predecessor manifest")?;
+            if manifest.payload.registry != expected.registry
+                || summary.release_id != expected.release_id
+                || summary.manifest_digest != expected.manifest_digest
+            {
+                bail!("retained predecessor verification differs from the execution case");
+            }
+            fs::write(
+                directory.join("predecessor-verification.json"),
+                canonical::to_vec(&summary)?,
+            )?;
+        }
+
         let client = reqwest::Client::builder()
             .https_only(true)
             .no_proxy()
@@ -379,6 +415,31 @@ async fn execute(args: &ReleaseQualificationExecuteArgs) -> Result<()> {
             objects.insert(object.artifact_id.clone(), path);
         }
         fs::write(directory.join("objects.json"), canonical::to_vec(&objects)?)?;
+
+        let predecessor_directory = directory.join("predecessor");
+        let mut predecessor_objects = BTreeMap::new();
+        if request.retained_predecessor.is_some() {
+            fs::create_dir(&predecessor_directory)?;
+        }
+        if let Some(retained) = &request.retained_predecessor {
+            for object in &retained.objects {
+                let filename = Sha256Digest::of_bytes(object.artifact_id.as_bytes()).hex();
+                let path = predecessor_directory.join(&filename);
+                let captured =
+                    capture::copy_payload_file(Path::new(&object.source_path), &path, &filename)?;
+                if captured.size_bytes != object.size_bytes || captured.sha256 != object.sha256 {
+                    bail!(
+                        "retained predecessor differs from the exact verified object {}",
+                        object.artifact_id
+                    );
+                }
+                predecessor_objects.insert(object.artifact_id.clone(), path);
+            }
+        }
+        fs::write(
+            directory.join("predecessor-objects.json"),
+            canonical::to_vec(&predecessor_objects)?,
+        )?;
         let response = qualification_run::invoke_scenario(
             Path::new(executable),
             Duration::from_secs(args.timeout_seconds),
@@ -516,6 +577,7 @@ mod tests {
                 size_bytes: 42,
                 sha256: Sha256Digest::of_bytes(b"nar"),
             }],
+            retained_predecessor: None,
             nonce: "a".repeat(64),
         })
     }
@@ -571,6 +633,7 @@ mod tests {
             platform: Platform::X86_64Linux,
             subjects: vec![],
             objects: vec![],
+            retained_predecessor: None,
             nonce: "a".repeat(64),
         };
         assert!(select(&registry, &request).is_ok());
@@ -625,6 +688,56 @@ mod tests {
             response.evidence.nonce.as_deref(),
             Some(request.nonce.as_str())
         );
+        Ok(())
+    }
+
+    #[test]
+    fn update_request_requires_the_verified_predecessor_graph() -> Result<()> {
+        let mut request = package_request()?;
+        request.schema_version = aos_release::evidence::QUALIFICATION_EXECUTOR_REQUEST_V3.into();
+        request
+            .qualification_case
+            .as_mut()
+            .context("fixture lacks a qualification case")?
+            .predecessor = Some(
+            aos_release::qualification_evidence::QualificationPredecessor {
+                registry: "andyl/testing".into(),
+                release_id: "qualification-snapshot-2026.9.0".into(),
+                manifest_digest: Sha256Digest::of_bytes(b"predecessor-manifest"),
+            },
+        );
+        assert!(request.validate().is_err());
+
+        request.retained_predecessor = Some(aos_release::evidence::QualificationRetainedBundleV1 {
+            bundle_path: "/srv/aos/predecessor".into(),
+            objects: vec![
+                aos_release::evidence::QualificationRetainedObjectV1 {
+                    artifact_id: "control/release-manifest-envelope".into(),
+                    source_path: "/srv/aos/predecessor/release-manifest.json".into(),
+                    size_bytes: 40,
+                    sha256: Sha256Digest::of_bytes(b"manifest-envelope"),
+                },
+                aos_release::evidence::QualificationRetainedObjectV1 {
+                    artifact_id: "package/example/x86_64-linux".into(),
+                    source_path: "/srv/aos/predecessor/example.nar.zst".into(),
+                    size_bytes: 42,
+                    sha256: Sha256Digest::of_bytes(b"predecessor-nar"),
+                },
+            ],
+            trusted_keys: vec![aos_release::evidence::QualificationTrustedKeyV1 {
+                key_id: "release-2026".into(),
+                public_key_hex: "11".repeat(32),
+            }],
+        });
+        assert!(request.validate().is_ok());
+
+        request
+            .retained_predecessor
+            .as_mut()
+            .context("fixture lacks a retained predecessor")?
+            .objects[1]
+            .source_path = "relative/example.nar.zst".into();
+        assert!(request.validate().is_err());
         Ok(())
     }
 

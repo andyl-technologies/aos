@@ -750,7 +750,11 @@ Each adapter reads one canonical request from standard input and writes one
 canonical `aos.release.qualification-executor-response/v1` object to standard
 output. Successful adapters must not write diagnostics. They download every
 object they exercise from the anonymous URLs in the request and verify the
-declared length and SHA-256 before testing it.
+declared length and SHA-256 before testing it. Version 3 update requests also
+carry a separate inventory of exact objects from the locally retained,
+offline-verified predecessor bundle. The executor recaptures those files into
+its private attempt directory and checks their lengths and hashes before the
+image scenario can use them.
 
 Run `aos release qualification cases` first and retain its
 `environment_profile_digests`. Review the compatibility scope and sources for
@@ -766,6 +770,7 @@ closure.
 aos release qualify-run \
   --bundle release-bundle \
   --staging-receipt release-staging/staging-receipt.json \
+  --predecessor-bundle /srv/aos-release/qualification-snapshot/bundle \
   --trusted-key release-2026=/media/keys/release-2026.pub \
   --hub-receipt-key staging-hub-2026=/media/keys/staging-hub-2026.pub \
   --executor x86_64-linux=/run/aos-release/executors/x86_64-linux \
@@ -788,8 +793,13 @@ aos release qualify-run \
 
 Both nonce values are single-use operator inputs. The plan must name a distinct
 `qualification` signer role with exactly the public key supplied above. The
-collection command retains each machine-readable executor report and the canonical
-aggregate report. Review those exact bytes, then repeat the command with
+predecessor bundle path must be absolute. `qualify-run` verifies its complete
+signed closure against `--trusted-key` and the plan's exact predecessor
+registry, release ID, and manifest digest before starting any executor. Supply
+it while collecting observations; omit it when admitting a reviewed report
+with `--report-input`. The collection command retains each machine-readable
+executor report and the canonical aggregate report. Review those exact bytes,
+then repeat the command with
 `--report-input qualification-prepared/qualification-report.json`,
 `--review-receipt approvals/review.json`, and `--output qualification`, omitting
 `--prepare-only`. Repeat review receipts to satisfy the planned threshold.

@@ -767,6 +767,10 @@ pub struct ReleaseQualifyRunArgs {
     #[arg(long, alias = "publication-receipt")]
     pub staging_receipt: PathBuf,
 
+    /// Verified prior release bundle used by image update scenarios
+    #[arg(long, conflicts_with = "report_input")]
+    pub predecessor_bundle: Option<PathBuf>,
+
     /// Trusted manifest key as KEY_ID=PATH; repeat to satisfy thresholds
     #[arg(long = "trusted-key", value_name = "KEY_ID=PATH", required = true)]
     pub trusted_keys: Vec<String>,
