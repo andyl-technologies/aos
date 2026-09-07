@@ -26,6 +26,8 @@ use crate::types::{validate_package_name, validate_registry_name};
 
 /// Schema identifier for an atomic registry authoring request.
 pub const TRANSACTION_SCHEMA: &str = "aos.registry-release-transaction/v1";
+/// Schema identifier for a registry authoring intent before surface review.
+pub const INTENT_SCHEMA: &str = "aos.registry-release-intent/v1";
 /// Schema identifier for a successfully prepared registry result.
 pub const PREPARED_SCHEMA: &str = "aos.prepared-registry-release/v1";
 const DIGEST_DOMAIN: &[u8] = b"aos.registry-release-surface/v1\0";
@@ -149,6 +151,32 @@ pub struct RegistrySurfaceDigests {
     pub store_graph: String,
     /// Digest of registry, trust-roster, Secure Boot, and TUF policy files.
     pub policy: String,
+}
+
+/// Complete registry authoring intent before the resulting surfaces exist.
+///
+/// The release coordinator derives this value from a frozen release plan and
+/// its validated build report. Preparing it authors provenance exactly once,
+/// retains the resulting tree, and returns the reviewable transaction whose
+/// expected digests bind that tree.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryReleaseIntent {
+    /// Exact intent schema.
+    pub schema: String,
+    /// Canonical registry identity.
+    pub registry: String,
+    /// Exact commit from which the isolated clone must start.
+    pub base_commit: String,
+    /// Release version reserved for the later signed tag.
+    pub release: String,
+    /// Canonical SHA-256 identity of the enclosing release plan.
+    pub plan_digest: String,
+    /// Every catalog entry to materialize in deterministic order.
+    pub entries: Vec<RegistryReleaseEntry>,
+    /// The release's own support tables, when selected by its contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support: Option<super::support::SupportSectionWrite>,
 }
 
 /// Complete all-or-nothing authoring request.
@@ -336,6 +364,80 @@ pub fn require_active_signing_key(registry: &Path, key_id: &str, trusted_key: &s
     crate::registry_ops::require_active_registry_key(registry, key_id, trusted_key)
 }
 
+impl RegistryReleaseIntent {
+    /// Authors the intent and returns the exact transaction to review.
+    ///
+    /// The output tree is retained at `output` with its branch still at the
+    /// frozen base commit. The returned transaction contains the surface
+    /// digests calculated from those exact authored bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid intent, dirty or mismatched source
+    /// clone, existing release tag, pre-existing output, author failure, ref
+    /// movement, invalid catalog or store data, or an incomplete entry.
+    pub async fn prepare(
+        &self,
+        source_registry: &Path,
+        output: &Path,
+        author: &mut dyn RegistryEntryAuthor,
+    ) -> Result<(RegistryReleaseTransaction, PreparedRegistryRelease)> {
+        self.prepare_with_container_release(source_registry, output, author, None)
+            .await
+    }
+
+    /// Authors the intent with an exact externally validated container sidecar.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors from [`Self::prepare`], or an error when the
+    /// container surface cannot be installed as a regular file.
+    pub async fn prepare_with_container_release(
+        &self,
+        source_registry: &Path,
+        output: &Path,
+        author: &mut dyn RegistryEntryAuthor,
+        container_release: Option<&[u8]>,
+    ) -> Result<(RegistryReleaseTransaction, PreparedRegistryRelease)> {
+        self.validate()?;
+        let prepared = prepare_registry(
+            self,
+            source_registry,
+            output,
+            author,
+            container_release,
+            None,
+        )
+        .await?;
+        let transaction = RegistryReleaseTransaction {
+            schema: TRANSACTION_SCHEMA.to_string(),
+            registry: self.registry.clone(),
+            base_commit: self.base_commit.clone(),
+            release: self.release.clone(),
+            plan_digest: self.plan_digest.clone(),
+            entries: self.entries.clone(),
+            expected: prepared.surfaces.clone(),
+            support: self.support.clone(),
+        };
+        transaction.validate()?;
+
+        Ok((transaction, prepared))
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.schema != INTENT_SCHEMA {
+            bail!("unsupported registry release intent schema");
+        }
+        validate_release_identity_and_entries(
+            &self.registry,
+            &self.base_commit,
+            &self.release,
+            &self.plan_digest,
+            &self.entries,
+        )
+    }
+}
+
 impl RegistryReleaseTransaction {
     /// Prepares the complete transaction in a new isolated registry clone.
     ///
@@ -379,94 +481,43 @@ impl RegistryReleaseTransaction {
         container_release: Option<&[u8]>,
     ) -> Result<PreparedRegistryRelease> {
         self.validate()?;
-        if output.exists() {
-            bail!(
-                "isolated registry output already exists: {}",
-                output.display()
-            );
-        }
-        let output_parent = output
-            .parent()
-            .context("isolated registry output has no parent")?;
-        fs::create_dir_all(output_parent)
-            .with_context(|| format!("creating {}", output_parent.display()))?;
-
-        let _lock = AuthoringLock::acquire(source_registry)?;
-        validate_source(source_registry, &self.base_commit, &self.release)?;
-
-        let temporary = tempfile::Builder::new()
-            .prefix(".aos-registry-release-")
-            .tempdir_in(output_parent)
-            .with_context(|| format!("creating isolated clone beside {}", output.display()))?;
-        let isolated = temporary.path().join("registry");
-        let source = source_registry
-            .to_str()
-            .context("source registry path is not valid UTF-8")?;
-        Repository::clone(source, &isolated).with_context(|| {
-            format!(
-                "cloning exact registry base from {}",
-                source_registry.display()
-            )
-        })?;
-        require_head(&isolated, &self.base_commit)?;
-
-        for entry in &self.entries {
-            author
-                .author_entry(&isolated, entry)
-                .await
-                .with_context(|| format!("authoring release entry '{}'", entry.id))?;
-            require_head(&isolated, &self.base_commit)
-                .context("entry author moved the isolated registry ref")?;
-        }
-
-        set_container_release(&isolated, container_release)?;
-        require_head(&isolated, &self.base_commit)
-            .context("container sidecar selection moved the isolated registry ref")?;
-        // Support is section-owned: the release writes its own train's table
-        // (and the default only from the newest train) and nothing else, so
-        // several source lines can publish into one registry without one
-        // rewriting another's promise.
-        if let Some(support) = &self.support {
-            super::support::apply_support_section(&isolated, support)
-                .context("applying the release's support policy tables")?;
-            require_head(&isolated, &self.base_commit)
-                .context("support policy write moved the isolated registry ref")?;
-        }
-
-        validate_materialized_entries(&isolated, &self.entries)?;
-        StoreMap::load(&isolated).context("validating prepared registry store graph")?;
-        require_head(&isolated, &self.base_commit)?;
-        require_worktree_changes(&isolated)?;
-
-        let surfaces = registry_surface_digests(&isolated)?;
-        if surfaces != self.expected {
-            bail!(
-                "prepared registry surface digests do not match the release transaction: expected {:?}, found {:?}",
-                self.expected,
-                surfaces
-            );
-        }
-
-        rustix::fs::renameat_with(
-            rustix::fs::CWD,
-            &isolated,
-            rustix::fs::CWD,
+        let intent = self.intent();
+        prepare_registry(
+            &intent,
+            source_registry,
             output,
-            rustix::fs::RenameFlags::NOREPLACE,
+            author,
+            container_release,
+            Some(&self.expected),
         )
-        .with_context(|| {
-            format!(
-                "publishing prepared isolated registry {} to {} without replacement",
-                isolated.display(),
-                output.display()
-            )
-        })?;
-        File::open(output_parent)?.sync_all().with_context(|| {
-            format!(
-                "syncing prepared registry parent {}",
-                output_parent.display()
-            )
-        })?;
+        .await
+    }
+
+    /// Verifies and binds an already authored tree to this reviewed transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid transaction, moved base ref, existing
+    /// release tag, missing entry, invalid store graph, clean tree, or surface
+    /// bytes whose digests differ from the reviewed transaction.
+    pub fn verify_prepared(&self, directory: &Path) -> Result<PreparedRegistryRelease> {
+        self.validate()?;
+        require_head(directory, &self.base_commit)?;
+        let repository = Repository::open(directory)
+            .with_context(|| format!("opening prepared registry {}", directory.display()))?;
+        if repository
+            .find_reference(&format!("refs/tags/{}", self.release))
+            .is_ok()
+        {
+            bail!("prepared registry release tag already exists");
+        }
+        validate_materialized_entries(directory, &self.entries)?;
+        StoreMap::load(directory).context("validating prepared registry store graph")?;
+        require_worktree_changes(directory)?;
+        let surfaces = registry_surface_digests(directory)?;
+        if surfaces != self.expected {
+            bail!("prepared registry surfaces differ from the reviewed transaction");
+        }
 
         Ok(PreparedRegistryRelease {
             schema: PREPARED_SCHEMA.to_string(),
@@ -476,62 +527,192 @@ impl RegistryReleaseTransaction {
             plan_digest: self.plan_digest.clone(),
             entry_count: self.entries.len(),
             surfaces,
-            directory: output.to_path_buf(),
+            directory: directory.to_path_buf(),
         })
+    }
+
+    fn intent(&self) -> RegistryReleaseIntent {
+        RegistryReleaseIntent {
+            schema: INTENT_SCHEMA.to_string(),
+            registry: self.registry.clone(),
+            base_commit: self.base_commit.clone(),
+            release: self.release.clone(),
+            plan_digest: self.plan_digest.clone(),
+            entries: self.entries.clone(),
+            support: self.support.clone(),
+        }
     }
 
     fn validate(&self) -> Result<()> {
         if self.schema != TRANSACTION_SCHEMA {
             bail!("unsupported registry release transaction schema");
         }
-        validate_registry_identity(&self.registry)?;
-        require_git_oid(&self.base_commit)?;
-        semver::Version::parse(&self.release).context("invalid registry release version")?;
-        require_sha256(&self.plan_digest, "plan digest")?;
+        self.intent().validate()?;
         require_sha256(&self.expected.catalog, "catalog digest")?;
         require_sha256(&self.expected.store_graph, "store-graph digest")?;
         require_sha256(&self.expected.policy, "policy digest")?;
-        if self.entries.is_empty() {
-            bail!("registry release transaction has no entries");
-        }
-
-        let mut ids = BTreeSet::new();
-        let mut coordinates = BTreeSet::new();
-        let mut previous_id: Option<&str> = None;
-        for entry in &self.entries {
-            if entry.id.is_empty() || !entry.id.bytes().all(is_identifier_byte) {
-                bail!("invalid registry release entry id '{}'", entry.id);
-            }
-            validate_package_name(&entry.name)?;
-            semver::Version::parse(&entry.version)
-                .with_context(|| format!("invalid version for entry '{}'", entry.id))?;
-            if !matches!(
-                entry.platform.as_str(),
-                "x86_64-linux" | "aarch64-linux" | "x86_64-darwin" | "aarch64-darwin"
-            ) {
-                bail!("entry '{}' has unsupported platform", entry.id);
-            }
-            if !entry.store_path.starts_with("/nix/store/") {
-                bail!("entry '{}' has invalid store path", entry.id);
-            }
-            if !ids.insert(&entry.id) {
-                bail!("duplicate registry release entry id '{}'", entry.id);
-            }
-            if previous_id.is_some_and(|previous| previous >= entry.id.as_str()) {
-                bail!("registry release entries must be strictly ordered by id");
-            }
-            previous_id = Some(&entry.id);
-            if !coordinates.insert((&entry.name, &entry.version, &entry.platform)) {
-                bail!(
-                    "duplicate registry release coordinate {}/{}/{}",
-                    entry.name,
-                    entry.version,
-                    entry.platform
-                );
-            }
-        }
         Ok(())
     }
+}
+
+async fn prepare_registry(
+    intent: &RegistryReleaseIntent,
+    source_registry: &Path,
+    output: &Path,
+    author: &mut dyn RegistryEntryAuthor,
+    container_release: Option<&[u8]>,
+    expected: Option<&RegistrySurfaceDigests>,
+) -> Result<PreparedRegistryRelease> {
+    if output.exists() {
+        bail!(
+            "isolated registry output already exists: {}",
+            output.display()
+        );
+    }
+    let output_parent = output
+        .parent()
+        .context("isolated registry output has no parent")?;
+    fs::create_dir_all(output_parent)
+        .with_context(|| format!("creating {}", output_parent.display()))?;
+
+    let _lock = AuthoringLock::acquire(source_registry)?;
+    validate_source(source_registry, &intent.base_commit, &intent.release)?;
+
+    let temporary = tempfile::Builder::new()
+        .prefix(".aos-registry-release-")
+        .tempdir_in(output_parent)
+        .with_context(|| format!("creating isolated clone beside {}", output.display()))?;
+    let isolated = temporary.path().join("registry");
+    let source = source_registry
+        .to_str()
+        .context("source registry path is not valid UTF-8")?;
+    Repository::clone(source, &isolated).with_context(|| {
+        format!(
+            "cloning exact registry base from {}",
+            source_registry.display()
+        )
+    })?;
+    require_head(&isolated, &intent.base_commit)?;
+
+    for entry in &intent.entries {
+        author
+            .author_entry(&isolated, entry)
+            .await
+            .with_context(|| format!("authoring release entry '{}'", entry.id))?;
+        require_head(&isolated, &intent.base_commit)
+            .context("entry author moved the isolated registry ref")?;
+    }
+
+    set_container_release(&isolated, container_release)?;
+    require_head(&isolated, &intent.base_commit)
+        .context("container sidecar selection moved the isolated registry ref")?;
+    // Support is section-owned: the release writes its own train's table and,
+    // only from the newest train, the default without rewriting another line.
+    if let Some(support) = &intent.support {
+        super::support::apply_support_section(&isolated, support)
+            .context("applying the release's support policy tables")?;
+        require_head(&isolated, &intent.base_commit)
+            .context("support policy write moved the isolated registry ref")?;
+    }
+
+    validate_materialized_entries(&isolated, &intent.entries)?;
+    StoreMap::load(&isolated).context("validating prepared registry store graph")?;
+    require_head(&isolated, &intent.base_commit)?;
+    require_worktree_changes(&isolated)?;
+
+    let surfaces = registry_surface_digests(&isolated)?;
+    if expected.is_some_and(|expected| expected != &surfaces) {
+        bail!(
+            "prepared registry surface digests do not match the release transaction: expected {:?}, found {:?}",
+            expected,
+            surfaces
+        );
+    }
+
+    rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        &isolated,
+        rustix::fs::CWD,
+        output,
+        rustix::fs::RenameFlags::NOREPLACE,
+    )
+    .with_context(|| {
+        format!(
+            "publishing prepared isolated registry {} to {} without replacement",
+            isolated.display(),
+            output.display()
+        )
+    })?;
+    File::open(output_parent)?.sync_all().with_context(|| {
+        format!(
+            "syncing prepared registry parent {}",
+            output_parent.display()
+        )
+    })?;
+
+    Ok(PreparedRegistryRelease {
+        schema: PREPARED_SCHEMA.to_string(),
+        registry: intent.registry.clone(),
+        base_commit: intent.base_commit.clone(),
+        release: intent.release.clone(),
+        plan_digest: intent.plan_digest.clone(),
+        entry_count: intent.entries.len(),
+        surfaces,
+        directory: output.to_path_buf(),
+    })
+}
+
+fn validate_release_identity_and_entries(
+    registry: &str,
+    base_commit: &str,
+    release: &str,
+    plan_digest: &str,
+    entries: &[RegistryReleaseEntry],
+) -> Result<()> {
+    validate_registry_identity(registry)?;
+    require_git_oid(base_commit)?;
+    semver::Version::parse(release).context("invalid registry release version")?;
+    require_sha256(plan_digest, "plan digest")?;
+    if entries.is_empty() {
+        bail!("registry release intent has no entries");
+    }
+
+    let mut ids = BTreeSet::new();
+    let mut coordinates = BTreeSet::new();
+    let mut previous_id: Option<&str> = None;
+    for entry in entries {
+        if entry.id.is_empty() || !entry.id.bytes().all(is_identifier_byte) {
+            bail!("invalid registry release entry id '{}'", entry.id);
+        }
+        validate_package_name(&entry.name)?;
+        semver::Version::parse(&entry.version)
+            .with_context(|| format!("invalid version for entry '{}'", entry.id))?;
+        if !matches!(
+            entry.platform.as_str(),
+            "x86_64-linux" | "aarch64-linux" | "x86_64-darwin" | "aarch64-darwin"
+        ) {
+            bail!("entry '{}' has unsupported platform", entry.id);
+        }
+        if !entry.store_path.starts_with("/nix/store/") {
+            bail!("entry '{}' has invalid store path", entry.id);
+        }
+        if !ids.insert(&entry.id) {
+            bail!("duplicate registry release entry id '{}'", entry.id);
+        }
+        if previous_id.is_some_and(|previous| previous >= entry.id.as_str()) {
+            bail!("registry release entries must be strictly ordered by id");
+        }
+        previous_id = Some(&entry.id);
+        if !coordinates.insert((&entry.name, &entry.version, &entry.platform)) {
+            bail!(
+                "duplicate registry release coordinate {}/{}/{}",
+                entry.name,
+                entry.version,
+                entry.platform
+            );
+        }
+    }
+    Ok(())
 }
 
 impl PreparedRegistryRelease {
@@ -1374,6 +1555,32 @@ mod tests {
         require_worktree_changes(&report.directory)?;
         validate_materialized_entries(&report.directory, &transaction.entries)?;
         require_clean(&Repository::open(&source)?)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn intent_emits_transaction_for_the_exact_retained_tree() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let source = temporary.path().join("source");
+        fs::create_dir(&source)?;
+        let base = initialize_registry(&source)?;
+        let intent = transaction(base.clone()).intent();
+        let output = temporary.path().join("prepared");
+
+        let (review, prepared) = intent
+            .prepare(&source, &output, &mut WritesPackageEntry)
+            .await?;
+
+        assert_eq!(review.expected, prepared.surfaces);
+        assert_eq!(review.entries, intent.entries);
+        assert_eq!(review.base_commit, base);
+        assert_eq!(review.verify_prepared(&output)?, prepared);
+
+        fs::write(output.join("packages/tampered"), b"changed after review")?;
+        let error = review
+            .verify_prepared(&output)
+            .expect_err("post-review bytes must be rejected");
+        assert!(format!("{error:#}").contains("differ from the reviewed transaction"));
         Ok(())
     }
 
