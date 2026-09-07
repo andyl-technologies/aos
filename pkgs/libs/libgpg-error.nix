@@ -5,6 +5,7 @@
   gnumake,
   bash,
   stdenv,
+  buildPackages,
 }: let
   version = "1.61";
 in
@@ -47,12 +48,14 @@ in
       {
         name = "configure";
         script =
-          if stdenv.isCross && stdenv.hostPlatform.isDarwin
+          if stdenv.isCross
           then ''
-            # mkerrcodes and mkheader execute on the Linux build machine.
-            # Keep their native compiler isolated from the target SDK and
-            # architecture flags exported by the Darwin cross stdenv.
-            native_cc="$BUILD_CC"
+            # mkerrcodes, mkheader, and yat2m execute on the Linux build
+            # machine. Use the native compiler directly so this package's
+            # strict-flex-array workaround reaches those helpers; the generic
+            # Linux CC_FOR_BUILD wrapper intentionally discards target
+            # hardening policy.
+            native_cc="${buildPackages.cc}/bin/cc"
             mkdir -p .aos-build-tools
             cat > .aos-build-tools/cc-for-build <<EOF
             #!$CONFIG_SHELL
