@@ -1748,6 +1748,16 @@ fn release_snapshot_artifacts(
                     store_hash: store_hash_component(&entry.store_path),
                     store_path: entry.store_path.clone(),
                 });
+                for store_path in entry.named_outputs.values() {
+                    artifacts.push(ReleaseSnapshotArtifact {
+                        package_name: package.package.name.clone(),
+                        package_version: version.version.clone(),
+                        platform: platform.clone(),
+                        artifact_kind: "output".to_string(),
+                        store_hash: store_hash_component(store_path),
+                        store_path: store_path.clone(),
+                    });
+                }
                 if !entry.source_drv.is_empty() {
                     artifacts.push(ReleaseSnapshotArtifact {
                         package_name: package.package.name.clone(),
@@ -3407,6 +3417,8 @@ fn sshsig_signer(armored: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::db::Database;
     use crate::fetch::{StreamedRead, SurfaceFetch};
@@ -3664,6 +3676,59 @@ mod tests {
 
         assert!(!descriptor_identity_matches(&admitted, &signed));
         assert!(signed.validate().is_err());
+    }
+
+    #[test]
+    fn release_snapshots_retain_every_named_output() {
+        let package = aos_registry_surface::manifest::parse_package_file(
+            r#"
+[package]
+name = "compiler"
+description = "test compiler"
+license = "MIT"
+maintainer = "AOS test"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-compiler"
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+
+[versions.platforms.x86_64-linux.named_outputs]
+dev = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-compiler-dev"
+tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
+"#,
+        )
+        .expect("parse multi-output package");
+
+        let required_hashes = load::required_package_store_hashes(std::slice::from_ref(&package));
+        assert_eq!(
+            required_hashes,
+            BTreeSet::from([
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                "cccccccccccccccccccccccccccccccc".to_string(),
+            ])
+        );
+
+        let artifacts = release_snapshot_artifacts(&[package]);
+
+        assert_eq!(artifacts.len(), 3);
+        assert!(artifacts.iter().all(|entry| entry.artifact_kind == "output"));
+        assert_eq!(
+            artifacts
+                .iter()
+                .map(|entry| entry.store_path.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-compiler",
+                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-compiler-dev",
+                "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools",
+            ])
+        );
     }
 
     #[tokio::test]

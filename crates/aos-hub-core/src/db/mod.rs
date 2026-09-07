@@ -4458,6 +4458,12 @@ impl Database {
                         entry.source_drv,
                     ]);
                     let mut catalog_artifacts = vec![("output", entry.store_path.as_str())];
+                    catalog_artifacts.extend(
+                        entry
+                            .named_outputs
+                            .values()
+                            .map(|store_path| ("output", store_path.as_str())),
+                    );
                     if !entry.source_drv.is_empty() {
                         catalog_artifacts.push(("source_derivation", entry.source_drv.as_str()));
                     }
@@ -28826,6 +28832,9 @@ source_nar_hash = ""
             source_drv = "/var/lib/store/abc.drv"
             source_nar_hash = "sha256:bb"
 
+            [versions.platforms.x86_64-linux.named_outputs]
+            dev = "/nix/store/dddddddddddddddddddddddddddddddd-curl-dev"
+
             [versions.platforms.x86_64-linux.documentation]
             format = "aos.package-documentation/v1+json"
             store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-curl-docs.json"
@@ -29026,9 +29035,15 @@ source_nar_hash = ""
                 "expose",
                 "image",
                 "output",
+                "output",
                 "source_derivation"
             ]
         );
+        assert!(current_artifacts.iter().any(|artifact| {
+            artifact.artifact_kind == "output"
+                && artifact.store_path
+                    == "/nix/store/dddddddddddddddddddddddddddddddd-curl-dev"
+        }));
         assert!(current_artifacts
             .iter()
             .all(|artifact| artifact.package_name == "curl"));
