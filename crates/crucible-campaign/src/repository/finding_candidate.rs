@@ -1,7 +1,55 @@
 //! Immutable finding-candidate publication and restart-safe validation.
 
 use super::*;
-use crate::{FindingCandidateBundle, FindingCandidateBundleId, FindingExactPins, FindingId};
+use crate::{
+    CampaignName, FindingCandidateBundle, FindingCandidateBundleId, FindingExactPins, FindingId,
+};
+
+/// Opaque proof that one snapshot directly retains a finding candidate bundle.
+///
+/// Values can be obtained only through
+/// [`CampaignRepository::authenticate_current_finding_candidate_incorporation`],
+/// which authenticates the named campaign's current authoritative head and the
+/// finding's direct bundle reference before constructing the proof.
+///
+/// The proof records a point-in-time read. It does not pin the campaign head or
+/// any immutable object and does not authorize a later unfenced root release.
+/// A ledger owner must immediately reauthenticate the current head while
+/// holding the operational GC/ledger-generation fence that covers its release
+/// compare-and-swap.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AuthenticatedFindingCandidateIncorporation {
+    campaign: CampaignName,
+    bundle: FindingCandidateBundleId,
+    snapshot: CampaignSnapshotId,
+    finding: FindingId,
+}
+
+impl AuthenticatedFindingCandidateIncorporation {
+    /// Returns the campaign whose authoritative head retains the finding.
+    #[must_use]
+    pub const fn campaign(&self) -> &CampaignName {
+        &self.campaign
+    }
+
+    /// Returns the exact candidate bundle retained by the finding.
+    #[must_use]
+    pub const fn bundle(&self) -> FindingCandidateBundleId {
+        self.bundle
+    }
+
+    /// Returns the authenticated snapshot containing the finding closure.
+    #[must_use]
+    pub const fn snapshot(&self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the finding that directly retains the candidate bundle.
+    #[must_use]
+    pub const fn finding(&self) -> FindingId {
+        self.finding
+    }
+}
 
 impl CampaignRepository {
     /// Publishes one fully verified finding candidate handoff.
@@ -92,6 +140,56 @@ impl CampaignRepository {
             bundle.exact_pins().clone(),
             Some(bundle_id),
         )
+    }
+
+    /// Authenticates that a campaign's current head retains one candidate.
+    ///
+    /// This read-only check is the handoff boundary for releasing an
+    /// executor-owned pending-candidate GC root. It verifies the candidate and
+    /// finding records, reads the named campaign's authoritative head, requires
+    /// the finding's direct candidate child to equal `bundle`, and authenticates
+    /// the complete current snapshot closure containing both records.
+    ///
+    /// The returned value is point-in-time evidence only. It neither pins that
+    /// head nor authorizes a later unfenced assignment-ledger update. A caller
+    /// releasing an operational candidate root must repeat this authentication
+    /// immediately inside the GC/ledger-generation fence that covers the exact
+    /// release compare-and-swap.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error when any record or descendant
+    /// is missing or corrupt, the finding names another bundle, or the named
+    /// finding and bundle are not both reachable from the current campaign
+    /// head.
+    pub fn authenticate_current_finding_candidate_incorporation(
+        &self,
+        campaign: &CampaignName,
+        finding: FindingId,
+        bundle: FindingCandidateBundleId,
+    ) -> Result<AuthenticatedFindingCandidateIncorporation, CampaignRepositoryError> {
+        self.load_finding_candidate_bundle(bundle)?;
+        let finding_record = self.read_finding(finding.content_id())?;
+        if finding_record.candidate_bundle() != Some(bundle) {
+            return Err(integrity(
+                "finding-candidate-incorporation-direct-link-mismatch",
+            ));
+        }
+
+        let snapshot = self.head(campaign.as_str())?.snapshot_id();
+        let closure = self.authenticated_closure_ids([snapshot.content_id()])?;
+        if !closure.contains(&finding.content_id()) || !closure.contains(&bundle.content_id()) {
+            return Err(integrity(
+                "finding-candidate-incorporation-not-retained-by-snapshot",
+            ));
+        }
+
+        Ok(AuthenticatedFindingCandidateIncorporation {
+            campaign: campaign.clone(),
+            bundle,
+            snapshot,
+            finding,
+        })
     }
 
     pub(super) fn decode_finding_candidate_bundle(
