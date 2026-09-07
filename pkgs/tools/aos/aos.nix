@@ -64,6 +64,10 @@
     if isCross
     then buildPackages.openssh
     else openssh;
+  buildZstd =
+    if isCross
+    then buildPackages.zstd
+    else zstd;
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
   # The four executables share Rust libraries and one Cargo build, but their
@@ -217,12 +221,13 @@ in
     # cmake + libssh2: git2's vendored libgit2 is compiled from source here
     # (CMake build) with SSH smart-transport support against system libssh2.
     #
-    # openssh is build-only: the `doCheck` workspace tests use `ssh-keygen` to
-    # build repository fixtures. `git-minimal` is also used by those tests, but
-    # remains in the `aos` runtime closure because maintainer commands create,
-    # inspect, commit, and publish isolated Git worktrees without host tools.
+    # openssh and zstd are build-only inputs for the check phase: the workspace
+    # tests use `ssh-keygen` for repository fixtures and exercise compressed
+    # registry packs. `git-minimal` is also used by those tests, but remains in
+    # the `aos` runtime closure because maintainer commands create, inspect,
+    # commit, and publish isolated Git worktrees without host tools.
     buildDeps =
-      [buildPerl buildPkgConfig openssl sqlite buildProtobuf buildCmake libssh2 buildGitMinimal buildOpenSsh]
+      [buildPerl buildPkgConfig openssl sqlite buildProtobuf buildCmake libssh2 buildGitMinimal buildOpenSsh buildZstd]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
       [openssl sqlite zlib]
