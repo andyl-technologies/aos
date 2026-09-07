@@ -3674,9 +3674,11 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   scenario-default campaign owner. Watch records name the exact campaign and
   snapshot and pair that head with the scheduler evidence captured at the same
   incorporation boundary; the CLI retains them under the owner's fixed bound
-  until its synchronous backend result is rendered. Save, resume, fork,
-  search, fuzz, replay, triage, interactive control, and long-lived session
-  migration remain open.
+  until its synchronous backend result is rendered. Campaign-produced replay
+  and historical selection-free `run` replay now use the same owner; unsupported
+  historical decision kinds remain on their compatible session path. Save,
+  resume, fork, search, fuzz, remaining replay producers, triage, interactive
+  control, and long-lived session migration remain open.
 - [x] **T-CAM-8.5** Publish user documentation and the worked network campaign
   as an executable fixture. The public Crucible guide now documents the
   shipped single-host campaign surface: strict offline import, managed daemon

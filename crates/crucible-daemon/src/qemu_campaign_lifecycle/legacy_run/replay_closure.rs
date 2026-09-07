@@ -97,6 +97,28 @@ impl GuardedCampaignReplayClosure {
         })
     }
 
+    /// Builds the exact empty closure for a schedule with no typed selections.
+    ///
+    /// This supports migration of historical replay artifacts whose schedules
+    /// predate campaign ownership but contain only decisions that need no
+    /// separately published choice records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuardedCampaignReplayClosureError`] when `schedule` contains
+    /// a malformed or typed selection decision.
+    pub fn empty_for_selection_free_schedule(
+        schedule: &Schedule,
+    ) -> Result<Self, GuardedCampaignReplayClosureError> {
+        if !schedule_selection_ids(schedule)?.is_empty() {
+            return Err(GuardedCampaignReplayClosureError::Invalid {
+                reason: "an empty replay closure cannot authenticate a schedule selection",
+            });
+        }
+
+        Self::new(Vec::new())
+    }
+
     #[cfg(test)]
     pub(super) fn with_alternate_boolean_branch_selection(
         &self,
