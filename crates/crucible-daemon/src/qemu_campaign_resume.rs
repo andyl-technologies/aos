@@ -149,46 +149,96 @@ impl<F, D> QemuProductionExactResumeExecutionRunner<F, D> {
 }
 
 /// Failure from one exact production-resume phase.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum QemuProductionExactResumeExecutionRunnerError<F, D> {
     /// The resume-only runner received an execution without a durable root.
-    #[error("production exact-resume runner received no checkpoint root")]
     MissingCheckpoint,
     /// Exact closure installation or guarded lifecycle construction failed.
-    #[error("restore production campaign lifecycle")]
     Lifecycle(F),
     /// The checkpoint retained only an event-log suffix.
-    #[error("production checkpoint event log begins after {0} prior events")]
     IncompleteEventLog(u64),
     /// Restored cumulative event evidence exceeded a campaign bound.
-    #[error("production checkpoint event log exceeded `{limit}`")]
     EventLogLimit {
         /// Stable name of the exceeded bound.
         limit: &'static str,
     },
     /// Modeled driving or result construction failed.
-    #[error("resumed production campaign driver failed")]
     Driver(D),
     /// A checkpoint was returned without a sticky checkpoint request.
-    #[error("resumed production campaign driver returned an unsolicited checkpoint")]
     UnsolicitedCheckpoint,
     /// Capturing a later exact checkpoint failed.
-    #[error("capture resumed production checkpoint: {0}")]
-    CheckpointCapture(#[source] SchedulerError),
+    CheckpointCapture(SchedulerError),
     /// Durable root-before-write handoff for a later checkpoint failed.
-    #[error("handoff resumed production checkpoint: {0}")]
-    CheckpointHandoff(#[source] CheckpointHandoffFailure),
+    CheckpointHandoff(CheckpointHandoffFailure),
     /// Final drain or lifecycle cleanup failed.
-    #[error("clean up resumed production campaign lifecycle: {0}")]
-    Cleanup(#[source] SchedulerError),
+    Cleanup(SchedulerError),
     /// Cleanup failed after another runner-owned phase failed.
-    #[error("resumed production cleanup failed after `{failure}`: {cleanup}")]
     CleanupAfterRunner {
         /// Original failure retained for diagnosis.
         failure: Box<QemuProductionExactResumeExecutionRunnerError<F, D>>,
         /// Higher-priority cleanup failure.
         cleanup: SchedulerError,
     },
+}
+
+impl<F, D> std::fmt::Display for QemuProductionExactResumeExecutionRunnerError<F, D> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingCheckpoint => {
+                formatter.write_str("production exact-resume runner received no checkpoint root")
+            }
+            Self::Lifecycle(_) => formatter.write_str("restore production campaign lifecycle"),
+            Self::IncompleteEventLog(prior) => write!(
+                formatter,
+                "production checkpoint event log begins after {prior} prior events"
+            ),
+            Self::EventLogLimit { limit } => {
+                write!(
+                    formatter,
+                    "production checkpoint event log exceeded `{limit}`"
+                )
+            }
+            Self::Driver(_) => formatter.write_str("resumed production campaign driver failed"),
+            Self::UnsolicitedCheckpoint => formatter
+                .write_str("resumed production campaign driver returned an unsolicited checkpoint"),
+            Self::CheckpointCapture(error) => {
+                write!(formatter, "capture resumed production checkpoint: {error}")
+            }
+            Self::CheckpointHandoff(error) => {
+                write!(formatter, "handoff resumed production checkpoint: {error}")
+            }
+            Self::Cleanup(error) => {
+                write!(
+                    formatter,
+                    "clean up resumed production campaign lifecycle: {error}"
+                )
+            }
+            Self::CleanupAfterRunner { cleanup, .. } => write!(
+                formatter,
+                "resumed production cleanup failed after a prior runner failure: {cleanup}"
+            ),
+        }
+    }
+}
+
+impl<F, D> std::error::Error for QemuProductionExactResumeExecutionRunnerError<F, D>
+where
+    F: std::error::Error + 'static,
+    D: std::error::Error + 'static,
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Lifecycle(error) => Some(error),
+            Self::Driver(error) => Some(error),
+            Self::CheckpointCapture(error) | Self::Cleanup(error) => Some(error),
+            Self::CheckpointHandoff(error) => Some(error),
+            Self::CleanupAfterRunner { failure, .. } => Some(failure.as_ref()),
+            Self::MissingCheckpoint
+            | Self::IncompleteEventLog(_)
+            | Self::EventLogLimit { .. }
+            | Self::UnsolicitedCheckpoint => None,
+        }
+    }
 }
 
 enum ResumeRunnerResult<P> {

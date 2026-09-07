@@ -790,40 +790,29 @@ where
 }
 
 /// Failure from one production whole-world execution phase.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum QemuHotForkWorldExecutionRunnerError<F, D> {
     /// A prior successful execution still owns publication authority.
-    #[error("hot-fork world still awaits prior semantic reconciliation")]
     PriorReconciliationPending,
     /// The lifecycle factory failed after exact source selection.
-    #[error("construct production hot-fork world lifecycle")]
     Factory(F),
     /// The factory returned a lifecycle for another supervisor incarnation.
-    #[error("production hot-fork world runtime basis differs from its worker reservation")]
     RuntimeBasisMismatch,
     /// The adopted start boundary could not be reconstructed exactly.
-    #[error("materialize production hot-fork start: {0}")]
-    Start(#[source] SchedulerError),
+    Start(SchedulerError),
     /// The authenticated branch edge could not be applied at the captured parent.
-    #[error("apply production hot-fork branch start: {0}")]
     StartReplay(String),
     /// Modeled driving or result construction failed.
-    #[error("drive production hot-fork world")]
     Driver(D),
     /// A checkpoint result lacked a sticky supervisor request.
-    #[error("production hot-fork driver returned an unsolicited checkpoint")]
     UnsolicitedCheckpoint,
     /// Capturing a later exact checkpoint failed.
-    #[error("capture production hot-fork checkpoint: {0}")]
-    CheckpointCapture(#[source] SchedulerError),
+    CheckpointCapture(SchedulerError),
     /// Durable checkpoint handoff failed.
-    #[error("handoff production hot-fork checkpoint: {0}")]
-    CheckpointHandoff(#[source] CheckpointHandoffFailure),
+    CheckpointHandoff(CheckpointHandoffFailure),
     /// Final drain or adopted-node cleanup failed.
-    #[error("clean up production hot-fork world: {0}")]
-    Cleanup(#[source] SchedulerError),
+    Cleanup(SchedulerError),
     /// Cleanup failed after an earlier runner phase failed.
-    #[error("production hot-fork cleanup failed after `{failure}`: {cleanup}")]
     CleanupAfterRunner {
         /// Earlier runner failure.
         failure: Box<QemuHotForkWorldExecutionRunnerError<F, D>>,
@@ -831,14 +820,85 @@ pub enum QemuHotForkWorldExecutionRunnerError<F, D> {
         cleanup: SchedulerError,
     },
     /// Durable publication reconciliation failed.
-    #[error("reconcile production hot-fork publication: {0}")]
-    Reconciliation(#[source] crucible_api::LifecycleApiError),
+    Reconciliation(crucible_api::LifecycleApiError),
     /// A reconciliation callback arrived without pending authority.
-    #[error("production hot-fork runner has no pending reconciliation")]
     NoPendingReconciliation,
     /// Complete source-world recovery contradicted lifecycle ownership.
-    #[error("recover production hot-fork source world")]
     SourceRecovery,
+}
+
+impl<F, D> std::fmt::Display for QemuHotForkWorldExecutionRunnerError<F, D> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PriorReconciliationPending => {
+                formatter.write_str("hot-fork world still awaits prior semantic reconciliation")
+            }
+            Self::Factory(_) => {
+                formatter.write_str("construct production hot-fork world lifecycle")
+            }
+            Self::RuntimeBasisMismatch => formatter.write_str(
+                "production hot-fork world runtime basis differs from its worker reservation",
+            ),
+            Self::Start(error) => {
+                write!(formatter, "materialize production hot-fork start: {error}")
+            }
+            Self::StartReplay(error) => {
+                write!(formatter, "apply production hot-fork branch start: {error}")
+            }
+            Self::Driver(_) => formatter.write_str("drive production hot-fork world"),
+            Self::UnsolicitedCheckpoint => {
+                formatter.write_str("production hot-fork driver returned an unsolicited checkpoint")
+            }
+            Self::CheckpointCapture(error) => {
+                write!(formatter, "capture production hot-fork checkpoint: {error}")
+            }
+            Self::CheckpointHandoff(error) => {
+                write!(formatter, "handoff production hot-fork checkpoint: {error}")
+            }
+            Self::Cleanup(error) => {
+                write!(formatter, "clean up production hot-fork world: {error}")
+            }
+            Self::CleanupAfterRunner { cleanup, .. } => write!(
+                formatter,
+                "production hot-fork cleanup failed after a prior runner failure: {cleanup}"
+            ),
+            Self::Reconciliation(error) => {
+                write!(
+                    formatter,
+                    "reconcile production hot-fork publication: {error}"
+                )
+            }
+            Self::NoPendingReconciliation => {
+                formatter.write_str("production hot-fork runner has no pending reconciliation")
+            }
+            Self::SourceRecovery => formatter.write_str("recover production hot-fork source world"),
+        }
+    }
+}
+
+impl<F, D> std::error::Error for QemuHotForkWorldExecutionRunnerError<F, D>
+where
+    F: std::error::Error + 'static,
+    D: std::error::Error + 'static,
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Factory(error) => Some(error),
+            Self::Start(error) | Self::CheckpointCapture(error) | Self::Cleanup(error) => {
+                Some(error)
+            }
+            Self::Driver(error) => Some(error),
+            Self::CheckpointHandoff(error) => Some(error),
+            Self::CleanupAfterRunner { failure, .. } => Some(failure.as_ref()),
+            Self::Reconciliation(error) => Some(error),
+            Self::PriorReconciliationPending
+            | Self::RuntimeBasisMismatch
+            | Self::StartReplay(_)
+            | Self::UnsolicitedCheckpoint
+            | Self::NoPendingReconciliation
+            | Self::SourceRecovery => None,
+        }
+    }
 }
 
 type HotForkWorldRunnerFailure<F, D> = AttemptWorkerFailure<
