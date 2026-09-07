@@ -92,6 +92,9 @@ pub enum QemuFreshModeledDriverError {
     /// The lifecycle returned a child configuration for another scenario.
     #[error("fresh campaign lifecycle returned a configuration for another scenario")]
     ScenarioMismatch,
+    /// The lifecycle reported failure without any modeled failure reason.
+    #[error("fresh campaign lifecycle returned an empty scenario failure")]
+    EmptyScenarioFailure,
     /// A repeated opportunity ID carried conflicting canonical bodies.
     #[error("fresh campaign lifecycle returned conflicting bodies for opportunity `{0}`")]
     ConflictingChoice(ChoiceOpportunityId),
@@ -173,7 +176,7 @@ pub struct QemuFreshPendingObservation {
 enum ModeledStop {
     Reached(StopCondition),
     TerminalPassed,
-    TerminalFailed,
+    TerminalFailed(Vec<String>),
 }
 
 impl QemuFreshModeledDriver {
@@ -425,10 +428,7 @@ fn drive_modeled_attempt(
     let mut discoveries = RetainedChoiceDiscoveries::default();
     check_cancellation(context)?;
     if let Some(verdict) = terminal_verdict {
-        let stop = match verdict {
-            QuantumTerminalVerdict::Passed => ModeledStop::TerminalPassed,
-            QuantumTerminalVerdict::Failed(_) => ModeledStop::TerminalFailed,
-        };
+        let stop = modeled_terminal_stop(verdict).map_err(AttemptWorkerFailure::Terminal)?;
         require_settled_network(lifecycle)?;
         return Ok(QemuFreshDriveOutcome::Observation(
             QemuFreshPendingObservation {
@@ -467,7 +467,9 @@ fn drive_modeled_attempt(
         check_cancellation(context)?;
         let terminal_stop = match lifecycle.terminal_verdict_for_stop() {
             Some(QuantumTerminalVerdict::Passed) => Some(ModeledStop::TerminalPassed),
-            Some(QuantumTerminalVerdict::Failed(_)) => Some(ModeledStop::TerminalFailed),
+            Some(verdict @ QuantumTerminalVerdict::Failed(_)) => {
+                Some(modeled_terminal_stop(verdict).map_err(AttemptWorkerFailure::Terminal)?)
+            }
             None => None,
         };
         if terminal_stop.is_none() && checkpoint_is_ready(lifecycle, context)? {
@@ -1313,9 +1315,19 @@ fn stop_outcome(stop: ModeledStop, report: &crucible::HostAssertionReport) -> St
     match stop {
         ModeledStop::Reached(stop) => StopOutcome::Reached(stop),
         ModeledStop::TerminalPassed => StopOutcome::TerminalSuccess,
-        ModeledStop::TerminalFailed => {
-            StopOutcome::GuestCrash(String::from("scenario-trigger-failure"))
+        ModeledStop::TerminalFailed(reasons) => StopOutcome::ScenarioFailure(reasons),
+    }
+}
+
+fn modeled_terminal_stop(
+    verdict: QuantumTerminalVerdict,
+) -> Result<ModeledStop, QemuFreshModeledDriverError> {
+    match verdict {
+        QuantumTerminalVerdict::Passed => Ok(ModeledStop::TerminalPassed),
+        QuantumTerminalVerdict::Failed(reasons) if reasons.is_empty() => {
+            Err(QemuFreshModeledDriverError::EmptyScenarioFailure)
         }
+        QuantumTerminalVerdict::Failed(reasons) => Ok(ModeledStop::TerminalFailed(reasons)),
     }
 }
 

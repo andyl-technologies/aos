@@ -370,7 +370,7 @@ pub enum CrucibleExecutionModelError<E> {
     Artifact(#[from] CrucibleArtifactError),
     /// The concrete Crucible runner failed after authentication.
     #[error("Crucible execution runner failed")]
-    Runner(E),
+    Runner(#[source] E),
 }
 
 impl<R> AttemptExecutionModel for CrucibleExecutionModel<R>

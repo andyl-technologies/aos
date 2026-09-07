@@ -621,6 +621,23 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
         0
     }
 
+    fn sample_fingerprint(
+        &mut self,
+        node: crucible::NodeId,
+    ) -> Result<crucible::FingerprintSample, crucible::SchedulerError> {
+        Ok(crucible::FingerprintSample {
+            node,
+            at: VirtualTime { ticks: 1 },
+            fingerprint: crucible::ExecutionFingerprint {
+                hash: crucible::ContentHash::from_bytes(b"standalone-fingerprint-test"),
+            },
+        })
+    }
+
+    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, crucible::SchedulerError> {
+        Ok(Some(b"resolved-effect-test".to_vec()))
+    }
+
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, crucible::SchedulerError> {
         self.order
             .lock()
@@ -638,6 +655,54 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
             )])
         }
     }
+}
+
+#[test]
+fn observed_lifecycle_retains_only_successful_execution_evidence() {
+    let scenario = ScenarioDef::from_canonical_material_with_seed(
+        "crucible.test.standalone-campaign-lifecycle",
+        "scenario=standalone-campaign-lifecycle",
+        Seed::from_u64(0x5a11_da10),
+    );
+    let genesis = Configuration::genesis(scenario);
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let lifecycle = FakeFreshLifecycle {
+        order: Arc::clone(&order),
+        promotion_observations: None,
+        cleanup_error: false,
+        pending: Vec::new(),
+        replies: Arc::new(Mutex::new(Vec::new())),
+        signal_fault_branches: VecDeque::new(),
+    };
+    let evidence = QemuAttemptExecutionEvidence::default();
+    let mut observed = QemuObservedFreshAttemptLifecycle::new(
+        lifecycle,
+        vec![crucible::NodeId {
+            name: String::from("node"),
+        }],
+        evidence.clone(),
+    );
+
+    observed
+        .drive_quantum(QuantumRequest {
+            configuration: genesis,
+            control: Vec::new(),
+        })
+        .expect("first admitted quantum");
+    observed.shutdown().expect("cleanup remains available");
+    let snapshot = evidence.snapshot().expect("observed execution evidence");
+    assert_eq!(snapshot.quanta(), 1);
+    assert_eq!(snapshot.frontier(), VirtualTime { ticks: 1 });
+    assert_eq!(snapshot.event_log_entries().len(), 1);
+    assert_eq!(snapshot.execution_fingerprints().len(), 2);
+    assert_eq!(
+        snapshot.resolved_effect_trace(),
+        Some(b"resolved-effect-test".as_slice())
+    );
+    assert_eq!(
+        *order.lock().expect("standalone lifecycle order"),
+        ["replay", "shutdown"]
+    );
 }
 
 struct FakeFreshLifecycleFactory {

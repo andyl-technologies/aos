@@ -1031,8 +1031,9 @@ impl CampaignRepository {
         &self,
         value: &Observation,
     ) -> Result<ContentId, CampaignRepositoryError> {
-        self.put_envelope(ObjectEnvelope::for_record(
+        self.put_envelope(ObjectEnvelope::for_record_versioned(
             crate::CampaignRecordKind::Observation,
+            value.schema_version(),
             crate::object::content_children(value.content_children())?,
             value.canonical_bytes(),
         )?)
@@ -1042,8 +1043,9 @@ impl CampaignRepository {
         &self,
         value: &ObjectiveEvaluation,
     ) -> Result<ContentId, CampaignRepositoryError> {
-        self.put_envelope(ObjectEnvelope::for_record(
+        self.put_envelope(ObjectEnvelope::for_record_versioned(
             crate::CampaignRecordKind::ObjectiveEvaluation,
+            value.schema_version(),
             crate::object::content_children(value.content_children())?,
             value.canonical_bytes(),
         )?)
@@ -1053,8 +1055,9 @@ impl CampaignRepository {
         &self,
         value: &RankingExplanation,
     ) -> Result<ContentId, CampaignRepositoryError> {
-        self.put_envelope(ObjectEnvelope::for_record(
+        self.put_envelope(ObjectEnvelope::for_record_versioned(
             crate::CampaignRecordKind::RankingExplanation,
+            value.schema_version(),
             crate::object::content_children(value.content_children())?,
             value.canonical_bytes(),
         )?)

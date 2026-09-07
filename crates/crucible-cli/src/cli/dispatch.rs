@@ -86,6 +86,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let run_plan = match &cli.command {
         Commands::Run(args) => {
             let mut plan = plan_run_invocation(args, &run_store_root)?;
+            plan.campaign_deployment = cli.campaign_deployment.clone();
             if let Some(seed) = run_identity_seed {
                 pin_run_invocation_seed(&mut plan, seed)?;
             }
@@ -100,6 +101,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let save_plan = match &cli.command {
         Commands::Save(args) => {
             let mut plan = plan_save_invocation(args, &run_store_root, &cli.artifact_dir)?;
+            plan.run_plan.campaign_deployment = cli.campaign_deployment.clone();
             if let Some(seed) = run_identity_seed {
                 pin_run_invocation_seed(&mut plan.run_plan, seed)?;
             }

@@ -1202,6 +1202,61 @@ fn terminal_run_projects_offline_property_verdicts() {
 }
 
 #[test]
+fn terminal_failure_preserves_grouped_reasons_in_scheduler_order() {
+    let fixture = crucible::happy_path_scenario().expect("happy-path fixture");
+    let input = input_for_scenario(fixture.scenario.clone(), StopCondition::Terminal);
+    let configuration = starting_configuration(&input);
+    let mut log = EventLog::new();
+    let append = log
+        .append_observable_events(fixture.observations().iter().cloned())
+        .expect("happy-path event log");
+    let mut quantum = outcome(configuration, append.entries, append.offset, 38);
+    quantum.scheduler_quiescence = Some(SchedulerQuiescence::default());
+    let reasons = vec![
+        "later lexical reason".to_owned(),
+        "earlier lexical reason".to_owned(),
+        "later lexical reason".to_owned(),
+    ];
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([Ok(quantum)]),
+        terminal: Some(QuantumTerminalVerdict::Failed(reasons.clone())),
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+    let mut driver = QemuFreshModeledDriver::new();
+
+    let pending = expect_observation(
+        driver
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+            )
+            .expect("terminal modeled failure"),
+    );
+    let product = driver
+        .seal(pending, Vec::new())
+        .expect("scenario failure projection");
+    let AttemptExecutionProduct::Observation(candidate) = product else {
+        panic!("fresh modeled driver must return an observation")
+    };
+
+    assert_eq!(
+        candidate.observation().stop(),
+        &StopOutcome::ScenarioFailure(reasons)
+    );
+}
+
+#[test]
+fn empty_terminal_failure_is_rejected() {
+    assert!(matches!(
+        modeled_terminal_stop(QuantumTerminalVerdict::Failed(Vec::new())),
+        Err(QemuFreshModeledDriverError::EmptyScenarioFailure)
+    ));
+}
+
+#[test]
 fn non_dense_final_drain_is_rejected_before_candidate_construction() {
     let input = input(StopCondition::EventCount(1));
     let configuration = starting_configuration(&input);
