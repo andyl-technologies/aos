@@ -2302,7 +2302,8 @@ fn selected(value: &str, current: Option<&str>) -> &'static str {
     }
 }
 
-fn image_select(
+/// Renders a shared catalog facet with an explicit unfiltered choice.
+pub(crate) fn catalog_select(
     name: &str,
     label: &str,
     all_label: &str,
@@ -2642,16 +2643,16 @@ pub fn images_page(
         escape(browse.query.unwrap_or("")),
         escape(slug),
         urlencode(context.query_value().unwrap_or("")),
-        image_select("channel", "Channel", "All channels", &channel_options, channel),
-        image_select(
+        catalog_select("channel", "Channel", "All channels", &channel_options, channel),
+        catalog_select(
             "architecture",
             "Architecture",
             "All architectures",
             &architecture_options,
             architecture
         ),
-        image_select("format", "Format", "All formats", &format_options, format),
-        image_select("target", "Target", "All targets", &target_options, target),
+        catalog_select("format", "Format", "All formats", &format_options, format),
+        catalog_select("target", "Target", "All targets", &target_options, target),
     );
     if total_matches == 0 {
         body.push_str("<p class=\"dim\">No matching signed disk images are published.</p>\n");

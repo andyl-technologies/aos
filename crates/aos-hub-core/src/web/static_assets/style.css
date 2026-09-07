@@ -25,6 +25,8 @@
   color-scheme: light dark;
   --font-sans: "Geist Sans", system-ui, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --control-height: 2.25rem;
+  --control-gap: 0.5rem;
 
   /* light-dark() also follows the OS without the optional preference script. */
   --paper: light-dark(#ffffff, #101110);
@@ -102,7 +104,6 @@ header.masthead {
 }
 .masthead-bar {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 0.65rem 1.5rem;
@@ -122,18 +123,17 @@ header.masthead .brand {
 }
 header.masthead .brand:hover { text-decoration-color: var(--rule-strong); }
 header.masthead .tagline { color: var(--dim); font-size: 0.78rem; }
-header.masthead .crumbs { flex: 1; min-width: 0; font-size: 0.82rem; }
+header.masthead .crumbs { display: flex; justify-content: center; flex: 1; min-width: 0; font-size: 0.82rem; }
 header.masthead .crumbs ol {
   display: flex;
-  justify-content: center;
-  flex-wrap: wrap;
+  overflow-x: auto;
   align-items: baseline;
   gap: 0.3rem 0.6rem;
   margin: 0;
   padding: 0;
   list-style: none;
 }
-header.masthead .crumbs li { min-width: 0; overflow-wrap: anywhere; }
+header.masthead .crumbs li { flex: none; white-space: nowrap; }
 header.masthead .crumbs li + li::before {
   content: "/";
   margin-right: 0.6rem;
@@ -141,34 +141,60 @@ header.masthead .crumbs li + li::before {
 }
 header.masthead .crumbs a { color: var(--dim); }
 header.masthead .crumbs [aria-current="page"] { color: var(--ink); }
-header.masthead .session {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.35rem 1rem;
-  margin-left: auto;
-  color: var(--dim);
-  font-size: 0.82rem;
-}
-header.masthead .session a { padding-block: 0.4rem; color: var(--dim); }
-header.masthead .session a:hover { color: var(--ink); }
-header.masthead .session .session-action {
+.masthead-menu { position: relative; flex: none; }
+.masthead-menu > summary {
   padding: 0.3rem 0.7rem;
   border: 1px solid var(--rule);
   border-radius: 3px;
-  color: var(--ink);
+  font-size: 0.82rem;
+  cursor: pointer;
+  list-style: none;
 }
-header.masthead .session .session-action:hover { background: var(--surface); text-decoration: none; }
+.masthead-menu > summary::-webkit-details-marker { display: none; }
+.masthead-menu > summary::after { content: "⌄"; margin-left: 0.5rem; color: var(--dim); }
+.masthead-menu > summary:hover,
+.masthead-menu[open] > summary { background: var(--surface); }
+/* Clicking the transparent backdrop toggles the native summary closed. */
+.masthead-menu[open] > summary::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  cursor: default;
+}
+header.masthead .session {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  z-index: 11;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 11rem;
+  max-width: calc(100vw - 2rem);
+  padding: 0.35rem;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--paper);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--ink) 12%, transparent);
+  color: var(--dim);
+  font-size: 0.82rem;
+}
+header.masthead .session a { display: block; padding: 0.45rem 0.65rem; color: var(--ink); }
+header.masthead .session a:hover { background: var(--surface); text-decoration: none; }
 header.masthead .session .who {
+  order: -1;
   max-width: 26ch;
+  padding: 0.45rem 0.65rem;
+  margin-bottom: 0.2rem;
+  border-bottom: 1px solid var(--rule-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 @media (max-width: 40rem) {
-  header.masthead .session { margin-left: 0; justify-content: flex-start; }
+  .masthead-bar { gap: 0.75rem; }
 }
 
 h1, h2, h3 {
@@ -801,24 +827,24 @@ p.chips { margin: 0.2rem 0 0.8rem; }
 .filter-form label { display: grid; gap: 0.3rem; min-width: 0; }
 .catalog-filters { margin: 0.6rem 0 1.2rem; }
 
-/* Catalogs share the search row; image-specific facets sit beneath it. */
+/* Catalogs share the search row and place their facets beneath it. */
 .catalog-search {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 0.7rem 0.9rem;
+  gap: var(--control-gap);
 }
 .catalog-search > label { flex: 1 1 20rem; }
-.catalog-search > a { padding-block: 0.55rem; }
+.catalog-search > a { display: inline-flex; align-items: center; min-height: var(--control-height); }
 .catalog-filter-fields {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
-  gap: 0.7rem 0.9rem;
-  margin-top: 0.9rem;
+  gap: var(--control-gap);
+  margin-top: var(--control-gap);
 }
 .catalog-filters label {
   display: grid;
-  gap: 0.35rem;
+  gap: var(--control-gap);
   min-width: 0;
   color: var(--dim);
   font-size: 0.85rem;
@@ -827,11 +853,6 @@ p.chips { margin: 0.2rem 0 0.8rem; }
 .catalog-filters input {
   width: 100%;
   min-width: 0;
-  font-size: 1rem;
-}
-.catalog-search input,
-.catalog-search button {
-  min-height: 2.6rem;
 }
 
 .images-table .image-artifact { border-top: 2px solid var(--rule); }
@@ -940,14 +961,8 @@ details.raw-metadata summary {
   cursor: pointer;
   color: var(--link);
 }
-form.pkg-search { margin-bottom: 0.4rem; }
-form.pkg-search select {
-  font: inherit;
-  padding: 0.2rem 0.4rem;
-  border: 1px solid var(--ink);
-  background: var(--paper);
-  color: var(--ink);
-}
+form.pkg-search { display: flex; align-items: center; gap: var(--control-gap); margin-bottom: 0.4rem; }
+form.pkg-search .filter-field { flex: 1; min-width: 0; max-width: none; margin-bottom: 0; }
 /* The Wireshark-style filter box. The input remains ordinary selectable text;
  * the widget wrapper adds custom autocomplete without replacing its paint. */
 .filter-field {
@@ -1754,7 +1769,7 @@ label.inline {
 .package-documentation section { scroll-margin-top: 1rem; }
 .package-documentation dl { margin: 0; }
 .package-documentation dt {
-  margin-top: 0.9rem;
+  margin-top: var(--control-gap);
   padding: 0.55rem 0.7rem;
   border-left: 3px solid var(--accent);
   background: color-mix(in srgb, var(--accent) 6%, var(--paper));
@@ -1795,11 +1810,11 @@ label.inline {
 }
 
 /* Shared release context and focused configuration browser. */
-.release-selector { display: flex; flex-wrap: wrap; align-items: center; gap: .7rem 1rem; padding: .9rem 0; border-bottom: 1px solid var(--rule); margin-bottom: 1.2rem; }
+.release-selector { display: flex; flex-wrap: wrap; align-items: center; gap: var(--control-gap); padding: .5rem 0; margin-bottom: 1.2rem; }
 .release-selector label { display: flex; align-items: center; gap: .6rem; }
 .release-selector select { max-width: 20rem; }
 .release-selector form { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: 0; max-width: 100%; }
-.release-rail { display: flex; flex-wrap: wrap; gap: .4rem; flex-basis: 100%; }
+.release-rail { display: flex; flex-wrap: wrap; gap: var(--control-gap); }
 .release-pill { display: inline-flex; align-items: center; gap: .35rem; padding: .2rem .6rem; border: 1px solid var(--rule); border-radius: 999px; font-size: .8rem; text-decoration: none; color: var(--ink); }
 .release-pill strong { font-weight: 600; }
 .release-pill[aria-current="true"] {
@@ -1835,7 +1850,7 @@ label.inline {
 .rollout-bar > :nth-child(2n) { background: var(--release-1); }
 .rollout-bar > :nth-child(3n) { background: var(--release-2); }
 .doc-browser { position: relative; }
-.doc-search { position: sticky; top: 0; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; background: var(--paper); padding: .8rem 0; border-bottom: 1px solid var(--rule); }
+.doc-search { position: sticky; top: 0; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; gap: var(--control-gap); background: var(--paper); padding: .5rem 0; border-bottom: 1px solid var(--rule); }
 .doc-search > label:first-of-type { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .doc-search input[type=search] { flex: 1 1 18rem; min-width: 0; }
 .doc-search label { display: flex; align-items: center; gap: .5rem; }
@@ -1915,3 +1930,15 @@ label.inline {
 .rollout-segment.r5 { fill: var(--release-5); }
 .rollout-segment.unassigned { fill: var(--rule); }
 .release-group > tr > th { padding-top: 1.5rem; font-size: 1rem; text-align: left; border-bottom: 2px solid var(--rule-strong); }
+
+/* Browse controls share geometry even when inputs use the monospace face. */
+:is(.release-selector, .catalog-filters, .doc-search, form.pkg-search) :is(input:not([type="hidden"]), select, button) {
+  height: var(--control-height);
+  min-height: var(--control-height);
+  padding: 0 0.65rem;
+  font-size: 0.875rem;
+  line-height: 1.25;
+}
+.release-selector label,
+.release-selector form,
+.doc-search label { gap: var(--control-gap); }

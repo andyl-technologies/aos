@@ -388,7 +388,7 @@ pub struct BrowseQuery {
     pub release: Option<String>,
     /// Exact system-image channel filter.
     pub channel: Option<String>,
-    /// Exact system-image architecture filter.
+    /// Exact image or OCI container architecture filter.
     pub architecture: Option<String>,
     /// Exact system-image format filter.
     pub format: Option<String>,
@@ -810,8 +810,7 @@ pub async fn containers(
         &context,
         &containers,
         authority.ok().flatten().as_deref(),
-        query.query(),
-        query.page_number(),
+        query,
         started,
         &session,
     ))
@@ -944,8 +943,7 @@ pub async fn container_repository(
             &context,
             &containers,
             authority.as_deref(),
-            None,
-            query.page_number(),
+            query,
             started,
             &session_indicator(svc, headers).await,
         ));

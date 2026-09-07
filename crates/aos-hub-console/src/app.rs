@@ -105,6 +105,29 @@ pub fn App() -> impl IntoView {
     }
 }
 
+/// Dismisses account navigation without losing the keyboard's place.
+fn dismiss_masthead_menu(event: ev::KeyboardEvent) {
+    if event.key() != "Escape" {
+        return;
+    }
+    let Some(target) = event
+        .target()
+        .and_then(|target| target.dyn_into::<leptos::web_sys::Element>().ok())
+    else {
+        return;
+    };
+    let Ok(Some(menu)) = target.closest("details.masthead-menu") else {
+        return;
+    };
+    let _ = menu.remove_attribute("open");
+    let Ok(Some(summary)) = menu.query_selector("summary") else {
+        return;
+    };
+    if let Ok(summary) = summary.dyn_into::<leptos::web_sys::HtmlElement>() {
+        let _ = summary.focus();
+    }
+}
+
 #[component]
 fn ManagementShell(
     route: ConsoleRoute,
@@ -167,6 +190,9 @@ fn ManagementShell(
             return;
         }
         event.prevent_default();
+        if let Ok(Some(menu)) = anchor.closest("details.masthead-menu") {
+            let _ = menu.remove_attribute("open");
+        }
         navigate.run(path);
     };
 
@@ -185,13 +211,16 @@ fn ManagementShell(
                             <li><span aria-current="page">{page_label}</span></li>
                         </ol>
                     </nav>
-                    <nav class="session" aria-label="Account navigation">
-                        {AUTHENTICATED_PRIMARY_NAVIGATION.iter().map(|item| view! {
-                            <a href=item.href>{item.label}</a>
-                        }).collect_view()}
-                        <span class="who"><Suspense fallback=move || "signed-in user">{move || Suspend::new(async move { session.await.as_ref().ok().and_then(|client| client.session().principal.map(|principal| principal.email)).unwrap_or_else(|| "signed-in user".to_string()) })}</Suspense></span>
-                        <a href="/logout">"log out"</a>
-                    </nav>
+                    <details class="masthead-menu" on:keydown=dismiss_masthead_menu>
+                        <summary>"Menu"</summary>
+                        <nav class="session" aria-label="Account navigation">
+                            {AUTHENTICATED_PRIMARY_NAVIGATION.iter().map(|item| view! {
+                                <a href=item.href>{item.label}</a>
+                            }).collect_view()}
+                            <span class="who"><Suspense fallback=move || "signed-in user">{move || Suspend::new(async move { session.await.as_ref().ok().and_then(|client| client.session().principal.map(|principal| principal.email)).unwrap_or_else(|| "signed-in user".to_string()) })}</Suspense></span>
+                            <a href="/logout">"log out"</a>
+                        </nav>
+                    </details>
                 </div>
             </header>
             {(!announcement.is_empty()).then(|| view! { <div class="announce">{announcement}</div> })}

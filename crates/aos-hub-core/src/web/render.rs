@@ -80,7 +80,10 @@ pub(crate) fn masthead(
         html.push_str("</ol></nav>");
     }
 
-    let _ = write!(html, "{session}</div></header>");
+    let _ = write!(
+        html,
+        "<details class=\"masthead-menu\"><summary>Menu</summary>{session}</details></div></header>"
+    );
     html
 }
 

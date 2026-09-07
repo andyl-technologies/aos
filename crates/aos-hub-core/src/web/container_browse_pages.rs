@@ -12,7 +12,8 @@ use crate::db::{
     IndexStatus, OciAdminManifestRecord, OciAdminPlatformRecord, OciAdminRepositoryRecord,
     OciAdminTagRecord, RegistryRecord,
 };
-use crate::web::browse_pages::{registry_crumbs, registry_nav, state_line};
+use crate::web::browse::BrowseQuery;
+use crate::web::browse_pages::{catalog_select, registry_crumbs, registry_nav, state_line};
 use crate::web::console_render::{page_with_session, urlencode, Pager, SessionIndicator};
 use crate::web::release_browse::ReleaseContext;
 use crate::web::render::{escape, human_size, table};
@@ -51,14 +52,61 @@ pub(crate) fn release_index(
     context: &ReleaseContext,
     containers: &[crate::db::ReleaseContainerRow],
     authority: Option<&str>,
-    query: Option<&str>,
-    page_number: usize,
+    browse: &BrowseQuery,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
     let slug = &registry.slug;
+    let query = browse
+        .q
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let normalize = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let channel = normalize(&browse.channel);
+    let architecture = normalize(&browse.architecture);
+    let filters = [
+        ("q", query),
+        ("channel", channel.as_deref()),
+        ("architecture", architecture.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(name, value)| value.map(|value| (name, value)))
+    .collect::<Vec<_>>();
+    let channel_names = |release: &str| {
+        context
+            .channels()
+            .iter()
+            .filter(|channel| {
+                channel.frontier.as_deref() == Some(release)
+                    || channel
+                        .partitions
+                        .iter()
+                        .any(|target| target.as_deref() == Some(release))
+            })
+            .map(|channel| channel.name.as_str())
+            .collect::<Vec<_>>()
+    };
+    let architecture_options = containers
+        .iter()
+        .flat_map(|container| &container.architectures)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(|value| (value.clone(), value.clone()))
+        .collect::<Vec<_>>();
+    let channel_options = context
+        .channels()
+        .iter()
+        .map(|channel| (channel.name.clone(), channel.name.clone()))
+        .collect::<Vec<_>>();
+
     let mut body = context.nav(slug, "containers");
-    let filters = query.map(|value| vec![("q", value)]).unwrap_or_default();
     body.push_str("<h1>Containers</h1>");
     body.push_str(&context.selector(slug, &format!("/{slug}/-/containers"), &filters));
     let needle = query.unwrap_or_default().to_lowercase();
@@ -66,6 +114,12 @@ pub(crate) fn release_index(
         .iter()
         .filter(|container| {
             (context.is_all() || context.selected() == Some(container.release.as_str()))
+                && channel
+                    .as_deref()
+                    .is_none_or(|channel| channel_names(&container.release).contains(&channel))
+                && architecture
+                    .as_ref()
+                    .is_none_or(|architecture| container.architectures.contains(architecture))
                 && (container
                     .repository
                     .as_str()
@@ -82,17 +136,20 @@ pub(crate) fn release_index(
     let release = context.query_value().unwrap_or_default();
     let _ = write!(
         body,
-        "<form method=\"get\" class=\"catalog-filters\" role=\"search\" aria-label=\"Search containers\">\
+        "<form method=\"get\" data-live class=\"catalog-filters\" role=\"search\" aria-label=\"Search containers\">\
          <input type=\"hidden\" name=\"release\" value=\"{}\">\
          <div class=\"catalog-search\"><label>Search<input type=\"search\" name=\"q\" value=\"{}\" \
          placeholder=\"Package or repository\"></label><button type=\"submit\">Search</button>\
-         <a href=\"/{}/-/containers?release={}\">Clear filters</a></div></form>",
+         <a href=\"/{}/-/containers?release={}\">Clear filters</a></div>\
+         <div class=\"catalog-filter-fields\">{}{}</div></form>",
         escape(release),
         escape(query.unwrap_or_default()),
         escape(slug),
         urlencode(release),
+        catalog_select("channel", "Channel", "All channels", &channel_options, channel.as_deref()),
+        catalog_select("architecture", "Architecture", "All architectures", &architecture_options, architecture.as_deref()),
     );
-    let pager = Pager::new(page_number, 25, containers.len());
+    let pager = Pager::new(browse.page_number(), 25, containers.len());
     let rows = pager
         .slice(&containers)
         .iter()
@@ -119,15 +176,25 @@ pub(crate) fn release_index(
                     escape(&container.package)
                 ),
                 escape(container.repository.as_str()),
+                escape(&channel_names(&container.release).join(", ")),
+                escape(&container.architectures.join(", ")),
                 pull_commands(reference.as_deref()),
                 format!("<a href=\"{}\">Platforms and details →</a>", escape(&href)),
             ]
         })
         .collect::<Vec<_>>();
     if rows.is_empty() {
-        body.push_str("<p class=\"dim\">No containers match this release and search.</p>");
+        body.push_str("<p class=\"dim\">No containers match these filters.</p>");
     } else {
-        let headers = ["release", "container", "repository", "pull", "details"];
+        let headers = [
+            "release",
+            "container",
+            "repository",
+            "channel",
+            "architecture",
+            "pull",
+            "details",
+        ];
         if context.is_all() {
             let page = pager.slice(&containers);
             let mut start = 0;
@@ -151,14 +218,11 @@ pub(crate) fn release_index(
         } else {
             body.push_str(&table(&headers, &rows));
         }
-        body.push_str(&pager.nav(
-            &format!("/{slug}/-/containers"),
-            &format!(
-                "release={}&q={}",
-                urlencode(release),
-                urlencode(query.unwrap_or_default())
-            ),
-        ));
+        let mut pager_query = format!("release={}", urlencode(release));
+        for (name, value) in &filters {
+            let _ = write!(pager_query, "&{}={}", urlencode(name), urlencode(value));
+        }
+        body.push_str(&pager.nav(&format!("/{slug}/-/containers"), &pager_query));
     }
     let _ = write!(body, "<details><summary>Repository inventory</summary><p><a href=\"/{}/-/containers/repositories\">Browse repositories and current tags</a></p></details>", escape(slug));
     page_with_session(
@@ -561,9 +625,8 @@ mod tests {
     use super::*;
     use aos_oci_types::{MediaType, Sha256Digest, Tag};
 
-    #[test]
-    fn repository_pull_uses_a_published_digest_and_never_assumes_latest() {
-        let registry = RegistryRecord {
+    fn test_registry() -> RegistryRecord {
+        RegistryRecord {
             id: 1,
             stable_id: "registry:test".into(),
             scope_key: "registry:test".into(),
@@ -578,7 +641,93 @@ mod tests {
             llms_txt_body: None,
             resource_version: 1,
             updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn release_filters_match_channel_partitions_and_platforms_before_paging() {
+        let registry = test_registry();
+        let releases = ["1.0.0", "2.0.0", "3.0.0"]
+            .into_iter()
+            .map(|version| crate::db::ReleaseRow {
+                semver: version.into(),
+                tag_oid: format!("tag-{version}"),
+                commit_oid: format!("commit-{version}"),
+                signer: Some("signer".into()),
+                tagged_at: Some(1),
+                pack_present: true,
+            })
+            .collect();
+        let context = ReleaseContext::select_among(
+            releases,
+            vec![crate::db::ChannelSummary {
+                name: "stable".into(),
+                frontier: Some("2.0.0".into()),
+                partitions: vec![Some("1.0.0".into())],
+            }],
+            None,
+            Some("all"),
+            true,
+        )
+        .unwrap();
+        let mut containers = (0..30)
+            .map(|index| crate::db::ReleaseContainerRow {
+                release: "1.0.0".into(),
+                repository: RepositoryName::parse(&format!("web{index:02}")).unwrap(),
+                package: format!("web{index:02}"),
+                digest: Sha256Digest::digest(format!("root-{index}").as_bytes()),
+                architectures: vec!["amd64".into(), "arm64".into()],
+            })
+            .collect::<Vec<_>>();
+        let mut unrelated = containers[0].clone();
+        unrelated.release = "3.0.0".into();
+        unrelated.package = "web-excluded-channel".into();
+        containers.push(unrelated);
+        let mut other_architecture = containers[0].clone();
+        other_architecture.release = "2.0.0".into();
+        other_architecture.package = "web-excluded-architecture".into();
+        other_architecture.architectures = vec!["arm64".into()];
+        containers.push(other_architecture);
+
+        let render = |query: &BrowseQuery| {
+            release_index(
+                &registry,
+                None,
+                &context,
+                &containers,
+                Some("oci.example"),
+                query,
+                Instant::now(),
+                &SessionIndicator::default(),
+            )
         };
+        let mut query = BrowseQuery {
+            release: Some("all".into()),
+            q: Some("web".into()),
+            channel: Some("stable".into()),
+            architecture: Some("amd64".into()),
+            ..BrowseQuery::default()
+        };
+        let first = render(&query);
+        assert_eq!(first.matches("Platforms and details →").count(), 25);
+        assert!(!first.contains("web-excluded"));
+        assert!(first.contains("channel=stable&amp;architecture=amd64"));
+        assert!(first.contains("<option value=\"amd64\" selected>amd64</option>"));
+        assert!(first.contains("<option value=\"stable\" selected>stable</option>"));
+        assert!(first.contains("/demo/-/containers?release=all\">Clear filters</a>"));
+
+        query.page = Some(2);
+        assert_eq!(render(&query).matches("Platforms and details →").count(), 5);
+        query.architecture = Some("unknown".into());
+        assert!(render(&query).contains("No containers match these filters."));
+        query.architecture = None;
+        query.channel = Some("unknown".into());
+        assert!(render(&query).contains("No containers match these filters."));
+    }
+
+    #[test]
+    fn repository_pull_uses_a_published_digest_and_never_assumes_latest() {
+        let registry = test_registry();
         let record = OciAdminRepositoryRecord {
             id: 1,
             registry_id: 1,
