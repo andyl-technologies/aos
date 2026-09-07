@@ -187,6 +187,7 @@ pub use campaign_attachment::{
     DEFAULT_CANONICAL_EXECUTOR_SCAN_LIMIT, DEFAULT_CANONICAL_PLANNER_INPUT_BYTES,
     DEFAULT_CANONICAL_PLANNER_SCAN_LIMIT, MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES,
     PreparedCanonicalCampaignRuntime, prepare_canonical_campaign_runtime,
+    prepare_canonical_campaign_runtime_endpoint,
 };
 pub use campaign_bootstrap::{
     CampaignLocalRepositoryStore, CampaignLocalService, CampaignLocalServiceConfig,

@@ -2,8 +2,6 @@
 
 use super::*;
 
-use std::os::unix::net::UnixStream;
-
 #[path = "artifact_capture.rs"]
 mod artifact_capture;
 pub(super) use artifact_capture::*;
@@ -1229,7 +1227,7 @@ pub(super) fn open_local_campaign_service(
     };
     let mut runtimes = Vec::with_capacity(runtime_targets.len());
     for (index, (campaign, executor_socket)) in runtime_targets.into_iter().enumerate() {
-        let stream = connect_campaign_executor(executor_socket)?;
+        let endpoint = campaign_executor_endpoint(executor_socket)?;
         let planner = runtime_control_planner.clone().ok_or_else(|| {
             serve_error("campaign runtime attachment requires the planner control profile")
         })?;
@@ -1240,7 +1238,7 @@ pub(super) fn open_local_campaign_service(
                 })?;
         runtimes.push(
             prepared
-                .prepare_runtime(stream, &runtime_config)
+                .prepare_runtime_endpoint(endpoint, &runtime_config)
                 .map_err(|error| {
                     serve_error(format!(
                         "campaign runtime {index} attachment error: {error}"
@@ -1268,7 +1266,9 @@ pub(super) fn open_local_campaign_service(
     }))
 }
 
-pub(super) fn connect_campaign_executor(path: &Path) -> Result<UnixStream, CliError> {
+pub(super) fn campaign_executor_endpoint(
+    path: &Path,
+) -> Result<crucible_daemon::ExecutorLoopbackEndpointConfig, CliError> {
     let user_id = rustix::process::geteuid().as_raw();
     let group_id = rustix::process::getegid().as_raw();
     let endpoint = crucible_daemon::ExecutorLoopbackEndpointConfig::new(
@@ -1278,9 +1278,7 @@ pub(super) fn connect_campaign_executor(path: &Path) -> Result<UnixStream, CliEr
         0o600,
     )
     .map_err(|error| serve_error(format!("campaign executor endpoint error: {error}")))?;
-    endpoint
-        .connect()
-        .map_err(|error| serve_error(format!("campaign executor connection error: {error}")))
+    Ok(endpoint)
 }
 
 struct RunningLocalCampaignService {
