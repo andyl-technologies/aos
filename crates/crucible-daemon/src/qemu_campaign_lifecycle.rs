@@ -331,7 +331,8 @@ pub use legacy_run::{
     GuardedDefaultCampaignInvariantError, GuardedDefaultCampaignObservation,
     GuardedDefaultCampaignProductionRunnerError, GuardedDefaultCampaignRun,
     GuardedDefaultCampaignRunError, GuardedDefaultCampaignRunRequest,
-    GuardedDefaultCampaignSupervisorError, run_guarded_default_campaign,
+    GuardedDefaultCampaignSupervisorError, GuardedDefaultCampaignWatchFrame,
+    run_guarded_default_campaign,
 };
 
 /// Narrow modeled-execution view of one guarded fresh QEMU lifecycle.

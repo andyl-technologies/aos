@@ -3669,7 +3669,14 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   replay/debug, export/import, push/pull/sync, and plan/apply GC.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage
   through common branch-request and campaign primitives and remove parallel
-  explicit-fork/search-expansion state models.
+  explicit-fork/search-expansion state models. The non-interactive local-QEMU
+  `run` path, including `--watch`, now executes through the authenticated
+  scenario-default campaign owner. Watch records name the exact campaign and
+  snapshot and pair that head with the scheduler evidence captured at the same
+  incorporation boundary; the CLI retains them under the owner's fixed bound
+  until its synchronous backend result is rendered. Save, resume, fork,
+  search, fuzz, replay, triage, interactive control, and long-lived session
+  migration remain open.
 - [x] **T-CAM-8.5** Publish user documentation and the worked network campaign
   as an executable fixture. The public Crucible guide now documents the
   shipped single-host campaign surface: strict offline import, managed daemon
