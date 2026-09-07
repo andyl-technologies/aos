@@ -209,8 +209,23 @@ def run_step(
     command = pathlib.Path(argv[0])
     if not command.is_absolute():
         fail(f"step {index} command is not an explicit absolute path")
-    if command not in allowed_harness_commands and not any(
-        command.is_relative_to(root_path) for root_path in allowed_command_roots
+    try:
+        resolved_command = command.resolve(strict=True)
+    except OSError as error:
+        raise RuntimeError(f"step {index} command cannot be resolved") from error
+
+    command_is_probe_output = resolved_command.is_relative_to(root.resolve())
+    command_is_allowed_input = any(
+        resolved_command.is_relative_to(root_path.resolve())
+        for root_path in allowed_command_roots
+    )
+    command_is_harness = resolved_command in {
+        path.resolve() for path in allowed_harness_commands
+    }
+    if (
+        not command_is_harness
+        and not command_is_probe_output
+        and not command_is_allowed_input
     ):
         fail(f"step {index} command is outside the package closure and harness")
 
