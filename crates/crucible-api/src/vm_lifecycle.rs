@@ -88,6 +88,7 @@ pub use hot_fork::{
 #[cfg(all(target_os = "linux", feature = "test-support"))]
 pub use hot_fork::{
     hot_fork_adoption_count_for_test, prepared_hot_fork_source_world_for_test,
+    prepared_multi_node_hot_fork_source_world_for_scenario_for_test,
     prepared_multi_node_hot_fork_source_world_for_test, reset_hot_fork_adoption_count_for_test,
 };
 

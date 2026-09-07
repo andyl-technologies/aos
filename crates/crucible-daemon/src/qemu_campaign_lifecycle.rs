@@ -85,6 +85,11 @@ pub enum QemuAttemptProductionVmLifecycleError {
     InvalidSignalFaultBranchReplay(String),
 }
 
+mod resource_admission;
+pub use resource_admission::{
+    QemuFreshScenarioResourceError, validate_fresh_qemu_scenario_resources,
+};
+
 /// Factory that binds one admitted attempt to the guarded production lifecycle.
 pub struct QemuAttemptProductionVmLifecycleFactory<R> {
     config: ProductionVmLifecycleConfig,

@@ -145,6 +145,8 @@ pub mod qemu_campaign_resume;
 #[cfg(target_os = "linux")]
 pub mod qemu_exact_resume_executor;
 #[cfg(target_os = "linux")]
+pub mod qemu_hot_first_router;
+#[cfg(target_os = "linux")]
 pub mod qemu_hot_fork_factory;
 #[cfg(target_os = "linux")]
 pub mod qemu_hot_fork_pool;
@@ -481,6 +483,8 @@ pub use qemu_campaign_resume::{
 };
 #[cfg(target_os = "linux")]
 pub use qemu_exact_resume_executor::QemuExactResumeLiveRealizationExecutor;
+#[cfg(target_os = "linux")]
+pub use qemu_hot_first_router::{QemuHotFirstExecutionRouter, QemuHotFirstExecutionRouterError};
 #[cfg(target_os = "linux")]
 pub use qemu_hot_fork_factory::{
     FixedQemuHotForkTemplateFactory, FixedQemuHotForkTemplateFactoryConstructionError,

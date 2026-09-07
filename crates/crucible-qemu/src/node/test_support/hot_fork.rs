@@ -39,6 +39,12 @@ struct ScriptedShmemHotPath {
     setup_identity: crucible_shmem::SetupRegionBackingIdentity,
     host_barrier: crucible_shmem::MappedRingIoBarrierSnapshot,
     image: crucible_shmem::HotForkRingImage,
+    observable_events: VecDeque<ObservableEvent>,
+    selectable_catalog_plan:
+        Option<crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan>,
+    deferred_selectable_request:
+        Option<crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest>,
+    quantum_completed: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -91,6 +97,36 @@ struct ScriptedQmpMachineControl {
 pub fn scripted_hot_fork_source_for_test(
     outcome: QemuTestHotForkOutcome,
 ) -> Result<QemuNode, QemuTestHotForkSourceError> {
+    scripted_hot_fork_source_with_observations_for_test(outcome, Vec::new())
+}
+
+/// Builds one live scripted source whose forked child emits fixed observations.
+///
+/// # Errors
+///
+/// Returns an error when the fixture cannot allocate its process, descriptors,
+/// shared-memory image, or scripted transport state.
+pub fn scripted_hot_fork_source_with_observations_for_test(
+    outcome: QemuTestHotForkOutcome,
+    observable_events: Vec<ObservableEvent>,
+) -> Result<QemuNode, QemuTestHotForkSourceError> {
+    scripted_hot_fork_source_with_state_for_test(outcome, observable_events, None)
+}
+
+/// Builds one live scripted source with fixed observations and selectable state.
+///
+/// # Errors
+///
+/// Returns an error when the fixture cannot allocate its process, descriptors,
+/// shared-memory image, or scripted transport state.
+pub fn scripted_hot_fork_source_with_state_for_test(
+    outcome: QemuTestHotForkOutcome,
+    observable_events: Vec<ObservableEvent>,
+    selectable_state: Option<(
+        crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan,
+        crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+    )>,
+) -> Result<QemuNode, QemuTestHotForkSourceError> {
     let (setup_identity, host_barrier, image) = held_hot_fork_ring_image()?;
     let plugin_barrier =
         crate::QmpHotForkPluginBarrierState::one_quiescent(15, host_barrier.ring_count());
@@ -99,12 +135,18 @@ pub fn scripted_hot_fork_source_for_test(
         .spawn()
         .map_err(|source| QemuTestHotForkSourceError::new("spawn scripted source", source))?;
     let process_id = child.id();
+    let (selectable_catalog_plan, deferred_selectable_request) = selectable_state
+        .map_or((None, None), |(plan, request)| (Some(plan), Some(request)));
     let channels = QemuNodeChannels::new(
         ScriptedPluginControl,
         ScriptedShmemHotPath {
             setup_identity,
             host_barrier,
             image,
+            observable_events: observable_events.into(),
+            selectable_catalog_plan,
+            deferred_selectable_request,
+            quantum_completed: false,
         },
         ScriptedQmpMachineControl {
             process_id,
@@ -351,6 +393,7 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
         // crucible-lint: allow host-nondeterminism-state -- this test source returns a scripted horizon without making a scheduler decision.
         horizon: ExecutionHorizon,
     ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError> {
+        self.quantum_completed = true;
         Ok(QemuNodePendingQuantum::new(horizon.icount.retired))
     }
 
@@ -416,7 +459,37 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
     }
 
     fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, QemuNodeChannelError> {
-        Ok(Vec::new())
+        Ok(self.observable_events.drain(..).collect())
+    }
+
+    fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<
+        Vec<crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest>,
+        QemuNodeChannelError,
+    > {
+        if !self.quantum_completed {
+            return Ok(Vec::new());
+        }
+        let Some(pending) = self.deferred_selectable_request.take() else {
+            return Ok(Vec::new());
+        };
+        let plan = self.selectable_catalog_plan.as_mut().ok_or_else(|| {
+            QemuNodeChannelError::new(
+                "publish scripted selectable request",
+                "scripted selectable catalog is absent",
+            )
+        })?;
+        plan.apply_pending_request(pending.clone()).map_err(|error| {
+            QemuNodeChannelError::new("publish scripted selectable request", error.to_string())
+        })?;
+        Ok(vec![pending])
+    }
+
+    fn selectable_catalog_plan(
+        &self,
+    ) -> Option<&crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan> {
+        self.selectable_catalog_plan.as_ref()
     }
 
     // crucible-lint: allow host-nondeterminism-state -- this test source deliberately discards the already-modeled frame input.
