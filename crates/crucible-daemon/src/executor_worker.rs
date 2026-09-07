@@ -23,8 +23,8 @@ use crate::{
     CheckpointCompletionOutcome, CheckpointHandoffFailure, CheckpointPublicationOutcome,
     CompletionOutcome, ExactCheckpointStore, ExactCheckpointStoreError, ExecutionCancellation,
     ExecutionCheckpointRequest, LocalExecutorError, LocalExecutorSupervisor,
-    ObservationPublicationOutcome, PreparedAttemptCheckpoint, QueuedAttempt,
-    TerminalFailureOutcome,
+    ObservationPublicationOutcome, PreparedAttemptCheckpoint, PreparedCrucibleFindingCandidate,
+    QueuedAttempt, TerminalFailureOutcome,
 };
 
 /// Fully authenticated discovery or branch start supplied to an execution model.
@@ -409,6 +409,13 @@ pub trait AttemptExecutionModel {
 pub enum AttemptExecutionProduct {
     /// The attempt reached its modeled stop and produced immutable evidence.
     Observation(Box<ObservationCandidate>),
+    /// The attempt produced an observation and a verified finding closure.
+    ObservationWithFinding {
+        /// Canonical observation candidate from the admitted execution.
+        observation: Box<ObservationCandidate>,
+        /// Prepared private-replay evidence and finding root.
+        finding: Box<PreparedCrucibleFindingCandidate>,
+    },
     /// A durable checkpoint request won at an exact scheduler boundary.
     ExactCheckpoint(Box<AttemptCheckpointResult>),
 }
@@ -418,6 +425,18 @@ impl AttemptExecutionProduct {
     #[must_use]
     pub fn observation(candidate: ObservationCandidate) -> Self {
         Self::Observation(Box::new(candidate))
+    }
+
+    /// Wraps an observation and its fully prepared finding candidate.
+    #[must_use]
+    pub fn observation_with_finding(
+        observation: ObservationCandidate,
+        finding: PreparedCrucibleFindingCandidate,
+    ) -> Self {
+        Self::ObservationWithFinding {
+            observation: Box::new(observation),
+            finding: Box::new(finding),
+        }
     }
 
     /// Wraps one complete attempt checkpoint capture.
@@ -654,7 +673,11 @@ where
             .execute(&input, &context)
             .map_err(|failure| map_worker_failure(failure, RepositoryAttemptWorkerError::Model))?;
         match &product {
-            AttemptExecutionProduct::Observation(candidate) => {
+            AttemptExecutionProduct::Observation(candidate)
+            | AttemptExecutionProduct::ObservationWithFinding {
+                observation: candidate,
+                ..
+            } => {
                 if candidate.observation().attempt() != queued.request().attempt() {
                     return Err(AttemptWorkerFailure::Terminal(
                         RepositoryAttemptWorkerError::IncompatibleResult {
@@ -800,6 +823,7 @@ pub enum AttemptWorkerReconcileOutcome {
 pub struct PendingAttemptResult {
     queued: QueuedAttempt,
     candidate: ObservationCandidate,
+    finding: Option<PreparedCrucibleFindingCandidate>,
 }
 
 /// Captured checkpoint retained for no-write preparation retry.
@@ -834,6 +858,7 @@ impl PendingCheckpointResult {
 pub struct PreparedAttemptResult {
     pending: PendingAttemptResult,
     observation: ObservationId,
+    finding_candidate: Option<crucible_campaign::FindingCandidateBundleId>,
 }
 
 impl PreparedAttemptResult {
@@ -848,6 +873,12 @@ impl PreparedAttemptResult {
     pub const fn observation(&self) -> ObservationId {
         self.observation
     }
+
+    /// Returns the finding root that must be staged with the observation.
+    #[must_use]
+    pub const fn finding_candidate(&self) -> Option<crucible_campaign::FindingCandidateBundleId> {
+        self.finding_candidate
+    }
 }
 
 /// Candidate whose immutable objects were published outside the supervisor actor.
@@ -855,6 +886,7 @@ impl PreparedAttemptResult {
 pub struct PublishedAttemptResult {
     queued: QueuedAttempt,
     observation: ObservationId,
+    finding_candidate: Option<crucible_campaign::FindingCandidateBundleId>,
 }
 
 /// Linear token proving the durable publication root was installed first.
@@ -1047,6 +1079,12 @@ impl PublishedAttemptResult {
     pub const fn queued(&self) -> &QueuedAttempt {
         &self.queued
     }
+
+    /// Returns the published finding candidate retained with completion.
+    #[must_use]
+    pub const fn finding_candidate(&self) -> Option<crucible_campaign::FindingCandidateBundleId> {
+        self.finding_candidate
+    }
 }
 
 /// Actor result of consuming one prepared candidate.
@@ -1071,7 +1109,13 @@ impl PendingAttemptResult {
         &self.candidate
     }
 
-    /// Consumes the pending value into its linear execution token and candidate.
+    /// Returns the prepared finding closure retained with the observation.
+    #[must_use]
+    pub const fn finding(&self) -> Option<&PreparedCrucibleFindingCandidate> {
+        self.finding.as_ref()
+    }
+
+    /// Consumes the pending value into its linear token and immutable records.
     #[must_use]
     pub fn into_parts(self) -> (QueuedAttempt, ObservationCandidate) {
         (self.queued, self.candidate)
@@ -1348,6 +1392,19 @@ pub fn prepare_attempt_result<W>(
             PendingAttemptResult {
                 queued,
                 candidate: *candidate,
+                finding: None,
+            },
+        )
+        .map(|prepared| PreparedAttemptWorkResult::Observation(Box::new(prepared))),
+        AttemptExecutionProduct::ObservationWithFinding {
+            observation,
+            finding,
+        } => prepare_pending_attempt_result(
+            store,
+            PendingAttemptResult {
+                queued,
+                candidate: *observation,
+                finding: Some(*finding),
             },
         )
         .map(|prepared| PreparedAttemptWorkResult::Observation(Box::new(prepared))),
@@ -1405,9 +1462,32 @@ fn prepare_pending_attempt_result<W>(
             });
         }
     };
+    let finding_candidate = match &pending.finding {
+        Some(finding) => {
+            if finding.bundle().observation() != observation {
+                return Err(AttemptResultPreparationError::Candidate {
+                    pending: Box::new(pending),
+                    source: CampaignRepositoryError::Integrity {
+                        reason: "prepared-finding-observation-mismatch",
+                    },
+                });
+            }
+            match finding.id() {
+                Ok(candidate) => Some(candidate),
+                Err(error) => {
+                    return Err(AttemptResultPreparationError::Candidate {
+                        pending: Box::new(pending),
+                        source: CampaignRepositoryError::Codec(error),
+                    });
+                }
+            }
+        }
+        None => None,
+    };
     Ok(PreparedAttemptResult {
         pending,
         observation,
+        finding_candidate,
     })
 }
 
@@ -1533,7 +1613,15 @@ where
     V: AttemptAdmissionValidator,
 {
     let observation = prepared.observation();
-    let stage = match supervisor.stage_observation_publication(prepared.queued(), observation) {
+    let stage_result = match prepared.finding_candidate() {
+        Some(finding_candidate) => supervisor.stage_observation_and_finding_candidate_publication(
+            prepared.queued(),
+            observation,
+            finding_candidate,
+        ),
+        None => supervisor.stage_observation_publication(prepared.queued(), observation),
+    };
+    let stage = match stage_result {
         Ok(stage) => stage,
         Err(source) => {
             return Err(AttemptResultStagingError {
@@ -1580,10 +1668,16 @@ pub fn publish_prepared_attempt_result(
     if let Err(source) = store.publish_observation_candidate(&staged.prepared.pending.candidate) {
         return Err(AttemptResultPublicationError { staged, source });
     }
+    if let Some(finding) = &staged.prepared.pending.finding
+        && let Err(source) = finding.publish_for_executor(store)
+    {
+        return Err(AttemptResultPublicationError { staged, source });
+    }
     let StagedAttemptResult { prepared } = *staged;
     Ok(PublishedAttemptResult {
         queued: prepared.pending.queued,
         observation: prepared.observation,
+        finding_candidate: prepared.finding_candidate,
     })
 }
 
@@ -1675,16 +1769,19 @@ where
     V: AttemptAdmissionValidator,
 {
     let observation = published.observation;
-    let completion =
-        match supervisor.stage_and_reconcile_completion(&published.queued, published.observation) {
-            Ok(completion) => completion,
-            Err(source) => {
-                return Err(AttemptWorkerReconcileError::CompletionPending {
-                    published: Box::new(published),
-                    source,
-                });
-            }
-        };
+    let completion = match supervisor.stage_and_reconcile_completion_with_finding_candidate(
+        &published.queued,
+        published.observation,
+        published.finding_candidate,
+    ) {
+        Ok(completion) => completion,
+        Err(source) => {
+            return Err(AttemptWorkerReconcileError::CompletionPending {
+                published: Box::new(published),
+                source,
+            });
+        }
+    };
     Ok(AttemptWorkerReconcileOutcome::Reconciled {
         observation,
         completion,
