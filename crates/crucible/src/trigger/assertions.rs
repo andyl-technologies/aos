@@ -670,15 +670,20 @@ impl OfflineAssertionChecker {
 
     /// Grades `properties` against a retained event log using `oracle`.
     ///
-    /// The event log is read-only input. Evaluation observes every recorded
-    /// event-log prefix except the terminal prefix, then lets
+    /// The event log is read-only input. Evaluation observes every valid
+    /// recorded prefix except the terminal prefix. An observable prefix that
+    /// falls behind an earlier evaluation point is deferred only when a trailing
+    /// scheduler evaluation boundary proves it belongs to an atomic batch. The
+    /// checker then lets
     /// [`HostAssertionEvaluator::finalize_prefix`] observe that terminal prefix
     /// exactly once before applying end-of-run policies. Each observed point is
     /// reconstructed as a [`ConditionEventLogPrefix`] before evaluation. The
     /// supplied [`RecordedAssertionLog`] should carry exact event-log offsets for
-    /// every prefix that can be observed by a named host predicate. Intermediate
-    /// prefixes without retained offsets are skipped for custom-oracle checks;
-    /// the terminal prefix must always have an exact offset.
+    /// every prefix that can be observed by a named host predicate. A retained
+    /// offset makes its prefix an authoritative published boundary even when it
+    /// ends in an observable entry. Intermediate prefixes without retained
+    /// offsets are skipped for custom-oracle checks; the terminal prefix must
+    /// always have an exact offset.
     ///
     /// # Errors
     ///
@@ -728,36 +733,66 @@ impl OfflineAssertionChecker {
         }
         let event_log = recorded_log.entries();
         let terminal_prefix_len = event_log.len();
+        let terminal_prefix = condition_prefix_from_recorded_log(
+            recorded_log,
+            terminal_prefix_len,
+            require_recorded_offsets,
+        )?;
 
         for index in 0..event_log.len() {
             let prefix_len = index + 1;
             if prefix_len == terminal_prefix_len {
                 continue;
             }
-            if require_recorded_offsets
-                && recorded_log
-                    .event_log_offset(u64::try_from(prefix_len).map_err(|_| {
-                        OfflineAssertionCheckError::PrefixLengthOverflow { prefix_len }
-                    })?)
-                    .is_none()
-            {
+            let prefix_len_u64 = u64::try_from(prefix_len)
+                .map_err(|_| OfflineAssertionCheckError::PrefixLengthOverflow { prefix_len })?;
+            let recorded_offset = recorded_log.event_log_offset(prefix_len_u64);
+            if require_recorded_offsets && recorded_offset.is_none() {
                 continue;
             }
-            let prefix = condition_prefix_from_recorded_log(
+            let prefix = match condition_prefix_from_recorded_log(
                 recorded_log,
                 prefix_len,
                 require_recorded_offsets,
-            )?;
+            ) {
+                Ok(prefix) => prefix,
+                Err(OfflineAssertionCheckError::ConditionEvaluation(
+                    ConditionEvaluationError::FutureEventLogEntry { .. },
+                )) if observation_awaits_atomic_evaluation_boundary(event_log, index)
+                    && (!require_recorded_offsets || recorded_offset.is_none()) =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             evaluator.observe_prefix(&prefix, oracle);
         }
 
-        let terminal_prefix = condition_prefix_from_recorded_log(
-            recorded_log,
-            terminal_prefix_len,
-            require_recorded_offsets,
-        )?;
         Ok(evaluator.finalize_prefix(&terminal_prefix, oracle))
     }
+}
+
+/// Reports whether an observation belongs to an explicitly bounded atomic batch.
+fn observation_awaits_atomic_evaluation_boundary(
+    event_log: &[SchedulerEventLogEntry],
+    index: usize,
+) -> bool {
+    if !matches!(
+        event_log[index].payload(),
+        SchedulerEventLogPayload::Observable(_)
+    ) {
+        return false;
+    }
+
+    event_log[index + 1..]
+        .iter()
+        .find(|entry| !matches!(entry.payload(), SchedulerEventLogPayload::Observable(_)))
+        .is_some_and(|entry| {
+            matches!(
+                entry.payload(),
+                SchedulerEventLogPayload::EvaluationBoundary(_)
+            )
+        })
 }
 
 /// Retained assertion-checking view of a recorded scheduler event log.
