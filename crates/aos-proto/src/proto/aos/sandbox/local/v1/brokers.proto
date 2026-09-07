@@ -76,6 +76,8 @@ enum BrokerMethod {
   BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT = 15;
   BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS = 16;
   BROKER_METHOD_HOST_PUBLISH_CATALOG = 17;
+  BROKER_METHOD_STORAGE_INVENTORY_RESOURCES = 18;
+  BROKER_METHOD_NETWORK_INVENTORY_RESOURCES = 19;
 }
 
 // Semantic roles for SCM_RIGHTS descriptors carried beside one packet.
@@ -364,9 +366,35 @@ message StorageResult {
 message InventoryStorageRequest { RequestHeader header = 1; }
 message InventoryStorageResponse { repeated StorageResult resources = 1; }
 
+// Storage 1.2 authoritative launch-resource inventory. The workspace pin path
+// is derived from workspace_handle beneath the fixed root-owned publisher;
+// caller-selected paths never cross this boundary.
+message StorageWorkspaceInventoryRecord {
+  bytes workspace_handle = 1; // Exactly 32 bytes.
+  AssignmentFence fence = 2;
+  Descriptor root_image = 3;
+  bytes resource_kernel_boot_id = 4; // Exactly 16 bytes.
+  uint64 root_device = 5;
+  uint64 root_inode = 6;
+  uint64 dataset_guid = 7;
+  uint32 uid_range_start = 8;
+  uint32 uid_range_size = 9;
+  bytes resource_digest = 10; // Commitment to the complete broker observation.
+}
+
+message InventoryStorageResourcesResponse {
+  bytes kernel_boot_id = 1; // Current Linux boot ID, exactly 16 bytes.
+  uint64 journal_sequence = 2; // Nonzero next-frame durable boundary.
+  uint64 catalog_generation = 3; // Nonzero protected storage catalog generation.
+  repeated StorageWorkspaceInventoryRecord workspaces = 4; // At most 16384, strict handle order.
+  bytes broker_instance_id = 5; // Exactly 16 bytes; changes on broker start.
+}
+
 service StorageBroker {
   rpc ApplyStorage(ApplyStorageRequest) returns (StorageResult);
   rpc InventoryStorage(InventoryStorageRequest) returns (InventoryStorageResponse);
+  rpc InventoryStorageResources(InventoryStorageRequest)
+      returns (InventoryStorageResourcesResponse);
 }
 
 enum MountAction {
@@ -739,9 +767,33 @@ enum NetworkState {
 message InventoryNetworksRequest { RequestHeader header = 1; }
 message InventoryNetworksResponse { repeated NetworkResult networks = 1; }
 
+// Network 1.2 authoritative current-resource inventory. The namespace pin path
+// is derived from network_handle beneath the fixed root-owned publisher.
+message NetworkNamespaceInventoryRecord {
+  bytes network_handle = 1; // Exactly 32 bytes.
+  AssignmentFence fence = 2;
+  bytes resource_kernel_boot_id = 3; // Exactly 16 bytes.
+  uint64 namespace_device = 4;
+  uint64 namespace_inode = 5;
+  NetworkState state = 6;
+  uint64 lease_generation = 7;
+  uint64 fail_stop_boottime_nanoseconds = 8;
+  bytes resource_digest = 9; // Commitment to the complete broker observation.
+}
+
+message InventoryNetworkResourcesResponse {
+  bytes kernel_boot_id = 1; // Current Linux boot ID, exactly 16 bytes.
+  uint64 journal_sequence = 2; // Nonzero next-frame durable boundary.
+  uint64 catalog_generation = 3; // Nonzero protected network catalog generation.
+  repeated NetworkNamespaceInventoryRecord networks = 4; // At most 16384, strict handle order.
+  bytes broker_instance_id = 5; // Exactly 16 bytes; changes on broker start.
+}
+
 service NetworkBroker {
   rpc ApplyNetwork(ApplyNetworkRequest) returns (NetworkResult);
   rpc InventoryNetworks(InventoryNetworksRequest) returns (InventoryNetworksResponse);
+  rpc InventoryNetworkResources(InventoryNetworksRequest)
+      returns (InventoryNetworkResourcesResponse);
 }
 
 enum GuardianAction {

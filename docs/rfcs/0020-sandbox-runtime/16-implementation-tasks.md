@@ -3675,3 +3675,44 @@ and `SBX-HOST-01`. It does not claim combined production publication: Storage
 and Network still need authoritative current-resource inventories, and the
 controller still needs durable whole-catalog generation and tombstone
 reconciliation before it can schedule the existing Host 1.4 dispatch.
+
+### Version-separated Storage and Network resource inventory contracts
+
+Storage and Network protocol 1.2 now define distinct authoritative-resource
+inventory methods instead of extending the legacy action-summary responses in
+place. A 1.1 peer can continue to negotiate the original summaries, but cannot
+request either new method or interpret an empty response as a complete physical
+snapshot. Both new methods remain authority-free and descriptor-free: the fixed
+node controller may observe broker-owned state, but receives no live kernel
+descriptor and gains no mutation authority.
+
+Storage snapshots bind every current launchable workspace handle to its exact
+assignment fence, portable root image, current-boot root-pin device and inode,
+nonzero ZFS dataset GUID, nonoverlapping subordinate identity range, and a
+complete broker observation digest. The validator requires bounded strict
+handle order, unique physical pins and dataset GUIDs, and derives the only
+admissible root path from the handle beneath the fixed Host workspace-pin root.
+Snapshot metadata carries the current boot, broker instance, protected catalog
+generation, and next durable journal boundary.
+
+Network snapshots likewise bind each current namespace handle to its exact
+assignment, current-boot namespace device and inode, closed lifecycle and lease
+shape, and observation digest. Default-drop and armed namespaces are explicitly
+launchable; fenced namespaces remain visible for cleanup but cannot be projected
+into a Host launch catalog. Physical namespace identities and handles are
+unique, and the only admissible pin path is derived beneath the fixed Host
+network-pin root.
+
+Focused validation covers Storage and Network 1.1/1.2 negotiation separation,
+request-header version binding, strict ordering, current-boot enforcement,
+duplicate physical resources, overlapping identity ranges, invalid lifecycle
+and lease combinations, fixed pin derivation, response ceilings, and nested
+hostile-field validation. The protobuf, core registry, and protocol library
+suites pass, along with Rust formatting and diff checks.
+
+This advances `SBX-BPROTO-04`, `SBX-CTRL-03`, `SBX-STOR-01`, and `SBX-NET-01`
+without claiming an authoritative producer. Storage still needs to publish
+these rows from verified ZFS postconditions and protected root pins; Network
+still needs its kernel effect/observer and durable lifecycle index. The
+controller still needs authenticated one-shot clients, durable snapshot
+continuity, and exact projection into the shared Host catalog schema.

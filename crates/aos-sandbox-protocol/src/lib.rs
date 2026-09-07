@@ -17,9 +17,11 @@ pub mod mount_catalog;
 pub mod mount_destination_slot;
 mod mount_result;
 pub mod mount_scope;
+pub mod network_inventory;
 pub mod payload_scope;
 pub mod semantics;
 pub mod session;
+pub mod storage_inventory;
 
 pub use host_catalog_snapshot::{
     ATTACHMENT_ANCHOR_PIN_PREFIX, AttachmentAnchorCatalogEntry, CatalogAssignment,
@@ -47,6 +49,16 @@ pub use mount_destination_slot::{
 };
 pub use mount_result::{
     ValidatedMountResult, decode_mount_result_for_apply, detached_mount_handle_v1,
+};
+pub use network_inventory::{
+    MAXIMUM_NETWORK_NAMESPACE_INVENTORY_RECORDS, ValidatedNetworkInventory,
+    ValidatedNetworkNamespace, decode_network_resource_inventory_request,
+    decode_network_resource_inventory_response,
+};
+pub use storage_inventory::{
+    MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS, ValidatedStorageInventory,
+    ValidatedStorageWorkspace, decode_storage_resource_inventory_request,
+    decode_storage_resource_inventory_response,
 };
 
 mod runtime_template;

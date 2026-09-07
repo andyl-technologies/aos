@@ -56,7 +56,7 @@ pub const MAXIMUM_HOST_QUERY_PACKET_BYTES: usize =
 /// Maximum exact completed Host Apply receipt carried by an effect query.
 pub const MAXIMUM_RUNTIME_EFFECT_RECEIPT_BYTES: usize = 1024 * 1024;
 const MAXIMUM_AUTHORIZATION_ARTIFACT_BYTES: usize = 960 * 1024;
-const MAXIMUM_BROKER_METHODS: usize = 17;
+const MAXIMUM_BROKER_METHODS: usize = 19;
 const MAXIMUM_REQUIRED_FEATURES: usize = 64;
 const MAXIMUM_SAFE_ERROR_MESSAGE_BYTES: usize = 1024;
 
@@ -1112,8 +1112,10 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS
         | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
         | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY
+        | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
-        | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY => roles.is_empty(),
+        | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
+        | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES => roles.is_empty(),
         BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => {
             roles == crate::host_catalog::HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES
         }
@@ -1506,10 +1508,12 @@ fn validate_method(
             ProtocolId::StorageBroker,
             BrokerMethod::BROKER_METHOD_STORAGE_APPLY
                 | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY
+                | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
         ) | (
             ProtocolId::NetworkBroker,
             BrokerMethod::BROKER_METHOD_NETWORK_APPLY
                 | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
+                | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES
         )
     );
     if !valid {
@@ -1519,6 +1523,13 @@ fn validate_method(
 }
 
 fn method_available_in_version(method: BrokerMethod, version: ProtocolVersion) -> bool {
+    if matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
+            | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES
+    ) {
+        return version.minor() >= 2;
+    }
     if method == BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG {
         return version.minor() >= 4;
     }
@@ -3482,6 +3493,63 @@ mod tests {
             ),
             Err(ProtocolValidationError::MethodMismatch)
         );
+    }
+
+    #[test]
+    fn storage_and_network_resource_inventories_require_protocol_one_two() {
+        for (protocol, method) in [
+            (
+                ProtocolId::StorageBroker,
+                BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
+            ),
+            (
+                ProtocolId::NetworkBroker,
+                BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES,
+            ),
+        ] {
+            assert!(!method_available_in_version(
+                method,
+                ProtocolVersion::new(1, 1)
+            ));
+            assert!(method_available_in_version(
+                method,
+                ProtocolVersion::new(1, 2)
+            ));
+
+            let hello = BrokerClientHello {
+                protocol_major: 1,
+                protocol_minor: 2,
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                maximum_response_bytes: 4096,
+                required_methods: vec![method.into()],
+                ..Default::default()
+            };
+            let session = negotiate_client_hello(
+                &hello.encode_to_vec(),
+                peer(),
+                policy(),
+                protocol,
+                &client_features(),
+                &[method],
+            )
+            .unwrap();
+            let packet = encode_unauthed_request_envelope(protocol, method, b"inventory").unwrap();
+            assert!(session.decode_request(&packet, 0).is_ok());
+
+            let mut legacy = hello;
+            legacy.protocol_minor = 1;
+            assert_eq!(
+                negotiate_client_hello(
+                    &legacy.encode_to_vec(),
+                    peer(),
+                    policy(),
+                    protocol,
+                    &client_features(),
+                    &[method],
+                ),
+                Err(ProtocolValidationError::MethodMismatch)
+            );
+        }
     }
 
     #[test]
