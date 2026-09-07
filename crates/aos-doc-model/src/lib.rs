@@ -2309,9 +2309,11 @@ mod tests {
         let anchors = identities.map(|(kind, key)| documentation_anchor(kind, key));
         assert_eq!(anchors.iter().collect::<BTreeSet<_>>().len(), anchors.len());
         for anchor in anchors {
-            assert!(anchor
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b':'));
+            assert!(
+                anchor
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b':')
+            );
             assert!(validate_token("section id", &anchor).is_err());
         }
     }

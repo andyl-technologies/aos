@@ -1,8 +1,5 @@
 # tests/build/sandbox-linux-uapi.nix — Linux sandbox syscall presence probe
-{
-  pkgs,
-  ...
-}:
+{pkgs, ...}:
 pkgs.mkDerivation {
   pname = "sandbox-linux-uapi-probe";
   version = "0";

@@ -1290,10 +1290,9 @@ mod tests {
         let publisher = publisher(&directory);
         publisher.publish(&empty_snapshot(3)).unwrap();
         let equivocation = empty_snapshot(3)
-            .with_retired_identity_allocations(vec![CatalogIdentityAllocation::new(
-                65_536, 65_536, 1,
-            )
-            .unwrap()])
+            .with_retired_identity_allocations(vec![
+                CatalogIdentityAllocation::new(65_536, 65_536, 1).unwrap(),
+            ])
             .unwrap();
 
         assert!(publisher.publish(&equivocation).is_err());
@@ -1307,7 +1306,7 @@ mod tests {
 
     #[test]
     fn publisher_rejects_unprotected_or_redirected_current_catalogs() {
-        use std::os::unix::fs::{symlink, PermissionsExt as _};
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
 
         let directory = tempfile::tempdir().unwrap();
         let publisher = publisher(&directory);
