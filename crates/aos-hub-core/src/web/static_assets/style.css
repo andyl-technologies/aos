@@ -123,8 +123,6 @@ header.masthead .session .who { color: var(--dim); }
 h1, h2 {
   font-size: 1rem;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
   /* A heavier, darker rule than any table line (`--rule-strong` ~half ink, 2px)
    * so a section divider never reads as a table header/row separator — the
    * three weights are: heading (2px, dark) > table header (1px, --rule) >
@@ -135,7 +133,7 @@ h1, h2 {
 }
 h1 { font-size: 1.15rem; margin-top: 0.5rem; }
 /* Subsection title under a group heading (e.g. "Registries" under "Publishing").
- * Title-case + no rule so it reads as subordinate to the uppercase, ruled h2. */
+ * No rule keeps it subordinate to the ruled h2. */
 h3 {
   font-size: 1rem;
   font-weight: 700;
@@ -145,8 +143,6 @@ h3 {
 h4 {
   font-size: 0.82rem;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
   color: var(--dim);
   margin: 1.2rem 0 0.4rem;
 }
@@ -414,8 +410,6 @@ button.danger { color: var(--bad); border-color: var(--bad); }
   color: var(--dim);
   font-size: 0.72rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 .settings-nav a {
   display: block;
@@ -1307,7 +1301,7 @@ form.console label > .hint { grid-column: 2; justify-self: start; }
   padding: 0.6rem 0.75rem;
   font-size: 0.85rem;
   line-height: 1.45;
-  text-transform: none;       /* never inherit a heading's uppercase */
+  text-transform: none;       /* Keep tooltip prose independent of its heading. */
   letter-spacing: normal;
   font-weight: 400;
   color: var(--ink);
@@ -1712,7 +1706,7 @@ label.inline {
 .doc-more { display: inline-block; margin: .8rem 0; }
 .doc-reader { min-width: 0; }
 /* Option paths and folder titles are identifiers: keep their case and spacing. */
-.doc-reader h2 { overflow-wrap: anywhere; margin-top: .8rem; text-transform: none; letter-spacing: normal; }
+.doc-reader h2 { overflow-wrap: anywhere; margin-top: .8rem; }
 .doc-reader ul, .doc-reader ol { margin: .4rem 0 .8rem 1.4rem; padding: 0; }
 .doc-reader li { margin: .2rem 0; }
 .doc-reader p { margin: .5rem 0; }

@@ -59,8 +59,8 @@ pub(crate) fn release_index(
     let slug = &registry.slug;
     let mut body = context.nav(slug, "containers");
     let filters = query.map(|value| vec![("q", value)]).unwrap_or_default();
-    body.push_str(&context.selector(slug, &format!("/{slug}/-/containers"), &filters));
     body.push_str("<h1>Containers</h1>");
+    body.push_str(&context.selector(slug, &format!("/{slug}/-/containers"), &filters));
     let needle = query.unwrap_or_default().to_lowercase();
     let mut containers = containers
         .iter()
@@ -494,6 +494,7 @@ pub fn manifest(
     let mut body = context
         .map(|context| context.nav(slug, "containers"))
         .unwrap_or_else(|| registry_nav(slug, "containers"));
+    let _ = write!(body, "<h1>{}</h1>", escape(repository.as_str()));
     if let Some(context) = context {
         body.push_str(&context.selector(
             slug,
@@ -501,7 +502,6 @@ pub fn manifest(
             &[("repository", repository.as_str())],
         ));
     }
-    let _ = write!(body, "<h1>{}</h1>", escape(repository.as_str()));
     body.push_str("<h2>Pull</h2>");
     body.push_str(&pull_commands(reference.as_deref()));
     body.push_str("<details><summary>Details</summary>");

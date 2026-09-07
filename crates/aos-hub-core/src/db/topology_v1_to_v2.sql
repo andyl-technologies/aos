@@ -174,7 +174,7 @@ CREATE TABLE topology_operations(
     'gateway.read', 'gateway.manage', 'gateway.grant',
     'route.read', 'route.manage', 'topology.reconcile', 'cache.retention.manage',
     'cache.gc.plan', 'cache.gc.execute', 'cache.lease.self',
-    'validation.repair', 'audit.read', 'iam.admin')),
+    'audit.read', 'iam.admin')),
   CHECK(primary_target_kind IN('registry', 'binary_cache', 'placement', 'domain',
     'network_policy', 'endpoint', 'gateway', 'route',
     'placement_policy', 'retention_subscription', 'population_target',
@@ -225,7 +225,7 @@ CREATE TABLE operation_secondary_targets(
     'gateway.read', 'gateway.manage', 'gateway.grant',
     'route.read', 'route.manage', 'topology.reconcile', 'cache.retention.manage',
     'cache.gc.plan', 'cache.gc.execute', 'cache.lease.self',
-    'validation.repair', 'audit.read', 'iam.admin'))
+    'audit.read', 'iam.admin'))
 );
 CREATE INDEX operation_secondary_targets_resource_idx
 ON operation_secondary_targets(target_kind, stable_id, operation_id);
