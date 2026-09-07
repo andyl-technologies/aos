@@ -3964,3 +3964,50 @@ Inventory remain unadvertised until the fixed namespace/veth and policy
 helper, verified effect postconditions, protected lifecycle index, current-
 namespace observer, long-running service packaging, and controller Apply
 orchestration are complete.
+
+### Crash-recoverable Network preparation effects
+
+Network preparation now has an authenticated three-phase transaction instead
+of a Prepared-only intent. Admission derives a domain-separated effect identity
+from the exact request bytes and complete protected preparation resolution,
+then atomically retains Prepared with the current assignment fence, pending
+effect intent, and a second assignment fence sealed for that request's durable
+location. A helper must synchronously publish Ambiguous before it may attempt a
+namespace, veth, or policy effect; recovery never converts that phase back into
+permission to reissue the effect.
+
+Only an Ambiguous transaction can commit a typed observation. The result binds
+the request, transport, effect, preparation catalog, reserved opaque handle,
+current Linux boot, nonzero `nsfs` device and inode, and the helper's complete
+observation digest. Another request cannot commit the same physical namespace
+identity in that boot. Exact retry returns either the unfinished phase and
+effect digest for observation-only recovery or the prior committed result; it
+cannot flatten both cases into an instruction to prepare again.
+
+The request-scoped fence keeps committed authority independently recoverable
+after the sandbox's current assignment fence advances. Recovery rejects
+missing, moved, tampered, orphaned, or inconsistent current fences, operation
+fences, effects, and operation records, as well as duplicate reserved handles
+or committed physical namespaces. Version-one Prepared records remain readable
+under their original current fence but cannot cross the effect boundary without
+an explicit migration that supplies the operation-scoped authority they never
+stored.
+
+Focused validation covers exact transition order, premature completion,
+effect-identity mismatch, Ambiguous restart, exact committed replay and typed
+catalog recovery, result substitution, physical namespace collision, legacy
+record recovery, assignment-fence advancement, authority-link corruption, and
+bounded operation recovery. All 32 Network tests and doctests pass, together
+with strict all-target/all-feature crate-local Clippy, Rust formatting, and diff
+checks. The full `nix-build -A checks.eval --cores 8 --no-out-link` gate passes
+the complete workspace test phase, configuration evaluation, and system-
+structure checks at
+`/nix/store/9sbww0cxlb0a1j6sgilk11av0yynqvv4-aos-eval-and-system-structure-checks-0`.
+
+This advances `SBX-NET-01` and `SBX-LIFE-06` through durable one-shot effect
+identity and recoverable physical result identity without claiming that a
+kernel object was actually produced. Network Apply and Inventory remain
+unadvertised: the fixed privileged namespace/veth and policy helper, complete
+typed kernel postcondition verifier, protected current-resource lifecycle
+catalog, inventory producer, service packaging, and controller orchestration
+are still required.

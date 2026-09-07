@@ -185,6 +185,14 @@ impl NetworkAuthorityV1 {
         self.0.seal_fence(sandbox_id, &admission.fence)
     }
 
+    pub(crate) fn seal_operation_fence(
+        &self,
+        request_id: &[u8; 16],
+        admission: &VerifiedBrokerAdmission,
+    ) -> Result<Vec<u8>, NetworkAdmissionError> {
+        self.0.seal_operation_fence(request_id, &admission.fence)
+    }
+
     pub(crate) fn seal_effect(
         &self,
         request_id: &[u8; 16],
@@ -234,12 +242,41 @@ impl NetworkAuthorityV1 {
         Ok(opened_effect)
     }
 
+    pub(crate) fn validate_operation_links(
+        &self,
+        sandbox_id: &[u8; 16],
+        request_id: &[u8; 16],
+        fence: &[u8],
+        effect: &[u8],
+    ) -> Result<aos_sandbox_broker::BrokerEffectIntentV2, NetworkAdmissionError> {
+        let opened_fence = self.0.open_operation_fence(request_id, fence)?;
+        let opened_effect = self.0.open_effect(request_id, effect)?;
+        let lease = opened_fence.local_lease_record();
+        if opened_fence.assignment().sandbox().as_bytes() != sandbox_id
+            || opened_effect.plan_digest() != opened_fence.plan_digest()
+            || opened_effect.lease_digest() != lease.lease_digest()
+            || opened_effect.host_boot_id() != lease.host_boot_id()
+            || opened_effect.clock_provenance() != lease.clock_provenance()
+        {
+            return Err(NetworkAdmissionError::FenceRejected);
+        }
+        Ok(opened_effect)
+    }
+
     pub(crate) fn open_fence(
         &self,
         sandbox_id: &[u8; 16],
         bytes: &[u8],
     ) -> Result<aos_sandbox_broker::BrokerAuthorizationFenceV1, NetworkAdmissionError> {
         self.0.open_fence(sandbox_id, bytes)
+    }
+
+    pub(crate) fn open_operation_fence(
+        &self,
+        request_id: &[u8; 16],
+        bytes: &[u8],
+    ) -> Result<aos_sandbox_broker::BrokerAuthorizationFenceV1, NetworkAdmissionError> {
+        self.0.open_operation_fence(request_id, bytes)
     }
 }
 

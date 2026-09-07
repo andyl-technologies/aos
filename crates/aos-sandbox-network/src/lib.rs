@@ -1,14 +1,15 @@
-//! Non-executing root network-broker admission and recovery foundation.
+//! Root network-broker preparation and recovery foundation.
 //!
 //! [`catalog`] models protected preparation-profile, endpoint-policy, and
 //! reserved-handle allocation. [`preparation_catalog`] binds those inputs to an
 //! exact portable assignment, mints the opaque handle, and retains reservations
 //! in a protected append-only catalog. [`authorization`] adapts the shared
 //! signed authority verifier. [`state`] atomically journals authenticated
-//! authorization links and network-specific phases. [`broker`] composes those
-//! pieces without exposing Apply or performing netlink, nftables, or BPF work.
-//! The current-resource lifecycle index and kernel helper remain explicit
-//! readiness prerequisites, so no network method is advertised.
+//! authorization links, a durable pre-effect crash boundary, and typed
+//! committed namespace observations. [`broker`] composes those pieces without
+//! exposing Apply or performing netlink, nftables, or BPF work. The current-
+//! resource lifecycle index and kernel helper remain explicit readiness
+//! prerequisites, so no network method is advertised.
 
 pub mod authorization;
 pub mod broker;
@@ -31,6 +32,6 @@ pub use preparation_catalog::{
     NetworkPreparationReservationV1,
 };
 pub use state::{
-    DurableNetworkPhase, NetworkRecoveryEntry, NetworkRecoverySnapshotV1, NetworkStateError,
-    NetworkStateStore,
+    CommittedNetworkResultV1, DurableNetworkPhase, NetworkRecoveryEntry, NetworkRecoverySnapshotV1,
+    NetworkStateError, NetworkStateStore, VerifiedNetworkResultV1,
 };

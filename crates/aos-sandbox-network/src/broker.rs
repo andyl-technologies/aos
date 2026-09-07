@@ -1,11 +1,12 @@
-//! Non-executing network admission coordinator.
+//! Crash-recoverable network preparation coordinator.
 //!
 //! The coordinator validates portable PREPARE semantics, requires an opaque
 //! protected-catalog token, verifies signed Network authority, and atomically
-//! journals linked Prepared records. Existing-resource actions are
-//! categorically rejected. No production catalog-token publisher exists in
-//! this increment, so admission is mechanically unreachable outside internal
-//! tests and no helper or transition can attempt a kernel effect.
+//! journals linked operation records. An admitted operation must cross the
+//! durable Ambiguous boundary before a future helper attempts an effect, and a
+//! complete typed observation commits the resulting physical namespace. The
+//! fixed kernel helper does not exist yet, so Apply remains unadvertised and
+//! existing-resource actions are categorically rejected.
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox::RecordNamespace;
@@ -18,7 +19,8 @@ use sha2::{Digest as _, Sha256};
 use crate::authorization::{NetworkAuthorityV1, decode_assignment};
 use crate::catalog::{AuthenticatedNetworkPreparationV1, ResolvedNetworkPreparationV1};
 use crate::state::{
-    NetworkBeginOutcome, NetworkStateError, NetworkStateStore, PreparedNetworkRecordInput,
+    CommittedNetworkResultV1, DurableNetworkPhase, NetworkBeginOutcome, NetworkRecoveryEntry,
+    NetworkStateError, NetworkStateStore, PreparedNetworkRecordInput, VerifiedNetworkResultV1,
     prepared_record,
 };
 
@@ -40,12 +42,22 @@ pub enum NetworkBrokerError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NetworkAdmissionOutcome {
     /// Exact signed authority and intent were durably prepared.
-    Prepared,
-    /// The exact Prepared intent already exists and must not be reissued.
-    AlreadyPrepared,
+    Prepared {
+        /// Deterministic identity of the one-shot preparation effect.
+        effect_digest: ObjectDigest,
+    },
+    /// The same effect is unfinished and must only be observed.
+    ObserveOnly {
+        /// Current durable crash phase.
+        phase: DurableNetworkPhase,
+        /// Deterministic identity of the one-shot preparation effect.
+        effect_digest: ObjectDigest,
+    },
+    /// The exact request already committed and returns its prior result.
+    Replay(CommittedNetworkResultV1),
 }
 
-/// Serializes protected network authority and non-executing journal admission.
+/// Serializes protected network authority and durable preparation state.
 pub struct NetworkAdmissionCoordinator {
     authority: NetworkAuthorityV1,
     state: NetworkStateStore,
@@ -120,6 +132,10 @@ impl NetworkAdmissionCoordinator {
             .authority
             .seal_effect(&request_id, &admission)
             .map_err(|_| NetworkBrokerError::Authority)?;
+        let operation_fence = self
+            .authority
+            .seal_operation_fence(&request_id, &admission)
+            .map_err(|_| NetworkBrokerError::Authority)?;
         let record = prepared_record(PreparedNetworkRecordInput {
             request_id,
             sandbox_id,
@@ -127,15 +143,71 @@ impl NetworkAdmissionCoordinator {
             semantic_digest: semantics.argument_commitment().digest(),
             verb: semantics.broker_verb(),
             catalog: catalog.clone(),
-            fence,
+            current_fence: fence,
+            operation_fence,
             effect,
         });
         Ok(
             match self.state.begin_authorized(&self.authority, record)? {
-                NetworkBeginOutcome::Prepared => NetworkAdmissionOutcome::Prepared,
-                NetworkBeginOutcome::AlreadyPrepared => NetworkAdmissionOutcome::AlreadyPrepared,
+                NetworkBeginOutcome::Prepared { effect_digest } => {
+                    NetworkAdmissionOutcome::Prepared { effect_digest }
+                }
+                NetworkBeginOutcome::ObserveOnly {
+                    phase,
+                    effect_digest,
+                } => NetworkAdmissionOutcome::ObserveOnly {
+                    phase,
+                    effect_digest,
+                },
+                NetworkBeginOutcome::Replay(result) => NetworkAdmissionOutcome::Replay(result),
             },
         )
+    }
+
+    /// Durably crosses the point after which a preparation may have run.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkBrokerError::State`] unless the exact prepared request
+    /// and effect digest are current.
+    pub fn mark_effect_ambiguous(
+        &mut self,
+        request_id: [u8; 16],
+        effect_digest: ObjectDigest,
+    ) -> Result<(), NetworkBrokerError> {
+        self.state
+            .mark_effect_ambiguous(&self.authority, request_id, effect_digest)?;
+        Ok(())
+    }
+
+    /// Commits one verified current-boot namespace observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkBrokerError::State`] unless the assertion exactly
+    /// matches the ambiguous durable effect and a unique physical namespace.
+    pub fn commit_verified(
+        &mut self,
+        request_id: [u8; 16],
+        effect_digest: ObjectDigest,
+        verified: VerifiedNetworkResultV1,
+    ) -> Result<CommittedNetworkResultV1, NetworkBrokerError> {
+        self.state
+            .commit_verified(&self.authority, request_id, effect_digest, verified)
+            .map_err(Into::into)
+    }
+
+    /// Reconstructs the exact protected preparation for a recovery entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkBrokerError::State`] when the entry no longer names
+    /// the exact current record.
+    pub fn recover_preparation(
+        &self,
+        entry: &NetworkRecoveryEntry,
+    ) -> Result<ResolvedNetworkPreparationV1, NetworkBrokerError> {
+        self.state.recover_preparation(entry).map_err(Into::into)
     }
 
     /// Returns bounded authenticated durable history for recovery.
@@ -400,6 +472,16 @@ mod tests {
     }
 
     fn request_for(request_id: u8, sandbox_id: u8, endpoints: &[u8]) -> Vec<u8> {
+        request_for_assignment(request_id, sandbox_id, 5, 6, endpoints)
+    }
+
+    fn request_for_assignment(
+        request_id: u8,
+        sandbox_id: u8,
+        desired_generation: u64,
+        assignment_digest: u8,
+        endpoints: &[u8],
+    ) -> Vec<u8> {
         let mut request = ApplyNetworkRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
@@ -412,8 +494,8 @@ mod tests {
         fence.sandbox_id = vec![sandbox_id; 16];
         fence.incarnation_id = vec![3; 16];
         fence.assignment_epoch = 4;
-        fence.desired_generation = 5;
-        fence.assignment_digest = vec![6; 32];
+        fence.desired_generation = desired_generation;
+        fence.assignment_digest = vec![assignment_digest; 32];
         request.action = NetworkAction::NETWORK_ACTION_PREPARE.into();
         request.endpoint_ids = endpoints.iter().map(|value| vec![*value; 16]).collect();
         request.encode_to_vec()
@@ -551,20 +633,21 @@ mod tests {
         let catalog = authenticated_catalog(&authority, catalog(), &request);
         let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
         let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
-        assert_eq!(
-            coordinator
-                .admit_apply_intent(
-                    &request,
-                    &artifacts,
-                    &catalog,
-                    ProtocolVersion::new(1, 1),
-                    peer(),
-                    peer_policy(),
-                    &clock()
-                )
-                .unwrap(),
-            NetworkAdmissionOutcome::Prepared
-        );
+        let NetworkAdmissionOutcome::Prepared { effect_digest } = coordinator
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 1),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("first admission did not prepare the effect");
+        };
+        assert_ne!(effect_digest.as_bytes(), &[0; 32]);
         assert_eq!(coordinator.recovery_snapshot().entries().len(), 1);
         assert_eq!(
             coordinator
@@ -578,7 +661,423 @@ mod tests {
                     &clock()
                 )
                 .unwrap(),
-            NetworkAdmissionOutcome::AlreadyPrepared
+            NetworkAdmissionOutcome::ObserveOnly {
+                phase: DurableNetworkPhase::Prepared,
+                effect_digest,
+            }
+        );
+    }
+
+    #[test]
+    fn preparation_crosses_exact_crash_phases_and_replays_committed_result() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request();
+        let artifacts = fixture.artifacts(&request);
+        let authority = fixture.authority();
+        let token = authenticated_catalog(&authority, catalog(), &request);
+        let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
+        let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
+
+        let NetworkAdmissionOutcome::Prepared { effect_digest } = coordinator
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &token,
+                ProtocolVersion::new(1, 1),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("first admission did not prepare the effect");
+        };
+        let premature = VerifiedNetworkResultV1::verify_preparation(
+            [7; 16],
+            ObjectDigest::from_bytes(Sha256::digest(&request).into()),
+            &catalog(),
+            [51; 16],
+            52,
+            53,
+            ObjectDigest::from_bytes([54; 32]),
+        )
+        .unwrap();
+        assert!(
+            coordinator
+                .commit_verified([7; 16], effect_digest, premature)
+                .is_err()
+        );
+        assert!(
+            coordinator
+                .mark_effect_ambiguous([7; 16], ObjectDigest::from_bytes([1; 32]))
+                .is_err()
+        );
+        coordinator
+            .mark_effect_ambiguous([7; 16], effect_digest)
+            .unwrap();
+        assert!(
+            coordinator
+                .mark_effect_ambiguous([7; 16], effect_digest)
+                .is_err()
+        );
+
+        let verified = VerifiedNetworkResultV1::verify_preparation(
+            [7; 16],
+            ObjectDigest::from_bytes(Sha256::digest(&request).into()),
+            &catalog(),
+            [51; 16],
+            52,
+            53,
+            ObjectDigest::from_bytes([54; 32]),
+        )
+        .unwrap();
+        let result = coordinator
+            .commit_verified([7; 16], effect_digest, verified)
+            .unwrap();
+        assert_eq!(result.request_id(), [7; 16]);
+        assert_eq!(result.network_handle(), [10; 32]);
+        assert_eq!(result.kernel_boot_id(), [51; 16]);
+        assert_eq!(result.namespace_device(), 52);
+        assert_eq!(result.namespace_inode(), 53);
+        assert_ne!(result.result_digest().as_bytes(), &[54; 32]);
+
+        assert_eq!(
+            coordinator
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &token,
+                    ProtocolVersion::new(1, 1),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap(),
+            NetworkAdmissionOutcome::Replay(result)
+        );
+        let snapshot = coordinator.recovery_snapshot();
+        let entry = &snapshot.entries()[0];
+        assert_eq!(entry.phase(), DurableNetworkPhase::Committed);
+        assert_eq!(entry.effect_digest(), effect_digest);
+        assert_eq!(entry.result(), Some(result));
+        assert_eq!(coordinator.recover_preparation(entry).unwrap(), catalog());
+
+        drop(coordinator);
+        let authority = fixture.authority();
+        let recovered = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
+        assert_eq!(
+            recovered.phase([7; 16]),
+            Some(DurableNetworkPhase::Committed)
+        );
+        assert_eq!(
+            recovered.committed_recovery_entry(result).unwrap().result(),
+            Some(result)
+        );
+    }
+
+    #[test]
+    fn ambiguous_restart_is_observation_only() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request();
+        let artifacts = fixture.artifacts(&request);
+        let effect_digest;
+        {
+            let authority = fixture.authority();
+            let token = authenticated_catalog(&authority, catalog(), &request);
+            let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
+            let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
+            effect_digest = match coordinator
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &token,
+                    ProtocolVersion::new(1, 1),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap()
+            {
+                NetworkAdmissionOutcome::Prepared { effect_digest } => effect_digest,
+                _ => panic!("first admission did not prepare the effect"),
+            };
+            coordinator
+                .mark_effect_ambiguous([7; 16], effect_digest)
+                .unwrap();
+        }
+
+        let authority = fixture.authority();
+        let token = authenticated_catalog(&authority, catalog(), &request);
+        let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
+        let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
+        assert_eq!(
+            coordinator
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &token,
+                    ProtocolVersion::new(1, 1),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap(),
+            NetworkAdmissionOutcome::ObserveOnly {
+                phase: DurableNetworkPhase::Ambiguous,
+                effect_digest,
+            }
+        );
+    }
+
+    #[test]
+    fn legacy_prepared_record_remains_recoverable_but_cannot_cross_the_effect_boundary() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request();
+        let artifacts = fixture.artifacts(&request);
+        let effect_digest;
+        {
+            let authority = fixture.authority();
+            let token = authenticated_catalog(&authority, catalog(), &request);
+            let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
+            let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
+            effect_digest = match coordinator
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &token,
+                    ProtocolVersion::new(1, 1),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap()
+            {
+                NetworkAdmissionOutcome::Prepared { effect_digest } => effect_digest,
+                _ => panic!("first admission did not prepare the effect"),
+            };
+            coordinator
+                .state
+                .rewrite_as_legacy_for_test(&coordinator.authority, [7; 16])
+                .unwrap();
+        }
+
+        let authority = fixture.authority();
+        let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
+        assert_eq!(store.phase([7; 16]), Some(DurableNetworkPhase::Prepared));
+        let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
+        assert!(
+            coordinator
+                .mark_effect_ambiguous([7; 16], effect_digest)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn mismatched_results_and_duplicate_physical_namespaces_fail_closed() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let first_request = request_for(7, 2, &[7]);
+        let second_request = request_for(8, 3, &[8]);
+        let first_artifacts = fixture.artifacts(&first_request);
+        let second_artifacts = fixture.artifacts(&second_request);
+        let first_catalog = catalog_for(9, 10, 11, &[(7, 12)]);
+        let second_catalog = catalog_for(10, 20, 21, &[(8, 22)]);
+        let authority = fixture.authority();
+        let first_token = authenticated_catalog(&authority, first_catalog.clone(), &first_request);
+        let second_token =
+            authenticated_catalog(&authority, second_catalog.clone(), &second_request);
+        let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
+        let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
+
+        let first_effect = match coordinator
+            .admit_apply_intent(
+                &first_request,
+                &first_artifacts,
+                &first_token,
+                ProtocolVersion::new(1, 1),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        {
+            NetworkAdmissionOutcome::Prepared { effect_digest } => effect_digest,
+            _ => panic!("first admission did not prepare the effect"),
+        };
+        coordinator
+            .mark_effect_ambiguous([7; 16], first_effect)
+            .unwrap();
+        let mismatched = VerifiedNetworkResultV1::verify_preparation(
+            [7; 16],
+            ObjectDigest::from_bytes(Sha256::digest(&first_request).into()),
+            &second_catalog,
+            [51; 16],
+            52,
+            53,
+            ObjectDigest::from_bytes([54; 32]),
+        )
+        .unwrap();
+        assert!(
+            coordinator
+                .commit_verified([7; 16], first_effect, mismatched)
+                .is_err()
+        );
+        let first_verified = VerifiedNetworkResultV1::verify_preparation(
+            [7; 16],
+            ObjectDigest::from_bytes(Sha256::digest(&first_request).into()),
+            &first_catalog,
+            [51; 16],
+            52,
+            53,
+            ObjectDigest::from_bytes([54; 32]),
+        )
+        .unwrap();
+        coordinator
+            .commit_verified([7; 16], first_effect, first_verified)
+            .unwrap();
+
+        let second_effect = match coordinator
+            .admit_apply_intent(
+                &second_request,
+                &second_artifacts,
+                &second_token,
+                ProtocolVersion::new(1, 1),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        {
+            NetworkAdmissionOutcome::Prepared { effect_digest } => effect_digest,
+            _ => panic!("second admission did not prepare the effect"),
+        };
+        coordinator
+            .mark_effect_ambiguous([8; 16], second_effect)
+            .unwrap();
+        let collision = VerifiedNetworkResultV1::verify_preparation(
+            [8; 16],
+            ObjectDigest::from_bytes(Sha256::digest(&second_request).into()),
+            &second_catalog,
+            [51; 16],
+            52,
+            53,
+            ObjectDigest::from_bytes([55; 32]),
+        )
+        .unwrap();
+        assert!(
+            coordinator
+                .commit_verified([8; 16], second_effect, collision)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn later_current_fence_does_not_orphan_committed_operation_authority() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let first_request = request_for(7, 2, &[7]);
+        let second_request = request_for_assignment(8, 2, 6, 60, &[8]);
+        let first_artifacts = fixture.artifacts(&first_request);
+        let second_artifacts = fixture.artifacts(&second_request);
+        let first_fence;
+        {
+            let authority = fixture.authority();
+            let first_catalog = catalog_for(9, 10, 11, &[(7, 12)]);
+            let second_catalog = catalog_for(10, 20, 21, &[(8, 22)]);
+            let first_token =
+                authenticated_catalog(&authority, first_catalog.clone(), &first_request);
+            let second_token = authenticated_catalog(&authority, second_catalog, &second_request);
+            let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
+            let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
+            let first_effect = match coordinator
+                .admit_apply_intent(
+                    &first_request,
+                    &first_artifacts,
+                    &first_token,
+                    ProtocolVersion::new(1, 1),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap()
+            {
+                NetworkAdmissionOutcome::Prepared { effect_digest } => effect_digest,
+                _ => panic!("first admission did not prepare the effect"),
+            };
+            coordinator
+                .mark_effect_ambiguous([7; 16], first_effect)
+                .unwrap();
+            let verified = VerifiedNetworkResultV1::verify_preparation(
+                [7; 16],
+                ObjectDigest::from_bytes(Sha256::digest(&first_request).into()),
+                &first_catalog,
+                [51; 16],
+                52,
+                53,
+                ObjectDigest::from_bytes([54; 32]),
+            )
+            .unwrap();
+            coordinator
+                .commit_verified([7; 16], first_effect, verified)
+                .unwrap();
+            first_fence = coordinator
+                .state
+                .authority_record(RecordNamespace::DesiredState, &[2; 16])
+                .unwrap()
+                .to_vec();
+            assert!(matches!(
+                coordinator
+                    .admit_apply_intent(
+                        &second_request,
+                        &second_artifacts,
+                        &second_token,
+                        ProtocolVersion::new(1, 1),
+                        peer(),
+                        peer_policy(),
+                        &clock(),
+                    )
+                    .unwrap(),
+                NetworkAdmissionOutcome::Prepared { .. }
+            ));
+        }
+
+        let authority = fixture.authority();
+        let recovered = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
+        assert_eq!(recovered.recovery_snapshot().entries().len(), 2);
+        assert_eq!(
+            recovered.phase([7; 16]),
+            Some(DurableNetworkPhase::Committed)
+        );
+        assert_eq!(
+            recovered.phase([8; 16]),
+            Some(DurableNetworkPhase::Prepared)
+        );
+        drop(recovered);
+
+        let (mut journal, _) = Journal::open(
+            directory.path().join("network-state.journal"),
+            JournalLimits::default(),
+        )
+        .unwrap();
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [89; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        vec![2; 16],
+                        first_fence,
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        drop(journal);
+        assert!(
+            NetworkStateStore::open_for_test(directory.path(), &fixture.authority(), 0).is_err()
         );
     }
 
@@ -629,6 +1128,60 @@ mod tests {
                 )
                 .unwrap();
         }
+        assert!(
+            NetworkStateStore::open_for_test(directory.path(), &fixture.authority(), 0).is_err()
+        );
+    }
+
+    #[test]
+    fn relocated_operation_fence_fails_recovery() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request();
+        let artifacts = fixture.artifacts(&request);
+        {
+            let authority = fixture.authority();
+            let catalog = authenticated_catalog(&authority, catalog(), &request);
+            let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
+            let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
+            coordinator
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 1),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap();
+        }
+        let (mut journal, _) = Journal::open(
+            directory.path().join("network-state.journal"),
+            JournalLimits::default(),
+        )
+        .unwrap();
+        let moved = journal
+            .get(RecordNamespace::AuthorityPublication, &[7; 16])
+            .unwrap()
+            .to_vec();
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [91; 16],
+                    vec![
+                        JournalRecord::delete(RecordNamespace::AuthorityPublication, vec![7; 16]),
+                        JournalRecord::put(
+                            RecordNamespace::AuthorityPublication,
+                            vec![9; 16],
+                            moved,
+                        ),
+                    ],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        drop(journal);
         assert!(
             NetworkStateStore::open_for_test(directory.path(), &fixture.authority(), 0).is_err()
         );
@@ -722,9 +1275,11 @@ mod tests {
         for (namespace, key, tamper) in [
             (RecordNamespace::DesiredState, vec![2; 16], false),
             (RecordNamespace::Effect, vec![7; 16], false),
+            (RecordNamespace::AuthorityPublication, vec![7; 16], false),
             (RecordNamespace::Operation, vec![7; 16], false),
             (RecordNamespace::DesiredState, vec![2; 16], true),
             (RecordNamespace::Effect, vec![7; 16], true),
+            (RecordNamespace::AuthorityPublication, vec![7; 16], true),
             (RecordNamespace::Operation, vec![7; 16], true),
         ] {
             let directory = TempDir::new().unwrap();
