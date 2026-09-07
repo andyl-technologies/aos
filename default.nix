@@ -88,11 +88,38 @@
         targetPlatform = hostPlatform;
       };
 
+  # UEFI firmware is freestanding guest code, independent of the host OS that
+  # runs QEMU. Darwin package builds therefore use the matching Linux-target
+  # GNU toolchain instead of producing Mach-O firmware inputs. x86_64 reuses
+  # the native build package set; aarch64 needs the existing Linux cross set.
+  firmwarePackages =
+    if !hostPlatform.isDarwin
+    then null
+    else if hostPlatform.isAarch64
+    then let
+      firmwarePlatform = lib.mkPlatform "aarch64-linux";
+      firmwareStdenv = import ./stdenv/linux-cross {
+        inherit
+          lib
+          buildStdenv
+          buildPackages
+          buildPlatform
+          ;
+        hostPlatform = firmwarePlatform;
+        targetPlatform = firmwarePlatform;
+      };
+    in
+      import ./pkgs {
+        inherit lib buildPackages;
+        stdenv = firmwareStdenv;
+      }
+    else buildPackages;
+
   # Host packages produce artifacts for hostPlatform. Package definitions use
   # pkgs.buildPackages for generators, compilers, and other executable build
   # dependencies, and ordinary package arguments for host libraries.
   pkgs = import ./pkgs {
-    inherit lib stdenv buildPackages;
+    inherit lib stdenv buildPackages firmwarePackages;
   };
 
   # Auto-discovered module list.
