@@ -401,7 +401,16 @@ pub trait ExactPinRetentionAdmin {
 pub struct DirectoryExactPinMaterializationStore {
     root: PathBuf,
     selection_records: u64,
-    _writer_lock: File,
+    writer_lock: File,
+}
+
+impl Drop for DirectoryExactPinMaterializationStore {
+    fn drop(&mut self) {
+        // A fork can retain this open-file description until exec closes it.
+        // Release ownership with the journal owner so an inherited or
+        // duplicated descriptor cannot extend the writer lease.
+        let _ = flock(&self.writer_lock, FlockOperation::Unlock);
+    }
 }
 
 /// Durable result of replacing one selected raw checkpoint with an oracle match.
@@ -573,7 +582,7 @@ impl DirectoryExactPinMaterializationStore {
         Ok(Self {
             root,
             selection_records,
-            _writer_lock: writer_lock,
+            writer_lock,
         })
     }
 
