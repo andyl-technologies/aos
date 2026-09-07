@@ -26,7 +26,6 @@ pub const RPC_MAX_BODY_BYTES: usize = aos_hub_core::connect::CONNECT_REQUEST_BOD
 
 use crate::auth::extract::AuthState;
 use crate::db::Database;
-use crate::domain::{Permission, Principal, Scope};
 
 /// Lifetime, in seconds, of a hub access token minted at `/oauth2/token`
 /// (1 hour).
@@ -153,74 +152,6 @@ impl AppState {
     ) -> Self {
         self.container_rollout = rollout;
         self
-    }
-}
-
-/// A [`RepairAuthorizer`](crate::validation::RepairAuthorizer) for managed
-/// cache routes.
-///
-/// Every simultaneously ready route resolves to the same immutable cache id.
-/// The authorizer mints an internal short-lived cache-write JWT; arbitrary or
-/// unhealthy external URLs remain plan-only.
-pub struct HubRepairAuthorizer {
-    db: Arc<Database>,
-    jwt_keys: crate::auth::jwt::JwtKeys,
-    external_url: String,
-}
-
-impl HubRepairAuthorizer {
-    /// Build an authorizer over the hub's database, signing keys, and base URL.
-    #[must_use]
-    pub fn new(
-        db: Arc<Database>,
-        jwt_keys: crate::auth::jwt::JwtKeys,
-        external_url: String,
-    ) -> HubRepairAuthorizer {
-        HubRepairAuthorizer {
-            db,
-            jwt_keys,
-            external_url,
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl crate::validation::RepairAuthorizer for HubRepairAuthorizer {
-    async fn credential_for(
-        &self,
-        target_cache_url: &str,
-    ) -> anyhow::Result<Option<crate::validation::RepairCredential>> {
-        let Some(cache) = self
-            .db
-            .binary_cache_by_ready_delivery_url(target_cache_url)
-            .await?
-        else {
-            return Ok(None);
-        };
-        if self
-            .db
-            .reconciled_surface_writer(aos_hub_core::db::SurfaceTarget::BinaryCache(cache.id))
-            .await
-            .is_err()
-        {
-            return Ok(None);
-        }
-        // The typed upload API authorizes the JWT's own claims, so a synthetic
-        // system-owned TokenAuth suffices.
-        let auth = crate::db::TokenAuth {
-            token_id: "hub-repair".to_string(),
-            owner: Principal::service_account(0),
-            scope: Scope::parse(&cache.scope_key),
-            permissions: vec![Permission::RegistryConfigure],
-        };
-        let jwt = self
-            .jwt_keys
-            .mint(&auth, aos_hub_core::service::INTERNAL_UPLOAD_AUTH_TTL_SECS)?;
-        Ok(Some(crate::validation::RepairCredential {
-            hub_url: self.external_url.trim_end_matches('/').to_string(),
-            cache_id: cache.stable_id,
-            bearer_jwt: jwt,
-        }))
     }
 }
 

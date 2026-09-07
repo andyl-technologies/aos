@@ -184,8 +184,6 @@ pub enum Permission {
     CacheGcExecute,
     /// Manage only leases owned by the calling service account.
     CacheLeaseSelf,
-    /// Run consistency-validation repair jobs.
-    ValidationRepair,
     /// Read the audit log.
     AuditRead,
     /// Full IAM administration (the owner-only verb).
@@ -231,7 +229,6 @@ impl Permission {
             Permission::CacheGcPlan => "cache.gc.plan",
             Permission::CacheGcExecute => "cache.gc.execute",
             Permission::CacheLeaseSelf => "cache.lease.self",
-            Permission::ValidationRepair => "validation.repair",
             Permission::AuditRead => "audit.read",
             Permission::IamAdmin => "iam.admin",
         }
@@ -277,7 +274,6 @@ impl Permission {
             "cache.gc.plan" => Some(Self::CacheGcPlan),
             "cache.gc.execute" => Some(Self::CacheGcExecute),
             "cache.lease.self" => Some(Self::CacheLeaseSelf),
-            "validation.repair" => Some(Self::ValidationRepair),
             "audit.read" => Some(Self::AuditRead),
             "iam.admin" => Some(Self::IamAdmin),
             _ => None,
@@ -291,10 +287,10 @@ impl Permission {
 ///
 /// - **Owner** — every verb, including [`Permission::IamAdmin`].
 /// - **Admin** — members, tokens (manage), registries/delivery/storage
-///   configuration, validation repair, audit read, plus the baseline
+///   configuration, audit read, plus the baseline
 ///   read and self-token verbs.
 /// - **Maintainer** — publish, channel advance, roster (key) management,
-///   validation repair, plus read and self-tokens.
+///   plus read and self-tokens.
 /// - **Developer** — registry read, specialized topology reads, and
 ///   self-service tokens.
 /// - **Viewer** — registry and specialized topology reads only.
@@ -340,7 +336,6 @@ pub fn role_grants(role: Role) -> &'static [Permission] {
             CacheGcPlan,
             CacheGcExecute,
             CacheLeaseSelf,
-            ValidationRepair,
             AuditRead,
             IamAdmin,
         ],
@@ -375,7 +370,6 @@ pub fn role_grants(role: Role) -> &'static [Permission] {
             CacheRetentionManage,
             CacheGcPlan,
             CacheGcExecute,
-            ValidationRepair,
             AuditRead,
         ],
         Role::Maintainer => &[
@@ -384,7 +378,6 @@ pub fn role_grants(role: Role) -> &'static [Permission] {
             Publish,
             ChannelAdvance,
             KeysManage,
-            ValidationRepair,
             BindingRead,
             PlacementRead,
             PlacementPolicyRead,
@@ -807,7 +800,6 @@ mod tests {
             CacheGcPlan,
             CacheGcExecute,
             CacheLeaseSelf,
-            ValidationRepair,
             AuditRead,
             IamAdmin,
         ]
@@ -854,7 +846,6 @@ mod tests {
             CacheRetentionManage,
             CacheGcPlan,
             CacheGcExecute,
-            ValidationRepair,
             AuditRead,
         ] {
             assert!(g.contains(&p), "admin missing {p:?}");
@@ -895,14 +886,7 @@ mod tests {
     fn maintainer_grants_publish_path() {
         use Permission::*;
         let g = grant_set(Role::Maintainer);
-        for p in [
-            Read,
-            TokensSelf,
-            Publish,
-            ChannelAdvance,
-            KeysManage,
-            ValidationRepair,
-        ] {
+        for p in [Read, TokensSelf, Publish, ChannelAdvance, KeysManage] {
             assert!(g.contains(&p), "maintainer missing {p:?}");
         }
         assert!(!g.contains(&MembersManage));
