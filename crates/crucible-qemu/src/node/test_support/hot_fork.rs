@@ -34,6 +34,20 @@ pub enum QemuTestHotForkOutcome {
     Indeterminate,
 }
 
+/// One scripted QEMU quantum boundary for node-set tests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QemuTestQuantumBoundary {
+    /// Reaches the requested scheduler ceiling.
+    Reached,
+    /// Parks before the requested ceiling with an optional exact wake.
+    Paused {
+        /// Physical instruction count at the park point.
+        at: u64,
+        /// Exact next wake instruction count, when one exists.
+        next_deadline: Option<u64>,
+    },
+}
+
 #[derive(Clone)]
 struct ScriptedShmemHotPath {
     setup_identity: crucible_shmem::SetupRegionBackingIdentity,
@@ -42,8 +56,9 @@ struct ScriptedShmemHotPath {
     observable_events: VecDeque<ObservableEvent>,
     selectable_catalog_plan:
         Option<crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan>,
-    deferred_selectable_request:
-        Option<crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest>,
+    deferred_selectable_requests:
+        VecDeque<crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest>,
+    quantum_boundaries: VecDeque<QemuTestQuantumBoundary>,
     quantum_completed: bool,
 }
 
@@ -127,6 +142,36 @@ pub fn scripted_hot_fork_source_with_state_for_test(
         crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
     )>,
 ) -> Result<QemuNode, QemuTestHotForkSourceError> {
+    let (selectable_catalog_plan, deferred_selectable_requests) = selectable_state
+        .map_or((None, VecDeque::new()), |(plan, request)| {
+            (Some(plan), VecDeque::from([request]))
+        });
+    scripted_hot_fork_source_with_script_for_test(
+        outcome,
+        observable_events,
+        selectable_catalog_plan,
+        deferred_selectable_requests,
+        VecDeque::new(),
+    )
+}
+
+/// Builds one live scripted source with exact quantum and selectable sequences.
+///
+/// # Errors
+///
+/// Returns an error when the fixture cannot allocate its process, descriptors,
+/// shared-memory image, or scripted transport state.
+pub fn scripted_hot_fork_source_with_script_for_test(
+    outcome: QemuTestHotForkOutcome,
+    observable_events: Vec<ObservableEvent>,
+    selectable_catalog_plan: Option<
+        crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan,
+    >,
+    deferred_selectable_requests: VecDeque<
+        crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+    >,
+    quantum_boundaries: VecDeque<QemuTestQuantumBoundary>,
+) -> Result<QemuNode, QemuTestHotForkSourceError> {
     let (setup_identity, host_barrier, image) = held_hot_fork_ring_image()?;
     let plugin_barrier =
         crate::QmpHotForkPluginBarrierState::one_quiescent(15, host_barrier.ring_count());
@@ -135,8 +180,6 @@ pub fn scripted_hot_fork_source_with_state_for_test(
         .spawn()
         .map_err(|source| QemuTestHotForkSourceError::new("spawn scripted source", source))?;
     let process_id = child.id();
-    let (selectable_catalog_plan, deferred_selectable_request) = selectable_state
-        .map_or((None, None), |(plan, request)| (Some(plan), Some(request)));
     let channels = QemuNodeChannels::new(
         ScriptedPluginControl,
         ScriptedShmemHotPath {
@@ -145,7 +188,8 @@ pub fn scripted_hot_fork_source_with_state_for_test(
             image,
             observable_events: observable_events.into(),
             selectable_catalog_plan,
-            deferred_selectable_request,
+            deferred_selectable_requests,
+            quantum_boundaries,
             quantum_completed: false,
         },
         ScriptedQmpMachineControl {
@@ -402,13 +446,32 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
         pending: &mut QemuNodePendingQuantum,
     ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
         let horizon = *pending.downcast_mut::<u64>("finish scripted quantum")?;
+        let boundary = self
+            .quantum_boundaries
+            .pop_front()
+            .unwrap_or(QemuTestQuantumBoundary::Reached);
+        let (outcome, final_state) = match boundary {
+            QemuTestQuantumBoundary::Reached => (
+                AdvanceOutcome::ReachedHorizon,
+                QemuNodeIdleState {
+                    current_icount: Icount { retired: horizon },
+                    next_deadline: None,
+                },
+            ),
+            QemuTestQuantumBoundary::Paused { at, next_deadline } => (
+                AdvanceOutcome::Paused {
+                    at: Icount { retired: at },
+                },
+                QemuNodeIdleState {
+                    current_icount: Icount { retired: at },
+                    next_deadline: next_deadline.map(|retired| Icount { retired }),
+                },
+            ),
+        };
         Ok(QemuAsyncQuantumCompletion {
             ceiling: Icount { retired: horizon },
-            outcome: AdvanceOutcome::ReachedHorizon,
-            final_state: QemuNodeIdleState {
-                current_icount: Icount { retired: horizon },
-                next_deadline: None,
-            },
+            outcome,
+            final_state,
             inbound_frames_consumed: 0,
             emitted_frames: Vec::new(),
             operations: Vec::new(),
@@ -471,7 +534,8 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
         if !self.quantum_completed {
             return Ok(Vec::new());
         }
-        let Some(pending) = self.deferred_selectable_request.take() else {
+        self.quantum_completed = false;
+        let Some(pending) = self.deferred_selectable_requests.pop_front() else {
             return Ok(Vec::new());
         };
         let plan = self.selectable_catalog_plan.as_mut().ok_or_else(|| {
@@ -480,10 +544,33 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
                 "scripted selectable catalog is absent",
             )
         })?;
-        plan.apply_pending_request(pending.clone()).map_err(|error| {
-            QemuNodeChannelError::new("publish scripted selectable request", error.to_string())
-        })?;
+        plan.apply_pending_request(pending.clone())
+            .map_err(|error| {
+                QemuNodeChannelError::new("publish scripted selectable request", error.to_string())
+            })?;
         Ok(vec![pending])
+    }
+
+    fn enqueue_selectable_reply(
+        &mut self,
+        pending: &crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+        reply: &crucible_protocol::SelectionReply,
+    ) -> Result<(), QemuNodeChannelError> {
+        let plan = self.selectable_catalog_plan.as_mut().ok_or_else(|| {
+            QemuNodeChannelError::new(
+                "complete scripted selectable request",
+                "scripted selectable catalog is absent",
+            )
+        })?;
+        if plan.continuation().pending() != Some(pending) {
+            return Err(QemuNodeChannelError::new(
+                "complete scripted selectable request",
+                "scripted pending request changed",
+            ));
+        }
+        plan.apply_completed_reply(reply).map_err(|error| {
+            QemuNodeChannelError::new("complete scripted selectable request", error.to_string())
+        })
     }
 
     fn selectable_catalog_plan(

@@ -426,6 +426,13 @@ struct QemuFaultEventStagingBudget {
     configured_event_records: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PendingSelectableRetention {
+    Absent,
+    AlreadyRetained,
+    NewlyRetained { boundary_icount: u64 },
+}
+
 impl QemuNodeSet {
     /// Builds an empty node set.
     #[must_use]
@@ -751,26 +758,9 @@ impl QemuNodeSet {
     pub fn drain_pending_selectable_requests(
         &mut self,
     ) -> Result<Vec<QemuNodeSelectablePendingRequest>, BackendError> {
-        for (node, backend) in &mut self.nodes {
-            if self.pending_selectable_requests.contains_key(node) {
-                continue;
-            }
-            let pending = backend
-                .drain_pending_selectable_requests()
-                .map_err(BackendError::from)?;
-            if pending.len() > 1 {
-                return Err(BackendError::Rejected {
-                    message: format!(
-                        "QEMU node `{}` reported {} pending selectable requests",
-                        node.name,
-                        pending.len()
-                    ),
-                });
-            }
-            if let Some(pending) = pending.into_iter().next() {
-                self.pending_selectable_requests
-                    .insert(node.clone(), pending.clone());
-            }
+        let nodes = self.nodes.keys().cloned().collect::<Vec<_>>();
+        for node in nodes {
+            self.retain_pending_selectable_request(&node)?;
         }
         let mut drained = Vec::new();
         drained
@@ -785,6 +775,38 @@ impl QemuNodeSet {
             });
         }
         Ok(drained)
+    }
+
+    /// Mirrors one node's paused selectable request into set-owned state.
+    fn retain_pending_selectable_request(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<PendingSelectableRetention, BackendError> {
+        if self.pending_selectable_requests.contains_key(node) {
+            return Ok(PendingSelectableRetention::AlreadyRetained);
+        }
+
+        let pending = self
+            .node_mut(node)?
+            .drain_pending_selectable_requests()
+            .map_err(BackendError::from)?;
+        if pending.len() > 1 {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` reported {} pending selectable requests",
+                    node.name,
+                    pending.len()
+                ),
+            });
+        }
+        let Some(pending) = pending.into_iter().next() else {
+            return Ok(PendingSelectableRetention::Absent);
+        };
+
+        let boundary_icount = pending.icount();
+        self.pending_selectable_requests
+            .insert(node.clone(), pending);
+        Ok(PendingSelectableRetention::NewlyRetained { boundary_icount })
     }
 
     /// Enqueues a reply for the exact node-qualified pending request.
@@ -1462,19 +1484,63 @@ impl SimulationBackend for QemuNodeSet {
         node: &NodeId,
         ceiling: VirtualTime,
     ) -> Result<StepObservation, BackendError> {
+        if self.pending_selectable_requests.contains_key(node) {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` cannot step with an unresolved selectable request",
+                    node.name,
+                ),
+            });
+        }
         self.arm_selected_fault_event_staging(node)?;
-        let backend = self.node_mut(node)?;
-        let mut previous = SimulationBackend::now(backend);
+        let mut previous = SimulationBackend::now(self.node_mut(node)?);
         let mut last_stagnant_pause = None;
         for reissue in 0..=MAX_STEP_REISSUES {
-            let mut observation = backend.step_to(ceiling)?;
+            let (mut observation, final_state, inbound_frames_consumed, effective_ceiling) = {
+                let backend = self.node_mut(node)?;
+                let observation = backend.step_to(ceiling)?;
+                (
+                    observation,
+                    backend.last_step_final_state(),
+                    backend.last_step_inbound_frames_consumed(),
+                    backend.last_step_ceiling(),
+                )
+            };
+            if let crucible::AdvanceOutcome::Paused { at } = observation.outcome {
+                match self.retain_pending_selectable_request(node)? {
+                    PendingSelectableRetention::NewlyRetained { boundary_icount }
+                        if boundary_icount == at.retired =>
+                    {
+                        // The plugin retains the exact request while native
+                        // VMStop prevents more guest execution. Return to the
+                        // modeled driver so it can select and enqueue a reply.
+                        observation.reached = ceiling;
+                        return Ok(observation);
+                    }
+                    PendingSelectableRetention::NewlyRetained { boundary_icount } => {
+                        return Err(BackendError::Rejected {
+                            message: format!(
+                                "QEMU node `{}` selectable boundary {} differs from physical pause {}",
+                                node.name, boundary_icount, at.retired,
+                            ),
+                        });
+                    }
+                    PendingSelectableRetention::AlreadyRetained => {
+                        return Err(BackendError::Rejected {
+                            message: format!(
+                                "QEMU node `{}` cannot step with an unresolved selectable request",
+                                node.name,
+                            ),
+                        });
+                    }
+                    PendingSelectableRetention::Absent => {}
+                }
+            }
             if observation.reached == ceiling {
                 return Ok(observation);
             }
             if let crucible::AdvanceOutcome::Paused { .. } = observation.outcome
-                && let Some(deadline) = backend
-                    .last_step_final_state()
-                    .and_then(|state| state.next_deadline)
+                && let Some(deadline) = final_state.and_then(|state| state.next_deadline)
                 && deadline.retired > ceiling.ticks
             {
                 observation.reached = ceiling;
@@ -1491,11 +1557,8 @@ impl SimulationBackend for QemuNodeSet {
                 // it before returning; issue a fresh quantum for the remainder.
             }
             if observation.reached <= previous {
-                if consumed_input_without_retiring(
-                    &observation,
-                    previous,
-                    backend.last_step_inbound_frames_consumed(),
-                ) {
+                if consumed_input_without_retiring(&observation, previous, inbound_frames_consumed)
+                {
                     // Consuming an input due at the current coordinate is real
                     // boundary progress even though it retires no guest
                     // instruction. Reissue once that complete batch has left
@@ -1504,8 +1567,7 @@ impl SimulationBackend for QemuNodeSet {
                     last_stagnant_pause = None;
                     continue;
                 }
-                if let Some(boundary) =
-                    stagnant_pause_boundary(&observation, previous, backend.last_step_final_state())
+                if let Some(boundary) = stagnant_pause_boundary(&observation, previous, final_state)
                     && last_stagnant_pause.as_ref() != Some(&boundary)
                 {
                     // A fresh timer or control boundary can become visible at
@@ -1522,10 +1584,10 @@ impl SimulationBackend for QemuNodeSet {
                         node.name,
                         observation.reached.ticks,
                         ceiling.ticks,
-                        backend.last_step_ceiling(),
+                        effective_ceiling,
                         observation.outcome,
-                        backend.last_step_final_state(),
-                        backend.last_step_inbound_frames_consumed(),
+                        final_state,
+                        inbound_frames_consumed,
                     ),
                 });
             }
