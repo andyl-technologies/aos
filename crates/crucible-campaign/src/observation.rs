@@ -2,8 +2,9 @@
 //!
 //! Observation records bind one admitted semantic attempt to its exact child
 //! configuration, stop outcome, measurements, property verdicts, coverage,
-//! and newly discovered choices. Operational reservation, worker, retry, and
-//! host-timing data is deliberately absent.
+//! newly discovered choices, and selections produced while continuing through
+//! those choices. Operational reservation, worker, retry, and host-timing data
+//! is deliberately absent.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,11 +15,13 @@ use crate::policy::{MAX_IDENTIFIER_BYTES, validate_identifier};
 use crate::{
     AttemptId, BranchPathId, CampaignCodecError, CampaignHash, ChoiceOpportunityId,
     ConfigurationArtifactId, ConfigurationId, CoverageProjectionId, MeasurementSetId,
-    ObservationId, PropertyVerdictSetId, StopCondition,
+    ObservationId, PropertyVerdictSetId, SelectionId, StopCondition,
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
 const SCENARIO_FAILURE_OBSERVATION_SCHEMA_VERSION: u32 = 2;
+const PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION: u32 = 3;
+const SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION: u32 = 4;
 const MEASUREMENT_SET_SCHEMA_VERSION: u32 = 2;
 const MAX_RECORD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_MEASUREMENT_EVALUATION_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
@@ -948,6 +951,7 @@ pub struct Observation {
     properties: PropertyVerdictSetId,
     coverage: CoverageProjectionId,
     discovered_choices: BTreeSet<ChoiceOpportunityId>,
+    produced_selections: BTreeSet<SelectionId>,
 }
 
 impl Observation {
@@ -986,7 +990,36 @@ impl Observation {
             properties,
             coverage,
             discovered_choices,
+            produced_selections: BTreeSet::new(),
         })
+    }
+
+    /// Attaches the nonempty selection closure produced by this attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after a nonempty selection closure was already
+    /// attached, or when the combined choice-reference count or encoded
+    /// observation exceeds its fixed bound.
+    pub(crate) fn with_produced_selections(
+        mut self,
+        produced_selections: BTreeSet<SelectionId>,
+    ) -> Result<Self, CampaignCodecError> {
+        if !self.produced_selections.is_empty() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "observation already carries produced selections",
+            });
+        }
+        if produced_selections.is_empty() {
+            return Ok(self);
+        }
+        self.schema_version = if matches!(self.stop, StopOutcome::ScenarioFailure(_)) {
+            SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
+        } else {
+            PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
+        };
+        self.produced_selections = produced_selections;
+        Self::from_versioned(self)
     }
 
     fn from_versioned(value: Self) -> Result<Self, CampaignCodecError> {
@@ -996,10 +1029,28 @@ impl Observation {
                 limit: "observation-discovered-choice-count",
             });
         }
+        if value
+            .discovered_choices
+            .len()
+            .checked_add(value.produced_selections.len())
+            .is_none_or(|count| count > MAX_DISCOVERED_CHOICES)
+        {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "observation-choice-reference-count",
+            });
+        }
+        let has_scenario_failure = matches!(&value.stop, StopOutcome::ScenarioFailure(_));
+        let has_produced_selections = !value.produced_selections.is_empty();
         let compatible = match value.schema_version {
-            RECORD_SCHEMA_VERSION => !matches!(&value.stop, StopOutcome::ScenarioFailure(_)),
+            RECORD_SCHEMA_VERSION => !has_scenario_failure && !has_produced_selections,
             SCENARIO_FAILURE_OBSERVATION_SCHEMA_VERSION => {
-                matches!(&value.stop, StopOutcome::ScenarioFailure(_))
+                has_scenario_failure && !has_produced_selections
+            }
+            PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION => {
+                !has_scenario_failure && has_produced_selections
+            }
+            SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION => {
+                has_scenario_failure && has_produced_selections
             }
             _ => false,
         };
@@ -1066,6 +1117,12 @@ impl Observation {
         &self.discovered_choices
     }
 
+    /// Returns selections produced while continuing through discovered choices.
+    #[must_use]
+    pub const fn produced_selections(&self) -> &BTreeSet<SelectionId> {
+        &self.produced_selections
+    }
+
     /// Returns strict canonical bytes.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
@@ -1118,6 +1175,17 @@ impl Observation {
                     )
                 }),
         );
+        children.extend(
+            self.produced_selections
+                .iter()
+                .enumerate()
+                .map(|(index, selection)| {
+                    (
+                        format!("produced-selection.{index:04x}"),
+                        selection.content_id(),
+                    )
+                }),
+        );
         children
     }
 
@@ -1138,24 +1206,64 @@ impl Canonical for Observation {
         self.properties.encode(encoder);
         self.coverage.encode(encoder);
         self.discovered_choices.encode(encoder);
+        if matches!(
+            self.schema_version,
+            PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
+                | SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
+        ) {
+            self.produced_selections.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
+        if !matches!(
+            schema_version,
+            RECORD_SCHEMA_VERSION
+                | SCENARIO_FAILURE_OBSERVATION_SCHEMA_VERSION
+                | PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
+                | SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
+        ) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported observation schema or stop outcome",
+            });
+        }
+        let attempt = AttemptId::decode(decoder)?;
+        let child = ConfigurationId::decode(decoder)?;
+        let child_content = ConfigurationArtifactId::decode(decoder)?;
+        let path = BranchPathId::decode(decoder)?;
+        let stop = StopOutcome::decode(decoder)?;
+        let measurements = MeasurementSetId::decode(decoder)?;
+        let properties = PropertyVerdictSetId::decode(decoder)?;
+        let coverage = CoverageProjectionId::decode(decoder)?;
+        let discovered_choices = decoder.set_bounded(
+            MAX_DISCOVERED_CHOICES,
+            "observation-discovered-choice-count",
+        )?;
+        let produced_selections = if matches!(
+            schema_version,
+            PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
+                | SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
+        ) {
+            decoder.set_bounded(
+                MAX_DISCOVERED_CHOICES,
+                "observation-produced-selection-count",
+            )?
+        } else {
+            BTreeSet::new()
+        };
         Self::from_versioned(Self {
             schema_version,
-            attempt: AttemptId::decode(decoder)?,
-            child: ConfigurationId::decode(decoder)?,
-            child_content: ConfigurationArtifactId::decode(decoder)?,
-            path: BranchPathId::decode(decoder)?,
-            stop: StopOutcome::decode(decoder)?,
-            measurements: MeasurementSetId::decode(decoder)?,
-            properties: PropertyVerdictSetId::decode(decoder)?,
-            coverage: CoverageProjectionId::decode(decoder)?,
-            discovered_choices: decoder.set_bounded(
-                MAX_DISCOVERED_CHOICES,
-                "observation-discovered-choice-count",
-            )?,
+            attempt,
+            child,
+            child_content,
+            path,
+            stop,
+            measurements,
+            properties,
+            coverage,
+            discovered_choices,
+            produced_selections,
         })
     }
 }

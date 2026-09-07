@@ -868,6 +868,20 @@ fn build_observation_candidate(
         .iter()
         .map(|discovery| discovery.opportunity().id())
         .collect::<Result<BTreeSet<_>, _>>()?;
+    let produced_selections = pending
+        .configuration
+        .schedule
+        .decisions()
+        .iter()
+        .filter_map(|decision| match decision {
+            Decision::Selection(selection) => Some(selection),
+            _ => None,
+        })
+        .map(|decision| Selection::from_canonical_bytes(decision.canonical_bytes()))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|selection| discovered_ids.contains(&selection.opportunity()))
+        .collect();
     let observation = Observation::new(
         pending.input.attempt().id()?,
         child.configuration(),
@@ -887,6 +901,7 @@ fn build_observation_candidate(
         discovered_choices,
         observation,
     )
+    .and_then(|candidate| candidate.with_produced_selections(produced_selections))
     .map_err(Into::into)
 }
 

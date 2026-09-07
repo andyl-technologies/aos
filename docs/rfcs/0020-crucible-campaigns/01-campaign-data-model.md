@@ -700,6 +700,7 @@ pub struct Observation {
     pub properties: PropertyVerdictSetId,
     pub coverage: CoverageProjectionId,
     pub discovered_choices: CanonicalSet<ChoiceOpportunityId>,
+    pub produced_selections: CanonicalSet<SelectionId>, // v3/v4 only
 }
 ```
 
@@ -711,6 +712,17 @@ reasons in scheduler firing order. Existing outcomes remain v1 and retain
 their exact historical body and envelope identities. A v1 body containing the
 new tag or a v2 body without it is invalid, and an unsupported reader fails
 closed on the v2 envelope before accepting campaign evidence.
+
+Schema v3 extends a non-scenario-failure observation with the bounded canonical
+set of selections produced while execution continued through choices discovered
+by that attempt. Each selection must resolve to exactly one of the observation's
+discovered opportunities, and no opportunity may be selected twice. The
+selection IDs are envelope children, so the accepted observation roots the
+complete replay closure. Schema v4 combines the same produced-selection set
+with the schema-v2 scenario-failure outcome. An empty produced-selection set
+continues to use v1 or v2, preserving all existing body and envelope identities.
+The combined discovered-opportunity and produced-selection count cannot exceed
+the envelope's existing 65,530 variable-child allowance.
 
 `BranchRequest` schema v1 encodes a uniform finite source as candidate-source
 tag 0 and a generated source as tag 1. Schema v2 preserves both encodings and

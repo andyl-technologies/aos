@@ -571,9 +571,9 @@ content_object_id!(
 content_object_id!(
     ObservationId,
     ObjectKind::Observation,
-    [1, 2],
+    [1, 2, 3, 4],
     "crucible.campaign.observation",
-    "Identifies one canonical attempt observation; version 1 remains decodable for history compatibility."
+    "Identifies one canonical attempt observation; versions 1 through 3 remain decodable for history compatibility."
 );
 content_object_id!(
     ObjectiveEvaluationId,

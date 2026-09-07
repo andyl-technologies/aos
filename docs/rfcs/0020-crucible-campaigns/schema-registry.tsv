@@ -157,7 +157,7 @@ crucible.campaign.expansion-credit	1	crucible-campaign::exploration	campaign-fac
 crucible.campaign.measurement-set	2	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address
 crucible.campaign.property-verdict-set	1	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address
 crucible.campaign.coverage-projection	1	crucible-campaign::observation	projection	gate:campaign-replay,gate:content-address
-crucible.campaign.observation	2	crucible-campaign::observation	observation	gate:attempt-idempotence,gate:campaign-replay,gate:content-address
+crucible.campaign.observation	4	crucible-campaign::observation	observation	gate:attempt-idempotence,gate:campaign-replay,gate:content-address
 crucible.campaign.objective-evaluation	2	crucible-campaign::objective	observation	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.campaign.ranking-explanation	2	crucible-campaign::objective	projection	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.campaign.survivor-selection	1	crucible-campaign::objective	campaign-fact	gate:campaign-model,gate:campaign-replay,gate:content-address
