@@ -21,7 +21,7 @@
   archDirectory =
     if isDarwin
     then "${targetCpu}-darwin"
-    else "x86_64-linux";
+    else "${targetCpu}-linux";
   longDoubleSize =
     if stdenv.hostPlatform.isAarch64
     then "8"
@@ -222,6 +222,7 @@ in
             ./Configure \
               -des \
               -Dprefix=$out \
+              -Darchname=${archDirectory} \
               -Dvendorprefix=$out \
               -Dprivlib=$out/lib/perl5/${version} \
               -Darchlib=$out/lib/perl5/${version}/${archDirectory} \
@@ -261,7 +262,16 @@ in
         script =
           ''
             make install
-
+            ${
+              if stdenv.isCross
+              then ''
+                # Perl installs its binaries and extension modules read-only.
+                # The generic cross fixup must be able to strip them and remove
+                # build-only target-compiler directories from their RPATHs.
+                chmod -R u+w "$out"
+              ''
+              else ""
+            }
             # ── Preserve unmodified Config files in $dev before scrubbing ──
             # $dev is a forensic copy mirroring $out's layout, not a usable
             # perl interpreter. Lets future devs audit the build-time

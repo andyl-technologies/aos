@@ -167,7 +167,7 @@
   # would turn harmless `#!/usr/bin/env ...` references into live
   # `/nix/store/<hash>-python3/bin/python3` paths, pulling python/perl/etc.
   # into closures that never needed them.
-  fixupPhase = {
+  fixupPhaseFor = stripCommand: {
     name = "fixup";
     script = ''
       object_format="''${AOS_OBJECT_FORMAT:-elf}"
@@ -177,11 +177,11 @@
         for o in ''${AOS_OUTPUT_NAMES:-out}; do
           eval "p=\"\''${$o:-}\""
           [ -d "$p" ] || continue
-          find "$p" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) -exec strip --strip-unneeded {} \; 2>/dev/null || true
-          find "$p" -type f -name '*.a' -exec strip -S {} \; 2>/dev/null || true
+          find "$p" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) -exec ${stripCommand} --strip-unneeded {} \; 2>/dev/null || true
+          find "$p" -type f -name '*.a' -exec ${stripCommand} -S {} \; 2>/dev/null || true
           for d in bin sbin libexec; do
             if [ -d "$p/$d" ]; then
-              find "$p/$d" -type f -exec strip -s {} \; 2>/dev/null || true
+              find "$p/$d" -type f -exec ${stripCommand} -s {} \; 2>/dev/null || true
             fi
           done
         done
@@ -236,6 +236,13 @@
       fi
     '';
   };
+
+  fixupPhase = fixupPhaseFor "strip";
+
+  # A native binutils only recognizes its own object targets. Cross packages
+  # without a custom fixup must use the selected target strip so debug sections
+  # cannot retain the compiler in otherwise small runtime closures.
+  crossElfFixupPhase = fixupPhaseFor "\"$STRIP\"";
 
   # Preserve the native phase bytes while avoiding grep -q's intentional
   # early pipe close for large Mach-O archives in Darwin cross builds.
@@ -775,6 +782,8 @@
         != outputPlatform.system
         && outputPlatform.objectFormat == "macho"
       then darwinCrossFixupPhase
+      else if buildPlatform.system != outputPlatform.system
+      then crossElfFixupPhase
       else fixupPhase;
 
     allPhases =
