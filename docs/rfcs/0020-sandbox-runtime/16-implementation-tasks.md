@@ -1363,6 +1363,26 @@ completes. The Git history remains authoritative for code details.
   master added deployment and release-evidence fields to `AppState`. Its
   complete test target compiles through the realized AOS development shell.
   This removes a package-build blocker; it is not VM runtime evidence.
+- `95bdfb35c` — foundation toward `SBX-NET-01`: a protected node-local policy
+  catalog resolves exact portable Network profiles, endpoint commitments, and
+  collision-resistant reserved namespace handles under signed assignment
+  authority. No kernel effect or inventory is claimed.
+- `6cf194000` — foundation toward `SBX-NET-01` and `SBX-LIFE-06`: Network
+  preparation now retains authenticated Prepared, Ambiguous, and Committed
+  effect phases, making restart recovery observation-only after an effect may
+  have occurred.
+- `94b21b0b2` — foundation toward `SBX-NET-01` and `SBX-LIFE-06`: exact
+  committed preparations can publish kernel-verified, pinned, default-drop
+  namespaces into a protected current-resource catalog and authoritative
+  current-boot inventory.
+- `0772770f3` — foundation toward `SBX-NET-01` and `SBX-LIFE-06`: the packaged,
+  systemd-activated Network service exposes authenticated read-only inventory
+  through protocol 1.2 while continuing to withhold Apply.
+- `4cb0100c0`, `462567f52` — foundation toward `SBX-NET-01` and `SBX-LIFE-06`:
+  protected Network rows retain monotonic arm, renewal, fence, disarm, and
+  irreversible retirement state, with each transition bound to an exact typed
+  helper-reported postcondition and lease tuple. Kernel mutation dispatch and
+  guardian scheduling remain open.
 
 The headless `checks.vm.sandbox-filesystem-capability` gate now passes on
 x86_64 AOS Linux 6.18.33, independently of full-system services. It qualifies
@@ -4153,3 +4173,43 @@ transitions without claiming kernel effects. Network Apply remains
 unadvertised: the privileged namespace/veth, policy, lease-gate, and
 postcondition helper; authenticated mutation dispatch; guardian scheduling;
 and controller Apply orchestration remain unimplemented.
+
+### Typed node-local Network packet policy
+
+Network preparation policy now retains the bounded typed packet program that
+its previously opaque profile and endpoint digests represented. A program
+selects one portable Network kind, the fixed reviewed enforcement artifact,
+the fixed tc-BPF lease-gate artifact where a veth is required, and an exact
+canonical logical-endpoint set. Each endpoint contains a nonempty canonical
+set of typed ingress or egress TCP, UDP, ICMPv4, or ICMPv6 flows with canonical
+remote prefixes and destination-port ranges. Host bits, invalid prefix lengths,
+port zero, reversed ranges, protocol/address-family disagreement, duplicates,
+sentinel identities, excess collections, Host networking, and incompatible
+profile shapes fail closed. Isolated policy permits no endpoint or lease gate;
+Outbound admits only egress flows, and Published admits only ingress flows.
+
+Domain-separated endpoint and program commitments cover the exact typed flows,
+portable kind, and enforcement artifacts. Root policy construction derives the
+profile and endpoint digests from those objects instead of accepting unrelated
+caller assertions. A retained preparation can recover the current trusted
+program only when the durable reservation, portable specification, handle,
+profile digest, and every endpoint digest reproduce one exact association.
+Substitution during policy roll-forward is rejected.
+
+Focused validation covers canonical IPv4 and IPv6 prefixes including `/32`
+and `/128`, protocol and port shapes, strict public typed ordering, duplicate
+flows, kind/gate/direction constraints, artifact and flow commitment changes,
+portable endpoint mismatch, exact retained-program recovery, and roll-forward
+substitution. All 50 locally runnable Network library tests and doctests pass,
+together with strict all-target/all-feature crate-local Clippy,
+warnings-as-errors rustdoc, Rust formatting, and diff checks. The full
+`nix-build -A checks.eval --cores 8 --no-out-link` gate passes the complete
+workspace test phase, configuration evaluation, and system-structure checks at
+`/nix/store/cbcbv9dczar4c7nkq9xnvdffdfkbrxf6-aos-eval-and-system-structure-checks-0`.
+
+This advances `SBX-NET-01`, `SBX-POL-01`, and `SBX-NET-02` through exact packet
+policy resolution without claiming those tasks complete. It does not allocate
+addresses or routes, derive link/MAC/ifindex identity, execute or observe
+netlink, nftables, or BPF state, implement service discovery or quota, advertise
+Apply, schedule the guardian, prove the `CLOCK_BOOTTIME` gate required by
+`SBX-P0-06`, or orchestrate the controller lifecycle.

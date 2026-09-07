@@ -31,6 +31,7 @@ use crate::authorization::NetworkAuthorityV1;
 use crate::catalog::{
     AuthenticatedNetworkPreparationV1, ResolvedEndpointV1, ResolvedNetworkPreparationV1,
 };
+use crate::policy::NetworkPolicyProgramV1;
 
 const PREPARATION_JOURNAL_FILE: &str = "network-preparations.journal";
 const HEAD_KEY: &[u8] = b"aos.network.preparation.head.v1\0";
@@ -77,39 +78,46 @@ pub enum NetworkPreparationCatalogError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkPolicyProfileV1 {
     portable_profile: NetworkProfile,
-    profile_digest: ObjectDigest,
+    program: NetworkPolicyProgramV1,
     endpoints: Vec<ResolvedEndpointV1>,
 }
 
 impl NetworkPolicyProfileV1 {
     /// Constructs one complete root-configured policy selection.
     ///
-    /// Endpoint policy rows must reproduce the portable profile's endpoint IDs
-    /// in exact canonical order. The local digest identifies the closed policy
-    /// program selected by trusted node configuration.
+    /// The typed program must implement the portable profile's network kind and
+    /// reproduce its endpoint IDs in exact canonical order. Profile and
+    /// endpoint digests are derived from that program rather than accepted as
+    /// opaque caller assertions.
     ///
     /// # Errors
     ///
-    /// Returns [`NetworkPreparationCatalogError::InvalidPolicy`] for a zero
-    /// digest, oversized collection, or endpoint mismatch.
+    /// Returns [`NetworkPreparationCatalogError::InvalidPolicy`] for a kind or
+    /// endpoint mismatch.
     pub fn new(
         portable_profile: NetworkProfile,
-        profile_digest: ObjectDigest,
-        endpoints: Vec<ResolvedEndpointV1>,
+        program: NetworkPolicyProgramV1,
     ) -> Result<Self, NetworkPreparationCatalogError> {
-        if profile_digest.as_bytes() == &[0; 32]
-            || endpoints.len() > MAXIMUM_ENDPOINTS
-            || !portable_profile
-                .endpoint_ids()
+        if portable_profile.kind() != program.kind()
+            || !portable_profile.endpoint_ids().iter().copied().eq(program
+                .endpoints()
                 .iter()
-                .map(|endpoint| endpoint.as_bytes())
-                .eq(endpoints.iter().map(ResolvedEndpointV1::id))
+                .map(|endpoint| endpoint.endpoint_id()))
         {
             return Err(NetworkPreparationCatalogError::InvalidPolicy);
         }
+        let endpoints = program
+            .endpoints()
+            .iter()
+            .map(|endpoint| {
+                ResolvedEndpointV1::new(*endpoint.endpoint_id().as_bytes(), endpoint.digest())
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| NetworkPreparationCatalogError::InvalidPolicy)?;
+
         Ok(Self {
             portable_profile,
-            profile_digest,
+            program,
             endpoints,
         })
     }
@@ -123,7 +131,13 @@ impl NetworkPolicyProfileV1 {
     /// Returns the protected local policy-program digest.
     #[must_use]
     pub const fn profile_digest(&self) -> ObjectDigest {
-        self.profile_digest
+        self.program.digest()
+    }
+
+    /// Returns the complete typed local policy program.
+    #[must_use]
+    pub const fn program(&self) -> &NetworkPolicyProgramV1 {
+        &self.program
     }
 
     /// Returns canonical logical-endpoint to local-policy bindings.
@@ -524,6 +538,46 @@ impl NetworkPreparationCatalogV1 {
             return Err(NetworkPreparationCatalogError::InvalidCandidate);
         }
         record.assignment.assignment()
+    }
+
+    /// Resolves one retained preparation to its complete typed packet policy.
+    ///
+    /// The durable reservation must exactly reproduce `resolution`. Its
+    /// retained portable specification then selects a program from the current
+    /// trusted policy catalog, and that program must reproduce every committed
+    /// profile and endpoint digest. A policy roll-forward must therefore retain
+    /// an unsettled program unchanged until its prepared effect is committed or
+    /// resolved by observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkPreparationCatalogError::InvalidCandidate`] when the
+    /// handle, retained resolution, portable profile, or current typed program
+    /// does not form one exact association.
+    pub fn program_for_resolution(
+        &self,
+        network_handle: [u8; 32],
+        resolution: &ResolvedNetworkPreparationV1,
+    ) -> Result<&NetworkPolicyProgramV1, NetworkPreparationCatalogError> {
+        let record = self
+            .records
+            .get(&network_handle)
+            .ok_or(NetworkPreparationCatalogError::InvalidCandidate)?;
+        if record.resolution()? != *resolution {
+            return Err(NetworkPreparationCatalogError::InvalidCandidate);
+        }
+        let sandbox_spec = decode_sandbox_spec(&record.sandbox_spec_bytes, DecodeLimits::default())
+            .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)?;
+        let profile = self
+            .policy
+            .resolve(sandbox_spec.network_profile())
+            .filter(|profile| {
+                profile.profile_digest() == resolution.profile_digest()
+                    && profile.endpoints() == resolution.endpoints()
+            })
+            .ok_or(NetworkPreparationCatalogError::InvalidCandidate)?;
+
+        Ok(profile.program())
     }
 }
 
@@ -1009,6 +1063,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::policy::{
+        NetworkEndpointPolicyV1, NetworkFlowDirectionV1, NetworkFlowPolicyV1, NetworkIpPrefixV1,
+        NetworkPortRangeV1, NetworkTransportProtocolV1,
+    };
 
     const NODE: NodeId = NodeId::from_bytes([31; 16]);
 
@@ -1173,29 +1231,52 @@ mod tests {
         portable_profile: NetworkProfile,
         profile_marker: u8,
     ) -> NetworkPolicyCatalogV1 {
+        let program = policy_program(&portable_profile, profile_marker);
+        NetworkPolicyCatalogV1::new(
+            node,
+            generation,
+            vec![NetworkPolicyProfileV1::new(portable_profile, program).unwrap()],
+        )
+        .unwrap()
+    }
+
+    fn policy_program(
+        portable_profile: &NetworkProfile,
+        profile_marker: u8,
+    ) -> NetworkPolicyProgramV1 {
+        let direction = match portable_profile.kind() {
+            NetworkKind::Published => NetworkFlowDirectionV1::Ingress,
+            _ => NetworkFlowDirectionV1::Egress,
+        };
         let endpoints = portable_profile
             .endpoint_ids()
             .iter()
             .enumerate()
             .map(|(index, endpoint)| {
-                ResolvedEndpointV1::new(
-                    *endpoint.as_bytes(),
-                    ObjectDigest::from_bytes([profile_marker.wrapping_add(index as u8 + 1); 32]),
+                let port = 10_000_u16 + u16::try_from(index).unwrap();
+                let flow = NetworkFlowPolicyV1::new(
+                    direction,
+                    NetworkTransportProtocolV1::Tcp,
+                    NetworkIpPrefixV1::ipv4([10, profile_marker, 0, 0], 16).unwrap(),
+                    Some(NetworkPortRangeV1::new(port, port).unwrap()),
                 )
-                .unwrap()
+                .unwrap();
+                NetworkEndpointPolicyV1::new(*endpoint, vec![flow]).unwrap()
             })
             .collect();
-        NetworkPolicyCatalogV1::new(
-            node,
-            generation,
-            vec![
-                NetworkPolicyProfileV1::new(
-                    portable_profile,
-                    ObjectDigest::from_bytes([profile_marker; 32]),
-                    endpoints,
-                )
-                .unwrap(),
-            ],
+        let gate = if portable_profile.kind() == NetworkKind::Isolated {
+            None
+        } else {
+            Some(ObjectDigest::from_bytes(
+                [profile_marker.wrapping_add(1); 32],
+            ))
+        };
+
+        NetworkPolicyProgramV1::new(
+            portable_profile.kind(),
+            ObjectDigest::from_bytes([profile_marker; 32]),
+            gate,
+            endpoints,
         )
         .unwrap()
     }
@@ -1231,6 +1312,12 @@ mod tests {
                 .unwrap(),
             manifest.broker_assignment().unwrap()
         );
+        assert_eq!(
+            catalog
+                .program_for_resolution(handle, first.preparation().resolution())
+                .unwrap(),
+            policy.profiles()[0].program()
+        );
         let substituted = ResolvedNetworkPreparationV1::new(
             2,
             handle,
@@ -1244,6 +1331,10 @@ mod tests {
         ));
         assert!(matches!(
             catalog.assignment_for_resolution([99; 32], first.preparation().resolution()),
+            Err(NetworkPreparationCatalogError::InvalidCandidate)
+        ));
+        assert!(matches!(
+            catalog.program_for_resolution([99; 32], first.preparation().resolution()),
             Err(NetworkPreparationCatalogError::InvalidCandidate)
         ));
         assert!(matches!(
@@ -1354,18 +1445,13 @@ mod tests {
             NetworkPreparationCatalogV1::open_for_test(directory.path(), foreign_policy, 2),
             Err(NetworkPreparationCatalogError::Rollback)
         ));
+        let isolated = isolated_profile();
+        let isolated_program = policy_program(&isolated, 81);
         assert!(matches!(
             NetworkPolicyCatalogV1::new(
                 NodeId::from_bytes([0; 16]),
                 1,
-                vec![
-                    NetworkPolicyProfileV1::new(
-                        isolated_profile(),
-                        ObjectDigest::from_bytes([81; 32]),
-                        Vec::new(),
-                    )
-                    .unwrap()
-                ],
+                vec![NetworkPolicyProfileV1::new(isolated, isolated_program).unwrap()],
             ),
             Err(NetworkPreparationCatalogError::InvalidPolicy)
         ));
@@ -1398,6 +1484,35 @@ mod tests {
         assert!(matches!(
             NetworkPreparationCatalogV1::open_for_test(directory.path(), second, 3),
             Err(NetworkPreparationCatalogError::Rollback)
+        ));
+    }
+
+    #[test]
+    fn policy_roll_forward_cannot_substitute_an_unsettled_program() {
+        let directory = TempDir::new().unwrap();
+        let portable_profile = isolated_profile();
+        let first_policy = policy_catalog(1, portable_profile.clone(), 81);
+        let spec = sandbox_spec(portable_profile.clone());
+        let manifest = manifest(&spec, 2, 5);
+        let reservation = NetworkPreparationReservationV1::new(&manifest, &spec).unwrap();
+        let authority = authority();
+        let mut first =
+            NetworkPreparationCatalogV1::open_for_test(directory.path(), first_policy, 1).unwrap();
+        let resolution = first
+            .reserve(reservation, &authority)
+            .unwrap()
+            .into_preparation()
+            .resolution()
+            .clone();
+        let handle = *resolution.reserved_network_handle();
+        drop(first);
+
+        let second_policy = policy_catalog(2, portable_profile, 82);
+        let advanced =
+            NetworkPreparationCatalogV1::open_for_test(directory.path(), second_policy, 2).unwrap();
+        assert!(matches!(
+            advanced.program_for_resolution(handle, &resolution),
+            Err(NetworkPreparationCatalogError::InvalidCandidate)
         ));
     }
 
@@ -1500,12 +1615,9 @@ mod tests {
     #[test]
     fn policy_and_portable_input_mismatches_fail_closed() {
         let project = project_profile(&[7, 8]);
+        let incomplete = project_profile(&[7]);
         assert!(matches!(
-            NetworkPolicyProfileV1::new(
-                project.clone(),
-                ObjectDigest::from_bytes([81; 32]),
-                vec![ResolvedEndpointV1::new([7; 16], ObjectDigest::from_bytes([82; 32])).unwrap()],
-            ),
+            NetworkPolicyProfileV1::new(project.clone(), policy_program(&incomplete, 81)),
             Err(NetworkPreparationCatalogError::InvalidPolicy)
         ));
 
