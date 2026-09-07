@@ -11,6 +11,7 @@ use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+// crucible-lint: allow host-nondeterminism-state -- The factory authenticates and forwards an unchanged captured scheduler continuation; operational source availability cannot mutate it.
 use crucible::{Configuration, ContentHash, ScenarioDef, SchedulerError};
 use crucible_api::{
     ProductionVmHotForkNodeServiceState, ProductionVmHotForkSourceWorld, ProductionVmNodeGeneration,
@@ -20,6 +21,9 @@ use crucible_qemu::{
     QemuHotForkChildProcessOwner, QemuShutdownPolicy, QemuVmRealizationError,
 };
 
+use crate::qemu_campaign_lifecycle::{
+    QemuFreshScenarioResourceError, validate_fresh_qemu_scenario_resources,
+};
 use crate::{
     AttemptCheckpointResult, AttemptExecutionContext, AttemptExecutionDisposition,
     AttemptExecutionProduct, AttemptExecutionReconciliationStep, AttemptWorkerFailure,
@@ -260,6 +264,9 @@ pub enum QemuProductionHotForkWorldLifecycleFactoryError<P> {
     /// The supervisor omitted its exact runtime incarnation.
     #[error("production hot-fork world requires an exact worker runtime basis")]
     MissingRuntimeBasis,
+    /// The complete target World exceeds the admitted attempt resources.
+    #[error("admit production hot-fork target World resources: {0}")]
+    ScenarioResources(#[source] QemuFreshScenarioResourceError),
     /// The target resource guard could not be installed.
     #[error("install production hot-fork target resources: {0}")]
     Resource(#[source] QemuVmRealizationError),
@@ -309,6 +316,9 @@ where
         let runtime_basis = context
             .runtime_basis()
             .ok_or_else(|| AttemptWorkerFailure::Terminal(Self::Error::MissingRuntimeBasis))?;
+        validate_fresh_qemu_scenario_resources(input.scenario(), context.resources()).map_err(
+            |error| AttemptWorkerFailure::Terminal(Self::Error::ScenarioResources(error)),
+        )?;
         let scenario = input.scenario().scenario_def();
         let start = execution_start(input);
         let Some(mut source_world) = self
@@ -868,7 +878,7 @@ fn map_hot_fork_checkpoint_handoff_failure<F, D>(
     failure.map(QemuHotForkWorldExecutionRunnerError::CheckpointHandoff)
 }
 
-trait AttemptWorkerFailureExt<E> {
+pub(crate) trait AttemptWorkerFailureExt<E> {
     fn map<T>(self, map: impl FnOnce(E) -> T) -> AttemptWorkerFailure<T>;
     fn into_error(self) -> E;
 }
