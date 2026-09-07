@@ -299,9 +299,8 @@ pub enum CampaignFact {
 executor incompatibility, invalid input, authorization denial, and terminal
 worker failure. A terminal worker failure is an operational quarantine: it
 closes the admitted ordinal without manufacturing an observation or modeled
-stop outcome. Campaign fact v10 is used only for that new disposition. Version
-9 is reserved for the extended-stop addition, and older closure dispositions
-retain their version-2 bytes.
+stop outcome. Campaign fact v10 is used only for that new disposition; the
+older closure dispositions retain their version-2 bytes.
 
 New branch-request transitions use `BranchRequestAccepted`. Its immutable
 summary records the validated addressable source cardinality, the existing
@@ -586,7 +585,7 @@ pub struct BranchPoint {
 }
 
 pub struct BranchRequest {
-    pub schema_version: u32, // v2 explicit/uniform, v3 modeled finite, v4 modeled generated, v5 scenario default
+    pub schema_version: u32, // v2 explicit/uniform, v3 modeled finite, v4 modeled generated, v5 scenario default, v6 extended stop
     pub branch_point: BranchPointId,
     pub parent: ConfigurationArtifactId,
     pub opportunity: ChoiceOpportunityId,
@@ -656,9 +655,23 @@ pub struct BranchEdge {
 }
 
 pub struct Attempt {
+    pub schema_version: u32, // v2 only for an extended execution-quanta stop
     pub start: AttemptStart,
     pub path: BranchPathId,
     pub stop: StopCondition,
+}
+
+pub enum StopCondition {
+    NextChoice,
+    NamedBoundary(String),
+    VirtualTimeNanoseconds(u64),
+    EventCount(u64),
+    Terminal,
+    ExecutionQuanta(u64),
+    VirtualTimeOrExecutionQuanta {
+        virtual_time_nanoseconds: u64,
+        execution_quanta: u64,
+    },
 }
 
 pub enum AttemptStart {
@@ -699,6 +712,7 @@ pub enum AttemptAdmissionRole {
 }
 
 pub struct Observation {
+    pub schema_version: u32, // v5-v8 extend the v1-v4 matrix for execution-quanta stops
     pub attempt: AttemptId,
     pub child: ConfigurationId,
     pub child_content: ConfigurationArtifactId,
@@ -708,7 +722,7 @@ pub struct Observation {
     pub properties: PropertyVerdictSetId,
     pub coverage: CoverageProjectionId,
     pub discovered_choices: CanonicalSet<ChoiceOpportunityId>,
-    pub produced_selections: CanonicalSet<SelectionId>, // v3/v4 only
+    pub produced_selections: CanonicalSet<SelectionId>, // v3/v4/v7/v8 only
 }
 ```
 
@@ -731,6 +745,27 @@ with the schema-v2 scenario-failure outcome. An empty produced-selection set
 continues to use v1 or v2, preserving all existing body and envelope identities.
 The combined discovered-opportunity and produced-selection count cannot exceed
 the envelope's existing 65,530 variable-child allowance.
+
+Stop-condition tags 5 and 6 add `ExecutionQuanta` and
+`VirtualTimeOrExecutionQuanta`. Both quantum bounds are absolute scheduler
+coordinates from scenario genesis and must be nonzero; the combined form also
+requires a nonzero virtual-time deadline. They are distinct from the executor's
+operational capacity ceiling. A resumed attempt therefore evaluates them
+against the version-2 `SingleSchedulerCheckpoint.quanta` coordinate and charges
+only the suffix after that coordinate. Restored virtual-time evaluation uses
+the checkpoint's exact scheduler frontier; the last retained event timestamp
+may be earlier and is not a substitute. Terminal and assertion outcomes retain
+precedence. When virtual time and execution quanta first cross on the same
+scheduler quantum, virtual time is the reporting priority.
+
+These new stop tags require versioned enclosing records so older readers reject
+them before interpreting a body. `Attempt` uses v2, `BranchRequest` uses v6,
+and a `DiscoveryRequested` campaign fact uses v9. `Observation` adds four to
+the matching v1-through-v4 shape, producing v5 for an ordinary reached stop
+and v7 when that observation also retains produced selections. Versions v6 and
+v8 reserve the corresponding scenario-failure shapes; the current closed
+outcome union cannot construct them and rejects a mismatched body. All earlier
+stop tags keep their prior enclosing versions, bytes, and content identities.
 
 `BranchRequest` schema v1 encodes a uniform finite source as candidate-source
 tag 0 and a generated source as tag 1. Schema v2 preserves both encodings and
@@ -759,6 +794,11 @@ singleton equal to the referenced opportunity's declared default, and a
 one-proposal/one-attempt budget. Every other cause remains on its established
 v1 through v4 writer schema and is invalid in v5. V1 through v4 bodies and
 envelope identities remain unchanged.
+
+Schema v6 accepts either new execution-quanta stop condition with every source
+and cause shape otherwise legal in v1 through v5. A v6 body carrying an older
+stop, or an older body carrying a new stop, is invalid. Source, cause, and
+budget semantics remain unchanged.
 
 `BranchPath` schema version 2 retains each `BranchPointId` beside its
 non-invertible `BranchEdgeId`. This lets a restart rebuild observation credit

@@ -676,7 +676,9 @@ where
         StopCondition::NextChoice
         | StopCondition::VirtualTimeNanoseconds(_)
         | StopCondition::EventCount(_)
-        | StopCondition::Terminal => BTreeSet::new(),
+        | StopCondition::Terminal
+        | StopCondition::ExecutionQuanta(_)
+        | StopCondition::VirtualTimeOrExecutionQuanta { .. } => BTreeSet::new(),
     };
     crucible_campaign::CampaignPolicy::new(
         lineage.scenario(),

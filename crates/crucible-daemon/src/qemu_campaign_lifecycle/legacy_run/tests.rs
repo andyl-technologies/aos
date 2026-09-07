@@ -53,6 +53,7 @@ struct TerminalLifecycle {
     event_log: EventLog,
     mode: TerminalLifecycleMode,
     frontier: VirtualTime,
+    completed_quanta: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -65,6 +66,7 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
     fn enable_signal_fault_campaign_promotion(&mut self) {}
 
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        self.completed_quanta = self.completed_quanta.saturating_add(1);
         self.frontier.ticks = match self.mode {
             TerminalLifecycleMode::Terminal => 7,
             TerminalLifecycleMode::VirtualTime {
@@ -94,6 +96,10 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
             event_log_offset: append.offset,
             scheduler_quiescence: None,
         })
+    }
+
+    fn completed_quanta(&self) -> u64 {
+        self.completed_quanta
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
@@ -180,12 +186,14 @@ struct SelectableLifecycle {
     selection_received: bool,
     terminal_driven: bool,
     frontier: VirtualTime,
+    completed_quanta: u64,
 }
 
 impl QemuFreshAttemptLifecycleOwner for SelectableLifecycle {
     fn enable_signal_fault_campaign_promotion(&mut self) {}
 
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        self.completed_quanta = self.completed_quanta.saturating_add(1);
         self.terminal_driven = self.selection_received;
         self.frontier = VirtualTime {
             ticks: if self.terminal_driven { 7 } else { 1 },
@@ -219,6 +227,10 @@ impl QemuFreshAttemptLifecycleOwner for SelectableLifecycle {
             event_log_offset: append.offset,
             scheduler_quiescence: None,
         })
+    }
+
+    fn completed_quanta(&self) -> u64 {
+        self.completed_quanta
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
@@ -314,6 +326,7 @@ impl QemuFreshAttemptLifecycleFactory for SelectableLifecycleFactory {
             selection_received: false,
             terminal_driven: false,
             frontier: VirtualTime::default(),
+            completed_quanta: 0,
         })
     }
 }
@@ -340,6 +353,7 @@ impl QemuFreshAttemptLifecycleFactory for TerminalLifecycleFactory {
             event_log: EventLog::new(),
             mode: self.mode,
             frontier: VirtualTime::default(),
+            completed_quanta: 0,
         })
     }
 }
@@ -499,6 +513,72 @@ fn explicit_virtual_time_discovery_retains_the_first_frontier_crossing_the_deadl
     assert_eq!(
         completed.terminal().observation().stop(),
         &StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(deadline))
+    );
+}
+
+#[test]
+fn explicit_execution_quanta_discovery_stops_at_the_absolute_coordinate() {
+    let execution_quanta = 3;
+    let quantum_nanoseconds = 11;
+    let (request, node) = request();
+    let request = request.with_discovery_stop(StopCondition::ExecutionQuanta(execution_quanta));
+    let (factory, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(TerminalLifecycleFactory {
+            node,
+            fail_start: false,
+            mode: TerminalLifecycleMode::VirtualTime {
+                quantum_nanoseconds,
+            },
+        });
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+
+    let completed = run_guarded_default_campaign_with_runner(request, runner, evidence)
+        .expect("execution-quanta campaign should reach the requested coordinate");
+
+    assert_eq!(completed.observations().len(), 1);
+    assert_eq!(completed.branch_request_count(), 0);
+    assert_eq!(completed.evidence().quanta(), execution_quanta);
+    assert_eq!(
+        completed.evidence().frontier().ticks,
+        execution_quanta * quantum_nanoseconds
+    );
+    assert_eq!(
+        completed.terminal().observation().stop(),
+        &StopOutcome::Reached(StopCondition::ExecutionQuanta(execution_quanta))
+    );
+}
+
+#[test]
+fn explicit_combined_discovery_stops_at_the_first_reached_bound() {
+    let virtual_time_nanoseconds = 15;
+    let execution_quanta = 3;
+    let quantum_nanoseconds = 10;
+    let stop = StopCondition::VirtualTimeOrExecutionQuanta {
+        virtual_time_nanoseconds,
+        execution_quanta,
+    };
+    let (request, node) = request();
+    let request = request.with_discovery_stop(stop.clone());
+    let (factory, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(TerminalLifecycleFactory {
+            node,
+            fail_start: false,
+            mode: TerminalLifecycleMode::VirtualTime {
+                quantum_nanoseconds,
+            },
+        });
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+
+    let completed = run_guarded_default_campaign_with_runner(request, runner, evidence)
+        .expect("combined campaign should reach its virtual-time member first");
+
+    assert_eq!(completed.observations().len(), 1);
+    assert_eq!(completed.branch_request_count(), 0);
+    assert_eq!(completed.evidence().quanta(), 2);
+    assert_eq!(completed.evidence().frontier().ticks, 20);
+    assert_eq!(
+        completed.terminal().observation().stop(),
+        &StopOutcome::Reached(stop)
     );
 }
 

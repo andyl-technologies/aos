@@ -267,6 +267,12 @@ impl SingleSchedulerCheckpoint {
         }
     }
 
+    /// Returns the absolute scheduler-quantum coordinate retained at this boundary.
+    #[must_use]
+    pub const fn quanta(&self) -> u64 {
+        self.wire.quanta
+    }
+
     /// Returns the scheduler-state projection retained at this boundary.
     ///
     /// # Errors

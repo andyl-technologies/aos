@@ -303,7 +303,7 @@ fn resume_start_materialization<F, D>(
     QemuFreshStartMaterialization,
     AttemptWorkerFailure<QemuProductionExactResumeExecutionRunnerError<F, D>>,
 > {
-    let (events, base, quiescence, terminal) = lifecycle
+    let (events, base, completed_quanta, frontier, quiescence, terminal) = lifecycle
         .resume_state()
         .map_err(map_resume_checkpoint_capture_failure)?
         .into_parts();
@@ -324,7 +324,12 @@ fn resume_start_materialization<F, D>(
         return Err(resume_event_log_limit("campaign-event-log-bytes"));
     }
     Ok(QemuFreshStartMaterialization::from_resume_parts(
-        events, bytes, quiescence, terminal,
+        events,
+        bytes,
+        completed_quanta,
+        frontier,
+        quiescence,
+        terminal,
     ))
 }
 

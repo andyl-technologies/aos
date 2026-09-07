@@ -17,6 +17,7 @@ const PIN_COMMAND_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 5;
 const CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 6;
 const BRANCH_ACCEPTANCE_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 7;
 const DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 8;
+const EXTENDED_STOP_DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 9;
 const TERMINAL_WORKER_FAILURE_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 10;
 
 #[derive(Clone, Copy)]
@@ -545,6 +546,10 @@ impl DiscoveryRequest {
             &codec::encode(self),
         )
     }
+
+    pub(crate) const fn uses_extended_stop_schema(&self) -> bool {
+        self.stop.uses_extended_wire_schema()
+    }
 }
 
 impl Canonical for DiscoveryRequest {
@@ -678,6 +683,9 @@ impl CampaignFact {
             Self::PinCommandAccepted(_) => PIN_COMMAND_CAMPAIGN_FACT_SCHEMA_VERSION,
             Self::ObjectiveEvaluationPublished(_) => CAMPAIGN_FACT_SCHEMA_VERSION,
             Self::BranchRequestAccepted { .. } => BRANCH_ACCEPTANCE_CAMPAIGN_FACT_SCHEMA_VERSION,
+            Self::DiscoveryRequested(request) if request.uses_extended_stop_schema() => {
+                EXTENDED_STOP_DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION
+            }
             Self::DiscoveryRequested(_) => DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION,
             Self::AttemptClosed {
                 disposition: NonModeledAttemptDisposition::TerminalWorkerFailure,
@@ -787,7 +795,27 @@ impl CampaignFact {
                             decoder,
                             CampaignFactDecodeExtension::DiscoveryRequest,
                         )?;
-                        if !matches!(fact, CampaignFact::DiscoveryRequested(_)) {
+                        if !matches!(
+                            fact,
+                            CampaignFact::DiscoveryRequested(ref request)
+                                if !request.uses_extended_stop_schema()
+                        ) {
+                            return Err(CampaignCodecError::InvalidValue {
+                                reason: "campaign fact variant requires its original schema version",
+                            });
+                        }
+                        Ok(Self { version, fact })
+                    }
+                    EXTENDED_STOP_DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION => {
+                        let fact = CampaignFact::decode_versioned(
+                            decoder,
+                            CampaignFactDecodeExtension::DiscoveryRequest,
+                        )?;
+                        if !matches!(
+                            fact,
+                            CampaignFact::DiscoveryRequested(ref request)
+                                if request.uses_extended_stop_schema()
+                        ) {
                             return Err(CampaignCodecError::InvalidValue {
                                 reason: "campaign fact variant requires its original schema version",
                             });

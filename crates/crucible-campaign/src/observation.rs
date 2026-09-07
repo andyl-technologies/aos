@@ -22,6 +22,8 @@ const RECORD_SCHEMA_VERSION: u32 = 1;
 const SCENARIO_FAILURE_OBSERVATION_SCHEMA_VERSION: u32 = 2;
 const PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION: u32 = 3;
 const SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION: u32 = 4;
+const EXTENDED_STOP_OBSERVATION_SCHEMA_OFFSET: u32 = 4;
+const OBSERVATION_SCHEMA_VERSION: u32 = 8;
 const MEASUREMENT_SET_SCHEMA_VERSION: u32 = 2;
 const MAX_RECORD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_MEASUREMENT_EVALUATION_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
@@ -836,6 +838,10 @@ impl StopOutcome {
             Self::TerminalSuccess => Ok(()),
         }
     }
+
+    const fn uses_extended_stop_schema(&self) -> bool {
+        matches!(self, Self::Reached(stop) if stop.uses_extended_wire_schema())
+    }
 }
 
 impl Canonical for StopOutcome {
@@ -974,11 +980,7 @@ impl Observation {
         coverage: CoverageProjectionId,
         discovered_choices: BTreeSet<ChoiceOpportunityId>,
     ) -> Result<Self, CampaignCodecError> {
-        let schema_version = if matches!(stop, StopOutcome::ScenarioFailure(_)) {
-            SCENARIO_FAILURE_OBSERVATION_SCHEMA_VERSION
-        } else {
-            RECORD_SCHEMA_VERSION
-        };
+        let schema_version = observation_schema_version(&stop, false);
         Self::from_versioned(Self {
             schema_version,
             attempt,
@@ -1013,11 +1015,7 @@ impl Observation {
         if produced_selections.is_empty() {
             return Ok(self);
         }
-        self.schema_version = if matches!(self.stop, StopOutcome::ScenarioFailure(_)) {
-            SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
-        } else {
-            PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
-        };
+        self.schema_version = observation_schema_version(&self.stop, true);
         self.produced_selections = produced_selections;
         Self::from_versioned(self)
     }
@@ -1039,22 +1037,9 @@ impl Observation {
                 limit: "observation-choice-reference-count",
             });
         }
-        let has_scenario_failure = matches!(&value.stop, StopOutcome::ScenarioFailure(_));
         let has_produced_selections = !value.produced_selections.is_empty();
-        let compatible = match value.schema_version {
-            RECORD_SCHEMA_VERSION => !has_scenario_failure && !has_produced_selections,
-            SCENARIO_FAILURE_OBSERVATION_SCHEMA_VERSION => {
-                has_scenario_failure && !has_produced_selections
-            }
-            PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION => {
-                !has_scenario_failure && has_produced_selections
-            }
-            SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION => {
-                has_scenario_failure && has_produced_selections
-            }
-            _ => false,
-        };
-        if !compatible {
+        if value.schema_version != observation_schema_version(&value.stop, has_produced_selections)
+        {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported observation schema or stop outcome",
             });
@@ -1210,6 +1195,8 @@ impl Canonical for Observation {
             self.schema_version,
             PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
                 | SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
+                | 7
+                | OBSERVATION_SCHEMA_VERSION
         ) {
             self.produced_selections.encode(encoder);
         }
@@ -1219,10 +1206,7 @@ impl Canonical for Observation {
         let schema_version = u32::decode(decoder)?;
         if !matches!(
             schema_version,
-            RECORD_SCHEMA_VERSION
-                | SCENARIO_FAILURE_OBSERVATION_SCHEMA_VERSION
-                | PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
-                | SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
+            RECORD_SCHEMA_VERSION..=OBSERVATION_SCHEMA_VERSION
         ) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported observation schema or stop outcome",
@@ -1244,6 +1228,8 @@ impl Canonical for Observation {
             schema_version,
             PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
                 | SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
+                | 7
+                | OBSERVATION_SCHEMA_VERSION
         ) {
             decoder.set_bounded(
                 MAX_DISCOVERED_CHOICES,
@@ -1266,6 +1252,22 @@ impl Canonical for Observation {
             produced_selections,
         })
     }
+}
+
+fn observation_schema_version(stop: &StopOutcome, has_produced_selections: bool) -> u32 {
+    let mut version = match (
+        matches!(stop, StopOutcome::ScenarioFailure(_)),
+        has_produced_selections,
+    ) {
+        (false, false) => RECORD_SCHEMA_VERSION,
+        (true, false) => SCENARIO_FAILURE_OBSERVATION_SCHEMA_VERSION,
+        (false, true) => PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION,
+        (true, true) => SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION,
+    };
+    if stop.uses_extended_stop_schema() {
+        version += EXTENDED_STOP_OBSERVATION_SCHEMA_OFFSET;
+    }
+    version
 }
 
 fn require_schema(actual: u32) -> Result<(), CampaignCodecError> {

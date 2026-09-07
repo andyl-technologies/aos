@@ -81,7 +81,7 @@ where
     /// Returns a scheduler error when the adopted lifecycle cannot expose its
     /// exact boundary, retained only a suffix, or its event bytes overflow.
     pub fn start_materialization(&self) -> Result<QemuFreshStartMaterialization, SchedulerError> {
-        let (event_log, base_events, quiescence, terminal_verdict) =
+        let (event_log, base_events, completed_quanta, frontier, quiescence, terminal_verdict) =
             self.lifecycle.resume_state()?.into_parts();
         if base_events != 0 {
             return Err(SchedulerError::BoundaryViolation {
@@ -100,6 +100,8 @@ where
         Ok(QemuFreshStartMaterialization::from_resume_parts(
             event_log,
             event_log_bytes,
+            completed_quanta,
+            frontier,
             quiescence,
             terminal_verdict,
         ))
@@ -229,6 +231,10 @@ where
 
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         QuantumLoop::drive_quantum(&mut self.lifecycle, request)
+    }
+
+    fn completed_quanta(&self) -> u64 {
+        self.lifecycle.completed_quanta()
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {

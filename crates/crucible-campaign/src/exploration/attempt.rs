@@ -233,7 +233,11 @@ impl Attempt {
     ) -> Result<Self, CampaignCodecError> {
         stop.validate()?;
         Ok(Self {
-            schema_version: RECORD_SCHEMA_VERSION,
+            schema_version: if stop.uses_extended_wire_schema() {
+                ATTEMPT_SCHEMA_VERSION
+            } else {
+                RECORD_SCHEMA_VERSION
+            },
             start,
             path,
             stop,
@@ -256,6 +260,10 @@ impl Attempt {
     #[must_use]
     pub const fn stop(&self) -> &StopCondition {
         &self.stop
+    }
+
+    pub(crate) const fn schema_version(&self) -> u32 {
+        self.schema_version
     }
 
     /// Returns strict canonical bytes.
@@ -281,8 +289,9 @@ impl Attempt {
     /// Returns [`CampaignCodecError`] if canonical envelope construction fails.
     pub fn id(&self) -> Result<AttemptId, CampaignCodecError> {
         AttemptId::from_content_id(
-            crate::ObjectEnvelope::for_record(
+            crate::ObjectEnvelope::for_record_versioned(
                 crate::CampaignRecordKind::Attempt,
+                self.schema_version,
                 crate::object::content_children(self.content_children())?,
                 self.canonical_bytes(),
             )?
@@ -316,12 +325,29 @@ impl Canonical for Attempt {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_schema(u32::decode(decoder)?)?;
-        Self::new(
-            AttemptStart::decode(decoder)?,
-            BranchPathId::decode(decoder)?,
-            StopCondition::decode(decoder)?,
-        )
+        let schema_version = u32::decode(decoder)?;
+        if !matches!(
+            schema_version,
+            RECORD_SCHEMA_VERSION | ATTEMPT_SCHEMA_VERSION
+        ) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported attempt schema version",
+            });
+        }
+        let start = AttemptStart::decode(decoder)?;
+        let path = BranchPathId::decode(decoder)?;
+        let stop = StopCondition::decode(decoder)?;
+        if stop.uses_extended_wire_schema() != (schema_version == ATTEMPT_SCHEMA_VERSION) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "attempt schema disagrees with stop-condition schema",
+            });
+        }
+        Ok(Self {
+            schema_version,
+            start,
+            path,
+            stop,
+        })
     }
 }
 

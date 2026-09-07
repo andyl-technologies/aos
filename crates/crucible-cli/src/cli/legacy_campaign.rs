@@ -27,7 +27,7 @@ pub(super) fn run_local_qemu_campaign_replay(
     let deployment_path =
         resolve_guarded_campaign_deployment_path(run_plan.campaign_deployment.as_deref())?;
     let deployment = load_guarded_campaign_run_deployment(&deployment_path)?;
-    let resources = guarded_run_resources(deployment.resources)?;
+    let resources = guarded_run_resources(deployment.resources, run_plan.max_quanta)?;
     let qemu_build_id = match backend {
         ResolvedLocalBackend::Qemu { qemu_build_id, .. } => qemu_build_id.clone(),
         #[cfg(any(test, feature = "test-double"))]
@@ -61,7 +61,6 @@ pub(super) fn run_local_qemu_campaign_replay(
 /// Returns whether the shared campaign owner can execute this run exactly.
 pub(super) fn guarded_campaign_run_eligible(plan: &RunInvocationPlan) -> bool {
     guarded_discovery_stop(plan).is_ok()
-        && plan.max_quanta.is_none()
         && plan.execution_mode == RunExecutionMode::ToCompletion
         && plan.save_policy == RunSavePolicy::Never
         && !plan.watch_streams_live_status
@@ -89,7 +88,7 @@ pub(super) fn run_local_qemu_campaign_workflow(
     let deployment_path =
         resolve_guarded_campaign_deployment_path(run_plan.campaign_deployment.as_deref())?;
     let deployment = load_guarded_campaign_run_deployment(&deployment_path)?;
-    let resources = guarded_run_resources(deployment.resources)?;
+    let resources = guarded_run_resources(deployment.resources, run_plan.max_quanta)?;
     let qemu_build_id = match backend {
         ResolvedLocalBackend::Qemu { qemu_build_id, .. } => qemu_build_id.clone(),
         #[cfg(any(test, feature = "test-double"))]
@@ -131,10 +130,14 @@ pub(super) fn run_local_qemu_campaign_workflow(
 
 fn guarded_run_resources(
     deployment: AttemptResourceLimits,
+    requested_quanta: Option<u64>,
 ) -> Result<AttemptResourceLimits, CliError> {
-    if deployment.maximum_execution_quanta() < PRODUCTION_CLI_QUANTUM_BUDGET {
+    let admitted_quanta = requested_quanta
+        .unwrap_or(PRODUCTION_CLI_QUANTUM_BUDGET)
+        .max(PRODUCTION_CLI_QUANTUM_BUDGET);
+    if deployment.maximum_execution_quanta() < admitted_quanta {
         return Err(backend_error(format!(
-            "campaign deployment admits {} execution quanta, below the default run requirement of {PRODUCTION_CLI_QUANTUM_BUDGET}",
+            "campaign deployment admits {} execution quanta, below the run requirement of {admitted_quanta}",
             deployment.maximum_execution_quanta(),
         )));
     }
@@ -142,7 +145,7 @@ fn guarded_run_resources(
         deployment.maximum_vcpus(),
         deployment.maximum_resident_bytes(),
         deployment.maximum_disk_bytes(),
-        PRODUCTION_CLI_QUANTUM_BUDGET,
+        admitted_quanta,
     )
     .map_err(|error| campaign_run_error("build guarded execution limits", error))
 }
@@ -154,14 +157,28 @@ fn guarded_discovery_stop(plan: &RunInvocationPlan) -> Result<StopCondition, Cli
         ));
     }
 
-    match (&plan.max_virtual_time, plan.max_virtual_time_ticks) {
-        (Some(_), Some(deadline)) => {
-            return Ok(StopCondition::VirtualTimeNanoseconds(deadline));
-        }
+    let virtual_time_deadline = match (&plan.max_virtual_time, plan.max_virtual_time_ticks) {
+        (Some(_), Some(deadline)) => Some(deadline),
         (Some(_), None) | (None, Some(_)) => {
             return Err(backend_error(
                 "the parsed virtual-time deadline is internally inconsistent",
             ));
+        }
+        (None, None) => None,
+    };
+
+    match (virtual_time_deadline, plan.max_quanta) {
+        (Some(virtual_time_nanoseconds), Some(execution_quanta)) => {
+            return Ok(StopCondition::VirtualTimeOrExecutionQuanta {
+                virtual_time_nanoseconds,
+                execution_quanta,
+            });
+        }
+        (Some(deadline), None) => {
+            return Ok(StopCondition::VirtualTimeNanoseconds(deadline));
+        }
+        (None, Some(bound)) => {
+            return Ok(StopCondition::ExecutionQuanta(bound));
         }
         (None, None) => {}
     }
@@ -275,6 +292,19 @@ fn campaign_stop_status(
         StopOutcome::ScenarioFailure(_) => (BackendCommandStatus::Failed, OutcomeKind::Failed),
         StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(deadline))
             if run_plan.max_virtual_time_ticks == Some(*deadline) =>
+        {
+            (BackendCommandStatus::Timeout, OutcomeKind::Timeout)
+        }
+        StopOutcome::Reached(StopCondition::ExecutionQuanta(bound))
+            if run_plan.max_quanta == Some(*bound) =>
+        {
+            (BackendCommandStatus::Timeout, OutcomeKind::Timeout)
+        }
+        StopOutcome::Reached(StopCondition::VirtualTimeOrExecutionQuanta {
+            virtual_time_nanoseconds,
+            execution_quanta,
+        }) if run_plan.max_virtual_time_ticks == Some(*virtual_time_nanoseconds)
+            && run_plan.max_quanta == Some(*execution_quanta) =>
         {
             (BackendCommandStatus::Timeout, OutcomeKind::Timeout)
         }
@@ -461,7 +491,40 @@ mod tests {
 
         let mut plan = default.clone();
         plan.max_quanta = Some(1);
-        assert!(!guarded_campaign_run_eligible(&plan));
+        assert!(guarded_campaign_run_eligible(&plan));
+        assert_eq!(
+            guarded_discovery_stop(&plan).expect("execution-quanta stop"),
+            StopCondition::ExecutionQuanta(1)
+        );
+        assert_eq!(
+            campaign_stop_status(
+                &plan,
+                &StopOutcome::Reached(StopCondition::ExecutionQuanta(1)),
+            )
+            .expect("reached execution-quanta status"),
+            (BackendCommandStatus::Timeout, OutcomeKind::Timeout)
+        );
+
+        plan.max_virtual_time = Some(String::from("2ms"));
+        plan.max_virtual_time_ticks = Some(2_000_000);
+        assert_eq!(
+            guarded_discovery_stop(&plan).expect("combined stop"),
+            StopCondition::VirtualTimeOrExecutionQuanta {
+                virtual_time_nanoseconds: 2_000_000,
+                execution_quanta: 1,
+            }
+        );
+        assert_eq!(
+            campaign_stop_status(
+                &plan,
+                &StopOutcome::Reached(StopCondition::VirtualTimeOrExecutionQuanta {
+                    virtual_time_nanoseconds: 2_000_000,
+                    execution_quanta: 1,
+                }),
+            )
+            .expect("reached combined status"),
+            (BackendCommandStatus::Timeout, OutcomeKind::Timeout)
+        );
 
         let mut plan = default.clone();
         plan.execution_mode = RunExecutionMode::Interactive;
@@ -501,7 +564,7 @@ mod tests {
     fn guarded_campaign_route_uses_the_deployment_quanta_ceiling() {
         let insufficient = AttemptResourceLimits::new(1, 1, 1, PRODUCTION_CLI_QUANTUM_BUDGET - 1)
             .expect("nonzero limits");
-        assert!(guarded_run_resources(insufficient).is_err());
+        assert!(guarded_run_resources(insufficient, None).is_err());
 
         let sufficient = AttemptResourceLimits::new(
             2,
@@ -510,10 +573,25 @@ mod tests {
             PRODUCTION_CLI_QUANTUM_BUDGET,
         )
         .expect("guarded capacity");
-        let resources = guarded_run_resources(sufficient).expect("default run resources");
+        let resources = guarded_run_resources(sufficient, None).expect("default run resources");
         assert_eq!(
             resources.maximum_execution_quanta(),
             PRODUCTION_CLI_QUANTUM_BUDGET
         );
+
+        let larger = AttemptResourceLimits::new(
+            2,
+            1024 * 1024 * 1024,
+            2 * 1024 * 1024 * 1024,
+            PRODUCTION_CLI_QUANTUM_BUDGET + 10,
+        )
+        .expect("larger guarded capacity");
+        let resources = guarded_run_resources(larger, Some(PRODUCTION_CLI_QUANTUM_BUDGET + 10))
+            .expect("requested run resources");
+        assert_eq!(
+            resources.maximum_execution_quanta(),
+            PRODUCTION_CLI_QUANTUM_BUDGET + 10
+        );
+        assert!(guarded_run_resources(larger, Some(PRODUCTION_CLI_QUANTUM_BUDGET + 11)).is_err());
     }
 }

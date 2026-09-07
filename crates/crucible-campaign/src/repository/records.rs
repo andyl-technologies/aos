@@ -979,8 +979,9 @@ impl CampaignRepository {
         &self,
         attempt: &Attempt,
     ) -> Result<ContentId, CampaignRepositoryError> {
-        self.put_envelope(ObjectEnvelope::for_record(
+        self.put_envelope(ObjectEnvelope::for_record_versioned(
             crate::CampaignRecordKind::Attempt,
+            attempt.schema_version(),
             crate::object::content_children(attempt.content_children())?,
             attempt.canonical_bytes(),
         )?)

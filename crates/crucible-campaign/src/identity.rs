@@ -458,9 +458,9 @@ content_object_id!(
 content_object_id!(
     CampaignFactId,
     ObjectKind::CampaignFact,
-    [2, 3, 4, 5, 6, 7, 8, 10],
+    [2, 3, 4, 5, 6, 7, 8, 9, 10],
     "crucible.campaign.fact",
-    "Identifies one immutable campaign fact; versions 2 through 8 and version 10 are decodable; version 9 is reserved."
+    "Identifies one immutable campaign fact; versions 2 through 9 remain decodable for history compatibility."
 );
 semantic_id!(
     CampaignCommandId,
@@ -528,9 +528,9 @@ semantic_id!(
 content_object_id!(
     BranchRequestId,
     ObjectKind::CampaignFact,
-    [1, 2, 3, 4, 5],
+    [1, 2, 3, 4, 5, 6],
     "crucible.campaign.branch-request",
-    "Identifies one bounded request for branch candidates; versions 1 through 4 remain decodable for history compatibility."
+    "Identifies one bounded request for branch candidates; versions 1 through 5 remain decodable for history compatibility."
 );
 content_object_id!(
     CandidateGeneratorSpecId,
@@ -558,8 +558,9 @@ content_object_id!(
 content_object_id!(
     AttemptId,
     ObjectKind::CampaignFact,
+    [1, 2],
     "crucible.campaign.attempt",
-    "Identifies one immutable semantic execution attempt."
+    "Identifies one immutable semantic execution attempt; version 1 remains decodable for history compatibility."
 );
 content_object_id!(
     AttemptAdmissionId,
@@ -571,9 +572,9 @@ content_object_id!(
 content_object_id!(
     ObservationId,
     ObjectKind::Observation,
-    [1, 2, 3, 4],
+    [1, 2, 3, 4, 5, 6, 7, 8],
     "crucible.campaign.observation",
-    "Identifies one canonical attempt observation; versions 1 through 3 remain decodable for history compatibility."
+    "Identifies one canonical attempt observation; versions 1 through 7 remain decodable for history compatibility."
 );
 content_object_id!(
     ObjectiveEvaluationId,

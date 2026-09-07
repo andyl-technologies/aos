@@ -21,7 +21,7 @@ pub struct QemuAttemptExecutionEvidenceSnapshot {
 }
 
 impl QemuAttemptExecutionEvidenceSnapshot {
-    /// Returns the number of successfully completed lifecycle quanta.
+    /// Returns the absolute scheduler-quantum coordinate at the latest retained boundary.
     #[must_use]
     pub const fn quanta(&self) -> u64 {
         self.quanta

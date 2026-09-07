@@ -65,19 +65,43 @@ pub enum StopCondition {
     EventCount(u64),
     /// Run until a modeled terminal outcome.
     Terminal,
+    /// Stop at an absolute scheduler-quantum coordinate from scenario genesis.
+    ExecutionQuanta(u64),
+    /// Stop when either absolute virtual time or scheduler quanta reaches its bound.
+    VirtualTimeOrExecutionQuanta {
+        /// Deterministic virtual-time deadline in nanoseconds.
+        virtual_time_nanoseconds: u64,
+        /// Absolute scheduler-quantum coordinate from scenario genesis.
+        execution_quanta: u64,
+    },
 }
 
 impl StopCondition {
     pub(crate) fn validate(&self) -> Result<(), CampaignCodecError> {
         match self {
             Self::NamedBoundary(name) => validate_identifier(name, "stop boundary is invalid"),
-            Self::VirtualTimeNanoseconds(0) | Self::EventCount(0) => {
-                Err(CampaignCodecError::InvalidValue {
-                    reason: "stop condition has a zero bound",
-                })
+            Self::VirtualTimeNanoseconds(0)
+            | Self::EventCount(0)
+            | Self::ExecutionQuanta(0)
+            | Self::VirtualTimeOrExecutionQuanta {
+                virtual_time_nanoseconds: 0,
+                ..
             }
+            | Self::VirtualTimeOrExecutionQuanta {
+                execution_quanta: 0,
+                ..
+            } => Err(CampaignCodecError::InvalidValue {
+                reason: "stop condition has a zero bound",
+            }),
             _ => Ok(()),
         }
+    }
+
+    pub(crate) const fn uses_extended_wire_schema(&self) -> bool {
+        matches!(
+            self,
+            Self::ExecutionQuanta(_) | Self::VirtualTimeOrExecutionQuanta { .. }
+        )
     }
 }
 
@@ -98,6 +122,18 @@ impl Canonical for StopCondition {
                 value.encode(encoder);
             }
             Self::Terminal => encoder.u8(4),
+            Self::ExecutionQuanta(value) => {
+                encoder.u8(5);
+                value.encode(encoder);
+            }
+            Self::VirtualTimeOrExecutionQuanta {
+                virtual_time_nanoseconds,
+                execution_quanta,
+            } => {
+                encoder.u8(6);
+                virtual_time_nanoseconds.encode(encoder);
+                execution_quanta.encode(encoder);
+            }
         }
     }
 
@@ -110,6 +146,11 @@ impl Canonical for StopCondition {
             2 => Self::VirtualTimeNanoseconds(u64::decode(decoder)?),
             3 => Self::EventCount(u64::decode(decoder)?),
             4 => Self::Terminal,
+            5 => Self::ExecutionQuanta(u64::decode(decoder)?),
+            6 => Self::VirtualTimeOrExecutionQuanta {
+                virtual_time_nanoseconds: u64::decode(decoder)?,
+                execution_quanta: u64::decode(decoder)?,
+            },
             tag => {
                 return Err(CampaignCodecError::UnknownTag {
                     kind: "stop-condition",
@@ -472,7 +513,9 @@ impl BranchRequest {
     /// repository before publication or use. A modeled finite source emits
     /// schema version 3; the established uniform, explicit, and generated
     /// forms continue to emit version 2 so their keyed identities do not drift.
-    /// A modeled generated source emits schema version 4.
+    /// A modeled generated source emits schema version 4. Extended execution-
+    /// budget stops emit schema version 6 while versions 1 through 5 retain
+    /// their established stop-condition bytes and identities.
     ///
     /// # Errors
     ///
@@ -491,7 +534,10 @@ impl BranchRequest {
         stop: StopCondition,
     ) -> Result<Self, CampaignCodecError> {
         let schema_version = match (&cause, &source) {
-            (BranchRequestCause::ScenarioDefault(_), _) => BRANCH_REQUEST_SCHEMA_VERSION,
+            _ if stop.uses_extended_wire_schema() => BRANCH_REQUEST_SCHEMA_VERSION,
+            (BranchRequestCause::ScenarioDefault(_), _) => {
+                SCENARIO_DEFAULT_BRANCH_REQUEST_SCHEMA_VERSION
+            }
             (_, CandidateSource::ModeledFinite(_)) => 3,
             (_, CandidateSource::ModeledGenerated(_)) => 4,
             (_, CandidateSource::Finite(_) | CandidateSource::Generated(_)) => 2,
@@ -526,24 +572,30 @@ impl BranchRequest {
             (CandidateSource::Finite(source), RECORD_SCHEMA_VERSION) => {
                 source.prior_weights().is_some()
             }
-            (CandidateSource::ModeledFinite(_), version) => version != 3,
-            (CandidateSource::ModeledGenerated(_), version) => version != 4,
+            (CandidateSource::ModeledFinite(_), version) => {
+                !matches!(version, 3 | BRANCH_REQUEST_SCHEMA_VERSION)
+            }
+            (CandidateSource::ModeledGenerated(_), version) => {
+                !matches!(version, 4 | BRANCH_REQUEST_SCHEMA_VERSION)
+            }
             (CandidateSource::Finite(_) | CandidateSource::Generated(_), _) => false,
         };
         let incompatible_cause = match cause {
-            BranchRequestCause::ScenarioDefault(_) => {
-                schema_version != BRANCH_REQUEST_SCHEMA_VERSION
-            }
+            BranchRequestCause::ScenarioDefault(_) => !matches!(
+                schema_version,
+                SCENARIO_DEFAULT_BRANCH_REQUEST_SCHEMA_VERSION | BRANCH_REQUEST_SCHEMA_VERSION
+            ),
             BranchRequestCause::Planner(_)
             | BranchRequestCause::Operator(_)
             | BranchRequestCause::Debugger(_)
             | BranchRequestCause::ExhaustivePolicy(_) => {
-                schema_version == BRANCH_REQUEST_SCHEMA_VERSION
+                schema_version == SCENARIO_DEFAULT_BRANCH_REQUEST_SCHEMA_VERSION
             }
         };
         if !matches!(schema_version, 1..=BRANCH_REQUEST_SCHEMA_VERSION)
             || incompatible_source
             || incompatible_cause
+            || stop.uses_extended_wire_schema() != (schema_version == BRANCH_REQUEST_SCHEMA_VERSION)
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported branch-request schema or source",

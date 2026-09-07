@@ -368,6 +368,41 @@ fn explicit_discovery_is_idempotent_and_cold_recomputable() {
 }
 
 #[test]
+fn explicit_discovery_with_execution_quanta_is_cold_recomputable() {
+    let (repository, lineage, policy) = fixture();
+    let head = running_discovery_head(&repository, "explicit-quanta", &lineage, &policy, true);
+    let stop = StopCondition::VirtualTimeOrExecutionQuanta {
+        virtual_time_nanoseconds: 20,
+        execution_quanta: 3,
+    };
+    let request = DiscoveryRequest::new(
+        crate::CampaignCommandId::from_hash(CampaignHash::derive("test", b"discover-quanta")),
+        head.snapshot_id(),
+        lineage.genesis_content(),
+        stop.clone(),
+    )
+    .expect("request");
+
+    let accepted = repository
+        .submit_discovery_request("explicit-quanta", &request)
+        .expect("accept execution-quanta discovery");
+    let attempt = repository
+        .load_attempt(accepted.attempt)
+        .expect("accepted attempt");
+    assert_eq!(attempt.stop(), &stop);
+    assert_eq!(accepted.attempt.content_id().schema_version(), 2);
+
+    let cold = CampaignRepository::new(Arc::clone(&repository.blobs), Arc::clone(&repository.refs));
+    cold.validate_complete_head(accepted.new_snapshot.content_id())
+        .expect("cold execution-quanta discovery validation");
+    let replay = cold
+        .submit_discovery_request("explicit-quanta", &request)
+        .expect("cold execution-quanta replay");
+    assert!(replay.replayed);
+    assert_eq!(replay.attempt, accepted.attempt);
+}
+
+#[test]
 fn explicit_discovery_rejects_invalid_configuration_stop_and_budget() {
     let (repository, lineage, policy) = fixture();
     let no_budget = running_discovery_head(&repository, "no-budget", &lineage, &policy, false);

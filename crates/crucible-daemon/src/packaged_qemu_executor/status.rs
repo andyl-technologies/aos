@@ -386,6 +386,10 @@ where
         self.inner.drive_quantum(request)
     }
 
+    fn completed_quanta(&self) -> u64 {
+        self.inner.completed_quanta()
+    }
+
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
         self.inner.terminal_verdict_for_stop()
     }

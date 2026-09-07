@@ -155,9 +155,17 @@ impl ProductionVmLifecycleLoop {
         Ok(ProductionVmLifecycleResumeState::new(
             scheduler.event_log().retained_entries().to_vec(),
             scheduler.event_log().retained_base_events(),
+            scheduler.quanta(),
+            scheduler.frontier(),
             scheduler.quiescence()?,
             self.terminal_verdict.clone(),
         ))
+    }
+
+    /// Returns the absolute scheduler-quantum coordinate at the current boundary.
+    #[must_use]
+    pub fn completed_quanta(&self) -> u64 {
+        self.inner.loop_impl().quanta()
     }
 
     /// Reports whether every live node can enter an exact checkpoint now.
