@@ -148,8 +148,11 @@ in
   )
   releaseInventory.packages;
   assert (decisionFor "systemd" "x86_64-linux").state == "eligible";
+  assert (decisionFor "systemd" "x86_64-linux").blockers == [];
   assert (decisionFor "systemd" "aarch64-darwin").state == "not-applicable";
   assert (decisionFor "darwin-runtimes" "aarch64-darwin").state == "eligible";
+  assert (decisionFor "rust" "x86_64-linux").blockers == [];
+  assert (decisionFor "rust" "x86_64-darwin").blockers != [];
   assert (decisionFor "darwin-runtimes" "x86_64-linux").state == "not-applicable";
   assert (decisionFor "aos-hub-e2e" "x86_64-linux").state == "not-applicable";
   assert (decisionFor "darling" "aarch64-linux").state == "not-applicable";
