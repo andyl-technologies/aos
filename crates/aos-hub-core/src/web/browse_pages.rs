@@ -2304,13 +2304,14 @@ fn selected(value: &str, current: Option<&str>) -> &'static str {
 
 fn image_select(
     name: &str,
+    label: &str,
     all_label: &str,
     values: &[(String, String)],
     current: Option<&str>,
 ) -> String {
     let mut html = format!(
         "<label>{}<select name=\"{}\"><option value=\"\">{}</option>",
-        escape(name),
+        escape(label),
         escape(name),
         escape(all_label),
     );
@@ -2631,24 +2632,26 @@ pub fn images_page(
     ];
     let _ = write!(
         body,
-        "<form method=\"get\" data-live class=\"image-filters\"><div class=\"image-filter-fields\">{}{}{}{}{}\
-         <label>search<input type=\"search\" name=\"q\" value=\"{}\" \
-         placeholder=\"package, checksum, or filename\"></label></div>\
-         <div class=\"image-filter-actions\"><button>filter</button>\
-         <a href=\"/{}/-/images?release={}\">Clear filters</a></div></form>",
-        format!("<input type=\"hidden\" name=\"release\" value=\"{}\">", escape(context.query_value().unwrap_or(""))),
-        image_select("channel", "all channels", &channel_options, channel),
-        image_select(
-            "architecture",
-            "all architectures",
-            &architecture_options,
-            architecture
-        ),
-        image_select("format", "all formats", &format_options, format),
-        image_select("target", "all targets", &target_options, target),
+        "<form method=\"get\" data-live class=\"catalog-filters\" role=\"search\" aria-label=\"Search images\">\
+         <input type=\"hidden\" name=\"release\" value=\"{}\">\
+         <div class=\"catalog-search\"><label>Search<input type=\"search\" name=\"q\" value=\"{}\" \
+         placeholder=\"Package, checksum, or filename\"></label><button type=\"submit\">Search</button>\
+         <a href=\"/{}/-/images?release={}\">Clear filters</a></div>\
+         <div class=\"catalog-filter-fields\">{}{}{}{}</div></form>",
+        escape(context.query_value().unwrap_or("")),
         escape(browse.query.unwrap_or("")),
         escape(slug),
         urlencode(context.query_value().unwrap_or("")),
+        image_select("channel", "Channel", "All channels", &channel_options, channel),
+        image_select(
+            "architecture",
+            "Architecture",
+            "All architectures",
+            &architecture_options,
+            architecture
+        ),
+        image_select("format", "Format", "All formats", &format_options, format),
+        image_select("target", "Target", "All targets", &target_options, target),
     );
     if total_matches == 0 {
         body.push_str("<p class=\"dim\">No matching signed disk images are published.</p>\n");
@@ -3162,8 +3165,8 @@ mod tests {
         assert!(default.contains("name=\"architecture\""));
         assert!(default.contains("name=\"format\""));
         assert!(default.contains("name=\"target\""));
-        assert!(default.contains("class=\"image-filter-fields\""));
-        assert!(default.contains("class=\"image-filter-actions\""));
+        assert!(default.contains("class=\"catalog-filter-fields\""));
+        assert!(default.contains("class=\"catalog-search\""));
         assert!(default.contains("class=\"image-summary\""));
         assert!(default.contains("class=\"image-facts\""));
         assert!(default.contains("<th scope=\"row\">file SHA-256</th>"));

@@ -96,29 +96,79 @@ a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 header.masthead {
+  border-bottom: 2px solid var(--ink);
+  padding-bottom: 0.85rem;
+  margin-bottom: 1.8rem;
+}
+.masthead-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem 1.5rem;
+}
+.masthead-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+header.masthead .brand {
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+header.masthead .brand:hover { text-decoration-color: var(--rule-strong); }
+header.masthead .tagline { color: var(--dim); font-size: 0.78rem; }
+header.masthead .crumbs { margin-top: 0.75rem; font-size: 0.82rem; }
+header.masthead .crumbs ol {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.5rem 1.4rem;
-  border-bottom: 1px solid var(--rule);
-  padding-bottom: 1.25rem;
-  margin-bottom: 2rem;
+  gap: 0.3rem 0.6rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
-header.masthead .brand {
-  font-size: 1.35rem;
-  font-weight: 600;
-  letter-spacing: -0.04em;
+header.masthead .crumbs li { min-width: 0; overflow-wrap: anywhere; }
+header.masthead .crumbs li + li::before {
+  content: "/";
+  margin-right: 0.6rem;
+  color: var(--rule-strong);
+}
+header.masthead .crumbs a { color: var(--dim); }
+header.masthead .crumbs [aria-current="page"] { color: var(--ink); }
+header.masthead .session {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem 1rem;
+  margin-left: auto;
+  color: var(--dim);
+  font-size: 0.82rem;
+}
+header.masthead .session a { padding-block: 0.4rem; color: var(--dim); }
+header.masthead .session a:hover { color: var(--ink); }
+header.masthead .session .session-action {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
   color: var(--ink);
 }
-header.masthead .tagline { color: var(--dim); margin-left: 0.5rem; font-size: 0.85rem; }
-header.masthead .crumbs { color: var(--dim); }
-header.masthead .crumbs a { color: var(--ink); }
-/* Push the session indicator (which doubles as the primary nav when
- * signed in) to the far right; the flex gap keeps the brand and crumbs
- * spaced apart on the left. */
-header.masthead .session { color: var(--dim); margin-left: auto; }
-header.masthead .session a { color: var(--ink); }
-header.masthead .session .who { color: var(--dim); }
+header.masthead .session .session-action:hover { background: var(--surface); text-decoration: none; }
+header.masthead .session .who {
+  max-width: 26ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 40rem) {
+  header.masthead .session { margin-left: 0; justify-content: flex-start; }
+}
 
 h1, h2, h3 {
   font-weight: 500;
@@ -192,7 +242,7 @@ table {
 }
 th, td {
   text-align: left;
-  padding: 0.7rem 1.1rem 0.7rem 0;
+  padding: 0.65rem 0.8rem;
   /* Data rows use the faint rule, distinct from the heavier `--rule` of section
    * headings (which the eye otherwise reads as another table line). */
   border-bottom: 1px solid var(--rule-faint);
@@ -322,6 +372,8 @@ tbody tr:hover > td { background: var(--surface); }
 .binding-loc code { overflow-wrap: anywhere; word-break: break-all; }
 
 code, pre {
+  /* Operators remain literal glyphs with one advance per character. */
+  font-variant-ligatures: none;
   font-family: var(--font-mono);
   font-size: 0.8125rem;
   background: var(--surface);
@@ -738,8 +790,6 @@ p.chips { margin: 0.2rem 0 0.8rem; }
 }
 .artifact-references a { display: inline-block; margin: 0 0.3rem 0.2rem 0; }
 
-/* Image filters are an intentional responsive grid instead of an inline run of
- * controls whose browser-selected wrapping made labels collide. */
 .filter-form {
   display: flex;
   flex-wrap: wrap;
@@ -748,28 +798,39 @@ p.chips { margin: 0.2rem 0 0.8rem; }
   margin: 0.6rem 0 1.2rem;
 }
 .filter-form label { display: grid; gap: 0.3rem; min-width: 0; }
-.image-filters { margin: 0.6rem 0 1.2rem; }
-.image-filter-fields {
+.catalog-filters { margin: 0.6rem 0 1.2rem; }
+
+/* Catalogs share the search row; image-specific facets sit beneath it. */
+.catalog-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.7rem 0.9rem;
+}
+.catalog-search > label { flex: 1 1 20rem; }
+.catalog-search > a { padding-block: 0.55rem; }
+.catalog-filter-fields {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
   gap: 0.7rem 0.9rem;
+  margin-top: 0.9rem;
 }
-.image-filter-fields label {
+.catalog-filters label {
   display: grid;
-  gap: 0.2rem;
+  gap: 0.35rem;
   min-width: 0;
   color: var(--dim);
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  font-size: 0.85rem;
 }
-.image-filter-fields select,
-.image-filter-fields input { width: 100%; min-width: 0; }
-.image-filter-actions {
-  display: flex;
-  align-items: baseline;
-  gap: 0.8rem;
-  margin-top: 0.8rem;
+.catalog-filters select,
+.catalog-filters input {
+  width: 100%;
+  min-width: 0;
+  font-size: 1rem;
+}
+.catalog-search input,
+.catalog-search button {
+  min-height: 2.6rem;
 }
 
 .images-table .image-artifact { border-top: 2px solid var(--rule); }
@@ -900,6 +961,7 @@ form.pkg-search select {
 input.filter-box {
   width: 100%;
   font: 0.875rem/1.5 var(--font-mono);
+  font-variant-ligatures: none;
 }
 /* The old transparent-input highlight layer was sensitive to browser form
  * control compositing and could render typed filters invisible. Keep the
@@ -910,6 +972,7 @@ input.filter-box {
   border: 1px solid var(--rule);
   padding: 0.25rem 0.5rem;
   font: 0.875rem/1.5 var(--font-mono);
+  font-variant-ligatures: none;
   line-height: 1.5;
   white-space: pre;
   overflow: hidden;
@@ -950,7 +1013,14 @@ input.filter-box {
 
 /* The field/operator legend under the filter box. */
 p.filter-help { font-size: 0.8rem; margin: 0.2rem 0 0.8rem; }
-p.filter-help code { font-size: 0.8rem; padding: 0 0.25rem; }
+p.filter-help code {
+  display: inline-block;
+  padding: 0.05rem 0.35rem;
+  font-size: inherit;
+  line-height: 1.4;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
 
 /* Click-to-sort column headers. Each sortable <th> holds a link that cycles
  * unsorted → descending → ascending; the glyph shows the current state and is
@@ -1019,9 +1089,7 @@ textarea:focus-visible,
 select:focus-visible,
 button:focus-visible { border-color: var(--accent); }
 
-/* The search field's clear control: WebKit/Blink draw a fixed gray-blue "x"
- * that ignores `accent-color`. Replace it with an accent-tinted X via a mask
- * so it tracks the theme (Firefox already honors `accent-color` above). */
+/* Draw the themed clear control in CSS so the strict CSP needs no data URI. */
 input[type="search"]::-webkit-search-cancel-button {
   -webkit-appearance: none;
   appearance: none;
@@ -1029,8 +1097,7 @@ input[type="search"]::-webkit-search-cancel-button {
   width: 0.8em;
   cursor: pointer;
   background-color: var(--accent);
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 3l10 10M13 3L3 13' stroke='%23000' stroke-width='2'/%3E%3C/svg%3E") center / contain no-repeat;
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 3l10 10M13 3L3 13' stroke='%23000' stroke-width='2'/%3E%3C/svg%3E") center / contain no-repeat;
+  clip-path: polygon(15% 0, 50% 35%, 85% 0, 100% 15%, 65% 50%, 100% 85%, 85% 100%, 50% 65%, 15% 100%, 0 85%, 35% 50%, 0 15%);
 }
 
 /* Producer console: the no-JS tier is the floor, so every mutation is a
@@ -1205,6 +1272,7 @@ form.console input[type="checkbox"]:disabled,
   display: block;
   width: 100%;
   font: 0.875rem/1.5 var(--font-mono);
+  font-variant-ligatures: none;
   line-height: 1.5;
   tab-size: 2;
   padding: 0.9rem 1.1rem;
@@ -1225,6 +1293,7 @@ form.console input[type="checkbox"]:disabled,
   border: 1px solid var(--rule);
   padding: 0.9rem 1.1rem;
   font: 0.875rem/1.5 var(--font-mono);
+  font-variant-ligatures: none;
   line-height: 1.5;
   tab-size: 2;
   white-space: pre;
@@ -1732,12 +1801,16 @@ label.inline {
 .release-rail { display: flex; flex-wrap: wrap; gap: .4rem; flex-basis: 100%; }
 .release-pill { display: inline-flex; align-items: center; gap: .35rem; padding: .2rem .6rem; border: 1px solid var(--rule); border-radius: 999px; font-size: .8rem; text-decoration: none; color: var(--ink); }
 .release-pill strong { font-weight: 600; }
-.release-pill[aria-current="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.release-pill[aria-current="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--rule));
+}
 .release-jump { position: relative; }
 .release-jump input[type=search] { width: 17rem; max-width: 60vw; font: inherit; }
 .release-suggest { min-width: 100%; }
 .release-suggest .release-suggest-channel { font-weight: 600; }
-.release-directory-link { font-size: .85rem; }
+.release-link { font-size: .85rem; }
 .registry-utility { margin-left: auto; }
 .support-board { display: flex; flex-wrap: wrap; gap: .7rem; margin: .4rem 0 1.2rem; }
 .support-tile { display: flex; flex-direction: column; gap: .15rem; min-width: 11rem; padding: .7rem .9rem; border: 1px solid var(--rule); border-top: 3px solid var(--rule); text-decoration: none; color: var(--ink); }
@@ -1766,6 +1839,7 @@ label.inline {
 .doc-search input[type=search] { flex: 1 1 18rem; min-width: 0; }
 .doc-search label { display: flex; align-items: center; gap: .5rem; }
 .doc-breadcrumbs { display: flex; flex-wrap: wrap; gap: .5rem; padding: 1rem 0; font-size: .85rem; }
+.doc-root { font-family: var(--font-mono); }
 .doc-layout { display: grid; grid-template-columns: minmax(15rem, 29%) minmax(0, 1fr); gap: 1.8rem; align-items: start; }
 .doc-tree { position: sticky; top: 5rem; max-height: calc(100vh - 6rem); overflow: auto; padding-right: .7rem; border-right: 1px solid var(--rule); font-size: .85rem; }
 .doc-tree h2 { font-size: .95rem; margin-top: 0; }
@@ -1806,19 +1880,19 @@ label.inline {
 .doc-folder-head h2 { margin: .4rem 0; }
 .doc-view-toggle { display: inline-flex; gap: .2rem; font-size: .85rem; border: 1px solid var(--rule); }
 .doc-view-toggle a { padding: .3rem .7rem; text-decoration: none; }
-.doc-view-toggle a[aria-current="true"] { background: var(--ink); color: var(--paper); }
+.doc-view-toggle a[aria-current="true"] { background: var(--accent-soft); color: var(--accent); }
 .doc-folder-table { width: 100%; border-collapse: collapse; font-size: .9rem; table-layout: fixed; }
-.doc-folder-table th { text-align: left; font-weight: 600; font-size: .8rem; color: var(--dim); padding: .4rem .5rem .4rem 0; border-bottom: 1px solid var(--rule); }
+.doc-folder-table th { text-align: left; font-weight: 600; font-size: .8rem; color: var(--dim); padding: .5rem .65rem; border-bottom: 1px solid var(--rule); }
 .doc-folder-table th:nth-child(1) { width: 36%; }
 .doc-folder-table th:nth-child(2) { width: 18%; }
-.doc-folder-table td { padding: .45rem .5rem .45rem 0; border-bottom: 1px solid var(--rule); vertical-align: top; overflow-wrap: anywhere; }
+.doc-folder-table td { padding: .55rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; overflow-wrap: anywhere; }
 .doc-folder-table td code { font-size: .8rem; }
 .doc-folder-branch > td:first-child a::before { content: "\25B8\00a0"; color: var(--dim); }
 .doc-folder-count { display: block; font-size: .7rem; }
 @media (max-width: 720px) {
   .doc-folder-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .doc-folder-table, .doc-folder-table tbody, .doc-folder-table tr, .doc-folder-table td { display: block; width: auto; }
-  .doc-folder-table tr { padding: .5rem 0; border-bottom: 1px solid var(--rule); }
+  .doc-folder-table tr { padding: .5rem .65rem; border-bottom: 1px solid var(--rule); }
   .doc-folder-table td { border: 0; padding: .1rem 0; }
   .doc-folder-table td:empty { display: none; }
   .doc-layout { grid-template-columns: 1fr; gap: 1rem; }

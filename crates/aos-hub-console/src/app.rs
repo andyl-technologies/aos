@@ -118,7 +118,9 @@ fn ManagementShell(
     let navigation_route = route.clone();
     let context_route = route.clone();
     let workflow_route = route.clone();
-    let brand = shell_meta("aos-site-brand").unwrap_or_else(|| "AOS Hub".to_string());
+    let brand = shell_meta("aos-site-brand")
+        .filter(|brand| !brand.is_empty())
+        .unwrap_or_else(|| "AOS Hub".to_string());
     let tagline = shell_meta("aos-site-tagline").unwrap_or_default();
     let announcement = shell_meta("aos-site-announcement").unwrap_or_default();
     let app_version = shell_meta("aos-app-version").unwrap_or_else(|| "aos-hub".to_string());
@@ -172,23 +174,25 @@ fn ManagementShell(
         <div class="app-shell" on:click=on_console_link>
             <a class="skip-link" href="#main-content">"Skip to content"</a>
             <header class="masthead">
-                <a class="brand" href="/">{brand}</a>
-                {(!tagline.is_empty()).then(|| view! { <span class="tagline">{tagline}</span> })}
-                <span class="crumbs">
-                    <a href=route.base_path.clone()>{context.clone()}</a>
-                    " / "
-                    {page_label}
-                </span>
-                <span class="session">
-                    {AUTHENTICATED_PRIMARY_NAVIGATION.iter().enumerate().map(|(index, item)| view! {
-                        {(index > 0).then_some(" · ")}
-                        <a href=item.href>{item.label}</a>
-                    }).collect_view()}
-                    " · "
-                    <span class="who"><Suspense fallback=move || "signed-in user">{move || Suspend::new(async move { session.await.as_ref().ok().and_then(|client| client.session().principal.map(|principal| principal.email)).unwrap_or_else(|| "signed-in user".to_string()) })}</Suspense></span>
-                    " · "
-                    <a href="/logout">"log out"</a>
-                </span>
+                <div class="masthead-bar">
+                    <div class="masthead-identity">
+                        <a class="brand" href="/">{brand}</a>
+                        {(!tagline.is_empty()).then(|| view! { <span class="tagline">{tagline}</span> })}
+                    </div>
+                    <nav class="session" aria-label="Account navigation">
+                        {AUTHENTICATED_PRIMARY_NAVIGATION.iter().map(|item| view! {
+                            <a href=item.href>{item.label}</a>
+                        }).collect_view()}
+                        <span class="who"><Suspense fallback=move || "signed-in user">{move || Suspend::new(async move { session.await.as_ref().ok().and_then(|client| client.session().principal.map(|principal| principal.email)).unwrap_or_else(|| "signed-in user".to_string()) })}</Suspense></span>
+                        <a href="/logout">"log out"</a>
+                    </nav>
+                </div>
+                <nav class="crumbs" aria-label="Breadcrumb">
+                    <ol>
+                        <li><a href=route.base_path.clone()>{context.clone()}</a></li>
+                        <li><span aria-current="page">{page_label}</span></li>
+                    </ol>
+                </nav>
             </header>
             {(!announcement.is_empty()).then(|| view! { <div class="announce">{announcement}</div> })}
             <div class="settings">

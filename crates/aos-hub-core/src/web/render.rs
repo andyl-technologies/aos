@@ -37,7 +37,51 @@ pub(crate) fn authenticated_navigation() -> String {
             )
         })
         .collect::<Vec<_>>()
-        .join(" · ")
+        .join(" ")
+}
+
+/// Renders shared site identity, navigation, and an accessible breadcrumb trail.
+pub(crate) fn masthead(
+    brand: &str,
+    tagline: &str,
+    crumbs: &[(String, String)],
+    session: &str,
+) -> String {
+    let brand = if brand.is_empty() { "AOS Hub" } else { brand };
+    let mut html = format!(
+        "<header class=\"masthead\"><div class=\"masthead-bar\">\
+         <div class=\"masthead-identity\"><a class=\"brand\" href=\"/\">{}</a>",
+        escape(brand)
+    );
+    if !tagline.is_empty() {
+        let _ = write!(html, "<span class=\"tagline\">{}</span>", escape(tagline));
+    }
+    let _ = write!(html, "</div>{session}</div>");
+
+    if !crumbs.is_empty() {
+        html.push_str("<nav class=\"crumbs\" aria-label=\"Breadcrumb\"><ol>");
+        for (index, (href, label)) in crumbs.iter().enumerate() {
+            let current = if index + 1 == crumbs.len() {
+                " aria-current=\"page\""
+            } else {
+                ""
+            };
+            if href.is_empty() {
+                let _ = write!(html, "<li><span{current}>{}</span></li>", escape(label));
+            } else {
+                let _ = write!(
+                    html,
+                    "<li><a href=\"{}\"{current}>{}</a></li>",
+                    escape(href),
+                    escape(label)
+                );
+            }
+        }
+        html.push_str("</ol></nav>");
+    }
+
+    html.push_str("</header>");
+    html
 }
 
 /// The masthead chrome threaded into every page by the deploying shell.
@@ -57,7 +101,7 @@ pub struct PageChrome {
     pub session_email: Option<String>,
     /// The operator-configured masthead brand (company/instance name).
     ///
-    /// When empty, the masthead shows only the page crumbs and titles default
+    /// When empty, the masthead uses "AOS Hub" and titles default
     /// to `"<page> — AOS Registry Hub"`; when set, the brand leads the masthead
     /// and titles every page.
     pub brand: String,
@@ -68,15 +112,6 @@ impl PageChrome {
     #[must_use]
     pub fn anonymous() -> Self {
         Self::default()
-    }
-
-    /// The masthead brand element: a home link, or empty when the brand is unset.
-    fn brand_span(&self) -> String {
-        if self.brand.is_empty() {
-            String::new()
-        } else {
-            format!("<a class=\"brand\" href=\"/\">{}</a>", escape(&self.brand))
-        }
     }
 
     /// The `<title>` text: `"<page> — <brand>"`, or `"<page> — AOS Registry
@@ -96,16 +131,15 @@ impl PageChrome {
     fn session_span(&self) -> String {
         match &self.session_email {
             Some(email) => format!(
-                "<span class=\"session\">\
-                 {} · \
-                 <span class=\"who\">{}</span> · \
-                 <a href=\"/logout\">log out</a></span>",
+                "<nav class=\"session\" aria-label=\"Account navigation\">\
+                 {}<span class=\"who\">{}</span>\
+                 <a href=\"/logout\">log out</a></nav>",
                 authenticated_navigation(),
                 escape(email),
             ),
-            None => "<span class=\"session\">\
-                     <a href=\"/\">registries</a> · \
-                     <a href=\"/login\">log in</a></span>"
+            None => "<nav class=\"session\" aria-label=\"Account navigation\">\
+                     <a href=\"/\">registries</a>\
+                     <a class=\"session-action\" href=\"/login\">log in</a></nav>"
                 .to_string(),
         }
     }
@@ -343,23 +377,6 @@ pub fn page(
     body: &str,
     index: &IndexInfo,
 ) -> String {
-    let mut crumb_html = String::new();
-    for (i, (href, label)) in crumbs.iter().enumerate() {
-        if i > 0 {
-            crumb_html.push_str(" / ");
-        }
-        if href.is_empty() {
-            let _ = write!(crumb_html, "{}", escape(label));
-        } else {
-            let _ = write!(
-                crumb_html,
-                "<a href=\"{}\">{}</a>",
-                escape(href),
-                escape(label)
-            );
-        }
-    }
-
     let mut statline = String::new();
     if let Some(commit) = &index.last_indexed_commit {
         let _ = write!(statline, "surface {}", escape(&truncate_chars(commit, 12)));
@@ -385,13 +402,11 @@ pub fn page(
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <title>{page_title}</title>\n</head>\n<body>\n\
-         <header class=\"masthead\">{brand_span}\
-         <span class=\"crumbs\">{crumb_html}</span>{session}</header>\n\
+         {masthead}\n\
          <main>\n{body}\n</main>\n\
          <footer class=\"statline\">{statline}</footer>\n</body>\n</html>\n",
         page_title = chrome.page_title(title),
-        brand_span = chrome.brand_span(),
-        session = chrome.session_span(),
+        masthead = masthead(&chrome.brand, "", crumbs, &chrome.session_span()),
     )
 }
 
@@ -796,9 +811,9 @@ mod tests {
 
     #[test]
     fn brand_and_session_chrome_render() {
-        // Anonymous, no brand: neutral title, no brand element, log-in link.
+        // Anonymous pages retain a home-linked identity and a neutral title.
         let anon = PageChrome::anonymous();
-        assert_eq!(anon.brand_span(), "");
+        assert!(masthead("", "", &[], &anon.session_span()).contains(">AOS Hub</a>"));
         assert_eq!(anon.page_title("log in"), "log in — AOS Registry Hub");
         assert!(anon.session_span().contains("log in"));
         // Branded + signed in: home-linked brand, branded title, email + logout.
@@ -806,10 +821,8 @@ mod tests {
             session_email: Some("a@b.example".into()),
             brand: "Acme <Co>".into(),
         };
-        assert_eq!(
-            signed.brand_span(),
-            "<a class=\"brand\" href=\"/\">Acme &lt;Co&gt;</a>"
-        );
+        assert!(masthead(&signed.brand, "", &[], &signed.session_span())
+            .contains("<a class=\"brand\" href=\"/\">Acme &lt;Co&gt;</a>"));
         assert_eq!(signed.page_title("log in"), "log in — Acme &lt;Co&gt;");
         assert!(signed.session_span().contains("a@b.example"));
         assert!(signed

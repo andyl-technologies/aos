@@ -318,14 +318,13 @@ impl ReleaseContext {
         );
         let _ = write!(
             body,
-            "<a class=\"release-directory-link\" href=\"/{}/-/releases\">All {} releases →</a>",
-            escape(slug),
-            self.releases.len()
+            "<a class=\"release-link\" href=\"/{}/-/releases\">Browse releases →</a>",
+            escape(slug)
         );
         if let Some(release) = self.release() {
             let _ = write!(
                 body,
-                "<a href=\"{}\">View release →</a>",
+                "<a class=\"release-link\" href=\"{}\">View release →</a>",
                 escape(&release_href(slug, &release.semver))
             );
         }
@@ -705,7 +704,7 @@ mod tests {
             "class=\"release-pill\" href=\"/org/main/-/docs?release=1.100.0&amp;root=abc\""
         ));
         assert!(html.contains("name=\"release\" data-release-jump"));
-        assert!(html.contains("All 121 releases →"));
+        assert!(html.contains("Browse releases →"));
         assert!(html.contains("\"channels\":[{\"name\":\"stable\",\"release\":\"1.100.0\"}]"));
         assert!(html.contains("<input type=\"hidden\" name=\"root\" value=\"abc\">"));
         assert_eq!(html.matches("name=\"root\" value=\"abc\"").count(), 2);

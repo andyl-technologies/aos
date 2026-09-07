@@ -80,8 +80,18 @@ pub(crate) fn release_index(
             .then_with(|| a.package.cmp(&b.package))
     });
     let release = context.query_value().unwrap_or_default();
-    let _ = write!(body, "<form method=\"get\" class=\"filter-form\"><input type=\"hidden\" name=\"release\" value=\"{}\"><label>Search containers <input type=\"search\" name=\"q\" value=\"{}\"></label><button>Search</button></form>",
-        escape(release), escape(query.unwrap_or_default()));
+    let _ = write!(
+        body,
+        "<form method=\"get\" class=\"catalog-filters\" role=\"search\" aria-label=\"Search containers\">\
+         <input type=\"hidden\" name=\"release\" value=\"{}\">\
+         <div class=\"catalog-search\"><label>Search<input type=\"search\" name=\"q\" value=\"{}\" \
+         placeholder=\"Package or repository\"></label><button type=\"submit\">Search</button>\
+         <a href=\"/{}/-/containers?release={}\">Clear filters</a></div></form>",
+        escape(release),
+        escape(query.unwrap_or_default()),
+        escape(slug),
+        urlencode(release),
+    );
     let pager = Pager::new(page_number, 25, containers.len());
     let rows = pager
         .slice(&containers)
