@@ -1604,6 +1604,75 @@ where
             })
     }
 
+    /// Reconciles a published observation with its exact staged finding root.
+    ///
+    /// The worker calls this after publishing both immutable closures. The
+    /// exact optional candidate is checked against the durable assignment
+    /// state before the ordinary bounded completion operation is installed, so
+    /// a recovered token cannot acknowledge a different staged root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalExecutorError::ConflictingCompletion`] when the current
+    /// execution retains a different observation or finding candidate. Other
+    /// ledger and semantic validation failures are returned unchanged.
+    pub fn stage_and_reconcile_completion_with_finding_candidate(
+        &mut self,
+        queued: &QueuedAttempt,
+        observation: ObservationId,
+        finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<CompletionOutcome, LocalExecutorError<L::Error>> {
+        let key = AttemptExecutionKey::new(queued.request.lineage(), queued.request.attempt());
+        let current = self
+            .ledger
+            .load_attempt(key)
+            .map_err(LocalExecutorError::Ledger)?;
+        match current {
+            Some(AttemptRuntimeState::Publishing {
+                execution,
+                observation: current_observation,
+                finding_candidate: current_candidate,
+                ..
+            }) if execution == queued.execution => {
+                if current_observation != observation || current_candidate != finding_candidate {
+                    return Err(LocalExecutorError::ConflictingCompletion);
+                }
+            }
+            Some(AttemptRuntimeState::Completed {
+                execution,
+                observation: current_observation,
+                finding_candidate: current_candidate,
+                ..
+            }) if execution == queued.execution => {
+                if current_observation != observation
+                    || current_candidate.candidate() != finding_candidate
+                {
+                    return Err(LocalExecutorError::ConflictingCompletion);
+                }
+            }
+            Some(AttemptRuntimeState::Running { execution, .. })
+            | Some(AttemptRuntimeState::CheckpointRequested { execution, .. })
+                if execution == queued.execution =>
+            {
+                return Err(LocalExecutorError::LedgerInvariant {
+                    reason: "exact completion was not staged before publication",
+                });
+            }
+            Some(AttemptRuntimeState::CheckpointPublishing { .. })
+            | Some(AttemptRuntimeState::Running { .. })
+            | Some(AttemptRuntimeState::CheckpointRequested { .. })
+            | Some(AttemptRuntimeState::Paused { .. })
+            | Some(AttemptRuntimeState::CheckpointPromoting { .. })
+            | Some(AttemptRuntimeState::Publishing { .. })
+            | Some(AttemptRuntimeState::Completed { .. })
+            | Some(AttemptRuntimeState::Canceled { .. })
+            | Some(AttemptRuntimeState::TerminalFailure { .. })
+            | None => {}
+        }
+
+        self.stage_and_reconcile_completion(queued, observation)
+    }
+
     /// Retries one staged immutable observation without executing the guest again.
     ///
     /// Returns `Ok(None)` when no completion is staged for this execution.
