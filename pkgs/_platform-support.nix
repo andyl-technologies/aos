@@ -839,7 +839,14 @@ in rec {
     if eligible
     then {
       state = "eligible";
-      inherit (entry) disposition wave blockers;
+      inherit (entry) disposition wave;
+      # The inventory blockers track the Linux-hosted Darwin cross-build
+      # roadmap. Linux realizations and public runtime qualification are
+      # separate release gates, so these reasons must not block Linux planning.
+      blockers =
+        if isDarwin system
+        then entry.blockers
+        else [];
     }
     else {
       state = "not-applicable";
