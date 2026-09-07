@@ -9,7 +9,7 @@ use super::*;
 use super::packaged_executor::{
     load_guarded_campaign_run_deployment, resolve_guarded_campaign_deployment_path,
 };
-use crucible_campaign::{AttemptResourceLimits, CampaignState, StopOutcome};
+use crucible_campaign::{AttemptResourceLimits, CampaignState, StopCondition, StopOutcome};
 // crucible-lint: allow host-nondeterminism-state -- rendering projects accepted scheduler evidence into the existing CLI wire-frame contract without influencing execution.
 use crucible_api as campaign_output_api;
 use crucible_daemon::qemu_campaign_lifecycle::{
@@ -50,18 +50,17 @@ pub(super) fn run_local_qemu_campaign_replay(
         deployment.host,
         resources,
     )
+    .with_discovery_stop(guarded_discovery_stop(run_plan)?)
     .with_initial_replay(schedule, replay_closure);
     let campaign = run_guarded_default_campaign(request)
         .map_err(|error| campaign_run_error("replay through shared campaign owner", error))?;
-    let (status, terminal_outcome) = campaign_terminal_status(&campaign)?;
+    let (status, terminal_outcome) = campaign_terminal_status(run_plan, &campaign)?;
     campaign_run_report(run_plan, &campaign, terminal_outcome, status)
 }
 
 /// Returns whether the shared campaign owner can execute this run exactly.
 pub(super) fn guarded_campaign_run_eligible(plan: &RunInvocationPlan) -> bool {
-    plan.terminal_condition == RunTerminalCondition::Quiescence
-        && plan.max_virtual_time.is_none()
-        && plan.max_virtual_time_ticks.is_none()
+    guarded_discovery_stop(plan).is_ok()
         && plan.max_quanta.is_none()
         && plan.execution_mode == RunExecutionMode::ToCompletion
         && plan.save_policy == RunSavePolicy::Never
@@ -83,7 +82,7 @@ pub(super) fn run_local_qemu_campaign_workflow(
 ) -> Result<BackendCommandOutcome, CliError> {
     if !guarded_campaign_run_eligible(run_plan) {
         return Err(backend_error(
-            "campaign-backed QEMU execution currently requires the default run mode without stop, save, watch, or interactive overrides",
+            "the requested stop, budget, save, watch, or interactive mode does not have an exact campaign-backed QEMU adapter",
         ));
     }
 
@@ -113,7 +112,8 @@ pub(super) fn run_local_qemu_campaign_workflow(
         lifecycle,
         deployment.host,
         resources,
-    );
+    )
+    .with_discovery_stop(guarded_discovery_stop(run_plan)?);
     let campaign = run_guarded_default_campaign(request)
         .map_err(|error| campaign_run_error("execute shared campaign owner", error))?;
 
@@ -147,6 +147,37 @@ fn guarded_run_resources(
     .map_err(|error| campaign_run_error("build guarded execution limits", error))
 }
 
+fn guarded_discovery_stop(plan: &RunInvocationPlan) -> Result<StopCondition, CliError> {
+    if plan.terminal_condition == RunTerminalCondition::Property {
+        return Err(backend_error(
+            "campaign-backed QEMU execution does not yet support stopping at the first property violation",
+        ));
+    }
+
+    match (&plan.max_virtual_time, plan.max_virtual_time_ticks) {
+        (Some(_), Some(deadline)) => {
+            return Ok(StopCondition::VirtualTimeNanoseconds(deadline));
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(backend_error(
+                "the parsed virtual-time deadline is internally inconsistent",
+            ));
+        }
+        (None, None) => {}
+    }
+
+    match plan.terminal_condition {
+        RunTerminalCondition::Quiescence => Ok(StopCondition::NextChoice),
+        RunTerminalCondition::Stopped => Ok(StopCondition::Terminal),
+        RunTerminalCondition::VirtualTime => Err(usage_error(
+            "--until virtual-time requires --max-virtual-time",
+        )),
+        RunTerminalCondition::Property => Err(backend_error(
+            "campaign-backed QEMU execution does not yet support stopping at the first property violation",
+        )),
+    }
+}
+
 struct CampaignRunOutcomeContext<'a> {
     thin_plan: &'a CliThinWrapperPlan,
     backend_plan: &'a BackendSelectionPlan,
@@ -169,7 +200,7 @@ fn campaign_run_outcome(
     let terminal = campaign.terminal();
     let observation = terminal.observation();
     let configuration = campaign.terminal_configuration();
-    let (status, terminal_outcome) = campaign_terminal_status(&campaign)?;
+    let (status, terminal_outcome) = campaign_terminal_status(run_plan, &campaign)?;
     let report = campaign_run_report(run_plan, &campaign, terminal_outcome, status)?;
     let mut outcome =
         finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)?;
@@ -226,14 +257,27 @@ fn campaign_run_outcome(
 }
 
 fn campaign_terminal_status(
+    run_plan: &RunInvocationPlan,
     campaign: &GuardedDefaultCampaignRun,
 ) -> Result<(BackendCommandStatus, OutcomeKind), CliError> {
-    Ok(match campaign.terminal().observation().stop() {
+    campaign_stop_status(run_plan, campaign.terminal().observation().stop())
+}
+
+fn campaign_stop_status(
+    run_plan: &RunInvocationPlan,
+    stop: &StopOutcome,
+) -> Result<(BackendCommandStatus, OutcomeKind), CliError> {
+    Ok(match stop {
         StopOutcome::TerminalSuccess => (BackendCommandStatus::Passed, OutcomeKind::Passed),
         StopOutcome::ModeledTimeout(_) => (BackendCommandStatus::Timeout, OutcomeKind::Timeout),
         StopOutcome::GuestCrash(_) => (BackendCommandStatus::Crashed, OutcomeKind::Crashed),
         StopOutcome::AssertionFailure(_) => (BackendCommandStatus::Failed, OutcomeKind::Failed),
         StopOutcome::ScenarioFailure(_) => (BackendCommandStatus::Failed, OutcomeKind::Failed),
+        StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(deadline))
+            if run_plan.max_virtual_time_ticks == Some(*deadline) =>
+        {
+            (BackendCommandStatus::Timeout, OutcomeKind::Timeout)
+        }
         StopOutcome::Reached(_) => {
             return Err(backend_error(
                 "campaign default run ended at an unexpected nonterminal boundary",
@@ -352,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn default_campaign_route_rejects_every_explicit_legacy_mode() {
+    fn campaign_route_accepts_exact_semantic_stops_and_rejects_session_only_modes() {
         let mut default = default_run_plan();
         assert!(guarded_campaign_run_eligible(&default));
         default.campaign_deployment = Some(PathBuf::from("guarded.toml"));
@@ -360,7 +404,40 @@ mod tests {
 
         let mut plan = default.clone();
         plan.terminal_condition = RunTerminalCondition::VirtualTime;
-        assert!(!guarded_campaign_run_eligible(&plan));
+        plan.max_virtual_time = Some(String::from("1tick"));
+        plan.max_virtual_time_ticks = Some(1);
+        assert!(guarded_campaign_run_eligible(&plan));
+        assert_eq!(
+            guarded_discovery_stop(&plan).expect("virtual-time stop"),
+            StopCondition::VirtualTimeNanoseconds(1)
+        );
+
+        let cli = Cli::parse_from([
+            "crucible",
+            "run",
+            "builtin:happy-path",
+            "--until",
+            "virtual-time",
+            "--max-virtual-time",
+            "2ms",
+        ]);
+        let Commands::Run(args) = &cli.command else {
+            panic!("expected run command");
+        };
+        let plan = plan_run_invocation(args, Path::new("."))
+            .expect("virtual-time run should produce an invocation plan");
+        assert_eq!(
+            guarded_discovery_stop(&plan).expect("converted virtual-time stop"),
+            StopCondition::VirtualTimeNanoseconds(2_000_000)
+        );
+        assert_eq!(
+            campaign_stop_status(
+                &plan,
+                &StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(2_000_000)),
+            )
+            .expect("reached deadline status"),
+            (BackendCommandStatus::Timeout, OutcomeKind::Timeout)
+        );
 
         let mut plan = default.clone();
         plan.max_virtual_time = Some(String::from("1tick"));
@@ -368,6 +445,18 @@ mod tests {
 
         let mut plan = default.clone();
         plan.max_virtual_time_ticks = Some(1);
+        assert!(!guarded_campaign_run_eligible(&plan));
+
+        let mut plan = default.clone();
+        plan.terminal_condition = RunTerminalCondition::Stopped;
+        assert!(guarded_campaign_run_eligible(&plan));
+        assert_eq!(
+            guarded_discovery_stop(&plan).expect("terminal stop"),
+            StopCondition::Terminal
+        );
+
+        let mut plan = default.clone();
+        plan.terminal_condition = RunTerminalCondition::Property;
         assert!(!guarded_campaign_run_eligible(&plan));
 
         let mut plan = default.clone();
