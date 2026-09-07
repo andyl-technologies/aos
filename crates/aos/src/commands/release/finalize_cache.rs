@@ -51,6 +51,7 @@ pub(super) async fn run(
             name: output.package.clone(),
             version: output.version.clone(),
             platform: output.platform.to_string(),
+            output: output.output.clone(),
             store_path: output.store_path.clone(),
         })
         .collect::<Vec<_>>();

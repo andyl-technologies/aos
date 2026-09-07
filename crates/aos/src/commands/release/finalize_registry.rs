@@ -216,6 +216,7 @@ fn registry_intent(
             name: output.package.clone(),
             version: output.version.clone(),
             platform: output.platform.to_string(),
+            output: output.output.clone(),
             store_path: output.store_path.clone(),
         })
         .collect::<Vec<_>>();
@@ -341,6 +342,7 @@ fn validate_transaction_binding(
         if entry.name != output.package
             || entry.version != output.version
             || entry.platform != output.platform.as_str()
+            || entry.output != output.output
             || entry.store_path != output.store_path
         {
             bail!(

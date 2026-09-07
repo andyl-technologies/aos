@@ -368,6 +368,12 @@ regenerate either input after review. Finalization revalidates the plan, build
 report, OCI input, every entry, the store graph, base ref, and all three surface
 digests before it requests either Git signature.
 
+Each package/platform coordinate must contain exactly one `out` output. That
+output remains the installable `store_path`; every additional named output is
+retained in the platform entry's `named_outputs` table and receives its own
+store-graph and static-cache root. Preparation fails closed on a missing,
+duplicate, or mismatched output binding.
+
 ```sh
 aos release finalize-registry \
   --plan release-plan.json \

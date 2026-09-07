@@ -111,8 +111,15 @@ pub struct VersionEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlatformEntry {
-    /// Absolute store path of the built output.
+    /// Absolute store path of the installable `out` output.
     pub store_path: String,
+    /// Additional retained derivation outputs, keyed by Nix output name.
+    ///
+    /// These paths are authenticated release and static-cache roots. Package
+    /// installation continues to select [`Self::store_path`]; build consumers
+    /// may resolve development and tool outputs explicitly from this map.
+    #[serde(default)]
+    pub named_outputs: BTreeMap<String, String>,
     /// NAR hash of the output (`sha256:...`).
     ///
     /// Legacy (pre-RFC-0005) field: newer registries publish the hash in
@@ -1289,6 +1296,30 @@ nar_size = 1
     }
 
     #[test]
+    fn shared_parser_validates_named_output_identity() {
+        let valid = package_with_images(
+            r#"
+[versions.platforms.x86_64-linux.named_outputs]
+dev = "/aos/store/server-dev"
+tools = "/aos/store/server-tools"
+"#,
+        );
+        let parsed = parse_package_file(&valid).expect("valid named outputs");
+        assert_eq!(
+            parsed.versions[0].platforms["x86_64-linux"]
+                .named_outputs
+                .len(),
+            2
+        );
+
+        let reserved = valid.replace("dev =", "out =");
+        assert!(parse_package_file(&reserved).is_err());
+
+        let repeated = valid.replace("/aos/store/server-dev", "/aos/store/server");
+        assert!(parse_package_file(&repeated).is_err());
+    }
+
+    #[test]
     fn shared_parser_requires_one_logical_identity_across_encodings() {
         let raw = raw_image_block(true);
         let qcow2 = raw_image_block(true)
@@ -2298,6 +2329,44 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
     validate_package_name(&toml.package.name)?;
     for version in &toml.versions {
         for (platform, entry) in &version.platforms {
+            let mut output_paths = HashSet::from([entry.store_path.as_str()]);
+            for (output, store_path) in &entry.named_outputs {
+                if output == "out"
+                    || output.is_empty()
+                    || output.len() > 256
+                    || !output.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'+')
+                    })
+                {
+                    bail!(
+                        "release '{}' platform '{}' contains invalid named output '{}'",
+                        version.version,
+                        platform,
+                        output
+                    );
+                }
+                if !store_path.starts_with('/')
+                    || store_path.ends_with('/')
+                    || store_path.contains("//")
+                    || store_path.split('/').any(|part| matches!(part, "." | ".."))
+                {
+                    bail!(
+                        "release '{}' platform '{}' named output '{}' has an invalid store path",
+                        version.version,
+                        platform,
+                        output
+                    );
+                }
+                if !output_paths.insert(store_path) {
+                    bail!(
+                        "release '{}' platform '{}' repeats output store path '{}'",
+                        version.version,
+                        platform,
+                        store_path
+                    );
+                }
+            }
+
             let mut formats = HashSet::new();
             for image in &entry.images {
                 if !formats.insert(image.format.as_str()) {
