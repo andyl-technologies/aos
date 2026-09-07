@@ -1375,10 +1375,36 @@ where
     let campaign_result = match tokio::task::spawn_blocking(move || campaign_thread.join()).await {
         Err(error) => Err(serve_error(format!("campaign service join error: {error}"))),
         Ok(Err(_)) => Err(serve_error("campaign service thread panicked")),
-        Ok(Ok(Err(error))) => Err(serve_error(format!("campaign service error: {error}"))),
+        Ok(Ok(Err(error))) => Err(campaign_service_join_error(&error)),
         Ok(Ok(Ok(_))) => Ok(()),
     };
     combine_lifecycle_and_campaign_results(lifecycle_result, campaign_result)
+}
+
+/// Converts a joined campaign service failure while retaining its typed cause chain.
+pub(super) fn campaign_service_join_error(error: &(dyn std::error::Error + 'static)) -> CliError {
+    serve_error(format!(
+        "campaign service error: {}",
+        campaign_service_error_chain(error)
+    ))
+}
+
+/// Renders a bounded campaign service error chain across the string-only CLI boundary.
+fn campaign_service_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut message = String::new();
+    let mut current = Some(error);
+    for _ in 0..12 {
+        let Some(error) = current else { break };
+        if !message.is_empty() {
+            message.push_str("; caused by: ");
+        }
+        message.extend(error.to_string().chars().take(1024));
+        current = error.source();
+    }
+    if current.is_some() {
+        message.push_str("; further causes omitted");
+    }
+    message
 }
 
 /// Combines the joined lifecycle and campaign service results without hiding either failure.
