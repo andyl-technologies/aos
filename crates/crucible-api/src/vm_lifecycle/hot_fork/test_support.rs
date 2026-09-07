@@ -85,7 +85,30 @@ pub fn prepared_multi_node_hot_fork_source_world_for_test(
     let source = crucible::crash_restart_scenario()
         .map_err(|error| test_support_error("construct built-in scenario", error))?
         .scenario;
-    let mut lifecycle = lifecycle_without_backends(&source)?;
+    prepared_multi_node_hot_fork_source_world_for_scenario_for_test(&source, source_nodes)
+}
+
+/// Builds one prepared production source world for an exact test scenario.
+///
+/// The scenario's first `source_nodes.len()` VMs are running retained sources.
+/// Every remaining VM is represented as permanently failed in both lifecycle
+/// and scheduler state.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError::LoopFactory`] when the scenario has too few VM
+/// nodes or any source-world boundary cannot be constructed.
+pub fn prepared_multi_node_hot_fork_source_world_for_scenario_for_test(
+    source: &ScenarioDefForm,
+    source_nodes: Vec<QemuNode>,
+) -> Result<
+    (
+        Vec<(NodeId, ProductionVmNodeGeneration)>,
+        ProductionVmHotForkSourceWorld,
+    ),
+    LifecycleApiError,
+> {
+    let mut lifecycle = lifecycle_without_backends(source)?;
     if source_nodes.is_empty() || source_nodes.len() > source.world().vm_nodes().len() {
         return Err(loop_factory_error(
             "scripted source count is outside the built-in scenario World",
@@ -102,6 +125,11 @@ pub fn prepared_multi_node_hot_fork_source_world_for_test(
         lifecycle
             .node_service_states
             .insert(vm.id.clone(), ProductionNodeServiceState::PermanentlyFailed);
+        lifecycle
+            .inner
+            .loop_impl_mut()
+            .set_vm_node_activity(&vm.id, SchedulerNodeActivity::Done)
+            .map_err(|error| test_support_error("retire absent scripted VM", error))?;
         lifecycle
             .immutable_root_images
             .insert(vm.id.clone(), root_image_hash);
@@ -146,6 +174,11 @@ pub fn prepared_multi_node_hot_fork_source_world_for_test(
             .insert(retained_node.clone(), ProductionNodeServiceState::Running);
         lifecycle
             .inner
+            .loop_impl_mut()
+            .set_vm_node_activity(&retained_node, SchedulerNodeActivity::Runnable)
+            .map_err(|error| test_support_error("activate scripted source VM", error))?;
+        lifecycle
+            .inner
             .backend_mut()
             .insert(retained_node.clone(), source_node);
         retained.push((retained_node, generation));
@@ -161,11 +194,21 @@ fn lifecycle_without_backends(
     source: &ScenarioDefForm,
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
     let scenario = source.scenario_def();
+    let icount_shift = source
+        .world()
+        .vm_nodes()
+        .first()
+        .ok_or_else(|| loop_factory_error("scripted source World has no VM nodes"))?
+        .icount_shift;
+    let time_limit = 4_u64
+        .checked_shl(u32::from(icount_shift))
+        .ok_or_else(|| loop_factory_error("scripted source time limit overflow"))?;
     let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
         &scenario.id().to_hex(),
-        Shift::new(0).map_err(|error| test_support_error("construct test time shift", error))?,
+        Shift::new(icount_shift)
+            .map_err(|error| test_support_error("construct test time shift", error))?,
         4,
-        SimInstant { nanos: 4 },
+        SimInstant { nanos: time_limit },
         0,
         source.world(),
     )
