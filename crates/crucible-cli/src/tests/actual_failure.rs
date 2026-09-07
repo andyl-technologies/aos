@@ -45,6 +45,7 @@ fn cli_non_passing_run_artifact_captures_actual_run_evidence() -> Result<(), Box
     let report = RunWorkflowReport {
         status: BackendCommandStatus::Failed,
         execution_owner: RunExecutionOwner::Session,
+        campaign_replay_closure: None,
         created_state: String::from("paused"),
         final_state: String::from("stopped"),
         outcome: Some(OutcomeKind::Failed),

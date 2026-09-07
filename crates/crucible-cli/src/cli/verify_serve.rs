@@ -37,8 +37,15 @@ pub(crate) fn run_local_qemu_campaign_replay(
     run_plan: &RunInvocationPlan,
     lifecycle: crucible_api::ProductionVmLifecycleConfig,
     schedule: crucible::Schedule,
+    replay_closure: crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
 ) -> Result<RunWorkflowReport, CliError> {
-    legacy_campaign::run_local_qemu_campaign_replay(backend, run_plan, lifecycle, schedule)
+    legacy_campaign::run_local_qemu_campaign_replay(
+        backend,
+        run_plan,
+        lifecycle,
+        schedule,
+        replay_closure,
+    )
 }
 
 use super::cli_campaign_import::apply_campaign_import_manifests;
@@ -1868,6 +1875,7 @@ where
         run: RunWorkflowReport {
             status: BackendCommandStatus::Passed,
             execution_owner: RunExecutionOwner::Session,
+            campaign_replay_closure: None,
             created_state: format!("{:?}", created.state).to_ascii_lowercase(),
             final_state,
             outcome: Some(OutcomeKind::Passed),

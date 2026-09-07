@@ -23,6 +23,8 @@ const LIVE_QEMU_EVENT_STREAM_MEDIA_TYPE: &str =
     "application/vnd.crucible.live-qemu-event-stream.v1+bytes";
 const LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE: &str =
     "application/vnd.crucible.live-qemu-fingerprint-stream.v1+bytes";
+const CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE: &str =
+    "application/vnd.crucible.campaign-replay-closure.v1+binary";
 
 #[test]
 #[ignore = "requires the packaged patched-QEMU, plugin, kernel, and root image VM fixture"]
@@ -130,6 +132,11 @@ fn guarded_campaign_failure_artifact_replays_live_evidence() -> Result<(), Box<d
         &artifact_text,
         "live_qemu_fingerprint_stream",
         LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE,
+    )?;
+    require_embedded_component(
+        &artifact_text,
+        "campaign_replay_closure",
+        CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE,
     )?;
 
     let replay = command()

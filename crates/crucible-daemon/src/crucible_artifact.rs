@@ -135,6 +135,48 @@ impl CrucibleCampaignArtifactStore {
 
         let artifact = encode_crucible_configuration_artifact(&scenario_artifact, schedule)?;
         decode_crucible_configuration_artifact(scenario, &scenario_artifact, &artifact)?;
+        self.publish_configuration(&artifact)
+    }
+
+    /// Verifies and publishes a configuration using authenticated selection records.
+    ///
+    /// The caller must publish every exact selection dependency before invoking
+    /// this method. The unchanged strict selection decoder checks exact schedule,
+    /// opportunity, domain, scenario, branch, and model provenance before write.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrucibleArtifactError`] when scenario import, selection
+    /// resolution, semantic verification, repository publication, or the
+    /// resulting identity check fails.
+    pub fn import_configuration_with_selections(
+        &self,
+        scenario: &ScenarioDefForm,
+        schedule: &Schedule,
+    ) -> Result<ConfigurationArtifactId, CrucibleArtifactError> {
+        let scenario_artifact = encode_crucible_scenario_artifact(scenario)?;
+        let stored_scenario = self.import_scenario(scenario)?;
+        if stored_scenario != scenario_artifact.id()? {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored scenario",
+            });
+        }
+
+        let artifact = encode_crucible_configuration_artifact(&scenario_artifact, schedule)?;
+        let store = CampaignExecutorStore::new(Arc::clone(&self.repository));
+        decode_crucible_configuration_artifact_with_selections(
+            scenario,
+            &scenario_artifact,
+            &artifact,
+            &store,
+        )?;
+        self.publish_configuration(&artifact)
+    }
+
+    fn publish_configuration(
+        &self,
+        artifact: &ConfigurationArtifact,
+    ) -> Result<ConfigurationArtifactId, CrucibleArtifactError> {
         let expected = artifact.id()?;
         let stored = self
             .repository

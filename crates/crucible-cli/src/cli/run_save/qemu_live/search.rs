@@ -77,6 +77,7 @@ fn search_finding_reproduction_artifact_bytes(
         fingerprint_stream: verify_fingerprint_stream_bytes(&fingerprints),
         fingerprint_samples: fingerprints.clone(),
         resolved_effect_trace: finding.resolved_effect_trace.clone(),
+        campaign_replay_closure: None,
     };
     let mut payloads = model_reproduction_artifact_payloads(&model.artifact, model.replay.state);
     payloads.extend(live_qemu_artifact_payloads(&live));
