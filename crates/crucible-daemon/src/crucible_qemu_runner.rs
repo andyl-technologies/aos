@@ -263,10 +263,10 @@ impl<F, R> QemuAttemptExecutionRouter<F, R> {
 pub enum QemuAttemptExecutionRouterError<F, R> {
     /// The fresh execution path failed.
     #[error("fresh campaign QEMU execution failed")]
-    Fresh(F),
+    Fresh(#[source] F),
     /// The exact durable-resume path failed.
     #[error("resumed campaign QEMU execution failed")]
-    Resume(R),
+    Resume(#[source] R),
 }
 
 impl<F, R> CrucibleExecutionRunner for QemuAttemptExecutionRouter<F, R>

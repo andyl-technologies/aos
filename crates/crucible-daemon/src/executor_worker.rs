@@ -540,7 +540,7 @@ pub enum RepositoryAttemptWorkerError<E> {
     Repository(#[from] CampaignRepositoryError),
     /// The execution-model adapter failed before publishing a completion.
     #[error("attempt execution model failed")]
-    Model(E),
+    Model(#[source] E),
     /// The model returned a result for a different immutable execution basis.
     #[error("attempt execution model returned an incompatible result: {reason}")]
     IncompatibleResult {

@@ -90,7 +90,8 @@ use hot_fork::{
 };
 #[cfg(test)]
 use status::{
-    OperationalPhase, PackagedWorldLifecyclePhase, operational_phase, successive_actor_snapshots,
+    MAX_PACKAGED_ATTEMPT_FAILURE_DIAGNOSTIC_BYTES, OperationalPhase, PackagedWorldLifecyclePhase,
+    operational_phase, packaged_attempt_failure_diagnostic, successive_actor_snapshots,
 };
 use status::{
     PackagedQemuOperationalStatusProvider, PackagedStatusAttemptWorker,
@@ -1039,6 +1040,7 @@ where
         AttemptResourceLimits,
     ) -> Result<PackagedQemuInitialRunnerBuild<R>, PackagedQemuExecutorError>,
     R: crate::CrucibleExecutionRunner + Send + 'static,
+    R::Error: std::error::Error + 'static,
 {
     let campaigns = config.campaigns.clone();
     let ledger_root = config.ledger_root.clone();

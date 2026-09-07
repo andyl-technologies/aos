@@ -839,8 +839,12 @@ struct ControlledLifecycleWorker {
     fail_shutdown: bool,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("controlled attempt failed")]
+struct ControlledAttemptError;
+
 impl LocalAttemptWorker for ControlledLifecycleWorker {
-    type Error = ();
+    type Error = ControlledAttemptError;
 
     fn execute(&mut self, queued: QueuedAttempt) -> AttemptWorkResult<Self::Error> {
         let source = ScenarioDefForm::from_components(
@@ -884,8 +888,103 @@ impl LocalAttemptWorker for ControlledLifecycleWorker {
         assert_eq!(cleanup.is_err(), self.fail_shutdown);
         self.boundary.arrive_and_wait(4);
 
-        AttemptWorkResult::new(queued, Err(AttemptWorkerFailure::Terminal(())))
+        AttemptWorkResult::new(
+            queued,
+            Err(AttemptWorkerFailure::Terminal(ControlledAttemptError)),
+        )
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("outer model failure")]
+struct DiagnosticOuterError(#[source] DiagnosticInnerError);
+
+#[derive(Debug, thiserror::Error)]
+#[error("inner model failure")]
+struct DiagnosticInnerError(#[source] std::io::Error);
+
+#[test]
+fn packaged_attempt_failure_diagnostic_preserves_classification_and_bounded_source_chain() {
+    let execution = ExecutionId::from_bytes([0x97; 16]).expect("execution");
+    let failure = AttemptWorkerFailure::Terminal(crate::RepositoryAttemptWorkerError::Model(
+        DiagnosticOuterError(DiagnosticInnerError(std::io::Error::other(
+            "leaf execution failure",
+        ))),
+    ));
+
+    let diagnostic = packaged_attempt_failure_diagnostic(execution, &failure);
+
+    assert_eq!(
+        diagnostic,
+        concat!(
+            "packaged campaign execution 97979797979797979797979797979797 failed: ",
+            "terminal execution failure: ",
+            "attempt execution model failed\n",
+            "  caused by [1]: attempt execution model failed\n",
+            "  caused by [2]: outer model failure\n",
+            "  caused by [3]: inner model failure\n",
+            "  caused by [4]: leaf execution failure",
+        )
+    );
+
+    let oversized = AttemptWorkerFailure::Terminal(crate::RepositoryAttemptWorkerError::Model(
+        DiagnosticOuterError(DiagnosticInnerError(std::io::Error::other(
+            "x".repeat(MAX_PACKAGED_ATTEMPT_FAILURE_DIAGNOSTIC_BYTES * 2),
+        ))),
+    ));
+    let diagnostic = packaged_attempt_failure_diagnostic(execution, &oversized);
+
+    assert_eq!(
+        diagnostic.len(),
+        MAX_PACKAGED_ATTEMPT_FAILURE_DIAGNOSTIC_BYTES
+    );
+    assert!(diagnostic.ends_with("\n  ... diagnostic truncated"));
+}
+
+#[test]
+fn packaged_attempt_failure_diagnostic_retains_prior_failure_after_cleanup_error() {
+    let execution = ExecutionId::from_bytes([0x98; 16]).expect("execution");
+    let resume_failure = crate::QemuProductionExactResumeExecutionRunnerError::<
+        std::io::Error,
+        std::io::Error,
+    >::CleanupAfterRunner {
+        failure: Box::new(
+            crate::QemuProductionExactResumeExecutionRunnerError::Lifecycle(std::io::Error::other(
+                "original resume failure",
+            )),
+        ),
+        cleanup: SchedulerError::BoundaryViolation {
+            message: String::from("resume cleanup failure"),
+        },
+    };
+    let diagnostic = packaged_attempt_failure_diagnostic(
+        execution,
+        &AttemptWorkerFailure::Terminal(resume_failure),
+    );
+
+    assert!(diagnostic.contains("resume cleanup failure"));
+    assert!(diagnostic.contains("caused by [2]: restore production campaign lifecycle"));
+    assert!(diagnostic.contains("caused by [3]: original resume failure"));
+
+    let hot_fork_failure = crate::QemuHotForkWorldExecutionRunnerError::<
+        std::io::Error,
+        std::io::Error,
+    >::CleanupAfterRunner {
+        failure: Box::new(crate::QemuHotForkWorldExecutionRunnerError::Factory(
+            std::io::Error::other("original hot-fork failure"),
+        )),
+        cleanup: SchedulerError::BoundaryViolation {
+            message: String::from("hot-fork cleanup failure"),
+        },
+    };
+    let diagnostic = packaged_attempt_failure_diagnostic(
+        execution,
+        &AttemptWorkerFailure::Terminal(hot_fork_failure),
+    );
+
+    assert!(diagnostic.contains("hot-fork cleanup failure"));
+    assert!(diagnostic.contains("caused by [2]: construct production hot-fork world lifecycle"));
+    assert!(diagnostic.contains("caused by [3]: original hot-fork failure"));
 }
 
 fn controlled_submit_request(epoch: DaemonEpoch) -> SubmitAttemptRequest {
