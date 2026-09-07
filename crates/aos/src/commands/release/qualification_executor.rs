@@ -2,9 +2,10 @@
 //!
 //! The Nix-built registry selects executable closures; a remote request cannot
 //! supply a command. Scenarios receive the original request on stdin and read
-//! `objects.json` in their private working directory for verified local paths.
-//! Their stdout is a canonical executor response. Every attempt is retained,
-//! including failures; the coordinator still independently validates coverage.
+//! `objects.json` for verified local paths and `downloads.json` for transfer
+//! evidence in their private working directory. Their stdout is a canonical
+//! executor response. Every attempt is retained, including failures; the
+//! coordinator still independently validates coverage.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -27,6 +28,7 @@ use aos_release::qualification::QualificationPhase;
 use aos_release::qualification::claims::CompatibilityAssessment;
 use aos_release::qualification::environment::EnvironmentInventory;
 use aos_release::qualification_evidence::{CheckObservation, QualificationObservation};
+use reqwest::header::{CONTENT_RANGE, RANGE};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -66,6 +68,19 @@ struct ScenarioReport {
     assessment: Option<CompatibilityAssessment>,
     #[serde(default)]
     capabilities: Option<aos_release::qualification::capabilities::CapabilityEvidence>,
+}
+
+#[derive(Serialize)]
+struct DownloadTrace {
+    mode: &'static str,
+    requests: Vec<DownloadRequestTrace>,
+}
+
+#[derive(Serialize)]
+struct DownloadRequestTrace {
+    status: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_range: Option<String>,
 }
 
 pub(super) fn inspect(command: &ReleaseQualificationCommand, printer: &Printer) -> Result<()> {
@@ -382,39 +397,27 @@ async fn execute(args: &ReleaseQualificationExecuteArgs) -> Result<()> {
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(args.timeout_seconds))
             .build()?;
+        let resumed_artifact = resumed_artifact(&request)?;
         let mut objects = BTreeMap::new();
+        let mut downloads = BTreeMap::new();
         for object in &request.objects {
             let filename = Sha256Digest::of_bytes(object.artifact_id.as_bytes()).hex();
             let path = directory.join(filename);
-            let mut response = client.get(&object.url).send().await?.error_for_status()?;
-            if response.status() != reqwest::StatusCode::OK {
-                bail!("object download did not return HTTP 200");
-            }
-            let mut file = File::options().create_new(true).write(true).open(&path)?;
-            let mut size = 0_u64;
-            let mut hash = Sha256::new();
-            while let Some(chunk) = response.chunk().await? {
-                size = size
-                    .checked_add(u64::try_from(chunk.len())?)
-                    .context("object size overflow")?;
-                if size > object.size_bytes {
-                    bail!("download exceeds planned object size");
-                }
-                hash.update(&chunk);
-                file.write_all(&chunk)?;
-            }
-            if size != object.size_bytes
-                || Sha256Digest::from_bytes(hash.finalize().into()) != object.sha256
-            {
-                bail!(
-                    "download differs from the exact signed object {}",
-                    object.artifact_id
-                );
-            }
-            file.sync_all()?;
+            let trace = download_object(
+                &client,
+                object,
+                &path,
+                resumed_artifact.as_deref() == Some(object.artifact_id.as_str()),
+            )
+            .await?;
             objects.insert(object.artifact_id.clone(), path);
+            downloads.insert(object.artifact_id.clone(), trace);
         }
         fs::write(directory.join("objects.json"), canonical::to_vec(&objects)?)?;
+        fs::write(
+            directory.join("downloads.json"),
+            canonical::to_vec(&downloads)?,
+        )?;
 
         let predecessor_directory = directory.join("predecessor");
         let mut predecessor_objects = BTreeMap::new();
@@ -511,6 +514,144 @@ async fn execute(args: &ReleaseQualificationExecuteArgs) -> Result<()> {
             })
         }
     }
+}
+
+fn resumed_artifact(request: &QualificationExecutorRequestV1) -> Result<Option<String>> {
+    let requires_resume = request.qualification_case.as_ref().is_some_and(|case| {
+        case.checks
+            .iter()
+            .any(|check| check == "anonymous-download-and-resume")
+    });
+    if !requires_resume {
+        return Ok(None);
+    }
+
+    request
+        .objects
+        .iter()
+        .filter(|object| object.size_bytes > 1 && request.subjects.contains(&object.artifact_id))
+        .max_by_key(|object| object.size_bytes)
+        .map(|object| Some(object.artifact_id.clone()))
+        .context("image resume qualification has no resumable subject object")
+}
+
+async fn download_object(
+    client: &reqwest::Client,
+    object: &aos_release::evidence::QualificationObjectV1,
+    path: &Path,
+    resume: bool,
+) -> Result<DownloadTrace> {
+    let mut file = File::options().create_new(true).write(true).open(path)?;
+    let mut size = 0_u64;
+    let mut hash = Sha256::new();
+    let mut requests = Vec::new();
+
+    if resume {
+        let first_size = (object.size_bytes / 2).min(1024 * 1024).max(1);
+        let ranges = [(0, first_size - 1), (first_size, object.size_bytes - 1)];
+        for (start, end) in ranges {
+            let range = format!("bytes={start}-{end}");
+            let response = client.get(&object.url).header(RANGE, &range).send().await?;
+            if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+                bail!(
+                    "resumed object download for {} did not return HTTP 206",
+                    object.artifact_id
+                );
+            }
+            let expected_content_range = format!("bytes {start}-{end}/{}", object.size_bytes);
+            let content_range = response
+                .headers()
+                .get(CONTENT_RANGE)
+                .context("resumed object download omitted Content-Range")?
+                .to_str()
+                .context("resumed object Content-Range is not ASCII")?
+                .to_owned();
+            if content_range != expected_content_range {
+                bail!(
+                    "resumed object download for {} returned an unexpected Content-Range",
+                    object.artifact_id
+                );
+            }
+            write_response(
+                response,
+                &mut file,
+                &mut hash,
+                &mut size,
+                end - start + 1,
+                object.size_bytes,
+            )
+            .await?;
+            requests.push(DownloadRequestTrace {
+                status: reqwest::StatusCode::PARTIAL_CONTENT.as_u16(),
+                content_range: Some(content_range),
+            });
+        }
+    } else {
+        let response = client.get(&object.url).send().await?;
+        if response.status() != reqwest::StatusCode::OK {
+            bail!(
+                "object download for {} did not return HTTP 200",
+                object.artifact_id
+            );
+        }
+        write_response(
+            response,
+            &mut file,
+            &mut hash,
+            &mut size,
+            object.size_bytes,
+            object.size_bytes,
+        )
+        .await?;
+        requests.push(DownloadRequestTrace {
+            status: reqwest::StatusCode::OK.as_u16(),
+            content_range: None,
+        });
+    }
+
+    if size != object.size_bytes
+        || Sha256Digest::from_bytes(hash.finalize().into()) != object.sha256
+    {
+        bail!(
+            "download differs from the exact signed object {}",
+            object.artifact_id
+        );
+    }
+    file.sync_all()?;
+
+    Ok(DownloadTrace {
+        mode: if resume { "range-resume" } else { "complete" },
+        requests,
+    })
+}
+
+async fn write_response(
+    mut response: reqwest::Response,
+    file: &mut File,
+    hash: &mut Sha256,
+    total_size: &mut u64,
+    expected_size: u64,
+    maximum_total_size: u64,
+) -> Result<()> {
+    let mut response_size = 0_u64;
+    while let Some(chunk) = response.chunk().await? {
+        let chunk_size = u64::try_from(chunk.len())?;
+        response_size = response_size
+            .checked_add(chunk_size)
+            .context("object response size overflow")?;
+        *total_size = total_size
+            .checked_add(chunk_size)
+            .context("object size overflow")?;
+        if response_size > expected_size || *total_size > maximum_total_size {
+            bail!("download exceeds planned object size");
+        }
+        hash.update(&chunk);
+        file.write_all(&chunk)?;
+    }
+    if response_size != expected_size {
+        bail!("download response differs from its requested byte range");
+    }
+    Ok(())
 }
 
 fn select<'a>(
@@ -648,6 +789,55 @@ mod tests {
             ..registry
         };
         assert!(select(&mutable, &request).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn image_resume_selects_the_largest_subject_object() -> Result<()> {
+        let mut request = package_request()?;
+        let case = request
+            .qualification_case
+            .as_mut()
+            .context("fixture lacks a qualification case")?;
+        case.checks = vec!["anonymous-download-and-resume".into()];
+        request.subjects = vec![
+            "image/aos/x86_64-linux/metadata".into(),
+            "image/aos/x86_64-linux/raw".into(),
+        ];
+        case.subjects.clone_from(&request.subjects);
+        request.objects = vec![
+            aos_release::evidence::QualificationObjectV1 {
+                artifact_id: "control/release-manifest-envelope".into(),
+                url: "https://aos.staging.andyl.org/andyl/testing/release-manifest.json".into(),
+                size_bytes: 4096,
+                sha256: Sha256Digest::of_bytes(b"manifest"),
+            },
+            aos_release::evidence::QualificationObjectV1 {
+                artifact_id: "image/aos/x86_64-linux/metadata".into(),
+                url: "https://aos.staging.andyl.org/andyl/testing/images/aos/x86_64-linux/metadata"
+                    .into(),
+                size_bytes: 8192,
+                sha256: Sha256Digest::of_bytes(b"metadata"),
+            },
+            aos_release::evidence::QualificationObjectV1 {
+                artifact_id: "image/aos/x86_64-linux/raw".into(),
+                url: "https://aos.staging.andyl.org/andyl/testing/images/aos/x86_64-linux/raw"
+                    .into(),
+                size_bytes: 32768,
+                sha256: Sha256Digest::of_bytes(b"raw"),
+            },
+        ];
+
+        assert_eq!(
+            resumed_artifact(&request)?,
+            Some("image/aos/x86_64-linux/raw".into())
+        );
+
+        request.objects[2].size_bytes = 1;
+        assert_eq!(
+            resumed_artifact(&request)?,
+            Some("image/aos/x86_64-linux/metadata".into())
+        );
         Ok(())
     }
 
