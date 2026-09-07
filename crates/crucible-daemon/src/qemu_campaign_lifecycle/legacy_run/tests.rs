@@ -44,22 +44,38 @@ const TEST_EFFECT_TRACE: &[u8] = b"guarded-default-run-effect-trace";
 struct TerminalLifecycle {
     node: NodeId,
     event_log: EventLog,
+    mode: TerminalLifecycleMode,
+    frontier: VirtualTime,
+}
+
+#[derive(Clone, Copy)]
+enum TerminalLifecycleMode {
+    Terminal,
+    VirtualTime { quantum_nanoseconds: u64 },
 }
 
 impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
     fn enable_signal_fault_campaign_promotion(&mut self) {}
 
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        self.frontier.ticks = match self.mode {
+            TerminalLifecycleMode::Terminal => 7,
+            TerminalLifecycleMode::VirtualTime {
+                quantum_nanoseconds,
+            } => self.frontier.ticks.saturating_add(quantum_nanoseconds),
+        };
         let append = self
             .event_log
             .append_observable_events([ObservableEvent::guest_marker(
-                Icount { retired: 7 },
+                Icount {
+                    retired: self.frontier.ticks,
+                },
                 self.node.clone(),
                 MarkerId::from_name("guarded-default-run-quantum"),
             )])?;
         Ok(QuantumOutcome {
             configuration: request.configuration,
-            frontier: VirtualTime { ticks: 7 },
+            frontier: self.frontier,
             advanced_node: None,
             resolved_events: Vec::new(),
             decisions: Vec::new(),
@@ -74,7 +90,8 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
-        Some(QuantumTerminalVerdict::Passed)
+        matches!(self.mode, TerminalLifecycleMode::Terminal)
+            .then_some(QuantumTerminalVerdict::Passed)
     }
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
@@ -118,7 +135,7 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
         assert_eq!(node, self.node);
         Ok(FingerprintSample {
             node,
-            at: VirtualTime { ticks: 7 },
+            at: self.frontier,
             fingerprint: ExecutionFingerprint {
                 hash: ContentHash::from_bytes(b"guarded-default-run-fingerprint"),
             },
@@ -130,6 +147,9 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        if matches!(self.mode, TerminalLifecycleMode::VirtualTime { .. }) {
+            return Ok(Vec::new());
+        }
         self.event_log
             .append_observable_events([ObservableEvent::guest_marker(
                 Icount { retired: 8 },
@@ -143,6 +163,7 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
 struct TerminalLifecycleFactory {
     node: NodeId,
     fail_start: bool,
+    mode: TerminalLifecycleMode,
 }
 
 struct SelectableLifecycle {
@@ -310,6 +331,8 @@ impl QemuFreshAttemptLifecycleFactory for TerminalLifecycleFactory {
         Ok(TerminalLifecycle {
             node: self.node.clone(),
             event_log: EventLog::new(),
+            mode: self.mode,
+            frontier: VirtualTime::default(),
         })
     }
 }
@@ -321,6 +344,7 @@ fn shared_owner_authenticates_completion_and_retains_terminal_evidence() {
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(TerminalLifecycleFactory {
             node: node.clone(),
             fail_start: false,
+            mode: TerminalLifecycleMode::Terminal,
         });
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
 
@@ -438,6 +462,36 @@ fn explicit_terminal_discovery_precedes_supervisor_automatic_discovery() {
     assert_eq!(
         completed.terminal().observation().stop(),
         &StopOutcome::TerminalSuccess
+    );
+}
+
+#[test]
+fn explicit_virtual_time_discovery_retains_the_first_frontier_crossing_the_deadline() {
+    let deadline = 2_000_000;
+    let quantum_nanoseconds = 1_100_000;
+    let completed_frontier = quantum_nanoseconds * 2;
+    let (request, node) = request();
+    let request = request.with_discovery_stop(StopCondition::VirtualTimeNanoseconds(deadline));
+    let (factory, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(TerminalLifecycleFactory {
+            node,
+            fail_start: false,
+            mode: TerminalLifecycleMode::VirtualTime {
+                quantum_nanoseconds,
+            },
+        });
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+
+    let completed = run_guarded_default_campaign_with_runner(request, runner, evidence)
+        .expect("virtual-time campaign should reach the requested deadline");
+
+    assert_eq!(completed.observations().len(), 1);
+    assert_eq!(completed.branch_request_count(), 0);
+    assert_eq!(completed.evidence().quanta(), 2);
+    assert_eq!(completed.evidence().frontier().ticks, completed_frontier);
+    assert_eq!(
+        completed.terminal().observation().stop(),
+        &StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(deadline))
     );
 }
 
@@ -693,6 +747,7 @@ fn shared_owner_preserves_the_terminal_lifecycle_error_source() {
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(TerminalLifecycleFactory {
             node,
             fail_start: true,
+            mode: TerminalLifecycleMode::Terminal,
         });
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
 
