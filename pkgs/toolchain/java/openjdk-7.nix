@@ -461,6 +461,13 @@ in
                   printf '#!/bin/sh\necho localhost\n' > dummy-bin/hostname
                   printf '#!/bin/sh\necho "             total       used       free"\necho "Mem:       8000000    4000000    4000000"\n' > dummy-bin/free
                   printf '#!/bin/sh\necho "builder"\n' > dummy-bin/logname
+                  cat > dummy-bin/lsb_release << LSBEOF
+          #!$CONFIG_SHELL
+          case "\$1" in
+            -ds|-is) printf '%s\n' AOS ;;
+            *) exit 2 ;;
+          esac
+          LSBEOF
                   for f in dummy-bin/*; do
                     if [ ! -L "$f" ]; then
                       chmod +x "$f"
@@ -519,6 +526,9 @@ in
           export ALSA_CFLAGS="-I${alsaForBuild}/include"
           export ALSA_LIBS="-L${alsaForBuild}/lib -lasound"
 
+          # Supplying deterministic distribution metadata prevents IcedTea
+          # from embedding the wall-clock configure time in every HotSpot
+          # object through DISTRIBUTION_ID.
           $CONFIG_SHELL configure \
             ${configurePlatformFlags}--prefix=$out \
             --with-jdk-home=$PWD/fake-jdk \
@@ -528,6 +538,7 @@ in
             --with-jar=${buildTools.fastjar}/bin/fastjar \
             --with-java=$PWD/fake-jdk/bin/java \
             --with-javah=${buildTools.gjavah}/bin/gjavah \
+            --with-pkgversion=openjdk-7-${icedteaVersion} \
             --disable-docs \
             --disable-downloading \
             --disable-tests \
@@ -576,6 +587,7 @@ in
                   export PATH="$PWD/dummy-bin:$PATH"
                   export CFLAGS="-fcommon -Wno-error -Wno-error=format-overflow -Wno-implicit-function-declaration"
                   export CXXFLAGS="-fcommon -Wno-error -Wno-error=format-overflow -fpermissive -Wno-error=pointer-arith"
+                  export HOTSPOT_BUILD_USER=AOS
 
                   # ALT_* variables for the inner OpenJDK/HotSpot build
                   export ALT_CUPS_HEADERS_PATH="${cups}/include"
@@ -750,6 +762,44 @@ in
                       find "$dir" -path '*/hotspot/make/linux/Makefile' 2>/dev/null | while read f; do
                         sed -i '/SUPPORTED_OS_VERSION/s/$/ 4% 5% 6% 7%/' "$f" 2>/dev/null || true
                       done
+                      # HotSpot otherwise expands the compiler's live date and
+                      # time macros into libjvm, defeating Nix --check.
+                      find "$dir" -path '*/hotspot/src/share/vm/runtime/vm_version.cpp' 2>/dev/null | while read f; do
+                        test "$(grep -Fc '" JRE (" JRE_RELEASE_VERSION "), built on " __DATE__ " " __TIME__' "$f")" = 1
+                        sed -i 's|" JRE (" JRE_RELEASE_VERSION "), built on " __DATE__ " " __TIME__|" JRE (" JRE_RELEASE_VERSION "), reproducibly built"|' "$f"
+                      done
+                      # Generated Java sources otherwise record the wall clock
+                      # in comments that are retained in the published src.zip.
+                      find "$dir" -path '*/corba/src/share/classes/com/sun/tools/corba/se/idl/toJavaPortable/Util.java' 2>/dev/null | while read f; do
+                        test "$(grep -Fc 'stream.println ("* " + formatter.format (new Date ()));' "$f")" = 1
+                        sed -i 's|stream.println ("\* " + formatter.format (new Date ()));|stream.println ("* Generated reproducibly by AOS");|' "$f"
+                      done
+                      find "$dir" -path '*/corba/src/share/classes/com/sun/tools/corba/se/logutil/MC.java' 2>/dev/null | while read f; do
+                        test "$(grep -Fc 'pw.printMsg("// Generated from input file @ on @", inFile, new Date());' "$f")" = 1
+                        sed -i 's|pw.printMsg("// Generated from input file @ on @", inFile, new Date());|pw.printMsg("// Generated reproducibly from input file @", inFile);|' "$f"
+                      done
+                      find "$dir" -path '*/jdk/make/tools/src/build/tools/generatecharacter/GenerateCharacter.java' 2>/dev/null | while read f; do
+                        timestampCount=$(grep -Fc 'new java.util.Date() + commentEnd' "$f" || true)
+                        test "$timestampCount" -le 1
+                        if [ "$timestampCount" -eq 1 ]; then
+                          sed -i 's|new java.util.Date() + commentEnd|"AOS reproducible build" + commentEnd|' "$f"
+                        fi
+                        ! grep -Fq 'new java.util.Date() + commentEnd' "$f"
+                      done
+                      # Native demo link order follows find(1) output unless the
+                      # two source inventories are sorted explicitly.
+                      find "$dir" -path '*/jdk/make/common/Demo.gmk' 2>/dev/null | while read f; do
+                        test "$(grep -Fc '| $(SED)' "$f")" = 2
+                        awk '
+                          index($0, "| $(SED)") {
+                            sub(/ \)$/, " | LC_ALL=C $(SORT) )")
+                            replacements++
+                          }
+                          { print }
+                          END { if (replacements != 2) exit 1 }
+                        ' "$f" > "$f.tmp"
+                        mv "$f.tmp" "$f"
+                      done
                       # Fix GCC 14 errors in HotSpot C++ code
                       find "$dir" -path '*/hotspot/make/linux/makefiles/gcc.make' 2>/dev/null | while read f; do
                         # Disable -Werror
@@ -813,6 +863,20 @@ in
                           skip && /\\$/ { next }
                           skip && !/\\$/ { skip=0; next }
                           { print }
+                        ' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+
+                        # Info-ZIP's recursive wildcard walk can emit a source
+                        # entry with an unfinished CRC even after the serial JDK
+                        # build completes. Feed it a stable sorted file list so
+                        # every entry is read and finalized exactly once.
+                        awk -v zip='${buildTools.zip}/bin/zip' '
+                          index($0, "$(CD) $(JDK_IMAGE_DIR)/src && $(ZIPEXE) -qr ../src.zip *") {
+                            print "\t$(CD) $(JDK_IMAGE_DIR)/src && $(FIND) . -type f -print | LC_ALL=C $(SORT) | " zip " -X -q ../src.zip -@"
+                            replacements++
+                            next
+                          }
+                          { print }
+                          END { if (replacements != 1) exit 1 }
                         ' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
                       done
                       # Skip ant -diagnostics in langtools (JamVM is too slow for this)
@@ -2354,6 +2418,37 @@ in
               fi
             done
           '';
+      }
+      {
+        name = "normalize-archives";
+        script = ''
+          # ZIP headers retain build-time mtimes and upstream file discovery
+          # order. Repack every published archive from a canonical tree.
+          find "$out" -type f \( -name '*.jar' -o -name '*.zip' \) -print | while IFS= read -r archive; do
+            archiveTree=$(mktemp -d "$NIX_BUILD_TOP/openjdk-archive.XXXXXX")
+            normalizedArchive="$archive.normalized"
+
+            ${buildTools.unzip}/bin/unzip -qq "$archive" -d "$archiveTree"
+            find "$archiveTree" -exec touch -h -t 198001010000 {} +
+            (
+              cd "$archiveTree"
+              find . -mindepth 1 -print \
+                | LC_ALL=C sort \
+                | ${buildTools.zip}/bin/zip -X -q -y "$normalizedArchive" -@
+            )
+
+            chmod --reference="$archive" "$normalizedArchive"
+            mv "$normalizedArchive" "$archive"
+            ${buildTools.unzip}/bin/unzip -tqq "$archive"
+            rm -rf "$archiveTree"
+          done
+
+          # The build-time CDS image names the original JAR checksums. Archive
+          # normalization makes that image unusable; leave CDS available for a
+          # deployment to generate against its final runtime instead of
+          # publishing a stale, nondeterministic image.
+          find "$out" -path '*/server/classes.jsa' -delete
+        '';
       }
     ];
 
