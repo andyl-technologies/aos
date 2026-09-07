@@ -6,6 +6,7 @@
   libgpg-error,
   bash,
   stdenv,
+  buildPackages,
 }: let
   version = "1.12.2";
 in
@@ -49,12 +50,13 @@ in
       {
         name = "configure";
         script =
-          if stdenv.isCross && stdenv.hostPlatform.isDarwin
+          if stdenv.isCross
           then ''
-            # gost-s-box is compiled and executed on the Linux build machine.
-            # Keep native hardening, except for Darwin arm's target-only PAC
-            # token, and isolate it from all target SDK/compiler flags.
-            native_cc="$BUILD_CC"
+            # gost-s-box and yat2m execute on the Linux build machine. Use the
+            # native compiler directly so this package's flexible-array
+            # hardening policy reaches those helpers; the generic Linux
+            # CC_FOR_BUILD wrapper intentionally discards target policy.
+            native_cc="${buildPackages.cc}/bin/cc"
             mkdir -p .aos-build-tools
             cat > .aos-build-tools/cc-for-build <<EOF
             #!$CONFIG_SHELL

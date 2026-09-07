@@ -122,12 +122,13 @@ in
       {
         name = "configure";
         script = ''
-          make configure${lib.optionalString isDarwinCross ''
+          make configure${lib.optionalString stdenv.isCross ''
 
-            # These runtime probes describe fixed Darwin libc behavior. Seed
+            # These runtime probes describe fixed target-libc behavior. Seed
             # them when the target binaries cannot run on the Linux builder.
             export ac_cv_fread_reads_directories=yes
             export ac_cv_snprintf_returns_bogus=no
+          ''}${lib.optionalString isDarwinCross ''
             export ac_cv_iconv_omits_bom=no
           ''}
           ./configure \

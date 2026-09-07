@@ -10,6 +10,7 @@
   swig,
   python3,
   linux-headers,
+  stdenv,
 }: let
   version = "0.9.5";
 in
@@ -61,16 +62,32 @@ in
       }
       {
         name = "check";
-        script = ''
-          make -C src check
-          make -C utils check
-          (
-            cd bindings/python3/test
-            PYTHONPATH=..:../.libs \
-              LD_LIBRARY_PATH="$PWD/../../../src/.libs" \
-              ${python3}/bin/python3 capng-test.py
-          )
-        '';
+        script =
+          if stdenv.isCross
+          then ''
+            # Automake still builds every source test through check_PROGRAMS.
+            # Run the tests whose assertions are independent of the emulated
+            # process's kernel capability state; qemu-user cannot faithfully
+            # expose capget/capset state for the remaining three tests.
+            make -C src/test check TESTS="file_caps_test securebits_test"
+            make -C utils check
+            (
+              cd bindings/python3/test
+              PYTHONPATH=..:../.libs \
+                LD_LIBRARY_PATH="$PWD/../../../src/.libs" \
+                ${python3}/bin/python3 capng-test.py
+            )
+          ''
+          else ''
+            make -C src check
+            make -C utils check
+            (
+              cd bindings/python3/test
+              PYTHONPATH=..:../.libs \
+                LD_LIBRARY_PATH="$PWD/../../../src/.libs" \
+                ${python3}/bin/python3 capng-test.py
+            )
+          '';
       }
       {
         name = "install";
