@@ -3716,3 +3716,46 @@ these rows from verified ZFS postconditions and protected root pins; Network
 still needs its kernel effect/observer and durable lifecycle index. The
 controller still needs authenticated one-shot clients, durable snapshot
 continuity, and exact projection into the shared Host catalog schema.
+
+### Durable controller acquisition of Storage and Network inventories
+
+The unprivileged controller now has separate one-shot clients for the Storage
+and Network 1.2 resource methods. Deployment supplies each expected service
+UID, GID, and retained exact cgroup. The client authenticates the actual hello
+writer through kernel record credentials and a live pidfd, rechecks that same
+execution immediately before request transfer, and requires the response writer
+to be the identical process before and after validation. Negotiation admits only
+the one authority-free inventory method, and both sessions accept no descriptor
+carrier.
+
+Exact request and response bytes become durable in domain-separated `AOSBRI01`
+latest-snapshot records under independent append-only journal namespaces. Each
+record also commits the complete materialized controller state outside the two
+new inventory keyspaces, so independently queried Storage and Network snapshots
+can be proven to postdate the same state without one snapshot invalidating the
+other. Public snapshot types expose only validated inventory, request and record
+identity, outcome, and an explicit currentness recheck; they do not recreate a
+socket, descriptor, or mutation permit after restart.
+
+Per-broker continuity rejects request-ID reuse, journal or catalog-generation
+rollback, same-sequence or same-generation resource equivocation, and one broker
+instance identity appearing across Linux boots. An exact replay is idempotent,
+while a newly authenticated broker process may refresh unchanged resources at
+the same durable boundary. Startup validation rejects malformed, oversized,
+cross-domain, truncated, or digest-substituted records before controller
+reconciliation can proceed.
+
+Focused validation covers bytewise and truncation corruption, independent
+Storage and Network recovery, rollback and equivocation, broker restart and
+cross-boot identity, request reuse, controller-state change, and replacement of
+an older durable snapshot. All 347 controller library tests pass, along with
+all-target, all-feature compilation, strict crate-local Clippy without
+dependency linting, warnings-as-errors rustdoc, Rust formatting, and diff
+checks.
+
+This advances `SBX-BPROTO-04` and `SBX-CTRL-03` without claiming catalog
+publication or broker production. The controller still needs to combine these
+snapshots with exact current assignment, Mount attachment, identity-tombstone,
+and Host generation evidence and atomically dispatch the resulting shared
+catalog. Storage and Network still need root-side authoritative snapshot
+producers backed by their protected journals and verified kernel resources.

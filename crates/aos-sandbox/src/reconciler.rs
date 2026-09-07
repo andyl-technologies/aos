@@ -537,6 +537,10 @@ pub enum ReconcilerError {
     #[cfg(target_os = "linux")]
     #[error("destination-slot inventory failed: {0}")]
     DestinationSlotInventory(#[source] Box<crate::mount_attempt::MountAttemptError>),
+    /// Protected Storage or Network resource inventory could not be validated.
+    #[cfg(target_os = "linux")]
+    #[error("broker resource inventory failed: {0}")]
+    ResourceInventory(#[source] Box<crate::ResourceInventoryError>),
     /// Protected destination-slot effect history could not be validated.
     #[cfg(target_os = "linux")]
     #[error("destination-slot effect failed: {0}")]
@@ -1335,6 +1339,25 @@ where
                 #[cfg(not(target_os = "linux"))]
                 return Err(ReconcilerError::CorruptLedger(
                     "destination-slot inventory requires Linux validation",
+                ));
+            }
+            if self
+                .journal
+                .records(RecordNamespace::StorageResourceInventory)
+                .next()
+                .is_some()
+                || self
+                    .journal
+                    .records(RecordNamespace::NetworkResourceInventory)
+                    .next()
+                    .is_some()
+            {
+                #[cfg(target_os = "linux")]
+                crate::resource_inventory::validate_namespaces(&mut self.journal)
+                    .map_err(|error| ReconcilerError::ResourceInventory(Box::new(error)))?;
+                #[cfg(not(target_os = "linux"))]
+                return Err(ReconcilerError::CorruptLedger(
+                    "broker resource inventory requires Linux validation",
                 ));
             }
             if self

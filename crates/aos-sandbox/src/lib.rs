@@ -53,6 +53,8 @@ pub mod publisher_policy;
 #[cfg(target_os = "linux")]
 pub mod publisher_sessions;
 pub mod reconciler;
+#[cfg(target_os = "linux")]
+pub mod resource_inventory;
 pub mod runtime_authority;
 #[cfg(target_os = "linux")]
 pub mod runtime_scope;
@@ -158,6 +160,12 @@ pub use reconciler::{
     EffectReceipt, OperationPlan, OwnershipGateActivationOutcome, OwnershipGatePlanV1,
     OwnershipGateStatusV1, PreparedAuthorityEffectV2, ReconcileOutcome, Reconciler,
     ReconcilerError, SingleNodeEffectExecutor, ValidatedHostEffectReceiptV1,
+};
+#[cfg(target_os = "linux")]
+pub use resource_inventory::{
+    DurableNetworkResourceInventorySnapshotV1, DurableStorageResourceInventorySnapshotV1,
+    NetworkResourceInventoryClient, ResourceInventoryError, ResourceInventoryServiceIdentity,
+    ResourceInventorySnapshotOutcomeV1, StorageResourceInventoryClient,
 };
 pub use sandbox_spec_state::{
     DurableSandboxSpecV1, SandboxSpecCommitOutcomeV1, SandboxSpecPublicationV1,

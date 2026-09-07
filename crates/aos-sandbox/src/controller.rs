@@ -1005,6 +1005,48 @@ where
         crate::destination_slot_inventory::record_snapshot(self.reconciler.journal_mut(), client)
     }
 
+    /// Queries and durably records Storage's complete workspace inventory.
+    ///
+    /// The one-shot client authenticates the actual hello and response writers,
+    /// validates the protocol 1.2 resource snapshot, and commits the exact query
+    /// and response. The resulting snapshot is non-authorizing evidence for a
+    /// later whole-catalog projection.
+    ///
+    /// # Errors
+    ///
+    /// Rejects service identity or negotiation failure, malformed or
+    /// non-monotonic broker inventory, stale controller state, capacity, and
+    /// failed durable commits.
+    #[cfg(target_os = "linux")]
+    pub fn record_storage_resource_inventory(
+        &mut self,
+        client: crate::StorageResourceInventoryClient,
+    ) -> Result<crate::DurableStorageResourceInventorySnapshotV1, crate::ResourceInventoryError>
+    {
+        crate::resource_inventory::record_storage_snapshot(self.reconciler.journal_mut(), client)
+    }
+
+    /// Queries and durably records Network's complete namespace inventory.
+    ///
+    /// The one-shot client authenticates the actual hello and response writers,
+    /// validates the protocol 1.2 resource snapshot, and commits the exact query
+    /// and response. The resulting snapshot is non-authorizing evidence for a
+    /// later whole-catalog projection.
+    ///
+    /// # Errors
+    ///
+    /// Rejects service identity or negotiation failure, malformed or
+    /// non-monotonic broker inventory, stale controller state, capacity, and
+    /// failed durable commits.
+    #[cfg(target_os = "linux")]
+    pub fn record_network_resource_inventory(
+        &mut self,
+        client: crate::NetworkResourceInventoryClient,
+    ) -> Result<crate::DurableNetworkResourceInventorySnapshotV1, crate::ResourceInventoryError>
+    {
+        crate::resource_inventory::record_network_snapshot(self.reconciler.journal_mut(), client)
+    }
+
     /// Reconciles one current logical slot with fresh complete broker state.
     ///
     /// Exact sandbox, incarnation, namespace, specification, and logical
