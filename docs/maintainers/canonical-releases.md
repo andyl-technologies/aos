@@ -29,10 +29,12 @@ The current implementation provides these fail-closed operations:
   plan, performs the complete external signing sequence, and emits one
   verified logical disk, four equivalent download formats, signed UKIs,
   metadata, and recovery bundle;
-- `aos release finalize-registry` binds a reviewed atomic registry transaction
-  to the validated build report, authors every package-platform entry in an
-  isolated clone, obtains externally backed provenance and Git SSHSIGs, and
-  creates the release's sole registry commit and annotated tag;
+- `aos release prepare-registry` derives and authors every package-platform
+  entry once, obtains externally backed provenance, retains the uncommitted
+  isolated clone, and emits its exact surface transaction for review;
+- `aos release finalize-registry` binds that reviewed transaction and retained
+  tree to the validated build report, obtains the Git SSHSIGs, and creates the
+  release's sole registry commit and annotated tag;
 - `aos release finalize-cache` generates the registry closure's static Nix
   cache and obtains a verified external raw Ed25519 signature over every exact
   narinfo fingerprint;
@@ -336,32 +338,47 @@ Consumers verify the record through the TUF chain and, independently, through
 its embedded signed envelope; the Hub renders it only after verifying that
 envelope against its trusted qualification keys.
 
-## Finalize the isolated registry
+## Prepare and finalize the isolated registry
 
-Prepare canonical `aos.registry-release-transaction/v1` JSON whose entries are
-strictly ordered by build artifact id and whose catalog, store-graph, and policy
-digests describe the complete intended result. The catalog surface includes
-`containers/`; when publishing OCI, calculate the expected digest with the
-exact externally finalized `containers/v1/index.json` sidecar installed. The
-command independently checks every package entry against `build-report.json`
-and binds the sidecar to its Nix signature input and planned system variant. A
-missing, extra, or changed package, version, target, store path, or sidecar
-aborts before the output directory is installed.
+Author the isolated registry once, before review. `prepare-registry` derives
+every entry from the validated build report, obtains the planned provenance
+signatures, installs the exact finalized OCI sidecar, calculates all registry
+surface digests, and writes the canonical
+`aos.registry-release-transaction/v1` review file. It leaves the retained
+registry clone uncommitted at the planned base ref.
+
+```sh
+aos release prepare-registry \
+  --plan release-plan.json \
+  --build-report release-build/evidence/build-report.json \
+  --container-release final-container/container-release.json \
+  --container-signature-input final-container/signature-input.json \
+  --source-registry /srv/aos-registry/authoring \
+  --output /var/lib/aos-release/2026.9.0/registry \
+  --transaction registry-transaction.json \
+  --signer-executable /opt/aos-signers/bin/provider-adapter \
+  --provenance-key provenance-2026=/media/trust/provenance-2026.pub \
+  --provenance-verification-identity provider-provenance-slot
+```
+
+Review the generated transaction and the retained registry diff together. Its
+entries are strictly ordered by build artifact id, and its catalog,
+store-graph, and policy digests bind the complete authored tree. Do not edit or
+regenerate either input after review. Finalization revalidates the plan, build
+report, OCI input, every entry, the store graph, base ref, and all three surface
+digests before it requests either Git signature.
 
 ```sh
 aos release finalize-registry \
   --plan release-plan.json \
   --build-report release-build/evidence/build-report.json \
   --transaction registry-transaction.json \
+  --prepared-registry /var/lib/aos-release/2026.9.0/registry \
   --container-release final-container/container-release.json \
   --container-signature-input final-container/signature-input.json \
-  --source-registry /srv/aos-registry/authoring \
-  --output /var/lib/aos-release/2026.9.0/registry \
   --result /var/lib/aos-release/2026.9.0/registry-result.json \
   --signer-executable /opt/aos-signers/bin/provider-adapter \
-  --provenance-key provenance-2026=/media/trust/provenance-2026.pub \
   --registry-key registry-2026=/media/trust/registry-2026.pub \
-  --provenance-verification-identity provider-provenance-slot \
   --registry-verification-identity provider-registry-slot \
   --git-name "AOS Release" \
   --git-email release@aos.andyl.org \
@@ -369,18 +386,17 @@ aos release finalize-registry \
   --git-offset-minutes 0
 ```
 
-The transaction's optional `support` object states the `[support]` tables this
-release writes into `registry.toml`: its own train's entry and, only from the
-newest train, the rolling `default`. Finalization derives the same object from
-the plan's frozen contract and refuses a transaction that differs, and the
-policy digest describes `registry.toml` after those tables are applied. A
-contract that names another train's entry is rejected, so a backport release
-can only extend its own train.
+The generated transaction's optional `support` object states the `[support]`
+tables this release writes into `registry.toml`: its own train's entry and,
+only from the newest train, the rolling `default`. Both commands derive the
+same object from the plan's frozen contract, and the policy digest describes
+`registry.toml` after those tables are applied. A contract that names another
+train's entry is rejected, so a backport release can only extend its own train.
 
-Omit both container arguments for a release with no OCI artifact; finalization
-removes any prior release's fixed-path sidecar from the new signed tree.
-Supplying only one is invalid. The sidecar definition must be either the
-compatibility alias `containerImages.aos` with exactly one planned image
+Omit both container arguments from both commands for a release with no OCI
+artifact; preparation removes any prior release's fixed-path sidecar from the
+new tree. Supplying only one is invalid. The sidecar definition must be either
+the compatibility alias `containerImages.aos` with exactly one planned image
 variant, or the preferred
 `systems.<planned-variant>.build.containers.aos` identity.
 
@@ -393,7 +409,7 @@ single-signature DSSE and Git formats cannot honestly represent a larger
 threshold, so the command rejects one rather than counting repeated signatures
 outside the signed object.
 
-For provenance, the provider signs the exact DSSE PAE bytes in the
+During preparation, the provider signs the exact provenance DSSE PAE bytes in the
 `aos-package-provenance-dsse-v1` SSHSIG namespace. For the commit and tag it
 signs Git's exact unsigned object payload in the `git` namespace. The
 coordinator verifies request binding, public-material identity, provider
@@ -402,13 +418,13 @@ also checks the provenance trust line against the active, non-revoked
 `keys.toml` entry before authoring.
 
 The source registry must be clean at the exact plan base and must not already
-contain the release tag. The output and result must not exist. Entries may
-write catalog, documentation, provenance, transparency, and store-graph files,
-but may not move a ref. Only after the full catalog, store graph, and expected
-surface digests pass does the transaction atomically install the isolated
-directory, create one signed commit and annotated tag, and generate its static
-origin surface. No authoring ref, Hub object, channel, or private key path is
-modified by this command.
+contain the release tag. The output, transaction, and result paths must not
+exist. Entry authoring may write catalog, documentation, provenance,
+transparency, and store-graph files, but may not move a ref. Preparation
+atomically installs the complete uncommitted directory. Finalization operates
+on those reviewed bytes, creates one signed commit and annotated tag, and
+generates its static origin surface. Neither command modifies the authoring
+ref, a Hub object, a channel, or a private key path.
 
 ## Generate and sign the static cache
 

@@ -180,15 +180,18 @@ every output under `AOS_RELEASE_WORK`, using a new path for each command.
   The authorities must belong to this release. Unsigned outputs and fixture
   keys do not satisfy this item.
 
-- [ ] **Finalize the registry and cache.** Run
-  [finalize-registry](canonical-releases.md#finalize-the-isolated-registry)
-  with the exact build report and finalized container sidecar, followed by
+- [ ] **Prepare, review, and finalize the registry and cache.** Run
+  [prepare-registry](canonical-releases.md#prepare-and-finalize-the-isolated-registry)
+  with the exact build report and finalized container sidecar. Review its
+  generated transaction and retained tree together, then run
+  `finalize-registry` on those exact inputs, followed by
   [finalize-cache](canonical-releases.md#generate-and-sign-the-static-cache)
   against that isolated registry.
 
-  **Check when:** both commands exit zero, their result files identify the
-  planned package/platform outputs, and cache narinfo signatures verify.
-  Preserve the isolated registry, cache, and signer records.
+  **Check when:** preparation and both finalization commands exit zero, the
+  transaction and result identify the planned package/platform outputs, and
+  cache narinfo signatures verify. Preserve the transaction, isolated
+  registry, cache, and signer records.
 
 - [ ] **Review build evidence and close the bundle.** Assemble the payload and
   unsigned manifest as specified in

@@ -362,6 +362,12 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         return commands::release::tuf_offline(args, printer).await;
     }
     if let Commands::Release {
+        command: crate::cli::ReleaseCommand::PrepareRegistry(args),
+    } = &cli.command
+    {
+        return commands::release::prepare_registry(args, printer).await;
+    }
+    if let Commands::Release {
         command: crate::cli::ReleaseCommand::FinalizeRegistry(args),
     } = &cli.command
     {

@@ -26,7 +26,9 @@ pub enum ReleaseCommand {
     },
     /// Finalize one Linux image assembly through external signers
     FinalizeImage(ReleaseFinalizeImageArgs),
-    /// Author and sign one isolated canonical registry release
+    /// Author one isolated registry tree and emit its review transaction
+    PrepareRegistry(ReleasePrepareRegistryArgs),
+    /// Commit and sign one reviewed isolated canonical registry release
     FinalizeRegistry(ReleaseFinalizeRegistryArgs),
     /// Close and threshold-sign one release bundle
     Finalize(ReleaseFinalizeArgs),
@@ -458,7 +460,7 @@ pub struct ReleaseFinalizeImageArgs {
 }
 
 #[derive(Args)]
-pub struct ReleaseFinalizeRegistryArgs {
+pub struct ReleasePrepareRegistryArgs {
     /// Canonical release plan authorizing the registry transaction
     #[arg(long)]
     pub plan: PathBuf,
@@ -466,10 +468,6 @@ pub struct ReleaseFinalizeRegistryArgs {
     /// Validated build report containing every transaction store output
     #[arg(long)]
     pub build_report: PathBuf,
-
-    /// Reviewed atomic registry transaction with expected surface digests
-    #[arg(long)]
-    pub transaction: PathBuf,
 
     /// Externally signed canonical container-release sidecar to commit
     #[arg(long, requires = "container_signature_input")]
@@ -487,9 +485,9 @@ pub struct ReleaseFinalizeRegistryArgs {
     #[arg(long)]
     pub output: PathBuf,
 
-    /// New canonical finalization result JSON
+    /// New generated transaction JSON for review before finalization
     #[arg(long)]
-    pub result: PathBuf,
+    pub transaction: PathBuf,
 
     /// Absolute path to the deployment-configured signer executable
     #[arg(long)]
@@ -499,13 +497,52 @@ pub struct ReleaseFinalizeRegistryArgs {
     #[arg(long, value_name = "KEY_ID=PATH")]
     pub provenance_key: String,
 
-    /// Registry roster key and public trust line as KEY_ID=PATH
-    #[arg(long, value_name = "KEY_ID=PATH")]
-    pub registry_key: String,
-
     /// Provider verification identity expected for provenance operations
     #[arg(long)]
     pub provenance_verification_identity: String,
+
+    /// Maximum duration of each external signer operation in seconds
+    #[arg(long, default_value_t = 120)]
+    pub signer_timeout_seconds: u64,
+}
+
+#[derive(Args)]
+pub struct ReleaseFinalizeRegistryArgs {
+    /// Canonical release plan authorizing the reviewed transaction
+    #[arg(long)]
+    pub plan: PathBuf,
+
+    /// Validated build report containing every transaction store output
+    #[arg(long)]
+    pub build_report: PathBuf,
+
+    /// Reviewed generated transaction with exact prepared surface digests
+    #[arg(long)]
+    pub transaction: PathBuf,
+
+    /// Prepared isolated registry directory bound by the transaction
+    #[arg(long)]
+    pub prepared_registry: PathBuf,
+
+    /// Externally signed canonical container-release sidecar that was prepared
+    #[arg(long, requires = "container_signature_input")]
+    pub container_release: Option<PathBuf>,
+
+    /// Nix-produced signature input paired with --container-release
+    #[arg(long, requires = "container_release")]
+    pub container_signature_input: Option<PathBuf>,
+
+    /// New canonical finalization result JSON
+    #[arg(long)]
+    pub result: PathBuf,
+
+    /// Absolute path to the deployment-configured signer executable
+    #[arg(long)]
+    pub signer_executable: PathBuf,
+
+    /// Registry roster key and public trust line as KEY_ID=PATH
+    #[arg(long, value_name = "KEY_ID=PATH")]
+    pub registry_key: String,
 
     /// Provider verification identity expected for registry operations
     #[arg(long)]
@@ -1190,7 +1227,50 @@ mod tests {
     }
 
     #[test]
-    fn registry_finalization_requires_both_public_role_keys() {
+    fn registry_preparation_requires_provenance_role_key() {
+        let base = [
+            "aos",
+            "release",
+            "prepare-registry",
+            "--plan",
+            "release-plan.json",
+            "--build-report",
+            "build-report.json",
+            "--source-registry",
+            "registry",
+            "--output",
+            "isolated-registry",
+            "--transaction",
+            "registry-transaction.json",
+            "--signer-executable",
+            "/opt/aos/signer",
+            "--provenance-key",
+            "provenance=provenance.pub",
+            "--provenance-verification-identity",
+            "provider-provenance",
+        ];
+        assert!(Cli::try_parse_from(base).is_ok());
+
+        let with_container = base
+            .into_iter()
+            .chain([
+                "--container-release",
+                "container-release.json",
+                "--container-signature-input",
+                "signature-input.json",
+            ])
+            .collect::<Vec<_>>();
+        assert!(Cli::try_parse_from(with_container).is_ok());
+
+        let unpaired = base
+            .into_iter()
+            .chain(["--container-release", "container-release.json"])
+            .collect::<Vec<_>>();
+        assert!(Cli::try_parse_from(unpaired).is_err());
+    }
+
+    #[test]
+    fn registry_finalization_requires_reviewed_tree_and_registry_key() {
         let base = [
             "aos",
             "release",
@@ -1201,20 +1281,14 @@ mod tests {
             "build-report.json",
             "--transaction",
             "registry-transaction.json",
-            "--source-registry",
-            "registry",
-            "--output",
+            "--prepared-registry",
             "isolated-registry",
             "--result",
             "registry-result.json",
             "--signer-executable",
             "/opt/aos/signer",
-            "--provenance-key",
-            "provenance=provenance.pub",
             "--registry-key",
             "registry=registry.pub",
-            "--provenance-verification-identity",
-            "provider-provenance",
             "--registry-verification-identity",
             "provider-registry",
             "--git-name",

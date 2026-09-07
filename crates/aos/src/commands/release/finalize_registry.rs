@@ -1,4 +1,4 @@
-//! Isolated multi-entry registry authoring through external SSHSIG providers.
+//! Prepared and finalized registry releases through external SSHSIG providers.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -7,11 +7,13 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
+use aos_oci_types::CONTAINER_RELEASE_SIDECAR_PATH;
 use aos_package::config::ApmConfig;
 use aos_package::registry::release::{
-    CanonicalRegistryEntryAuthor, RegistryCommitIdentity, RegistryGitObjectKind,
+    CanonicalRegistryEntryAuthor, INTENT_SCHEMA, RegistryCommitIdentity, RegistryGitObjectKind,
     RegistryGitSignature, RegistryGitSigningRequest, RegistryObjectSigner,
-    RegistryPackagePublication, RegistryReleaseTransaction, require_active_signing_key,
+    RegistryPackagePublication, RegistryReleaseEntry, RegistryReleaseIntent,
+    RegistryReleaseTransaction, require_active_signing_key,
 };
 use aos_package::registry::support::SupportSectionWrite;
 use aos_package::registry_ops::{ContainerReleaseAttachment, load_container_release_attachment};
@@ -26,32 +28,18 @@ use aos_release::signing::{
     SigningOperation, SigningRequestV1,
 };
 
-use crate::cli::ReleaseFinalizeRegistryArgs;
+use crate::cli::{ReleaseFinalizeRegistryArgs, ReleasePrepareRegistryArgs};
 
 use super::capture;
 use super::signer::ExternalSigner;
 
-/// Authors every planned package entry and creates one signed commit and tag.
-pub(super) async fn run(
-    args: &ReleaseFinalizeRegistryArgs,
+/// Authors every planned entry once and emits its exact review transaction.
+pub(super) async fn prepare(
+    args: &ReleasePrepareRegistryArgs,
     printer: &aos_core::output::Printer,
 ) -> Result<()> {
-    let plan_bytes = capture::control_file(&args.plan, "release plan")?;
-    canonical::require_canonical(&plan_bytes, "release plan")?;
-    let plan: ReleasePlanV1 = canonical::from_slice(&plan_bytes, "release plan")?;
-    plan.validate()?;
-    let plan_digest = Sha256Digest::of_bytes(&plan_bytes);
-
-    let report_bytes = capture::control_file(&args.build_report, "build report")?;
-    canonical::require_canonical(&report_bytes, "build report")?;
-    let report: BuildReportV1 = canonical::from_slice(&report_bytes, "build report")?;
-    report.validate(&plan, plan_digest)?;
-
-    let transaction_bytes = capture::control_file(&args.transaction, "registry transaction")?;
-    canonical::require_canonical(&transaction_bytes, "registry transaction")?;
-    let transaction: RegistryReleaseTransaction =
-        canonical::from_slice(&transaction_bytes, "registry transaction")?;
-    validate_transaction_binding(&transaction, &plan, &report, plan_digest)?;
+    require_new_path(&args.transaction, "registry transaction")?;
+    let (plan, report, plan_digest) = load_release_inputs(&args.plan, &args.build_report)?;
     let container_release = load_container_release_attachment(
         &semver::Version::parse(&plan.version).context("parsing planned release version")?,
         args.container_release.as_deref(),
@@ -60,12 +48,9 @@ pub(super) async fn run(
     validate_container_plan_binding(container_release.as_ref(), &plan)?;
 
     let provenance_key = read_key_spec(&args.provenance_key, "provenance")?;
-    let registry_key = read_key_spec(&args.registry_key, "registry")?;
     require_active_signing_key(&args.source_registry, &provenance_key.0, &provenance_key.1)?;
-    require_active_signing_key(&args.source_registry, &registry_key.0, &registry_key.1)?;
     let provenance_requirement =
         signer_requirement(&plan, SignerRole::Provenance, &provenance_key.0)?;
-    let registry_requirement = signer_requirement(&plan, SignerRole::Registry, &registry_key.0)?;
     let external = ExternalSigner::new(
         args.signer_executable.clone(),
         Duration::from_secs(args.signer_timeout_seconds),
@@ -74,18 +59,17 @@ pub(super) async fn run(
         external,
         plan: &plan,
         plan_digest,
-        provenance_requirement,
-        registry_requirement,
-        provenance_key,
-        registry_key,
-        provenance_verification_identity: &args.provenance_verification_identity,
-        registry_verification_identity: &args.registry_verification_identity,
+        role: SignerRole::Provenance,
+        requirement: provenance_requirement,
+        key: provenance_key,
+        verification_identity: &args.provenance_verification_identity,
         seen_nonces: BTreeSet::new(),
     };
 
+    let intent = registry_intent(&plan, &report, plan_digest)?;
     let publications = publication_map(&plan)?;
     let config = ApmConfig::load(ProfileScope::User)?;
-    let prepared = {
+    let (transaction, prepared) = {
         let mut author = CanonicalRegistryEntryAuthor::new(
             &config,
             &plan.registry,
@@ -93,7 +77,7 @@ pub(super) async fn run(
             &mut signer,
             printer,
         );
-        transaction
+        intent
             .prepare_with_container_release(
                 &args.source_registry,
                 &args.output,
@@ -104,6 +88,67 @@ pub(super) async fn run(
             )
             .await?
     };
+    let transaction_bytes = canonical::to_vec(&transaction)?;
+    write_new_file(&args.transaction, &transaction_bytes)?;
+
+    if printer.json_if_active(&serde_json::json!({
+        "schema_version": "aos.release.registry-preparation-result/v1",
+        "registry": prepared.registry,
+        "release": prepared.release,
+        "entry_count": prepared.entry_count,
+        "surfaces": prepared.surfaces,
+        "directory": prepared.directory,
+        "transaction": args.transaction,
+    })) {
+        return Ok(());
+    }
+    printer.success(&format!(
+        "Prepared {} registry entries for transaction review",
+        prepared.entry_count
+    ));
+    Ok(())
+}
+
+/// Verifies a reviewed prepared tree and creates one signed commit and tag.
+pub(super) async fn finalize(
+    args: &ReleaseFinalizeRegistryArgs,
+    printer: &aos_core::output::Printer,
+) -> Result<()> {
+    require_new_path(&args.result, "registry finalization result")?;
+    let (plan, report, plan_digest) = load_release_inputs(&args.plan, &args.build_report)?;
+    let transaction_bytes = capture::control_file(&args.transaction, "registry transaction")?;
+    canonical::require_canonical(&transaction_bytes, "registry transaction")?;
+    let transaction: RegistryReleaseTransaction =
+        canonical::from_slice(&transaction_bytes, "registry transaction")?;
+    validate_transaction_binding(&transaction, &plan, &report, plan_digest)?;
+
+    let container_release = load_container_release_attachment(
+        &semver::Version::parse(&plan.version).context("parsing planned release version")?,
+        args.container_release.as_deref(),
+        args.container_signature_input.as_deref(),
+    )?;
+    validate_container_plan_binding(container_release.as_ref(), &plan)?;
+    validate_prepared_container(&args.prepared_registry, container_release.as_ref())?;
+
+    let registry_key = read_key_spec(&args.registry_key, "registry")?;
+    require_active_signing_key(&args.prepared_registry, &registry_key.0, &registry_key.1)?;
+    let registry_requirement = signer_requirement(&plan, SignerRole::Registry, &registry_key.0)?;
+    let external = ExternalSigner::new(
+        args.signer_executable.clone(),
+        Duration::from_secs(args.signer_timeout_seconds),
+    )?;
+    let mut signer = ReleaseRegistrySigner {
+        external,
+        plan: &plan,
+        plan_digest,
+        role: SignerRole::Registry,
+        requirement: registry_requirement,
+        key: registry_key,
+        verification_identity: &args.registry_verification_identity,
+        seen_nonces: BTreeSet::new(),
+    };
+
+    let prepared = transaction.verify_prepared(&args.prepared_registry)?;
     let identity = RegistryCommitIdentity {
         name: args.git_name.clone(),
         email: args.git_email.clone(),
@@ -131,6 +176,87 @@ pub(super) async fn run(
         prepared.entry_count, finalized.commit
     ));
     Ok(())
+}
+
+fn load_release_inputs(
+    plan_path: &Path,
+    report_path: &Path,
+) -> Result<(ReleasePlanV1, BuildReportV1, Sha256Digest)> {
+    let plan_bytes = capture::control_file(plan_path, "release plan")?;
+    canonical::require_canonical(&plan_bytes, "release plan")?;
+    let plan: ReleasePlanV1 = canonical::from_slice(&plan_bytes, "release plan")?;
+    plan.validate()?;
+    let plan_digest = Sha256Digest::of_bytes(&plan_bytes);
+
+    let report_bytes = capture::control_file(report_path, "build report")?;
+    canonical::require_canonical(&report_bytes, "build report")?;
+    let report: BuildReportV1 = canonical::from_slice(&report_bytes, "build report")?;
+    report.validate(&plan, plan_digest)?;
+
+    Ok((plan, report, plan_digest))
+}
+
+fn registry_intent(
+    plan: &ReleasePlanV1,
+    report: &BuildReportV1,
+    plan_digest: Sha256Digest,
+) -> Result<RegistryReleaseIntent> {
+    let planned_support = plan
+        .qualification
+        .as_ref()
+        .and_then(|contract| contract.support.as_ref())
+        .map(|policy| SupportSectionWrite::from_policy(&plan.version, policy))
+        .transpose()?
+        .flatten();
+    let mut entries = report
+        .outputs
+        .iter()
+        .map(|output| RegistryReleaseEntry {
+            id: output.id.clone(),
+            name: output.package.clone(),
+            version: output.version.clone(),
+            platform: output.platform.to_string(),
+            store_path: output.store_path.clone(),
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.id.cmp(&right.id));
+
+    Ok(RegistryReleaseIntent {
+        schema: INTENT_SCHEMA.to_string(),
+        registry: plan.registry.clone(),
+        base_commit: plan.registry_base_commit.clone(),
+        release: plan.version.clone(),
+        plan_digest: plan_digest.to_string(),
+        entries,
+        support: planned_support,
+    })
+}
+
+fn validate_prepared_container(
+    prepared_registry: &Path,
+    attachment: Option<&ContainerReleaseAttachment>,
+) -> Result<()> {
+    let path = prepared_registry.join(CONTAINER_RELEASE_SIDECAR_PATH);
+    match (attachment, fs::read(&path)) {
+        (Some(attachment), Ok(bytes)) if bytes == attachment.canonical_bytes => Ok(()),
+        (Some(_), Ok(_)) => bail!("prepared container sidecar differs from its reviewed input"),
+        (Some(_), Err(error)) => Err(error)
+            .with_context(|| format!("reading prepared container sidecar {}", path.display())),
+        (None, Err(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        (None, Err(error)) => Err(error)
+            .with_context(|| format!("checking prepared container sidecar {}", path.display())),
+        (None, Ok(_)) => bail!("prepared registry contains an unexpected container sidecar"),
+    }
+}
+
+fn require_new_path(path: &Path, description: &str) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => {
+            Err(error).with_context(|| format!("checking {description} {}", path.display()))
+        }
+        Ok(_) => bail!("{description} already exists: {}", path.display()),
+    }
 }
 
 fn validate_container_plan_binding(
@@ -285,12 +411,10 @@ struct ReleaseRegistrySigner<'a> {
     external: ExternalSigner,
     plan: &'a ReleasePlanV1,
     plan_digest: Sha256Digest,
-    provenance_requirement: &'a SignerRequirement,
-    registry_requirement: &'a SignerRequirement,
-    provenance_key: (String, String),
-    registry_key: (String, String),
-    provenance_verification_identity: &'a str,
-    registry_verification_identity: &'a str,
+    role: SignerRole,
+    requirement: &'a SignerRequirement,
+    key: (String, String),
+    verification_identity: &'a str,
     seen_nonces: BTreeSet<String>,
 }
 
@@ -312,17 +436,9 @@ impl ReleaseRegistrySigner<'_> {
         operation: SigningOperation,
         context: SigningContext,
     ) -> Result<SigningRequestV1> {
-        let (key_id, provider_revision) = match role {
-            SignerRole::Provenance => (
-                self.provenance_key.0.clone(),
-                self.provenance_requirement.provider_revision.clone(),
-            ),
-            SignerRole::Registry => (
-                self.registry_key.0.clone(),
-                self.registry_requirement.provider_revision.clone(),
-            ),
-            _ => bail!("registry finalization requested an unrelated signer role"),
-        };
+        if role != self.role || !matches!(role, SignerRole::Provenance | SignerRole::Registry) {
+            bail!("registry operation requested an unavailable signer role");
+        }
         let nonce = self.fresh_nonce()?;
         Ok(SigningRequestV1 {
             schema_version: SIGNING_REQUEST_DOMAIN.to_string(),
@@ -333,8 +449,8 @@ impl ReleaseRegistrySigner<'_> {
             plan_digest: self.plan_digest,
             manifest_digest: None,
             role,
-            key_id,
-            provider_revision,
+            key_id: self.key.0.clone(),
+            provider_revision: self.requirement.provider_revision.clone(),
             algorithm: SignatureAlgorithm::SshsigEd25519,
             operation,
             context,
@@ -347,11 +463,11 @@ impl ReleaseRegistrySigner<'_> {
 #[async_trait::async_trait]
 impl ProvenanceSigner for ReleaseRegistrySigner<'_> {
     fn key_id(&self) -> &str {
-        &self.provenance_key.0
+        &self.key.0
     }
 
     fn trusted_key_line(&self) -> Option<&str> {
-        Some(&self.provenance_key.1)
+        Some(&self.key.1)
     }
 
     async fn sign_provenance(&mut self, payload: &[u8]) -> Result<ProvenanceSignature> {
@@ -368,9 +484,9 @@ impl ProvenanceSigner for ReleaseRegistrySigner<'_> {
             .sign_sshsig(
                 &request,
                 payload,
-                &self.provenance_key.1,
+                &self.key.1,
                 DSSE_SIGNATURE_NAMESPACE,
-                self.provenance_verification_identity,
+                self.verification_identity,
             )
             .await?;
         Ok(ProvenanceSignature {
@@ -411,9 +527,9 @@ impl RegistryObjectSigner for ReleaseRegistrySigner<'_> {
             .sign_sshsig(
                 &signing_request,
                 &request.payload,
-                &self.registry_key.1,
+                &self.key.1,
                 "git",
-                self.registry_verification_identity,
+                self.verification_identity,
             )
             .await?;
         Ok(RegistryGitSignature {

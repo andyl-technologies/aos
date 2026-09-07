@@ -159,7 +159,7 @@ Follow the [release checklist](release-checklist.md), using
 [`canonical-releases.md`](canonical-releases.md) for command arguments.
 
 For the testing OCI artifact, externally finalize the exact Nix publication
-inputs before `finalize-registry`. The signing key must be the active testing
+inputs before `prepare-registry`. The signing key must be the active testing
 registry key, never a main-registry key:
 
 ```sh
@@ -193,12 +193,13 @@ aos container publish aos "$TESTING_OCI_REFERENCE" \
 ```
 
 Include those exact `container-release.json` and `signature-input.json` paths in
-`aos release finalize-registry`; its reviewed catalog digest includes the
-sidecar. After the signed registry release is promoted and the Hub has indexed
-it, rerun the same `aos container publish` command without `--stage-only`, add
-the production Hub credentials, and use a new stable idempotency key. Record
-the returned verified root and tag resource version. Do not use a generic OCI
-push for the release tag.
+both `aos release prepare-registry` and `aos release finalize-registry`. The
+generated transaction's reviewed catalog digest includes the sidecar, and
+finalization verifies its exact bytes again. After the signed registry release
+is promoted and the Hub has indexed it, rerun the same `aos container publish`
+command without `--stage-only`, add the production Hub credentials, and use a
+new stable idempotency key. Record the returned verified root and tag resource
+version. Do not use a generic OCI push for the release tag.
 
 Do not omit staging qualification even though testing data is disposable. Each
 command consumes the prior phase's exact evidence, refuses replacement outputs,
