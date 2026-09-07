@@ -71,7 +71,7 @@ fn indexed_pages_match_legacy_order_across_request_schemas_and_restart() {
                 .expect("scenario-default request id")
                 .content_id()
                 .schema_version(),
-            crate::exploration::BRANCH_REQUEST_SCHEMA_VERSION
+            crate::exploration::SCENARIO_DEFAULT_BRANCH_REQUEST_SCHEMA_VERSION
         );
         let head = repository.head("scan-order").expect("head");
         repository
