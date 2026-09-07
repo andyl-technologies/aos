@@ -372,6 +372,7 @@ fn parse_operation(operation: &str) -> Option<CampaignServiceOperation> {
         "get-campaign-choice-object" => Some(CampaignServiceOperation::GetCampaignChoiceObject),
         "apply-campaign-command" => Some(CampaignServiceOperation::ApplyCampaignCommand),
         "pin-campaign" => Some(CampaignServiceOperation::PinCampaign),
+        "submit-discovery-request" => Some(CampaignServiceOperation::SubmitDiscoveryRequest),
         "submit-branch-request" => Some(CampaignServiceOperation::SubmitBranchRequest),
         "attach-campaign-runtime" => Some(CampaignServiceOperation::AttachCampaignRuntime),
         _ => None,

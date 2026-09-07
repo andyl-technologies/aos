@@ -364,6 +364,13 @@ impl CampaignService for FixedHeadService {
     ) -> Result<SubmitCampaignBranchResponse, Self::Error> {
         Ok(fixed_branch_response(request, "branched"))
     }
+
+    fn submit_discovery_request(
+        &self,
+        _request: &SubmitCampaignDiscoveryRequest,
+    ) -> Result<SubmitCampaignDiscoveryResponse, Self::Error> {
+        unreachable!("unused campaign-service operation")
+    }
 }
 
 impl CampaignService for StatusSequenceService {
@@ -423,6 +430,7 @@ impl CampaignService for StatusSequenceService {
         fn apply_campaign_command(ApplyCampaignCommandRequest) -> ApplyCampaignCommandResponse;
         fn pin_campaign(PinCampaignRequest) -> PinCampaignResponse;
         fn submit_branch_request(SubmitCampaignBranchRequest) -> SubmitCampaignBranchResponse;
+        fn submit_discovery_request(SubmitCampaignDiscoveryRequest) -> SubmitCampaignDiscoveryResponse;
     }
 }
 
@@ -818,6 +826,13 @@ impl CampaignService for GraphPageService {
         request: &SubmitCampaignBranchRequest,
     ) -> Result<SubmitCampaignBranchResponse, Self::Error> {
         Ok(fixed_branch_response(request, "graph-page-branched"))
+    }
+
+    fn submit_discovery_request(
+        &self,
+        _request: &SubmitCampaignDiscoveryRequest,
+    ) -> Result<SubmitCampaignDiscoveryResponse, Self::Error> {
+        unreachable!("unused campaign-service operation")
     }
 }
 

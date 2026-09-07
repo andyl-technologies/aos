@@ -28,21 +28,21 @@ use crate::{
     ChoiceGroupId, ChoiceOpportunity, ChoiceOpportunityId, ConfigurationArtifact,
     ConfigurationArtifactId, ConfigurationId, ContinuationProjection, ControlRequest,
     CoverageProjection, CoverageProjectionId, DaemonEpoch, DebuggerAuthorityKey,
-    DebuggerSubmission, ExecutorCompatibilityProfile, ExecutorRejection, ExpansionCredit,
-    ExpansionState, ExpansionStateId, Finding, FindingId, FindingMinimizationEvidence,
-    FindingOccurrenceSet, MeasurementSet, MeasurementSetId, MerkleMap, MerkleMapLookupProof,
-    MerkleMapPage, MerkleMapPageProof, MerkleMapRoot, NonModeledAttemptDisposition, ObjectEnvelope,
-    ObjectiveEvaluation, ObjectiveEvaluationId, Observation, ObservationId, PinRequest,
-    PlannerAuthorityKey, PlannerDisposition, PlannerEngine, PlannerInvocation, PlannerInvocationId,
-    PlannerProposalDisposition, PlannerRequest, PlannerState, PlannerStep, PlannerStepId,
-    PlannerStepProposal, PlanningAccounting, PlanningBudget, PlanningScanPage,
-    PlanningScanPosition, PlanningUsage, PolicyActivation, PolicyArtifact, PropertyVerdict,
-    PropertyVerdictSet, PropertyVerdictSetId, Proposal, ProposalId, PurePlannerEngine,
-    RankingExplanation, RankingExplanationId, ReproductionArtifact, ReproductionArtifactId,
-    RetainedPlannerRequestId, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
-    SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition, StopOutcome,
-    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse, SurvivorSelection,
-    SurvivorSelectionBundle, SurvivorSelectionId,
+    DebuggerSubmission, DiscoveryRequest, ExecutorCompatibilityProfile, ExecutorRejection,
+    ExpansionCredit, ExpansionState, ExpansionStateId, Finding, FindingId,
+    FindingMinimizationEvidence, FindingOccurrenceSet, MeasurementSet, MeasurementSetId, MerkleMap,
+    MerkleMapLookupProof, MerkleMapPage, MerkleMapPageProof, MerkleMapRoot,
+    NonModeledAttemptDisposition, ObjectEnvelope, ObjectiveEvaluation, ObjectiveEvaluationId,
+    Observation, ObservationId, PinRequest, PlannerAuthorityKey, PlannerDisposition, PlannerEngine,
+    PlannerInvocation, PlannerInvocationId, PlannerProposalDisposition, PlannerRequest,
+    PlannerState, PlannerStep, PlannerStepId, PlannerStepProposal, PlanningAccounting,
+    PlanningBudget, PlanningScanPage, PlanningScanPosition, PlanningUsage, PolicyActivation,
+    PolicyArtifact, PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId, Proposal,
+    ProposalId, PurePlannerEngine, RankingExplanation, RankingExplanationId, ReproductionArtifact,
+    ReproductionArtifactId, RetainedPlannerRequestId, ScenarioArtifact, ScenarioArtifactId,
+    ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition,
+    StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
+    SurvivorSelection, SurvivorSelectionBundle, SurvivorSelectionId,
 };
 use crate::{BranchAcceptanceCount, BranchAcceptanceSummary};
 
@@ -177,6 +177,21 @@ pub struct CampaignCommandResult {
     /// Snapshot first produced by the accepted command.
     pub new_snapshot: CampaignSnapshotId,
     /// Whether this call observed a previously committed command.
+    pub replayed: bool,
+}
+
+/// Stable response for an accepted or replayed explicit discovery request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignDiscoveryResult {
+    /// Snapshot named by the accepted request's precondition.
+    pub prior_snapshot: CampaignSnapshotId,
+    /// Snapshot first produced by the accepted request.
+    pub new_snapshot: CampaignSnapshotId,
+    /// Exact semantic attempt admitted for discovery.
+    pub attempt: AttemptId,
+    /// Exact admission record that owns the attempt's execution basis.
+    pub admission: AttemptAdmissionId,
+    /// Whether this call observed a previously committed request.
     pub replayed: bool,
 }
 
@@ -883,6 +898,7 @@ mod closure;
 mod discovery;
 mod execution;
 mod executor_driver;
+mod fact_references;
 mod finding;
 mod objective;
 mod observation;

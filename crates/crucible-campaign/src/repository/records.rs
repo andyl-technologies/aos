@@ -1449,24 +1449,9 @@ impl CampaignRepository {
                     crate::CampaignRecordKind::Policy,
                 )?;
             }
-            CampaignFact::ControlRequested(request) => {
-                self.require_record_kind(
-                    request.expected_snapshot.content_id(),
-                    crate::CampaignRecordKind::Snapshot,
-                )?;
-                if let CampaignControlAction::ActivatePolicy(policy) = request.action {
-                    self.require_record_kind(
-                        policy.content_id(),
-                        crate::CampaignRecordKind::Policy,
-                    )?;
-                }
-            }
-            CampaignFact::PinCommandAccepted(request) => {
-                self.require_record_kind(
-                    request.expected_snapshot.content_id(),
-                    crate::CampaignRecordKind::Snapshot,
-                )?;
-            }
+            CampaignFact::ControlRequested(_)
+            | CampaignFact::PinCommandAccepted(_)
+            | CampaignFact::DiscoveryRequested(_) => self.validate_command_fact_references(fact)?,
             CampaignFact::BranchRequestIssued(id)
             | CampaignFact::BranchRequestAccepted { request: id, .. } => {
                 self.read_branch_request(id.content_id())?;

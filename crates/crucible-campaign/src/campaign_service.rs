@@ -21,6 +21,7 @@ use crate::{
 
 mod create;
 mod derive;
+mod discovery;
 mod get_snapshot;
 mod list;
 mod pin;
@@ -35,6 +36,7 @@ pub use create::{
     MAX_CREATE_CAMPAIGN_GENERATORS,
 };
 pub use derive::{DeriveCampaignRequest, DeriveCampaignResponse};
+pub use discovery::{SubmitCampaignDiscoveryRequest, SubmitCampaignDiscoveryResponse};
 pub use get_snapshot::{GetCampaignSnapshotRequest, GetCampaignSnapshotResponse};
 pub use list::{
     CampaignListEntry, ListCampaignsRequest, ListCampaignsResponse, MAX_CAMPAIGN_LIST_PAGE_ITEMS,
@@ -189,6 +191,8 @@ pub enum CampaignServiceOperation {
     ApplyCampaignCommand,
     /// Apply one idempotent semantic configuration-pin command.
     PinCampaign,
+    /// Submit one idempotent explicit discovery request.
+    SubmitDiscoveryRequest,
     /// Submit one additive operator branch request.
     SubmitBranchRequest,
     /// Attach one daemon runtime to a local executor endpoint.
@@ -584,6 +588,31 @@ impl CampaignServiceFailure {
                     reason: "campaign service failure is invalid for pin campaign",
                 })
             }
+            Self::Stale { expected, current }
+                if expected != expected_snapshot || current == expected =>
+            {
+                Err(CampaignCodecError::InvalidValue {
+                    reason: "campaign service stale failure snapshot mismatch",
+                })
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Validates a failure for one exact discovery-submission request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a creation-only failure or when a
+    /// stale failure does not describe this request's exact precondition.
+    pub fn validate_for_submit_discovery_request(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        match self {
+            Self::AlreadyExists => Err(CampaignCodecError::InvalidValue {
+                reason: "campaign service failure is invalid for discovery submission",
+            }),
             Self::Stale { expected, current }
                 if expected != expected_snapshot || current == expected =>
             {
@@ -1766,6 +1795,18 @@ pub trait CampaignService {
         request: &PinCampaignRequest,
     ) -> Result<PinCampaignResponse, Self::Error>;
 
+    /// Submits one explicit discovery request.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// campaign-state, configuration, stop-policy, budget, publication, or
+    /// response construction fails.
+    fn submit_discovery_request(
+        &self,
+        request: &SubmitCampaignDiscoveryRequest,
+    ) -> Result<SubmitCampaignDiscoveryResponse, Self::Error>;
+
     /// Submits one exact additive operator or exhaustive-policy branch request.
     ///
     /// # Errors
@@ -2288,6 +2329,32 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_pin_campaign(request.command().expected_snapshot)
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Submits one explicit discovery request and validates exact response binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different request.
+    pub fn submit_discovery_request(
+        &self,
+        request: &SubmitCampaignDiscoveryRequest,
+    ) -> Result<SubmitCampaignDiscoveryResponse, CampaignClientError> {
+        let response = match self.service.submit_discovery_request(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_submit_discovery_request(request.command().expected_snapshot)
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }
