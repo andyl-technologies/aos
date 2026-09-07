@@ -79,6 +79,21 @@ impl RecordSubjectListener {
         Ok(Self { fd })
     }
 
+    /// Rechecks that the retained listener still has both identity options.
+    ///
+    /// This is useful immediately before acceptance when the caller needs to
+    /// distinguish a corrupted listener from one old queued child that lacks
+    /// inherited identity options. Exclusive configuration ownership remains
+    /// required; a successful observation is not a lock against later changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either required socket option is now disabled or
+    /// the kernel cannot inspect the listener.
+    pub fn validate_current(&self) -> Result<(), SeqpacketError> {
+        uapi::require_seqpacket_identity(self.fd.as_fd()).map_err(map_kernel_error)
+    }
+
     /// Accepts one child with independently checked inherited identity options.
     ///
     /// An older child queued before listener configuration is closed, not
@@ -92,7 +107,7 @@ impl RecordSubjectListener {
     /// or child options, failed acceptance, and peer-identity adoption failure.
     /// Any newly accepted descriptor closes before a rejection is returned.
     pub fn accept(&mut self) -> Result<SeqpacketSocket, SeqpacketError> {
-        uapi::require_seqpacket_identity(self.fd.as_fd()).map_err(map_kernel_error)?;
+        self.validate_current()?;
         let child =
             uapi::accept_record_subject_socket(self.fd.as_fd()).map_err(map_kernel_error)?;
         uapi::require_seqpacket_identity(child.as_fd()).map_err(map_kernel_error)?;

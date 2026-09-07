@@ -167,7 +167,7 @@ impl NetworkNamespaceCatalogV1 {
     }
 
     #[cfg(test)]
-    fn open_for_test(
+    pub(crate) fn open_for_test(
         state_directory: &Path,
         pin_directory: &Path,
         kernel_boot_id: [u8; 16],

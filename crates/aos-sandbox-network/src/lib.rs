@@ -8,16 +8,20 @@
 //! authorization links, a durable pre-effect crash boundary, and typed
 //! committed namespace observations. [`namespace_catalog`] publishes only exact
 //! committed default-drop namespaces after reopening their fixed typed pins and
-//! emits authoritative current-boot inventory. [`broker`] composes those pieces
-//! without exposing Apply or performing netlink, nftables, or BPF work. The
-//! kernel helper and remaining lifecycle transitions stay explicit readiness
-//! prerequisites, so no network method is advertised.
+//! emits authoritative current-boot inventory. [`service`] exposes that catalog
+//! through an authenticated Network 1.2 one-shot session, while [`activation`]
+//! validates its systemd record-subject listener. [`broker`] composes effect
+//! state without exposing Apply or performing netlink, nftables, or BPF work.
+//! The kernel helper and remaining lifecycle transitions stay explicit Apply
+//! readiness prerequisites.
 
+pub mod activation;
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
 pub mod namespace_catalog;
 pub mod preparation_catalog;
+pub mod service;
 pub mod state;
 
 pub use authorization::{NetworkAdmissionError, NetworkAuthorityV1};
@@ -38,6 +42,7 @@ pub use preparation_catalog::{
     NetworkPreparationCatalogOutcomeV1, NetworkPreparationCatalogV1,
     NetworkPreparationReservationV1,
 };
+pub use service::{NetworkConnectionOutcome, NetworkInventoryService, NetworkServiceError};
 pub use state::{
     CommittedNetworkResultV1, DurableNetworkPhase, NetworkRecoveryEntry, NetworkRecoverySnapshotV1,
     NetworkStateError, NetworkStateStore, VerifiedNetworkResultV1,

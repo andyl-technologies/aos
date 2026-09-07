@@ -23,29 +23,34 @@ in {
     };
   };
 
-  config = lib.mkIf (brokers.hostBroker.enable || brokers.mountBroker.enable) {
-    assertions = [
-      {
-        assertion = cfg.uid > 0 && cfg.uid < 65536;
-        message = "aos.sandbox.controller.uid must be in 1..65535";
-      }
-      {
-        assertion = cfg.gid > 0 && cfg.gid < 65536;
-        message = "aos.sandbox.controller.gid must be in 1..65535";
-      }
-    ];
+  config =
+    lib.mkIf (
+      brokers.hostBroker.enable
+      || brokers.mountBroker.enable
+      || brokers.networkBroker.enable
+    ) {
+      assertions = [
+        {
+          assertion = cfg.uid > 0 && cfg.uid < 65536;
+          message = "aos.sandbox.controller.uid must be in 1..65535";
+        }
+        {
+          assertion = cfg.gid > 0 && cfg.gid < 65536;
+          message = "aos.sandbox.controller.gid must be in 1..65535";
+        }
+      ];
 
-    aos.users.users.aos-sandboxd = {
-      uid = cfg.uid;
-      group = "aos-sandboxd";
-      home = "/var/lib/aos/sandboxd";
-      shell = "/sbin/nologin";
-      description = "AOS sandbox node controller";
-      extraGroups = [];
+      aos.users.users.aos-sandboxd = {
+        uid = cfg.uid;
+        group = "aos-sandboxd";
+        home = "/var/lib/aos/sandboxd";
+        shell = "/sbin/nologin";
+        description = "AOS sandbox node controller";
+        extraGroups = [];
+      };
+      aos.users.groups.aos-sandboxd = {
+        gid = cfg.gid;
+        members = [];
+      };
     };
-    aos.users.groups.aos-sandboxd = {
-      gid = cfg.gid;
-      members = [];
-    };
-  };
 }

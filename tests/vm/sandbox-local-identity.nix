@@ -9,6 +9,7 @@
     "aos-sandbox-linux"
     "aos-sandbox-host"
     "aos-sandbox-mount"
+    "aos-sandbox-network"
   ];
   packageFlags = builtins.concatStringsSep " " (map (name: "-p ${name}") packages);
   features = builtins.concatStringsSep "," (map (name: "${name}/kernel-tests") packages);
@@ -35,7 +36,7 @@
     # distinct default-feature test binaries into the same Cargo target tree.
     postBuild = ''
       mkdir kernel-fixtures
-      for crate in aos_sandbox aos_sandbox_linux aos_sandbox_host aos_sandbox_mount; do
+      for crate in aos_sandbox aos_sandbox_linux aos_sandbox_host aos_sandbox_mount aos_sandbox_network; do
         count=0
         for candidate in target/debug/deps/"$crate"-*; do
           if [ -f "$candidate" ] && [ -x "$candidate" ]; then
@@ -94,6 +95,7 @@ in
       run_tests ${fixtures}/bin/aos_sandbox_host broker::tests::service_peer::stale_accepted_peer_is_nonfatal_and_next_connection_is_handled
       run_tests ${fixtures}/bin/aos_sandbox_mount broker::tests::service_peer::stale_accepted_peer_is_nonfatal_and_next_connection_is_handled
       run_tests ${fixtures}/bin/aos_sandbox_mount broker::tests::host_scope_exchange::
+      run_tests ${fixtures}/bin/aos_sandbox_network service::kernel_tests::controller_records_authenticated_netd_inventory_over_record_subject_session
 
       # Verify the distinct fixed RootMount peer profile under its deployed
       # cgroup name, without granting controller-method identity to that peer.

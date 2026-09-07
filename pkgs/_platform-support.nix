@@ -448,6 +448,7 @@ let
     "aos-ebpf-net-policy"
     "aos-fuse-transport"
     "aos-landlock"
+    "aos-netd"
     "aos-recovery"
     "aos-registry-server"
     "aos-sandbox-hostd"

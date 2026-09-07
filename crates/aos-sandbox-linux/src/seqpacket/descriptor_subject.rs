@@ -20,7 +20,10 @@ use super::{
 };
 use crate::uapi::{self, RawAncillary};
 
-const MAXIMUM_PACKET_BYTES: usize = 2 * 1024 * 1024;
+// Resource inventories use the broker protocol's full response ceiling. Keep
+// this carrier-local value explicit because the Linux boundary does not depend
+// on the protocol crate.
+const MAXIMUM_PACKET_BYTES: usize = 16 * 1024 * 1024;
 const MAXIMUM_TRANSFERRED_DESCRIPTORS: usize = 2;
 
 /// Owns a configured nonblocking descriptor-reply channel without service authority.

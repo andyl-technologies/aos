@@ -6,7 +6,8 @@
 //! durable Ambiguous boundary before a future helper attempts an effect, and a
 //! complete typed observation commits the resulting physical namespace. The
 //! fixed kernel helper does not exist yet, so Apply remains unadvertised and
-//! existing-resource actions are categorically rejected.
+//! existing-resource actions are categorically rejected. Authoritative
+//! inventory is independently available through the read-only service.
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox::RecordNamespace;
@@ -272,14 +273,14 @@ fn validate_catalog(
     Ok(())
 }
 
-/// Returns the closed method set safe for the incomplete network service.
+/// Returns the closed method set safe for the current network service.
 ///
 /// Apply remains absent until tc-BPF/netlink helpers and P0-06 readiness exist.
-/// Inventory remains absent until service composition opens the authoritative
-/// namespace catalog and includes it in one complete startup-readiness proof.
+/// Inventory is read-only and is advertised only because service startup opens
+/// and validates the complete protected namespace catalog and fixed pin root.
 #[must_use]
 pub fn advertised_network_methods() -> Vec<BrokerMethod> {
-    Vec::new()
+    vec![BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES]
 }
 
 #[cfg(test)]
@@ -637,8 +638,11 @@ mod tests {
     }
 
     #[test]
-    fn apply_is_never_advertised() {
-        assert!(advertised_network_methods().is_empty());
+    fn only_authoritative_inventory_is_advertised() {
+        assert_eq!(
+            advertised_network_methods(),
+            [BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES]
+        );
     }
 
     #[test]

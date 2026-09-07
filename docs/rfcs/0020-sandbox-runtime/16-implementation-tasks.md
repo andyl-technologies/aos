@@ -4056,3 +4056,46 @@ service. Apply and Inventory remain unadvertised until the fixed privileged
 namespace/veth and policy helper, complete postcondition observation, remaining
 lease/fence/destroy lifecycle transitions, session dispatch, service packaging,
 and controller Apply orchestration are ready.
+
+### Authenticated Network inventory service
+
+The authoritative Network catalog is now reachable by the node controller
+through an independently packaged, systemd-activated `aos-netd` service. The
+Network 1.2 handshake advertises only the resource-inventory method. The server
+accepts exactly one authorization-free, descriptor-free inventory request per
+connection, returns the complete physically revalidated catalog, and maps
+private catalog failures to a bounded integrity error without exposing journal
+or pin details. Apply remains absent from negotiation.
+
+Authentication is bound to every record rather than only connection setup.
+Both the hello and request must carry kernel-generated credentials and a pidfd
+for the configured controller UID, GID, exact retained
+`aos-control.slice/aos-sandboxd.service` cgroup, and same live process. The
+service rechecks that execution before observing the protected catalog and
+again before replying. A fixed `CLOCK_BOOTTIME` exchange deadline bounds idle
+children, while rejected peers and malformed requests cannot terminate the
+listener.
+
+The deployment gives the controller-owned `0600` Unix sequenced-packet socket
+both identity-reporting options before it becomes reachable. Its explicit send
+buffer accommodates the complete bounded namespace catalog. The root-only
+inventory process receives no network-administration capabilities, has a
+private Network namespace, and exposes only `AF_UNIX`; protected state and the
+fixed namespace-pin root remain its only resource authority. Startup fails
+closed unless systemd supplies the exact single descriptor-3 activation
+contract and the configured controller cgroup and protected catalog are live.
+
+Qualification covers the pure module/socket hardening contract, hermetic
+package construction, and a real-cgroup kernel exchange through the production
+controller client. The end-to-end test records the authenticated response as a
+durable protected controller snapshot rather than stopping at raw protocol
+bytes. All 40 Network tests and doctests, strict all-target/all-feature
+crate-local Clippy, warnings-as-errors rustdoc, Rust formatting, package build,
+the shared sandbox-local-identity VM test, and full hermetic evaluation pass.
+The final evaluation result is
+`/nix/store/zxs86igd4sm2vsqw175im9dwwcxpvdcy-aos-eval-and-system-structure-checks-0`.
+
+This advances `SBX-NET-01` and `SBX-LIFE-06` through a deployable read-only
+inventory boundary. It does not complete `SBX-NET-01`: the privileged
+namespace/veth and policy helper, verified Apply dispatch, lease/fence/destroy
+lifecycle, and controller Apply orchestration remain unimplemented.
