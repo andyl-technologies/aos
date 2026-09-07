@@ -8,7 +8,8 @@ pub use budget::{CampaignBudgetError, CampaignBudgetLedger};
 pub use facts::{
     ActiveAttemptPolicy, BudgetGrant, CampaignControlAction, CampaignDerivation, CampaignFact,
     CampaignState, ControlRequest, DiscoveryRequest, NonModeledAttemptDisposition, PinChange,
-    PinRequest, PinRetention, PolicyActivation,
+    PinRequest, PinRetention, PolicyActivation, SavepointCaptureOutcome, SavepointCaptureRequest,
+    SavepointCaptureResolution,
 };
 
 use std::collections::{BTreeMap, BTreeSet};

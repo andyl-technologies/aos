@@ -214,7 +214,7 @@ impl CampaignRecordKind {
     pub const fn schema_version(self) -> u32 {
         match self {
             Self::Snapshot => 3,
-            Self::Fact => 10,
+            Self::Fact => 12,
             Self::PlannerInvocation => 2,
             Self::PlannerStep => 4,
             Self::ExpansionState => 2,
@@ -656,7 +656,7 @@ impl ObjectEnvelope {
         let version_supported = envelope.schema_version() == record_kind.schema_version()
             || record_kind == CampaignRecordKind::Snapshot && envelope.schema_version() == 2
             || record_kind == CampaignRecordKind::Fact
-                && matches!(envelope.schema_version(), 2..=9)
+                && matches!(envelope.schema_version(), 2..=11)
             || record_kind == CampaignRecordKind::BranchPath && envelope.schema_version() == 1
             || record_kind == CampaignRecordKind::BranchRequest
                 && matches!(envelope.schema_version(), 1..=5)
@@ -971,6 +971,18 @@ fn fact_children(fact: &CampaignFact) -> Result<BTreeSet<ContentChild>, Campaign
         CampaignFact::DiscoveryRequested(request) => vec![
             ("expected-snapshot", request.expected_snapshot.content_id()),
             ("configuration", request.configuration.content_id()),
+        ],
+        CampaignFact::SavepointCaptureRequested(request) => vec![
+            ("expected-snapshot", request.expected_snapshot.content_id()),
+            ("attempt", request.attempt.content_id()),
+            ("configuration", request.configuration.content_id()),
+        ],
+        CampaignFact::SavepointCaptureResolved(resolution) => vec![
+            (
+                "expected-snapshot",
+                resolution.expected_snapshot.content_id(),
+            ),
+            ("capture-request", resolution.request.content_id()),
         ],
         CampaignFact::ControlRequested(request) => {
             let mut values = vec![("expected-snapshot", request.expected_snapshot.content_id())];

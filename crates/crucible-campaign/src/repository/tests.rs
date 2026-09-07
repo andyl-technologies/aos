@@ -835,5 +835,6 @@ mod discovery;
 mod execution;
 mod planner_scan_index;
 mod request_budget_scale;
+mod savepoint;
 mod scenario_default;
 mod validation;

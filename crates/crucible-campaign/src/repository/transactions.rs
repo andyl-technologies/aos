@@ -1748,7 +1748,9 @@ impl CampaignRepository {
                 | CampaignFact::BranchRequestIssued(_)
                 | CampaignFact::BranchRequestAccepted { .. }
                 | CampaignFact::PinCommandAccepted(_)
-                | CampaignFact::DiscoveryRequested(_) => {
+                | CampaignFact::DiscoveryRequested(_)
+                | CampaignFact::SavepointCaptureRequested(_)
+                | CampaignFact::SavepointCaptureResolved(_) => {
                     return Err(CampaignRepositoryError::CommandReuse);
                 }
                 _ => return Err(integrity("command-index-value-is-not-mutation-fact")),
@@ -1886,7 +1888,9 @@ impl CampaignRepository {
                 | CampaignFact::BranchRequestIssued(_)
                 | CampaignFact::BranchRequestAccepted { .. }
                 | CampaignFact::PinCommandAccepted(_)
-                | CampaignFact::DiscoveryRequested(_) => {
+                | CampaignFact::DiscoveryRequested(_)
+                | CampaignFact::SavepointCaptureRequested(_)
+                | CampaignFact::SavepointCaptureResolved(_) => {
                     return Err(CampaignRepositoryError::CommandReuse);
                 }
                 _ => return Err(integrity("command-index-value-is-not-mutation-fact")),

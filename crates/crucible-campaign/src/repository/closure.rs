@@ -191,6 +191,11 @@ impl CampaignRepository {
         ),
         CampaignRepositoryError,
     > {
+        enum LifecycleValidationAction {
+            Control(CampaignControlAction),
+            RequireRunning(&'static str),
+        }
+
         let mut snapshots = BTreeSet::new();
         let mut verified_roots = BTreeSet::new();
         let mut seen_commands = BTreeSet::new();
@@ -220,7 +225,16 @@ impl CampaignRepository {
                     actions.reverse();
                     let mut projected = ProjectedState::new();
                     for action in &actions {
-                        projected.apply(action)?;
+                        match action {
+                            LifecycleValidationAction::Control(action) => {
+                                projected.apply(action)?;
+                            }
+                            LifecycleValidationAction::RequireRunning(reason) => {
+                                if projected.visible != CampaignState::Running {
+                                    return Err(integrity(reason));
+                                }
+                            }
+                        }
                     }
                     return Ok((depth, projected, content_id, derived_branch));
                 }
@@ -269,7 +283,7 @@ impl CampaignRepository {
                                 transition.content_id(),
                                 &request,
                             )?;
-                            actions.push(request.action);
+                            actions.push(LifecycleValidationAction::Control(request.action));
                         }
                         CampaignFact::PinCommandAccepted(request) => {
                             if !seen_commands.insert(request.command) {
@@ -297,6 +311,37 @@ impl CampaignRepository {
                                 &loaded,
                                 transition.content_id(),
                                 &request,
+                            )?;
+                        }
+                        CampaignFact::SavepointCaptureRequested(request) => {
+                            if !seen_commands.insert(request.command) {
+                                return Err(integrity("snapshot-ancestry-reused-mutation-command"));
+                            }
+                            if request.expected_snapshot != parent {
+                                return Err(integrity("transition-precondition-parent-mismatch"));
+                            }
+                            self.validate_savepoint_capture_successor(
+                                &parent_snapshot,
+                                &loaded,
+                                transition.content_id(),
+                                &request,
+                            )?;
+                            actions.push(LifecycleValidationAction::RequireRunning(
+                                "savepoint-capture-parent-is-not-running",
+                            ));
+                        }
+                        CampaignFact::SavepointCaptureResolved(resolution) => {
+                            if !seen_commands.insert(resolution.command) {
+                                return Err(integrity("snapshot-ancestry-reused-mutation-command"));
+                            }
+                            if resolution.expected_snapshot != parent {
+                                return Err(integrity("transition-precondition-parent-mismatch"));
+                            }
+                            self.validate_savepoint_capture_resolution_successor(
+                                &parent_snapshot,
+                                &loaded,
+                                transition.content_id(),
+                                &resolution,
                             )?;
                         }
                         CampaignFact::BranchRequestIssued(request) => {
@@ -1419,7 +1464,9 @@ impl CampaignRepository {
             | CampaignFact::BudgetGranted(_)
             | CampaignFact::PinChanged(_)
             | CampaignFact::PinCommandAccepted(_)
-            | CampaignFact::DiscoveryRequested(_) => {}
+            | CampaignFact::DiscoveryRequested(_)
+            | CampaignFact::SavepointCaptureRequested(_)
+            | CampaignFact::SavepointCaptureResolved(_) => {}
         }
         Ok(anchors)
     }
