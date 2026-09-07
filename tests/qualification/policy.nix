@@ -42,6 +42,27 @@
     scenarios.package-function = "/nix/store/00000000000000000000000000000000-scenario/bin/run";
     workRoot = "/var/lib/aos-release/qualification-fixture";
   };
+  packageProbe = pkgs.writeTextFile {
+    name = "qualification-package-probe-fixture";
+    text = "fixture";
+    executable = true;
+  };
+  packageExecutor = testing.mkQualificationPackageScenario {
+    name = "qualification-package-scenario-fixture";
+    identity = "fixture-executor";
+    packageNames = ["fixture"];
+    probes.fixture = packageProbe;
+    trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
+  };
+  rejectsPackageExecutor = packageNames: probes:
+    !(builtins.tryEval (builtins.deepSeq (testing.mkQualificationPackageScenario {
+        name = "qualification-package-scenario-invalid";
+        identity = "fixture-executor";
+        inherit packageNames probes;
+        trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
+      })
+      true))
+    .success;
   names = map (rule: rule.name) contract.package_rules;
   phases = map (gate: gate.phase) contract.requirements;
   composed = import ../../qualification/_eval.nix {
@@ -112,6 +133,15 @@ in
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+/scenarios.json$" executor.passthru.qualification.registryPath != null;
   assert executor.passthru.qualification.platform == "x86_64-linux";
   assert executor.passthru.qualification.scenarios.package-function == "/nix/store/00000000000000000000000000000000-scenario/bin/run";
+  assert packageExecutor.passthru.qualification.platform == "x86_64-linux";
+  assert packageExecutor.passthru.qualification.packageNames == ["fixture"];
+  assert packageExecutor.passthru.qualification.probes == ["fixture"];
+  assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+/probes.json$" packageExecutor.passthru.qualification.probeRegistry != null;
+  assert rejectsPackageExecutor ["fixture" "missing"] {fixture = packageProbe;};
+  assert rejectsPackageExecutor ["fixture"] {
+    extra = packageProbe;
+    fixture = packageProbe;
+  };
   assert builtins.attrNames releaseExecutor.passthru.qualification.scenarios
   == [
     "claim-container-x86_64-linux-functional"
