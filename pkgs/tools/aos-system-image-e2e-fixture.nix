@@ -50,7 +50,10 @@
     pname = "aos-hub-e2e-image-raw";
     version = "2026.3.0";
     src = null;
-    buildDeps = [coreutils dosfstools gptfdisk jq mtools ukiImage zstd];
+    # ukiImage is target data read by mcopy, not a host executable. Its
+    # interpolated path below retains it as an input without build-platform
+    # splicing during cross evaluation.
+    buildDeps = [coreutils dosfstools gptfdisk jq mtools zstd];
     phases = [
       {
         name = "build";
@@ -120,7 +123,9 @@
     pname = "aos-hub-e2e-image-qcow2";
     version = "2026.3.0";
     src = null;
-    buildDeps = [coreutils jq qemu rawImage ukiImage zstd];
+    # rawImage and ukiImage are target data; their interpolated paths retain
+    # them separately from the host tools that must be runnable here.
+    buildDeps = [coreutils jq qemu zstd];
     phases = [
       {
         name = "build";
@@ -173,7 +178,8 @@
       inherit pname;
       version = "2026.3.0";
       src = null;
-      buildDeps = [coreutils image];
+      # image is copied as target data and retained by its path interpolation.
+      buildDeps = [coreutils];
       phases = [
         {
           name = "install";

@@ -4278,3 +4278,70 @@ veth, address, route, firewall, or lease-gate kernel effect is executed or
 observed. Apply dispatch, kernel ifindex/peer/postcondition identity, address
 reuse, service discovery, quota, anti-spoof enforcement, guardian scheduling,
 controller orchestration, and the `SBX-P0-06` live lease-gate proof remain open.
+
+### Architecture-aware fleet qualification preparation
+
+The fleet harness can now describe x86_64 and AArch64 QEMU guests without
+asking target binaries to execute on the x86_64 derivation builder. The
+AArch64 profile is deliberately limited to direct-kernel, TPM-less functional
+tests under `qemu-system-aarch64 -machine virt,accel=tcg -cpu cortex-a57` with
+the `ttyAMA0` console. The existing x86_64 profile remains q35/KVM/host CPU
+with `ttyS0`.
+
+Manifest loading normalizes missing platform fields from the selected profile,
+so an architecture-only AArch64 manifest constructs an AArch64 machine rather
+than silently falling back to x86 values. Both manifest validation and direct
+`QemuMachine` construction reject incoherent executable, machine, accelerator,
+CPU, or console combinations. Legacy manifests without an architecture retain
+the established x86_64 defaults.
+
+The harness uses `pkgs.buildPackages` for the test derivation, QEMU, Python,
+test driver, metadata/image preparation tools, and generated manifest inputs.
+Guest kernels, initrds, disks, services, and runtime closures still come from
+the target package set. KVM is required only by the x86 profile; the AArch64
+TCG profile publishes no KVM system-feature requirement. Interactive launchers
+remain x86-only and fail clearly if requested from the AArch64 harness.
+
+Two cross-evaluation defects uncovered by this work were corrected without
+changing target content:
+
+- Hub image UKI/raw/image artifacts are target data referenced directly by
+  their phase scripts, not executable `buildDeps`. Their path interpolation
+  preserves the derivation inputs and closure.
+- Crucible resolves Rust, pkg-config, and protobuf build tools from
+  `buildPackages` for every cross build. Target OpenSSL/runtime inputs and all
+  Crucible license scopes, protocol boundaries, source inputs, and execution
+  gates are unchanged.
+
+Focused verification passed the following checks:
+
+- `nix-build -A checks.integration.aos-test-driver-unit --no-out-link`
+  passed 10 profile/compatibility tests, including direct construction
+  rejection before launch side effects, at
+  `/nix/store/kydmgw40cnrkn91sdnijj59n6x3snymg-aos-test-driver-unit-0`.
+- `nix-build -A checks.integration.aos-test-driver-pyrefly --no-out-link`
+  passed with zero errors at
+  `/nix/store/rkhdk3cm5acn5527079ssv9qm1r3kvrx-aos-test-driver-pyrefly-0`.
+- `nix-instantiate -A checks.fleet.sandbox-nspawn-platform-proof` preserved
+  normal x86 fleet evaluation at
+  `/nix/store/c5almkwwi49a884w3sq3jxfp0xydhklj-aos-fleet-test-sandbox-nspawn-platform-proof-0.drv`.
+- `nix-instantiate -A checks.build.linux-cross-smoke` passed the focused
+  target-data and Crucible build-tool evaluation assertions at
+  `/nix/store/5zjdgc8gibmsaix8ij7qcfn1kifyycpk-linux-cross-smoke-aarch64-0.drv`.
+- Alejandra checks and `git diff --check` passed for the scoped changes.
+
+An AArch64 fleet VM has not been built or booted, so the nspawn platform proof
+is not qualified on AArch64 yet. Full derivation evaluation now reaches the
+repository-wide frozen package inventory and stops because Darling correctly
+supports only x86_64 Linux while the current inventory/base-library path still
+tries to evaluate it for AArch64:
+
+```text
+darling-0-unstable-2026-08-19 is not supported on aarch64-linux
+```
+
+The dedicated AArch64 fleet check was therefore not published in this
+increment. The next audit must reconcile Linux architecture classifications
+with the frozen base-library package set before measuring the build plan or
+running the TCG guest proof. No production service or base-library behavior was
+stubbed to bypass this boundary. `SBX-P0-04` and `SBX-P0-05` remain open.

@@ -366,9 +366,37 @@
   # ---------------------------------------------------------------------------
   fleetHarness = import ./lib/testing/fleet.nix {inherit pkgs lib;};
 
-  discoverFleetTests = let
-    fleetSpec = import ./lib/testing/fleet-spec.nix {inherit lib pkgs;};
+  fleetSpec = import ./lib/testing/fleet-spec.nix {inherit lib pkgs;};
+  loadFleetSpec = filename: let
+    specModule = import (./tests/fleet + "/${filename}");
+    availableArgs = {
+      inherit lib pkgs mkSystem;
+      inherit (testing) dataUrl mkDarlingFleetSpec mkDarlingFleetSuite;
+      systems = discoverSystems;
+      # Fleet checks consume the exact local-platform production subject and
+      # unsigned signing inputs without importing flake self recursively.
+      containerPublicationInputs =
+        if containerPublicationInputsOverride != null
+        then containerPublicationInputsOverride
+        else containerImages.aos.publicationInputs;
+    };
+    raw = specModule (
+      lib.filterAttrs (name: _: builtins.hasAttr name (builtins.functionArgs specModule))
+      availableArgs
+    );
+    eval = lib.evalModules {
+      modules = [
+        {options.spec = lib.mkOption {type = fleetSpec.fleetSpecType;};}
+        {config.spec = raw;}
+      ];
+    };
+  in
+    eval.config.spec;
 
+  mkFleetTestFromFile = filename:
+    fleetHarness.mkFleetTest (loadFleetSpec filename);
+
+  discoverFleetTests = let
     entries = builtins.readDir ./tests/fleet;
     fleetFiles = builtins.filter (
       n:
@@ -377,37 +405,11 @@
         && builtins.match ".*\\.nix" n != null
         && builtins.substring 0 1 n != "_"
     ) (builtins.attrNames entries);
-
-    loadSpec = filename: let
-      specModule = import (./tests/fleet + "/${filename}");
-      availableArgs = {
-        inherit lib pkgs mkSystem;
-        inherit (testing) dataUrl mkDarlingFleetSpec mkDarlingFleetSuite;
-        systems = discoverSystems;
-        # Fleet checks consume the exact local-platform production subject and
-        # unsigned signing inputs without importing flake self recursively.
-        containerPublicationInputs =
-          if containerPublicationInputsOverride != null
-          then containerPublicationInputsOverride
-          else containerImages.aos.publicationInputs;
-      };
-      raw = specModule (
-        lib.filterAttrs (name: _: builtins.hasAttr name (builtins.functionArgs specModule))
-        availableArgs
-      );
-      eval = lib.evalModules {
-        modules = [
-          {options.spec = lib.mkOption {type = fleetSpec.fleetSpecType;};}
-          {config.spec = raw;}
-        ];
-      };
-    in
-      eval.config.spec;
   in
     builtins.listToAttrs (
       map (filename: {
         name = lib.removeSuffix ".nix" filename;
-        value = fleetHarness.mkFleetTest (loadSpec filename);
+        value = mkFleetTestFromFile filename;
       })
       fleetFiles
     );
@@ -1086,7 +1088,7 @@
       referenceIntegrity = crucibleReferenceIntegrity;
     };
 in {
-  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions;
+  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem mkFleetTestFromFile packagesWithExpose containerImages containerDefinitions;
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
   # this value with strict JSON evaluation before resolving any derivation.

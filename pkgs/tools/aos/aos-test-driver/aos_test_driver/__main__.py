@@ -26,13 +26,12 @@ from .errors import AosDriverError
 from .firecracker import FirecrackerMachine
 from .logger import setup as setup_logging
 from .machine import Machine
-from .qemu import QemuMachine
+from .qemu import QEMU_PLATFORM_PROFILES, QemuMachine
 
 
 log: logging.Logger = logging.getLogger(__name__)
 
 NAME_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
 
 def _configure_stdio() -> None:
     """Keep driver/test output visible while Nix is still running the check."""
@@ -119,6 +118,37 @@ def _load_manifest(path: Path) -> dict[str, Any]:
                     raise SystemExit(
                         f"machine {name!r}: qemu requires field {required!r}"
                     )
+
+            # Version-1 manifests predate explicit QEMU platform fields and
+            # mean the established x86_64 q35/KVM profile. New manifests pin
+            # every field, and must match one complete reviewed profile so an
+            # architecture label cannot disguise a different executable or
+            # accelerator.
+            architecture = m.get("architecture", "x86_64")
+            profile = QEMU_PLATFORM_PROFILES.get(architecture)
+            if profile is None:
+                raise SystemExit(
+                    f"machine {name!r}: unsupported qemu architecture"
+                    f" {architecture!r}"
+                )
+            for field, expected in profile.items():
+                actual = m.get(field, expected)
+                if actual != expected:
+                    raise SystemExit(
+                        f"machine {name!r}: qemu {architecture} profile requires"
+                        f" {field}={expected!r} (got {actual!r})"
+                    )
+                m[field] = expected
+            if architecture == "aarch64" and boot == "image":
+                raise SystemExit(
+                    f"machine {name!r}: aarch64 image boot is not supported;"
+                    " use the direct-kernel functional profile"
+                )
+            if architecture == "aarch64" and m.get("tpm", False):
+                raise SystemExit(
+                    f"machine {name!r}: aarch64 TPM attachment is not supported"
+                    " by the direct-kernel functional profile"
+                )
         seen_transports.add(transport)
 
     if len(seen_transports) > 1:
@@ -145,6 +175,12 @@ def _build_machine(entry: dict[str, Any], tmpdir: Path) -> Machine:
         machine = QemuMachine(
             name=entry["name"],
             boot=entry.get("boot", "kernel"),
+            architecture=entry.get("architecture", "x86_64"),
+            qemu_binary=entry.get("qemu_binary"),
+            machine_type=entry.get("machine_type"),
+            acceleration=entry.get("acceleration"),
+            cpu_model=entry.get("cpu_model"),
+            console=entry.get("console"),
             kernel=entry.get("kernel"),
             initrd=entry.get("initrd"),
             disk=entry["disk"],

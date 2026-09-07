@@ -123,5 +123,32 @@ mkDerivation {
         license = "Apache-2.0";
       };
     };
+
+    unit = pkgs.buildPackages.mkDerivation {
+      pname = "aos-test-driver-unit";
+      version = "0";
+      src = null;
+
+      buildDeps = [pkgs.buildPackages.python3];
+
+      phases = [
+        {
+          name = "test";
+          script = ''
+            export PYTHONPATH=${./aos-test-driver}
+            python3 -m unittest discover \
+              -s ${./aos-test-driver}/tests \
+              -p 'test_*.py' \
+              -v
+            touch "$out"
+          '';
+        }
+      ];
+
+      meta = {
+        description = "Unit tests for aos-test-driver platform profiles";
+        license = "Apache-2.0";
+      };
+    };
   };
 }
