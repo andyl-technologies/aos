@@ -5,14 +5,15 @@
 
 use crucible_campaign::{
     AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId, DaemonEpoch,
-    ExecutionRetentionIntent, ExecutorService, ObservationId, SubmitAttemptDisposition,
-    SubmitAttemptRequest,
+    ExecutionRetentionIntent, ExecutorRejection, ExecutorService, ExecutorStatusService,
+    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, ObservationId,
+    SubmitAttemptDisposition, SubmitAttemptRequest,
 };
 
 use super::*;
 use crate::{
-    AllowAllAttemptAdmission, AttemptExecutionKey, ExecutorCapacity, LocalExecutorSupervisor,
-    MemoryAssignmentLedger,
+    AllowAllAttemptAdmission, AssignmentLedger, AttemptExecutionKey, AttemptExecutionOrigin,
+    AttemptRuntimeState, ExecutorCapacity, LocalExecutorSupervisor, MemoryAssignmentLedger,
 };
 
 #[test]
@@ -146,12 +147,16 @@ fn cancellation_wins_over_a_retryable_worker_failure() {
 }
 
 #[test]
-fn terminal_worker_failure_cancels_without_requeue() {
+fn terminal_worker_failure_is_durable_without_requeue() {
     let epoch = DaemonEpoch::from_bytes([0x34; 16]).expect("epoch");
     let mut supervisor = supervisor(epoch);
-    supervisor
-        .submit_attempt(&request(epoch, 0x45))
+    let request = request(epoch, 0x45);
+    let response = supervisor
+        .submit_attempt(&request)
         .expect("accept assignment");
+    let SubmitAttemptDisposition::Accepted { execution } = response.disposition() else {
+        panic!("assignment should be accepted")
+    };
     let queued = supervisor.next_queued().expect("queued attempt");
 
     assert!(matches!(
@@ -160,13 +165,66 @@ fn terminal_worker_failure_cancels_without_requeue() {
             queued,
             AttemptWorkerFailure::Terminal("incompatible modeled result"),
         ),
-        Err(AttemptWorkerReconcileError::Stopped {
-            cancellation: CancellationOutcome::Canceled,
-            ..
+        Err(AttemptWorkerReconcileError::TerminalStopped {
+            terminal_failure: TerminalFailureOutcome::Failed,
+            failure: AttemptWorkerFailure::Terminal("incompatible modeled result"),
         })
     ));
     assert_eq!(supervisor.active_count(), 0);
     assert_eq!(supervisor.queued_count(), 0);
+
+    let status = GetAttemptExecutionRequest::new(&request, execution).expect("status query");
+    assert_eq!(
+        supervisor
+            .get_attempt_execution(&status)
+            .expect("terminal status")
+            .disposition(),
+        GetAttemptExecutionDisposition::TerminalFailure
+    );
+
+    let restart_epoch = DaemonEpoch::from_bytes([0x35; 16]).expect("restart epoch");
+    let mut restarted = LocalExecutorSupervisor::new(
+        supervisor.into_ledger(),
+        AllowAllAttemptAdmission,
+        restart_epoch,
+        ExecutorCapacity::new(1, 2, 4096, 8192, 64).expect("capacity"),
+    );
+    assert_eq!(
+        restarted
+            .ledger()
+            .load_attempt(AttemptExecutionKey::new(
+                request.lineage(),
+                request.attempt()
+            ))
+            .expect("load terminal state"),
+        Some(AttemptRuntimeState::TerminalFailure {
+            execution_basis: request.execution_basis_digest(),
+            origin: AttemptExecutionOrigin::Initial,
+            daemon_epoch: epoch,
+            execution,
+        })
+    );
+
+    let reassignment = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x46; 16]).expect("reassignment"),
+        restart_epoch,
+        request.lineage(),
+        request.attempt(),
+        request.resources(),
+        request.retention(),
+    )
+    .expect("restart assignment");
+    assert_eq!(
+        restarted
+            .submit_attempt(&reassignment)
+            .expect("terminal replay response")
+            .disposition(),
+        SubmitAttemptDisposition::Rejected {
+            reason: ExecutorRejection::TerminalFailure,
+        }
+    );
+    assert_eq!(restarted.active_count(), 0);
+    assert_eq!(restarted.queued_count(), 0);
 }
 
 fn supervisor(

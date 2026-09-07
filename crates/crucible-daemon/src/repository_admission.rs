@@ -56,9 +56,8 @@ impl AttemptAdmissionValidator for RepositoryAttemptAdmission {
                 ExecutorRejection::Unauthorized => CompletionValidationFailure::Unauthorized,
                 ExecutorRejection::Incompatible
                 | ExecutorRejection::Backpressure
-                | ExecutorRejection::ConflictingAssignment => {
-                    CompletionValidationFailure::Incompatible
-                }
+                | ExecutorRejection::ConflictingAssignment
+                | ExecutorRejection::TerminalFailure => CompletionValidationFailure::Incompatible,
             })
     }
 }

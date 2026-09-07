@@ -261,7 +261,13 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         let message = rows
             .get(schema)
             .unwrap_or_else(|| panic!("missing executor component schema {schema}"));
-        assert_eq!(message[1], "2");
+        let expected_version = match schema {
+            "crucible.campaign.submit-attempt-response"
+            | "crucible.campaign.get-attempt-execution-response"
+            | "crucible.campaign.resume-attempt-execution-response" => "3",
+            _ => "2",
+        };
+        assert_eq!(message[1], expected_version);
         assert_eq!(message[2], "crucible-campaign::execution");
         assert_eq!(message[3], "component-message");
         owned_campaign_schemas.insert(schema);
@@ -346,7 +352,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.executor.attempt-state-record",
-            "6",
+            "7",
             "operational-record",
         ),
         (
@@ -1108,6 +1114,34 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
         CampaignFact::from_canonical_bytes(envelope.body()).expect("closure fact"),
         cancelled
     );
+
+    let terminal = CampaignFact::AttemptClosed {
+        attempt,
+        ordinal: AdmissionOrdinal::new(7),
+        disposition: NonModeledAttemptDisposition::TerminalWorkerFailure,
+    };
+    let terminal_bytes = terminal.canonical_bytes();
+    assert_eq!(&terminal_bytes[..4], &10_u32.to_be_bytes());
+    assert_eq!(
+        CampaignFact::from_canonical_bytes(&terminal_bytes).expect("terminal closure fact"),
+        terminal
+    );
+    let terminal_envelope = ObjectEnvelope::for_fact(&terminal).expect("terminal fact envelope");
+    assert_eq!(terminal_envelope.content_id().schema_version(), 10);
+    let mut terminal_as_v2 = terminal_bytes;
+    terminal_as_v2[..4].copy_from_slice(&2_u32.to_be_bytes());
+    assert!(CampaignFact::from_canonical_bytes(&terminal_as_v2).is_err());
+    let mut terminal_as_v9 = terminal.canonical_bytes();
+    terminal_as_v9[..4].copy_from_slice(&9_u32.to_be_bytes());
+    assert_eq!(
+        CampaignFact::from_canonical_bytes(&terminal_as_v9),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported campaign object schema version"
+        })
+    );
+    let mut cancelled_as_v10 = cancelled.canonical_bytes();
+    cancelled_as_v10[..4].copy_from_slice(&10_u32.to_be_bytes());
+    assert!(CampaignFact::from_canonical_bytes(&cancelled_as_v10).is_err());
 
     let credited = CampaignFact::ObservationCredited(stored_id!(
         ObservationId,

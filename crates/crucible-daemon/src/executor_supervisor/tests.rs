@@ -457,6 +457,45 @@ fn paused_execution_resumes_from_the_exact_root_and_survives_restart() {
     ));
     let restarted = second.next_queued().expect("restart execution token");
     assert_eq!(restarted.origin().checkpoint(), Some(root));
+
+    assert_eq!(
+        second
+            .stage_and_reconcile_terminal_failure(&restarted)
+            .expect("quarantine resumed execution"),
+        TerminalFailureOutcome::Failed
+    );
+    let third_epoch = daemon_epoch(0x2f);
+    let mut third = LocalExecutorSupervisor::new(
+        second.into_ledger(),
+        AllowAllAttemptAdmission,
+        third_epoch,
+        capacity,
+    );
+    let terminal_submit = request(0x21, 0x3d, third_epoch, resources(1, 2048, 4096));
+    assert_eq!(
+        third
+            .submit_attempt(&terminal_submit)
+            .expect("terminal submit response")
+            .disposition(),
+        SubmitAttemptDisposition::Rejected {
+            reason: ExecutorRejection::TerminalFailure,
+        }
+    );
+    let terminal_resume_assignment = request(0x22, 0x3d, third_epoch, resources(1, 2048, 4096));
+    let terminal_resume =
+        ResumeAttemptExecutionRequest::new(&terminal_resume_assignment, prior_execution, root)
+            .expect("terminal resume request");
+    assert_eq!(
+        third
+            .resume_attempt_execution(&terminal_resume)
+            .expect("terminal resume response")
+            .disposition(),
+        ResumeAttemptExecutionDisposition::Rejected {
+            reason: ExecutorRejection::TerminalFailure,
+        }
+    );
+    assert_eq!(third.active_count(), 0);
+    assert_eq!(third.queued_count(), 0);
 }
 
 #[test]
@@ -953,6 +992,46 @@ fn compare_exchange_failures_reconcile_running_completion_and_cancellation() {
             }
         );
         assert_eq!(supervisor.active_count(), 0);
+    }
+
+    for failure in [CasFailure::BeforeStore, CasFailure::AfterStore] {
+        let epoch = daemon_epoch(match failure {
+            CasFailure::BeforeStore => 0x46,
+            CasFailure::AfterStore => 0x47,
+        });
+        let ledger = FailingCasLedger::new(failure, 2);
+        let mut supervisor = LocalExecutorSupervisor::new(
+            ledger,
+            AllowAllAttemptAdmission,
+            epoch,
+            ExecutorCapacity::new(1, 1, 2048, 4096, 64).expect("capacity"),
+        );
+        let request = request(0x63, 0x73, epoch, resources(1, 1024, 2048));
+        supervisor
+            .submit_attempt(&request)
+            .expect("terminal fixture accepted");
+        let queued = supervisor.next_queued().expect("queued terminal fixture");
+
+        assert!(matches!(
+            supervisor.stage_and_reconcile_terminal_failure(&queued),
+            Err(LocalExecutorError::Ledger(InjectedFailure))
+        ));
+        assert_eq!(
+            supervisor.active_count(),
+            usize::from(matches!(failure, CasFailure::BeforeStore))
+        );
+        assert_eq!(
+            supervisor
+                .stage_and_reconcile_terminal_failure(&queued)
+                .expect("terminal transition retry"),
+            if matches!(failure, CasFailure::BeforeStore) {
+                TerminalFailureOutcome::Failed
+            } else {
+                TerminalFailureOutcome::AlreadyFailed
+            }
+        );
+        assert_eq!(supervisor.active_count(), 0);
+        assert_eq!(supervisor.queued_count(), 0);
     }
 }
 
