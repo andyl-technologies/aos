@@ -35,7 +35,9 @@ pub use catalog::{
 };
 pub use namespace_catalog::{
     NetworkNamespaceCatalogError, NetworkNamespaceCatalogOutcomeV1, NetworkNamespaceCatalogV1,
-    NetworkNamespacePublicationV1,
+    NetworkNamespaceIdentityV1, NetworkNamespaceLifecycleActionV1,
+    NetworkNamespaceLifecycleObservationV1, NetworkNamespaceLifecycleOutcomeV1,
+    NetworkNamespaceLifecycleTransitionV1, NetworkNamespacePublicationV1,
 };
 pub use preparation_catalog::{
     NetworkPolicyCatalogV1, NetworkPolicyProfileV1, NetworkPreparationCatalogError,

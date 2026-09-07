@@ -4099,3 +4099,51 @@ This advances `SBX-NET-01` and `SBX-LIFE-06` through a deployable read-only
 inventory boundary. It does not complete `SBX-NET-01`: the privileged
 namespace/veth and policy helper, verified Apply dispatch, lease/fence/destroy
 lifecycle, and controller Apply orchestration remain unimplemented.
+
+### Durable Network namespace lifecycle
+
+Network namespace inventory can now represent the complete closed lifecycle
+instead of only initial default-drop publication. A helper-verified transition
+compare-and-swaps the exact prior resource digest, opaque handle, Linux boot,
+namespace device/inode, and complete postcondition observation before the
+protected catalog advances. Arm installs only a strictly newer ownership-lease
+generation; renew requires an already armed row and advances the same
+high-water fence. Guardian fencing retains the last active lease tuple as
+containment evidence, while disarm returns Armed or Fenced state to
+default-drop without erasing the generation fence.
+
+Destroy is irreversible and requires the fixed handle-derived pin to be
+absent. On the current boot, only DefaultDrop or Fenced state can retire, so a
+missing pin cannot turn an Armed namespace into cleanup authority. After a
+reboot, verified absence may retire any stale non-retired row because its
+boot-scoped namespace and deadline cannot remain live. Retired rows remain in
+the protected catalog as collision evidence, never re-enter inventory, and
+make startup and every inventory call fail if their fixed pin reappears.
+
+Canonical resource-record format two commits creation correlation, the current
+observation, closed lifecycle, active lease tuple, lease-generation/digest
+high-water mark, and most recent transition identity. Existing canonical
+format-one default-drop rows remain readable under their original resource
+digest and upgrade only when a transition commits. Exact immediate retry
+replays without another generation, while changed prior state, physical
+identity, transition semantics, request binding, pin identity, or lifecycle
+order fails closed.
+
+Focused validation covers arm, monotonic renewal, guardian fence, disarm,
+stale-generation rejection, same-boot Armed retirement rejection, cross-boot
+retirement, permanent tombstones, exact replay and restart, typed-pin loss,
+request reuse, stale compare-and-swap evidence, corrupt lease high-water state,
+and byte-exact format-one recovery and upgrade. All 45 locally runnable Network
+library tests and its doctests pass; the all-feature root qualification test is
+unchanged and requires a writable root filesystem unavailable in the managed
+worktree. Strict all-target/all-feature crate-local Clippy,
+warnings-as-errors rustdoc, Rust formatting, and diff checks pass. The full
+`nix-build -A checks.eval --cores 8 --no-out-link` gate passes the complete
+workspace test phase, configuration evaluation, and system-structure checks at
+`/nix/store/m583bgalh4hz7w25lnnah9snv0sml53a-aos-eval-and-system-structure-checks-0`.
+
+This advances `SBX-NET-01` and `SBX-LIFE-06` through durable namespace state
+transitions without claiming kernel effects. Network Apply remains
+unadvertised: the privileged namespace/veth, policy, lease-gate, and
+postcondition helper; authenticated mutation dispatch; guardian scheduling;
+and controller Apply orchestration remain unimplemented.
