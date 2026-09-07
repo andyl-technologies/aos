@@ -13,7 +13,8 @@ use crucible_campaign::{AttemptResourceLimits, CampaignState, StopOutcome};
 // crucible-lint: allow host-nondeterminism-state -- rendering projects accepted scheduler evidence into the existing CLI wire-frame contract without influencing execution.
 use crucible_api as campaign_output_api;
 use crucible_daemon::qemu_campaign_lifecycle::{
-    GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest, run_guarded_default_campaign,
+    GuardedCampaignReplayClosure, GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest,
+    run_guarded_default_campaign,
 };
 
 pub(super) fn run_local_qemu_campaign_replay(
@@ -21,6 +22,7 @@ pub(super) fn run_local_qemu_campaign_replay(
     run_plan: &RunInvocationPlan,
     lifecycle: crucible_api::ProductionVmLifecycleConfig,
     schedule: crucible::Schedule,
+    replay_closure: GuardedCampaignReplayClosure,
 ) -> Result<RunWorkflowReport, CliError> {
     let deployment_path =
         resolve_guarded_campaign_deployment_path(run_plan.campaign_deployment.as_deref())?;
@@ -48,7 +50,7 @@ pub(super) fn run_local_qemu_campaign_replay(
         deployment.host,
         resources,
     )
-    .with_initial_schedule(schedule);
+    .with_initial_replay(schedule, replay_closure);
     let campaign = run_guarded_default_campaign(request)
         .map_err(|error| campaign_run_error("replay through shared campaign owner", error))?;
     let (status, terminal_outcome) = campaign_terminal_status(&campaign)?;
@@ -271,6 +273,12 @@ pub(super) fn campaign_run_report(
     Ok(RunWorkflowReport {
         status,
         execution_owner: RunExecutionOwner::Campaign,
+        campaign_replay_closure: Some(
+            campaign
+                .replay_closure()
+                .to_canonical_bytes()
+                .map_err(|error| campaign_run_error("encode replay closure", error))?,
+        ),
         created_state: String::from("created"),
         final_state: terminal_final_state(run_plan, Some(terminal_outcome)),
         outcome: Some(terminal_outcome),

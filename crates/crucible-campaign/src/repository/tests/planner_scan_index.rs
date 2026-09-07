@@ -50,6 +50,37 @@ fn indexed_pages_match_legacy_order_across_request_schemas_and_restart() {
                 ));
             }
         }
+        let opportunity = repository
+            .load_choice_opportunity(template.opportunity())
+            .expect("scenario-default opportunity");
+        let scenario_default = BranchRequest::new(
+            template.branch_point(),
+            template.parent(),
+            template.opportunity(),
+            template.domain(),
+            CandidateSource::finite(BTreeSet::from([opportunity.default().clone()]))
+                .expect("scenario-default source"),
+            BranchRequestCause::ScenarioDefault(policy.id().expect("policy id")),
+            BranchBudget::new(1, 1).expect("scenario-default budget"),
+            StopCondition::NextChoice,
+        )
+        .expect("scenario-default request");
+        assert_eq!(
+            scenario_default
+                .id()
+                .expect("scenario-default request id")
+                .content_id()
+                .schema_version(),
+            crate::exploration::BRANCH_REQUEST_SCHEMA_VERSION
+        );
+        let head = repository.head("scan-order").expect("head");
+        repository
+            .submit_known_branch_request("scan-order", head.snapshot_id(), &scenario_default)
+            .expect("scenario-default request transition");
+        expected.insert(PlanningScanPosition::new(
+            scenario_default.branch_point(),
+            scenario_default.id().expect("scenario-default request id"),
+        ));
     }
     let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
     let head = cold.head("scan-order").expect("cold indexed head");

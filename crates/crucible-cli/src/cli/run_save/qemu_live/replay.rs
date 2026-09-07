@@ -2,6 +2,14 @@
 
 use super::*;
 
+/// Optional authenticated resources carried by a live-QEMU replay artifact.
+pub(crate) struct LiveQemuReplayResources {
+    pub(crate) campaign_closure:
+        Option<crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure>,
+    pub(crate) effect_trace: Option<crucible::ResolvedEffectTrace>,
+    pub(crate) signal_artifacts: Option<std::sync::Arc<crucible::MemoryDagStore>>,
+}
+
 /// Re-executes a v3 artifact through a fresh packaged-QEMU lifecycle session.
 ///
 /// # Errors
@@ -14,8 +22,7 @@ pub(crate) fn run_live_qemu_artifact_replay(
     scenario: crucible::ScenarioDefForm,
     schedule: &crucible::Schedule,
     contract: &LiveQemuReplayContract,
-    resolved_effect_trace: Option<crucible::ResolvedEffectTrace>,
-    signal_artifacts: Option<std::sync::Arc<crucible::MemoryDagStore>>,
+    resources: LiveQemuReplayResources,
 ) -> Result<(RunInvocationPlan, RunWorkflowReport), CliError> {
     let terminal_condition = match contract.terminal_condition.as_str() {
         "quiescence" => RunTerminalCondition::Quiescence,
@@ -86,7 +93,7 @@ pub(crate) fn run_live_qemu_artifact_replay(
     if let Some(quantum_budget) = contract.lifecycle_quantum_budget {
         config = config.with_quantum_budget(quantum_budget);
     }
-    if let Some(signal_artifacts) = signal_artifacts {
+    if let Some(signal_artifacts) = resources.signal_artifacts {
         config = config.with_signal_artifacts(signal_artifacts);
     }
     let mut branch_evidence = None;
@@ -180,7 +187,7 @@ pub(crate) fn run_live_qemu_artifact_replay(
     if contract.coverage {
         config = config.with_coverage(production_api::ProductionPluginSwitch::On);
     }
-    if let Some(trace) = resolved_effect_trace {
+    if let Some(trace) = resources.effect_trace {
         config = config.with_fault_replay(trace);
     }
     let report = if matches!(
@@ -192,8 +199,16 @@ pub(crate) fn run_live_qemu_artifact_replay(
             &run_plan,
             config,
             schedule.clone(),
+            resources.campaign_closure.ok_or_else(|| {
+                artifact_error("campaign-run replay requires its authenticated choice closure")
+            })?,
         )?
     } else {
+        if resources.campaign_closure.is_some() {
+            return Err(artifact_error(
+                "session-owned replay cannot consume a campaign replay closure",
+            ));
+        }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;

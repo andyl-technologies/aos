@@ -44,11 +44,14 @@ use crate::{
     ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError, CrucibleCampaignArtifactStore,
     CrucibleExecutionModel, CrucibleExecutionRunner, LinuxQemuAttemptHostConfig,
     LinuxQemuAttemptHostResourceFactory, QemuFreshModeledDriver, RepositoryAttemptAdmission,
-    decode_crucible_configuration_artifact,
+    decode_crucible_configuration_artifact_with_selections,
 };
 
 mod executor;
 use executor::{LocalPlannerMeter, SynchronousCampaignExecutor};
+
+mod replay_closure;
+pub use replay_closure::{GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError};
 
 #[cfg(test)]
 mod tests;
@@ -86,6 +89,7 @@ pub struct GuardedDefaultCampaignRunRequest {
     host: LinuxQemuAttemptHostConfig,
     resources: AttemptResourceLimits,
     initial_schedule: Schedule,
+    initial_replay_closure: Option<GuardedCampaignReplayClosure>,
 }
 
 impl GuardedDefaultCampaignRunRequest {
@@ -109,17 +113,23 @@ impl GuardedDefaultCampaignRunRequest {
             host,
             resources,
             initial_schedule: Schedule::empty(),
+            initial_replay_closure: None,
         }
     }
 
-    /// Starts discovery from an authenticated recorded schedule.
+    /// Starts discovery from an authenticated recorded schedule and choice closure.
     ///
     /// This is the campaign replay adapter: the executor re-materializes the
     /// supplied configuration before publishing any observation. The schedule
     /// remains modeled input and does not weaken host resource ownership.
     #[must_use]
-    pub fn with_initial_schedule(mut self, schedule: Schedule) -> Self {
+    pub fn with_initial_replay(
+        mut self,
+        schedule: Schedule,
+        closure: GuardedCampaignReplayClosure,
+    ) -> Self {
         self.initial_schedule = schedule;
+        self.initial_replay_closure = Some(closure);
         self
     }
 }
@@ -163,6 +173,7 @@ pub struct GuardedDefaultCampaignRun {
     branch_request_count: usize,
     state_updates: Vec<CampaignState>,
     evidence: QemuAttemptExecutionEvidenceSnapshot,
+    replay_closure: GuardedCampaignReplayClosure,
 }
 
 impl GuardedDefaultCampaignRun {
@@ -214,6 +225,12 @@ impl GuardedDefaultCampaignRun {
     pub const fn evidence(&self) -> &QemuAttemptExecutionEvidenceSnapshot {
         &self.evidence
     }
+
+    /// Returns the exact choice-record closure needed to replay the terminal schedule.
+    #[must_use]
+    pub const fn replay_closure(&self) -> &GuardedCampaignReplayClosure {
+        &self.replay_closure
+    }
 }
 
 /// Failure while owning one guarded default campaign run.
@@ -255,6 +272,9 @@ pub enum GuardedDefaultCampaignRunError {
     /// Reading the bounded terminal-attempt evidence failed.
     #[error("guarded default campaign evidence failed: {0}")]
     Evidence(#[source] crucible::SchedulerError),
+    /// A selected replay schedule did not have an exact authenticated choice closure.
+    #[error("guarded default campaign replay closure failed: {0}")]
+    ReplayClosure(#[source] GuardedCampaignReplayClosureError),
     /// A fixed default-run invariant was violated.
     #[error("guarded default campaign invariant failed: {0}")]
     Invariant(#[source] GuardedDefaultCampaignInvariantError),
@@ -293,6 +313,7 @@ pub enum GuardedDefaultCampaignInvariantError {
 pub fn run_guarded_default_campaign(
     request: GuardedDefaultCampaignRunRequest,
 ) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError> {
+    validate_initial_replay(&request)?;
     validate_fresh_qemu_scenario_resources(&request.scenario, request.resources)
         .map_err(GuardedDefaultCampaignRunError::Resource)?;
 
@@ -306,10 +327,25 @@ pub fn run_guarded_default_campaign(
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(guarded_factory);
     let runner = QemuFreshExecutionRunner::new(lifecycle_factory, QemuFreshModeledDriver);
 
-    run_guarded_default_campaign_with_runner(request, runner, execution_evidence)
+    run_guarded_default_campaign_with_validated_runner(request, runner, execution_evidence)
 }
 
+#[cfg(test)]
 fn run_guarded_default_campaign_with_runner<R>(
+    request: GuardedDefaultCampaignRunRequest,
+    runner: R,
+    execution_evidence: QemuAttemptExecutionEvidence,
+) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError>
+where
+    R: CrucibleExecutionRunner,
+    R::Error: Error + Send + Sync + 'static,
+{
+    validate_initial_replay(&request)?;
+
+    run_guarded_default_campaign_with_validated_runner(request, runner, execution_evidence)
+}
+
+fn run_guarded_default_campaign_with_validated_runner<R>(
     request: GuardedDefaultCampaignRunRequest,
     runner: R,
     execution_evidence: QemuAttemptExecutionEvidence,
@@ -334,14 +370,22 @@ where
         )
         .map_err(GuardedDefaultCampaignRunError::Repository)?,
     );
+    if let Some(closure) = &request.initial_replay_closure {
+        closure
+            .publish(&repository, &request.scenario, &request.initial_schedule)
+            .map_err(GuardedDefaultCampaignRunError::ReplayClosure)?;
+    }
     let artifacts = CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
     let initial_schedule = request.initial_schedule.clone();
     let scenario_content = artifacts
         .import_scenario(&request.scenario)
         .map_err(GuardedDefaultCampaignRunError::Artifact)?;
-    let genesis_content = artifacts
-        .import_configuration(&request.scenario, &initial_schedule)
-        .map_err(GuardedDefaultCampaignRunError::Artifact)?;
+    let genesis_content = if request.initial_replay_closure.is_some() {
+        artifacts.import_configuration_with_selections(&request.scenario, &initial_schedule)
+    } else {
+        artifacts.import_configuration(&request.scenario, &initial_schedule)
+    }
+    .map_err(GuardedDefaultCampaignRunError::Artifact)?;
     let lineage = default_run_lineage(&request, scenario_content, genesis_content)?;
     let policy = default_run_policy(&lineage, request.seed)?;
     let campaign = CampaignName::new(format!(
@@ -501,6 +545,22 @@ fn default_run_lineage(
         crate::EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
     )
     .map_err(GuardedDefaultCampaignRunError::Codec)
+}
+
+fn validate_initial_replay(
+    request: &GuardedDefaultCampaignRunRequest,
+) -> Result<(), GuardedDefaultCampaignRunError> {
+    match &request.initial_replay_closure {
+        Some(closure) => closure
+            .validate_for_schedule(&request.scenario, &request.initial_schedule)
+            .map_err(GuardedDefaultCampaignRunError::ReplayClosure),
+        None if request.initial_schedule.is_empty() => Ok(()),
+        None => Err(GuardedDefaultCampaignRunError::ReplayClosure(
+            GuardedCampaignReplayClosureError::Invalid {
+                reason: "a nonempty initial schedule requires its authenticated choice closure",
+            },
+        )),
+    }
 }
 
 fn default_run_policy(
@@ -699,7 +759,7 @@ where
 }
 
 fn materialize_result(
-    repository: &CampaignRepository,
+    repository: &Arc<CampaignRepository>,
     campaign: CampaignName,
     execution: DefaultRunExecution,
     evidence: QemuAttemptExecutionEvidenceSnapshot,
@@ -715,6 +775,7 @@ fn materialize_result(
         .map_err(GuardedDefaultCampaignRunError::Repository)?;
     let scenario = crate::decode_crucible_scenario_artifact(&scenario_artifact)
         .map_err(GuardedDefaultCampaignRunError::Artifact)?;
+    let store = CampaignExecutorStore::new(Arc::clone(repository));
     let mut observations = Vec::new();
     observations
         .try_reserve(execution.observations.len())
@@ -730,8 +791,13 @@ fn materialize_result(
                 .load_configuration_artifact(observation.child_content())
                 .map_err(GuardedDefaultCampaignRunError::Repository)?;
             terminal_configuration = Some(
-                decode_crucible_configuration_artifact(&scenario, &scenario_artifact, &child)
-                    .map_err(GuardedDefaultCampaignRunError::Artifact)?,
+                decode_crucible_configuration_artifact_with_selections(
+                    &scenario,
+                    &scenario_artifact,
+                    &child,
+                    &store,
+                )
+                .map_err(GuardedDefaultCampaignRunError::Artifact)?,
             );
         }
         observations.push(GuardedDefaultCampaignObservation {
@@ -746,6 +812,9 @@ fn materialize_result(
         .ok_or(GuardedDefaultCampaignInvariantError::MissingTerminalObservation)?;
     let terminal_configuration = terminal_configuration
         .ok_or(GuardedDefaultCampaignInvariantError::MissingTerminalObservation)?;
+    let replay_closure =
+        GuardedCampaignReplayClosure::collect(&store, &scenario, &terminal_configuration.schedule)
+            .map_err(GuardedDefaultCampaignRunError::ReplayClosure)?;
     Ok(GuardedDefaultCampaignRun {
         campaign,
         final_snapshot: execution.final_snapshot,
@@ -755,6 +824,7 @@ fn materialize_result(
         branch_request_count: execution.branch_request_count,
         state_updates: execution.state_updates,
         evidence,
+        replay_closure,
     })
 }
 
