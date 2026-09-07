@@ -19,6 +19,16 @@ use crucible_campaign::{
 };
 use crucible_cas::content_store::ContentId;
 
+mod evidence;
+
+pub use evidence::{
+    CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
+    CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1, CrucibleMeasurementPublication,
+    CrucibleMeasurementReplayEvidence, MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
+    derive_crucible_measurement_samples, evaluate_crucible_measurement_publication,
+    verify_crucible_measurement_publication,
+};
+
 /// Payload schema for a canonical Crucible measurement evaluation v1 body.
 pub const CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V1: u32 = 1;
 
@@ -35,6 +45,53 @@ pub enum CrucibleMeasurementError {
         actual: u32,
         /// Exact schema implemented by this adapter.
         expected: u32,
+    },
+    /// The raw replay leaf names an unsupported schema.
+    #[error("unsupported Crucible measurement evidence schema {actual}; expected {expected}")]
+    UnsupportedEvidenceSchema {
+        /// Unsupported retained schema.
+        actual: u32,
+        /// Exact schema implemented by this adapter.
+        expected: u32,
+    },
+    /// Canonical raw replay evidence exceeded its operational bound.
+    #[error("Crucible measurement evidence has {actual} bytes; maximum is {maximum}")]
+    EvidenceTooLarge {
+        /// Actual encoded or input byte length.
+        actual: usize,
+        /// Active format or caller-selected ceiling.
+        maximum: usize,
+    },
+    /// Canonical evidence CBOR could not be encoded or decoded.
+    #[error("Crucible measurement evidence encoding failed: {reason}")]
+    EvidenceEncoding {
+        /// Stable serializer or parser detail.
+        reason: String,
+    },
+    /// Decoded evidence was valid CBOR but not its unique canonical encoding.
+    #[error("Crucible measurement evidence is not canonically encoded")]
+    NonCanonicalEvidence,
+    /// Raw evidence was replayed against a different semantic owner.
+    #[error("Crucible measurement evidence {binding} binding does not match")]
+    EvidenceBindingMismatch {
+        /// Mismatched scenario, configuration, or definition binding.
+        binding: &'static str,
+    },
+    /// The measurement set does not own exactly its one raw replay leaf.
+    #[error("Crucible measurement set has {actual_count} evidence edges; expected only {expected}")]
+    ReplayEvidenceSetMismatch {
+        /// Required singleton trace identity.
+        expected: ContentId,
+        /// Actual number of retained evidence edges.
+        actual_count: usize,
+    },
+    /// A typed guest measurement message violated its scenario contract.
+    #[error("Crucible guest measurement protocol failed at sequence {sequence}: {reason}")]
+    GuestMeasurementProtocol {
+        /// Exact scheduler sequence carrying the invalid message.
+        sequence: u64,
+        /// Stable validation detail.
+        reason: String,
     },
     /// The retained definition identity differs from the supplied scenario component.
     #[error("Crucible measurement definition identity does not match the campaign record")]
@@ -207,10 +264,14 @@ pub fn evaluate_crucible_objectives(
     let retained = measurement_set
         .evaluation()
         .ok_or(CrucibleMeasurementError::LegacyMeasurementSet)?;
-    if retained.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V1 {
+    if !matches!(
+        retained.payload_schema(),
+        CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V1
+            | CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
+    ) {
         return Err(CrucibleMeasurementError::UnsupportedPayloadSchema {
             actual: retained.payload_schema(),
-            expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V1,
+            expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
         });
     }
     if retained.definitions() != campaign_hash(evaluation.definitions()) {

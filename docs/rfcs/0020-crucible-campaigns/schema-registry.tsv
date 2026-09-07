@@ -120,6 +120,7 @@ crucible.executor.assignment-record	1	crucible-daemon::assignment_ledger	operati
 crucible.executor.attempt-state-record	11	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
 crucible.executor.prepared-semantic-attempt-result	1	crucible-daemon::crucible_artifact::prepared_result	operational-record	gate:component-contract,gate:campaign-replay
 crucible.executor.prepared-result-journal-state	1	crucible-daemon::prepared_result_journal	operational-record	gate:component-contract,gate:campaign-replay
+crucible.executor.measurement-replay-evidence	1	crucible-daemon::crucible_measurement::evidence	trace	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.executor.assignment-retention-state	1	crucible-daemon::assignment_ledger	administrative-record	gate:campaign-store-composition
 crucible.executor.exact-pin-materialization-selection	1	crucible-daemon::exact_pin_retention	administrative-record	gate:campaign-store-composition
 crucible.executor.hot-checkpoint-fallback	1	crucible-daemon::hot_checkpoint_retention	operational-record	gate:campaign-store-composition
@@ -144,6 +145,7 @@ crucible.campaign-s3-credentials	1	crucible-cli::campaign_store	deployment-secre
 crucible.executor.crucible-scenario-payload	3	crucible-daemon::crucible_artifact	execution-model-payload	gate:component-contract,gate:campaign-replay
 crucible.executor.crucible-configuration-payload	2	crucible-daemon::crucible_artifact	execution-model-payload	gate:component-contract,gate:campaign-replay
 crucible.executor.crucible-reproduction-payload	3	crucible-daemon::crucible_artifact	execution-model-payload	gate:component-contract,gate:campaign-replay
+crucible.executor.crucible-measurement-evaluation-payload	2	crucible-daemon::crucible_measurement	execution-model-payload	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.execution.scenario-form	7	crucible::model	execution-model-payload	gate:campaign-model,gate:campaign-replay
 crucible.execution.measurement-definitions	1	crucible::model	execution-model-payload	gate:campaign-model,gate:campaign-replay
 crucible.execution.measurement-evaluation	1	crucible::model	execution-model-payload	gate:campaign-model,gate:campaign-replay
