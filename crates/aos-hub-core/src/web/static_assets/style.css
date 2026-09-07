@@ -122,9 +122,10 @@ header.masthead .brand {
 }
 header.masthead .brand:hover { text-decoration-color: var(--rule-strong); }
 header.masthead .tagline { color: var(--dim); font-size: 0.78rem; }
-header.masthead .crumbs { margin-top: 0.75rem; font-size: 0.82rem; }
+header.masthead .crumbs { flex: 1; min-width: 0; font-size: 0.82rem; }
 header.masthead .crumbs ol {
   display: flex;
+  justify-content: center;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 0.3rem 0.6rem;
@@ -1802,9 +1803,9 @@ label.inline {
 .release-pill { display: inline-flex; align-items: center; gap: .35rem; padding: .2rem .6rem; border: 1px solid var(--rule); border-radius: 999px; font-size: .8rem; text-decoration: none; color: var(--ink); }
 .release-pill strong { font-weight: 600; }
 .release-pill[aria-current="true"] {
-  background: var(--accent-soft);
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--rule));
+  background: var(--surface-hover);
+  color: var(--ink);
+  border-color: var(--rule-strong);
 }
 .release-jump { position: relative; }
 .release-jump input[type=search] { width: 17rem; max-width: 60vw; font: inherit; }
