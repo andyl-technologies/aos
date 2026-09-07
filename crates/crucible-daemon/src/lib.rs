@@ -265,11 +265,14 @@ pub use crucible_artifact::{
     CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V2, CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
     CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1, CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V2,
     CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3, CrucibleArtifactError, CrucibleCampaignArtifactStore,
-    MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES, decode_crucible_configuration_artifact,
+    CrucibleFindingReplayEvidence, CrucibleFindingReplayTranscript,
+    MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES, MAX_CRUCIBLE_FINDING_REPLAY_BYTES,
+    MAX_CRUCIBLE_FINDING_REPLAY_RECORDS, MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS,
+    PreparedCrucibleFindingCandidate, decode_crucible_configuration_artifact,
     decode_crucible_configuration_artifact_with_selections,
     decode_crucible_configuration_artifact_with_signal_fault_replay,
     decode_crucible_scenario_artifact, encode_crucible_configuration_artifact,
-    encode_crucible_scenario_artifact,
+    encode_crucible_scenario_artifact, prepare_signature_preserving_minimized_finding_candidate,
 };
 pub use crucible_execution::{
     CrucibleAttemptExecution, CrucibleExecutionModel, CrucibleExecutionModelError,

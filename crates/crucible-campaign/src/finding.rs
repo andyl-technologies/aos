@@ -395,6 +395,12 @@ impl FindingSignature {
         )
     }
 
+    /// Returns strict canonical bytes for retained replay accounting.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
     fn content_children(&self) -> Vec<(String, ContentId)> {
         let mut children = self
             .causal_evidence

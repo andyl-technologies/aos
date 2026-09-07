@@ -29,20 +29,21 @@ use crate::{
     ConfigurationArtifactId, ConfigurationId, ContinuationProjection, ControlRequest,
     CoverageProjection, CoverageProjectionId, DaemonEpoch, DebuggerAuthorityKey,
     DebuggerSubmission, DiscoveryRequest, ExecutorCompatibilityProfile, ExecutorRejection,
-    ExpansionCredit, ExpansionState, ExpansionStateId, Finding, FindingCandidateBundleId,
-    FindingId, FindingMinimizationEvidence, FindingOccurrenceSet, MeasurementSet, MeasurementSetId,
-    MerkleMap, MerkleMapLookupProof, MerkleMapPage, MerkleMapPageProof, MerkleMapRoot,
-    NonModeledAttemptDisposition, ObjectEnvelope, ObjectiveEvaluation, ObjectiveEvaluationId,
-    Observation, ObservationId, PinRequest, PlannerAuthorityKey, PlannerDisposition, PlannerEngine,
-    PlannerInvocation, PlannerInvocationId, PlannerProposalDisposition, PlannerRequest,
-    PlannerState, PlannerStep, PlannerStepId, PlannerStepProposal, PlanningAccounting,
-    PlanningBudget, PlanningScanPage, PlanningScanPosition, PlanningUsage, PolicyActivation,
-    PolicyArtifact, PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId, Proposal,
-    ProposalId, PurePlannerEngine, RankingExplanation, RankingExplanationId, ReproductionArtifact,
-    ReproductionArtifactId, RetainedPlannerRequestId, ScenarioArtifact, ScenarioArtifactId,
-    ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition,
-    StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
-    SurvivorSelection, SurvivorSelectionBundle, SurvivorSelectionId,
+    ExpansionCredit, ExpansionState, ExpansionStateId, Finding, FindingCandidateBundle,
+    FindingCandidateBundleId, FindingId, FindingMinimizationEvidence, FindingOccurrenceSet,
+    MeasurementSet, MeasurementSetId, MerkleMap, MerkleMapLookupProof, MerkleMapPage,
+    MerkleMapPageProof, MerkleMapRoot, NonModeledAttemptDisposition, ObjectEnvelope,
+    ObjectiveEvaluation, ObjectiveEvaluationId, Observation, ObservationId, PinRequest,
+    PlannerAuthorityKey, PlannerDisposition, PlannerEngine, PlannerInvocation, PlannerInvocationId,
+    PlannerProposalDisposition, PlannerRequest, PlannerState, PlannerStep, PlannerStepId,
+    PlannerStepProposal, PlanningAccounting, PlanningBudget, PlanningScanPage,
+    PlanningScanPosition, PlanningUsage, PolicyActivation, PolicyArtifact, PropertyVerdict,
+    PropertyVerdictSet, PropertyVerdictSetId, Proposal, ProposalId, PurePlannerEngine,
+    RankingExplanation, RankingExplanationId, ReproductionArtifact, ReproductionArtifactId,
+    RetainedPlannerRequestId, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
+    SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition, StopOutcome,
+    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse, SurvivorSelection,
+    SurvivorSelectionBundle, SurvivorSelectionId,
 };
 use crate::{BranchAcceptanceCount, BranchAcceptanceSummary};
 
@@ -814,6 +815,94 @@ impl CampaignExecutorStore {
         self.repository.publish_observation_candidate(candidate)
     }
 
+    /// Publishes one executor-verified replay choice domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the exact record cannot be stored and authenticated.
+    pub fn publish_executor_choice_domain(
+        &self,
+        domain: &ChoiceDomain,
+    ) -> Result<ChoiceDomainId, CampaignRepositoryError> {
+        self.repository.publish_choice_domain(domain)
+    }
+
+    /// Publishes one executor-verified replay selectable declaration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the exact record cannot be stored and authenticated.
+    pub fn publish_executor_selectable(
+        &self,
+        selectable: &SelectableDeclaration,
+    ) -> Result<SelectableId, CampaignRepositoryError> {
+        self.repository.publish_selectable(selectable)
+    }
+
+    /// Publishes one executor-verified replay choice opportunity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a dependency is absent or the exact record cannot
+    /// be stored and authenticated.
+    pub fn publish_executor_choice_opportunity(
+        &self,
+        opportunity: &ChoiceOpportunity,
+    ) -> Result<ChoiceOpportunityId, CampaignRepositoryError> {
+        self.repository.publish_choice_opportunity(opportunity)
+    }
+
+    /// Publishes one executor-verified replay selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when its opportunity is absent or its exact value is invalid.
+    pub fn publish_executor_selection(
+        &self,
+        selection: &Selection,
+    ) -> Result<SelectionId, CampaignRepositoryError> {
+        self.repository.publish_selection(selection)
+    }
+
+    /// Publishes one executor-verified replay measurement set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a transitive evidence dependency is absent or the
+    /// exact record cannot be stored and authenticated.
+    pub fn publish_executor_measurement_set(
+        &self,
+        value: &MeasurementSet,
+    ) -> Result<MeasurementSetId, CampaignRepositoryError> {
+        self.repository.publish_measurement_set(value)
+    }
+
+    /// Publishes one executor-verified replay property-verdict set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a transitive evidence dependency is absent or the
+    /// exact record cannot be stored and authenticated.
+    pub fn publish_executor_property_verdict_set(
+        &self,
+        value: &PropertyVerdictSet,
+    ) -> Result<PropertyVerdictSetId, CampaignRepositoryError> {
+        self.repository.publish_property_verdict_set(value)
+    }
+
+    /// Publishes one executor-verified replay coverage projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a transitive evidence dependency is absent or the
+    /// exact record cannot be stored and authenticated.
+    pub fn publish_executor_coverage_projection(
+        &self,
+        value: &CoverageProjection,
+    ) -> Result<CoverageProjectionId, CampaignRepositoryError> {
+        self.repository.publish_coverage_projection(value)
+    }
+
     /// Validates an observation candidate without writing any bundle member.
     ///
     /// # Errors
@@ -825,6 +914,71 @@ impl CampaignExecutorStore {
         candidate: &ObservationCandidate,
     ) -> Result<(), CampaignRepositoryError> {
         self.repository.validate_observation_candidate(candidate)
+    }
+
+    /// Publishes one executor-derived configuration artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the scenario dependency is unavailable or the
+    /// exact configuration cannot be durably stored and authenticated.
+    pub fn publish_executor_configuration(
+        &self,
+        artifact: &ConfigurationArtifact,
+    ) -> Result<ConfigurationArtifactId, CampaignRepositoryError> {
+        self.repository.publish_configuration_artifact(
+            artifact.scenario(),
+            artifact.scenario_artifact(),
+            artifact.configuration(),
+            artifact.payload_schema(),
+            artifact.payload().to_vec(),
+        )
+    }
+
+    /// Publishes one executor-verified original or minimized reproduction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the prepared reproduction or any dependency is
+    /// missing, corrupt, inconsistent, or unavailable for durable storage.
+    pub fn publish_executor_reproduction(
+        &self,
+        artifact: &ReproductionArtifact,
+    ) -> Result<ReproductionArtifactId, CampaignRepositoryError> {
+        match artifact.minimization() {
+            Some(minimization) => self.repository.publish_minimized_reproduction_artifact(
+                artifact.scenario(),
+                artifact.scenario_artifact(),
+                artifact.configuration(),
+                artifact.configuration_artifact(),
+                artifact.finding_fingerprint(),
+                artifact.payload_schema(),
+                artifact.payload().to_vec(),
+                minimization.clone(),
+            ),
+            None => self.repository.publish_reproduction_artifact(
+                artifact.scenario(),
+                artifact.scenario_artifact(),
+                artifact.configuration(),
+                artifact.configuration_artifact(),
+                artifact.finding_fingerprint(),
+                artifact.payload_schema(),
+                artifact.payload().to_vec(),
+            ),
+        }
+    }
+
+    /// Publishes one executor-prepared finding-candidate root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any exact descendant is unavailable or the bundle
+    /// fails repository authentication.
+    pub fn publish_executor_finding_candidate(
+        &self,
+        bundle: &FindingCandidateBundle,
+    ) -> Result<FindingCandidateBundleId, CampaignRepositoryError> {
+        self.repository.publish_finding_candidate_bundle(bundle)
     }
 }
 

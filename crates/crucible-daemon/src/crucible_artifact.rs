@@ -19,6 +19,13 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+mod finding_replay;
+
+pub use finding_replay::{CrucibleFindingReplayEvidence, CrucibleFindingReplayTranscript};
+use finding_replay::{
+    PreparedFindingReplayRecords, RecordedFindingReplay, validate_recorded_replay_configuration,
+};
+
 use crucible::{
     Configuration, ContentHash, Decision, EngineError, FindingReproductionArtifact,
     MAX_MINIMIZATION_CANDIDATE_WORK_BYTES, MAX_MINIMIZATION_CANDIDATES, MinimizationConfig,
@@ -27,10 +34,13 @@ use crucible::{
 };
 use crucible_campaign::{
     CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignRepository,
-    CampaignRepositoryError, CandidateGeneratorSpec, CandidateGeneratorSpecId,
-    ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, FindingMinimizationAttempt,
-    FindingMinimizationEvidence, ReproductionArtifact, ReproductionArtifactId, ScenarioArtifact,
-    ScenarioArtifactId, ScenarioDefId, SelectionOrigin,
+    CampaignRepositoryError, CandidateGeneratorSpec, CandidateGeneratorSpecId, ChoiceDomain,
+    ChoiceOpportunity, ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId,
+    CoverageProjection, FindingCandidateBundle, FindingCandidateBundleId, FindingExactPins,
+    FindingMinimizationAttempt, FindingMinimizationEvidence, FindingReplaySignature,
+    FindingSignature, FindingSignatureMinimizationEvidence, MeasurementSet, ObservationId,
+    PropertyVerdictSet, ReproductionArtifact, ReproductionArtifactId, ScenarioArtifact,
+    ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin,
 };
 
 /// Payload schema for a compact canonical Crucible scenario definition.
@@ -59,6 +69,12 @@ const CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V1: u32 = 1;
 const CRUCIBLE_MINIMIZATION_POLICY_MAGIC: &[u8] = b"crucible.finding-minimization-policy.v1\0";
 const CRUCIBLE_MINIMIZATION_CANDIDATES: u32 = 4_096;
 const CRUCIBLE_MINIMIZATION_CANDIDATE_WORK_BYTES: u64 = 128 * 1024 * 1024;
+/// Maximum unique immutable records retained from both finding replay passes.
+pub const MAX_CRUCIBLE_FINDING_REPLAY_RECORDS: usize = 65_536;
+/// Maximum aggregate canonical bytes retained from both finding replay passes.
+pub const MAX_CRUCIBLE_FINDING_REPLAY_BYTES: usize = 256 * 1024 * 1024;
+/// Maximum oracle results retained in either finding replay pass.
+pub const MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS: usize = MAX_MINIMIZATION_CANDIDATES + 1;
 const _: () = assert!(MAX_MINIMIZATION_CANDIDATES == CRUCIBLE_MINIMIZATION_CANDIDATES as usize);
 const _: () = assert!(
     MAX_MINIMIZATION_CANDIDATE_WORK_BYTES == CRUCIBLE_MINIMIZATION_CANDIDATE_WORK_BYTES as usize
@@ -75,11 +91,433 @@ pub struct CrucibleCampaignArtifactStore {
     repository: Arc<CampaignRepository>,
 }
 
+/// Prepared immutable records for one verified finding-candidate publication.
+///
+/// Preparation performs no repository writes. The caller can therefore derive
+/// [`Self::id`] before installing an operational publication root, then publish
+/// the exact same records idempotently after that root is durable. The admitted
+/// finding observation, exact checkpoints, scenario, and transitive evidence
+/// leaves are authenticated prerequisites rather than records created here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedCrucibleFindingCandidate {
+    scenario: ScenarioArtifact,
+    original_configuration: ConfigurationArtifact,
+    original: ReproductionArtifact,
+    minimized_configuration: ConfigurationArtifact,
+    minimized: ReproductionArtifact,
+    replay_records: PreparedFindingReplayRecords,
+    bundle: FindingCandidateBundle,
+}
+
+impl PreparedCrucibleFindingCandidate {
+    /// Returns the exact scenario record shared by both reproductions.
+    #[must_use]
+    pub const fn scenario(&self) -> &ScenarioArtifact {
+        &self.scenario
+    }
+
+    /// Returns the original unminimized configuration record.
+    #[must_use]
+    pub const fn original_configuration(&self) -> &ConfigurationArtifact {
+        &self.original_configuration
+    }
+
+    /// Returns the original unminimized reproduction record.
+    #[must_use]
+    pub const fn original(&self) -> &ReproductionArtifact {
+        &self.original
+    }
+
+    /// Returns the retained minimized configuration record.
+    #[must_use]
+    pub const fn minimized_configuration(&self) -> &ConfigurationArtifact {
+        &self.minimized_configuration
+    }
+
+    /// Returns the retained minimized reproduction record.
+    #[must_use]
+    pub const fn minimized(&self) -> &ReproductionArtifact {
+        &self.minimized
+    }
+
+    /// Returns the number of unique typed records retained from both replay passes.
+    #[must_use]
+    pub const fn replay_record_count(&self) -> usize {
+        self.replay_records.record_count
+    }
+
+    /// Returns aggregate canonical body bytes retained from both replay passes.
+    #[must_use]
+    pub const fn replay_record_bytes(&self) -> usize {
+        self.replay_records.canonical_bytes
+    }
+
+    /// Returns the finding-candidate root record.
+    #[must_use]
+    pub const fn bundle(&self) -> &FindingCandidateBundle {
+        &self.bundle
+    }
+
+    /// Returns the deterministic root that must be staged before publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when canonical envelope construction
+    /// fails.
+    pub fn id(&self) -> Result<FindingCandidateBundleId, CampaignCodecError> {
+        self.bundle.id()
+    }
+
+    /// Publishes every prepared descendant followed by the candidate root.
+    ///
+    /// All writes are content addressed and idempotent. Callers that coordinate
+    /// with destructive collection must already have staged [`Self::id`] and
+    /// must retain their publication exclusion until this method returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrucibleArtifactError`] when any exact record cannot be stored
+    /// or the repository returns an identity other than the prepared identity.
+    pub fn publish(
+        &self,
+        store: &CrucibleCampaignArtifactStore,
+    ) -> Result<FindingCandidateBundleId, CrucibleArtifactError> {
+        store.publish_scenario_record(&self.scenario)?;
+        for domain in &self.replay_records.domains {
+            store.publish_choice_domain_record(domain)?;
+        }
+        for declaration in &self.replay_records.declarations {
+            store.publish_selectable_record(declaration)?;
+        }
+        for opportunity in &self.replay_records.opportunities {
+            store.publish_choice_opportunity_record(opportunity)?;
+        }
+        for selection in &self.replay_records.selections {
+            store.publish_selection_record(selection)?;
+        }
+        for configuration in &self.replay_records.configurations {
+            store.publish_configuration(configuration)?;
+        }
+        for measurements in &self.replay_records.measurements {
+            store.publish_measurement_record(measurements)?;
+        }
+        for properties in &self.replay_records.properties {
+            store.publish_property_record(properties)?;
+        }
+        for coverage in &self.replay_records.coverage {
+            store.publish_coverage_record(coverage)?;
+        }
+        store.publish_configuration(&self.original_configuration)?;
+        store.publish_reproduction_record(&self.original)?;
+        store.publish_configuration(&self.minimized_configuration)?;
+        store.publish_reproduction_record(&self.minimized)?;
+
+        let expected = self.id()?;
+        let stored = store
+            .repository
+            .publish_finding_candidate_bundle(&self.bundle)
+            .map_err(CrucibleArtifactError::RepositoryPublication)?;
+        if stored != expected {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored finding candidate bundle",
+            });
+        }
+        Ok(stored)
+    }
+
+    /// Publishes this closure through the executor's repository capability.
+    ///
+    /// The scenario is authenticated input and must already exist. Every other
+    /// record is published in dependency order, with the candidate root last.
+    /// The caller must retain the same staged-root and collection exclusion
+    /// described by [`Self::publish`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError`] when a dependency cannot be stored
+    /// or any stored identity differs from the prepared identity.
+    pub fn publish_for_executor(
+        &self,
+        store: &CampaignExecutorStore,
+    ) -> Result<FindingCandidateBundleId, CampaignRepositoryError> {
+        for domain in &self.replay_records.domains {
+            store.publish_executor_choice_domain(domain)?;
+        }
+        for declaration in &self.replay_records.declarations {
+            store.publish_executor_selectable(declaration)?;
+        }
+        for opportunity in &self.replay_records.opportunities {
+            store.publish_executor_choice_opportunity(opportunity)?;
+        }
+        for selection in &self.replay_records.selections {
+            store.publish_executor_selection(selection)?;
+        }
+        for configuration in &self.replay_records.configurations {
+            store.publish_executor_configuration(configuration)?;
+        }
+        for measurements in &self.replay_records.measurements {
+            store.publish_executor_measurement_set(measurements)?;
+        }
+        for properties in &self.replay_records.properties {
+            store.publish_executor_property_verdict_set(properties)?;
+        }
+        for coverage in &self.replay_records.coverage {
+            store.publish_executor_coverage_projection(coverage)?;
+        }
+        let original_configuration =
+            store.publish_executor_configuration(&self.original_configuration)?;
+        if original_configuration != self.original_configuration.id()? {
+            return Err(CampaignRepositoryError::Integrity {
+                reason: "prepared-finding-original-configuration-publication-mismatch",
+            });
+        }
+        let original = store.publish_executor_reproduction(&self.original)?;
+        if original != self.original.id()? {
+            return Err(CampaignRepositoryError::Integrity {
+                reason: "prepared-finding-original-publication-mismatch",
+            });
+        }
+        let minimized_configuration =
+            store.publish_executor_configuration(&self.minimized_configuration)?;
+        if minimized_configuration != self.minimized_configuration.id()? {
+            return Err(CampaignRepositoryError::Integrity {
+                reason: "prepared-finding-minimized-configuration-publication-mismatch",
+            });
+        }
+        let minimized = store.publish_executor_reproduction(&self.minimized)?;
+        if minimized != self.minimized.id()? {
+            return Err(CampaignRepositoryError::Integrity {
+                reason: "prepared-finding-minimized-publication-mismatch",
+            });
+        }
+        let bundle = store.publish_executor_finding_candidate(&self.bundle)?;
+        if bundle != self.id()? {
+            return Err(CampaignRepositoryError::Integrity {
+                reason: "prepared-finding-bundle-publication-mismatch",
+            });
+        }
+        Ok(bundle)
+    }
+}
+
+/// Prepares a signature-preserving minimized finding without repository writes.
+///
+/// `transcript` must contain the actual typed evidence recorded by the caller's
+/// execution-model replay oracle. Each pass begins with the original
+/// reproduction and continues one-to-one with the
+/// deterministic minimizer's candidate order. This function replays that order
+/// only through Crucible's pure schedule reducer; it never fabricates, executes,
+/// or infers a signature. Both supplied signature passes must independently
+/// select the same exact run. Unique retained records across both passes are
+/// bounded separately from reducer work.
+///
+/// # Errors
+///
+/// Returns [`CrucibleArtifactError`] when the finding, signature, pass lengths,
+/// pass observations, deterministic run, or constructed campaign records are
+/// inconsistent.
+pub fn prepare_signature_preserving_minimized_finding_candidate(
+    signature: FindingSignature,
+    observation: ObservationId,
+    finding: &FindingReproductionArtifact,
+    exact_pins: FindingExactPins,
+    seed: crucible::Seed,
+    transcript: CrucibleFindingReplayTranscript,
+) -> Result<PreparedCrucibleFindingCandidate, CrucibleArtifactError> {
+    let CrucibleFindingReplayTranscript {
+        minimization_pass,
+        verification_pass,
+        records,
+    } = transcript;
+    let minimization =
+        replay_recorded_signature_pass(finding, &signature, seed, &minimization_pass)?;
+    let verified = replay_recorded_signature_pass(finding, &signature, seed, &verification_pass)?;
+    if verified != minimization {
+        return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+            artifact: "finding minimization replay passes",
+        });
+    }
+
+    let (scenario, original_configuration, original) = prepare_original_reproduction(finding)?;
+    let original_id = original.id()?;
+    let (minimized_configuration, minimized) =
+        prepare_minimized_reproduction(original_id, &minimization)?;
+    let minimization_evidence =
+        minimized
+            .minimization()
+            .ok_or(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "prepared minimized finding evidence",
+            })?;
+    let minimization_signatures = minimization_pass
+        .iter()
+        .map(|replay| replay.signature.clone())
+        .collect();
+    let verification_signatures = verification_pass
+        .iter()
+        .map(|replay| replay.signature.clone())
+        .collect();
+    let signature_minimization = FindingSignatureMinimizationEvidence::new(
+        &signature,
+        minimization_evidence,
+        minimization_signatures,
+        verification_signatures,
+    )?;
+    let replay_records = records.finish();
+    let bundle = FindingCandidateBundle::new(
+        observation,
+        signature,
+        original_id,
+        minimized.id()?,
+        signature_minimization,
+        exact_pins,
+    )?;
+
+    Ok(PreparedCrucibleFindingCandidate {
+        scenario,
+        original_configuration,
+        original,
+        minimized_configuration,
+        minimized,
+        replay_records,
+        bundle,
+    })
+}
+
 impl CrucibleCampaignArtifactStore {
     /// Creates a narrow artifact-import capability over one repository.
     #[must_use]
     pub const fn new(repository: Arc<CampaignRepository>) -> Self {
         Self { repository }
+    }
+
+    fn publish_scenario_record(
+        &self,
+        artifact: &ScenarioArtifact,
+    ) -> Result<ScenarioArtifactId, CrucibleArtifactError> {
+        let expected = artifact.id()?;
+        let stored = self
+            .repository
+            .publish_scenario_artifact(
+                artifact.scenario(),
+                artifact.payload_schema(),
+                artifact.payload().to_vec(),
+            )
+            .map_err(CrucibleArtifactError::RepositoryPublication)?;
+        if stored != expected {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored scenario",
+            });
+        }
+        Ok(stored)
+    }
+
+    fn publish_choice_domain_record(
+        &self,
+        value: &ChoiceDomain,
+    ) -> Result<(), CrucibleArtifactError> {
+        let stored = self
+            .repository
+            .publish_choice_domain(value)
+            .map_err(CrucibleArtifactError::RepositoryPublication)?;
+        if stored != value.id()? {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored finding replay choice domain",
+            });
+        }
+        Ok(())
+    }
+
+    fn publish_selectable_record(
+        &self,
+        value: &SelectableDeclaration,
+    ) -> Result<(), CrucibleArtifactError> {
+        let stored = self
+            .repository
+            .publish_selectable(value)
+            .map_err(CrucibleArtifactError::RepositoryPublication)?;
+        if stored != value.id()? {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored finding replay selectable",
+            });
+        }
+        Ok(())
+    }
+
+    fn publish_choice_opportunity_record(
+        &self,
+        value: &ChoiceOpportunity,
+    ) -> Result<(), CrucibleArtifactError> {
+        let stored = self
+            .repository
+            .publish_choice_opportunity(value)
+            .map_err(CrucibleArtifactError::RepositoryPublication)?;
+        if stored != value.id()? {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored finding replay choice opportunity",
+            });
+        }
+        Ok(())
+    }
+
+    fn publish_selection_record(&self, value: &Selection) -> Result<(), CrucibleArtifactError> {
+        let stored = self
+            .repository
+            .publish_selection(value)
+            .map_err(CrucibleArtifactError::RepositoryPublication)?;
+        if stored != value.id()? {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored finding replay selection",
+            });
+        }
+        Ok(())
+    }
+
+    fn publish_measurement_record(
+        &self,
+        value: &MeasurementSet,
+    ) -> Result<(), CrucibleArtifactError> {
+        let stored = self
+            .repository
+            .publish_measurement_set(value)
+            .map_err(CrucibleArtifactError::RepositoryPublication)?;
+        if stored != value.id()? {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored finding replay measurements",
+            });
+        }
+        Ok(())
+    }
+
+    fn publish_property_record(
+        &self,
+        value: &PropertyVerdictSet,
+    ) -> Result<(), CrucibleArtifactError> {
+        let stored = self
+            .repository
+            .publish_property_verdict_set(value)
+            .map_err(CrucibleArtifactError::RepositoryPublication)?;
+        if stored != value.id()? {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored finding replay properties",
+            });
+        }
+        Ok(())
+    }
+
+    fn publish_coverage_record(
+        &self,
+        value: &CoverageProjection,
+    ) -> Result<(), CrucibleArtifactError> {
+        let stored = self
+            .repository
+            .publish_coverage_projection(value)
+            .map_err(CrucibleArtifactError::RepositoryPublication)?;
+        if stored != value.id()? {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored finding replay coverage",
+            });
+        }
+        Ok(())
     }
 
     /// Verifies, content-addresses, and publishes one Crucible scenario.
@@ -191,6 +629,41 @@ impl CrucibleCampaignArtifactStore {
         if stored != expected {
             return Err(CrucibleArtifactError::SemanticIdentityMismatch {
                 artifact: "stored configuration",
+            });
+        }
+        Ok(stored)
+    }
+
+    fn publish_reproduction_record(
+        &self,
+        artifact: &ReproductionArtifact,
+    ) -> Result<ReproductionArtifactId, CrucibleArtifactError> {
+        let expected = artifact.id()?;
+        let stored = match artifact.minimization() {
+            Some(minimization) => self.repository.publish_minimized_reproduction_artifact(
+                artifact.scenario(),
+                artifact.scenario_artifact(),
+                artifact.configuration(),
+                artifact.configuration_artifact(),
+                artifact.finding_fingerprint(),
+                artifact.payload_schema(),
+                artifact.payload().to_vec(),
+                minimization.clone(),
+            ),
+            None => self.repository.publish_reproduction_artifact(
+                artifact.scenario(),
+                artifact.scenario_artifact(),
+                artifact.configuration(),
+                artifact.configuration_artifact(),
+                artifact.finding_fingerprint(),
+                artifact.payload_schema(),
+                artifact.payload().to_vec(),
+            ),
+        }
+        .map_err(CrucibleArtifactError::RepositoryPublication)?;
+        if stored != expected {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored finding reproduction",
             });
         }
         Ok(stored)
@@ -406,6 +879,64 @@ impl CrucibleCampaignArtifactStore {
         Ok(stored)
     }
 
+    /// Minimizes and publishes one signature-preserving finding candidate.
+    ///
+    /// The failure oracle returns the complete typed evidence and stable
+    /// campaign signature for a replayed candidate. Candidates preserve the
+    /// finding only when that stable replay projection equals `signature`;
+    /// matching the payload fingerprint alone is insufficient. Both complete
+    /// passes finish before the first write. Their unique evidence records and
+    /// raw signatures are retained in the published bundle closure. This
+    /// executor-side operation does not advance a campaign ref.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrucibleArtifactError`] when the original fingerprint differs
+    /// from the stable signature, replay or deterministic minimization fails,
+    /// immutable artifact verification, signature-evidence construction, or
+    /// bundle publication fails.
+    pub fn publish_signature_preserving_minimized_finding_candidate<F>(
+        &self,
+        signature: FindingSignature,
+        observation: ObservationId,
+        finding: &FindingReproductionArtifact,
+        exact_pins: FindingExactPins,
+        seed: crucible::Seed,
+        mut signature_oracle: F,
+    ) -> Result<FindingCandidateBundleId, CrucibleArtifactError>
+    where
+        F: FnMut(
+            &FindingReproductionArtifact,
+        ) -> Result<CrucibleFindingReplayEvidence, EngineError>,
+    {
+        let mut transcript = CrucibleFindingReplayTranscript::new();
+        minimize_signature_preserving_finding(
+            finding,
+            &signature,
+            seed,
+            FindingReplayPass::Minimization,
+            &mut transcript,
+            &mut signature_oracle,
+        )?;
+        minimize_signature_preserving_finding(
+            finding,
+            &signature,
+            seed,
+            FindingReplayPass::Verification,
+            &mut transcript,
+            &mut signature_oracle,
+        )?;
+        let prepared = prepare_signature_preserving_minimized_finding_candidate(
+            signature,
+            observation,
+            finding,
+            exact_pins,
+            seed,
+            transcript,
+        )?;
+        prepared.publish(self)
+    }
+
     /// Validates and publishes one closed candidate-generator specification.
     ///
     /// # Errors
@@ -428,6 +959,226 @@ impl CrucibleCampaignArtifactStore {
         }
         Ok(stored)
     }
+}
+
+fn prepare_original_reproduction(
+    finding: &FindingReproductionArtifact,
+) -> Result<
+    (
+        ScenarioArtifact,
+        ConfigurationArtifact,
+        ReproductionArtifact,
+    ),
+    CrucibleArtifactError,
+> {
+    let scenario = finding.artifact.scenario_form();
+    let schedule = finding.artifact.schedule();
+    let configuration = Configuration {
+        def: finding.artifact.scenario_def(),
+        schedule: schedule.clone(),
+    };
+    let verified = FindingReproductionArtifact::capture(
+        finding.discovery_path,
+        finding.finding_fingerprint,
+        scenario,
+        &configuration,
+    )
+    .map_err(|source| CrucibleArtifactError::InvalidPayload {
+        artifact: "finding reproduction",
+        source: Box::new(source),
+    })?;
+    if verified != *finding {
+        return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+            artifact: "finding reproduction",
+        });
+    }
+
+    let scenario_record = encode_crucible_scenario_artifact(scenario)?;
+    let configuration_record = encode_crucible_configuration_artifact(&scenario_record, schedule)?;
+    let reproduction = ReproductionArtifact::new(
+        scenario_record.scenario(),
+        scenario_record.id()?,
+        configuration_record.configuration(),
+        configuration_record.id()?,
+        CampaignHash::from_bytes(finding.finding_fingerprint.bytes),
+        CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
+        finding.artifact.to_compact_binary(),
+    )?;
+    Ok((scenario_record, configuration_record, reproduction))
+}
+
+fn prepare_minimized_reproduction(
+    original: ReproductionArtifactId,
+    run: &MinimizationRun,
+) -> Result<(ConfigurationArtifact, ReproductionArtifact), CrucibleArtifactError> {
+    let minimized = &run.minimized;
+    let scenario_record = encode_crucible_scenario_artifact(minimized.artifact.scenario_form())?;
+    let configuration_record =
+        encode_crucible_configuration_artifact(&scenario_record, minimized.artifact.schedule())?;
+    let attempts = run
+        .attempts
+        .iter()
+        .map(|attempt| {
+            FindingMinimizationAttempt::new(
+                attempt.sequence,
+                CampaignHash::from_bytes(attempt.candidate_artifact.bytes),
+                CampaignHash::from_bytes(attempt.candidate_schedule.bytes),
+                CampaignHash::from_bytes(attempt.replayed_state.bytes),
+                attempt
+                    .observed_fingerprint
+                    .map(|fingerprint| CampaignHash::from_bytes(fingerprint.bytes)),
+                attempt.accepted,
+            )
+        })
+        .collect();
+    let minimization = FindingMinimizationEvidence::new(
+        original,
+        CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V1,
+        encode_crucible_minimization_policy(run.seed),
+        attempts,
+        CampaignHash::from_bytes(minimized.replay.state.bytes),
+    )?;
+    let reproduction = ReproductionArtifact::new_minimized(
+        scenario_record.scenario(),
+        scenario_record.id()?,
+        configuration_record.configuration(),
+        configuration_record.id()?,
+        CampaignHash::from_bytes(minimized.finding_fingerprint.bytes),
+        CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
+        minimized.artifact.to_compact_binary(),
+        minimization,
+    )?;
+    Ok((configuration_record, reproduction))
+}
+
+fn replay_recorded_signature_pass(
+    finding: &FindingReproductionArtifact,
+    signature: &FindingSignature,
+    seed: crucible::Seed,
+    observations: &[RecordedFindingReplay],
+) -> Result<MinimizationRun, CrucibleArtifactError> {
+    let target_fingerprint = finding.finding_fingerprint;
+    if CampaignHash::from_bytes(target_fingerprint.bytes) != signature.fingerprint() {
+        return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+            artifact: "finding signature",
+        });
+    }
+    if observations
+        .first()
+        .and_then(|replay| replay.signature.as_ref())
+        != Some(signature)
+    {
+        return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+            artifact: "finding minimization original replay observation",
+        });
+    }
+
+    let target_signature = FindingReplaySignature::from_observed(signature);
+    let mut next_observation = 0;
+    let mut replay_error = None;
+    let run = finding
+        .minimize(MinimizationConfig::new(seed), |candidate| {
+            let Some(observed) = observations.get(next_observation) else {
+                replay_error = Some("finding minimization replay observation count");
+                return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                    operation: "finding minimization replay",
+                    reason: "finding minimization replay observation count",
+                });
+            };
+            next_observation += 1;
+            if validate_recorded_replay_configuration(candidate, observed).is_err() {
+                replay_error = Some("finding replay candidate configuration");
+                return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                    operation: "finding minimization replay",
+                    reason: "finding minimization replay configuration mismatch",
+                });
+            }
+            let preserves_signature = observed
+                .signature
+                .as_ref()
+                .map(FindingReplaySignature::from_observed)
+                .as_ref()
+                == Some(&target_signature);
+            Ok(preserves_signature.then_some(target_fingerprint))
+        })
+        .map_err(|source| match replay_error {
+            Some(artifact) => CrucibleArtifactError::SemanticIdentityMismatch { artifact },
+            None => CrucibleArtifactError::InvalidPayload {
+                artifact: "recorded signature-preserving finding minimization",
+                source: Box::new(source),
+            },
+        })?;
+    let expected_observations = run.attempts.len().checked_add(1).ok_or(
+        CrucibleArtifactError::SemanticIdentityMismatch {
+            artifact: "finding minimization replay observation count",
+        },
+    )?;
+    if observations.len() != expected_observations || next_observation != expected_observations {
+        return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+            artifact: "finding minimization replay observation count",
+        });
+    }
+    Ok(run)
+}
+
+#[derive(Clone, Copy)]
+enum FindingReplayPass {
+    Minimization,
+    Verification,
+}
+
+fn minimize_signature_preserving_finding<F>(
+    finding: &FindingReproductionArtifact,
+    signature: &FindingSignature,
+    seed: crucible::Seed,
+    pass: FindingReplayPass,
+    transcript: &mut CrucibleFindingReplayTranscript,
+    mut signature_oracle: F,
+) -> Result<MinimizationRun, CrucibleArtifactError>
+where
+    F: FnMut(&FindingReproductionArtifact) -> Result<CrucibleFindingReplayEvidence, EngineError>,
+{
+    let target_fingerprint = finding.finding_fingerprint;
+    if CampaignHash::from_bytes(target_fingerprint.bytes) != signature.fingerprint() {
+        return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+            artifact: "finding signature",
+        });
+    }
+
+    let target_signature = FindingReplaySignature::from_observed(signature);
+    let mut transcript_error = None;
+    let run = finding
+        .minimize(MinimizationConfig::new(seed), |candidate| {
+            let observed = signature_oracle(candidate)?;
+            let preserves_signature = observed
+                .signature()
+                .map(FindingReplaySignature::from_observed)
+                .as_ref()
+                == Some(&target_signature);
+            let result = match pass {
+                FindingReplayPass::Minimization => {
+                    transcript.record_minimization(candidate, observed)
+                }
+                FindingReplayPass::Verification => {
+                    transcript.record_verification(candidate, observed)
+                }
+            };
+            if let Err(error) = result {
+                transcript_error = Some(error);
+                return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                    operation: "finding minimization replay retention",
+                    reason: "finding replay evidence could not be retained",
+                });
+            }
+            Ok(preserves_signature.then_some(target_fingerprint))
+        })
+        .map_err(|source| {
+            transcript_error.unwrap_or(CrucibleArtifactError::InvalidPayload {
+                artifact: "signature-preserving finding minimization",
+                source: Box::new(source),
+            })
+        })?;
+    Ok(run)
 }
 
 fn encode_crucible_minimization_policy(seed: crucible::Seed) -> Vec<u8> {
@@ -865,6 +1616,8 @@ fn campaign_configuration_id(id: crucible::ContentHash) -> ConfigurationId {
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
 #[allow(clippy::expect_used)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use std::collections::BTreeSet;
     use std::sync::Arc;
 
@@ -874,10 +1627,11 @@ mod tests {
     };
     use crucible_campaign::{
         BooleanDomain, CampaignRepository, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
-        ChoiceOpportunity, ChoiceSource, ChoiceValue, SelectableDeclaration, Selection,
+        ChoiceOpportunity, ChoiceSource, ChoiceValue, CoverageProjection, FindingKind,
+        FindingTarget, MeasurementSet, PropertyVerdictSet, SelectableDeclaration, Selection,
         SelectionOrigin,
     };
-    use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
+    use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
 
     use super::*;
 
@@ -1267,6 +2021,360 @@ mod tests {
                 .expect("retained minimization evidence")
                 .original(),
             id
+        );
+    }
+
+    fn replay_evidence(
+        candidate: &FindingReproductionArtifact,
+        signature: FindingSignature,
+    ) -> CrucibleFindingReplayEvidence {
+        let scenario = encode_crucible_scenario_artifact(candidate.artifact.scenario_form())
+            .expect("encode replay scenario");
+        let configuration =
+            encode_crucible_configuration_artifact(&scenario, candidate.artifact.schedule())
+                .expect("encode replay configuration");
+        CrucibleFindingReplayEvidence::new(
+            Some(signature),
+            configuration,
+            MeasurementSet::new(BTreeMap::new()).expect("empty replay measurements"),
+            PropertyVerdictSet::new(BTreeMap::new()).expect("empty replay properties"),
+            CoverageProjection::new(BTreeSet::new(), BTreeSet::new())
+                .expect("empty replay coverage"),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("typed replay evidence")
+    }
+
+    #[test]
+    fn finding_candidate_preparation_deduplicates_bounded_replay_records_without_writes() {
+        let scenario = crucible::happy_path_scenario()
+            .expect("happy-path scenario")
+            .scenario;
+        let schedule = Schedule::empty().appended(Decision::DeliveryOrder(DeliveryOrderDecision {
+            at: VirtualTime { ticks: 1 },
+            order: Vec::new(),
+        }));
+        let configuration = Configuration {
+            def: scenario.scenario_def(),
+            schedule,
+        };
+        let fingerprint = ContentHash::from_bytes(b"prepared-finding-fingerprint");
+        let finding = FindingReproductionArtifact::capture(
+            FindingDiscoveryPath::StateSpaceSearch,
+            fingerprint,
+            &scenario,
+            &configuration,
+        )
+        .expect("capture finding reproduction");
+        let signature = FindingSignature::new(
+            FindingKind::Divergence,
+            CampaignHash::from_bytes(fingerprint.bytes),
+            None,
+            String::from("qemu.replay-divergence"),
+            None,
+            BTreeSet::new(),
+        )
+        .expect("stable finding signature");
+        let seed = crucible::Seed::from_u64(0x5eed);
+        let mut transcript = CrucibleFindingReplayTranscript::new();
+        let first = minimize_signature_preserving_finding(
+            &finding,
+            &signature,
+            seed,
+            FindingReplayPass::Minimization,
+            &mut transcript,
+            |candidate| Ok(replay_evidence(candidate, signature.clone())),
+        )
+        .expect("first replay pass");
+        let second = minimize_signature_preserving_finding(
+            &finding,
+            &signature,
+            seed,
+            FindingReplayPass::Verification,
+            &mut transcript,
+            |candidate| Ok(replay_evidence(candidate, signature.clone())),
+        )
+        .expect("second replay pass");
+        assert_eq!(first, second);
+        assert!(first.shrank());
+        assert_eq!(transcript.minimization_pass.len(), first.attempts.len() + 1);
+        assert_eq!(transcript.verification_pass.len(), first.attempts.len() + 1);
+
+        let observation_content =
+            ContentId::for_bytes(ObjectKind::Observation, 1, b"prepared-finding-observation");
+        let observation = ObservationId::parse(&format!(
+            "crucible.campaign.observation@{observation_content}"
+        ))
+        .expect("observation ID");
+        let repository = Arc::new(CampaignRepository::new(
+            Arc::new(MemoryBlobBackend::new(
+                "prepared-finding-no-write",
+                u64::MAX,
+            )),
+            Arc::new(MemoryRefBackend::new()),
+        ));
+        let mut truncated = transcript.clone();
+        truncated.verification_pass.pop();
+        assert!(matches!(
+            prepare_signature_preserving_minimized_finding_candidate(
+                signature.clone(),
+                observation,
+                &finding,
+                FindingExactPins::default(),
+                seed,
+                truncated,
+            ),
+            Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "finding minimization replay observation count"
+            })
+        ));
+
+        let prepared = prepare_signature_preserving_minimized_finding_candidate(
+            signature,
+            observation,
+            &finding,
+            FindingExactPins::default(),
+            seed,
+            transcript,
+        )
+        .expect("prepare finding candidate");
+        assert_eq!(prepared.replay_record_count(), 5);
+        assert!(prepared.replay_record_bytes() > 0);
+        assert!(
+            repository
+                .load_scenario_artifact(prepared.scenario().id().expect("scenario ID"))
+                .is_err()
+        );
+        assert!(
+            repository
+                .load_reproduction_artifact(prepared.original().id().expect("original ID"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn finding_replay_retains_nonempty_configuration_target_and_causal_evidence() {
+        let scenario = crucible::happy_path_scenario()
+            .expect("happy-path scenario")
+            .scenario;
+        let schedule = Schedule::empty().appended(Decision::DeliveryOrder(DeliveryOrderDecision {
+            at: VirtualTime { ticks: 1 },
+            order: Vec::new(),
+        }));
+        let configuration = Configuration {
+            def: scenario.scenario_def(),
+            schedule,
+        };
+        let fingerprint = ContentHash::from_bytes(b"owned-replay-evidence-fingerprint");
+        let finding = FindingReproductionArtifact::capture(
+            FindingDiscoveryPath::StateSpaceSearch,
+            fingerprint,
+            &scenario,
+            &configuration,
+        )
+        .expect("capture finding reproduction");
+        let scenario_record =
+            encode_crucible_scenario_artifact(&scenario).expect("scenario record");
+        let original_configuration =
+            encode_crucible_configuration_artifact(&scenario_record, finding.artifact.schedule())
+                .expect("original configuration");
+        let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("empty properties");
+        let property_id = properties.id().expect("property ID");
+        let signature = FindingSignature::new(
+            FindingKind::Divergence,
+            CampaignHash::from_bytes(fingerprint.bytes),
+            None,
+            String::from("qemu.replay-divergence"),
+            Some(FindingTarget::Configuration(
+                original_configuration.id().expect("configuration ID"),
+            )),
+            BTreeSet::from([property_id.content_id()]),
+        )
+        .expect("targeted finding signature");
+        let seed = crucible::Seed::from_u64(0xe71d);
+        let mut transcript = CrucibleFindingReplayTranscript::new();
+        for pass in [
+            FindingReplayPass::Minimization,
+            FindingReplayPass::Verification,
+        ] {
+            minimize_signature_preserving_finding(
+                &finding,
+                &signature,
+                seed,
+                pass,
+                &mut transcript,
+                |candidate| {
+                    let scenario =
+                        encode_crucible_scenario_artifact(candidate.artifact.scenario_form())
+                            .expect("candidate scenario");
+                    let candidate_configuration = encode_crucible_configuration_artifact(
+                        &scenario,
+                        candidate.artifact.schedule(),
+                    )
+                    .expect("candidate configuration");
+                    let candidate_signature = FindingSignature::new(
+                        FindingKind::Divergence,
+                        CampaignHash::from_bytes(fingerprint.bytes),
+                        None,
+                        String::from("qemu.replay-divergence"),
+                        Some(FindingTarget::Configuration(
+                            candidate_configuration
+                                .id()
+                                .expect("candidate configuration ID"),
+                        )),
+                        BTreeSet::from([property_id.content_id()]),
+                    )
+                    .expect("candidate signature");
+                    Ok(CrucibleFindingReplayEvidence::new(
+                        Some(candidate_signature),
+                        candidate_configuration,
+                        MeasurementSet::new(BTreeMap::new()).expect("measurements"),
+                        properties.clone(),
+                        CoverageProjection::new(BTreeSet::new(), BTreeSet::new())
+                            .expect("coverage"),
+                        Vec::new(),
+                        Vec::new(),
+                    )
+                    .expect("candidate replay evidence"))
+                },
+            )
+            .expect("targeted replay pass");
+        }
+        let observation_content =
+            ContentId::for_bytes(ObjectKind::Observation, 1, b"targeted-finding-observation");
+        let observation = ObservationId::parse(&format!(
+            "crucible.campaign.observation@{observation_content}"
+        ))
+        .expect("observation ID");
+        let prepared = prepare_signature_preserving_minimized_finding_candidate(
+            signature.clone(),
+            observation,
+            &finding,
+            FindingExactPins::default(),
+            seed,
+            transcript,
+        )
+        .expect("prepare targeted finding");
+        let retained = prepared
+            .bundle()
+            .signature_minimization()
+            .minimization_pass();
+        assert!(retained.iter().flatten().all(|observed| {
+            observed.target().is_some() && !observed.causal_evidence().is_empty()
+        }));
+        assert!(prepared.replay_records.configurations.iter().any(|record| {
+            record.id().ok() == Some(original_configuration.id().expect("configuration ID"))
+        }));
+        assert!(
+            prepared
+                .replay_records
+                .properties
+                .iter()
+                .any(|record| record.id().ok() == Some(property_id))
+        );
+    }
+
+    #[test]
+    fn finding_candidate_publication_waits_for_both_replay_passes() {
+        let scenario = crucible::happy_path_scenario()
+            .expect("happy-path scenario")
+            .scenario;
+        let schedule = Schedule::empty().appended(Decision::DeliveryOrder(DeliveryOrderDecision {
+            at: VirtualTime { ticks: 1 },
+            order: Vec::new(),
+        }));
+        let configuration = Configuration {
+            def: scenario.scenario_def(),
+            schedule,
+        };
+        let fingerprint = ContentHash::from_bytes(b"two-pass-finding-fingerprint");
+        let finding = FindingReproductionArtifact::capture(
+            FindingDiscoveryPath::StateSpaceSearch,
+            fingerprint,
+            &scenario,
+            &configuration,
+        )
+        .expect("capture finding reproduction");
+        let signature = FindingSignature::new(
+            FindingKind::Divergence,
+            CampaignHash::from_bytes(fingerprint.bytes),
+            None,
+            String::from("qemu.replay-divergence"),
+            None,
+            BTreeSet::new(),
+        )
+        .expect("stable finding signature");
+        let seed = crucible::Seed::from_u64(0x7777);
+        let mut probe = CrucibleFindingReplayTranscript::new();
+        let first = minimize_signature_preserving_finding(
+            &finding,
+            &signature,
+            seed,
+            FindingReplayPass::Minimization,
+            &mut probe,
+            |candidate| Ok(replay_evidence(candidate, signature.clone())),
+        )
+        .expect("first replay pass");
+        let (_, original_configuration, original) =
+            prepare_original_reproduction(&finding).expect("prepare original reproduction");
+        let observation_content =
+            ContentId::for_bytes(ObjectKind::Observation, 1, b"two-pass-finding-observation");
+        let observation = ObservationId::parse(&format!(
+            "crucible.campaign.observation@{observation_content}"
+        ))
+        .expect("observation ID");
+        let repository = Arc::new(CampaignRepository::new(
+            Arc::new(MemoryBlobBackend::new(
+                "two-pass-finding-no-partial-write",
+                u64::MAX,
+            )),
+            Arc::new(MemoryRefBackend::new()),
+        ));
+        let store = CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
+        let mut calls = 0;
+
+        let error = store
+            .publish_signature_preserving_minimized_finding_candidate(
+                signature.clone(),
+                observation,
+                &finding,
+                FindingExactPins::default(),
+                seed,
+                |candidate| {
+                    if calls == first.attempts.len() + 1 {
+                        return Err(crucible::ReproductionArtifact::from_compact_binary(
+                            b"invalid replay artifact",
+                        )
+                        .expect_err("invalid replay artifact"));
+                    }
+                    calls += 1;
+                    Ok(replay_evidence(candidate, signature.clone()))
+                },
+            )
+            .expect_err("second replay pass must fail");
+
+        assert!(matches!(
+            error,
+            CrucibleArtifactError::InvalidPayload {
+                artifact: "signature-preserving finding minimization",
+                ..
+            }
+        ));
+        assert_eq!(calls, first.attempts.len() + 1);
+        assert!(
+            repository
+                .load_configuration_artifact(
+                    original_configuration
+                        .id()
+                        .expect("original configuration ID"),
+                )
+                .is_err()
+        );
+        assert!(
+            repository
+                .load_reproduction_artifact(original.id().expect("original reproduction ID"))
+                .is_err()
         );
     }
 
