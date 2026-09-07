@@ -1626,10 +1626,13 @@ mod tests {
         VirtualTime,
     };
     use crucible_campaign::{
-        BooleanDomain, CampaignRepository, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
-        ChoiceOpportunity, ChoiceSource, ChoiceValue, CoverageProjection, FindingKind,
-        FindingTarget, MeasurementSet, PropertyVerdictSet, SelectableDeclaration, Selection,
-        SelectionOrigin,
+        BooleanDomain, BudgetGrant, CampaignCommandId, CampaignControlAction, CampaignLineage,
+        CampaignMode, CampaignPolicy, CampaignRepository, CampaignSeed, ChoiceClassContext,
+        ChoiceCoordinate, ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity, ChoiceSource,
+        ChoiceValue, ControlRequest, CoverageProjection, ExplorerPolicy, FairnessPolicy,
+        FindingKind, FindingTarget, MeasurementSet, Observation, ObservationCandidate,
+        ProgressiveWideningPolicy, PropertyVerdictSet, PuctPolicy, RetentionPolicy,
+        SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
     };
     use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
 
@@ -2272,6 +2275,290 @@ mod tests {
                 .properties
                 .iter()
                 .any(|record| record.id().ok() == Some(property_id))
+        );
+    }
+
+    #[test]
+    fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure() {
+        let scenario = crucible::happy_path_scenario()
+            .expect("happy-path scenario")
+            .scenario;
+        let schedule = Schedule::empty().appended(Decision::DeliveryOrder(DeliveryOrderDecision {
+            at: VirtualTime { ticks: 1 },
+            order: Vec::new(),
+        }));
+        let scenario_record =
+            encode_crucible_scenario_artifact(&scenario).expect("scenario record");
+        let genesis = encode_crucible_configuration_artifact(&scenario_record, &Schedule::empty())
+            .expect("genesis configuration");
+        let child = encode_crucible_configuration_artifact(&scenario_record, &schedule)
+            .expect("finding configuration");
+
+        let repository = Arc::new(CampaignRepository::new(
+            Arc::new(MemoryBlobBackend::new(
+                "prepared-finding-publication",
+                u64::MAX,
+            )),
+            Arc::new(MemoryRefBackend::new()),
+        ));
+        repository
+            .publish_scenario_artifact(
+                scenario_record.scenario(),
+                scenario_record.payload_schema(),
+                scenario_record.payload().to_vec(),
+            )
+            .expect("publish scenario");
+        repository
+            .publish_configuration_artifact(
+                genesis.scenario(),
+                genesis.scenario_artifact(),
+                genesis.configuration(),
+                genesis.payload_schema(),
+                genesis.payload().to_vec(),
+            )
+            .expect("publish genesis");
+        let lineage = CampaignLineage::new(
+            scenario_record.scenario(),
+            scenario_record.id().expect("scenario ID"),
+            genesis.configuration(),
+            genesis.id().expect("genesis ID"),
+            "crucible-test",
+            "qemu-test",
+            BTreeMap::from([(String::from("control"), 1)]),
+            scenario_record.payload_schema(),
+            1,
+        )
+        .expect("campaign lineage");
+        let widening = ProgressiveWideningPolicy::new(
+            crucible_campaign::ExactRational::new(1, 1).expect("widening numerator"),
+            crucible_campaign::ExactRational::new(1, 2).expect("widening exponent"),
+            1,
+            100,
+            1,
+        )
+        .expect("widening policy");
+        let policy = CampaignPolicy::new(
+            lineage.scenario(),
+            CampaignSeed::from_bytes([7; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                widening: Some(widening),
+                puct: PuctPolicy::new(1_000_000, 1, 0),
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness policy"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        )
+        .expect("campaign policy");
+        let created = repository
+            .create("prepared-finding", &lineage, &policy, &BTreeMap::new())
+            .expect("create campaign");
+        let resumed = repository
+            .apply_control(
+                "prepared-finding",
+                &ControlRequest {
+                    command: CampaignCommandId::from_hash(CampaignHash::derive(
+                        "test",
+                        b"resume-prepared-finding",
+                    )),
+                    expected_snapshot: created.snapshot_id(),
+                    action: CampaignControlAction::Resume,
+                },
+            )
+            .expect("resume campaign");
+        let funded = repository
+            .apply_control(
+                "prepared-finding",
+                &ControlRequest {
+                    command: CampaignCommandId::from_hash(CampaignHash::derive(
+                        "test",
+                        b"fund-prepared-finding",
+                    )),
+                    expected_snapshot: resumed.new_snapshot,
+                    action: CampaignControlAction::GrantBudget(
+                        BudgetGrant::new(0, 1).expect("attempt grant"),
+                    ),
+                },
+            )
+            .expect("fund campaign");
+        let attempt = repository
+            .admit_initial_discovery_if_ready("prepared-finding")
+            .expect("admit initial discovery")
+            .expect("discovery attempt");
+        assert_ne!(funded.new_snapshot, created.snapshot_id());
+        let attempt_record = repository.load_attempt(attempt).expect("load attempt");
+
+        let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
+        let declaration = SelectableDeclaration::new(
+            "product.test.prepared-finding-choice",
+            ChoiceSource::Scheduler {
+                producer: String::from("prepared-finding-test"),
+            },
+            domain.clone(),
+            ChoiceValue::Boolean(false),
+            ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+            BTreeSet::new(),
+            true,
+        )
+        .expect("selectable declaration");
+        let opportunity = ChoiceOpportunity::new(
+            lineage.scenario(),
+            &declaration,
+            &domain,
+            ChoiceCoordinate {
+                scheduler: CampaignHash::derive("test", b"prepared-finding-scheduler"),
+                producer: CampaignHash::derive("test", b"prepared-finding-producer"),
+            },
+            "prepared-finding-choice",
+            None,
+        )
+        .expect("choice opportunity");
+        let discovery =
+            ChoiceDiscovery::new(declaration, domain, opportunity.clone()).expect("discovery");
+        let measurements = MeasurementSet::new(BTreeMap::new()).expect("measurements");
+        let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
+        let coverage =
+            CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage projection");
+        let observation = Observation::new(
+            attempt,
+            child.configuration(),
+            child.id().expect("child ID"),
+            attempt_record.path(),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurements.id().expect("measurement ID"),
+            properties.id().expect("property ID"),
+            coverage.id().expect("coverage ID"),
+            BTreeSet::from([opportunity.id().expect("opportunity ID")]),
+        )
+        .expect("observation");
+        let observation_candidate = ObservationCandidate::new(
+            child.clone(),
+            measurements,
+            properties.clone(),
+            coverage,
+            vec![discovery],
+            observation,
+        )
+        .expect("observation candidate");
+        let executor_store = CampaignExecutorStore::new(Arc::clone(&repository));
+        let observation = executor_store
+            .publish_observation_candidate(&observation_candidate)
+            .expect("publish admitted observation");
+
+        let fingerprint = ContentHash::from_bytes(b"published-finding-fingerprint");
+        let finding = FindingReproductionArtifact::capture(
+            FindingDiscoveryPath::StateSpaceSearch,
+            fingerprint,
+            &scenario,
+            &Configuration {
+                def: scenario.scenario_def(),
+                schedule,
+            },
+        )
+        .expect("capture finding reproduction");
+        let property = properties.id().expect("causal property record");
+        let signature = FindingSignature::new(
+            FindingKind::Divergence,
+            CampaignHash::from_bytes(fingerprint.bytes),
+            None,
+            String::from("qemu.replay-divergence"),
+            Some(FindingTarget::Configuration(
+                child.id().expect("finding target"),
+            )),
+            BTreeSet::from([property.content_id()]),
+        )
+        .expect("finding signature");
+        let seed = crucible::Seed::from_u64(0xface);
+        let mut transcript = CrucibleFindingReplayTranscript::new();
+        for pass in [
+            FindingReplayPass::Minimization,
+            FindingReplayPass::Verification,
+        ] {
+            minimize_signature_preserving_finding(
+                &finding,
+                &signature,
+                seed,
+                pass,
+                &mut transcript,
+                |candidate| {
+                    let candidate_scenario =
+                        encode_crucible_scenario_artifact(candidate.artifact.scenario_form())
+                            .expect("candidate scenario");
+                    let candidate_configuration = encode_crucible_configuration_artifact(
+                        &candidate_scenario,
+                        candidate.artifact.schedule(),
+                    )
+                    .expect("candidate configuration");
+                    let observed = if candidate.artifact.schedule() == finding.artifact.schedule() {
+                        signature.clone()
+                    } else {
+                        FindingSignature::new(
+                            FindingKind::Divergence,
+                            CampaignHash::derive("test", b"reduced-candidate-divergence"),
+                            None,
+                            String::from("qemu.different-replay-divergence"),
+                            Some(FindingTarget::Configuration(
+                                candidate_configuration.id().expect("candidate target"),
+                            )),
+                            BTreeSet::from([property.content_id()]),
+                        )
+                        .expect("rejected candidate signature")
+                    };
+                    Ok(CrucibleFindingReplayEvidence::new(
+                        Some(observed),
+                        candidate_configuration,
+                        MeasurementSet::new(BTreeMap::new()).expect("replay measurements"),
+                        properties.clone(),
+                        CoverageProjection::new(BTreeSet::new(), BTreeSet::new())
+                            .expect("replay coverage"),
+                        Vec::new(),
+                        Vec::new(),
+                    )
+                    .expect("replay evidence"))
+                },
+            )
+            .expect("finding replay pass");
+        }
+        let prepared = prepare_signature_preserving_minimized_finding_candidate(
+            signature.clone(),
+            observation,
+            &finding,
+            FindingExactPins::default(),
+            seed,
+            transcript,
+        )
+        .expect("prepare finding candidate");
+        assert!(
+            prepared
+                .minimized()
+                .minimization()
+                .expect("minimization evidence")
+                .attempts()
+                .iter()
+                .any(|attempt| !attempt.accepted()),
+            "the reduced empty schedule must be rejected by the concrete target"
+        );
+
+        let expected = prepared.id().expect("prepared candidate ID");
+        assert_eq!(
+            prepared
+                .publish_for_executor(&executor_store)
+                .expect("publish prepared finding closure"),
+            expected
+        );
+        let loaded = repository
+            .load_finding_candidate_bundle(expected)
+            .expect("load and authenticate finding closure");
+        assert_eq!(loaded, *prepared.bundle());
+        assert_eq!(loaded.observation(), observation);
+        assert_eq!(loaded.signature().target(), signature.target());
+        assert_eq!(
+            loaded.signature().causal_evidence(),
+            signature.causal_evidence()
         );
     }
 
