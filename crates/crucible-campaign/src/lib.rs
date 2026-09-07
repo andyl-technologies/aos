@@ -207,11 +207,12 @@ pub use policy::{
 };
 pub use repository::{
     AttemptAdmissionResult, AttemptQueue, AttemptQueueCursor, AttemptQueueError,
-    AttemptReservation, BranchRequestResult, CampaignBudgetProjection, CampaignCommandResult,
-    CampaignDerivationResult, CampaignDiscoveryResult, CampaignExecutorCancelOutcome,
-    CampaignExecutorCheckpointOutcome, CampaignExecutorDriver, CampaignExecutorDriverConfigError,
-    CampaignExecutorDriverError, CampaignExecutorStepOutcome, CampaignExecutorStore, CampaignHead,
-    CampaignHeadPage, CampaignLifecycle, CampaignPinRetentionRecord, CampaignPinRetentionSummary,
+    AttemptReservation, AuthenticatedFindingCandidateIncorporation, BranchRequestResult,
+    CampaignBudgetProjection, CampaignCommandResult, CampaignDerivationResult,
+    CampaignDiscoveryResult, CampaignExecutorCancelOutcome, CampaignExecutorCheckpointOutcome,
+    CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignExecutorDriverError,
+    CampaignExecutorStepOutcome, CampaignExecutorStore, CampaignHead, CampaignHeadPage,
+    CampaignLifecycle, CampaignPinRetentionRecord, CampaignPinRetentionSummary,
     CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignPlannerDriverError,
     CampaignPlannerStepOutcome, CampaignRepository, CampaignRepositoryError, CampaignSupervisor,
     CampaignSupervisorConfigError, CampaignSupervisorError, CampaignSupervisorStepOutcome,
