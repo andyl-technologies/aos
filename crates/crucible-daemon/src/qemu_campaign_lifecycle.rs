@@ -10,10 +10,10 @@
 //! substitutes for an exact-checkpoint resume.
 
 use crucible::{
-    Configuration, ContentHash, Decision, FingerprintSample, NodeId, QuantumLoop, QuantumOutcome,
-    QuantumRequest, QuantumTerminalVerdict, ScenarioDef, ScenarioDefForm, SchedulerError,
-    SchedulerEventLogEntry, SchedulerOperationalFailureClass, SchedulerQuiescence,
-    SelectionDecision,
+    CheckpointTerminalCause, Configuration, ContentHash, Decision, FingerprintSample, NodeId,
+    QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ScenarioDef,
+    ScenarioDefForm, SchedulerError, SchedulerEventLogEntry, SchedulerOperationalFailureClass,
+    SchedulerQuiescence, SelectionDecision,
 };
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
@@ -127,6 +127,22 @@ pub trait QemuFreshAttemptLifecycleOwner {
     /// Observes the terminal verdict without consuming checkpoint ownership.
     #[must_use]
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict>;
+
+    /// Retains the semantic terminal cause in the exact checkpoint continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when `cause` conflicts with terminal evidence
+    /// already retained by the lifecycle.
+    fn prepare_terminal_checkpoint(
+        &mut self,
+        cause: CheckpointTerminalCause,
+    ) -> Result<(), SchedulerError> {
+        let _ = cause;
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("fresh lifecycle cannot retain a terminal checkpoint cause"),
+        })
+    }
 
     /// Returns whether every live node can enter an exact checkpoint now.
     ///
@@ -254,6 +270,13 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
 
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
         QuantumLoop::terminal_verdict_for_stop(self)
+    }
+
+    fn prepare_terminal_checkpoint(
+        &mut self,
+        cause: CheckpointTerminalCause,
+    ) -> Result<(), SchedulerError> {
+        QuantumLoop::prepare_terminal_checkpoint(self, cause)
     }
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
@@ -617,9 +640,6 @@ pub enum QemuFreshExecutionRunnerError<F, D> {
     /// Capture mode reached the runner without its supervisor-prelatched request.
     #[error("materialized-start capture did not carry a prelatched checkpoint request")]
     CaptureCheckpointNotRequested,
-    /// The materialized start was already terminal and cannot yield a capture result.
-    #[error("materialized-start capture reached a terminal start configuration")]
-    CaptureStartTerminated,
     /// The exact materialized start was not safe for checkpoint capture.
     #[error("materialized-start capture was not checkpoint ready")]
     CaptureStartNotCheckpointReady,
@@ -1237,13 +1257,23 @@ where
                 context.start_mode(),
                 AttemptStartMode::CaptureMaterializedStart { .. }
             ) {
-                if materialization.terminal_verdict.is_some()
-                    || lifecycle.terminal_verdict_for_stop().is_some()
+                let lifecycle_terminal = lifecycle.terminal_verdict_for_stop();
+                if let (Some(materialized), Some(retained)) =
+                    (&materialization.terminal_verdict, &lifecycle_terminal)
+                    && materialized != retained
                 {
-                    return Err(AttemptWorkerFailure::Terminal(
-                        QemuFreshExecutionRunnerError::CaptureStartTerminated,
+                    return Err(map_checkpoint_capture_failure(
+                        SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "materialized terminal verdict differs from lifecycle evidence",
+                            ),
+                        },
                     ));
                 }
+                let terminal_verdict = materialization
+                    .terminal_verdict
+                    .as_ref()
+                    .or(lifecycle_terminal.as_ref());
                 let checkpoint_ready = lifecycle
                     .exact_checkpoint_ready()
                     .map_err(map_checkpoint_capture_failure)?;
@@ -1251,6 +1281,17 @@ where
                     return Err(AttemptWorkerFailure::Terminal(
                         QemuFreshExecutionRunnerError::CaptureStartNotCheckpointReady,
                     ));
+                }
+                if let Some(verdict) = terminal_verdict {
+                    let cause = match verdict {
+                        QuantumTerminalVerdict::Passed => CheckpointTerminalCause::Passed,
+                        QuantumTerminalVerdict::Failed(violations) => {
+                            CheckpointTerminalCause::Failed(violations.clone())
+                        }
+                    };
+                    lifecycle
+                        .prepare_terminal_checkpoint(cause)
+                        .map_err(map_checkpoint_capture_failure)?;
                 }
                 let capture = lifecycle
                     .capture_attempt_checkpoint(context)

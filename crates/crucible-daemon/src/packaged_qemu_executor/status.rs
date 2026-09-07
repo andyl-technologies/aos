@@ -483,6 +483,13 @@ where
         self.inner.terminal_verdict_for_stop()
     }
 
+    fn prepare_terminal_checkpoint(
+        &mut self,
+        cause: crucible::CheckpointTerminalCause,
+    ) -> Result<(), SchedulerError> {
+        self.inner.prepare_terminal_checkpoint(cause)
+    }
+
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         self.inner.exact_checkpoint_ready()
     }
