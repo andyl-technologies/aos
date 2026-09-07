@@ -1,71 +1,14 @@
 //! Hardening and spec-feature integration tests: symlink containment,
-//! anti-rollback floors, stale-vs-failed classification, incremental
-//! channel refresh, and presence validation.
+//! anti-rollback floors, stale-vs-failed classification, and incremental
+//! channel refresh.
 
 mod common;
-
-use std::path::Path;
 
 use aos_hub::db::Database;
 use aos_hub::fetch::{fetch_mirror_upstream, is_fetch_error, LocalFsFetch, SurfaceFetch};
 use aos_hub::indexer::index_and_record;
-use aos_hub::validation::validate_presence;
 
-/// Like `common::standard_registry` but with a custom committed
-/// `[caches]` stack, for validation tests that need local cache dirs.
-fn registry_with_caches(root: &Path, caches: &[(&str, u32)]) -> common::Fixture {
-    let fixture = common::Fixture::new(root);
-
-    let mut registry_text =
-        String::from("[registry]\nname = \"demo\"\ndescription = \"Fixture registry\"\n");
-    if let Some((url, _)) = caches.first() {
-        if caches.len() == 1 {
-            registry_text.push_str(&format!("\n[caches]\nendpoint = \"{url}\"\n"));
-        } else {
-            registry_text.push_str("\n[caches]\nkind = \"try\"\nmembers = [\n");
-            for (url, _) in caches {
-                registry_text.push_str(&format!("  {{ endpoint = \"{url}\" }},\n"));
-            }
-            registry_text.push_str("]\n");
-        }
-    }
-    let registry_toml = fixture.put_blob(&registry_text);
-    let keys_toml = fixture.put_blob(&format!(
-        "schema = 1\n\n[[keys]]\nid = \"maintainer\"\nkey = \"{}\"\n",
-        fixture.trust_key,
-    ));
-    let curl_toml = fixture.put_blob(
-        "[package]\nname = \"curl\"\ndescription = \"URL transfers\"\nlicense = \"MIT\"\n\
-         maintainer = \"aos\"\n\n[[versions]]\nversion = \"8.5.0\"\n\n\
-         [versions.platforms.x86_64-linux]\nstore_path = \"/var/lib/store/h7j3k8l2m9n4-curl-8.5.0\"\n\
-         nar_hash = \"sha256:aa\"\nnar_size = 10\nclosure_size = 20\n\
-         source_drv = \"/var/lib/store/h7j3k8l2m9n4-curl-8.5.0.drv\"\n\
-         source_nar_hash = \"sha256:bb\"\nreferences = []\n",
-    );
-    let closure_blob = fixture.put_blob("h7j3k8l2m9n4\n");
-
-    let bucket_c = fixture.put_tree(&[("100644", "curl.toml", curl_toml)]);
-    let packages = fixture.put_tree(&[("40000", "c", bucket_c)]);
-    let closures = fixture.put_tree(&[("100644", "h7j3k8l2m9n4", closure_blob)]);
-    let root_tree = fixture.put_tree(&[
-        ("100644", "keys.toml", keys_toml),
-        ("100644", "registry.toml", registry_toml),
-        ("40000", "closures", closures),
-        ("40000", "packages", packages),
-    ]);
-
-    let commit = fixture.put_signed_commit(root_tree, "release 1.0.0");
-    let release_tag = fixture.put_release_tag("1.0.0", commit);
-    fixture.put_channel("stable", release_tag);
-    fixture.put_refs(
-        "stable",
-        &[("stable", commit)],
-        &[("1.0.0", release_tag, commit)],
-    );
-    fixture
-}
-
-async fn register(db: &Database, fixture: &common::Fixture, surface: &Path) {
+async fn register(db: &Database, fixture: &common::Fixture) {
     db.register_registry("demo", std::slice::from_ref(&fixture.trust_key), true)
         .await
         .unwrap();
@@ -102,7 +45,7 @@ async fn channel_rollback_fails_closed() {
     std::fs::create_dir_all(&surface_a).unwrap();
     let fixture_a = common::standard_registry_versioned(&surface_a, "1.0.0");
     let db = Database::open_in_memory().await.unwrap();
-    register(&db, &fixture_a, &surface_a).await;
+    register(&db, &fixture_a).await;
     let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     index_and_record(&db, &LocalFsFetch::new(&surface_a), &registry)
         .await
@@ -120,7 +63,7 @@ async fn channel_rollback_fails_closed() {
     let surface_b = dir.path().join("b");
     std::fs::create_dir_all(&surface_b).unwrap();
     let fixture_b = common::standard_registry_versioned(&surface_b, "0.9.0");
-    register(&db, &fixture_b, &surface_b).await;
+    register(&db, &fixture_b).await;
     let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     let err = index_and_record(&db, &LocalFsFetch::new(&surface_b), &registry)
         .await
@@ -173,7 +116,7 @@ async fn unchanged_refs_take_incremental_path() {
     .unwrap();
 
     let db = Database::open_in_memory().await.unwrap();
-    register(&db, &fixture, &surface).await;
+    register(&db, &fixture).await;
     let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     let fetch = LocalFsFetch::new(&surface);
 
@@ -200,90 +143,6 @@ async fn unchanged_refs_take_incremental_path() {
     let channels = db.list_channels(registry.id).await.unwrap();
     assert_eq!(channels[0].frontier.as_deref(), Some("1.0.0"));
     assert_eq!(channels[0].partitions.iter().flatten().count(), 256);
-}
-
-#[tokio::test]
-async fn presence_validation_records_coverage_and_findings() {
-    let dir = tempfile::tempdir().unwrap();
-
-    // A complete file:// cache, an incomplete one, and an unreachable
-    // HTTP endpoint.
-    let good_cache = dir.path().join("good-cache");
-    std::fs::create_dir_all(&good_cache).unwrap();
-    std::fs::write(
-        good_cache.join("h7j3k8l2m9n4.narinfo"),
-        "StorePath: /var/lib/store/h7j3k8l2m9n4-curl-8.5.0\n",
-    )
-    .unwrap();
-    let bad_cache = dir.path().join("bad-cache");
-    std::fs::create_dir_all(&bad_cache).unwrap();
-
-    let good_url = format!("file://{}", good_cache.display());
-    let bad_url = format!("file://{}", bad_cache.display());
-    let surface = dir.path().join("surface");
-    std::fs::create_dir_all(&surface).unwrap();
-    let fixture = registry_with_caches(
-        &surface,
-        &[
-            (good_url.as_str(), 50),
-            (bad_url.as_str(), 40),
-            ("http://127.0.0.1:1/", 30),
-        ],
-    );
-
-    let db = Database::open_in_memory().await.unwrap();
-    register(&db, &fixture, &surface).await;
-    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
-    index_and_record(&db, &LocalFsFetch::new(&surface), &registry)
-        .await
-        .unwrap();
-
-    let summaries = validate_presence(&db, &registry).await.unwrap();
-    assert_eq!(summaries.len(), 3);
-
-    let good = summaries
-        .iter()
-        .find(|summary| summary.cache_url == good_url)
-        .unwrap();
-    assert_eq!(good.cache_url, good_url);
-    assert!(good.reachable);
-    assert_eq!(good.checked, 1);
-    assert_eq!(good.missing, 0);
-    assert_eq!(good.coverage_percent, 100.0);
-
-    let bad = summaries
-        .iter()
-        .find(|summary| summary.cache_url == bad_url)
-        .unwrap();
-    assert_eq!(bad.cache_url, bad_url);
-    assert!(bad.reachable);
-    assert_eq!(bad.checked, 1);
-    assert_eq!(bad.missing, 1);
-    assert_eq!(bad.coverage_percent, 0.0);
-
-    let dead = summaries
-        .iter()
-        .find(|summary| summary.cache_url == "http://127.0.0.1:1/")
-        .unwrap();
-    assert_eq!(dead.cache_url, "http://127.0.0.1:1/");
-    assert!(!dead.reachable);
-    assert_eq!(dead.checked, 0);
-
-    // Runs and findings are persisted.
-    let runs = db.latest_validation_runs(registry.id).await.unwrap();
-    assert_eq!(runs.len(), 3);
-    let bad_run = runs.iter().find(|r| r.cache_url == bad_url).unwrap();
-    assert_eq!(bad_run.missing, 1);
-    assert_eq!(
-        db.validation_missing(bad_run.id).await.unwrap(),
-        vec!["h7j3k8l2m9n4".to_string()]
-    );
-    let dead_run = runs
-        .iter()
-        .find(|r| r.cache_url == "http://127.0.0.1:1/")
-        .unwrap();
-    assert!(!dead_run.reachable);
-    assert_eq!(dead_run.checked, 0);
 }
 
 #[tokio::test]

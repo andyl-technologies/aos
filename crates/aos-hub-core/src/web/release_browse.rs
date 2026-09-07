@@ -386,14 +386,6 @@ pub(crate) fn release_href(slug: &str, version: &str) -> String {
     format!("/{slug}/-/releases/{}", urlencode(version))
 }
 
-pub(crate) fn verification(release: &ReleaseRow) -> &'static str {
-    if release.signer.is_some() {
-        "<span class=\"ok release-verification\">Verified</span>"
-    } else {
-        "<span class=\"warn release-verification\">Unverified</span>"
-    }
-}
-
 /// Renders missing content without substituting a different release.
 pub(crate) fn unavailable_page(
     registry: &RegistryRecord,
@@ -406,12 +398,9 @@ pub(crate) fn unavailable_page(
 ) -> String {
     let slug = &registry.slug;
     let mut body = context.nav(slug, section);
+    body.push_str("<h1>Content unavailable</h1>");
     body.push_str(&context.selector(slug, &format!("/{slug}/-/{section}"), &[]));
-    let _ = write!(
-        body,
-        "<h1>Content unavailable</h1><p>{}</p>",
-        escape(message)
-    );
+    let _ = write!(body, "<p>{}</p>", escape(message));
     page_with_session(
         "Content unavailable",
         &registry_crumbs(slug, &[]),
