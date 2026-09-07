@@ -3,6 +3,18 @@
 use super::*;
 
 impl ProductionVmLifecycleConfig {
+    /// Returns the selected QEMU executable.
+    #[must_use]
+    pub fn executable(&self) -> &std::path::Path {
+        &self.executable
+    }
+
+    /// Returns the selected QEMU plugin.
+    #[must_use]
+    pub fn plugin(&self) -> &std::path::Path {
+        &self.plugin
+    }
+
     /// Returns the durable lifecycle recovery root.
     #[must_use]
     pub fn run_state_root(&self) -> &std::path::Path {
