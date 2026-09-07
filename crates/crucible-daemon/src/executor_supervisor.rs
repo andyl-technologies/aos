@@ -15,21 +15,22 @@ use std::sync::{
 use std::time::Duration;
 
 use crucible_campaign::{
-    AttemptResourceLimits, CampaignCodecError, CancelAttemptExecutionDisposition,
-    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
-    CheckpointAttemptExecutionDisposition, CheckpointAttemptExecutionRequest,
-    CheckpointAttemptExecutionResponse, DaemonEpoch, ExactCheckpointId, ExecutionId,
-    ExecutorControlService, ExecutorRejection, ExecutorResumeService, ExecutorService,
-    ExecutorStatusService, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
-    GetAttemptExecutionResponse, ObservationId, ResumeAttemptExecutionDisposition,
-    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, SubmitAttemptDisposition,
-    SubmitAttemptRequest, SubmitAttemptResponse,
+    AttemptId, AttemptResourceLimits, CampaignCodecError, CampaignLineageId,
+    CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
+    CancelAttemptExecutionResponse, CheckpointAttemptExecutionDisposition,
+    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, DaemonEpoch,
+    ExactCheckpointId, ExecutionId, ExecutorControlService, ExecutorRejection,
+    ExecutorResumeService, ExecutorService, ExecutorStatusService, FindingCandidateBundleId,
+    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
+    ObservationId, ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
+    ResumeAttemptExecutionResponse, SubmitAttemptDisposition, SubmitAttemptRequest,
+    SubmitAttemptResponse,
 };
 
 use crate::{
     AssignmentLedger, AssignmentPublish, AssignmentRecord, AttemptExecutionKey,
     AttemptExecutionOrigin, AttemptRuntimeState, AttemptStateCas, CapturedAttemptCheckpoint,
-    PreparedAttemptCheckpoint,
+    CompletedFindingCandidate, PreparedAttemptCheckpoint,
 };
 
 mod checkpoint_promotion;
@@ -73,6 +74,50 @@ pub trait AttemptAdmissionValidator {
     ) -> Result<(), CompletionValidationFailure> {
         Err(CompletionValidationFailure::Incompatible)
     }
+
+    /// Validates every retained root before durable completion or replay.
+    ///
+    /// The default accepts observation-only completions through
+    /// [`Self::validate_completion`] and fails closed when a candidate is
+    /// present. Repository-backed implementations authenticate the candidate's
+    /// complete immutable closure before returning success.
+    ///
+    /// # Errors
+    ///
+    /// Returns the stable completion failure when either retained root is
+    /// unavailable, unauthorized, or incompatible with the admitted request.
+    fn validate_completion_artifacts(
+        &self,
+        request: &SubmitAttemptRequest,
+        observation: ObservationId,
+        finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<(), CompletionValidationFailure> {
+        self.validate_completion(request, observation)?;
+        if finding_candidate.is_some() {
+            return Err(CompletionValidationFailure::Incompatible);
+        }
+        Ok(())
+    }
+
+    /// Validates a durable completion projected through status or control.
+    ///
+    /// These requests preserve the semantic lineage and attempt but omit the
+    /// original assignment-local resource fields. The default fails closed;
+    /// repository-backed validators authenticate every reported root directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns the stable completion failure when any retained artifact is
+    /// unavailable, unauthorized, or incompatible.
+    fn validate_retained_completion(
+        &self,
+        _lineage: CampaignLineageId,
+        _attempt: AttemptId,
+        _observation: ObservationId,
+        _finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<(), CompletionValidationFailure> {
+        Err(CompletionValidationFailure::Incompatible)
+    }
 }
 
 /// Stable reason a durable operational completion cannot be reused.
@@ -108,6 +153,25 @@ impl AttemptAdmissionValidator for AllowAllAttemptAdmission {
         &self,
         _request: &SubmitAttemptRequest,
         _observation: ObservationId,
+    ) -> Result<(), CompletionValidationFailure> {
+        Ok(())
+    }
+
+    fn validate_completion_artifacts(
+        &self,
+        _request: &SubmitAttemptRequest,
+        _observation: ObservationId,
+        _finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<(), CompletionValidationFailure> {
+        Ok(())
+    }
+
+    fn validate_retained_completion(
+        &self,
+        _lineage: CampaignLineageId,
+        _attempt: AttemptId,
+        _observation: ObservationId,
+        _finding_candidate: Option<FindingCandidateBundleId>,
     ) -> Result<(), CompletionValidationFailure> {
         Ok(())
     }
@@ -758,6 +822,11 @@ enum AttemptAdvance<E> {
 }
 
 /// Short actor decision made before repository-backed semantic validation.
+// A resolved response deliberately remains inline: this short-lived internal
+// decision crosses no persistence or wire boundary, and boxing every exact
+// replay would introduce an allocation solely to shrink the empty variant.
+// crucible-lint: allow rust-allow -- the large variant is bounded by the executor message limit.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum SubmitPreflight {
     /// An exact replay, conflict, or stale epoch produced a complete response.
     Resolved(SubmitAttemptResponse),
@@ -1466,7 +1535,8 @@ where
                 ..
             } if current_execution == queued.execution
                 && current_observation == observation
-                && (finding_candidate.is_none() || current_candidate == finding_candidate) =>
+                && (finding_candidate.is_none()
+                    || current_candidate.candidate() == finding_candidate) =>
             {
                 self.release_active_if_present(queued.execution)?;
                 Ok(ObservationPublicationOutcome::AlreadyCompleted)
@@ -1839,7 +1909,7 @@ where
                     });
                 }
                 self.validator
-                    .validate_completion(&active.request, observation)
+                    .validate_completion_artifacts(&active.request, observation, finding_candidate)
                     .map_err(|reason| LocalExecutorError::CompletionValidation { reason })?;
                 let next = AttemptRuntimeState::Completed {
                     execution_basis,
@@ -1847,7 +1917,7 @@ where
                     daemon_epoch,
                     execution,
                     observation,
-                    finding_candidate,
+                    finding_candidate: CompletedFindingCandidate::pending(finding_candidate),
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
                 self.release_active_if_present(execution)?;
@@ -2154,30 +2224,50 @@ where
 
         if current.execution_basis() == execution_basis && resume_origin_matches(current.origin()) {
             match current {
-                AttemptRuntimeState::Completed { observation, .. } => {
-                    let disposition =
-                        match self.validator.validate_completion(&assignment, observation) {
-                            Ok(()) => {
-                                ResumeAttemptExecutionDisposition::AlreadyCompleted { observation }
-                            }
-                            Err(CompletionValidationFailure::UnavailableInput) => {
-                                ResumeAttemptExecutionDisposition::Rejected {
-                                    reason: ExecutorRejection::UnavailableInput,
-                                }
-                            }
-                            Err(CompletionValidationFailure::Unauthorized) => {
-                                ResumeAttemptExecutionDisposition::Rejected {
-                                    reason: ExecutorRejection::Unauthorized,
-                                }
-                            }
-                            Err(CompletionValidationFailure::Incompatible) => {
-                                ResumeAttemptExecutionDisposition::Rejected {
-                                    reason: ExecutorRejection::Incompatible,
-                                }
-                            }
-                        };
-                    return ResumeAttemptExecutionResponse::new(request, disposition)
-                        .map_err(Into::into);
+                AttemptRuntimeState::Completed {
+                    observation,
+                    finding_candidate,
+                    ..
+                } => {
+                    let finding_candidate = finding_candidate.candidate();
+                    let (disposition, response_candidate) = match self
+                        .validator
+                        .validate_completion_artifacts(&assignment, observation, finding_candidate)
+                    {
+                        Ok(()) => (
+                            ResumeAttemptExecutionDisposition::AlreadyCompleted { observation },
+                            finding_candidate,
+                        ),
+                        Err(CompletionValidationFailure::UnavailableInput) => (
+                            ResumeAttemptExecutionDisposition::Rejected {
+                                reason: ExecutorRejection::UnavailableInput,
+                            },
+                            None,
+                        ),
+                        Err(CompletionValidationFailure::Unauthorized) => (
+                            ResumeAttemptExecutionDisposition::Rejected {
+                                reason: ExecutorRejection::Unauthorized,
+                            },
+                            None,
+                        ),
+                        Err(CompletionValidationFailure::Incompatible) => (
+                            ResumeAttemptExecutionDisposition::Rejected {
+                                reason: ExecutorRejection::Incompatible,
+                            },
+                            None,
+                        ),
+                    };
+                    return match response_candidate {
+                        Some(candidate) => {
+                            ResumeAttemptExecutionResponse::new_with_finding_candidate(
+                                request,
+                                disposition,
+                                candidate,
+                            )
+                        }
+                        None => ResumeAttemptExecutionResponse::new(request, disposition),
+                    }
+                    .map_err(Into::into);
                 }
                 AttemptRuntimeState::Canceled { .. } => {
                     return ResumeAttemptExecutionResponse::new(
@@ -2582,7 +2672,11 @@ where
                     finding_candidate,
                 },
             ) if current_basis == execution_basis => {
-                match self.validator.validate_completion(request, observation) {
+                match self.validator.validate_completion_artifacts(
+                    request,
+                    observation,
+                    finding_candidate,
+                ) {
                     Ok(()) => {
                         let completed = AttemptRuntimeState::Completed {
                             execution_basis: current_basis,
@@ -2590,16 +2684,19 @@ where
                             daemon_epoch,
                             execution,
                             observation,
-                            finding_candidate,
+                            finding_candidate: CompletedFindingCandidate::pending(
+                                finding_candidate,
+                            ),
                         };
                         let advance = self.advance_attempt(key, publishing, Some(completed))?;
                         if let AttemptAdvance::CommittedAfterError(error) = advance {
                             return Err(LocalExecutorError::Ledger(error));
                         }
                         self.release_active_if_present(execution)?;
-                        return self.persist_response(
+                        return self.persist_response_with_finding_candidate(
                             request,
                             SubmitAttemptDisposition::AlreadyCompleted { observation },
+                            finding_candidate,
                         );
                     }
                     Err(CompletionValidationFailure::UnavailableInput) => {
@@ -2655,13 +2752,20 @@ where
             Some(AttemptRuntimeState::Completed {
                 execution_basis: current_basis,
                 observation,
+                finding_candidate,
                 ..
             }) if current_basis == execution_basis => {
-                match self.validator.validate_completion(request, observation) {
+                let finding_candidate = finding_candidate.candidate();
+                match self.validator.validate_completion_artifacts(
+                    request,
+                    observation,
+                    finding_candidate,
+                ) {
                     Ok(()) => {
-                        return self.persist_response(
+                        return self.persist_response_with_finding_candidate(
                             request,
                             SubmitAttemptDisposition::AlreadyCompleted { observation },
+                            finding_candidate,
                         );
                     }
                     Err(CompletionValidationFailure::UnavailableInput) => {
@@ -2804,7 +2908,17 @@ where
         request: &SubmitAttemptRequest,
         disposition: SubmitAttemptDisposition,
     ) -> Result<SubmitAttemptResponse, LocalExecutorError<L::Error>> {
-        let response = self.response(request, disposition)?;
+        self.persist_response_with_finding_candidate(request, disposition, None)
+    }
+
+    fn persist_response_with_finding_candidate(
+        &mut self,
+        request: &SubmitAttemptRequest,
+        disposition: SubmitAttemptDisposition,
+        finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<SubmitAttemptResponse, LocalExecutorError<L::Error>> {
+        let response =
+            self.response_with_finding_candidate(request, disposition, finding_candidate)?;
         let record = AssignmentRecord::new(request.clone(), response.clone())?;
         match self
             .ledger
@@ -2823,7 +2937,22 @@ where
         request: &SubmitAttemptRequest,
         disposition: SubmitAttemptDisposition,
     ) -> Result<SubmitAttemptResponse, LocalExecutorError<L::Error>> {
-        SubmitAttemptResponse::new(request, disposition).map_err(Into::into)
+        self.response_with_finding_candidate(request, disposition, None)
+    }
+
+    fn response_with_finding_candidate(
+        &self,
+        request: &SubmitAttemptRequest,
+        disposition: SubmitAttemptDisposition,
+        finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<SubmitAttemptResponse, LocalExecutorError<L::Error>> {
+        match finding_candidate {
+            Some(candidate) => {
+                SubmitAttemptResponse::new_with_finding_candidate(request, disposition, candidate)
+            }
+            None => SubmitAttemptResponse::new(request, disposition),
+        }
+        .map_err(Into::into)
     }
 
     fn advance_attempt(
@@ -3072,7 +3201,7 @@ where
             .ledger
             .load_attempt(key)
             .map_err(LocalExecutorError::Ledger)?;
-        let disposition = match state {
+        let (disposition, finding_candidate) = match state {
             Some(state)
                 if state.daemon_epoch() == request.daemon_epoch()
                     && state.execution() == request.execution()
@@ -3081,37 +3210,67 @@ where
                 match state {
                     AttemptRuntimeState::Running { .. }
                     | AttemptRuntimeState::Publishing { .. } => {
-                        GetAttemptExecutionDisposition::Running
+                        (GetAttemptExecutionDisposition::Running, None)
                     }
                     AttemptRuntimeState::CheckpointRequested { .. } => {
-                        GetAttemptExecutionDisposition::CheckpointRequested
+                        (GetAttemptExecutionDisposition::CheckpointRequested, None)
                     }
-                    AttemptRuntimeState::CheckpointPublishing { checkpoint, .. } => {
-                        GetAttemptExecutionDisposition::CheckpointPublishing { checkpoint }
-                    }
+                    AttemptRuntimeState::CheckpointPublishing { checkpoint, .. } => (
+                        GetAttemptExecutionDisposition::CheckpointPublishing { checkpoint },
+                        None,
+                    ),
                     AttemptRuntimeState::CheckpointPromoting {
                         promoted_checkpoint,
                         ..
-                    } => GetAttemptExecutionDisposition::CheckpointPublishing {
-                        checkpoint: promoted_checkpoint,
-                    },
+                    } => (
+                        GetAttemptExecutionDisposition::CheckpointPublishing {
+                            checkpoint: promoted_checkpoint,
+                        },
+                        None,
+                    ),
                     AttemptRuntimeState::Paused { checkpoint, .. } => {
-                        GetAttemptExecutionDisposition::Paused { checkpoint }
+                        (GetAttemptExecutionDisposition::Paused { checkpoint }, None)
                     }
-                    AttemptRuntimeState::Completed { observation, .. } => {
-                        GetAttemptExecutionDisposition::Completed { observation }
+                    AttemptRuntimeState::Completed {
+                        observation,
+                        finding_candidate,
+                        ..
+                    } => {
+                        let finding_candidate = finding_candidate.candidate();
+                        self.validator
+                            .validate_retained_completion(
+                                request.lineage(),
+                                request.attempt(),
+                                observation,
+                                finding_candidate,
+                            )
+                            .map_err(|reason| LocalExecutorError::CompletionValidation {
+                                reason,
+                            })?;
+                        (
+                            GetAttemptExecutionDisposition::Completed { observation },
+                            finding_candidate,
+                        )
                     }
                     AttemptRuntimeState::Canceled { .. } => {
-                        GetAttemptExecutionDisposition::Canceled
+                        (GetAttemptExecutionDisposition::Canceled, None)
                     }
                     AttemptRuntimeState::TerminalFailure { .. } => {
-                        GetAttemptExecutionDisposition::TerminalFailure
+                        (GetAttemptExecutionDisposition::TerminalFailure, None)
                     }
                 }
             }
-            Some(_) | None => GetAttemptExecutionDisposition::NotCurrent,
+            Some(_) | None => (GetAttemptExecutionDisposition::NotCurrent, None),
         };
-        GetAttemptExecutionResponse::new(request, disposition).map_err(Into::into)
+        match finding_candidate {
+            Some(candidate) => GetAttemptExecutionResponse::new_with_finding_candidate(
+                request,
+                disposition,
+                candidate,
+            ),
+            None => GetAttemptExecutionResponse::new(request, disposition),
+        }
+        .map_err(Into::into)
     }
 }
 
@@ -3134,6 +3293,24 @@ where
                 && state.execution() == request.execution()
                 && state.execution_basis() == request.execution_basis()
         });
+        if exact
+            && let Some(AttemptRuntimeState::Completed {
+                observation,
+                finding_candidate,
+                ..
+            }) = state
+        {
+            let finding_candidate = finding_candidate.candidate();
+            self.validator
+                .validate_retained_completion(
+                    request.lineage(),
+                    request.attempt(),
+                    observation,
+                    finding_candidate,
+                )
+                .map_err(|reason| LocalExecutorError::CompletionValidation { reason })?;
+        }
+        let finding_candidate = state.and_then(AttemptRuntimeState::finding_candidate);
         let disposition = if exact {
             match self.request_checkpoint(key, request.execution())? {
                 CheckpointRequestOutcome::Requested => {
@@ -3161,7 +3338,17 @@ where
         } else {
             CheckpointAttemptExecutionDisposition::NotCurrent
         };
-        CheckpointAttemptExecutionResponse::new(request, disposition).map_err(Into::into)
+        match (disposition, finding_candidate) {
+            (CheckpointAttemptExecutionDisposition::AlreadyCompleted { .. }, Some(candidate)) => {
+                CheckpointAttemptExecutionResponse::new_with_finding_candidate(
+                    request,
+                    disposition,
+                    candidate,
+                )
+            }
+            _ => CheckpointAttemptExecutionResponse::new(request, disposition),
+        }
+        .map_err(Into::into)
     }
 
     fn cancel_attempt_execution(
@@ -3178,6 +3365,24 @@ where
                 && state.execution() == request.execution()
                 && state.execution_basis() == request.execution_basis()
         });
+        if exact
+            && let Some(AttemptRuntimeState::Completed {
+                observation,
+                finding_candidate,
+                ..
+            }) = state
+        {
+            let finding_candidate = finding_candidate.candidate();
+            self.validator
+                .validate_retained_completion(
+                    request.lineage(),
+                    request.attempt(),
+                    observation,
+                    finding_candidate,
+                )
+                .map_err(|reason| LocalExecutorError::CompletionValidation { reason })?;
+        }
+        let finding_candidate = state.and_then(AttemptRuntimeState::finding_candidate);
         let disposition = if exact {
             match self.cancel_execution(key, request.execution())? {
                 CancellationOutcome::Canceled => CancelAttemptExecutionDisposition::Canceled,
@@ -3192,7 +3397,17 @@ where
         } else {
             CancelAttemptExecutionDisposition::NotCurrent
         };
-        CancelAttemptExecutionResponse::new(request, disposition).map_err(Into::into)
+        match (disposition, finding_candidate) {
+            (CancelAttemptExecutionDisposition::AlreadyCompleted { .. }, Some(candidate)) => {
+                CancelAttemptExecutionResponse::new_with_finding_candidate(
+                    request,
+                    disposition,
+                    candidate,
+                )
+            }
+            _ => CancelAttemptExecutionResponse::new(request, disposition),
+        }
+        .map_err(Into::into)
     }
 }
 

@@ -138,6 +138,22 @@ impl AssignmentRetentionFence for RootLedgerFence<'_> {
                 .expect("finding candidate count fits u64"),
         ))
     }
+
+    fn load_attempt(
+        &mut self,
+        _key: AttemptExecutionKey,
+    ) -> Result<Option<AttemptRuntimeState>, Self::BackendError> {
+        Ok(None)
+    }
+
+    fn compare_exchange_attempt(
+        &mut self,
+        _key: AttemptExecutionKey,
+        _expected: Option<AttemptRuntimeState>,
+        _next: Option<AttemptRuntimeState>,
+    ) -> Result<AttemptStateCas, Self::BackendError> {
+        Ok(AttemptStateCas::Conflict { current: None })
+    }
 }
 
 #[test]
