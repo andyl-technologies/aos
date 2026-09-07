@@ -311,6 +311,14 @@
     identity = qualificationExecutorIdentity;
     reportPath = "/run/aos-release/qualification-reports/production-recovery.json";
   };
+  containerLifecycleScenario =
+    if hostPlatform.isLinux
+    then
+      testing.mkQualificationContainerScenario {
+        name = "aos-qualification-${hostPlatform.system}-container-lifecycle";
+        identity = qualificationExecutorIdentity;
+      }
+    else null;
   qualificationTargetIds = map (target: target.id) (
     builtins.filter (target: target.platform == hostPlatform.system) releaseQualification.targets
   );
@@ -337,12 +345,16 @@
       value = "${qualificationReportScenario}/bin/aos-qualification-${hostPlatform.system}-report";
     })
     qualificationScenarioIds);
+  qualificationAutomatedScenarios = lib.optionalAttrs hostPlatform.isLinux {
+    "claim-container-${hostPlatform.system}-functional" = "${containerLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-container-lifecycle";
+  };
   releaseQualificationExecutor = testing.mkQualificationExecutor {
     name = "aos-qualification-${hostPlatform.system}";
     platform = hostPlatform.system;
     identity = qualificationExecutorIdentity;
     scenarios =
       qualificationReportScenarios
+      // qualificationAutomatedScenarios
       // lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
         operator-recovery = "${operatorRecoveryScenario}/bin/aos-qualification-operator-recovery";
         production-recovery = "${productionRecoveryScenario}/bin/aos-qualification-production-recovery";

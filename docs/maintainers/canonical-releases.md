@@ -752,6 +752,16 @@ output. Successful adapters must not write diagnostics. They download every
 object they exercise from the anonymous URLs in the request and verify the
 declared length and SHA-256 before testing it.
 
+Run `aos release qualification cases` first and retain its
+`environment_profile_digests`. Review the compatibility scope and sources for
+each required target, then install the canonical assessment object as
+`/etc/aos-release/qualification-assessments/<target-id>.json` on the applicable
+Linux executor host. The built-in container lifecycle program refuses a
+missing, symlinked, or scope-mismatched assessment and records its own concrete
+execution inventory. Install the matching `qualification-executor-<platform>`
+flake output rather than copying an individual scenario script without its
+closure.
+
 ```sh
 aos release qualify-run \
   --bundle release-bundle \
