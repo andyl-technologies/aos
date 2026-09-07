@@ -262,8 +262,10 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             .get(schema)
             .unwrap_or_else(|| panic!("missing executor component schema {schema}"));
         let expected_version = match schema {
-            "crucible.campaign.submit-attempt-response"
+            "crucible.campaign.submit-attempt-request"
+            | "crucible.campaign.submit-attempt-response"
             | "crucible.campaign.get-attempt-execution-response"
+            | "crucible.campaign.resume-attempt-execution-request"
             | "crucible.campaign.resume-attempt-execution-response" => "3",
             _ => "2",
         };

@@ -6,6 +6,9 @@
 //! ```text
 //! SubmitAttemptRequestV2 = version | assignment | daemon-epoch | lineage |
 //!                          attempt | resource-limits | retention-intent
+//! SubmitAttemptRequestV3 = version | assignment | daemon-epoch | lineage |
+//!                          attempt | resource-limits | retention-intent |
+//!                          start-mode
 //! SubmitAttemptResponseV2/V3 = version | assignment | daemon-epoch | attempt |
 //!                              request-digest | disposition
 //! SubmitAttemptResponseV4 = version | assignment | daemon-epoch | attempt |
@@ -22,6 +25,10 @@
 //!                                    lineage | attempt | prior-execution |
 //!                                    checkpoint | resource-limits |
 //!                                    retention-intent
+//! ResumeAttemptExecutionRequestV3 = version | assignment | daemon-epoch |
+//!                                    lineage | attempt | prior-execution |
+//!                                    checkpoint | resource-limits |
+//!                                    retention-intent | prior-start-mode
 //! ResumeAttemptExecutionResponseV2/V3 = version | assignment | daemon-epoch |
 //!                                        attempt | prior-execution | checkpoint |
 //!                                        request-digest | disposition
@@ -60,10 +67,12 @@ use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::policy::validate_identifier;
 use crate::{
     AttemptId, CampaignCodecError, CampaignHash, CampaignLineage, CampaignLineageId,
-    ExactCheckpointId, FindingCandidateBundleId, ObservationId,
+    ConfigurationArtifactId, ExactCheckpointId, FindingCandidateBundleId, ObservationId,
 };
 
 const EXECUTOR_MESSAGE_SCHEMA_VERSION: u32 = 2;
+const SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION: u32 = 3;
+const RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION: u32 = 3;
 const SUBMIT_ATTEMPT_RESPONSE_SCHEMA_VERSION: u32 = 3;
 const GET_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION: u32 = 3;
 const RESUME_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION: u32 = 3;
@@ -91,6 +100,35 @@ pub fn attempt_execution_basis_digest(
     retention.encode(&mut encoder);
     CampaignHash::derive(
         "crucible.campaign.submit-attempt-execution-basis.v1",
+        &encoder.finish(),
+    )
+}
+
+/// Derives the assignment-neutral digest for an explicit attempt start mode.
+///
+/// [`AttemptStartMode::Execute`] preserves the version 1 execution-basis
+/// digest exactly. Materialized-start capture uses a separate version 2 domain
+/// that also authenticates the requested configuration artifact.
+#[must_use]
+pub fn attempt_execution_basis_digest_for_start_mode(
+    lineage: CampaignLineageId,
+    attempt: AttemptId,
+    resources: AttemptResourceLimits,
+    retention: ExecutionRetentionIntent,
+    start_mode: AttemptStartMode,
+) -> CampaignHash {
+    if start_mode == AttemptStartMode::Execute {
+        return attempt_execution_basis_digest(lineage, attempt, resources, retention);
+    }
+
+    let mut encoder = Encoder::new();
+    lineage.encode(&mut encoder);
+    attempt.encode(&mut encoder);
+    resources.encode(&mut encoder);
+    retention.encode(&mut encoder);
+    start_mode.encode(&mut encoder);
+    CampaignHash::derive(
+        "crucible.campaign.submit-attempt-execution-basis.v2",
         &encoder.finish(),
     )
 }
@@ -404,6 +442,43 @@ impl Canonical for ExecutionRetentionIntent {
     }
 }
 
+/// Operational behavior requested immediately after start materialization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttemptStartMode {
+    /// Runs the semantic attempt from its authenticated start configuration.
+    Execute,
+    /// Captures the exact materialized start before any modeled quantum.
+    CaptureMaterializedStart {
+        /// Exact configuration artifact the worker must authenticate at start.
+        configuration: ConfigurationArtifactId,
+    },
+}
+
+impl Canonical for AttemptStartMode {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Self::Execute => encoder.u8(0),
+            Self::CaptureMaterializedStart { configuration } => {
+                encoder.u8(1);
+                configuration.encode(encoder);
+            }
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::Execute),
+            1 => Ok(Self::CaptureMaterializedStart {
+                configuration: ConfigurationArtifactId::decode(decoder)?,
+            }),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "attempt-start-mode",
+                tag,
+            }),
+        }
+    }
+}
+
 /// Strict bounded request for one local executor assignment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubmitAttemptRequest {
@@ -414,6 +489,7 @@ pub struct SubmitAttemptRequest {
     attempt: AttemptId,
     resources: AttemptResourceLimits,
     retention: ExecutionRetentionIntent,
+    start_mode: AttemptStartMode,
 }
 
 impl SubmitAttemptRequest {
@@ -443,6 +519,44 @@ impl SubmitAttemptRequest {
             attempt,
             resources,
             retention,
+            start_mode: AttemptStartMode::Execute,
+        };
+        codec::ensure_encoded_size(
+            &request,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "submit-attempt-request-encoded-bytes",
+        )?;
+        Ok(request)
+    }
+
+    /// Builds an assignment that captures its authenticated materialized start.
+    ///
+    /// The executor durably requests an exact checkpoint before dispatch. The
+    /// worker must authenticate `configuration` against the resolved start
+    /// artifact before publishing the checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resulting component message exceeds its strict
+    /// encoded bound.
+    pub fn new_capture_materialized_start(
+        assignment: AssignmentId,
+        daemon_epoch: DaemonEpoch,
+        lineage: CampaignLineageId,
+        attempt: AttemptId,
+        resources: AttemptResourceLimits,
+        retention: ExecutionRetentionIntent,
+        configuration: ConfigurationArtifactId,
+    ) -> Result<Self, CampaignCodecError> {
+        let request = Self {
+            schema_version: SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION,
+            assignment,
+            daemon_epoch,
+            lineage,
+            attempt,
+            resources,
+            retention,
+            start_mode: AttemptStartMode::CaptureMaterializedStart { configuration },
         };
         codec::ensure_encoded_size(
             &request,
@@ -488,13 +602,21 @@ impl SubmitAttemptRequest {
         self.retention
     }
 
+    /// Returns the requested behavior at the materialized execution start.
+    #[must_use]
+    pub const fn start_mode(&self) -> AttemptStartMode {
+        self.start_mode
+    }
+
     /// Returns the domain-separated digest of every canonical request field.
     #[must_use]
     pub fn request_digest(&self) -> CampaignHash {
-        CampaignHash::derive(
-            "crucible.campaign.submit-attempt-request.v2",
-            &self.canonical_bytes(),
-        )
+        let domain = if self.schema_version == EXECUTOR_MESSAGE_SCHEMA_VERSION {
+            "crucible.campaign.submit-attempt-request.v2"
+        } else {
+            "crucible.campaign.submit-attempt-request.v3"
+        };
+        CampaignHash::derive(domain, &self.canonical_bytes())
     }
 
     /// Returns the assignment-neutral local execution-contract digest.
@@ -504,7 +626,13 @@ impl SubmitAttemptRequest {
     /// share one running or completed execution only when this digest matches.
     #[must_use]
     pub fn execution_basis_digest(&self) -> CampaignHash {
-        attempt_execution_basis_digest(self.lineage, self.attempt, self.resources, self.retention)
+        attempt_execution_basis_digest_for_start_mode(
+            self.lineage,
+            self.attempt,
+            self.resources,
+            self.retention,
+            self.start_mode,
+        )
     }
 
     /// Returns strict canonical component-message bytes.
@@ -533,19 +661,45 @@ impl Canonical for SubmitAttemptRequest {
         self.attempt.encode(encoder);
         self.resources.encode(encoder);
         self.retention.encode(encoder);
+        if self.schema_version == SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION {
+            self.start_mode.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_executor_message_version(u32::decode(decoder)?)?;
+        let schema_version = u32::decode(decoder)?;
+        require_submit_attempt_request_version(schema_version)?;
         let assignment = AssignmentId::decode(decoder)?;
         let daemon_epoch = DaemonEpoch::decode(decoder)?;
-        Self::new(
+        let lineage = CampaignLineageId::decode(decoder)?;
+        let attempt = AttemptId::decode(decoder)?;
+        let resources = AttemptResourceLimits::decode(decoder)?;
+        let retention = ExecutionRetentionIntent::decode(decoder)?;
+        if schema_version == EXECUTOR_MESSAGE_SCHEMA_VERSION {
+            return Self::new(
+                assignment,
+                daemon_epoch,
+                lineage,
+                attempt,
+                resources,
+                retention,
+            );
+        }
+
+        let start_mode = AttemptStartMode::decode(decoder)?;
+        let AttemptStartMode::CaptureMaterializedStart { configuration } = start_mode else {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "submit attempt request version 3 requires materialized-start capture",
+            });
+        };
+        Self::new_capture_materialized_start(
             assignment,
             daemon_epoch,
-            CampaignLineageId::decode(decoder)?,
-            AttemptId::decode(decoder)?,
-            AttemptResourceLimits::decode(decoder)?,
-            ExecutionRetentionIntent::decode(decoder)?,
+            lineage,
+            attempt,
+            resources,
+            retention,
+            configuration,
         )
     }
 }
@@ -1372,6 +1526,7 @@ pub struct ResumeAttemptExecutionRequest {
     checkpoint: ExactCheckpointId,
     resources: AttemptResourceLimits,
     retention: ExecutionRetentionIntent,
+    prior_start_mode: AttemptStartMode,
 }
 
 impl ResumeAttemptExecutionRequest {
@@ -1384,12 +1539,14 @@ impl ResumeAttemptExecutionRequest {
     ///
     /// # Errors
     ///
-    /// Returns an error if the resulting component message exceeds 4 KiB.
+    /// Returns an error if `assignment` is a materialized-start capture or the
+    /// resulting component message exceeds 4 KiB.
     pub fn new(
         assignment: &SubmitAttemptRequest,
         prior_execution: ExecutionId,
         checkpoint: ExactCheckpointId,
     ) -> Result<Self, CampaignCodecError> {
+        require_execute_resume_assignment(assignment)?;
         let request = Self {
             schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
             assignment: assignment.assignment(),
@@ -1400,6 +1557,44 @@ impl ResumeAttemptExecutionRequest {
             checkpoint,
             resources: assignment.resources(),
             retention: assignment.retention(),
+            prior_start_mode: AttemptStartMode::Execute,
+        };
+        codec::ensure_encoded_size(
+            &request,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "resume-attempt-execution-request-encoded-bytes",
+        )?;
+        Ok(request)
+    }
+
+    /// Builds a request that resumes a materialized-start capture as execution.
+    ///
+    /// `assignment` is the fresh ordinary-execution assignment. The prior
+    /// capture mode remains separately authenticated so the executor can match
+    /// the paused root before replacing its operational basis.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `assignment` is itself a capture request or the
+    /// resulting component message exceeds its strict encoded bound.
+    pub fn new_from_materialized_start(
+        assignment: &SubmitAttemptRequest,
+        prior_execution: ExecutionId,
+        checkpoint: ExactCheckpointId,
+        configuration: ConfigurationArtifactId,
+    ) -> Result<Self, CampaignCodecError> {
+        require_execute_resume_assignment(assignment)?;
+        let request = Self {
+            schema_version: RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION,
+            assignment: assignment.assignment(),
+            daemon_epoch: assignment.daemon_epoch(),
+            lineage: assignment.lineage(),
+            attempt: assignment.attempt(),
+            prior_execution,
+            checkpoint,
+            resources: assignment.resources(),
+            retention: assignment.retention(),
+            prior_start_mode: AttemptStartMode::CaptureMaterializedStart { configuration },
         };
         codec::ensure_encoded_size(
             &request,
@@ -1457,6 +1652,12 @@ impl ResumeAttemptExecutionRequest {
         self.retention
     }
 
+    /// Returns the start mode that produced the paused checkpoint.
+    #[must_use]
+    pub const fn prior_start_mode(&self) -> AttemptStartMode {
+        self.prior_start_mode
+    }
+
     /// Reconstructs the exact new-incarnation assignment basis.
     ///
     /// # Errors
@@ -1480,13 +1681,27 @@ impl ResumeAttemptExecutionRequest {
         attempt_execution_basis_digest(self.lineage, self.attempt, self.resources, self.retention)
     }
 
+    /// Returns the execution basis that must own the paused checkpoint.
+    #[must_use]
+    pub fn prior_execution_basis_digest(&self) -> CampaignHash {
+        attempt_execution_basis_digest_for_start_mode(
+            self.lineage,
+            self.attempt,
+            self.resources,
+            self.retention,
+            self.prior_start_mode,
+        )
+    }
+
     /// Returns the domain-separated digest of every canonical request field.
     #[must_use]
     pub fn request_digest(&self) -> CampaignHash {
-        CampaignHash::derive(
-            "crucible.campaign.resume-attempt-execution-request.v2",
-            &self.canonical_bytes(),
-        )
+        let domain = if self.schema_version == EXECUTOR_MESSAGE_SCHEMA_VERSION {
+            "crucible.campaign.resume-attempt-execution-request.v2"
+        } else {
+            "crucible.campaign.resume-attempt-execution-request.v3"
+        };
+        CampaignHash::derive(domain, &self.canonical_bytes())
     }
 
     /// Returns strict canonical component-message bytes.
@@ -1517,10 +1732,14 @@ impl Canonical for ResumeAttemptExecutionRequest {
         self.checkpoint.encode(encoder);
         self.resources.encode(encoder);
         self.retention.encode(encoder);
+        if self.schema_version == RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION {
+            self.prior_start_mode.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_executor_message_version(u32::decode(decoder)?)?;
+        let schema_version = u32::decode(decoder)?;
+        require_resume_attempt_execution_request_version(schema_version)?;
         let assignment = AssignmentId::decode(decoder)?;
         let daemon_epoch = DaemonEpoch::decode(decoder)?;
         let lineage = CampaignLineageId::decode(decoder)?;
@@ -1537,7 +1756,17 @@ impl Canonical for ResumeAttemptExecutionRequest {
             resources,
             retention,
         )?;
-        Self::new(&assignment, prior_execution, checkpoint)
+        if schema_version == EXECUTOR_MESSAGE_SCHEMA_VERSION {
+            return Self::new(&assignment, prior_execution, checkpoint);
+        }
+
+        let prior_start_mode = AttemptStartMode::decode(decoder)?;
+        let AttemptStartMode::CaptureMaterializedStart { configuration } = prior_start_mode else {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "resume attempt request version 3 requires materialized-start capture",
+            });
+        };
+        Self::new_from_materialized_start(&assignment, prior_execution, checkpoint, configuration)
     }
 }
 
@@ -2970,6 +3199,44 @@ const fn require_executor_message_version(version: u32) -> Result<(), CampaignCo
     } else {
         Err(CampaignCodecError::InvalidValue {
             reason: "unsupported executor component-message schema version",
+        })
+    }
+}
+
+const fn require_submit_attempt_request_version(version: u32) -> Result<(), CampaignCodecError> {
+    if version == EXECUTOR_MESSAGE_SCHEMA_VERSION
+        || version == SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION
+    {
+        Ok(())
+    } else {
+        Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported executor component-message schema version",
+        })
+    }
+}
+
+const fn require_resume_attempt_execution_request_version(
+    version: u32,
+) -> Result<(), CampaignCodecError> {
+    if version == EXECUTOR_MESSAGE_SCHEMA_VERSION
+        || version == RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
+    {
+        Ok(())
+    } else {
+        Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported executor component-message schema version",
+        })
+    }
+}
+
+fn require_execute_resume_assignment(
+    assignment: &SubmitAttemptRequest,
+) -> Result<(), CampaignCodecError> {
+    if assignment.start_mode() == AttemptStartMode::Execute {
+        Ok(())
+    } else {
+        Err(CampaignCodecError::InvalidValue {
+            reason: "resume requires an execute assignment",
         })
     }
 }

@@ -140,7 +140,8 @@ fn classify_production_promotion_failure(
                     classify_repository_failure(error)
                 }
                 crate::PausedCheckpointPromotionRecoveryResolutionError::Artifact(_)
-                | crate::PausedCheckpointPromotionRecoveryResolutionError::ExecutionBasisMismatch => {
+                | crate::PausedCheckpointPromotionRecoveryResolutionError::ExecutionBasisMismatch
+                | crate::PausedCheckpointPromotionRecoveryResolutionError::CaptureStartMismatch => {
                     PromotionFailureClass::Terminal
                 }
             }
@@ -225,6 +226,7 @@ fn classify_restore_failure(
         | ProductionAttemptCheckpointRestoreError::ClosureIdentityMismatch { .. }
         | ProductionAttemptCheckpointRestoreError::CheckpointConfigurationMismatch { .. }
         | ProductionAttemptCheckpointRestoreError::AttemptPrefixMismatch { .. }
+        | ProductionAttemptCheckpointRestoreError::MaterializedStartMismatch { .. }
         | ProductionAttemptCheckpointRestoreError::NestedCampaignBranch { .. }
         | ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady { .. }
         | ProductionAttemptCheckpointRestoreError::Checkpoint(_)

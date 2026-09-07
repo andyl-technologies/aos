@@ -85,7 +85,7 @@ pub use choice::{
 };
 pub use codec::CampaignCodecError;
 pub use execution::{
-    AssignmentId, AttemptResourceLimits, CancelAttemptExecutionDisposition,
+    AssignmentId, AttemptResourceLimits, AttemptStartMode, CancelAttemptExecutionDisposition,
     CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
     CheckpointAttemptExecutionDisposition, CheckpointAttemptExecutionRequest,
     CheckpointAttemptExecutionResponse, DaemonEpoch, ExecutionId, ExecutionRetentionIntent,
@@ -95,6 +95,7 @@ pub use execution::{
     MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES, ResumeAttemptExecutionDisposition,
     ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, SubmitAttemptDisposition,
     SubmitAttemptRequest, SubmitAttemptResponse, attempt_execution_basis_digest,
+    attempt_execution_basis_digest_for_start_mode,
 };
 pub use executor_capability::{
     DescribeExecutorRequest, ExecutorCapabilityService, ExecutorCapabilitySet,

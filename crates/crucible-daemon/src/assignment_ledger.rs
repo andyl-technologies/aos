@@ -25,15 +25,16 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crucible_campaign::{
-    AssignmentId, AttemptId, AttemptResourceLimits, CampaignCodecError, CampaignHash,
-    CampaignLineageId, DaemonEpoch, ExactCheckpointId, ExecutionId, ExecutionRetentionIntent,
-    FindingCandidateBundleId, ObservationId, SubmitAttemptRequest, SubmitAttemptResponse,
-    attempt_execution_basis_digest,
+    AssignmentId, AttemptId, AttemptResourceLimits, AttemptStartMode, CampaignCodecError,
+    CampaignHash, CampaignLineageId, ConfigurationArtifactId, DaemonEpoch, ExactCheckpointId,
+    ExecutionId, ExecutionRetentionIntent, FindingCandidateBundleId, ObservationId,
+    SubmitAttemptRequest, SubmitAttemptResponse, attempt_execution_basis_digest_for_start_mode,
 };
 use rustix::fs::{FlockOperation, flock};
 
 const ASSIGNMENT_MAGIC: &[u8] = b"crucible.executor.assignment-record.v1\0";
-const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v9\0";
+const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v10\0";
+const ATTEMPT_STATE_MAGIC_V9: &[u8] = b"crucible.executor.attempt-state-record.v9\0";
 const ATTEMPT_STATE_MAGIC_V8: &[u8] = b"crucible.executor.attempt-state-record.v8\0";
 const ATTEMPT_STATE_MAGIC_V7: &[u8] = b"crucible.executor.attempt-state-record.v7\0";
 const ATTEMPT_STATE_MAGIC_V6: &[u8] = b"crucible.executor.attempt-state-record.v6\0";
@@ -43,7 +44,8 @@ const ATTEMPT_STATE_MAGIC_V3: &[u8] = b"crucible.executor.attempt-state-record.v
 const ATTEMPT_STATE_MAGIC_V2: &[u8] = b"crucible.executor.attempt-state-record.v2\0";
 const ATTEMPT_STATE_MAGIC_V1: &[u8] = b"crucible.executor.attempt-state-record.v1\0";
 const ASSIGNMENT_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-record.v1";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v9";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v10";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN_V9: &str = "crucible.executor.attempt-state-record.v9";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V8: &str = "crucible.executor.attempt-state-record.v8";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V7: &str = "crucible.executor.attempt-state-record.v7";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V6: &str = "crucible.executor.attempt-state-record.v6";
@@ -190,10 +192,11 @@ impl CompletedFindingCandidate {
 pub struct CheckpointPromotionExecutionBasis {
     resources: AttemptResourceLimits,
     retention: ExecutionRetentionIntent,
+    start_mode: AttemptStartMode,
 }
 
 impl CheckpointPromotionExecutionBasis {
-    /// Captures the assignment-neutral resource and retention contract.
+    /// Captures the resource and retention contract for standard execution.
     #[must_use]
     pub const fn new(
         resources: AttemptResourceLimits,
@@ -202,6 +205,21 @@ impl CheckpointPromotionExecutionBasis {
         Self {
             resources,
             retention,
+            start_mode: AttemptStartMode::Execute,
+        }
+    }
+
+    /// Captures the resource, retention, and explicit start contract.
+    #[must_use]
+    pub const fn new_for_start_mode(
+        resources: AttemptResourceLimits,
+        retention: ExecutionRetentionIntent,
+        start_mode: AttemptStartMode,
+    ) -> Self {
+        Self {
+            resources,
+            retention,
+            start_mode,
         }
     }
 
@@ -215,6 +233,12 @@ impl CheckpointPromotionExecutionBasis {
     #[must_use]
     pub const fn retention(self) -> ExecutionRetentionIntent {
         self.retention
+    }
+
+    /// Returns the execution behavior authenticated at initial materialization.
+    #[must_use]
+    pub const fn start_mode(self) -> AttemptStartMode {
+        self.start_mode
     }
 }
 
@@ -1704,6 +1728,8 @@ fn decode_attempt_state(
 ) -> Result<(AttemptExecutionKey, AttemptRuntimeState), AssignmentLedgerError> {
     let (payload, magic) = if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN) {
         (payload, ATTEMPT_STATE_MAGIC)
+    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V9) {
+        (payload, ATTEMPT_STATE_MAGIC_V9)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V8) {
         (payload, ATTEMPT_STATE_MAGIC_V8)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V7) {
@@ -1730,6 +1756,7 @@ fn decode_attempt_state(
     let attempt = parse_typed(cursor.bytes()?, AttemptId::parse)?;
     let execution_basis = CampaignHash::from_bytes(cursor.fixed()?);
     let origin = if magic == ATTEMPT_STATE_MAGIC
+        || magic == ATTEMPT_STATE_MAGIC_V9
         || magic == ATTEMPT_STATE_MAGIC_V8
         || magic == ATTEMPT_STATE_MAGIC_V7
         || magic == ATTEMPT_STATE_MAGIC_V6
@@ -1753,7 +1780,9 @@ fn decode_attempt_state(
         1 => {
             let observation = parse_typed(cursor.bytes()?, ObservationId::parse)?;
             let finding_candidate = decode_optional_finding_candidate(&mut cursor, magic)?;
-            let finding_candidate_acknowledged = if magic == ATTEMPT_STATE_MAGIC {
+            let finding_candidate_acknowledged = if magic == ATTEMPT_STATE_MAGIC
+                || magic == ATTEMPT_STATE_MAGIC_V9
+            {
                 match cursor.byte()? {
                     0 => false,
                     1 => true,
@@ -1788,6 +1817,7 @@ fn decode_attempt_state(
             execution,
         },
         8 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V9
             || magic == ATTEMPT_STATE_MAGIC_V8
             || magic == ATTEMPT_STATE_MAGIC_V7 =>
         {
@@ -1799,6 +1829,7 @@ fn decode_attempt_state(
             }
         }
         3 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V9
             || magic == ATTEMPT_STATE_MAGIC_V8
             || magic == ATTEMPT_STATE_MAGIC_V7
             || magic == ATTEMPT_STATE_MAGIC_V6
@@ -1817,6 +1848,7 @@ fn decode_attempt_state(
             }
         }
         4 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V9
             || magic == ATTEMPT_STATE_MAGIC_V8
             || magic == ATTEMPT_STATE_MAGIC_V7
             || magic == ATTEMPT_STATE_MAGIC_V6
@@ -1832,6 +1864,7 @@ fn decode_attempt_state(
             }
         }
         5 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V9
             || magic == ATTEMPT_STATE_MAGIC_V8
             || magic == ATTEMPT_STATE_MAGIC_V7
             || magic == ATTEMPT_STATE_MAGIC_V6
@@ -1848,6 +1881,7 @@ fn decode_attempt_state(
             }
         }
         6 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V9
             || magic == ATTEMPT_STATE_MAGIC_V8
             || magic == ATTEMPT_STATE_MAGIC_V7
             || magic == ATTEMPT_STATE_MAGIC_V6
@@ -1864,17 +1898,19 @@ fn decode_attempt_state(
                 promotion_basis: if matches!(
                     magic,
                     ATTEMPT_STATE_MAGIC
+                        | ATTEMPT_STATE_MAGIC_V9
                         | ATTEMPT_STATE_MAGIC_V8
                         | ATTEMPT_STATE_MAGIC_V7
                         | ATTEMPT_STATE_MAGIC_V6
                 ) {
-                    decode_checkpoint_promotion_basis(&mut cursor)?
+                    decode_checkpoint_promotion_basis(&mut cursor, magic == ATTEMPT_STATE_MAGIC)?
                 } else {
                     None
                 },
             }
         }
         7 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V9
             || magic == ATTEMPT_STATE_MAGIC_V8
             || magic == ATTEMPT_STATE_MAGIC_V7
             || magic == ATTEMPT_STATE_MAGIC_V6
@@ -1890,11 +1926,12 @@ fn decode_attempt_state(
                 promotion_basis: if matches!(
                     magic,
                     ATTEMPT_STATE_MAGIC
+                        | ATTEMPT_STATE_MAGIC_V9
                         | ATTEMPT_STATE_MAGIC_V8
                         | ATTEMPT_STATE_MAGIC_V7
                         | ATTEMPT_STATE_MAGIC_V6
                 ) {
-                    decode_checkpoint_promotion_basis(&mut cursor)?
+                    decode_checkpoint_promotion_basis(&mut cursor, magic == ATTEMPT_STATE_MAGIC)?
                 } else {
                     None
                 },
@@ -1918,11 +1955,12 @@ fn decode_attempt_state(
         | AttemptRuntimeState::TerminalFailure { .. } => None,
     };
     if let Some(promotion_basis) = promotion_basis
-        && attempt_execution_basis_digest(
+        && attempt_execution_basis_digest_for_start_mode(
             lineage,
             attempt,
             promotion_basis.resources(),
             promotion_basis.retention(),
+            promotion_basis.start_mode(),
         ) != execution_basis
     {
         return Err(corrupt("checkpoint-promotion-execution-basis-mismatch"));
@@ -1948,7 +1986,10 @@ fn decode_optional_finding_candidate(
     cursor: &mut RecordCursor<'_>,
     magic: &[u8],
 ) -> Result<Option<FindingCandidateBundleId>, AssignmentLedgerError> {
-    if magic != ATTEMPT_STATE_MAGIC && magic != ATTEMPT_STATE_MAGIC_V8 {
+    if magic != ATTEMPT_STATE_MAGIC
+        && magic != ATTEMPT_STATE_MAGIC_V9
+        && magic != ATTEMPT_STATE_MAGIC_V8
+    {
         return Ok(None);
     }
     match cursor.byte()? {
@@ -1977,10 +2018,18 @@ fn encode_checkpoint_promotion_basis(
         ExecutionRetentionIntent::RetainOnFailure => 1,
         ExecutionRetentionIntent::RetainAlways => 2,
     });
+    match basis.start_mode() {
+        AttemptStartMode::Execute => payload.push(0),
+        AttemptStartMode::CaptureMaterializedStart { configuration } => {
+            payload.push(1);
+            push_bytes(payload, configuration.to_text().as_bytes());
+        }
+    }
 }
 
 fn decode_checkpoint_promotion_basis(
     cursor: &mut RecordCursor<'_>,
+    has_start_mode: bool,
 ) -> Result<Option<CheckpointPromotionExecutionBasis>, AssignmentLedgerError> {
     match cursor.byte()? {
         0 => Ok(None),
@@ -1997,8 +2046,22 @@ fn decode_checkpoint_promotion_basis(
                 2 => ExecutionRetentionIntent::RetainAlways,
                 _ => return Err(corrupt("checkpoint-promotion-retention-tag")),
             };
-            Ok(Some(CheckpointPromotionExecutionBasis::new(
-                resources, retention,
+            let start_mode = if has_start_mode {
+                match cursor.byte()? {
+                    0 => AttemptStartMode::Execute,
+                    1 => AttemptStartMode::CaptureMaterializedStart {
+                        configuration: parse_typed(
+                            cursor.bytes()?,
+                            ConfigurationArtifactId::parse,
+                        )?,
+                    },
+                    _ => return Err(corrupt("checkpoint-promotion-start-mode-tag")),
+                }
+            } else {
+                AttemptStartMode::Execute
+            };
+            Ok(Some(CheckpointPromotionExecutionBasis::new_for_start_mode(
+                resources, retention, start_mode,
             )))
         }
         _ => Err(corrupt("checkpoint-promotion-basis-tag")),

@@ -4,10 +4,11 @@
 #![allow(clippy::expect_used)]
 
 use crucible_campaign::{
-    AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId, DaemonEpoch,
+    AssignmentId, AttemptId, AttemptResourceLimits, AttemptStartMode, CampaignHash,
+    CampaignLineageId, ConfigurationArtifact, ConfigurationId, DaemonEpoch,
     ExecutionRetentionIntent, ExecutorRejection, ExecutorService, ExecutorStatusService,
-    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, ObservationId,
-    SubmitAttemptDisposition, SubmitAttemptRequest,
+    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, ObservationId, ScenarioArtifact,
+    ScenarioDefId, SubmitAttemptDisposition, SubmitAttemptRequest,
 };
 
 use super::*;
@@ -15,6 +16,44 @@ use crate::{
     AllowAllAttemptAdmission, AssignmentLedger, AttemptExecutionKey, AttemptExecutionOrigin,
     AttemptRuntimeState, ExecutorCapacity, LocalExecutorSupervisor, MemoryAssignmentLedger,
 };
+
+#[test]
+fn capture_start_validation_requires_the_exact_discovery_artifact() {
+    let resolved = configuration_artifact(0x21);
+    let resolved_id = resolved.id().expect("resolved configuration artifact ID");
+    let requested = configuration_artifact(0x22)
+        .id()
+        .expect("requested configuration artifact ID");
+    let start = ResolvedAttemptStart::Discover {
+        configuration: resolved,
+    };
+
+    assert_eq!(
+        capture_start_validation_reason(
+            &start,
+            AttemptStartMode::CaptureMaterializedStart {
+                configuration: resolved_id,
+            },
+        )
+        .expect("matching capture validation"),
+        None
+    );
+    assert_eq!(
+        capture_start_validation_reason(
+            &start,
+            AttemptStartMode::CaptureMaterializedStart {
+                configuration: requested,
+            },
+        )
+        .expect("capture validation"),
+        Some("materialized-start capture configuration differs from resolved discovery start")
+    );
+    assert_eq!(
+        capture_start_validation_reason(&start, AttemptStartMode::Execute)
+            .expect("ordinary execution validation"),
+        None
+    );
+}
 
 #[test]
 fn staged_publication_reconciles_and_releases_capacity() {
@@ -267,6 +306,23 @@ fn observation(byte: u8) -> ObservationId {
         byte,
     ))
     .expect("observation")
+}
+
+fn configuration_artifact(byte: u8) -> ConfigurationArtifact {
+    let scenario = ScenarioDefId::from_hash(CampaignHash::derive(
+        "crucible.test.executor-worker.capture-scenario.v1",
+        &[byte],
+    ));
+    let scenario_artifact = ScenarioArtifact::new(scenario, 1, vec![byte])
+        .expect("scenario artifact")
+        .id()
+        .expect("scenario artifact ID");
+    let configuration = ConfigurationId::from_hash(CampaignHash::derive(
+        "crucible.test.executor-worker.capture-configuration.v1",
+        &[byte],
+    ));
+    ConfigurationArtifact::new(scenario, scenario_artifact, configuration, 1, vec![byte])
+        .expect("configuration artifact")
 }
 
 fn typed_id(tag: &str, kind: &str, byte: u8) -> String {

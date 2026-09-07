@@ -12,8 +12,9 @@ use std::path::Path;
 use crucible::{Configuration, ScenarioDefForm, World};
 use crucible_api::LifecycleApiError;
 use crucible_campaign::{
-    AttemptResourceLimits, CampaignExecutorStore, CampaignRepositoryError, ExactCheckpointId,
-    ExecutionId, attempt_execution_basis_digest,
+    AttemptResourceLimits, AttemptStart, AttemptStartMode, CampaignExecutorStore,
+    CampaignRepositoryError, ExactCheckpointId, ExecutionId,
+    attempt_execution_basis_digest_for_start_mode,
 };
 use crucible_qemu::{
     QemuFailedLaunchChildSource, QemuGuardedNodeRealizationLauncher,
@@ -22,6 +23,7 @@ use crucible_qemu::{
 };
 use thiserror::Error;
 
+use crate::exact_checkpoint_restore::validate_materialized_start_configuration;
 use crate::{
     AssignmentLedger, AttemptAdmissionValidator, AttemptExecutionKey,
     CheckpointPromotionCompletionOutcome, CheckpointPromotionRecovery,
@@ -74,6 +76,7 @@ pub struct ProductionPausedCheckpointPromotionTarget<'a> {
     run_state_root: &'a Path,
     cancellation: &'a ExecutionCancellation,
     resources: AttemptResourceLimits,
+    require_materialized_start: bool,
 }
 
 /// Owned semantic input for restarting one raw paused-root comparison.
@@ -112,6 +115,10 @@ impl ResolvedProductionPausedCheckpointPromotionRecovery {
             run_state_root,
             &self.cancellation,
             self.recovery.promotion_basis().resources(),
+            matches!(
+                self.recovery.promotion_basis().start_mode(),
+                AttemptStartMode::CaptureMaterializedStart { .. }
+            ),
         )
     }
 }
@@ -131,6 +138,7 @@ impl<'a> ProductionPausedCheckpointPromotionTarget<'a> {
         run_state_root: &'a Path,
         cancellation: &'a ExecutionCancellation,
         resources: AttemptResourceLimits,
+        require_materialized_start: bool,
     ) -> Self {
         Self {
             key,
@@ -142,6 +150,7 @@ impl<'a> ProductionPausedCheckpointPromotionTarget<'a> {
             run_state_root,
             cancellation,
             resources,
+            require_materialized_start,
         }
     }
 
@@ -438,6 +447,9 @@ pub enum PausedCheckpointPromotionRecoveryResolutionError {
     /// The durable resource/retention basis does not match the attempt key.
     #[error("paused checkpoint promotion execution basis is inconsistent")]
     ExecutionBasisMismatch,
+    /// A capture basis does not name this discovery attempt's exact start artifact.
+    #[error("paused checkpoint promotion capture start is inconsistent")]
+    CaptureStartMismatch,
 }
 
 /// No-write restart result ready for a short supervisor or publication phase.
@@ -489,22 +501,53 @@ pub fn resolve_production_paused_checkpoint_promotion_recovery(
     PausedCheckpointPromotionRecoveryResolutionError,
 > {
     let basis = recovery.promotion_basis();
-    if attempt_execution_basis_digest(
-        recovery.key().lineage(),
-        recovery.key().attempt(),
-        basis.resources(),
-        basis.retention(),
-    ) != recovery.execution_basis()
-    {
-        return Err(PausedCheckpointPromotionRecoveryResolutionError::ExecutionBasisMismatch);
-    }
+    validate_promotion_execution_basis(recovery.key(), recovery.execution_basis(), basis)?;
     let input = resolve_attempt_execution_input(store, recovery.key())?;
+    validate_capture_attempt_start(&input, basis.start_mode())?;
     let execution = decode_crucible_attempt_execution(store, &input)?;
     Ok(ResolvedProductionPausedCheckpointPromotionRecovery {
         recovery,
         execution,
         cancellation,
     })
+}
+
+fn validate_promotion_execution_basis(
+    key: AttemptExecutionKey,
+    execution_basis: crucible_campaign::CampaignHash,
+    basis: crate::CheckpointPromotionExecutionBasis,
+) -> Result<(), PausedCheckpointPromotionRecoveryResolutionError> {
+    if attempt_execution_basis_digest_for_start_mode(
+        key.lineage(),
+        key.attempt(),
+        basis.resources(),
+        basis.retention(),
+        basis.start_mode(),
+    ) != execution_basis
+    {
+        return Err(PausedCheckpointPromotionRecoveryResolutionError::ExecutionBasisMismatch);
+    }
+
+    Ok(())
+}
+
+fn validate_capture_attempt_start(
+    input: &crate::AttemptExecutionInput,
+    start_mode: AttemptStartMode,
+) -> Result<(), PausedCheckpointPromotionRecoveryResolutionError> {
+    if let AttemptStartMode::CaptureMaterializedStart { configuration } = start_mode {
+        let AttemptStart::Discover {
+            configuration: resolved,
+        } = input.attempt().start()
+        else {
+            return Err(PausedCheckpointPromotionRecoveryResolutionError::CaptureStartMismatch);
+        };
+        if resolved != configuration {
+            return Err(PausedCheckpointPromotionRecoveryResolutionError::CaptureStartMismatch);
+        }
+    }
+
+    Ok(())
 }
 
 /// Prepares one durable paused-root restart phase without supervisor ownership.
@@ -550,13 +593,39 @@ where
             )))
         }
         CheckpointPromotionRestartWork::Staged(recovery) => {
+            let promotion_basis = recovery.promotion_basis();
+            if let Some(basis) = promotion_basis {
+                validate_promotion_execution_basis(
+                    recovery.key(),
+                    recovery.execution_basis(),
+                    basis,
+                )?;
+            }
             let input = resolve_attempt_execution_input(store, recovery.key())?;
+            if let Some(basis) = promotion_basis {
+                validate_capture_attempt_start(&input, basis.start_mode())?;
+            }
             let execution = decode_crucible_attempt_execution(store, &input)?;
+            let materialized_start = match promotion_basis.map(|basis| basis.start_mode()) {
+                Some(AttemptStartMode::CaptureMaterializedStart { .. }) => {
+                    let CrucibleResolvedAttemptStart::Discover { configuration } =
+                        execution.start()
+                    else {
+                        return Err(
+                            PausedCheckpointPromotionRecoveryResolutionError::CaptureStartMismatch
+                                .into(),
+                        );
+                    };
+                    Some(configuration)
+                }
+                Some(AttemptStartMode::Execute) | None => None,
+            };
             let published = recover_published_production_paused_checkpoint_promotion(
                 checkpoints,
                 execution.scenario(),
                 &cancellation,
                 recovery,
+                materialized_start,
             )?;
             Ok(PreparedPausedCheckpointPromotionRestart::Reconcile(
                 Box::new(published),
@@ -677,6 +746,13 @@ where
         target.run_state_root,
         target.cancellation,
     )?;
+    if target.require_materialized_start {
+        validate_materialized_start_configuration(
+            target.raw,
+            target.initial,
+            installed.configuration().id(),
+        )?;
+    }
     let mut boundary = || {
         if target.cancellation.is_canceled() {
             Err(LifecycleApiError::LoopFactory {
@@ -898,6 +974,7 @@ pub fn recover_published_production_paused_checkpoint_promotion(
     source: &ScenarioDefForm,
     cancellation: &ExecutionCancellation,
     recovery: CheckpointPromotionRecovery,
+    materialized_start: Option<&Configuration>,
 ) -> Result<PublishedPausedCheckpointPromotion, ProductionAttemptCheckpointRestoreError> {
     authenticate_production_exact_checkpoint_replay_oracle_promotion(
         checkpoints,
@@ -906,12 +983,31 @@ pub fn recover_published_production_paused_checkpoint_promotion(
         source,
         cancellation,
     )?;
+    if let Some(materialized_start) = materialized_start {
+        let raw = checkpoints
+            .load_production_closure_with_cancellation(recovery.source(), cancellation)
+            .map_err(map_staged_checkpoint_store_error)?;
+        validate_materialized_start_configuration(
+            recovery.source(),
+            materialized_start,
+            raw.configuration(),
+        )?;
+    }
     Ok(PublishedPausedCheckpointPromotion {
         key: recovery.key(),
         execution: recovery.execution(),
         source: recovery.source(),
         promoted: recovery.promoted(),
     })
+}
+
+fn map_staged_checkpoint_store_error(
+    error: ExactCheckpointStoreError,
+) -> ProductionAttemptCheckpointRestoreError {
+    match error {
+        ExactCheckpointStoreError::Canceled => ProductionAttemptCheckpointRestoreError::Canceled,
+        error => ProductionAttemptCheckpointRestoreError::Checkpoint(error),
+    }
 }
 
 /// Commits one complete replacement as the paused resume root.

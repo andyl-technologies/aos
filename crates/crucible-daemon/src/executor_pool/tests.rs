@@ -13,8 +13,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, MaterializedState, ScenarioDef,
-    SchedulerLivenessScenario, Shift, SimInstant, SingleScheduler, SingleSchedulerCheckpoint,
+    Checkpoint, CheckpointKind, Configuration, MaterializedState, Plan, Properties, ScenarioDef,
+    ScenarioDefForm, SchedulerLivenessScenario, Seed, Shift, SimInstant, SingleScheduler,
+    SingleSchedulerCheckpoint, World,
 };
 use crucible_campaign::{
     AssignmentId, Attempt, AttemptId, AttemptResourceLimits, AttemptStart, BooleanDomain,
@@ -24,14 +25,14 @@ use crucible_campaign::{
     CampaignPolicy, CampaignRepository, CampaignSeed, CancelAttemptExecutionRequest,
     CancelAttemptExecutionResponse, CandidateSource, CheckpointAttemptExecutionRequest,
     CheckpointAttemptExecutionResponse, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
-    ChoiceOpportunity, ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationId,
-    ControlRequest, CoverageProjection, DaemonEpoch, ExactCheckpointId, ExactRational, ExecutionId,
-    ExecutionRetentionIntent, ExecutorCapabilitySet, ExecutorClient, ExecutorCompatibilityProfile,
-    ExecutorControlService, ExecutorDescription, ExecutorMaterializationCapability,
-    ExecutorRejection, ExecutorResumeService, ExecutorService, ExecutorStatusService,
-    ExplorerPolicy, FairnessPolicy, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
-    GetAttemptExecutionResponse, MeasurementSet, Observation, ObservationCandidate,
-    ProgressiveWideningPolicy, PropertyVerdictSet, Proposal, PuctPolicy,
+    ChoiceOpportunity, ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationArtifactId,
+    ConfigurationId, ControlRequest, CoverageProjection, DaemonEpoch, ExactCheckpointId,
+    ExactRational, ExecutionId, ExecutionRetentionIntent, ExecutorCapabilitySet, ExecutorClient,
+    ExecutorCompatibilityProfile, ExecutorControlService, ExecutorDescription,
+    ExecutorMaterializationCapability, ExecutorRejection, ExecutorResumeService, ExecutorService,
+    ExecutorStatusService, ExplorerPolicy, FairnessPolicy, GetAttemptExecutionDisposition,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, MeasurementSet, Observation,
+    ObservationCandidate, ProgressiveWideningPolicy, PropertyVerdictSet, Proposal, PuctPolicy,
     ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, RetentionPolicy, ScenarioDefId,
     SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
     SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse, WorkerSlotId,
@@ -55,7 +56,8 @@ use crate::{
     PausedCheckpointPromotionRecoveryResolutionError, PausedCheckpointPromotionStageOutcome,
     PreparedPausedCheckpointPromotion, PreparedPausedCheckpointPromotionRestart,
     RepositoryAttemptAdmission, RepositoryAttemptWorker, RepositoryAttemptWorkerError,
-    UnixPeerExecutorIdentity, recover_published_paused_checkpoint_promotion,
+    UnixPeerExecutorIdentity, encode_crucible_configuration_artifact,
+    encode_crucible_scenario_artifact, recover_published_paused_checkpoint_promotion,
     resolve_production_paused_checkpoint_promotion_recovery,
     stage_prepared_paused_checkpoint_promotion,
 };
@@ -1459,6 +1461,177 @@ fn repository_worker_rejects_a_checkpoint_from_another_scenario() {
 }
 
 #[test]
+fn repository_worker_rejects_branch_capture_before_model_execution() {
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "branch-materialized-start-capture",
+            64 * 1024 * 1024,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let (lineage, _policy, branch, admitted, candidate) =
+        campaign_attempt_fixture(&repository, "branch-materialized-start-capture");
+    let epoch = DaemonEpoch::from_bytes([0x93; 16]).expect("daemon epoch");
+    let request = SubmitAttemptRequest::new_capture_materialized_start(
+        AssignmentId::from_bytes([0x94; 16]).expect("assignment"),
+        epoch,
+        lineage.id().expect("lineage id"),
+        admitted.attempt,
+        AttemptResourceLimits::new(1, 64 * 1024 * 1024, 0, 1_000).expect("resources"),
+        ExecutionRetentionIntent::RetainOnFailure,
+        branch.parent(),
+    )
+    .expect("capture submit request");
+    let mut supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        ExecutorCapacity::new(1, 1, 64 * 1024 * 1024, 0, 1_000).expect("capacity"),
+    );
+    supervisor
+        .submit_attempt(&request)
+        .expect("accept capture execution");
+    let queued = supervisor.next_queued().expect("queued capture execution");
+    assert!(queued.checkpoint_request().is_requested());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut worker = RepositoryAttemptWorker::new(
+        CampaignExecutorStore::new(repository),
+        CandidateModel {
+            candidate,
+            calls: Arc::clone(&calls),
+            runtime_bases: Arc::new(Mutex::new(Vec::new())),
+            reconciliations: Arc::new(Mutex::new(Vec::new())),
+        },
+    );
+
+    let (_queued, result) = worker.execute(queued).into_parts();
+
+    assert!(matches!(
+        result,
+        Err(AttemptWorkerFailure::Terminal(
+            RepositoryAttemptWorkerError::IncompatibleResult {
+                reason: "materialized-start capture requires a discovery attempt",
+            }
+        ))
+    ));
+    assert_eq!(calls.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn raw_pause_restart_resolves_exact_materialized_start_capture() {
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "capture-promotion-recovery",
+            64 * 1024 * 1024,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let (lineage, attempt, configuration) =
+        crucible_discovery_attempt_fixture(&repository, "capture-promotion-recovery");
+    let epoch = DaemonEpoch::from_bytes([0x95; 16]).expect("daemon epoch");
+    let request = SubmitAttemptRequest::new_capture_materialized_start(
+        AssignmentId::from_bytes([0x96; 16]).expect("assignment"),
+        epoch,
+        lineage.id().expect("lineage id"),
+        attempt,
+        AttemptResourceLimits::new(1, 64 * 1024 * 1024, 0, 1_000).expect("resources"),
+        ExecutionRetentionIntent::RetainOnFailure,
+        configuration,
+    )
+    .expect("capture submit request");
+    let recovery = raw_pause_recovery_for_request(&request, 0x97);
+
+    let resolved = resolve_production_paused_checkpoint_promotion_recovery(
+        &CampaignExecutorStore::new(repository),
+        recovery,
+        ExecutionCancellation::default(),
+    )
+    .expect("resolve exact materialized-start capture");
+
+    assert_eq!(resolved.recovery(), recovery);
+}
+
+#[test]
+fn raw_pause_restart_rejects_capture_for_another_configuration() {
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "capture-promotion-wrong-configuration",
+            64 * 1024 * 1024,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let (lineage, attempt, _configuration) =
+        crucible_discovery_attempt_fixture(&repository, "capture-promotion-wrong-configuration");
+    let wrong_configuration = ConfigurationArtifact::new(
+        lineage.scenario(),
+        lineage.scenario_content(),
+        ConfigurationId::from_hash(CampaignHash::derive(
+            "crucible.test.capture-promotion-wrong-configuration.v1",
+            b"wrong",
+        )),
+        1,
+        b"wrong".to_vec(),
+    )
+    .and_then(|artifact| artifact.id())
+    .expect("wrong configuration artifact id");
+    let epoch = DaemonEpoch::from_bytes([0x98; 16]).expect("daemon epoch");
+    let request = SubmitAttemptRequest::new_capture_materialized_start(
+        AssignmentId::from_bytes([0x99; 16]).expect("assignment"),
+        epoch,
+        lineage.id().expect("lineage id"),
+        attempt,
+        AttemptResourceLimits::new(1, 64 * 1024 * 1024, 0, 1_000).expect("resources"),
+        ExecutionRetentionIntent::RetainOnFailure,
+        wrong_configuration,
+    )
+    .expect("capture submit request");
+    let recovery = raw_pause_recovery_for_request(&request, 0x9a);
+
+    assert!(matches!(
+        resolve_production_paused_checkpoint_promotion_recovery(
+            &CampaignExecutorStore::new(repository),
+            recovery,
+            ExecutionCancellation::default(),
+        ),
+        Err(PausedCheckpointPromotionRecoveryResolutionError::CaptureStartMismatch)
+    ));
+}
+
+#[test]
+fn raw_pause_restart_rejects_capture_for_a_branch_attempt() {
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "capture-promotion-branch",
+            64 * 1024 * 1024,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let (lineage, _policy, branch, admitted, _candidate) =
+        campaign_attempt_fixture(&repository, "capture-promotion-branch");
+    let epoch = DaemonEpoch::from_bytes([0x9b; 16]).expect("daemon epoch");
+    let request = SubmitAttemptRequest::new_capture_materialized_start(
+        AssignmentId::from_bytes([0x9c; 16]).expect("assignment"),
+        epoch,
+        lineage.id().expect("lineage id"),
+        admitted.attempt,
+        AttemptResourceLimits::new(1, 64 * 1024 * 1024, 0, 1_000).expect("resources"),
+        ExecutionRetentionIntent::RetainOnFailure,
+        branch.parent(),
+    )
+    .expect("capture submit request");
+    let recovery = raw_pause_recovery_for_request(&request, 0x9d);
+
+    assert!(matches!(
+        resolve_production_paused_checkpoint_promotion_recovery(
+            &CampaignExecutorStore::new(repository),
+            recovery,
+            ExecutionCancellation::default(),
+        ),
+        Err(PausedCheckpointPromotionRecoveryResolutionError::CaptureStartMismatch)
+    ));
+}
+
+#[test]
 fn raw_pause_restart_rejects_an_inconsistent_execution_basis_before_repository_reads() {
     let repository = Arc::new(CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new(
@@ -1927,6 +2100,163 @@ fn pool_stages_the_exact_root_before_the_modeled_worker_returns() {
     assert_eq!(report.checkpoints_paused(), 1);
     assert_eq!(report.active(), 0);
     assert_eq!(pool.shutdown_and_join().expect("clean shutdown"), report);
+}
+
+fn crucible_discovery_attempt_fixture(
+    repository: &CampaignRepository,
+    name: &str,
+) -> (CampaignLineage, AttemptId, ConfigurationArtifactId) {
+    let world = World::from_nodes_and_links(Vec::new(), Vec::new()).expect("empty world");
+    let scenario = ScenarioDefForm::from_components(
+        &world,
+        &Plan::empty(),
+        &Properties::empty(),
+        Seed::from_u64(7),
+    )
+    .expect("minimal scenario");
+    let scenario_artifact =
+        encode_crucible_scenario_artifact(&scenario).expect("scenario artifact");
+    let scenario_content = repository
+        .publish_scenario_artifact(
+            scenario_artifact.scenario(),
+            scenario_artifact.payload_schema(),
+            scenario_artifact.payload().to_vec(),
+        )
+        .expect("publish scenario artifact");
+    let configuration = Configuration::genesis(scenario.scenario_def());
+    let configuration_artifact =
+        encode_crucible_configuration_artifact(&scenario_artifact, &configuration.schedule)
+            .expect("configuration artifact");
+    let configuration_content = repository
+        .publish_configuration_artifact(
+            configuration_artifact.scenario(),
+            scenario_content,
+            configuration_artifact.configuration(),
+            configuration_artifact.payload_schema(),
+            configuration_artifact.payload().to_vec(),
+        )
+        .expect("publish configuration artifact");
+    let lineage = CampaignLineage::new(
+        scenario_artifact.scenario(),
+        scenario_content,
+        configuration_artifact.configuration(),
+        configuration_content,
+        "crucible-test",
+        "qemu-test",
+        BTreeMap::from([(String::from("control"), 1)]),
+        scenario_artifact.payload_schema(),
+        1,
+    )
+    .expect("lineage");
+    let widening = ProgressiveWideningPolicy::new(
+        ExactRational::new(1, 1).expect("rational"),
+        ExactRational::new(1, 2).expect("rational"),
+        1,
+        100,
+        1,
+    )
+    .expect("widening");
+    let policy = CampaignPolicy::new(
+        scenario_artifact.scenario(),
+        CampaignSeed::from_bytes([7; 32]),
+        CampaignMode::Strict,
+        ExplorerPolicy::TreeSearch {
+            widening: Some(widening),
+            puct: PuctPolicy::new(1_000_000, 1, 0),
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeSet::new(),
+        FairnessPolicy::new(0, 0).expect("fairness"),
+        RetentionPolicy::new(true, 1, true, true),
+        true,
+    )
+    .expect("policy");
+    let created = repository
+        .create(name, &lineage, &policy, &BTreeMap::new())
+        .expect("create campaign");
+    let granted = repository
+        .apply_control(
+            name,
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "crucible.test.capture-promotion-budget.v1",
+                    name.as_bytes(),
+                )),
+                expected_snapshot: created.snapshot_id(),
+                action: CampaignControlAction::GrantBudget(
+                    crucible_campaign::BudgetGrant::new(0, 1).expect("attempt grant"),
+                ),
+            },
+        )
+        .expect("grant campaign budget");
+    repository
+        .apply_control(
+            name,
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "crucible.test.capture-promotion-resume.v1",
+                    name.as_bytes(),
+                )),
+                expected_snapshot: granted.new_snapshot,
+                action: CampaignControlAction::Resume,
+            },
+        )
+        .expect("resume campaign");
+    let attempt = repository
+        .admit_initial_discovery_if_ready(name)
+        .expect("initial discovery admission")
+        .expect("initial discovery attempt");
+
+    (lineage, attempt, configuration_content)
+}
+
+fn raw_pause_recovery_for_request(
+    request: &SubmitAttemptRequest,
+    identity_byte: u8,
+) -> crate::PausedCheckpointPromotionRecovery {
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let execution = ExecutionId::from_bytes([identity_byte; 16]).expect("execution");
+    let checkpoint = ExactCheckpointId::parse(&format!(
+        "crucible.executor.exact-checkpoint-root@exact-manifest.2.{}",
+        format!("{identity_byte:02x}").repeat(32)
+    ))
+    .expect("checkpoint");
+    let state = AttemptRuntimeState::Paused {
+        execution_basis: request.execution_basis_digest(),
+        origin: crate::AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution,
+        checkpoint,
+        promotion_basis: Some(CheckpointPromotionExecutionBasis::new_for_start_mode(
+            request.resources(),
+            request.retention(),
+            request.start_mode(),
+        )),
+    };
+    let mut ledger = MemoryAssignmentLedger::default();
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(key, None, Some(state))
+            .expect("seed raw pause"),
+        AttemptStateCas::Advanced
+    );
+    let supervisor = LocalExecutorSupervisor::new(
+        ledger,
+        AllowAllAttemptAdmission,
+        request.daemon_epoch(),
+        ExecutorCapacity::new(1, 1, 64 * 1024 * 1024, 0, 1_000).expect("capacity"),
+    );
+    let mut work = Vec::new();
+    supervisor
+        .visit_checkpoint_promotion_restart_work(&mut |item| work.push(item))
+        .expect("discover raw pause");
+    let [CheckpointPromotionRestartWork::Paused(recovery)] = work.as_slice() else {
+        panic!("expected one raw-pause recovery")
+    };
+
+    *recovery
 }
 
 fn campaign_attempt_fixture(

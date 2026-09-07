@@ -15,7 +15,7 @@ use std::sync::{
 use std::time::Duration;
 
 use crucible_campaign::{
-    AttemptId, AttemptResourceLimits, CampaignCodecError, CampaignLineageId,
+    AttemptId, AttemptResourceLimits, AttemptStartMode, CampaignCodecError, CampaignLineageId,
     CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
     CancelAttemptExecutionResponse, CheckpointAttemptExecutionDisposition,
     CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, DaemonEpoch,
@@ -1354,10 +1354,13 @@ where
                     daemon_epoch,
                     execution,
                     checkpoint,
-                    promotion_basis: Some(crate::CheckpointPromotionExecutionBasis::new(
-                        queued.request.resources(),
-                        queued.request.retention(),
-                    )),
+                    promotion_basis: Some(
+                        crate::CheckpointPromotionExecutionBasis::new_for_start_mode(
+                            queued.request.resources(),
+                            queued.request.retention(),
+                            queued.request.start_mode(),
+                        ),
+                    ),
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
                 self.mark_worker_finished(execution);
@@ -2416,7 +2419,7 @@ where
             )
             .map_err(Into::into);
         };
-        if current.execution_basis() != execution_basis
+        if current.execution_basis() != request.prior_execution_basis_digest()
             || prior_execution != request.prior_execution()
             || checkpoint != request.checkpoint()
         {
@@ -2883,15 +2886,36 @@ where
         }
 
         let execution = self.allocate_execution_id()?;
-        let running = AttemptRuntimeState::Running {
-            execution_basis,
-            origin: AttemptExecutionOrigin::Initial,
-            daemon_epoch: self.daemon_epoch,
-            execution,
+        let capture_materialized_start = matches!(
+            request.start_mode(),
+            AttemptStartMode::CaptureMaterializedStart { .. }
+        );
+        let initial_state = if capture_materialized_start {
+            AttemptRuntimeState::CheckpointRequested {
+                execution_basis,
+                origin: AttemptExecutionOrigin::Initial,
+                daemon_epoch: self.daemon_epoch,
+                execution,
+            }
+        } else {
+            AttemptRuntimeState::Running {
+                execution_basis,
+                origin: AttemptExecutionOrigin::Initial,
+                daemon_epoch: self.daemon_epoch,
+                execution,
+            }
         };
-        let advance = self.advance_attempt_optional(key, prior, Some(running))?;
+        let advance = self.advance_attempt_optional(key, prior, Some(initial_state))?;
         if let AttemptAdvance::CommittedAfterError(error) = advance {
-            self.reserve(request, execution, AttemptExecutionOrigin::Initial)?;
+            if capture_materialized_start {
+                self.reserve_checkpoint_recovery(
+                    request,
+                    execution,
+                    AttemptExecutionOrigin::Initial,
+                )?;
+            } else {
+                self.reserve(request, execution, AttemptExecutionOrigin::Initial)?;
+            }
             return Err(LocalExecutorError::Ledger(error));
         }
         let response =
@@ -2899,7 +2923,11 @@ where
         // State is durable before response publication. Even when publication
         // is indeterminate, retain and run the prepared work so a response that
         // did become visible can never name an execution the daemon abandoned.
-        self.reserve(request, execution, AttemptExecutionOrigin::Initial)?;
+        if capture_materialized_start {
+            self.reserve_checkpoint_recovery(request, execution, AttemptExecutionOrigin::Initial)?;
+        } else {
+            self.reserve(request, execution, AttemptExecutionOrigin::Initial)?;
+        }
         response
     }
 

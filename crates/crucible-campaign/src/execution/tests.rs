@@ -39,6 +39,15 @@ fn fixture_finding_candidate() -> FindingCandidateBundleId {
     .expect("finding candidate")
 }
 
+fn fixture_configuration(byte: u8) -> ConfigurationArtifactId {
+    ConfigurationArtifactId::from_content_id(ContentId::for_bytes(
+        ObjectKind::Configuration,
+        1,
+        &[byte; 32],
+    ))
+    .expect("configuration")
+}
+
 #[test]
 fn completed_responses_version_finding_candidates_and_decode_legacy_none() {
     let assignment = fixture_request();
@@ -305,6 +314,88 @@ fn submit_attempt_messages_are_strict_bounded_and_request_bound() {
 }
 
 #[test]
+fn materialized_start_capture_is_explicit_versioned_and_basis_bound() {
+    let execute = fixture_request();
+    let configuration = fixture_configuration(0x91);
+    let capture = SubmitAttemptRequest::new_capture_materialized_start(
+        execute.assignment(),
+        execute.daemon_epoch(),
+        execute.lineage(),
+        execute.attempt(),
+        execute.resources(),
+        execute.retention(),
+        configuration,
+    )
+    .expect("capture request");
+
+    let bytes = capture.canonical_bytes();
+    assert_eq!(&bytes[..4], &3_u32.to_be_bytes());
+    assert_eq!(
+        capture.start_mode(),
+        AttemptStartMode::CaptureMaterializedStart { configuration }
+    );
+    assert_eq!(
+        SubmitAttemptRequest::from_canonical_bytes(&bytes).expect("decode capture request"),
+        capture
+    );
+    assert_ne!(capture.request_digest(), execute.request_digest());
+    assert_ne!(
+        capture.execution_basis_digest(),
+        execute.execution_basis_digest()
+    );
+    assert_eq!(
+        attempt_execution_basis_digest_for_start_mode(
+            execute.lineage(),
+            execute.attempt(),
+            execute.resources(),
+            execute.retention(),
+            AttemptStartMode::Execute,
+        ),
+        attempt_execution_basis_digest(
+            execute.lineage(),
+            execute.attempt(),
+            execute.resources(),
+            execute.retention(),
+        )
+    );
+
+    let changed_configuration = SubmitAttemptRequest::new_capture_materialized_start(
+        execute.assignment(),
+        execute.daemon_epoch(),
+        execute.lineage(),
+        execute.attempt(),
+        execute.resources(),
+        execute.retention(),
+        fixture_configuration(0x92),
+    )
+    .expect("changed configuration request");
+    assert_ne!(
+        capture.execution_basis_digest(),
+        changed_configuration.execution_basis_digest()
+    );
+
+    let mut unknown_mode = bytes;
+    unknown_mode[execute.canonical_bytes().len()] = 0xff;
+    assert_eq!(
+        SubmitAttemptRequest::from_canonical_bytes(&unknown_mode),
+        Err(CampaignCodecError::UnknownTag {
+            kind: "attempt-start-mode",
+            tag: 0xff,
+        })
+    );
+
+    let mut version_three_execute = capture.canonical_bytes();
+    version_three_execute.truncate(execute.canonical_bytes().len() + 1);
+    *version_three_execute.last_mut().expect("start mode tag") = 0;
+    assert_eq!(
+        SubmitAttemptRequest::from_canonical_bytes(&version_three_execute),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "submit attempt request version 3 requires materialized-start capture",
+        })
+    );
+}
+
+#[test]
 fn get_attempt_execution_messages_are_strict_and_exact_request_bound() {
     let assignment = fixture_request();
     let execution = ExecutionId::from_bytes([0x37; 16]).expect("execution");
@@ -497,6 +588,113 @@ fn resume_attempt_execution_messages_bind_the_exact_paused_root() {
         ResumeAttemptExecutionResponse::from_canonical_bytes(&accepted_as_v3),
         Err(CampaignCodecError::InvalidValue {
             reason: "resume attempt execution response schema/disposition mismatch"
+        })
+    );
+}
+
+#[test]
+fn materialized_start_resume_authenticates_prior_and_new_execution_bases() {
+    let assignment = fixture_request();
+    let prior_execution = ExecutionId::from_bytes([0x4d; 16]).expect("prior execution");
+    let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
+        ObjectKind::ExactManifest,
+        2,
+        b"materialized-start-resume-checkpoint",
+    ))
+    .expect("checkpoint root");
+    let configuration = fixture_configuration(0x93);
+    let request = ResumeAttemptExecutionRequest::new_from_materialized_start(
+        &assignment,
+        prior_execution,
+        checkpoint,
+        configuration,
+    )
+    .expect("materialized-start resume request");
+
+    let bytes = request.canonical_bytes();
+    assert_eq!(&bytes[..4], &3_u32.to_be_bytes());
+    assert_eq!(
+        ResumeAttemptExecutionRequest::from_canonical_bytes(&bytes)
+            .expect("decode materialized-start resume"),
+        request
+    );
+    assert_eq!(
+        request.prior_start_mode(),
+        AttemptStartMode::CaptureMaterializedStart { configuration }
+    );
+    assert_eq!(
+        request.execution_basis_digest(),
+        assignment.execution_basis_digest()
+    );
+    assert_eq!(
+        request.prior_execution_basis_digest(),
+        attempt_execution_basis_digest_for_start_mode(
+            assignment.lineage(),
+            assignment.attempt(),
+            assignment.resources(),
+            assignment.retention(),
+            AttemptStartMode::CaptureMaterializedStart { configuration },
+        )
+    );
+    assert_ne!(
+        request.prior_execution_basis_digest(),
+        request.execution_basis_digest()
+    );
+
+    let standard = ResumeAttemptExecutionRequest::new(&assignment, prior_execution, checkpoint)
+        .expect("standard resume request");
+    assert_eq!(
+        standard.prior_execution_basis_digest(),
+        standard.execution_basis_digest()
+    );
+
+    let capture_assignment = SubmitAttemptRequest::new_capture_materialized_start(
+        assignment.assignment(),
+        assignment.daemon_epoch(),
+        assignment.lineage(),
+        assignment.attempt(),
+        assignment.resources(),
+        assignment.retention(),
+        configuration,
+    )
+    .expect("capture assignment");
+    assert_eq!(
+        ResumeAttemptExecutionRequest::new(&capture_assignment, prior_execution, checkpoint),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "resume requires an execute assignment",
+        })
+    );
+    assert_eq!(
+        ResumeAttemptExecutionRequest::new_from_materialized_start(
+            &capture_assignment,
+            prior_execution,
+            checkpoint,
+            configuration,
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "resume requires an execute assignment",
+        })
+    );
+
+    let mut unknown_mode = bytes;
+    unknown_mode[standard.canonical_bytes().len()] = 0xff;
+    assert_eq!(
+        ResumeAttemptExecutionRequest::from_canonical_bytes(&unknown_mode),
+        Err(CampaignCodecError::UnknownTag {
+            kind: "attempt-start-mode",
+            tag: 0xff,
+        })
+    );
+
+    let mut version_three_execute = request.canonical_bytes();
+    version_three_execute.truncate(standard.canonical_bytes().len() + 1);
+    *version_three_execute
+        .last_mut()
+        .expect("prior start mode tag") = 0;
+    assert_eq!(
+        ResumeAttemptExecutionRequest::from_canonical_bytes(&version_three_execute),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "resume attempt request version 3 requires materialized-start capture",
         })
     );
 }

@@ -1120,6 +1120,12 @@ pub enum ProductionAttemptCheckpointRestoreError {
         /// Exact campaign-CAS root being installed.
         checkpoint: ExactCheckpointId,
     },
+    /// A materialized-start capture root contains a later attempt configuration.
+    #[error("production exact checkpoint {checkpoint} is not the materialized attempt start")]
+    MaterializedStartMismatch {
+        /// Exact campaign-CAS root being installed.
+        checkpoint: ExactCheckpointId,
+    },
     /// The restored suffix contains another campaign branch edge.
     #[error("production exact checkpoint {checkpoint} crosses another campaign branch edge")]
     NestedCampaignBranch {
@@ -1159,6 +1165,21 @@ fn check_cancellation(
     } else {
         Ok(())
     }
+}
+
+/// Requires a capture root to denote the exact materialized attempt start.
+pub(crate) fn validate_materialized_start_configuration(
+    checkpoint: ExactCheckpointId,
+    materialized_start: &Configuration,
+    restored: ContentHash,
+) -> Result<(), ProductionAttemptCheckpointRestoreError> {
+    if restored != materialized_start.id() {
+        return Err(
+            ProductionAttemptCheckpointRestoreError::MaterializedStartMismatch { checkpoint },
+        );
+    }
+
+    Ok(())
 }
 
 fn validate_production_attempt_continuation(
@@ -1346,6 +1367,13 @@ mod captured_source_tests {
         .unwrap_or_else(|error| panic!("build production exact root: {error}"));
 
         assert!(validate_production_attempt_continuation(&start, &restored, checkpoint).is_ok());
+        assert!(validate_materialized_start_configuration(checkpoint, &start, start.id()).is_ok());
+        assert!(matches!(
+            validate_materialized_start_configuration(checkpoint, &start, restored.id()),
+            Err(ProductionAttemptCheckpointRestoreError::MaterializedStartMismatch {
+                checkpoint: observed
+            }) if observed == checkpoint
+        ));
 
         let foreign = Configuration {
             def: scenario,
