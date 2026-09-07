@@ -12,11 +12,13 @@ pub enum VmCommand {
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
 pub enum VmAcceleration {
-    /// Use KVM when available, otherwise fall back to software emulation.
+    /// Use KVM on Linux or HVF on macOS, otherwise use software emulation.
     #[default]
     Auto,
     /// Require hardware acceleration through KVM.
     Kvm,
+    /// Require hardware acceleration through macOS Hypervisor.framework.
+    Hvf,
     /// Use portable software emulation.
     Tcg,
 }
@@ -49,16 +51,16 @@ pub struct VmRunArgs {
     /// Select hardware acceleration or software emulation.
     #[arg(long, value_enum, default_value_t)]
     pub accel: VmAcceleration,
-    /// Directory that retains the writable disk and UEFI variables.
+    /// Directory that retains the writable disk and UEFI variable state.
     #[arg(long)]
     pub state_dir: Option<PathBuf>,
-    /// Read-only OVMF firmware code image.
+    /// Read-only UEFI firmware code image for the host architecture.
     #[arg(long, env = "AOS_OVMF_CODE")]
     pub firmware_code: Option<PathBuf>,
-    /// OVMF variable-store template copied for this VM.
+    /// UEFI variable-state template copied for this VM.
     #[arg(long, env = "AOS_OVMF_VARS")]
     pub firmware_vars: Option<PathBuf>,
-    /// QEMU x86_64 system emulator executable.
+    /// QEMU system emulator executable for the host architecture.
     #[arg(long, env = "AOS_QEMU")]
     pub qemu: Option<PathBuf>,
     /// QEMU disk conversion executable.

@@ -178,9 +178,10 @@ end-user target, release channel, or direct disk encoding.
 
 `aos vm run` prepares a persistent writable disk from a downloaded raw or
 QCOW2 image and boots it through UEFI. The verified download remains unchanged.
-The command enlarges the working disk, relocates its backup GPT, retains a
-per-VM OVMF variable store, and can deliver literal `host.nix` through QEMU's
-native metadata channel:
+The command enlarges the working disk, relocates its backup GPT, retains
+per-VM UEFI variable state, and can deliver literal `host.nix` through QEMU's
+native metadata channel. The packaged runner selects QEMU and firmware for its
+host architecture, so supply the corresponding image architecture:
 
 ```sh
 nix-build -A pkgs.aos-vm -o result-aos-vm
@@ -197,20 +198,23 @@ Signed configuration deployments can add
 `--host-config-signature ./host.nix.sig`; the command exposes both files under
 their documented QEMU `fw_cfg` names.
 
-The opt-in `pkgs.aos-vm` host package carries the AOS-built QEMU, OVMF,
+The opt-in `pkgs.aos-vm` host package carries the AOS-built QEMU, UEFI firmware,
 `qemu-img`, and `sgdisk` without adding emulator tooling to guest images. When
-running the base package or a development binary, pass `--firmware-code` and
-`--firmware-vars`, or set `AOS_OVMF_CODE` and `AOS_OVMF_VARS`, if firmware is
-not installed at a conventional system path.
+running the base package or a development binary, pass `--firmware-code` if
+firmware is not installed at a conventional system path. x86_64 also accepts
+an OVMF variable-store template through `--firmware-vars`; aarch64 accepts a
+QEMU UEFI variable-state JSON template through the same option. The
+corresponding environment variables are `AOS_OVMF_CODE` and `AOS_OVMF_VARS`.
 
-KVM is selected only when `/dev/kvm` is accessible; automatic selection falls
-back to slower TCG emulation with a warning. Use `--accel kvm` to require
-hardware acceleration. Inspect paths, resources, firmware, forwarding, and
-acceleration without changing state by adding `--dry-run`. VM state lives under
+Automatic acceleration selects KVM on Linux when `/dev/kvm` is accessible and
+HVF on macOS. Linux falls back to slower TCG emulation with a warning. Use
+`--accel kvm` or `--accel hvf` to require the corresponding host accelerator.
+Inspect paths, resources, firmware, forwarding, and acceleration without
+changing state by adding `--dry-run`. VM state lives under
 `$XDG_STATE_HOME/aos/vms/<name>` (or `$HOME/.local/state/aos/vms/<name>`) unless
 `--state-dir` is supplied. Its metadata binds the persistent disk to the base
-image hash and requested capacity so a reused name cannot silently boot the
-wrong disk.
+image hash, architecture, and requested capacity so a reused name cannot
+silently boot the wrong disk.
 
 ## Run checks and maintenance commands
 

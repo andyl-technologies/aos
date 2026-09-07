@@ -9,42 +9,54 @@
   edk2,
   gptfdisk,
   qemu,
-}:
-mkDerivation {
-  pname = "aos-vm";
-  version = aos.version;
-  src = null;
+  stdenv,
+}: let
+  firmwareSedExpressions = builtins.concatStringsSep " \\\n            " (
+    if stdenv.hostPlatform.isAarch64
+    then [
+      ''-e '/^exec /i export AOS_OVMF_CODE="${edk2}/FV/AAVMF_CODE.fd"' ''
+      ''-e '/^exec /i export AOS_QEMU="${qemu}/bin/qemu-system-aarch64"' ''
+    ]
+    else [
+      ''-e '/^exec /i export AOS_OVMF_CODE="${edk2}/FV/OVMF_CODE.fd"' ''
+      ''-e '/^exec /i export AOS_OVMF_VARS="${edk2}/FV/OVMF_VARS.fd"' ''
+      ''-e '/^exec /i export AOS_QEMU="${qemu}/bin/qemu-system-x86_64"' ''
+    ]
+  );
+in
+  mkDerivation {
+    pname = "aos-vm";
+    version = aos.version;
+    src = null;
 
-  runtimeDeps = [aos aos.apr edk2 gptfdisk qemu];
+    runtimeDeps = [aos aos.apr edk2 gptfdisk qemu];
 
-  # This package copies the base CLI launcher so it can add the VM-specific
-  # environment without another shell process. Preserve the launcher's
-  # intentional references to the base CLI runtime closure.
-  dontNukeRefs = true;
+    # This package copies the base CLI launcher so it can add the VM-specific
+    # environment without another shell process. Preserve the launcher's
+    # intentional references to the base CLI runtime closure.
+    dontNukeRefs = true;
 
-  passthru.evidenceSources = [./aos-vm.nix];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/bin"
 
-  phases = [
-    {
-      name = "install";
-      script = ''
-        mkdir -p "$out/bin"
+          sed \
+            ${firmwareSedExpressions} \
+            -e '/^exec /i export AOS_SGDISK="${gptfdisk}/sbin/sgdisk"' \
+            "${aos}/bin/aos" > "$out/bin/aos"
+          chmod +x "$out/bin/aos"
+          ln -s "${aos.apr}/bin/apr" "$out/bin/apr"
+        '';
+      }
+    ];
 
-        sed \
-          -e '/^exec /i export AOS_OVMF_CODE="${edk2}/FV/OVMF_CODE.fd"' \
-          -e '/^exec /i export AOS_OVMF_VARS="${edk2}/FV/OVMF_VARS.fd"' \
-          -e '/^exec /i export AOS_QEMU="${qemu}/bin/qemu-system-x86_64"' \
-          -e '/^exec /i export AOS_SGDISK="${gptfdisk}/sbin/sgdisk"' \
-          "${aos}/bin/aos" > "$out/bin/aos"
-        chmod +x "$out/bin/aos"
-        ln -s "${aos.apr}/bin/apr" "$out/bin/apr"
-      '';
-    }
-  ];
+    passthru.evidenceSources = [./aos-vm.nix];
 
-  meta = {
-    description = "AOS CLI with QEMU, OVMF, and GPT tools for local virtual machines";
-    homepage = "https://github.com/andyl-technologies/aos";
-    license = "MIT";
-  };
-}
+    meta = {
+      description = "AOS CLI with QEMU, UEFI firmware, and GPT tools for local virtual machines";
+      homepage = "https://github.com/andyl-technologies/aos";
+      license = "MIT";
+    };
+  }
