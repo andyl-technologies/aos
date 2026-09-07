@@ -307,6 +307,7 @@ where
             let id = match root {
                 AssignmentRetentionRoot::Observation(observation) => observation.content_id(),
                 AssignmentRetentionRoot::ExactCheckpoint(checkpoint) => checkpoint.content_id(),
+                AssignmentRetentionRoot::FindingCandidate(candidate) => candidate.content_id(),
             };
             roots
                 .insert(id)

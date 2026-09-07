@@ -10,8 +10,8 @@ use std::sync::Arc;
 use crucible_campaign::{
     AssignmentId, CampaignCommandId, CampaignHash, CampaignLineage, CampaignMode, CampaignName,
     CampaignPolicy, CampaignRepository, CampaignSeed, ConfigurationId, ExactRational,
-    ExplorerPolicy, FairnessPolicy, ObservationId, PinChange, PinRequest, PinRetention,
-    ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy, ScenarioDefId,
+    ExplorerPolicy, FairnessPolicy, FindingCandidateBundleId, ObservationId, PinChange, PinRequest,
+    PinRetention, ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy, ScenarioDefId,
 };
 use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
 
@@ -25,6 +25,7 @@ use crate::{
 struct RootLedger {
     observations: Vec<ObservationId>,
     checkpoints: Vec<ExactCheckpointId>,
+    finding_candidates: Vec<FindingCandidateBundleId>,
 }
 
 impl AssignmentLedger for RootLedger {
@@ -119,6 +120,9 @@ impl AssignmentRetentionFence for RootLedgerFence<'_> {
         for root in self.ledger.checkpoints.iter().copied() {
             visitor(AssignmentRetentionRoot::ExactCheckpoint(root))?;
         }
+        for root in self.ledger.finding_candidates.iter().copied() {
+            visitor(AssignmentRetentionRoot::FindingCandidate(root))?;
+        }
         Ok(AssignmentRetentionSummary::new(
             AssignmentRetentionGeneration::from_bytes([0x5a; 32]),
             u64::try_from(
@@ -130,6 +134,8 @@ impl AssignmentRetentionFence for RootLedgerFence<'_> {
             .expect("root count fits u64"),
             u64::try_from(self.ledger.observations.len()).expect("observation count fits u64"),
             u64::try_from(self.ledger.checkpoints.len()).expect("checkpoint count fits u64"),
+            u64::try_from(self.ledger.finding_candidates.len())
+                .expect("finding candidate count fits u64"),
         ))
     }
 }
@@ -232,9 +238,15 @@ fn semantic_and_operational_roots_share_one_terminal_inventory() {
         "crucible.executor.exact-checkpoint-root@{checkpoint_content}"
     ))
     .expect("checkpoint root");
+    let finding_content = ContentId::for_bytes(ObjectKind::Finding, 1, b"retained-finding");
+    let finding_candidate = FindingCandidateBundleId::parse(&format!(
+        "crucible.campaign.finding-candidate-bundle@{finding_content}"
+    ))
+    .expect("finding candidate root");
     let mut ledger = RootLedger {
         observations: vec![observation, observation],
         checkpoints: vec![checkpoint],
+        finding_candidates: vec![finding_candidate],
     };
 
     let mut roots = Vec::new();
@@ -249,6 +261,7 @@ fn semantic_and_operational_roots_share_one_terminal_inventory() {
     assert_eq!(summary.ledger_generation().as_bytes(), [0x5a; 32]);
     assert_eq!(summary.observation_roots(), 2);
     assert_eq!(summary.checkpoint_roots(), 1);
+    assert_eq!(summary.finding_candidate_roots(), 1);
     assert!(matches!(
         &roots[0],
         LocalCampaignRetentionRoot::SemanticPin(record)
@@ -261,6 +274,7 @@ fn semantic_and_operational_roots_share_one_terminal_inventory() {
             LocalCampaignRetentionRoot::Observation(observation),
             LocalCampaignRetentionRoot::Observation(observation),
             LocalCampaignRetentionRoot::ExactCheckpoint(checkpoint),
+            LocalCampaignRetentionRoot::FindingCandidate(finding_candidate),
         ]
     );
 }
