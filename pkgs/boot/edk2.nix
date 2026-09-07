@@ -1,11 +1,13 @@
-##! edk2 — TianoCore EDK2 UEFI firmware: OVMF for QEMU (x86_64)
+##! edk2 — TianoCore EDK2 UEFI firmware for QEMU
 ##!
-##! Builds OvmfPkgX64 from source, producing the split-flash pair the
-##! test harness (and any QEMU UEFI boot) consumes:
+##! Builds the firmware matching the Linux target architecture. x86_64 uses
+##! OVMF's split pflash, while aarch64 uses ArmVirt's code image and QEMU's
+##! persistent paravirtual variable store:
 ##!
 ##!   $out/FV/OVMF_CODE.fd  — read-only firmware code flash
 ##!   $out/FV/OVMF_VARS.fd  — writable NVRAM variable store template
 ##!   $out/FV/OVMF.fd       — combined image (single-pflash use)
+##!   $out/FV/AAVMF_CODE.fd — aarch64 ArmVirt code flash
 ##!
 ##! Two toolchains are deliberately in play:
 ##!
@@ -30,6 +32,7 @@
   mkDerivation,
   fetchurl,
   bootstrapTools,
+  gccUnwrapped,
   buildPackages,
   stdenv,
   gnumake,
@@ -39,6 +42,7 @@
   util-linux,
 }: let
   version = "edk2-stable202602";
+  buildAarch64Firmware = stdenv.hostPlatform.system == "aarch64-linux";
   buildPython =
     if stdenv.isCross
     then buildPackages.python3
@@ -256,8 +260,17 @@ in
           # or the append lands before the \r and the tools_def parser
           # skips the whole assignment.
           sed -i 's/\r$//' Conf/tools_def.txt
-          sed -i 's/^\(RELEASE_GCC_X64_CC_FLAGS *=.*\)$/\1 -Wno-maybe-uninitialized/' \
-            Conf/tools_def.txt
+          ${
+            if buildAarch64Firmware
+            then ''
+              sed -i 's/^\(RELEASE_GCC5_AARCH64_CC_FLAGS *=.*\)$/\1 -Wno-maybe-uninitialized/' \
+                Conf/tools_def.txt
+            ''
+            else ''
+              sed -i 's/^\(RELEASE_GCC_X64_CC_FLAGS *=.*\)$/\1 -Wno-maybe-uninitialized/' \
+                Conf/tools_def.txt
+            ''
+          }
 
           # The generated module makefiles invoke BaseTools by bare name
           # (Trim, GenFw, GenFv, ...) — normally edksetup.sh puts the
@@ -271,7 +284,11 @@ in
           # ccWrapper flag injection) plus binutils from the bootstrap
           # PATH. tools_def resolves every tool as <prefix><name>.
           ${
-            if stdenv.isCross
+            if buildAarch64Firmware
+            then ''
+              ORIG_CC=${gccUnwrapped}
+            ''
+            else if stdenv.isCross
             then "ORIG_CC=${buildPackages.gccUnwrapped}"
             else "ORIG_CC=$(cat ${bootstrapTools}/nix-support/orig-cc)"
           }
@@ -285,6 +302,19 @@ in
               [ -n "$src" ] && ln -sf "$src" "$PWD/fw-toolchain/$t"
             fi
           done
+          ${
+            if buildAarch64Firmware
+            then ''
+              # The cross GCC output carries the prefixed compiler drivers,
+              # while the matching target binutils are a separate stdenv
+              # output. EDK2 expects both sets under one GCC5 prefix.
+              for t in ${stdenv.binutils}/bin/*; do
+                ln -sf "$t" "$PWD/fw-toolchain/$(basename "$t")"
+              done
+              export GCC5_AARCH64_PREFIX="$PWD/fw-toolchain/${stdenv.hostPlatform.config}-"
+            ''
+            else ""
+          }
           export GCC_BIN="$PWD/fw-toolchain/"
           export GCC5_BIN="$PWD/fw-toolchain/"
           export NASM_PREFIX="${buildNasm}/bin/"
@@ -311,31 +341,56 @@ in
           # firmware does no measurement and TPM-sealed /var (RFC-0006
           # phase 3) cannot bind to PCR 7/11. Harmless when no TPM is
           # attached (the measurement calls just no-op).
-          $PYTHON_COMMAND BaseTools/Source/Python/build/build.py \
-            -a X64 \
-            -t GCC \
-            -b RELEASE \
-            -p OvmfPkg/OvmfPkgX64.dsc \
-            -D SECURE_BOOT_ENABLE=TRUE \
-            -D SMM_REQUIRE=TRUE \
-            -D TPM2_ENABLE=TRUE \
-            -D TPM2_CONFIG_ENABLE=TRUE \
-            -n $NIX_BUILD_CORES
+          ${
+            if buildAarch64Firmware
+            then ''
+              $PYTHON_COMMAND BaseTools/Source/Python/build/build.py \
+                -a AARCH64 \
+                -t GCC5 \
+                -b RELEASE \
+                -p ArmVirtPkg/ArmVirtQemu.dsc \
+                -D SECURE_BOOT_ENABLE=TRUE \
+                -D TPM2_ENABLE=TRUE \
+                -D TPM2_CONFIG_ENABLE=TRUE \
+                -D QEMU_PV_VARS=TRUE \
+                -n $NIX_BUILD_CORES
+            ''
+            else ''
+              $PYTHON_COMMAND BaseTools/Source/Python/build/build.py \
+                -a X64 \
+                -t GCC \
+                -b RELEASE \
+                -p OvmfPkg/OvmfPkgX64.dsc \
+                -D SECURE_BOOT_ENABLE=TRUE \
+                -D SMM_REQUIRE=TRUE \
+                -D TPM2_ENABLE=TRUE \
+                -D TPM2_CONFIG_ENABLE=TRUE \
+                -n $NIX_BUILD_CORES
+            ''
+          }
         '';
       }
       {
         name = "install";
-        script = ''
-          mkdir -p $out/FV
-          cp Build/OvmfX64/RELEASE_GCC/FV/OVMF.fd $out/FV/
-          cp Build/OvmfX64/RELEASE_GCC/FV/OVMF_CODE.fd $out/FV/
-          cp Build/OvmfX64/RELEASE_GCC/FV/OVMF_VARS.fd $out/FV/
-        '';
+        script =
+          if buildAarch64Firmware
+          then ''
+            mkdir -p $out/FV
+            cp Build/ArmVirtQemu-AArch64/RELEASE_GCC5/FV/QEMU_EFI.fd \
+              $out/FV/AAVMF_CODE.fd
+            truncate -s 64M $out/FV/AAVMF_CODE.fd
+          ''
+          else ''
+            mkdir -p $out/FV
+            cp Build/OvmfX64/RELEASE_GCC/FV/OVMF.fd $out/FV/
+            cp Build/OvmfX64/RELEASE_GCC/FV/OVMF_CODE.fd $out/FV/
+            cp Build/OvmfX64/RELEASE_GCC/FV/OVMF_VARS.fd $out/FV/
+          '';
       }
     ];
 
     meta = {
-      description = "edk2 — TianoCore UEFI firmware (OVMF for QEMU x86_64)";
+      description = "edk2 — TianoCore UEFI firmware for QEMU";
       homepage = "https://github.com/tianocore/edk2";
       license = "BSD-2-Clause-Patent";
     };
