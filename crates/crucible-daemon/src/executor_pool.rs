@@ -1183,7 +1183,7 @@ fn worker_loop<L, V, W>(
         }
         increment(&shared.counters.executions);
         let execution = queued.execution();
-        let key = AttemptExecutionKey::new(queued.request().lineage(), queued.request().attempt());
+        let key = AttemptExecutionKey::for_request(queued.request());
         let cancellation = queued.cancellation().clone();
         match catch_unwind(AssertUnwindSafe(|| worker.execute(queued))) {
             Ok(work) if cancellation.is_canceled() => {
@@ -1438,10 +1438,7 @@ where
             abort_checkpoint(shared, CheckpointResultAbortToken::Published(published));
             return AttemptExecutionDisposition::Canceled;
         }
-        let key = AttemptExecutionKey::new(
-            published.queued().request().lineage(),
-            published.queued().request().attempt(),
-        );
+        let key = AttemptExecutionKey::for_request(published.queued().request());
         let checkpoint = published.root();
         let mut executor = lock_or_retain(shared, &published);
         match reconcile_published_checkpoint_result(executor.supervisor_mut(), *published) {

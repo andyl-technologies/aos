@@ -663,7 +663,7 @@ where
         )
         .with_start_mode(queued.request().start_mode())
         .with_runtime_basis(AttemptExecutionRuntimeBasis::new(
-            crate::AttemptExecutionKey::new(queued.request().lineage(), queued.request().attempt()),
+            crate::AttemptExecutionKey::for_request(queued.request()),
             queued.execution(),
         ))
         .with_resume_checkpoint(queued.origin().checkpoint())
@@ -722,7 +722,7 @@ where
     ) -> Result<AttemptExecutionInput, CampaignRepositoryError> {
         resolve_attempt_execution_input(
             &self.store,
-            crate::AttemptExecutionKey::new(request.lineage(), request.attempt()),
+            crate::AttemptExecutionKey::for_request(request),
         )
     }
 }
@@ -731,8 +731,10 @@ fn capture_start_validation_reason(
     start: &ResolvedAttemptStart,
     start_mode: AttemptStartMode,
 ) -> Result<Option<&'static str>, crucible_campaign::CampaignCodecError> {
-    let AttemptStartMode::CaptureMaterializedStart { configuration } = start_mode else {
-        return Ok(None);
+    let configuration = match start_mode {
+        AttemptStartMode::Execute => return Ok(None),
+        AttemptStartMode::CaptureMaterializedStart { configuration }
+        | AttemptStartMode::SavepointCapture { configuration, .. } => configuration,
     };
     let ResolvedAttemptStart::Discover {
         configuration: resolved,

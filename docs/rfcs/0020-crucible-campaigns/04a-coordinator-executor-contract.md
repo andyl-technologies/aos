@@ -1678,17 +1678,33 @@ SubmitAttemptRequestV3 = version | assignment_id | daemon_epoch | lineage_id |
                          attempt_id | resource_limits | retention_intent |
                          start_mode
 
+SubmitAttemptRequestV4 = version | assignment_id | daemon_epoch | lineage_id |
+                         attempt_id | resource_limits | retention_intent |
+                         scoped_start_mode
+
 resource_limits = maximum_vcpus | maximum_resident_bytes |
                   maximum_disk_bytes | maximum_execution_quanta
 
-SubmitAttemptResponseV2/V3 = version | assignment_id | daemon_epoch | attempt_id |
-                             request_digest | disposition
+SubmitAttemptResponseV2/V3 = version | assignment_id | daemon_epoch |
+                             attempt_id | request_digest | disposition
+
+SubmitAttemptResponseV4 = version | assignment_id | daemon_epoch | attempt_id |
+                          request_digest | completed_disposition |
+                          finding_candidate
 
 GetAttemptExecutionRequestV2 = version | daemon_epoch | lineage_id | attempt_id |
                                execution_id | execution_basis_digest
 
+GetAttemptExecutionRequestV3 = version | daemon_epoch | lineage_id | attempt_id |
+                               execution_id | execution_basis_digest |
+                               execution_scope
+
 GetAttemptExecutionResponseV2/V3 = version | daemon_epoch | attempt_id |
                                    execution_id | request_digest | disposition
+
+GetAttemptExecutionResponseV4 = version | daemon_epoch | attempt_id |
+                                execution_id | request_digest |
+                                completed_disposition | finding_candidate
 
 ResumeAttemptExecutionRequestV2 = version | assignment_id | daemon_epoch |
                                   lineage_id | attempt_id | prior_execution_id |
@@ -1705,18 +1721,39 @@ ResumeAttemptExecutionResponseV2/V3 = version | assignment_id | daemon_epoch |
                                       exact_checkpoint_id | request_digest |
                                       disposition
 
+ResumeAttemptExecutionResponseV4 = version | assignment_id | daemon_epoch |
+                                   attempt_id | prior_execution_id |
+                                   exact_checkpoint_id | request_digest |
+                                   completed_disposition | finding_candidate
+
 CheckpointAttemptExecutionRequestV2 = version | daemon_epoch | lineage_id |
                                       attempt_id | execution_id |
                                       execution_basis_digest
 
+CheckpointAttemptExecutionRequestV3 = version | daemon_epoch | lineage_id |
+                                      attempt_id | execution_id |
+                                      execution_basis_digest | execution_scope
+
 CheckpointAttemptExecutionResponseV2 = version | daemon_epoch | attempt_id |
                                        execution_id | request_digest | disposition
+
+CheckpointAttemptExecutionResponseV4 = version | daemon_epoch | attempt_id |
+                                       execution_id | request_digest |
+                                       completed_disposition | finding_candidate
 
 CancelAttemptExecutionRequestV2 = version | daemon_epoch | lineage_id | attempt_id |
                                   execution_id | execution_basis_digest
 
-CancelAttemptExecutionResponseV2 = version | daemon_epoch | attempt_id | execution_id |
-                                   request_digest | disposition
+CancelAttemptExecutionRequestV3 = version | daemon_epoch | lineage_id | attempt_id |
+                                  execution_id | execution_basis_digest |
+                                  execution_scope
+
+CancelAttemptExecutionResponseV2 = version | daemon_epoch | attempt_id |
+                                   execution_id | request_digest | disposition
+
+CancelAttemptExecutionResponseV4 = version | daemon_epoch | attempt_id |
+                                   execution_id | request_digest |
+                                   completed_disposition | finding_candidate
 ```
 
 Version 3 of `GetAttemptExecutionResponse` adds the `TerminalFailure`
@@ -1729,6 +1766,11 @@ fact v10. This operational classification does not synthesize a guest
 observation or modeled stop outcome. Every older response disposition and
 campaign closure reason retains its prior schema version and bytes.
 
+Version 4 of the submit, status, resume, checkpoint, and cancellation responses
+adds a required finding-candidate bundle to a completed disposition. A response
+without that child retains its earlier version and bytes. Every response
+authenticates the complete request before exposing the candidate.
+
 Version 3 of `SubmitAttemptRequest` adds the explicit
 `capture-materialized-start(configuration-artifact ID)` start mode. Ordinary
 execution retains the exact version 2 bytes, digest domain, and execution-basis
@@ -1736,6 +1778,18 @@ identity. Capture uses a separate execution-basis domain that authenticates the
 requested configuration. The supervisor persists `checkpoint-requested` and
 latches the worker signal before dispatch, so capture cannot race with an
 ordinary modeled quantum.
+
+Version 4 of `SubmitAttemptRequest` adds the closed
+`savepoint-capture(capture-request fact ID, configuration-artifact ID)` mode.
+Its `AttemptExecutionScope` is either `semantic` or
+`savepoint-capture(capture-request fact ID)`. The scope has canonical schema
+version 1 and is bound into the request and execution-basis digests. Version 3
+of each status, checkpoint, and cancellation request carries that scope
+explicitly; version 2 decodes only as `semantic`. An executor uses the explicit
+scope for direct lookup and never scans or infers a scope from a lineage and
+attempt ID. Attempt-state record v11 persists the scope and uses a separate
+version 2 storage-key domain for nonsemantic state while preserving the exact
+semantic version 1 path digest.
 
 The canonical `AttemptId` names the immutable `Attempt` record and is itself
 the execution specification; the protocol deliberately does not create a
@@ -1772,7 +1826,9 @@ assignment.
 
 `GetAttemptExecution` is the read-only completion-poll operation. Its request
 digest is
-`H("crucible.campaign.get-attempt-execution-request.v2", canonical_request)`;
+`H("crucible.campaign.get-attempt-execution-request.v2", canonical_request)`
+for legacy semantic bytes or the corresponding `.v3` domain for an explicit
+scope;
 the response repeats the exact epoch, attempt, and execution and is rejected if
 any echo or the digest differs. Its closed disposition vocabulary is
 `running | checkpoint-requested | checkpoint-publishing(exact-checkpoint ID) |
@@ -1791,7 +1847,8 @@ record.
 `CheckpointAttemptExecution` is the exact-basis, idempotent pause request. Its
 request digest is
 `H("crucible.campaign.checkpoint-attempt-execution-request.v2",
-canonical_request)`. Its closed disposition vocabulary is `requested |
+canonical_request)` for legacy semantic bytes or the corresponding `.v3`
+domain for an explicit scope. Its closed disposition vocabulary is `requested |
 already-requested | publishing(exact-checkpoint ID) |
 paused(exact-checkpoint ID) | already-completed(observation ID) |
 already-canceled | not-current`. The executor MUST persist
@@ -1864,7 +1921,9 @@ new assignment as another capture.
 
 `CancelAttemptExecution` is the idempotent mutation for the same exact
 execution basis. Its request digest is
-`H("crucible.campaign.cancel-attempt-execution-request.v2", canonical_request)`;
+`H("crucible.campaign.cancel-attempt-execution-request.v2", canonical_request)`
+for legacy semantic bytes or the corresponding `.v3` domain for an explicit
+scope;
 the response repeats the exact epoch, attempt, and execution and is rejected if
 any echo or the digest differs. Its closed disposition vocabulary is
 `canceled | already-canceled | already-completed(observation ID) | not-current`.

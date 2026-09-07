@@ -11,14 +11,15 @@ use crate::{
     ExecutionCheckpointRequest, RepositoryAttemptAdmission, resolve_attempt_execution_input,
 };
 use crucible_campaign::{
-    AssignmentId, AttemptResourceLimits, CampaignCodecError, CampaignExecutorStore, CampaignHash,
-    CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
-    CancelAttemptExecutionResponse, CheckpointAttemptExecutionDisposition,
-    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, DaemonEpoch,
-    ExecutorControlService, ExecutorRejection, ExecutorResumeService, ExecutorService,
-    ExecutorStatusService, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
-    GetAttemptExecutionResponse, ObservationId, PlannerExecutionSupervisor, PlannerRequest,
-    PurePlannerEngine, ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
+    AssignmentId, AttemptExecutionScope, AttemptResourceLimits, CampaignCodecError,
+    CampaignExecutorStore, CampaignHash, CancelAttemptExecutionDisposition,
+    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
+    CheckpointAttemptExecutionDisposition, CheckpointAttemptExecutionRequest,
+    CheckpointAttemptExecutionResponse, DaemonEpoch, ExecutorControlService, ExecutorRejection,
+    ExecutorResumeService, ExecutorService, ExecutorStatusService, GetAttemptExecutionDisposition,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, ObservationId,
+    PlannerExecutionSupervisor, PlannerRequest, PurePlannerEngine,
+    ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
     ResumeAttemptExecutionResponse, SubmitAttemptDisposition, SubmitAttemptRequest,
     SubmitAttemptResponse, SupervisedPlannerExecution,
 };
@@ -170,6 +171,15 @@ where
             )
             .map_err(SynchronousCampaignExecutorError::Protocol);
         }
+        if request.execution_scope() != AttemptExecutionScope::Semantic {
+            return SubmitAttemptResponse::new(
+                request,
+                SubmitAttemptDisposition::Rejected {
+                    reason: ExecutorRejection::Incompatible,
+                },
+            )
+            .map_err(SynchronousCampaignExecutorError::Protocol);
+        }
         if let Err(reason) = self.admission.validate(request) {
             return SubmitAttemptResponse::new(
                 request,
@@ -195,7 +205,7 @@ where
             .entry(request.assignment())
             .or_insert(request_digest);
 
-        let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+        let key = AttemptExecutionKey::for_request(request);
         if let Some(observation) = self.completed.get(&key).copied() {
             self.admission
                 .validate_completion(request, observation)

@@ -48,6 +48,15 @@ fn fixture_configuration(byte: u8) -> ConfigurationArtifactId {
     .expect("configuration")
 }
 
+fn fixture_campaign_fact(byte: u8) -> CampaignFactId {
+    CampaignFactId::from_content_id(ContentId::for_bytes(
+        ObjectKind::CampaignFact,
+        10,
+        &[byte; 32],
+    ))
+    .expect("campaign fact")
+}
+
 #[test]
 fn completed_responses_version_finding_candidates_and_decode_legacy_none() {
     let assignment = fixture_request();
@@ -396,6 +405,189 @@ fn materialized_start_capture_is_explicit_versioned_and_basis_bound() {
 }
 
 #[test]
+fn savepoint_capture_scope_is_explicit_versioned_and_control_bound() {
+    let execute = fixture_request();
+    let capture_fact = fixture_campaign_fact(0xa1);
+    let configuration = fixture_configuration(0xa2);
+    let capture = SubmitAttemptRequest::new_savepoint_capture(
+        execute.assignment(),
+        execute.daemon_epoch(),
+        execute.lineage(),
+        execute.attempt(),
+        execute.resources(),
+        execute.retention(),
+        capture_fact,
+        configuration,
+    )
+    .expect("scoped capture request");
+    let scope = AttemptExecutionScope::SavepointCapture {
+        request: capture_fact,
+    };
+
+    assert_eq!(&capture.canonical_bytes()[..4], &4_u32.to_be_bytes());
+    assert_eq!(capture.execution_scope(), scope);
+    assert_eq!(
+        capture.start_mode(),
+        AttemptStartMode::SavepointCapture {
+            request: capture_fact,
+            configuration,
+        }
+    );
+    assert_eq!(
+        SubmitAttemptRequest::from_canonical_bytes(&capture.canonical_bytes())
+            .expect("decode scoped capture"),
+        capture
+    );
+    assert_ne!(capture.request_digest(), execute.request_digest());
+    assert_ne!(
+        capture.execution_basis_digest(),
+        execute.execution_basis_digest()
+    );
+
+    let changed_fact = SubmitAttemptRequest::new_savepoint_capture(
+        execute.assignment(),
+        execute.daemon_epoch(),
+        execute.lineage(),
+        execute.attempt(),
+        execute.resources(),
+        execute.retention(),
+        fixture_campaign_fact(0xa3),
+        configuration,
+    )
+    .expect("capture with changed fact");
+    let changed_configuration = SubmitAttemptRequest::new_savepoint_capture(
+        execute.assignment(),
+        execute.daemon_epoch(),
+        execute.lineage(),
+        execute.attempt(),
+        execute.resources(),
+        execute.retention(),
+        capture_fact,
+        fixture_configuration(0xa4),
+    )
+    .expect("capture with changed configuration");
+    assert_ne!(
+        capture.execution_basis_digest(),
+        changed_fact.execution_basis_digest()
+    );
+    assert_ne!(
+        capture.execution_basis_digest(),
+        changed_configuration.execution_basis_digest()
+    );
+
+    assert_eq!(
+        AttemptExecutionScope::from_canonical_bytes(&scope.canonical_bytes())
+            .expect("decode capture scope"),
+        scope
+    );
+    assert_eq!(
+        AttemptExecutionScope::from_canonical_bytes(&[0xff]),
+        Err(CampaignCodecError::UnknownTag {
+            kind: "attempt-execution-scope",
+            tag: 0xff,
+        })
+    );
+
+    let execution = ExecutionId::from_bytes([0xa5; 16]).expect("execution");
+    let status = GetAttemptExecutionRequest::new(&capture, execution).expect("status request");
+    let checkpoint =
+        CheckpointAttemptExecutionRequest::new(&capture, execution).expect("checkpoint request");
+    let cancel =
+        CancelAttemptExecutionRequest::new(&capture, execution).expect("cancellation request");
+    assert_eq!(status.execution_scope(), scope);
+    assert_eq!(checkpoint.execution_scope(), scope);
+    assert_eq!(cancel.execution_scope(), scope);
+    assert_eq!(&status.canonical_bytes()[..4], &3_u32.to_be_bytes());
+    assert_eq!(&checkpoint.canonical_bytes()[..4], &3_u32.to_be_bytes());
+    assert_eq!(&cancel.canonical_bytes()[..4], &3_u32.to_be_bytes());
+    assert_eq!(
+        GetAttemptExecutionRequest::from_canonical_bytes(&status.canonical_bytes())
+            .expect("decode scoped status"),
+        status
+    );
+    assert_eq!(
+        CheckpointAttemptExecutionRequest::from_canonical_bytes(&checkpoint.canonical_bytes())
+            .expect("decode scoped checkpoint"),
+        checkpoint
+    );
+    assert_eq!(
+        CancelAttemptExecutionRequest::from_canonical_bytes(&cancel.canonical_bytes())
+            .expect("decode scoped cancellation"),
+        cancel
+    );
+}
+
+#[test]
+fn legacy_control_requests_decode_in_the_semantic_scope() {
+    let assignment = fixture_request();
+    let status = GetAttemptExecutionRequest::new(
+        &assignment,
+        ExecutionId::from_bytes([0x37; 16]).expect("status execution"),
+    )
+    .expect("status request");
+    let checkpoint = CheckpointAttemptExecutionRequest::new(
+        &assignment,
+        ExecutionId::from_bytes([0x3b; 16]).expect("checkpoint execution"),
+    )
+    .expect("checkpoint request");
+    let cancel = CancelAttemptExecutionRequest::new(
+        &assignment,
+        ExecutionId::from_bytes([0x39; 16]).expect("cancellation execution"),
+    )
+    .expect("cancellation request");
+    let legacy_status = semantic_control_v2_bytes(status.canonical_bytes());
+    let legacy_checkpoint = semantic_control_v2_bytes(checkpoint.canonical_bytes());
+    let legacy_cancel = semantic_control_v2_bytes(cancel.canonical_bytes());
+
+    let decoded = GetAttemptExecutionRequest::from_canonical_bytes(&legacy_status)
+        .expect("decode legacy semantic request");
+    assert_eq!(decoded.execution_scope(), AttemptExecutionScope::Semantic);
+    assert_eq!(decoded.canonical_bytes(), legacy_status);
+    assert_eq!(
+        CheckpointAttemptExecutionRequest::from_canonical_bytes(&legacy_checkpoint)
+            .expect("decode legacy checkpoint")
+            .execution_scope(),
+        AttemptExecutionScope::Semantic
+    );
+    assert_eq!(
+        CancelAttemptExecutionRequest::from_canonical_bytes(&legacy_cancel)
+            .expect("decode legacy cancellation")
+            .execution_scope(),
+        AttemptExecutionScope::Semantic
+    );
+    assert_eq!(
+        CampaignHash::derive(
+            "crucible.test.get-attempt-execution-request-vector.v2",
+            &legacy_status,
+        )
+        .to_hex(),
+        "ef1b1a52e9f1bce2ad5f56a3d038c2a48cbd7c3e1809e0cd999edb4f1f64d5f3"
+    );
+    assert_eq!(
+        CampaignHash::derive(
+            "crucible.test.checkpoint-attempt-execution-request-vector.v2",
+            &legacy_checkpoint,
+        )
+        .to_hex(),
+        "2f1dfdb45541a18fd2b09e3033e982af8e110c8ebd443bc06823751c45cc4a2e"
+    );
+    assert_eq!(
+        CampaignHash::derive(
+            "crucible.test.cancel-attempt-execution-request-vector.v2",
+            &legacy_cancel,
+        )
+        .to_hex(),
+        "b3ca93e0286e939ba61708de078d38588c5e9298611b4c30482453ee649e367e"
+    );
+}
+
+fn semantic_control_v2_bytes(mut current: Vec<u8>) -> Vec<u8> {
+    assert_eq!(current.pop(), Some(0), "semantic scope tag is last");
+    current[..4].copy_from_slice(&2_u32.to_be_bytes());
+    current
+}
+
+#[test]
 fn get_attempt_execution_messages_are_strict_and_exact_request_bound() {
     let assignment = fixture_request();
     let execution = ExecutionId::from_bytes([0x37; 16]).expect("execution");
@@ -408,11 +600,11 @@ fn get_attempt_execution_messages_are_strict_and_exact_request_bound() {
     );
     assert_eq!(
         CampaignHash::derive(
-            "crucible.test.get-attempt-execution-request-vector.v2",
+            "crucible.test.get-attempt-execution-request-vector.v3",
             &request_bytes,
         )
         .to_hex(),
-        "ef1b1a52e9f1bce2ad5f56a3d038c2a48cbd7c3e1809e0cd999edb4f1f64d5f3"
+        "1de5573b7844799d67468fa16a02eca1f0ca18da8fcef37254cb5439f582bac9"
     );
 
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
@@ -438,7 +630,7 @@ fn get_attempt_execution_messages_are_strict_and_exact_request_bound() {
             &response_bytes,
         )
         .to_hex(),
-        "52a161cda68e3b020734a39e141906ba8b707768a93964e597884cd1777b03fb"
+        "8bc812429e8d43891bf90d4db7e1eb0cf2c52bd952884df309753f2254074f0a"
     );
 
     let other_execution = ExecutionId::from_bytes([0x38; 16]).expect("other execution");
@@ -713,11 +905,11 @@ fn cancel_attempt_execution_messages_are_strict_and_exact_request_bound() {
     );
     assert_eq!(
         CampaignHash::derive(
-            "crucible.test.cancel-attempt-execution-request-vector.v2",
+            "crucible.test.cancel-attempt-execution-request-vector.v3",
             &request_bytes,
         )
         .to_hex(),
-        "b3ca93e0286e939ba61708de078d38588c5e9298611b4c30482453ee649e367e"
+        "e9d78b74ec0daea24ba7162230e9969096fc5aaf3f39204d41f7deae053af45f"
     );
 
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
@@ -743,7 +935,7 @@ fn cancel_attempt_execution_messages_are_strict_and_exact_request_bound() {
             &response_bytes,
         )
         .to_hex(),
-        "fd77a046700eedf86394ce59e290a5396105a04b9f1fe224d767eaa79d119fac"
+        "036e6f61251e9b34cf52f7da9be50ed4d3b0b0f6f106c34a73951d7b7f9dcaa5"
     );
 
     let other = CancelAttemptExecutionRequest::new(
@@ -788,11 +980,11 @@ fn checkpoint_attempt_execution_messages_bind_the_exact_root_and_request() {
     );
     assert_eq!(
         CampaignHash::derive(
-            "crucible.test.checkpoint-attempt-execution-request-vector.v2",
+            "crucible.test.checkpoint-attempt-execution-request-vector.v3",
             &request_bytes,
         )
         .to_hex(),
-        "2f1dfdb45541a18fd2b09e3033e982af8e110c8ebd443bc06823751c45cc4a2e"
+        "c8d3b52f8c4acc70c550074a64f5f7c547eac20f232b0fa9da0b55621350717c"
     );
 
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
@@ -818,7 +1010,7 @@ fn checkpoint_attempt_execution_messages_bind_the_exact_root_and_request() {
             &response_bytes,
         )
         .to_hex(),
-        "ff859c55efc7e56f7e81c6dd969fbe068a0c583e346a37023531a81a8a61877d"
+        "f63b6aafce5ff5625364895cf8e67d0ff3111932ce18aceb14509300240ebd67"
     );
 
     let other = CheckpointAttemptExecutionRequest::new(

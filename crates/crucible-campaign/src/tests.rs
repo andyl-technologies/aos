@@ -247,6 +247,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         owned_campaign_schemas.insert(schema);
     }
     for schema in [
+        "crucible.campaign.attempt-execution-scope",
         "crucible.campaign.submit-attempt-request",
         "crucible.campaign.submit-attempt-response",
         "crucible.campaign.get-attempt-execution-request",
@@ -262,12 +263,13 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             .get(schema)
             .unwrap_or_else(|| panic!("missing executor component schema {schema}"));
         let expected_version = match schema {
-            "crucible.campaign.submit-attempt-request"
-            | "crucible.campaign.submit-attempt-response"
-            | "crucible.campaign.get-attempt-execution-response"
-            | "crucible.campaign.resume-attempt-execution-request"
-            | "crucible.campaign.resume-attempt-execution-response" => "3",
-            _ => "2",
+            "crucible.campaign.attempt-execution-scope" => "1",
+            "crucible.campaign.submit-attempt-request" => "4",
+            "crucible.campaign.resume-attempt-execution-request"
+            | "crucible.campaign.get-attempt-execution-request"
+            | "crucible.campaign.cancel-attempt-execution-request"
+            | "crucible.campaign.checkpoint-attempt-execution-request" => "3",
+            _ => "4",
         };
         assert_eq!(message[1], expected_version);
         assert_eq!(message[2], "crucible-campaign::execution");
@@ -354,7 +356,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.executor.attempt-state-record",
-            "9",
+            "11",
             "operational-record",
         ),
         (
