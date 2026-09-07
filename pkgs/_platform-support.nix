@@ -122,6 +122,7 @@ let
   # to execute during their build.
   targetWave2 = [
     "acpica"
+    "aos-fuse3"
     "bind"
     "boringssl"
     "cairo"
@@ -445,9 +446,12 @@ let
     "aos-boot-identity"
     "aos-ebpf-lsm-policy"
     "aos-ebpf-net-policy"
+    "aos-fuse-transport"
     "aos-landlock"
     "aos-recovery"
     "aos-registry-server"
+    "aos-sandbox-hostd"
+    "aos-sandbox-mountd"
     "aos-service-root"
     "aos-selinux-run"
     "aos-var-policy-migrate"

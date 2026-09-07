@@ -1,0 +1,15 @@
+[package]
+name = "aos-filesystem-fuse-kernel-worker"
+version = "0.0.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+aos-filesystem-fuse.workspace = true
+aos-filesystem-view.workspace = true
+aos-sandbox-core.workspace = true
+libc.workspace = true
+
+[lints]
+workspace = true

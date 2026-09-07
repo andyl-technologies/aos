@@ -1,0 +1,40 @@
+[package]
+name = "aos-sandbox-mount"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "aos-sandbox-mount-helper"
+path = "src/bin/aos-sandbox-mount-helper.rs"
+
+[[bin]]
+name = "aos-sandbox-mountd"
+path = "src/bin/aos-sandbox-mountd.rs"
+
+[features]
+default = []
+kernel-tests = ["aos-sandbox-linux/kernel-tests"]
+
+[dependencies]
+aos-proto.workspace = true
+aos-sandbox.workspace = true
+aos-sandbox-broker.workspace = true
+aos-sandbox-core.workspace = true
+aos-sandbox-linux.workspace = true
+aos-sandbox-protocol.workspace = true
+buffa.workspace = true
+libc.workspace = true
+rustix = { workspace = true, features = ["event", "fs", "net", "process", "time"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+hex.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -8,7 +8,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, HelpTooltip};
+use crate::components::{HelpTooltip, InlineError};
 use crate::transport::ApiClient;
 
 #[derive(Clone, Copy)]

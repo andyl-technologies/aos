@@ -1,0 +1,16 @@
+[package]
+name = "aos-sandbox-linux"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[features]
+# Explicit AOS VM qualification; ordinary package builds lack a cgroup2 mount.
+kernel-tests = []
+
+[dependencies]
+libc.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,37 @@
+[package]
+name = "aos-sandbox-host"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "aos-sandbox-hostd"
+path = "src/main.rs"
+
+[features]
+default = []
+kernel-tests = ["aos-sandbox-linux/kernel-tests"]
+
+[dependencies]
+aos-proto = { path = "../aos-proto" }
+aos-sandbox-broker.workspace = true
+aos-sandbox-core = { path = "../aos-sandbox-core" }
+aos-sandbox-linux = { path = "../aos-sandbox-linux" }
+aos-sandbox-protocol = { path = "../aos-sandbox-protocol" }
+aos-systemd = { path = "../aos-systemd" }
+async-trait.workspace = true
+buffa = "0.3"
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+rustix = { workspace = true, features = ["fs", "net", "process", "time"] }
+tokio.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+tempfile = "3"
+
+[lints]
+workspace = true

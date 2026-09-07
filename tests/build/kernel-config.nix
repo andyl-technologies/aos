@@ -16,6 +16,8 @@
   isAarch64 = builtins.match "aarch64-.*" system != null;
 
   configFile = "${pkgs.linux}/boot/config-${pkgs.linux.version}";
+  linuxSource = import ../../pkgs/kernel/_source.nix {inherit (pkgs) fetchurl;};
+  configDir = ../../pkgs/kernel/config;
 
   # Symbols required to be enabled (CONFIG_<name>=y). Includes key-free,
   # seed-free hardening plus container substrate features common to all
@@ -75,6 +77,9 @@
     "DM_VERITY"
     "DM_VERITY_VERIFY_ROOTHASH_SIG"
     "DM_VERITY_VERIFY_ROOTHASH_SIG_PLATFORM_KEYRING"
+    "FUSE_FS"
+    "FUSE_PASSTHROUGH"
+    "FS_VERITY"
   ];
 
   # Symbols required to hold a specific value (CONFIG_<name>=<value>).
@@ -145,7 +150,7 @@ in
     pname = "kernel-config-check";
     version = "0";
     src = null;
-    buildDeps = [pkgs.linux];
+    buildDeps = [pkgs.linux pkgs.gnumake pkgs.bison pkgs.flex];
     phases = [
       {
         name = "check";
@@ -182,10 +187,37 @@ in
             echo "ok: CONFIG_$1 disabled"
           }
 
+          assert_sandbox_features_for_arch() {
+            kernel_arch="$1"
+            make mrproper > /dev/null
+            make ARCH="$kernel_arch" defconfig > /dev/null
+
+            for fragment in ${configDir}/*.config; do
+              ${pkgs.bash}/bin/bash scripts/kconfig/merge_config.sh -m .config "$fragment" > /dev/null
+            done
+            for fragment in "${configDir}/$kernel_arch"/*.config; do
+              [ -e "$fragment" ] || continue
+              ${pkgs.bash}/bin/bash scripts/kconfig/merge_config.sh -m .config "$fragment" > /dev/null
+            done
+            make ARCH="$kernel_arch" olddefconfig > /dev/null
+
+            assert_enabled FUSE_FS
+            assert_enabled FUSE_PASSTHROUGH
+            assert_enabled FS_VERITY
+            echo "ok: sandbox filesystem features resolve for ARCH=$kernel_arch"
+          }
+
           echo "==> Kernel config checks (${system})"
           ${enabledLines}
           ${valueLines}
           ${disabledLines}
+
+          echo "==> Cross-architecture sandbox filesystem Kconfig checks"
+          tar xf ${linuxSource.src}
+          cd linux-${linuxSource.version}
+          cfg=.config
+          assert_sandbox_features_for_arch x86_64
+          assert_sandbox_features_for_arch arm64
 
           echo "==> All kernel config checks passed."
           mkdir -p $out

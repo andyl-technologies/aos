@@ -1,0 +1,12 @@
+[package]
+name = "aos-sandbox-service-journal-probe"
+version = "0.0.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+aos-sandbox.workspace = true
+
+[lints]
+workspace = true

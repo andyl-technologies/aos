@@ -35,5 +35,6 @@ topic files.
  | [0017](0017-canonical-hub-publishing/README.md) | 2026-09-02 | Canonical AOS Hub publishing — one registry, signed channels, exact-byte promotion, and production key custody | Proposed (design-only; production blockers, code architecture, delivery sequence, and maintainer-host runbook defined) |
  | [0018](0018-maintainer-package-upgrades/README.md) | 2026-09-03 | Local maintainer package upgrades — upstream discovery, deterministic source updates, bounded agent repair, complete validation, and maintainer UX | Proposed (design-only) |
  | [0019](0019-oci-containers/README.md) | 2026-08-27 | Scratch OCI containers built from AOS package closures and published through AOS Hub | Proposed — phased plan in [`implementation-plan.md`](0019-oci-containers/implementation-plan.md) |
+| [0020](0020-sandbox-runtime/README.md) | 2026-09-03 | Generic sandboxes and filesystem views | Proposed; implementation in progress |
 
 Numbering is chronological by the date the design entered the tree.

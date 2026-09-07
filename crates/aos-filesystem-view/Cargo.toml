@@ -1,0 +1,18 @@
+[package]
+name = "aos-filesystem-view"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-sandbox-core.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[[test]]
+name = "semantic_no_alloc"
+path = "tests/semantic_no_alloc.rs"
+harness = false
+
+[lints]
+workspace = true

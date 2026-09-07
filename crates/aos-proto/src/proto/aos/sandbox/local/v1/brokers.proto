@@ -1,0 +1,852 @@
+syntax = "proto3";
+package aos.sandbox.local.v1;
+
+// Mandatory envelope for every node-local broker request. Authentication is
+// bound to the Unix socket peer credentials and MAC label outside protobuf.
+message RequestHeader {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  bytes request_id = 3; // Exactly 16 bytes.
+  Audience audience = 4;
+  uint64 deadline_boottime_nanoseconds = 5;
+  uint32 maximum_response_bytes = 6; // Inclusive range 4096..16777216.
+}
+
+enum Audience {
+  AUDIENCE_UNSPECIFIED = 0;
+  AUDIENCE_NODE_CONTROLLER = 1;
+  AUDIENCE_ASSIGNMENT_GUARDIAN = 2;
+  AUDIENCE_MOUNT_WORKER = 3;
+  AUDIENCE_GUEST_AGENT = 4;
+  AUDIENCE_ROOT_MOUNT = 5;
+}
+
+message Descriptor {
+  string media_type = 1;
+  bytes sha256 = 2; // Exactly 32 bytes.
+  uint64 encoded_size = 3;
+}
+
+message Feature {
+  string namespace = 1;
+  uint32 major = 2;
+  uint32 minor = 3;
+}
+
+// First packet sent by a client on a newly accepted broker connection.
+message BrokerClientHello {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  Audience audience = 3;
+  repeated Feature required_features = 4;
+  uint32 maximum_response_bytes = 5;
+  repeated BrokerMethod required_methods = 6;
+}
+
+// First and only handshake packet returned by a broker. A non-successful
+// negotiation carries error and the connection is closed without dispatch.
+message BrokerServerHello {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  repeated Feature features = 3;
+  uint32 maximum_request_bytes = 4;
+  uint32 maximum_response_bytes = 5;
+  BrokerError error = 6;
+  repeated BrokerMethod methods = 7;
+}
+
+// Closed node-local method registry. Method tags are compatibility semantics,
+// independent of protobuf body type names.
+enum BrokerMethod {
+  BROKER_METHOD_UNSPECIFIED = 0;
+  BROKER_METHOD_HOST_APPLY_RUNTIME = 1;
+  BROKER_METHOD_HOST_OBSERVE_RUNTIME = 2;
+  BROKER_METHOD_HOST_INVENTORY_RUNTIME = 3;
+  BROKER_METHOD_MOUNT_APPLY = 4;
+  BROKER_METHOD_MOUNT_INVENTORY = 5;
+  BROKER_METHOD_MOUNT_INVENTORY_RESOURCES = 6;
+  BROKER_METHOD_STORAGE_APPLY = 7;
+  BROKER_METHOD_STORAGE_INVENTORY = 8;
+  BROKER_METHOD_NETWORK_APPLY = 9;
+  BROKER_METHOD_NETWORK_INVENTORY = 10;
+  BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT = 11;
+  BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE = 12;
+  BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE = 13;
+  BROKER_METHOD_MOUNT_PREPARE_CATALOG = 14;
+  BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT = 15;
+  BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS = 16;
+  BROKER_METHOD_HOST_PUBLISH_CATALOG = 17;
+}
+
+// Semantic roles for SCM_RIGHTS descriptors carried beside one packet.
+enum BrokerDescriptorRole {
+  BROKER_DESCRIPTOR_ROLE_UNSPECIFIED = 0;
+  BROKER_DESCRIPTOR_ROLE_PAYLOAD_MOUNT_NAMESPACE = 1;
+  BROKER_DESCRIPTOR_ROLE_TARGET_ROOT = 2;
+  BROKER_DESCRIPTOR_ROLE_MOUNT_SOURCE = 3;
+  BROKER_DESCRIPTOR_ROLE_DETACHED_MOUNT = 4;
+  BROKER_DESCRIPTOR_ROLE_RUNTIME_LEADER = 5;
+  BROKER_DESCRIPTOR_ROLE_PAYLOAD_USER_NAMESPACE = 6;
+  BROKER_DESCRIPTOR_ROLE_TARGET_SLOT = 7;
+  BROKER_DESCRIPTOR_ROLE_PAYLOAD_LEADER_PIDFD = 8;
+  BROKER_DESCRIPTOR_ROLE_PAYLOAD_CGROUP = 9;
+  BROKER_DESCRIPTOR_ROLE_HOST_CATALOG = 10;
+}
+
+// Declares response-side ownership of a descriptor received with the request.
+enum BrokerDescriptorDisposition {
+  BROKER_DESCRIPTOR_DISPOSITION_UNSPECIFIED = 0;
+  BROKER_DESCRIPTOR_DISPOSITION_CONSUMED = 1;
+  BROKER_DESCRIPTOR_DISPOSITION_RETURNED = 2;
+  BROKER_DESCRIPTOR_DISPOSITION_CLOSED = 3;
+}
+
+// Entry n describes ancillary descriptor n; sparse indices are forbidden.
+// The envelope validates this structure. Each closed method separately fixes
+// which exact role sequence is legal for that operation.
+message BrokerDescriptorEntry {
+  uint32 index = 1;
+  BrokerDescriptorRole role = 2;
+}
+
+// Accounts for every request descriptor on every response path.
+message BrokerDescriptorDispositionEntry {
+  uint32 request_index = 1;
+  BrokerDescriptorRole role = 2;
+  BrokerDescriptorDisposition disposition = 3;
+}
+
+// Exact portable signed artifacts carried by protocol-1.1 authority-bearing
+// methods. These bytes are untrusted until the selected broker verifies them
+// against protected node-local trust, clock, revocation, and durable-fence
+// state. Trust policies, public keys, local deadlines, and journal records are
+// never supplied by the requester.
+message BrokerAuthorizationArtifactsV1 {
+  bytes broker_plan = 1; // Canonical BrokerAuthorizationPlan CBOR.
+  bytes broker_plan_signature = 2; // Canonical detached Signature CBOR.
+  bytes ownership_lease = 3; // Canonical OwnershipLease CBOR.
+  bytes ownership_lease_signature = 4; // Canonical detached Signature CBOR.
+}
+
+// One request packet after a successful two-packet hello exchange.
+message BrokerRequestEnvelope {
+  BrokerMethod method = 1;
+  bytes body = 2;
+  repeated BrokerDescriptorEntry descriptors = 3;
+  BrokerAuthorizationArtifactsV1 authorization = 4;
+}
+
+// One response packet. request_id repeats the validated body header ID.
+message BrokerResponseEnvelope {
+  bytes request_id = 1; // Exactly 16 bytes.
+  BrokerMethod method = 2;
+  bytes body = 3;
+  repeated BrokerDescriptorEntry descriptors = 4;
+  BrokerError error = 5;
+  repeated BrokerDescriptorDispositionEntry request_descriptor_dispositions = 6;
+}
+
+message BrokerError {
+  BrokerErrorCode code = 1;
+  string safe_message = 2;
+  bool retryable = 3;
+  Feature missing_feature = 4;
+}
+
+enum BrokerErrorCode {
+  BROKER_ERROR_CODE_UNSPECIFIED = 0;
+  BROKER_ERROR_CODE_INVALID_REQUEST = 1;
+  BROKER_ERROR_CODE_UNAUTHENTICATED_PEER = 2;
+  BROKER_ERROR_CODE_WRONG_AUDIENCE = 3;
+  BROKER_ERROR_CODE_STALE_ASSIGNMENT = 4;
+  BROKER_ERROR_CODE_STALE_GENERATION = 5;
+  BROKER_ERROR_CODE_UNKNOWN_HANDLE = 6;
+  BROKER_ERROR_CODE_CONFLICT = 7;
+  BROKER_ERROR_CODE_RESOURCE_EXHAUSTED = 8;
+  BROKER_ERROR_CODE_REQUIRED_FEATURE_UNAVAILABLE = 9;
+  BROKER_ERROR_CODE_DEADLINE_EXPIRED = 10;
+  BROKER_ERROR_CODE_BACKEND_FAILURE = 11;
+  BROKER_ERROR_CODE_INTEGRITY_FAILURE = 12;
+}
+
+message AssignmentFence {
+  bytes sandbox_id = 1;
+  bytes incarnation_id = 2;
+  uint64 assignment_epoch = 3;
+  uint64 desired_generation = 4;
+  bytes assignment_digest = 5; // Exactly 32 bytes.
+}
+
+message ResourceLimit {
+  uint32 dimension = 1;
+  uint64 value = 2;
+}
+
+enum RuntimeAction {
+  RUNTIME_ACTION_UNSPECIFIED = 0;
+  RUNTIME_ACTION_LAUNCH = 1;
+  RUNTIME_ACTION_STOP = 2;
+  RUNTIME_ACTION_FREEZE = 3;
+  RUNTIME_ACTION_THAW = 4;
+  RUNTIME_ACTION_KILL = 5;
+}
+
+// A fully compiled fixed transient-unit plan. No property names are accepted.
+message RuntimePlan {
+  Descriptor root_image = 1;
+  bytes workspace_handle = 2;
+  bytes network_handle = 3;
+  uint32 uid_range_start = 4;
+  uint32 uid_range_size = 5;
+  repeated ResourceLimit limits = 6;
+  repeated bytes attachment_handles = 7;
+  repeated Feature required_features = 8;
+  // Host 1.3: one broker-minted handle for the namespace-generation anchor.
+  bytes attachment_anchor_handle = 9;
+}
+
+message ApplyRuntimeRequest {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  RuntimeAction action = 3;
+  RuntimePlan launch_plan = 4; // Present only for launch.
+}
+
+message RuntimeObservation {
+  bytes runtime_handle = 1;
+  AssignmentFence fence = 2;
+  RuntimeState state = 3;
+  uint64 observation_sequence = 4;
+  bytes leader_handle = 5; // Opaque pidfd-backed handle, never a PID.
+  BrokerError error = 6;
+}
+
+enum RuntimeState {
+  RUNTIME_STATE_UNSPECIFIED = 0;
+  RUNTIME_STATE_ABSENT = 1;
+  RUNTIME_STATE_STARTING = 2;
+  RUNTIME_STATE_READY = 3;
+  RUNTIME_STATE_FROZEN = 4;
+  RUNTIME_STATE_STOPPING = 5;
+  RUNTIME_STATE_EXITED = 6;
+  RUNTIME_STATE_FAILED = 7;
+}
+
+message ObserveRuntimeRequest {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  bytes runtime_handle = 3;
+}
+
+// Authority-bearing descriptor acquisition, unlike legacy ObserveRuntime.
+// Requires the exact signed HostObserve grant and current ownership lease.
+message ObservePayloadScopeRequest {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  bytes runtime_handle = 3; // Exactly 32 nonzero bytes.
+}
+
+// Success returns exactly [PAYLOAD_LEADER_PIDFD, PAYLOAD_CGROUP] SCM_RIGHTS.
+// The cgroup O_PATH anchor is the retained payload subtree, not its PID1 leaf.
+// These descriptors may exercise the receiver's existing kernel rights.
+message ObservePayloadScopeResponse {
+  AssignmentFence fence = 1;
+  bytes runtime_handle = 2; // Exactly 32 nonzero bytes.
+  bytes payload_scope_handle = 3; // Opaque retained-pin handle, not authority alone.
+  bytes leader_cgroup_hint = 4; // At most 4096 bytes; empty exact, otherwise strict relative.
+}
+
+// Host 1.3 RootMount-only acquisition. Requires a separately committed
+// HostObserve grant and the exact current retained payload-scope handle.
+// The node controller cannot request or receive these descriptors.
+message ObserveMountScopeRequest {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  bytes runtime_handle = 3;
+  bytes payload_scope_handle = 4;
+}
+
+// Success returns exactly [PAYLOAD_LEADER_PIDFD, PAYLOAD_CGROUP, TARGET_ROOT,
+// PAYLOAD_MOUNT_NAMESPACE, PAYLOAD_USER_NAMESPACE]. None authorizes a mount
+// effect without independent Mount plan and ownership admission.
+message ObserveMountScopeResponse {
+  AssignmentFence fence = 1;
+  bytes runtime_handle = 2;
+  bytes payload_scope_handle = 3;
+  bytes leader_cgroup_hint = 4;
+}
+
+message InventoryRuntimeRequest { RequestHeader header = 1; }
+message InventoryRuntimeResponse { repeated RuntimeObservation runtimes = 1; }
+
+// Queries one exact original ApplyRuntime transaction without admitting or
+// executing it. The outer envelope carries the same signed authorization
+// quartet; original_apply_request is the byte-exact ApplyRuntimeRequest body.
+message QueryRuntimeEffectRequest {
+  RequestHeader header = 1;
+  bytes original_apply_request = 2;
+}
+
+enum RuntimeEffectStatus {
+  RUNTIME_EFFECT_STATUS_UNSPECIFIED = 0;
+  RUNTIME_EFFECT_STATUS_ABSENT = 1;
+  RUNTIME_EFFECT_STATUS_PENDING = 2;
+  RUNTIME_EFFECT_STATUS_COMPLETE = 3;
+}
+
+message QueryRuntimeEffectResponse {
+  RuntimeEffectStatus status = 1;
+  bytes receipt = 2; // Exact prior RuntimeObservation bytes only for Complete.
+}
+
+// Host 1.4 publication carries one sealed memfd containing a complete canonical
+// node-local launch catalog. The fixed controller peer derives these physical
+// bindings through trusted reconciliation; hostd validates the sealed bytes,
+// generation, digest, and identity-allocation continuity before making the
+// snapshot visible.
+message PublishHostCatalogRequest {
+  RequestHeader header = 1;
+  uint64 catalog_generation = 2;
+  uint64 catalog_bytes = 3; // Nonzero and at most 16 MiB.
+  bytes catalog_sha256 = 4; // SHA-256 of the sealed canonical catalog memfd.
+}
+
+enum HostCatalogPublicationStatus {
+  HOST_CATALOG_PUBLICATION_STATUS_UNSPECIFIED = 0;
+  HOST_CATALOG_PUBLICATION_STATUS_PUBLISHED = 1;
+  HOST_CATALOG_PUBLICATION_STATUS_REPLAY = 2;
+}
+
+message PublishHostCatalogResponse {
+  HostCatalogPublicationStatus status = 1;
+  uint64 generation = 2;
+  bytes catalog_sha256 = 3; // SHA-256 of the exact visible canonical bytes.
+}
+
+service HostBroker {
+  rpc ApplyRuntime(ApplyRuntimeRequest) returns (RuntimeObservation);
+  rpc ObserveRuntime(ObserveRuntimeRequest) returns (RuntimeObservation);
+  rpc ObservePayloadScope(ObservePayloadScopeRequest) returns (ObservePayloadScopeResponse);
+  rpc InventoryRuntime(InventoryRuntimeRequest) returns (InventoryRuntimeResponse);
+  rpc QueryRuntimeEffect(QueryRuntimeEffectRequest) returns (QueryRuntimeEffectResponse);
+  rpc PublishCatalog(PublishHostCatalogRequest) returns (PublishHostCatalogResponse);
+}
+
+enum StorageAction {
+  STORAGE_ACTION_UNSPECIFIED = 0;
+  STORAGE_ACTION_CREATE_WORKSPACE = 1;
+  STORAGE_ACTION_SNAPSHOT = 2;
+  STORAGE_ACTION_HOLD_SNAPSHOT = 3;
+  STORAGE_ACTION_RELEASE_HOLD = 4;
+  STORAGE_ACTION_CLONE = 5;
+  STORAGE_ACTION_SET_QUOTA = 6;
+  STORAGE_ACTION_DESTROY = 7;
+}
+
+message ApplyStorageRequest {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  StorageAction action = 3;
+  bytes storage_handle = 4;
+  bytes source_version_handle = 5;
+  uint64 quota_bytes = 6;
+  bytes operation_id = 7;
+}
+
+message StorageResult {
+  bytes storage_handle = 1;
+  bytes immutable_version_handle = 2;
+  Descriptor portable_state = 3;
+  bytes non_secret_receipt = 4;
+  BrokerError error = 5;
+}
+
+message InventoryStorageRequest { RequestHeader header = 1; }
+message InventoryStorageResponse { repeated StorageResult resources = 1; }
+
+service StorageBroker {
+  rpc ApplyStorage(ApplyStorageRequest) returns (StorageResult);
+  rpc InventoryStorage(InventoryStorageRequest) returns (InventoryStorageResponse);
+}
+
+enum MountAction {
+  MOUNT_ACTION_UNSPECIFIED = 0;
+  MOUNT_ACTION_CREATE_DETACHED = 1;
+  MOUNT_ACTION_INSTALL = 2;
+  MOUNT_ACTION_REPLACE = 3;
+  MOUNT_ACTION_DETACH = 4;
+  MOUNT_ACTION_RELEASE = 5;
+}
+
+message MountAttributes {
+  bool read_only = 1;
+  bool no_exec = 2;
+  bool no_suid = 3;
+  bool no_device = 4;
+  bool no_atime = 5;
+  uint32 mutation_mode = 6;
+  bool recursive = 7; // Includes source submounts in the detached clone.
+}
+
+enum MountSourceConsistency {
+  MOUNT_SOURCE_CONSISTENCY_UNSPECIFIED = 0;
+  MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION = 1;
+  MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE = 2;
+  MOUNT_SOURCE_CONSISTENCY_TRANSACTIONAL_SERVICE = 3;
+  MOUNT_SOURCE_CONSISTENCY_BEST_EFFORT_REPLICA = 4;
+}
+
+message ApplyMountRequest {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  MountAction action = 3;
+  bytes attachment_id = 4;
+  bytes destination_slot_id = 5;
+  Descriptor view_revision = 6;
+  // New detached handle for install/replace, installed for detach, staged for release.
+  bytes detached_mount_handle = 7; // Exactly 32 bytes when required by action.
+  // Current installed handle replaced by MOUNT_ACTION_REPLACE.
+  bytes replacement_mount_handle = 8; // Exactly 32 bytes only for replace.
+  MountAttributes attributes = 9;
+  uint64 source_generation = 10; // Exact nonzero source-view revision/generation.
+  // Exact payload mount-namespace generation; changes across internal reboot.
+  uint64 namespace_generation = 11; // Nonzero for every action.
+  // Current desired generation authorizing this operation.
+  uint64 desired_attachment_generation = 12; // Nonzero for every action.
+  // Generation whose immutable recipe is created or addressed by this operation.
+  uint64 resource_attachment_generation = 13; // Equal to desired except for teardown.
+  bytes source_view_id = 14; // Exactly 16 bytes.
+  bytes source_incarnation_id = 15; // Exactly 16 bytes only for local-live sources.
+  // Transactional service projections are not native Mount resources.
+  MountSourceConsistency source_consistency = 16;
+  bytes attachment_lease_id = 17; // Exactly 16 bytes.
+  int64 attachment_lease_issued_seconds = 18;
+  int64 attachment_lease_expires_seconds = 19; // Strictly after issue time.
+}
+
+// Mount 1.2 read-only preparation. The nested Mount request selects the exact
+// catalog behavior later committed by a signed Apply grant. host_request_packet
+// is a complete authorized Host 1.3 ObserveMountScope envelope; the controller
+// cannot receive or nominate any of the returned descriptors.
+message PrepareMountCatalogRequest {
+  RequestHeader header = 1;
+  ApplyMountRequest mount_request = 2;
+  bytes host_request_packet = 3;
+}
+
+message PrepareMountCatalogResponse {
+  bytes catalog_commitment = 1; // Exact nonzero SHA-256 digest.
+  uint64 valid_until_boottime_nanoseconds = 2;
+}
+
+// Mount 1.4 destination-slot effects operate only on broker-derived paths.
+// The exact canonical sandbox specification proves the portable declaration;
+// its descriptor prevents the broker from accepting substituted bytes.
+enum DestinationSlotAction {
+  DESTINATION_SLOT_ACTION_UNSPECIFIED = 0;
+  DESTINATION_SLOT_ACTION_MATERIALIZE = 1;
+  DESTINATION_SLOT_ACTION_REAP = 2;
+  DESTINATION_SLOT_ACTION_REMATERIALIZE = 3;
+}
+
+message ApplyDestinationSlotRequest {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  DestinationSlotAction action = 3;
+  uint64 namespace_generation = 4;
+  bytes destination_slot_id = 5; // Exactly 16 bytes.
+  Descriptor sandbox_spec = 6;
+  bytes sandbox_spec_bytes = 7; // Exact canonical portable specification.
+  // Empty for first materialization; exact ready-record digest for reap or
+  // rematerialization.
+  bytes expected_resource_digest = 8;
+  // Absent for first materialization; immutable creation fence of the slot for
+  // reap or rematerialization.
+  AssignmentFence resource_fence = 9;
+}
+
+enum DestinationSlotLifecycle {
+  DESTINATION_SLOT_LIFECYCLE_UNSPECIFIED = 0;
+  DESTINATION_SLOT_LIFECYCLE_MATERIALIZING = 1;
+  DESTINATION_SLOT_LIFECYCLE_READY = 2;
+  DESTINATION_SLOT_LIFECYCLE_REAPING = 3;
+  DESTINATION_SLOT_LIFECYCLE_RELEASED = 4;
+}
+
+message DestinationSlotReapCorrelation {
+  MountOperationCorrelation operation = 1;
+  bytes expected_resource_digest = 2; // Exact ready-record digest.
+}
+
+message DestinationSlotRematerializationCorrelation {
+  MountOperationCorrelation operation = 1;
+  // Exact stale ready-record digest replaced by this operation.
+  bytes expected_resource_digest = 2;
+}
+
+// One lossless durable destination-slot row. Physical identity is absent only
+// while materializing and remains as historical evidence after release.
+message DestinationSlotInventoryRecord {
+  MountAssignmentBinding binding = 1;
+  bytes destination_slot_id = 2; // Exactly 16 bytes.
+  Descriptor sandbox_spec = 3;
+  DestinationSlotLifecycle lifecycle = 4;
+  bytes resource_kernel_boot_id = 5; // Exactly 16 bytes.
+  MountOperationCorrelation materialization = 6;
+  DestinationSlotReapCorrelation reap = 7;
+  optional uint64 slot_device = 8;
+  optional uint64 slot_inode = 9;
+  optional uint64 anchor_unique_mount_id = 10;
+  bytes resource_digest = 11; // Exact durable-record digest.
+  // Present after a stale ready resource has begun rematerialization. The
+  // original materialization correlation remains immutable in field 6.
+  DestinationSlotRematerializationCorrelation rematerialization = 12;
+}
+
+message ApplyDestinationSlotResponse {
+  DestinationSlotInventoryRecord resource = 1;
+}
+
+message InventoryDestinationSlotsRequest { RequestHeader header = 1; }
+
+// One current broker-owned namespace-generation anchor. The handle is derived
+// from every physical identity field and is the only value carried into a Host
+// launch plan. Paths remain a fixed local convention and never cross this
+// boundary.
+message AttachmentAnchorInventoryRecord {
+  bytes attachment_anchor_handle = 1; // Exactly 32 bytes.
+  bytes sandbox_id = 2; // Exactly 16 bytes.
+  bytes incarnation_id = 3; // Exactly 16 bytes.
+  uint64 namespace_generation = 4;
+  bytes resource_kernel_boot_id = 5; // Exactly 16 bytes.
+  uint64 directory_device = 6;
+  uint64 directory_inode = 7;
+  uint64 unique_mount_id = 8;
+}
+
+message InventoryDestinationSlotsResponse {
+  bytes kernel_boot_id = 1; // Current Linux boot ID, exactly 16 bytes.
+  uint64 journal_sequence = 2; // Nonzero next-frame durable boundary.
+  repeated DestinationSlotInventoryRecord slots = 3; // At most 16384, strict key order.
+  bytes broker_instance_id = 4; // Exactly 16 bytes; changes on broker start.
+  // Mount 1.5 only. One strict logical-key-ordered row for every current anchor
+  // that contains at least one Ready destination slot.
+  repeated AttachmentAnchorInventoryRecord attachment_anchors = 5;
+}
+
+message MountResult {
+  bytes attachment_id = 1;
+  bytes detached_mount_handle = 2;
+  bytes installed_mount_handle = 3;
+  Descriptor view_revision = 4;
+  uint64 source_generation = 5;
+  MountState state = 6;
+  BrokerError error = 7;
+  uint64 desired_attachment_generation = 8; // Exact Apply echo.
+  uint64 resource_attachment_generation = 9; // Exact Apply echo.
+  bytes source_view_id = 10; // Exact Apply echo.
+  bytes source_incarnation_id = 11; // Exact optional Apply echo.
+  MountSourceConsistency source_consistency = 12;
+  bytes attachment_lease_id = 13;
+  int64 attachment_lease_issued_seconds = 14;
+  int64 attachment_lease_expires_seconds = 15;
+}
+
+enum MountState {
+  MOUNT_STATE_UNSPECIFIED = 0;
+  MOUNT_STATE_ABSENT = 1;
+  MOUNT_STATE_DETACHED = 2;
+  MOUNT_STATE_INSTALLED = 3;
+  MOUNT_STATE_REVOKED = 4;
+  MOUNT_STATE_FAILED = 5;
+}
+
+message InventoryMountsRequest { RequestHeader header = 1; }
+
+// Durable assignment identity attached to an inventoried mount resource.
+// namespace_generation is deliberately outside AssignmentFence because an
+// internal payload reboot does not create a new control-plane assignment.
+message MountAssignmentBinding {
+  AssignmentFence fence = 1;
+  uint64 namespace_generation = 2;
+}
+
+// Immutable physical recipe from which the broker created the detached mount.
+// Current desired generation and attachment lease are operation authority and
+// therefore do not appear in inventory.
+message MountRecipe {
+  bytes attachment_id = 1; // Exactly 16 bytes.
+  bytes destination_slot_id = 2; // Exactly 16 bytes.
+  Descriptor view_revision = 3;
+  uint64 source_generation = 4;
+  MountAttributes attributes = 5;
+  uint64 resource_attachment_generation = 6;
+  bytes source_view_id = 7;
+  bytes source_incarnation_id = 8;
+  MountSourceConsistency source_consistency = 9;
+}
+
+// Kernel identity observed for an installed mount. Paths are raw, NUL-free
+// kernel path bytes rather than caller-selected lookup paths.
+message MountKernelObservation {
+  uint64 unique_mount_id = 1;
+  uint64 parent_mount_id = 2;
+  uint64 mount_namespace_id = 3;
+  uint32 device_major = 4;
+  uint32 device_minor = 5;
+  uint64 superblock_magic = 6;
+  uint32 superblock_flags = 7;
+  uint64 mount_attributes = 8;
+  uint64 propagation = 9;
+  bytes root = 10; // 1..4096 bytes, no NUL.
+  bytes mount_point = 11; // 1..4096 bytes, no NUL.
+  bytes identity_map_digest = 12; // Exactly 32 bytes.
+}
+
+enum MountLifecycle {
+  MOUNT_LIFECYCLE_UNSPECIFIED = 0;
+  MOUNT_LIFECYCLE_ALLOCATED = 1;
+  MOUNT_LIFECYCLE_PREPARED = 2;
+  MOUNT_LIFECYCLE_PUBLISHING = 3;
+  MOUNT_LIFECYCLE_INSTALLED = 4;
+  MOUNT_LIFECYCLE_DRAINING = 5;
+  MOUNT_LIFECYCLE_RELEASED = 6;
+  MOUNT_LIFECYCLE_FAULTED = 7;
+  MOUNT_LIFECYCLE_DETACHING = 8;
+  MOUNT_LIFECYCLE_RELEASING = 9;
+}
+
+// Correlates detached-mount creation before the kernel object exists and while
+// it is retained but not yet submitted for publication.
+message MountOperationCorrelation {
+  bytes operation_id = 1; // Exactly 16 bytes.
+  bytes request_digest = 2; // Exactly 32 bytes.
+}
+
+// Correlates a publication with its distinct operation, exact target, and
+// optional resource generation it replaces.
+message MountPublicationCorrelation {
+  MountOperationCorrelation operation = 1;
+  uint64 target_mount_namespace_id = 2;
+  uint64 target_namespace_generation = 3;
+  bytes replaces_mount_handle = 4; // Empty or exactly 32 bytes.
+}
+
+enum MountFaultPhase {
+  MOUNT_FAULT_PHASE_UNSPECIFIED = 0;
+  MOUNT_FAULT_PHASE_ALLOCATED = 1;
+  MOUNT_FAULT_PHASE_PREPARED = 2;
+  MOUNT_FAULT_PHASE_PUBLISHING = 3;
+  MOUNT_FAULT_PHASE_INSTALLED = 4;
+  MOUNT_FAULT_PHASE_DRAINING = 5;
+  MOUNT_FAULT_PHASE_DETACHING = 6;
+  MOUNT_FAULT_PHASE_RELEASING = 7;
+}
+
+// Correlates a terminal fault with the phase and sanitized failure identity.
+// It is present exactly in FAULTED; no diagnostic string crosses this boundary.
+message MountFaultCorrelation {
+  MountFaultPhase from = 1;
+  bytes failure_digest = 2; // Exactly 32 bytes.
+}
+
+// One lossless durable resource-table row. detached_unique_mount_id is absent
+// before a kernel mount exists and may be absent after release. An installed
+// observation is present in INSTALLED and DRAINING and retained by faults from
+// those phases. RELEASED retains the last detached and installed IDs when they
+// existed, without claiming those kernel resources remain live.
+message MountInventoryRecord {
+  bytes mount_handle = 1; // Stable, exactly 32 bytes.
+  uint64 resource_revision = 2;
+  MountAssignmentBinding binding = 3;
+  MountRecipe recipe = 4;
+  MountLifecycle lifecycle = 5;
+  bytes resource_kernel_boot_id = 6; // Exactly 16 bytes.
+  optional uint64 detached_unique_mount_id = 7;
+  MountKernelObservation installed_observation = 8;
+  MountPublicationCorrelation publication = 9;
+  // Present in DRAINING and retained by a fault originating there.
+  bytes replaced_by_mount_handle = 10; // Empty or exactly 32 bytes.
+  MountFaultCorrelation fault = 11;
+  // Present only in RELEASED when an installed mount once existed.
+  optional uint64 last_installed_unique_mount_id = 12;
+  // Present in ALLOCATED and PREPARED and retained by faults from those phases.
+  MountOperationCorrelation creation = 13;
+  // Present in DETACHING and retained by a fault from that phase.
+  MountOperationCorrelation detachment = 14;
+  // Present in RELEASING and retained by a fault from that phase.
+  MountOperationCorrelation release = 15;
+}
+
+// Preserved protocol-1.0 action-summary inventory.
+message InventoryMountsResponse { repeated MountResult mounts = 1; }
+
+// Authoritative inventory is a distinct, explicitly negotiated method so a
+// protocol-1.0 peer can never decode resource records as MountResult values.
+message InventoryMountResourcesResponse {
+  bytes kernel_boot_id = 2; // Current Linux boot ID, exactly 16 bytes.
+  // Nonzero next-frame boundary after the complete durable snapshot.
+  uint64 journal_sequence = 3;
+  repeated MountInventoryRecord mounts = 4; // At most 1024, strict handle order.
+  bytes broker_instance_id = 5; // Exactly 16 bytes; changes on broker start.
+}
+
+service MountBroker {
+  rpc ApplyMount(ApplyMountRequest) returns (MountResult);
+  rpc InventoryMounts(InventoryMountsRequest) returns (InventoryMountsResponse);
+  rpc InventoryMountResources(InventoryMountsRequest) returns (InventoryMountResourcesResponse);
+  rpc ApplyDestinationSlot(ApplyDestinationSlotRequest) returns (ApplyDestinationSlotResponse);
+  rpc InventoryDestinationSlots(InventoryDestinationSlotsRequest)
+      returns (InventoryDestinationSlotsResponse);
+}
+
+enum NetworkAction {
+  NETWORK_ACTION_UNSPECIFIED = 0;
+  NETWORK_ACTION_PREPARE = 1;
+  NETWORK_ACTION_ARM_LEASE = 2;
+  NETWORK_ACTION_RENEW_LEASE = 3;
+  NETWORK_ACTION_DISARM = 4;
+  NETWORK_ACTION_DESTROY = 5;
+}
+
+message ApplyNetworkRequest {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  NetworkAction action = 3;
+  bytes network_handle = 4;
+  repeated bytes endpoint_ids = 5;
+  bytes ownership_lease_digest = 6;
+  uint64 lease_generation = 7;
+  uint64 fail_stop_boottime_nanoseconds = 8;
+}
+
+message NetworkResult {
+  bytes network_handle = 1;
+  NetworkState state = 2;
+  uint64 lease_generation = 3;
+  BrokerError error = 4;
+}
+
+enum NetworkState {
+  NETWORK_STATE_UNSPECIFIED = 0;
+  NETWORK_STATE_ABSENT = 1;
+  NETWORK_STATE_DEFAULT_DROP = 2;
+  NETWORK_STATE_ARMED = 3;
+  NETWORK_STATE_FENCED = 4;
+  NETWORK_STATE_FAILED = 5;
+}
+
+message InventoryNetworksRequest { RequestHeader header = 1; }
+message InventoryNetworksResponse { repeated NetworkResult networks = 1; }
+
+service NetworkBroker {
+  rpc ApplyNetwork(ApplyNetworkRequest) returns (NetworkResult);
+  rpc InventoryNetworks(InventoryNetworksRequest) returns (InventoryNetworksResponse);
+}
+
+enum GuardianAction {
+  GUARDIAN_ACTION_UNSPECIFIED = 0;
+  GUARDIAN_ACTION_ARM = 1;
+  GUARDIAN_ACTION_RENEW = 2;
+  GUARDIAN_ACTION_FENCE = 3;
+  GUARDIAN_ACTION_RELEASE = 4;
+}
+
+message OwnershipLease {
+  AssignmentFence fence = 1;
+  bytes node_id = 2;
+  uint64 lease_generation = 3;
+  int64 authority_issued_seconds = 4;
+  int64 authority_expires_seconds = 5;
+  uint64 maximum_clock_skew_nanoseconds = 6;
+  bytes renewal_nonce = 7;
+  bytes authority_signature = 8;
+}
+
+message ApplyGuardianRequest {
+  RequestHeader header = 1;
+  GuardianAction action = 2;
+  OwnershipLease lease = 3;
+  bytes runtime_handle = 4;
+  bytes network_handle = 5;
+  bytes host_boot_id = 6;
+}
+
+message GuardianResult {
+  AssignmentFence fence = 1;
+  GuardianState state = 2;
+  uint64 lease_generation = 3;
+  uint64 fail_stop_boottime_nanoseconds = 4;
+  BrokerError error = 5;
+}
+
+enum GuardianState {
+  GUARDIAN_STATE_UNSPECIFIED = 0;
+  GUARDIAN_STATE_DISARMED = 1;
+  GUARDIAN_STATE_ARMED = 2;
+  GUARDIAN_STATE_FENCING = 3;
+  GUARDIAN_STATE_FENCED = 4;
+  GUARDIAN_STATE_FAILED = 5;
+}
+
+service GuardianBroker {
+  rpc ApplyGuardian(ApplyGuardianRequest) returns (GuardianResult);
+}
+
+message GuestHandshakeRequest {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  bytes challenge = 3;
+}
+
+message GuestHandshakeResponse {
+  bytes challenge_signature = 1;
+  Feature agent_version = 2;
+  repeated Feature features = 3;
+  BrokerError error = 4;
+}
+
+enum GuestExecutionAction {
+  GUEST_EXECUTION_ACTION_UNSPECIFIED = 0;
+  GUEST_EXECUTION_ACTION_AUTHORIZE = 1;
+  GUEST_EXECUTION_ACTION_RESIZE_TERMINAL = 2;
+  GUEST_EXECUTION_ACTION_SIGNAL = 3;
+  GUEST_EXECUTION_ACTION_CANCEL = 4;
+  GUEST_EXECUTION_ACTION_OBSERVE = 5;
+}
+
+message ApplyGuestExecutionRequest {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  bytes execution_id = 3;
+  GuestExecutionAction action = 4;
+  bytes forced_command_digest = 5;
+  bytes principal_id = 6;
+  bytes audit_id = 7;
+  uint32 terminal_rows = 8;
+  uint32 terminal_columns = 9;
+  uint32 signal_number = 10;
+}
+
+message GuestExecutionResult {
+  bytes execution_id = 1;
+  GuestExecutionState state = 2;
+  int32 exit_code = 3;
+  string termination_reason = 4;
+  uint64 observation_sequence = 5;
+  BrokerError error = 6;
+}
+
+enum GuestExecutionState {
+  GUEST_EXECUTION_STATE_UNSPECIFIED = 0;
+  GUEST_EXECUTION_STATE_AUTHORIZED = 1;
+  GUEST_EXECUTION_STATE_RUNNING = 2;
+  GUEST_EXECUTION_STATE_EXITED = 3;
+  GUEST_EXECUTION_STATE_CANCELED = 4;
+  GUEST_EXECUTION_STATE_FAILED = 5;
+}
+
+service GuestAgent {
+  rpc Handshake(GuestHandshakeRequest) returns (GuestHandshakeResponse);
+  rpc ApplyExecution(ApplyGuestExecutionRequest) returns (GuestExecutionResult);
+}
