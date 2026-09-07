@@ -88,13 +88,13 @@ impl NetworkAdmissionCoordinator {
             current_clock.boottime_nanoseconds(),
         )
         .map_err(|_| NetworkBrokerError::Request)?;
-        let catalog = self
-            .authority
-            .validate_catalog(catalog)
-            .map_err(|_| NetworkBrokerError::Authority)?;
-        validate_catalog(&semantics, catalog)?;
         let assignment =
             decode_assignment(request_body).map_err(|_| NetworkBrokerError::Request)?;
+        let catalog = self
+            .authority
+            .validate_catalog(catalog, assignment)
+            .map_err(|_| NetworkBrokerError::Authority)?;
+        validate_catalog(&semantics, catalog)?;
         let sandbox_id = *assignment.sandbox().as_bytes();
         let request_id = *semantics.header().request_id();
         let prior_fence = self
@@ -444,6 +444,19 @@ mod tests {
         .unwrap()
     }
 
+    fn authenticated_catalog(
+        authority: &NetworkAuthorityV1,
+        resolution: ResolvedNetworkPreparationV1,
+        request: &[u8],
+    ) -> AuthenticatedNetworkPreparationV1 {
+        authority
+            .authenticate_protected_catalog_for_assignment(
+                resolution,
+                decode_assignment(request).unwrap(),
+            )
+            .unwrap()
+    }
+
     fn key_ref(id: &str, generation: u64, usage: KeyUsage, key: &SigningKey) -> KeyReference {
         KeyReference::new(
             StableKeyId::new(id.to_owned()).unwrap(),
@@ -535,7 +548,7 @@ mod tests {
             .unwrap();
         assert!(authority.seal_fence(&[99; 16], &admission).is_err());
         assert!(authority.seal_effect(&[98; 16], &admission).is_err());
-        let catalog = authority.authenticate_protected_catalog(catalog()).unwrap();
+        let catalog = authenticated_catalog(&authority, catalog(), &request);
         let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
         let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
         assert_eq!(
@@ -577,7 +590,7 @@ mod tests {
         let artifacts = fixture.artifacts(&request);
         {
             let authority = fixture.authority();
-            let catalog = authority.authenticate_protected_catalog(catalog()).unwrap();
+            let catalog = authenticated_catalog(&authority, catalog(), &request);
             let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
             let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
             coordinator
@@ -629,7 +642,7 @@ mod tests {
         for substitute_resolution in [false, true] {
             let directory = TempDir::new().unwrap();
             let authority = fixture.authority();
-            let mut token = authority.authenticate_protected_catalog(catalog()).unwrap();
+            let mut token = authenticated_catalog(&authority, catalog(), &request);
             if substitute_resolution {
                 token.resolution = catalog_for(10, 10, 11, &[(7, 12), (8, 13)]);
             } else {
@@ -652,6 +665,26 @@ mod tests {
         }
 
         let directory = TempDir::new().unwrap();
+        let relocated_request = request_for(7, 9, &[7, 8]);
+        let relocated_artifacts = fixture.artifacts(&relocated_request);
+        let authority = fixture.authority();
+        let token = authenticated_catalog(&authority, catalog(), &request);
+        let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
+        let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
+        assert!(matches!(
+            coordinator.admit_apply_intent(
+                &relocated_request,
+                &relocated_artifacts,
+                &token,
+                ProtocolVersion::new(1, 1),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(NetworkBrokerError::Authority)
+        ));
+
+        let directory = TempDir::new().unwrap();
         let authority = fixture.authority();
         let resolution = catalog();
         let sealed = authority
@@ -663,7 +696,11 @@ mod tests {
                 &crate::catalog::encode_resolution(&resolution),
             )
             .unwrap();
-        let token = crate::AuthenticatedNetworkPreparationV1 { resolution, sealed };
+        let token = crate::AuthenticatedNetworkPreparationV1 {
+            resolution,
+            assignment: decode_assignment(&request).unwrap(),
+            sealed,
+        };
         let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
         let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
         assert!(matches!(
@@ -696,7 +733,7 @@ mod tests {
             let artifacts = fixture.artifacts(&request);
             {
                 let authority = fixture.authority();
-                let token = authority.authenticate_protected_catalog(catalog()).unwrap();
+                let token = authenticated_catalog(&authority, catalog(), &request);
                 let store =
                     NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
                 let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
@@ -755,7 +792,7 @@ mod tests {
         let request = request();
         let artifacts = fixture.artifacts(&request);
         let authority = fixture.authority();
-        let token = authority.authenticate_protected_catalog(catalog()).unwrap();
+        let token = authenticated_catalog(&authority, catalog(), &request);
         let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
         let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
         coordinator
@@ -769,10 +806,11 @@ mod tests {
                 &clock(),
             )
             .unwrap();
-        let changed = coordinator
-            .authority
-            .authenticate_protected_catalog(catalog_for(10, 10, 11, &[(7, 12), (8, 13)]))
-            .unwrap();
+        let changed = authenticated_catalog(
+            &coordinator.authority,
+            catalog_for(10, 10, 11, &[(7, 12), (8, 13)]),
+            &request,
+        );
         assert!(matches!(
             coordinator.admit_apply_intent(
                 &request,
@@ -797,12 +835,13 @@ mod tests {
         let changed_artifacts = fixture.artifacts_authorizing(&changed_semantics, &authorized);
         let directory = TempDir::new().unwrap();
         let authority = fixture.authority();
-        let first_token = authority
-            .authenticate_protected_catalog(catalog_for(9, 10, 11, &[(7, 12)]))
-            .unwrap();
-        let changed_token = authority
-            .authenticate_protected_catalog(catalog_for(10, 20, 21, &[(8, 22)]))
-            .unwrap();
+        let first_token =
+            authenticated_catalog(&authority, catalog_for(9, 10, 11, &[(7, 12)]), &first);
+        let changed_token = authenticated_catalog(
+            &authority,
+            catalog_for(10, 20, 21, &[(8, 22)]),
+            &changed_semantics,
+        );
         let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
         let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
         coordinator
@@ -834,12 +873,13 @@ mod tests {
         let first_artifacts = fixture.artifacts(&first);
         let changed_artifacts = fixture.artifacts(&changed_sandbox);
         let authority = fixture.authority();
-        let first_token = authority
-            .authenticate_protected_catalog(catalog_for(9, 10, 11, &[(7, 12)]))
-            .unwrap();
-        let changed_token = authority
-            .authenticate_protected_catalog(catalog_for(10, 20, 21, &[(7, 22)]))
-            .unwrap();
+        let first_token =
+            authenticated_catalog(&authority, catalog_for(9, 10, 11, &[(7, 12)]), &first);
+        let changed_token = authenticated_catalog(
+            &authority,
+            catalog_for(10, 20, 21, &[(7, 22)]),
+            &changed_sandbox,
+        );
         let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
         let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
         coordinator
@@ -877,11 +917,9 @@ mod tests {
         let first_artifacts = fixture.artifacts_authorizing(&first, &authorized);
         let second_artifacts = fixture.artifacts_authorizing(&second, &authorized);
         let authority = fixture.authority();
-        let first_token = authority.authenticate_protected_catalog(catalog()).unwrap();
+        let first_token = authenticated_catalog(&authority, catalog(), &first);
         let second_catalog = catalog_for(10, 20, 21, &[(9, 22), (10, 23)]);
-        let second_token = authority
-            .authenticate_protected_catalog(second_catalog)
-            .unwrap();
+        let second_token = authenticated_catalog(&authority, second_catalog, &second);
         let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
         let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
         coordinator
@@ -919,7 +957,7 @@ mod tests {
         let artifacts = fixture.artifacts(&request);
         {
             let authority = fixture.authority();
-            let token = authority.authenticate_protected_catalog(catalog()).unwrap();
+            let token = authenticated_catalog(&authority, catalog(), &request);
             let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
             let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
             coordinator
@@ -941,9 +979,11 @@ mod tests {
         let lower_than_current = request_for(8, 3, &[9]);
         let lower_than_current_artifacts = fixture.artifacts(&lower_than_current);
         let authority = fixture.authority();
-        let lower_than_current_token = authority
-            .authenticate_protected_catalog(catalog_for(8, 20, 21, &[(9, 22)]))
-            .unwrap();
+        let lower_than_current_token = authenticated_catalog(
+            &authority,
+            catalog_for(8, 20, 21, &[(9, 22)]),
+            &lower_than_current,
+        );
         let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
         let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
         assert!(matches!(
@@ -975,12 +1015,10 @@ mod tests {
         let first_artifacts = fixture.artifacts(&first);
         let second_artifacts = fixture.artifacts(&second);
         let authority = fixture.authority();
-        let first_token = authority
-            .authenticate_protected_catalog(catalog_for(9, 10, 11, &[(7, 12)]))
-            .unwrap();
-        let second_token = authority
-            .authenticate_protected_catalog(catalog_for(10, 10, 13, &[(8, 14)]))
-            .unwrap();
+        let first_token =
+            authenticated_catalog(&authority, catalog_for(9, 10, 11, &[(7, 12)]), &first);
+        let second_token =
+            authenticated_catalog(&authority, catalog_for(10, 10, 13, &[(8, 14)]), &second);
         let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
         let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
         coordinator
@@ -1026,10 +1064,7 @@ mod tests {
                 &[if request_id == 7 { 7 } else { 8 }],
             );
             let artifacts = fixture.artifacts(&request);
-            let token = coordinator
-                .authority
-                .authenticate_protected_catalog(catalog)
-                .unwrap();
+            let token = authenticated_catalog(&coordinator.authority, catalog, &request);
             coordinator
                 .admit_apply_intent(
                     &request,
@@ -1060,7 +1095,7 @@ mod tests {
         let request = request();
         let artifacts = fixture.artifacts(&request);
         let authority = fixture.authority();
-        let token = authority.authenticate_protected_catalog(catalog()).unwrap();
+        let token = authenticated_catalog(&authority, catalog(), &request);
         let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
         let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
         coordinator
@@ -1077,10 +1112,11 @@ mod tests {
         coordinator.state.fill_epoch_for_test();
         let next = request_for(8, 3, &[9]);
         let next_artifacts = fixture.artifacts(&next);
-        let next_token = coordinator
-            .authority
-            .authenticate_protected_catalog(catalog_for(10, 20, 21, &[(9, 22)]))
-            .unwrap();
+        let next_token = authenticated_catalog(
+            &coordinator.authority,
+            catalog_for(10, 20, 21, &[(9, 22)]),
+            &next,
+        );
         assert!(matches!(
             coordinator.admit_apply_intent(
                 &next,
@@ -1141,7 +1177,7 @@ mod tests {
         // signed admission could inspect or accept these artifacts.
         let artifacts = fixture.artifacts(&request());
         let authority = fixture.authority();
-        let preparation_token = authority.authenticate_protected_catalog(catalog()).unwrap();
+        let preparation_token = authenticated_catalog(&authority, catalog(), &request());
         let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
         let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
         assert!(matches!(

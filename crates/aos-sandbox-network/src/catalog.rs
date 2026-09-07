@@ -1,11 +1,13 @@
 //! Protected network-preparation catalog commitments.
 //!
-//! This increment models only pre-effect policy allocation: a protected policy
-//! profile, canonical endpoint-policy bindings, and a broker-reserved opaque
-//! result handle. It deliberately contains no speculative existing-resource or
+//! Preparation resolves a protected policy profile, canonical endpoint-policy
+//! bindings, and a broker-reserved opaque result handle. The authenticated
+//! carrier additionally binds that resolution to one exact assignment; a
+//! valid carrier cannot be replayed for a different sandbox generation. This
+//! module deliberately contains no speculative existing-resource or
 //! kernel-identity model.
 
-use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_core::{BrokerAssignment, ObjectDigest};
 use sha2::{Digest as _, Sha256};
 
 const DOMAIN: &[u8] = b"aos.sandbox.network.catalog.prepare.v1\0";
@@ -85,6 +87,7 @@ impl ResolvedNetworkPreparationV1 {
     /// # Errors
     ///
     /// Returns [`CatalogError`] for sentinels or noncanonical endpoints.
+    /// Empty endpoint sets are valid for isolated private networking.
     pub fn new(
         generation: u64,
         reserved_network_handle: [u8; 32],
@@ -94,7 +97,6 @@ impl ResolvedNetworkPreparationV1 {
         if generation == 0
             || reserved_network_handle == [0; 32]
             || profile_digest.as_bytes() == &[0; 32]
-            || endpoints.is_empty()
             || endpoints.len() > MAXIMUM_ENDPOINTS
             || endpoints.windows(2).any(|pair| pair[0].id >= pair[1].id)
         {
@@ -148,12 +150,13 @@ impl ResolvedNetworkPreparationV1 {
 
 /// Carries one authority-authenticated protected preparation resolution.
 ///
-/// No production constructor exists in this increment: a future distinct
-/// root-owned catalog publisher must issue this token from its protected
-/// snapshot. Consequently, Apply remains unreachable and unadvertised.
+/// Only the root-owned catalog publisher can construct this carrier. The
+/// assignment is covered by the same local MAC as the resolution, so admission
+/// can reject a valid catalog token moved to another assignment.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthenticatedNetworkPreparationV1 {
     pub(crate) resolution: ResolvedNetworkPreparationV1,
+    pub(crate) assignment: BrokerAssignment,
     pub(crate) sealed: Vec<u8>,
 }
 
@@ -162,6 +165,12 @@ impl AuthenticatedNetworkPreparationV1 {
     #[must_use]
     pub const fn resolution(&self) -> &ResolvedNetworkPreparationV1 {
         &self.resolution
+    }
+
+    /// Returns the exact assignment for which the handle was reserved.
+    #[must_use]
+    pub const fn assignment(&self) -> BrokerAssignment {
+        self.assignment
     }
 }
 
@@ -178,6 +187,20 @@ pub(crate) fn encode_resolution(catalog: &ResolvedNetworkPreparationV1) -> Vec<u
     bytes
 }
 
+pub(crate) fn encode_authenticated_resolution(
+    assignment: BrokerAssignment,
+    catalog: &ResolvedNetworkPreparationV1,
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(144 + catalog.endpoints().len() * 48);
+    bytes.extend_from_slice(assignment.sandbox().as_bytes());
+    bytes.extend_from_slice(assignment.incarnation().as_bytes());
+    bytes.extend_from_slice(&assignment.epoch().get().to_be_bytes());
+    bytes.extend_from_slice(&assignment.desired_generation().get().to_be_bytes());
+    bytes.extend_from_slice(assignment.digest().as_bytes());
+    bytes.extend_from_slice(&encode_resolution(catalog));
+    bytes
+}
+
 /// Reports invalid preparation catalog data.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("network preparation catalog resolution is invalid")]
@@ -190,15 +213,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn preparation_has_no_kernel_identity_input() {
+    fn preparation_accepts_isolated_empty_endpoint_set() {
         let resolution = ResolvedNetworkPreparationV1::new(
             1,
             [3; 32],
             ObjectDigest::from_bytes([4; 32]),
-            vec![ResolvedEndpointV1::new([1; 16], ObjectDigest::from_bytes([2; 32])).unwrap()],
+            Vec::new(),
         )
         .unwrap();
-        assert_eq!(resolution.endpoints().len(), 1);
+        assert!(resolution.endpoints().is_empty());
     }
 
     fn resolution(
@@ -217,16 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn preparation_rejects_empty_duplicate_unsorted_and_oversized_endpoints() {
-        assert!(
-            ResolvedNetworkPreparationV1::new(
-                1,
-                [3; 32],
-                ObjectDigest::from_bytes([4; 32]),
-                Vec::new(),
-            )
-            .is_err()
-        );
+    fn preparation_rejects_duplicate_unsorted_and_oversized_endpoints() {
         let first = ResolvedEndpointV1::new([1; 16], ObjectDigest::from_bytes([2; 32])).unwrap();
         let second = ResolvedEndpointV1::new([2; 16], ObjectDigest::from_bytes([3; 32])).unwrap();
         assert!(

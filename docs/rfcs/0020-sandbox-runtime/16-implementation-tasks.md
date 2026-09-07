@@ -3916,3 +3916,51 @@ unadvertised until the fixed ZFS process backend, privileged postcondition and
 pin materializer, long-running service packaging, and controller Apply
 orchestration are complete. Network still needs its protected lifecycle and
 kernel namespace producer before whole-catalog launch can become operational.
+
+### Protected Network preparation-policy catalog
+
+Network now owns the protected pre-effect catalog required to turn one exact
+portable assignment into a node-local preparation resolution. Trusted node
+configuration supplies a nonempty, generation-fenced policy catalog whose
+head and digest bind the owning node together with every portable profile,
+required feature, logical endpoint, local policy-program digest, and endpoint-
+policy binding. The catalog matches the assignment manifest to that node, its
+canonical sandbox specification, environment, root view, and Network profile
+before reserving anything; Host networking is excluded because it creates no
+private namespace, while an isolated profile correctly admits an empty
+endpoint set.
+
+Each reservation is append-only for a sandbox incarnation and retains the
+canonical manifest and specification, exact assignment, selected policy
+generation and objects, resolution binding, and a domain-separated record
+digest. The opaque future namespace handle is derived under the Network
+authority key from the complete reservation preimage. Exact retry and restart
+return that handle, while assignment advancement, incarnation rebinding,
+handle collision, and catalog exhaustion fail closed. Admission tokens now MAC
+the assignment together with the resolution, so a valid token cannot be moved
+to a different request or sandbox generation.
+
+Recovery validates canonical bounded JSON rows and all cross-record identities
+against the durable policy head before it may initialize or roll that head
+forward. Policy rollback, equal-generation forks, missing heads, duplicate
+assignment incarnations, malformed rows, and a reservation claiming a future
+policy generation are rejected. The future-generation test also proves that a
+failed attempt to open under a newer trusted policy cannot conceal the row or
+advance the old head.
+
+Focused validation covers isolated and endpoint-bearing profiles, policy-
+digest inputs, exact replay and restart, assignment and token relocation,
+policy advancement and rollback, cross-node catalog and assignment relocation,
+corrupt future-generation rows, profile and portable-input mismatch, and
+protected-directory enforcement. All 26 Network
+tests and doctests pass, together with strict all-target/all-feature crate-local
+Clippy, warnings-as-errors rustdoc, Rust formatting, and diff checks. The final
+`nix-build -A checks.eval --cores 8 --no-out-link` gate passes the complete
+workspace test phase, configuration evaluation, and system-structure checks.
+
+This advances `SBX-NET-01` through protected policy resolution and durable
+handle reservation without claiming a kernel resource. Network Apply and
+Inventory remain unadvertised until the fixed namespace/veth and policy
+helper, verified effect postconditions, protected lifecycle index, current-
+namespace observer, long-running service packaging, and controller Apply
+orchestration are complete.

@@ -16,15 +16,24 @@ use aos_sandbox_core::{
 use aos_sandbox_protocol::semantics::network::CanonicalNetworkSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use buffa::Message as _;
+use sha2::{Digest as _, Sha256};
 
 use crate::catalog::{
-    AuthenticatedNetworkPreparationV1, ResolvedNetworkPreparationV1, encode_resolution,
+    AuthenticatedNetworkPreparationV1, ResolvedNetworkPreparationV1,
+    encode_authenticated_resolution,
 };
 
 fn catalog_domain() -> Result<BrokerLocalRecordDomain, NetworkAdmissionError> {
     BrokerLocalRecordDomain::new(*b"AOSNETCATALOG001")
         .map_err(|_| NetworkAdmissionError::InvalidConfiguration)
 }
+
+fn handle_domain() -> Result<BrokerLocalRecordDomain, NetworkAdmissionError> {
+    BrokerLocalRecordDomain::new(*b"AOSNETHANDLE0001")
+        .map_err(|_| NetworkAdmissionError::InvalidConfiguration)
+}
+
+const HANDLE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.handle.v1\0";
 
 /// Network authority configuration failure.
 pub type NetworkAuthorityConfigError = BrokerAuthorityConfigError;
@@ -61,38 +70,68 @@ impl NetworkAuthorityV1 {
         BrokerAuthority::from_protected_directory(path, BrokerDomain::Network).map(Self)
     }
 
-    // Only a future root-owned catalog publisher in this crate may call this.
+    // Only the root-owned catalog publisher in this crate may call this.
     // Keeping it crate-private prevents callers from blessing arbitrary local
     // identities merely because they can submit broker requests.
-    #[cfg(test)]
-    pub(crate) fn authenticate_protected_catalog(
+    pub(crate) fn authenticate_protected_catalog_for_assignment(
         &self,
         resolution: ResolvedNetworkPreparationV1,
+        assignment: BrokerAssignment,
     ) -> Result<AuthenticatedNetworkPreparationV1, NetworkAdmissionError> {
-        let payload = encode_resolution(&resolution);
+        let payload = encode_authenticated_resolution(assignment, &resolution);
         let sealed = self.0.seal_local_record(
             RecordNamespace::DesiredState,
             resolution.binding().digest().as_bytes(),
             catalog_domain()?,
             &payload,
         )?;
-        Ok(AuthenticatedNetworkPreparationV1 { resolution, sealed })
+        Ok(AuthenticatedNetworkPreparationV1 {
+            resolution,
+            assignment,
+            sealed,
+        })
     }
 
     pub(crate) fn validate_catalog<'a>(
         &self,
         catalog: &'a AuthenticatedNetworkPreparationV1,
+        assignment: BrokerAssignment,
     ) -> Result<&'a ResolvedNetworkPreparationV1, NetworkAdmissionError> {
+        if catalog.assignment != assignment {
+            return Err(NetworkAdmissionError::RequestMismatch);
+        }
         let payload = self.0.open_local_record(
             RecordNamespace::DesiredState,
             catalog.resolution.binding().digest().as_bytes(),
             catalog_domain()?,
             &catalog.sealed,
         )?;
-        if payload != encode_resolution(&catalog.resolution) {
+        if payload != encode_authenticated_resolution(assignment, &catalog.resolution) {
             return Err(NetworkAdmissionError::RequestMismatch);
         }
         Ok(&catalog.resolution)
+    }
+
+    pub(crate) fn mint_network_handle(
+        &self,
+        assignment: BrokerAssignment,
+        preimage: &[u8],
+    ) -> Result<[u8; 32], NetworkAdmissionError> {
+        let sealed = self.0.seal_local_record(
+            RecordNamespace::DesiredState,
+            assignment.sandbox().as_bytes(),
+            handle_domain()?,
+            preimage,
+        )?;
+        let handle: [u8; 32] = Sha256::new()
+            .chain_update(HANDLE_DIGEST_DOMAIN)
+            .chain_update(sealed)
+            .finalize()
+            .into();
+        if handle == [0; 32] {
+            return Err(NetworkAdmissionError::InvalidConfiguration);
+        }
+        Ok(handle)
     }
 
     pub(crate) fn admit(

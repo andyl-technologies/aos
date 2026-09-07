@@ -894,6 +894,8 @@ dependencies = [
  "aos-sandbox-protocol",
  "buffa",
  "ed25519-dalek",
+ "serde",
+ "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
