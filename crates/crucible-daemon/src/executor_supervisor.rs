@@ -1340,6 +1340,41 @@ where
         queued: &QueuedAttempt,
         observation: ObservationId,
     ) -> Result<ObservationPublicationOutcome, LocalExecutorError<L::Error>> {
+        self.stage_observation_publication_with_candidate(queued, observation, None)
+    }
+
+    /// Durably reserves an observation and finding candidate before publication.
+    ///
+    /// Both deterministic identities enter the same assignment-ledger state
+    /// transition. The caller must compute and preflight them without writes,
+    /// invoke this method, and only then publish either immutable closure. A
+    /// crash therefore leaves the exact missing or complete candidate root for
+    /// bounded restart recovery, while destructive GC fails closed on an
+    /// incomplete closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalExecutorError`] for an invalid execution token, ledger
+    /// failure, or a conflicting observation or finding candidate.
+    pub fn stage_observation_and_finding_candidate_publication(
+        &mut self,
+        queued: &QueuedAttempt,
+        observation: ObservationId,
+        finding_candidate: crucible_campaign::FindingCandidateBundleId,
+    ) -> Result<ObservationPublicationOutcome, LocalExecutorError<L::Error>> {
+        self.stage_observation_publication_with_candidate(
+            queued,
+            observation,
+            Some(finding_candidate),
+        )
+    }
+
+    fn stage_observation_publication_with_candidate(
+        &mut self,
+        queued: &QueuedAttempt,
+        observation: ObservationId,
+        finding_candidate: Option<crucible_campaign::FindingCandidateBundleId>,
+    ) -> Result<ObservationPublicationOutcome, LocalExecutorError<L::Error>> {
         self.validate_pending_basis(queued)?;
         self.mark_worker_finished(queued.execution);
         let key = AttemptExecutionKey::new(queued.request.lineage(), queued.request.attempt());
@@ -1372,6 +1407,34 @@ where
                     daemon_epoch,
                     execution,
                     observation,
+                    finding_candidate,
+                };
+                let advance = self.advance_attempt(key, current, Some(next))?;
+                if let AttemptAdvance::CommittedAfterError(error) = advance {
+                    return Err(LocalExecutorError::Ledger(error));
+                }
+                Ok(ObservationPublicationOutcome::Staged)
+            }
+            AttemptRuntimeState::Publishing {
+                execution_basis,
+                origin,
+                daemon_epoch,
+                execution: current_execution,
+                observation: current_observation,
+                finding_candidate: current_candidate,
+                ..
+            } if current_execution == queued.execution
+                && current_observation == observation
+                && current_candidate.is_none()
+                && finding_candidate.is_some() =>
+            {
+                let next = AttemptRuntimeState::Publishing {
+                    execution_basis,
+                    origin,
+                    daemon_epoch,
+                    execution: current_execution,
+                    observation,
+                    finding_candidate,
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
                 if let AttemptAdvance::CommittedAfterError(error) = advance {
@@ -1382,8 +1445,12 @@ where
             AttemptRuntimeState::Publishing {
                 execution: current_execution,
                 observation: current_observation,
+                finding_candidate: current_candidate,
                 ..
-            } if current_execution == queued.execution && current_observation == observation => {
+            } if current_execution == queued.execution
+                && current_observation == observation
+                && (finding_candidate.is_none() || current_candidate == finding_candidate) =>
+            {
                 Ok(ObservationPublicationOutcome::AlreadyStaged)
             }
             AttemptRuntimeState::Publishing {
@@ -1395,8 +1462,12 @@ where
             AttemptRuntimeState::Completed {
                 execution: current_execution,
                 observation: current_observation,
+                finding_candidate: current_candidate,
                 ..
-            } if current_execution == queued.execution && current_observation == observation => {
+            } if current_execution == queued.execution
+                && current_observation == observation
+                && (finding_candidate.is_none() || current_candidate == finding_candidate) =>
+            {
                 self.release_active_if_present(queued.execution)?;
                 Ok(ObservationPublicationOutcome::AlreadyCompleted)
             }
@@ -1752,6 +1823,7 @@ where
                 daemon_epoch,
                 execution: current_execution,
                 observation: staged_observation,
+                finding_candidate,
             } if daemon_epoch == self.daemon_epoch && current_execution == execution => {
                 if staged_observation != observation {
                     return Err(LocalExecutorError::ConflictingCompletion);
@@ -1775,6 +1847,7 @@ where
                     daemon_epoch,
                     execution,
                     observation,
+                    finding_candidate,
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
                 self.release_active_if_present(execution)?;
@@ -2187,15 +2260,18 @@ where
                                 checkpoint,
                             }
                         }
-                        AttemptRuntimeState::Publishing { observation, .. } => {
-                            AttemptRuntimeState::Publishing {
-                                execution_basis,
-                                origin,
-                                daemon_epoch: self.daemon_epoch,
-                                execution,
-                                observation,
-                            }
-                        }
+                        AttemptRuntimeState::Publishing {
+                            observation,
+                            finding_candidate,
+                            ..
+                        } => AttemptRuntimeState::Publishing {
+                            execution_basis,
+                            origin,
+                            daemon_epoch: self.daemon_epoch,
+                            execution,
+                            observation,
+                            finding_candidate,
+                        },
                         AttemptRuntimeState::Paused { .. }
                         | AttemptRuntimeState::CheckpointPromoting { .. }
                         | AttemptRuntimeState::Completed { .. }
@@ -2503,6 +2579,7 @@ where
                     daemon_epoch,
                     execution,
                     observation,
+                    finding_candidate,
                 },
             ) if current_basis == execution_basis => {
                 match self.validator.validate_completion(request, observation) {
@@ -2513,6 +2590,7 @@ where
                             daemon_epoch,
                             execution,
                             observation,
+                            finding_candidate,
                         };
                         let advance = self.advance_attempt(key, publishing, Some(completed))?;
                         if let AttemptAdvance::CommittedAfterError(error) = advance {
@@ -2540,6 +2618,7 @@ where
                             daemon_epoch: self.daemon_epoch,
                             execution: recovery_execution,
                             observation,
+                            finding_candidate,
                         };
                         let advance = self.advance_attempt(key, publishing, Some(recovery))?;
                         if let AttemptAdvance::CommittedAfterError(error) = advance {

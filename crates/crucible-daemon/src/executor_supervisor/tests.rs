@@ -10,11 +10,14 @@ use std::time::Duration;
 
 use crucible_campaign::{
     AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId, ExecutionRetentionIntent,
-    ExecutorClient, SubmitAttemptDisposition,
+    ExecutorClient, FindingCandidateBundleId, SubmitAttemptDisposition,
 };
 
 use super::*;
-use crate::{DirectoryAssignmentLedger, MemoryAssignmentLedger};
+use crate::{
+    AssignmentRetentionAdmin, AssignmentRetentionRoot, DirectoryAssignmentLedger,
+    MemoryAssignmentLedger,
+};
 
 #[test]
 fn execution_cancellation_wakes_blocked_guards_and_times_out_cleanly() {
@@ -767,6 +770,68 @@ fn completion_and_cancellation_races_are_idempotent() {
             .disposition(),
         SubmitAttemptDisposition::Accepted { .. }
     ));
+}
+
+#[test]
+fn finding_candidate_root_is_staged_atomically_and_preserved_by_completion() {
+    let epoch = daemon_epoch(0x2d);
+    let request = request(0x4d, 0x6d, epoch, resources(1, 1024, 2048));
+    let mut supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        ExecutorCapacity::new(1, 1, 2048, 4096, 64).expect("capacity"),
+    );
+    let execution = accepted_execution(
+        &supervisor
+            .submit_attempt(&request)
+            .expect("finding attempt accepted"),
+    );
+    let queued = supervisor.next_queued().expect("finding attempt queued");
+    let observation = observation(0x8d);
+    let candidate = finding_candidate(0x9d);
+
+    assert_eq!(
+        supervisor
+            .stage_observation_and_finding_candidate_publication(&queued, observation, candidate,)
+            .expect("stage observation and finding candidate"),
+        ObservationPublicationOutcome::Staged
+    );
+    assert_eq!(
+        supervisor
+            .stage_observation_publication(&queued, observation)
+            .expect("legacy observation staging preserves stronger root"),
+        ObservationPublicationOutcome::AlreadyStaged
+    );
+    assert_eq!(
+        supervisor
+            .complete_execution(execution_key(&request), execution, observation)
+            .expect("complete finding attempt"),
+        CompletionOutcome::Completed
+    );
+
+    let mut ledger = supervisor.into_ledger();
+    assert!(matches!(
+        ledger
+            .load_attempt(execution_key(&request))
+            .expect("load completed finding state"),
+        Some(AttemptRuntimeState::Completed {
+            observation: retained_observation,
+            finding_candidate: Some(retained_candidate),
+            ..
+        }) if retained_observation == observation && retained_candidate == candidate
+    ));
+    let mut roots = Vec::new();
+    let summary = ledger
+        .acquire_retention_fence()
+        .expect("acquire finding retention fence")
+        .visit_roots(&mut |root| {
+            roots.push(root);
+            Ok(())
+        })
+        .expect("visit completed finding roots");
+    assert_eq!(summary.finding_candidate_roots(), 1);
+    assert!(roots.contains(&AssignmentRetentionRoot::FindingCandidate(candidate)));
 }
 
 #[test]
@@ -1692,6 +1757,15 @@ fn observation(byte: u8) -> ObservationId {
         byte,
     ))
     .expect("observation")
+}
+
+fn finding_candidate(byte: u8) -> FindingCandidateBundleId {
+    FindingCandidateBundleId::parse(&typed_id(
+        "crucible.campaign.finding-candidate-bundle",
+        "finding",
+        byte,
+    ))
+    .expect("finding candidate")
 }
 
 fn checkpoint(byte: u8) -> ExactCheckpointId {
