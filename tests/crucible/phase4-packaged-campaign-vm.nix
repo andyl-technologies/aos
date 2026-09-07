@@ -34,18 +34,22 @@
           sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
           if ! cargo test --frozen --offline --release --no-run --message-format=json \
             --manifest-path crates/Cargo.toml --target-dir "$TMPDIR/target" \
-            -p crucible-cli --test campaign_store_process --test legacy_campaign_process \
+            -p crucible-cli --bin crucible \
+            --test campaign_store_process --test legacy_campaign_process \
             > "$TMPDIR/artifacts.jsonl"; then
             jq -r 'select(.reason == "compiler-message") | .message.rendered // empty' "$TMPDIR/artifacts.jsonl"
             exit 1
           fi
           test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "campaign_store_process" and .executable != null) | .executable' "$TMPDIR/artifacts.jsonl")
           legacy_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "legacy_campaign_process" and .executable != null) | .executable' "$TMPDIR/artifacts.jsonl")
+          unit_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "crucible" and .target.kind == ["bin"] and .profile.test == true and .executable != null) | .executable' "$TMPDIR/artifacts.jsonl")
           test -f "$test_binary"
           test -f "$legacy_test_binary"
+          test -f "$unit_test_binary"
           mkdir -p "$out/bin"
           cp "$test_binary" "$out/bin/campaign-process-flight"
           cp "$legacy_test_binary" "$out/bin/legacy-campaign-process-flight"
+          cp "$unit_test_binary" "$out/bin/crucible-unit-flight"
           cp "$TMPDIR/target/release/crucible" "$out/bin/crucible"
           # Genesis is captured before execution; the immutable blank disk still
           # follows the production store-path contract for guest assets.
@@ -158,6 +162,17 @@ in
       ${pkgs.grep}/bin/grep -Fxq \
         'legacy_guarded_failure_replay=true' \
         /tmp/legacy-failure-replay-flight.log
+      if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
+        ${flight}/bin/crucible-unit-flight --ignored --exact \
+        cli_replay::tests::actual_session_run_artifact_replays_through_campaign_owner \
+        --nocapture > /tmp/legacy-actual-session-replay-flight.log 2>&1; then
+        cat /tmp/legacy-actual-session-replay-flight.log
+        exit 1
+      fi
+      cat /tmp/legacy-actual-session-replay-flight.log
+      ${pkgs.grep}/bin/grep -Fxq \
+        'legacy_actual_session_campaign_replay=true' \
+        /tmp/legacy-actual-session-replay-flight.log
       if ! ${pkgs.coreutils}/bin/timeout -k 5 60 \
         ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
         guarded_campaign_rejects_insufficient_capacity_before_guest_launch \
