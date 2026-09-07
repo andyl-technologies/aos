@@ -118,6 +118,8 @@ crucible.campaign.gc-candidate-manifest	1	crucible-daemon::campaign_gc	administr
 crucible.campaign.gc-journal-state	1	crucible-daemon::campaign_gc	administrative-record	gate:campaign-store-composition
 crucible.executor.assignment-record	1	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
 crucible.executor.attempt-state-record	11	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
+crucible.executor.prepared-semantic-attempt-result	1	crucible-daemon::crucible_artifact::prepared_result	operational-record	gate:component-contract,gate:campaign-replay
+crucible.executor.prepared-result-journal-state	1	crucible-daemon::prepared_result_journal	operational-record	gate:component-contract,gate:campaign-replay
 crucible.executor.assignment-retention-state	1	crucible-daemon::assignment_ledger	administrative-record	gate:campaign-store-composition
 crucible.executor.exact-pin-materialization-selection	1	crucible-daemon::exact_pin_retention	administrative-record	gate:campaign-store-composition
 crucible.executor.hot-checkpoint-fallback	1	crucible-daemon::hot_checkpoint_retention	operational-record	gate:campaign-store-composition

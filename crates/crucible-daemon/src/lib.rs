@@ -52,6 +52,8 @@
 //! durable checkpoint materializations for generation-fenced GC;
 //! [`crucible_artifact`] strictly
 //! translates opaque campaign payloads into Crucible execution-model values;
+//! [`prepared_result_journal`] retains a complete semantic result across
+//! crash-safe publication retries;
 //! [`crucible_execution`] supplies the typed runner boundary used by the local
 //! QEMU/session adapter; [`crucible_qemu_runner`] connects that boundary to the
 //! exact-restore/thin-replay QEMU realization path; [`crucible_qemu_session`]
@@ -143,6 +145,7 @@ pub mod paused_checkpoint_promotion;
 pub mod pending_finding;
 pub mod planner_loopback;
 pub mod planner_process;
+pub mod prepared_result_journal;
 pub mod qemu_baked_genesis;
 pub mod qemu_campaign_driver;
 pub mod qemu_campaign_lifecycle;
@@ -269,8 +272,9 @@ pub use crucible_artifact::{
     CrucibleFindingReplayEvidence, CrucibleFindingReplayTranscript,
     MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES, MAX_CRUCIBLE_FINDING_REPLAY_BYTES,
     MAX_CRUCIBLE_FINDING_REPLAY_RECORDS, MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS,
-    PreparedCrucibleFindingCandidate, decode_crucible_configuration_artifact,
-    decode_crucible_configuration_artifact_with_selections,
+    MAX_PREPARED_SEMANTIC_RESULT_BYTES, PreparedCrucibleFindingCandidate,
+    PreparedSemanticAttemptResult, PreparedSemanticResultCodecError,
+    decode_crucible_configuration_artifact, decode_crucible_configuration_artifact_with_selections,
     decode_crucible_configuration_artifact_with_signal_fault_replay,
     decode_crucible_scenario_artifact, encode_crucible_configuration_artifact,
     encode_crucible_scenario_artifact, prepare_signature_preserving_minimized_finding_candidate,
@@ -449,8 +453,8 @@ pub use packaged_qemu_executor::{
     PackagedExactPinMaterializerError, PackagedQemuExecutor, PackagedQemuExecutorCompletion,
     PackagedQemuExecutorConfig, PackagedQemuExecutorConfigError, PackagedQemuExecutorError,
     PackagedQemuExecutorJoinError, PackagedQemuExecutorJoinFailures,
-    PackagedQemuExecutorStartError, PackagedQemuHotForkConfig,
-    PackagedQemuHotForkConfigError, PackagedQemuHotForkSourceShutdownError,
+    PackagedQemuExecutorStartError, PackagedQemuHotForkConfig, PackagedQemuHotForkConfigError,
+    PackagedQemuHotForkSourceShutdownError,
 };
 #[cfg(target_os = "linux")]
 pub use paused_checkpoint_promotion::{
@@ -486,6 +490,10 @@ pub use planner_process::{
     CANONICAL_PLANNER_WORKER_ARGUMENT, CanonicalPlannerProcessCancellation,
     CanonicalPlannerProcessConfig, CanonicalPlannerProcessError, CanonicalPlannerProcessSupervisor,
     serve_canonical_planner_process_once,
+};
+pub use prepared_result_journal::{
+    DirectoryPreparedResultJournal, PreparedResultJournalCreateDisposition,
+    PreparedResultJournalError,
 };
 pub use qemu_baked_genesis::{
     ProductionBakedGenesisCaptureError, ProductionBakedGenesisCheckpoint,

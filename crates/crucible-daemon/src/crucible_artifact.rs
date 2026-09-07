@@ -20,10 +20,15 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 mod finding_replay;
+mod prepared_result;
 
 pub use finding_replay::{CrucibleFindingReplayEvidence, CrucibleFindingReplayTranscript};
 use finding_replay::{
     PreparedFindingReplayRecords, RecordedFindingReplay, validate_recorded_replay_configuration,
+};
+pub use prepared_result::{
+    MAX_PREPARED_SEMANTIC_RESULT_BYTES, PreparedSemanticAttemptResult,
+    PreparedSemanticResultCodecError,
 };
 
 use crucible::{
@@ -100,12 +105,16 @@ pub struct CrucibleCampaignArtifactStore {
 /// leaves are authenticated prerequisites rather than records created here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreparedCrucibleFindingCandidate {
+    discovery_path: crucible::FindingDiscoveryPath,
+    minimization_seed: crucible::Seed,
     scenario: ScenarioArtifact,
     original_configuration: ConfigurationArtifact,
     original: ReproductionArtifact,
     minimized_configuration: ConfigurationArtifact,
     minimized: ReproductionArtifact,
     replay_records: PreparedFindingReplayRecords,
+    minimization_replays: Vec<RecordedFindingReplay>,
+    verification_replays: Vec<RecordedFindingReplay>,
     bundle: FindingCandidateBundle,
 }
 
@@ -373,12 +382,16 @@ pub fn prepare_signature_preserving_minimized_finding_candidate(
     )?;
 
     Ok(PreparedCrucibleFindingCandidate {
+        discovery_path: finding.discovery_path,
+        minimization_seed: seed,
         scenario,
         original_configuration,
         original,
         minimized_configuration,
         minimized,
         replay_records,
+        minimization_replays: minimization_pass,
+        verification_replays: verification_pass,
         bundle,
     })
 }
@@ -2566,6 +2579,106 @@ mod tests {
 
         let expected = prepared.id().expect("prepared candidate ID");
         let expected_bundle = prepared.bundle().clone();
+        let durable_result = PreparedSemanticAttemptResult::new(
+            observation_candidate.clone(),
+            Some(prepared.clone()),
+        )
+        .expect("bind prepared semantic result");
+        let durable_bytes = durable_result
+            .canonical_bytes()
+            .expect("encode prepared semantic result");
+        let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(&durable_bytes)
+            .expect("decode prepared semantic result");
+        assert_eq!(decoded, durable_result);
+        let mut trailing = durable_bytes.clone();
+        trailing.push(0);
+        assert!(matches!(
+            PreparedSemanticAttemptResult::from_canonical_bytes(&trailing),
+            Err(PreparedSemanticResultCodecError::TrailingBytes)
+        ));
+
+        let unrelated_observation = Observation::new(
+            attempt,
+            genesis.configuration(),
+            genesis.id().expect("unrelated observation child"),
+            attempt_record.path(),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            observation_candidate
+                .measurements()
+                .id()
+                .expect("unrelated observation measurements"),
+            observation_candidate
+                .properties()
+                .id()
+                .expect("unrelated observation properties"),
+            observation_candidate
+                .coverage()
+                .id()
+                .expect("unrelated observation coverage"),
+            BTreeSet::from([opportunity.id().expect("unrelated observation choice")]),
+        )
+        .expect("unrelated observation");
+        let unrelated_candidate = ObservationCandidate::new(
+            genesis.clone(),
+            observation_candidate.measurements().clone(),
+            observation_candidate.properties().clone(),
+            observation_candidate.coverage().clone(),
+            observation_candidate.discovered_choices().to_vec(),
+            unrelated_observation,
+        )
+        .expect("unrelated observation candidate");
+        let mut mismatched_finding = prepared.clone();
+        mismatched_finding.bundle = FindingCandidateBundle::new(
+            unrelated_candidate
+                .observation()
+                .id()
+                .expect("unrelated observation ID"),
+            signature.clone(),
+            prepared.bundle().reproduction(),
+            prepared.bundle().minimized(),
+            prepared.bundle().signature_minimization().clone(),
+            prepared.bundle().exact_pins().clone(),
+        )
+        .expect("finding rebound to unrelated observation ID");
+        assert!(matches!(
+            PreparedSemanticAttemptResult::new(unrelated_candidate, Some(mismatched_finding)),
+            Err(PreparedSemanticResultCodecError::Inconsistent {
+                component: "finding observation reproduction basis"
+            })
+        ));
+
+        let mut inconsistent_finding = prepared.clone();
+        let unrelated_schedule =
+            finding
+                .artifact
+                .schedule()
+                .clone()
+                .appended(Decision::DeliveryOrder(DeliveryOrderDecision {
+                    at: VirtualTime { ticks: 2 },
+                    order: Vec::new(),
+                }));
+        let unrelated_configuration =
+            encode_crucible_configuration_artifact(&scenario_record, &unrelated_schedule)
+                .expect("unrelated replay configuration")
+                .id()
+                .expect("unrelated replay configuration ID");
+        inconsistent_finding.minimization_replays[0].configuration = unrelated_configuration;
+        let inconsistent = PreparedSemanticAttemptResult::new(
+            observation_candidate.clone(),
+            Some(inconsistent_finding),
+        )
+        .expect("observation binding remains valid");
+        assert!(matches!(
+            inconsistent.canonical_bytes_with_limit(1),
+            Err(PreparedSemanticResultCodecError::LimitExceeded)
+        ));
+        assert!(matches!(
+            inconsistent.canonical_bytes(),
+            Err(PreparedSemanticResultCodecError::Inconsistent {
+                component: "finding replay record index"
+            })
+        ));
+
         let epoch = DaemonEpoch::from_bytes([0x57; 16]).expect("daemon epoch");
         let request = SubmitAttemptRequest::new(
             AssignmentId::from_bytes([0x58; 16]).expect("assignment"),

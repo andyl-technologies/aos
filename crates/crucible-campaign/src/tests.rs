@@ -388,6 +388,23 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     assert_eq!(hot_fallback[1], "1");
     assert_eq!(hot_fallback[2], "crucible-daemon::hot_checkpoint_retention");
     assert_eq!(hot_fallback[3], "operational-record");
+    for (schema, owner) in [
+        (
+            "crucible.executor.prepared-semantic-attempt-result",
+            "crucible-daemon::crucible_artifact::prepared_result",
+        ),
+        (
+            "crucible.executor.prepared-result-journal-state",
+            "crucible-daemon::prepared_result_journal",
+        ),
+    ] {
+        let record = rows
+            .get(schema)
+            .unwrap_or_else(|| panic!("missing prepared-result schema {schema}"));
+        assert_eq!(record[1], "1");
+        assert_eq!(record[2], owner);
+        assert_eq!(record[3], "operational-record");
+    }
     for (schema, version, owner, kind) in [
         (
             "crucible.qemu.vm-snapshot",
