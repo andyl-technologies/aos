@@ -17,20 +17,20 @@ use crucible::{ScenarioDefForm, Schedule, Seed};
 // crucible-lint: allow host-nondeterminism-state -- the caller supplies a validated production lifecycle capability; host observations cannot alter modeled choices.
 use crucible_api::ProductionVmLifecycleConfig;
 use crucible_campaign::{
-    ApplyCampaignCommandRequest, AttemptResourceLimits, AuthorizedPlannerService, BranchBudget,
-    BranchRequest, BranchRequestCause, BudgetGrant, CampaignAuthorizationError, CampaignClient,
-    CampaignClientError, CampaignCodecError, CampaignCommandId, CampaignControlAction,
-    CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignExecutorStepOutcome,
-    CampaignExecutorStore, CampaignHash, CampaignLineage, CampaignMode, CampaignName,
-    CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignPrincipal,
-    CampaignPrincipalAuthorizer, CampaignRepository, CampaignRepositoryError, CampaignSeed,
-    CampaignServiceOperation, CampaignSnapshotId, CampaignState, CampaignSupervisor,
-    CampaignSupervisorConfigError, CampaignSupervisorStepOutcome, CandidateSource,
-    CreateCampaignRequest, DaemonEpoch, DebuggerAuthorityKey, DiscoveryRequest,
-    ExecutionRetentionIntent, ExecutorCompatibilityProfile, ExplorerPolicy, FairnessPolicy,
-    Observation, ObservationId, PlannerAuthorityKey, PlannerClient, PlannerService, PlanningBudget,
-    RepositoryCampaignService, RetentionPolicy, StopCondition, StopOutcome,
-    SubmitCampaignBranchRequest, SubmitCampaignDiscoveryRequest,
+    ApplyCampaignCommandRequest, AttemptResourceLimits, AuthorizedPlannerService,
+    AuthorizedPlannerServiceError, BranchBudget, BranchRequest, BranchRequestCause, BudgetGrant,
+    CampaignAuthorizationError, CampaignClient, CampaignClientError, CampaignCodecError,
+    CampaignCommandId, CampaignControlAction, CampaignExecutorDriver,
+    CampaignExecutorDriverConfigError, CampaignExecutorStepOutcome, CampaignExecutorStore,
+    CampaignHash, CampaignLineage, CampaignMode, CampaignName, CampaignPlannerDriver,
+    CampaignPlannerDriverConfigError, CampaignPrincipal, CampaignPrincipalAuthorizer,
+    CampaignRepository, CampaignRepositoryError, CampaignSeed, CampaignServiceOperation,
+    CampaignSnapshotId, CampaignState, CampaignSupervisor, CampaignSupervisorConfigError,
+    CampaignSupervisorError, CampaignSupervisorStepOutcome, CandidateSource, CreateCampaignRequest,
+    DaemonEpoch, DebuggerAuthorityKey, DiscoveryRequest, ExecutionRetentionIntent,
+    ExecutorCompatibilityProfile, ExplorerPolicy, FairnessPolicy, Observation, ObservationId,
+    PlannerAuthorityKey, PlannerClient, PlanningBudget, RepositoryCampaignService, RetentionPolicy,
+    StopCondition, StopOutcome, SubmitCampaignBranchRequest, SubmitCampaignDiscoveryRequest,
 };
 use crucible_cas::content_store::{
     ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend, MutableRefBackend,
@@ -39,19 +39,24 @@ use thiserror::Error;
 
 use super::{
     QemuAttemptExecutionEvidence, QemuAttemptExecutionEvidenceSnapshot,
-    QemuAttemptProductionVmLifecycleFactory, QemuFreshExecutionRunner,
-    QemuFreshScenarioResourceError, QemuObservedFreshAttemptLifecycleFactory,
+    QemuAttemptProductionVmLifecycleError, QemuAttemptProductionVmLifecycleFactory,
+    QemuFreshExecutionRunner, QemuFreshExecutionRunnerError, QemuFreshScenarioResourceError,
+    QemuObservedFreshAttemptLifecycleFactory, QemuObservedFreshAttemptLifecycleFactoryError,
     validate_fresh_qemu_scenario_resources,
 };
 use crate::{
     ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError, CrucibleCampaignArtifactStore,
-    CrucibleExecutionModel, CrucibleExecutionRunner, LinuxQemuAttemptHostConfig,
-    LinuxQemuAttemptHostResourceFactory, QemuFreshModeledDriver, RepositoryAttemptAdmission,
+    CrucibleExecutionModel, CrucibleExecutionModelError, CrucibleExecutionRunner,
+    LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostResourceFactory, QemuFreshModeledDriver,
+    QemuFreshModeledDriverError, RepositoryAttemptAdmission,
     decode_crucible_configuration_artifact_with_selections,
 };
 
 mod executor;
-use executor::{LocalPlannerMeter, SynchronousCampaignExecutor};
+use executor::{
+    LocalPlannerMeter, LocalPlannerMeterError, SynchronousCampaignExecutor,
+    SynchronousCampaignExecutorError,
+};
 
 mod replay_closure;
 pub use replay_closure::{GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError};
@@ -66,17 +71,41 @@ const DEFAULT_RUN_PLANNER_SCAN: u32 = 1_024;
 const DEFAULT_RUN_MAX_SUPERVISOR_STEPS: usize = 1_000_000;
 const DEFAULT_RUN_RECONCILIATION_STEPS: usize = 64;
 
-/// Opaque shared-owner failure while advancing one guarded campaign.
-#[derive(Debug)]
-pub struct GuardedDefaultCampaignSupervisorError(Box<dyn Error + Send + Sync>);
+type DefaultPlannerService =
+    AuthorizedPlannerService<crucible_campaign::CanonicalFrontierPlanner, LocalPlannerMeter>;
+type DefaultPlannerServiceError =
+    AuthorizedPlannerServiceError<CampaignCodecError, LocalPlannerMeterError>;
+type DefaultExecutorService<R> = SynchronousCampaignExecutor<CrucibleExecutionModel<R>>;
+type DefaultExecutorServiceError<E> =
+    SynchronousCampaignExecutorError<CrucibleExecutionModelError<E>>;
+type DefaultSupervisorError<E> =
+    CampaignSupervisorError<DefaultPlannerServiceError, DefaultExecutorServiceError<E>>;
 
-impl fmt::Display for GuardedDefaultCampaignSupervisorError {
+/// Concrete production-runner failure used by the guarded CLI campaign owner.
+pub type GuardedDefaultCampaignProductionRunnerError = QemuFreshExecutionRunnerError<
+    QemuObservedFreshAttemptLifecycleFactoryError<QemuAttemptProductionVmLifecycleError>,
+    QemuFreshModeledDriverError,
+>;
+
+/// Typed shared-owner failure while advancing one guarded campaign.
+#[derive(Debug)]
+pub struct GuardedDefaultCampaignSupervisorError<E = GuardedDefaultCampaignProductionRunnerError>(
+    Box<DefaultSupervisorError<E>>,
+);
+
+impl<E> fmt::Display for GuardedDefaultCampaignSupervisorError<E>
+where
+    E: Error + 'static,
+{
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)
     }
 }
 
-impl Error for GuardedDefaultCampaignSupervisorError {
+impl<E> Error for GuardedDefaultCampaignSupervisorError<E>
+where
+    E: Error + 'static,
+{
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(self.0.as_ref())
     }
@@ -251,7 +280,10 @@ impl GuardedDefaultCampaignRun {
 
 /// Failure while owning one guarded default campaign run.
 #[derive(Debug, Error)]
-pub enum GuardedDefaultCampaignRunError {
+pub enum GuardedDefaultCampaignRunError<E = GuardedDefaultCampaignProductionRunnerError>
+where
+    E: Error + 'static,
+{
     /// A canonical campaign request or artifact record was invalid.
     #[error("guarded default campaign record is invalid: {0}")]
     Codec(#[source] CampaignCodecError),
@@ -284,7 +316,7 @@ pub enum GuardedDefaultCampaignRunError {
     SupervisorConfiguration(#[source] CampaignSupervisorConfigError),
     /// The shared campaign planner or executor supervisor failed.
     #[error("guarded default campaign supervisor failed: {0}")]
-    Supervisor(#[source] GuardedDefaultCampaignSupervisorError),
+    Supervisor(#[source] GuardedDefaultCampaignSupervisorError<E>),
     /// Reading the bounded terminal-attempt evidence failed.
     #[error("guarded default campaign evidence failed: {0}")]
     Evidence(#[source] crucible::SchedulerError),
@@ -348,7 +380,7 @@ fn run_guarded_default_campaign_with_runner<R>(
     request: GuardedDefaultCampaignRunRequest,
     runner: R,
     execution_evidence: QemuAttemptExecutionEvidence,
-) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError>
+) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError<R::Error>>
 where
     R: CrucibleExecutionRunner,
     R::Error: Error + Send + Sync + 'static,
@@ -362,7 +394,7 @@ fn run_guarded_default_campaign_with_validated_runner<R>(
     request: GuardedDefaultCampaignRunRequest,
     runner: R,
     execution_evidence: QemuAttemptExecutionEvidence,
-) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError>
+) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError<R::Error>>
 where
     R: CrucibleExecutionRunner,
     R::Error: Error + Send + Sync + 'static,
@@ -385,7 +417,7 @@ fn run_guarded_default_campaign_with_store<R>(
     execution_evidence: QemuAttemptExecutionEvidence,
     blobs: Arc<dyn ImmutableBlobBackend>,
     refs: Arc<dyn MutableRefBackend>,
-) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError>
+) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError<R::Error>>
 where
     R: CrucibleExecutionRunner,
     R::Error: Error + Send + Sync + 'static,
@@ -553,10 +585,13 @@ where
     )
 }
 
-fn default_run_repository(
+fn default_run_repository<E>(
     blobs: Arc<dyn ImmutableBlobBackend>,
     refs: Arc<dyn MutableRefBackend>,
-) -> Result<(CampaignRepository, PlannerAuthorityKey), GuardedDefaultCampaignRunError> {
+) -> Result<(CampaignRepository, PlannerAuthorityKey), GuardedDefaultCampaignRunError<E>>
+where
+    E: Error + 'static,
+{
     let planner_authority = PlannerAuthorityKey::from_bytes([0x31; 32])
         .map_err(GuardedDefaultCampaignRunError::Codec)?;
     let debugger_authority = DebuggerAuthorityKey::from_bytes([0x47; 32])
@@ -571,11 +606,14 @@ fn default_run_repository(
     Ok((repository, planner_authority))
 }
 
-fn default_run_lineage(
+fn default_run_lineage<E>(
     request: &GuardedDefaultCampaignRunRequest,
     scenario_content: crucible_campaign::ScenarioArtifactId,
     genesis_content: crucible_campaign::ConfigurationArtifactId,
-) -> Result<CampaignLineage, GuardedDefaultCampaignRunError> {
+) -> Result<CampaignLineage, GuardedDefaultCampaignRunError<E>>
+where
+    E: Error + 'static,
+{
     let encoded = crate::encode_crucible_scenario_artifact(&request.scenario)
         .map_err(GuardedDefaultCampaignRunError::Artifact)?;
     let scenario = encoded.scenario();
@@ -606,9 +644,12 @@ fn default_run_lineage(
     .map_err(GuardedDefaultCampaignRunError::Codec)
 }
 
-fn validate_initial_replay(
+fn validate_initial_replay<E>(
     request: &GuardedDefaultCampaignRunRequest,
-) -> Result<(), GuardedDefaultCampaignRunError> {
+) -> Result<(), GuardedDefaultCampaignRunError<E>>
+where
+    E: Error + 'static,
+{
     match &request.initial_replay_closure {
         Some(closure) => closure
             .validate_for_schedule(&request.scenario, &request.initial_schedule)
@@ -622,11 +663,14 @@ fn validate_initial_replay(
     }
 }
 
-fn default_run_policy(
+fn default_run_policy<E>(
     lineage: &CampaignLineage,
     seed: Seed,
     discovery_stop: &StopCondition,
-) -> Result<crucible_campaign::CampaignPolicy, GuardedDefaultCampaignRunError> {
+) -> Result<crucible_campaign::CampaignPolicy, GuardedDefaultCampaignRunError<E>>
+where
+    E: Error + 'static,
+{
     let stop_conditions = match discovery_stop {
         StopCondition::NamedBoundary(name) => BTreeSet::from([name.clone()]),
         StopCondition::NextChoice
@@ -653,17 +697,18 @@ fn default_run_policy(
     .map_err(GuardedDefaultCampaignRunError::Codec)
 }
 
-fn apply_campaign_control<S>(
+fn apply_campaign_control<S, E>(
     client: &CampaignClient<S>,
     principal: &CampaignPrincipal,
     campaign: &CampaignName,
     snapshot: CampaignSnapshotId,
     ordinal: u64,
     action: CampaignControlAction,
-) -> Result<CampaignSnapshotId, GuardedDefaultCampaignRunError>
+) -> Result<CampaignSnapshotId, GuardedDefaultCampaignRunError<E>>
 where
     S: crucible_campaign::CampaignService,
     S::Error: crucible_campaign::CampaignServiceFailureSource,
+    E: Error + 'static,
 {
     let command = CampaignCommandId::from_hash(CampaignHash::derive(
         "crucible.daemon.legacy-run-control.v1",
@@ -706,16 +751,14 @@ struct DefaultRunContext<'a, S> {
     policy: crucible_campaign::CampaignPolicyId,
 }
 
-fn drive_default_campaign<P, E, S>(
+fn drive_default_campaign<R, S>(
     context: DefaultRunContext<'_, S>,
     mut state_updates: Vec<CampaignState>,
-    supervisor: &mut CampaignSupervisor<P, E>,
-) -> Result<DefaultRunExecution, GuardedDefaultCampaignRunError>
+    supervisor: &mut CampaignSupervisor<DefaultPlannerService, DefaultExecutorService<R>>,
+) -> Result<DefaultRunExecution, GuardedDefaultCampaignRunError<R::Error>>
 where
-    P: PlannerService,
-    P::Error: Error + Send + Sync + 'static,
-    E: crucible_campaign::ExecutorControlService + crucible_campaign::ExecutorResumeService,
-    E::Error: Error + Send + Sync + 'static,
+    R: CrucibleExecutionRunner,
+    R::Error: Error + Send + Sync + 'static,
     S: crucible_campaign::CampaignService,
     S::Error: crucible_campaign::CampaignServiceFailureSource,
 {
@@ -822,12 +865,15 @@ where
     Err(GuardedDefaultCampaignInvariantError::SupervisorStepLimit.into())
 }
 
-fn materialize_result(
+fn materialize_result<E>(
     repository: &Arc<CampaignRepository>,
     campaign: CampaignName,
     execution: DefaultRunExecution,
     evidence: QemuAttemptExecutionEvidenceSnapshot,
-) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError> {
+) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError<E>>
+where
+    E: Error + 'static,
+{
     let head = repository
         .head(campaign.as_str())
         .map_err(GuardedDefaultCampaignRunError::Repository)?;
@@ -892,7 +938,10 @@ fn materialize_result(
     })
 }
 
-impl From<GuardedDefaultCampaignInvariantError> for GuardedDefaultCampaignRunError {
+impl<E> From<GuardedDefaultCampaignInvariantError> for GuardedDefaultCampaignRunError<E>
+where
+    E: Error + 'static,
+{
     fn from(error: GuardedDefaultCampaignInvariantError) -> Self {
         Self::Invariant(error)
     }

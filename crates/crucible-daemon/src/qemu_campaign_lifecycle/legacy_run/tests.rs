@@ -41,6 +41,13 @@ use crate::{
 
 const TEST_EFFECT_TRACE: &[u8] = b"guarded-default-run-effect-trace";
 
+type TestGuardedDefaultCampaignRunError = GuardedDefaultCampaignRunError<
+    QemuFreshExecutionRunnerError<
+        QemuObservedFreshAttemptLifecycleFactoryError<io::Error>,
+        QemuFreshModeledDriverError,
+    >,
+>;
+
 struct TerminalLifecycle {
     node: NodeId,
     event_log: EventLog,
@@ -550,7 +557,7 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
         .expect("publish GC control object");
     drop(completed);
 
-    let (repository, _) = default_run_repository(graph.clone(), refs.clone())
+    let (repository, _) = default_run_repository::<io::Error>(graph.clone(), refs.clone())
         .expect("reopen campaign repository for GC planning");
     let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("open assignment ledger");
     let prepared =
@@ -583,7 +590,7 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
         StoreGraph::build_with_admin(graph_config()).expect("reopen campaign graph");
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let (repository, _) = default_run_repository(graph.clone(), refs.clone())
+    let (repository, _) = default_run_repository::<io::Error>(graph.clone(), refs.clone())
         .expect("reopen campaign repository for GC apply");
     let mut ledger =
         DirectoryAssignmentLedger::open(&ledger_root).expect("reopen assignment ledger");
@@ -617,7 +624,7 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
         StoreGraph::build_with_admin(graph_config()).expect("reopen collected campaign graph");
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let (repository, _) = default_run_repository(graph.clone(), refs.clone())
+    let (repository, _) = default_run_repository::<io::Error>(graph.clone(), refs.clone())
         .expect("reopen collected campaign repository");
     let observation = repository
         .load_observation(observation_id)
@@ -753,18 +760,26 @@ fn shared_owner_preserves_the_terminal_lifecycle_error_source() {
 
     let error = run_guarded_default_campaign_with_runner(request, runner, evidence)
         .expect_err("injected lifecycle failure must reach the daemon caller");
+    assert!(matches!(
+        &error,
+        GuardedDefaultCampaignRunError::Supervisor(_)
+    ));
+
     let mut source = Some(&error as &(dyn Error + 'static));
-    let mut messages = Vec::new();
+    let mut injected = None;
     while let Some(current) = source {
-        messages.push(current.to_string());
+        if let Some(error) = current.downcast_ref::<io::Error>() {
+            injected = Some((error.kind(), error.to_string()));
+        }
         source = current.source();
     }
 
-    assert!(
-        messages
-            .iter()
-            .any(|message| { message.contains("injected guarded lifecycle start failure") }),
-        "error sources: {messages:?}"
+    assert_eq!(
+        injected,
+        Some((
+            io::ErrorKind::Other,
+            String::from("injected guarded lifecycle start failure"),
+        ))
     );
 }
 
@@ -942,7 +957,7 @@ fn try_selectable_campaign(
     request: GuardedDefaultCampaignRunRequest,
     node: NodeId,
     starts: Arc<AtomicUsize>,
-) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError> {
+) -> Result<GuardedDefaultCampaignRun, TestGuardedDefaultCampaignRunError> {
     let (factory, evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(SelectableLifecycleFactory {
             node,
@@ -958,7 +973,7 @@ fn try_selectable_campaign_with_store(
     starts: Arc<AtomicUsize>,
     blobs: Arc<dyn ImmutableBlobBackend>,
     refs: Arc<dyn MutableRefBackend>,
-) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError> {
+) -> Result<GuardedDefaultCampaignRun, TestGuardedDefaultCampaignRunError> {
     let (factory, evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(SelectableLifecycleFactory {
             node,
