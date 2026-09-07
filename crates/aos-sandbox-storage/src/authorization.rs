@@ -26,6 +26,13 @@ pub type StorageAuthorityConfigError = BrokerAuthorityConfigError;
 /// Storage-audience alias for signed admission failures.
 pub type StorageAdmissionError = BrokerAdmissionError;
 
+/// Groups the three location-bound records committed with one Storage intent.
+pub(crate) struct SealedStorageAdmission {
+    pub(crate) current_fence: Vec<u8>,
+    pub(crate) effect: Vec<u8>,
+    pub(crate) operation_fence: Vec<u8>,
+}
+
 /// Owns protected storage-audience trust and record-authentication state.
 pub struct StorageAuthorityV1(BrokerAuthority);
 
@@ -102,12 +109,16 @@ impl StorageAuthorityV1 {
         &self,
         sandbox_id: &[u8; 16],
         request_id: &[u8; 16],
+        operation_id: &[u8; 16],
         admission: &VerifiedBrokerAdmission,
-    ) -> Result<(Vec<u8>, Vec<u8>), StorageAdmissionError> {
-        Ok((
-            self.0.seal_fence(sandbox_id, &admission.fence)?,
-            self.0.seal_effect(request_id, &admission.effect)?,
-        ))
+    ) -> Result<SealedStorageAdmission, StorageAdmissionError> {
+        Ok(SealedStorageAdmission {
+            current_fence: self.0.seal_fence(sandbox_id, &admission.fence)?,
+            effect: self.0.seal_effect(request_id, &admission.effect)?,
+            operation_fence: self
+                .0
+                .seal_operation_fence(operation_id, &admission.fence)?,
+        })
     }
 
     pub(crate) fn open_fence(
@@ -116,6 +127,14 @@ impl StorageAuthorityV1 {
         bytes: &[u8],
     ) -> Result<BrokerAuthorizationFenceV1, StorageAdmissionError> {
         self.0.open_fence(sandbox_id, bytes)
+    }
+
+    pub(crate) fn open_operation_fence(
+        &self,
+        operation_id: &[u8; 16],
+        bytes: &[u8],
+    ) -> Result<BrokerAuthorizationFenceV1, StorageAdmissionError> {
+        self.0.open_operation_fence(operation_id, bytes)
     }
 
     pub(crate) fn open_admission_intent(

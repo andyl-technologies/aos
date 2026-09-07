@@ -3858,3 +3858,61 @@ effects or authoritative workspace publication. Storage Apply remains
 unadvertised: the fixed process backend, protected resource catalog and root
 pin lifecycle, inventory response producer, service packaging, and controller
 Apply orchestration are still required.
+
+### Protected Storage workspace catalog and authoritative inventory
+
+Storage now owns a protected, append-only workspace catalog that can populate
+the registered 1.2 authoritative inventory contract. A generation-one head
+fixes the trusted subordinate-identity pool. Every later publication advances
+the head atomically with one canonical workspace row that retains the opaque
+workspace handle, nonzero ZFS dataset GUID, creation correlation, exact
+assignment, portable root-image descriptor, boot-scoped root-pin identity,
+nonoverlapping subordinate-identity range, and domain-separated resource
+digest. First-fit
+allocation considers every retained row, including retired tombstones, so a
+range is never silently recycled.
+
+Publication capabilities can be constructed only from an exact committed
+create or clone result recovered from the authenticated transaction store.
+Storage now seals a second copy of the admitted assignment fence for the exact
+operation-keyed journal location, atomically with the current fence, effect
+intent, and mutation intent. Recovery authenticates this operation-scoped
+fence rather than consulting a newer sandbox fence, then requires the canonical
+assignment manifest and decoded sandbox specification to reproduce its
+assignment digest, node, spec descriptor, environment, root view, and private
+user-namespace range. This prevents an old result from being rebound after the
+sandbox's current assignment advances.
+
+The catalog opens only a root-owned, non-writable real pin root and resolves
+the fixed lowercase-hex handle component through descriptor-relative,
+no-follow directory opens. Publication records the observed device/inode;
+same-boot replacement fails closed. After a reboot, stale active rows remain
+reserved but disappear from inventory until the exact original publication
+refreshes them with a new verified pin, preserving their GUID, assignment, and
+identity range. Retirement accepts only an authenticated committed exact
+dataset destruction at or after the workspace's creation result and requires
+the fixed pin to be absent before converting the row to a permanent tombstone.
+
+Each inventory call revalidates every current-boot pin, emits rows in strict
+handle order with the protected journal boundary and broker-process identity,
+and decodes its own bounded protobuf through the public Storage 1.2 validator
+before returning bytes. Focused validation covers operation-fence relocation,
+manifest/spec substitution, initialization and restart, replay, allocation and
+exhaustion, assignment rebinding, retirement continuity, permanent range
+retention, cross-boot omission and refresh, pin replacement and unsafe modes,
+pool changes, and corrupt catalog heads. All 41 Storage tests and all 19 shared
+broker tests pass, together with strict crate-local Clippy, warnings-as-errors
+rustdoc, Rust formatting, and diff checks. The first full hermetic gate ran all
+4,758 workspace tests but encountered the unrelated transient
+`aos-hub::oci_distribution::manifest_admission_stages_before_validation_and_claims_each_digest_once`
+503; the unchanged isolated test then passed. A clean final
+`nix-build -A checks.eval --cores 8 --no-out-link` rerun passes the complete
+workspace test phase, configuration evaluation, and system-structure checks at
+`/nix/store/4jz5dy102dkh8nv6hn72dnpgnkidphzw-aos-eval-and-system-structure-checks-0`.
+
+This advances `SBX-STOR-01` and `SBX-LIFE-06` through authoritative workspace
+production without claiming runnable Storage effects. Storage Apply remains
+unadvertised until the fixed ZFS process backend, privileged postcondition and
+pin materializer, long-running service packaging, and controller Apply
+orchestration are complete. Network still needs its protected lifecycle and
+kernel namespace producer before whole-catalog launch can become operational.

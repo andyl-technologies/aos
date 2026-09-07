@@ -9,9 +9,13 @@ aos-proto.workspace = true
 aos-sandbox.workspace = true
 aos-sandbox-broker.workspace = true
 aos-sandbox-core.workspace = true
+aos-sandbox-linux.workspace = true
 aos-sandbox-protocol.workspace = true
 buffa.workspace = true
 hmac.workspace = true
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 

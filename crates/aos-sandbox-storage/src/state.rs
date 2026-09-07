@@ -106,6 +106,7 @@ pub enum DurableStoragePhase {
 /// Carries an authenticated committed storage result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CommittedStorageResultV1 {
+    operation_id: [u8; 16],
     catalog: CatalogBindingV1,
     result_digest: ObjectDigest,
     storage_handle: Option<[u8; 32]>,
@@ -114,6 +115,12 @@ pub struct CommittedStorageResultV1 {
 }
 
 impl CommittedStorageResultV1 {
+    /// Returns the exact idempotent operation that committed this result.
+    #[must_use]
+    pub const fn operation_id(self) -> [u8; 16] {
+        self.operation_id
+    }
+
     /// Returns the resulting catalog generation and digest.
     #[must_use]
     pub const fn catalog(self) -> CatalogBindingV1 {
@@ -402,14 +409,20 @@ impl StorageTransactionStore {
     /// privileged observer must still authenticate that operation's persisted
     /// authority links before reconciling it.
     pub fn recovery_entries(&self) -> impl Iterator<Item = StorageRecoveryEntry> + '_ {
-        self.records.values().map(|record| StorageRecoveryEntry {
-            operation_id: record.operation_id,
-            sandbox_id: record.sandbox_id,
-            request_id: record.request_id,
-            phase: record.phase,
-            mutation_digest: record.mutation_digest,
-            catalog: record.catalog,
-        })
+        self.records.values().map(recovery_entry)
+    }
+
+    pub(crate) fn committed_recovery_entry(
+        &self,
+        result: CommittedStorageResultV1,
+    ) -> Result<StorageRecoveryEntry, StorageStateError> {
+        self.records
+            .get(&result.operation_id)
+            .filter(|record| {
+                record.phase == DurableStoragePhase::Committed && record.result == Some(result)
+            })
+            .map(recovery_entry)
+            .ok_or(StorageStateError::InvalidTransition)
     }
 
     /// Reconstructs the exact typed catalog for one enumerated recovery entry.
@@ -532,7 +545,7 @@ impl StorageTransactionStore {
         key: &[u8],
     ) {
         let transaction = JournalTransaction::new(
-            [241; 16],
+            [240_u8.wrapping_add(namespace as u8); 16],
             vec![JournalRecord::delete(namespace, key.to_vec())],
         )
         .unwrap();
@@ -549,11 +562,14 @@ impl StorageTransactionStore {
         request_id: [u8; 16],
         sealed_fence: Vec<u8>,
         sealed_effect: Vec<u8>,
+        sealed_operation_fence: Vec<u8>,
     ) -> Result<BeginStorageTransaction, StorageStateError> {
         if sealed_fence.is_empty()
             || sealed_effect.is_empty()
+            || sealed_operation_fence.is_empty()
             || sealed_fence.len() > MAXIMUM_RECORD_BYTES
             || sealed_effect.len() > MAXIMUM_RECORD_BYTES
+            || sealed_operation_fence.len() > MAXIMUM_RECORD_BYTES
         {
             return Err(StorageStateError::InvalidValue);
         }
@@ -584,6 +600,11 @@ impl StorageTransactionStore {
                     sealed_fence,
                 ),
                 JournalRecord::put(RecordNamespace::Effect, request_id.to_vec(), sealed_effect),
+                JournalRecord::put(
+                    RecordNamespace::AuthorityPublication,
+                    operation_id.to_vec(),
+                    sealed_operation_fence,
+                ),
             ],
         )?;
         Ok(BeginStorageTransaction::Prepared { mutation_digest })
@@ -708,6 +729,7 @@ impl StorageTransactionStore {
             };
 
         Ok(CommittedStorageResultV1 {
+            operation_id: verified.operation_id,
             catalog: verified.result_catalog,
             result_digest: verified.result_digest,
             storage_handle,
@@ -775,6 +797,17 @@ impl StorageTransactionStore {
     }
 }
 
+fn recovery_entry(record: &DurableRecord) -> StorageRecoveryEntry {
+    StorageRecoveryEntry {
+        operation_id: record.operation_id,
+        sandbox_id: record.sandbox_id,
+        request_id: record.request_id,
+        phase: record.phase,
+        mutation_digest: record.mutation_digest,
+        catalog: record.catalog,
+    }
+}
+
 const fn journal_limits() -> JournalLimits {
     JournalLimits {
         maximum_journal_bytes: 64 * 1024 * 1024,
@@ -783,8 +816,8 @@ const fn journal_limits() -> JournalLimits {
         maximum_records_per_transaction: 4,
         maximum_transaction_bytes: MAXIMUM_RECORD_BYTES * 4,
         maximum_transactions: 65_536,
-        maximum_materialized_bytes: MAXIMUM_RECORD_BYTES * MAXIMUM_OPERATIONS * 3,
-        maximum_materialized_records: MAXIMUM_OPERATIONS * 3,
+        maximum_materialized_bytes: MAXIMUM_RECORD_BYTES * MAXIMUM_OPERATIONS * 4,
+        maximum_materialized_records: MAXIMUM_OPERATIONS * 4,
     }
 }
 
@@ -1048,6 +1081,7 @@ fn decode_record(bytes: &[u8], key: &StorageStateKey) -> Result<DurableRecord, S
             }
         };
         Some(CommittedStorageResultV1 {
+            operation_id,
             catalog,
             result_digest,
             storage_handle: identity.storage_handle,
@@ -1312,6 +1346,7 @@ mod tests {
         let request_id = [34; 16];
         let fence = b"sealed-storage-fence".to_vec();
         let intent = b"sealed-storage-admission-intent".to_vec();
+        let operation_fence = b"sealed-storage-operation-fence".to_vec();
         {
             let mut store =
                 StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
@@ -1325,6 +1360,7 @@ mod tests {
                         request_id,
                         fence.clone(),
                         intent.clone(),
+                        operation_fence.clone(),
                     )
                     .unwrap(),
                 BeginStorageTransaction::Prepared { .. }
@@ -1339,6 +1375,10 @@ mod tests {
         assert_eq!(
             store.authority_record(RecordNamespace::Effect, &request_id),
             Some(intent.as_slice())
+        );
+        assert_eq!(
+            store.authority_record(RecordNamespace::AuthorityPublication, &[31; 16]),
+            Some(operation_fence.as_slice())
         );
         assert_eq!(store.phase([31; 16]), Some(DurableStoragePhase::Prepared));
     }
@@ -1413,6 +1453,7 @@ mod tests {
         };
         let mut recovered =
             StorageTransactionStore::open_for_test(directory.path(), key(1), 7).unwrap();
+        assert_eq!(expected.operation_id(), operation_id);
         assert_eq!(expected.object_guid(), Some(91));
         assert!(
             expected

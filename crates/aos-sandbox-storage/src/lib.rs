@@ -12,10 +12,12 @@
 //! names, shell text, or `PATH` lookup.
 //!
 //! [`state`] owns the bounded, authenticated durable intent/result state
-//! machine and its exclusive catalog lock. Postcondition observation, the
+//! machine and its exclusive catalog lock. [`workspace_catalog`] binds an exact
+//! committed creation to its operation-scoped authority fence and fixed root
+//! pin, retains non-recycled dataset and subordinate-identity allocations, and
+//! emits the bounded authoritative inventory. Postcondition observation, the
 //! long-running storage service, and the one-shot helper executable remain
-//! intentionally separate layers. This crate does not spawn processes or
-//! claim that a mutation reached the catalog's expected state.
+//! intentionally separate layers. This crate does not spawn processes.
 
 pub mod authorization;
 pub mod broker;
@@ -28,6 +30,7 @@ mod catalog_decode;
 mod helper;
 pub mod request;
 pub mod state;
+pub mod workspace_catalog;
 pub mod zfs;
 
 pub use authorization::{StorageAdmissionError, StorageAuthorityConfigError, StorageAuthorityV1};
@@ -48,6 +51,10 @@ pub use request::{
 pub use state::{
     BeginStorageTransaction, CommittedStorageResultV1, DurableStoragePhase, StorageRecoveryEntry,
     StorageStateError, StorageStateKey, StorageTransactionStore, VerifiedStorageResultV1,
+};
+pub use workspace_catalog::{
+    StorageIdentityPoolV1, StorageWorkspaceCatalogError, StorageWorkspaceCatalogOutcomeV1,
+    StorageWorkspaceCatalogV1, StorageWorkspacePublicationV1, StorageWorkspaceRetirementV1,
 };
 pub use zfs::{
     AncestorPolicyTransaction, ZfsHelperContract, ZfsPrecondition, ZfsTransaction,

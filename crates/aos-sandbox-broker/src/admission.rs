@@ -282,6 +282,29 @@ impl BrokerAuthority {
         .map_err(|_| BrokerAdmissionError::FenceRejected)
     }
 
+    /// Authenticates an assignment fence retained with one exact operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerAdmissionError::FenceRejected`] for a zero operation
+    /// identity or malformed, unauthenticated, or relocated state.
+    pub fn open_operation_fence(
+        &self,
+        operation_id: &[u8; 16],
+        bytes: &[u8],
+    ) -> Result<BrokerAuthorizationFenceV1, BrokerAdmissionError> {
+        if operation_id == &[0; 16] {
+            return Err(BrokerAdmissionError::FenceRejected);
+        }
+        open_authorization_fence(
+            &self.journal_mac_key,
+            RecordNamespace::AuthorityPublication,
+            operation_id,
+            bytes,
+        )
+        .map_err(|_| BrokerAdmissionError::FenceRejected)
+    }
+
     /// Reads a fresh clock and validates it immediately before an effect.
     ///
     /// # Errors
@@ -350,6 +373,29 @@ impl BrokerAuthority {
             &self.journal_mac_key,
             RecordNamespace::DesiredState,
             sandbox_id,
+            fence,
+        )
+        .map_err(|_| BrokerAdmissionError::FenceRejected)
+    }
+
+    /// Authenticates an assignment fence for one exact operation location.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerAdmissionError::FenceRejected`] for a zero operation
+    /// identity or invalid state.
+    pub fn seal_operation_fence(
+        &self,
+        operation_id: &[u8; 16],
+        fence: &BrokerAuthorizationFenceV1,
+    ) -> Result<Vec<u8>, BrokerAdmissionError> {
+        if operation_id == &[0; 16] {
+            return Err(BrokerAdmissionError::FenceRejected);
+        }
+        seal_authorization_fence(
+            &self.journal_mac_key,
+            RecordNamespace::AuthorityPublication,
+            operation_id,
             fence,
         )
         .map_err(|_| BrokerAdmissionError::FenceRejected)

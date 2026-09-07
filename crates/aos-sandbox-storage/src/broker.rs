@@ -8,15 +8,21 @@
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox::journal::RecordNamespace;
-use aos_sandbox_core::{ObjectDigest, ProtocolVersion, RawPairedClockSample};
+use aos_sandbox_core::model::SandboxSpec;
+use aos_sandbox_core::{
+    BrokerAssignment, CanonicalAssignmentManifestV1, NodeId, ObjectDigest, ProtocolVersion,
+    RawPairedClockSample,
+};
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 use sha2::{Digest as _, Sha256};
 
 use crate::authorization::{StorageAuthorityV1, decode_assignment};
+use crate::workspace_catalog::{StorageWorkspacePublicationV1, StorageWorkspaceRetirementV1};
 use crate::{
-    BeginStorageTransaction, DurableStoragePhase, ResolvedCatalogCommitmentV1,
-    StorageTransactionStore, decode_resolved,
+    BeginStorageTransaction, CommittedStorageResultV1, DurableStoragePhase,
+    ResolvedCatalogCommitmentV1, StorageTransactionStore, StorageWorkspaceCatalogError,
+    decode_resolved,
 };
 
 /// Reports fail-closed storage admission failure.
@@ -31,6 +37,9 @@ pub enum StorageBrokerError {
     /// Durable admission state was corrupt, conflicting, or unavailable.
     #[error("storage durable admission failed: {0}")]
     State(#[from] crate::StorageStateError),
+    /// Workspace publication inputs failed closed validation.
+    #[error("storage workspace catalog input was rejected: {0}")]
+    WorkspaceCatalog(#[from] StorageWorkspaceCatalogError),
 }
 
 /// Classifies a durable admission without implying that mutation is runnable.
@@ -159,9 +168,14 @@ impl StorageAdmissionCoordinator {
                 ));
             }
         }
-        let (sealed_fence, sealed_admission_intent) = self
+        let sealed = self
             .authority
-            .seal(&sandbox_id, &request_id, &admission)
+            .seal(
+                &sandbox_id,
+                &request_id,
+                semantics.operation_id(),
+                &admission,
+            )
             .map_err(|_| StorageBrokerError::Authority)?;
         let request_digest = ObjectDigest::from_bytes(Sha256::digest(request_body).into());
         let outcome = self.transactions.begin_authorized(
@@ -170,8 +184,9 @@ impl StorageAdmissionCoordinator {
             catalog,
             sandbox_id,
             request_id,
-            sealed_fence,
-            sealed_admission_intent,
+            sealed.current_fence,
+            sealed.effect,
+            sealed.operation_fence,
         )?;
         Ok(match outcome {
             BeginStorageTransaction::Prepared { mutation_digest } => {
@@ -186,6 +201,74 @@ impl StorageAdmissionCoordinator {
             },
             BeginStorageTransaction::Replay(result) => StorageAdmissionOutcome::Replay(result),
         })
+    }
+
+    /// Reconstructs one launchable workspace publication from committed state.
+    ///
+    /// The supplied manifest and specification are portable controller objects,
+    /// but neither is trusted by itself. Their assignment, descriptor, root,
+    /// and environment must reproduce the authenticated fence retained with
+    /// this exact operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageBrokerError`] when the result is not the exact current
+    /// committed record, its catalog cannot be recovered, its authority fence
+    /// is missing or invalid, or the portable objects do not match that fence.
+    pub fn workspace_publication(
+        &self,
+        result: CommittedStorageResultV1,
+        manifest: &CanonicalAssignmentManifestV1,
+        sandbox_spec: &SandboxSpec,
+    ) -> Result<StorageWorkspacePublicationV1, StorageBrokerError> {
+        let (catalog, assignment, node) = self.committed_context(result)?;
+        StorageWorkspacePublicationV1::from_committed(
+            result,
+            &catalog,
+            assignment,
+            node,
+            manifest,
+            sandbox_spec,
+        )
+        .map_err(Into::into)
+    }
+
+    /// Reconstructs one workspace retirement from an exact committed destroy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageBrokerError`] when the result is not the exact current
+    /// committed record, its catalog cannot be recovered, its operation-scoped
+    /// authority fence is missing or invalid, or the operation is not a dataset
+    /// destruction.
+    pub fn workspace_retirement(
+        &self,
+        result: CommittedStorageResultV1,
+    ) -> Result<StorageWorkspaceRetirementV1, StorageBrokerError> {
+        let (catalog, _, _) = self.committed_context(result)?;
+        StorageWorkspaceRetirementV1::from_committed(result, &catalog).map_err(Into::into)
+    }
+
+    fn committed_context(
+        &self,
+        result: CommittedStorageResultV1,
+    ) -> Result<(ResolvedCatalogCommitmentV1, BrokerAssignment, NodeId), StorageBrokerError> {
+        let entry = self.transactions.committed_recovery_entry(result)?;
+        let catalog = self.transactions.recover_catalog(entry)?;
+        let sandbox_id = entry.sandbox_id();
+        let sealed_fence = self
+            .transactions
+            .authority_record(RecordNamespace::AuthorityPublication, &entry.operation_id())
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let fence = self
+            .authority
+            .open_operation_fence(&entry.operation_id(), sealed_fence)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let assignment = fence.assignment();
+        if assignment.sandbox().as_bytes() != &sandbox_id {
+            return Err(StorageBrokerError::Authority);
+        }
+        Ok((catalog, assignment, fence.node()))
     }
 }
 
@@ -208,6 +291,8 @@ pub fn advertised_storage_methods(inventory_ready: bool) -> Vec<BrokerMethod> {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use std::num::NonZeroU32;
+
     use aos_proto::aos::sandbox::local::v1::{
         ApplyStorageRequest, Audience, BrokerAuthorizationArtifactsV1, BrokerRequestEnvelope,
         StorageAction,
@@ -217,13 +302,17 @@ mod tests {
         encode_trust_policy,
     };
     use aos_sandbox_core::model::{
-        KeyReference, KeyUsage, SignaturePurpose, SignatureStatement, StableKeyId, TrustPolicy,
+        AssignmentManifestV1, IdentityProfile, KeyReference, KeyUsage, NetworkKind, NetworkProfile,
+        ResourceProfile, SandboxAncestry, SignaturePurpose, SignatureStatement, StableKeyId,
+        TrustPolicy, UnmappableIdentityPolicy,
     };
     use aos_sandbox_core::{
-        BrokerAudience, BrokerAuthorizationPlan, BrokerGrant, BrokerGrantTarget, BrokerVerb,
-        DecodeLimits, LeaseAssignment, MediaType, NodeId, OwnershipLease,
-        OwnershipLeaseTrustAnchor, PortableMediaType, ProtocolId, RawClockProvenance,
-        RevocationScopeId, TrustScopeId, descriptor_for_bytes, sign_statement,
+        AssignmentEpoch, BrokerAudience, BrokerAuthorizationPlan, BrokerGrant, BrokerGrantTarget,
+        BrokerVerb, CanonicalAssignmentManifestV1, DecodeLimits, DesiredGeneration, FeatureRef,
+        IncarnationId, LeaseAssignment, MediaType, NamespaceGeneration, NodeId, ObjectDescriptor,
+        OwnershipLease, OwnershipLeaseTrustAnchor, PortableMediaType, ProjectId, ProtocolId,
+        RawClockProvenance, ResourceVector, RevocationScopeId, SandboxId, TrustScopeId,
+        descriptor_for_bytes, encode_sandbox_spec, sign_statement,
     };
     use aos_sandbox_protocol::decode_request_envelope;
     use buffa::Message as _;
@@ -232,8 +321,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        CatalogPlanV1, ManagedDatasetRoot, ProjectAncestorPolicyV1, ReservationPolicy,
-        ResolvedDataset, StorageDomainsV1, StorageStateKey, WorkspaceSpacePolicyV1,
+        CatalogBindingV1, CatalogPlanV1, ManagedDatasetRoot, PlannedDataset,
+        ProjectAncestorPolicyV1, ReservationPolicy, ResolvedDataset, StorageDomainsV1,
+        StorageStateKey, WorkspaceSpacePolicyV1,
     };
 
     const NODE: NodeId = NodeId::from_bytes([31; 16]);
@@ -465,6 +555,49 @@ mod tests {
         value.quota_bytes = 4096;
         value.encode_to_vec()
     }
+
+    fn destroy_request(operation: u8, handle: u8) -> Vec<u8> {
+        let mut value = ApplyStorageRequest::default();
+        let header = value.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.protocol_minor = 1;
+        header.request_id = vec![operation; 16];
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.deadline_boottime_nanoseconds = 200;
+        header.maximum_response_bytes = 4096;
+        let fence = value.fence.get_or_insert_default();
+        fence.sandbox_id = vec![2; 16];
+        fence.incarnation_id = vec![3; 16];
+        fence.assignment_epoch = 4;
+        fence.desired_generation = 5;
+        fence.assignment_digest = vec![6; 32];
+        value.action = StorageAction::STORAGE_ACTION_DESTROY.into();
+        value.operation_id = vec![operation; 16];
+        value.storage_handle = vec![handle; 32];
+        value.encode_to_vec()
+    }
+
+    fn create_request(operation: u8, assignment_digest: ObjectDigest) -> Vec<u8> {
+        let mut value = ApplyStorageRequest::default();
+        let header = value.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.protocol_minor = 1;
+        header.request_id = vec![operation; 16];
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.deadline_boottime_nanoseconds = 200;
+        header.maximum_response_bytes = 4096;
+        let fence = value.fence.get_or_insert_default();
+        fence.sandbox_id = vec![2; 16];
+        fence.incarnation_id = vec![3; 16];
+        fence.assignment_epoch = 4;
+        fence.desired_generation = 5;
+        fence.assignment_digest = assignment_digest.as_bytes().to_vec();
+        value.action = StorageAction::STORAGE_ACTION_CREATE_WORKSPACE.into();
+        value.operation_id = vec![operation; 16];
+        value.quota_bytes = 4096;
+        value.encode_to_vec()
+    }
+
     fn catalog(handle: u8, generation: u64) -> ResolvedCatalogCommitmentV1 {
         let domains = StorageDomainsV1::new(
             ObjectDigest::from_bytes([21; 32]),
@@ -490,6 +623,110 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    fn destroy_catalog(handle: u8, generation: u64) -> ResolvedCatalogCommitmentV1 {
+        let domains = StorageDomainsV1::new(
+            ObjectDigest::from_bytes([21; 32]),
+            ObjectDigest::from_bytes([22; 32]),
+            ObjectDigest::from_bytes([23; 32]),
+            ObjectDigest::from_bytes([24; 32]),
+        )
+        .unwrap();
+        let dataset = ResolvedDataset::from_catalog(
+            ManagedDatasetRoot::from_catalog("tank", "tank/aos", 10).unwrap(),
+            "tank/aos/project/work",
+            11,
+            [handle; 32],
+            domains,
+        )
+        .unwrap();
+        ResolvedCatalogCommitmentV1::new(
+            generation,
+            domains,
+            CatalogPlanV1::DestroyDataset { dataset },
+        )
+        .unwrap()
+    }
+
+    fn create_catalog(generation: u64) -> ResolvedCatalogCommitmentV1 {
+        let domains = StorageDomainsV1::new(
+            ObjectDigest::from_bytes([21; 32]),
+            ObjectDigest::from_bytes([22; 32]),
+            ObjectDigest::from_bytes([23; 32]),
+            ObjectDigest::from_bytes([24; 32]),
+        )
+        .unwrap();
+        let root = ManagedDatasetRoot::from_catalog("tank", "tank/aos", 10).unwrap();
+        let ancestor =
+            ResolvedDataset::from_catalog(root.clone(), "tank/aos/project", 15, [9; 32], domains)
+                .unwrap();
+        let destination =
+            PlannedDataset::from_catalog(root, "tank/aos/project/work", domains).unwrap();
+        ResolvedCatalogCommitmentV1::new(
+            generation,
+            domains,
+            CatalogPlanV1::CreateWorkspace {
+                destination,
+                space: WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1)).unwrap(),
+                ancestor: ProjectAncestorPolicyV1::new(ancestor, 65_536, 8, 16).unwrap(),
+            },
+        )
+        .unwrap()
+    }
+
+    fn object_descriptor(kind: PortableMediaType, marker: u8) -> ObjectDescriptor {
+        ObjectDescriptor::new(
+            MediaType::new(kind.as_str().to_owned()).unwrap(),
+            ObjectDigest::from_bytes([marker; 32]),
+            1,
+        )
+    }
+
+    fn sandbox_spec(root_marker: u8) -> SandboxSpec {
+        SandboxSpec::new(
+            FeatureRef::new("aos.sandbox.runtime.linux-systemd", 1, 0).unwrap(),
+            IdentityProfile::PrivateUserns {
+                id_range_size: NonZeroU32::new(65_536).unwrap(),
+                unmappable_policy: UnmappableIdentityPolicy::Reject,
+                required_features: Vec::new(),
+            },
+            ResourceProfile::new(Vec::new()).unwrap(),
+            object_descriptor(PortableMediaType::Environment, 71),
+            object_descriptor(PortableMediaType::View, root_marker),
+            Vec::new(),
+            NetworkProfile::new(NetworkKind::Isolated, Vec::new(), Vec::new()).unwrap(),
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    fn assignment_manifest(spec: &SandboxSpec) -> CanonicalAssignmentManifestV1 {
+        let spec_bytes = encode_sandbox_spec(spec);
+        let spec_descriptor = descriptor_for_bytes(
+            MediaType::new(PortableMediaType::SandboxSpec.as_str().to_owned()).unwrap(),
+            &spec_bytes,
+        );
+        let manifest = AssignmentManifestV1::new(
+            SandboxId::from_bytes([2; 16]),
+            ProjectId::from_bytes([4; 16]),
+            SandboxAncestry::new(SandboxId::from_bytes([2; 16]), Vec::new()).unwrap(),
+            IncarnationId::from_bytes([3; 16]),
+            NODE,
+            AssignmentEpoch::new(4),
+            DesiredGeneration::new(5),
+            NamespaceGeneration::new(6),
+            spec_descriptor,
+            object_descriptor(PortableMediaType::Policy, 70),
+            spec.environment().clone(),
+            spec.root_view().clone(),
+            Vec::new(),
+            ObjectDigest::from_bytes([73; 32]),
+            ResourceVector::ZERO,
+            Vec::new(),
+        )
+        .unwrap();
+        CanonicalAssignmentManifestV1::new(manifest)
     }
     fn key_ref(id: &str, generation: u64, usage: KeyUsage, key: &SigningKey) -> KeyReference {
         KeyReference::new(
@@ -611,6 +848,150 @@ mod tests {
                 phase: DurableStoragePhase::Prepared,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn exact_committed_destroy_reconstructs_an_authenticated_retirement() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = destroy_request(7, 8);
+        let catalog = destroy_catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = coordinator(&directory, &fixture);
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 1),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("new destruction was not prepared")
+        };
+        broker
+            .transactions
+            .mark_mutation_ambiguous([7; 16], mutation_digest)
+            .unwrap();
+        let request_digest = ObjectDigest::from_bytes(Sha256::digest(&request).into());
+        let verified = crate::VerifiedStorageResultV1::verify_observation(
+            [7; 16],
+            request_digest,
+            &catalog,
+            &catalog.plan().postcondition(),
+            None,
+            CatalogBindingV1::from_publisher(10, ObjectDigest::from_bytes([61; 32])).unwrap(),
+            ObjectDigest::from_bytes([62; 32]),
+        )
+        .unwrap();
+        let result = broker
+            .transactions
+            .commit_verified([7; 16], mutation_digest, verified)
+            .unwrap();
+
+        let operation_fence = broker
+            .transactions
+            .authority_record(RecordNamespace::AuthorityPublication, &[7; 16])
+            .unwrap();
+        assert!(
+            broker
+                .authority
+                .open_operation_fence(&[8; 16], operation_fence)
+                .is_err()
+        );
+        assert!(broker.workspace_retirement(result).is_ok());
+        broker
+            .transactions
+            .remove_authority_record_for_test(RecordNamespace::DesiredState, &[2; 16]);
+        assert!(broker.workspace_retirement(result).is_ok());
+        broker
+            .transactions
+            .remove_authority_record_for_test(RecordNamespace::AuthorityPublication, &[7; 16]);
+        assert!(matches!(
+            broker.workspace_retirement(result),
+            Err(StorageBrokerError::State(
+                crate::StorageStateError::MissingAuthorityLink
+            ))
+        ));
+    }
+
+    #[test]
+    fn exact_committed_creation_requires_the_canonical_manifest_and_specification() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let spec = sandbox_spec(72);
+        let manifest = assignment_manifest(&spec);
+        let request = create_request(7, manifest.digest());
+        let catalog = create_catalog(9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = coordinator(&directory, &fixture);
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 1),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("new workspace creation was not prepared")
+        };
+        broker
+            .transactions
+            .mark_mutation_ambiguous([7; 16], mutation_digest)
+            .unwrap();
+        let request_digest = ObjectDigest::from_bytes(Sha256::digest(&request).into());
+        let verified = crate::VerifiedStorageResultV1::verify_observation(
+            [7; 16],
+            request_digest,
+            &catalog,
+            &catalog.plan().postcondition(),
+            Some(91),
+            CatalogBindingV1::from_publisher(10, ObjectDigest::from_bytes([61; 32])).unwrap(),
+            ObjectDigest::from_bytes([62; 32]),
+        )
+        .unwrap();
+        let result = broker
+            .transactions
+            .commit_verified([7; 16], mutation_digest, verified)
+            .unwrap();
+
+        assert!(
+            broker
+                .workspace_publication(result, &manifest, &spec)
+                .is_ok()
+        );
+        drop(broker);
+        let broker = coordinator(&directory, &fixture);
+        assert!(
+            broker
+                .workspace_publication(result, &manifest, &spec)
+                .is_ok()
+        );
+        assert!(matches!(
+            broker.workspace_publication(result, &manifest, &sandbox_spec(74)),
+            Err(StorageBrokerError::WorkspaceCatalog(
+                StorageWorkspaceCatalogError::InvalidCandidate
+            ))
         ));
     }
 
@@ -800,7 +1181,7 @@ mod tests {
         assert!(
             broker
                 .authority
-                .seal(&[2; 16], &[7; 16], &admission)
+                .seal(&[2; 16], &[7; 16], &[9; 16], &admission)
                 .is_err()
         );
     }
