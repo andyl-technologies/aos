@@ -65,8 +65,8 @@ pub const MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES: usize = 32 * 1024 * 1024;
 const CRUCIBLE_SCHEDULE_V2_MAGIC: &[u8] = b"crucible.schedule.v2\0";
 const MAX_CONFIGURATION_SELECTION_DECISIONS: usize = 4_096;
 const MAX_CONFIGURATION_BRANCH_PREFIX_BYTES: usize = 256 * 1024 * 1024;
-const CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V1: u32 = 1;
-const CRUCIBLE_MINIMIZATION_POLICY_MAGIC: &[u8] = b"crucible.finding-minimization-policy.v1\0";
+const CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V2: u32 = 2;
+const CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V2: &[u8] = b"crucible.finding-minimization-policy.v2\0";
 const CRUCIBLE_MINIMIZATION_CANDIDATES: u32 = 4_096;
 const CRUCIBLE_MINIMIZATION_CANDIDATE_WORK_BYTES: u64 = 128 * 1024 * 1024;
 /// Maximum unique immutable records retained from both finding replay passes.
@@ -841,7 +841,7 @@ impl CrucibleCampaignArtifactStore {
             .collect();
         let minimization = FindingMinimizationEvidence::new(
             original,
-            CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V1,
+            CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V2,
             policy,
             attempts,
             CampaignHash::from_bytes(minimized.replay.state.bytes),
@@ -1033,7 +1033,7 @@ fn prepare_minimized_reproduction(
         .collect();
     let minimization = FindingMinimizationEvidence::new(
         original,
-        CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V1,
+        CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V2,
         encode_crucible_minimization_policy(run.seed),
         attempts,
         CampaignHash::from_bytes(minimized.replay.state.bytes),
@@ -1182,8 +1182,8 @@ where
 }
 
 fn encode_crucible_minimization_policy(seed: crucible::Seed) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(CRUCIBLE_MINIMIZATION_POLICY_MAGIC.len() + 44);
-    bytes.extend_from_slice(CRUCIBLE_MINIMIZATION_POLICY_MAGIC);
+    let mut bytes = Vec::with_capacity(CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V2.len() + 44);
+    bytes.extend_from_slice(CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V2);
     bytes.extend_from_slice(&seed.bytes());
     bytes.extend_from_slice(&CRUCIBLE_MINIMIZATION_CANDIDATES.to_be_bytes());
     bytes.extend_from_slice(&CRUCIBLE_MINIMIZATION_CANDIDATE_WORK_BYTES.to_be_bytes());
@@ -2018,12 +2018,18 @@ mod tests {
             .load_reproduction_artifact(minimized)
             .expect("load minimized reproduction");
         assert_eq!(minimized.schema_version(), 2);
+        let minimization = minimized
+            .minimization()
+            .expect("retained minimization evidence");
+        assert_eq!(minimization.original(), id);
         assert_eq!(
-            minimized
-                .minimization()
-                .expect("retained minimization evidence")
-                .original(),
-            id
+            minimization.policy_schema(),
+            CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V2
+        );
+        assert!(
+            minimization
+                .policy()
+                .starts_with(CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V2)
         );
     }
 

@@ -3701,11 +3701,12 @@ fn finding_v2_retains_minimization_trace_and_role_tagged_exact_pins() {
         Some(fingerprint),
         true,
     );
+    let legacy_policy = b"crucible.finding-minimization-policy.v1\0legacy-limits".to_vec();
     assert!(matches!(
         FindingMinimizationEvidence::new(
             original_id,
             1,
-            b"seeded-shortest-first".to_vec(),
+            legacy_policy.clone(),
             vec![attempt],
             hash("different final state"),
         ),
@@ -3716,7 +3717,7 @@ fn finding_v2_retains_minimization_trace_and_role_tagged_exact_pins() {
     let minimization = FindingMinimizationEvidence::new(
         original_id,
         1,
-        b"seeded-shortest-first".to_vec(),
+        legacy_policy.clone(),
         vec![attempt],
         hash("candidate state"),
     )
@@ -3747,11 +3748,14 @@ fn finding_v2_retains_minimization_trace_and_role_tagged_exact_pins() {
             reason: "finding minimization original is not schema v1"
         })
     ));
-    assert_eq!(
-        ReproductionArtifact::from_canonical_bytes(&minimized.canonical_bytes())
-            .expect("decode minimized reproduction"),
-        minimized
-    );
+    let decoded = ReproductionArtifact::from_canonical_bytes(&minimized.canonical_bytes())
+        .expect("decode minimized reproduction");
+    assert_eq!(decoded, minimized);
+    let decoded_minimization = decoded
+        .minimization()
+        .expect("decode legacy minimization evidence");
+    assert_eq!(decoded_minimization.policy_schema(), 1);
+    assert_eq!(decoded_minimization.policy(), legacy_policy);
 
     let checkpoint = |name: &[u8]| {
         ExactCheckpointId::from_content_id(ContentId::for_bytes(ObjectKind::ExactManifest, 3, name))
