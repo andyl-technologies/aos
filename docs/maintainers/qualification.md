@@ -374,6 +374,8 @@ anchors for verification.
 Run `aos release qualify-run --prepare-only` with the bundle, publication
 receipt, applicable executor mappings, and `--qualified-at now` described in
 [the runbook](canonical-releases.md#run-the-native-qualification-matrix).
+For staging image update cases, also supply the retained snapshot through an
+absolute `--predecessor-bundle` path.
 Inspect the prepared report and its retained `reports/` directory. Sign an
 independent review payload with a planned `release-evidence` key:
 
