@@ -1674,6 +1674,10 @@ The first bounded assignment messages are:
 SubmitAttemptRequestV2 = version | assignment_id | daemon_epoch | lineage_id |
                          attempt_id | resource_limits | retention_intent
 
+SubmitAttemptRequestV3 = version | assignment_id | daemon_epoch | lineage_id |
+                         attempt_id | resource_limits | retention_intent |
+                         start_mode
+
 resource_limits = maximum_vcpus | maximum_resident_bytes |
                   maximum_disk_bytes | maximum_execution_quanta
 
@@ -1690,6 +1694,11 @@ ResumeAttemptExecutionRequestV2 = version | assignment_id | daemon_epoch |
                                   lineage_id | attempt_id | prior_execution_id |
                                   exact_checkpoint_id | resource_limits |
                                   retention_intent
+
+ResumeAttemptExecutionRequestV3 = version | assignment_id | daemon_epoch |
+                                  lineage_id | attempt_id | prior_execution_id |
+                                  exact_checkpoint_id | resource_limits |
+                                  retention_intent | prior_start_mode
 
 ResumeAttemptExecutionResponseV2/V3 = version | assignment_id | daemon_epoch |
                                       attempt_id | prior_execution_id |
@@ -1719,6 +1728,14 @@ the admitted ordinal with `AttemptClosed(TerminalWorkerFailure)` in campaign
 fact v10. This operational classification does not synthesize a guest
 observation or modeled stop outcome. Every older response disposition and
 campaign closure reason retains its prior schema version and bytes.
+
+Version 3 of `SubmitAttemptRequest` adds the explicit
+`capture-materialized-start(configuration-artifact ID)` start mode. Ordinary
+execution retains the exact version 2 bytes, digest domain, and execution-basis
+identity. Capture uses a separate execution-basis domain that authenticates the
+requested configuration. The supervisor persists `checkpoint-requested` and
+latches the worker signal before dispatch, so capture cannot race with an
+ordinary modeled quantum.
 
 The canonical `AttemptId` names the immutable `Attempt` record and is itself
 the execution specification; the protocol deliberately does not create a
@@ -1818,7 +1835,7 @@ capacity when semantic and promotion workers overlap.
 
 `ResumeAttemptExecution` is the idempotent admission request for a fresh local
 execution incarnation from one exact durable `paused(root)` state. Its request
-digest is
+version 2 request digest is
 `H("crucible.campaign.resume-attempt-execution-request.v2",
 canonical_request)`. The request carries the new assignment and daemon epoch,
 the semantic lineage and attempt, and the exact prior execution and checkpoint
@@ -1836,6 +1853,14 @@ or any paused-root, prior-execution, lineage, attempt, or basis mismatch is
 execution incarnation. After restart, an admitted resume remains bound to the
 same checkpoint and cannot degrade to an ordinary execution from the attempt's
 starting configuration.
+
+Version 3 resumes a materialized-start capture. It carries the prior capture
+mode and requested configuration under the
+`crucible.campaign.resume-attempt-execution-request.v3` digest domain. The
+executor first matches the paused root against that capture basis, then records
+the new incarnation under the ordinary execution basis. A version 2
+resume cannot match a captured root, and a version 3 request cannot relabel its
+new assignment as another capture.
 
 `CancelAttemptExecution` is the idempotent mutation for the same exact
 execution basis. Its request digest is
@@ -2038,16 +2063,19 @@ limits and retention intent, but excludes assignment and daemon-epoch
 identities. Restart therefore reads only requested and active IDs; it does not
 load assignment history into memory. The in-memory ledger implements the
 identical trait only for fake components and tests.
-The version-7 attempt-state reader retains strict read compatibility for
-versions 1 through 6. Only versions 5 through 7 may encode
+The version-10 attempt-state reader retains strict read compatibility for
+versions 1 through 9. Versions 5 through 10 may encode
 `checkpoint-promoting`; version 6 additionally retains the exact resource and
 retention basis in `paused` and `checkpoint-promoting` records. A legacy pause
 without that basis remains a durable GC root but cannot launch a new guarded
 comparison after restart. A legacy staged pair remains discoverable because a
 complete replacement can be authenticated and reconciled without QEMU.
-Version 7 adds the terminal-worker-failure state, which retains its exact
-execution basis and prevents submission or resume from starting another
-incarnation.
+Version 7 adds the terminal-worker-failure state, version 8 adds the optional
+pending finding-candidate root, and version 9 distinguishes pending from
+acknowledged candidate roots. Version 10 binds the start mode into checkpoint
+promotion state; earlier promotion records decode as ordinary execution. The
+terminal-worker-failure state retains its exact execution basis and prevents
+submission or resume from starting another incarnation.
 
 `checkpoint-publishing` and `paused` records are durable GC roots for their
 exact output checkpoint IDs. `checkpoint-promoting` retains both its raw source

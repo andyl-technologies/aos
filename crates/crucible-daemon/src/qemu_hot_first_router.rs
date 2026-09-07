@@ -5,6 +5,8 @@
 //! resumes bypass hot fork, and the selected route retains exclusive semantic
 //! reconciliation ownership until completion.
 
+use crucible_campaign::AttemptStartMode;
+
 use crate::qemu_hot_fork_world_factory::AttemptWorkerFailureExt;
 use crate::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionReconciliationStep,
@@ -119,7 +121,9 @@ where
             ));
         }
 
-        if context.resume_checkpoint().is_none() {
+        if context.resume_checkpoint().is_none()
+            && context.start_mode() == AttemptStartMode::Execute
+        {
             match self
                 .hot_fork
                 .try_execute(input, context)

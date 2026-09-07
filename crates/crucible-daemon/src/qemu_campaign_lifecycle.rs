@@ -21,7 +21,9 @@ use crucible_api::{
     build_production_vm_lifecycle_loop_from_exact_closure_with_launcher,
     build_production_vm_lifecycle_loop_with_launcher,
 };
-use crucible_campaign::{CampaignHash, ConfigurationId, ExactCheckpointId, SelectionOrigin};
+use crucible_campaign::{
+    AttemptStartMode, CampaignHash, ConfigurationId, ExactCheckpointId, SelectionOrigin,
+};
 use crucible_cas::content_store::StoreError;
 use crucible_protocol::SelectionReply;
 use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuVmRealizationError};
@@ -612,6 +614,15 @@ pub enum QemuFreshExecutionRunnerError<F, D> {
     /// A modeled driver requested capture without the supervisor's sticky signal.
     #[error("fresh production QEMU driver returned an unsolicited checkpoint request")]
     UnsolicitedCheckpoint,
+    /// Capture mode reached the runner without its supervisor-prelatched request.
+    #[error("materialized-start capture did not carry a prelatched checkpoint request")]
+    CaptureCheckpointNotRequested,
+    /// The materialized start was already terminal and cannot yield a capture result.
+    #[error("materialized-start capture reached a terminal start configuration")]
+    CaptureStartTerminated,
+    /// The exact materialized start was not safe for checkpoint capture.
+    #[error("materialized-start capture was not checkpoint ready")]
+    CaptureStartNotCheckpointReady,
     /// Cleanup failed after the driver had already returned a failure.
     #[error("fresh production QEMU lifecycle cleanup failed after driver failure: {cleanup}")]
     CleanupAfterDriver {
@@ -1186,6 +1197,15 @@ where
                 QemuFreshExecutionRunnerError::ResumeCheckpointUnsupported(checkpoint),
             ));
         }
+        if matches!(
+            context.start_mode(),
+            AttemptStartMode::CaptureMaterializedStart { .. }
+        ) && !context.checkpoint_request().is_requested()
+        {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::CaptureCheckpointNotRequested,
+            ));
+        }
         let scenario = input.scenario().scenario_def();
         let start = match input.start() {
             crate::CrucibleResolvedAttemptStart::Discover { configuration } => configuration,
@@ -1213,6 +1233,33 @@ where
             .map_err(map_fresh_lifecycle_failure)?;
         let materialization = materialize_fresh_start(&mut lifecycle, input, start, context);
         let driven = materialization.and_then(|materialization| {
+            if matches!(
+                context.start_mode(),
+                AttemptStartMode::CaptureMaterializedStart { .. }
+            ) {
+                if materialization.terminal_verdict.is_some()
+                    || lifecycle.terminal_verdict_for_stop().is_some()
+                {
+                    return Err(AttemptWorkerFailure::Terminal(
+                        QemuFreshExecutionRunnerError::CaptureStartTerminated,
+                    ));
+                }
+                let checkpoint_ready = lifecycle
+                    .exact_checkpoint_ready()
+                    .map_err(map_checkpoint_capture_failure)?;
+                if !checkpoint_ready {
+                    return Err(AttemptWorkerFailure::Terminal(
+                        QemuFreshExecutionRunnerError::CaptureStartNotCheckpointReady,
+                    ));
+                }
+                let capture = lifecycle
+                    .capture_attempt_checkpoint(context)
+                    .map_err(map_checkpoint_capture_failure)?;
+                return context
+                    .prepare_and_stage_checkpoint(capture)
+                    .map(QemuFreshRunnerResult::Checkpoint)
+                    .map_err(map_checkpoint_handoff_failure);
+            }
             if input.attempt().stop() == &crucible_campaign::StopCondition::NextChoice {
                 lifecycle.enable_signal_fault_campaign_promotion();
             }

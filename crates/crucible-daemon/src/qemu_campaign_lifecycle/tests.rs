@@ -20,8 +20,8 @@ use crucible_api::{
     ProductionVmNodeLauncher,
 };
 use crucible_campaign::{
-    Attempt, AttemptResourceLimits, AttemptStart, BooleanDomain, BranchPath, CampaignHash,
-    CampaignLineage, ChoiceClassContext, ChoiceDomain, ChoiceSource, ChoiceValue,
+    Attempt, AttemptResourceLimits, AttemptStart, AttemptStartMode, BooleanDomain, BranchPath,
+    CampaignHash, CampaignLineage, ChoiceClassContext, ChoiceDomain, ChoiceSource, ChoiceValue,
     ConfigurationArtifact, ConfigurationId, ExecutionRetentionIntent, ScenarioArtifact,
     ScenarioDefId, SelectableDeclaration, Selection, StopCondition,
 };
@@ -506,6 +506,7 @@ struct FakeFreshLifecycle {
     pending: Vec<crucible_qemu::QemuNodeSelectablePendingRequest>,
     replies: Arc<Mutex<Vec<crucible_protocol::SelectionReply>>>,
     signal_fault_branches: VecDeque<crucible::SignalFaultCampaignBranch>,
+    terminal_after_replay: bool,
 }
 
 impl FakeFreshLifecycle {
@@ -591,7 +592,8 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<crucible::QuantumTerminalVerdict> {
-        None
+        (self.terminal_after_replay && self.completed_quanta > 0)
+            .then_some(crucible::QuantumTerminalVerdict::Passed)
     }
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, crucible::SchedulerError> {
@@ -696,6 +698,7 @@ fn observed_lifecycle_retains_only_successful_execution_evidence() {
         pending: Vec::new(),
         replies: Arc::new(Mutex::new(Vec::new())),
         signal_fault_branches: VecDeque::new(),
+        terminal_after_replay: false,
     };
     let evidence = QemuAttemptExecutionEvidence::default();
     let mut observed = QemuObservedFreshAttemptLifecycle::new(
@@ -731,6 +734,7 @@ fn observed_lifecycle_retains_only_successful_execution_evidence() {
 struct FakeFreshLifecycleFactory {
     order: Arc<Mutex<Vec<&'static str>>>,
     cleanup_error: bool,
+    terminal_after_replay: bool,
 }
 
 impl QemuFreshAttemptLifecycleFactory for FakeFreshLifecycleFactory {
@@ -757,6 +761,7 @@ impl QemuFreshAttemptLifecycleFactory for FakeFreshLifecycleFactory {
             pending: Vec::new(),
             replies: Arc::new(Mutex::new(Vec::new())),
             signal_fault_branches: signal_fault_replay.branches().iter().cloned().collect(),
+            terminal_after_replay: self.terminal_after_replay,
         })
     }
 }
@@ -790,6 +795,7 @@ impl QemuFreshAttemptLifecycleFactory for PromotionRecordingFreshLifecycleFactor
             pending: Vec::new(),
             replies: Arc::new(Mutex::new(Vec::new())),
             signal_fault_branches: signal_fault_replay.branches().iter().cloned().collect(),
+            terminal_after_replay: false,
         })
     }
 }
@@ -1079,6 +1085,7 @@ fn fresh_runner_captures_a_sticky_checkpoint_before_shutdown_and_seal() {
         FakeFreshLifecycleFactory {
             order: Arc::clone(&order),
             cleanup_error: false,
+            terminal_after_replay: false,
         },
         FakeFreshDriver {
             order: Arc::clone(&order),
@@ -1122,6 +1129,140 @@ fn fresh_runner_captures_a_sticky_checkpoint_before_shutdown_and_seal() {
         outcome.product(),
         AttemptExecutionProduct::ExactCheckpoint(_)
     ));
+}
+
+#[test]
+fn fresh_runner_capture_mode_returns_the_materialized_start_without_driving() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+            terminal_after_replay: false,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let checkpoint_directory = tempfile::tempdir().expect("checkpoint handoff directory");
+    let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
+        "materialized-start-checkpoint-handoff",
+        checkpoint_directory.path(),
+    ));
+    let checkpoints = ExactCheckpointStore::new(checkpoint_backend, 1024 * 1024)
+        .expect("checkpoint handoff store");
+    let checkpoint_scenario = test_checkpoint_capture()
+        .snapshot()
+        .checkpoint()
+        .scenario_ref;
+    let handoff = ExecutionCheckpointHandoff::new(Arc::new(OrderingCheckpointHandoff {
+        order: Arc::clone(&order),
+        checkpoints,
+    }));
+    let checkpoint_request = ExecutionCheckpointRequest::default();
+    checkpoint_request.request_for_test();
+    let input = fresh_runner_input();
+    let AttemptStart::Discover { configuration } = input.attempt().start() else {
+        panic!("capture fixture must be a discovery attempt")
+    };
+    let context = AttemptExecutionContext::new(
+        resources(4),
+        ExecutionRetentionIntent::Discard,
+        ExecutionCancellation::default(),
+        checkpoint_request,
+    )
+    .with_start_mode(AttemptStartMode::CaptureMaterializedStart { configuration })
+    .with_checkpoint_handoff(checkpoint_scenario, Some(handoff));
+
+    let outcome = runner
+        .execute(&input, &context)
+        .expect("capture mode should return the exact materialized start");
+
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "capture", "stage", "shutdown"]
+    );
+    assert!(matches!(
+        outcome.product(),
+        AttemptExecutionProduct::ExactCheckpoint(_)
+    ));
+}
+
+#[test]
+fn fresh_runner_capture_mode_rejects_a_terminal_materialized_start() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+            terminal_after_replay: true,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let checkpoint_request = ExecutionCheckpointRequest::default();
+    checkpoint_request.request_for_test();
+    let input = non_genesis_fresh_runner_input();
+    let AttemptStart::Discover { configuration } = input.attempt().start() else {
+        panic!("capture fixture must be a discovery attempt")
+    };
+    let context = AttemptExecutionContext::new(
+        resources(4),
+        ExecutionRetentionIntent::Discard,
+        ExecutionCancellation::default(),
+        checkpoint_request,
+    )
+    .with_start_mode(AttemptStartMode::CaptureMaterializedStart { configuration });
+
+    let error = runner
+        .execute(&input, &context)
+        .expect_err("terminal materialization must not become a capture result");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::CaptureStartTerminated)
+    ));
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "replay", "shutdown"]
+    );
+}
+
+#[test]
+fn fresh_runner_capture_mode_requires_a_prelatched_checkpoint_request() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+            terminal_after_replay: false,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let input = fresh_runner_input();
+    let AttemptStart::Discover { configuration } = input.attempt().start() else {
+        panic!("capture fixture must be a discovery attempt")
+    };
+    let context = fresh_runner_context()
+        .with_start_mode(AttemptStartMode::CaptureMaterializedStart { configuration });
+
+    let error = runner
+        .execute(&input, &context)
+        .expect_err("capture mode without a prelatched request must fail closed");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::CaptureCheckpointNotRequested
+        )
+    ));
+    assert!(order.lock().expect("fresh lifecycle order").is_empty());
 }
 
 #[test]
@@ -1321,6 +1462,7 @@ fn fresh_runner_rejects_an_unsolicited_checkpoint_before_capture() {
         FakeFreshLifecycleFactory {
             order: Arc::clone(&order),
             cleanup_error: false,
+            terminal_after_replay: false,
         },
         UnsolicitedCheckpointDriver,
     );
@@ -1346,6 +1488,7 @@ fn fresh_runner_seals_only_after_runner_owned_shutdown() {
         FakeFreshLifecycleFactory {
             order: Arc::clone(&order),
             cleanup_error: false,
+            terminal_after_replay: false,
         },
         FakeFreshDriver {
             order: Arc::clone(&order),
@@ -1378,6 +1521,7 @@ fn fresh_runner_rejects_resume_origin_before_factory_invocation() {
         FakeFreshLifecycleFactory {
             order: Arc::clone(&order),
             cleanup_error: false,
+            terminal_after_replay: false,
         },
         FakeFreshDriver {
             order: Arc::clone(&order),
@@ -1412,6 +1556,7 @@ fn fresh_runner_replays_supported_non_genesis_start_before_driver() {
         FakeFreshLifecycleFactory {
             order: Arc::clone(&order),
             cleanup_error: false,
+            terminal_after_replay: false,
         },
         FakeFreshDriver {
             order: Arc::clone(&order),
@@ -1480,6 +1625,7 @@ fn fresh_runner_replays_authenticated_signal_fault_plan_before_driver() {
         FakeFreshLifecycleFactory {
             order: Arc::clone(&order),
             cleanup_error: false,
+            terminal_after_replay: false,
         },
         FakeFreshDriver {
             order: Arc::clone(&order),
@@ -1600,6 +1746,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         ],
         replies: Arc::clone(&replies),
         signal_fault_branches: VecDeque::new(),
+        terminal_after_replay: false,
     };
     let mut current = parent;
 
@@ -1628,6 +1775,7 @@ fn fresh_runner_replay_divergence_cleans_up_without_calling_driver() {
         FakeFreshLifecycleFactory {
             order: Arc::clone(&order),
             cleanup_error: false,
+            terminal_after_replay: false,
         },
         FakeFreshDriver {
             order: Arc::clone(&order),
@@ -1662,6 +1810,7 @@ fn fresh_runner_replay_honors_cancellation_before_first_quantum() {
         FakeFreshLifecycleFactory {
             order: Arc::clone(&order),
             cleanup_error: false,
+            terminal_after_replay: false,
         },
         FakeFreshDriver {
             order: Arc::clone(&order),
@@ -1697,6 +1846,7 @@ fn fresh_runner_replay_is_bounded_by_admitted_quanta() {
         FakeFreshLifecycleFactory {
             order: Arc::clone(&order),
             cleanup_error: false,
+            terminal_after_replay: false,
         },
         FakeFreshDriver {
             order: Arc::clone(&order),
@@ -1735,6 +1885,7 @@ fn fresh_runner_rejects_producer_override_before_factory_invocation() {
         FakeFreshLifecycleFactory {
             order: Arc::clone(&order),
             cleanup_error: false,
+            terminal_after_replay: false,
         },
         FakeFreshDriver {
             order: Arc::clone(&order),
@@ -1779,6 +1930,7 @@ fn fresh_runner_cleans_up_and_preserves_driver_failure_classification() {
         FakeFreshLifecycleFactory {
             order: Arc::clone(&order),
             cleanup_error: false,
+            terminal_after_replay: false,
         },
         FakeFreshDriver {
             order: Arc::clone(&order),
@@ -1807,6 +1959,7 @@ fn fresh_cleanup_failure_overrides_driver_retry_and_retains_diagnostics() {
         FakeFreshLifecycleFactory {
             order: Arc::clone(&order),
             cleanup_error: true,
+            terminal_after_replay: false,
         },
         FakeFreshDriver {
             order: Arc::clone(&order),
