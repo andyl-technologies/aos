@@ -12,24 +12,28 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use crucible::{
-    Configuration, ContentHash, ScenarioDefForm, ScenarioSelectableLimits, ScenarioSelectables,
+    Configuration, ContentHash, Decision, ScenarioDefForm, ScenarioSelectableLimits,
+    ScenarioSelectables, SelectionDecision,
 };
+use crucible_api::ProductionFaultEvidenceSnapshot;
 use crucible_api::vm_lifecycle::{
     hot_fork_adoption_count_for_test,
     prepared_multi_node_hot_fork_source_world_for_scenario_for_test,
     prepared_multi_node_hot_fork_source_world_for_test, reset_hot_fork_adoption_count_for_test,
 };
 use crucible_campaign::{
-    AssignmentId, Attempt, AttemptResourceLimits, AttemptStart, BooleanDomain, BranchPath,
-    BudgetGrant, CampaignCommandId, CampaignControlAction, CampaignExecutorStore, CampaignHash,
-    CampaignLineage, CampaignMode, CampaignPolicy, CampaignRepository, CampaignSeed,
-    ChoiceClassContext, ChoiceDomain, ChoiceSource, ChoiceValue, ConfigurationArtifact,
-    ConfigurationId, ControlRequest, CoverageProjection, DaemonEpoch, ExactCheckpointId,
+    AlternativeId, AssignmentId, Attempt, AttemptResourceLimits, AttemptStart, BooleanDomain,
+    BranchPath, BranchPathSegment, BudgetGrant, CampaignCommandId, CampaignControlAction,
+    CampaignExecutorStore, CampaignHash, CampaignLineage, CampaignMode, CampaignPolicy,
+    CampaignRepository, CampaignSeed, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
+    ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationId, ControlRequest,
+    CoverageProjection, DaemonEpoch, DiscreteAlternative, DiscreteDomain, ExactCheckpointId,
     ExactRational, ExecutionId, ExecutionRetentionIntent, ExecutorCompatibilityProfile,
-    ExecutorService, ExplorerPolicy, FairnessPolicy, MeasurementSet, Observation,
-    ObservationCandidate, ProgressiveWideningPolicy, PropertyVerdictSet, PuctPolicy,
-    RetentionPolicy, ScenarioArtifact, ScenarioDefId, SelectableDeclaration, StopCondition,
-    StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
+    ExecutorService, ExplorerPolicy, FairnessPolicy, IntegerDomain, IntegerRepresentation,
+    IntegerValue, MeasurementSet, Observation, ObservationCandidate, ProgressiveWideningPolicy,
+    PropertyVerdictSet, PuctPolicy, RetentionPolicy, ScenarioArtifact, ScenarioDefId,
+    SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
+    SubmitAttemptDisposition, SubmitAttemptRequest,
 };
 use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, MemoryBlobBackend,
@@ -44,8 +48,8 @@ use crucible_protocol::selectable_catalog_plan::{
 use crucible_qemu::{
     LinuxQemuHotForkChildProcessAuthority, QemuChildProcessContract, QemuHotForkChildProcessBasis,
     QemuHotForkChildProcessOwner, QemuLaunchResourceRequirements, QemuNodeChannelError,
-    QemuPreparedRunDirectory, QemuTestHotForkOutcome, QemuVmRealizationError,
-    linux_process_identity, scripted_hot_fork_source_for_test,
+    QemuNodeSelectablePendingRequest, QemuPreparedRunDirectory, QemuTestHotForkOutcome,
+    QemuVmRealizationError, linux_process_identity, scripted_hot_fork_source_for_test,
     scripted_hot_fork_source_with_state_for_test,
 };
 use rustix::process::{Pid, PidfdFlags, pidfd_open};
@@ -351,6 +355,241 @@ impl QemuFreshAttemptDriver for ScriptedPublishedObservationDriver {
     }
 }
 
+#[derive(Clone)]
+struct BranchReplayObservations {
+    replay_requests: Arc<Mutex<Vec<Configuration>>>,
+    guest_replies: Arc<Mutex<Vec<crucible_protocol::SelectionReply>>>,
+    driver_starts: Arc<Mutex<Vec<Configuration>>>,
+    shutdowns: Arc<AtomicUsize>,
+    recoveries: Arc<AtomicUsize>,
+    quarantines: Arc<AtomicUsize>,
+}
+
+impl BranchReplayObservations {
+    fn new() -> Self {
+        Self {
+            replay_requests: Arc::new(Mutex::new(Vec::new())),
+            guest_replies: Arc::new(Mutex::new(Vec::new())),
+            driver_starts: Arc::new(Mutex::new(Vec::new())),
+            shutdowns: Arc::new(AtomicUsize::new(0)),
+            recoveries: Arc::new(AtomicUsize::new(0)),
+            quarantines: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+struct BranchReplayLifecycle {
+    runtime_basis: AttemptExecutionRuntimeBasis,
+    selected: Configuration,
+    pending_guest_request: Option<QemuNodeSelectablePendingRequest>,
+    observations: BranchReplayObservations,
+}
+
+impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
+    fn enable_signal_fault_campaign_promotion(&mut self) {}
+
+    fn drive_quantum(
+        &mut self,
+        request: crucible::QuantumRequest,
+    ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
+        self.observations
+            .replay_requests
+            .lock()
+            .expect("branch replay requests")
+            .push(request.configuration.clone());
+        let configuration = if self.pending_guest_request.is_some() {
+            request.configuration
+        } else {
+            self.selected.clone()
+        };
+
+        Ok(crucible::QuantumOutcome {
+            configuration,
+            frontier: crucible::VirtualTime { ticks: 1 },
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: Vec::new(),
+            discovered_choices: Vec::new(),
+            event_log_entries: Vec::new(),
+            event_log_segment_bytes: Vec::new(),
+            event_log_segment_text: String::new(),
+            event_log_segment_hash: None,
+            event_log_offset: crucible::EventLogOffset::default(),
+            scheduler_quiescence: None,
+        })
+    }
+
+    fn terminal_verdict_for_stop(&mut self) -> Option<crucible::QuantumTerminalVerdict> {
+        None
+    }
+
+    fn exact_checkpoint_ready(&mut self) -> Result<bool, crucible::SchedulerError> {
+        Ok(false)
+    }
+
+    fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<Vec<QemuNodeSelectablePendingRequest>, crucible::SchedulerError> {
+        Ok(self.pending_guest_request.take().into_iter().collect())
+    }
+
+    fn enqueue_selectable_reply(
+        &mut self,
+        _pending: &QemuNodeSelectablePendingRequest,
+        reply: &crucible_protocol::SelectionReply,
+    ) -> Result<(), crucible::SchedulerError> {
+        self.observations
+            .guest_replies
+            .lock()
+            .expect("branch replay guest replies")
+            .push(reply.clone());
+        Ok(())
+    }
+
+    fn capture_attempt_checkpoint(
+        &mut self,
+        _context: &AttemptExecutionContext,
+    ) -> Result<crate::CapturedAttemptCheckpoint, crucible::SchedulerError> {
+        Err(crucible::SchedulerError::NotImplemented {
+            operation: "capture scripted branch replay checkpoint",
+        })
+    }
+
+    fn fault_evidence_snapshot(
+        &self,
+    ) -> Result<ProductionFaultEvidenceSnapshot, crucible::SchedulerError> {
+        Err(crucible::SchedulerError::NotImplemented {
+            operation: "capture scripted branch replay evidence",
+        })
+    }
+
+    fn pending_network_output_count(&self) -> usize {
+        0
+    }
+
+    fn shutdown(
+        &mut self,
+    ) -> Result<Vec<crucible::SchedulerEventLogEntry>, crucible::SchedulerError> {
+        self.observations.shutdowns.fetch_add(1, Ordering::SeqCst);
+        Ok(Vec::new())
+    }
+}
+
+impl QemuHotForkWorldLifecycleOwner for BranchReplayLifecycle {
+    fn runtime_basis(&self) -> AttemptExecutionRuntimeBasis {
+        self.runtime_basis
+    }
+
+    fn start_materialization(
+        &self,
+    ) -> Result<crate::QemuFreshStartMaterialization, crucible::SchedulerError> {
+        Ok(crate::QemuFreshStartMaterialization::genesis())
+    }
+
+    fn reconcile_execution_disposition(
+        &mut self,
+        _disposition: AttemptExecutionDisposition,
+    ) -> Result<AttemptExecutionReconciliationStep, crucible_api::LifecycleApiError> {
+        Ok(AttemptExecutionReconciliationStep::Complete)
+    }
+
+    fn quarantine(&mut self) {
+        self.observations.quarantines.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+struct BranchReplayLifecycleFactory {
+    observations: BranchReplayObservations,
+}
+
+impl QemuHotForkWorldLifecycleFactory for BranchReplayLifecycleFactory {
+    type Lifecycle = BranchReplayLifecycle;
+    type Error = Infallible;
+
+    fn try_start(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<QemuHotForkWorldLifecycleStart<Self::Lifecycle>, AttemptWorkerFailure<Self::Error>>
+    {
+        let crate::CrucibleResolvedAttemptStart::Branch {
+            selection,
+            selected,
+            ..
+        } = input.start()
+        else {
+            panic!("branch replay factory requires a branch attempt")
+        };
+        let pending_guest_request =
+            matches!(selection.opportunity().source(), ChoiceSource::Guest { .. }).then(|| {
+                branch_replay_guest_pending(
+                    selection.declaration(),
+                    selection.opportunity().instance(),
+                )
+            });
+
+        Ok(QemuHotForkWorldLifecycleStart::Started(
+            BranchReplayLifecycle {
+                runtime_basis: context.runtime_basis().expect("branch runtime basis"),
+                selected: selected.clone(),
+                pending_guest_request,
+                observations: self.observations.clone(),
+            },
+        ))
+    }
+
+    fn recover(&mut self, _lifecycle: Self::Lifecycle) -> Result<(), Self::Lifecycle> {
+        self.observations.recoveries.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn quarantine(&mut self, mut lifecycle: Self::Lifecycle) {
+        lifecycle.quarantine();
+    }
+}
+
+struct BranchReplayDriver {
+    candidate: ObservationCandidate,
+    observations: BranchReplayObservations,
+}
+
+impl QemuFreshAttemptDriver for BranchReplayDriver {
+    type Pending = ObservationCandidate;
+    type Error = Infallible;
+
+    fn drive(
+        &mut self,
+        _lifecycle: &mut QemuFreshAttemptLifecycle<'_>,
+        input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+        materialization: crate::QemuFreshStartMaterialization,
+    ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>> {
+        let (events, bytes, quiescence, verdict) = materialization.into_parts();
+        assert!(events.is_empty());
+        assert_eq!(bytes, 0);
+        assert!(quiescence.is_none());
+        assert!(verdict.is_none());
+        let crate::CrucibleResolvedAttemptStart::Branch { selected, .. } = input.start() else {
+            panic!("branch replay driver requires a branch attempt")
+        };
+        self.observations
+            .driver_starts
+            .lock()
+            .expect("branch driver starts")
+            .push(selected.clone());
+        Ok(QemuFreshDriveOutcome::Observation(self.candidate.clone()))
+    }
+
+    fn seal(
+        &mut self,
+        candidate: Self::Pending,
+        final_events: Vec<crucible::SchedulerEventLogEntry>,
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
+        assert!(final_events.is_empty());
+        Ok(AttemptExecutionProduct::observation(candidate))
+    }
+}
+
 struct NeverFallbackRunner {
     calls: Arc<AtomicUsize>,
 }
@@ -374,13 +613,14 @@ struct RecordingUnavailableSourceWorldProvider {
     checkouts: Arc<AtomicUsize>,
 }
 
+impl super::source_world_provider_sealed::Sealed for RecordingUnavailableSourceWorldProvider {}
+
 impl QemuHotForkSourceWorldProvider for RecordingUnavailableSourceWorldProvider {
     type Error = Infallible;
 
     fn checkout(
         &mut self,
-        _scenario: ContentHash,
-        _configuration: ContentHash,
+        _key: &QemuHotForkSourceWorldKey,
     ) -> Result<Option<ProductionVmHotForkSourceWorld>, Self::Error> {
         self.checkouts.fetch_add(1, Ordering::SeqCst);
         Ok(None)
@@ -389,6 +629,60 @@ impl QemuHotForkSourceWorldProvider for RecordingUnavailableSourceWorldProvider 
     fn restore(&mut self, source: ProductionVmHotForkSourceWorld) {
         let _retained_for_process_lifetime = Box::leak(Box::new(source));
     }
+
+    fn abandon(&mut self) {}
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("scripted source provider failure")]
+struct ScriptedSourceProviderError;
+
+struct FailingSourceWorldProvider;
+
+impl super::source_world_provider_sealed::Sealed for FailingSourceWorldProvider {}
+
+impl QemuHotForkSourceWorldProvider for FailingSourceWorldProvider {
+    type Error = ScriptedSourceProviderError;
+
+    fn checkout(
+        &mut self,
+        _key: &QemuHotForkSourceWorldKey,
+    ) -> Result<Option<ProductionVmHotForkSourceWorld>, Self::Error> {
+        Err(ScriptedSourceProviderError)
+    }
+
+    fn restore(&mut self, source: ProductionVmHotForkSourceWorld) {
+        let _retained_for_process_lifetime = Box::leak(Box::new(source));
+    }
+
+    fn abandon(&mut self) {}
+}
+
+#[test]
+fn source_provider_failure_preserves_its_diagnostic_chain() {
+    let input = execution_input();
+    let observations = ScriptedWorldObservations::new();
+    let run_state = tempfile::tempdir().expect("run state");
+    let mut factory = QemuProductionHotForkWorldLifecycleFactory::new(
+        FailingSourceWorldProvider,
+        ScriptedWorldGuardFactory { observations },
+        run_state.path(),
+        QemuShutdownPolicy::fast_test(),
+        QemuAsyncDriverPolicy::fast_test(),
+    );
+
+    let failure = factory
+        .try_start(&input, &execution_context(&input, 0x72))
+        .err()
+        .expect("provider checkout should fail");
+    let error = match failure {
+        AttemptWorkerFailure::Retryable(error) => error,
+        _ => panic!("provider checkout failure should remain retryable"),
+    };
+    let source = std::error::Error::source(&error)
+        .unwrap_or_else(|| panic!("provider diagnostic should remain in the source chain"));
+
+    assert_eq!(source.to_string(), "scripted source provider failure");
 }
 
 struct RecordingFallbackRunner {
@@ -495,6 +789,10 @@ fn execution_input() -> CrucibleAttemptExecution {
     let scenario = crucible::crash_restart_scenario()
         .expect("built-in scenario")
         .scenario;
+    execution_input_for_scenario(scenario)
+}
+
+fn execution_input_for_scenario(scenario: ScenarioDefForm) -> CrucibleAttemptExecution {
     let definition = scenario.scenario_def();
     let scenario_id = ScenarioDefId::from_hash(CampaignHash::from_bytes(definition.id().bytes));
     let scenario_artifact =
@@ -570,16 +868,330 @@ fn execution_context(
     .with_runtime_basis(execution_basis(input, execution_byte))
 }
 
+fn branch_replay_guest_pending(
+    declaration: &SelectableDeclaration,
+    instance: &str,
+) -> QemuNodeSelectablePendingRequest {
+    let ChoiceSource::Guest { node, .. } = declaration.source() else {
+        panic!("branch guest request requires a guest declaration")
+    };
+    let request = SelectionRequest::new(7, declaration.name(), instance, None, 256)
+        .expect("guest replay selection request");
+    QemuNodeSelectablePendingRequest::from_test_parts(
+        crucible::NodeId { name: node.clone() },
+        SelectablePlanPendingRequest::new(request, 11, 0, 0x1000),
+    )
+}
+
+fn branch_execution_input(
+    source: ChoiceSource,
+    domain: ChoiceDomain,
+    default: ChoiceValue,
+    selected_value: ChoiceValue,
+    name: &str,
+) -> CrucibleAttemptExecution {
+    let base = if matches!(source, ChoiceSource::Guest { .. }) {
+        execution_input_for_scenario(guest_selectable_scenario())
+    } else {
+        execution_input()
+    };
+    let declaration = if matches!(source, ChoiceSource::Guest { .. }) {
+        guest_selectable_declaration()
+    } else {
+        SelectableDeclaration::new(
+            name,
+            source,
+            domain.clone(),
+            default,
+            ChoiceClassContext::new(BTreeSet::new()).expect("branch choice class"),
+            BTreeSet::new(),
+            true,
+        )
+        .expect("branch selectable declaration")
+    };
+    let repository = CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "hot-world-branch-selection",
+            8 * 1024 * 1024,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    );
+    repository
+        .publish_choice_domain(&domain)
+        .expect("publish branch choice domain");
+    repository
+        .publish_selectable(&declaration)
+        .expect("publish branch selectable");
+    let opportunity = if matches!(declaration.source(), ChoiceSource::Guest { .. }) {
+        let pending = branch_replay_guest_pending(&declaration, "publication");
+        crate::guest_selectable::resolve_guest_selectable(
+            base.lineage().scenario(),
+            base.scenario(),
+            pending.node(),
+            pending.pending(),
+        )
+        .expect("resolve guest branch opportunity")
+        .opportunity()
+        .clone()
+    } else {
+        crucible_campaign::ChoiceOpportunity::new(
+            base.lineage().scenario(),
+            &declaration,
+            &domain,
+            ChoiceCoordinate {
+                scheduler: CampaignHash::derive("hot-world-branch-scheduler", name.as_bytes()),
+                producer: CampaignHash::derive("hot-world-branch-producer", name.as_bytes()),
+            },
+            name,
+            None,
+        )
+        .expect("branch choice opportunity")
+    };
+    repository
+        .publish_choice_opportunity(&opportunity)
+        .expect("publish branch choice opportunity");
+
+    let crate::CrucibleResolvedAttemptStart::Discover {
+        configuration: parent,
+    } = base.start()
+    else {
+        panic!("branch fixture base must begin at discovery")
+    };
+    let parent = parent.clone();
+    let parent_id = ConfigurationId::from_hash(CampaignHash::from_bytes(parent.id().bytes));
+    let branch_point = opportunity.branch_point_id(parent_id);
+    let selection =
+        Selection::new_campaign_branch(&opportunity, &domain, selected_value, branch_point)
+            .expect("campaign branch selection");
+    repository
+        .publish_selection(&selection)
+        .expect("publish campaign branch selection");
+    let resolved = repository
+        .resolve_selection(selection.id().expect("branch selection id"))
+        .expect("resolve campaign branch selection");
+    let SelectionOrigin::CampaignBranch { edge, .. } = selection.origin() else {
+        panic!("campaign branch selection has the wrong origin")
+    };
+    let selected = crucible::step(
+        &parent,
+        Decision::Selection(SelectionDecision::new(&selection)),
+    );
+    let path =
+        BranchPath::new(vec![BranchPathSegment::new(branch_point, edge)]).expect("branch path");
+    let attempt = Attempt::new(
+        AttemptStart::Branch {
+            edge,
+            parent: base.lineage().genesis_content(),
+            selection: selection.id().expect("branch selection id"),
+        },
+        path.id().expect("branch path id"),
+        StopCondition::Terminal,
+    )
+    .expect("branch attempt");
+
+    CrucibleAttemptExecution::from_test_parts(
+        base.lineage().clone(),
+        base.scenario().clone(),
+        attempt,
+        path,
+        crate::CrucibleResolvedAttemptStart::Branch {
+            parent,
+            selection: Box::new(resolved),
+            selected,
+        },
+    )
+}
+
+fn run_branch_through_hot_world_runner(input: CrucibleAttemptExecution, expect_guest_reply: bool) {
+    let (_repository, _store, _lineage, _attempt, candidate, _scenario) =
+        repository_execution_fixture();
+    let observations = BranchReplayObservations::new();
+    let mut runner = QemuHotForkWorldExecutionRunner::new(
+        BranchReplayLifecycleFactory {
+            observations: observations.clone(),
+        },
+        BranchReplayDriver {
+            candidate,
+            observations: observations.clone(),
+        },
+    );
+    let context = execution_context(&input, 0x83);
+    let (parent, selected, selected_value) = match input.start() {
+        crate::CrucibleResolvedAttemptStart::Branch {
+            parent,
+            selection,
+            selected,
+        } => (
+            parent.clone(),
+            selected.clone(),
+            selection.selection().value().clone(),
+        ),
+        crate::CrucibleResolvedAttemptStart::Discover { .. } => {
+            panic!("branch runner fixture must contain a branch start")
+        }
+    };
+
+    let outcome = runner
+        .try_execute(&input, &context)
+        .expect("hot-world runner must execute the selected branch");
+    let QemuHotForkWorldExecutionAttempt::Executed(outcome) = outcome else {
+        panic!("scripted retained source must not decline")
+    };
+    assert_eq!(
+        outcome.materialization(),
+        CrucibleMaterializationTier::HotFork
+    );
+    assert!(matches!(
+        outcome.product(),
+        AttemptExecutionProduct::Observation(_)
+    ));
+    assert_eq!(
+        *observations
+            .replay_requests
+            .lock()
+            .expect("branch replay requests"),
+        [parent]
+    );
+    assert_eq!(
+        *observations
+            .driver_starts
+            .lock()
+            .expect("branch driver starts"),
+        [selected]
+    );
+    let replies = observations
+        .guest_replies
+        .lock()
+        .expect("branch replay guest replies");
+    assert_eq!(replies.len(), usize::from(expect_guest_reply));
+    if let Some(reply) = replies.first() {
+        assert_eq!(reply.sequence(), 7);
+        assert_eq!(
+            reply.selected_value(),
+            Some(selected_value.canonical_bytes().as_slice())
+        );
+    }
+    drop(replies);
+    assert_eq!(observations.shutdowns.load(Ordering::SeqCst), 1);
+
+    assert_eq!(
+        runner
+            .reconcile_execution(AttemptExecutionDisposition::Canceled)
+            .expect("reconcile scripted hot-world branch"),
+        AttemptExecutionReconciliationStep::Complete
+    );
+    assert_eq!(observations.recoveries.load(Ordering::SeqCst), 1);
+    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn hot_world_runner_materializes_a_discrete_typed_branch_from_its_parent() {
+    let keep = AlternativeId::from_hash(CampaignHash::derive("hot-world-discrete", b"keep"));
+    let replace = AlternativeId::from_hash(CampaignHash::derive("hot-world-discrete", b"replace"));
+    let domain = ChoiceDomain::Discrete(
+        DiscreteDomain::new(
+            1,
+            BTreeMap::from([
+                (
+                    keep,
+                    DiscreteAlternative::new(keep, "Keep route", None).expect("keep alternative"),
+                ),
+                (
+                    replace,
+                    DiscreteAlternative::new(replace, "Replace route", None)
+                        .expect("replace alternative"),
+                ),
+            ]),
+        )
+        .expect("discrete branch domain"),
+    );
+    let input = branch_execution_input(
+        ChoiceSource::Workload {
+            producer: String::from("route-controller"),
+        },
+        domain,
+        ChoiceValue::Discrete(keep),
+        ChoiceValue::Discrete(replace),
+        "product.route-strategy",
+    );
+
+    run_branch_through_hot_world_runner(input, false);
+}
+
+#[test]
+fn hot_world_runner_materializes_an_unsigned_64_bit_branch_from_its_parent() {
+    let domain = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(0),
+            IntegerValue::Unsigned(u64::MAX),
+            1,
+            Some(String::from("nanoseconds")),
+            ExactRational::new(1, 1).expect("unsigned branch scale"),
+            vec![IntegerValue::Unsigned(0), IntegerValue::Unsigned(u64::MAX)],
+        )
+        .expect("unsigned branch domain"),
+    );
+    let input = branch_execution_input(
+        ChoiceSource::Workload {
+            producer: String::from("timeout-controller"),
+        },
+        domain,
+        ChoiceValue::Integer(IntegerValue::Unsigned(0)),
+        ChoiceValue::Integer(IntegerValue::Unsigned(u64::MAX)),
+        "product.timeout-nanoseconds",
+    );
+
+    run_branch_through_hot_world_runner(input, false);
+}
+
+#[test]
+fn hot_world_runner_materializes_a_scheduler_source_branch_from_its_parent() {
+    let input = branch_execution_input(
+        ChoiceSource::Scheduler {
+            producer: String::from("delivery-order"),
+        },
+        ChoiceDomain::Boolean(BooleanDomain::new(1).expect("scheduler branch domain")),
+        ChoiceValue::Boolean(false),
+        ChoiceValue::Boolean(true),
+        "scheduler.delivery-order",
+    );
+
+    run_branch_through_hot_world_runner(input, false);
+}
+
+#[test]
+fn hot_world_runner_materializes_a_guest_branch_and_enqueues_its_exact_reply() {
+    let declaration = guest_selectable_declaration();
+    let input = branch_execution_input(
+        declaration.source().clone(),
+        declaration.domain().clone(),
+        declaration.default().clone(),
+        ChoiceValue::Boolean(true),
+        declaration.name(),
+    );
+
+    run_branch_through_hot_world_runner(input, true);
+}
+
 fn factory(
     source_world: ProductionVmHotForkSourceWorld,
+    lineage: &CampaignLineage,
     run_state_root: PathBuf,
     observations: ScriptedWorldObservations,
 ) -> QemuProductionHotForkWorldLifecycleFactory<
     QemuSingleHotForkSourceWorldProvider,
     ScriptedWorldGuardFactory,
 > {
+    let key = QemuHotForkSourceWorldKey::new(
+        lineage.id().expect("lineage id"),
+        source_world.continuation().configuration().def.id(),
+        source_world.continuation().configuration().id(),
+        ExecutorCompatibilityProfile::from_lineage(lineage),
+    );
     QemuProductionHotForkWorldLifecycleFactory::new(
-        QemuSingleHotForkSourceWorldProvider::new(source_world),
+        QemuSingleHotForkSourceWorldProvider::new(key, source_world),
         ScriptedWorldGuardFactory { observations },
         run_state_root,
         QemuShutdownPolicy::fast_test(),
@@ -778,6 +1390,7 @@ fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
     let observations = ScriptedWorldObservations::new();
     let mut factory = factory(
         source_world,
+        input.lineage(),
         run_state.path().to_path_buf(),
         observations.clone(),
     );
@@ -841,6 +1454,7 @@ fn second_child_indeterminate_failure_quarantines_first_child_and_complete_world
     let observations = ScriptedWorldObservations::new();
     let mut factory = factory(
         source_world,
+        input.lineage(),
         run_state.path().to_path_buf(),
         observations.clone(),
     );
@@ -895,6 +1509,7 @@ fn second_adoption_failure_retains_first_adoption_and_complete_world() {
     let observations = ScriptedWorldObservations::new();
     let mut factory = factory(
         source_world,
+        input.lineage(),
         run_state.path().to_path_buf(),
         observations.clone(),
     );
@@ -938,7 +1553,12 @@ fn poisoned_source_owner_cannot_be_recovered_on_retry() {
     let context = execution_context(&input, 0x79);
     let run_state = tempfile::tempdir().expect("run state");
     let observations = ScriptedWorldObservations::new();
-    let mut factory = factory(source_world, run_state.path().to_path_buf(), observations);
+    let mut factory = factory(
+        source_world,
+        input.lineage(),
+        run_state.path().to_path_buf(),
+        observations,
+    );
     let mut lifecycle = match factory.try_start(&input, &context).expect("start world") {
         QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
         QemuHotForkWorldLifecycleStart::Declined => panic!("exact source world declined"),
@@ -997,6 +1617,7 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
     let hot_fork = QemuHotForkWorldExecutionRunner::new(
         factory(
             source_world,
+            &lineage,
             run_state.path().to_path_buf(),
             observations.clone(),
         ),
@@ -1175,6 +1796,7 @@ fn target_world_resource_preflight_rejects_before_source_checkout_or_guard_insta
     let run_state = tempfile::tempdir().expect("run state");
     let mut factory = factory(
         source_world,
+        input.lineage(),
         run_state.path().to_path_buf(),
         observations.clone(),
     );

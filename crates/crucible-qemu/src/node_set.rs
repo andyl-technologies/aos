@@ -88,6 +88,12 @@ impl QemuNodeSetPreparedHotForkTemplate {
         self.template_generation
     }
 
+    /// Returns the exact retained source process incarnation.
+    #[must_use]
+    pub const fn source_process_identity(&self) -> &QemuProcessIdentity {
+        &self.source_process
+    }
+
     /// Returns the exact configuration authenticated during preparation.
     #[must_use]
     pub const fn configuration(&self) -> ContentHash {

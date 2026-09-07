@@ -325,7 +325,6 @@ impl QemuHotForkTemplatePoolSlot {
         self.slot
     }
 
-    #[cfg(test)]
     pub(crate) const fn new(key: QemuHotForkTemplateKey, slot: usize) -> Self {
         Self { key, slot }
     }
