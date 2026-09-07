@@ -4397,3 +4397,73 @@ JIT inputs, and installed PGXS metadata need a feature-preserving audit before
 the AArch64 VM can run. No PostgreSQL feature was disabled or bypassed here.
 The AArch64 guest proof remains unqualified, so `SBX-P0-04` and `SBX-P0-05`
 remain open.
+
+### Production Storage worker and deadline qualification (in progress)
+
+The current Storage increment adds a fixed typed, systemd-contained mutation
+worker. The worker runs as a dynamic non-root identity with `CAP_SYS_ADMIN`,
+compiles an independent fixed ZFS argument vector, admits a closed environment
+and descriptor set, bounds captured output, authenticates the worker exchange,
+and checks the broker deadline around worker I/O. It also adds exact ZFS
+`list`, `get`, and `holds` observation plans, strict worker-local parsers and a
+pre/post-state evaluator, typed v2 observation verbs and results, and a private
+`SystemdZfsProcessBackend` adapter under the existing store-lifetime lock.
+
+The Storage library suite without default features currently enumerates 57
+tests: 56 pass, none fail, and the real-systemd VM client remains intentionally
+ignored. The scoped formatter check, all-target no-dependency Clippy with
+warnings denied, warning-denied rustdoc without dependencies, and diff
+whitespace check all pass.
+
+This evidence does not qualify the production path or worker VM. No production
+coordinator or `storaged` construction path exposes the concrete process
+backend, and Apply remains unadvertised. The frozen retry was stopped without a
+result or output path and therefore produced no VM evidence. A fresh integrated
+VM instantiation is running but waiting on the shared GCC stage-2 store lock;
+the top derivation has not yet been emitted. That run must still exercise the
+real worker boundary and deadline behavior. `SBX-STOR-01` remains open, and no
+completion is claimed for `SBX-P0-07`.
+
+### Canonical Network kernel plan (in progress)
+
+The Network broker can now compile one exact assignment, namespace allocation,
+and packet-policy program into a bounded, architecture-neutral pre-effect
+artifact. The V1 decoder independently admits closed actions, publication
+requirements, enums, counts, reserved fields, and semantic digest cross-links,
+then requires canonical byte-for-byte re-encoding. The artifact records that
+namespace publication needs retained descriptor custody; it does not encode
+descriptor numbers, paths, netlink messages, BPF commands, or loader-selected
+programs.
+
+The focused `aos-sandbox-network` kernel-plan suite passes six tests. Coverage
+includes the shared published-IPv4 golden vector and malformed mutation corpus,
+loopback-only isolation without a veth or tail, dual-stack allocation with an
+IPv6 route and flow, exact reserved and length fields, and a duplicate-family
+attack with its namespace digest recomputed. The scoped formatter, all-target
+no-dependency Clippy with warnings denied, and warning-denied rustdoc checks
+pass. The canonical reproduction command is:
+
+```text
+nix develop -c cargo test --manifest-path crates/Cargo.toml -p aos-sandbox-network --lib kernel_plan
+```
+
+This recorded run used the already provisioned workspace toolchain because the
+current development-shell evaluation was blocked by stale platform
+classifications from concurrent package work; it does not claim that the
+canonical command ran successfully on this snapshot.
+
+The checked-in structural C reader at
+`tests/sandbox/network-kernel-plan-codec.c` accepts the same golden vector and
+rejects the same mutation file when compiled with the AOS C wrapper under
+`-std=c17 -Wall -Wextra -Werror`. Header size and offset assertions also pass
+direct Clang syntax checks for `x86_64-unknown-linux-gnu` and
+`aarch64-unknown-linux-gnu`. These are scoped manual results, not a hermetic
+gate: a focused Nix conformance check must still compile and run the native C
+reader and compile both target-header views. The C reader is deliberately only
+a format-conformance oracle and must not become the privileged semantic
+admission path.
+
+No privileged Network worker, authenticated descriptor transfer, durable
+namespace custody, netlink mutation, or mandatory packet-policy installation is
+implemented by this increment. Apply remains unadvertised. The related Network
+runtime and end-to-end qualification tasks remain open.

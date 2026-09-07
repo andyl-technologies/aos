@@ -6,23 +6,26 @@
 //! [`catalog`] models protected preparation-profile, endpoint-policy, and
 //! reserved-handle allocation. [`preparation_catalog`] binds those inputs to an
 //! exact portable assignment, mints the opaque handle, and retains reservations
-//! in a protected append-only catalog. [`authorization`] adapts the shared
-//! signed authority verifier. [`state`] atomically journals authenticated
-//! authorization links, a durable pre-effect crash boundary, and typed
-//! committed namespace observations. [`namespace_catalog`] retains verified
-//! namespace identity and lease lifecycle, then emits authoritative current-boot
-//! inventory. [`service`] exposes that catalog through an authenticated Network
-//! 1.2 one-shot session, while [`activation`] validates its systemd
-//! record-subject listener. [`broker`] composes effect state without exposing
-//! Apply or performing netlink, nftables, or BPF work. The privileged kernel
-//! helper, postcondition observer, and authenticated mutation dispatch remain
-//! explicit Apply-readiness prerequisites.
+//! in a protected append-only catalog. [`kernel_plan`] compiles one exact
+//! assignment, namespace allocation, and packet policy into a canonical
+//! architecture-neutral pre-effect artifact. [`authorization`] adapts the
+//! shared signed authority verifier. [`state`] atomically journals
+//! authenticated authorization links, a durable pre-effect crash boundary, and
+//! typed committed namespace observations. [`namespace_catalog`] retains
+//! verified namespace identity and lease lifecycle, then emits authoritative
+//! current-boot inventory. [`service`] exposes that catalog through an
+//! authenticated Network 1.2 one-shot session, while [`activation`] validates
+//! its systemd record-subject listener. [`broker`] composes effect state without
+//! exposing Apply or performing netlink, nftables, or BPF work. The privileged
+//! kernel helper, postcondition observer, and authenticated mutation dispatch
+//! remain explicit Apply-readiness prerequisites.
 
 pub mod activation;
 pub mod allocation;
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
+pub mod kernel_plan;
 pub mod namespace_catalog;
 pub mod policy;
 pub mod preparation_catalog;
@@ -42,6 +45,10 @@ pub use broker::{
 pub use catalog::{
     AuthenticatedNetworkPreparationV1, NetworkCatalogBindingV1, ResolvedEndpointV1,
     ResolvedNetworkPreparationV1,
+};
+pub use kernel_plan::{
+    NetworkKernelActionV1, NetworkKernelPlanError, NetworkKernelPlanV1,
+    NetworkNamespacePublicationRequirementV1,
 };
 pub use namespace_catalog::{
     NetworkNamespaceCatalogError, NetworkNamespaceCatalogOutcomeV1, NetworkNamespaceCatalogV1,
