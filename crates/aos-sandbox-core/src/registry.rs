@@ -462,7 +462,7 @@ pub fn negotiate_protocol(
 const fn protocol_version(protocol: ProtocolId) -> ProtocolVersion {
     match protocol {
         ProtocolId::HostBroker => ProtocolVersion::new(1, 4),
-        ProtocolId::MountBroker => ProtocolVersion::new(1, 4),
+        ProtocolId::MountBroker => ProtocolVersion::new(1, 5),
         ProtocolId::StorageBroker | ProtocolId::NetworkBroker | ProtocolId::OwnershipAuthority => {
             ProtocolVersion::new(1, 1)
         }
@@ -624,6 +624,10 @@ mod tests {
             Ok(ProtocolVersion::new(1, 4))
         );
         assert_eq!(
+            negotiate_protocol(ProtocolId::MountBroker, ProtocolVersion::new(1, 5)),
+            Ok(ProtocolVersion::new(1, 5))
+        );
+        assert_eq!(
             negotiate_protocol(ProtocolId::HostBroker, ProtocolVersion::new(1, 1)),
             Ok(ProtocolVersion::new(1, 1))
         );
@@ -652,7 +656,7 @@ mod tests {
             Ok(ProtocolVersion::new(1, 1))
         );
         assert!(matches!(
-            negotiate_protocol(ProtocolId::MountBroker, ProtocolVersion::new(1, 5)),
+            negotiate_protocol(ProtocolId::MountBroker, ProtocolVersion::new(1, 6)),
             Err(RegistryError::IncompatibleProtocol { .. })
         ));
         assert!(matches!(

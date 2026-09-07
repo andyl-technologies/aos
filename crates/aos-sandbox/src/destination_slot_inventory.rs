@@ -1,10 +1,12 @@
 //! Authenticates, records, and reconciles Mount destination-slot inventories.
 //!
-//! The controller stores only the latest complete protocol 1.4 snapshot. Each
-//! record binds the exact query and response to the complete controller state
-//! that existed before the query. Reconciliation compares one current logical
-//! slot with that fresh evidence and returns a descriptive next action; it does
-//! not grant broker authority or retain a namespace descriptor.
+//! The controller stores only the latest complete protocol 1.4 or 1.5 snapshot.
+//! New queries use 1.5 so current attachment anchors accompany Ready slots,
+//! while retained 1.4 records remain recoverable. Each record binds the exact
+//! query and response to the complete controller state that existed before the
+//! query. Reconciliation compares one current logical slot with that fresh
+//! evidence and returns a descriptive next action; it does not grant broker
+//! authority or retain a namespace descriptor.
 
 use std::os::fd::OwnedFd;
 
@@ -15,10 +17,11 @@ use aos_proto::aos::sandbox::local::v1::{
 use aos_sandbox_core::{ObjectDigest, OperationId, ProtocolId, ProtocolVersion};
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_protocol::{
-    PeerCredentials, PeerPolicy, ValidatedDestinationSlotInventory,
-    ValidatedDestinationSlotInventoryRecord, ValidatedHeader,
-    decode_destination_slot_inventory_request, decode_destination_slot_inventory_response,
-    decode_response_envelope, decode_server_hello, encode_unauthed_request_envelope,
+    PeerCredentials, PeerPolicy, ValidatedAttachmentAnchorInventoryRecord,
+    ValidatedDestinationSlotInventory, ValidatedDestinationSlotInventoryRecord, ValidatedHeader,
+    decode_destination_slot_inventory_request,
+    decode_destination_slot_inventory_response_for_version, decode_response_envelope,
+    decode_server_hello, encode_unauthed_request_envelope,
 };
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -36,7 +39,8 @@ use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 mod format;
 
 const NAMESPACE: RecordNamespace = RecordNamespace::DestinationSlotInventory;
-const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 4);
+const PREVIOUS_CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 4);
+const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 5);
 const REMATERIALIZATION_OPERATION_DOMAIN: &[u8] =
     b"aos.sandbox.destination-slot-rematerialization.operation.v1\0";
 const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS;
@@ -238,9 +242,10 @@ impl DestinationSlotInventoryClient {
             });
         }
         let response_body = envelope.body().to_vec();
-        let inventory = decode_destination_slot_inventory_response(
+        let inventory = decode_destination_slot_inventory_response_for_version(
             &response_body,
             request.maximum_response_bytes(),
+            request.protocol_version(),
         )?;
         transport::check_deadline(deadline).map_err(MountAttemptError::Preparation)?;
 
@@ -291,6 +296,34 @@ impl DurableDestinationSlotInventorySnapshotV1 {
     #[must_use]
     pub const fn inventory(&self) -> &ValidatedDestinationSlotInventory {
         &self.inventory
+    }
+
+    /// Finds one exact current Mount attachment anchor by logical generation.
+    ///
+    /// A missing result includes recovered Mount 1.4 snapshots, generations
+    /// without a current Ready slot, and unrelated sandbox incarnations. Such
+    /// absence must block a Host 1.3 launch that requires the anchor handle.
+    #[must_use]
+    pub fn attachment_anchor(
+        &self,
+        sandbox_id: &[u8; 16],
+        incarnation_id: &[u8; 16],
+        namespace_generation: u64,
+    ) -> Option<&ValidatedAttachmentAnchorInventoryRecord> {
+        self.inventory
+            .attachment_anchors()
+            .binary_search_by_key(
+                &(*sandbox_id, *incarnation_id, namespace_generation),
+                |anchor| {
+                    (
+                        *anchor.sandbox_id(),
+                        *anchor.incarnation_id(),
+                        anchor.namespace_generation(),
+                    )
+                },
+            )
+            .ok()
+            .map(|index| &self.inventory.attachment_anchors()[index])
     }
 
     fn recheck(&self, journal: &mut Journal) -> Result<(), MountAttemptError> {
@@ -382,9 +415,10 @@ impl SnapshotRecord {
         response_body: Vec<u8>,
     ) -> Result<(Self, ValidatedDestinationSlotInventory), MountAttemptError> {
         let request = decode_inventory_request_body(&request_body)?;
-        let inventory = decode_destination_slot_inventory_response(
+        let inventory = decode_destination_slot_inventory_response_for_version(
             &response_body,
             request.maximum_response_bytes(),
+            request.protocol_version(),
         )?;
         let mut record = Self {
             request_id: *request.request_id(),
@@ -421,9 +455,10 @@ impl SnapshotRecord {
         if request.request_id() != &self.request_id {
             return Err(MountAttemptError::CorruptState);
         }
-        decode_destination_slot_inventory_response(
+        decode_destination_slot_inventory_response_for_version(
             &self.response_body,
             request.maximum_response_bytes(),
+            request.protocol_version(),
         )
         .map_err(|_| MountAttemptError::CorruptState)
     }
@@ -479,14 +514,34 @@ impl SnapshotHistory {
         }
         if current.request_id == candidate.request_id
             || inventory.journal_sequence() < current_inventory.journal_sequence()
-            || (inventory.journal_sequence() == current_inventory.journal_sequence()
-                && inventory.slots() != current_inventory.slots())
+            || same_sequence_equivocates(inventory, current_inventory)
             || (inventory.broker_instance_id() == current_inventory.broker_instance_id()
                 && inventory.kernel_boot_id() != current_inventory.kernel_boot_id())
         {
             return Err(MountAttemptError::Conflict);
         }
         Ok(None)
+    }
+}
+
+fn same_sequence_equivocates(
+    candidate: &ValidatedDestinationSlotInventory,
+    current: &ValidatedDestinationSlotInventory,
+) -> bool {
+    if candidate.journal_sequence() != current.journal_sequence() {
+        return false;
+    }
+    if candidate.slots() != current.slots() {
+        return true;
+    }
+
+    match (current.protocol_version(), candidate.protocol_version()) {
+        (current_version, candidate_version) if current_version == candidate_version => {
+            candidate.kernel_boot_id() == current.kernel_boot_id()
+                && candidate.attachment_anchors() != current.attachment_anchors()
+        }
+        (PREVIOUS_CARRIER_VERSION, CARRIER_VERSION) => false,
+        _ => true,
     }
 }
 
@@ -784,7 +839,8 @@ fn decode_inventory_request_body(bytes: &[u8]) -> Result<ValidatedHeader, MountA
         deadline,
     )
     .map_err(|_| MountAttemptError::CorruptState)?;
-    if request.protocol_version() != CARRIER_VERSION
+    let protocol_version = request.protocol_version();
+    if (protocol_version != PREVIOUS_CARRIER_VERSION && protocol_version != CARRIER_VERSION)
         || request.audience() != Audience::AUDIENCE_NODE_CONTROLLER
         || request.maximum_response_bytes() != RESPONSE_BYTES
     {
@@ -815,9 +871,10 @@ mod tests {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     use aos_proto::aos::sandbox::local::v1::{
-        AssignmentFence, Descriptor, DestinationSlotInventoryRecord,
-        DestinationSlotReapCorrelation, DestinationSlotRematerializationCorrelation,
-        InventoryDestinationSlotsResponse, MountAssignmentBinding, MountOperationCorrelation,
+        AssignmentFence, AttachmentAnchorInventoryRecord, Descriptor,
+        DestinationSlotInventoryRecord, DestinationSlotReapCorrelation,
+        DestinationSlotRematerializationCorrelation, InventoryDestinationSlotsResponse,
+        MountAssignmentBinding, MountOperationCorrelation,
     };
     use aos_sandbox_core::{AttachmentSlotId, IncarnationId, Revision, SandboxId};
 
@@ -873,10 +930,14 @@ mod tests {
     }
 
     fn query(request_byte: u8) -> Vec<u8> {
+        query_for_version(request_byte, CARRIER_VERSION)
+    }
+
+    fn query_for_version(request_byte: u8, protocol_version: ProtocolVersion) -> Vec<u8> {
         InventoryDestinationSlotsRequest {
             header: Some(RequestHeader {
-                protocol_major: 1,
-                protocol_minor: 4,
+                protocol_major: protocol_version.major().into(),
+                protocol_minor: protocol_version.minor().into(),
                 request_id: vec![request_byte; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 100,
@@ -895,11 +956,60 @@ mod tests {
         instance_byte: u8,
         slots: Vec<DestinationSlotInventoryRecord>,
     ) -> Vec<u8> {
+        response_with_anchor_inode(sequence, boot_byte, instance_byte, slots, 43)
+    }
+
+    fn response_with_anchor_inode(
+        sequence: u64,
+        boot_byte: u8,
+        instance_byte: u8,
+        slots: Vec<DestinationSlotInventoryRecord>,
+        directory_inode: u64,
+    ) -> Vec<u8> {
+        let kernel_boot_id = [boot_byte; 16];
+        let mut anchors = std::collections::BTreeMap::new();
+        for slot in &slots {
+            if slot.lifecycle.as_known()
+                != Some(DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY)
+                || slot.resource_kernel_boot_id != kernel_boot_id
+            {
+                continue;
+            }
+            let binding = slot.binding.as_option().unwrap();
+            let fence = binding.fence.as_option().unwrap();
+            let sandbox_id: [u8; 16] = fence.sandbox_id.as_slice().try_into().unwrap();
+            let incarnation_id: [u8; 16] = fence.incarnation_id.as_slice().try_into().unwrap();
+            let directory_device = slot.slot_device.unwrap();
+            let unique_mount_id = slot.anchor_unique_mount_id.unwrap();
+            let handle = aos_sandbox_protocol::attachment_anchor_handle_v1(
+                &sandbox_id,
+                &incarnation_id,
+                binding.namespace_generation,
+                &kernel_boot_id,
+                directory_device,
+                directory_inode,
+                unique_mount_id,
+            );
+            anchors
+                .entry((sandbox_id, incarnation_id, binding.namespace_generation))
+                .or_insert(AttachmentAnchorInventoryRecord {
+                    attachment_anchor_handle: handle.to_vec(),
+                    sandbox_id: sandbox_id.to_vec(),
+                    incarnation_id: incarnation_id.to_vec(),
+                    namespace_generation: binding.namespace_generation,
+                    resource_kernel_boot_id: kernel_boot_id.to_vec(),
+                    directory_device,
+                    directory_inode,
+                    unique_mount_id,
+                    ..Default::default()
+                });
+        }
         InventoryDestinationSlotsResponse {
-            kernel_boot_id: vec![boot_byte; 16],
+            kernel_boot_id: kernel_boot_id.to_vec(),
             journal_sequence: sequence,
             slots,
             broker_instance_id: vec![instance_byte; 16],
+            attachment_anchors: anchors.into_values().collect(),
             ..Default::default()
         }
         .encode_to_vec()
@@ -1019,9 +1129,10 @@ mod tests {
         slot: &DurableAttachmentSlotV1,
         lifecycle: DestinationSlotLifecycle,
     ) -> ValidatedDestinationSlotInventoryRecord {
-        let inventory = decode_destination_slot_inventory_response(
+        let inventory = decode_destination_slot_inventory_response_for_version(
             &response(1, 8, 9, vec![resource(slot, lifecycle)]),
             RESPONSE_BYTES,
+            CARRIER_VERSION,
         )
         .unwrap();
         inventory.slots()[0].clone()
@@ -1151,6 +1262,80 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_history_allows_one_four_upgrade_but_rejects_anchor_equivocation() {
+        let (_directory, mut journal) = test_journal();
+        let slot = create_slot(&mut journal);
+        let ready = resource(
+            &slot,
+            DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY,
+        );
+
+        let one_four_response = InventoryDestinationSlotsResponse {
+            kernel_boot_id: vec![8; 16],
+            journal_sequence: 5,
+            slots: vec![ready.clone()],
+            broker_instance_id: vec![9; 16],
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let (one_four, one_four_inventory) = SnapshotRecord::from_query(
+            [20; 32],
+            query_for_version(1, PREVIOUS_CARRIER_VERSION),
+            one_four_response,
+        )
+        .unwrap();
+        let history = SnapshotHistory {
+            record: Some((one_four, one_four_inventory)),
+        };
+        let (upgraded, upgraded_inventory) =
+            SnapshotRecord::from_query([20; 32], query(2), response(5, 8, 9, vec![ready.clone()]))
+                .unwrap();
+        assert_eq!(
+            history.outcome(&upgraded, &upgraded_inventory).unwrap(),
+            None
+        );
+
+        let history = SnapshotHistory {
+            record: Some((upgraded, upgraded_inventory)),
+        };
+        let (rebooted, rebooted_inventory) =
+            SnapshotRecord::from_query([20; 32], query(3), response(5, 9, 10, vec![ready.clone()]))
+                .unwrap();
+        assert_eq!(
+            history.outcome(&rebooted, &rebooted_inventory).unwrap(),
+            None
+        );
+
+        let downgrade_response = InventoryDestinationSlotsResponse {
+            kernel_boot_id: vec![8; 16],
+            journal_sequence: 5,
+            slots: vec![ready.clone()],
+            broker_instance_id: vec![9; 16],
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let (downgrade, downgrade_inventory) = SnapshotRecord::from_query(
+            [20; 32],
+            query_for_version(4, PREVIOUS_CARRIER_VERSION),
+            downgrade_response,
+        )
+        .unwrap();
+        assert!(history.outcome(&downgrade, &downgrade_inventory).is_err());
+
+        let (substituted, substituted_inventory) = SnapshotRecord::from_query(
+            [20; 32],
+            query(5),
+            response_with_anchor_inode(5, 8, 9, vec![ready], 44),
+        )
+        .unwrap();
+        assert!(
+            history
+                .outcome(&substituted, &substituted_inventory)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn controller_state_change_invalidates_snapshot() {
         let (_directory, mut journal) = test_journal();
         let snapshot = durable_snapshot(&mut journal, Vec::new());
@@ -1224,9 +1409,10 @@ mod tests {
         let predecessor = ObjectDigest::from_bytes([69; 32]);
         let operation = rematerialization_operation(&slot, predecessor, &[9; 16]);
         let row = rematerializing_resource(&slot, predecessor, [9; 16]);
-        let inventory = decode_destination_slot_inventory_response(
+        let inventory = decode_destination_slot_inventory_response_for_version(
             &response(1, 9, 10, vec![row.clone()]),
             RESPONSE_BYTES,
+            CARRIER_VERSION,
         )
         .unwrap();
         assert_eq!(
@@ -1243,9 +1429,10 @@ mod tests {
             }
         );
 
-        let stale_inventory = decode_destination_slot_inventory_response(
+        let stale_inventory = decode_destination_slot_inventory_response_for_version(
             &response(1, 8, 10, vec![row.clone()]),
             RESPONSE_BYTES,
+            CARRIER_VERSION,
         )
         .unwrap();
         assert!(
@@ -1265,9 +1452,10 @@ mod tests {
             .operation
             .get_or_insert_default()
             .operation_id = vec![99; 16];
-        let substituted_inventory = decode_destination_slot_inventory_response(
+        let substituted_inventory = decode_destination_slot_inventory_response_for_version(
             &response(1, 9, 10, vec![substituted]),
             RESPONSE_BYTES,
+            CARRIER_VERSION,
         )
         .unwrap();
         assert!(
@@ -1340,9 +1528,10 @@ mod tests {
         let predecessor = ObjectDigest::from_bytes([69; 32]);
         let operation_id = rematerialization_operation(&slot, predecessor, &[9; 16]);
         let row = rematerializing_resource(&slot, predecessor, [9; 16]);
-        let inventory = decode_destination_slot_inventory_response(
+        let inventory = decode_destination_slot_inventory_response_for_version(
             &response(1, 9, 10, vec![row]),
             RESPONSE_BYTES,
+            CARRIER_VERSION,
         )
         .unwrap();
         assert_eq!(
@@ -1369,6 +1558,14 @@ mod tests {
         let reconciliation = reconcile_current(&mut journal, slot.clone(), snapshot).unwrap();
         assert_eq!(reconciliation.slot(), &slot);
         assert_eq!(reconciliation.snapshot().record_digest(), snapshot_digest);
+        let anchor = reconciliation
+            .snapshot()
+            .attachment_anchor(&SANDBOX_ID, &INCARNATION_ID, NAMESPACE_GENERATION)
+            .unwrap();
+        assert_ne!(anchor.handle(), &[0; 32]);
+        assert_eq!(anchor.directory_device(), 40);
+        assert_eq!(anchor.directory_inode(), 43);
+        assert_eq!(anchor.unique_mount_id(), 42);
         assert_eq!(
             reconciliation.action(),
             DestinationSlotReconciliationActionV1::Ready {

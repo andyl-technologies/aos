@@ -3598,3 +3598,45 @@ existing Mount inventory. Backend readiness, cleanup-authorized identity
 reclaim, source-handle materialization, native attachment replay, lease-expiry
 scheduling, internal-reboot anchor handoff, and live namespace VM qualification
 remain open.
+
+### Authenticated Mount attachment-anchor inventory
+
+Mount protocol 1.5 now reports the broker-owned attachment anchor behind every
+current-boot namespace generation that contains a Ready destination slot. Each
+strictly ordered row carries the sandbox, incarnation, namespace generation,
+boot identity, generation-directory device and inode, and kernel-unique mount
+ID. A domain-separated handle commits that complete physical identity for later
+use in a Host launch plan. Response validation requires exactly one row for
+every current Ready generation, rejects orphan, duplicate, reordered,
+stale-boot, and slot-inconsistent rows, and independently recomputes every
+handle. Mount 1.4 remains wire compatible and rejects the new field rather than
+silently accepting incomplete anchor evidence.
+
+The Mount broker revalidates each live slot pin and its fixed generation
+directory while it holds the destination-slot store, groups slots only when
+their anchor device and mount identity agree, and binds the response to the
+negotiated session version. The controller now queries 1.5, stores the exact
+authenticated response in its existing self-authenticating snapshot record,
+and exposes a logical-generation lookup over the validated anchor table.
+Retained 1.4 records remain recoverable for a one-way upgrade. A 1.5-to-1.4
+downgrade, slot change at the same journal sequence, or same-version anchor
+equivocation on the same boot at that sequence fails closed. A broker restart
+on a new boot may report those former Ready slots without current anchors.
+
+Focused validation covers the frozen handle derivation, version separation,
+current-versus-stale boot completeness, physical cross-links, broker directory
+revalidation, controller lookup, one-way snapshot upgrade, downgrade rejection,
+same-sequence reboot recovery, and same-boot anchor equivocation. All 340
+controller, 186 core, 84 Mount, and 90 protocol library tests pass. The four
+changed crates also pass all-target, all-feature compilation, strict crate-local
+Clippy without dependency linting, warnings-as-errors rustdoc, Rust formatting,
+and diff checks. The hermetic `nix-build -A checks.eval --cores 8 --no-out-link`
+gate passes.
+
+This advances `SBX-BPROTO-04`, `SBX-CTRL-03`, and `SBX-MOUNT-01`. It supplies
+the authoritative Mount half of attachment-anchor catalog projection, but does
+not yet combine it with current assignment, workspace, network, and identity
+allocation evidence or publish a production launch catalog. Source-handle
+materialization, native attachment replay, lease-expiry scheduling,
+internal-reboot anchor handoff, and live namespace VM qualification remain
+open.

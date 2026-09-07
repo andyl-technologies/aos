@@ -472,6 +472,17 @@ pub struct ResolvedDestinationSlotV1<'a> {
     pin: &'a ResolvedPath,
 }
 
+/// Describes one current namespace-generation anchor for broker inventory.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AttachmentAnchorInventoryV1 {
+    pub(crate) sandbox_id: [u8; 16],
+    pub(crate) incarnation_id: [u8; 16],
+    pub(crate) namespace_generation: u64,
+    pub(crate) kernel_boot_id: [u8; 16],
+    pub(crate) identity: FileIdentity,
+    pub(crate) mount_id: MountId,
+}
+
 impl ResolvedDestinationSlotV1<'_> {
     /// Borrows the live close-on-exec `O_PATH` descriptor.
     #[must_use]
@@ -943,6 +954,69 @@ impl DestinationSlotStoreV1 {
             .values()
             .cloned()
             .map(|record| DestinationSlotResourceV1 { record })
+    }
+
+    /// Revalidates and reports every current anchor containing a Ready slot.
+    pub(crate) fn attachment_anchors(&self) -> Result<Vec<AttachmentAnchorInventoryV1>> {
+        let mut anchors: BTreeMap<_, AttachmentAnchorInventoryV1> = BTreeMap::new();
+
+        for (slot_key, record) in &self.records {
+            if record.phase != DestinationSlotResourcePhaseV1::Ready
+                || record.kernel_boot_id != self.kernel_boot_id
+            {
+                continue;
+            }
+            self.verify_ready_pin(slot_key, record)?;
+
+            let key = (
+                record.binding.sandbox_id,
+                record.binding.incarnation_id,
+                record.binding.namespace_generation,
+            );
+            if let Some(anchor) = anchors.get(&key) {
+                if anchor.identity.device != record.slot_device
+                    || anchor.mount_id.get() != record.anchor_mount_id
+                {
+                    return Err(corrupt(
+                        "ready destination slots disagree about their attachment anchor",
+                    ));
+                }
+                continue;
+            }
+
+            let resolved = self
+                .root
+                .resolve(
+                    &record.binding.anchor_relative_path(),
+                    ResolveOptions::directory(),
+                )
+                .map_err(linux_error)?;
+            self.verify_directory(&resolved, ANCHOR_DIRECTORY_MODE)?;
+            let identity = resolved.identity();
+            let mount_id = MountId::from_fd(resolved.as_fd()).map_err(linux_error)?;
+            if identity.device != record.slot_device
+                || mount_id.get() != record.anchor_mount_id
+                || mount_id != self.anchor_mount_id
+            {
+                return Err(corrupt(
+                    "attachment anchor does not reproduce its ready slot identity",
+                ));
+            }
+
+            anchors.insert(
+                key,
+                AttachmentAnchorInventoryV1 {
+                    sandbox_id: record.binding.sandbox_id,
+                    incarnation_id: record.binding.incarnation_id,
+                    namespace_generation: record.binding.namespace_generation,
+                    kernel_boot_id: self.kernel_boot_id,
+                    identity,
+                    mount_id,
+                },
+            );
+        }
+
+        Ok(anchors.into_values().collect())
     }
 
     #[cfg(test)]
@@ -1892,6 +1966,43 @@ mod tests {
             .unwrap();
         assert_eq!(outcome, DestinationSlotMutationOutcomeV1::Replay);
         assert_eq!(replayed.record_digest(), ready.record_digest());
+    }
+
+    #[test]
+    fn anchor_inventory_revalidates_the_current_generation_directory() {
+        let mut fixture = Fixture::new();
+        let (ready, _) = fixture
+            .store
+            .materialize(&mut fixture.journal, &fixture.materialization)
+            .unwrap();
+
+        let anchors = fixture.store.attachment_anchors().unwrap();
+        let [anchor] = anchors.as_slice() else {
+            panic!("one Ready slot must produce one attachment anchor");
+        };
+        assert_eq!(anchor.sandbox_id, *fixture.binding.sandbox_id());
+        assert_eq!(anchor.incarnation_id, *fixture.binding.incarnation_id());
+        assert_eq!(
+            anchor.namespace_generation,
+            fixture.binding.namespace_generation()
+        );
+        assert_eq!(anchor.kernel_boot_id, fixture.store.kernel_boot_id);
+        assert_eq!(
+            anchor.identity.device,
+            ready.file_identity().unwrap().device
+        );
+        assert_eq!(anchor.mount_id, fixture.store.anchor_mount_id);
+
+        let anchor_path = fixture
+            .directory
+            .path()
+            .join(fixture.binding.anchor_relative_path());
+        std::fs::set_permissions(
+            anchor_path,
+            std::fs::Permissions::from_mode(PARENT_DIRECTORY_MODE),
+        )
+        .unwrap();
+        assert!(fixture.store.attachment_anchors().is_err());
     }
 
     #[test]

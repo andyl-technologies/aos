@@ -227,7 +227,8 @@ impl<W: MountWorker> MountService<W> {
                 (
                     *header.request_id(),
                     header.maximum_response_bytes(),
-                    self.broker.inventory_destination_slots(),
+                    self.broker
+                        .inventory_destination_slots_for_version(session.version()),
                 )
             }
             BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG => {

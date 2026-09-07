@@ -1,27 +1,31 @@
-//! Validated Mount 1.4 destination-slot requests and durable inventory.
+//! Validated Mount destination-slot requests and durable inventory.
 //!
 //! Materialization requests carry the exact canonical portable sandbox
 //! specification that declares the slot. Inventory carries only the proven
-//! descriptor and the broker's lossless node-local lifecycle record:
+//! descriptor and the broker's lossless node-local lifecycle record. Mount
+//! 1.5 additionally reports the exact current namespace-generation anchors
+//! that contain Ready slots:
 //!
 //! ```text
 //! assignment + namespace generation + slot + sandbox-spec descriptor
 //! lifecycle + operation correlations + physical identity + record digest
+//! anchor handle + sandbox/incarnation/generation + directory/mount identity
 //! ```
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use aos_proto::aos::sandbox::local::v1::{
-    ApplyDestinationSlotRequest, ApplyDestinationSlotResponse, DestinationSlotAction,
-    DestinationSlotInventoryRecord, DestinationSlotLifecycle, DestinationSlotReapCorrelation,
-    DestinationSlotRematerializationCorrelation, InventoryDestinationSlotsRequest,
-    InventoryDestinationSlotsResponse, MountOperationCorrelation,
+    ApplyDestinationSlotRequest, ApplyDestinationSlotResponse, AttachmentAnchorInventoryRecord,
+    DestinationSlotAction, DestinationSlotInventoryRecord, DestinationSlotLifecycle,
+    DestinationSlotReapCorrelation, DestinationSlotRematerializationCorrelation,
+    InventoryDestinationSlotsRequest, InventoryDestinationSlotsResponse, MountOperationCorrelation,
 };
 use aos_sandbox_core::{
     DecodeLimits, DescriptorRole, ObjectDescriptor, ProtocolId, ProtocolVersion,
     decode_sandbox_spec, descriptor_for_bytes, encode_sandbox_spec,
 };
 use buffa::Message as _;
+use sha2::{Digest as _, Sha256};
 
 use crate::{
     MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES, MINIMUM_RESPONSE_BYTES, PeerCredentials,
@@ -33,6 +37,12 @@ use crate::{
 pub const MAXIMUM_DESTINATION_SLOT_SPEC_BYTES: usize = 512 * 1024;
 /// Maximum durable destination-slot rows accepted in one complete inventory.
 pub const MAXIMUM_DESTINATION_SLOT_INVENTORY_RECORDS: usize = 16_384;
+/// Maximum current attachment anchors accepted in one complete inventory.
+pub const MAXIMUM_ATTACHMENT_ANCHOR_INVENTORY_RECORDS: usize = 16_384;
+
+const ATTACHMENT_ANCHOR_HANDLE_DOMAIN: &[u8] = b"aos.sandbox.mount.attachment-anchor-handle.v1\0";
+const DESTINATION_SLOT_PROTOCOL_V1_4: ProtocolVersion = ProtocolVersion::new(1, 4);
+const DESTINATION_SLOT_PROTOCOL_V1_5: ProtocolVersion = ProtocolVersion::new(1, 5);
 
 /// Carries one destination-slot effect after complete portable validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -293,13 +303,21 @@ impl ValidatedDestinationSlotInventoryRecord {
 /// Carries one validated authoritative destination-slot inventory snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedDestinationSlotInventory {
+    protocol_version: ProtocolVersion,
     kernel_boot_id: [u8; 16],
     journal_sequence: u64,
     slots: Vec<ValidatedDestinationSlotInventoryRecord>,
+    attachment_anchors: Vec<ValidatedAttachmentAnchorInventoryRecord>,
     broker_instance_id: [u8; 16],
 }
 
 impl ValidatedDestinationSlotInventory {
+    /// Returns the exact protocol version used to validate this snapshot.
+    #[must_use]
+    pub const fn protocol_version(&self) -> ProtocolVersion {
+        self.protocol_version
+    }
+
     /// Returns the broker's current Linux boot identifier.
     #[must_use]
     pub const fn kernel_boot_id(&self) -> &[u8; 16] {
@@ -318,6 +336,12 @@ impl ValidatedDestinationSlotInventory {
         &self.slots
     }
 
+    /// Returns current attachment anchors in strict logical-key order.
+    #[must_use]
+    pub fn attachment_anchors(&self) -> &[ValidatedAttachmentAnchorInventoryRecord] {
+        &self.attachment_anchors
+    }
+
     /// Returns the identity of the broker process that emitted the snapshot.
     #[must_use]
     pub const fn broker_instance_id(&self) -> &[u8; 16] {
@@ -325,7 +349,106 @@ impl ValidatedDestinationSlotInventory {
     }
 }
 
-/// Decodes and validates one hostile Mount 1.4 destination-slot effect body.
+/// Carries one current broker-owned attachment anchor after complete validation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidatedAttachmentAnchorInventoryRecord {
+    handle: [u8; 32],
+    sandbox_id: [u8; 16],
+    incarnation_id: [u8; 16],
+    namespace_generation: u64,
+    resource_kernel_boot_id: [u8; 16],
+    directory_device: u64,
+    directory_inode: u64,
+    unique_mount_id: u64,
+}
+
+impl ValidatedAttachmentAnchorInventoryRecord {
+    /// Returns the opaque Mount-derived handle consumed by Host launch plans.
+    #[must_use]
+    pub const fn handle(&self) -> &[u8; 32] {
+        &self.handle
+    }
+
+    /// Returns the logical sandbox identity owning this anchor.
+    #[must_use]
+    pub const fn sandbox_id(&self) -> &[u8; 16] {
+        &self.sandbox_id
+    }
+
+    /// Returns the exact sandbox incarnation owning this anchor.
+    #[must_use]
+    pub const fn incarnation_id(&self) -> &[u8; 16] {
+        &self.incarnation_id
+    }
+
+    /// Returns the payload mount-namespace generation represented by the anchor.
+    #[must_use]
+    pub const fn namespace_generation(&self) -> u64 {
+        self.namespace_generation
+    }
+
+    /// Returns the Linux boot identity under which the anchor was pinned.
+    #[must_use]
+    pub const fn resource_kernel_boot_id(&self) -> &[u8; 16] {
+        &self.resource_kernel_boot_id
+    }
+
+    /// Returns the anchor directory's device identity.
+    #[must_use]
+    pub const fn directory_device(&self) -> u64 {
+        self.directory_device
+    }
+
+    /// Returns the anchor directory's inode identity.
+    #[must_use]
+    pub const fn directory_inode(&self) -> u64 {
+        self.directory_inode
+    }
+
+    /// Returns the kernel-unique mount identity containing the anchor.
+    #[must_use]
+    pub const fn unique_mount_id(&self) -> u64 {
+        self.unique_mount_id
+    }
+
+    fn key(&self) -> ([u8; 16], [u8; 16], u64) {
+        (
+            self.sandbox_id,
+            self.incarnation_id,
+            self.namespace_generation,
+        )
+    }
+}
+
+/// Derives the opaque Host-facing handle for one exact physical anchor.
+///
+/// The fixed-width inputs are already broker-private identities. The domain
+/// separated digest prevents an anchor handle from aliasing another handle
+/// family.
+#[must_use]
+pub fn attachment_anchor_handle_v1(
+    sandbox_id: &[u8; 16],
+    incarnation_id: &[u8; 16],
+    namespace_generation: u64,
+    resource_kernel_boot_id: &[u8; 16],
+    directory_device: u64,
+    directory_inode: u64,
+    unique_mount_id: u64,
+) -> [u8; 32] {
+    Sha256::new()
+        .chain_update(ATTACHMENT_ANCHOR_HANDLE_DOMAIN)
+        .chain_update(sandbox_id)
+        .chain_update(incarnation_id)
+        .chain_update(namespace_generation.to_be_bytes())
+        .chain_update(resource_kernel_boot_id)
+        .chain_update(directory_device.to_be_bytes())
+        .chain_update(directory_inode.to_be_bytes())
+        .chain_update(unique_mount_id.to_be_bytes())
+        .finalize()
+        .into()
+}
+
+/// Decodes and validates one hostile Mount 1.4 or 1.5 destination-slot effect body.
 ///
 /// # Errors
 ///
@@ -356,7 +479,10 @@ pub fn decode_destination_slot_request(
         ProtocolId::MountBroker,
         now_boottime_nanoseconds,
     )?;
-    if header.protocol_version() != ProtocolVersion::new(1, 4) {
+    if !matches!(
+        header.protocol_version(),
+        DESTINATION_SLOT_PROTOCOL_V1_4 | DESTINATION_SLOT_PROTOCOL_V1_5
+    ) {
         return Err(ProtocolValidationError::MethodMismatch);
     }
     let fence = validate_fence(
@@ -506,7 +632,10 @@ pub fn decode_destination_slot_inventory_request(
         ProtocolId::MountBroker,
         now_boottime_nanoseconds,
     )?;
-    if header.protocol_version() != ProtocolVersion::new(1, 4) {
+    if !matches!(
+        header.protocol_version(),
+        DESTINATION_SLOT_PROTOCOL_V1_4 | DESTINATION_SLOT_PROTOCOL_V1_5
+    ) {
         return Err(ProtocolValidationError::MethodMismatch);
     }
     Ok(header)
@@ -559,7 +688,23 @@ pub fn decode_destination_slot_response(
 pub fn encode_destination_slot_inventory_response(
     response: InventoryDestinationSlotsResponse,
 ) -> Result<Vec<u8>, ProtocolValidationError> {
-    validate_inventory_response(&response)?;
+    encode_destination_slot_inventory_response_for_version(response, DESTINATION_SLOT_PROTOCOL_V1_4)
+}
+
+/// Validates and encodes one version-bound destination-slot inventory snapshot.
+///
+/// Mount 1.4 preserves the original slot-only response. Mount 1.5 requires a
+/// complete anchor row for every current Ready namespace generation.
+///
+/// # Errors
+///
+/// Returns [`ProtocolValidationError`] for an unsupported protocol version,
+/// version-incompatible fields, or any invalid snapshot identity or row.
+pub fn encode_destination_slot_inventory_response_for_version(
+    response: InventoryDestinationSlotsResponse,
+    protocol_version: ProtocolVersion,
+) -> Result<Vec<u8>, ProtocolValidationError> {
+    validate_inventory_response(&response, protocol_version)?;
     Ok(response.encode_to_vec())
 }
 
@@ -574,16 +719,43 @@ pub fn decode_destination_slot_inventory_response(
     bytes: &[u8],
     maximum_response_bytes: u32,
 ) -> Result<ValidatedDestinationSlotInventory, ProtocolValidationError> {
+    decode_destination_slot_inventory_response_for_version(
+        bytes,
+        maximum_response_bytes,
+        DESTINATION_SLOT_PROTOCOL_V1_4,
+    )
+}
+
+/// Decodes one complete version-bound destination-slot inventory snapshot.
+///
+/// # Errors
+///
+/// Returns [`ProtocolValidationError`] for an unsupported version, an
+/// oversized or malformed response, version-incompatible fields, sentinel
+/// snapshot identity, noncanonical order, reused operations, or an invalid
+/// slot/anchor cross-link.
+pub fn decode_destination_slot_inventory_response_for_version(
+    bytes: &[u8],
+    maximum_response_bytes: u32,
+    protocol_version: ProtocolVersion,
+) -> Result<ValidatedDestinationSlotInventory, ProtocolValidationError> {
     validate_response_bound(bytes, maximum_response_bytes)?;
     let response = InventoryDestinationSlotsResponse::decode_from_slice(bytes)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
     reject_unknown(&response.__buffa_unknown_fields)?;
-    validate_inventory_response(&response)
+    validate_inventory_response(&response, protocol_version)
 }
 
 fn validate_inventory_response(
     response: &InventoryDestinationSlotsResponse,
+    protocol_version: ProtocolVersion,
 ) -> Result<ValidatedDestinationSlotInventory, ProtocolValidationError> {
+    if !matches!(
+        protocol_version,
+        DESTINATION_SLOT_PROTOCOL_V1_4 | DESTINATION_SLOT_PROTOCOL_V1_5
+    ) {
+        return Err(ProtocolValidationError::MethodMismatch);
+    }
     if response.journal_sequence == 0 {
         return Err(ProtocolValidationError::InvalidField("journal_sequence"));
     }
@@ -593,12 +765,25 @@ fn validate_inventory_response(
             maximum: MAXIMUM_DESTINATION_SLOT_INVENTORY_RECORDS,
         });
     }
+    if response.attachment_anchors.len() > MAXIMUM_ATTACHMENT_ANCHOR_INVENTORY_RECORDS {
+        return Err(ProtocolValidationError::TooManyEntries {
+            field: "inventory.attachment_anchors",
+            maximum: MAXIMUM_ATTACHMENT_ANCHOR_INVENTORY_RECORDS,
+        });
+    }
+    if protocol_version == DESTINATION_SLOT_PROTOCOL_V1_4 && !response.attachment_anchors.is_empty()
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "inventory.attachment_anchors protocol version",
+        ));
+    }
 
     let kernel_boot_id = exact_nonzero::<16>(&response.kernel_boot_id, "kernel_boot_id")?;
     let broker_instance_id =
         exact_nonzero::<16>(&response.broker_instance_id, "broker_instance_id")?;
     let mut slots = Vec::with_capacity(response.slots.len());
     let mut operations = BTreeSet::new();
+    let mut current_ready_anchors = BTreeMap::new();
     for source in &response.slots {
         let slot = validate_inventory_record(source)?;
         if slots
@@ -623,14 +808,124 @@ fn validate_inventory_response(
                 "inventory.destination_slots operations",
             ));
         }
+        if slot.lifecycle == DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY
+            && slot.resource_kernel_boot_id == kernel_boot_id
+        {
+            let key = (
+                *slot.fence.sandbox_id(),
+                *slot.fence.incarnation_id(),
+                slot.namespace_generation,
+            );
+            let physical = (
+                slot.anchor_unique_mount_id
+                    .ok_or(ProtocolValidationError::InvalidField(
+                        "inventory.current_ready_anchor physical identity",
+                    ))?,
+                slot.slot_device
+                    .ok_or(ProtocolValidationError::InvalidField(
+                        "inventory.current_ready_anchor physical identity",
+                    ))?,
+            );
+            if current_ready_anchors
+                .insert(key, physical)
+                .is_some_and(|prior| prior != physical)
+            {
+                return Err(ProtocolValidationError::InvalidField(
+                    "inventory.current_ready_anchor identity",
+                ));
+            }
+        }
         slots.push(slot);
     }
 
+    let mut attachment_anchors = Vec::with_capacity(response.attachment_anchors.len());
+    for source in &response.attachment_anchors {
+        let anchor = validate_attachment_anchor(source)?;
+        if anchor.resource_kernel_boot_id != kernel_boot_id
+            || attachment_anchors.last().is_some_and(
+                |previous: &ValidatedAttachmentAnchorInventoryRecord| {
+                    previous.key() >= anchor.key()
+                },
+            )
+        {
+            return Err(ProtocolValidationError::InvalidField(
+                "inventory.attachment_anchors order or boot",
+            ));
+        }
+        let Some((slot_mount_id, slot_device)) = current_ready_anchors.get(&anchor.key()) else {
+            return Err(ProtocolValidationError::InvalidField(
+                "inventory.attachment_anchor without ready slot",
+            ));
+        };
+        if anchor.unique_mount_id != *slot_mount_id || anchor.directory_device != *slot_device {
+            return Err(ProtocolValidationError::InvalidField(
+                "inventory.attachment_anchor physical cross-link",
+            ));
+        }
+        attachment_anchors.push(anchor);
+    }
+    if protocol_version == DESTINATION_SLOT_PROTOCOL_V1_5
+        && attachment_anchors.len() != current_ready_anchors.len()
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "inventory.attachment_anchors completeness",
+        ));
+    }
+
     Ok(ValidatedDestinationSlotInventory {
+        protocol_version,
         kernel_boot_id,
         journal_sequence: response.journal_sequence,
         slots,
+        attachment_anchors,
         broker_instance_id,
+    })
+}
+
+fn validate_attachment_anchor(
+    record: &AttachmentAnchorInventoryRecord,
+) -> Result<ValidatedAttachmentAnchorInventoryRecord, ProtocolValidationError> {
+    reject_unknown(&record.__buffa_unknown_fields)?;
+    let handle = exact_nonzero::<32>(
+        &record.attachment_anchor_handle,
+        "attachment_anchor.attachment_anchor_handle",
+    )?;
+    let sandbox_id = exact_nonzero::<16>(&record.sandbox_id, "attachment_anchor.sandbox_id")?;
+    let incarnation_id =
+        exact_nonzero::<16>(&record.incarnation_id, "attachment_anchor.incarnation_id")?;
+    let resource_kernel_boot_id = exact_nonzero::<16>(
+        &record.resource_kernel_boot_id,
+        "attachment_anchor.resource_kernel_boot_id",
+    )?;
+    if record.namespace_generation == 0
+        || record.directory_device == 0
+        || record.directory_inode == 0
+        || record.unique_mount_id == 0
+        || handle
+            != attachment_anchor_handle_v1(
+                &sandbox_id,
+                &incarnation_id,
+                record.namespace_generation,
+                &resource_kernel_boot_id,
+                record.directory_device,
+                record.directory_inode,
+                record.unique_mount_id,
+            )
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "attachment_anchor identity",
+        ));
+    }
+
+    Ok(ValidatedAttachmentAnchorInventoryRecord {
+        handle,
+        sandbox_id,
+        incarnation_id,
+        namespace_generation: record.namespace_generation,
+        resource_kernel_boot_id,
+        directory_device: record.directory_device,
+        directory_inode: record.directory_inode,
+        unique_mount_id: record.unique_mount_id,
     })
 }
 
@@ -1062,6 +1357,58 @@ mod tests {
         record
     }
 
+    fn anchor_record(slot: &DestinationSlotInventoryRecord) -> AttachmentAnchorInventoryRecord {
+        let binding = slot.binding.as_option().unwrap();
+        let fence = binding.fence.as_option().unwrap();
+        let sandbox_id: [u8; 16] = fence.sandbox_id.as_slice().try_into().unwrap();
+        let incarnation_id: [u8; 16] = fence.incarnation_id.as_slice().try_into().unwrap();
+        let resource_kernel_boot_id: [u8; 16] =
+            slot.resource_kernel_boot_id.as_slice().try_into().unwrap();
+        let directory_device = slot.slot_device.unwrap();
+        let directory_inode = 12;
+        let unique_mount_id = slot.anchor_unique_mount_id.unwrap();
+        let handle = attachment_anchor_handle_v1(
+            &sandbox_id,
+            &incarnation_id,
+            binding.namespace_generation,
+            &resource_kernel_boot_id,
+            directory_device,
+            directory_inode,
+            unique_mount_id,
+        );
+        AttachmentAnchorInventoryRecord {
+            attachment_anchor_handle: handle.to_vec(),
+            sandbox_id: sandbox_id.to_vec(),
+            incarnation_id: incarnation_id.to_vec(),
+            namespace_generation: binding.namespace_generation,
+            resource_kernel_boot_id: resource_kernel_boot_id.to_vec(),
+            directory_device,
+            directory_inode,
+            unique_mount_id,
+            ..Default::default()
+        }
+    }
+
+    fn refresh_anchor_handle(anchor: &mut AttachmentAnchorInventoryRecord) {
+        let sandbox_id = anchor.sandbox_id.as_slice().try_into().unwrap();
+        let incarnation_id = anchor.incarnation_id.as_slice().try_into().unwrap();
+        let resource_kernel_boot_id = anchor
+            .resource_kernel_boot_id
+            .as_slice()
+            .try_into()
+            .unwrap();
+        anchor.attachment_anchor_handle = attachment_anchor_handle_v1(
+            &sandbox_id,
+            &incarnation_id,
+            anchor.namespace_generation,
+            &resource_kernel_boot_id,
+            anchor.directory_device,
+            anchor.directory_inode,
+            anchor.unique_mount_id,
+        )
+        .to_vec();
+    }
+
     #[test]
     fn request_binds_exact_declaration_action_and_protocol_version() {
         let materialize = request(
@@ -1400,6 +1747,132 @@ mod tests {
                 1,
             )
             .is_ok()
+        );
+
+        let mut current = inventory_request;
+        current.header.get_or_insert_default().protocol_minor = 5;
+        assert!(
+            decode_destination_slot_inventory_request(
+                &current.encode_to_vec(),
+                peer(),
+                policy(),
+                1,
+            )
+            .is_ok()
+        );
+        current.header.get_or_insert_default().protocol_minor = 6;
+        assert!(matches!(
+            decode_destination_slot_inventory_request(
+                &current.encode_to_vec(),
+                peer(),
+                policy(),
+                1,
+            ),
+            Err(ProtocolValidationError::Protocol(_))
+        ));
+    }
+
+    #[test]
+    fn mount_one_five_inventory_requires_exact_complete_current_anchors() {
+        let ready = inventory_record(
+            4,
+            30,
+            DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY,
+        );
+        let anchor = anchor_record(&ready);
+        let response = InventoryDestinationSlotsResponse {
+            kernel_boot_id: vec![8; 16],
+            journal_sequence: 41,
+            slots: vec![ready],
+            broker_instance_id: vec![9; 16],
+            attachment_anchors: vec![anchor.clone()],
+            ..Default::default()
+        };
+        let encoded = encode_destination_slot_inventory_response_for_version(
+            response.clone(),
+            DESTINATION_SLOT_PROTOCOL_V1_5,
+        )
+        .unwrap();
+        let decoded = decode_destination_slot_inventory_response_for_version(
+            &encoded,
+            16 * 1024,
+            DESTINATION_SLOT_PROTOCOL_V1_5,
+        )
+        .unwrap();
+        assert_eq!(decoded.protocol_version(), DESTINATION_SLOT_PROTOCOL_V1_5);
+        assert_eq!(decoded.attachment_anchors().len(), 1);
+        assert_eq!(
+            decoded.attachment_anchors()[0].handle().as_slice(),
+            anchor.attachment_anchor_handle.as_slice()
+        );
+
+        let mut missing = response.clone();
+        missing.attachment_anchors.clear();
+        assert!(
+            encode_destination_slot_inventory_response_for_version(
+                missing,
+                DESTINATION_SLOT_PROTOCOL_V1_5,
+            )
+            .is_err()
+        );
+        assert!(
+            encode_destination_slot_inventory_response_for_version(
+                response.clone(),
+                DESTINATION_SLOT_PROTOCOL_V1_4,
+            )
+            .is_err()
+        );
+
+        let mut substituted = response;
+        substituted.attachment_anchors[0].directory_inode += 1;
+        assert!(
+            encode_destination_slot_inventory_response_for_version(
+                substituted.clone(),
+                DESTINATION_SLOT_PROTOCOL_V1_5,
+            )
+            .is_err()
+        );
+
+        let mut cross_link_substitution = substituted;
+        cross_link_substitution.attachment_anchors[0].unique_mount_id += 1;
+        refresh_anchor_handle(&mut cross_link_substitution.attachment_anchors[0]);
+        assert!(
+            encode_destination_slot_inventory_response_for_version(
+                cross_link_substitution,
+                DESTINATION_SLOT_PROTOCOL_V1_5,
+            )
+            .is_err()
+        );
+
+        let stale_ready = inventory_record(
+            4,
+            30,
+            DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY,
+        );
+        assert!(
+            encode_destination_slot_inventory_response_for_version(
+                InventoryDestinationSlotsResponse {
+                    kernel_boot_id: vec![9; 16],
+                    journal_sequence: 42,
+                    slots: vec![stale_ready],
+                    broker_instance_id: vec![10; 16],
+                    ..Default::default()
+                },
+                DESTINATION_SLOT_PROTOCOL_V1_5,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn attachment_anchor_handle_derivation_is_stable() {
+        assert_eq!(
+            attachment_anchor_handle_v1(&[2; 16], &[3; 16], 4, &[8; 16], 40, 43, 42),
+            [
+                0xbe, 0x43, 0x67, 0xc1, 0xc1, 0x34, 0x0e, 0x01, 0x83, 0x7d, 0x60, 0x63, 0x9b, 0x3f,
+                0x9c, 0x28, 0x5c, 0x9d, 0x05, 0x2e, 0x77, 0xef, 0xd9, 0x93, 0xad, 0x34, 0x38, 0xb2,
+                0x4f, 0xa3, 0xf8, 0xac,
+            ]
         );
     }
 }

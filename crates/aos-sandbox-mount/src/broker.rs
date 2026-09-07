@@ -5,8 +5,8 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 
 use aos_proto::aos::sandbox::local::v1::{
-    AssignmentFence, Descriptor, DestinationSlotAction, DestinationSlotInventoryRecord,
-    DestinationSlotLifecycle, DestinationSlotReapCorrelation,
+    AssignmentFence, AttachmentAnchorInventoryRecord, Descriptor, DestinationSlotAction,
+    DestinationSlotInventoryRecord, DestinationSlotLifecycle, DestinationSlotReapCorrelation,
     DestinationSlotRematerializationCorrelation, InventoryDestinationSlotsResponse,
     InventoryMountResourcesResponse, MountAction, MountAssignmentBinding, MountAttributes,
     MountFaultCorrelation, MountFaultPhase, MountInventoryRecord, MountKernelObservation,
@@ -27,9 +27,9 @@ use aos_sandbox_protocol::mount_catalog::{
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, ValidatedDestinationSlotRequest, ValidatedMountAttributes,
-    ValidatedMountRequest, decode_destination_slot_request, decode_mount_request,
-    detached_mount_handle_v1, encode_destination_slot_inventory_response,
-    encode_destination_slot_response,
+    ValidatedMountRequest, attachment_anchor_handle_v1, decode_destination_slot_request,
+    decode_mount_request, detached_mount_handle_v1,
+    encode_destination_slot_inventory_response_for_version, encode_destination_slot_response,
 };
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -163,17 +163,66 @@ impl<W: MountWorker> MountBroker<W> {
     /// Returns an error when destination-slot ownership is not configured or
     /// an internally produced row violates the closed wire schema.
     pub fn inventory_destination_slots(&self) -> Result<Vec<u8>> {
+        self.inventory_destination_slots_for_version(ProtocolVersion::new(1, 4))
+    }
+
+    /// Encodes a version-bound authoritative destination-slot table snapshot.
+    ///
+    /// Mount 1.5 additionally revalidates and includes every current
+    /// namespace-generation anchor containing at least one Ready slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when destination-slot ownership is unavailable, the
+    /// protocol version is unsupported, current anchor identity changed, or
+    /// an internally produced row violates the closed schema.
+    pub fn inventory_destination_slots_for_version(
+        &self,
+        protocol_version: ProtocolVersion,
+    ) -> Result<Vec<u8>> {
         let slots = self.destination_slots.as_ref().ok_or_else(|| {
             MountError::State("destination-slot ownership is not configured".to_owned())
         })?;
+        let attachment_anchors = if protocol_version == ProtocolVersion::new(1, 5) {
+            slots
+                .attachment_anchors()?
+                .into_iter()
+                .map(|anchor| {
+                    let handle = attachment_anchor_handle_v1(
+                        &anchor.sandbox_id,
+                        &anchor.incarnation_id,
+                        anchor.namespace_generation,
+                        &anchor.kernel_boot_id,
+                        anchor.identity.device,
+                        anchor.identity.inode,
+                        anchor.mount_id.get(),
+                    );
+                    AttachmentAnchorInventoryRecord {
+                        attachment_anchor_handle: handle.to_vec(),
+                        sandbox_id: anchor.sandbox_id.to_vec(),
+                        incarnation_id: anchor.incarnation_id.to_vec(),
+                        namespace_generation: anchor.namespace_generation,
+                        resource_kernel_boot_id: anchor.kernel_boot_id.to_vec(),
+                        directory_device: anchor.identity.device,
+                        directory_inode: anchor.identity.inode,
+                        unique_mount_id: anchor.mount_id.get(),
+                        ..Default::default()
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let response = InventoryDestinationSlotsResponse {
             kernel_boot_id: self.kernel_boot_id.to_vec(),
             journal_sequence: self.journal.snapshot_sequence(),
             slots: slots.resources().map(destination_slot_record).collect(),
             broker_instance_id: self.broker_instance_id.to_vec(),
+            attachment_anchors,
             ..Default::default()
         };
-        encode_destination_slot_inventory_response(response).map_err(Into::into)
+        encode_destination_slot_inventory_response_for_version(response, protocol_version)
+            .map_err(Into::into)
     }
 
     /// Admits and applies one signed destination-slot materialization or reap.
@@ -2398,7 +2447,8 @@ mod tests {
     use aos_sandbox_protocol::session::decode_request_envelope;
     use aos_sandbox_protocol::{
         AuthorizationArtifactBytes, decode_destination_slot_inventory_response,
-        decode_destination_slot_response, encode_authorized_request_envelope,
+        decode_destination_slot_inventory_response_for_version, decode_destination_slot_response,
+        encode_authorized_request_envelope,
     };
     use ed25519_dalek::SigningKey;
     use std::num::NonZeroU32;
@@ -3462,6 +3512,27 @@ mod tests {
         assert_eq!(inventory.kernel_boot_id(), &broker.kernel_boot_id);
         assert_ne!(inventory.broker_instance_id(), &[0; 16]);
         assert!(inventory.journal_sequence() > 1);
+
+        let inventory_v1_5 = decode_destination_slot_inventory_response_for_version(
+            &broker
+                .inventory_destination_slots_for_version(ProtocolVersion::new(1, 5))
+                .unwrap(),
+            4096,
+            ProtocolVersion::new(1, 5),
+        )
+        .unwrap();
+        assert_eq!(inventory_v1_5.attachment_anchors().len(), 1);
+        let anchor = inventory_v1_5.attachment_anchors()[0];
+        assert_eq!(anchor.sandbox_id(), ready.fence().sandbox_id());
+        assert_eq!(anchor.incarnation_id(), ready.fence().incarnation_id());
+        assert_eq!(anchor.namespace_generation(), ready.namespace_generation());
+        assert_eq!(anchor.resource_kernel_boot_id(), &broker.kernel_boot_id);
+        assert_eq!(anchor.directory_device(), ready.slot_device().unwrap());
+        assert_ne!(anchor.directory_inode(), 0);
+        assert_eq!(
+            anchor.unique_mount_id(),
+            ready.anchor_unique_mount_id().unwrap()
+        );
         drop(broker);
 
         let (mut recovered, recovered_fixture) = test_broker_with_destination_slots(

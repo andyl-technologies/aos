@@ -509,11 +509,29 @@ message ApplyDestinationSlotResponse {
 
 message InventoryDestinationSlotsRequest { RequestHeader header = 1; }
 
+// One current broker-owned namespace-generation anchor. The handle is derived
+// from every physical identity field and is the only value carried into a Host
+// launch plan. Paths remain a fixed local convention and never cross this
+// boundary.
+message AttachmentAnchorInventoryRecord {
+  bytes attachment_anchor_handle = 1; // Exactly 32 bytes.
+  bytes sandbox_id = 2; // Exactly 16 bytes.
+  bytes incarnation_id = 3; // Exactly 16 bytes.
+  uint64 namespace_generation = 4;
+  bytes resource_kernel_boot_id = 5; // Exactly 16 bytes.
+  uint64 directory_device = 6;
+  uint64 directory_inode = 7;
+  uint64 unique_mount_id = 8;
+}
+
 message InventoryDestinationSlotsResponse {
   bytes kernel_boot_id = 1; // Current Linux boot ID, exactly 16 bytes.
   uint64 journal_sequence = 2; // Nonzero next-frame durable boundary.
   repeated DestinationSlotInventoryRecord slots = 3; // At most 16384, strict key order.
   bytes broker_instance_id = 4; // Exactly 16 bytes; changes on broker start.
+  // Mount 1.5 only. One strict logical-key-ordered row for every current anchor
+  // that contains at least one Ready destination slot.
+  repeated AttachmentAnchorInventoryRecord attachment_anchors = 5;
 }
 
 message MountResult {

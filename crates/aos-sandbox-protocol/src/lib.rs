@@ -28,13 +28,15 @@ pub use inventory::{
     decode_mount_inventory_response,
 };
 pub use mount_destination_slot::{
-    MAXIMUM_DESTINATION_SLOT_INVENTORY_RECORDS, MAXIMUM_DESTINATION_SLOT_SPEC_BYTES,
+    MAXIMUM_ATTACHMENT_ANCHOR_INVENTORY_RECORDS, MAXIMUM_DESTINATION_SLOT_INVENTORY_RECORDS,
+    MAXIMUM_DESTINATION_SLOT_SPEC_BYTES, ValidatedAttachmentAnchorInventoryRecord,
     ValidatedDestinationSlotInventory, ValidatedDestinationSlotInventoryRecord,
     ValidatedDestinationSlotOperation, ValidatedDestinationSlotReap,
-    ValidatedDestinationSlotRequest, decode_destination_slot_inventory_request,
-    decode_destination_slot_inventory_response, decode_destination_slot_request,
+    ValidatedDestinationSlotRequest, attachment_anchor_handle_v1,
+    decode_destination_slot_inventory_request, decode_destination_slot_inventory_response,
+    decode_destination_slot_inventory_response_for_version, decode_destination_slot_request,
     decode_destination_slot_response, encode_destination_slot_inventory_response,
-    encode_destination_slot_response,
+    encode_destination_slot_inventory_response_for_version, encode_destination_slot_response,
 };
 pub use mount_result::{
     ValidatedMountResult, decode_mount_result_for_apply, detached_mount_handle_v1,
