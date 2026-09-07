@@ -87,16 +87,21 @@ class BrowserAudit:
         self.chrome.call("Emulation.setDeviceMetricsOverride", {"width": 1440, "height": 1000, "deviceScaleFactor": 1, "mobile": False})
 
     def run(self):
-        for section in ("packages", "docs", "images"):
+        for section in ("packages", "docs", "images", "containers"):
             status, body, _, url = self.get(f"/demo/cdn/-/{section}")
             self.check(status == 200 and "release=1.0.0" in url, f"{section} initial URL pins its release")
             self.check(b"?release=1.0.0" in body, f"{section} navigation carries its release")
             self.check(b"index state: failed" not in body, f"{section} retains a verified index after publication")
+            title_position = body.find(b"<h1")
+            picker_position = body.find(b"data-release-picker")
+            self.check(0 <= title_position < picker_position, f"{section} shows its title before the release selector")
         status, body, _, _ = self.get("/demo/cdn/-/releases/1.0.0")
         self.check(status == 200 and b"Release notes" in body and b"Current rollout" in body, "individual release exposes notes, contents, and live channel context")
+        self.check(b'data-release-picker' not in body, "individual release omits the release selection toolbar")
         status, body, _, _ = self.get("/demo/cdn/-/releases")
         text = body.decode()
         self.check(status == 200 and 'class="support-tile supported"' in text and "<strong>1.0.0</strong>" in text and "stable" in text, "release directory opens with the supported train board")
+        self.check(">verification</th>" not in text, "release directory omits the redundant verification column")
         self.check('<span class="support-train">1.0 · LTS</span>' in text and "Until 2036-12-31" in text, "board reads the committed support policy for kind and end date")
         self.check('class="release-filter"' in text and '<option value="stable"' in text and '<option value="lts">Long-term support</option>' in text, "release directory offers train, status, and LTS filters")
         status, body, _, _ = self.get("/demo/cdn/-/releases?status=lts")
