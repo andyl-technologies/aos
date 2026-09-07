@@ -28,7 +28,7 @@ use super::{
     AttachedCanonicalCampaignRuntime, CampaignLocalServiceError, CampaignLocalServiceMode,
     CampaignLoopbackServerShutdown, CampaignStateOwner, CanonicalCampaignRuntimeConfig,
     MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES, PreparedCanonicalCampaignRuntime,
-    prepare_canonical_campaign_runtime,
+    prepare_canonical_campaign_runtime, prepare_canonical_campaign_runtime_endpoint,
 };
 
 /// Weak operational capability for attaching one runtime to a live service.
@@ -110,11 +110,10 @@ impl CampaignRuntimeAttachmentHandle {
             .as_ref()
             .ok_or(CampaignLocalServiceError::RuntimeAuthorityUnavailable)?
             .clone();
-        let executor_stream = endpoint.connect()?;
-        let prepared = prepare_canonical_campaign_runtime(
+        let prepared = prepare_canonical_campaign_runtime_endpoint(
             Arc::clone(&shared.repository),
             planner_authority,
-            executor_stream,
+            endpoint.clone(),
             config,
         )?;
         reservation.install(prepared).map(|_| ())
@@ -211,13 +210,10 @@ impl CampaignRuntimeControlService for CanonicalCampaignRuntimeController {
             self.planner_process.clone(),
         )
         .map_err(|_| CampaignServiceFailure::IntegrityFailure)?;
-        let executor_stream = endpoint
-            .connect()
-            .map_err(|_| CampaignServiceFailure::Unavailable)?;
-        let prepared = prepare_canonical_campaign_runtime(
+        let prepared = prepare_canonical_campaign_runtime_endpoint(
             Arc::clone(&shared.repository),
             planner_authority,
-            executor_stream,
+            endpoint,
             &config,
         )
         .map_err(|error| runtime_control_runtime_failure(&error))?;
