@@ -695,7 +695,10 @@
     if (!input || !suggest || !indexEl || !form) return;
     var index;
     try { index = JSON.parse(indexEl.textContent); } catch (_) { return; }
+    // Replace native datalist suggestions only once the enhanced picker is ready.
+    input.removeAttribute("list");
     var entries = [];
+    if (index.allow_all) entries.push({value: "all", label: "All releases", kind: "scope"});
     (index.channels || []).forEach(function (channel) {
       entries.push({value: channel.name, label: channel.name + " \u2192 " + channel.release, kind: "channel"});
     });
@@ -707,18 +710,21 @@
     });
     var active = -1;
     var shown = [];
-    function close() { suggest.hidden = true; suggest.innerHTML = ""; active = -1; shown = []; }
+    function close() { suggest.hidden = true; suggest.innerHTML = ""; input.removeAttribute("aria-activedescendant"); active = -1; shown = []; }
     function choose(entry) { input.value = entry.value; close(); form.requestSubmit(); }
     function render() {
       var term = input.value.trim().toLowerCase();
       shown = entries.filter(function (entry) { return !term || entry.value.toLowerCase().indexOf(term) !== -1; }).slice(0, 12);
       suggest.innerHTML = "";
       active = -1;
+      input.removeAttribute("aria-activedescendant");
       if (!shown.length) { suggest.hidden = true; return; }
       shown.forEach(function (entry, position) {
         var item = document.createElement("div");
         item.className = "fs-item release-suggest-" + entry.kind;
+        item.id = "release-option-" + position;
         item.setAttribute("role", "option");
+        item.setAttribute("aria-selected", "false");
         item.textContent = entry.label;
         item.addEventListener("mousedown", function (event) { event.preventDefault(); choose(entry); });
         item.addEventListener("mouseenter", function () { highlight(position); });
@@ -728,12 +734,20 @@
     }
     function highlight(position) {
       active = position;
-      Array.from(suggest.children).forEach(function (item, at) { item.classList.toggle("active", at === active); });
-      if (active >= 0) suggest.children[active].scrollIntoView({block: "nearest"});
+      Array.from(suggest.children).forEach(function (item, at) {
+        item.classList.toggle("active", at === active);
+        item.setAttribute("aria-selected", at === active ? "true" : "false");
+      });
+      if (active >= 0) {
+        input.setAttribute("aria-activedescendant", suggest.children[active].id);
+        suggest.children[active].scrollIntoView({block: "nearest"});
+      }
     }
     input.setAttribute("role", "combobox");
     input.setAttribute("aria-expanded", "false");
     input.setAttribute("aria-autocomplete", "list");
+    input.setAttribute("aria-controls", suggest.id);
+    suggest.setAttribute("aria-label", "Available releases");
     suggest.setAttribute("role", "listbox");
     input.addEventListener("input", render);
     input.addEventListener("focus", render);

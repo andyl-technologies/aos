@@ -212,13 +212,17 @@ fn ManagementShell(
                         </ol>
                     </nav>
                     <details class="masthead-menu" on:keydown=dismiss_masthead_menu>
-                        <summary>"Menu"</summary>
+                        <summary aria-label="Menu">
+                            <span class="hamburger" aria-hidden="true">
+                                <span></span><span></span><span></span>
+                            </span>
+                        </summary>
                         <nav class="session" aria-label="Account navigation">
                             {AUTHENTICATED_PRIMARY_NAVIGATION.iter().map(|item| view! {
-                                <a href=item.href>{item.label}</a>
+                                <a href=item.href><svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d=aos_hub_console_contract::navigation_icon_path(item.href)/></svg>{item.label}</a>
                             }).collect_view()}
                             <span class="who"><Suspense fallback=move || "signed-in user">{move || Suspend::new(async move { session.await.as_ref().ok().and_then(|client| client.session().principal.map(|principal| principal.email)).unwrap_or_else(|| "signed-in user".to_string()) })}</Suspense></span>
-                            <a href="/logout">"log out"</a>
+                            <a href="/logout"><svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d=aos_hub_console_contract::navigation_icon_path("/logout")/></svg>"log out"</a>
                         </nav>
                     </details>
                 </div>

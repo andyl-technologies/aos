@@ -203,10 +203,10 @@ impl ReleaseContext {
 
     /// Builds the shared selector with page-specific filters preserved.
     ///
-    /// The selector stays small at any release count: channel targets, the
-    /// newest releases, and the current selection are offered directly, a
-    /// typed jump resolves any version, commit, or channel name, and the
-    /// Releases directory lists everything else. An explicit action lets
+    /// A single search field offers channels and recent releases and resolves
+    /// any version, commit, or channel name. The linked pill identifies only
+    /// the viewed release. Native suggestions keep the form usable without
+    /// JavaScript; the enhanced picker searches the full index. Its action lets
     /// detail pages resolve the package in the newly selected release.
     /// Pagination and digests belong to the old selection and must not be
     /// included in `filters`.
@@ -224,112 +224,59 @@ impl ReleaseContext {
         let channel_targets = self.channel_targets();
 
         let mut body = String::from("<div class=\"release-selector\" data-release-picker>");
-        if !channel_targets.is_empty() || self.selected().is_some() {
-            body.push_str("<div class=\"release-rail\" role=\"group\" aria-label=\"Releases\">");
-            for (name, version) in &channel_targets {
-                let href = escape(&release_href(slug, version));
-                let _ = write!(
-                    body,
-                    "<a class=\"release-pill\" href=\"{href}\"{}>{} <strong>{}</strong></a>",
-                    if Some(*version) == self.selected() {
-                        " aria-current=\"true\""
-                    } else {
-                        ""
-                    },
-                    escape(name),
-                    escape(version)
-                );
-            }
-            if let Some(version) = self.selected().filter(|selected| {
-                !channel_targets
-                    .iter()
-                    .any(|(_, version)| version == selected)
-            }) {
-                let _ = write!(
-                    body,
-                    "<a class=\"release-pill\" href=\"{}\" aria-current=\"true\"><strong>{}</strong></a>",
-                    escape(&release_href(slug, version)),
-                    escape(version)
-                );
-            }
-            body.push_str("</div>");
+        // Only the viewed release belongs in the context rail. Other channel
+        // frontiers are destinations in the picker, not additional selections.
+        if let Some(version) = self.selected() {
+            let channel = channel_targets
+                .iter()
+                .find(|(_, target)| *target == version)
+                .map(|(name, _)| format!("{} ", escape(name)))
+                .unwrap_or_default();
+            let _ = write!(
+                body,
+                "<div class=\"release-rail\"><a class=\"release-pill\" href=\"{}\" aria-current=\"true\">{channel}<strong>{}</strong></a></div>",
+                escape(&release_href(slug, version)),
+                escape(version)
+            );
+        } else if self.all_releases {
+            body.push_str("<span class=\"release-pill\" aria-current=\"true\">All releases</span>");
         }
 
         let _ = write!(
             body,
-            "<form method=\"get\" action=\"{}\" class=\"release-choice\">{hidden}<label>Release <select name=\"release\">",
+            "<form method=\"get\" action=\"{}\" class=\"release-jump\" role=\"search\" aria-label=\"Switch release\">{hidden}<label><span class=\"visually-hidden\">Version, channel, or commit</span><input type=\"search\" name=\"release\" data-release-jump list=\"release-options\" placeholder=\"Find version, channel, or commit\" required autocomplete=\"off\" autocapitalize=\"off\" spellcheck=\"false\"></label><button type=\"submit\">Switch</button><div id=\"release-suggestions\" class=\"filter-suggest release-suggest\" hidden></div><datalist id=\"release-options\">",
             escape(action)
         );
         if self.allow_all {
+            body.push_str("<option value=\"all\">All releases</option>");
+        }
+        for (name, version) in &channel_targets {
             let _ = write!(
                 body,
-                "<option value=\"all\"{}>All releases</option>",
-                if self.all_releases { " selected" } else { "" }
+                "<option value=\"{}\">{} → {}</option>",
+                escape(name),
+                escape(name),
+                escape(version)
             );
         }
-        if self.selected.is_none() && !self.all_releases {
-            body.push_str("<option value=\"\" selected disabled>Choose a release</option>");
-        }
-        let option = |body: &mut String, release: &ReleaseRow, prefix: &str| {
-            let _ = write!(
-                body,
-                "<option value=\"{}\"{}>{prefix}{}{}</option>",
-                escape(&release.semver),
-                if Some(release.semver.as_str()) == self.selected() {
-                    " selected"
-                } else {
-                    ""
-                },
-                escape(&release.semver),
-                if is_prerelease(&release.semver) {
-                    " · prerelease"
-                } else {
-                    ""
-                }
-            );
-        };
         let mut offered = std::collections::BTreeSet::new();
-        if !channel_targets.is_empty() {
-            body.push_str("<optgroup label=\"Channels\">");
-            for (name, version) in &channel_targets {
-                if let Some(release) = self.releases.iter().find(|r| r.semver == *version) {
-                    option(&mut body, release, &format!("{} → ", escape(name)));
-                    offered.insert(release.semver.as_str());
-                }
-            }
-            body.push_str("</optgroup>");
-        }
-        let recent = self
+        for release in self
             .releases
             .iter()
-            .filter(|release| !offered.contains(release.semver.as_str()))
             .take(RECENT_RELEASES)
-            .collect::<Vec<_>>();
-        if !recent.is_empty() {
-            body.push_str("<optgroup label=\"Recent\">");
-            for release in recent {
-                option(&mut body, release, "");
-                offered.insert(release.semver.as_str());
-            }
-            body.push_str("</optgroup>");
-        }
-        if let Some(release) = self
-            .release()
-            .filter(|release| !offered.contains(release.semver.as_str()))
+            .chain(self.release())
         {
-            body.push_str("<optgroup label=\"Selected\">");
-            option(&mut body, release, "");
-            body.push_str("</optgroup>");
+            if offered.insert(&release.semver) {
+                let _ = write!(
+                    body,
+                    "<option value=\"{}\">{}</option>",
+                    escape(&release.semver),
+                    escape(&release.semver)
+                );
+            }
         }
-        body.push_str("</select></label><button type=\"submit\">Show release</button></form>");
+        body.push_str("</datalist></form>");
 
-        // A second form keeps the typed value out of the select's field name;
-        // the server resolves versions, commits, and channel names alike.
-        let _ = write!(
-            body,
-            "<form method=\"get\" action=\"{}\" class=\"release-jump\" role=\"search\">{hidden}<label><span class=\"visually-hidden\">Jump to release</span><input type=\"search\" name=\"release\" data-release-jump placeholder=\"Jump to version, commit, or channel\" autocomplete=\"off\" autocapitalize=\"off\" spellcheck=\"false\"></label><button type=\"submit\">Go</button><div class=\"filter-suggest release-suggest\" hidden></div></form>",
-            escape(action)
-        );
         let _ = write!(
             body,
             "<a class=\"release-link\" href=\"/{}/-/releases\">Browse releases →</a>",
@@ -366,7 +313,7 @@ impl ReleaseContext {
                 })
             })
             .collect::<Vec<_>>();
-        let json = serde_json::json!({"channels": channels, "releases": releases})
+        let json = serde_json::json!({"channels": channels, "releases": releases, "allow_all": self.allow_all})
             .to_string()
             .replace('<', "\\u003c");
         format!("<script type=\"application/json\" data-release-index>{json}</script>")
@@ -698,16 +645,13 @@ mod tests {
         .unwrap();
         let html = context.selector("org/main", "/org/main/-/docs", &[("root", "abc")]);
         assert_eq!(html.matches("<option ").count(), 12, "{html}");
-        assert!(html.contains(
-            "<optgroup label=\"Channels\"><option value=\"1.100.0\">stable → 1.100.0</option>"
-        ));
-        assert!(
-            html.contains("<optgroup label=\"Recent\"><option value=\"1.119.0\">1.119.0</option>")
-        );
-        assert!(html.contains(
-            "<optgroup label=\"Selected\"><option value=\"0.1.0\" selected>0.1.0</option>"
-        ));
-        assert!(html.contains("class=\"release-pill\" href=\"/org/main/-/releases/1.100.0\""));
+        assert!(html.contains("<option value=\"stable\">stable → 1.100.0</option>"));
+        assert!(html.contains("<option value=\"1.119.0\">1.119.0</option>"));
+        assert!(html.contains("<option value=\"0.1.0\">0.1.0</option>"));
+        assert_eq!(html.matches("class=\"release-pill\"").count(), 1);
+        assert_eq!(html.matches("<form ").count(), 1);
+        assert_eq!(html.matches("type=\"submit\"").count(), 1);
+        assert!(!html.contains("<select"));
         assert!(html.contains("name=\"release\" data-release-jump"));
         assert!(html.contains("Browse releases →"));
         assert!(!html.contains("View release →"));
@@ -716,13 +660,13 @@ mod tests {
         ));
         assert!(html.contains("\"channels\":[{\"name\":\"stable\",\"release\":\"1.100.0\"}]"));
         assert!(html.contains("<input type=\"hidden\" name=\"root\" value=\"abc\">"));
-        assert_eq!(html.matches("name=\"root\" value=\"abc\"").count(), 2);
+        assert_eq!(html.matches("name=\"root\" value=\"abc\"").count(), 1);
 
         let current = ReleaseContext::select_among(releases, channels, None, Some("stable"), false)
             .unwrap()
             .selector("org/main", "/org/main/-/docs", &[]);
         assert!(current.contains("aria-current=\"true\">stable <strong>1.100.0</strong>"));
-        assert!(!current.contains("<optgroup label=\"Selected\">"));
+        assert_eq!(current.matches("class=\"release-pill\"").count(), 1);
     }
 
     #[test]
