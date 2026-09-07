@@ -134,7 +134,7 @@ in-process/LMDB-txn (native). NOT KV** (KV caps at 1 write/s/key, no atomics).
 **Bucket 3 — relational / queried / reported → stay in D1 until layer 3, then
 the tenant DO's SQLite.** orgs, users, memberships, projects, registries,
 packages, package_versions, releases, channels, caches, cache_objects,
-audit_log, webhooks, validation_*, config_changesets/revisions, etc.
+audit_log, webhooks, config_changesets/revisions, etc.
 
 ## Workers ↔ Native realization (the single-source ports)
 

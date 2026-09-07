@@ -4,9 +4,8 @@
 disabled — the Debian ethos):
 
 - Registry home: name, description, trust anchors with fingerprints,
-  channels and their current versions, freshness ("frontier observed
-  4m ago"), mirror-freshness table, cache-coverage health, setup
-  snippets.
+  channels and their current versions, index status, committed cache
+  policy, and setup snippets.
 - Package index and search; package page: versions × platforms table,
   NAR/closure sizes, store paths, license/homepage/maintainer,
   dependency closure browser, sysroot image downloads (qcow2/raw),
@@ -16,8 +15,8 @@ disabled — the Debian ethos):
   "which version will *my* host get?" calculator.
 - Releases page: signed tags, signature status, pack/thin-delta
   availability, commit history.
-- Registry health page: cache × coverage matrix, validation history,
-  missing-path drill-down.
+- Registry health page: index status, committed cache policy, and delivery
+  routes.
 - Raw directory-listing fallback for every machine path.
 
 **Producer-facing** (authenticated):
@@ -169,7 +168,7 @@ top-level list (`login`, `activate`, `account`, `new`, `oauth2`,
     packages/        packages/{name}     index · package page
     channels/        channels/{name}     rollout grid · advance console
     releases/        releases/{semver}   signed tags · pack/delta detail
-    health/                              validation matrix · mirror freshness
+    health/                              index · cache policy · delivery routes
     git/log  git/diff/{a}..{b}           git views
     changes/         changes/{id}        change requests · prepared operations
     publishes/       publishes/{id}      publish pipeline runs
@@ -179,8 +178,8 @@ top-level list (`login`, `activate`, `account`, `new`, `oauth2`,
 #### Page flows — the five journeys that matter
 
 1. **Evaluate → adopt** (anonymous consumer): land on the registry
-   home from search or a pasted URL → trust anchors, frontier
-   freshness, and cache health are above the fold (the decision
+   home from search or a pasted URL → trust anchors, index status,
+   and cache policy are above the fold (the decision
    inputs) → package page → copy the setup snippet. Zero login, zero
    JS required.
 2. **Publish** (maintainer): run `apr release` in the terminal → the

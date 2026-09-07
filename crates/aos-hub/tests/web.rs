@@ -12,7 +12,6 @@ use aos_hub::db::{Database, SurfaceTarget};
 use aos_hub::fetch::LocalFsFetch;
 use aos_hub::indexer::index_and_record;
 use aos_hub::server::{router, AppState};
-use aos_hub::validation::validate_presence;
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use tower::ServiceExt;
@@ -238,35 +237,6 @@ async fn javascript_homepage_is_not_a_link() {
         "javascript: homepage must not become a link: {body}"
     );
     assert!(body.contains("javascript:alert(1)"), "shown as plain text");
-}
-
-#[tokio::test]
-async fn health_page_shows_unreachable_cache_after_validation() {
-    let dir = tempfile::tempdir().unwrap();
-    let surface = dir.path().join("surface");
-    std::fs::create_dir_all(&surface).unwrap();
-    let fixture = common::standard_registry(&surface);
-    let (app, db) = serve_fixture(&surface, &fixture).await;
-
-    // Validation state belongs on the dedicated health page.
-    let (_, _, health) = get(&app, "/demo/-/health").await;
-    assert!(health.contains("Not yet validated"));
-
-    // The fixture's committed cache (https://cache.example.com) does not
-    // resolve, so presence validation records it unreachable.
-    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
-    validate_presence(&db, &registry).await.unwrap();
-
-    let (status, _, body) = get(&app, "/demo/-/health").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("https://cache.example.com/"), "{body}");
-    assert!(body.contains("unreachable"), "{body}");
-    assert!(body.contains("presence"), "{body}");
-
-    // Overview links to Health without duplicating its cache table.
-    let (_, _, home) = get(&app, "/demo/").await;
-    assert!(!home.contains("unreachable"), "{home}");
-    assert!(home.contains("/demo/-/health"), "{home}");
 }
 
 #[tokio::test]

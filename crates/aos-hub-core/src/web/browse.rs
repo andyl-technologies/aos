@@ -129,9 +129,6 @@ const REVERSE_DEP_CAP: usize = 100;
 /// Maximum distinct values embedded per field for the filter autocomplete.
 const VALUE_CAP: usize = 500;
 
-/// Maximum repair-job rows shown in the per-registry health page history.
-const HEALTH_REPAIR_JOB_LIMIT: i64 = 50;
-
 /// Current Unix time in seconds.
 fn now_secs() -> i64 {
     crate::clock::now_unix_secs()
@@ -1644,45 +1641,18 @@ async fn verified_release_record(
     Some(record)
 }
 
-/// The per-registry health page (HTML): the cache × coverage validation matrix
-/// plus missing/corrupt drill-downs, repair history, freshness, and routes.
+/// The per-registry health page (HTML): index, cache policy, and route status.
 pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Rendered {
     let started = Instant::now();
     let Some((registry, status)) = load_visible(svc, headers, slug).await else {
         return Rendered::NotFound;
     };
-    let mut runs = Vec::new();
-    if let Ok(latest) = svc.db.latest_validation_runs(registry.id).await {
-        for run in latest {
-            let missing = if run.missing > 0 {
-                svc.db.validation_missing(run.id).await.unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            let corrupt = if run.missing > 0 {
-                svc.db.validation_corrupt(run.id).await.unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            runs.push((run, missing, corrupt));
-        }
-    }
     let stack = svc
         .db
         .registry_cache_stack(registry.id)
         .await
         .ok()
         .flatten();
-    let probes = svc
-        .db
-        .list_cache_probes(registry.id)
-        .await
-        .unwrap_or_default();
-    let repair_jobs = svc
-        .db
-        .list_repair_jobs(registry.id, HEALTH_REPAIR_JOB_LIMIT)
-        .await
-        .unwrap_or_default();
     let route_records = svc
         .db
         .list_routes(crate::db::SurfaceTarget::Registry(registry.id))
@@ -1719,10 +1689,7 @@ pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Render
     Rendered::Html(pages::health_page(
         &registry,
         status.as_ref(),
-        &runs,
         stack.as_ref(),
-        &probes,
-        &repair_jobs,
         &routes,
         started,
         &session,

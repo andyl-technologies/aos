@@ -434,8 +434,6 @@ button.danger { color: var(--bad); border-color: var(--bad); }
   color: var(--dim);
   font-size: 0.72rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 .settings-nav a {
   display: block;
@@ -1353,7 +1351,7 @@ form.console label > .hint { grid-column: 2; justify-self: start; }
   padding: 0.6rem 0.75rem;
   font-size: 0.85rem;
   line-height: 1.45;
-  text-transform: none;       /* never inherit a heading's uppercase */
+  text-transform: none;       /* Keep tooltip prose independent of its heading. */
   letter-spacing: normal;
   font-weight: 400;
   color: var(--ink);
@@ -1781,7 +1779,7 @@ label.inline {
 .doc-more { display: inline-block; margin: .8rem 0; }
 .doc-reader { min-width: 0; }
 /* Option paths and folder titles are identifiers: keep their case and spacing. */
-.doc-reader h2 { overflow-wrap: anywhere; margin-top: .8rem; text-transform: none; letter-spacing: normal; }
+.doc-reader h2 { overflow-wrap: anywhere; margin-top: .8rem; letter-spacing: normal; }
 .doc-reader ul, .doc-reader ol { margin: .4rem 0 .8rem 1.4rem; padding: 0; }
 .doc-reader li { margin: .2rem 0; }
 .doc-reader p { margin: .5rem 0; }
