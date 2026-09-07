@@ -235,6 +235,17 @@ fn ManagementShell(
                         }).collect_view()}
                     </span>
                 })}
+                <button
+                    class="theme-toggle"
+                    type="button"
+                    data-theme-toggle=""
+                    title="Switch theme: system, light, dark"
+                >
+                    "Theme: "
+                    <span data-theme-label="system">"System"</span>
+                    <span data-theme-label="light">"Light"</span>
+                    <span data-theme-label="dark">"Dark"</span>
+                </button>
             </footer>
         </div>
     }

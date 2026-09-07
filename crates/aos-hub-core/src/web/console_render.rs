@@ -437,6 +437,7 @@ pub fn page_with_session(
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <title>{page_title}</title>\n\
+         <script src=\"/_assets/theme.js?v={ver}\"></script>\n\
          <link rel=\"stylesheet\" href=\"/_assets/style.css?v={ver}\">\n\
          <script src=\"/_assets/app.js?v={ver}\" defer></script>\n</head>\n<body>\n\
          <a class=\"skip-link\" href=\"#main-content\">Skip to content</a>\
@@ -444,7 +445,12 @@ pub fn page_with_session(
          <span class=\"crumbs\">{crumb_html}</span>{session}</header>\n\
          {announcement}\
          <main id=\"main-content\">\n{body}\n</main>\n\
-         <footer class=\"statline\">{statline}{footer_links}</footer>\n</body>\n</html>\n",
+         <footer class=\"statline\">{statline}{footer_links}\
+         <button class=\"theme-toggle\" type=\"button\" data-theme-toggle \
+         title=\"Switch theme: system, light, dark\">Theme: \
+         <span data-theme-label=\"system\">System</span>\
+         <span data-theme-label=\"light\">Light</span>\
+         <span data-theme-label=\"dark\">Dark</span></button></footer>\n</body>\n</html>\n",
         session = session.render(),
         ver = crate::web::assets::asset_version(),
     )

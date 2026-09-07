@@ -199,10 +199,10 @@ top-level list (`login`, `activate`, `account`, `new`, `oauth2`,
    approval (shows exactly which paths/permissions) → the CLI
    proceeds without a copied secret.
 
-#### Design language: release-engineering paper
+#### Design language: Stone & ocean
 
-Two contemporary references set the register, both studied from their
-shipped HTML/CSS:
+The original "release-engineering paper" direction drew on two references,
+both studied from their shipped HTML/CSS:
 
 - **usgraphics.com** (U.S. Graphics / Berkeley Graphics): a
   server-rendered, table-dense "engineering document" aesthetic —
@@ -220,23 +220,36 @@ shipped HTML/CSS:
 Behind both stands the heritage this tool actually descends from:
 Debian FTP listings and changelogs, man pages, IETF RFC plaintext,
 `MAINTAINERS` files, BSD handbooks, release-announcement emails.
-The hub should look like the best-set engineering document its lineage
-deserves — **release-engineering paper** — not a SaaS dashboard.
+The current **Stone & ocean** direction retains the document hierarchy and
+explicit state while separating readable interface text from machine data.
+The shared `/_assets/style.css` owns the palette and font-family variables for
+both browse pages and the management console. Workflow-specific console CSS
+references those variables instead of defining a second theme.
 
 Principles, concretely:
 
-- **One typeface.** A single monospace family for prose, UI, and data,
-  self-hosted as subsetted hash-named woff2: JetBrains Mono (OFL —
-  redistributable in this repo and embeddable in `apr`). Open-license
-  fonts only; no commercial typefaces anywhere in the system. The
-  theme system exposes a font slot, constrained to self-hosted files.
-- **Ink on paper.** Near-white paper, near-black ink; dark mode is
-  terminal phosphor. Color is exclusively semantic — green = verified,
-  amber = stale, red = failed, blue = interactive — never decorative.
-- **Tables and rules are the layout.** Man-page-style uppercase
-  section headers, dense bordered tables, horizontal rules. Flat: no
-  shadows, no gradients, no rounded corners; the only permitted
-  ornament is the `░` shade.
+- **Paired typography.** Geist Sans carries headings, prose, navigation,
+  and form controls. Geist Mono carries code, configuration editors,
+  hashes, versions, paths, and machine identifiers. Both are self-hosted
+  variable WOFF2 files under the SIL Open Font License, with bounded cache
+  lifetimes. There are no font CDNs or runtime font downloads from third
+  parties; upstream provenance lives beside the bundled assets.
+- **Stone & ocean.** White (`#ffffff`) and near-black (`#141413`) anchor
+  light mode. Warm stone surfaces (`#f2f0ed`), brown-grey secondary text
+  (`#716a63`), and ocean green (`#07594f`) establish hierarchy. Dark mode
+  uses `#101110`, `#f7f7f5`, `#1c1b19`, `#aaa198`, and the lighter green
+  `#80bcae` for text. Solid primary actions retain deep green with white
+  text. Amber and red are reserved for warning and error states; release
+  categories and syntax highlighting use the green/neutral palette.
+- **Appearance preference.** System is the default and works without
+  JavaScript. The footer control cycles System, Light, and Dark; an explicit
+  preference persists locally and applies before the stylesheet paints on
+  both browse and console pages. Unavailable browser storage falls back to
+  a document-local preference.
+- **Tables and rules are the layout.** Sentence-case sans-serif headings,
+  readable tables, and thin horizontal rules distinguish sections. Warm
+  surfaces identify code and grouped controls. Small corner radii soften
+  controls without turning every section into a card.
 - **ASCII diagrams are the iconography.** Stack topology, mirror
   layout, and closure graphs render as box-drawing text — identical in
   the SSR page, the SPA, the static no-JS tier, and a `curl` of the
