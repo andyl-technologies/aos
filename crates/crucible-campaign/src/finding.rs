@@ -14,12 +14,14 @@ use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::policy::{MAX_IDENTIFIER_BYTES, validate_identifier};
 use crate::{
     CampaignCodecError, CampaignHash, CampaignRecordKind, CampaignSnapshotId, ChoiceOpportunityId,
-    ConfigurationArtifactId, ConfigurationId, ExactCheckpointId, FindingId, ObjectEnvelope,
-    ObservationId, ReproductionArtifactId, ScenarioArtifactId, ScenarioDefId,
+    ConfigurationArtifactId, ConfigurationId, ExactCheckpointId, FindingCandidateBundleId,
+    FindingId, ObjectEnvelope, ObservationId, ReproductionArtifactId, ScenarioArtifactId,
+    ScenarioDefId,
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
 const RETENTION_SCHEMA_VERSION: u32 = 2;
+const CANDIDATE_BUNDLE_SCHEMA_VERSION: u32 = 3;
 const MAX_REPRODUCTION_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_REPRODUCTION_RECORD_BYTES: usize = 34 * 1024 * 1024;
 const MAX_FINDING_RECORD_BYTES: usize = 4 * 1024 * 1024;
@@ -1035,6 +1037,7 @@ pub struct Finding {
     occurrences: FindingOccurrenceSet,
     minimized: Option<ReproductionArtifactId>,
     exact_pins: FindingExactPins,
+    candidate_bundle: Option<FindingCandidateBundleId>,
 }
 
 impl Finding {
@@ -1066,6 +1069,7 @@ impl Finding {
             occurrences,
             minimized,
             FindingExactPins::from_untyped(exact_pins)?,
+            None,
         )
     }
 
@@ -1094,6 +1098,38 @@ impl Finding {
             occurrences,
             minimized,
             exact_pins,
+            None,
+        )
+    }
+
+    /// Builds a schema-v3 finding that retains its verified candidate bundle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when reproduction versions are invalid or
+    /// the encoded record exceeds 4 MiB.
+    // crucible-lint: allow rust-allow -- the versioned constructor keeps every canonical field explicit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_candidate_bundle(
+        signature: FindingSignature,
+        observation: ObservationId,
+        reproduction: ReproductionArtifactId,
+        first_seen_snapshot: CampaignSnapshotId,
+        occurrences: FindingOccurrenceSet,
+        minimized: Option<ReproductionArtifactId>,
+        exact_pins: FindingExactPins,
+        candidate_bundle: FindingCandidateBundleId,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_versioned(
+            CANDIDATE_BUNDLE_SCHEMA_VERSION,
+            signature,
+            observation,
+            reproduction,
+            first_seen_snapshot,
+            occurrences,
+            minimized,
+            exact_pins,
+            Some(candidate_bundle),
         )
     }
 
@@ -1108,6 +1144,7 @@ impl Finding {
         occurrences: FindingOccurrenceSet,
         minimized: Option<ReproductionArtifactId>,
         exact_pins: FindingExactPins,
+        candidate_bundle: Option<FindingCandidateBundleId>,
     ) -> Result<Self, CampaignCodecError> {
         let reproduction_version = reproduction.content_id().schema_version();
         let minimized_version = minimized.map(|id| id.content_id().schema_version());
@@ -1115,10 +1152,17 @@ impl Finding {
             RECORD_SCHEMA_VERSION => {
                 reproduction_version == RECORD_SCHEMA_VERSION
                     && minimized_version.is_none_or(|version| version == RECORD_SCHEMA_VERSION)
+                    && candidate_bundle.is_none()
             }
             RETENTION_SCHEMA_VERSION => {
                 reproduction_version == RECORD_SCHEMA_VERSION
                     && minimized_version.is_none_or(|version| version == RETENTION_SCHEMA_VERSION)
+                    && candidate_bundle.is_none()
+            }
+            CANDIDATE_BUNDLE_SCHEMA_VERSION => {
+                reproduction_version == RECORD_SCHEMA_VERSION
+                    && minimized_version == Some(RETENTION_SCHEMA_VERSION)
+                    && candidate_bundle.is_some()
             }
             _ => false,
         };
@@ -1136,6 +1180,7 @@ impl Finding {
             occurrences,
             minimized,
             exact_pins,
+            candidate_bundle,
         };
         codec::ensure_encoded_size(
             &value,
@@ -1211,6 +1256,12 @@ impl Finding {
         &self.exact_pins
     }
 
+    /// Returns the verified candidate bundle retained by this finding version.
+    #[must_use]
+    pub const fn candidate_bundle(&self) -> Option<FindingCandidateBundleId> {
+        self.candidate_bundle
+    }
+
     /// Returns strict canonical record-body bytes.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
@@ -1267,6 +1318,9 @@ impl Finding {
         if let Some(minimized) = self.minimized {
             children.push(("minimized".to_owned(), minimized.content_id()));
         }
+        if let Some(candidate_bundle) = self.candidate_bundle {
+            children.push(("candidate-bundle".to_owned(), candidate_bundle.content_id()));
+        }
         if self.schema_version == RECORD_SCHEMA_VERSION {
             children.extend(
                 self.exact_pins
@@ -1296,13 +1350,16 @@ impl Canonical for Finding {
         } else {
             self.exact_pins.encode(encoder);
         }
+        if self.schema_version == CANDIDATE_BUNDLE_SCHEMA_VERSION {
+            self.candidate_bundle.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
         if !matches!(
             schema_version,
-            RECORD_SCHEMA_VERSION | RETENTION_SCHEMA_VERSION
+            RECORD_SCHEMA_VERSION | RETENTION_SCHEMA_VERSION | CANDIDATE_BUNDLE_SCHEMA_VERSION
         ) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported finding record schema version",
@@ -1321,6 +1378,11 @@ impl Canonical for Finding {
         } else {
             FindingExactPins::decode(decoder)?
         };
+        let candidate_bundle = if schema_version == CANDIDATE_BUNDLE_SCHEMA_VERSION {
+            Option::<FindingCandidateBundleId>::decode(decoder)?
+        } else {
+            None
+        };
         Self::new_versioned(
             schema_version,
             signature,
@@ -1330,6 +1392,7 @@ impl Canonical for Finding {
             occurrences,
             minimized,
             exact_pins,
+            candidate_bundle,
         )
     }
 }

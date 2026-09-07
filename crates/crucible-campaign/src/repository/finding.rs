@@ -1,7 +1,10 @@
 //! Atomic finding publication and imported finding-owner validation.
 
 use super::*;
-use crate::{ExactCheckpointId, FindingExactPins, FindingKind, FindingSignature, FindingTarget};
+use crate::{
+    ExactCheckpointId, FindingCandidateBundleId, FindingExactPins, FindingKind, FindingSignature,
+    FindingTarget,
+};
 
 /// Stable result of publishing or rediscovering one campaign finding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +80,31 @@ impl CampaignRepository {
         minimized: Option<ReproductionArtifactId>,
         exact_pins: FindingExactPins,
     ) -> Result<FindingPublicationResult, CampaignRepositoryError> {
+        self.publish_finding_with_candidate_bundle(
+            name,
+            expected_snapshot,
+            signature,
+            observation,
+            reproduction,
+            minimized,
+            exact_pins,
+            None,
+        )
+    }
+
+    // crucible-lint: allow rust-allow -- this internal transaction keeps its complete authenticated basis explicit.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn publish_finding_with_candidate_bundle(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+        signature: FindingSignature,
+        observation: ObservationId,
+        reproduction: ReproductionArtifactId,
+        minimized: Option<ReproductionArtifactId>,
+        exact_pins: FindingExactPins,
+        candidate_bundle: Option<FindingCandidateBundleId>,
+    ) -> Result<FindingPublicationResult, CampaignRepositoryError> {
         let _guard = self.lock_mutation()?;
         let campaign_ref = campaign_ref(name)?;
         let current_content = self
@@ -110,6 +138,19 @@ impl CampaignRepository {
             reproduction,
             minimized,
         )?;
+        if let Some(candidate_bundle) = candidate_bundle {
+            let bundle = self.load_finding_candidate_bundle(candidate_bundle)?;
+            if bundle.signature() != &signature
+                || bundle.observation() != observation
+                || bundle.reproduction() != reproduction
+                || Some(bundle.minimized()) != minimized
+                || bundle.exact_pins() != &exact_pins
+            {
+                return Err(integrity(
+                    "finding-candidate-bundle-publication-basis-mismatch",
+                ));
+            }
+        }
 
         let key = finding_signature_key(signature.cluster_key());
         let existing = self
@@ -127,9 +168,13 @@ impl CampaignRepository {
             occurrence_count,
             selected_minimized,
             pins,
+            selected_candidate_bundle,
         ) = if let Some(existing) = existing {
             if existing.signature() != &signature {
                 return Err(integrity("finding-signature-key-collision"));
+            }
+            if candidate_bundle.is_some() && existing.reproduction() != reproduction {
+                return Err(CampaignRepositoryError::AlreadyExists);
             }
             let occurrence_key = finding_occurrence_key(observation);
             let already_present = self.merkle.get(existing.occurrences(), occurrence_key)?
@@ -154,6 +199,13 @@ impl CampaignRepository {
                 (None, None) => None,
             };
             let pins = existing.exact_pin_retention().union(&exact_pins)?;
+            let selected_candidate_bundle = match (existing.candidate_bundle(), candidate_bundle) {
+                (Some(left), Some(right)) if left != right => {
+                    return Err(CampaignRepositoryError::AlreadyExists);
+                }
+                (Some(value), _) | (None, Some(value)) => Some(value),
+                (None, None) => None,
+            };
             (
                 existing.observation(),
                 if already_present {
@@ -168,6 +220,7 @@ impl CampaignRepository {
                 occurrence_count,
                 selected_minimized,
                 pins,
+                selected_candidate_bundle,
             )
         } else {
             let prior_occurrences = MerkleMap::empty_content_id()?;
@@ -188,18 +241,34 @@ impl CampaignRepository {
                 1,
                 minimized,
                 exact_pins,
+                candidate_bundle,
             )
         };
 
-        let finding = Finding::new_with_retention(
-            signature,
-            representative,
-            original_reproduction,
-            first_seen,
-            FindingOccurrenceSet::new(occurrences, occurrence_count, latest_occurrence)?,
-            selected_minimized,
-            pins,
-        )?;
+        let occurrence_set =
+            FindingOccurrenceSet::new(occurrences, occurrence_count, latest_occurrence)?;
+        let finding = if let Some(candidate_bundle) = selected_candidate_bundle {
+            Finding::new_with_candidate_bundle(
+                signature,
+                representative,
+                original_reproduction,
+                first_seen,
+                occurrence_set,
+                selected_minimized,
+                pins,
+                candidate_bundle,
+            )?
+        } else {
+            Finding::new_with_retention(
+                signature,
+                representative,
+                original_reproduction,
+                first_seen,
+                occurrence_set,
+                selected_minimized,
+                pins,
+            )?
+        };
         let finding_id = finding.id()?;
         if self.merkle.get(current.snapshot.roots().findings, key)? == Some(finding_id.content_id())
         {
@@ -282,7 +351,7 @@ impl CampaignRepository {
         }
     }
 
-    fn validate_finding_candidate_basis(
+    pub(super) fn validate_finding_candidate_basis(
         &self,
         signature: &FindingSignature,
         observation: &Observation,
@@ -387,6 +456,20 @@ impl CampaignRepository {
             finding.reproduction(),
             finding.minimized(),
         )?;
+        if let Some(candidate_bundle) = finding.candidate_bundle() {
+            let bundle = self.load_finding_candidate_bundle(candidate_bundle)?;
+            if bundle.signature() != finding.signature()
+                || bundle.reproduction() != finding.reproduction()
+                || Some(bundle.minimized()) != finding.minimized()
+                || !exact_pins_contain(finding.exact_pin_retention(), bundle.exact_pins())
+                || self.merkle.get(
+                    finding.occurrences(),
+                    finding_occurrence_key(bundle.observation()),
+                )? != Some(bundle.observation().content_id())
+            {
+                return Err(integrity("finding-candidate-bundle-retention-mismatch"));
+            }
+        }
         let latest = self.decode_observation(finding.latest_occurrence().content_id())?;
         if self.merkle.get(
             prior.observations,
@@ -431,6 +514,14 @@ impl CampaignRepository {
                     (Some(left), Some(right)) if left != right
                 )
                 || matches!((previous.minimized(), finding.minimized()), (Some(_), None))
+                || matches!(
+                    (previous.candidate_bundle(), finding.candidate_bundle()),
+                    (Some(left), Some(right)) if left != right
+                )
+                || matches!(
+                    (previous.candidate_bundle(), finding.candidate_bundle()),
+                    (Some(_), None)
+                )
             {
                 return Err(integrity(
                     "finding-transition-cluster-regressed-or-replaced",
@@ -478,4 +569,13 @@ pub(crate) fn finding_signature_key(signature: CampaignHash) -> CampaignHash {
 
 pub(super) fn finding_occurrence_key(observation: ObservationId) -> CampaignHash {
     map_key_content("findings.occurrence", observation.content_id())
+}
+
+fn exact_pins_contain(retained: &FindingExactPins, requested: &FindingExactPins) -> bool {
+    requested.pre_failure().is_subset(retained.pre_failure())
+        && requested
+            .measurement_boundary()
+            .is_subset(retained.measurement_boundary())
+        && requested.post_failure().is_subset(retained.post_failure())
+        && requested.additional().is_subset(retained.additional())
 }

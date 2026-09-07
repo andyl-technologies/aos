@@ -6,7 +6,9 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
+use crucible_cas::content_store::{
+    BlobHandle, BlobStoreAdmin, ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend,
+};
 
 use crate::{
     AlternativeId, AssignmentId, AttemptResourceLimits, BooleanDomain, BranchBudget, BudgetGrant,

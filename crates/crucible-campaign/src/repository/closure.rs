@@ -1569,6 +1569,10 @@ impl CampaignRepository {
                 crate::CampaignRecordKind::Finding => {
                     self.read_finding_cached(id, choice_cache)?;
                 }
+                crate::CampaignRecordKind::FindingCandidateBundle => {
+                    let bundle = self.decode_finding_candidate_bundle(id)?;
+                    self.validate_finding_candidate_bundle(&bundle)?;
+                }
                 crate::CampaignRecordKind::BranchRequest => {
                     let request = self.decode_branch_request(id)?;
                     self.validate_branch_request_references_shallow(&request)?;

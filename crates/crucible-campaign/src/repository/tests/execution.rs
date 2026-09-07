@@ -6,8 +6,9 @@ use crate::{
     CancelAttemptExecutionResponse, CheckpointAttemptExecutionDisposition,
     CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, ExactCheckpointId,
     ExecutorClient, ExecutorControlService, ExecutorResumeService, ExecutorService,
-    ExecutorStatusService, FindingExactPins, FindingKind, FindingMinimizationAttempt,
-    FindingMinimizationEvidence, FindingSignature, FindingTarget, GetAttemptExecutionDisposition,
+    ExecutorStatusService, FindingCandidateBundle, FindingExactPins, FindingKind,
+    FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
+    FindingSignatureMinimizationEvidence, FindingTarget, GetAttemptExecutionDisposition,
     GetAttemptExecutionRequest, GetAttemptExecutionResponse, Objective, ObjectiveGoal,
     ObjectiveValue, ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
     ResumeAttemptExecutionResponse, SelectionOrigin, evaluate_objectives,
@@ -1306,6 +1307,205 @@ fn minimized_finding_retains_trace_and_complete_observation_evidence() {
         blobs.object_count().expect("object count after rejection"),
         count_before
     );
+}
+
+#[test]
+fn finding_candidate_bundle_incorporation_survives_gc_and_restart() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let (_, admitted, observation) = admitted_observation_fixture(
+        &repository,
+        &lineage,
+        &policy,
+        "finding-candidate-incorporation",
+    );
+    let observed = repository
+        .publish_observation(
+            "finding-candidate-incorporation",
+            admitted.new_snapshot,
+            &observation,
+        )
+        .expect("publish observation");
+    let fingerprint = CampaignHash::derive("test-finding", b"durable candidate");
+    let original = repository
+        .publish_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"verified original candidate reproduction".to_vec(),
+        )
+        .expect("publish original reproduction");
+    let final_state = CampaignHash::derive("test-finding", b"durable candidate final state");
+    let minimization = FindingMinimizationEvidence::new(
+        original,
+        1,
+        b"seeded shortest-first; candidates=4096; bytes=134217728".to_vec(),
+        vec![
+            FindingMinimizationAttempt::new(
+                0,
+                CampaignHash::derive("test-finding", b"rejected candidate artifact"),
+                CampaignHash::derive("test-finding", b"rejected candidate schedule"),
+                CampaignHash::derive("test-finding", b"rejected candidate state"),
+                None,
+                false,
+            ),
+            FindingMinimizationAttempt::new(
+                1,
+                CampaignHash::derive("test-finding", b"durable candidate artifact"),
+                CampaignHash::derive("test-finding", b"durable candidate schedule"),
+                final_state,
+                Some(fingerprint),
+                true,
+            ),
+        ],
+        final_state,
+    )
+    .expect("minimization evidence");
+    let minimized = repository
+        .publish_minimized_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"verified minimized candidate reproduction".to_vec(),
+            minimization.clone(),
+        )
+        .expect("publish minimized reproduction");
+    let signature = FindingSignature::new(
+        FindingKind::Divergence,
+        fingerprint,
+        None,
+        "qemu.replay-divergence".to_owned(),
+        Some(FindingTarget::Configuration(observation.child_content())),
+        BTreeSet::from([observation.properties().content_id()]),
+    )
+    .expect("finding signature");
+    let different_failure_class = FindingSignature::new(
+        FindingKind::Divergence,
+        fingerprint,
+        None,
+        "qemu.different-divergence".to_owned(),
+        Some(FindingTarget::Configuration(observation.child_content())),
+        BTreeSet::from([observation.properties().content_id()]),
+    )
+    .expect("same-fingerprint different-class signature");
+    let signature_minimization = FindingSignatureMinimizationEvidence::new(
+        &signature,
+        &minimization,
+        vec![
+            Some(signature.clone()),
+            Some(different_failure_class.clone()),
+            Some(signature.clone()),
+        ],
+        vec![
+            Some(signature.clone()),
+            Some(different_failure_class),
+            Some(signature.clone()),
+        ],
+    )
+    .expect("signature minimization evidence");
+    let bundle = FindingCandidateBundle::new(
+        observed.observation,
+        signature,
+        original,
+        minimized,
+        signature_minimization,
+        FindingExactPins::default(),
+    )
+    .expect("finding candidate bundle");
+    let bundle_id = repository
+        .publish_finding_candidate_bundle(&bundle)
+        .expect("publish finding candidate bundle");
+    assert_eq!(
+        repository
+            .publish_finding_candidate_bundle(&bundle)
+            .expect("republish finding candidate bundle"),
+        bundle_id
+    );
+
+    let incorporated = repository
+        .incorporate_finding_candidate_bundle(
+            "finding-candidate-incorporation",
+            observed.new_snapshot,
+            bundle_id,
+        )
+        .expect("incorporate finding candidate");
+    assert!(!incorporated.replayed);
+    assert_eq!(
+        repository
+            .read_finding(incorporated.finding.content_id())
+            .expect("load incorporated finding")
+            .candidate_bundle(),
+        Some(bundle_id)
+    );
+    let replayed = repository
+        .incorporate_finding_candidate_bundle(
+            "finding-candidate-incorporation",
+            observed.new_snapshot,
+            bundle_id,
+        )
+        .expect("replay finding candidate after head advancement");
+    assert!(replayed.replayed);
+    assert_eq!(replayed.finding, incorporated.finding);
+    assert_eq!(replayed.new_snapshot, incorporated.new_snapshot);
+
+    let orphan_bytes = b"unreachable finding candidate";
+    let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
+    blobs
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes))
+        .expect("store GC candidate");
+    let retained = repository
+        .authenticated_closure_ids([incorporated.new_snapshot.content_id()])
+        .expect("authenticate incorporated finding closure");
+    assert!(retained.contains(&incorporated.finding.content_id()));
+    assert!(retained.contains(&bundle_id.content_id()));
+    let mut inventory = blobs
+        .acquire_inventory_fence()
+        .expect("acquire GC inventory fence");
+    let mut candidates = Vec::new();
+    inventory
+        .visit_inventory(&mut |record| {
+            if !retained.contains(&record.id()) {
+                candidates.push(record.id());
+            }
+            Ok(())
+        })
+        .expect("inventory GC candidates");
+    assert!(candidates.contains(&orphan));
+    for candidate in candidates {
+        inventory
+            .delete_candidate(candidate)
+            .expect("delete unreachable GC candidate");
+    }
+    drop(inventory);
+    assert!(!blobs.contains(orphan).expect("orphan presence"));
+    assert!(
+        blobs
+            .contains(bundle_id.content_id())
+            .expect("bundle presence")
+    );
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        restarted
+            .load_finding_candidate_bundle(bundle_id)
+            .expect("load finding candidate after restart"),
+        bundle
+    );
+    let restarted_replay = restarted
+        .incorporate_finding_candidate_bundle(
+            "finding-candidate-incorporation",
+            observed.new_snapshot,
+            bundle_id,
+        )
+        .expect("replay finding candidate after restart");
+    assert!(restarted_replay.replayed);
+    assert_eq!(restarted_replay.finding, incorporated.finding);
+    assert_eq!(restarted_replay.new_snapshot, incorporated.new_snapshot);
 }
 
 #[test]

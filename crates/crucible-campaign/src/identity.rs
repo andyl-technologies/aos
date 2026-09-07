@@ -598,9 +598,15 @@ content_object_id!(
 content_object_id!(
     FindingId,
     ObjectKind::Finding,
-    [1, 2],
+    [1, 2, 3],
     "crucible.campaign.finding",
-    "Identifies one canonical campaign finding."
+    "Identifies one canonical campaign finding; versions 1 and 2 remain decodable for history compatibility."
+);
+content_object_id!(
+    FindingCandidateBundleId,
+    ObjectKind::Finding,
+    "crucible.campaign.finding-candidate-bundle",
+    "Identifies one durable executor-produced finding candidate handoff."
 );
 content_object_id!(
     ReproductionArtifactId,
