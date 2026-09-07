@@ -20,11 +20,12 @@ use std::thread::{self, JoinHandle};
 use crucible::ScenarioDefForm;
 use crucible_api::ProductionVmLifecycleConfig;
 use crucible_campaign::{
-    AttemptResourceLimits, CampaignCodecError, CampaignExecutorStore, CampaignHash,
+    AttemptId, AttemptResourceLimits, CampaignCodecError, CampaignExecutorStore, CampaignHash,
     CampaignLineageId, CampaignName, CampaignOperationalStatusProvider, CampaignRepository,
     CampaignRepositoryError, DaemonEpoch, ExecutionRetentionIntent, ExecutorCapabilitySet,
     ExecutorCompatibilityProfile, ExecutorDescription, ExecutorMaterializationCapability,
-    ExecutorRejection, ObservationId, ScenarioArtifactId, SubmitAttemptRequest,
+    ExecutorRejection, FindingCandidateBundleId, ObservationId, ScenarioArtifactId,
+    SubmitAttemptRequest,
 };
 use crucible_cas::content_store::ImmutableBlobBackend;
 use crucible_qemu::{
@@ -1329,9 +1330,16 @@ impl PackagedAttemptAdmission {
     }
 
     fn validate_scenario(&self, request: &SubmitAttemptRequest) -> Result<(), ExecutorRejection> {
+        self.validate_lineage_scenario(request.lineage())
+    }
+
+    fn validate_lineage_scenario(
+        &self,
+        lineage: CampaignLineageId,
+    ) -> Result<(), ExecutorRejection> {
         let lineage = self
             .repository
-            .load_lineage(request.lineage())
+            .load_lineage(lineage)
             .map_err(|error| error.executor_rejection())?;
         if !self.scenarios.contains(&lineage.scenario_content()) {
             return Err(ExecutorRejection::Incompatible);
@@ -1357,6 +1365,44 @@ impl AttemptAdmissionValidator for PackagedAttemptAdmission {
             .validate_executor_completion_with_profile(request, observation, &self.profile)
             .map_err(completion_validation_failure)?;
         self.validate_scenario(request)
+            .map_err(|_| CompletionValidationFailure::Incompatible)
+    }
+
+    fn validate_completion_artifacts(
+        &self,
+        request: &SubmitAttemptRequest,
+        observation: ObservationId,
+        finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<(), CompletionValidationFailure> {
+        self.repository
+            .validate_executor_completion_artifacts_with_profile(
+                request,
+                observation,
+                finding_candidate,
+                &self.profile,
+            )
+            .map_err(completion_validation_failure)?;
+        self.validate_scenario(request)
+            .map_err(|_| CompletionValidationFailure::Incompatible)
+    }
+
+    fn validate_retained_completion(
+        &self,
+        lineage: CampaignLineageId,
+        attempt: AttemptId,
+        observation: ObservationId,
+        finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<(), CompletionValidationFailure> {
+        self.repository
+            .validate_retained_executor_completion_with_profile(
+                lineage,
+                attempt,
+                observation,
+                finding_candidate,
+                &self.profile,
+            )
+            .map_err(completion_validation_failure)?;
+        self.validate_lineage_scenario(lineage)
             .map_err(|_| CompletionValidationFailure::Incompatible)
     }
 }

@@ -6,28 +6,38 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Cursor;
-use std::sync::Arc;
+use std::sync::{
+    Arc, Mutex, MutexGuard,
+    mpsc::{self, Sender, TryRecvError},
+};
+use std::thread;
+use std::time::Duration;
 
 use crucible::ContentHash;
 use crucible_campaign::{
     AssignmentId, AttemptId, AttemptResourceLimits, BudgetGrant, CampaignCommandId,
-    CampaignControlAction, CampaignLineage, CampaignLineageId, CampaignMode, CampaignPolicy,
-    CampaignRepository, CampaignSeed, ConfigurationId, ControlRequest, CoverageProjection,
-    DaemonEpoch, ExecutionId, ExecutionRetentionIntent, ExplorerPolicy, FairnessPolicy,
+    CampaignControlAction, CampaignLineage, CampaignLineageId, CampaignMode, CampaignName,
+    CampaignPolicy, CampaignRepository, CampaignSeed, CancelAttemptExecutionDisposition,
+    CancelAttemptExecutionRequest, CheckpointAttemptExecutionDisposition,
+    CheckpointAttemptExecutionRequest, ConfigurationId, ControlRequest, CoverageProjection,
+    DaemonEpoch, ExecutionId, ExecutionRetentionIntent, ExecutorCompatibilityProfile,
+    ExecutorControlService, ExecutorStatusService, ExplorerPolicy, FairnessPolicy,
     FindingCandidateBundle, FindingCandidateBundleId, FindingExactPins, FindingKind,
     FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
-    FindingSignatureMinimizationEvidence, FindingTarget, MeasurementSet, Observation,
-    ObservationId, PropertyVerdictSet, RetentionPolicy, ScenarioDefId, StopOutcome,
-    SubmitAttemptRequest,
+    FindingSignatureMinimizationEvidence, FindingTarget, GetAttemptExecutionDisposition,
+    GetAttemptExecutionRequest, MeasurementSet, Observation, ObservationId, PropertyVerdictSet,
+    RetentionPolicy, ScenarioDefId, StopOutcome, SubmitAttemptRequest,
 };
 use crucible_cas::content_envelope::ContentEnvelope;
 use crucible_cas::content_store::{
     BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
     ContentId, DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend, MemoryBlobBackend,
     MemoryRefBackend, MutableRefBackend, ObjectKind, PackedBlobBackend, PlannedDeleteDisposition,
-    RefCasOutcome, RefName, StoreEncryptionKey, StoreEncryptionKeyId, StoreError, StoreGraph,
-    StoreGraphConfig, StoreGraphKeyring, StoreNodeId, StoreNodeSpec,
+    RefBackendCapabilities, RefCasOutcome, RefName, RefPublicationGuard, RefScanPage,
+    StoreEncryptionKey, StoreEncryptionKeyId, StoreError, StoreGraph, StoreGraphConfig,
+    StoreGraphKeyring, StoreNodeId, StoreNodeSpec,
 };
+use crucible_cas::content_store::{RefInventoryFence, RefStoreAdmin};
 
 use super::apply::CampaignGcApplySources;
 use super::*;
@@ -39,10 +49,15 @@ use crate::{
     AssignmentLedger, AssignmentRetentionAdmin, AssignmentRetentionFence,
     AssignmentRetentionGeneration, AssignmentRetentionInventoryError, AssignmentRetentionRoot,
     AssignmentRetentionSummary, AssignmentRetentionVisitorError, AttemptExecutionKey,
-    AttemptExecutionOrigin, AttemptRuntimeState, AttemptStateCas, DirectoryAssignmentLedger,
-    HotCheckpointFallback, HotCheckpointFallbackRecord, HotCheckpointFallbackRetentionCas,
+    AttemptExecutionOrigin, AttemptRuntimeState, AttemptStateCas, CompletedFindingCandidate,
+    DirectoryAssignmentLedger, FindingCandidateRetentionOutcome, HotCheckpointFallback,
+    HotCheckpointFallbackRecord, HotCheckpointFallbackRetentionCas,
     HotCheckpointFallbackRetentionStore, HotCheckpointFallbackSlot, MemoryAssignmentLedger,
-    MemoryHotCheckpointFallbackRetentionStore, QemuHotForkTemplateKey,
+    MemoryHotCheckpointFallbackRetentionStore, QemuHotForkTemplateKey, RepositoryAttemptAdmission,
+    acknowledge_incorporated_finding_candidate, incorporate_and_acknowledge_finding_candidate,
+};
+use crate::{
+    CompletionValidationFailure, ExecutorCapacity, LocalExecutorError, LocalExecutorSupervisor,
 };
 
 mod s3;
@@ -61,6 +76,158 @@ fn pending_finding_request(lineage: CampaignLineageId, attempt: AttemptId) -> Su
         ExecutionRetentionIntent::RetainOnFailure,
     )
     .expect("pending finding request")
+}
+
+struct LockOrderDirectoryRefs {
+    inner: DirectoryRefBackend,
+    publication_requested: Mutex<Option<Sender<()>>>,
+    inventory_acquired: Mutex<Option<Sender<()>>>,
+}
+
+impl LockOrderDirectoryRefs {
+    fn new(root: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            inner: DirectoryRefBackend::new(root),
+            publication_requested: Mutex::new(None),
+            inventory_acquired: Mutex::new(None),
+        }
+    }
+
+    fn arm(&self, publication_requested: Sender<()>, inventory_acquired: Sender<()>) {
+        *self
+            .publication_requested
+            .lock()
+            .expect("publication signal mutex") = Some(publication_requested);
+        *self
+            .inventory_acquired
+            .lock()
+            .expect("inventory signal mutex") = Some(inventory_acquired);
+    }
+}
+
+impl MutableRefBackend for LockOrderDirectoryRefs {
+    fn capabilities(&self) -> RefBackendCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError> {
+        if let Some(signal) = self
+            .publication_requested
+            .lock()
+            .expect("publication signal mutex")
+            .as_ref()
+        {
+            signal.send(()).expect("signal publication request");
+        }
+        self.inner.acquire_publication_guard()
+    }
+
+    fn read_ref(&self, name: &RefName) -> Result<Option<ContentId>, StoreError> {
+        self.inner.read_ref(name)
+    }
+
+    fn scan_refs(
+        &self,
+        namespace: &RefName,
+        after: Option<&RefName>,
+        limit: usize,
+    ) -> Result<RefScanPage, StoreError> {
+        self.inner.scan_refs(namespace, after, limit)
+    }
+
+    fn compare_exchange(
+        &self,
+        name: &RefName,
+        expected: Option<ContentId>,
+        next: ContentId,
+    ) -> Result<RefCasOutcome, StoreError> {
+        self.inner.compare_exchange(name, expected, next)
+    }
+}
+
+impl RefStoreAdmin for LockOrderDirectoryRefs {
+    fn acquire_ref_inventory_fence(&self) -> Result<Box<dyn RefInventoryFence + '_>, StoreError> {
+        let fence = self.inner.acquire_ref_inventory_fence()?;
+        if let Some(signal) = self
+            .inventory_acquired
+            .lock()
+            .expect("inventory signal mutex")
+            .as_ref()
+        {
+            signal.send(()).expect("signal inventory acquisition");
+        }
+        Ok(fence)
+    }
+}
+
+#[derive(Clone)]
+struct LockOrderDirectoryLedger {
+    inner: Arc<Mutex<DirectoryAssignmentLedger>>,
+    gate: Arc<Mutex<()>>,
+    acquisition_requested: Sender<()>,
+}
+
+struct LockOrderDirectoryFence<'a> {
+    inner: Arc<Mutex<DirectoryAssignmentLedger>>,
+    _gate: MutexGuard<'a, ()>,
+}
+
+impl AssignmentRetentionAdmin for LockOrderDirectoryLedger {
+    type Error = crate::AssignmentLedgerError;
+
+    fn acquire_retention_fence(
+        &mut self,
+    ) -> Result<Box<dyn AssignmentRetentionFence<BackendError = Self::Error> + '_>, Self::Error>
+    {
+        self.acquisition_requested
+            .send(())
+            .expect("signal ledger acquisition request");
+        let gate = self.gate.lock().expect("lock-order ledger gate");
+        Ok(Box::new(LockOrderDirectoryFence {
+            inner: self.inner.clone(),
+            _gate: gate,
+        }))
+    }
+}
+
+impl AssignmentRetentionFence for LockOrderDirectoryFence<'_> {
+    type BackendError = crate::AssignmentLedgerError;
+
+    fn visit_roots(
+        &mut self,
+        visitor: &mut dyn FnMut(
+            AssignmentRetentionRoot,
+        ) -> Result<(), AssignmentRetentionVisitorError>,
+    ) -> Result<AssignmentRetentionSummary, AssignmentRetentionInventoryError<Self::BackendError>>
+    {
+        let mut ledger = self.inner.lock().expect("lock directory ledger");
+        let mut fence = ledger
+            .acquire_retention_fence()
+            .map_err(AssignmentRetentionInventoryError::Backend)?;
+        fence.visit_roots(visitor)
+    }
+
+    fn load_attempt(
+        &mut self,
+        key: AttemptExecutionKey,
+    ) -> Result<Option<AttemptRuntimeState>, Self::BackendError> {
+        self.inner
+            .lock()
+            .expect("lock directory ledger")
+            .load_attempt(key)
+    }
+
+    fn compare_exchange_attempt(
+        &mut self,
+        key: AttemptExecutionKey,
+        expected: Option<AttemptRuntimeState>,
+        next: Option<AttemptRuntimeState>,
+    ) -> Result<AttemptStateCas, Self::BackendError> {
+        self.inner
+            .lock()
+            .expect("lock directory ledger")
+            .compare_exchange_attempt(key, expected, next)
+    }
 }
 
 fn publish_pending_finding_fixture(
@@ -666,7 +833,7 @@ fn pending_finding_candidate_closure_survives_gc_and_ledger_restart() {
         daemon_epoch: request.daemon_epoch(),
         execution: ExecutionId::from_bytes([0x64; 16]).expect("execution"),
         observation,
-        finding_candidate: Some(candidate),
+        finding_candidate: CompletedFindingCandidate::Pending(candidate),
     };
     {
         let mut ledger =
@@ -757,6 +924,427 @@ fn pending_finding_candidate_closure_survives_gc_and_ledger_restart() {
         u64::try_from(expected_closure.len()).expect("restarted pending finding closure count")
     );
     assert!(restarted.candidates().is_empty());
+}
+
+#[test]
+fn incorporated_finding_releases_exact_candidate_root_across_restart() {
+    const CAMPAIGN: &str = "pending-finding-gc-fixture";
+
+    let storage = tempfile::tempdir().expect("durable handoff storage");
+    let blob_root = storage.path().join("blobs");
+    let ref_root = storage.path().join("refs");
+    let ledger_root = storage.path().join("ledger");
+    let campaign = CampaignName::new(CAMPAIGN).expect("campaign name");
+    let (key, execution, observation, candidate, expected_snapshot, completed, publication) = {
+        let blobs = Arc::new(DirectoryBlobBackend::new(
+            "incorporated-finding-gc",
+            &blob_root,
+        ));
+        let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+        let repository = CampaignRepository::new(blobs, refs);
+        let (lineage, attempt, observation, candidate) =
+            publish_pending_finding_fixture(&repository);
+        let expected_snapshot = repository
+            .head(CAMPAIGN)
+            .expect("observation-owning head")
+            .snapshot_id();
+        let request = pending_finding_request(lineage, attempt);
+        let key = AttemptExecutionKey::new(lineage, attempt);
+        let execution = ExecutionId::from_bytes([0x65; 16]).expect("execution");
+        let completed = AttemptRuntimeState::Completed {
+            execution_basis: request.execution_basis_digest(),
+            origin: AttemptExecutionOrigin::Initial,
+            daemon_epoch: request.daemon_epoch(),
+            execution,
+            observation,
+            finding_candidate: CompletedFindingCandidate::Pending(candidate),
+        };
+        let mut ledger =
+            DirectoryAssignmentLedger::open(&ledger_root).expect("open assignment ledger");
+        assert_eq!(
+            ledger
+                .compare_exchange_attempt(key, None, Some(completed))
+                .expect("retain pending candidate"),
+            AttemptStateCas::Advanced
+        );
+
+        let publication = repository
+            .incorporate_finding_candidate_bundle(CAMPAIGN, expected_snapshot, candidate)
+            .expect("incorporate candidate before simulated crash");
+
+        (
+            key,
+            execution,
+            observation,
+            candidate,
+            expected_snapshot,
+            completed,
+            publication,
+        )
+    };
+
+    let blobs = Arc::new(DirectoryBlobBackend::new(
+        "incorporated-finding-gc",
+        &blob_root,
+    ));
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let mut restarted =
+        DirectoryAssignmentLedger::open(&ledger_root).expect("restart before acknowledgement");
+    assert_eq!(
+        restarted
+            .load_attempt(key)
+            .expect("candidate remains after crash"),
+        Some(completed)
+    );
+    let released = acknowledge_incorporated_finding_candidate(
+        &repository,
+        &mut restarted,
+        &campaign,
+        key,
+        execution,
+        observation,
+        publication.finding,
+        candidate,
+    )
+    .expect("reauthenticate and release after restart");
+    let FindingCandidateRetentionOutcome::Released(acknowledgement) = released else {
+        panic!("expected exact candidate release");
+    };
+    assert_eq!(acknowledgement.bundle(), candidate);
+    assert_eq!(acknowledgement.finding(), publication.finding);
+    assert_eq!(acknowledgement.snapshot(), publication.new_snapshot);
+    assert!(matches!(
+        restarted
+            .load_attempt(key)
+            .expect("load released completion"),
+        Some(AttemptRuntimeState::Completed {
+            finding_candidate: CompletedFindingCandidate::Acknowledged(retained_candidate),
+            ..
+        }) if retained_candidate == candidate
+    ));
+    let wrong_candidate_content =
+        ContentId::for_bytes(ObjectKind::Finding, 1, b"wrong acknowledged candidate");
+    let wrong_candidate = FindingCandidateBundleId::parse(&format!(
+        "crucible.campaign.finding-candidate-bundle@{wrong_candidate_content}"
+    ))
+    .expect("wrong candidate identity");
+    assert_eq!(
+        acknowledge_incorporated_finding_candidate(
+            &repository,
+            &mut restarted,
+            &campaign,
+            key,
+            execution,
+            observation,
+            publication.finding,
+            wrong_candidate,
+        )
+        .expect("wrong candidate is a stable non-current result"),
+        FindingCandidateRetentionOutcome::NotCurrent
+    );
+
+    drop(restarted);
+    drop(repository);
+    drop(refs);
+    drop(blobs);
+
+    let blobs = Arc::new(DirectoryBlobBackend::new(
+        "incorporated-finding-gc",
+        &blob_root,
+    ));
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let mut replayed_ledger =
+        DirectoryAssignmentLedger::open(&ledger_root).expect("restart after release");
+    let replayed = incorporate_and_acknowledge_finding_candidate(
+        &repository,
+        &mut replayed_ledger,
+        &campaign,
+        expected_snapshot,
+        key,
+        execution,
+        observation,
+        candidate,
+    )
+    .expect("replay incorporated and acknowledged candidate");
+    assert!(replayed.publication().replayed);
+    assert!(matches!(
+        replayed.acknowledgement(),
+        FindingCandidateRetentionOutcome::AlreadyReleased(_)
+    ));
+
+    let expected_candidate_closure = repository
+        .authenticated_closure_ids([candidate.content_id()])
+        .expect("authenticate candidate closure");
+    let orphan_bytes = b"unreachable incorporated-finding neighbor".to_vec();
+    let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, &orphan_bytes);
+    blobs
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes))
+        .expect("store orphan");
+    let graph = hash("crucible.test.incorporated-finding-gc-graph.v1", 0x76);
+    let physical = CampaignGcPhysicalStore::new("incorporated-finding-gc", blobs.as_ref())
+        .expect("physical store");
+    let prepared = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut replayed_ledger,
+        None,
+        None,
+        graph,
+        &[physical],
+    )
+    .expect("plan after candidate acknowledgement");
+    assert!(
+        !prepared
+            .roots()
+            .iter()
+            .any(|root| root == candidate.content_id())
+    );
+    let journal_root = tempfile::tempdir().expect("GC journal directory");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(journal_root.path().join("journal"), &prepared)
+            .expect("create post-acknowledgement GC journal");
+    apply_single_host_campaign_gc(
+        &mut journal,
+        CampaignGcApplySources::new(&repository, refs.as_ref(), &mut replayed_ledger, None, None),
+        graph,
+        &[physical],
+    )
+    .expect("apply post-acknowledgement GC");
+    assert!(!blobs.contains(orphan).expect("orphan deleted"));
+    for object in expected_candidate_closure {
+        assert!(
+            blobs
+                .contains(object)
+                .expect("incorporated candidate closure retained")
+        );
+    }
+}
+
+#[test]
+fn finding_acknowledgement_and_gc_follow_directory_ref_before_ledger_lock_order() {
+    const CAMPAIGN: &str = "pending-finding-gc-fixture";
+
+    let storage = tempfile::tempdir().expect("lock-order storage");
+    let blobs = Arc::new(DirectoryBlobBackend::new(
+        "finding-lock-order",
+        storage.path().join("blobs"),
+    ));
+    let refs = Arc::new(LockOrderDirectoryRefs::new(storage.path().join("refs")));
+    let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs.clone()));
+    let (lineage, attempt, observation, candidate) = publish_pending_finding_fixture(&repository);
+    let expected_snapshot = repository
+        .head(CAMPAIGN)
+        .expect("observation-owning head")
+        .snapshot_id();
+    let publication = repository
+        .incorporate_finding_candidate_bundle(CAMPAIGN, expected_snapshot, candidate)
+        .expect("incorporate lock-order candidate");
+    let campaign = CampaignName::new(CAMPAIGN).expect("campaign name");
+    let request = pending_finding_request(lineage, attempt);
+    let key = AttemptExecutionKey::new(lineage, attempt);
+    let execution = ExecutionId::from_bytes([0x66; 16]).expect("execution");
+    let completed = AttemptRuntimeState::Completed {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution,
+        observation,
+        finding_candidate: CompletedFindingCandidate::Pending(candidate),
+    };
+    let mut directory_ledger =
+        DirectoryAssignmentLedger::open(storage.path().join("ledger")).expect("directory ledger");
+    assert_eq!(
+        directory_ledger
+            .compare_exchange_attempt(key, None, Some(completed))
+            .expect("retain lock-order candidate"),
+        AttemptStateCas::Advanced
+    );
+
+    let (ledger_requested_tx, ledger_requested_rx) = mpsc::channel();
+    let shared_ledger = LockOrderDirectoryLedger {
+        inner: Arc::new(Mutex::new(directory_ledger)),
+        gate: Arc::new(Mutex::new(())),
+        acquisition_requested: ledger_requested_tx,
+    };
+    let gate = shared_ledger.gate.clone();
+    let blocker = gate.lock().expect("block ledger acquisition");
+    let (publication_requested_tx, publication_requested_rx) = mpsc::channel();
+    let (inventory_acquired_tx, inventory_acquired_rx) = mpsc::channel();
+    refs.arm(publication_requested_tx, inventory_acquired_tx);
+
+    let (gc_done_tx, gc_done_rx) = mpsc::channel();
+    let gc_repository = repository.clone();
+    let gc_refs = refs.clone();
+    let gc_blobs = blobs.clone();
+    let mut gc_ledger = shared_ledger.clone();
+    let gc_thread = thread::spawn(move || {
+        let physical = CampaignGcPhysicalStore::new("finding-lock-order", gc_blobs.as_ref())
+            .expect("lock-order physical store");
+        plan_single_host_campaign_gc(
+            &gc_repository,
+            gc_refs.as_ref(),
+            &mut gc_ledger,
+            None,
+            None,
+            hash("crucible.test.finding-lock-order.v1", 0x77),
+            &[physical],
+        )
+        .expect("plan lock-order GC");
+        gc_done_tx.send(()).expect("signal GC completion");
+    });
+    inventory_acquired_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("GC acquires directory ref inventory first");
+    ledger_requested_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("GC requests ledger after ref inventory");
+
+    let (ack_done_tx, ack_done_rx) = mpsc::channel();
+    let ack_repository = repository.clone();
+    let mut ack_ledger = shared_ledger;
+    let ack_thread = thread::spawn(move || {
+        let outcome = acknowledge_incorporated_finding_candidate(
+            &ack_repository,
+            &mut ack_ledger,
+            &campaign,
+            key,
+            execution,
+            observation,
+            publication.finding,
+            candidate,
+        )
+        .expect("acknowledge after concurrent GC");
+        assert!(matches!(
+            outcome,
+            FindingCandidateRetentionOutcome::Released(_)
+        ));
+        ack_done_tx
+            .send(())
+            .expect("signal acknowledgement completion");
+    });
+    publication_requested_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("acknowledgement requests publication guard");
+    assert_eq!(ledger_requested_rx.try_recv(), Err(TryRecvError::Empty));
+
+    drop(blocker);
+    gc_done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("GC completes after ledger release");
+    ack_done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("acknowledgement completes after GC releases refs");
+    gc_thread.join().expect("join GC thread");
+    ack_thread.join().expect("join acknowledgement thread");
+}
+
+#[test]
+fn completed_status_and_control_fail_closed_on_missing_candidate_descendant() {
+    let storage = tempfile::tempdir().expect("missing candidate storage");
+    let blobs = Arc::new(DirectoryBlobBackend::new(
+        "missing-candidate-descendant",
+        storage.path().join("blobs"),
+    ));
+    let refs = Arc::new(DirectoryRefBackend::new(storage.path().join("refs")));
+    let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs));
+    let (lineage, attempt, observation, candidate) = publish_pending_finding_fixture(&repository);
+    let request = pending_finding_request(lineage, attempt);
+    let execution = ExecutionId::from_bytes([0x67; 16]).expect("execution");
+    let completed = AttemptRuntimeState::Completed {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution,
+        observation,
+        finding_candidate: CompletedFindingCandidate::Pending(candidate),
+    };
+    let mut ledger = MemoryAssignmentLedger::default();
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(
+                AttemptExecutionKey::new(lineage, attempt),
+                None,
+                Some(completed),
+            )
+            .expect("retain missing candidate fixture"),
+        AttemptStateCas::Advanced
+    );
+
+    let lineage_record = repository
+        .load_lineage(lineage)
+        .expect("load candidate lineage");
+    let admission = RepositoryAttemptAdmission::new(
+        Arc::clone(&repository),
+        ExecutorCompatibilityProfile::from_lineage(&lineage_record),
+    );
+    let mut supervisor = LocalExecutorSupervisor::new(
+        ledger,
+        admission,
+        request.daemon_epoch(),
+        ExecutorCapacity::new(1, 1, 4096, 8192, 64).expect("executor capacity"),
+    );
+    let status = GetAttemptExecutionRequest::new(&request, execution).expect("status request");
+    let completed_status = ExecutorStatusService::get_attempt_execution(&mut supervisor, &status)
+        .expect("complete candidate status");
+    assert_eq!(
+        completed_status.disposition(),
+        GetAttemptExecutionDisposition::Completed { observation }
+    );
+    assert_eq!(completed_status.finding_candidate(), Some(candidate));
+    let checkpoint =
+        CheckpointAttemptExecutionRequest::new(&request, execution).expect("checkpoint request");
+    let completed_checkpoint =
+        ExecutorControlService::checkpoint_attempt_execution(&mut supervisor, &checkpoint)
+            .expect("complete candidate checkpoint response");
+    assert_eq!(
+        completed_checkpoint.disposition(),
+        CheckpointAttemptExecutionDisposition::AlreadyCompleted { observation }
+    );
+    assert_eq!(completed_checkpoint.finding_candidate(), Some(candidate));
+    let cancel = CancelAttemptExecutionRequest::new(&request, execution).expect("cancel request");
+    let completed_cancel =
+        ExecutorControlService::cancel_attempt_execution(&mut supervisor, &cancel)
+            .expect("complete candidate cancel response");
+    assert_eq!(
+        completed_cancel.disposition(),
+        CancelAttemptExecutionDisposition::AlreadyCompleted { observation }
+    );
+    assert_eq!(completed_cancel.finding_candidate(), Some(candidate));
+
+    let bundle = repository
+        .load_finding_candidate_bundle(candidate)
+        .expect("load complete candidate before fault");
+    let mut inventory = blobs
+        .acquire_inventory_fence()
+        .expect("acquire candidate fault inventory");
+    assert_eq!(
+        inventory
+            .delete_candidate(bundle.minimized().content_id())
+            .expect("delete one candidate descendant"),
+        PlannedDeleteDisposition::Deleted
+    );
+    drop(inventory);
+
+    assert!(matches!(
+        ExecutorStatusService::get_attempt_execution(&mut supervisor, &status),
+        Err(LocalExecutorError::CompletionValidation {
+            reason: CompletionValidationFailure::UnavailableInput,
+        })
+    ));
+    assert!(matches!(
+        ExecutorControlService::checkpoint_attempt_execution(&mut supervisor, &checkpoint),
+        Err(LocalExecutorError::CompletionValidation {
+            reason: CompletionValidationFailure::UnavailableInput,
+        })
+    ));
+    assert!(matches!(
+        ExecutorControlService::cancel_attempt_execution(&mut supervisor, &cancel),
+        Err(LocalExecutorError::CompletionValidation {
+            reason: CompletionValidationFailure::UnavailableInput,
+        })
+    ));
 }
 
 #[test]
@@ -1990,6 +2578,22 @@ impl AssignmentRetentionFence for SyntheticRetentionFence {
             0,
             0,
         ))
+    }
+
+    fn load_attempt(
+        &mut self,
+        _key: AttemptExecutionKey,
+    ) -> Result<Option<AttemptRuntimeState>, Self::BackendError> {
+        Ok(None)
+    }
+
+    fn compare_exchange_attempt(
+        &mut self,
+        _key: AttemptExecutionKey,
+        _expected: Option<AttemptRuntimeState>,
+        _next: Option<AttemptRuntimeState>,
+    ) -> Result<AttemptStateCas, Self::BackendError> {
+        Ok(AttemptStateCas::Conflict { current: None })
     }
 }
 

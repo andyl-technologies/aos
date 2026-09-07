@@ -24,6 +24,8 @@
 //! [`campaign_policy`] owns its immutable Unix identity and operation grants;
 //! [`campaign_retention`] composes snapshot-bound semantic pins with durable
 //! executor publication roots for local garbage-collection inventory;
+//! [`pending_finding`] owns the fenced handoff that replaces an executor
+//! candidate root with an authenticated campaign finding;
 //! [`campaign_store_quota`] adapts pinned Linux project quotas to the CAS
 //! store graph without introducing a storage dependency into the kernel layer;
 //! [`campaign_store_composition`] exposes the bounded concrete store
@@ -138,6 +140,7 @@ pub mod managed_qemu_hot_fork_source_world_pool;
 pub mod packaged_qemu_executor;
 #[cfg(target_os = "linux")]
 pub mod paused_checkpoint_promotion;
+pub mod pending_finding;
 pub mod planner_loopback;
 pub mod planner_process;
 pub mod qemu_baked_genesis;
@@ -175,7 +178,8 @@ pub use assignment_ledger::{
     AssignmentRetentionInventoryError, AssignmentRetentionRoot, AssignmentRetentionSummary,
     AssignmentRetentionVisitorError, AttemptExecutionKey, AttemptExecutionOrigin,
     AttemptRuntimeState, AttemptStateCas, CheckpointPromotionExecutionBasis,
-    DirectoryAssignmentLedger, MemoryAssignmentLedger, visit_directory_attempt_states_bounded,
+    CompletedFindingCandidate, DirectoryAssignmentLedger, MemoryAssignmentLedger,
+    visit_directory_attempt_states_bounded,
 };
 pub use campaign_attachment::{
     AttachedCanonicalCampaignRuntime, CanonicalCampaignRuntimeConfig,
@@ -463,6 +467,11 @@ pub use paused_checkpoint_promotion::{
     stage_prepared_paused_checkpoint_promotion,
     validate_and_prepare_paused_checkpoint_promotion_guarded,
     validate_and_prepare_production_paused_checkpoint_promotion,
+};
+pub use pending_finding::{
+    AcknowledgedFindingCandidate, FindingCandidateHandoffError, FindingCandidateHandoffResult,
+    FindingCandidateRetentionOutcome, PendingFindingAcknowledgementError, PendingFindingCandidate,
+    acknowledge_incorporated_finding_candidate, incorporate_and_acknowledge_finding_candidate,
 };
 pub use planner_loopback::{
     LoopbackPlannerProtocolError, LoopbackPlannerServerError, LoopbackPlannerService,

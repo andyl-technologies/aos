@@ -214,14 +214,15 @@ pub use repository::{
     CampaignExecutorStepOutcome, CampaignExecutorStore, CampaignHead, CampaignHeadPage,
     CampaignLifecycle, CampaignPinRetentionRecord, CampaignPinRetentionSummary,
     CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignPlannerDriverError,
-    CampaignPlannerStepOutcome, CampaignRepository, CampaignRepositoryError, CampaignSupervisor,
-    CampaignSupervisorConfigError, CampaignSupervisorError, CampaignSupervisorStepOutcome,
-    ChoiceDiscovery, ChoiceDiscoveryResult, ClaimableAttemptPage, FindingPublicationResult,
-    MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_CLOSURE_OBJECTS,
-    MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS, MAX_OBSERVATION_CHOICE_DISCOVERIES,
-    MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, MAX_PLANNER_SCAN_PAGE_ITEMS, NonModeledAttemptResult,
-    ObjectiveEvaluationPublicationResult, ObservationCandidate, ObservationDisposition,
-    ObservationResult, PlannerStepResult, ProposalResult, ResolvedSelection, WorkerSlotId,
+    CampaignPlannerStepOutcome, CampaignRepository, CampaignRepositoryError,
+    CampaignRepositoryGcExclusionGuard, CampaignSupervisor, CampaignSupervisorConfigError,
+    CampaignSupervisorError, CampaignSupervisorStepOutcome, ChoiceDiscovery, ChoiceDiscoveryResult,
+    ClaimableAttemptPage, FindingPublicationResult, MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS,
+    MAX_CAMPAIGN_CLOSURE_OBJECTS, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
+    MAX_OBSERVATION_CHOICE_DISCOVERIES, MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES,
+    MAX_PLANNER_SCAN_PAGE_ITEMS, NonModeledAttemptResult, ObjectiveEvaluationPublicationResult,
+    ObservationCandidate, ObservationDisposition, ObservationResult, PlannerStepResult,
+    ProposalResult, ResolvedSelection, WorkerSlotId,
 };
 
 #[cfg(test)]

@@ -57,7 +57,7 @@ fn directory_ledger_reopens_exact_records_and_attempt_state() {
         daemon_epoch: request.daemon_epoch(),
         execution: execution(0x51),
         observation: observation(0x71),
-        finding_candidate: Some(finding_candidate(0x72)),
+        finding_candidate: CompletedFindingCandidate::Pending(finding_candidate(0x72)),
     };
     let publishing = AttemptRuntimeState::Publishing {
         execution_basis,
@@ -725,7 +725,7 @@ fn directory_ledger_reads_legacy_v1_attempt_state() {
         daemon_epoch: request.daemon_epoch(),
         execution: execution(0x55),
         observation: observation(0x75),
-        finding_candidate: None,
+        finding_candidate: CompletedFindingCandidate::None,
     };
     let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
 
@@ -982,6 +982,47 @@ fn directory_ledger_reads_legacy_v7_publishing_state_without_finding_candidate()
         ledger.load_attempt(key).expect("load legacy attempt state"),
         Some(state)
     );
+}
+
+#[test]
+fn directory_ledger_reads_legacy_v8_candidate_as_pending() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let request = request(0x1f, 0x3f, 1);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let candidate = finding_candidate(0x7f);
+    let state = AttemptRuntimeState::Completed {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x5f),
+        observation: observation(0x7f),
+        finding_candidate: CompletedFindingCandidate::Pending(candidate),
+    };
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
+
+    let mut payload = Vec::with_capacity(512);
+    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V8);
+    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
+    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
+    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
+    encode_attempt_origin(&mut payload, AttemptExecutionOrigin::Initial);
+    payload.push(1);
+    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
+    payload.extend_from_slice(&execution(0x5f).as_bytes());
+    push_bytes(&mut payload, observation(0x7f).to_text().as_bytes());
+    encode_optional_finding_candidate(&mut payload, Some(candidate));
+    let path = ledger.attempt_path(key);
+    fs::create_dir_all(path.parent().expect("attempt-state parent"))
+        .expect("create legacy attempt-state parent");
+    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V8))
+        .expect("write legacy attempt state");
+
+    assert_eq!(
+        ledger.load_attempt(key).expect("load legacy attempt state"),
+        Some(state)
+    );
+    assert_eq!(state.pending_finding_candidate(), Some(candidate));
+    assert!(!state.finding_candidate_acknowledged());
 }
 
 fn request(assignment_byte: u8, attempt_byte: u8, vcpus: u32) -> SubmitAttemptRequest {

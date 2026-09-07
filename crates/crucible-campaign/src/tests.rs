@@ -352,7 +352,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.executor.attempt-state-record",
-            "8",
+            "9",
             "operational-record",
         ),
         (

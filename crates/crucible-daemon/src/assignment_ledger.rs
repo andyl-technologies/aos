@@ -33,7 +33,8 @@ use crucible_campaign::{
 use rustix::fs::{FlockOperation, flock};
 
 const ASSIGNMENT_MAGIC: &[u8] = b"crucible.executor.assignment-record.v1\0";
-const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v8\0";
+const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v9\0";
+const ATTEMPT_STATE_MAGIC_V8: &[u8] = b"crucible.executor.attempt-state-record.v8\0";
 const ATTEMPT_STATE_MAGIC_V7: &[u8] = b"crucible.executor.attempt-state-record.v7\0";
 const ATTEMPT_STATE_MAGIC_V6: &[u8] = b"crucible.executor.attempt-state-record.v6\0";
 const ATTEMPT_STATE_MAGIC_V5: &[u8] = b"crucible.executor.attempt-state-record.v5\0";
@@ -42,7 +43,8 @@ const ATTEMPT_STATE_MAGIC_V3: &[u8] = b"crucible.executor.attempt-state-record.v
 const ATTEMPT_STATE_MAGIC_V2: &[u8] = b"crucible.executor.attempt-state-record.v2\0";
 const ATTEMPT_STATE_MAGIC_V1: &[u8] = b"crucible.executor.attempt-state-record.v1\0";
 const ASSIGNMENT_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-record.v1";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v8";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v9";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN_V8: &str = "crucible.executor.attempt-state-record.v8";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V7: &str = "crucible.executor.attempt-state-record.v7";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V6: &str = "crucible.executor.attempt-state-record.v6";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V5: &str = "crucible.executor.attempt-state-record.v5";
@@ -129,6 +131,57 @@ impl AttemptExecutionOrigin {
             Self::Initial => None,
             Self::ExactCheckpoint { checkpoint, .. } => Some(checkpoint),
         }
+    }
+}
+
+/// Durable retention disposition for a completed finding candidate.
+///
+/// The candidate identity remains available after acknowledgement so retries
+/// can distinguish an exact released handoff from an observation-only
+/// completion. Only the pending variant contributes an operational GC root.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CompletedFindingCandidate {
+    /// The completed observation has no finding candidate.
+    #[default]
+    None,
+    /// The executor retains the candidate until coordinator acknowledgement.
+    Pending(FindingCandidateBundleId),
+    /// The coordinator acknowledged this exact incorporated candidate.
+    Acknowledged(FindingCandidateBundleId),
+}
+
+impl CompletedFindingCandidate {
+    /// Builds the completion disposition for an optional newly published candidate.
+    #[must_use]
+    pub const fn pending(candidate: Option<FindingCandidateBundleId>) -> Self {
+        match candidate {
+            Some(candidate) => Self::Pending(candidate),
+            None => Self::None,
+        }
+    }
+
+    /// Returns the candidate identity retained for status and replay.
+    #[must_use]
+    pub const fn candidate(self) -> Option<FindingCandidateBundleId> {
+        match self {
+            Self::None => None,
+            Self::Pending(candidate) | Self::Acknowledged(candidate) => Some(candidate),
+        }
+    }
+
+    /// Returns the candidate while its operational GC root remains live.
+    #[must_use]
+    pub const fn pending_candidate(self) -> Option<FindingCandidateBundleId> {
+        match self {
+            Self::Pending(candidate) => Some(candidate),
+            Self::None | Self::Acknowledged(_) => None,
+        }
+    }
+
+    /// Reports whether the exact candidate was acknowledged as incorporated.
+    #[must_use]
+    pub const fn is_acknowledged(self) -> bool {
+        matches!(self, Self::Acknowledged(_))
     }
 }
 
@@ -282,8 +335,8 @@ pub enum AttemptRuntimeState {
         execution: ExecutionId,
         /// Immutable completed observation.
         observation: ObservationId,
-        /// Finding candidate retained until coordinator incorporation is acknowledged.
-        finding_candidate: Option<FindingCandidateBundleId>,
+        /// Candidate identity and operational-retention disposition.
+        finding_candidate: CompletedFindingCandidate,
     },
     /// The daemon accepted cancellation before canonical completion.
     Canceled {
@@ -409,16 +462,16 @@ impl AttemptRuntimeState {
         }
     }
 
-    /// Returns the pending finding-candidate retention root, when present.
+    /// Returns the finding candidate reported with completion, when present.
     #[must_use]
     pub const fn finding_candidate(self) -> Option<FindingCandidateBundleId> {
         match self {
             Self::Publishing {
                 finding_candidate, ..
-            }
-            | Self::Completed {
-                finding_candidate, ..
             } => finding_candidate,
+            Self::Completed {
+                finding_candidate, ..
+            } => finding_candidate.candidate(),
             Self::Running { .. }
             | Self::CheckpointRequested { .. }
             | Self::CheckpointPublishing { .. }
@@ -427,6 +480,38 @@ impl AttemptRuntimeState {
             | Self::Canceled { .. }
             | Self::TerminalFailure { .. } => None,
         }
+    }
+
+    /// Returns the candidate that remains an operational retention root.
+    #[must_use]
+    pub const fn pending_finding_candidate(self) -> Option<FindingCandidateBundleId> {
+        match self {
+            Self::Publishing {
+                finding_candidate, ..
+            } => finding_candidate,
+            Self::Completed {
+                finding_candidate: CompletedFindingCandidate::Pending(finding_candidate),
+                ..
+            } => Some(finding_candidate),
+            Self::Completed { .. }
+            | Self::Running { .. }
+            | Self::CheckpointRequested { .. }
+            | Self::CheckpointPublishing { .. }
+            | Self::Paused { .. }
+            | Self::CheckpointPromoting { .. }
+            | Self::Canceled { .. }
+            | Self::TerminalFailure { .. } => None,
+        }
+    }
+
+    /// Reports whether the candidate identity is an incorporated tombstone.
+    #[must_use]
+    pub const fn finding_candidate_acknowledged(self) -> bool {
+        matches!(
+            self,
+            Self::Completed { finding_candidate, .. }
+                if finding_candidate.is_acknowledged()
+        )
     }
 
     /// Returns an exact-checkpoint retention root, when one is durable.
@@ -646,7 +731,7 @@ impl AssignmentRetentionSummary {
                 .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
             visitor(AssignmentRetentionRoot::Observation(observation))?;
         }
-        if let Some(candidate) = state.finding_candidate() {
+        if let Some(candidate) = state.pending_finding_candidate() {
             self.finding_candidate_roots = self
                 .finding_candidate_roots
                 .checked_add(1)
@@ -705,6 +790,34 @@ pub trait AssignmentRetentionFence {
             AssignmentRetentionRoot,
         ) -> Result<(), AssignmentRetentionVisitorError>,
     ) -> Result<AssignmentRetentionSummary, AssignmentRetentionInventoryError<Self::BackendError>>;
+
+    /// Loads one attempt while retaining exclusive root-inventory authority.
+    ///
+    /// This method lets a coordinator reauthenticate an incorporated finding
+    /// against the current campaign head and then release the matching
+    /// operational root without recursively acquiring the ledger fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend error when the current record cannot be read and
+    /// authenticated.
+    fn load_attempt(
+        &mut self,
+        key: AttemptExecutionKey,
+    ) -> Result<Option<AttemptRuntimeState>, Self::BackendError>;
+
+    /// Replaces one exact attempt state while retaining the same fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend error when the compare-and-swap cannot be made
+    /// durable or its outcome cannot be determined safely.
+    fn compare_exchange_attempt(
+        &mut self,
+        key: AttemptExecutionKey,
+        expected: Option<AttemptRuntimeState>,
+        next: Option<AttemptRuntimeState>,
+    ) -> Result<AttemptStateCas, Self::BackendError>;
 }
 
 /// Separate maintenance capability for operational assignment-ledger roots.
@@ -1005,6 +1118,22 @@ impl AssignmentRetentionFence for MemoryAssignmentRetentionFence<'_> {
             summary.visit(state, visitor)?;
         }
         Ok(summary)
+    }
+
+    fn load_attempt(
+        &mut self,
+        key: AttemptExecutionKey,
+    ) -> Result<Option<AttemptRuntimeState>, Self::BackendError> {
+        self.ledger.load_attempt(key)
+    }
+
+    fn compare_exchange_attempt(
+        &mut self,
+        key: AttemptExecutionKey,
+        expected: Option<AttemptRuntimeState>,
+        next: Option<AttemptRuntimeState>,
+    ) -> Result<AttemptStateCas, Self::BackendError> {
+        self.ledger.compare_exchange_attempt(key, expected, next)
     }
 }
 
@@ -1416,6 +1545,22 @@ impl AssignmentRetentionFence for DirectoryAssignmentRetentionFence<'_> {
         }
         Ok(summary)
     }
+
+    fn load_attempt(
+        &mut self,
+        key: AttemptExecutionKey,
+    ) -> Result<Option<AttemptRuntimeState>, Self::BackendError> {
+        self.ledger.load_attempt(key)
+    }
+
+    fn compare_exchange_attempt(
+        &mut self,
+        key: AttemptExecutionKey,
+        expected: Option<AttemptRuntimeState>,
+        next: Option<AttemptRuntimeState>,
+    ) -> Result<AttemptStateCas, Self::BackendError> {
+        self.ledger.compare_exchange_attempt(key, expected, next)
+    }
 }
 
 fn encode_assignment_record(record: &AssignmentRecord) -> Vec<u8> {
@@ -1516,7 +1661,8 @@ fn encode_attempt_state(key: AttemptExecutionKey, state: AttemptRuntimeState) ->
             payload.extend_from_slice(&daemon_epoch.as_bytes());
             payload.extend_from_slice(&execution.as_bytes());
             push_bytes(&mut payload, observation.to_text().as_bytes());
-            encode_optional_finding_candidate(&mut payload, finding_candidate);
+            encode_optional_finding_candidate(&mut payload, finding_candidate.candidate());
+            payload.push(u8::from(finding_candidate.is_acknowledged()));
         }
         AttemptRuntimeState::Publishing {
             daemon_epoch,
@@ -1558,6 +1704,8 @@ fn decode_attempt_state(
 ) -> Result<(AttemptExecutionKey, AttemptRuntimeState), AssignmentLedgerError> {
     let (payload, magic) = if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN) {
         (payload, ATTEMPT_STATE_MAGIC)
+    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V8) {
+        (payload, ATTEMPT_STATE_MAGIC_V8)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V7) {
         (payload, ATTEMPT_STATE_MAGIC_V7)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V6) {
@@ -1582,6 +1730,7 @@ fn decode_attempt_state(
     let attempt = parse_typed(cursor.bytes()?, AttemptId::parse)?;
     let execution_basis = CampaignHash::from_bytes(cursor.fixed()?);
     let origin = if magic == ATTEMPT_STATE_MAGIC
+        || magic == ATTEMPT_STATE_MAGIC_V8
         || magic == ATTEMPT_STATE_MAGIC_V7
         || magic == ATTEMPT_STATE_MAGIC_V6
         || magic == ATTEMPT_STATE_MAGIC_V5
@@ -1601,21 +1750,47 @@ fn decode_attempt_state(
             daemon_epoch,
             execution,
         },
-        1 => AttemptRuntimeState::Completed {
-            execution_basis,
-            origin,
-            daemon_epoch,
-            execution,
-            observation: parse_typed(cursor.bytes()?, ObservationId::parse)?,
-            finding_candidate: decode_optional_finding_candidate(&mut cursor, magic)?,
-        },
+        1 => {
+            let observation = parse_typed(cursor.bytes()?, ObservationId::parse)?;
+            let finding_candidate = decode_optional_finding_candidate(&mut cursor, magic)?;
+            let finding_candidate_acknowledged = if magic == ATTEMPT_STATE_MAGIC {
+                match cursor.byte()? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(corrupt("attempt-state-finding-candidate-acknowledged-tag")),
+                }
+            } else {
+                false
+            };
+            let finding_candidate = match (finding_candidate, finding_candidate_acknowledged) {
+                (None, false) => CompletedFindingCandidate::None,
+                (Some(candidate), false) => CompletedFindingCandidate::Pending(candidate),
+                (Some(candidate), true) => CompletedFindingCandidate::Acknowledged(candidate),
+                (None, true) => {
+                    return Err(corrupt(
+                        "attempt-state-acknowledged-finding-candidate-missing",
+                    ));
+                }
+            };
+            AttemptRuntimeState::Completed {
+                execution_basis,
+                origin,
+                daemon_epoch,
+                execution,
+                observation,
+                finding_candidate,
+            }
+        }
         2 => AttemptRuntimeState::Canceled {
             execution_basis,
             origin,
             daemon_epoch,
             execution,
         },
-        8 if magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V7 => {
+        8 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V8
+            || magic == ATTEMPT_STATE_MAGIC_V7 =>
+        {
             AttemptRuntimeState::TerminalFailure {
                 execution_basis,
                 origin,
@@ -1624,6 +1799,7 @@ fn decode_attempt_state(
             }
         }
         3 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V8
             || magic == ATTEMPT_STATE_MAGIC_V7
             || magic == ATTEMPT_STATE_MAGIC_V6
             || magic == ATTEMPT_STATE_MAGIC_V5
@@ -1641,6 +1817,7 @@ fn decode_attempt_state(
             }
         }
         4 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V8
             || magic == ATTEMPT_STATE_MAGIC_V7
             || magic == ATTEMPT_STATE_MAGIC_V6
             || magic == ATTEMPT_STATE_MAGIC_V5
@@ -1655,6 +1832,7 @@ fn decode_attempt_state(
             }
         }
         5 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V8
             || magic == ATTEMPT_STATE_MAGIC_V7
             || magic == ATTEMPT_STATE_MAGIC_V6
             || magic == ATTEMPT_STATE_MAGIC_V5
@@ -1670,6 +1848,7 @@ fn decode_attempt_state(
             }
         }
         6 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V8
             || magic == ATTEMPT_STATE_MAGIC_V7
             || magic == ATTEMPT_STATE_MAGIC_V6
             || magic == ATTEMPT_STATE_MAGIC_V5
@@ -1684,7 +1863,10 @@ fn decode_attempt_state(
                 checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
                 promotion_basis: if matches!(
                     magic,
-                    ATTEMPT_STATE_MAGIC | ATTEMPT_STATE_MAGIC_V7 | ATTEMPT_STATE_MAGIC_V6
+                    ATTEMPT_STATE_MAGIC
+                        | ATTEMPT_STATE_MAGIC_V8
+                        | ATTEMPT_STATE_MAGIC_V7
+                        | ATTEMPT_STATE_MAGIC_V6
                 ) {
                     decode_checkpoint_promotion_basis(&mut cursor)?
                 } else {
@@ -1693,6 +1875,7 @@ fn decode_attempt_state(
             }
         }
         7 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V8
             || magic == ATTEMPT_STATE_MAGIC_V7
             || magic == ATTEMPT_STATE_MAGIC_V6
             || magic == ATTEMPT_STATE_MAGIC_V5 =>
@@ -1706,7 +1889,10 @@ fn decode_attempt_state(
                 promoted_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
                 promotion_basis: if matches!(
                     magic,
-                    ATTEMPT_STATE_MAGIC | ATTEMPT_STATE_MAGIC_V7 | ATTEMPT_STATE_MAGIC_V6
+                    ATTEMPT_STATE_MAGIC
+                        | ATTEMPT_STATE_MAGIC_V8
+                        | ATTEMPT_STATE_MAGIC_V7
+                        | ATTEMPT_STATE_MAGIC_V6
                 ) {
                     decode_checkpoint_promotion_basis(&mut cursor)?
                 } else {
@@ -1762,7 +1948,7 @@ fn decode_optional_finding_candidate(
     cursor: &mut RecordCursor<'_>,
     magic: &[u8],
 ) -> Result<Option<FindingCandidateBundleId>, AssignmentLedgerError> {
-    if magic != ATTEMPT_STATE_MAGIC {
+    if magic != ATTEMPT_STATE_MAGIC && magic != ATTEMPT_STATE_MAGIC_V8 {
         return Ok(None);
     }
     match cursor.byte()? {

@@ -30,6 +30,139 @@ fn fixture_request() -> SubmitAttemptRequest {
     .expect("submit attempt request")
 }
 
+fn fixture_finding_candidate() -> FindingCandidateBundleId {
+    FindingCandidateBundleId::from_content_id(ContentId::for_bytes(
+        ObjectKind::Finding,
+        1,
+        b"executor-finding-candidate",
+    ))
+    .expect("finding candidate")
+}
+
+#[test]
+fn completed_responses_version_finding_candidates_and_decode_legacy_none() {
+    let assignment = fixture_request();
+    let execution = ExecutionId::from_bytes([0x71; 16]).expect("execution");
+    let observation = ObservationId::from_content_id(ContentId::for_bytes(
+        ObjectKind::Observation,
+        1,
+        b"candidate-bearing-completion",
+    ))
+    .expect("observation");
+    let candidate = fixture_finding_candidate();
+
+    let submit_disposition = SubmitAttemptDisposition::AlreadyCompleted { observation };
+    let submit = SubmitAttemptResponse::new_with_finding_candidate(
+        &assignment,
+        submit_disposition,
+        candidate,
+    )
+    .expect("candidate submit response");
+    let submit_bytes = submit.canonical_bytes();
+    assert_eq!(&submit_bytes[..4], &4_u32.to_be_bytes());
+    assert_eq!(
+        SubmitAttemptResponse::from_canonical_bytes_for(&assignment, &submit_bytes)
+            .expect("decode candidate submit response")
+            .finding_candidate(),
+        Some(candidate)
+    );
+    assert_eq!(
+        SubmitAttemptResponse::new(&assignment, submit_disposition)
+            .expect("legacy submit response")
+            .finding_candidate(),
+        None
+    );
+
+    let status_request =
+        GetAttemptExecutionRequest::new(&assignment, execution).expect("status request");
+    let status = GetAttemptExecutionResponse::new_with_finding_candidate(
+        &status_request,
+        GetAttemptExecutionDisposition::Completed { observation },
+        candidate,
+    )
+    .expect("candidate status response");
+    assert_eq!(
+        GetAttemptExecutionResponse::from_canonical_bytes_for(
+            &status_request,
+            &status.canonical_bytes(),
+        )
+        .expect("decode candidate status response")
+        .finding_candidate(),
+        Some(candidate)
+    );
+
+    let checkpoint_request =
+        CheckpointAttemptExecutionRequest::new(&assignment, execution).expect("checkpoint request");
+    let checkpoint = CheckpointAttemptExecutionResponse::new_with_finding_candidate(
+        &checkpoint_request,
+        CheckpointAttemptExecutionDisposition::AlreadyCompleted { observation },
+        candidate,
+    )
+    .expect("candidate checkpoint response");
+    assert_eq!(
+        CheckpointAttemptExecutionResponse::from_canonical_bytes_for(
+            &checkpoint_request,
+            &checkpoint.canonical_bytes(),
+        )
+        .expect("decode candidate checkpoint response")
+        .finding_candidate(),
+        Some(candidate)
+    );
+
+    let cancel_request =
+        CancelAttemptExecutionRequest::new(&assignment, execution).expect("cancel request");
+    let cancel = CancelAttemptExecutionResponse::new_with_finding_candidate(
+        &cancel_request,
+        CancelAttemptExecutionDisposition::AlreadyCompleted { observation },
+        candidate,
+    )
+    .expect("candidate cancel response");
+    assert_eq!(
+        CancelAttemptExecutionResponse::from_canonical_bytes_for(
+            &cancel_request,
+            &cancel.canonical_bytes(),
+        )
+        .expect("decode candidate cancel response")
+        .finding_candidate(),
+        Some(candidate)
+    );
+
+    let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
+        ObjectKind::ExactManifest,
+        2,
+        b"candidate-resume-checkpoint",
+    ))
+    .expect("resume checkpoint");
+    let resume_request = ResumeAttemptExecutionRequest::new(&assignment, execution, checkpoint)
+        .expect("resume request");
+    let resume = ResumeAttemptExecutionResponse::new_with_finding_candidate(
+        &resume_request,
+        ResumeAttemptExecutionDisposition::AlreadyCompleted { observation },
+        candidate,
+    )
+    .expect("candidate resume response");
+    assert_eq!(
+        ResumeAttemptExecutionResponse::from_canonical_bytes_for(
+            &resume_request,
+            &resume.canonical_bytes(),
+        )
+        .expect("decode candidate resume response")
+        .finding_candidate(),
+        Some(candidate)
+    );
+
+    assert_eq!(
+        SubmitAttemptResponse::new_with_finding_candidate(
+            &assignment,
+            SubmitAttemptDisposition::AlreadyRunning { execution },
+            candidate,
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "finding candidate requires a completed executor response",
+        })
+    );
+}
+
 #[test]
 fn submit_attempt_messages_are_strict_bounded_and_request_bound() {
     let request = fixture_request();
