@@ -285,6 +285,20 @@ impl CampaignRepository {
                                 &request,
                             )?;
                         }
+                        CampaignFact::DiscoveryRequested(request) => {
+                            if !seen_commands.insert(request.command) {
+                                return Err(integrity("snapshot-ancestry-reused-mutation-command"));
+                            }
+                            if request.expected_snapshot != parent {
+                                return Err(integrity("transition-precondition-parent-mismatch"));
+                            }
+                            self.validate_discovery_request_successor(
+                                &parent_snapshot,
+                                &loaded,
+                                transition.content_id(),
+                                &request,
+                            )?;
+                        }
                         CampaignFact::BranchRequestIssued(request) => {
                             let request_record = self.read_branch_request(request.content_id())?;
                             if let BranchRequestCause::Operator(command) = request_record.cause()
@@ -1404,7 +1418,8 @@ impl CampaignRepository {
             | CampaignFact::PolicyActivated(_)
             | CampaignFact::BudgetGranted(_)
             | CampaignFact::PinChanged(_)
-            | CampaignFact::PinCommandAccepted(_) => {}
+            | CampaignFact::PinCommandAccepted(_)
+            | CampaignFact::DiscoveryRequested(_) => {}
         }
         Ok(anchors)
     }

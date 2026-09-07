@@ -410,6 +410,10 @@ fn policy_operation_labels_cover_the_closed_service_vocabulary() {
         ),
         ("pin-campaign", CampaignServiceOperation::PinCampaign),
         (
+            "submit-discovery-request",
+            CampaignServiceOperation::SubmitDiscoveryRequest,
+        ),
+        (
             "submit-branch-request",
             CampaignServiceOperation::SubmitBranchRequest,
         ),

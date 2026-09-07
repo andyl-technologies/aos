@@ -318,6 +318,8 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         "crucible.campaign.apply-campaign-command-response",
         "crucible.campaign.pin-campaign-request",
         "crucible.campaign.pin-campaign-response",
+        "crucible.campaign.submit-campaign-discovery-request",
+        "crucible.campaign.submit-campaign-discovery-response",
         "crucible.campaign.submit-campaign-branch-request",
         "crucible.campaign.submit-campaign-branch-response",
         "crucible.campaign.service-error-response",

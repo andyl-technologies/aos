@@ -11,10 +11,11 @@ use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend
 
 use super::*;
 use crate::{
-    BranchAcceptanceCount, BranchAcceptanceSummary, BranchBudget, BranchPointId,
-    BranchRequestCause, CampaignCommandId, CampaignControlAction, CampaignRoots, CandidateSource,
-    ChoiceDomainId, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId, ConfigurationId,
-    DaemonEpoch, PinChange, PinRequest, PinRetention, StopCondition,
+    AttemptAdmissionId, AttemptId, BranchAcceptanceCount, BranchAcceptanceSummary, BranchBudget,
+    BranchPointId, BranchRequestCause, CampaignCommandId, CampaignControlAction,
+    CampaignDiscoveryResult, CampaignRoots, CandidateSource, ChoiceDomainId, ChoiceOpportunityId,
+    ChoiceValue, ConfigurationArtifactId, ConfigurationId, DaemonEpoch, DiscoveryRequest,
+    PinChange, PinRequest, PinRetention, StopCondition,
 };
 
 fn hash(label: &str) -> CampaignHash {
@@ -461,6 +462,13 @@ impl CampaignService for WrongGetService {
     ) -> Result<SubmitCampaignBranchResponse, Self::Error> {
         unreachable!("test service only handles GetCampaign")
     }
+
+    fn submit_discovery_request(
+        &self,
+        _request: &SubmitCampaignDiscoveryRequest,
+    ) -> Result<SubmitCampaignDiscoveryResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
 }
 
 #[test]
@@ -632,6 +640,13 @@ impl CampaignService for FixedFailureService {
     ) -> Result<SubmitCampaignBranchResponse, Self::Error> {
         Err(self.0)
     }
+
+    fn submit_discovery_request(
+        &self,
+        _request: &SubmitCampaignDiscoveryRequest,
+    ) -> Result<SubmitCampaignDiscoveryResponse, Self::Error> {
+        Err(self.0)
+    }
 }
 
 impl CampaignService for WrongApplyService {
@@ -774,6 +789,13 @@ impl CampaignService for WrongApplyService {
         &self,
         _request: &SubmitCampaignBranchRequest,
     ) -> Result<SubmitCampaignBranchResponse, Self::Error> {
+        unreachable!("test service only handles ApplyCampaignCommand")
+    }
+
+    fn submit_discovery_request(
+        &self,
+        _request: &SubmitCampaignDiscoveryRequest,
+    ) -> Result<SubmitCampaignDiscoveryResponse, Self::Error> {
         unreachable!("test service only handles ApplyCampaignCommand")
     }
 }
@@ -1166,6 +1188,94 @@ fn pin_messages_are_canonical_and_bind_the_exact_request() {
         [
             String::from("f660144a465eda8be74584b363ac4c67ee327bd8afdb42704954910ad178431d"),
             String::from("ca85fb59c75c094ed8077a411bc7dac9f5730c08bc858542ec8171d9c127c820"),
+        ]
+    );
+}
+
+#[test]
+fn discovery_messages_are_canonical_and_bind_the_exact_request() {
+    let configuration = ConfigurationArtifactId::from_content_id(ContentId::for_bytes(
+        ObjectKind::Configuration,
+        1,
+        b"discovery-configuration",
+    ))
+    .expect("configuration artifact ID");
+    let request = SubmitCampaignDiscoveryRequest::new(
+        CampaignPrincipal::new("operator:alice").expect("principal"),
+        CampaignName::new("network-recovery").expect("campaign name"),
+        DiscoveryRequest::new(
+            CampaignCommandId::from_hash(hash("discovery")),
+            snapshot("prior"),
+            configuration,
+            StopCondition::Terminal,
+        )
+        .expect("discovery command"),
+    )
+    .expect("discovery request");
+    assert_eq!(
+        SubmitCampaignDiscoveryRequest::from_canonical_bytes(&request.canonical_bytes())
+            .expect("decode discovery request"),
+        request
+    );
+
+    let attempt = AttemptId::parse(&format!(
+        "crucible.campaign.attempt@{}",
+        ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"discovery-attempt").encode()
+    ))
+    .expect("attempt ID");
+    let admission = AttemptAdmissionId::parse(&format!(
+        "crucible.campaign.attempt-admission@{}",
+        ContentId::for_bytes(ObjectKind::CampaignFact, 2, b"discovery-admission").encode()
+    ))
+    .expect("admission ID");
+    let response = SubmitCampaignDiscoveryResponse::new(
+        &request,
+        CampaignDiscoveryResult {
+            prior_snapshot: snapshot("prior"),
+            new_snapshot: snapshot("next"),
+            attempt,
+            admission,
+            replayed: false,
+        },
+    )
+    .expect("discovery response");
+    assert_eq!(
+        SubmitCampaignDiscoveryResponse::from_canonical_bytes(&response.canonical_bytes())
+            .expect("decode discovery response"),
+        response
+    );
+    response.validate_for(&request).expect("request binding");
+
+    let changed = SubmitCampaignDiscoveryRequest::new(
+        request.principal().clone(),
+        request.campaign().clone(),
+        DiscoveryRequest::new(
+            request.command().command,
+            request.command().expected_snapshot,
+            request.command().configuration,
+            StopCondition::NextChoice,
+        )
+        .expect("changed discovery command"),
+    )
+    .expect("changed discovery request");
+    assert!(response.validate_for(&changed).is_err());
+
+    let mut malformed_schema = response.canonical_bytes();
+    malformed_schema[..std::mem::size_of::<u32>()].copy_from_slice(&2_u32.to_be_bytes());
+    assert!(SubmitCampaignDiscoveryResponse::from_canonical_bytes(&malformed_schema).is_err());
+
+    assert_eq!(
+        [
+            blake3::hash(&request.canonical_bytes())
+                .to_hex()
+                .to_string(),
+            blake3::hash(&response.canonical_bytes())
+                .to_hex()
+                .to_string(),
+        ],
+        [
+            String::from("f5b4f0f2f5c6a6fcbe6c4ce6d55551032d44e1aeeca9d182d2a74ea245bf6f87"),
+            String::from("496e1f906e77d17ccc8c5d62eda0f1c2b3075a9ed860f06534b678540666f597"),
         ]
     );
 }

@@ -210,7 +210,7 @@ impl CampaignRecordKind {
     pub const fn schema_version(self) -> u32 {
         match self {
             Self::Snapshot => 3,
-            Self::Fact => 7,
+            Self::Fact => 8,
             Self::PlannerInvocation => 2,
             Self::PlannerStep => 4,
             Self::ExpansionState => 2,
@@ -644,7 +644,7 @@ impl ObjectEnvelope {
         let version_supported = envelope.schema_version() == record_kind.schema_version()
             || record_kind == CampaignRecordKind::Snapshot && envelope.schema_version() == 2
             || record_kind == CampaignRecordKind::Fact
-                && matches!(envelope.schema_version(), 2..=6)
+                && matches!(envelope.schema_version(), 2..=8)
             || record_kind == CampaignRecordKind::BranchPath && envelope.schema_version() == 1
             || record_kind == CampaignRecordKind::BranchRequest
                 && matches!(envelope.schema_version(), 1..=4)
@@ -948,6 +948,10 @@ fn fact_children(fact: &CampaignFact) -> Result<BTreeSet<ContentChild>, Campaign
         CampaignFact::PinCommandAccepted(request) => {
             vec![("expected-snapshot", request.expected_snapshot.content_id())]
         }
+        CampaignFact::DiscoveryRequested(request) => vec![
+            ("expected-snapshot", request.expected_snapshot.content_id()),
+            ("configuration", request.configuration.content_id()),
+        ],
         CampaignFact::ControlRequested(request) => {
             let mut values = vec![("expected-snapshot", request.expected_snapshot.content_id())];
             if let CampaignControlAction::ActivatePolicy(policy) = &request.action {

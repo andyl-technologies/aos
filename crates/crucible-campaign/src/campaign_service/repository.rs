@@ -801,6 +801,22 @@ where
         Ok(PinCampaignResponse::new(request, result)?)
     }
 
+    fn submit_discovery_request(
+        &self,
+        request: &SubmitCampaignDiscoveryRequest,
+    ) -> Result<SubmitCampaignDiscoveryResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::SubmitDiscoveryRequest,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let result = self
+            .repository
+            .submit_discovery_request(request.campaign().as_str(), request.command())?;
+        Ok(SubmitCampaignDiscoveryResponse::new(request, result)?)
+    }
+
     fn submit_branch_request(
         &self,
         request: &SubmitCampaignBranchRequest,

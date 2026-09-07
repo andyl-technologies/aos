@@ -16,31 +16,32 @@ use crucible_campaign::{
     BranchAcceptanceCount, BranchAcceptanceSummary, BranchBudget, BranchPointId, BranchRequest,
     BranchRequestCause, BranchRequestResult, CampaignChoiceEntry, CampaignChoiceObject,
     CampaignChoiceObjectKind, CampaignClient, CampaignCommandId, CampaignCommandResult,
-    CampaignContinuationStatus, CampaignControlAction, CampaignDerivationResult, CampaignFact,
-    CampaignHash, CampaignLineage, CampaignLineageId, CampaignMode, CampaignName,
-    CampaignOperationalStatus, CampaignPolicy, CampaignPolicyId, CampaignPrincipal,
-    CampaignPrincipalAuthorizer, CampaignRepository, CampaignRoots, CampaignSeed,
-    CampaignSemanticStatus, CampaignService, CampaignServiceOperation, CampaignSnapshot,
-    CampaignSnapshotId, CampaignState, CampaignStatusSummary, CandidateSource, ChoiceClassContext,
-    ChoiceCoordinate, ChoiceDomain, ChoiceDomainId, ChoiceOpportunity, ChoiceOpportunityId,
-    ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId,
-    ContinuationProjection, ContinuationState, ControlRequest, CreateCampaignRequest,
-    CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse, ExactRational,
-    ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse, ExplorerPolicy, FairnessPolicy,
-    GetCampaignChoiceObjectRequest, GetCampaignChoiceObjectResponse,
-    GetCampaignFindingObjectRequest, GetCampaignFindingObjectResponse,
-    GetCampaignFrontierObjectRequest, GetCampaignFrontierObjectResponse,
-    GetCampaignGraphObjectRequest, GetCampaignGraphObjectResponse,
-    GetCampaignPlannerRankingsRequest, GetCampaignPlannerRankingsResponse, GetCampaignRequest,
-    GetCampaignResponse, GetCampaignSnapshotRequest, GetCampaignSnapshotResponse,
-    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, MerkleMap, ObjectEnvelope, PinCampaignRequest,
-    PinCampaignResponse, PinChange, PinRequest, PinRetention, ProgressiveWideningPolicy,
-    PuctPolicy, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
-    QueryCampaignFindingsRequest, QueryCampaignFindingsResponse, QueryCampaignFrontierRequest,
-    QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
-    RepositoryCampaignService, RetentionPolicy, ScenarioArtifactId, ScenarioDefId,
-    SelectableDeclaration, StopCondition, SubmitCampaignBranchRequest,
-    SubmitCampaignBranchResponse, WatchCampaignRequest, WatchCampaignResponse,
+    CampaignContinuationStatus, CampaignControlAction, CampaignDerivationResult,
+    CampaignDiscoveryResult, CampaignFact, CampaignHash, CampaignLineage, CampaignLineageId,
+    CampaignMode, CampaignName, CampaignOperationalStatus, CampaignPolicy, CampaignPolicyId,
+    CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignRepository, CampaignRoots,
+    CampaignSeed, CampaignSemanticStatus, CampaignService, CampaignServiceOperation,
+    CampaignSnapshot, CampaignSnapshotId, CampaignState, CampaignStatusSummary, CandidateSource,
+    ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceDomainId, ChoiceOpportunity,
+    ChoiceOpportunityId, ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationArtifactId,
+    ConfigurationId, ContinuationProjection, ContinuationState, ControlRequest,
+    CreateCampaignRequest, CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse,
+    DiscoveryRequest, ExactRational, ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse,
+    ExplorerPolicy, FairnessPolicy, GetCampaignChoiceObjectRequest,
+    GetCampaignChoiceObjectResponse, GetCampaignFindingObjectRequest,
+    GetCampaignFindingObjectResponse, GetCampaignFrontierObjectRequest,
+    GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
+    GetCampaignGraphObjectResponse, GetCampaignPlannerRankingsRequest,
+    GetCampaignPlannerRankingsResponse, GetCampaignRequest, GetCampaignResponse,
+    GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
+    MerkleMap, ObjectEnvelope, PinCampaignRequest, PinCampaignResponse, PinChange, PinRequest,
+    PinRetention, ProgressiveWideningPolicy, PuctPolicy, QueryCampaignChoicesRequest,
+    QueryCampaignChoicesResponse, QueryCampaignFindingsRequest, QueryCampaignFindingsResponse,
+    QueryCampaignFrontierRequest, QueryCampaignFrontierResponse, QueryCampaignGraphRequest,
+    QueryCampaignGraphResponse, RepositoryCampaignService, RetentionPolicy, ScenarioArtifactId,
+    ScenarioDefId, SelectableDeclaration, StopCondition, SubmitCampaignBranchRequest,
+    SubmitCampaignBranchResponse, SubmitCampaignDiscoveryRequest, SubmitCampaignDiscoveryResponse,
+    WatchCampaignRequest, WatchCampaignResponse,
 };
 use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
 
@@ -454,6 +455,33 @@ impl CampaignService for FixedCampaignService {
         )
         .expect("branch response"))
     }
+
+    fn submit_discovery_request(
+        &self,
+        request: &SubmitCampaignDiscoveryRequest,
+    ) -> Result<SubmitCampaignDiscoveryResponse, Self::Error> {
+        let attempt = crucible_campaign::AttemptId::parse(&format!(
+            "crucible.campaign.attempt@{}",
+            ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"discovery-attempt").encode()
+        ))
+        .expect("attempt id");
+        let admission = crucible_campaign::AttemptAdmissionId::parse(&format!(
+            "crucible.campaign.attempt-admission@{}",
+            ContentId::for_bytes(ObjectKind::CampaignFact, 2, b"discovery-admission").encode()
+        ))
+        .expect("admission id");
+        Ok(SubmitCampaignDiscoveryResponse::new(
+            request,
+            CampaignDiscoveryResult {
+                prior_snapshot: request.command().expected_snapshot,
+                new_snapshot: snapshot("discovery-next"),
+                attempt,
+                admission,
+                replayed: false,
+            },
+        )
+        .expect("discovery response"))
+    }
 }
 
 #[test]
@@ -537,6 +565,7 @@ fn direct_and_loopback_campaign_services_are_identical() {
     let apply = apply_request("network-recovery");
     let pin = pin_request("network-recovery");
     let branch = branch_submission("network-recovery");
+    let discovery = discovery_submission("network-recovery");
     let direct = CampaignClient::new(FixedCampaignService);
     let expected_list = direct.list_campaigns(&list).expect("direct list");
     let expected_create = direct.create_campaign(&create).expect("direct create");
@@ -572,10 +601,13 @@ fn direct_and_loopback_campaign_services_are_identical() {
     let expected_branch = direct
         .submit_branch_request(&branch)
         .expect("direct branch");
+    let expected_discovery = direct
+        .submit_discovery_request(&discovery)
+        .expect("direct discovery");
 
     let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
     let server = thread::spawn(move || {
-        for _ in 0..16 {
+        for _ in 0..17 {
             serve_loopback_campaign_once(&mut server_stream, &FixedCampaignService)
                 .expect("serve campaign request");
         }
@@ -668,6 +700,12 @@ fn direct_and_loopback_campaign_services_are_identical() {
             .submit_branch_request(&branch)
             .expect("loopback branch"),
         expected_branch
+    );
+    assert_eq!(
+        client
+            .submit_discovery_request(&discovery)
+            .expect("loopback discovery"),
+        expected_discovery
     );
     server.join().expect("server thread");
 }
@@ -988,6 +1026,13 @@ impl CampaignService for WrongGetService {
         &self,
         _request: &SubmitCampaignBranchRequest,
     ) -> Result<SubmitCampaignBranchResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
+
+    fn submit_discovery_request(
+        &self,
+        _request: &SubmitCampaignDiscoveryRequest,
+    ) -> Result<SubmitCampaignDiscoveryResponse, Self::Error> {
         unreachable!("test service only handles GetCampaign")
     }
 }
@@ -2092,6 +2137,26 @@ fn pin_request(name: &str) -> PinCampaignRequest {
         },
     )
     .expect("pin request")
+}
+
+fn discovery_submission(name: &str) -> SubmitCampaignDiscoveryRequest {
+    let configuration = ConfigurationArtifactId::parse(&format!(
+        "crucible.campaign.configuration-artifact@{}",
+        ContentId::for_bytes(ObjectKind::Configuration, 1, b"discovery-genesis").encode()
+    ))
+    .expect("discovery configuration");
+    SubmitCampaignDiscoveryRequest::new(
+        principal(),
+        CampaignName::new(name).expect("campaign name"),
+        DiscoveryRequest::new(
+            CampaignCommandId::from_hash(hash("discovery")),
+            snapshot("discovery-prior"),
+            configuration,
+            StopCondition::Terminal,
+        )
+        .expect("discovery command"),
+    )
+    .expect("discovery request")
 }
 
 fn watch_request(name: &str, after: Option<CampaignSnapshotId>) -> WatchCampaignRequest {
