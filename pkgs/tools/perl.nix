@@ -130,9 +130,29 @@ in
           if isDarwin
           then ''
             # perl-cross configures a Linux build-miniperl before the Darwin
-            # target. Its probe uses the conventional GNU readelf name; AOS
-            # LLVM provides the compatible implementation as llvm-readelf.
+            # target. Isolate that native compiler from the target architecture
+            # and hardening state; otherwise an aarch64 target makes the x86_64
+            # GCC reject -mbranch-protection before every feature probe.
             mkdir -p "$TMPDIR/perl-native-tools"
+            cat > "$TMPDIR/perl-native-tools/cc-for-build" <<EOF
+            #!$CONFIG_SHELL
+            native_hardening=
+            for token in \$AOS_HARDENING_ENABLE; do
+              case "\$token" in
+                pacret) ;;
+                *) native_hardening="\$native_hardening \$token" ;;
+              esac
+            done
+            export AOS_HARDENING_ENABLE="\$native_hardening"
+            unset AOS_CROSS_COMPILING AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+            unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH
+            unset MACOSX_DEPLOYMENT_TARGET NIX_CFLAGS_COMPILE NIX_CFLAGS_LINK NIX_LDFLAGS SDKROOT
+            exec ${buildPackages.cc}/bin/cc "\$@"
+            EOF
+            chmod +x "$TMPDIR/perl-native-tools/cc-for-build"
+
+            # The probe also uses the conventional GNU readelf name; AOS LLVM
+            # provides the compatible implementation as llvm-readelf.
             ln -s ${buildPackages.llvm}/bin/llvm-readelf \
               "$TMPDIR/perl-native-tools/readelf"
             export PATH="$TMPDIR/perl-native-tools:$PATH"
@@ -148,7 +168,7 @@ in
               --with-cc="$CC" \
               --with-ranlib="$RANLIB" \
               --with-objdump="$OBJDUMP" \
-              --host-cc="$CC_FOR_BUILD" \
+              --host-cc="$TMPDIR/perl-native-tools/cc-for-build" \
               --sysroot="$SDKROOT" \
               --prefix="$out" \
               --man1dir="$out/share/man/man1" \
