@@ -45,6 +45,7 @@ in
     description = "Lightweight Kubernetes (combined: server + agent)";
     command = "server";
     requiredEnv = [];
+    evidenceSources = [./k3s-combined.nix];
     firewall = {
       allowedTCP = [6443 10250];
       allowedUDP = [8472];

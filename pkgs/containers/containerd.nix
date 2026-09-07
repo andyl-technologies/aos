@@ -76,6 +76,11 @@ in
     runtimeDeps = [payload runc kmod bash];
     propagatedDeps = [];
 
+    passthru.evidenceSources = [
+      ./containerd.nix
+      payload.src
+    ];
+
     # Pure stage-2 inventory: generateUnits can reproduce the historical
     # systemd.packages symlink farm without inspecting this output at eval
     # time (and therefore without import-from-derivation).

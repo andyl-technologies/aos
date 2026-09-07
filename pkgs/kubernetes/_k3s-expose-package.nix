@@ -45,6 +45,7 @@ in
     command,
     requiredEnv,
     firewall,
+    evidenceSources,
     stateDirectories ? ["rancher/k3s" "kubelet"],
     hostPaths ? [
       {
@@ -113,6 +114,14 @@ in
           '';
         }
       ];
+
+      passthru.evidenceSources =
+        evidenceSources
+        ++ [
+          ./_k3s-expose-package.nix
+          ./_k3s-common.nix
+          ./_k3s-config
+        ];
 
       expose = {
         units = {

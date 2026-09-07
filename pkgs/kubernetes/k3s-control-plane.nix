@@ -45,6 +45,7 @@ in
     description = "Lightweight Kubernetes (control plane, no agent)";
     command = "server --disable-agent";
     requiredEnv = [];
+    evidenceSources = [./k3s-control-plane.nix];
     stateDirectories = ["rancher/k3s"];
     hostPaths = [
       {

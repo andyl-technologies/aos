@@ -341,6 +341,12 @@ in
       }
     ];
 
+    passthru.evidenceSources = [
+      ./miniflare.nix
+      npmSrc
+      esbuildSrc
+    ];
+
     meta = {
       description = "Cloudflare wrangler + miniflare local Workers test tooling (vendored npm closure)";
       homepage = "https://miniflare.dev/";

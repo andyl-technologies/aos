@@ -157,6 +157,14 @@ in
     ];
   }
   // {
+    passthru =
+      (spec.passthru or {})
+      // {
+        evidenceSources =
+          ((spec.passthru or {}).evidenceSources or [])
+          ++ [spec.src]
+          ++ map (dependency: dependency.src) inTreeDeps;
+      };
     meta =
       spec.meta
       or {

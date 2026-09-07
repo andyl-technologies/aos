@@ -654,6 +654,15 @@
         );
     };
 
+  # Language builders consume dependency source bundles in addition to the
+  # package's primary source. Keep both in the release evidence contract even
+  # though these evaluation-only attributes do not enter the runtime closure.
+  appendEvidenceSources = passthru: sources:
+    passthru
+    // {
+      evidenceSources = (passthru.evidenceSources or []) ++ sources;
+    };
+
   mkCargoPackage = args: let
     # Cross-building a Rust package needs a compiler that executes on the
     # Linux builder while carrying the selected target standard library.
@@ -802,7 +811,12 @@
               )
               ++ (args.buildDeps or []);
             phases = phases.cargoPhases cargoArgs;
-            passthru = (args.passthru or {}) // {inherit cargoArtifactContract;};
+            passthru =
+              appendEvidenceSources (args.passthru or {}) [
+                args.src
+                args.cargoDeps
+              ]
+              // {inherit cargoArtifactContract;};
             # Cargo's JSON messages and restored target metadata contain
             # source paths by design. None of those build-only roots may
             # survive in an ordinary package output. Keep artifact-producing
@@ -870,6 +884,10 @@
         // {
           buildDeps = [resolvedBuildPackages.go] ++ (args.buildDeps or []);
           phases = phases.goPhases goArgsWithDefaults;
+          passthru = appendEvidenceSources (args.passthru or {}) (
+            [args.src]
+            ++ lib.optional ((args.goModules or null) != null) args.goModules
+          );
           # Guard: the Go toolchain must not leak into the runtime closure.
           # -trimpath (in goPhases) prevents source-path embedding; this
           # disallowedReferences catches any residual leak at build time.
@@ -952,6 +970,10 @@
             ]
             ++ tools
             ++ (args.buildDeps or []);
+          passthru = appendEvidenceSources (args.passthru or {}) [
+            args.src
+            deps
+          ];
           phases = phases.bazelPhases {
             bazelDeps = deps;
             inherit bazel jdk tools;
@@ -1566,7 +1588,10 @@
             license = "LGPL-2.1-or-later";
           }
           (lib.getOutput "getent" stdenv.glibc))
-        // {version = "2.39.0";};
+        // {
+          version = "2.39.0";
+          passthru.evidenceSources = stdenv.glibc.passthru.evidenceSources;
+        };
       # Native package sets retain the final stdenv tools. Darwin package roots
       # must be actual target builds; Linux build tools remain available only
       # through buildPackages and build-dependency splicing.

@@ -22,6 +22,8 @@ mkDerivation {
   # intentional references to the base CLI runtime closure.
   dontNukeRefs = true;
 
+  passthru.evidenceSources = [./aos-vm.nix];
+
   phases = [
     {
       name = "install";

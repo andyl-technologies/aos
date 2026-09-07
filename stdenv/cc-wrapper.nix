@@ -398,6 +398,11 @@ in
   // {
     inherit cc libc;
     binutils = binutils_;
+    passthru.evidenceSources =
+      [./cc-wrapper.nix]
+      ++ (cc.passthru.evidenceSources or [])
+      ++ (libc.passthru.evidenceSources or [])
+      ++ (binutils_.passthru.evidenceSources or []);
     isWrapper = true;
     targetPrefix = "";
     inherit targetTriple;

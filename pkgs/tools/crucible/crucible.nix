@@ -565,6 +565,10 @@
       plugin = crucible-qemu-plugin;
       correspondingSource = qemu-crucible-source;
       standaloneRelease = true;
+      evidenceSources = [
+        ./crucible.nix
+        ./live-debugger-matrix.sh
+      ];
     };
     meta = {
       description = "Crucible controller with the GPL QEMU backend";

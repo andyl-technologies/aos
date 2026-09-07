@@ -91,7 +91,7 @@ pub struct PlannedArtifact {
     pub output: Option<String>,
     /// Evaluated output store path.
     pub store_path: Option<String>,
-    /// Exact upstream source store paths, or empty for repository source.
+    /// Exact source and dependency-source store roots needed to rebuild it.
     pub source_store_paths: Vec<String>,
 }
 

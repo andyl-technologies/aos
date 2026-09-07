@@ -875,17 +875,49 @@ in rec {
     packages = map (
       name: let
         package = packages.${name};
+        normalizeSource = source: let
+          sourcePath = toString source;
+          storePath = builtins.match "^(/nix/store/[0-9a-z]{32}-[^/]+)(/.*)?$" sourcePath;
+        in
+          if storePath != null
+          then builtins.head storePath
+          # Checked-in subdirectories are not store roots during local
+          # evaluation. Capture each as an immutable root so the release plan
+          # can retain the same source evidence as container publication.
+          else if builtins.isPath source
+          then
+            builtins.path {
+              path = source;
+              name = builtins.baseNameOf sourcePath;
+            }
+          else source;
+        # Generated packages and language builders declare every source bundle
+        # through this passthru contract. Ordinary packages retain their src.
+        declaredSources =
+          if package ? passthru && package.passthru ? evidenceSources
+          then package.passthru.evidenceSources
+          else if !(package ? src) || package.src == null
+          then []
+          else if builtins.isList package.src
+          then package.src
+          else if toString package.src == ""
+          then []
+          else [package.src];
+        sourcePaths =
+          map (
+            source:
+              builtins.unsafeDiscardStringContext (toString (normalizeSource source))
+          )
+          declaredSources;
       in {
         inherit name;
-        source_store_paths = let
-          source =
-            if package ? src
-            then builtins.unsafeDiscardStringContext (toString package.src)
-            else "";
-        in
-          if builtins.substring 0 11 source == "/nix/store/"
-          then [source]
-          else [];
+        source_store_paths = builtins.attrNames (builtins.listToAttrs (
+          map (source: {
+            name = source;
+            value = true;
+          })
+          sourcePaths
+        ));
         publication = let
           license = package.meta.license or null;
           licenseExpression =
