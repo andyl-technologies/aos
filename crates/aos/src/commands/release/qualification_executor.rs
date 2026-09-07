@@ -102,10 +102,27 @@ pub(super) fn inspect(command: &ReleaseQualificationCommand, printer: &Printer) 
         .iter()
         .map(|case| Ok((case.id.clone(), case.digest()?)))
         .collect::<Result<BTreeMap<_, _>>>()?;
+    let environment_profile_digests = cases
+        .iter()
+        .filter_map(|case| {
+            case.target
+                .as_ref()?
+                .environment
+                .as_ref()
+                .map(|environment| (&case.id, environment))
+        })
+        .map(|(id, environment)| {
+            Ok((
+                id.clone(),
+                Sha256Digest::of_canonical("aos.release.environment-profile/v1", environment)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
     let output = serde_json::json!({
         "status": "not-evaluated",
         "cases": cases,
         "case_digests": case_digests,
+        "environment_profile_digests": environment_profile_digests,
     });
     if !printer.json_if_active(&output) {
         std::io::stdout().write_all(&canonical::canonical_json(&output)?)?;

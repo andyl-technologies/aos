@@ -366,9 +366,10 @@ aos release qualification cases --plan release-bundle/release-plan.json \
   --manifest release-bundle/release-manifest.json --phase staging
 ```
 
-This command displays requirements and a `case_digests` map keyed by case ID;
-it does not verify signatures or claim a pass. Use `aos release verify` with
-independent public anchors for verification.
+This command displays requirements, a `case_digests` map keyed by case ID, and
+an `environment_profile_digests` map for target cases. It does not verify
+signatures or claim a pass. Use `aos release verify` with independent public
+anchors for verification.
 
 Run `aos release qualify-run --prepare-only` with the bundle, publication
 receipt, applicable executor mappings, and `--qualified-at now` described in
@@ -468,6 +469,30 @@ aos release qualification respond \
   --identity linux-x86-v1
 ```
 
+The Linux executors include a native program for each mandatory staging
+container claim. It reconstructs an OCI layout only from the anonymously
+downloaded objects, imports that layout into a private AOS-built containerd and
+runc instance, and runs ten bounded create, network, state, stop, and remove
+cycles. The program retains the runtime import, HTTP, container, inspection,
+and shutdown logs in the executor attempt. It records the host CPU, kernel,
+resources, container runtime, cgroup, network, and volume identities directly
+from the executing machine.
+
+Before running that program, place the reviewed compatibility assessment for
+each target at
+`/etc/aos-release/qualification-assessments/<target-id>.json`. The file is the
+canonical `CompatibilityAssessment` object for the exact environment-profile
+digest printed during case review. It must be a regular file rather than a
+symlink. The native program supplies the observed inventory; the assessment
+does not supply or override test results. Missing or mismatched assessments,
+OCI objects, runtime properties, lifecycle operations, or report bindings fail
+the case and leave the complete failed attempt in the executor work root.
+
+Completion container claims still consume retained campaign reports because
+their 24-hour-or-longer observation windows exceed the executor's six-hour
+process bound. Those reports must cover the same target inventory and include
+the required operation denominators and committed-data result.
+
 An executor that imports reports from several machines or package exercises can
 instead use `--report-root DIR`. The CLI selects
 `DIR/<case-digest-without-sha256-prefix>.json` from the exact case in the
@@ -515,8 +540,11 @@ The flake exposes `qualification-executor-<platform>` packages for all four
 release platforms under `packages.x86_64-linux`, plus a native
 `qualification-executor` alias on each supported system. Install the exact
 platform closures at the paths passed to `qualify-run`. Before starting an
-executor, install each applicable single-link canonical report at
+executor, install each applicable report-backed scenario's single-link
+canonical report at
 `/run/aos-release/qualification-reports/<platform>/<case-digest>.json`.
+The staging container lifecycle cases execute directly and do not read this
+report directory.
 The x86_64 Linux executor uses the fixed paths
 `/run/aos-release/qualification-reports/operator-recovery.json` and
 `production-recovery.json` for those two operator exercises. Each adapter
