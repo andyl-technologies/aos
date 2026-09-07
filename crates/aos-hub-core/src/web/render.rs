@@ -47,6 +47,24 @@ pub(crate) fn masthead(
     crumbs: &[(String, String)],
     session: &str,
 ) -> String {
+    // Add shared icons here so every server-rendered session variant agrees.
+    let mut session = session.to_string();
+    for href in [
+        "/",
+        "/-/caches",
+        "/-/orgs",
+        "/-/instance",
+        "/-/account",
+        "/login",
+        "/logout",
+    ] {
+        let icon = aos_hub_console_contract::navigation_icon_path(href);
+        session = session.replace(
+            &format!("href=\"{href}\">"),
+            &format!("href=\"{href}\"><svg class=\"menu-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"{icon}\"/></svg>"),
+        );
+    }
+
     let brand = if brand.is_empty() { "AOS Hub" } else { brand };
     let mut html = format!(
         "<header class=\"masthead\"><div class=\"masthead-bar\">\
@@ -82,7 +100,7 @@ pub(crate) fn masthead(
 
     let _ = write!(
         html,
-        "<details class=\"masthead-menu\"><summary>Menu</summary>{session}</details></div></header>"
+        "<details class=\"masthead-menu\"><summary aria-label=\"Menu\"><span class=\"hamburger\" aria-hidden=\"true\"><span></span><span></span><span></span></span></summary>{session}</details></div></header>"
     );
     html
 }

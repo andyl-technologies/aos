@@ -1343,7 +1343,8 @@ mod tests {
         assert!(html.contains("class=\"token-list\""));
         assert!(html.contains("class=\"token-head\""));
         assert!(html.contains("class=\"token-permissions\""));
-        assert!(html.contains("<a href=\"/-/instance\">settings</a>"));
+        assert!(html.contains("<a href=\"/-/instance\"><svg class=\"menu-icon\""));
+        assert!(html.contains("</svg>settings</a>"));
         assert!(html.contains(&format!("title=\"{id}\"")));
         assert!(html.contains(">0123456789ab…</code>"));
         assert!(!html.contains("<th>permissions</th>"));

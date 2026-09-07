@@ -175,9 +175,9 @@ class BrowserAudit:
         self.check(status == 200 and "release=1.0.0" in url and "release=stable" not in url, "channel name resolves to its exact release and redirects")
         status, body, _, _ = self.get(self.base)
         text = body.decode()
-        self.check('class="release-pill"' in text and "stable <strong>1.0.0</strong>" in text, "selector shows channel targets as pills")
+        self.check('class="release-pill"' in text and "stable <strong>1.0.0</strong>" in text, "selector labels the current release with its channel")
         self.check("data-release-jump" in text and '"channels":[{"name":"stable","release":"1.0.0"}]' in text, "selector offers a typed jump backed by a compact release index")
-        self.check('<optgroup label="Channels">' in text and text.count("<option ") <= 12, "selector offers grouped releases instead of every tag")
+        self.check('<datalist id="release-options">' in text and text.count("<option ") <= 12 and text.count('class="release-pill"') == 1, "selector offers one current release and one bounded searchable picker")
 
         self.navigate(self.base)
         self.check(self.chrome.evaluate("document.querySelectorAll('.doc-tree-list > li').length") == 1, "initial browser DOM contains no expanded descendants")
