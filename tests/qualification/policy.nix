@@ -35,6 +35,94 @@
   };
   sourceRoot = builtins.head sourceEvidence.sourcePaths;
   testing = import ../../lib/testing {inherit pkgs lib;};
+  declarativeProbe = testing.mkQualificationPackageProbe {
+    name = "fixture";
+    spec = {
+      schema_version = "aos.release.package-probe/v1";
+      package = "fixture";
+      primary = {
+        input = "A lowercase text file.";
+        operation = "Transform the file to uppercase with a deterministic program.";
+        expected = "The output file contains FIXTURE followed by a newline.";
+        files."input.txt" = "fixture\n";
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              "from pathlib import Path; Path('output.txt').write_text(Path('input.txt').read_text().upper())"
+            ];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+        ];
+        artifacts = [
+          {
+            path = "output.txt";
+            text = "FIXTURE\n";
+          }
+        ];
+      };
+      bad_input = {
+        input = "A path that does not exist.";
+        operation = "Attempt to read the absent input.";
+        expected = "The operation rejects the missing file with status 7 and a fixed diagnostic.";
+        files = {};
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              "import sys; from pathlib import Path; missing = not Path('absent').exists(); sys.stderr.write('missing input\\n' if missing else 'unexpected input\\n'); raise SystemExit(7 if missing else 0)"
+            ];
+            exit_code = 7;
+            stdout.exact = "";
+            stderr.exact = "missing input\n";
+            observes_rejection = true;
+          }
+        ];
+        artifacts = [];
+      };
+    };
+  };
+  declarativeProbeCheck = pkgs.runCommand "qualification-package-declarative-probe-check" {} ''
+    mkdir -p work/home work/tmp work/profile
+    export HOME=$PWD/work/home
+    export USER=aos-qualification
+    export TMPDIR=$PWD/work/tmp
+    export LC_ALL=C
+    buildPath=$PATH
+    export PATH=
+    export AOS_QUALIFICATION_PACKAGE=fixture
+    export AOS_QUALIFICATION_PLATFORM=x86_64-linux
+    export AOS_QUALIFICATION_PACKAGE_OUTPUTS='{"out":"/nix/store/00000000000000000000000000000000-fixture"}'
+    export AOS_QUALIFICATION_PACKAGE_CLOSURE='["/nix/store/00000000000000000000000000000000-fixture"]'
+    export AOS_QUALIFICATION_PACKAGE_PROFILE=$PWD/work/profile
+    export AOS_QUALIFICATION_PROBE_REPORT=$PWD/work/result.json
+    export AOS_QUALIFICATION_PROBE_WORK=$PWD/work
+    export AOS_QUALIFICATION_BASH=${pkgs.bash}/bin/bash
+    export AOS_QUALIFICATION_CC=${pkgs.cc}/bin/cc
+    export AOS_QUALIFICATION_CXX=${pkgs.cc}/bin/c++
+    export AOS_QUALIFICATION_PYTHON=${pkgs.python3}/bin/python3
+
+    ${declarativeProbe}
+    export PATH=$buildPath
+    ${pkgs.python3}/bin/python3 - "$AOS_QUALIFICATION_PROBE_REPORT" <<'PY'
+    import json
+    import pathlib
+    import sys
+
+    report = pathlib.Path(sys.argv[1]).read_bytes()
+    parsed = json.loads(report)
+    assert report == json.dumps(
+        parsed, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode() + b"\n"
+    assert parsed["primary"]["observed"].startswith("step1=exit:0")
+    assert parsed["bad_input"]["observed"].startswith("step1=exit:7")
+    PY
+    ${pkgs.coreutils}/bin/cp "$AOS_QUALIFICATION_PROBE_REPORT" $out/result.json
+  '';
   executor = testing.mkQualificationExecutor {
     name = "qualification-executor-contract-fixture";
     platform = "x86_64-linux";
@@ -42,11 +130,7 @@
     scenarios.package-function = "/nix/store/00000000000000000000000000000000-scenario/bin/run";
     workRoot = "/var/lib/aos-release/qualification-fixture";
   };
-  packageProbe = pkgs.writeTextFile {
-    name = "qualification-package-probe-fixture";
-    text = "fixture";
-    executable = true;
-  };
+  packageProbe = declarativeProbe;
   packageExecutor = testing.mkQualificationPackageScenario {
     name = "qualification-package-scenario-fixture";
     identity = "fixture-executor";
@@ -203,4 +287,7 @@ in
       name = "aos-qualification-policy-check";
       destination = "/contract.json";
       text = builtins.toJSON contract;
+      checkPhase = ''
+        test -f ${declarativeProbeCheck}/result.json
+      '';
     }
