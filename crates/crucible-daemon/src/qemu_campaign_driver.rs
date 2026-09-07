@@ -110,6 +110,24 @@ pub enum QemuFreshModeledDriverError {
     /// A modeled stop was reported while network output remained uncommitted.
     #[error("fresh campaign stop retained {0} uncommitted network outputs")]
     PendingNetworkOutput(usize),
+    /// The authoritative scheduler-quantum coordinate moved backward.
+    #[error("fresh campaign scheduler quantum coordinate regressed from {before} to {after}")]
+    QuantumCounterRegressed {
+        /// Coordinate observed before the operation.
+        before: u64,
+        /// Coordinate observed after the operation.
+        after: u64,
+    },
+    /// The retained start and live scheduler name different quantum coordinates.
+    #[error(
+        "fresh campaign start quantum coordinate {materialized} differs from live scheduler coordinate {authoritative}"
+    )]
+    StartQuantumCoordinateMismatch {
+        /// Coordinate carried by the retained start materialization.
+        materialized: u64,
+        /// Coordinate reported by the live scheduler lifecycle.
+        authoritative: u64,
+    },
 }
 
 impl From<CrucibleArtifactError> for QemuFreshModeledDriverError {
@@ -210,6 +228,10 @@ pub trait QemuModeledAttemptLifecycle {
     /// the requested quantum.
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError>;
 
+    /// Returns the absolute scheduler-quantum coordinate at the current boundary.
+    #[must_use]
+    fn completed_quanta(&self) -> u64;
+
     /// Observes the current modeled terminal verdict, if any.
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict>;
 
@@ -249,6 +271,10 @@ pub trait QemuModeledAttemptLifecycle {
 impl QemuModeledAttemptLifecycle for QemuFreshAttemptLifecycle<'_> {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         QemuFreshAttemptLifecycle::drive_quantum(self, request)
+    }
+
+    fn completed_quanta(&self) -> u64 {
+        QemuFreshAttemptLifecycle::completed_quanta(self)
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
@@ -323,16 +349,14 @@ impl QemuHotForkAttemptDriver for QemuHotForkModeledDriver {
     where
         L: QemuHotForkLiveExecution,
     {
+        let materialization = live
+            .take_start_materialization()
+            .map_err(classify_hot_lifecycle_failure)?;
         let lifecycle = live
             .modeled_lifecycle()
             .map_err(classify_hot_lifecycle_failure)?;
-        match drive_modeled_attempt(
-            lifecycle,
-            input,
-            context,
-            QemuFreshStartMaterialization::genesis(),
-        )
-        .map_err(map_hot_modeled_failure)?
+        match drive_modeled_attempt(lifecycle, input, context, materialization)
+            .map_err(map_hot_modeled_failure)?
         {
             QemuFreshDriveOutcome::Observation(pending) => Ok(pending),
             QemuFreshDriveOutcome::CheckpointRequested => Err(AttemptWorkerFailure::Terminal(
@@ -420,11 +444,24 @@ fn drive_modeled_attempt(
         ));
     }
 
-    let (mut event_log, mut event_log_bytes, mut terminal_quiescence, terminal_verdict) =
-        materialization.into_parts();
-    let mut terminal_at = event_log
-        .last()
-        .map_or(VirtualTime { ticks: 0 }, SchedulerEventLogEntry::at);
+    let (
+        mut event_log,
+        mut event_log_bytes,
+        mut completed_quanta,
+        frontier,
+        mut terminal_quiescence,
+        terminal_verdict,
+    ) = materialization.into_parts();
+    let authoritative_quanta = lifecycle.completed_quanta();
+    if completed_quanta != authoritative_quanta {
+        return Err(AttemptWorkerFailure::Terminal(
+            QemuFreshModeledDriverError::StartQuantumCoordinateMismatch {
+                materialized: completed_quanta,
+                authoritative: authoritative_quanta,
+            },
+        ));
+    }
+    let mut terminal_at = frontier;
     let mut discoveries = RetainedChoiceDiscoveries::default();
     check_cancellation(context)?;
     if let Some(verdict) = terminal_verdict {
@@ -446,6 +483,21 @@ fn drive_modeled_attempt(
     if checkpoint_is_ready(lifecycle, context)? {
         return Ok(QemuFreshDriveOutcome::CheckpointRequested);
     }
+    if initial_requested_stop_reached(input.attempt().stop(), terminal_at, completed_quanta) {
+        require_settled_network(lifecycle)?;
+        return Ok(QemuFreshDriveOutcome::Observation(
+            QemuFreshPendingObservation {
+                input: input.clone(),
+                configuration,
+                stop: ModeledStop::Reached(input.attempt().stop().clone()),
+                event_log,
+                event_log_bytes,
+                discoveries: discoveries.discoveries,
+                terminal_quiescence,
+                terminal_at,
+            },
+        ));
+    }
 
     let mut observed_event_count = 0usize;
     loop {
@@ -458,6 +510,16 @@ fn drive_modeled_attempt(
                 control: Vec::new(),
             })
             .map_err(classify_scheduler_error)?;
+        let next_completed_quanta = lifecycle.completed_quanta();
+        if next_completed_quanta < completed_quanta {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshModeledDriverError::QuantumCounterRegressed {
+                    before: completed_quanta,
+                    after: next_completed_quanta,
+                },
+            ));
+        }
+        completed_quanta = next_completed_quanta;
         if outcome.configuration.def != scenario {
             return Err(AttemptWorkerFailure::Terminal(
                 QemuFreshModeledDriverError::ScenarioMismatch,
@@ -483,6 +545,7 @@ fn drive_modeled_attempt(
                 input.attempt().stop(),
                 &outcome,
                 observed_event_count,
+                completed_quanta,
                 &discoveries.discoveries,
             )
         });
@@ -796,6 +859,7 @@ fn reached_requested_stop(
     requested: &StopCondition,
     outcome: &QuantumOutcome,
     observed_event_count: usize,
+    completed_quanta: u64,
     discoveries: &BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
 ) -> Option<ModeledStop> {
     let reached = match requested {
@@ -817,8 +881,35 @@ fn reached_requested_stop(
             .and_then(|events| u64::try_from(events).ok())
             .is_some_and(|events| events >= *count),
         StopCondition::Terminal => false,
+        StopCondition::ExecutionQuanta(bound) => completed_quanta >= *bound,
+        StopCondition::VirtualTimeOrExecutionQuanta {
+            virtual_time_nanoseconds,
+            execution_quanta,
+        } => {
+            outcome.frontier.ticks >= *virtual_time_nanoseconds
+                || completed_quanta >= *execution_quanta
+        }
     };
     reached.then(|| ModeledStop::Reached(requested.clone()))
+}
+
+fn initial_requested_stop_reached(
+    requested: &StopCondition,
+    frontier: VirtualTime,
+    completed_quanta: u64,
+) -> bool {
+    match requested {
+        StopCondition::VirtualTimeNanoseconds(deadline) => frontier.ticks >= *deadline,
+        StopCondition::ExecutionQuanta(bound) => completed_quanta >= *bound,
+        StopCondition::VirtualTimeOrExecutionQuanta {
+            virtual_time_nanoseconds,
+            execution_quanta,
+        } => frontier.ticks >= *virtual_time_nanoseconds || completed_quanta >= *execution_quanta,
+        StopCondition::NextChoice
+        | StopCondition::NamedBoundary(_)
+        | StopCondition::EventCount(_)
+        | StopCondition::Terminal => false,
+    }
 }
 
 fn build_observation_candidate(

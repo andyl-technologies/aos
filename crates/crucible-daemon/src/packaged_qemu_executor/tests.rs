@@ -774,6 +774,10 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         panic!("controlled lifecycle does not drive a guest")
     }
 
+    fn completed_quanta(&self) -> u64 {
+        0
+    }
+
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
         panic!("controlled lifecycle does not drive a guest")
     }

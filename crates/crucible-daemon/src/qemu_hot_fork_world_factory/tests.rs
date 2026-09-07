@@ -12,8 +12,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use crucible::{
-    Configuration, ContentHash, Decision, ScenarioDefForm, ScenarioSelectableLimits,
-    ScenarioSelectables, SelectionDecision,
+    Configuration, ContentHash, Decision, EventLog, Icount, MarkerId, NodeId, ObservableEvent,
+    Plan, Properties, ScenarioDefForm, ScenarioSelectableLimits, ScenarioSelectables,
+    SchedulerEventLogEntry, SchedulerQuiescence, Seed, SelectionDecision, World,
 };
 use crucible_api::ProductionFaultEvidenceSnapshot;
 use crucible_api::vm_lifecycle::{
@@ -26,13 +27,12 @@ use crucible_campaign::{
     BranchPath, BranchPathSegment, BudgetGrant, CampaignCommandId, CampaignControlAction,
     CampaignExecutorStore, CampaignHash, CampaignLineage, CampaignMode, CampaignPolicy,
     CampaignRepository, CampaignSeed, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
-    ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationId, ControlRequest,
-    CoverageProjection, DaemonEpoch, DiscreteAlternative, DiscreteDomain, ExactCheckpointId,
-    ExactRational, ExecutionId, ExecutionRetentionIntent, ExecutorCompatibilityProfile,
-    ExecutorService, ExplorerPolicy, FairnessPolicy, IntegerDomain, IntegerRepresentation,
-    IntegerValue, MeasurementSet, Observation, ObservationCandidate, ProgressiveWideningPolicy,
-    PropertyVerdictSet, PuctPolicy, RetentionPolicy, ScenarioArtifact, ScenarioDefId,
-    SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
+    ChoiceSource, ChoiceValue, ConfigurationId, ControlRequest, CoverageProjection, DaemonEpoch,
+    DiscreteAlternative, DiscreteDomain, ExactCheckpointId, ExactRational, ExecutionId,
+    ExecutionRetentionIntent, ExecutorCompatibilityProfile, ExecutorService, ExplorerPolicy,
+    FairnessPolicy, IntegerDomain, IntegerRepresentation, IntegerValue, MeasurementSet,
+    Observation, ObservationCandidate, ProgressiveWideningPolicy, PropertyVerdictSet, PuctPolicy,
+    RetentionPolicy, SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
     SubmitAttemptDisposition, SubmitAttemptRequest,
 };
 use crucible_cas::content_store::{
@@ -338,7 +338,7 @@ impl QemuFreshAttemptDriver for ScriptedPublishedObservationDriver {
         _context: &AttemptExecutionContext,
         materialization: crate::QemuFreshStartMaterialization,
     ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>> {
-        let (events, _bytes, _terminal_quiescence, _terminal_verdict) =
+        let (events, _bytes, _completed_quanta, _frontier, _terminal_quiescence, _terminal_verdict) =
             materialization.into_parts();
         assert!(events.is_empty());
         self.drives.fetch_add(1, Ordering::SeqCst);
@@ -417,6 +417,10 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
             event_log_offset: crucible::EventLogOffset::default(),
             scheduler_quiescence: None,
         })
+    }
+
+    fn completed_quanta(&self) -> u64 {
+        0
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<crucible::QuantumTerminalVerdict> {
@@ -548,6 +552,170 @@ impl QemuHotForkWorldLifecycleFactory for BranchReplayLifecycleFactory {
     }
 }
 
+#[derive(Clone)]
+struct InheritedBoundaryObservations {
+    drives: Arc<AtomicUsize>,
+    shutdowns: Arc<AtomicUsize>,
+    recoveries: Arc<AtomicUsize>,
+}
+
+impl InheritedBoundaryObservations {
+    fn new() -> Self {
+        Self {
+            drives: Arc::new(AtomicUsize::new(0)),
+            shutdowns: Arc::new(AtomicUsize::new(0)),
+            recoveries: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+struct InheritedBoundaryLifecycle {
+    runtime_basis: AttemptExecutionRuntimeBasis,
+    start_events: Vec<SchedulerEventLogEntry>,
+    completed_quanta: u64,
+    frontier: crucible::VirtualTime,
+    observations: InheritedBoundaryObservations,
+}
+
+impl QemuFreshAttemptLifecycleOwner for InheritedBoundaryLifecycle {
+    fn enable_signal_fault_campaign_promotion(&mut self) {}
+
+    fn drive_quantum(
+        &mut self,
+        _request: crucible::QuantumRequest,
+    ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
+        self.observations.drives.fetch_add(1, Ordering::SeqCst);
+        Err(crucible::SchedulerError::NotImplemented {
+            operation: "drive past inherited absolute stop",
+        })
+    }
+
+    fn completed_quanta(&self) -> u64 {
+        self.completed_quanta
+    }
+
+    fn terminal_verdict_for_stop(&mut self) -> Option<crucible::QuantumTerminalVerdict> {
+        None
+    }
+
+    fn exact_checkpoint_ready(&mut self) -> Result<bool, crucible::SchedulerError> {
+        Ok(false)
+    }
+
+    fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<Vec<QemuNodeSelectablePendingRequest>, crucible::SchedulerError> {
+        Ok(Vec::new())
+    }
+
+    fn enqueue_selectable_reply(
+        &mut self,
+        _pending: &QemuNodeSelectablePendingRequest,
+        _reply: &crucible_protocol::SelectionReply,
+    ) -> Result<(), crucible::SchedulerError> {
+        Ok(())
+    }
+
+    fn capture_attempt_checkpoint(
+        &mut self,
+        _context: &AttemptExecutionContext,
+    ) -> Result<crate::CapturedAttemptCheckpoint, crucible::SchedulerError> {
+        Err(crucible::SchedulerError::NotImplemented {
+            operation: "capture inherited-boundary checkpoint",
+        })
+    }
+
+    fn fault_evidence_snapshot(
+        &self,
+    ) -> Result<ProductionFaultEvidenceSnapshot, crucible::SchedulerError> {
+        Err(crucible::SchedulerError::NotImplemented {
+            operation: "capture inherited-boundary evidence",
+        })
+    }
+
+    fn pending_network_output_count(&self) -> usize {
+        0
+    }
+
+    fn shutdown(
+        &mut self,
+    ) -> Result<Vec<crucible::SchedulerEventLogEntry>, crucible::SchedulerError> {
+        self.observations.shutdowns.fetch_add(1, Ordering::SeqCst);
+        Ok(Vec::new())
+    }
+}
+
+impl QemuHotForkWorldLifecycleOwner for InheritedBoundaryLifecycle {
+    fn runtime_basis(&self) -> AttemptExecutionRuntimeBasis {
+        self.runtime_basis
+    }
+
+    fn start_materialization(
+        &self,
+    ) -> Result<crate::QemuFreshStartMaterialization, crucible::SchedulerError> {
+        let event_log_bytes = self
+            .start_events
+            .iter()
+            .map(SchedulerEventLogEntry::canonical_material_len)
+            .sum();
+        Ok(crate::QemuFreshStartMaterialization::from_resume_parts(
+            self.start_events.clone(),
+            event_log_bytes,
+            self.completed_quanta,
+            self.frontier,
+            SchedulerQuiescence::default(),
+            None,
+        ))
+    }
+
+    fn reconcile_execution_disposition(
+        &mut self,
+        _disposition: AttemptExecutionDisposition,
+    ) -> Result<AttemptExecutionReconciliationStep, crucible_api::LifecycleApiError> {
+        Ok(AttemptExecutionReconciliationStep::Complete)
+    }
+
+    fn quarantine(&mut self) {}
+}
+
+struct InheritedBoundaryLifecycleFactory {
+    start_events: Vec<SchedulerEventLogEntry>,
+    completed_quanta: u64,
+    frontier: crucible::VirtualTime,
+    observations: InheritedBoundaryObservations,
+}
+
+impl QemuHotForkWorldLifecycleFactory for InheritedBoundaryLifecycleFactory {
+    type Lifecycle = InheritedBoundaryLifecycle;
+    type Error = Infallible;
+
+    fn try_start(
+        &mut self,
+        _input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<QemuHotForkWorldLifecycleStart<Self::Lifecycle>, AttemptWorkerFailure<Self::Error>>
+    {
+        Ok(QemuHotForkWorldLifecycleStart::Started(
+            InheritedBoundaryLifecycle {
+                runtime_basis: context.runtime_basis().expect("inherited runtime basis"),
+                start_events: self.start_events.clone(),
+                completed_quanta: self.completed_quanta,
+                frontier: self.frontier,
+                observations: self.observations.clone(),
+            },
+        ))
+    }
+
+    fn recover(&mut self, _lifecycle: Self::Lifecycle) -> Result<(), Self::Lifecycle> {
+        self.observations.recoveries.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn quarantine(&mut self, mut lifecycle: Self::Lifecycle) {
+        lifecycle.quarantine();
+    }
+}
+
 struct BranchReplayDriver {
     candidate: ObservationCandidate,
     observations: BranchReplayObservations,
@@ -564,7 +732,8 @@ impl QemuFreshAttemptDriver for BranchReplayDriver {
         _context: &AttemptExecutionContext,
         materialization: crate::QemuFreshStartMaterialization,
     ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>> {
-        let (events, bytes, quiescence, verdict) = materialization.into_parts();
+        let (events, bytes, _completed_quanta, _frontier, quiescence, verdict) =
+            materialization.into_parts();
         assert!(events.is_empty());
         assert_eq!(bytes, 0);
         assert!(quiescence.is_none());
@@ -789,26 +958,27 @@ fn execution_input() -> CrucibleAttemptExecution {
     let scenario = crucible::crash_restart_scenario()
         .expect("built-in scenario")
         .scenario;
-    execution_input_for_scenario(scenario)
+    execution_input_for_scenario_with_stop(scenario, StopCondition::Terminal)
 }
 
 fn execution_input_for_scenario(scenario: ScenarioDefForm) -> CrucibleAttemptExecution {
+    execution_input_for_scenario_with_stop(scenario, StopCondition::Terminal)
+}
+
+fn execution_input_for_scenario_with_stop(
+    scenario: ScenarioDefForm,
+    stop: StopCondition,
+) -> CrucibleAttemptExecution {
     let definition = scenario.scenario_def();
-    let scenario_id = ScenarioDefId::from_hash(CampaignHash::from_bytes(definition.id().bytes));
     let scenario_artifact =
-        ScenarioArtifact::new(scenario_id, 1, b"scenario".to_vec()).expect("scenario artifact");
+        encode_crucible_scenario_artifact(&scenario).expect("encoded scenario artifact");
+    let scenario_id = scenario_artifact.scenario();
     let scenario_content = scenario_artifact.id().expect("scenario artifact id");
     let configuration = Configuration::genesis(definition);
-    let configuration_id =
-        ConfigurationId::from_hash(CampaignHash::from_bytes(configuration.id().bytes));
-    let configuration_artifact = ConfigurationArtifact::new(
-        scenario_id,
-        scenario_content,
-        configuration_id,
-        1,
-        b"configuration".to_vec(),
-    )
-    .expect("configuration artifact");
+    let configuration_artifact =
+        encode_crucible_configuration_artifact(&scenario_artifact, &configuration.schedule)
+            .expect("encoded configuration artifact");
+    let configuration_id = configuration_artifact.configuration();
     let configuration_content = configuration_artifact
         .id()
         .expect("configuration artifact id");
@@ -830,7 +1000,7 @@ fn execution_input_for_scenario(scenario: ScenarioDefForm) -> CrucibleAttemptExe
             configuration: configuration_content,
         },
         path.id().expect("path id"),
-        StopCondition::Terminal,
+        stop,
     )
     .expect("attempt");
     CrucibleAttemptExecution::from_test_parts(
@@ -1082,6 +1252,77 @@ fn run_branch_through_hot_world_runner(input: CrucibleAttemptExecution, expect_g
     );
     assert_eq!(observations.recoveries.load(Ordering::SeqCst), 1);
     assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn hot_world_runner_honors_an_inherited_quantum_boundary_without_driving() {
+    let completed_quanta = 3;
+    let stop = StopCondition::ExecutionQuanta(completed_quanta);
+    let scenario = ScenarioDefForm::from_components(
+        &World::from_nodes_and_links(Vec::new(), Vec::new()).expect("empty world"),
+        &Plan::empty(),
+        &Properties::empty(),
+        Seed::from_u64(7),
+    )
+    .expect("minimal scenario");
+    let input = execution_input_for_scenario_with_stop(scenario, stop.clone());
+    let crate::CrucibleResolvedAttemptStart::Discover { configuration } = input.start() else {
+        panic!("inherited-boundary fixture must begin at discovery")
+    };
+    assert_eq!(configuration.def, input.scenario().scenario_def());
+    let mut source_log = EventLog::new();
+    let prefix = source_log
+        .append_observable_events([ObservableEvent::coverage_marker(
+            Icount { retired: 9 },
+            NodeId {
+                name: String::from("node-a"),
+            },
+            MarkerId::from_name("world-runner-inherited-prefix"),
+        )])
+        .expect("inherited source prefix");
+    let expected_coverage = crucible::event_log_coverage_projection(&prefix.entries)
+        .entries()
+        .iter()
+        .map(|entry| CampaignHash::from_bytes(entry.observation.content_hash().bytes))
+        .collect::<BTreeSet<_>>();
+    let observations = InheritedBoundaryObservations::new();
+    let mut runner = QemuHotForkWorldExecutionRunner::new(
+        InheritedBoundaryLifecycleFactory {
+            start_events: prefix.entries,
+            completed_quanta,
+            frontier: crucible::VirtualTime { ticks: 9 },
+            observations: observations.clone(),
+        },
+        QemuFreshModeledDriver::new(),
+    );
+    let context = execution_context(&input, 0x84);
+
+    let outcome = runner
+        .try_execute(&input, &context)
+        .expect("hot-world runner should stop at the inherited boundary");
+    let QemuHotForkWorldExecutionAttempt::Executed(outcome) = outcome else {
+        panic!("scripted retained source must not decline")
+    };
+    let AttemptExecutionProduct::Observation(candidate) = outcome.product() else {
+        panic!("inherited absolute stop must produce an observation")
+    };
+
+    assert_eq!(
+        outcome.materialization(),
+        CrucibleMaterializationTier::HotFork
+    );
+    assert_eq!(candidate.observation().stop(), &StopOutcome::Reached(stop));
+    assert_eq!(candidate.coverage().identities(), &expected_coverage);
+    assert_eq!(observations.drives.load(Ordering::SeqCst), 0);
+    assert_eq!(observations.shutdowns.load(Ordering::SeqCst), 1);
+
+    assert_eq!(
+        runner
+            .reconcile_execution(AttemptExecutionDisposition::Canceled)
+            .expect("reconcile inherited-boundary execution"),
+        AttemptExecutionReconciliationStep::Complete
+    );
+    assert_eq!(observations.recoveries.load(Ordering::SeqCst), 1);
 }
 
 #[test]

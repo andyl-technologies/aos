@@ -500,11 +500,26 @@ fn lifecycle_construction_failure_quarantines_installed_guard() {
 
 struct FakeFreshLifecycle {
     order: Arc<Mutex<Vec<&'static str>>>,
+    completed_quanta: u64,
     promotion_observations: Option<Arc<Mutex<Vec<bool>>>>,
     cleanup_error: bool,
     pending: Vec<crucible_qemu::QemuNodeSelectablePendingRequest>,
     replies: Arc<Mutex<Vec<crucible_protocol::SelectionReply>>>,
     signal_fault_branches: VecDeque<crucible::SignalFaultCampaignBranch>,
+}
+
+impl FakeFreshLifecycle {
+    fn complete_quantum(
+        &mut self,
+        outcome: crucible::QuantumOutcome,
+    ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
+        self.completed_quanta = self.completed_quanta.checked_add(1).ok_or_else(|| {
+            crucible::SchedulerError::BoundaryViolation {
+                message: String::from("fake lifecycle quantum coordinate overflowed"),
+            }
+        })?;
+        Ok(outcome)
+    }
 }
 
 impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
@@ -533,7 +548,7 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
             && branch.parent() == &request.configuration
         {
             self.signal_fault_branches.pop_front();
-            return Ok(crucible::QuantumOutcome {
+            return self.complete_quantum(crucible::QuantumOutcome {
                 configuration: branch.selected().clone(),
                 frontier: branch.frontier(),
                 advanced_node: None,
@@ -555,7 +570,7 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
                 value: 7,
             }),
         );
-        Ok(crucible::QuantumOutcome {
+        self.complete_quantum(crucible::QuantumOutcome {
             configuration,
             frontier: VirtualTime { ticks: 1 },
             advanced_node: None,
@@ -569,6 +584,10 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
             event_log_offset: crucible::EventLogOffset::default(),
             scheduler_quiescence: None,
         })
+    }
+
+    fn completed_quanta(&self) -> u64 {
+        self.completed_quanta
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<crucible::QuantumTerminalVerdict> {
@@ -668,6 +687,7 @@ fn observed_lifecycle_retains_only_successful_execution_evidence() {
     let order = Arc::new(Mutex::new(Vec::new()));
     let lifecycle = FakeFreshLifecycle {
         order: Arc::clone(&order),
+        completed_quanta: 0,
         promotion_observations: None,
         cleanup_error: false,
         pending: Vec::new(),
@@ -728,6 +748,7 @@ impl QemuFreshAttemptLifecycleFactory for FakeFreshLifecycleFactory {
             .push("begin");
         Ok(FakeFreshLifecycle {
             order: Arc::clone(&self.order),
+            completed_quanta: 0,
             promotion_observations: None,
             cleanup_error: self.cleanup_error,
             pending: Vec::new(),
@@ -760,6 +781,7 @@ impl QemuFreshAttemptLifecycleFactory for PromotionRecordingFreshLifecycleFactor
             .push("begin");
         Ok(FakeFreshLifecycle {
             order: Arc::clone(&self.order),
+            completed_quanta: 0,
             promotion_observations: Some(Arc::clone(&self.observed)),
             cleanup_error: false,
             pending: Vec::new(),
@@ -787,6 +809,10 @@ impl QemuFreshAttemptLifecycleOwner for FakeGenesisCheckpointLifecycle {
         _request: crucible::QuantumRequest,
     ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
         unreachable!("fresh genesis capture performs no modeled quantum")
+    }
+
+    fn completed_quanta(&self) -> u64 {
+        0
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<crucible::QuantumTerminalVerdict> {
@@ -1560,6 +1586,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
     let replies = Arc::new(Mutex::new(Vec::new()));
     let mut lifecycle = FakeFreshLifecycle {
         order: Arc::new(Mutex::new(Vec::new())),
+        completed_quanta: 0,
         promotion_observations: None,
         cleanup_error: false,
         pending: vec![

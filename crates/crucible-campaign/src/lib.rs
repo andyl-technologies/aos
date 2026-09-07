@@ -225,4 +225,6 @@ pub use repository::{
 };
 
 #[cfg(test)]
+mod extended_stop_tests;
+#[cfg(test)]
 mod tests;

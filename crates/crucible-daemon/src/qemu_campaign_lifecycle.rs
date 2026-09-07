@@ -117,6 +117,10 @@ pub trait QemuFreshAttemptLifecycleOwner {
     /// complete the exact quantum.
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError>;
 
+    /// Returns the absolute scheduler-quantum coordinate at the current boundary.
+    #[must_use]
+    fn completed_quanta(&self) -> u64;
+
     /// Observes the terminal verdict without consuming checkpoint ownership.
     #[must_use]
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict>;
@@ -238,6 +242,10 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         QuantumLoop::drive_quantum(self, request)
     }
 
+    fn completed_quanta(&self) -> u64 {
+        ProductionVmLifecycleLoop::completed_quanta(self)
+    }
+
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
         QuantumLoop::terminal_verdict_for_stop(self)
     }
@@ -355,6 +363,12 @@ impl QemuFreshAttemptLifecycle<'_> {
         self.owner.drive_quantum(request)
     }
 
+    /// Returns the absolute scheduler-quantum coordinate at the current boundary.
+    #[must_use]
+    pub fn completed_quanta(&self) -> u64 {
+        self.owner.completed_quanta()
+    }
+
     /// Observes the terminal verdict without consuming checkpoint ownership.
     #[must_use]
     pub fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
@@ -457,8 +471,9 @@ pub trait QemuFreshAttemptDriver {
     /// `materialization` contains the bounded event history, terminal state,
     /// and quiescence reconstructed while the runner reached `input`'s exact
     /// start. The driver must preserve that history when evaluating or sealing
-    /// cumulative modeled evidence, while stop conditions begin at the admitted
-    /// start rather than being satisfied by replayed prefix events.
+    /// cumulative modeled evidence. Event-relative stops begin at the admitted
+    /// start; absolute virtual-time and scheduler-quantum coordinates may
+    /// already be satisfied by the authenticated replay prefix.
     ///
     /// # Errors
     ///
@@ -608,15 +623,24 @@ pub enum QemuFreshExecutionRunnerError<F, D> {
 pub struct QemuFreshStartMaterialization {
     event_log: Vec<SchedulerEventLogEntry>,
     event_log_bytes: usize,
+    completed_quanta: u64,
+    frontier: crucible::VirtualTime,
     terminal_quiescence: Option<SchedulerQuiescence>,
     terminal_verdict: Option<QuantumTerminalVerdict>,
 }
 
 impl QemuFreshStartMaterialization {
+    #[cfg(test)]
     pub(crate) fn genesis() -> Self {
+        Self::at_quanta(0)
+    }
+
+    pub(crate) fn at_quanta(completed_quanta: u64) -> Self {
         Self {
             event_log: Vec::new(),
             event_log_bytes: 0,
+            completed_quanta,
+            frontier: crucible::VirtualTime::default(),
             terminal_quiescence: None,
             terminal_verdict: None,
         }
@@ -625,20 +649,25 @@ impl QemuFreshStartMaterialization {
     /// Consumes the materialization into cumulative replay evidence and state.
     ///
     /// The byte count is the checked aggregate canonical material length of
-    /// `event_log`. `terminal_quiescence` and `terminal_verdict` describe the
-    /// exact admitted start after replay, not a later attempt quantum.
+    /// `event_log`. `frontier`, `terminal_quiescence`, and `terminal_verdict`
+    /// describe the exact admitted start after replay, not a later attempt
+    /// quantum.
     #[must_use]
     pub fn into_parts(
         self,
     ) -> (
         Vec<SchedulerEventLogEntry>,
         usize,
+        u64,
+        crucible::VirtualTime,
         Option<SchedulerQuiescence>,
         Option<QuantumTerminalVerdict>,
     ) {
         (
             self.event_log,
             self.event_log_bytes,
+            self.completed_quanta,
+            self.frontier,
             self.terminal_quiescence,
             self.terminal_verdict,
         )
@@ -647,12 +676,16 @@ impl QemuFreshStartMaterialization {
     pub(crate) fn from_resume_parts(
         event_log: Vec<SchedulerEventLogEntry>,
         event_log_bytes: usize,
+        completed_quanta: u64,
+        frontier: crucible::VirtualTime,
         terminal_quiescence: SchedulerQuiescence,
         terminal_verdict: Option<QuantumTerminalVerdict>,
     ) -> Self {
         Self {
             event_log,
             event_log_bytes,
+            completed_quanta,
+            frontier,
             terminal_quiescence: Some(terminal_quiescence),
             terminal_verdict,
         }
@@ -661,6 +694,7 @@ impl QemuFreshStartMaterialization {
     #[cfg(test)]
     pub(crate) fn from_test_parts(
         event_log: Vec<SchedulerEventLogEntry>,
+        frontier: crucible::VirtualTime,
         terminal_quiescence: Option<SchedulerQuiescence>,
         terminal_verdict: Option<QuantumTerminalVerdict>,
     ) -> Self {
@@ -671,6 +705,8 @@ impl QemuFreshStartMaterialization {
         Self {
             event_log,
             event_log_bytes,
+            completed_quanta: 0,
+            frontier,
             terminal_quiescence,
             terminal_verdict,
         }
@@ -698,6 +734,24 @@ pub enum QemuFreshStartReplayError {
     /// Replay exhausted the attempt's admitted execution-quanta ceiling.
     #[error("fresh start replay exhausted the admitted execution-quanta ceiling")]
     QuantumLimit,
+    /// The scheduler's authoritative absolute quantum coordinate moved backward.
+    #[error("fresh start replay scheduler quantum coordinate regressed from {before} to {after}")]
+    QuantumCounterRegressed {
+        /// Coordinate before the replay operation.
+        before: u64,
+        /// Coordinate after the replay operation.
+        after: u64,
+    },
+    /// The retained materialization and live scheduler name different quantum coordinates.
+    #[error(
+        "fresh start materialization quantum coordinate {materialized} differs from live scheduler coordinate {authoritative}"
+    )]
+    QuantumCoordinateMismatch {
+        /// Coordinate carried by the retained start materialization.
+        materialized: u64,
+        /// Coordinate reported by the live scheduler lifecycle.
+        authoritative: u64,
+    },
     /// Replayed event history exceeded the observation projection bound.
     #[error("fresh start replay exceeded `{limit}`")]
     LimitExceeded {
@@ -1244,13 +1298,14 @@ fn materialize_fresh_start<F, D>(
     context: &AttemptExecutionContext,
 ) -> Result<QemuFreshStartMaterialization, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
 {
+    let completed_quanta = lifecycle.completed_quanta();
     materialize_start_from(
         lifecycle,
         input,
         Configuration::genesis(target.def.clone()),
         target,
         context,
-        QemuFreshStartMaterialization::genesis(),
+        QemuFreshStartMaterialization::at_quanta(completed_quanta),
     )
 }
 
@@ -1263,6 +1318,17 @@ pub(crate) fn materialize_start_from<F, D>(
     mut replay: QemuFreshStartMaterialization,
 ) -> Result<QemuFreshStartMaterialization, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
 {
+    let authoritative_quanta = lifecycle.completed_quanta();
+    if replay.completed_quanta != authoritative_quanta {
+        return Err(AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::StartReplay(
+                QemuFreshStartReplayError::QuantumCoordinateMismatch {
+                    materialized: replay.completed_quanta,
+                    authoritative: authoritative_quanta,
+                },
+            ),
+        ));
+    }
     if current == *target {
         return Ok(replay);
     }
@@ -1272,7 +1338,24 @@ pub(crate) fn materialize_start_from<F, D>(
         ));
     }
 
-    for _ in 0..context.resources().maximum_execution_quanta() {
+    let initial_completed_quanta = replay.completed_quanta;
+    loop {
+        let charged_quanta = replay
+            .completed_quanta
+            .checked_sub(initial_completed_quanta)
+            .ok_or(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartReplay(
+                    QemuFreshStartReplayError::QuantumCounterRegressed {
+                        before: initial_completed_quanta,
+                        after: replay.completed_quanta,
+                    },
+                ),
+            ))?;
+        if charged_quanta >= context.resources().maximum_execution_quanta() {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::QuantumLimit),
+            ));
+        }
         if context.cancellation().is_canceled() {
             return Err(AttemptWorkerFailure::Canceled(
                 QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Canceled),
@@ -1285,6 +1368,27 @@ pub(crate) fn materialize_start_from<F, D>(
                 control: Vec::new(),
             })
             .map_err(map_start_replay_scheduler_failure)?;
+        let completed_quanta = lifecycle.completed_quanta();
+        if completed_quanta < replay.completed_quanta {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartReplay(
+                    QemuFreshStartReplayError::QuantumCounterRegressed {
+                        before: replay.completed_quanta,
+                        after: completed_quanta,
+                    },
+                ),
+            ));
+        }
+        let prior_completed_quanta = replay.completed_quanta;
+        replay.completed_quanta = completed_quanta;
+        replay.frontier = outcome.frontier;
+        if replay.completed_quanta - initial_completed_quanta
+            > context.resources().maximum_execution_quanta()
+        {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::QuantumLimit),
+            ));
+        }
         if context.cancellation().is_canceled() {
             return Err(AttemptWorkerFailure::Canceled(
                 QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Canceled),
@@ -1326,11 +1430,13 @@ pub(crate) fn materialize_start_from<F, D>(
                 QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Terminated),
             ));
         }
+        if replay.completed_quanta == prior_completed_quanta && current.schedule.len() == prior_len
+        {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Diverged),
+            ));
+        }
     }
-
-    Err(AttemptWorkerFailure::Terminal(
-        QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::QuantumLimit),
-    ))
 }
 
 fn apply_replayed_guest_selectables<F, D>(
