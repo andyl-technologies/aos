@@ -277,13 +277,35 @@
         # The env vars are nixpkgs-style ($buildInputs = runtimeDeps,
         # $propagatedBuildInputs = propagatedDeps).
         keep_args=""
+        append_keep_paths() {
+          for p in "$@"; do
+            [ -n "$p" ] && keep_args="$keep_args -e $p"
+          done
+        }
+
         for o in ''${AOS_OUTPUT_NAMES:-out}; do
           eval "p=\"\''${$o:-}\""
-          [ -n "$p" ] && keep_args="$keep_args -e $p"
+          append_keep_paths "$p"
         done
-        for p in ''${buildInputs:-} ''${propagatedBuildInputs:-} ''${nukeRefsKeep:-}; do
-          [ -n "$p" ] && keep_args="$keep_args -e $p"
-        done
+
+        # Structured attrs expose dependency lists as arrays. An ordinary
+        # scalar expansion reads only element zero, which would silently scrub
+        # every later intentional runtime reference from scripts and binaries.
+        if declare -p buildInputs 2>/dev/null | grep -q 'declare -a'; then
+          append_keep_paths "''${buildInputs[@]}"
+        else
+          append_keep_paths ''${buildInputs:-}
+        fi
+        if declare -p propagatedBuildInputs 2>/dev/null | grep -q 'declare -a'; then
+          append_keep_paths "''${propagatedBuildInputs[@]}"
+        else
+          append_keep_paths ''${propagatedBuildInputs:-}
+        fi
+        if declare -p nukeRefsKeep 2>/dev/null | grep -q 'declare -a'; then
+          append_keep_paths "''${nukeRefsKeep[@]}"
+        else
+          append_keep_paths ''${nukeRefsKeep:-}
+        fi
 
         # Default target set: every executable, every shared lib, every
         # pkgconfig/.la/Makefile/sysconfig file. These are the locations
