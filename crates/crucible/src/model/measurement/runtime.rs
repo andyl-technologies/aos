@@ -664,7 +664,7 @@ pub fn append_model_measurement_samples(
     entries: &[SchedulerEventLogEntry],
     samples: &mut Vec<MeasurementRuntimeSample>,
 ) -> Result<(), MeasurementEvaluationError> {
-    validate_event_log(entries)?;
+    validate_measurement_event_log(entries)?;
     if samples.len() > MAX_MEASUREMENT_RUNTIME_SAMPLES {
         return Err(MeasurementEvaluationError::LimitExceeded {
             limit: "measurement-runtime-samples",
@@ -835,7 +835,7 @@ pub fn evaluate_measurements(
     samples: Vec<MeasurementRuntimeSample>,
     terminal: &MeasurementTerminalState,
 ) -> Result<MeasurementEvaluation, MeasurementEvaluationError> {
-    validate_event_log(entries)?;
+    validate_measurement_event_log(entries)?;
     validate_terminal_state(entries, terminal)?;
     if samples.len() > MAX_MEASUREMENT_RUNTIME_SAMPLES {
         return Err(MeasurementEvaluationError::LimitExceeded {
@@ -1093,7 +1093,16 @@ fn greatest_common_divisor(mut left: u128, mut right: u128) -> u128 {
     left
 }
 
-fn validate_event_log(
+/// Validates the bounded authenticated scheduler log used by measurement replay.
+///
+/// Semantic adapters call this before interpreting or copying typed payloads so
+/// forged and non-dense entries cannot enter producer-specific normalization.
+///
+/// # Errors
+///
+/// Returns [`MeasurementEvaluationError`] when the entry count exceeds its
+/// deterministic bound, an entry hash is invalid, or sequences are not dense.
+pub fn validate_measurement_event_log(
     entries: &[SchedulerEventLogEntry],
 ) -> Result<(), MeasurementEvaluationError> {
     if entries.len() > MAX_MEASUREMENT_EVENT_ENTRIES {
