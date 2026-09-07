@@ -22,6 +22,14 @@ in
       nativeGo = buildPackages.go-1_17;
       description = "Go 1.17 bootstrap — Darwin-hosted toolchain built with native Go 1.17";
     }
+  else if stdenv.isCross
+  then
+    import ./_go-linux-cross.nix {
+      inherit mkDerivation version src stdenv;
+      pname = "go-1_17";
+      nativeGo = buildPackages.go-1_17;
+      description = "Go 1.17 bootstrap — cross-built Linux-hosted toolchain";
+    }
   else
     mkDerivation {
       pname = "go-1_17";

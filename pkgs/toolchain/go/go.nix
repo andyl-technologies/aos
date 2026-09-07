@@ -23,6 +23,14 @@ in
       nativeGo = buildPackages.go;
       description = "Go ${version} — Darwin-hosted Go compiler and tools";
     }
+  else if stdenv.isCross
+  then
+    import ./_go-linux-cross.nix {
+      inherit mkDerivation version src stdenv;
+      pname = "go";
+      nativeGo = buildPackages.go;
+      description = "Go ${version} — cross-built Linux-hosted Go compiler and tools";
+    }
   else
     mkDerivation {
       pname = "go";
