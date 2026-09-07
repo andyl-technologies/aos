@@ -2732,9 +2732,9 @@ fn channel_error_to_shutdown_error(error: QemuNodeChannelError) -> QemuShutdownT
 mod test_support;
 #[cfg(all(target_os = "linux", feature = "test-support"))]
 pub use test_support::hot_fork::{
-    QemuTestHotForkOutcome, QemuTestHotForkSourceError, scripted_hot_fork_source_for_test,
-    scripted_hot_fork_source_with_observations_for_test,
-    scripted_hot_fork_source_with_state_for_test,
+    QemuTestHotForkOutcome, QemuTestHotForkSourceError, QemuTestQuantumBoundary,
+    scripted_hot_fork_source_for_test, scripted_hot_fork_source_with_observations_for_test,
+    scripted_hot_fork_source_with_script_for_test, scripted_hot_fork_source_with_state_for_test,
 };
 
 #[cfg(test)]
