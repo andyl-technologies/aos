@@ -72,7 +72,8 @@ pub use campaign_service::{
     QueryCampaignFindingsResponse, QueryCampaignFrontierRequest, QueryCampaignFrontierResponse,
     QueryCampaignGraphRequest, QueryCampaignGraphResponse, RepositoryCampaignService,
     RepositoryCampaignServiceError, SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
-    WatchCampaignRequest, WatchCampaignResponse,
+    SubmitCampaignDiscoveryRequest, SubmitCampaignDiscoveryResponse, WatchCampaignRequest,
+    WatchCampaignResponse,
 };
 pub use choice::{
     BooleanDomain, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceGroup,
@@ -146,9 +147,9 @@ pub use merkle::{
 pub use model::{
     ActiveAttemptPolicy, AdmissionOrdinal, BudgetGrant, CampaignControlAction, CampaignDerivation,
     CampaignFact, CampaignLineage, CampaignPlanningView, CampaignRoots, CampaignSnapshot,
-    CampaignState, ControlRequest, NonModeledAttemptDisposition, PinChange, PinRequest,
-    PinRetention, PlannerEngine, PlannerInvocation, PlannerState, PlanningBudget, PolicyActivation,
-    PolicyArtifact,
+    CampaignState, ControlRequest, DiscoveryRequest, NonModeledAttemptDisposition, PinChange,
+    PinRequest, PinRetention, PlannerEngine, PlannerInvocation, PlannerState, PlanningBudget,
+    PolicyActivation, PolicyArtifact,
 };
 pub use object::{CampaignRecordKind, ChildReference, ObjectEnvelope};
 pub use object_profile::{CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignObjectProfiler};
@@ -202,10 +203,10 @@ pub use policy::{
 pub use repository::{
     AttemptAdmissionResult, AttemptQueue, AttemptQueueCursor, AttemptQueueError,
     AttemptReservation, BranchRequestResult, CampaignBudgetProjection, CampaignCommandResult,
-    CampaignDerivationResult, CampaignExecutorCancelOutcome, CampaignExecutorCheckpointOutcome,
-    CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignExecutorDriverError,
-    CampaignExecutorStepOutcome, CampaignExecutorStore, CampaignHead, CampaignHeadPage,
-    CampaignLifecycle, CampaignPinRetentionRecord, CampaignPinRetentionSummary,
+    CampaignDerivationResult, CampaignDiscoveryResult, CampaignExecutorCancelOutcome,
+    CampaignExecutorCheckpointOutcome, CampaignExecutorDriver, CampaignExecutorDriverConfigError,
+    CampaignExecutorDriverError, CampaignExecutorStepOutcome, CampaignExecutorStore, CampaignHead,
+    CampaignHeadPage, CampaignLifecycle, CampaignPinRetentionRecord, CampaignPinRetentionSummary,
     CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignPlannerDriverError,
     CampaignPlannerStepOutcome, CampaignRepository, CampaignRepositoryError, CampaignSupervisor,
     CampaignSupervisorConfigError, CampaignSupervisorError, CampaignSupervisorStepOutcome,

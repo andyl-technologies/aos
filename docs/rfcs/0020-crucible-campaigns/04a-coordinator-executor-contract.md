@@ -192,7 +192,7 @@ ApplyCampaignCommand
 ListCampaigns
 GetSnapshot           QueryGraph           GetGraphObject
 QueryFrontier          GetFrontierObject    QueryChoices
-GetChoiceObject        PinCampaign
+GetChoiceObject        PinCampaign         SubmitDiscoveryRequest
 SubmitBranchRequest    DeriveCampaign       QueryFindings
 ExplainObject          ExplainAttempt       WatchCampaign
 GetPlannerRankings
@@ -212,7 +212,7 @@ The strict service checkpoint defines principal-aware `ListCampaigns`, `CreateCa
 `ApplyCampaignCommand`, `QueryGraph`, `GetGraphObject`, and
 `QueryChoices`, `QueryFrontier`, `QueryFindings`, `GetFindingObject`,
 `ExplainAttempt`, `GetPlannerRankings`, `GetFrontierObject`, `GetChoiceObject`,
-`PinCampaign`, and `SubmitBranchRequest` messages. All use
+`PinCampaign`, `SubmitDiscoveryRequest`, and `SubmitBranchRequest` messages. All use
 canonical schema version 1 and a 64 MiB outer bound:
 
 ```text
@@ -387,6 +387,13 @@ PinCampaignRequestV1 = version | principal | campaign | PinRequestV1
 PinCampaignResponseV1 = version | request_digest | prior_snapshot |
                         new_snapshot | replayed
 
+DiscoveryRequestV1 = command | expected_snapshot | configuration_artifact |
+                     StopConditionV1
+SubmitCampaignDiscoveryRequestV1 = version | principal | campaign |
+                                   DiscoveryRequestV1
+SubmitCampaignDiscoveryResponseV1 = version | request_digest | prior_snapshot |
+                                    new_snapshot | attempt | admission | replayed
+
 SubmitCampaignBranchRequestV1 = version | principal | campaign |
                                 expected_snapshot | BranchRequestV1-through-V5
 SubmitCampaignBranchResponseV1 = version | request_digest | prior_snapshot |
@@ -449,7 +456,8 @@ permit 2;
 `GetChoiceObject`, `GetPlannerRankings`
 additionally permit 2 and 4;
 `ApplyCampaignCommand` permits 2, 4, 5, 6, and 7; `PinCampaign` permits
-2, 4, 5, and 6; and `SubmitCampaignBranch` permits 2, 4, 5, and 6. For every
+2, 4, 5, and 6; `SubmitDiscoveryRequest` permits 2, 4, 5, 6, and 7; and
+`SubmitCampaignBranch` permits 2, 4, 5, and 6. For every
 snapshot-preconditioned
 operation,
 `Stale.expected_snapshot` MUST equal that exact request's snapshot precondition,
@@ -522,6 +530,9 @@ apply_request_digest =
     ApplyCampaignCommandRequestV1)
 pin_request_digest =
   H("crucible.campaign-service.pin-campaign.v1", PinCampaignRequestV1)
+discovery_request_digest =
+  H("crucible.campaign-service.submit-campaign-discovery.v1",
+    SubmitCampaignDiscoveryRequestV1)
 branch_request_digest =
   H("crucible.campaign-service.submit-branch-request.v1",
     SubmitCampaignBranchRequestV1)
@@ -946,8 +957,27 @@ kind = 1 (GetCampaignRequestV1) |
       40 (AttachCampaignRuntimeRequestV1) |
       41 (AttachCampaignRuntimeResponseV1) |
       42 (GetCampaignStatusRequestV1) |
-      43 (GetCampaignStatusResponseV1)
+      43 (GetCampaignStatusResponseV1) |
+      44 (SubmitCampaignDiscoveryRequestV1) |
+      45 (SubmitCampaignDiscoveryResponseV1)
 ```
+
+An accepted explicit discovery request is a version-8 `CampaignFact` whose
+canonical payload contains the command, exact parent snapshot, exact
+campaign-owned configuration artifact, and stop condition. The repository admits it only while the
+campaign is `Running`, the frontier and admission sequence are empty, the
+active policy permits a named boundary, and campaign attempt budget remains.
+It publishes the empty branch path, semantic attempt, admission, command index,
+and result locator atomically with the successor ref. Cold validation
+reconstructs that complete delta from the request fact. Automatic idle
+discovery remains the fixed `NextChoice` transition and does not interpret an
+operator request.
+
+A caller that requests an explicit initial stop MUST submit this operation
+after the campaign becomes `Running` and before attaching or starting the
+coordinator/executor. This ordering prevents automatic idle discovery from
+winning the admission sequence with `NextChoice`; if another admission wins,
+the explicit request fails closed without replacing it.
 
 Loopback frame versions 1 through 19 are rejected rather than reinterpreted
 under the expanded kind table.

@@ -693,6 +693,7 @@ CampaignService
   QueryChoices
   GetChoiceObject
   PinCampaign
+  SubmitDiscoveryRequest
   SubmitBranchRequest
   DeriveCampaign
   QueryFindings
@@ -741,7 +742,8 @@ The direct service contract implements strict request-bound `CreateCampaign`,
 `DeriveCampaign`, `GetCampaign`, snapshot-bound `GetCampaignStatus`, historical `GetSnapshot`, coalesced
 `WatchCampaign`, snapshot-bound
 `QueryGraph`,
-`ApplyCampaignCommand`, semantic `PinCampaign`, and operator
+`ApplyCampaignCommand`, semantic `PinCampaign`, explicit initial
+`SubmitDiscoveryRequest`, and operator
 `SubmitBranchRequest`
 messages over the semantic repository owner. Creation carries the complete
 bounded lineage/policy basis and exactly replays the authenticated

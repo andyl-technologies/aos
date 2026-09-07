@@ -220,6 +220,7 @@ impl CampaignLocalServiceMode {
                 | CampaignServiceOperation::ApplyCampaignCommand
                 | CampaignServiceOperation::PinCampaign
                 | CampaignServiceOperation::SubmitBranchRequest
+                | CampaignServiceOperation::SubmitDiscoveryRequest
                 | CampaignServiceOperation::AttachCampaignRuntime => false,
                 CampaignServiceOperation::ListCampaigns
                 | CampaignServiceOperation::GetCampaign

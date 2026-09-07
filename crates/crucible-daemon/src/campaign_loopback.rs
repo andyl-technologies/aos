@@ -47,7 +47,9 @@
 //!       40 (AttachCampaignRuntimeRequestV1) |
 //!       41 (AttachCampaignRuntimeResponseV1) |
 //!       42 (GetCampaignStatusRequestV1) |
-//!       43 (GetCampaignStatusResponseV1)
+//!       43 (GetCampaignStatusResponseV1) |
+//!       44 (SubmitCampaignDiscoveryRequestV1) |
+//!       45 (SubmitCampaignDiscoveryResponseV1)
 //! magic = "CRUCCS20"
 //! ```
 //!
@@ -88,8 +90,8 @@ use crucible_campaign::{
     QueryCampaignChoicesRequest, QueryCampaignChoicesResponse, QueryCampaignFindingsRequest,
     QueryCampaignFindingsResponse, QueryCampaignFrontierRequest, QueryCampaignFrontierResponse,
     QueryCampaignGraphRequest, QueryCampaignGraphResponse, RepositoryCampaignService,
-    SubmitCampaignBranchRequest, SubmitCampaignBranchResponse, WatchCampaignRequest,
-    WatchCampaignResponse,
+    SubmitCampaignBranchRequest, SubmitCampaignBranchResponse, SubmitCampaignDiscoveryRequest,
+    SubmitCampaignDiscoveryResponse, WatchCampaignRequest, WatchCampaignResponse,
 };
 
 use crate::{
@@ -142,6 +144,8 @@ const ATTACH_CAMPAIGN_RUNTIME_REQUEST_KIND: u8 = 40;
 const ATTACH_CAMPAIGN_RUNTIME_RESPONSE_KIND: u8 = 41;
 const GET_CAMPAIGN_STATUS_REQUEST_KIND: u8 = 42;
 const GET_CAMPAIGN_STATUS_RESPONSE_KIND: u8 = 43;
+const SUBMIT_DISCOVERY_REQUEST_KIND: u8 = 44;
+const SUBMIT_DISCOVERY_RESPONSE_KIND: u8 = 45;
 const DEFAULT_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 pub(crate) const DEFAULT_CAMPAIGN_REQUESTS_PER_CONNECTION: usize = 4_096;
@@ -665,6 +669,26 @@ impl CampaignService for LoopbackCampaignService {
                 Ok(response)
             },
             |failure| failure.validate_for_pin_campaign(request.command().expected_snapshot),
+        )
+    }
+
+    fn submit_discovery_request(
+        &self,
+        request: &SubmitCampaignDiscoveryRequest,
+    ) -> Result<SubmitCampaignDiscoveryResponse, Self::Error> {
+        self.exchange(
+            SUBMIT_DISCOVERY_REQUEST_KIND,
+            SUBMIT_DISCOVERY_RESPONSE_KIND,
+            request.request_digest(),
+            &request.canonical_bytes(),
+            |response| {
+                let response = SubmitCampaignDiscoveryResponse::from_canonical_bytes(response)?;
+                response.validate_for(request)?;
+                Ok(response)
+            },
+            |failure| {
+                failure.validate_for_submit_discovery_request(request.command().expected_snapshot)
+            },
         )
     }
 
@@ -1805,6 +1829,36 @@ where
                     let failure = error.campaign_service_failure();
                     if let Err(error) =
                         failure.validate_for_pin_campaign(request.command().expected_snapshot)
+                    {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
+        }
+        SUBMIT_DISCOVERY_REQUEST_KIND => {
+            let request = SubmitCampaignDiscoveryRequest::from_canonical_bytes(&body)?;
+            match service.submit_discovery_request(&request) {
+                Ok(response) => {
+                    if let Err(error) = response.validate_for(&request) {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    (SUBMIT_DISCOVERY_RESPONSE_KIND, response.canonical_bytes())
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    if let Err(error) = failure
+                        .validate_for_submit_discovery_request(request.command().expected_snapshot)
                     {
                         return reject_invalid_service_response(
                             stream,
