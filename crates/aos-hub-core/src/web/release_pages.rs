@@ -12,7 +12,7 @@ use super::browse::BrowseQuery;
 use super::browse_pages::{registry_crumbs, state_line};
 use super::console_render::{ago, page_with_session, urlencode, Pager, SessionIndicator};
 use super::release_browse::{
-    is_prerelease, release_href, release_order, unavailable_page, verification, ReleaseContext,
+    is_prerelease, release_href, release_order, unavailable_page, ReleaseContext,
 };
 use super::render::{escape, hash_value, table};
 use crate::db::{ChannelSummary, Database, IndexStatus, RegistryRecord, ReleaseRow};
@@ -160,14 +160,6 @@ impl ReleaseStatus {
     /// Query value for the policy-dependent long-term-support filter, which
     /// selects stable releases whose train the registry marks as LTS.
     pub(crate) const LTS_TOKEN: &'static str = "lts";
-
-    fn token(self) -> &'static str {
-        Self::ALL
-            .iter()
-            .find(|(status, _, _)| *status == self)
-            .map(|(_, token, _)| *token)
-            .unwrap_or("prerelease")
-    }
 
     fn label(self) -> &'static str {
         Self::ALL
@@ -530,7 +522,6 @@ pub(crate) fn releases_page(
                     version,
                     &contents.get(version).cloned().unwrap_or_default(),
                 ),
-                verification(release).to_string(),
                 channel_participation(slug, version, channels),
             ]
         })
@@ -546,13 +537,7 @@ pub(crate) fn releases_page(
         // horizontal scroll that clips the channel column.
         body.push_str("<div class=\"release-directory\">");
         body.push_str(&table(
-            &[
-                "release",
-                "published",
-                "contents",
-                "verification",
-                "current channels",
-            ],
+            &["release", "published", "contents", "current channels"],
             &rows,
         ));
         body.push_str("</div>");
@@ -593,7 +578,6 @@ pub(crate) fn release_page(
     };
     let version = &release.semver;
     let mut body = context.nav(slug, "releases");
-    body.push_str(&context.selector(slug, &format!("/{slug}/-/releases"), &[]));
     let _ = write!(
         body,
         "<h1>Release {}</h1><p>{} {}</p>",

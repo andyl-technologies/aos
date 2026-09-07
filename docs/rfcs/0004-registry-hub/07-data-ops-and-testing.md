@@ -24,8 +24,7 @@ re-indexable at any time): `registry_index` (per-registry
 `channel_partitions(channel, bucket, release, sig_key_id)`,
 `channel_floor_events` (derived from indexed tag/partition history),
 `releases(semver, tag_hash, signer, pack_presence)`, `key_rosters`,
-`validation_runs`, `validation_findings(cache, store_hash, depth,
-status)`, `frontend_probes`, plus the per-dialect full-text index.
+`frontend_probes`, plus the per-dialect full-text index.
 Reverse-dependencies are derived from `closures/` during indexing, not
 stored as a separate source of truth.
 

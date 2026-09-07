@@ -9,9 +9,8 @@
   implementation. Until RFC-0012 is implemented, the shipped RFC-0004 model
   remains current behavior.
 
-  Phase 1: surface reader, fail-closed indexer (anti-rollback floors,
-  presence+integrity validation), machine-path facade, no-JS browse UI,
-  cache-freshness probes, `aos.registry.v1` read path, local-first
+  Phase 1: surface reader, fail-closed indexer (anti-rollback floors),
+  machine-path facade, no-JS browse UI, `aos.registry.v1` read path, local-first
   `serve --dev`. Phase 2: tenancy/IAM, tokens/JWT/device-flow/sessions/
   magic-links, bindings + nested URLs + visibility, authenticated
   upload facade. Phase 3: audit + SQL config change-sets, no-JS producer
@@ -99,7 +98,7 @@ is a live proposal and its own file carries its working status.
 | [01-architecture.md](01-architecture.md) | Stance — a control plane over a static data plane — and architecture / runtime targets |
 | [02-tenancy-iam-auth.md](02-tenancy-iam-auth.md) | Tenancy and IAM, authentication (sessions/tokens/SSO), the access matrix |
 | [03-api-storage-frontends.md](03-api-storage-frontends.md) | `aos.registry.v1` over ConnectRPC, `Binding` + shared buckets, direct/proxied frontends |
-| [04-caching-and-mirroring.md](04-caching-and-mirroring.md) | Cache stores, stacks, consistency validation; mirroring other registries |
+| [04-caching-and-mirroring.md](04-caching-and-mirroring.md) | Cache stores, stacks, managed-cache coverage; mirroring other registries |
 | [05-url-cli-and-config.md](05-url-cli-and-config.md) | URL design (one URL, three audiences), CLI convergence, configuration management |
 | [06-web-surface.md](06-web-surface.md) | UI surface map, the static SPA on the registry's own CDN, sitemap / page flows / visual design |
 | [07-data-ops-and-testing.md](07-data-ops-and-testing.md) | Database schema sketch, operations (migrations/backup/quotas/observability), testing, changes outside the hub crate |

@@ -44,11 +44,6 @@
 //! population targets from cache-global GC policy. Logical `cache_objects`,
 //! placement-scoped presence, immutable mark/plan generations, and deletion
 //! operations preserve the evidence required for safe multi-placement GC.
-//! - **Operational history** — `validation_runs`, `validation_findings`, and
-//!   `repair_jobs` (v14): records of past consistency-validation runs (each
-//!   finding flagged `missing` or, at deep depth, `corrupt`) and the repair
-//!   attempts that copied missing objects between caches. Not derived from the
-//!   surface, but droppable without losing registration state.
 //!
 //! Registry mirroring configuration and observations are system-of-record
 //! state. Delivery identity, endpoints, gateways, and routes are modeled by
@@ -237,24 +232,6 @@
 //! `next_attempt_at` with exponential backoff up to the attempt cap. The
 //! dispatch/delivery logic lives in [`crate::webhook`]; this module only
 //! stores and lists the rows.
-//!
-//! # Cache freshness probes (v12)
-//!
-//! For each committed consumer-cache URL the
-//! hub knows, a lightweight reachability probe records whether the cache serves
-//! a `nix-cache-info`, how long the probe took, and when it ran. These rows are
-//! purely **observational** (rebuildable from the next probe), so they live in
-//! the index/derived set rather than the system of record.
-//!
-//! ```text
-//! cache_probes  registry_id 1  cache_url "https://cdn.example.com"
-//!               status "ok"  observed_nix_cache_info 1
-//!               latency_ms 42  checked_at 1730000000
-//! ```
-//!
-//! `status` is `ok` (reachable, valid `nix-cache-info`), `stale` (reachable but
-//! no/empty `nix-cache-info`), or `unreachable` (transport failure or missing
-//! file root). The probing logic lives in the hub's `probe` module.
 //!
 //! # Operations: quotas, signup policy, soft-delete (v13)
 //!
@@ -646,6 +623,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("release_browse.sql"),
     include_str!("registry_support_policy.sql"),
     include_str!("release_records.sql"),
+    include_str!("remove_legacy_cache_validation.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -1921,97 +1899,6 @@ pub struct RetentionChannelPartitionRecord {
     pub snapshot_id: String,
     /// Complete snapshot artifacts.
     pub artifacts: Vec<ReleaseSnapshotArtifact>,
-}
-
-/// One recorded consistency-validation run against a cache endpoint.
-#[derive(Debug, Clone)]
-pub struct ValidationRunRow {
-    /// Run id (foreign key for [`Database::validation_missing`]).
-    pub id: i64,
-    /// The cache endpoint that was validated.
-    pub cache_url: String,
-    /// Validation depth (`presence` in phase 1).
-    pub depth: String,
-    /// Number of store hashes probed.
-    pub checked: u64,
-    /// Number of probed hashes whose narinfo was absent.
-    pub missing: u64,
-    /// Whether the cache endpoint was reachable at all.
-    pub reachable: bool,
-    /// Unix time the run finished.
-    pub finished_at: i64,
-}
-
-/// The classification of one [`validation finding`](ValidationFinding).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FindingStatus {
-    /// The narinfo (or, at integrity depth, its NAR) was absent.
-    Missing,
-    /// The NAR was present but its downloaded content did not match its
-    /// declared hash (recorded only at deep depth).
-    Corrupt,
-}
-
-impl FindingStatus {
-    /// The status label stored in `validation_findings.status`.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            FindingStatus::Missing => "missing",
-            FindingStatus::Corrupt => "corrupt",
-        }
-    }
-}
-
-/// One per-hash finding of a validation run.
-#[derive(Debug, Clone)]
-pub struct ValidationFinding {
-    /// The store hash the finding concerns.
-    pub store_hash: String,
-    /// Whether the hash is missing or corrupt.
-    pub status: FindingStatus,
-}
-
-/// One recorded repair-job attempt.
-///
-/// See the [repair-jobs migration docs](self) (v14) for the `status`
-/// vocabulary (`pending | done | failed | plan_only`).
-#[derive(Debug, Clone)]
-pub struct RepairJobRow {
-    /// Repair-job id.
-    pub id: i64,
-    /// The cache the object was (to be) copied into.
-    pub cache_url: String,
-    /// The store hash repaired.
-    pub store_hash: String,
-    /// The cache the object was copied from.
-    pub source_cache_url: String,
-    /// Lifecycle status: `pending`, `done`, `failed`, or `plan_only`.
-    pub status: String,
-    /// Failure detail when `status` is `failed` (else `None`).
-    pub error: Option<String>,
-    /// Unix time the job was recorded.
-    pub created_at: i64,
-    /// Unix time the job finished (`None` while pending).
-    pub finished_at: Option<i64>,
-}
-
-/// The latest freshness probe of one committed cache endpoint.
-///
-/// See the [cache-freshness migration docs](self) for the `status` vocabulary
-/// and the probing logic in the hub's `probe` module.
-#[derive(Debug, Clone)]
-pub struct CacheProbeRow {
-    /// The committed cache endpoint that was probed.
-    pub cache_url: String,
-    /// Probe outcome: `ok`, `stale`, or `unreachable`.
-    pub status: String,
-    /// Whether a `nix-cache-info` document was served by the cache.
-    pub observed_nix_cache_info: bool,
-    /// Round-trip latency of the probe, in milliseconds.
-    pub latency_ms: i64,
-    /// Unix time the probe ran.
-    pub checked_at: i64,
 }
 
 /// A registry's upstream mirror source (system-of-record row).
@@ -5909,351 +5796,6 @@ impl Database {
             )
             .await?;
         Ok(())
-    }
-
-    // -- consistency validation ----------------------------------------------
-
-    /// Record one validation run with its missing-hash findings; returns
-    /// the run id.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure; the transaction rolls back.
-    // The argument list mirrors the validation_runs row one-to-one.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn record_validation_run(
-        &self,
-        registry_id: i64,
-        cache_url: &str,
-        depth: &str,
-        checked: u64,
-        missing_hashes: &[String],
-        reachable: bool,
-        started_at: i64,
-        finished_at: i64,
-    ) -> Result<i64> {
-        let findings: Vec<ValidationFinding> = missing_hashes
-            .iter()
-            .map(|hash| ValidationFinding {
-                store_hash: hash.clone(),
-                status: FindingStatus::Missing,
-            })
-            .collect();
-        self.record_validation_run_with_findings(
-            registry_id,
-            cache_url,
-            depth,
-            checked,
-            &findings,
-            reachable,
-            started_at,
-            finished_at,
-        )
-        .await
-    }
-
-    /// Record one validation run, classifying each finding as `missing` or
-    /// `corrupt`.
-    ///
-    /// The run's `missing` count column is the total number of findings (a
-    /// hash that is absent *or* whose downloaded content does not match its
-    /// declared hash is, either way, a hash that does not resolve correctly in
-    /// the cache). Each finding row carries its own status so the health page
-    /// can flag deep-validation corruption distinctly from plain absence.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn record_validation_run_with_findings(
-        &self,
-        registry_id: i64,
-        cache_url: &str,
-        depth: &str,
-        checked: u64,
-        findings: &[ValidationFinding],
-        reachable: bool,
-        started_at: i64,
-        finished_at: i64,
-    ) -> Result<i64> {
-        // validation_runs.id feeds each finding's run_id and is read back as
-        // MAX(id) for "latest run per cache" (latest_validation_runs) and
-        // returned to the caller, so assign it client-side in monotonic order
-        // rather than via last_insert_rowid. A concurrent run would collide on
-        // the id and its batch would roll back (no corruption); validation is
-        // driven per-registry, so that path is effectively sequential.
-        let run_id = self.max_id("validation_runs").await? + 1;
-        let mut stmts: Vec<Statement> = vec![Statement::new(
-            "INSERT INTO validation_runs
-             (id, registry_id, cache_url, depth, checked, missing, reachable,
-              started_at, finished_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            vals![
-                run_id,
-                registry_id,
-                cache_url,
-                depth,
-                checked,
-                findings.len() as i64,
-                reachable,
-                started_at,
-                finished_at,
-            ]
-            .to_vec(),
-        )];
-        for finding in findings {
-            stmts.push(Statement::new(
-                "INSERT INTO validation_findings (run_id, store_hash, status)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT(run_id, store_hash) DO NOTHING",
-                vals![run_id, finding.store_hash, finding.status.as_str()].to_vec(),
-            ));
-        }
-        self.backend.batch(&stmts).await?;
-        Ok(run_id)
-    }
-
-    /// The latest validation run per cache URL for one registry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    pub async fn latest_validation_runs(&self, registry_id: i64) -> Result<Vec<ValidationRunRow>> {
-        let rows = self.backend.query(
-            "SELECT v.id, v.cache_url, v.depth, v.checked, v.missing, v.reachable, v.finished_at
-             FROM validation_runs v
-             WHERE v.registry_id = ?1
-               AND v.id = (SELECT MAX(id) FROM validation_runs
-                           WHERE registry_id = ?1 AND cache_url = v.cache_url)
-             ORDER BY v.cache_url",
-            &vals![registry_id],
-        ).await?;
-        rows.iter()
-            .map(|row| {
-                Ok(ValidationRunRow {
-                    id: row.get(0)?,
-                    cache_url: row.get(1)?,
-                    depth: row.get(2)?,
-                    checked: row.get(3)?,
-                    missing: row.get(4)?,
-                    reachable: row.get(5)?,
-                    finished_at: row.get(6)?,
-                })
-            })
-            .collect()
-    }
-
-    /// The store hashes a validation run found missing, sorted.
-    ///
-    /// Includes only `missing` findings (absent narinfo/NAR); deep-validation
-    /// `corrupt` findings are reported separately by [`Self::validation_corrupt`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    pub async fn validation_missing(&self, run_id: i64) -> Result<Vec<String>> {
-        let rows = self
-            .backend
-            .query(
-                "SELECT store_hash FROM validation_findings
-             WHERE run_id = ?1 AND status = 'missing' ORDER BY store_hash",
-                &vals![run_id],
-            )
-            .await?;
-        rows.iter().map(|row| row.get(0)).collect()
-    }
-
-    /// The store hashes a validation run found corrupt, sorted.
-    ///
-    /// A `corrupt` finding is recorded only at the hub's `validation::ValidationDepth::Deep`:
-    /// a hash whose narinfo and NAR are present, but the downloaded NAR's
-    /// content hash does not match the narinfo's declared `FileHash`/`NarHash`.
-    /// This is distinct from a `missing` finding (which repair can fix by
-    /// copying); corruption flags a cache that must be re-uploaded from a good
-    /// source.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    pub async fn validation_corrupt(&self, run_id: i64) -> Result<Vec<String>> {
-        let rows = self
-            .backend
-            .query(
-                "SELECT store_hash FROM validation_findings
-             WHERE run_id = ?1 AND status = 'corrupt' ORDER BY store_hash",
-                &vals![run_id],
-            )
-            .await?;
-        rows.iter().map(|row| row.get(0)).collect()
-    }
-
-    /// Record a repair-job attempt and return its id.
-    ///
-    /// `status` is one of `pending`, `done`, `failed`, or `plan_only`;
-    /// `error` carries the failure detail for `failed` jobs (else `None`), and
-    /// `finished_at` is the completion time for terminal jobs (`None` while
-    /// pending).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn record_repair_job(
-        &self,
-        registry_id: i64,
-        cache_url: &str,
-        store_hash: &str,
-        source_cache_url: &str,
-        status: &str,
-        error: Option<&str>,
-        created_at: i64,
-        finished_at: Option<i64>,
-    ) -> Result<i64> {
-        self.backend
-            .execute_insert(
-                "INSERT INTO repair_jobs
-             (registry_id, cache_url, store_hash, source_cache_url, status, error,
-              created_at, finished_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                &vals![
-                    registry_id,
-                    cache_url,
-                    store_hash,
-                    source_cache_url,
-                    status,
-                    error,
-                    created_at,
-                    finished_at,
-                ],
-            )
-            .await
-    }
-
-    /// The most recent repair jobs for one registry, newest first.
-    ///
-    /// Capped at `limit` rows for the health-page history.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    pub async fn list_repair_jobs(
-        &self,
-        registry_id: i64,
-        limit: i64,
-    ) -> Result<Vec<RepairJobRow>> {
-        let rows = self
-            .backend
-            .query(
-                "SELECT id, cache_url, store_hash, source_cache_url, status, error,
-                    created_at, finished_at
-             FROM repair_jobs
-             WHERE registry_id = ?1
-             ORDER BY id DESC
-             LIMIT ?2",
-                &vals![registry_id, limit],
-            )
-            .await?;
-        rows.iter()
-            .map(|row| {
-                Ok(RepairJobRow {
-                    id: row.get(0)?,
-                    cache_url: row.get(1)?,
-                    store_hash: row.get(2)?,
-                    source_cache_url: row.get(3)?,
-                    status: row.get(4)?,
-                    error: row.get(5)?,
-                    created_at: row.get(6)?,
-                    finished_at: row.get(7)?,
-                })
-            })
-            .collect()
-    }
-
-    /// Prune `repair_jobs` rows older than `created_before`, returning the
-    /// number deleted.
-    ///
-    /// `repair_jobs` is an unbounded append-only audit of every repair attempt;
-    /// without retention it grows without limit on a busy hub. The serve loop
-    /// calls this periodically with `now - retention_window` so the table keeps
-    /// only recent history (the health page already pages with a `LIMIT`).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    pub async fn prune_repair_jobs(&self, created_before: i64) -> Result<u64> {
-        self.backend
-            .execute(
-                "DELETE FROM repair_jobs WHERE created_at < ?1",
-                &vals![created_before],
-            )
-            .await
-    }
-
-    /// Records (upserting) the latest freshness probe of one cache endpoint.
-    ///
-    /// One row is kept per `(registry_id, cache_url)`; re-probing overwrites
-    /// the prior observation. See the hub's `probe` module for the producer.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    pub async fn upsert_cache_probe(
-        &self,
-        registry_id: i64,
-        cache_url: &str,
-        status: &str,
-        observed_nix_cache_info: bool,
-        latency_ms: i64,
-        checked_at: i64,
-    ) -> Result<()> {
-        self.backend
-            .execute(
-                "INSERT INTO cache_probes
-             (registry_id, cache_url, status, observed_nix_cache_info, latency_ms, checked_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(registry_id, cache_url) DO UPDATE SET
-               status = excluded.status,
-               observed_nix_cache_info = excluded.observed_nix_cache_info,
-               latency_ms = excluded.latency_ms,
-               checked_at = excluded.checked_at",
-                &vals![
-                    registry_id,
-                    cache_url,
-                    status,
-                    observed_nix_cache_info,
-                    latency_ms,
-                    checked_at,
-                ],
-            )
-            .await?;
-        Ok(())
-    }
-
-    /// The latest freshness probe per committed cache, for one registry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    pub async fn list_cache_probes(&self, registry_id: i64) -> Result<Vec<CacheProbeRow>> {
-        let rows = self
-            .backend
-            .query(
-                "SELECT cache_url, status, observed_nix_cache_info, latency_ms, checked_at
-             FROM cache_probes WHERE registry_id = ?1 ORDER BY cache_url",
-                &vals![registry_id],
-            )
-            .await?;
-        rows.iter()
-            .map(|row| {
-                Ok(CacheProbeRow {
-                    cache_url: row.get(0)?,
-                    status: row.get(1)?,
-                    observed_nix_cache_info: row.get(2)?,
-                    latency_ms: row.get(3)?,
-                    checked_at: row.get(4)?,
-                })
-            })
-            .collect()
     }
 
     // -- mirror sources -----------------------------------------------------
@@ -28181,6 +27723,44 @@ source_nar_hash = ""
         );
     }
 
+    #[tokio::test]
+    async fn legacy_cache_validation_tables_are_removed_on_upgrade() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("legacy-cache-validation.db");
+
+        drop(Database::open(&path).await.unwrap());
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(&format!(
+                "CREATE TABLE validation_runs(id INTEGER PRIMARY KEY);
+                 CREATE TABLE validation_findings(run_id INTEGER);
+                 CREATE TABLE repair_jobs(id INTEGER PRIMARY KEY);
+                 CREATE TABLE cache_probes(registry_id INTEGER);
+                 UPDATE schema_version SET version = {};",
+                MIGRATIONS.len() - 1
+            ))
+            .unwrap();
+        drop(connection);
+
+        let upgraded = Database::open(&path).await.unwrap();
+        let remaining: i64 = upgraded
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN ('validation_runs', 'validation_findings',
+                                'repair_jobs', 'cache_probes')",
+                &[],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+
+        assert_eq!(remaining, 0);
+    }
+
     #[test]
     fn package_documentation_system_module_identity_is_forward_migrated() {
         let documentation_index = MIGRATIONS
@@ -32011,52 +31591,6 @@ source_nar_hash = ""
     }
 
     #[tokio::test]
-    async fn validation_runs_record_and_query() {
-        let db = Database::open_in_memory().await.unwrap();
-        let id = db.register_registry("demo", &[], false).await.unwrap();
-        let run = db
-            .record_validation_run(
-                id,
-                "https://cache.example",
-                "presence",
-                3,
-                &["aaa".into(), "bbb".into()],
-                true,
-                10,
-                11,
-            )
-            .await
-            .unwrap();
-        // A newer run for the same cache supersedes it.
-        db.record_validation_run(
-            id,
-            "https://cache.example",
-            "presence",
-            3,
-            &[],
-            true,
-            20,
-            21,
-        )
-        .await
-        .unwrap();
-        db.record_validation_run(id, "file:///srv/cache", "presence", 0, &[], false, 20, 21)
-            .await
-            .unwrap();
-
-        let latest = db.latest_validation_runs(id).await.unwrap();
-        assert_eq!(latest.len(), 2);
-        assert_eq!(latest[0].cache_url, "file:///srv/cache");
-        assert!(!latest[0].reachable);
-        assert_eq!(latest[1].cache_url, "https://cache.example");
-        assert_eq!(latest[1].missing, 0);
-        assert_eq!(
-            db.validation_missing(run).await.unwrap(),
-            vec!["aaa".to_string(), "bbb".to_string()]
-        );
-    }
-
-    #[tokio::test]
     async fn take_webauthn_challenge_is_scoped_by_kind() {
         let db = Database::open_in_memory().await.unwrap();
         // A registration challenge is in flight for a victim.
@@ -32086,45 +31620,6 @@ source_nar_hash = ""
             .await
             .unwrap()
             .is_none());
-    }
-
-    #[tokio::test]
-    async fn prune_repair_jobs_removes_old_rows() {
-        let db = Database::open_in_memory().await.unwrap();
-        let id = db.register_registry("demo", &[], false).await.unwrap();
-        // An old job (created_at = 100) and a recent one (created_at = 10_000).
-        db.record_repair_job(
-            id,
-            "file:///c",
-            "old01",
-            "file:///s",
-            "done",
-            None,
-            100,
-            Some(101),
-        )
-        .await
-        .unwrap();
-        db.record_repair_job(
-            id,
-            "file:///c",
-            "new01",
-            "file:///s",
-            "done",
-            None,
-            10_000,
-            Some(10_001),
-        )
-        .await
-        .unwrap();
-        assert_eq!(db.list_repair_jobs(id, 10).await.unwrap().len(), 2);
-
-        // Pruning everything created before 1_000 removes only the old row.
-        let pruned = db.prune_repair_jobs(1_000).await.unwrap();
-        assert_eq!(pruned, 1);
-        let remaining = db.list_repair_jobs(id, 10).await.unwrap();
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].store_hash, "new01");
     }
 
     #[tokio::test]

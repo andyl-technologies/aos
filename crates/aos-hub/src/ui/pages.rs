@@ -27,8 +27,8 @@ pub use aos_hub_core::web::browse_pages::{
 };
 
 use aos_hub_core::db::{
-    CacheProbeRow, ChannelSummary, IndexStatus, IndexedSystemImage, PackageDetail, PackageRow,
-    RegistryRecord, ReleaseRow, RepairJobRow, ValidationRunRow,
+    ChannelSummary, IndexStatus, IndexedSystemImage, PackageDetail, PackageRow, RegistryRecord,
+    ReleaseRow,
 };
 use aos_hub_core::stack::StackNode;
 
@@ -235,28 +235,21 @@ pub fn releases_page(
     )
 }
 
-/// The health page: the cache × coverage validation matrix and drill-downs.
+/// The health page: index, cache policy, and delivery-route status.
 ///
 /// Native-hub shim over [`aos_hub_core::web::browse_pages::health_page`].
-#[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn health_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
-    runs: &[(ValidationRunRow, Vec<String>, Vec<String>)],
     stack: Option<&StackNode>,
-    cache_probes: &[CacheProbeRow],
-    repair_jobs: &[RepairJobRow],
     routes: &[RouteHealthRow],
     started: Instant,
 ) -> String {
     aos_hub_core::web::browse_pages::health_page(
         registry,
         status,
-        runs,
         stack,
-        cache_probes,
-        repair_jobs,
         routes,
         started,
         &current_session_indicator(),

@@ -89,7 +89,7 @@ frontend CNAMEs to the bucket, so a client configured with
 `https://cdn.example.com/acme/prod` fetches both `…/<hash>.narinfo` and the
 relative `…/nar/<hash>.nar.zst` straight from R2's CDN; the hub is never in the
 byte path. The hub keeps serving the small, dynamic control plane (browse, RPC,
-index, freshness probes) where the D1 read-replica and edge cache already help.
+and index) where the D1 read-replica and edge cache already help.
 
 For a `proxied` frontend (or a `private` binding) nothing changes: the existing
 hub facade — now fronted by the edge-cache read-through — serves it, with
@@ -145,7 +145,7 @@ scheme://F.domain/{F.base_path}/{C.prefix}        (segments joined, empties drop
   frontend URL instead of `{hub external_url}/{C.slug}` (today's
   `cache_advertise_url`). When advertised, it is written into the registry's
   committed `[[caches]]` (the existing write-through), so the existing
-  `advertised_caches` index and freshness probes pick it up unchanged.
+  `advertised_caches` index picks it up unchanged.
 
 ## Security boundary (the load-bearing invariant)
 
