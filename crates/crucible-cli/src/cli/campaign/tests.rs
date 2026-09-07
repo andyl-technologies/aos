@@ -140,30 +140,6 @@ fn fixed_branch_response(
     .expect("fixed branch response")
 }
 
-fn fixed_campaign_status_response(request: &GetCampaignStatusRequest) -> GetCampaignStatusResponse {
-    let continuations = CampaignContinuationStatus::new(2, 3, 5, 7, 11);
-    let semantic = CampaignSemanticStatus::new(continuations, 13, 17, 28, 2_048)
-        .expect("fixed semantic status");
-    let operational = CampaignOperationalStatus::Observed(CampaignOperationalEvidence::new(
-        DaemonEpoch::from_bytes([0x44; 16]).expect("daemon epoch"),
-        hash("inventory"),
-        CampaignWorldStatus::new(19, 23, 29, 31, 37, 41),
-        43,
-        47,
-    ));
-    GetCampaignStatusResponse::new(request, CampaignStatusSummary::new(semantic, operational))
-        .expect("fixed status response")
-}
-
-fn status_sequence_head(index: usize) -> CampaignSnapshotId {
-    match index {
-        0 => snapshot("head-a"),
-        1 => snapshot("head-b"),
-        2 => snapshot("head-c"),
-        _ => snapshot("head-d"),
-    }
-}
-
 impl CampaignService for FixedHeadService {
     type Error = Infallible;
 
@@ -249,7 +225,7 @@ impl CampaignService for FixedHeadService {
         &self,
         request: &GetCampaignStatusRequest,
     ) -> Result<GetCampaignStatusResponse, Self::Error> {
-        Ok(fixed_campaign_status_response(request))
+        Ok(render_status::fixed_campaign_status_response(request))
     }
 
     fn get_campaign_snapshot(
@@ -398,7 +374,7 @@ impl CampaignService for StatusSequenceService {
         request: &GetCampaignRequest,
     ) -> Result<GetCampaignResponse, Self::Error> {
         let get_index = self.calls.get.fetch_add(1, Ordering::SeqCst);
-        let head = status_sequence_head(get_index);
+        let head = render_status::status_sequence_head(get_index);
 
         Ok(GetCampaignResponse::new(
             request,
@@ -421,11 +397,11 @@ impl CampaignService for StatusSequenceService {
         if status_index < self.stale_statuses {
             return Err(CampaignServiceFailure::Stale {
                 expected: request.snapshot(),
-                current: status_sequence_head(status_index + 1),
+                current: render_status::status_sequence_head(status_index + 1),
             });
         }
 
-        Ok(fixed_campaign_status_response(request))
+        Ok(render_status::fixed_campaign_status_response(request))
     }
 
     unreachable_status_sequence_operations! {

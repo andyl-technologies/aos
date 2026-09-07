@@ -2,6 +2,32 @@
 
 use super::*;
 
+pub(super) fn fixed_campaign_status_response(
+    request: &GetCampaignStatusRequest,
+) -> GetCampaignStatusResponse {
+    let continuations = CampaignContinuationStatus::new(2, 3, 5, 7, 11);
+    let semantic = CampaignSemanticStatus::new(continuations, 13, 17, 28, 2_048)
+        .expect("fixed semantic status");
+    let operational = CampaignOperationalStatus::Observed(CampaignOperationalEvidence::new(
+        DaemonEpoch::from_bytes([0x44; 16]).expect("daemon epoch"),
+        hash("inventory"),
+        CampaignWorldStatus::new(19, 23, 29, 31, 37, 41),
+        43,
+        47,
+    ));
+    GetCampaignStatusResponse::new(request, CampaignStatusSummary::new(semantic, operational))
+        .expect("fixed status response")
+}
+
+pub(super) fn status_sequence_head(index: usize) -> CampaignSnapshotId {
+    match index {
+        0 => snapshot("head-a"),
+        1 => snapshot("head-b"),
+        2 => snapshot("head-c"),
+        _ => snapshot("head-d"),
+    }
+}
+
 #[test]
 fn campaign_head_report_renders_machine_and_human_forms() {
     let report = CampaignHeadReport {

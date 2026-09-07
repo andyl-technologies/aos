@@ -31,7 +31,7 @@ crucible-cas	src/content_store/s3	retry	1
 crucible-cas	src/content_store/tests	thread::sleep	1
 crucible-cas	src/content_store	retry	1
 crucible-cli	src/cli/campaign	retry	1
-crucible-cli	src/cli/campaign/tests	retry	1
+crucible-cli	src/cli/campaign/tests/render_status	retry	1
 crucible-cli	src/main	retry	1
 crucible-cli	tests/campaign_store_process	thread::sleep	1
 crucible-cli	tests/support/campaign_packaged_process	thread::sleep	1

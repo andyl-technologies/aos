@@ -13,7 +13,6 @@ const TEST_RUST_LINE_LIMIT: usize = 4_000;
 const SOURCE_LINE_DEBT: &[(&str, usize)] = &[
     ("crucible-api/src/vm_lifecycle/checkpoint_store.rs", 3_217),
     ("crucible-cas/src/content_store/tests.rs", 5_357),
-    ("crucible-cli/src/cli/campaign/tests.rs", 4_140),
 ];
 
 #[test]
