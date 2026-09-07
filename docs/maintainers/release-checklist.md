@@ -193,11 +193,12 @@ every output under `AOS_RELEASE_WORK`, using a new path for each command.
   cache narinfo signatures verify. Preserve the transaction, isolated
   registry, cache, and signer records.
 
-- [ ] **Review build evidence and close the bundle.** Assemble the payload and
-  unsigned manifest as specified in
-  [close and sign the bundle](canonical-releases.md#close-and-sign-the-bundle).
-  Include build observations, SBOM/advisory decisions, licenses, and matching
-  corresponding source. Run `aos release finalize`, with output `finalized/`.
+- [ ] **Review build evidence and close the bundle.** Prepare the canonical
+  advisory disposition, then run
+  [`aos release assemble`](canonical-releases.md#close-and-sign-the-bundle)
+  against the exact finalized cache, registry, images, and container. Review
+  its payload and unsigned manifest, then run `aos release finalize`, with
+  output `finalized/`.
 
   **Check when:** required build observations passed, every advisory has a
   disposition with no unresolved release blocker, and finalization exits zero.

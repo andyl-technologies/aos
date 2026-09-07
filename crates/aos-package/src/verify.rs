@@ -195,6 +195,66 @@ pub fn verify_nar_hash_with_compression(
     Ok(())
 }
 
+/// Verifies the signed hash and byte length of a decompressed NAR stream.
+///
+/// The decoder reads at most one byte beyond `expected_size`, which bounds
+/// work performed on a transport payload that expands beyond its signed NAR
+/// identity.
+///
+/// # Errors
+///
+/// Returns an error when the payload cannot be read or decoded, the encoding
+/// is unsupported, or the decompressed size or SHA-256 differs from the
+/// expected identity.
+pub fn verify_nar_identity_with_compression(
+    path: &Path,
+    expected_hash: &str,
+    expected_size: u64,
+    compression: &str,
+) -> Result<()> {
+    let file = File::open(path)
+        .with_context(|| format!("opening {} for NAR identity verification", path.display()))?;
+    let reader: Box<dyn Read> = match compression {
+        "none" => Box::new(BufReader::new(file)),
+        "zstd" => Box::new(
+            zstd::stream::read::Decoder::new(BufReader::new(file))
+                .with_context(|| format!("creating zstd decoder for {}", path.display()))?,
+        ),
+        other => bail!("unsupported NAR compression '{other}'"),
+    };
+    let limit = expected_size
+        .checked_add(1)
+        .context("expected NAR size cannot be bounded")?;
+    let mut bounded = reader.take(limit);
+    let mut hasher = Sha256::new();
+    let mut actual_size = 0_u64;
+    let mut buffer = vec![0_u8; HASH_BUF_SIZE];
+    loop {
+        let read = bounded
+            .read(&mut buffer)
+            .context("reading decompressed NAR for identity verification")?;
+        if read == 0 {
+            break;
+        }
+        actual_size = actual_size
+            .checked_add(u64::try_from(read)?)
+            .context("decompressed NAR size overflow")?;
+        hasher.update(&buffer[..read]);
+    }
+    if actual_size != expected_size {
+        bail!("decompressed NAR size {actual_size} differs from expected size {expected_size}");
+    }
+    let actual_hash = format!("sha256:{}", hex::encode(hasher.finalize()));
+    if !sha256_hashes_equal(&actual_hash, expected_hash)? {
+        return Err(AosError::HashMismatch {
+            expected: expected_hash.to_owned(),
+            actual: actual_hash,
+        }
+        .into());
+    }
+    Ok(())
+}
+
 /// Extracts a verified regular-file NAR into `output` without using the Nix store.
 ///
 /// The decoder accepts only the canonical NAR shape for one non-executable root
@@ -974,6 +1034,27 @@ mod tests {
             encoder.finish().unwrap();
         }
         (tmp, hash)
+    }
+
+    #[test]
+    fn signed_nar_identity_rejects_expansion_beyond_declared_size() {
+        let content = b"bounded decompressed NAR content";
+        let (tmp, hash) = zstd_fixture(content);
+
+        assert!(verify_nar_identity_with_compression(
+            tmp.path(),
+            &hash,
+            u64::try_from(content.len()).unwrap(),
+            "zstd",
+        )
+        .is_ok());
+        assert!(verify_nar_identity_with_compression(
+            tmp.path(),
+            &hash,
+            u64::try_from(content.len() - 1).unwrap(),
+            "zstd",
+        )
+        .is_err());
     }
 
     use crate::registry::store::{self, NarBytes, Realisation};
