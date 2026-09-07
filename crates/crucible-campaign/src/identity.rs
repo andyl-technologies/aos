@@ -571,20 +571,23 @@ content_object_id!(
 content_object_id!(
     ObservationId,
     ObjectKind::Observation,
+    [1, 2],
     "crucible.campaign.observation",
-    "Identifies one canonical attempt observation."
+    "Identifies one canonical attempt observation; version 1 remains decodable for history compatibility."
 );
 content_object_id!(
     ObjectiveEvaluationId,
     ObjectKind::Observation,
+    [1, 2],
     "crucible.campaign.objective-evaluation",
-    "Identifies one policy-bound exact objective evaluation."
+    "Identifies one policy-bound exact objective evaluation; version 1 remains decodable for history compatibility."
 );
 content_object_id!(
     RankingExplanationId,
     ObjectKind::Projection,
+    [1, 2],
     "crucible.campaign.ranking-explanation",
-    "Identifies one deterministic explanation for a ranked observation."
+    "Identifies one deterministic explanation for a ranked observation; version 1 remains decodable for history compatibility."
 );
 content_object_id!(
     SurvivorSelectionId,

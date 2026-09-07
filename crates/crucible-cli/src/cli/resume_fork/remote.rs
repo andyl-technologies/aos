@@ -273,6 +273,10 @@ pub(in super::super) fn finish_run_workflow_outcome(
         let artifact = run_failure_reproduction_artifact_bytes(
             artifact_seed,
             backend_plan.resolved_backend.as_ref(),
+            match report.execution_owner {
+                RunExecutionOwner::Session => "run",
+                RunExecutionOwner::Campaign => "campaign-run",
+            },
             run_plan,
             &report,
             &outcome.canonical_log,

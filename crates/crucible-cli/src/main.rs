@@ -191,6 +191,9 @@ struct Cli {
     /// Content-addressed store root (06, 07). Else default.
     #[arg(long, value_name = "path", global = true)]
     store: Option<PathBuf>,
+    /// Guarded local campaign-executor deployment capability.
+    #[arg(long, value_name = "PATH", global = true)]
+    campaign_deployment: Option<PathBuf>,
     /// Trace/report render format. Default: table on a terminal, otherwise jsonl.
     #[arg(
         long,

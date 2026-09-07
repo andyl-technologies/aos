@@ -67,6 +67,13 @@ fn policy(objectives: &[(&str, ObjectiveGoal, u64)]) -> CampaignPolicy {
 }
 
 fn observation_basis(label: &str) -> (Observation, PropertyVerdictSet) {
+    observation_basis_with_stop(label, StopOutcome::TerminalSuccess)
+}
+
+fn observation_basis_with_stop(
+    label: &str,
+    stop: StopOutcome,
+) -> (Observation, PropertyVerdictSet) {
     let measurements = MeasurementSet::new(BTreeMap::new()).expect("measurements");
     let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
     let coverage = CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage");
@@ -90,7 +97,7 @@ fn observation_basis(label: &str) -> (Observation, PropertyVerdictSet) {
             "crucible.campaign.branch-path",
             &format!("path-{label}"),
         ),
-        StopOutcome::TerminalSuccess,
+        stop,
         measurements.id().expect("measurement ID"),
         properties.id().expect("property ID"),
         coverage.id().expect("coverage ID"),
@@ -98,6 +105,75 @@ fn observation_basis(label: &str) -> (Observation, PropertyVerdictSet) {
     )
     .expect("observation");
     (observation, properties)
+}
+
+#[test]
+fn scenario_failure_is_a_versioned_inadmissible_objective() {
+    let policy = policy(&[("recovery.latency", ObjectiveGoal::Minimize, 1_000_000)]);
+    let reasons = vec!["first failure".to_owned(), "first failure".to_owned()];
+    let (observation, properties) = observation_basis_with_stop(
+        "scenario-failure",
+        StopOutcome::ScenarioFailure(reasons.clone()),
+    );
+    let evaluation = evaluate_objectives(
+        &policy,
+        &observation,
+        &properties,
+        BTreeMap::from([("recovery.latency".to_owned(), ObjectiveValue::Unsigned(9))]),
+    )
+    .expect("scenario failure evaluation");
+
+    assert!(!evaluation.is_admissible());
+    assert_eq!(evaluation.schema_version(), 2);
+    assert!(
+        evaluation
+            .rejections()
+            .contains(&ObjectiveRejection::ScenarioFailure(
+                crate::observation::scenario_failure_hash(&reasons),
+            ))
+    );
+    assert_eq!(
+        ObjectiveEvaluation::from_canonical_bytes(&evaluation.canonical_bytes())
+            .expect("scenario failure evaluation round trip"),
+        evaluation
+    );
+    assert_eq!(
+        evaluation
+            .id()
+            .expect("scenario failure evaluation id")
+            .content_id()
+            .schema_version(),
+        2
+    );
+    let mut downgraded = evaluation.canonical_bytes();
+    downgraded[..4].copy_from_slice(&1_u32.to_be_bytes());
+    assert!(ObjectiveEvaluation::from_canonical_bytes(&downgraded).is_err());
+
+    let candidate = RankingCandidate::new(evaluation, 0, 0);
+    let ranked = rank_survivors(
+        &policy,
+        SurvivorRule::new(RankingMethod::WeightedTopK, 1, 0, 0).expect("rule"),
+        vec![candidate],
+    )
+    .expect("scenario failure ranking");
+    let explanation = ranked
+        .explanations()
+        .values()
+        .next()
+        .expect("scenario failure explanation");
+    assert_eq!(explanation.schema_version(), 2);
+    assert!(matches!(
+        explanation.disposition(),
+        RankingDisposition::Filtered(rejections)
+            if rejections.iter().any(|rejection| {
+                matches!(rejection, ObjectiveRejection::ScenarioFailure(_))
+            })
+    ));
+    assert_eq!(
+        RankingExplanation::from_canonical_bytes(&explanation.canonical_bytes())
+            .expect("scenario failure explanation round trip"),
+        *explanation
+    );
 }
 
 fn evaluation(

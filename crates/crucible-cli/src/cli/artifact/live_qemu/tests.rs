@@ -88,7 +88,7 @@ fn live_qemu_replay_contract_round_trips_canonically() -> Result<(), CliError> {
 
 #[test]
 fn live_qemu_replay_contract_accepts_every_closed_producer() -> Result<(), CliError> {
-    for producer in ["run", "verify", "search", "fuzz", "fork"] {
+    for producer in ["run", "campaign-run", "verify", "search", "fuzz", "fork"] {
         let contract = producer_contract(producer);
         assert_eq!(
             LiveQemuReplayContract::decode(&contract.encode())?,

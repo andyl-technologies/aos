@@ -817,6 +817,9 @@ fn stop_outcome_label(outcome: &StopOutcome) -> String {
         StopOutcome::ModeledTimeout(name) => format!("modeled-timeout:{name}"),
         StopOutcome::GuestCrash(class) => format!("guest-crash:{class}"),
         StopOutcome::AssertionFailure(property) => format!("assertion-failure:{property}"),
+        StopOutcome::ScenarioFailure(reasons) => {
+            format!("scenario-failure:{}", reasons.join(" | "))
+        }
     }
 }
 

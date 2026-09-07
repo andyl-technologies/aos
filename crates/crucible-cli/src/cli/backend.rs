@@ -1218,16 +1218,24 @@ impl BackendCommandRunner for NullBackendCommandRunner {
         } else if let Some(run_plan) = run_plan {
             match backend {
                 #[cfg(any(test, feature = "test-double"))]
+                ResolvedLocalBackend::Double if run_plan.campaign_deployment.is_some() => {
+                    return Err(backend_error(
+                        "--campaign-deployment requires the production QEMU backend",
+                    ));
+                }
+                #[cfg(any(test, feature = "test-double"))]
                 ResolvedLocalBackend::Double => {
                     run_local_double_workflow(thin_plan, backend_plan, ergonomics_plan, run_plan)
                 }
-                ResolvedLocalBackend::Qemu { .. } => run_local_qemu_workflow(
-                    backend,
-                    thin_plan,
-                    backend_plan,
-                    ergonomics_plan,
-                    run_plan,
-                ),
+                ResolvedLocalBackend::Qemu { .. } => {
+                    crate::cli_verify_serve::run_local_qemu_campaign_workflow(
+                        backend,
+                        thin_plan,
+                        backend_plan,
+                        ergonomics_plan,
+                        run_plan,
+                    )
+                }
             }?
         } else {
             backend_command_outcome(thin_plan, backend_plan, ergonomics_plan)
@@ -1248,6 +1256,11 @@ impl BackendCommandRunner for NullBackendCommandRunner {
         verify_plan: Option<&VerifyInvocationPlan>,
         save_plan: Option<&SaveInvocationPlan>,
     ) -> Result<BackendCommandExecution, CliError> {
+        if run_plan.is_some_and(|plan| plan.campaign_deployment.is_some()) {
+            return Err(backend_error(
+                "--campaign-deployment selects local guarded execution and cannot be combined with --daemon",
+            ));
+        }
         let outcome = if let Some(save_plan) = save_plan {
             run_remote_save_workflow(daemon, thin_plan, backend_plan, ergonomics_plan, save_plan)?
         } else if let Some(run_plan) = run_plan {

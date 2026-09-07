@@ -390,7 +390,7 @@ records and derives their identity union, so a new projector can rebuild the
 same union without mutating an old bitmap in place.
 
 Objective evaluation produces three strict canonical record schemas. Their
-schema-version field is `1`, and fields occur in the order shown:
+established schema-version field is `1`, and fields occur in the order shown:
 
 ```text
 ObjectiveEvaluationV1:
@@ -421,8 +421,14 @@ FixedReward:
 The component map exactly repeats the policy's objective names, directions, and
 millionth-denominated weights. A missing verified numeric aggregate retains the
 component with `value = None` and an exact `MissingMeasurement(name)` rejection.
-Failed or inconclusive properties, guest crashes, and assertion failures are
-also retained as closed rejection variants. `scalar-reward` exists only for a
+Failed or inconclusive properties, guest crashes, assertion failures, and
+scenario failures are also retained as closed rejection variants. A scenario
+failure rejection binds the ordered failure-reason vector by a domain-separated
+digest rather than duplicating its potentially large text. Objective evaluation
+and ranking explanation schema v2 are written only when this rejection is
+present; all other records retain their exact v1 body and envelope identities.
+A v1 body carrying the new rejection tag or a v2 body without it is invalid.
+`scalar-reward` exists only for a
 nonempty, rejection-free vector and is the reduced arbitrary-precision sum of
 direction-adjusted weighted values. Objective values and rewards never use
 floating point.

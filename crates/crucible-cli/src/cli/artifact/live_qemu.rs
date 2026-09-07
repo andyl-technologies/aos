@@ -318,7 +318,7 @@ impl LiveQemuReplayContract {
             producer.ok_or_else(|| artifact_error("live-QEMU replay contract has no producer"))?;
         if !matches!(
             producer.as_str(),
-            "run" | "verify" | "search" | "fuzz" | "fork"
+            "run" | "campaign-run" | "verify" | "search" | "fuzz" | "fork"
         ) {
             return Err(artifact_error(format!(
                 "live-QEMU replay contract has unsupported producer `{producer}`"

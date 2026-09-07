@@ -12,6 +12,35 @@ pub(super) use artifact_capture::*;
 mod packaged_executor;
 use packaged_executor::prepare_cli_packaged_executor;
 
+#[path = "legacy_campaign.rs"]
+mod legacy_campaign;
+
+// crucible-lint: allow host-nondeterminism-state -- this thin command boundary forwards validated inputs to the daemon owner and only renders its accepted result.
+pub(crate) fn run_local_qemu_campaign_workflow(
+    backend: &ResolvedLocalBackend,
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    run_plan: &RunInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    legacy_campaign::run_local_qemu_campaign_workflow(
+        backend,
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        run_plan,
+    )
+}
+
+pub(crate) fn run_local_qemu_campaign_replay(
+    backend: &ResolvedLocalBackend,
+    run_plan: &RunInvocationPlan,
+    lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    schedule: crucible::Schedule,
+) -> Result<RunWorkflowReport, CliError> {
+    legacy_campaign::run_local_qemu_campaign_replay(backend, run_plan, lifecycle, schedule)
+}
+
 use super::cli_campaign_import::apply_campaign_import_manifests;
 use super::cli_campaign_store::load_campaign_repository_store;
 
@@ -123,6 +152,7 @@ pub(super) fn verify_run_invocation_plan(
     RunInvocationPlan {
         scenario,
         save_store_root: None,
+        campaign_deployment: None,
         request_seed: Some(request_seed),
         terminal_condition: RunTerminalCondition::Quiescence,
         max_virtual_time: None,
@@ -1837,6 +1867,7 @@ where
     Ok(SaveWorkflowReport {
         run: RunWorkflowReport {
             status: BackendCommandStatus::Passed,
+            execution_owner: RunExecutionOwner::Session,
             created_state: format!("{:?}", created.state).to_ascii_lowercase(),
             final_state,
             outcome: Some(OutcomeKind::Passed),

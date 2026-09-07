@@ -973,5 +973,5 @@ pub enum CampaignExecutorDriverError<E> {
     Protocol(#[from] CampaignCodecError),
     /// The checked executor component call failed.
     #[error("executor component call failed")]
-    Executor(ExecutorClientError<E>),
+    Executor(#[source] ExecutorClientError<E>),
 }

@@ -3214,8 +3214,9 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
             .expect("canonical observation"),
         observation
     );
-    let envelope = ObjectEnvelope::for_record(
+    let envelope = ObjectEnvelope::for_record_versioned(
         CampaignRecordKind::Observation,
+        1,
         super::object::content_children(observation.content_children())
             .expect("observation children"),
         observation.canonical_bytes(),
@@ -3229,6 +3230,81 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
         ObjectEnvelope::from_canonical_bytes(&envelope.canonical_bytes())
             .expect("canonical observation envelope"),
         envelope
+    );
+
+    let scenario_failure = Observation::new(
+        observation.attempt(),
+        observation.child(),
+        observation.child_content(),
+        observation.path(),
+        StopOutcome::ScenarioFailure(vec![
+            "first declared failure".to_owned(),
+            "second declared failure".to_owned(),
+        ]),
+        observation.measurements(),
+        observation.properties(),
+        observation.coverage(),
+        BTreeSet::new(),
+    )
+    .expect("scenario failure observation");
+    assert_eq!(scenario_failure.schema_version(), 2);
+    assert_eq!(
+        Observation::from_canonical_bytes(&scenario_failure.canonical_bytes())
+            .expect("canonical scenario failure observation"),
+        scenario_failure
+    );
+    assert_eq!(
+        scenario_failure
+            .id()
+            .expect("scenario failure observation id")
+            .content_id()
+            .schema_version(),
+        2
+    );
+    let mut downgraded_failure = scenario_failure.canonical_bytes();
+    downgraded_failure[..4].copy_from_slice(&1_u32.to_be_bytes());
+    assert!(Observation::from_canonical_bytes(&downgraded_failure).is_err());
+    let mismatched_failure_envelope = ObjectEnvelope::for_record_versioned(
+        CampaignRecordKind::Observation,
+        1,
+        super::object::content_children(scenario_failure.content_children())
+            .expect("scenario failure observation children"),
+        scenario_failure.canonical_bytes(),
+    )
+    .expect("structural scenario failure envelope");
+    assert!(
+        ObjectEnvelope::from_canonical_bytes(&mismatched_failure_envelope.canonical_bytes())
+            .is_err()
+    );
+    assert!(
+        Observation::new(
+            observation.attempt(),
+            observation.child(),
+            observation.child_content(),
+            observation.path(),
+            StopOutcome::ScenarioFailure(Vec::new()),
+            observation.measurements(),
+            observation.properties(),
+            observation.coverage(),
+            BTreeSet::new(),
+        )
+        .is_err()
+    );
+    let aggregate_oversize_failure =
+        vec!["a".repeat(16 * 1024 * 1024), "b".repeat(16 * 1024 * 1024)];
+    assert!(
+        Observation::new(
+            observation.attempt(),
+            observation.child(),
+            observation.child_content(),
+            observation.path(),
+            StopOutcome::ScenarioFailure(aggregate_oversize_failure),
+            observation.measurements(),
+            observation.properties(),
+            observation.coverage(),
+            BTreeSet::new(),
+        )
+        .is_err()
     );
 
     let mut trailing = observation.canonical_bytes();

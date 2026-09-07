@@ -36,6 +36,25 @@ only after that nonempty owner set exists.
 Raw `NotRun` checkpoints remain ineligible until promotion succeeds. Do not
 interpret this single-host composition as multi-host readiness.
 
+Ordinary local QEMU `run` commands use the same campaign owner for the default
+to-completion path. The deployment capability is resolved in this order:
+
+1. the global `--campaign-deployment PATH` option;
+2. `CRUCIBLE_CAMPAIGN_DEPLOYMENT`; then
+3. `/etc/crucible/packaged-executor.toml`, when that file exists.
+
+The selected packaged-executor file still passes the strict ownership, mode,
+cgroup, project-quota, and resource-limit checks described below. If no
+capability is available, the command fails before launching QEMU and names all
+three configuration methods. Stop overrides, save, watch, and interactive
+execution are not yet accepted by this compatibility path.
+
+A failure artifact produced by this path records `campaign-run` as its typed
+producer. Replaying that artifact resolves the deployment capability again and
+re-materializes its authenticated schedule through the campaign owner. Older
+`run`, `verify`, `search`, `fuzz`, and `fork` artifacts retain their existing
+session replay behavior.
+
 ## Build and validate inputs
 
 Build the complete suite first:

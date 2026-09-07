@@ -669,6 +669,7 @@ pub(super) async fn run_resumed_savepoint_actor_with_driver_async(
             } else {
                 BackendCommandStatus::Passed
             },
+            execution_owner: RunExecutionOwner::Session,
             created_state: String::from("paused"),
             final_state,
             outcome: Some(if property_violation_reached {
@@ -893,6 +894,7 @@ pub(super) async fn run_forked_savepoint_actor_with_driver_async(
             } else {
                 BackendCommandStatus::Passed
             },
+            execution_owner: RunExecutionOwner::Session,
             created_state: String::from("paused"),
             final_state,
             outcome: Some(if property_violation_reached {

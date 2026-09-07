@@ -231,6 +231,7 @@ where
 
     Ok(RunWorkflowReport {
         status,
+        execution_owner: RunExecutionOwner::Session,
         created_state: format!("{:?}", created.state).to_ascii_lowercase(),
         final_state: observation.final_state,
         outcome: observation.outcome,

@@ -9,12 +9,10 @@
 //! after those final events are available. The fresh path never silently
 //! substitutes for an exact-checkpoint resume.
 
-use std::collections::BTreeSet;
-
 use crucible::{
-    Configuration, ContentHash, Decision, QuantumLoop, QuantumOutcome, QuantumRequest,
-    QuantumTerminalVerdict, ScenarioDef, ScenarioDefForm, SchedulerError, SchedulerEventLogEntry,
-    SchedulerOperationalFailureClass, SchedulerQuiescence,
+    Configuration, ContentHash, Decision, FingerprintSample, NodeId, QuantumLoop, QuantumOutcome,
+    QuantumRequest, QuantumTerminalVerdict, ScenarioDef, ScenarioDefForm, SchedulerError,
+    SchedulerEventLogEntry, SchedulerOperationalFailureClass, SchedulerQuiescence,
 };
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
@@ -26,6 +24,7 @@ use crucible_campaign::{CampaignHash, ConfigurationId, ExactCheckpointId, Select
 use crucible_cas::content_store::StoreError;
 use crucible_protocol::SelectionReply;
 use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuVmRealizationError};
+use std::collections::BTreeSet;
 use thiserror::Error;
 
 use crate::guest_selectable::{
@@ -193,6 +192,30 @@ pub trait QemuFreshAttemptLifecycleOwner {
     #[must_use]
     fn pending_network_output_count(&self) -> usize;
 
+    /// Samples one node's concrete execution fingerprint at the current boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the node is absent or its live state cannot
+    /// be read consistently.
+    fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        let _ = node;
+        Err(SchedulerError::NotImplemented {
+            operation: "sample fresh-attempt execution fingerprint",
+        })
+    }
+
+    /// Copies the exact resolved-effect trace retained by the live fault runtime.
+    ///
+    /// Lifecycles without a signal-driven fault runtime return `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when retained effect evidence cannot be encoded.
+    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        Ok(None)
+    }
+
     /// Performs final drain, process reap, lease release, and aggregate release.
     ///
     /// Returned entries are the only scheduler observations produced during
@@ -271,10 +294,35 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         ProductionVmLifecycleLoop::pending_network_output_count(self)
     }
 
+    fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        // crucible-lint: allow host-nondeterminism-state -- this delegates a read-only fingerprint sample to the scheduler-owned lifecycle.
+        QuantumLoop::sample_fingerprint(self, node)
+    }
+
+    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        // crucible-lint: allow host-nondeterminism-state -- this copies scheduler-retained replay evidence without feeding it into execution.
+        QuantumLoop::resolved_effect_trace(self)
+    }
+
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        // crucible-lint: allow host-nondeterminism-state -- scheduler shutdown returns authoritative final evidence and does not synthesize modeled state.
         QuantumLoop::shutdown(self)
     }
 }
+
+mod evidence;
+pub use evidence::{
+    QemuAttemptExecutionEvidence, QemuAttemptExecutionEvidenceSnapshot,
+    QemuObservedFreshAttemptLifecycle, QemuObservedFreshAttemptLifecycleFactory,
+    QemuObservedFreshAttemptLifecycleFactoryError,
+};
+
+mod legacy_run;
+pub use legacy_run::{
+    GuardedDefaultCampaignInvariantError, GuardedDefaultCampaignObservation,
+    GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError, GuardedDefaultCampaignRunRequest,
+    GuardedDefaultCampaignSupervisorError, run_guarded_default_campaign,
+};
 
 /// Narrow modeled-execution view of one guarded fresh QEMU lifecycle.
 ///
@@ -517,13 +565,13 @@ pub enum QemuFreshExecutionRunnerError<F, D> {
     StartReplay(#[source] QemuFreshStartReplayError),
     /// Guarded lifecycle admission or construction failed.
     #[error("fresh production QEMU lifecycle construction failed")]
-    Lifecycle(F),
+    Lifecycle(#[source] F),
     /// Modeled driving or post-shutdown result sealing failed.
     #[error("fresh production QEMU attempt driver failed")]
-    Driver(D),
+    Driver(#[source] D),
     /// Final drain, process reap, or resource release failed.
     #[error("fresh production QEMU lifecycle cleanup failed: {0}")]
-    Cleanup(SchedulerError),
+    Cleanup(#[source] SchedulerError),
     /// Complete production checkpoint capture failed at a safe boundary.
     #[error("fresh production QEMU checkpoint capture failed: {0}")]
     CheckpointCapture(#[source] SchedulerError),
@@ -543,7 +591,7 @@ pub enum QemuFreshExecutionRunnerError<F, D> {
     },
     /// Cleanup failed after start replay or another runner-owned phase failed.
     #[error(
-        "fresh production QEMU lifecycle cleanup failed after runner failure `{failure}`: {cleanup}"
+        "fresh production QEMU lifecycle cleanup failed after a prior runner failure: {cleanup}"
     )]
     CleanupAfterRunner {
         /// Original runner failure retained for diagnosis.

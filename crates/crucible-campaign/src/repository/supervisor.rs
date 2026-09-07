@@ -270,8 +270,8 @@ pub enum CampaignSupervisorError<P, E> {
     Repository(#[from] CampaignRepositoryError),
     /// The bounded planner driver failed.
     #[error("campaign planner driver failed")]
-    Planner(CampaignPlannerDriverError<P>),
+    Planner(#[source] CampaignPlannerDriverError<P>),
     /// The bounded executor driver failed.
     #[error("campaign executor driver failed")]
-    Executor(CampaignExecutorDriverError<E>),
+    Executor(#[source] CampaignExecutorDriverError<E>),
 }

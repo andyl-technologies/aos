@@ -2521,7 +2521,7 @@ impl<S: crate::executor_capability::ExecutorCapabilityService> ExecutorClient<S>
 pub enum ExecutorClientError<E> {
     /// The direct or RPC implementation failed to produce a response.
     #[error("executor service failed: {0}")]
-    Service(E),
+    Service(#[source] E),
     /// The implementation returned a malformed cross-request response.
     #[error(transparent)]
     InvalidResponse(CampaignCodecError),

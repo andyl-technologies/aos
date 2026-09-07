@@ -655,6 +655,16 @@ The existing command concepts remain useful but use one implementation:
 | `replay` | Instantiate a recorded scenario/schedule artifact |
 | `triage` | Project and minimize the campaign findings ledger |
 
+The first compatibility milestone routes the default local-QEMU `run` path
+through the shared campaign owner. Operational capability discovery checks the
+global `--campaign-deployment` option, then
+`CRUCIBLE_CAMPAIGN_DEPLOYMENT`, then the installed
+`/etc/crucible/packaged-executor.toml` deployment. Absence is an actionable,
+fail-closed error before QEMU launch. Its reproduction artifacts carry the
+typed producer `campaign-run`, so replay uses the same campaign owner and
+authenticated recorded schedule. Existing `run`, `verify`, `search`, `fuzz`,
+and `fork` artifacts continue to select their session replay contracts.
+
 The `run` compatibility path must record each discovered choice as a schema-v5
 `ScenarioDefault` request tied to the active policy. Repository admission
 accepts only the declared default as one finite candidate with a
