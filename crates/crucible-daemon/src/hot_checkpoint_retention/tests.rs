@@ -146,6 +146,29 @@ fn directory_catalog_survives_restart_and_rejects_corruption() {
 }
 
 #[test]
+fn final_directory_catalog_owner_releases_a_duplicated_writer_descriptor() {
+    let directory = tempfile::tempdir().expect("catalog directory");
+    let store =
+        DirectoryHotCheckpointFallbackRetentionStore::open(directory.path()).expect("first writer");
+    let inherited = store
+        .inner
+        .writer_lock
+        .try_clone()
+        .expect("duplicate inherited writer descriptor");
+    let remaining_owner = store.clone();
+
+    assert!(DirectoryHotCheckpointFallbackRetentionStore::open(directory.path()).is_err());
+    drop(store);
+    assert!(DirectoryHotCheckpointFallbackRetentionStore::open(directory.path()).is_err());
+    drop(remaining_owner);
+
+    let replacement = DirectoryHotCheckpointFallbackRetentionStore::open(directory.path())
+        .expect("final owner drop releases inherited lock");
+    drop(replacement);
+    drop(inherited);
+}
+
+#[test]
 fn directory_inventory_fence_blocks_root_replacement() {
     let directory = tempfile::tempdir().expect("catalog directory");
     let store =

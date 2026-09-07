@@ -305,9 +305,18 @@ pub struct DirectoryHotCheckpointFallbackRetentionStore {
 
 struct DirectoryHotCheckpointFallbackRetentionInner {
     root: PathBuf,
-    _writer_lock: File,
+    writer_lock: File,
     lifecycle: RwLock<()>,
     records: Mutex<BTreeMap<HotCheckpointFallbackSlot, HotCheckpointFallbackRecord>>,
+}
+
+impl Drop for DirectoryHotCheckpointFallbackRetentionInner {
+    fn drop(&mut self) {
+        // A fork can retain this open-file description until exec closes it.
+        // Release ownership when the final store owner ends so an inherited or
+        // duplicated descriptor cannot extend the catalog's writer lease.
+        let _ = flock(&self.writer_lock, FlockOperation::Unlock);
+    }
 }
 
 impl DirectoryHotCheckpointFallbackRetentionStore {
@@ -341,7 +350,7 @@ impl DirectoryHotCheckpointFallbackRetentionStore {
         Ok(Self {
             inner: Arc::new(DirectoryHotCheckpointFallbackRetentionInner {
                 root,
-                _writer_lock: writer_lock,
+                writer_lock,
                 lifecycle: RwLock::new(()),
                 records: Mutex::new(records),
             }),

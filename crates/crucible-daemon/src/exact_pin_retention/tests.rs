@@ -53,6 +53,25 @@ use super::*;
 
 const STORE_LIMIT: u64 = 1024 * 1024;
 
+#[test]
+fn exact_pin_owner_drop_releases_a_duplicated_writer_descriptor() {
+    let directory = tempfile::tempdir().expect("selection directory");
+    let store =
+        DirectoryExactPinMaterializationStore::open(directory.path()).expect("first writer");
+    let inherited = store
+        .writer_lock
+        .try_clone()
+        .expect("duplicate inherited writer descriptor");
+
+    assert!(DirectoryExactPinMaterializationStore::open(directory.path()).is_err());
+    drop(store);
+
+    let replacement = DirectoryExactPinMaterializationStore::open(directory.path())
+        .expect("owner drop releases inherited lock");
+    drop(replacement);
+    drop(inherited);
+}
+
 struct TestDurableBackend {
     memory: MemoryBlobBackend,
     cancel_vmstate_read: Mutex<Option<crate::ExecutionCancellation>>,
