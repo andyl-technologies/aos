@@ -65,6 +65,8 @@ mkDerivation {
     }
   ];
 
+  passthru.evidenceSources = [./aos-hub-cloudflare.nix];
+
   meta = {
     description = "aos-hub packaged with wrangler + the Worker wasm dist as a Cloudflare installer";
     homepage = "https://github.com/andyl-technologies/aos";

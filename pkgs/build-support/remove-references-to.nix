@@ -60,6 +60,8 @@
   done
 '')
 .overrideAttrs (_: {
+  passthru.evidenceSources = [./remove-references-to.nix];
+
   meta = {
     description = "Remove selected Nix store references from files";
     license = "MIT";

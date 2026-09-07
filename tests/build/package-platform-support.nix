@@ -73,6 +73,8 @@
   excludedResources = discoverExcludedResources ../../pkgs "" false;
   publicationMatrix = support.publicationMatrix packageNames;
   releaseInventory = support.releaseInventory packageNames;
+  releaseDerivations =
+    support.releaseDerivations pkgs.stdenv.hostPlatform.system pkgs packageNames;
   x86Packages = publicationMatrix.x86_64-darwin;
   armPackages = publicationMatrix.aarch64-darwin;
   x86LinuxPackages = publicationMatrix.x86_64-linux;
@@ -117,6 +119,47 @@
   annotationProbe = support.annotate "rust" {
     meta = {license = "probe";};
   };
+  nestedSource = ../../qualification/modules;
+  derivationProbe = support.releaseDerivations "x86_64-linux" {
+    aos = {
+      type = "derivation";
+      drvPath = "/nix/store/00000000000000000000000000000000-aos.drv";
+      outPath = "/nix/store/00000000000000000000000000000000-aos";
+      out = "/nix/store/00000000000000000000000000000000-aos";
+      outputs = ["out"];
+      src = nestedSource;
+      passthru.evidenceSources = [
+        nestedSource
+        "/nix/store/11111111111111111111111111111111-source/subdirectory"
+        "/nix/store/11111111111111111111111111111111-source"
+      ];
+      pname = "aos";
+      version = "1";
+      meta = {
+        description = "source fixture";
+        license = "MIT";
+        maintainers = ["AOS test"];
+      };
+    };
+  } ["aos"];
+  sourceRoots = (builtins.head derivationProbe.packages).source_store_paths;
+  nestedSourceRoot = builtins.unsafeDiscardStringContext (toString (builtins.path {
+    path = nestedSource;
+    name = builtins.baseNameOf (toString nestedSource);
+  }));
+  releasePackageByName = name:
+    builtins.head (builtins.filter (package: package.name == name) releaseDerivations.packages);
+  releaseSourcesComplete =
+    builtins.all (
+      package:
+        package.source_store_paths
+        != []
+        && builtins.all (
+          source: builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" source != null
+        )
+        package.source_store_paths
+    )
+    releaseDerivations.packages;
   linuxPackages = support.targetPackageNames "x86_64-linux" packageNames;
   packageByName = name:
     builtins.head (builtins.filter (package: package.name == name) releaseInventory.packages);
@@ -138,6 +181,15 @@ in
   assert selectionProbe == {rust = "included";};
   assert annotationProbe.meta.license == "probe";
   assert annotationProbe.meta.aos.platformSupport.disposition == "target";
+  assert sourceRoots
+  == builtins.sort builtins.lessThan [
+    "/nix/store/11111111111111111111111111111111-source"
+    nestedSourceRoot
+  ];
+  assert releaseSourcesComplete;
+  assert builtins.length (releasePackageByName "aos").source_store_paths >= 2;
+  assert builtins.length (releasePackageByName "docker-compose").source_store_paths >= 2;
+  assert builtins.length (releasePackageByName "envoy").source_store_paths >= 2;
   assert releaseInventory.schema_version == "aos.release.package-inventory/v1";
   assert releaseInventory.platforms == support.canonicalSystems;
   assert builtins.attrNames publicationMatrix == builtins.sort builtins.lessThan support.canonicalSystems;

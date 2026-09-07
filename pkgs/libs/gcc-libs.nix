@@ -10,7 +10,6 @@
 ##! build environment — the cc-wrapper interferes with GMP's CC_FOR_BUILD.
 {
   mkDerivation,
-  lib,
   stdenv,
   bootstrapTools,
 }: let
@@ -33,14 +32,13 @@
   };
 
   # Pull derivations (not just paths) from cc-wrapper's passthru so we
-  # can reach the multi-output glibc's $dev / $static. orig-libc /
-  # orig-cc in nix-support/ are string paths; reading them via readFile
-  # would lose the attribute set. The dynamic-linker file remains a
-  # readFile since it's a plain path to ld-linux.so inside glibc.$out.
+  # can reach the multi-output glibc's $dev / $static. The dynamic linker is
+  # determined by the structured target platform. Reading the same value from
+  # cc-wrapper's generated nix-support file would force that wrapper to build
+  # during cross-package evaluation.
   glibc = bootstrapTools.libc;
   gcc = bootstrapTools.cc;
-  trim = s: lib.removeSuffix "\n" s;
-  interp = trim (builtins.readFile "${bootstrapTools}/nix-support/dynamic-linker");
+  interp = "${glibc}/lib/${stdenv.hostPlatform.dynamicLinker}";
   platformConfig = stdenv.hostPlatform.config;
 in
   # Use mkDerivation but bypass the cc-wrapper by setting CC/CXX directly

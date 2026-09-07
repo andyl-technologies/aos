@@ -12,6 +12,18 @@
   stdenv,
 }: let
   version = "2026b";
+  tzcodeSrc = fetchurl {
+    urls = [
+      "https://data.iana.org/time-zones/releases/tzcode${version}.tar.gz"
+    ];
+    hash = "sha256-N+nthCf101IcIvxY4pPL+wQ9cO7fEAOHCzPzY/Yco0Q=";
+  };
+  tzdataSrc = fetchurl {
+    urls = [
+      "https://data.iana.org/time-zones/releases/tzdata${version}.tar.gz"
+    ];
+    hash = "sha256-EUVD2fGaa/61vKQ2hq6hc9OHVaPbHy7sESZHrpLG9UQ=";
+  };
 in
   mkDerivation {
     pname = "tzdata";
@@ -20,22 +32,16 @@ in
     # IANA ships tzcode (the C source for zic) and tzdata (the zone
     # tables) as two tarballs; the canonical build extracts both into
     # the same directory.
-    tzcodeSrc = fetchurl {
-      urls = [
-        "https://data.iana.org/time-zones/releases/tzcode${version}.tar.gz"
-      ];
-      hash = "sha256-N+nthCf101IcIvxY4pPL+wQ9cO7fEAOHCzPzY/Yco0Q=";
-    };
-    tzdataSrc = fetchurl {
-      urls = [
-        "https://data.iana.org/time-zones/releases/tzdata${version}.tar.gz"
-      ];
-      hash = "sha256-EUVD2fGaa/61vKQ2hq6hc9OHVaPbHy7sESZHrpLG9UQ=";
-    };
+    inherit tzcodeSrc tzdataSrc;
 
     buildDeps = [gnumake];
     runtimeDeps = [];
     propagatedDeps = [];
+
+    passthru.evidenceSources = [
+      tzcodeSrc
+      tzdataSrc
+    ];
 
     phases = [
       {

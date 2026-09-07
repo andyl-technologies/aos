@@ -97,6 +97,11 @@ in
       }
     ];
 
+    passthru.evidenceSources = [
+      ./aos-registry-server.nix
+      ./_aos-registry-server-config
+    ];
+
     expose = {
       units = {
         "aos-registry-server-gitd.service" = {

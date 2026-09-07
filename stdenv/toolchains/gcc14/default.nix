@@ -85,46 +85,50 @@
     # ${glibc.dev}/include for cc-wrapper-symmetry and for callers that probe
     # `gcc -v`. Stage-2's own specs file already has these baked in, so
     # these flags are belt-and-suspenders.
-    gcc = builtins.derivation {
-      name = "gcc-14.3.0-wrapped";
-      system = buildPlatform.system;
-      builder = "${prev.bash}/bin/bash";
-      args = [
-        "-c"
-        ''
-          set -eu
-          export PATH="${prev.coreutils}/bin"
-          mkdir -p $out/bin
+    gcc =
+      (builtins.derivation {
+        name = "gcc-14.3.0-wrapped";
+        system = buildPlatform.system;
+        builder = "${prev.bash}/bin/bash";
+        args = [
+          "-c"
+          ''
+            set -eu
+            export PATH="${prev.coreutils}/bin"
+            mkdir -p $out/bin
 
-          echo '#!${prev.bash}/bin/bash' > $out/bin/gcc
-          echo 'exec ${gccStage2}/bin/gcc -B${scope.glibc}/lib -idirafter ${scope.glibc.dev}/include "$@"' >> $out/bin/gcc
-          chmod +x $out/bin/gcc
+            echo '#!${prev.bash}/bin/bash' > $out/bin/gcc
+            echo 'exec ${gccStage2}/bin/gcc -B${scope.glibc}/lib -idirafter ${scope.glibc.dev}/include "$@"' >> $out/bin/gcc
+            chmod +x $out/bin/gcc
 
-          if [ -f "${gccStage2}/bin/g++" ]; then
-            echo '#!${prev.bash}/bin/bash' > $out/bin/g++
-            echo 'exec ${gccStage2}/bin/g++ -B${scope.glibc}/lib -idirafter ${scope.glibc.dev}/include "$@"' >> $out/bin/g++
-            chmod +x $out/bin/g++
-          fi
+            if [ -f "${gccStage2}/bin/g++" ]; then
+              echo '#!${prev.bash}/bin/bash' > $out/bin/g++
+              echo 'exec ${gccStage2}/bin/g++ -B${scope.glibc}/lib -idirafter ${scope.glibc.dev}/include "$@"' >> $out/bin/g++
+              chmod +x $out/bin/g++
+            fi
 
-          [ -f "$out/bin/gcc" ] && [ ! -e "$out/bin/cc" ] && ln -sf gcc $out/bin/cc
-          [ -f "$out/bin/g++" ] && [ ! -e "$out/bin/c++" ] && ln -sf g++ $out/bin/c++
+            [ -f "$out/bin/gcc" ] && [ ! -e "$out/bin/cc" ] && ln -sf gcc $out/bin/cc
+            [ -f "$out/bin/g++" ] && [ ! -e "$out/bin/c++" ] && ln -sf g++ $out/bin/c++
 
-          # Symlink all other binaries from the final bootstrapped GCC.
-          for f in ${gccStage2}/bin/*; do
-            bn=$(basename "$f")
-            [ ! -e "$out/bin/$bn" ] && ln -s "$f" "$out/bin/$bn"
-          done
+            # Symlink all other binaries from the final bootstrapped GCC.
+            for f in ${gccStage2}/bin/*; do
+              bn=$(basename "$f")
+              [ ! -e "$out/bin/$bn" ] && ln -s "$f" "$out/bin/$bn"
+            done
 
-          # Symlink lib/libexec/include/share and target-specific directories.
-          # `|| true` because ${targetPlatform.config} may not exist in stage2
-          # (Phase 2b removed the binutils-symlink subdir) and the trailing
-          # `[ -e ] && ln -s` would otherwise trip set -e.
-          for d in lib lib64 libexec include share ${targetPlatform.config}; do
-            [ -e "${gccStage2}/$d" ] && ln -s "${gccStage2}/$d" "$out/$d" || true
-          done
-        ''
-      ];
-    };
+            # Symlink lib/libexec/include/share and target-specific directories.
+            # `|| true` because ${targetPlatform.config} may not exist in stage2
+            # (Phase 2b removed the binutils-symlink subdir) and the trailing
+            # `[ -e ] && ln -s` would otherwise trip set -e.
+            for d in lib lib64 libexec include share ${targetPlatform.config}; do
+              [ -e "${gccStage2}/$d" ] && ln -s "${gccStage2}/$d" "$out/$d" || true
+            done
+          ''
+        ];
+      })
+      // {
+        passthru.evidenceSources = [./default.nix] ++ gccStage2.passthru.evidenceSources;
+      };
 
     # Phase 2: binutils 2.41 built with raw GCC
     binutils = callPackage ./binutils.nix {gcc = gccRaw;};

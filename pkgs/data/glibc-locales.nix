@@ -15,6 +15,8 @@ in
     runtimeDeps = [];
     propagatedDeps = [];
 
+    passthru.evidenceSources = buildPackages.glibc.passthru.evidenceSources;
+
     phases = [
       {
         name = "install";

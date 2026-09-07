@@ -462,6 +462,8 @@ mkDerivation {
     }
   ];
 
+  passthru.evidenceSources = [./aos-var-policy-migrate.nix];
+
   meta = {
     description = "Migrate /var TPM enrollment to the PCR-7+12 policy";
     license = "Apache-2.0";

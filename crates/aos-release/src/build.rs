@@ -35,7 +35,7 @@ pub struct BuildOutputEvidence {
     pub version: String,
     /// SPDX-compatible declared license expression.
     pub license_expression: String,
-    /// Exact upstream source store paths, or empty for repository source.
+    /// Exact source and dependency-source store roots needed to rebuild it.
     pub source_store_paths: Vec<String>,
     /// Planned target platform.
     pub platform: Platform,
@@ -178,7 +178,7 @@ pub struct PlannedNixOutput<'a> {
     pub version: &'a str,
     /// SPDX-compatible declared license expression.
     pub license_expression: &'a str,
-    /// Exact upstream source store paths.
+    /// Exact source and dependency-source store roots.
     pub source_store_paths: &'a [String],
     /// Planned target platform.
     pub platform: Platform,

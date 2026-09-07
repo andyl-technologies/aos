@@ -96,7 +96,7 @@ pub struct DerivationPackage {
     pub name: String,
     /// Nix-derived public distribution metadata, absent when incomplete.
     pub publication: Option<PackagePublicationMetadata>,
-    /// Exact upstream source store paths; empty means repository source.
+    /// Exact source and dependency-source store roots needed to rebuild it.
     pub source_store_paths: Vec<String>,
     /// Exact `.drv` path.
     pub derivation: String,
@@ -280,6 +280,13 @@ impl PackageInventoryV1 {
                             .ok_or_else(|| {
                                 anyhow::anyhow!("eligible package lacks an evaluated derivation")
                             })?;
+                        if evaluated.source_store_paths.is_empty() {
+                            bail!(
+                                "publishable package '{}' for {} lacks retained source evidence",
+                                package.name,
+                                cell.platform
+                            );
+                        }
                         MatrixCell::Artifact {
                             artifact: PlannedArtifactSet {
                                 artifacts: evaluated
@@ -447,6 +454,8 @@ fn validate_decision(platform: Platform, decision: &InventoryDecision) -> Result
 mod tests {
     use super::*;
 
+    const SOURCE_PATH: &str = "/nix/store/cccccccccccccccccccccccccccccccc-example-source";
+
     fn decision(platform: Platform) -> InventoryPlatformCell {
         InventoryPlatformCell {
             platform,
@@ -480,7 +489,7 @@ mod tests {
                 platform,
                 packages: vec![DerivationPackage {
                     name: "example".to_owned(),
-                    source_store_paths: vec![],
+                    source_store_paths: vec![SOURCE_PATH.to_owned()],
                     publication: Some(PackagePublicationMetadata {
                         version: "1.0.0".to_owned(),
                         description: "Example package".to_owned(),
@@ -540,7 +549,7 @@ mod tests {
                 platform,
                 packages: vec![DerivationPackage {
                     name: "example".to_owned(),
-                    source_store_paths: vec![],
+                    source_store_paths: vec![SOURCE_PATH.to_owned()],
                     publication: Some(PackagePublicationMetadata {
                         version: "1.0.0".to_owned(),
                         description: "Example package".to_owned(),
@@ -574,5 +583,44 @@ mod tests {
             packages: Vec::new(),
         };
         assert!(inventory.validate().is_err());
+    }
+
+    #[test]
+    fn inventory_rejects_publishable_package_without_source_evidence() {
+        let inventory = PackageInventoryV1 {
+            schema_version: PACKAGE_INVENTORY_V1.to_owned(),
+            platforms: Platform::ALL.to_vec(),
+            packages: vec![InventoryPackage {
+                name: "example".to_owned(),
+                platforms: Platform::ALL.into_iter().map(decision).collect(),
+            }],
+        };
+        let derivations = Platform::ALL
+            .into_iter()
+            .map(|platform| DerivationInventoryV1 {
+                schema_version: DERIVATION_INVENTORY_V1.to_owned(),
+                platform,
+                packages: vec![DerivationPackage {
+                    name: "example".to_owned(),
+                    publication: Some(PackagePublicationMetadata {
+                        version: "1.0.0".to_owned(),
+                        description: "Example package".to_owned(),
+                        homepage: None,
+                        license_expression: "Apache-2.0".to_owned(),
+                        maintainers: vec!["Example Maintainer".to_owned()],
+                    }),
+                    source_store_paths: Vec::new(),
+                    derivation: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv"
+                        .to_owned(),
+                    outputs: vec![DerivationOutput {
+                        name: "out".to_owned(),
+                        store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example"
+                            .to_owned(),
+                    }],
+                }],
+            })
+            .collect::<Vec<_>>();
+
+        assert!(inventory.package_plan(&derivations).is_err());
     }
 }

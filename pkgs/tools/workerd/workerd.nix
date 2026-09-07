@@ -75,6 +75,8 @@ in
       runtimeDeps = [];
       propagatedDeps = [];
 
+      passthru.evidenceSources = workerd-source.passthru.evidenceSources;
+
       phases = [
         {
           name = "install";

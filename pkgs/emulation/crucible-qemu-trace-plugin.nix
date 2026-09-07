@@ -47,6 +47,11 @@ in
       }
     ];
 
+    passthru.evidenceSources = [
+      ./crucible-qemu-trace-plugin.nix
+      ./crucible-qemu-trace-plugin.c
+    ];
+
     meta = {
       description = "Crucible Phase 0 QEMU instruction-stream trace plugin";
       license = "GPL-2.0-only";

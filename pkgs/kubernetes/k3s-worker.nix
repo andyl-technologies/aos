@@ -45,6 +45,7 @@ in
     description = "Lightweight Kubernetes (agent / worker)";
     command = "agent";
     requiredEnv = ["K3S_URL"];
+    evidenceSources = [./k3s-worker.nix];
     firewall = {
       allowedTCP = [10250];
       allowedUDP = [8472];
