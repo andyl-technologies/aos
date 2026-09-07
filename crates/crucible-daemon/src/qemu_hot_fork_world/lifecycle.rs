@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+// crucible-lint: allow host-nondeterminism-state -- The lifecycle owns canonical scheduler progress; host observations only govern process cleanup and never select modeled transitions.
 use crucible::{
     NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, SchedulerError,
     SchedulerEventLogEntry, SchedulerOperationalFailureClass,

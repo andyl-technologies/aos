@@ -12,10 +12,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 // crucible-lint: allow host-nondeterminism-state -- The factory authenticates and forwards an unchanged captured scheduler continuation; operational source availability cannot mutate it.
-use crucible::{Configuration, ContentHash, ScenarioDef, SchedulerError};
+use crucible::{ContentHash, ScenarioDef, SchedulerError};
+use crucible_api::vm_lifecycle::ProductionVmHotForkNodeBoundary;
 use crucible_api::{
     ProductionVmHotForkNodeServiceState, ProductionVmHotForkSourceWorld, ProductionVmNodeGeneration,
 };
+use crucible_campaign::{CampaignLineageId, ExecutorCompatibilityProfile};
 use crucible_qemu::{
     LinuxQemuHotForkChildProcessAuthority, QemuAsyncDriverPolicy, QemuCrashDetector,
     QemuHotForkChildProcessOwner, QemuShutdownPolicy, QemuVmRealizationError,
@@ -31,15 +33,124 @@ use crate::{
     CrucibleMaterializationTier, LinuxQemuHotForkReconciliationBackend,
     QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard,
     QemuAttemptResourceGuardFactory, QemuFreshAttemptDriver, QemuFreshAttemptLifecycle,
-    QemuFreshAttemptLifecycleOwner, QemuFreshDriveOutcome, QemuHotForkAttemptReconciliation,
-    QemuHotForkWorldAssembly, QemuHotForkWorldNodeTarget, QemuHotForkWorldResourceOwner,
-    QemuProductionHotForkWorldLifecycle,
+    QemuFreshAttemptLifecycleOwner, QemuFreshDriveOutcome, QemuFreshExecutionRunnerError,
+    QemuHotForkAttemptReconciliation, QemuHotForkWorldAssembly, QemuHotForkWorldNodeTarget,
+    QemuHotForkWorldResourceOwner, QemuProductionHotForkWorldLifecycle,
 };
 
+/// Exact semantic and executor basis of one retained source world.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuHotForkSourceWorldKey {
+    template: crate::QemuHotForkTemplateKey,
+    scenario: ContentHash,
+    profile: ExecutorCompatibilityProfile,
+}
+
+impl QemuHotForkSourceWorldKey {
+    /// Binds one retained source world to its complete reuse identity.
+    #[must_use]
+    pub(crate) const fn new(
+        lineage: CampaignLineageId,
+        scenario: ContentHash,
+        configuration: ContentHash,
+        profile: ExecutorCompatibilityProfile,
+    ) -> Self {
+        Self {
+            template: crate::QemuHotForkTemplateKey::new(lineage, configuration),
+            scenario,
+            profile,
+        }
+    }
+
+    /// Returns the lineage and paused-source identity used by shared accounting.
+    #[must_use]
+    pub const fn template_key(&self) -> crate::QemuHotForkTemplateKey {
+        self.template
+    }
+
+    /// Returns the exact retained scenario definition.
+    #[must_use]
+    pub const fn scenario(&self) -> ContentHash {
+        self.scenario
+    }
+
+    /// Returns the paused source configuration.
+    #[must_use]
+    pub const fn configuration(&self) -> ContentHash {
+        self.template.configuration()
+    }
+
+    /// Returns the complete executor compatibility profile.
+    #[must_use]
+    pub const fn profile(&self) -> &ExecutorCompatibilityProfile {
+        &self.profile
+    }
+
+    fn for_execution(
+        input: &CrucibleAttemptExecution,
+        runtime_basis: crate::AttemptExecutionRuntimeBasis,
+    ) -> Result<Self, String> {
+        let lineage = input
+            .lineage()
+            .id()
+            .map_err(|error| format!("derive hot-fork source lineage: {error}"))?;
+        if runtime_basis.key().lineage() != lineage {
+            return Err(String::from(
+                "hot-fork runtime lineage differs from the authenticated attempt lineage",
+            ));
+        }
+        let configuration = match input.start() {
+            crate::CrucibleResolvedAttemptStart::Discover { configuration } => configuration.id(),
+            crate::CrucibleResolvedAttemptStart::Branch { parent, .. } => parent.id(),
+        };
+        Ok(Self::new(
+            lineage,
+            input.scenario().scenario_def().id(),
+            configuration,
+            ExecutorCompatibilityProfile::from_lineage(input.lineage()),
+        ))
+    }
+}
+
+/// Exact source incarnation retained across one provider checkout.
+///
+/// A prepared source may mint a new transaction generation while it is made
+/// reusable, but its world-node generations and Linux process incarnations
+/// remain fixed. Providers use this receipt to prevent a caller from returning
+/// another prepared world under the checked-out source's authenticated key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct QemuHotForkSourceWorldCheckoutIdentity {
+    scenario: ContentHash,
+    configuration: ContentHash,
+    nodes: Vec<ProductionVmHotForkNodeBoundary>,
+}
+
+impl QemuHotForkSourceWorldCheckoutIdentity {
+    pub(crate) fn capture(source: &ProductionVmHotForkSourceWorld) -> Self {
+        Self {
+            scenario: source.continuation().configuration().def.id(),
+            configuration: source.continuation().configuration().id(),
+            nodes: source.continuation().nodes().to_vec(),
+        }
+    }
+
+    pub(crate) fn matches(&self, source: &ProductionVmHotForkSourceWorld) -> bool {
+        self.scenario == source.continuation().configuration().def.id()
+            && self.configuration == source.continuation().configuration().id()
+            && self.nodes == source.continuation().nodes()
+    }
+}
+
+pub(crate) mod source_world_provider_sealed {
+    /// Prevents source-world authority providers from being implemented outside
+    /// the daemon crate.
+    pub trait Sealed {}
+}
+
 /// Checked-out source-world storage used by the production hot-fork factory.
-pub trait QemuHotForkSourceWorldProvider {
+pub trait QemuHotForkSourceWorldProvider: source_world_provider_sealed::Sealed {
     /// Provider-specific checkout failure.
-    type Error;
+    type Error: std::error::Error + Send + Sync + 'static;
 
     /// Removes an exact source world from reusable storage when one is available.
     ///
@@ -48,25 +159,36 @@ pub trait QemuHotForkSourceWorldProvider {
     /// Returns an availability failure without removing a source world.
     fn checkout(
         &mut self,
-        scenario: ContentHash,
-        configuration: ContentHash,
+        key: &QemuHotForkSourceWorldKey,
     ) -> Result<Option<ProductionVmHotForkSourceWorld>, Self::Error>;
 
     /// Returns a completely reconciled source world to reusable storage.
     fn restore(&mut self, source: ProductionVmHotForkSourceWorld);
+
+    /// Marks the checked-out source unavailable after its authority moved to quarantine.
+    fn abandon(&mut self);
 }
 
 /// One exact prepared source world used until managed pooling is installed.
 #[must_use = "retain the prepared source world for hot-fork execution"]
+#[cfg(test)]
 pub struct QemuSingleHotForkSourceWorldProvider {
+    key: QemuHotForkSourceWorldKey,
     source: Option<ProductionVmHotForkSourceWorld>,
+    checked_out: Option<QemuHotForkSourceWorldCheckoutIdentity>,
 }
 
+#[cfg(test)]
 impl QemuSingleHotForkSourceWorldProvider {
     /// Creates a provider owning one complete prepared source world.
-    pub const fn new(source: ProductionVmHotForkSourceWorld) -> Self {
+    pub(crate) const fn new(
+        key: QemuHotForkSourceWorldKey,
+        source: ProductionVmHotForkSourceWorld,
+    ) -> Self {
         Self {
+            key,
             source: Some(source),
+            checked_out: None,
         }
     }
 
@@ -77,24 +199,41 @@ impl QemuSingleHotForkSourceWorldProvider {
     }
 }
 
+#[cfg(test)]
+impl source_world_provider_sealed::Sealed for QemuSingleHotForkSourceWorldProvider {}
+
+#[cfg(test)]
 impl QemuHotForkSourceWorldProvider for QemuSingleHotForkSourceWorldProvider {
     type Error = Infallible;
 
     fn checkout(
         &mut self,
-        scenario: ContentHash,
-        configuration: ContentHash,
+        key: &QemuHotForkSourceWorldKey,
     ) -> Result<Option<ProductionVmHotForkSourceWorld>, Self::Error> {
-        let compatible = self.source.as_ref().is_some_and(|source| {
-            source.continuation().configuration().def.id() == scenario
-                && source.continuation().configuration().id() == configuration
-        });
-        Ok(compatible.then(|| self.source.take()).flatten())
+        let compatible = &self.key == key
+            && self.source.as_ref().is_some_and(|source| {
+                source.continuation().configuration().def.id() == key.scenario()
+                    && source.continuation().configuration().id() == key.configuration()
+            });
+        let source = compatible.then(|| self.source.take()).flatten();
+        self.checked_out = source
+            .as_ref()
+            .map(QemuHotForkSourceWorldCheckoutIdentity::capture);
+        Ok(source)
     }
 
     fn restore(&mut self, source: ProductionVmHotForkSourceWorld) {
+        let Some(identity) = self.checked_out.as_ref() else {
+            let _ = source.retire();
+            return;
+        };
+        if !identity.matches(&source) {
+            let _ = source.retire();
+            return;
+        }
+        self.checked_out = None;
         if self.source.is_some() {
-            let _retained_for_process_lifetime = Box::leak(Box::new(source));
+            let _ = source.retire();
             return;
         }
         match source.into_reusable() {
@@ -104,19 +243,24 @@ impl QemuHotForkSourceWorldProvider for QemuSingleHotForkSourceWorldProvider {
             }
         }
     }
+
+    fn abandon(&mut self) {
+        self.checked_out = None;
+    }
 }
 
 /// Source provider used when the packaged executor has no retained world yet.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct QemuUnavailableHotForkSourceWorldProvider;
 
+impl source_world_provider_sealed::Sealed for QemuUnavailableHotForkSourceWorldProvider {}
+
 impl QemuHotForkSourceWorldProvider for QemuUnavailableHotForkSourceWorldProvider {
     type Error = Infallible;
 
     fn checkout(
         &mut self,
-        _scenario: ContentHash,
-        _configuration: ContentHash,
+        _key: &QemuHotForkSourceWorldKey,
     ) -> Result<Option<ProductionVmHotForkSourceWorld>, Self::Error> {
         Ok(None)
     }
@@ -124,6 +268,8 @@ impl QemuHotForkSourceWorldProvider for QemuUnavailableHotForkSourceWorldProvide
     fn restore(&mut self, source: ProductionVmHotForkSourceWorld) {
         let _retained_for_process_lifetime = Box::leak(Box::new(source));
     }
+
+    fn abandon(&mut self) {}
 }
 
 /// Result of attempting retained-source lifecycle construction.
@@ -260,7 +406,10 @@ impl<S, R> QemuProductionHotForkWorldLifecycleFactory<S, R> {
 pub enum QemuProductionHotForkWorldLifecycleFactoryError<P> {
     /// The source provider could not complete exact checkout.
     #[error("check out production hot-fork source world")]
-    SourceProvider(P),
+    SourceProvider(#[source] P),
+    /// The attempt could not produce one exact retained-source lookup key.
+    #[error("authenticate production hot-fork source-world key: {0}")]
+    SourceKey(String),
     /// The supervisor omitted its exact runtime incarnation.
     #[error("production hot-fork world requires an exact worker runtime basis")]
     MissingRuntimeBasis,
@@ -320,16 +469,18 @@ where
             |error| AttemptWorkerFailure::Terminal(Self::Error::ScenarioResources(error)),
         )?;
         let scenario = input.scenario().scenario_def();
-        let start = execution_start(input);
+        let source_key = QemuHotForkSourceWorldKey::for_execution(input, runtime_basis)
+            .map_err(|error| AttemptWorkerFailure::Terminal(Self::Error::SourceKey(error)))?;
         let Some(mut source_world) = self
             .sources
-            .checkout(scenario.id(), start.id())
+            .checkout(&source_key)
             .map_err(|error| AttemptWorkerFailure::Retryable(Self::Error::SourceProvider(error)))?
         else {
             return Ok(QemuHotForkWorldLifecycleStart::Declined);
         };
-        let source_matches = source_world.continuation().configuration().def.id() == scenario.id()
-            && source_world.continuation().configuration().id() == start.id();
+        let source_matches = source_world.continuation().configuration().def.id()
+            == source_key.scenario()
+            && source_world.continuation().configuration().id() == source_key.configuration();
         if !source_matches {
             self.sources.restore(source_world);
             return Ok(QemuHotForkWorldLifecycleStart::Declined);
@@ -381,7 +532,7 @@ where
             }
         };
         let source_world = Arc::new(Mutex::new(source_world));
-        self.launch_complete_world(
+        let outcome = self.launch_complete_world(
             input,
             context,
             scenario,
@@ -389,7 +540,11 @@ where
             continuation,
             resources,
             runtime_basis,
-        )
+        );
+        if outcome.is_err() {
+            self.sources.abandon();
+        }
+        outcome
     }
 
     fn recover(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Lifecycle> {
@@ -404,6 +559,7 @@ where
 
     fn quarantine(&mut self, mut lifecycle: Self::Lifecycle) {
         lifecycle.quarantine();
+        self.sources.abandon();
         let _retained_for_process_lifetime = Box::leak(Box::new(lifecycle));
     }
 }
@@ -585,13 +741,6 @@ fn quarantine_failed_assembly<G>(
     let _retained_for_process_lifetime = Box::leak(Box::new(quarantine));
 }
 
-fn execution_start(input: &CrucibleAttemptExecution) -> &Configuration {
-    match input.start() {
-        crate::CrucibleResolvedAttemptStart::Discover { configuration } => configuration,
-        crate::CrucibleResolvedAttemptStart::Branch { selected, .. } => selected,
-    }
-}
-
 /// Whole-world runner result before durable publication reconciliation.
 pub enum QemuHotForkWorldExecutionAttempt {
     /// No exact retained source was available; a lower tier may run.
@@ -646,6 +795,9 @@ pub enum QemuHotForkWorldExecutionRunnerError<F, D> {
     /// The adopted start boundary could not be reconstructed exactly.
     #[error("materialize production hot-fork start: {0}")]
     Start(#[source] SchedulerError),
+    /// The authenticated branch edge could not be applied at the captured parent.
+    #[error("apply production hot-fork branch start: {0}")]
+    StartReplay(String),
     /// Modeled driving or result construction failed.
     #[error("drive production hot-fork world")]
     Driver(D),
@@ -735,6 +887,24 @@ where
                 AttemptWorkerFailure::Terminal(QemuHotForkWorldExecutionRunnerError::Start(error))
             })
             .and_then(|materialization| {
+                let (source, target) = match input.start() {
+                    crate::CrucibleResolvedAttemptStart::Discover { configuration } => {
+                        (configuration, configuration)
+                    }
+                    crate::CrucibleResolvedAttemptStart::Branch {
+                        parent, selected, ..
+                    } => (parent, selected),
+                };
+                let materialization =
+                    crate::qemu_campaign_lifecycle::materialize_start_from::<F::Error, D::Error>(
+                        &mut lifecycle,
+                        input,
+                        source.clone(),
+                        target,
+                        context,
+                        materialization,
+                    )
+                    .map_err(map_hot_fork_start_replay_failure)?;
                 if input.attempt().stop() == &crucible_campaign::StopCondition::NextChoice {
                     lifecycle.enable_signal_fault_campaign_promotion();
                 }
@@ -846,6 +1016,29 @@ where
                 ))
             }
         }
+    }
+}
+
+fn map_hot_fork_start_replay_failure<F, D>(
+    failure: AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>,
+) -> AttemptWorkerFailure<QemuHotForkWorldExecutionRunnerError<F, D>> {
+    match failure {
+        AttemptWorkerFailure::Retryable(error) => AttemptWorkerFailure::Retryable(
+            QemuHotForkWorldExecutionRunnerError::StartReplay(start_replay_message(error)),
+        ),
+        AttemptWorkerFailure::Canceled(error) => AttemptWorkerFailure::Canceled(
+            QemuHotForkWorldExecutionRunnerError::StartReplay(start_replay_message(error)),
+        ),
+        AttemptWorkerFailure::Terminal(error) => AttemptWorkerFailure::Terminal(
+            QemuHotForkWorldExecutionRunnerError::StartReplay(start_replay_message(error)),
+        ),
+    }
+}
+
+fn start_replay_message<F, D>(error: QemuFreshExecutionRunnerError<F, D>) -> String {
+    match error {
+        QemuFreshExecutionRunnerError::StartReplay(source) => source.to_string(),
+        _ => String::from("start replay returned an unrelated execution phase failure"),
     }
 }
 
