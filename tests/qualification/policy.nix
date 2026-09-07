@@ -41,28 +41,31 @@
       schema_version = "aos.release.package-probe/v1";
       package = "fixture";
       primary = {
-        input = "A lowercase text file.";
-        operation = "Transform the file to uppercase with a deterministic program.";
-        expected = "The output file contains FIXTURE followed by a newline.";
-        files."input.txt" = "fixture\n";
+        input = "A C source file that prints one fixed line.";
+        operation = "Compile the source and execute the resulting program.";
+        expected = "The compiled program prints fixture followed by a newline.";
+        files."fixture.c" = ''
+          #include <stdio.h>
+
+          int main(void) {
+              return fputs("fixture\n", stdout) == EOF;
+          }
+        '';
         steps = [
           {
-            argv = [
-              "@python@"
-              "-c"
-              "from pathlib import Path; Path('output.txt').write_text(Path('input.txt').read_text().upper())"
-            ];
+            argv = ["@cc@" "fixture.c" "-o" "fixture"];
             exit_code = 0;
             stdout.exact = "";
             stderr.exact = "";
           }
-        ];
-        artifacts = [
           {
-            path = "output.txt";
-            text = "FIXTURE\n";
+            argv = ["@work@/primary/fixture"];
+            exit_code = 0;
+            stdout.exact = "fixture\n";
+            stderr.exact = "";
           }
         ];
+        artifacts = [];
       };
       bad_input = {
         input = "A path that does not exist.";
