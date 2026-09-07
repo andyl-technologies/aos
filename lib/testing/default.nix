@@ -28,6 +28,7 @@
 in {
   mkQualificationContainerScenario = import ./qualification-container.nix {inherit pkgs lib;};
   mkQualificationImageScenario = import ./qualification-image.nix {inherit pkgs lib;};
+  mkQualificationPackageScenario = import ./qualification-package.nix {inherit pkgs lib;};
   mkQualificationExecutor = import ./qualification.nix {inherit pkgs;};
   mkQualificationReportScenario = import ./qualification-report.nix {inherit pkgs;};
   inherit (vm) mkVMTest mkTestDisk;
