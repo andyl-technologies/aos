@@ -10,7 +10,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
-use aos_release::artifact::{ArtifactKind, ArtifactRecord, BundlePath, Compression};
+use aos_core::nar::cache::{
+    NarCompression, NarInfoSigner, StaticNarInfoInput, render_static_narinfo,
+};
+use aos_release::artifact::{
+    ArtifactKind, ArtifactRecord, ArtifactRelation, ArtifactRelationship, BundlePath, Compression,
+};
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::evidence::{
@@ -128,20 +133,39 @@ fn prepare(arguments: &[String]) -> Result<()> {
     let mut artifacts = Vec::new();
     inventory_tree(output, output, &mut artifacts)?;
     for (platform, source) in &package_inputs {
+        let package_bytes = fs::read(source)
+            .with_context(|| format!("reading mounted package NAR {}", source.display()))?;
         let relative = format!("releases/candidate/{RELEASE_VERSION}/packages/{platform}.nar");
         let destination = output.join(&relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::copy(source, &destination)
-            .with_context(|| format!("copying mounted package NAR {}", source.display()))?;
+        write_new(destination, &package_bytes)?;
+
+        let narinfo_bytes = fixture_narinfo(*platform, &package_bytes)?.into_bytes();
+        let narinfo_relative =
+            format!("releases/candidate/{RELEASE_VERSION}/packages/{platform}.narinfo");
+        write_new(output.join(&narinfo_relative), &narinfo_bytes)?;
         artifacts.push(record(
+            narinfo_id(*platform),
+            ArtifactKind::NarInfo,
+            Some(*platform),
+            &narinfo_relative,
+            &narinfo_bytes,
+        )?);
+
+        let mut package = record(
             package_id(*platform),
             ArtifactKind::PackageNar,
             Some(*platform),
             &relative,
-            &fs::read(&destination)?,
-        )?);
+            &package_bytes,
+        )?;
+        package.relationships.push(ArtifactRelationship {
+            relation: ArtifactRelation::AuthenticatedBy,
+            target: narinfo_id(*platform),
+        });
+        artifacts.push(package);
     }
     for (id, kind, platform) in Platform::LINUX
         .into_iter()
@@ -934,6 +958,36 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
 
 fn package_id(platform: Platform) -> String {
     format!("package/fleet-package/{platform}")
+}
+
+fn narinfo_id(platform: Platform) -> String {
+    format!("narinfo/fleet-package/{platform}")
+}
+
+fn fixture_narinfo(platform: Platform, nar_bytes: &[u8]) -> Result<String> {
+    let digest = Sha256Digest::of_bytes(nar_bytes).to_string();
+    let store_path =
+        format!("/nix/store/00000000000000000000000000000000-release-fleet-{platform}");
+    let mut secret = [0_u8; 64];
+    secret[..RELEASE_SEED.len()].copy_from_slice(&RELEASE_SEED);
+    let encoded = base64::engine::general_purpose::STANDARD.encode(secret);
+    let signer = NarInfoSigner::from_key_content(&format!("fleet-cache-v1:{encoded}"))?;
+
+    render_static_narinfo(
+        &StaticNarInfoInput {
+            store_path: &store_path,
+            nar_hash: &digest,
+            nar_size: u64::try_from(nar_bytes.len())?,
+            references: &[],
+            deriver: None,
+            signatures: &[],
+            file_hash: &digest,
+            file_size: u64::try_from(nar_bytes.len())?,
+            compression: NarCompression::None,
+        },
+        "/nix/store",
+        Some(&signer),
+    )
 }
 
 fn digest(value: &str) -> Sha256Digest {
