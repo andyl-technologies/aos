@@ -6,6 +6,7 @@
   lib,
   stdenv,
   buildPackages ? null,
+  firmwarePackages ? null,
   targetPackages ? null,
 }: let
   fetchurl = lib.fetchurl;
@@ -998,6 +999,7 @@
   };
   packageArgumentScope =
     self
+    // {inherit firmwarePackages;}
     // lib.optionalAttrs stdenv.hostPlatform.isDarwin (
       builtins.listToAttrs (
         builtins.map (name: {

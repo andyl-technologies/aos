@@ -1,6 +1,6 @@
 ##! edk2 — TianoCore EDK2 UEFI firmware for QEMU
 ##!
-##! Builds the firmware matching the Linux target architecture. x86_64 uses
+##! Builds the firmware matching the package's target architecture. x86_64 uses
 ##! OVMF's split pflash, while aarch64 uses ArmVirt's code image and QEMU's
 ##! persistent paravirtual variable store:
 ##!
@@ -33,6 +33,7 @@
   fetchurl,
   bootstrapTools,
   gccUnwrapped,
+  firmwarePackages ? null,
   buildPackages,
   stdenv,
   gnumake,
@@ -42,7 +43,23 @@
   util-linux,
 }: let
   version = "edk2-stable202602";
-  buildAarch64Firmware = stdenv.hostPlatform.system == "aarch64-linux";
+  buildAarch64Firmware = stdenv.hostPlatform.isAarch64;
+  firmwareGccUnwrapped =
+    if firmwarePackages != null
+    then firmwarePackages.gccUnwrapped
+    else gccUnwrapped;
+  firmwareBinutils =
+    if firmwarePackages != null
+    then firmwarePackages.binutils
+    else stdenv.binutils;
+  firmwareTargetConfig =
+    if firmwarePackages != null
+    then firmwarePackages.stdenv.hostPlatform.config
+    else stdenv.hostPlatform.config;
+  firmwareBuildDirectory =
+    if buildAarch64Firmware
+    then "Build/ArmVirtQemu-AArch64/RELEASE_GCC5"
+    else "Build/OvmfX64/RELEASE_GCC";
   buildPython =
     if stdenv.isCross
     then buildPackages.python3
@@ -201,6 +218,21 @@ in
           cd edk2
           ${unpackSubmodules}
           chmod -R u+w .
+
+          # GenFw ignores SOURCE_DATE_EPOCH while translating ELF modules and
+          # writes wall-clock PE timestamps into every firmware volume. Make
+          # the two converter paths consume the epoch exported by the build.
+          for converter in \
+            BaseTools/Source/C/GenFw/Elf32Convert.c \
+            BaseTools/Source/C/GenFw/Elf64Convert.c; do
+            sed -i \
+              's|(UINT32) time(NULL)|(UINT32) strtoul (getenv ("SOURCE_DATE_EPOCH"), NULL, 10)|' \
+              "$converter"
+            if grep -q 'TimeDateStamp = (UINT32) time(NULL)' "$converter"; then
+              echo "failed to patch GenFw timestamp source in $converter" >&2
+              exit 1
+            fi
+          done
         '';
       }
       {
@@ -249,6 +281,39 @@ in
           export PYTHON_COMMAND=${buildPython}/bin/python3
           export PYTHONPATH=$PWD/BaseTools/Source/Python
 
+          # EDK2 otherwise initializes SOURCE_DATE_EPOCH from wall-clock time,
+          # and ArmVirt embeds that value through __DATE__ and __TIME__.
+          export SOURCE_DATE_EPOCH=1
+          export PYTHONHASHSEED=0
+
+          # New EDK2 releases generate random per-module stack cookies during
+          # every clean build. Released firmware is already public, so those
+          # build-time values cannot remain secret; derive them from the fixed
+          # source identity to preserve diversity between source revisions and
+          # make independently rebuilt firmware byte-identical.
+          mkdir -p ${firmwareBuildDirectory}
+          $PYTHON_COMMAND - ${firmwareBuildDirectory} "${src}" <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import sys
+
+          output_directory = Path(sys.argv[1])
+          source_identity = sys.argv[2].encode("utf-8")
+
+          for bit_width in (32, 64):
+              byte_width = bit_width // 8
+              values = []
+
+              for index in range(100):
+                  label = f":aos-edk2-stack-cookie-v1:{bit_width}:{index}".encode("ascii")
+                  digest = hashlib.sha256(source_identity + label).digest()
+                  values.append(int.from_bytes(digest[:byte_width], "big") or 1)
+
+              destination = output_directory / f"StackCookieValues{bit_width}.json"
+              destination.write_text(json.dumps(values), encoding="utf-8")
+          PY
+
           mkdir -p Conf
           cp BaseTools/Conf/tools_def.template Conf/tools_def.txt
           cp BaseTools/Conf/build_rule.template Conf/build_rule.txt
@@ -286,7 +351,7 @@ in
           ${
             if buildAarch64Firmware
             then ''
-              ORIG_CC=${gccUnwrapped}
+              ORIG_CC=${firmwareGccUnwrapped}
             ''
             else if stdenv.isCross
             then "ORIG_CC=${buildPackages.gccUnwrapped}"
@@ -308,10 +373,15 @@ in
               # The cross GCC output carries the prefixed compiler drivers,
               # while the matching target binutils are a separate stdenv
               # output. EDK2 expects both sets under one GCC5 prefix.
-              for t in ${stdenv.binutils}/bin/*; do
+              for t in ${firmwareBinutils}/bin/*; do
                 ln -sf "$t" "$PWD/fw-toolchain/$(basename "$t")"
               done
-              export GCC5_AARCH64_PREFIX="$PWD/fw-toolchain/${stdenv.hostPlatform.config}-"
+              # GCC's prefixed gcc-ar/gcc-ranlib drivers resolve their
+              # underlying binutils by name, independently of EDK2's prefix.
+              # Put the combined tool directory on PATH as well as exposing
+              # it through GCC5_AARCH64_PREFIX.
+              export PATH="$PWD/fw-toolchain:$PATH"
+              export GCC5_AARCH64_PREFIX="$PWD/fw-toolchain/${firmwareTargetConfig}-"
             ''
             else ""
           }
