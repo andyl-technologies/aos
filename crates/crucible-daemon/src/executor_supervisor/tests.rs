@@ -810,6 +810,37 @@ fn finding_candidate_root_is_staged_atomically_and_preserved_by_completion() {
         CompletionOutcome::Completed
     );
 
+    let status_request =
+        GetAttemptExecutionRequest::new(&request, execution).expect("finding status request");
+    let status = supervisor
+        .get_attempt_execution(&status_request)
+        .expect("completed finding status");
+    assert_eq!(
+        status.disposition(),
+        GetAttemptExecutionDisposition::Completed { observation }
+    );
+    assert_eq!(status.finding_candidate(), Some(candidate));
+
+    let checkpoint_request = CheckpointAttemptExecutionRequest::new(&request, execution)
+        .expect("completed finding checkpoint request");
+    assert_eq!(
+        supervisor
+            .checkpoint_attempt_execution(&checkpoint_request)
+            .expect("completed finding checkpoint response")
+            .finding_candidate(),
+        Some(candidate)
+    );
+
+    let cancel_request = CancelAttemptExecutionRequest::new(&request, execution)
+        .expect("completed finding cancellation request");
+    assert_eq!(
+        supervisor
+            .cancel_attempt_execution(&cancel_request)
+            .expect("completed finding cancellation response")
+            .finding_candidate(),
+        Some(candidate)
+    );
+
     let mut ledger = supervisor.into_ledger();
     assert!(matches!(
         ledger
@@ -817,7 +848,7 @@ fn finding_candidate_root_is_staged_atomically_and_preserved_by_completion() {
             .expect("load completed finding state"),
         Some(AttemptRuntimeState::Completed {
             observation: retained_observation,
-            finding_candidate: Some(retained_candidate),
+            finding_candidate: CompletedFindingCandidate::Pending(retained_candidate),
             ..
         }) if retained_observation == observation && retained_candidate == candidate
     ));
@@ -1469,6 +1500,25 @@ impl AttemptAdmissionValidator for CompletionValidator {
         &self,
         _request: &SubmitAttemptRequest,
         _observation: ObservationId,
+    ) -> Result<(), CompletionValidationFailure> {
+        self.0
+    }
+
+    fn validate_completion_artifacts(
+        &self,
+        _request: &SubmitAttemptRequest,
+        _observation: ObservationId,
+        _finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<(), CompletionValidationFailure> {
+        self.0
+    }
+
+    fn validate_retained_completion(
+        &self,
+        _lineage: CampaignLineageId,
+        _attempt: AttemptId,
+        _observation: ObservationId,
+        _finding_candidate: Option<FindingCandidateBundleId>,
     ) -> Result<(), CompletionValidationFailure> {
         self.0
     }

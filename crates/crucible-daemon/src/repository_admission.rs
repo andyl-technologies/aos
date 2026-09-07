@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use crucible_campaign::{
-    CampaignRepository, ExecutorCompatibilityProfile, ExecutorRejection, ObservationId,
-    SubmitAttemptRequest,
+    AttemptId, CampaignLineageId, CampaignRepository, ExecutorCompatibilityProfile,
+    ExecutorRejection, FindingCandidateBundleId, ObservationId, SubmitAttemptRequest,
 };
 
 use crate::{AttemptAdmissionValidator, CompletionValidationFailure};
@@ -59,5 +59,52 @@ impl AttemptAdmissionValidator for RepositoryAttemptAdmission {
                 | ExecutorRejection::ConflictingAssignment
                 | ExecutorRejection::TerminalFailure => CompletionValidationFailure::Incompatible,
             })
+    }
+
+    fn validate_completion_artifacts(
+        &self,
+        request: &SubmitAttemptRequest,
+        observation: ObservationId,
+        finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<(), CompletionValidationFailure> {
+        self.repository
+            .validate_executor_completion_artifacts_with_profile(
+                request,
+                observation,
+                finding_candidate,
+                &self.profile,
+            )
+            .map_err(map_completion_validation_failure)
+    }
+
+    fn validate_retained_completion(
+        &self,
+        lineage: CampaignLineageId,
+        attempt: AttemptId,
+        observation: ObservationId,
+        finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<(), CompletionValidationFailure> {
+        self.repository
+            .validate_retained_executor_completion_with_profile(
+                lineage,
+                attempt,
+                observation,
+                finding_candidate,
+                &self.profile,
+            )
+            .map_err(map_completion_validation_failure)
+    }
+}
+
+fn map_completion_validation_failure(
+    error: crucible_campaign::CampaignRepositoryError,
+) -> CompletionValidationFailure {
+    match error.executor_rejection() {
+        ExecutorRejection::UnavailableInput => CompletionValidationFailure::UnavailableInput,
+        ExecutorRejection::Unauthorized => CompletionValidationFailure::Unauthorized,
+        ExecutorRejection::Incompatible
+        | ExecutorRejection::Backpressure
+        | ExecutorRejection::ConflictingAssignment
+        | ExecutorRejection::TerminalFailure => CompletionValidationFailure::Incompatible,
     }
 }

@@ -29,9 +29,9 @@ use crate::{
     ConfigurationArtifactId, ConfigurationId, ContinuationProjection, ControlRequest,
     CoverageProjection, CoverageProjectionId, DaemonEpoch, DebuggerAuthorityKey,
     DebuggerSubmission, DiscoveryRequest, ExecutorCompatibilityProfile, ExecutorRejection,
-    ExpansionCredit, ExpansionState, ExpansionStateId, Finding, FindingId,
-    FindingMinimizationEvidence, FindingOccurrenceSet, MeasurementSet, MeasurementSetId, MerkleMap,
-    MerkleMapLookupProof, MerkleMapPage, MerkleMapPageProof, MerkleMapRoot,
+    ExpansionCredit, ExpansionState, ExpansionStateId, Finding, FindingCandidateBundleId,
+    FindingId, FindingMinimizationEvidence, FindingOccurrenceSet, MeasurementSet, MeasurementSetId,
+    MerkleMap, MerkleMapLookupProof, MerkleMapPage, MerkleMapPageProof, MerkleMapRoot,
     NonModeledAttemptDisposition, ObjectEnvelope, ObjectiveEvaluation, ObjectiveEvaluationId,
     Observation, ObservationId, PinRequest, PlannerAuthorityKey, PlannerDisposition, PlannerEngine,
     PlannerInvocation, PlannerInvocationId, PlannerProposalDisposition, PlannerRequest,
@@ -983,6 +983,36 @@ pub struct CampaignRepository {
 struct RepositoryMutationGuard<'a> {
     _local: MutexGuard<'a, ()>,
     _publication: Box<dyn RefPublicationGuard + 'a>,
+}
+
+/// Shared guard that excludes destructive ref inventory during a read handoff.
+///
+/// The guard does not freeze a campaign head. It prevents GC from acquiring
+/// the exclusive ref-inventory side of the backend lifecycle lock while a
+/// caller performs an authenticated read and transfers retention ownership to
+/// another fenced subsystem.
+pub struct CampaignRepositoryGcExclusionGuard<'a> {
+    _publication: Box<dyn RefPublicationGuard + 'a>,
+}
+
+impl CampaignRepository {
+    /// Excludes destructive ref inventory for a cross-subsystem read handoff.
+    ///
+    /// Callers acquire this guard before any later subsystem fence, matching
+    /// campaign GC's ref-before-operational-root lock order. Normal campaign
+    /// head updates may continue while this shared guard is held.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store error when the backend cannot acquire its shared
+    /// publication lifecycle guard.
+    pub fn acquire_gc_exclusion_guard(
+        &self,
+    ) -> Result<CampaignRepositoryGcExclusionGuard<'_>, CampaignRepositoryError> {
+        Ok(CampaignRepositoryGcExclusionGuard {
+            _publication: self.refs.acquire_publication_guard()?,
+        })
+    }
 }
 
 mod acceptance;

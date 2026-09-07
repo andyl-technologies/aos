@@ -92,7 +92,9 @@ impl CampaignRepository {
     ) -> Result<(), CampaignRepositoryError> {
         response.validate_for(request)?;
         if let SubmitAttemptDisposition::AlreadyCompleted { observation } = response.disposition() {
-            return self.validate_executor_completion(request, observation);
+            self.validate_executor_completion(request, observation)?;
+            return self
+                .validate_executor_finding_candidate(observation, response.finding_candidate());
         }
         self.validate_executor_request(request)
     }
@@ -114,7 +116,7 @@ impl CampaignRepository {
         observation: ObservationId,
     ) -> Result<(), CampaignRepositoryError> {
         let lineage = self.validate_executor_request_lineage(request)?;
-        self.validate_executor_completion_for_lineage(request, observation, &lineage)
+        self.validate_executor_completion_for_lineage(request.attempt(), observation, &lineage)
     }
 
     /// Authenticates completion against both campaign semantics and local profile.
@@ -134,17 +136,66 @@ impl CampaignRepository {
         if !profile.admits(&lineage) {
             return Err(integrity("executor-compatibility-profile-mismatch"));
         }
-        self.validate_executor_completion_for_lineage(request, observation, &lineage)
+        self.validate_executor_completion_for_lineage(request.attempt(), observation, &lineage)
+    }
+
+    /// Authenticates every immutable root reported for one completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as
+    /// [`Self::validate_executor_completion_with_profile`], or a closure and
+    /// basis error when the optional candidate is incomplete or names another
+    /// observation.
+    pub fn validate_executor_completion_artifacts_with_profile(
+        &self,
+        request: &SubmitAttemptRequest,
+        observation: ObservationId,
+        finding_candidate: Option<FindingCandidateBundleId>,
+        profile: &ExecutorCompatibilityProfile,
+    ) -> Result<(), CampaignRepositoryError> {
+        self.validate_executor_completion_with_profile(request, observation, profile)?;
+        self.validate_executor_finding_candidate(observation, finding_candidate)
+    }
+
+    /// Authenticates a retained completion without reconstructing an assignment.
+    ///
+    /// Status and control requests retain the lineage, attempt, and execution
+    /// basis but deliberately omit assignment-local resource fields. This check
+    /// authenticates the semantic lineage and attempt directly, requires the
+    /// local compatibility profile, and validates every reported completion
+    /// root.
+    ///
+    /// # Errors
+    ///
+    /// Returns a repository error when the lineage, attempt, observation, or
+    /// optional candidate closure is unavailable, corrupt, or incompatible.
+    pub fn validate_retained_executor_completion_with_profile(
+        &self,
+        lineage: CampaignLineageId,
+        attempt: AttemptId,
+        observation: ObservationId,
+        finding_candidate: Option<FindingCandidateBundleId>,
+        profile: &ExecutorCompatibilityProfile,
+    ) -> Result<(), CampaignRepositoryError> {
+        let lineage_record = self.read_lineage(lineage.content_id())?;
+        self.verify_campaign_closure(lineage.content_id())?;
+        self.load_attempt(attempt)?;
+        if !profile.admits(&lineage_record) {
+            return Err(integrity("executor-compatibility-profile-mismatch"));
+        }
+        self.validate_executor_completion_for_lineage(attempt, observation, &lineage_record)?;
+        self.validate_executor_finding_candidate(observation, finding_candidate)
     }
 
     fn validate_executor_completion_for_lineage(
         &self,
-        request: &SubmitAttemptRequest,
+        attempt: AttemptId,
         observation: ObservationId,
         lineage: &CampaignLineage,
     ) -> Result<(), CampaignRepositoryError> {
         let observation = self.load_observation(observation)?;
-        if observation.attempt() != request.attempt() {
+        if observation.attempt() != attempt {
             return Err(integrity("executor-completion-attempt-mismatch"));
         }
         let child = self.read_configuration_artifact(observation.child_content().content_id())?;
@@ -152,6 +203,21 @@ impl CampaignRepository {
             || child.scenario_artifact() != lineage.scenario_content()
         {
             return Err(integrity("executor-completion-lineage-mismatch"));
+        }
+        Ok(())
+    }
+
+    fn validate_executor_finding_candidate(
+        &self,
+        observation: ObservationId,
+        finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<(), CampaignRepositoryError> {
+        let Some(candidate) = finding_candidate else {
+            return Ok(());
+        };
+        let bundle = self.load_finding_candidate_bundle(candidate)?;
+        if bundle.observation() != observation {
+            return Err(integrity("executor-completion-finding-candidate-mismatch"));
         }
         Ok(())
     }

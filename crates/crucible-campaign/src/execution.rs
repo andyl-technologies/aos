@@ -8,10 +8,16 @@
 //!                          attempt | resource-limits | retention-intent
 //! SubmitAttemptResponseV2/V3 = version | assignment | daemon-epoch | attempt |
 //!                              request-digest | disposition
+//! SubmitAttemptResponseV4 = version | assignment | daemon-epoch | attempt |
+//!                           request-digest | completed-disposition |
+//!                           finding-candidate
 //! GetAttemptExecutionRequestV2 = version | daemon-epoch | lineage | attempt |
 //!                                execution | execution-basis-digest
 //! GetAttemptExecutionResponseV2/V3 = version | daemon-epoch | attempt |
 //!                                    execution | request-digest | disposition
+//! GetAttemptExecutionResponseV4 = version | daemon-epoch | attempt | execution |
+//!                                 request-digest | completed-disposition |
+//!                                 finding-candidate
 //! ResumeAttemptExecutionRequestV2 = version | assignment | daemon-epoch |
 //!                                    lineage | attempt | prior-execution |
 //!                                    checkpoint | resource-limits |
@@ -19,17 +25,30 @@
 //! ResumeAttemptExecutionResponseV2/V3 = version | assignment | daemon-epoch |
 //!                                        attempt | prior-execution | checkpoint |
 //!                                        request-digest | disposition
+//! ResumeAttemptExecutionResponseV4 = version | assignment | daemon-epoch |
+//!                                     attempt | prior-execution | checkpoint |
+//!                                     request-digest | completed-disposition |
+//!                                     finding-candidate
 //! CheckpointAttemptExecutionRequestV2 = version | daemon-epoch | lineage |
 //!                                       attempt | execution |
 //!                                       execution-basis-digest
 //! CheckpointAttemptExecutionResponseV2 = version | daemon-epoch | attempt |
 //!                                        execution | request-digest |
 //!                                        disposition
+//! CheckpointAttemptExecutionResponseV4 = version | daemon-epoch | attempt |
+//!                                        execution | request-digest |
+//!                                        completed-disposition | finding-candidate
 //! CancelAttemptExecutionRequestV2 = version | daemon-epoch | lineage | attempt |
 //!                                   execution | execution-basis-digest
 //! CancelAttemptExecutionResponseV2 = version | daemon-epoch | attempt | execution |
 //!                                    request-digest | disposition
+//! CancelAttemptExecutionResponseV4 = version | daemon-epoch | attempt | execution |
+//!                                    request-digest | completed-disposition |
+//!                                    finding-candidate
 //! ```
+//!
+//! Version 4 is valid only for a completed disposition with one candidate.
+//! Decoding a version 2 or version 3 response yields no finding candidate.
 //!
 //! Assignment, execution, epoch, resource, and retention fields are local
 //! execution metadata. They never enter the identity of an attempt,
@@ -41,13 +60,14 @@ use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::policy::validate_identifier;
 use crate::{
     AttemptId, CampaignCodecError, CampaignHash, CampaignLineage, CampaignLineageId,
-    ExactCheckpointId, ObservationId,
+    ExactCheckpointId, FindingCandidateBundleId, ObservationId,
 };
 
 const EXECUTOR_MESSAGE_SCHEMA_VERSION: u32 = 2;
 const SUBMIT_ATTEMPT_RESPONSE_SCHEMA_VERSION: u32 = 3;
 const GET_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION: u32 = 3;
 const RESUME_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION: u32 = 3;
+const FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION: u32 = 4;
 
 /// Maximum canonical bytes in one executor component message.
 pub const MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES: usize = 4 * 1024;
@@ -677,6 +697,10 @@ impl Canonical for SubmitAttemptDisposition {
 }
 
 impl SubmitAttemptDisposition {
+    const fn is_completed(self) -> bool {
+        matches!(self, Self::AlreadyCompleted { .. })
+    }
+
     const fn uses_terminal_failure_schema(self) -> bool {
         matches!(
             self,
@@ -696,6 +720,7 @@ pub struct SubmitAttemptResponse {
     attempt: AttemptId,
     request_digest: CampaignHash,
     disposition: SubmitAttemptDisposition,
+    finding_candidate: Option<FindingCandidateBundleId>,
 }
 
 impl SubmitAttemptResponse {
@@ -709,17 +734,40 @@ impl SubmitAttemptResponse {
         request: &SubmitAttemptRequest,
         disposition: SubmitAttemptDisposition,
     ) -> Result<Self, CampaignCodecError> {
+        Self::new_with_optional_finding_candidate(request, disposition, None)
+    }
+
+    /// Builds a completed response that reports one retained finding candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `disposition` is not a completed outcome or the
+    /// resulting component message exceeds its strict encoded bound.
+    pub fn new_with_finding_candidate(
+        request: &SubmitAttemptRequest,
+        disposition: SubmitAttemptDisposition,
+        finding_candidate: FindingCandidateBundleId,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_with_optional_finding_candidate(request, disposition, Some(finding_candidate))
+    }
+
+    fn new_with_optional_finding_candidate(
+        request: &SubmitAttemptRequest,
+        disposition: SubmitAttemptDisposition,
+        finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<Self, CampaignCodecError> {
         let response = Self {
-            schema_version: if disposition.uses_terminal_failure_schema() {
-                SUBMIT_ATTEMPT_RESPONSE_SCHEMA_VERSION
-            } else {
-                EXECUTOR_MESSAGE_SCHEMA_VERSION
-            },
+            schema_version: response_schema_version(
+                disposition.is_completed(),
+                disposition.uses_terminal_failure_schema(),
+                finding_candidate,
+            )?,
             assignment: request.assignment,
             daemon_epoch: request.daemon_epoch,
             attempt: request.attempt,
             request_digest: request.request_digest(),
             disposition,
+            finding_candidate,
         };
         codec::ensure_encoded_size(
             &response,
@@ -757,6 +805,12 @@ impl SubmitAttemptResponse {
     #[must_use]
     pub const fn disposition(&self) -> SubmitAttemptDisposition {
         self.disposition
+    }
+
+    /// Returns the retained candidate published with a completed attempt.
+    #[must_use]
+    pub const fn finding_candidate(&self) -> Option<FindingCandidateBundleId> {
+        self.finding_candidate
     }
 
     /// Reports whether this response belongs to the exact request basis.
@@ -829,12 +883,16 @@ impl Canonical for SubmitAttemptResponse {
         self.attempt.encode(encoder);
         self.request_digest.encode(encoder);
         self.disposition.encode(encoder);
+        if let Some(finding_candidate) = self.finding_candidate {
+            finding_candidate.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
         if schema_version != EXECUTOR_MESSAGE_SCHEMA_VERSION
             && schema_version != SUBMIT_ATTEMPT_RESPONSE_SCHEMA_VERSION
+            && schema_version != FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported submit attempt response schema version",
@@ -845,6 +903,11 @@ impl Canonical for SubmitAttemptResponse {
         let attempt = AttemptId::decode(decoder)?;
         let request_digest = CampaignHash::decode(decoder)?;
         let disposition = SubmitAttemptDisposition::decode(decoder)?;
+        let finding_candidate = if schema_version == FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION {
+            Some(FindingCandidateBundleId::decode(decoder)?)
+        } else {
+            None
+        };
         let response = Self {
             schema_version,
             assignment,
@@ -852,9 +915,13 @@ impl Canonical for SubmitAttemptResponse {
             attempt,
             request_digest,
             disposition,
+            finding_candidate,
         };
-        if response.disposition.uses_terminal_failure_schema()
-            != (schema_version == SUBMIT_ATTEMPT_RESPONSE_SCHEMA_VERSION)
+        if response_schema_version(
+            response.disposition.is_completed(),
+            response.disposition.uses_terminal_failure_schema(),
+            response.finding_candidate,
+        )? != schema_version
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "submit attempt response schema/disposition mismatch",
@@ -1068,6 +1135,16 @@ impl Canonical for GetAttemptExecutionDisposition {
     }
 }
 
+impl GetAttemptExecutionDisposition {
+    const fn is_completed(self) -> bool {
+        matches!(self, Self::Completed { .. })
+    }
+
+    const fn uses_terminal_failure_schema(self) -> bool {
+        matches!(self, Self::TerminalFailure)
+    }
+}
+
 /// Strict status response bound to one exact execution query.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GetAttemptExecutionResponse {
@@ -1077,6 +1154,7 @@ pub struct GetAttemptExecutionResponse {
     execution: ExecutionId,
     request_digest: CampaignHash,
     disposition: GetAttemptExecutionDisposition,
+    finding_candidate: Option<FindingCandidateBundleId>,
 }
 
 impl GetAttemptExecutionResponse {
@@ -1089,17 +1167,40 @@ impl GetAttemptExecutionResponse {
         request: &GetAttemptExecutionRequest,
         disposition: GetAttemptExecutionDisposition,
     ) -> Result<Self, CampaignCodecError> {
+        Self::new_with_optional_finding_candidate(request, disposition, None)
+    }
+
+    /// Builds a completed status response with one retained finding candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `disposition` is not completed or the response
+    /// exceeds the strict component-message bound.
+    pub fn new_with_finding_candidate(
+        request: &GetAttemptExecutionRequest,
+        disposition: GetAttemptExecutionDisposition,
+        finding_candidate: FindingCandidateBundleId,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_with_optional_finding_candidate(request, disposition, Some(finding_candidate))
+    }
+
+    fn new_with_optional_finding_candidate(
+        request: &GetAttemptExecutionRequest,
+        disposition: GetAttemptExecutionDisposition,
+        finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<Self, CampaignCodecError> {
         let response = Self {
-            schema_version: if disposition == GetAttemptExecutionDisposition::TerminalFailure {
-                GET_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION
-            } else {
-                EXECUTOR_MESSAGE_SCHEMA_VERSION
-            },
+            schema_version: response_schema_version(
+                disposition.is_completed(),
+                disposition.uses_terminal_failure_schema(),
+                finding_candidate,
+            )?,
             daemon_epoch: request.daemon_epoch(),
             attempt: request.attempt(),
             execution: request.execution(),
             request_digest: request.request_digest(),
             disposition,
+            finding_candidate,
         };
         codec::ensure_encoded_size(
             &response,
@@ -1137,6 +1238,12 @@ impl GetAttemptExecutionResponse {
     #[must_use]
     pub const fn disposition(&self) -> GetAttemptExecutionDisposition {
         self.disposition
+    }
+
+    /// Returns the retained candidate published with completed status.
+    #[must_use]
+    pub const fn finding_candidate(&self) -> Option<FindingCandidateBundleId> {
+        self.finding_candidate
     }
 
     /// Validates that this response answers every field of one exact request.
@@ -1200,27 +1307,45 @@ impl Canonical for GetAttemptExecutionResponse {
         self.execution.encode(encoder);
         self.request_digest.encode(encoder);
         self.disposition.encode(encoder);
+        if let Some(finding_candidate) = self.finding_candidate {
+            finding_candidate.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
         if schema_version != EXECUTOR_MESSAGE_SCHEMA_VERSION
             && schema_version != GET_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION
+            && schema_version != FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported get attempt execution response schema version",
             });
         }
+        let daemon_epoch = DaemonEpoch::decode(decoder)?;
+        let attempt = AttemptId::decode(decoder)?;
+        let execution = ExecutionId::decode(decoder)?;
+        let request_digest = CampaignHash::decode(decoder)?;
+        let disposition = GetAttemptExecutionDisposition::decode(decoder)?;
+        let finding_candidate = if schema_version == FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION {
+            Some(FindingCandidateBundleId::decode(decoder)?)
+        } else {
+            None
+        };
         let response = Self {
             schema_version,
-            daemon_epoch: DaemonEpoch::decode(decoder)?,
-            attempt: AttemptId::decode(decoder)?,
-            execution: ExecutionId::decode(decoder)?,
-            request_digest: CampaignHash::decode(decoder)?,
-            disposition: GetAttemptExecutionDisposition::decode(decoder)?,
+            daemon_epoch,
+            attempt,
+            execution,
+            request_digest,
+            disposition,
+            finding_candidate,
         };
-        if (response.disposition == GetAttemptExecutionDisposition::TerminalFailure)
-            != (schema_version == GET_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION)
+        if response_schema_version(
+            response.disposition.is_completed(),
+            response.disposition.uses_terminal_failure_schema(),
+            response.finding_candidate,
+        )? != schema_version
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "get attempt execution response schema/disposition mismatch",
@@ -1494,6 +1619,10 @@ impl Canonical for ResumeAttemptExecutionDisposition {
 }
 
 impl ResumeAttemptExecutionDisposition {
+    const fn is_completed(self) -> bool {
+        matches!(self, Self::AlreadyCompleted { .. })
+    }
+
     const fn uses_terminal_failure_schema(self) -> bool {
         matches!(
             self,
@@ -1515,6 +1644,7 @@ pub struct ResumeAttemptExecutionResponse {
     checkpoint: ExactCheckpointId,
     request_digest: CampaignHash,
     disposition: ResumeAttemptExecutionDisposition,
+    finding_candidate: Option<FindingCandidateBundleId>,
 }
 
 impl ResumeAttemptExecutionResponse {
@@ -1527,12 +1657,34 @@ impl ResumeAttemptExecutionResponse {
         request: &ResumeAttemptExecutionRequest,
         disposition: ResumeAttemptExecutionDisposition,
     ) -> Result<Self, CampaignCodecError> {
+        Self::new_with_optional_finding_candidate(request, disposition, None)
+    }
+
+    /// Builds a completed resume response with one retained finding candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `disposition` is not completed or the response
+    /// exceeds the strict component-message bound.
+    pub fn new_with_finding_candidate(
+        request: &ResumeAttemptExecutionRequest,
+        disposition: ResumeAttemptExecutionDisposition,
+        finding_candidate: FindingCandidateBundleId,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_with_optional_finding_candidate(request, disposition, Some(finding_candidate))
+    }
+
+    fn new_with_optional_finding_candidate(
+        request: &ResumeAttemptExecutionRequest,
+        disposition: ResumeAttemptExecutionDisposition,
+        finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<Self, CampaignCodecError> {
         let response = Self {
-            schema_version: if disposition.uses_terminal_failure_schema() {
-                RESUME_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION
-            } else {
-                EXECUTOR_MESSAGE_SCHEMA_VERSION
-            },
+            schema_version: response_schema_version(
+                disposition.is_completed(),
+                disposition.uses_terminal_failure_schema(),
+                finding_candidate,
+            )?,
             assignment: request.assignment(),
             daemon_epoch: request.daemon_epoch(),
             attempt: request.attempt(),
@@ -1540,6 +1692,7 @@ impl ResumeAttemptExecutionResponse {
             checkpoint: request.checkpoint(),
             request_digest: request.request_digest(),
             disposition,
+            finding_candidate,
         };
         codec::ensure_encoded_size(
             &response,
@@ -1589,6 +1742,12 @@ impl ResumeAttemptExecutionResponse {
     #[must_use]
     pub const fn disposition(&self) -> ResumeAttemptExecutionDisposition {
         self.disposition
+    }
+
+    /// Returns the retained candidate published with completed resume status.
+    #[must_use]
+    pub const fn finding_candidate(&self) -> Option<FindingCandidateBundleId> {
+        self.finding_candidate
     }
 
     /// Validates that this response answers every field of one exact request.
@@ -1656,29 +1815,49 @@ impl Canonical for ResumeAttemptExecutionResponse {
         self.checkpoint.encode(encoder);
         self.request_digest.encode(encoder);
         self.disposition.encode(encoder);
+        if let Some(finding_candidate) = self.finding_candidate {
+            finding_candidate.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
         if schema_version != EXECUTOR_MESSAGE_SCHEMA_VERSION
             && schema_version != RESUME_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION
+            && schema_version != FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported resume attempt execution response schema version",
             });
         }
+        let assignment = AssignmentId::decode(decoder)?;
+        let daemon_epoch = DaemonEpoch::decode(decoder)?;
+        let attempt = AttemptId::decode(decoder)?;
+        let prior_execution = ExecutionId::decode(decoder)?;
+        let checkpoint = ExactCheckpointId::decode(decoder)?;
+        let request_digest = CampaignHash::decode(decoder)?;
+        let disposition = ResumeAttemptExecutionDisposition::decode(decoder)?;
+        let finding_candidate = if schema_version == FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION {
+            Some(FindingCandidateBundleId::decode(decoder)?)
+        } else {
+            None
+        };
         let response = Self {
             schema_version,
-            assignment: AssignmentId::decode(decoder)?,
-            daemon_epoch: DaemonEpoch::decode(decoder)?,
-            attempt: AttemptId::decode(decoder)?,
-            prior_execution: ExecutionId::decode(decoder)?,
-            checkpoint: ExactCheckpointId::decode(decoder)?,
-            request_digest: CampaignHash::decode(decoder)?,
-            disposition: ResumeAttemptExecutionDisposition::decode(decoder)?,
+            assignment,
+            daemon_epoch,
+            attempt,
+            prior_execution,
+            checkpoint,
+            request_digest,
+            disposition,
+            finding_candidate,
         };
-        if response.disposition.uses_terminal_failure_schema()
-            != (schema_version == RESUME_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION)
+        if response_schema_version(
+            response.disposition.is_completed(),
+            response.disposition.uses_terminal_failure_schema(),
+            response.finding_candidate,
+        )? != schema_version
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "resume attempt execution response schema/disposition mismatch",
@@ -1888,6 +2067,12 @@ impl Canonical for CheckpointAttemptExecutionDisposition {
     }
 }
 
+impl CheckpointAttemptExecutionDisposition {
+    const fn is_completed(self) -> bool {
+        matches!(self, Self::AlreadyCompleted { .. })
+    }
+}
+
 /// Strict response bound to one exact checkpoint request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheckpointAttemptExecutionResponse {
@@ -1897,6 +2082,7 @@ pub struct CheckpointAttemptExecutionResponse {
     execution: ExecutionId,
     request_digest: CampaignHash,
     disposition: CheckpointAttemptExecutionDisposition,
+    finding_candidate: Option<FindingCandidateBundleId>,
 }
 
 impl CheckpointAttemptExecutionResponse {
@@ -1909,13 +2095,40 @@ impl CheckpointAttemptExecutionResponse {
         request: &CheckpointAttemptExecutionRequest,
         disposition: CheckpointAttemptExecutionDisposition,
     ) -> Result<Self, CampaignCodecError> {
+        Self::new_with_optional_finding_candidate(request, disposition, None)
+    }
+
+    /// Builds a completed checkpoint response with one retained candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `disposition` is not completed or the response
+    /// exceeds the strict component-message bound.
+    pub fn new_with_finding_candidate(
+        request: &CheckpointAttemptExecutionRequest,
+        disposition: CheckpointAttemptExecutionDisposition,
+        finding_candidate: FindingCandidateBundleId,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_with_optional_finding_candidate(request, disposition, Some(finding_candidate))
+    }
+
+    fn new_with_optional_finding_candidate(
+        request: &CheckpointAttemptExecutionRequest,
+        disposition: CheckpointAttemptExecutionDisposition,
+        finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<Self, CampaignCodecError> {
         let response = Self {
-            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            schema_version: response_schema_version(
+                disposition.is_completed(),
+                false,
+                finding_candidate,
+            )?,
             daemon_epoch: request.daemon_epoch(),
             attempt: request.attempt(),
             execution: request.execution(),
             request_digest: request.request_digest(),
             disposition,
+            finding_candidate,
         };
         codec::ensure_encoded_size(
             &response,
@@ -1953,6 +2166,12 @@ impl CheckpointAttemptExecutionResponse {
     #[must_use]
     pub const fn disposition(&self) -> CheckpointAttemptExecutionDisposition {
         self.disposition
+    }
+
+    /// Returns the retained candidate published with completed status.
+    #[must_use]
+    pub const fn finding_candidate(&self) -> Option<FindingCandidateBundleId> {
+        self.finding_candidate
     }
 
     /// Validates that this response answers every field of one exact request.
@@ -2016,18 +2235,49 @@ impl Canonical for CheckpointAttemptExecutionResponse {
         self.execution.encode(encoder);
         self.request_digest.encode(encoder);
         self.disposition.encode(encoder);
+        if let Some(finding_candidate) = self.finding_candidate {
+            finding_candidate.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_executor_message_version(u32::decode(decoder)?)?;
-        let response = Self {
-            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
-            daemon_epoch: DaemonEpoch::decode(decoder)?,
-            attempt: AttemptId::decode(decoder)?,
-            execution: ExecutionId::decode(decoder)?,
-            request_digest: CampaignHash::decode(decoder)?,
-            disposition: CheckpointAttemptExecutionDisposition::decode(decoder)?,
+        let schema_version = u32::decode(decoder)?;
+        if schema_version != EXECUTOR_MESSAGE_SCHEMA_VERSION
+            && schema_version != FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported checkpoint attempt execution response schema version",
+            });
+        }
+        let daemon_epoch = DaemonEpoch::decode(decoder)?;
+        let attempt = AttemptId::decode(decoder)?;
+        let execution = ExecutionId::decode(decoder)?;
+        let request_digest = CampaignHash::decode(decoder)?;
+        let disposition = CheckpointAttemptExecutionDisposition::decode(decoder)?;
+        let finding_candidate = if schema_version == FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION {
+            Some(FindingCandidateBundleId::decode(decoder)?)
+        } else {
+            None
         };
+        let response = Self {
+            schema_version,
+            daemon_epoch,
+            attempt,
+            execution,
+            request_digest,
+            disposition,
+            finding_candidate,
+        };
+        if response_schema_version(
+            response.disposition.is_completed(),
+            false,
+            response.finding_candidate,
+        )? != schema_version
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "checkpoint attempt execution response schema/disposition mismatch",
+            });
+        }
         codec::ensure_encoded_size(
             &response,
             MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
@@ -2204,6 +2454,12 @@ impl Canonical for CancelAttemptExecutionDisposition {
     }
 }
 
+impl CancelAttemptExecutionDisposition {
+    const fn is_completed(self) -> bool {
+        matches!(self, Self::AlreadyCompleted { .. })
+    }
+}
+
 /// Strict response bound to one exact cancellation request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CancelAttemptExecutionResponse {
@@ -2213,6 +2469,7 @@ pub struct CancelAttemptExecutionResponse {
     execution: ExecutionId,
     request_digest: CampaignHash,
     disposition: CancelAttemptExecutionDisposition,
+    finding_candidate: Option<FindingCandidateBundleId>,
 }
 
 impl CancelAttemptExecutionResponse {
@@ -2225,13 +2482,40 @@ impl CancelAttemptExecutionResponse {
         request: &CancelAttemptExecutionRequest,
         disposition: CancelAttemptExecutionDisposition,
     ) -> Result<Self, CampaignCodecError> {
+        Self::new_with_optional_finding_candidate(request, disposition, None)
+    }
+
+    /// Builds a completed cancellation response with one retained candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `disposition` is not completed or the response
+    /// exceeds the strict component-message bound.
+    pub fn new_with_finding_candidate(
+        request: &CancelAttemptExecutionRequest,
+        disposition: CancelAttemptExecutionDisposition,
+        finding_candidate: FindingCandidateBundleId,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_with_optional_finding_candidate(request, disposition, Some(finding_candidate))
+    }
+
+    fn new_with_optional_finding_candidate(
+        request: &CancelAttemptExecutionRequest,
+        disposition: CancelAttemptExecutionDisposition,
+        finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<Self, CampaignCodecError> {
         let response = Self {
-            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            schema_version: response_schema_version(
+                disposition.is_completed(),
+                false,
+                finding_candidate,
+            )?,
             daemon_epoch: request.daemon_epoch(),
             attempt: request.attempt(),
             execution: request.execution(),
             request_digest: request.request_digest(),
             disposition,
+            finding_candidate,
         };
         codec::ensure_encoded_size(
             &response,
@@ -2269,6 +2553,12 @@ impl CancelAttemptExecutionResponse {
     #[must_use]
     pub const fn disposition(&self) -> CancelAttemptExecutionDisposition {
         self.disposition
+    }
+
+    /// Returns the retained candidate published with completed status.
+    #[must_use]
+    pub const fn finding_candidate(&self) -> Option<FindingCandidateBundleId> {
+        self.finding_candidate
     }
 
     /// Validates that this response answers every field of one exact request.
@@ -2334,18 +2624,49 @@ impl Canonical for CancelAttemptExecutionResponse {
         self.execution.encode(encoder);
         self.request_digest.encode(encoder);
         self.disposition.encode(encoder);
+        if let Some(finding_candidate) = self.finding_candidate {
+            finding_candidate.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_executor_message_version(u32::decode(decoder)?)?;
-        let response = Self {
-            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
-            daemon_epoch: DaemonEpoch::decode(decoder)?,
-            attempt: AttemptId::decode(decoder)?,
-            execution: ExecutionId::decode(decoder)?,
-            request_digest: CampaignHash::decode(decoder)?,
-            disposition: CancelAttemptExecutionDisposition::decode(decoder)?,
+        let schema_version = u32::decode(decoder)?;
+        if schema_version != EXECUTOR_MESSAGE_SCHEMA_VERSION
+            && schema_version != FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported cancel attempt execution response schema version",
+            });
+        }
+        let daemon_epoch = DaemonEpoch::decode(decoder)?;
+        let attempt = AttemptId::decode(decoder)?;
+        let execution = ExecutionId::decode(decoder)?;
+        let request_digest = CampaignHash::decode(decoder)?;
+        let disposition = CancelAttemptExecutionDisposition::decode(decoder)?;
+        let finding_candidate = if schema_version == FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION {
+            Some(FindingCandidateBundleId::decode(decoder)?)
+        } else {
+            None
         };
+        let response = Self {
+            schema_version,
+            daemon_epoch,
+            attempt,
+            execution,
+            request_digest,
+            disposition,
+            finding_candidate,
+        };
+        if response_schema_version(
+            response.disposition.is_completed(),
+            false,
+            response.finding_candidate,
+        )? != schema_version
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "cancel attempt execution response schema/disposition mismatch",
+            });
+        }
         codec::ensure_encoded_size(
             &response,
             MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
@@ -2622,6 +2943,25 @@ fn decode_executor_message<T: Canonical>(
         return Err(CampaignCodecError::LimitExceeded { limit });
     }
     codec::decode(bytes)
+}
+
+fn response_schema_version(
+    is_completed: bool,
+    uses_terminal_failure_schema: bool,
+    finding_candidate: Option<FindingCandidateBundleId>,
+) -> Result<u32, CampaignCodecError> {
+    if finding_candidate.is_some() {
+        if !is_completed {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "finding candidate requires a completed executor response",
+            });
+        }
+        return Ok(FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION);
+    }
+    if uses_terminal_failure_schema {
+        return Ok(SUBMIT_ATTEMPT_RESPONSE_SCHEMA_VERSION);
+    }
+    Ok(EXECUTOR_MESSAGE_SCHEMA_VERSION)
 }
 
 const fn require_executor_message_version(version: u32) -> Result<(), CampaignCodecError> {
