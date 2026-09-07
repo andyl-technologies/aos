@@ -1,7 +1,8 @@
 //! Audited Linux descriptor boundary for the AOS sandbox runtime.
 //!
 //! The crate wraps pidfds, namespace descriptors, race-resistant `openat2`
-//! resolution, the descriptor-based mount API, and mount-topology queries.
+//! resolution, the descriptor-based mount API, bounded fixed-process execution,
+//! and mount-topology queries.
 //! All kernel resources are represented by owned descriptor types. Raw syscall
 //! invocation and vendored Linux 6.18 UAPI live only in the private `uapi`
 //! module; safe callers cannot manufacture a typed descriptor from an integer.
@@ -11,6 +12,7 @@
 //! - [`pidfd`] pins a process and obtains typed namespace descriptors;
 //! - [`path`] resolves descendants beneath a pre-opened directory;
 //! - [`cgroup`] checks exact and hinted descendant membership against retained cgroup-v2 anchors;
+//! - [`process`] executes fixed absolute programs with bounded output and time;
 //! - [`mount`] constructs, attributes, idmaps, and attaches detached mounts;
 //! - [`inventory`] lists mounts and reads stable mount metadata;
 //! - [`immutable_file`] pins descriptors and maps seal-proven immutable files; and
@@ -25,6 +27,7 @@ pub mod inventory;
 pub mod mount;
 pub mod path;
 pub mod pidfd;
+pub mod process;
 pub mod seqpacket;
 mod uapi;
 

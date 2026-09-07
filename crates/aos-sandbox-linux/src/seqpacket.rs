@@ -17,6 +17,7 @@
 
 use std::num::NonZeroU32;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::path::{Component, Path};
 
 use crate::Error;
 use crate::pidfd::{PidFd, PidFdInfo};
@@ -38,6 +39,32 @@ pub struct SeqpacketSocket {
 }
 
 impl SeqpacketSocket {
+    /// Connects to one absolute filesystem Unix sequenced-packet socket.
+    ///
+    /// Record credentials and pidfds are enabled on the fresh socket before
+    /// connection, so an immediately sent first record retains its subject.
+    /// The socket is nonblocking and close-on-exec.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a non-normalized or oversized path, socket-option
+    /// failure, incomplete nonblocking connection, or peer-pinning failure.
+    pub fn connect(path: &Path) -> Result<Self, SeqpacketError> {
+        let normalized = path.is_absolute()
+            && path
+                .components()
+                .all(|part| matches!(part, Component::RootDir | Component::Normal(_)));
+        if !normalized {
+            return Err(SeqpacketError::Kernel(Error::invalid(
+                "sequenced-packet connection path",
+                "must be a normalized absolute path",
+            )));
+        }
+
+        let socket = uapi::connect_seqpacket(path)?;
+        Self::from_owned(socket)
+    }
+
     /// Creates a private channel with record-subject reporting enabled before exposure.
     ///
     /// Returns the controller's bounded receiver and an owned endpoint for
@@ -580,6 +607,8 @@ fn checked_pid(pid: i32) -> Option<NonZeroU32> {
 mod tests {
     use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 
+    use tempfile::TempDir;
+
     use super::*;
 
     fn pair() -> (SeqpacketSocket, SeqpacketSocket) {
@@ -609,6 +638,39 @@ mod tests {
                 before_cloexec
             );
             assert!(uapi::require_seqpacket_identity(left.as_fd()).is_err());
+        }
+    }
+
+    #[test]
+    fn filesystem_connect_enables_record_identity_before_first_traffic() {
+        let directory = TempDir::new().expect("create socket directory");
+        let path = directory.path().join("control.sock");
+        let mut listener = RecordSubjectListener::bind(&path, 1).expect("bind listener");
+        let mut client = SeqpacketSocket::connect(&path).expect("connect client");
+        let mut accepted = listener.accept().expect("accept client");
+
+        accepted.send(b"ready").expect("send first record");
+        let ready = client.receive(64).expect("receive first record subject");
+        assert_eq!(ready.payload(), b"ready");
+        assert_eq!(
+            ready.subject().credentials().pid().get(),
+            std::process::id()
+        );
+    }
+
+    #[test]
+    fn filesystem_connect_rejects_non_normalized_paths() {
+        for path in [
+            Path::new("relative.sock"),
+            Path::new("/tmp/../control.sock"),
+        ] {
+            assert!(matches!(
+                SeqpacketSocket::connect(path),
+                Err(SeqpacketError::Kernel(Error::InvalidInput {
+                    field: "sequenced-packet connection path",
+                    ..
+                }))
+            ));
         }
     }
 

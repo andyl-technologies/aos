@@ -4,8 +4,8 @@
 //! converts successful descriptor returns immediately into [`OwnedFd`] and
 //! borrows every input for the complete syscall duration.
 
-use std::ffi::CStr;
-use std::mem::size_of;
+use std::ffi::{CStr, CString};
+use std::mem::{MaybeUninit, size_of};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
@@ -36,6 +36,190 @@ pub(crate) struct RawSeqpacketMessage {
     pub(crate) bytes: usize,
     pub(crate) flags: i32,
     pub(crate) ancillary: Vec<RawAncillary>,
+}
+
+pub(crate) fn validate_child_reaping_disposition() -> Result<()> {
+    let mut action = MaybeUninit::<libc::sigaction>::uninit();
+    // SAFETY: a null second argument queries the process-wide disposition and
+    // the third argument names writable output storage.
+    let result = unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), action.as_mut_ptr()) };
+    unit_result(result.into(), "inspect SIGCHLD disposition")?;
+    // SAFETY: successful sigaction above initialized the complete value.
+    let action = unsafe { action.assume_init() };
+    if action.sa_sigaction != libc::SIG_DFL || action.sa_flags & libc::SA_NOCLDWAIT != 0 {
+        return Err(Error::invalid(
+            "fixed process reaping ownership",
+            "requires default SIGCHLD disposition without SA_NOCLDWAIT",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn posix_spawn_fixed(
+    executable: &CStr,
+    arguments: &[CString],
+    stdin: BorrowedFd<'_>,
+    stdout: BorrowedFd<'_>,
+    stderr: BorrowedFd<'_>,
+) -> Result<rustix::process::Pid> {
+    let mut action_storage = MaybeUninit::<libc::posix_spawn_file_actions_t>::uninit();
+    // SAFETY: the pointer names writable uninitialized action storage.
+    check_posix(
+        unsafe { libc::posix_spawn_file_actions_init(action_storage.as_mut_ptr()) },
+        "initialize fixed process file actions",
+    )?;
+    // SAFETY: successful initialization above produced the value.
+    let mut actions = unsafe { action_storage.assume_init() };
+    if let Err(error) = configure_fixed_actions(&mut actions, stdin, stdout, stderr) {
+        destroy_fixed_actions(&mut actions);
+        return Err(error);
+    }
+
+    let mut attribute_storage = MaybeUninit::<libc::posix_spawnattr_t>::uninit();
+    // SAFETY: the pointer names writable uninitialized attribute storage.
+    let initialized = unsafe { libc::posix_spawnattr_init(attribute_storage.as_mut_ptr()) };
+    if let Err(error) = check_posix(initialized, "initialize fixed process attributes") {
+        destroy_fixed_actions(&mut actions);
+        return Err(error);
+    }
+    // SAFETY: successful initialization above produced the value.
+    let mut attributes = unsafe { attribute_storage.assume_init() };
+    if let Err(error) = configure_fixed_attributes(&mut attributes) {
+        destroy_fixed_attributes(&mut attributes);
+        destroy_fixed_actions(&mut actions);
+        return Err(error);
+    }
+
+    let mut argument_pointers = Vec::with_capacity(arguments.len() + 2);
+    argument_pointers.push(executable.as_ptr().cast_mut());
+    argument_pointers.extend(
+        arguments
+            .iter()
+            .map(|argument| argument.as_ptr().cast_mut()),
+    );
+    argument_pointers.push(std::ptr::null_mut());
+    let environment = [std::ptr::null_mut::<libc::c_char>()];
+    let mut raw_pid = 0;
+    // SAFETY: strings and pointer arrays remain live through the call; actions
+    // and attributes are initialized; argv/envp are terminated; and raw_pid
+    // names writable output. libc never returns child-side Rust execution.
+    let result = unsafe {
+        libc::posix_spawn(
+            &raw mut raw_pid,
+            executable.as_ptr(),
+            &raw const actions,
+            &raw const attributes,
+            argument_pointers.as_ptr(),
+            environment.as_ptr(),
+        )
+    };
+    destroy_fixed_attributes(&mut attributes);
+    destroy_fixed_actions(&mut actions);
+    check_posix(result, "spawn fixed process")?;
+
+    let mut guard = RawSpawnedChildGuard::new(raw_pid);
+    let pid = rustix::process::Pid::from_raw(raw_pid).ok_or_else(|| {
+        Error::invalid(
+            "fixed process PID",
+            "successful posix_spawn returned a nonpositive PID",
+        )
+    })?;
+    guard.disarm();
+    Ok(pid)
+}
+
+fn configure_fixed_actions(
+    actions: &mut libc::posix_spawn_file_actions_t,
+    stdin: BorrowedFd<'_>,
+    stdout: BorrowedFd<'_>,
+    stderr: BorrowedFd<'_>,
+) -> Result<()> {
+    for (source, target) in [(stdin, 0), (stdout, 1), (stderr, 2)] {
+        // SAFETY: actions is initialized and sources remain borrowed until spawn.
+        check_posix(
+            unsafe { libc::posix_spawn_file_actions_adddup2(actions, source.as_raw_fd(), target) },
+            "map fixed process standard descriptor",
+        )?;
+    }
+    // SAFETY: actions is initialized. AOS glibc supplies this GNU extension.
+    check_posix(
+        unsafe { libc::posix_spawn_file_actions_addclosefrom_np(actions, 3) },
+        "close inherited fixed process descriptors",
+    )
+}
+
+fn configure_fixed_attributes(attributes: &mut libc::posix_spawnattr_t) -> Result<()> {
+    // A zero pgroup requests a new process group whose ID is the child's PID.
+    // SAFETY: attributes is initialized and exclusively borrowed.
+    check_posix(
+        unsafe { libc::posix_spawnattr_setpgroup(attributes, 0) },
+        "set fixed process group",
+    )?;
+    // SAFETY: attributes is initialized and the flag is supported by glibc.
+    check_posix(
+        unsafe {
+            libc::posix_spawnattr_setflags(attributes, libc::POSIX_SPAWN_SETPGROUP as libc::c_short)
+        },
+        "enable fixed process group",
+    )
+}
+
+fn destroy_fixed_actions(actions: &mut libc::posix_spawn_file_actions_t) {
+    // SAFETY: callers invoke this exactly once after successful initialization.
+    let _ = unsafe { libc::posix_spawn_file_actions_destroy(actions) };
+}
+
+fn destroy_fixed_attributes(attributes: &mut libc::posix_spawnattr_t) {
+    // SAFETY: callers invoke this exactly once after successful initialization.
+    let _ = unsafe { libc::posix_spawnattr_destroy(attributes) };
+}
+
+fn check_posix(result: libc::c_int, operation: &'static str) -> Result<()> {
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(Error::Syscall {
+            operation,
+            source: std::io::Error::from_raw_os_error(result),
+        })
+    }
+}
+
+struct RawSpawnedChildGuard {
+    pid: libc::pid_t,
+    armed: bool,
+}
+
+impl RawSpawnedChildGuard {
+    const fn new(pid: libc::pid_t) -> Self {
+        Self { pid, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RawSpawnedChildGuard {
+    fn drop(&mut self) {
+        if !self.armed || self.pid <= 0 {
+            return;
+        }
+        // The child was created as a new process group and remains unreaped,
+        // so its PID/process-group ID cannot yet have been recycled.
+        // SAFETY: negative positive-child PID selects exactly that group.
+        let _ = unsafe { libc::kill(-self.pid, libc::SIGKILL) };
+        let mut status = 0;
+        loop {
+            // SAFETY: status is writable and pid is the successful spawn result.
+            let result = unsafe { libc::waitpid(self.pid, &raw mut status, 0) };
+            if result == self.pid
+                || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)
+            {
+                break;
+            }
+        }
+    }
 }
 
 pub(crate) const RESOLVE_NO_XDEV: u64 = 0x01;
@@ -1161,6 +1345,51 @@ pub(crate) fn unconnected_seqpacket() -> Result<OwnedFd> {
         )
     };
     fd_result(result.into(), "socket(SOCK_SEQPACKET)")
+}
+
+pub(crate) fn connect_seqpacket(path: &Path) -> Result<OwnedFd> {
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.is_empty() || bytes.contains(&0) {
+        return Err(Error::invalid(
+            "sequenced-packet connection path",
+            "must be nonempty and contain no NUL byte",
+        ));
+    }
+    // Filesystem addresses require a trailing NUL inside `sun_path`.
+    if bytes.len()
+        >= size_of::<libc::sockaddr_un>() - std::mem::offset_of!(libc::sockaddr_un, sun_path)
+    {
+        return Err(Error::invalid(
+            "sequenced-packet connection path",
+            "exceeds the Unix socket pathname limit",
+        ));
+    }
+
+    let socket = unconnected_seqpacket()?;
+    enable_seqpacket_identity(socket.as_fd())?;
+
+    // All-zero initializes the pathname terminator after the copied bytes.
+    // SAFETY: every field of `sockaddr_un` admits the all-zero bit pattern.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (destination, source) in address.sun_path.iter_mut().zip(bytes) {
+        *destination = *source as libc::c_char;
+    }
+    let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1;
+    // A nonblocking Unix-domain connect normally completes synchronously. An
+    // incomplete result is rejected; callers never exchange records on a
+    // connection whose completion or peer identity remains uncertain.
+    // SAFETY: the address covers initialized family/path bytes, including the
+    // trailing NUL, and the fresh socket remains live throughout the call.
+    let result = unsafe {
+        libc::connect(
+            socket.as_raw_fd(),
+            std::ptr::addr_of!(address).cast(),
+            length as libc::socklen_t,
+        )
+    };
+    unit_result(result.into(), "connect(record-subject SOCK_SEQPACKET)")?;
+    Ok(socket)
 }
 
 pub(crate) fn bind_record_subject_listener(path: &Path, backlog: u32) -> Result<OwnedFd> {

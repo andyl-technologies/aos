@@ -857,6 +857,7 @@ name = "aos-sandbox-linux"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rustix 1.1.4",
  "tempfile",
  "thiserror 2.0.18",
 ]
