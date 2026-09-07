@@ -81,6 +81,8 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
             },
             payload: result_payload,
         };
+        let child = Command::new("sleep").arg("60").spawn()?;
+        let process_id = child.id();
         let channels = QemuNodeChannels::new(
             ScriptedPluginControl {
                 log: Arc::clone(&log),
@@ -96,15 +98,36 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 stale_fault_results: Arc::new(Mutex::new(VecDeque::new())),
                 fault_events: Arc::new(Mutex::new(VecDeque::new())),
                 fingerprint_retry_countdown: Arc::new(Mutex::new(0)),
+                hot_fork_setup_identity: None,
+                hot_fork_ring_image: None,
             },
             ScriptedQmpMachineControl {
                 log: Arc::clone(&log),
+                process_id,
+                track_process_endpoint_retirement: false,
                 fail_stop: false,
                 fail_snapshot: false,
                 timeout_snapshot: false,
+                plugin_resources: None,
+                plugin_barriers: None,
+                last_plugin_barrier: Arc::new(Mutex::new(None)),
+                private_ring_state: Arc::new(Mutex::new(None)),
+                diagnostic_state: Arc::new(Mutex::new(None)),
+                child_qmp_state: Arc::new(Mutex::new(None)),
+                child_console_state: Arc::new(Mutex::new(None)),
+                process_contract_state: Arc::new(Mutex::new(None)),
+                child_files_state: Arc::new(Mutex::new(None)),
+                fail_descriptor_install: false,
+                fail_descriptor_close: false,
+                fail_endpoint_install: false,
+                mismatch_endpoint_disposition: false,
+                request_basis_mismatch_after_queries: None,
+                serve_child_qmp: false,
+                template_query_count: Arc::new(Mutex::new(0)),
+                hot_fork_aborted: Arc::new(Mutex::new(false)),
+                hot_fork_script: HotForkScript::Rejected,
             },
         );
-        let child = Command::new("sleep").arg("60").spawn()?;
         let mut node = QemuNode::new(
             QemuNodeChild::new(child),
             channels,
@@ -117,6 +140,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 fault_results: VecDeque::from([result.clone()]),
                 staged_fault_events: Vec::new(),
                 fingerprint_fault_events: VecDeque::new(),
+                fail_hot_fork_clone: false,
             },
             2,
         )

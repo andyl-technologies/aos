@@ -972,6 +972,30 @@ fn block_request(
 }
 
 impl LiveVcpuTimeCallbackState {
+    pub(in crate::runtime) fn rebind_hot_fork_process_generation(
+        &mut self,
+        parent: u64,
+        child: u64,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let devices = self.devices.as_mut().ok_or_else(|| {
+            LiveVcpuTimeCallbackError::live_device(LiveDeviceCallbackError::StateUnavailable)
+        })?;
+        let devices = devices.get_mut().map_err(|_poisoned| {
+            LiveVcpuTimeCallbackError::live_device(LiveDeviceCallbackError::StatePoisoned)
+        })?;
+        if devices.accelerator_generation != parent || parent.checked_add(1) != Some(child) {
+            return Err(LiveVcpuTimeCallbackError::live_device(
+                LiveDeviceCallbackError::ProcessGeneration {
+                    expected_parent: devices.accelerator_generation,
+                    supplied_parent: parent,
+                    supplied_child: child,
+                },
+            ));
+        }
+        devices.accelerator_generation = child;
+        Ok(())
+    }
+
     fn lock_devices(
         &self,
     ) -> Result<MutexGuard<'_, LiveDeviceCallbackState>, LiveVcpuTimeCallbackError> {
@@ -1637,6 +1661,18 @@ unsafe fn output_buffer<'a>(
 /// A live block or 9p callback registration/dispatch error.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum LiveDeviceCallbackError {
+    /// A fork-child generation did not exactly advance the live device owner.
+    #[error(
+        "fork-child process generation expected parent {expected_parent}, supplied parent {supplied_parent}, child {supplied_child}"
+    )]
+    ProcessGeneration {
+        /// Generation currently retained by the callback owner.
+        expected_parent: u64,
+        /// Parent generation supplied by the child plan.
+        supplied_parent: u64,
+        /// Child generation supplied by the child plan.
+        supplied_child: u64,
+    },
     /// An accelerator shared-memory operation failed.
     #[error("accelerator shared-memory operation failed: {source}")]
     AcceleratorRing {

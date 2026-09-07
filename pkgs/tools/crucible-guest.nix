@@ -39,7 +39,7 @@
     target = targetTriple;
     rustflags = "-C target-feature=+crt-static -C relocation-model=static";
     nativeInputs = map toString [patchelf];
-    licenseScope = "MIT";
+    licenseScope = "Apache-2.0";
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "crucible-static-guest-artifacts";
@@ -126,9 +126,9 @@ in
     '';
 
     meta = {
-      description = "Static Crucible guest white-box marker emitter";
+      description = "Static Crucible guest marker and typed-selectable client";
       homepage = "https://github.com/andyl/andyl-os";
-      license = "MIT";
+      license = "Apache-2.0";
       mainProgram = "crucible-guest";
     };
   }

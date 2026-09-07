@@ -15,7 +15,9 @@ use crucible_guest::{
     WhiteboxAssertionMarkerFlavor, WhiteboxCoverageMarkerBody, WhiteboxDoorbellArchitecture,
     WhiteboxDoorbellFrame, WhiteboxDoorbellTrapAbi, WhiteboxEventMarkerBody,
     WhiteboxLifecycleMarkerEvent, WhiteboxMarkerDetail, WhiteboxMarkerPayload,
-    WhiteboxRandomRequestBody, decode_whitebox_marker_payload, emit_command, parse_cli_args,
+    WhiteboxMeasurementBoundaryBody, WhiteboxMeasurementValue, WhiteboxMetricSampleBody,
+    WhiteboxRandomRequestBody, WhiteboxSemanticMarkerBody, WhiteboxSemanticMarkerDetail,
+    decode_whitebox_marker_payload, emit_command, parse_cli_args,
     whitebox_doorbell_abi_for_architecture,
 };
 
@@ -91,6 +93,59 @@ fn guest_cli_verbs_encode_shared_marker_payloads() {
         payload_from_args(&["coverage", "hot-path"]),
         WhiteboxMarkerPayload::Coverage(WhiteboxCoverageMarkerBody {
             point: String::from("hot-path"),
+        })
+    );
+    assert_eq!(
+        payload_from_args(&["measurement-begin", "latency", "request/1"]),
+        WhiteboxMarkerPayload::MeasurementBegin(WhiteboxMeasurementBoundaryBody {
+            measurement: String::from("latency"),
+            instance: String::from("request/1"),
+        })
+    );
+    assert_eq!(
+        payload_from_args(&[
+            "metric-sample",
+            "latency",
+            "request/1",
+            "duration",
+            "i64",
+            "-7",
+        ]),
+        WhiteboxMarkerPayload::MetricSample(WhiteboxMetricSampleBody {
+            measurement: String::from("latency"),
+            instance: String::from("request/1"),
+            metric: String::from("duration"),
+            value: WhiteboxMeasurementValue::Signed(-7),
+        })
+    );
+    assert_eq!(
+        payload_from_args(&["measurement-end", "latency", "request/1"]),
+        WhiteboxMarkerPayload::MeasurementEnd(WhiteboxMeasurementBoundaryBody {
+            measurement: String::from("latency"),
+            instance: String::from("request/1"),
+        })
+    );
+    assert_eq!(
+        payload_from_args(&[
+            "semantic-marker",
+            "converged",
+            "epoch/1",
+            "stable:bool=1",
+            "epoch:u64=42",
+        ]),
+        WhiteboxMarkerPayload::SemanticMarker(WhiteboxSemanticMarkerBody {
+            marker: String::from("converged"),
+            instance: String::from("epoch/1"),
+            details: vec![
+                WhiteboxSemanticMarkerDetail {
+                    key: String::from("epoch"),
+                    value: WhiteboxMeasurementValue::Unsigned(42),
+                },
+                WhiteboxSemanticMarkerDetail {
+                    key: String::from("stable"),
+                    value: WhiteboxMeasurementValue::Boolean(true),
+                },
+            ],
         })
     );
     assert_eq!(
@@ -199,6 +254,7 @@ fn guest_static_build_contract_is_declared_for_aos_package() {
     let cargo_toml = manifest_file("Cargo.toml");
     assert!(cargo_toml.contains("name = \"crucible-guest\""));
     assert!(cargo_toml.contains("path = \"src/main.rs\""));
+    assert!(cargo_toml.contains("crucible-campaign = { path = \"../crucible-campaign\" }"));
     assert!(!cargo_toml.contains("clap"));
 
     // The standalone `pkgs.aos` package intentionally copies only `crates/`
@@ -211,6 +267,8 @@ fn guest_static_build_contract_is_declared_for_aos_package() {
         assert!(package.contains("patchelf --print-interpreter"));
         assert!(package.contains("packaged_guest_system=${lib.system}"));
         assert!(package.contains("instruction_abi_architectures=x86_64,aarch64"));
+        assert!(package.contains("licenseScope = \"Apache-2.0\""));
+        assert!(package.contains("license = \"Apache-2.0\""));
     }
 }
 

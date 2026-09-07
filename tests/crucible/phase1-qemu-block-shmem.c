@@ -7,6 +7,13 @@
 #include "migration/vmstate.h"
 #include "block/crucible-shmem.c"
 
+void qemu_plugin_crucible_callback_registered(qemu_plugin_id_t plugin_id,
+                                              uint64_t callback_mask)
+{
+    (void)plugin_id;
+    (void)callback_mask;
+}
+
 typedef enum TestOutcome {
     TEST_OUTCOME_READ,
     TEST_OUTCOME_ZERO_SUCCESS,

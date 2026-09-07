@@ -15,6 +15,7 @@ pub(super) const NONDETERMINISTIC_BOUNDARY_PACKAGES: &[&str] = &[
     "crucible-cli",
     "crucible-debug-gateway",
     "crucible-qemu",
+    "crucible-s3-store",
 ];
 pub(super) const BINARY_BOUNDARY_PACKAGE: &str = "crucible-cli";
 pub(super) const BINARY_ENTRY_PACKAGES: &[&str] = &["crucible-debug-gateway", "crucible-guest"];
@@ -191,6 +192,15 @@ pub(super) fn is_test_only_source(package_dir: &Path, source: &Path) -> bool {
                             || name.contains("_test_")
                     })
             })
+    })
+}
+
+pub(super) fn is_test_support_only_source(content: &str) -> bool {
+    content.lines().any(|line| {
+        matches!(
+            line.trim(),
+            "#![cfg(test)]" | "#![cfg(any(test, feature = \"test-support\"))]"
+        )
     })
 }
 

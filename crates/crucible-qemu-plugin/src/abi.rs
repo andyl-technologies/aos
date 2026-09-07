@@ -90,6 +90,15 @@ pub const QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL: &str = "qemu_plugin_force_vcpu_exi
 pub const QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL: &str = "qemu_plugin_request_vmstop";
 /// QEMU plugin API symbol used to register the setup wake fd with QEMU.
 pub const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL: &str = "qemu_plugin_register_wake_fd";
+/// QEMU plugin API symbol used to seal the fixed resource manifest.
+pub const QEMU_PLUGIN_REGISTER_RESOURCE_MANIFEST_SYMBOL: &str =
+    "qemu_plugin_crucible_register_resource_manifest";
+/// QEMU plugin API symbol used to register the reversible hot-fork callback barrier.
+pub const QEMU_PLUGIN_REGISTER_HOT_FORK_BARRIER_SYMBOL: &str =
+    "qemu_plugin_crucible_register_hot_fork_barrier";
+/// QEMU plugin API symbol used to register fork-child runtime reconstruction.
+pub const QEMU_PLUGIN_REGISTER_HOT_FORK_CHILD_RUNTIME_SYMBOL: &str =
+    "qemu_plugin_crucible_register_hot_fork_child_runtime";
 /// QEMU plugin API symbol used to request a clean or fail-loud process shutdown.
 pub const QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL: &str = "qemu_plugin_request_shutdown";
 /// QEMU plugin API symbol that binds the immutable process generation.
@@ -129,6 +138,12 @@ const QEMU_PLUGIN_ICOUNT_RAW_SYMBOL_C: &[u8] = b"qemu_plugin_icount_raw\0";
 const QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL_C: &[u8] = b"qemu_plugin_force_vcpu_exit\0";
 const QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL_C: &[u8] = b"qemu_plugin_request_vmstop\0";
 const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL_C: &[u8] = b"qemu_plugin_register_wake_fd\0";
+const QEMU_PLUGIN_REGISTER_RESOURCE_MANIFEST_SYMBOL_C: &[u8] =
+    b"qemu_plugin_crucible_register_resource_manifest\0";
+const QEMU_PLUGIN_REGISTER_HOT_FORK_BARRIER_SYMBOL_C: &[u8] =
+    b"qemu_plugin_crucible_register_hot_fork_barrier\0";
+const QEMU_PLUGIN_REGISTER_HOT_FORK_CHILD_RUNTIME_SYMBOL_C: &[u8] =
+    b"qemu_plugin_crucible_register_hot_fork_child_runtime\0";
 const QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL_C: &[u8] = b"qemu_plugin_request_shutdown\0";
 const QEMU_PLUGIN_SET_PROCESS_GENERATION_SYMBOL_C: &[u8] =
     b"qemu_plugin_crucible_lifecycle_set_process_generation\0";
@@ -140,6 +155,7 @@ const QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_COND_CB_SYMBOL_C: &[u8] =
 const QEMU_PLUGIN_SCOREBOARD_NEW_SYMBOL_C: &[u8] = b"qemu_plugin_scoreboard_new\0";
 const QEMU_PLUGIN_SCOREBOARD_FREE_SYMBOL_C: &[u8] = b"qemu_plugin_scoreboard_free\0";
 const QEMU_PLUGIN_U64_SET_SYMBOL_C: &[u8] = b"qemu_plugin_u64_set\0";
+const QEMU_PLUGIN_NUM_VCPUS_SYMBOL_C: &[u8] = b"qemu_plugin_num_vcpus\0";
 const QEMU_PLUGIN_ICOUNT_AT_TB_ENTRY_SYMBOL_C: &[u8] = b"qemu_plugin_icount_at_tb_entry\0";
 const QEMU_PLUGIN_REGISTER_FLUSH_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_flush_cb\0";
 const QEMU_PLUGIN_TB_VADDR_SYMBOL_C: &[u8] = b"qemu_plugin_tb_vaddr\0";
@@ -337,6 +353,233 @@ pub type QemuForceVcpuExitFn = extern "C" fn();
 pub type QemuRequestVmstopFn = extern "C" fn() -> c_int;
 /// QEMU wake-fd registration exported by `crucible-plugin-wake-fd`.
 pub type QemuRegisterWakeFdFn = extern "C" fn(c_int) -> c_int;
+
+/// Fixed-layout scalar plugin resource manifest consumed by patched QEMU.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct QemuPluginResourceManifest {
+    /// Manifest schema version, currently two.
+    pub schema_version: u32,
+    /// Exact C ABI structure size.
+    pub struct_size: u32,
+    /// Nonzero host-supervised QEMU process generation.
+    pub process_generation: u64,
+    /// Nonzero QEMU plugin identity.
+    pub plugin_id: u64,
+    /// Closed plugin-owned resource-class mask.
+    pub resource_mask: u64,
+    /// Closed callback-registration-class mask.
+    pub callback_mask: u64,
+    /// Closed process-lifetime worker-class mask.
+    pub worker_mask: u64,
+    /// Shared-memory backing device number captured before mmap.
+    pub shmem_device: u64,
+    /// Shared-memory backing inode captured before mmap.
+    pub shmem_inode: u64,
+    /// Exact shared-memory mapping length.
+    pub shmem_length: u64,
+    /// Assigned VM slot index.
+    pub slot_index: u32,
+    /// Shared-memory topology node count.
+    pub node_count: u32,
+    /// Plugin control-socket descriptor number.
+    pub control_fd: i32,
+    /// QEMU-registered wake descriptor number.
+    pub wake_fd: i32,
+}
+
+/// QEMU function that validates and seals the plugin resource manifest.
+pub type QemuRegisterResourceManifestFn = extern "C" fn(*const QemuPluginResourceManifest) -> c_int;
+/// Hot-fork barrier callback action that acquires the reversible hold.
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD: u32 = 1;
+/// Hot-fork barrier callback action that observes the current state.
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY: u32 = 2;
+/// Hot-fork barrier callback action that releases the reversible hold.
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE: u32 = 3;
+/// Current fixed-layout callback, ring, worker, and mapping barrier schema.
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_STATUS_VERSION: u32 = 6;
+/// Callback-barrier status flag indicating that the reversible hold is active.
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_HELD: u32 = 1_u32 << 0;
+/// Callback-barrier status flag indicating permanent teardown closure.
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_TEARDOWN: u32 = 1_u32 << 1;
+/// Callback-barrier status flag indicating the source mapping is `MADV_DONTFORK`.
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_MAPPING_DONTFORK: u32 = 1_u32 << 2;
+
+/// Fixed-layout status copied from the plugin callback-admission owner.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct QemuPluginHotForkBarrierStatus {
+    /// Status schema version, currently six.
+    pub schema_version: u32,
+    /// Exact C ABI structure size.
+    pub struct_size: u32,
+    /// Closed flag mask describing held, teardown, and mapping-disposition state.
+    pub flags: u32,
+    /// Reserved field that must remain zero.
+    pub reserved: u32,
+    /// Exact callbacks admitted but not yet returned at the snapshot instant.
+    pub in_flight: u64,
+    /// Exact number of SPSC rings in the validated shared-memory layout.
+    pub ring_count: u64,
+    /// Number of rings whose reversible producer and consumer barriers are held.
+    pub rings_held: u64,
+    /// Checked aggregate of admitted producer publications still in flight.
+    pub ring_producers_in_flight: u64,
+    /// Checked aggregate of admitted consumer operations still in flight.
+    pub ring_consumers_in_flight: u64,
+    /// Exact sealed process-lifetime worker-class mask.
+    pub worker_mask: u64,
+    /// Worker classes currently parked at an operation boundary.
+    pub parked_worker_mask: u64,
+    /// Parked worker classes retaining one dequeued item in thread-local state.
+    pub pending_worker_mask: u64,
+    /// Checked count of worker operations admitted before the hold.
+    pub worker_operations_in_flight: u64,
+}
+
+/// Plugin callback that changes or observes the callback-admission barrier.
+pub type QemuPluginHotForkBarrierCbFn =
+    extern "C" fn(u32, *mut QemuPluginHotForkBarrierStatus, *mut c_void) -> c_int;
+/// QEMU function that registers the process-lifetime hot-fork barrier callback.
+pub type QemuRegisterHotForkBarrierFn =
+    extern "C" fn(QemuPluginId, Option<QemuPluginHotForkBarrierCbFn>, *mut c_void) -> c_int;
+/// Fork-child runtime callback action that installs process-private resources.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_INITIALIZE: u32 = 1;
+/// Fork-child runtime callback action that observes reconstruction progress.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_QUERY: u32 = 2;
+/// Fork-child runtime callback action that releases reconstructed workers.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_RELEASE: u32 = 3;
+/// Current fixed-layout fork-child runtime plan schema.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_PLAN_VERSION: u32 = 3;
+/// Current fixed-layout fork-child runtime status schema.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_STATUS_VERSION: u32 = 3;
+/// Child status phase before this process attempts reconstruction.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_PHASE_TEMPLATE: u32 = 0;
+/// Child status phase while the one-shot reconstruction call owns mutation.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_PHASE_INITIALIZING: u32 = 1;
+/// Child status phase after every replacement worker parks behind the hold.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_PHASE_WORKERS_HELD: u32 = 2;
+/// Child status phase after ordinary child execution admission opens.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_PHASE_ACTIVE: u32 = 3;
+/// Child status phase after an unrecoverable reconstruction failure.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_PHASE_FAILED: u32 = 4;
+/// Child status flag indicating that callback admission remains held.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD: u32 = 1_u32 << 0;
+/// Child status flag indicating that the private shared-memory mapping exists.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED: u32 = 1_u32 << 1;
+/// Child status flag indicating that every replacement worker is parked.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_WORKERS_READY: u32 = 1_u32 << 2;
+/// Child status flag indicating that ordinary callback and worker admission is active.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_ACTIVE: u32 = 1_u32 << 3;
+/// Child status flag indicating a terminal reconstruction failure.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_FAILED: u32 = 1_u32 << 4;
+
+/// Exact staged-resource basis supplied to a fork-child runtime.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct QemuPluginHotForkChildPlan {
+    /// Plan schema version, currently three.
+    pub schema_version: u32,
+    /// Exact C ABI structure size.
+    pub struct_size: u32,
+    /// Closed flag mask; version three requires zero.
+    pub flags: u32,
+    /// Reserved field that must remain zero.
+    pub reserved: u32,
+    /// Exact process generation retained by the fork template.
+    pub parent_process_generation: u64,
+    /// Exact successor process generation assigned to this child.
+    pub child_process_generation: u64,
+    /// Exact template transaction generation that admitted every staged resource.
+    pub template_generation: u64,
+    /// Exact branch-private ring mutation generation.
+    pub private_ring_generation: u64,
+    /// Exact replacement endpoint-pair mutation generation.
+    pub plugin_endpoint_generation: u64,
+    /// Exact quiescent plugin-barrier generation captured at endpoint staging.
+    pub plugin_barrier_generation: u64,
+    /// Exact sealed worker mask copied from the template manifest.
+    pub worker_mask: u64,
+    /// Linux `SO_COOKIE` identity of the replacement control socket.
+    pub control_socket_cookie: u64,
+    /// Linux `/proc/self/fdinfo` identity of the replacement wake eventfd.
+    pub wake_eventfd_id: u64,
+    /// Device number of the branch-private shared-memory backing object.
+    pub shmem_device: u64,
+    /// Inode number of the branch-private shared-memory backing object.
+    pub shmem_inode: u64,
+    /// Exact branch-private shared-memory mapping length.
+    pub shmem_length: u64,
+    /// Authenticated template setup-region VMA start address.
+    pub source_mapping_start: u64,
+    /// Exact authenticated template setup-region VMA length.
+    pub source_mapping_length: u64,
+    /// Exact authenticated template setup-region file offset; version three requires zero.
+    pub source_mapping_offset: u64,
+    /// Descriptor carrying the branch-private shared-memory object.
+    pub private_ring_fd: i32,
+    /// Replacement control socket at the template manifest descriptor number.
+    pub control_fd: i32,
+    /// Replacement wake eventfd at the template manifest descriptor number.
+    pub wake_fd: i32,
+    /// Reserved descriptor field that must remain negative one.
+    pub reserved_fd: i32,
+}
+
+/// Exact process-local progress reported by the fork-child runtime callback.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct QemuPluginHotForkChildStatus {
+    /// Status schema version, currently three.
+    pub schema_version: u32,
+    /// Exact C ABI structure size.
+    pub struct_size: u32,
+    /// Closed callback, mapping, worker, active, and failure flag mask.
+    pub flags: u32,
+    /// Closed internal child-runtime phase.
+    pub phase: u32,
+    /// Exact process generation inherited from the fork template.
+    pub parent_process_generation: u64,
+    /// Exact successor process generation installed in this child.
+    pub child_process_generation: u64,
+    /// Exact template transaction generation installed in this child.
+    pub template_generation: u64,
+    /// Exact branch-private ring generation installed in this child.
+    pub private_ring_generation: u64,
+    /// Exact replacement endpoint generation installed in this child.
+    pub plugin_endpoint_generation: u64,
+    /// Exact plugin-barrier generation authorizing this child transition.
+    pub plugin_barrier_generation: u64,
+    /// Linux `SO_COOKIE` identity of the installed control socket.
+    pub control_socket_cookie: u64,
+    /// Linux eventfd identity of the installed wake descriptor.
+    pub wake_eventfd_id: u64,
+    /// Authenticated template setup-region VMA start used for installation.
+    pub source_mapping_start: u64,
+    /// Exact authenticated template setup-region VMA length.
+    pub source_mapping_length: u64,
+    /// Exact authenticated template setup-region file offset.
+    pub source_mapping_offset: u64,
+    /// Exact sealed process-lifetime worker-class mask.
+    pub worker_mask: u64,
+    /// Replacement worker classes parked at their held operation boundary.
+    pub parked_worker_mask: u64,
+    /// Parked replacement workers retaining one dequeued item.
+    pub pending_worker_mask: u64,
+    /// Replacement worker operations admitted before their hold.
+    pub worker_operations_in_flight: u64,
+}
+
+/// Plugin callback that initializes, observes, or releases the fork-child runtime.
+pub type QemuPluginHotForkChildRuntimeCbFn = extern "C" fn(
+    u32,
+    *const QemuPluginHotForkChildPlan,
+    *mut QemuPluginHotForkChildStatus,
+    *mut c_void,
+) -> c_int;
+/// QEMU function that registers the process-lifetime fork-child runtime callback.
+pub type QemuRegisterHotForkChildRuntimeFn =
+    extern "C" fn(QemuPluginId, Option<QemuPluginHotForkChildRuntimeCbFn>, *mut c_void) -> c_int;
 /// QEMU shutdown request function; nonzero selects the fail-loud host-error path.
 pub type QemuRequestShutdownFn = extern "C" fn(c_int);
 /// QEMU immutable process-generation provisioning function.
@@ -1593,6 +1836,75 @@ pub const fn resolve_qemu_register_wake_fd_symbol() -> Option<QemuRegisterWakeFd
     None
 }
 
+/// Resolves QEMU's fixed plugin resource-manifest registration export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_resource_manifest_symbol() -> Option<QemuRegisterResourceManifestFn> {
+    let symbol = resolve_process_symbol(QEMU_PLUGIN_REGISTER_RESOURCE_MANIFEST_SYMBOL_C);
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the non-null address was resolved by the exact patched-QEMU
+        // symbol whose C structure and return type match this ABI declaration.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRegisterResourceManifestFn>(symbol) })
+    }
+}
+
+/// Returns no resource-manifest registration export on non-Unix hosts.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_resource_manifest_symbol()
+-> Option<QemuRegisterResourceManifestFn> {
+    None
+}
+
+/// Resolves QEMU's reversible hot-fork callback-barrier registration export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_hot_fork_barrier_symbol() -> Option<QemuRegisterHotForkBarrierFn> {
+    let symbol = resolve_process_symbol(QEMU_PLUGIN_REGISTER_HOT_FORK_BARRIER_SYMBOL_C);
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the non-null address was resolved by the exact patched-QEMU
+        // symbol whose callback and argument types match this ABI declaration.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRegisterHotForkBarrierFn>(symbol) })
+    }
+}
+
+/// Returns no hot-fork barrier registration export on non-Unix hosts.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_hot_fork_barrier_symbol() -> Option<QemuRegisterHotForkBarrierFn>
+{
+    None
+}
+
+/// Resolves QEMU's fork-child runtime registration export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_hot_fork_child_runtime_symbol()
+-> Option<QemuRegisterHotForkChildRuntimeFn> {
+    let symbol = resolve_process_symbol(QEMU_PLUGIN_REGISTER_HOT_FORK_CHILD_RUNTIME_SYMBOL_C);
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the non-null address was resolved by the exact patched-QEMU
+        // symbol whose callback and argument types match this ABI declaration.
+        Some(unsafe {
+            std::mem::transmute::<*mut c_void, QemuRegisterHotForkChildRuntimeFn>(symbol)
+        })
+    }
+}
+
+/// Returns no fork-child runtime registration export on non-Unix hosts.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_hot_fork_child_runtime_symbol()
+-> Option<QemuRegisterHotForkChildRuntimeFn> {
+    None
+}
+
 /// Resolves QEMU's plugin-initiated shutdown export from the loaded process.
 #[cfg(unix)]
 #[must_use]
@@ -1682,6 +1994,7 @@ pub(crate) fn resolve_qemu_basic_block_coverage_apis()
     let scoreboard_new = resolve_process_symbol(QEMU_PLUGIN_SCOREBOARD_NEW_SYMBOL_C);
     let scoreboard_free = resolve_process_symbol(QEMU_PLUGIN_SCOREBOARD_FREE_SYMBOL_C);
     let u64_set = resolve_process_symbol(QEMU_PLUGIN_U64_SET_SYMBOL_C);
+    let num_vcpus = resolve_process_symbol(QEMU_PLUGIN_NUM_VCPUS_SYMBOL_C);
     let require = |symbol: *mut c_void, name| {
         if symbol.is_null() {
             Err(QemuPluginAbiError::RuntimeApiCapability { symbol: name })
@@ -1712,6 +2025,7 @@ pub(crate) fn resolve_qemu_basic_block_coverage_apis()
     let scoreboard_new = require(scoreboard_new, crate::QEMU_PLUGIN_SCOREBOARD_NEW_SYMBOL)?;
     let scoreboard_free = require(scoreboard_free, crate::QEMU_PLUGIN_SCOREBOARD_FREE_SYMBOL)?;
     let u64_set = require(u64_set, crate::QEMU_PLUGIN_U64_SET_SYMBOL)?;
+    let num_vcpus = require(num_vcpus, crate::QEMU_PLUGIN_NUM_VCPUS_SYMBOL)?;
 
     // SAFETY: all non-null addresses were resolved by their exact QEMU 10
     // public-plugin symbol names and are converted to matching `extern "C"`
@@ -1733,6 +2047,7 @@ pub(crate) fn resolve_qemu_basic_block_coverage_apis()
             std::mem::transmute::<*mut c_void, crate::QemuPluginScoreboardNewFn>(scoreboard_new),
             std::mem::transmute::<*mut c_void, crate::QemuPluginScoreboardFreeFn>(scoreboard_free),
             std::mem::transmute::<*mut c_void, crate::QemuPluginU64SetFn>(u64_set),
+            std::mem::transmute::<*mut c_void, crate::QemuPluginNumVcpusFn>(num_vcpus),
         )
     })
 }
@@ -2184,6 +2499,18 @@ fn install_owned_boundary(
     let force_vcpu_exit = resolve_qemu_force_vcpu_exit_symbol();
     let request_vmstop = resolve_qemu_request_vmstop_symbol();
     let register_wake_fd = resolve_qemu_register_wake_fd_symbol();
+    let register_resource_manifest = require_runtime_api(
+        resolve_qemu_register_resource_manifest_symbol(),
+        QEMU_PLUGIN_REGISTER_RESOURCE_MANIFEST_SYMBOL,
+    )?;
+    let register_hot_fork_barrier = require_runtime_api(
+        resolve_qemu_register_hot_fork_barrier_symbol(),
+        QEMU_PLUGIN_REGISTER_HOT_FORK_BARRIER_SYMBOL,
+    )?;
+    let register_hot_fork_child_runtime = require_runtime_api(
+        resolve_qemu_register_hot_fork_child_runtime_symbol(),
+        QEMU_PLUGIN_REGISTER_HOT_FORK_CHILD_RUNTIME_SYMBOL,
+    )?;
     let request_shutdown = resolve_qemu_request_shutdown_symbol();
     let set_process_generation = resolve_qemu_set_process_generation_symbol();
     let register_tcg_exec_cb = resolve_qemu_register_tcg_exec_cb_symbol();
@@ -2247,6 +2574,9 @@ fn install_owned_boundary(
         advance_time_ns,
         register_time_advance_cb,
         register_wake_fd: runtime_apis.register_wake_fd(),
+        register_resource_manifest,
+        register_hot_fork_barrier,
+        register_hot_fork_child_runtime,
         request_shutdown,
         basic_block_coverage,
         register_vcpu_init,

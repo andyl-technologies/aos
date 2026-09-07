@@ -1,0 +1,330 @@
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index 0b3f7c660..4a1632481 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -487,6 +487,8 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+                    shmem_inode)))) {
+         qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
+         qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
++        fprintf(stderr, "crucible plugin child runtime: action %u does not "
++                "match the sealed resource manifest\n", action);
+         return -EPROTO;
+     }
+     cb = qemu_plugin_crucible_child_runtime_cb;
+@@ -527,6 +529,11 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+         qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
+         return result;
+     }
++    /*
++     * A held child's replacement workers park from their own threads after
++     * initialization returns, so the readiness flag must track the parked
++     * mask rather than the phase; the reinitializer queries until it is set.
++     */
+     if (status.schema_version !=
+             QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_STATUS_VERSION ||
+         status.struct_size != sizeof(status) ||
+@@ -579,11 +586,14 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+              QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_WORKERS_HELD &&
+          ((status.flags &
+            (QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD |
+-            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED |
+-            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_WORKERS_READY)) !=
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED)) !=
+           (QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD |
+-           QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED |
+-           QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_WORKERS_READY))) ||
++           QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED) ||
++          (((status.flags &
++             QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_WORKERS_READY) != 0) !=
++           (status.parked_worker_mask == status.worker_mask &&
++            status.pending_worker_mask == 0 &&
++            status.worker_operations_in_flight == 0)))) ||
+         (status.phase == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_ACTIVE &&
+          ((status.flags &
+            (QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD |
+@@ -642,6 +652,15 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+          (status.flags & QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_ACTIVE) ==
+              0)) {
+         qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
++        fprintf(stderr, "crucible plugin child runtime: action %u returned "
++                "an invalid status: flags 0x%x phase %u workers 0x%" PRIx64
++                " parked 0x%" PRIx64 " pending 0x%" PRIx64 " in-flight %"
++                PRIu64 " process %" PRIu64 "/%" PRIu64 "\n",
++                action, status.flags, status.phase, status.worker_mask,
++                status.parked_worker_mask, status.pending_worker_mask,
++                status.worker_operations_in_flight,
++                status.parent_process_generation,
++                status.child_process_generation);
+         return -EPROTO;
+     }
+ 
+diff --git a/system/crucible-hot-fork-plugin-child.c b/system/crucible-hot-fork-plugin-child.c
+index a4fab2323..df4eb34b5 100644
+--- a/system/crucible-hot-fork-plugin-child.c
++++ b/system/crucible-hot-fork-plugin-child.c
+@@ -2060,9 +2060,12 @@ void qemu_crucible_hot_fork_reset_plugin_child_reinitializer(
+     }
+ }
+ 
+-static bool crucible_hot_fork_plugin_child_status_matches(
+-    const QemuCrucibleHotForkPluginChildReinitializer *reinitializer,
+-    bool active)
++/*
++ * Identity a child status must carry regardless of how far its replacement
++ * workers have settled: the plan it was initialized from, exactly.
++ */
++static bool crucible_hot_fork_plugin_child_identity_matches(
++    const QemuCrucibleHotForkPluginChildReinitializer *reinitializer)
+ {
+     const struct qemu_plugin_crucible_hot_fork_child_plan *plan =
+         &reinitializer->plan;
+@@ -2070,22 +2073,12 @@ static bool crucible_hot_fork_plugin_child_status_matches(
+         &reinitializer->inventory;
+     const struct qemu_plugin_crucible_hot_fork_child_status *status =
+         &inventory->status;
+-    const uint32_t expected_flags = active ?
+-        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED |
+-            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_ACTIVE :
+-        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD |
+-            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED |
+-            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_WORKERS_READY;
+ 
+     return inventory->registered && inventory->manifest_consistent &&
+         inventory->generation != 0 && inventory->plugin_id != 0 &&
+         status->schema_version ==
+             QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_STATUS_VERSION &&
+         status->struct_size == sizeof(*status) &&
+-        status->flags == expected_flags &&
+-        status->phase == (active ?
+-            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_ACTIVE :
+-            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_WORKERS_HELD) &&
+         status->parent_process_generation ==
+             plan->parent_process_generation &&
+         status->child_process_generation == plan->child_process_generation &&
+@@ -2101,15 +2094,94 @@ static bool crucible_hot_fork_plugin_child_status_matches(
+         status->source_mapping_length == plan->source_mapping_length &&
+         status->source_mapping_offset == plan->source_mapping_offset &&
+         status->worker_mask == plan->worker_mask &&
+-        status->parked_worker_mask ==
+-            (active ? 0 : status->worker_mask) &&
+         status->pending_worker_mask == 0 &&
+         status->worker_operations_in_flight == 0;
+ }
+ 
++static bool crucible_hot_fork_plugin_child_status_matches(
++    const QemuCrucibleHotForkPluginChildReinitializer *reinitializer,
++    bool active)
++{
++    const struct qemu_plugin_crucible_hot_fork_child_status *status =
++        &reinitializer->inventory.status;
++    const uint32_t expected_flags = active ?
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED |
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_ACTIVE :
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD |
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED |
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_WORKERS_READY;
++
++    return crucible_hot_fork_plugin_child_identity_matches(reinitializer) &&
++        status->flags == expected_flags &&
++        status->phase == (active ?
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_ACTIVE :
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_WORKERS_HELD) &&
++        status->parked_worker_mask ==
++            (active ? 0 : status->worker_mask);
++}
++
++/*
++ * A freshly initialized child whose replacement workers have not all
++ * reached their parked safe point yet: the same identity and held phase,
++ * only the readiness flag and a subset of the parked mask outstanding.
++ */
++static bool crucible_hot_fork_plugin_child_workers_settling(
++    const QemuCrucibleHotForkPluginChildReinitializer *reinitializer)
++{
++    const struct qemu_plugin_crucible_hot_fork_child_status *status =
++        &reinitializer->inventory.status;
++
++    return crucible_hot_fork_plugin_child_identity_matches(reinitializer) &&
++        status->flags ==
++            (QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD |
++             QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED) &&
++        status->phase ==
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_WORKERS_HELD &&
++        (status->parked_worker_mask & ~status->worker_mask) == 0;
++}
++
++/* Bound on the replacement workers reaching their parked safe point. */
++#define CRUCIBLE_HOT_FORK_PLUGIN_CHILD_WORKER_SETTLE_US (10 * G_USEC_PER_SEC)
++#define CRUCIBLE_HOT_FORK_PLUGIN_CHILD_WORKER_POLL_US 1000
++
++/*
++ * Written to the child's stderr, which descriptor application has routed to
++ * its branch-private diagnostics stream, when the plugin child status does
++ * not match the plan: the host otherwise sees only EPROTO.
++ */
++static void crucible_hot_fork_plugin_child_report_status(
++    const QemuCrucibleHotForkPluginChildReinitializer *reinitializer,
++    const char *stage, int result)
++{
++    const QemuPluginCrucibleHotForkChildRuntimeInventory *inventory =
++        &reinitializer->inventory;
++    const struct qemu_plugin_crucible_hot_fork_child_status *status =
++        &inventory->status;
++
++    fprintf(stderr,
++            "crucible hot-fork plugin child %s: result %d registered %d "
++            "consistent %d generation %" PRIu64 " plugin %" PRIu64
++            " identity %d schema %u size %u flags 0x%x phase %u "
++            "workers 0x%" PRIx64 " parked 0x%" PRIx64 " pending 0x%" PRIx64
++            " in-flight %" PRIu64 " process %" PRIu64 "/%" PRIu64
++            " plan %" PRIu64 "/%" PRIu64 "\n",
++            stage, result, inventory->registered,
++            inventory->manifest_consistent, inventory->generation,
++            inventory->plugin_id,
++            crucible_hot_fork_plugin_child_identity_matches(reinitializer),
++            status->schema_version, status->struct_size, status->flags,
++            status->phase, status->worker_mask, status->parked_worker_mask,
++            status->pending_worker_mask, status->worker_operations_in_flight,
++            status->parent_process_generation,
++            status->child_process_generation,
++            reinitializer->plan.parent_process_generation,
++            reinitializer->plan.child_process_generation);
++}
++
+ int qemu_crucible_hot_fork_reinitialize_plugin_child(void *opaque)
+ {
+     QemuCrucibleHotForkPluginChildReinitializer *reinitializer = opaque;
++    gint64 deadline;
+     int result;
+ 
+     if (!reinitializer || !reinitializer->prepared ||
+@@ -2122,11 +2194,39 @@ int qemu_crucible_hot_fork_reinitialize_plugin_child(void *opaque)
+         QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_INITIALIZE,
+         &reinitializer->plan, &reinitializer->inventory);
+     if (result != 0) {
++        crucible_hot_fork_plugin_child_report_status(
++            reinitializer, "initialization failed", result);
+         return result;
+     }
+-    if (!crucible_hot_fork_plugin_child_status_matches(
+-            reinitializer, false)) {
+-        return -EPROTO;
++
++    /*
++     * Initialization spawns the replacement workers, but each one parks
++     * behind the retained hold from its own thread, so the readiness the
++     * held status requires arrives after the synchronous call returns.
++     * Query until it does, within a bound; anything other than that
++     * settling shape is a protocol failure straight away.
++     */
++    deadline = g_get_monotonic_time() +
++        CRUCIBLE_HOT_FORK_PLUGIN_CHILD_WORKER_SETTLE_US;
++    while (!crucible_hot_fork_plugin_child_status_matches(
++               reinitializer, false)) {
++        if (!crucible_hot_fork_plugin_child_workers_settling(reinitializer)) {
++            crucible_hot_fork_plugin_child_report_status(
++                reinitializer, "status mismatch", -EPROTO);
++            return -EPROTO;
++        }
++        if (g_get_monotonic_time() >= deadline) {
++            crucible_hot_fork_plugin_child_report_status(
++                reinitializer, "workers never settled", -ETIMEDOUT);
++            return -ETIMEDOUT;
++        }
++        g_usleep(CRUCIBLE_HOT_FORK_PLUGIN_CHILD_WORKER_POLL_US);
++        result = qemu_plugin_crucible_hot_fork_child_runtime(
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_QUERY, NULL,
++            &reinitializer->inventory);
++        if (result != 0) {
++            return result;
++        }
+     }
+ 
+     reinitializer->initialized = true;
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index 7da88e3b7..2ac6d12b8 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -49,6 +49,8 @@ typedef struct FakePluginChildRuntime {
+     struct qemu_plugin_crucible_hot_fork_child_plan plan;
+     uint32_t phase;
+     unsigned int calls;
++    /* Status reports, initialization included, before the workers park. */
++    unsigned int settle_queries;
+     bool initialized;
+ } FakePluginChildRuntime;
+ 
+@@ -132,17 +134,24 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+     QemuPluginCrucibleHotForkChildRuntimeInventory *inventory)
+ {
+     struct qemu_plugin_crucible_hot_fork_child_status *status;
++    bool settling = false;
+     int result;
+ 
+     if (!inventory ||
+         (action != QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_INITIALIZE &&
++         action != QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_QUERY &&
+          action != QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_RELEASE) ||
+         (action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_INITIALIZE && !plan) ||
+-        (action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_RELEASE &&
++        (action != QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_INITIALIZE &&
+          !fake_plugin_child_runtime.initialized)) {
+         return -EINVAL;
+     }
+     fake_plugin_child_runtime.calls++;
++    if (action != QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_RELEASE &&
++        fake_plugin_child_runtime.settle_queries > 0) {
++        fake_plugin_child_runtime.settle_queries--;
++        settling = true;
++    }
+     if (action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_INITIALIZE &&
+         fake_plugin_child_runtime.mapping) {
+         result = reinitialize_child_resources(
+@@ -173,6 +182,9 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+         .flags = action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_RELEASE ?
+             QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED |
+                 QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_ACTIVE :
++            settling ?
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD |
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED :
+             QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD |
+             QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED |
+             QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_WORKERS_READY,
+@@ -192,8 +204,8 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+         .source_mapping_offset = plan->source_mapping_offset,
+         .worker_mask = plan->worker_mask,
+         .parked_worker_mask =
+-            action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_RELEASE ?
+-                0 : plan->worker_mask,
++            action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_RELEASE ||
++            settling ? 0 : plan->worker_mask,
+     };
+     return 0;
+ }
+@@ -1649,6 +1661,26 @@ static void test_plugin_child_reinitializer_is_held_and_one_shot(void)
+                     ==, -EPERM);
+     g_assert_cmpuint(fake_plugin_child_runtime.calls, ==, 1);
+ 
++    /*
++     * Replacement workers park from their own threads after initialization
++     * returns, so the reinitializer queries until the held status is
++     * complete.
++     */
++    qemu_crucible_hot_fork_reset_plugin_child_reinitializer(&reinitializer);
++    g_assert_cmpint(qemu_crucible_hot_fork_prepare_plugin_child_reinitializer(
++                        &reinitializer, &plan),
++                    ==, 0);
++    fake_plugin_child_runtime = (FakePluginChildRuntime) {
++        .phase = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_WORKERS_HELD,
++        .settle_queries = 3,
++    };
++    g_assert_cmpint(qemu_crucible_hot_fork_reinitialize_plugin_child(
++                        &reinitializer),
++                    ==, 0);
++    g_assert_true(reinitializer.initialized);
++    g_assert_cmpuint(fake_plugin_child_runtime.calls, ==, 4);
++    g_assert_cmpuint(fake_plugin_child_runtime.settle_queries, ==, 0);
++
+     plan.source_mapping_length--;
+     g_assert_cmpint(qemu_crucible_hot_fork_prepare_plugin_child_reinitializer(
+                         &reinitializer, &plan),

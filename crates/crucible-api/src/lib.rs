@@ -99,11 +99,34 @@ pub use rpc_abi::{
     negotiate_rpc_protocol, rpc_status_code_from_wire_name, rpc_status_code_wire_name,
 };
 pub use vm_lifecycle::{
-    ProductionBlockFaultEvidence, ProductionFaultEvidenceSnapshot, ProductionNetworkOutageEvidence,
-    ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence, ProductionVmLifecycleConfig,
-    ProductionVmLifecycleLoop, build_production_vm_lifecycle_loop,
-    build_production_vm_lifecycle_loop_from_checkpoint, collect_signal_artifact_objects,
-    production_vm_search_frontier,
+    PreparedProductionReplayOraclePromotion, ProductionBlockFaultEvidence,
+    ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
+    ProductionExactCheckpointReplayArtifact, ProductionExactCheckpointReplayCatalog,
+    ProductionExactCheckpointReplayTarget, ProductionExactCheckpointReplayTargets,
+    ProductionExactCheckpointResumeBasis, ProductionExactCheckpointRetirement,
+    ProductionExactCheckpointRetirementError, ProductionExactCheckpointRetirementReport,
+    ProductionExactCheckpointSource, ProductionFaultEvidenceSnapshot,
+    ProductionNetworkOutageEvidence, ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence,
+    ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmLifecycleResumeState,
+    ProductionVmNodeCheckpointArtifact, ProductionVmNodeGeneration, ProductionVmNodeLaunch,
+    ProductionVmNodeLaunchKind, ProductionVmNodeLaunchRequest, ProductionVmNodeLauncher,
+    ProductionVmNodeLease, ProductionVmNodePreparationKind, ProductionVmNodeReplayLaunchProfile,
+    authenticate_portable_exact_checkpoint_replay_oracle_promotion,
+    authenticate_portable_exact_checkpoint_replay_oracle_promotion_with_boundary,
+    build_production_vm_lifecycle_loop, build_production_vm_lifecycle_loop_from_checkpoint,
+    build_production_vm_lifecycle_loop_from_checkpoint_with_launcher,
+    build_production_vm_lifecycle_loop_from_exact_closure,
+    build_production_vm_lifecycle_loop_from_exact_closure_with_launcher,
+    build_production_vm_lifecycle_loop_with_launcher, collect_signal_artifact_objects,
+    install_exact_checkpoint_closure, install_exact_checkpoint_closure_with_boundary,
+    install_exact_checkpoint_closure_with_boundary_and_admission, open_exact_checkpoint_closure,
+    production_vm_search_frontier, retire_production_exact_checkpoint_catalog,
+};
+#[cfg(target_os = "linux")]
+pub use vm_lifecycle::{
+    ProductionVmHotForkNodeAdoption, ProductionVmHotForkNodeServiceState,
+    ProductionVmHotForkSourceWorld, ProductionVmHotForkWorldContinuation,
+    build_production_vm_lifecycle_loop_from_hot_fork_with_launcher,
 };
 // Re-exported so control-plane clients (e.g. the CLI) record the *shared*
 // guest-host protocol version in a reproduction artifact's provenance triple

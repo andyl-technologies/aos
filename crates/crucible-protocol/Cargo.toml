@@ -11,3 +11,4 @@ workspace = true
 [dependencies]
 libc = { workspace = true }
 thiserror = { workspace = true }
+unicode-normalization = { workspace = true }

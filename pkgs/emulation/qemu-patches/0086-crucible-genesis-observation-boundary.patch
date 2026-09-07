@@ -1,8 +1,8 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index cc779123a..64276e786 100644
+index cf6cf05ec..3c2eee36f 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1635,16 +1635,20 @@ int qemu_plugin_crucible_device_state_schema_sha256(
+@@ -1653,16 +1653,20 @@ int qemu_plugin_crucible_device_state_schema_sha256(
  
  #define QEMU_PLUGIN_CRUCIBLE_RAM_REGION_NAME_MAX 256
  
@@ -28,10 +28,10 @@ index cc779123a..64276e786 100644
  QEMU_PLUGIN_API
  int qemu_plugin_crucible_request_terminal_pause(
 diff --git a/plugins/api.c b/plugins/api.c
-index 0330a3da3..54d33612c 100644
+index 7f46e0584..08a3b2b48 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -1102,6 +1102,7 @@ static void crucible_terminal_pause_bh(void *opaque)
+@@ -1114,6 +1114,7 @@ static void crucible_terminal_pause_bh(void *opaque)
  {
      struct CrucibleTerminalPauseRequest *request = opaque;
      int status = 0;
@@ -39,7 +39,7 @@ index 0330a3da3..54d33612c 100644
  
      if (!bql_locked()) {
          status = -EPERM;
-@@ -1112,6 +1113,11 @@ static void crucible_terminal_pause_bh(void *opaque)
+@@ -1124,6 +1125,11 @@ static void crucible_terminal_pause_bh(void *opaque)
                                      crucible_terminal_pause_bh, request);
              return;
          }

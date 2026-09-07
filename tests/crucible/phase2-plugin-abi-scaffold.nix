@@ -74,7 +74,7 @@
       }
       {
         label = "plugin API version constant";
-        needle = "pub const QEMU_PLUGIN_API_VERSION: c_int = 4;";
+        needle = "pub const QEMU_PLUGIN_API_VERSION: c_int = 5;";
       }
       {
         label = "version symbol constant";

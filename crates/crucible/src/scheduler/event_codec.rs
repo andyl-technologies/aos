@@ -98,7 +98,10 @@ pub(super) fn search_schedule_decision_event_time(
         Decision::Preemption(preemption) => VirtualTime {
             ticks: preemption.at.retired,
         },
-        Decision::RngDraw(_) | Decision::Override(_) | Decision::AppRandom(_) => VirtualTime {
+        Decision::RngDraw(_)
+        | Decision::Override(_)
+        | Decision::AppRandom(_)
+        | Decision::Selection(_) => VirtualTime {
             ticks: fallback_sequence,
         },
     }
@@ -432,6 +435,13 @@ pub(super) fn decision_event_payload(decision: &Decision) -> EventPayload {
             );
             EventPayload::new("app_random", attributes)
         }
+        Decision::Selection(selection) => {
+            attributes.insert(
+                String::from("canonical_selection"),
+                EventAttributeValue::Bytes(selection.canonical_bytes().to_vec()),
+            );
+            EventPayload::new("campaign_selection", attributes)
+        }
     }
 }
 
@@ -656,6 +666,90 @@ pub(super) fn observable_event_payload(observable: &ObservableEventPayload) -> E
             );
             EventPayload::new("guest_marker", attributes)
         }
+        ObservableEventPayload::GuestMeasurement {
+            retired_icount,
+            node,
+            event,
+        } => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(node.clone()),
+            );
+            attributes.insert(
+                String::from("retired_icount"),
+                EventAttributeValue::Icount(*retired_icount),
+            );
+            match event {
+                GuestMeasurementEvent::Begin {
+                    measurement,
+                    instance,
+                } => {
+                    insert_guest_measurement_basis(&mut attributes, measurement, instance);
+                    EventPayload::new("guest_measurement_begin", attributes)
+                }
+                GuestMeasurementEvent::Sample {
+                    measurement,
+                    instance,
+                    metric,
+                    value,
+                } => {
+                    insert_guest_measurement_basis(&mut attributes, measurement, instance);
+                    attributes.insert(
+                        String::from("metric"),
+                        EventAttributeValue::String(metric.clone()),
+                    );
+                    insert_guest_measurement_value(&mut attributes, "value", value);
+                    EventPayload::new("guest_metric_sample", attributes)
+                }
+                GuestMeasurementEvent::End {
+                    measurement,
+                    instance,
+                } => {
+                    insert_guest_measurement_basis(&mut attributes, measurement, instance);
+                    EventPayload::new("guest_measurement_end", attributes)
+                }
+            }
+        }
+        ObservableEventPayload::GuestSemanticMarker {
+            retired_icount,
+            node,
+            marker,
+            instance,
+            details,
+        } => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(node.clone()),
+            );
+            attributes.insert(
+                String::from("retired_icount"),
+                EventAttributeValue::Icount(*retired_icount),
+            );
+            attributes.insert(
+                String::from("marker"),
+                EventAttributeValue::String(marker.clone()),
+            );
+            attributes.insert(
+                String::from("instance"),
+                EventAttributeValue::String(instance.clone()),
+            );
+            attributes.insert(
+                String::from("details_len"),
+                EventAttributeValue::U64(u64::try_from(details.len()).unwrap_or(u64::MAX)),
+            );
+            for (index, detail) in details.iter().enumerate() {
+                attributes.insert(
+                    format!("detail.{index}.key"),
+                    EventAttributeValue::String(detail.key.clone()),
+                );
+                insert_guest_measurement_value(
+                    &mut attributes,
+                    &format!("detail.{index}.value"),
+                    &detail.value,
+                );
+            }
+            EventPayload::new("guest_semantic_marker", attributes)
+        }
         ObservableEventPayload::GuestAssertionMarker {
             retired_icount,
             node,
@@ -700,6 +794,101 @@ pub(super) fn observable_event_payload(observable: &ObservableEventPayload) -> E
             insert_guest_assertion_details(&mut attributes, &marker.details);
             EventPayload::new("guest_marker", attributes)
         }
+    }
+}
+
+fn insert_guest_measurement_basis(
+    attributes: &mut BTreeMap<String, EventAttributeValue>,
+    measurement: &str,
+    instance: &str,
+) {
+    attributes.insert(
+        String::from("measurement"),
+        EventAttributeValue::String(measurement.to_owned()),
+    );
+    attributes.insert(
+        String::from("instance"),
+        EventAttributeValue::String(instance.to_owned()),
+    );
+}
+
+fn insert_guest_measurement_value(
+    attributes: &mut BTreeMap<String, EventAttributeValue>,
+    prefix: &str,
+    value: &GuestMeasurementValue,
+) {
+    let (kind, elements) = match value {
+        GuestMeasurementValue::Signed(value) => {
+            attributes.insert(
+                format!("{prefix}.signed"),
+                EventAttributeValue::String(value.to_string()),
+            );
+            ("signed", None)
+        }
+        GuestMeasurementValue::Unsigned(value) => {
+            attributes.insert(
+                format!("{prefix}.unsigned"),
+                EventAttributeValue::U64(*value),
+            );
+            ("unsigned", None)
+        }
+        GuestMeasurementValue::Rational(value) => {
+            attributes.insert(
+                format!("{prefix}.negative"),
+                EventAttributeValue::Bool(value.negative),
+            );
+            attributes.insert(
+                format!("{prefix}.numerator"),
+                EventAttributeValue::U128(value.numerator),
+            );
+            attributes.insert(
+                format!("{prefix}.denominator"),
+                EventAttributeValue::U128(value.denominator),
+            );
+            ("rational", None)
+        }
+        GuestMeasurementValue::Boolean(value) => {
+            attributes.insert(
+                format!("{prefix}.boolean"),
+                EventAttributeValue::Bool(*value),
+            );
+            ("boolean", None)
+        }
+        GuestMeasurementValue::Enumerated(value) => {
+            attributes.insert(
+                format!("{prefix}.enumerated"),
+                EventAttributeValue::String(value.clone()),
+            );
+            ("enumerated", None)
+        }
+        GuestMeasurementValue::SignedVector(values) => {
+            for (index, value) in values.iter().enumerate() {
+                attributes.insert(
+                    format!("{prefix}.element.{index}"),
+                    EventAttributeValue::String(value.to_string()),
+                );
+            }
+            ("signed_vector", Some(values.len()))
+        }
+        GuestMeasurementValue::UnsignedVector(values) => {
+            for (index, value) in values.iter().enumerate() {
+                attributes.insert(
+                    format!("{prefix}.element.{index}"),
+                    EventAttributeValue::U64(*value),
+                );
+            }
+            ("unsigned_vector", Some(values.len()))
+        }
+    };
+    attributes.insert(
+        format!("{prefix}.kind"),
+        EventAttributeValue::String(kind.to_owned()),
+    );
+    if let Some(elements) = elements {
+        attributes.insert(
+            format!("{prefix}.elements"),
+            EventAttributeValue::U64(u64::try_from(elements).unwrap_or(u64::MAX)),
+        );
     }
 }
 
@@ -815,9 +1004,10 @@ pub(super) fn decision_icount(at: VirtualTime, decision: &Decision) -> EventLogI
             icount: preemption.at,
         },
         Decision::AppRandom(random) => node_boundary_icount(at, &random.node),
-        Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Override(_) => {
-            boundary_icount(at)
-        }
+        Decision::DeliveryOrder(_)
+        | Decision::RngDraw(_)
+        | Decision::Override(_)
+        | Decision::Selection(_) => boundary_icount(at),
     }
 }
 
@@ -851,6 +1041,16 @@ pub(super) fn observable_payload_icount(
             icount: *sample_icount,
         },
         ObservableEventPayload::GuestMarker {
+            retired_icount,
+            node,
+            ..
+        }
+        | ObservableEventPayload::GuestMeasurement {
+            retired_icount,
+            node,
+            ..
+        }
+        | ObservableEventPayload::GuestSemanticMarker {
             retired_icount,
             node,
             ..
@@ -934,9 +1134,10 @@ pub(super) fn decision_source(decision: &Decision) -> EventSource {
         Decision::AppRandom(random) => EventSource::Guest {
             node: random.node.clone(),
         },
-        Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Override(_) => {
-            EventSource::Engine
-        }
+        Decision::DeliveryOrder(_)
+        | Decision::RngDraw(_)
+        | Decision::Override(_)
+        | Decision::Selection(_) => EventSource::Engine,
     }
 }
 
@@ -950,6 +1151,8 @@ pub(super) fn observable_payload_source(observable: &ObservableEventPayload) -> 
         }
         ObservableEventPayload::GuestMarker { node, .. }
         | ObservableEventPayload::CoverageMarker { node, .. }
+        | ObservableEventPayload::GuestMeasurement { node, .. }
+        | ObservableEventPayload::GuestSemanticMarker { node, .. }
         | ObservableEventPayload::GuestAssertionMarker { node, .. } => {
             EventSource::Guest { node: node.clone() }
         }
@@ -992,6 +1195,8 @@ pub(super) fn observable_payload_level(observable: &ObservableEventPayload) -> E
         | ObservableEventPayload::AssertionEvaluated { .. }
         | ObservableEventPayload::CoverageMarker { .. }
         | ObservableEventPayload::GuestMarker { .. }
+        | ObservableEventPayload::GuestMeasurement { .. }
+        | ObservableEventPayload::GuestSemanticMarker { .. }
         | ObservableEventPayload::GuestAssertionMarker { .. } => EventLevel::Info,
     }
 }
@@ -2060,7 +2265,10 @@ pub(super) fn scheduler_decision_event_log_time(
                 })
             }
         }
-        Decision::RngDraw(_) | Decision::Override(_) | Decision::AppRandom(_) => Ok(VirtualTime {
+        Decision::RngDraw(_)
+        | Decision::Override(_)
+        | Decision::AppRandom(_)
+        | Decision::Selection(_) => Ok(VirtualTime {
             ticks: fallback.nanos,
         }),
     }
@@ -2134,6 +2342,23 @@ pub(super) fn scheduler_decision_material(decision: &Decision) -> String {
             lines.push(format!("width={}", random.width));
             lines.push(format!("value={}", random.value));
         }
+        Decision::Selection(selection) => {
+            lines.push(String::from("decision=campaign-selection"));
+            lines.push(format!(
+                "canonical_selection={}",
+                scheduler_hex_bytes(selection.canonical_bytes())
+            ));
+        }
     }
     lines.join("\n")
+}
+
+fn scheduler_hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }

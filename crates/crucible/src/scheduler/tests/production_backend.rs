@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::{
-    AppRandomDecision, BackendEffect, BackendSnapshot, MockSimulationBackend, StepObservation,
+    AppRandomDecision, AppRandomSelectable, BackendEffect, BackendSnapshot, MockSimulationBackend,
+    SelectionDecision, StepObservation,
 };
 
 #[test]
@@ -20,6 +21,7 @@ fn quantum_loop_trait_is_object_safe() {
                 advanced_node: None,
                 resolved_events: Vec::new(),
                 decisions: Vec::new(),
+                discovered_choices: Vec::new(),
                 event_log_entries: Vec::new(),
                 event_log_segment_bytes: Vec::new(),
                 event_log_segment_text: String::new(),
@@ -70,6 +72,61 @@ fn production_scenario_binding_preserves_the_submitted_configuration_identity() 
         runtime.canonical_configuration(),
         Configuration::genesis(scenario)
     );
+}
+
+#[test]
+fn live_app_random_consumes_an_exact_parent_campaign_selection() {
+    let mut scheduler = test_scheduler(Vec::new(), Vec::new());
+    let configuration = scheduler.configuration().clone();
+    let node = NodeId {
+        name: String::from("node-a"),
+    };
+    let stream = RngStreamId::from_name("app-random/node:6:node-a/stream:6:branch");
+    let mut seeded = configuration
+        .def
+        .seed()
+        .decision_rng()
+        .fork_in_domain(&stream.domain, &stream.name);
+    let raw = seeded.next_u64();
+    let selected = raw ^ 1;
+    let live = AppRandomDecision {
+        node,
+        stream: stream.clone(),
+        request_id: 9,
+        width: 64,
+        value: selected,
+    };
+    let parent = step(
+        &configuration,
+        Decision::RngDraw(RngDecision { stream, value: raw }),
+    );
+    let selectable = AppRandomSelectable::from_decision(&configuration.def, &live)
+        .expect("live app-random request should reconstruct");
+    let selection = selectable
+        .branch_selection(&parent, selected)
+        .expect("exact parent should admit campaign selection");
+    scheduler
+        .install_app_random_branch_selections([(parent.id(), SelectionDecision::new(&selection))])
+        .expect("campaign selection should install");
+    assert!(matches!(
+        scheduler.checkpoint(),
+        Err(SingleSchedulerCheckpointError::Transient)
+    ));
+
+    let (recorded, discoveries, advanced, _append) = QuantumLoop::append_backend_causal_decisions(
+        &mut scheduler,
+        vec![Decision::AppRandom(live)],
+    )
+    .expect("live selected value should authenticate");
+
+    assert_eq!(scheduler.pending_branch_effect_choice_count(), 0);
+    assert_eq!(advanced.id(), step(&parent, recorded[1].clone()).id());
+    assert_eq!(discoveries.len(), 1);
+    assert!(matches!(
+        recorded.as_slice(),
+        [Decision::RngDraw(draw), Decision::Selection(selection)]
+            if draw.value == raw && selection.is_campaign_branch()
+    ));
 }
 
 #[test]
@@ -170,6 +227,7 @@ fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
                 advanced_node: None,
                 resolved_events: Vec::new(),
                 decisions: Vec::new(),
+                discovered_choices: Vec::new(),
                 event_log_entries: append.entries,
                 event_log_segment_bytes: append.segment_bytes,
                 event_log_segment_text: append.segment_text,
@@ -288,6 +346,75 @@ fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
 }
 
 #[test]
+fn shutdown_rejects_causal_decisions_without_a_discovery_handoff() {
+    struct ShutdownDecisionBackend {
+        inner: MockSimulationBackend,
+        decisions: Vec<Decision>,
+    }
+
+    impl SimulationBackend for ShutdownDecisionBackend {
+        fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
+            self.inner.step_to(ceiling)
+        }
+
+        fn drain_causal_decisions(&mut self) -> Result<Vec<Decision>, BackendError> {
+            Ok(std::mem::take(&mut self.decisions))
+        }
+
+        fn apply(&mut self, effect: &BackendEffect, at: VirtualTime) -> Result<(), BackendError> {
+            self.inner.apply(effect, at)
+        }
+
+        fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError> {
+            self.inner.snapshot()
+        }
+
+        fn restore(&mut self, snapshot: &BackendSnapshot) -> Result<(), BackendError> {
+            self.inner.restore(snapshot)
+        }
+
+        fn now(&self) -> VirtualTime {
+            self.inner.now()
+        }
+
+        fn fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, BackendError> {
+            self.inner.fingerprint(node)
+        }
+
+        fn shutdown(&mut self) -> Result<(), BackendError> {
+            self.inner.shutdown()
+        }
+    }
+
+    let scheduler = test_scheduler(Vec::new(), Vec::new());
+    let mut adapter = BackendQuantumLoop::new(
+        scheduler,
+        ShutdownDecisionBackend {
+            inner: MockSimulationBackend::new(),
+            decisions: vec![Decision::AppRandom(AppRandomDecision {
+                node: NodeId {
+                    name: String::from("node-a"),
+                },
+                stream: RngStreamId::from_name("app-random/node:6:node-a/stream:4:test"),
+                request_id: 1,
+                width: 8,
+                value: 7,
+            })],
+        },
+    );
+
+    let error = adapter
+        .shutdown()
+        .expect_err("shutdown must not lose typed choice discoveries");
+    assert!(
+        error
+            .to_string()
+            .contains("without a quantum discovery handoff")
+    );
+    assert!(adapter.loop_impl().configuration().schedule.is_empty());
+}
+
+#[test]
 fn branch_prefix_admission_records_only_explorer_overrides() {
     let mut scheduler = test_scheduler(
         vec![test_scenario_node(
@@ -333,8 +460,60 @@ fn branch_prefix_admission_records_only_explorer_overrides() {
 }
 
 #[test]
+fn signal_fault_branch_admission_requires_the_exact_typed_boundary() {
+    let mut scheduler = test_scheduler(Vec::new(), Vec::new());
+    let parent = scheduler.configuration().clone();
+    let frontier = scheduler.frontier();
+    let choice = crate::model::BindingSearchChoice {
+        id: crate::model::SearchChoiceId::from_content_hash(ContentHash::from_bytes(
+            b"typed-scheduler-signal-choice",
+        )),
+        candidates_digest: ContentHash::from_bytes(b"typed-scheduler-signal-candidates"),
+        candidate_count: 2,
+        selected_index: None,
+        overridden: false,
+    };
+    let selectable = crate::SignalFaultSelectable::from_frontier(&crate::SearchRuntimeFrontier {
+        configuration: parent.clone(),
+        at: frontier,
+        choices: crate::SearchFrontierChoices::from_decisions(
+            choice
+                .override_decisions(parent.id())
+                .into_iter()
+                .map(Decision::Override),
+        ),
+    })
+    .expect("typed signal selectable");
+    let selection = selectable
+        .branch_selection(&parent, 1)
+        .expect("typed signal selection");
+    let branch = selectable
+        .resolve_branch(&selection)
+        .expect("typed signal branch");
+
+    let (configuration, append) = scheduler
+        .append_signal_fault_campaign_branch(&branch)
+        .expect("exact typed branch should append");
+    assert_eq!(configuration, *branch.selected());
+    assert_eq!(scheduler.configuration(), branch.selected());
+    assert!(branch.decisions().iter().all(|decision| {
+        append
+            .entries
+            .iter()
+            .any(|entry| entry.payload() == &SchedulerEventLogPayload::Decision(decision.clone()))
+    }));
+
+    let error = scheduler
+        .append_signal_fault_campaign_branch(&branch)
+        .expect_err("a consumed branch must not apply at another parent");
+    assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
+}
+
+#[test]
 fn branch_reseed_drives_live_app_random_and_resets_world_network_cursors() {
-    fn app_random_decisions(seed: Seed) -> Vec<Decision> {
+    fn app_random_decisions(
+        seed: Seed,
+    ) -> (Vec<Decision>, Vec<crucible_campaign::ChoiceDiscovery>) {
         let node = NodeId {
             name: String::from("node-a"),
         };
@@ -347,27 +526,48 @@ fn branch_reseed_drives_live_app_random_and_resets_world_network_cursors() {
         scheduler
             .reseed_future_decisions(seed)
             .expect("an idle scheduler should admit a branch re-seed");
-        let (decisions, _configuration, _append) = QuantumLoop::append_backend_causal_decisions(
-            &mut scheduler,
-            vec![Decision::AppRandom(AppRandomDecision {
-                node,
-                stream,
-                request_id: 0,
-                width: 64,
-                value: expected_value,
-            })],
-        )
-        .expect("the live app-random value should match the branch seed");
-        decisions
+        let (decisions, discovered, _configuration, _append) =
+            QuantumLoop::append_backend_causal_decisions(
+                &mut scheduler,
+                vec![Decision::AppRandom(AppRandomDecision {
+                    node,
+                    stream,
+                    request_id: 0,
+                    width: 64,
+                    value: expected_value,
+                })],
+            )
+            .expect("the live app-random value should match the branch seed");
+        assert!(matches!(
+            decisions.as_slice(),
+            [Decision::RngDraw(_), Decision::Selection(_)]
+        ));
+        assert_eq!(discovered.len(), 1);
+        let Decision::Selection(selection) = &decisions[1] else {
+            panic!("typed app-random decision should be a selection")
+        };
+        assert_eq!(
+            selection
+                .selection()
+                .expect("canonical selection")
+                .opportunity(),
+            discovered[0]
+                .opportunity()
+                .id()
+                .expect("discovered opportunity id")
+        );
+        (decisions, discovered)
     }
 
     let first_seed = Seed::from_u64(0xa990_0001);
     let second_seed = Seed::from_u64(0xa990_0002);
-    let first = app_random_decisions(first_seed);
-    let replayed = app_random_decisions(first_seed);
-    let second = app_random_decisions(second_seed);
+    let (first, first_discovered) = app_random_decisions(first_seed);
+    let (replayed, replayed_discovered) = app_random_decisions(first_seed);
+    let (second, second_discovered) = app_random_decisions(second_seed);
     assert_eq!(first, replayed);
+    assert_eq!(first_discovered, replayed_discovered);
     assert_ne!(first, second);
+    assert_eq!(first_discovered, second_discovered);
 
     let mut scheduler = test_scheduler(Vec::new(), Vec::new());
     let link = LinkId::for_endpoints(

@@ -234,6 +234,26 @@ pub(super) fn source_shape_failures(
         ));
     }
 
+    if standard.shape == TestShape::CampaignModel {
+        for required in [
+            "CampaignRepository::new",
+            "CampaignLineage::new",
+            "assert_eq!(lineage.id()?, reverse_lineage.id()?)",
+            "CampaignRepositoryError::Stale",
+            "derive_campaign",
+            "assert_eq!(rebuilt.snapshot_id(), derived.new_snapshot)",
+            "restarted.state",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove canonical identities, stale-command refusal, derivation, and restart through the public campaign repository",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
     if standard.shape == TestShape::CampaignContinuity {
         for required in [
             "seed_next_run_for_provenance",
@@ -269,9 +289,12 @@ pub(super) fn package_layer(package: &str) -> Option<Layer> {
     match package {
         "crucible-sim" | "crucible-assert" => Some(Layer::L0),
         "crucible-shmem" | "crucible-protocol" | "crucible-device" => Some(Layer::L1),
-        "crucible-qemu" | "crucible-qemu-plugin" | "crucible-guest" => Some(Layer::L2),
-        "crucible" | "crucible-cas" => Some(Layer::L3),
-        "crucible-session" | "crucible-api" | "crucible-daemon" | "crucible-cli" => Some(Layer::L4),
+        "crucible-qemu" | "crucible-qemu-plugin" | "crucible-guest" | "crucible-linux-resource" => {
+            Some(Layer::L2)
+        }
+        "crucible" | "crucible-cas" | "crucible-campaign" => Some(Layer::L3),
+        "crucible-s3-store" | "crucible-session" | "crucible-api" | "crucible-daemon"
+        | "crucible-cli" => Some(Layer::L4),
         "crucible-harness" => Some(Layer::CrossCutting),
         _ => None,
     }

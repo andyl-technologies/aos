@@ -1,0 +1,918 @@
+diff --git a/block/crucible-hot-fork-source.c b/block/crucible-hot-fork-source.c
+index 64258b76b..3bc5e5997 100644
+--- a/block/crucible-hot-fork-source.c
++++ b/block/crucible-hot-fork-source.c
+@@ -10,8 +10,13 @@
+ #include "block/block_int.h"
+ #include "block/graph-lock.h"
+ #include "qapi/error.h"
++#include "qemu/cutils.h"
+ #include "qemu/main-loop.h"
+ #include "system/block-backend.h"
++#ifdef __linux__
++#include <linux/fs.h>
++#include <sys/ioctl.h>
++#endif
+ 
+ #define HOT_FORK_WRITE_PERMISSIONS \
+     (BLK_PERM_WRITE | BLK_PERM_WRITE_UNCHANGED | BLK_PERM_RESIZE)
+@@ -233,13 +238,14 @@ static bool source_root_matches(const QemuBlockBackendHotForkReadOnlySource *sou
+            QLIST_NEXT(parent, next_parent) == NULL;
+ }
+ 
+-static bool source_matches(const QemuBlockBackendHotForkReadOnlySource *source,
+-                           Error **errp)
++static bool source_matches_owner(
++    const QemuBlockBackendHotForkReadOnlySource *source,
++    pid_t owner, Error **errp)
+ {
+     uint64_t permissions = 0, shared_permissions = 0;
+     uint64_t expected_permissions, expected_shared;
+ 
+-    if (!source || source->owner != getpid() || !source_root_matches(source)) {
++    if (!source || source->owner != owner || !source_root_matches(source)) {
+         error_setg(errp, "Crucible read-only source lost its process or root");
+         return false;
+     }
+@@ -262,6 +268,12 @@ static bool source_matches(const QemuBlockBackendHotForkReadOnlySource *source,
+     return source_graph_validate(source, false, errp);
+ }
+ 
++static bool source_matches(const QemuBlockBackendHotForkReadOnlySource *source,
++                           Error **errp)
++{
++    return source_matches_owner(source, getpid(), errp);
++}
++
+ static bool source_transition_allowed(
+     const QemuBlockBackendHotForkReadOnlySource *source, Error **errp)
+ {
+@@ -462,25 +474,29 @@ struct QemuBlockHotForkSourceSet {
+     GHashTable *backends;
+     size_t originally_writable_roots;
+     size_t originally_writable_backends;
++    bool child_plan_active;
+ };
+ 
+-static bool source_set_owned(const QemuBlockHotForkSourceSet *set, Error **errp)
++static bool source_set_owned_by(const QemuBlockHotForkSourceSet *set,
++                                pid_t owner, Error **errp)
+ {
+     size_t index;
+ 
+-    if (!set || set->owner != getpid()) {
++    if (!set || set->owner != owner) {
+         error_setg(errp, "Crucible source set lost its owning process");
+         return false;
+     }
+     for (index = 0; index < set->sources->len; index++) {
+-        if (!source_matches(g_ptr_array_index(set->sources, index), errp)) {
++        if (!source_matches_owner(g_ptr_array_index(set->sources, index),
++                                   owner, errp)) {
+             return false;
+         }
+     }
+     return true;
+ }
+ 
+-static bool source_set_complete(const QemuBlockHotForkSourceSet *set, Error **errp)
++static bool source_set_complete_owned(const QemuBlockHotForkSourceSet *set,
++                                      pid_t owner, Error **errp)
+ {
+     g_autoptr(GHashTable) consumers =
+         g_hash_table_new(g_direct_hash, g_direct_equal);
+@@ -490,7 +506,7 @@ static bool source_set_complete(const QemuBlockHotForkSourceSet *set, Error **er
+     gpointer key;
+     size_t nodes = 0, backends = 0;
+ 
+-    if (!source_set_owned(set, errp)) {
++    if (!source_set_owned_by(set, owner, errp)) {
+         return false;
+     }
+     GRAPH_RDLOCK_GUARD_MAINLOOP();
+@@ -534,6 +550,16 @@ static bool source_set_complete(const QemuBlockHotForkSourceSet *set, Error **er
+     return true;
+ }
+ 
++static bool source_set_owned(const QemuBlockHotForkSourceSet *set, Error **errp)
++{
++    return source_set_owned_by(set, getpid(), errp);
++}
++
++static bool source_set_complete(const QemuBlockHotForkSourceSet *set, Error **errp)
++{
++    return source_set_complete_owned(set, getpid(), errp);
++}
++
+ /* Only called after all release preconditions have been checked under BQL. */
+ static void source_set_destroy(QemuBlockHotForkSourceSet *set)
+ {
+@@ -690,6 +716,10 @@ bool qemu_block_hot_fork_source_set_restore(QemuBlockHotForkSourceSet *set,
+     if (!source_set_owned(set, errp)) {
+         return false;
+     }
++    if (set->child_plan_active) {
++        error_setg(errp, "Crucible source set retains a child file plan");
++        return false;
++    }
+     /* Recover in reverse transition order; failure retains all capabilities. */
+     for (index = set->sources->len; index > 0; index--) {
+         if (!qemu_block_backend_hot_fork_read_only_source_restore(
+@@ -709,6 +739,10 @@ bool qemu_block_hot_fork_source_set_free(QemuBlockHotForkSourceSet *set,
+     if (!source_set_owned(set, errp)) {
+         return false;
+     }
++    if (set->child_plan_active) {
++        error_setg(errp, "Crucible source set retains a child file plan");
++        return false;
++    }
+     for (index = 0; index < set->sources->len; index++) {
+         QemuBlockBackendHotForkReadOnlySource *source =
+             g_ptr_array_index(set->sources, index);
+@@ -726,7 +760,8 @@ bool qemu_block_hot_fork_source_set_release_empty_child(
+     QemuBlockHotForkSourceSet *set, Error **errp)
+ {
+     GLOBAL_STATE_CODE();
+-    if (!set || set->owner == getpid() || set->sources->len ||
++    if (!set || set->owner == getpid() || set->child_plan_active ||
++        set->sources->len ||
+         g_hash_table_size(set->nodes) || g_hash_table_size(set->backends)) {
+         error_setg(errp, "Crucible child requires a native graph handoff");
+         return false;
+@@ -735,3 +770,417 @@ bool qemu_block_hot_fork_source_set_release_empty_child(
+     source_set_destroy(set);
+     return true;
+ }
++
++/* Bound native files independently of the complete graph visit bound. */
++#define HOT_FORK_CHILD_MAX_FILES 4096
++#define HOT_FORK_CHILD_COPY_CHUNK (64 * 1024)
++
++typedef struct HotForkChildFileEntry {
++    BlockDriverState *node;
++    BdrvCrucibleHotForkFileState source;
++    struct stat destination;
++    off_t source_size;
++    bool private_file;
++    int destination_fd;
++    int prepared_fd;
++} HotForkChildFileEntry;
++
++struct QemuBlockHotForkChildFiles {
++    QemuBlockHotForkSourceSet *sources;
++    GArray *files;
++    pid_t owner;
++    bool consumed;
++};
++
++static void child_files_destroy(QemuBlockHotForkChildFiles *plan)
++{
++    size_t index;
++
++    for (index = 0; index < plan->files->len; index++) {
++        HotForkChildFileEntry *entry =
++            &g_array_index(plan->files, HotForkChildFileEntry, index);
++
++        if (entry->prepared_fd >= 0) {
++            close(entry->prepared_fd);
++        }
++    }
++    g_array_free(plan->files, true);
++    g_free(plan);
++}
++
++static bool child_files_capture(QemuBlockHotForkChildFiles *plan, Error **errp)
++{
++    g_autoptr(GHashTable) seen = g_hash_table_new(g_direct_hash, g_direct_equal);
++    size_t index, visit;
++    GRAPH_RDLOCK_GUARD_MAINLOOP();
++
++    for (index = 0; index < plan->sources->sources->len; index++) {
++        QemuBlockBackendHotForkReadOnlySource *source =
++            g_ptr_array_index(plan->sources->sources, index);
++
++        for (visit = 0; visit < source->graph->len; visit++) {
++            ReadOnlySourceNode *node =
++                &g_array_index(source->graph, ReadOnlySourceNode, visit);
++            HotForkChildFileEntry entry = {
++                .node = node->node,
++                .private_file = !node->file.read_only,
++                .destination_fd = -1,
++                .prepared_fd = -1,
++            };
++
++            if (!node->file_pinned || !g_hash_table_add(seen, node->node)) {
++                continue;
++            }
++            if (plan->files->len == HOT_FORK_CHILD_MAX_FILES ||
++                !node->driver->bdrv_crucible_hot_fork_file_child ||
++                !node->driver->bdrv_crucible_hot_fork_file(
++                    node->node, BDRV_CRUCIBLE_HOT_FORK_FILE_QUERY,
++                    &entry.source, errp) || !entry.source.read_only) {
++                if (!errp || !*errp) {
++                    error_setg(errp, "Crucible child lacks a bounded frozen "
++                               "file disposition");
++                }
++                return false;
++            }
++            g_array_append_val(plan->files, entry);
++        }
++    }
++    return true;
++}
++
++static bool child_files_bind(QemuBlockHotForkChildFiles *plan,
++                             const QemuBlockHotForkChildFile *files,
++                             size_t count, uint64_t maximum_bytes, Error **errp)
++{
++    size_t index, candidate, other, matched = 0;
++    uint64_t total = 0;
++
++    for (index = 0; index < plan->files->len; index++) {
++        HotForkChildFileEntry *entry =
++            &g_array_index(plan->files, HotForkChildFileEntry, index);
++        struct stat source;
++        int flags;
++
++        if (!entry->private_file) {
++            continue;
++        }
++        for (candidate = 0; candidate < count; candidate++) {
++            if (files[candidate].node == entry->node) {
++                if (entry->destination_fd >= 0) {
++                    error_setg(errp, "Crucible child file has duplicate replacements");
++                    return false;
++                }
++                entry->destination_fd = files[candidate].descriptor;
++                matched++;
++            }
++        }
++        flags = entry->destination_fd < 0 ? -1 :
++            fcntl(entry->destination_fd, F_GETFL);
++        if (flags < 0 ||
++            fstat(entry->destination_fd, &entry->destination) < 0 ||
++            !S_ISREG(entry->destination.st_mode) ||
++            entry->destination.st_nlink != 1 ||
++            entry->destination.st_size != 0 ||
++            (flags & O_ACCMODE) != O_RDWR || (flags & O_APPEND) ||
++            fstat(entry->source.descriptor, &source) < 0 ||
++            source.st_size < 0 ||
++            (uint64_t)source.st_size > maximum_bytes - total) {
++            error_setg(errp, "Crucible child requires empty private files "
++                       "within its byte budget");
++            return false;
++        }
++        total += source.st_size;
++        entry->source_size = source.st_size;
++        for (other = 0; other < plan->files->len; other++) {
++            HotForkChildFileEntry *prior =
++                &g_array_index(plan->files, HotForkChildFileEntry, other);
++
++            if ((entry->destination.st_dev == prior->source.device &&
++                 entry->destination.st_ino == prior->source.inode) ||
++                (other < index && prior->private_file &&
++                 entry->destination.st_dev == prior->destination.st_dev &&
++                 entry->destination.st_ino == prior->destination.st_ino)) {
++                error_setg(errp, "Crucible child file aliases a source or "
++                           "another replacement");
++                return false;
++            }
++        }
++    }
++    if (matched != count) {
++        error_setg(errp, "Crucible child file list contains an unowned replacement");
++        return false;
++    }
++    return true;
++}
++
++static int child_file_open(int descriptor, int flags, Error **errp)
++{
++    char path[64];
++    int opened;
++
++    g_snprintf(path, sizeof(path), "/proc/self/fd/%d", descriptor);
++    opened = open(path, flags | O_CLOEXEC);
++    if (opened < 0) {
++        error_setg_errno(errp, errno, "Cannot open Crucible child file capability");
++    }
++    return opened;
++}
++
++static bool child_file_copy(int source, int destination, off_t size, Error **errp)
++{
++    g_autofree uint8_t *buffer = NULL;
++    off_t offset = 0;
++
++#ifdef FICLONE
++    if (ioctl(destination, FICLONE, source) == 0) {
++        goto sync;
++    }
++    if (errno != EOPNOTSUPP && errno != ENOTTY && errno != EXDEV && errno != EINVAL) {
++        error_setg_errno(errp, errno, "Cannot clone Crucible child file");
++        return false;
++    }
++#endif
++    /* Sparse copying is the correctness fallback, not a reflink requirement. */
++    buffer = g_malloc(HOT_FORK_CHILD_COPY_CHUNK);
++    while (offset < size) {
++        size_t length = MIN(size - offset, HOT_FORK_CHILD_COPY_CHUNK);
++        size_t read_bytes = 0, written = 0, index;
++        uint8_t nonzero = 0;
++
++        while (read_bytes < length) {
++            ssize_t result = pread(source, buffer + read_bytes,
++                                    length - read_bytes, offset + read_bytes);
++            if (result < 0 && errno == EINTR) {
++                continue;
++            }
++            if (result <= 0) {
++                error_setg_errno(errp, result < 0 ? errno : EIO,
++                                 "Cannot read frozen Crucible source file");
++                return false;
++            }
++            read_bytes += result;
++        }
++        for (index = 0; index < length; index++) {
++            nonzero |= buffer[index];
++        }
++        while (nonzero && written < length) {
++            ssize_t result = pwrite(destination, buffer + written,
++                                     length - written, offset + written);
++            if (result < 0 && errno == EINTR) {
++                continue;
++            }
++            if (result <= 0) {
++                error_setg_errno(errp, result < 0 ? errno : EIO,
++                                 "Cannot write private Crucible child file");
++                return false;
++            }
++            written += result;
++        }
++        offset += length;
++    }
++    if (ftruncate(destination, size) < 0) {
++        error_setg_errno(errp, errno, "Cannot size private Crucible child file");
++        return false;
++    }
++#ifdef FICLONE
++sync:
++#endif
++    if (fdatasync(destination) < 0) {
++        error_setg_errno(errp, errno, "Cannot sync private Crucible child file");
++        return false;
++    }
++    return true;
++}
++
++static bool child_file_prepare(HotForkChildFileEntry *entry, Error **errp)
++{
++    struct stat source, destination, after;
++    int reader = -1, writer = -1;
++    bool prepared = false;
++
++    reader = child_file_open(entry->source.descriptor, O_RDONLY, errp);
++    if (reader < 0) {
++        goto out;
++    }
++    if (fstat(reader, &source) < 0 || source.st_dev != entry->source.device ||
++        source.st_ino != entry->source.inode ||
++        (entry->private_file && source.st_size != entry->source_size)) {
++        error_setg(errp, "Crucible source file changed before private copy");
++        goto out;
++    }
++    if (entry->private_file) {
++        writer = child_file_open(entry->destination_fd, O_RDWR, errp);
++        if (writer < 0) {
++            goto out;
++        }
++        if (fstat(writer, &destination) < 0 || destination.st_size != 0 ||
++            destination.st_dev != entry->destination.st_dev ||
++            destination.st_ino != entry->destination.st_ino) {
++            error_setg(errp, "Crucible private destination changed before copy");
++            goto out;
++        }
++        if (!child_file_copy(reader, writer, source.st_size, errp)) {
++            goto out;
++        }
++        if (fstat(writer, &entry->destination) < 0 ||
++            entry->destination.st_size != source.st_size) {
++            error_setg(errp, "Crucible private copy has an unexpected length");
++            goto out;
++        }
++    }
++    if (fstat(reader, &after) < 0 || source.st_size != after.st_size ||
++        source.st_mtim.tv_sec != after.st_mtim.tv_sec ||
++        source.st_mtim.tv_nsec != after.st_mtim.tv_nsec) {
++        error_setg(errp, "Frozen Crucible source changed during private copy");
++        goto out;
++    }
++    entry->prepared_fd = child_file_open(entry->private_file ? writer : reader,
++                                          entry->source.flags, errp);
++    prepared = entry->prepared_fd >= 0;
++out:
++    if (reader >= 0) {
++        close(reader);
++    }
++    if (writer >= 0) {
++        close(writer);
++    }
++    return prepared;
++}
++
++QemuBlockHotForkChildFiles *qemu_block_hot_fork_child_files_prepare(
++    QemuBlockHotForkSourceSet *set, const QemuBlockHotForkChildFile *files,
++    size_t count, uint64_t maximum_bytes, Error **errp)
++{
++    QemuBlockHotForkSourceSetInventory inventory;
++    QemuBlockHotForkChildFiles *plan;
++    size_t index;
++
++    GLOBAL_STATE_CODE();
++    if (count > HOT_FORK_CHILD_MAX_FILES || (count && !files) ||
++        !qemu_block_hot_fork_source_set_query(set, &inventory, errp) ||
++        !inventory.frozen || set->child_plan_active) {
++        if (!errp || !*errp) {
++            error_setg(errp, "Crucible child files require one complete "
++                       "frozen source set");
++        }
++        return NULL;
++    }
++    plan = g_new0(QemuBlockHotForkChildFiles, 1);
++    plan->sources = set;
++    plan->owner = getpid();
++    plan->files = g_array_new(false, false, sizeof(HotForkChildFileEntry));
++    if (!child_files_capture(plan, errp) ||
++        !child_files_bind(plan, files, count, maximum_bytes, errp)) {
++        goto fail;
++    }
++    for (index = 0; index < plan->files->len; index++) {
++        if (!child_file_prepare(
++                &g_array_index(plan->files, HotForkChildFileEntry, index), errp)) {
++            goto fail;
++        }
++    }
++    set->child_plan_active = true;
++    return plan;
++fail:
++    child_files_destroy(plan);
++    return NULL;
++}
++
++bool qemu_block_hot_fork_child_files_free(QemuBlockHotForkChildFiles *plan,
++                                         Error **errp)
++{
++    GLOBAL_STATE_CODE();
++    if (!plan || plan->owner != getpid() || plan->consumed ||
++        !plan->sources->child_plan_active) {
++        error_setg(errp, "Crucible child file plan lost its parent owner");
++        return false;
++    }
++    plan->sources->child_plan_active = false;
++    child_files_destroy(plan);
++    return true;
++}
++
++bool qemu_block_hot_fork_child_files_install(QemuBlockHotForkChildFiles *plan,
++                                            Error **errp)
++{
++    QemuBlockHotForkSourceSet *set;
++    QemuBlockBackendHotForkBarrierInventory barrier;
++    size_t index, visit;
++    bool held;
++
++    GLOBAL_STATE_CODE();
++    if (!plan || plan->owner <= 1 || plan->owner != getppid() ||
++        plan->owner == getpid() || plan->consumed ||
++        !source_set_complete_owned(plan->sources, plan->owner, errp) ||
++        !qemu_aio_hot_fork_thread_pools_empty() ||
++        !qemu_block_hot_fork_all_sources_read_only(errp)) {
++        if (!errp || !*errp) {
++            error_setg(errp, "Crucible file installation requires a "
++                       "quiescent immediate child");
++        }
++        return false;
++    }
++    if (!qemu_block_backend_hot_fork_barrier(
++            QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_QUERY, &barrier)) {
++        error_setg(errp, "Cannot inspect child block barriers");
++        return false;
++    }
++    held = barrier.held || barrier.graph_held;
++    qemu_block_backend_hot_fork_barrier_inventory_destroy(&barrier);
++    if (held) {
++        error_setg(errp, "Crucible file installation requires released block barriers");
++        return false;
++    }
++    set = plan->sources;
++    plan->consumed = true;
++    {
++        GRAPH_RDLOCK_GUARD_MAINLOOP();
++        for (index = 0; index < plan->files->len; index++) {
++            HotForkChildFileEntry *entry =
++                &g_array_index(plan->files, HotForkChildFileEntry, index);
++            struct stat actual;
++            dev_t device = entry->private_file ?
++                entry->destination.st_dev : entry->source.device;
++            ino_t inode = entry->private_file ?
++                entry->destination.st_ino : entry->source.inode;
++
++            if (fstat(entry->prepared_fd, &actual) < 0 ||
++                actual.st_dev != device || actual.st_ino != inode ||
++                (entry->private_file &&
++                 (actual.st_size != entry->destination.st_size ||
++                  actual.st_mtim.tv_sec != entry->destination.st_mtim.tv_sec ||
++                  actual.st_mtim.tv_nsec != entry->destination.st_mtim.tv_nsec)) ||
++                !entry->node->drv->bdrv_crucible_hot_fork_file_child(
++                    entry->node, plan->owner, entry->prepared_fd, errp)) {
++                if (!errp || !*errp) {
++                    error_setg(errp, "Crucible prepared child file lost its identity");
++                }
++                return false;
++            }
++        }
++        for (index = 0; index < set->sources->len; index++) {
++            QemuBlockBackendHotForkReadOnlySource *source =
++                g_ptr_array_index(set->sources, index);
++
++            source->owner = getpid();
++            for (visit = 0; visit < source->graph->len; visit++) {
++                ReadOnlySourceNode *node =
++                    &g_array_index(source->graph, ReadOnlySourceNode, visit);
++                if (node->file_pinned &&
++                    !node->driver->bdrv_crucible_hot_fork_file(
++                        node->node, BDRV_CRUCIBLE_HOT_FORK_FILE_QUERY,
++                        &node->file, errp)) {
++                    return false;
++                }
++            }
++        }
++    }
++    set->owner = getpid();
++    set->child_plan_active = false;
++    if (!qemu_block_hot_fork_source_set_restore(set, errp) ||
++        !qemu_block_hot_fork_source_set_free(set, errp)) {
++        return false;
++    }
++    child_files_destroy(plan);
++    return true;
++}
+diff --git a/block/file-posix.c b/block/file-posix.c
+index 56c7aa1cc..5e5b76c72 100644
+--- a/block/file-posix.c
++++ b/block/file-posix.c
+@@ -159,6 +159,8 @@ typedef struct BDRVRawState {
+ 
+     /* Native source leases prohibit pathname replacement during reopen. */
+     unsigned crucible_source_pins;
++    pid_t crucible_source_owner;
++    bool crucible_child_descriptor;
+ 
+     bool has_discard:1;
+     bool has_write_zeroes:1;
+@@ -1102,7 +1104,14 @@ static int raw_reconfigure_getfd(BlockDriverState *bs, int flags,
+ 
+     /* If we cannot use fcntl, or fcntl failed, fall back to qemu_open() */
+     if (fd == -1) {
++        g_autofree char *child_filename = s->crucible_child_descriptor ?
++            g_strdup_printf("/proc/self/fd/%d", s->fd) : NULL;
+         const char *normalized_filename = bs->filename;
++
++        /* A child must never reopen its parent's launch pathname. */
++        if (child_filename) {
++            normalized_filename = child_filename;
++        }
+         ret = raw_normalize_devicepath(&normalized_filename, errp);
+         if (ret >= 0) {
+             fd = qemu_open(normalized_filename, *open_flags, errp);
+@@ -1112,7 +1121,7 @@ static int raw_reconfigure_getfd(BlockDriverState *bs, int flags,
+         }
+     }
+ 
+-    if (fd != -1 && s->crucible_source_pins) {
++    if (fd != -1 && (s->crucible_source_pins || s->crucible_child_descriptor)) {
+         struct stat original, replacement;
+ 
+         if (fstat(s->fd, &original) < 0 || fstat(fd, &replacement) < 0 ||
+@@ -3938,6 +3947,9 @@ static bool GRAPH_RDLOCK raw_crucible_hot_fork_file(
+             error_setg(errp, "Crucible file source pin count is exhausted");
+             return false;
+         }
++        if (!s->crucible_source_pins) {
++            s->crucible_source_owner = getpid();
++        }
+         s->crucible_source_pins++;
+         break;
+     case BDRV_CRUCIBLE_HOT_FORK_FILE_UNPIN:
+@@ -3956,11 +3968,74 @@ static bool GRAPH_RDLOCK raw_crucible_hot_fork_file(
+     *state = (BdrvCrucibleHotForkFileState) {
+         .device = metadata.st_dev,
+         .inode = metadata.st_ino,
++        .descriptor = s->fd,
++        .flags = flags,
+         .read_only = (flags & O_ACCMODE) == O_RDONLY,
+     };
+     return true;
+ }
+ 
++static bool GRAPH_RDLOCK raw_crucible_hot_fork_file_child(
++    BlockDriverState *bs, pid_t parent, int descriptor, Error **errp)
++{
++#ifdef __linux__
++    BDRVRawState *s = bs->opaque;
++    BdrvCrucibleHotForkFileState original;
++    struct stat metadata, opened;
++    char path[64];
++    int flags, retained;
++
++    GLOBAL_STATE_CODE();
++    if (parent <= 1 || parent != getppid() || parent == getpid() ||
++        s->crucible_source_owner != parent || !s->crucible_source_pins ||
++        s->use_linux_aio || s->use_linux_io_uring ||
++        !raw_crucible_hot_fork_file(bs, BDRV_CRUCIBLE_HOT_FORK_FILE_QUERY,
++                                    &original, errp)) {
++        if (!errp || !*errp) {
++            error_setg(errp, "Crucible file adoption requires its immediate child");
++        }
++        return false;
++    }
++    flags = descriptor < 0 ? -1 : fcntl(descriptor, F_GETFL);
++    if (!original.read_only || descriptor == s->fd || flags < 0 ||
++        fstat(descriptor, &metadata) < 0 || !S_ISREG(metadata.st_mode) ||
++        flags != original.flags) {
++        error_setg(errp, "Crucible child file must preserve frozen access flags");
++        return false;
++    }
++    /* dup() would retain locks through the parent's staged open description. */
++    g_snprintf(path, sizeof(path), "/proc/self/fd/%d", descriptor);
++    retained = qemu_open(path, flags, errp);
++    if (retained < 0) {
++        return false;
++    }
++    if (fstat(retained, &opened) < 0 || opened.st_dev != metadata.st_dev ||
++        opened.st_ino != metadata.st_ino) {
++        qemu_close(retained);
++        error_setg(errp, "Crucible child file changed during independent reopen");
++        return false;
++    }
++    /* Locks belong to open file descriptions, not inherited cached bitmasks. */
++    if (s->use_lock &&
++        (raw_apply_lock_bytes(NULL, retained, s->perm, ~s->shared_perm,
++                              false, errp) < 0 ||
++         raw_check_lock_bytes(retained, s->perm, s->shared_perm, errp) < 0)) {
++        qemu_close(retained);
++        return false;
++    }
++    qemu_close(s->fd);
++    s->fd = retained;
++    s->locked_perm = s->use_lock ? s->perm : 0;
++    s->locked_shared_perm = s->use_lock ? BLK_PERM_ALL & ~s->shared_perm : 0;
++    s->crucible_source_owner = getpid();
++    s->crucible_child_descriptor = true;
++    return true;
++#else
++    error_setg(errp, "Crucible child file adoption requires Linux");
++    return false;
++#endif
++}
++
+ BlockDriver bdrv_file = {
+     .format_name = "file",
+     .protocol_name = "file",
+@@ -3973,6 +4048,7 @@ BlockDriver bdrv_file = {
+     .bdrv_reopen_commit = raw_reopen_commit,
+     .bdrv_reopen_abort = raw_reopen_abort,
+     .bdrv_crucible_hot_fork_file = raw_crucible_hot_fork_file,
++    .bdrv_crucible_hot_fork_file_child = raw_crucible_hot_fork_file_child,
+     .bdrv_close = raw_close,
+     .bdrv_co_create = raw_co_create,
+     .bdrv_co_create_opts = raw_co_create_opts,
+diff --git a/include/block/block_int-common.h b/include/block/block_int-common.h
+index 2271ea260..10e5db2f5 100644
+--- a/include/block/block_int-common.h
++++ b/include/block/block_int-common.h
+@@ -95,6 +95,8 @@ typedef struct BdrvTrackedRequest {
+ typedef struct BdrvCrucibleHotForkFileState {
+     dev_t device;
+     ino_t inode;
++    int descriptor;
++    int flags;
+     bool read_only;
+ } BdrvCrucibleHotForkFileState;
+ 
+@@ -257,6 +259,10 @@ struct BlockDriver {
+         BlockDriverState *bs, BdrvCrucibleHotForkFileAction action,
+         BdrvCrucibleHotForkFileState *state, Error **errp);
+ 
++    /* Child-only adoption of an authenticated, byte-identical native file. */
++    bool GRAPH_RDLOCK_PTR (*bdrv_crucible_hot_fork_file_child)(
++        BlockDriverState *bs, pid_t parent, int descriptor, Error **errp);
++
+     /* For handling image reopen for split or non-split files. */
+     int GRAPH_UNLOCKED_PTR (*bdrv_reopen_prepare)(
+         BDRVReopenState *reopen_state, BlockReopenQueue *queue, Error **errp);
+diff --git a/include/system/block-backend-global-state.h b/include/system/block-backend-global-state.h
+index 93201b23b..072b2318b 100644
+--- a/include/system/block-backend-global-state.h
++++ b/include/system/block-backend-global-state.h
+@@ -193,6 +193,44 @@ bool qemu_block_backend_hot_fork_read_only_source_free(
+     QemuBlockBackendHotForkReadOnlySource *source, Error **errp);
+ 
+ typedef struct QemuBlockHotForkSourceSet QemuBlockHotForkSourceSet;
++typedef struct QemuBlockHotForkChildFiles QemuBlockHotForkChildFiles;
++
++/* Caller-owned empty regular files for every originally writable native leaf. */
++typedef struct QemuBlockHotForkChildFile {
++    BlockDriverState *node;
++    int descriptor;
++} QemuBlockHotForkChildFile;
++
++/*
++ * Prepares exact private file copies while the complete source set is frozen.
++ * Destination descriptors must be unique, empty, writable regular files and
++ * must not alias any source. The caller retains them, including partial copies
++ * on I/O failure. maximum_bytes bounds their aggregate logical source length.
++ * Read-only leaves get independent read-only descriptors for the same inode.
++ * A source set permits one outstanding plan and cannot restore before release.
++ * The coordinator must bind it to one fork and release the parent copy after
++ * that fork; reusing its private destinations for another child is forbidden.
++ * This native primitive does not authorize the production physical fork.
++ */
++QemuBlockHotForkChildFiles *qemu_block_hot_fork_child_files_prepare(
++    QemuBlockHotForkSourceSet *set, const QemuBlockHotForkChildFile *files,
++    size_t count, uint64_t maximum_bytes, Error **errp);
++
++/* Releases a prepared plan in its parent without changing source permissions. */
++bool qemu_block_hot_fork_child_files_free(QemuBlockHotForkChildFiles *plan,
++                                         Error **errp);
++
++/*
++ * Adopts the complete prepared file set only in its immediate fork child,
++ * outside block barriers and after native worker retirement. It preserves the
++ * graph and cached bytes, rebinds native file locks, restores original root
++ * access against the private files, and releases the child's source capability.
++ * The caller must terminate the child on any failure after adoption begins;
++ * the parent plan, graph, files, and source capabilities remain unchanged.
++ * Success consumes both the inherited plan and its source set.
++ */
++bool qemu_block_hot_fork_child_files_install(QemuBlockHotForkChildFiles *plan,
++                                            Error **errp);
+ 
+ /* Explicit process-local ownership, never a wire representation. */
+ typedef struct QemuBlockHotForkSourceRoot {
+diff --git a/tests/unit/test-block-backend.c b/tests/unit/test-block-backend.c
+index 2063614bf..c045515b0 100644
+--- a/tests/unit/test-block-backend.c
++++ b/tests/unit/test-block-backend.c
+@@ -1114,6 +1114,142 @@ static void test_hot_fork_native_io_after_worker_retirement(void)
+     unlink(child_path);
+     unlink(source_path);
+ }
++
++static void test_hot_fork_child_native_files(void)
++{
++    HotForkSourceSetFixture fixture;
++    QemuBlockHotForkSourceSet *sources;
++    QemuBlockHotForkChildFiles *plan;
++    QemuBlockHotForkChildFile files[2], wrong[2];
++    char paths[2][80];
++    uint8_t original[1024], changed[1024], observed[1024];
++    BdrvCrucibleHotForkFileState parent_files[3];
++    QemuBlockHotForkSourceSetInventory inventory;
++    size_t index;
++    pid_t child;
++    int status;
++
++    test_hot_fork_source_set_setup(&fixture, false);
++    memset(original, 0x31, sizeof(original));
++    memset(changed, 0xa6, sizeof(changed));
++    g_assert_cmpint(bdrv_save_vmstate(fixture.roots[0].root, original, 0,
++                                     sizeof(original)), ==, sizeof(original));
++    g_assert_cmpint(blk_pwrite(fixture.roots[1].backend, 0,
++                               sizeof(original), original, 0), ==, 0);
++    for (index = 0; index < G_N_ELEMENTS(files); index++) {
++        g_snprintf(paths[index], sizeof(paths[index]),
++                    "/tmp/qemu-hot-fork-private-native-%zu-XXXXXX", index);
++        files[index] = (QemuBlockHotForkChildFile) {
++            .node = fixture.roots[index].root->file->bs,
++            .descriptor = mkstemp(paths[index]),
++        };
++        g_assert_cmpint(files[index].descriptor, >=, 0);
++    }
++    sources = qemu_block_hot_fork_source_set_new(
++        fixture.roots, G_N_ELEMENTS(fixture.roots), &error_abort);
++    g_assert_null(qemu_block_hot_fork_child_files_prepare(
++        sources, files, G_N_ELEMENTS(files), 16 * HOT_FORK_SNAPSHOT_SIZE, NULL));
++    g_assert_true(qemu_block_hot_fork_source_set_freeze(sources, &error_abort));
++    g_assert_null(qemu_block_hot_fork_child_files_prepare(
++        sources, files, G_N_ELEMENTS(files), 0, NULL));
++    g_assert_null(qemu_block_hot_fork_child_files_prepare(
++        sources, files, 1, 16 * HOT_FORK_SNAPSHOT_SIZE, NULL));
++    memcpy(wrong, files, sizeof(files));
++    wrong[1].descriptor = wrong[0].descriptor;
++    g_assert_null(qemu_block_hot_fork_child_files_prepare(
++        sources, wrong, G_N_ELEMENTS(wrong), 16 * HOT_FORK_SNAPSHOT_SIZE, NULL));
++    memcpy(wrong, files, sizeof(files));
++    wrong[1].node = fixture.roots[2].root->file->bs;
++    g_assert_null(qemu_block_hot_fork_child_files_prepare(
++        sources, wrong, G_N_ELEMENTS(wrong), 16 * HOT_FORK_SNAPSHOT_SIZE, NULL));
++
++    plan = qemu_block_hot_fork_child_files_prepare(
++        sources, files, G_N_ELEMENTS(files), 16 * HOT_FORK_SNAPSHOT_SIZE,
++        &error_abort);
++    g_assert_nonnull(plan);
++    g_assert_false(qemu_block_hot_fork_child_files_install(plan, NULL));
++    g_assert_false(qemu_block_hot_fork_source_set_restore(sources, NULL));
++    g_assert_false(qemu_block_hot_fork_source_set_free(sources, NULL));
++    for (index = 0; index < G_N_ELEMENTS(fixture.roots); index++) {
++        parent_files[index] = test_hot_fork_file_state(fixture.roots[index].root);
++        g_assert_true(parent_files[index].read_only);
++    }
++    g_assert_true(qemu_aio_hot_fork_prepare_thread_pools(&error_abort));
++    child = fork();
++    g_assert_cmpint(child, >=, 0);
++    if (child == 0) {
++        test_hot_fork_child_alarm(15);
++        g_assert_false(qemu_block_hot_fork_child_files_free(plan, NULL));
++        g_assert_false(qemu_block_hot_fork_source_set_restore(sources, NULL));
++        g_assert_true(qemu_block_hot_fork_child_files_install(plan, &error_abort));
++        for (index = 0; index < G_N_ELEMENTS(fixture.roots); index++) {
++            BdrvCrucibleHotForkFileState adopted =
++                test_hot_fork_file_state(fixture.roots[index].root);
++            bool same = adopted.device == parent_files[index].device &&
++                        adopted.inode == parent_files[index].inode;
++
++            g_assert_cmpint(same, ==, index == 2);
++            g_assert_cmpint(adopted.read_only, ==, index == 2);
++        }
++        g_assert_cmpint(bdrv_load_vmstate(fixture.roots[0].root, observed, 0,
++                                         sizeof(observed)), ==, sizeof(observed));
++        g_assert_cmpmem(observed, sizeof(observed), original, sizeof(original));
++        g_assert_cmpint(blk_pread(fixture.roots[1].backend, 0,
++                                  sizeof(observed), observed, 0), ==, 0);
++        g_assert_cmpmem(observed, sizeof(observed), original, sizeof(original));
++        /* Later reopen must continue using the private inode, not launch paths. */
++        g_assert_cmpint(bdrv_reopen_set_read_only(fixture.roots[0].root,
++                                                  true, &error_abort), ==, 0);
++        g_assert_cmpint(bdrv_reopen_set_read_only(fixture.roots[0].root,
++                                                  false, &error_abort), ==, 0);
++        g_assert_cmpint(bdrv_save_vmstate(fixture.roots[0].root, changed, 0,
++                                          sizeof(changed)), ==, sizeof(changed));
++        g_assert_cmpint(bdrv_flush(fixture.roots[0].root), ==, 0);
++        g_assert_cmpint(blk_pwrite(fixture.roots[1].backend, 0,
++                                   sizeof(changed), changed, 0), ==, 0);
++        g_assert_cmpint(blk_flush(fixture.roots[1].backend), ==, 0);
++        _exit(0);
++    }
++    g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++    g_assert_true(WIFEXITED(status));
++    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++    g_assert_true(qemu_block_hot_fork_source_set_query(sources, &inventory,
++                                                       &error_abort));
++    g_assert_true(inventory.frozen);
++    g_assert_true(qemu_block_hot_fork_child_files_free(plan, &error_abort));
++    for (index = 0; index < G_N_ELEMENTS(files); index++) {
++        QDict *options = qdict_new();
++        BlockDriverState *fresh;
++
++        qdict_put_str(options, "driver", "qcow2");
++        fresh = bdrv_open(paths[index], NULL, options, 0, &error_abort);
++        g_assert_nonnull(fresh);
++        if (index == 0) {
++            g_assert_cmpint(bdrv_load_vmstate(fresh, observed, 0, sizeof(observed)),
++                            ==, sizeof(observed));
++        } else {
++            BlockBackend *backend = blk_new(qemu_get_aio_context(),
++                                             BLK_PERM_CONSISTENT_READ, BLK_PERM_ALL);
++            g_assert_cmpint(blk_insert_bs(backend, fresh, &error_abort), ==, 0);
++            g_assert_cmpint(blk_pread(backend, 0, sizeof(observed), observed, 0),
++                            ==, 0);
++            blk_unref(backend);
++        }
++        g_assert_cmpmem(observed, sizeof(observed), changed, sizeof(changed));
++        bdrv_unref(fresh);
++        close(files[index].descriptor);
++        unlink(paths[index]);
++    }
++    g_assert_cmpint(bdrv_load_vmstate(fixture.roots[0].root, observed, 0,
++                                     sizeof(observed)), ==, sizeof(observed));
++    g_assert_cmpmem(observed, sizeof(observed), original, sizeof(original));
++    g_assert_cmpint(blk_pread(fixture.roots[1].backend, 0, sizeof(observed),
++                              observed, 0), ==, 0);
++    g_assert_cmpmem(observed, sizeof(observed), original, sizeof(original));
++    g_assert_true(qemu_block_hot_fork_source_set_restore(sources, &error_abort));
++    g_assert_true(qemu_block_hot_fork_source_set_free(sources, &error_abort));
++    test_hot_fork_source_set_cleanup(&fixture);
++}
+ #endif
+ 
+ int main(int argc, char **argv)
+@@ -1155,6 +1291,8 @@ int main(int argc, char **argv)
+                     test_hot_fork_empty_source_set_child);
+     g_test_add_func("/block-backend/hot_fork_native_io_after_worker_retirement",
+                     test_hot_fork_native_io_after_worker_retirement);
++    g_test_add_func("/block-backend/hot_fork_child_native_files",
++                    test_hot_fork_child_native_files);
+ #endif
+ 
+     return g_test_run();

@@ -142,6 +142,7 @@ fn duration_step_uses_global_frontier_instead_of_event_timestamp() {
         advanced_node: None,
         resolved_events: Vec::new(),
         decisions: Vec::new(),
+        discovered_choices: Vec::new(),
         event_log_entries: vec![event],
         event_log_segment_bytes: Vec::new(),
         event_log_segment_text: String::new(),

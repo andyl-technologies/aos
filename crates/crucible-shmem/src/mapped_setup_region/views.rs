@@ -191,6 +191,57 @@ pub struct MappedSetupRegion {
     pub(super) address: usize,
     pub(super) len: usize,
     pub(super) region_len: u64,
+    pub(super) backing_identity: SetupRegionBackingIdentity,
+    /// Process that owns the currently installed virtual-memory mapping.
+    ///
+    /// `MADV_DONTFORK` deliberately leaves this owner without a mapping in a
+    /// fork child. The child must install its authenticated replacement before
+    /// any typed accessor reconstructs a pointer.
+    pub(super) mapping_process_id: libc::pid_t,
+}
+
+/// Stable filesystem identity of one mapped setup-region backing object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SetupRegionBackingIdentity {
+    pub(super) device: u64,
+    pub(super) inode: u64,
+    pub(super) length: u64,
+}
+
+impl SetupRegionBackingIdentity {
+    /// Constructs one exact nonempty setup-region backing identity.
+    ///
+    /// Returns `None` for a zero inode or length. A zero device remains valid
+    /// because pseudo-filesystems may report it.
+    #[must_use]
+    pub const fn from_parts(device: u64, inode: u64, length: u64) -> Option<Self> {
+        if inode == 0 || length == 0 {
+            return None;
+        }
+        Some(Self {
+            device,
+            inode,
+            length,
+        })
+    }
+
+    /// Returns the backing filesystem device number.
+    #[must_use]
+    pub const fn device(self) -> u64 {
+        self.device
+    }
+
+    /// Returns the backing inode number.
+    #[must_use]
+    pub const fn inode(self) -> u64 {
+        self.inode
+    }
+
+    /// Returns the descriptor length observed immediately before `mmap`.
+    #[must_use]
+    pub const fn length(self) -> u64 {
+        self.length
+    }
 }
 
 pub(super) type AcceleratorRingPairMut<'a> = (
@@ -236,6 +287,20 @@ pub struct MappedWhiteboxMarkerRingMut<'a> {
     /// SPSC header shared by the plugin producer and host consumer.
     pub header: &'a RingHeader,
     /// Bounded marker-entry backing storage.
+    pub entries: &'a mut [WhiteboxMarkerEntry],
+}
+
+/// A mutable view of one VM's host-to-plugin selectable-reply ring.
+///
+/// The host is the sole entry/write-index producer and the plugin is the sole
+/// read-index consumer. Its single entry uses the public white-box envelope
+/// layout but is directionally disjoint from observational markers.
+pub struct MappedSelectableReplyRingMut<'a> {
+    /// VM slot whose plugin exclusively consumes this ring.
+    pub vm_slot: u32,
+    /// SPSC header shared by the host producer and plugin consumer.
+    pub header: &'a RingHeader,
+    /// Single bounded reply-entry slot.
     pub entries: &'a mut [WhiteboxMarkerEntry],
 }
 

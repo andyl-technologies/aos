@@ -16,6 +16,7 @@ use super::{
     NetworkIoRunOutcome, QMP_PRIMER_WAKE_INTERVAL, QemuLiveNetworkIoGateConfig,
     QemuLiveNetworkIoGateError,
 };
+use crate::supervision::HostSupervisionDeadline;
 use crate::supervision::network_io_servicer::{
     is_live_network_ack, is_live_network_backpressure_ack, is_live_network_probe,
 };
@@ -185,21 +186,51 @@ pub(super) fn connect_qmp_priming_main_loop(
 }
 
 pub(super) fn reap_child(child: &mut QemuNodeChild, timeout: Duration) -> bool {
-    for _ in 0..bounded_drive_polls(timeout) {
+    let mut budget = DrivePollBudget::new(timeout);
+    while budget.begin_attempt() {
         match child.try_wait_natural_exit() {
             Ok(Some(status)) => return status.success(),
-            Ok(None) => thread::park_timeout(DRIVE_POLL_INTERVAL),
+            Ok(None) => budget.park(),
             Err(_) => return false,
         }
     }
     false
 }
 
-pub(super) fn bounded_drive_polls(timeout: Duration) -> u64 {
-    let interval = DRIVE_POLL_INTERVAL.as_micros().max(1);
-    u64::try_from(timeout.as_micros().saturating_add(interval - 1) / interval)
-        .unwrap_or(u64::MAX)
-        .max(1)
+/// Bounds a polling phase by elapsed time rather than assumed sleep count.
+///
+/// `park_timeout` may return early after a scheduler wake or spuriously. A
+/// fixed number of nominal one-millisecond sleeps therefore does not represent
+/// a wall-clock timeout. The first attempt is retained even for a zero timeout
+/// so callers can observe already-complete state without sleeping.
+pub(super) struct DrivePollBudget {
+    deadline: HostSupervisionDeadline,
+    first_attempt: bool,
+}
+
+impl DrivePollBudget {
+    pub(super) fn new(timeout: Duration) -> Self {
+        Self {
+            deadline: HostSupervisionDeadline::start(timeout),
+            first_attempt: true,
+        }
+    }
+
+    pub(super) fn begin_attempt(&mut self) -> bool {
+        if self.first_attempt {
+            self.first_attempt = false;
+            return true;
+        }
+        self.deadline.has_time_remaining()
+    }
+
+    pub(super) fn park(&self) {
+        let remaining = self.deadline.remaining().unwrap_or(Duration::ZERO);
+        let delay = remaining.min(DRIVE_POLL_INTERVAL);
+        if !delay.is_zero() {
+            thread::park_timeout(delay);
+        }
+    }
 }
 
 pub(super) fn node_id(name: &str) -> NodeId {

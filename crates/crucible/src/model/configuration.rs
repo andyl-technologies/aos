@@ -8,6 +8,8 @@ pub struct ScenarioDefForm {
     pub(super) world: World,
     pub(super) plan: Plan,
     pub(super) properties: Properties,
+    pub(super) measurements: MeasurementDefinitions,
+    pub(super) selectables: ScenarioSelectables,
     pub(super) seed: Seed,
     pub(super) app_random_draw_cap: u64,
 }
@@ -57,14 +59,73 @@ impl ScenarioDefForm {
         seed: Seed,
         app_random_draw_cap: u64,
     ) -> Result<Self, EngineError> {
+        Self::from_components_with_measurements_and_app_random_draw_cap(
+            world,
+            plan,
+            properties,
+            &MeasurementDefinitions::empty(),
+            seed,
+            app_random_draw_cap,
+        )
+    }
+
+    /// Builds a serialized-form scenario with measurement definitions and the
+    /// default app-random draw cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same world, plan, property, and measurement validation
+    /// errors as [`Self::from_components_with_measurements_and_app_random_draw_cap`].
+    pub fn from_components_with_measurements(
+        world: &World,
+        plan: &Plan,
+        properties: &Properties,
+        measurements: &MeasurementDefinitions,
+        seed: Seed,
+    ) -> Result<Self, EngineError> {
+        Self::from_components_with_measurements_and_app_random_draw_cap(
+            world,
+            plan,
+            properties,
+            measurements,
+            seed,
+            DEFAULT_APP_RANDOM_DRAW_CAP,
+        )
+    }
+
+    /// Builds a serialized-form scenario with measurement definitions and an
+    /// app-random draw cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same world, plan, and property validation errors as
+    /// [`Self::from_components_with_app_random_draw_cap`]. Returns
+    /// [`EngineError::ScenarioSerialization`] when `measurements` are not the
+    /// canonical definitions for these exact scenario components.
+    pub fn from_components_with_measurements_and_app_random_draw_cap(
+        world: &World,
+        plan: &Plan,
+        properties: &Properties,
+        measurements: &MeasurementDefinitions,
+        seed: Seed,
+        app_random_draw_cap: u64,
+    ) -> Result<Self, EngineError> {
         validate_world_serialized_identity(world)?;
         let properties = resolve_properties_dsl_for_context(world, plan, properties)?;
         properties.validate_for_world(world)?;
         plan.validate_for_world_with_properties(world, &properties)?;
+        let measurements = MeasurementDefinitions::from_decoded_definitions(
+            world,
+            plan,
+            &properties,
+            measurements.definitions().to_vec(),
+        )?;
         Ok(Self {
             world: world.clone(),
             plan: plan.clone(),
             properties: properties.clone(),
+            measurements,
+            selectables: ScenarioSelectables::empty(),
             seed,
             app_random_draw_cap,
         })
@@ -88,6 +149,18 @@ impl ScenarioDefForm {
         &self.properties
     }
 
+    /// Returns the serialized measurement-definition component.
+    #[must_use]
+    pub fn measurements(&self) -> &MeasurementDefinitions {
+        &self.measurements
+    }
+
+    /// Returns the immutable scenario selectable declarations and ceilings.
+    #[must_use]
+    pub const fn selectables(&self) -> &ScenarioSelectables {
+        &self.selectables
+    }
+
     /// Returns the serialized scenario seed component.
     #[must_use]
     pub fn seed(&self) -> Seed {
@@ -104,9 +177,11 @@ impl ScenarioDefForm {
     #[must_use]
     pub fn scenario_def(&self) -> ScenarioDef {
         self.world
-            .scenario_def_from_components_with_app_random_draw_cap(
+            .scenario_def_from_components_with_measurements_selectables_and_app_random_draw_cap(
                 &self.plan,
                 &self.properties,
+                &self.measurements,
+                &self.selectables,
                 self.seed,
                 self.app_random_draw_cap,
             )
@@ -125,13 +200,53 @@ impl ScenarioDefForm {
     /// Returns [`EngineError`] when `plan` does not layer over the retained
     /// world and properties.
     pub fn with_plan(&self, plan: Plan) -> Result<Self, EngineError> {
-        Self::from_components_with_app_random_draw_cap(
+        let mut rebuilt = Self::from_components_with_measurements_and_app_random_draw_cap(
             &self.world,
             &plan,
             &self.properties,
+            &self.measurements,
             self.seed,
             self.app_random_draw_cap,
-        )
+        )?;
+        rebuilt.selectables = self.selectables.clone();
+        Ok(rebuilt)
+    }
+
+    /// Rebuilds this scenario around replacement measurement definitions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] when `measurements`
+    /// reference objects outside the retained world, plan, or properties, or
+    /// otherwise violate the bounded measurement contract.
+    pub fn with_measurements(
+        &self,
+        measurements: MeasurementDefinitions,
+    ) -> Result<Self, EngineError> {
+        let mut rebuilt = Self::from_components_with_measurements_and_app_random_draw_cap(
+            &self.world,
+            &self.plan,
+            &self.properties,
+            &measurements,
+            self.seed,
+            self.app_random_draw_cap,
+        )?;
+        rebuilt.selectables = self.selectables.clone();
+        Ok(rebuilt)
+    }
+
+    /// Rebuilds this scenario around an exact validated selectable catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] when the catalog does not
+    /// decode canonically for this World or names an absent guest node.
+    pub fn with_selectables(&self, selectables: ScenarioSelectables) -> Result<Self, EngineError> {
+        let canonical = selectables.canonical_bytes();
+        let selectables = ScenarioSelectables::from_canonical_bytes(&self.world, &canonical)?;
+        let mut rebuilt = self.clone();
+        rebuilt.selectables = selectables;
+        Ok(rebuilt)
     }
 
     /// Serializes this form as deterministic TOML.
@@ -166,7 +281,7 @@ impl ScenarioDefForm {
     /// Serializes this form as the compact canonical binary representation.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let mut writer = ScenarioBinaryWriter::new(SCENARIO_FORM_BINARY_MAGIC_V5);
+        let mut writer = ScenarioBinaryWriter::new(SCENARIO_FORM_BINARY_MAGIC_V7);
         write_scenario_form_binary(self, &mut writer);
         writer.finish()
     }
@@ -179,8 +294,27 @@ impl ScenarioDefForm {
     /// id mismatches, or the same validation errors as the component constructors
     /// when the parsed world, plan, or properties are invalid.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, SCENARIO_FORM_BINARY_MAGIC_V5)?;
-        let form = read_scenario_form_binary(&mut reader)?;
+        let (mut reader, has_measurements, has_selectables) =
+            if bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V7) {
+                (
+                    ScenarioBinaryReader::new(bytes, SCENARIO_FORM_BINARY_MAGIC_V7)?,
+                    true,
+                    true,
+                )
+            } else if bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V6) {
+                (
+                    ScenarioBinaryReader::new(bytes, SCENARIO_FORM_BINARY_MAGIC_V6)?,
+                    true,
+                    false,
+                )
+            } else {
+                (
+                    ScenarioBinaryReader::new(bytes, SCENARIO_FORM_BINARY_MAGIC_V5)?,
+                    false,
+                    false,
+                )
+            };
+        let form = read_scenario_form_binary(&mut reader, has_measurements, has_selectables)?;
         reader.finish()?;
         Ok(form)
     }
@@ -188,10 +322,12 @@ impl ScenarioDefForm {
     /// Returns the canonical bytes used to compute this scenario definition's id.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        scenario_world_plan_properties_seed_app_random_cap_material(
+        scenario_world_plan_properties_measurements_selectables_seed_app_random_cap_material(
             &self.world,
             &self.plan,
             &self.properties,
+            &self.measurements,
+            &self.selectables,
             self.seed,
             self.app_random_draw_cap,
         )
@@ -244,6 +380,106 @@ impl Configuration {
     }
 }
 
+/// Structurally validated campaign selection embedded in one schedule decision.
+///
+/// The wrapper retains the strict language-neutral selection bytes rather than
+/// process-private consumer state. A replaying producer reconstructs the exact
+/// opportunity and domain, decodes [`Self::selection`], and applies the value
+/// only after the campaign replay validator succeeds.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SelectionDecision {
+    canonical_selection: Vec<u8>,
+    app_random_model_sample: bool,
+    campaign_branch: bool,
+}
+
+impl SelectionDecision {
+    /// Builds one schedule decision from a constructed campaign selection.
+    #[must_use]
+    pub fn new(selection: &crucible_campaign::Selection) -> Self {
+        Self {
+            canonical_selection: selection.canonical_bytes(),
+            app_random_model_sample: crate::decision::is_app_random_model_selection(selection),
+            campaign_branch: matches!(
+                selection.origin(),
+                crucible_campaign::SelectionOrigin::CampaignBranch { .. }
+            ),
+        }
+    }
+
+    /// Decodes one strict canonical selection decision.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crucible_campaign::CampaignCodecError`] for malformed,
+    /// noncanonical, invalid, or oversized selection bytes.
+    pub fn from_canonical_bytes(
+        bytes: &[u8],
+    ) -> Result<Self, crucible_campaign::CampaignCodecError> {
+        let selection = crucible_campaign::Selection::from_canonical_bytes(bytes)?;
+        Ok(Self::new(&selection))
+    }
+
+    /// Returns the strict language-neutral selection bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical_selection
+    }
+
+    /// Returns whether this decision uses the standardized app-random model.
+    ///
+    /// The flag is derived from the canonical selection bytes and is not a
+    /// separate serialized field.
+    #[must_use]
+    pub const fn is_app_random_model_sample(&self) -> bool {
+        self.app_random_model_sample
+    }
+
+    /// Returns whether this decision was produced by a campaign branch.
+    ///
+    /// The flag is derived from the canonical selection bytes and is not a
+    /// separate serialized field.
+    #[must_use]
+    pub const fn is_campaign_branch(&self) -> bool {
+        self.campaign_branch
+    }
+
+    /// Decodes the retained campaign selection.
+    ///
+    /// Construction guarantees these bytes already passed strict structural
+    /// decoding. Opportunity, domain, and origin-specific replay validation is
+    /// still required before execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crucible_campaign::CampaignCodecError`] if in-memory bytes no
+    /// longer form the canonical validated selection.
+    pub fn selection(
+        &self,
+    ) -> Result<crucible_campaign::Selection, crucible_campaign::CampaignCodecError> {
+        crucible_campaign::Selection::from_canonical_bytes(&self.canonical_selection)
+    }
+}
+
+impl serde::Serialize for SelectionDecision {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bytes(&self.canonical_selection)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SelectionDecision {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let bytes = <Vec<u8> as serde::Deserialize>::deserialize(deserializer)?;
+        Self::from_canonical_bytes(&bytes).map_err(serde::de::Error::custom)
+    }
+}
+
 /// One resolved nondeterministic choice at a scheduling point.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Decision {
@@ -257,6 +493,8 @@ pub enum Decision {
     Preemption(PreemptionDecision),
     /// A served application-requested random value.
     AppRandom(AppRandomDecision),
+    /// An unresolved typed campaign selection requiring producer validation.
+    Selection(SelectionDecision),
 }
 
 impl Decision {
@@ -351,7 +589,8 @@ impl Schedule {
                 Decision::RngDraw(_)
                 | Decision::Override(_)
                 | Decision::Preemption(_)
-                | Decision::AppRandom(_) => None,
+                | Decision::AppRandom(_)
+                | Decision::Selection(_) => None,
             };
             match (recorded, at) {
                 (Some(current), Some(at)) => Some(current.max(at)),
@@ -419,7 +658,7 @@ impl Schedule {
     /// Serializes this schedule as compact canonical bytes.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let mut writer = ScenarioBinaryWriter::new(SCHEDULE_BINARY_MAGIC);
+        let mut writer = ScenarioBinaryWriter::new(SCHEDULE_BINARY_MAGIC_V2);
         write_schedule_binary(self, &mut writer);
         writer.finish()
     }
@@ -428,11 +667,28 @@ impl Schedule {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::ScenarioSerialization`] for malformed binary input
-    /// or a schedule id mismatch.
+    /// Returns [`EngineError::ScenarioSerialization`] for malformed binary input,
+    /// a schedule id mismatch, or a selection decision under legacy version 1.
+    /// Selection-free version-1 schedules remain readable; new writes use
+    /// version 2.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, SCHEDULE_BINARY_MAGIC)?;
+        let (magic, legacy) = if bytes.starts_with(SCHEDULE_BINARY_MAGIC_V2) {
+            (SCHEDULE_BINARY_MAGIC_V2, false)
+        } else {
+            (SCHEDULE_BINARY_MAGIC_V1, true)
+        };
+        let mut reader = ScenarioBinaryReader::new(bytes, magic)?;
         let schedule = read_schedule_binary(&mut reader)?;
+        if legacy
+            && schedule
+                .decisions()
+                .iter()
+                .any(|decision| matches!(decision, Decision::Selection(_)))
+        {
+            return Err(scenario_serialization_error(
+                "schedule V1 cannot contain a campaign selection decision",
+            ));
+        }
         reader.finish()?;
         Ok(schedule)
     }

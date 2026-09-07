@@ -104,6 +104,16 @@ pub enum QemuLiveNodeStepGateError {
     /// The plugin setup acknowledgement did not permit scheduling.
     #[error("plugin setup acknowledgement did not permit scheduling")]
     SetupAckNotReady,
+    /// The diagnostic path did not name the descriptor-pinned launch directory.
+    #[error(
+        "configured QEMU run directory {configured} does not match prepared directory {prepared}"
+    )]
+    PreparedRunDirectoryMismatch {
+        /// Path used to derive the launch command and endpoints.
+        configured: PathBuf,
+        /// Exact path retained by the prepared directory capability.
+        prepared: PathBuf,
+    },
     /// The supplied exact snapshot was not emitted by a live QEMU node.
     #[error("production exact restore rejected a non-live or identity-inconsistent snapshot")]
     InvalidExactSnapshot,
@@ -175,6 +185,18 @@ pub enum QemuLiveNodeStepGateError {
         /// Underlying node-factory error.
         source: QemuNodeFactoryError,
     },
+    /// A failed launch step could not synchronously reap its direct child.
+    #[error(
+        "live QEMU node launch failed ({primary}); mandatory child reap also failed ({cleanup})"
+    )]
+    FailedCleanup {
+        /// Primary launch or assembly failure.
+        primary: Box<QemuLiveNodeStepGateError>,
+        /// Independent force-kill/reap failure.
+        cleanup: crate::QemuShutdownTargetError,
+        /// Nonduplicable direct-child handle retained after failed reap.
+        unreaped_child: Option<Box<crate::QemuNodeChild>>,
+    },
     /// A bounded node step failed.
     #[error("{operation} failed")]
     Step {
@@ -222,6 +244,20 @@ pub enum QemuLiveNodeStepGateError {
 }
 
 impl QemuLiveNodeStepGateError {
+    /// Extracts a direct child whose mandatory synchronous reap failed.
+    ///
+    /// A guarded caller must transfer the returned handle into its attempt
+    /// resource owner before releasing containment or storage authority.
+    #[must_use]
+    pub fn take_unreaped_child(&mut self) -> Option<crate::QemuNodeChild> {
+        match self {
+            Self::WhiteboxSetup { source } => source.take_unreaped_child(),
+            Self::NodeFactory { source } => source.take_unreaped_child(),
+            Self::FailedCleanup { unreaped_child, .. } => unreaped_child.take().map(|child| *child),
+            _ => None,
+        }
+    }
+
     /// Builds a [`QemuLiveNodeStepGateError::Step`] for a node operation.
     pub(super) fn node_op(operation: &'static str, source: QemuNodeError) -> Self {
         Self::Step { operation, source }

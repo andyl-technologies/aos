@@ -17,6 +17,7 @@ pub(crate) struct ReplayArtifactReport {
 
 #[derive(Debug)]
 pub(crate) struct ReplayLiveQemuProof {
+    pub(crate) execution_owner: &'static str,
     pub(crate) producer: String,
     pub(crate) terminal_status: String,
     pub(crate) terminal_outcome: String,

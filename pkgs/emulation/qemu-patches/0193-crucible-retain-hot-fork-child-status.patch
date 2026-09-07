@@ -1,0 +1,555 @@
+diff --git a/include/system/crucible-hot-fork-coordinator.h b/include/system/crucible-hot-fork-coordinator.h
+index 77f94c86c..77e03f7f1 100644
+--- a/include/system/crucible-hot-fork-coordinator.h
++++ b/include/system/crucible-hot-fork-coordinator.h
+@@ -33,6 +33,20 @@ typedef struct QemuCrucibleHotForkMainLoopOperation {
+     void *opaque;
+ } QemuCrucibleHotForkMainLoopOperation;
+ 
++typedef enum QemuCrucibleHotForkChildProcessPhase {
++    QEMU_CRUCIBLE_HOT_FORK_CHILD_RUNNING,
++    QEMU_CRUCIBLE_HOT_FORK_CHILD_EXITED,
++    QEMU_CRUCIBLE_HOT_FORK_CHILD_SIGNALED,
++} QemuCrucibleHotForkChildProcessPhase;
++
++typedef struct QemuCrucibleHotForkChildProcessState {
++    uint64_t generation;
++    pid_t process_id;
++    QemuCrucibleHotForkChildProcessPhase phase;
++    int status;
++    bool retained;
++} QemuCrucibleHotForkChildProcessState;
++
+ /* Install the single system-emulator coordinator on the main-loop thread. */
+ void qemu_crucible_hot_fork_main_loop_coordinator_init(Error **errp);
+ 
+@@ -45,6 +59,18 @@ void qemu_crucible_hot_fork_main_loop_coordinator_init(Error **errp);
+  */
+ int qemu_crucible_hot_fork_main_loop_fork(
+     const QemuCrucibleHotForkMainLoopOperation *operation,
++    uint64_t child_process_generation,
+     pid_t *child_pid);
+ 
++/*
++ * Observes or releases one exact parent-owned fork-child reap record.  Each
++ * call performs at most one nonblocking waitpid operation while the child is
++ * running.  Query remains valid after final status is retained, and release
++ * succeeds only after the child has been reaped.
++ */
++int qemu_crucible_hot_fork_child_process_query(
++    uint64_t generation, QemuCrucibleHotForkChildProcessState *state);
++int qemu_crucible_hot_fork_child_process_release(
++    uint64_t generation, QemuCrucibleHotForkChildProcessState *state);
++
+ #endif
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 1ccf335b5..243a93622 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -3544,7 +3544,8 @@ CrucibleHotForkState *qmp_crucible_hot_fork(
+     crucible_hot_fork_operation_active = true;
+     g_mutex_unlock(&crucible_hot_fork_template_lock);
+ 
+-    result = qemu_crucible_hot_fork_main_loop_fork(&request, &child_pid);
++    result = qemu_crucible_hot_fork_main_loop_fork(
++        &request, child_process_generation, &child_pid);
+ 
+     g_mutex_lock(&crucible_hot_fork_template_lock);
+     crucible_hot_fork_operation_active = false;
+@@ -3577,6 +3578,54 @@ CrucibleHotForkState *qmp_crucible_hot_fork(
+     return report;
+ }
+ 
++CrucibleHotForkChildProcessState *qmp_crucible_hot_fork_child_process(
++    CrucibleHotForkChildProcessAction action, uint64_t generation,
++    Error **errp)
++{
++    QemuCrucibleHotForkChildProcessState state = { 0 };
++    CrucibleHotForkChildProcessState *report;
++    int result;
++
++    switch (action) {
++    case CRUCIBLE_HOT_FORK_CHILD_PROCESS_ACTION_QUERY:
++        result = qemu_crucible_hot_fork_child_process_query(
++            generation, &state);
++        break;
++    case CRUCIBLE_HOT_FORK_CHILD_PROCESS_ACTION_RELEASE:
++        result = qemu_crucible_hot_fork_child_process_release(
++            generation, &state);
++        break;
++    default:
++        g_assert_not_reached();
++    }
++    if (result != 0) {
++        error_setg_errno(errp, -result,
++                         "Could not operate on Crucible hot-fork child");
++        return NULL;
++    }
++
++    report = g_new0(CrucibleHotForkChildProcessState, 1);
++    report->schema_version = 1;
++    report->generation = state.generation;
++    report->child_pid = state.process_id;
++    report->status = state.status;
++    report->retained = state.retained;
++    switch (state.phase) {
++    case QEMU_CRUCIBLE_HOT_FORK_CHILD_RUNNING:
++        report->phase = CRUCIBLE_HOT_FORK_CHILD_PROCESS_PHASE_RUNNING;
++        break;
++    case QEMU_CRUCIBLE_HOT_FORK_CHILD_EXITED:
++        report->phase = CRUCIBLE_HOT_FORK_CHILD_PROCESS_PHASE_EXITED;
++        break;
++    case QEMU_CRUCIBLE_HOT_FORK_CHILD_SIGNALED:
++        report->phase = CRUCIBLE_HOT_FORK_CHILD_PROCESS_PHASE_SIGNALED;
++        break;
++    default:
++        g_assert_not_reached();
++    }
++    return report;
++}
++
+ CrucibleHotForkThreadInventory *
+ qmp_query_crucible_hot_fork_thread_inventory(Error **errp)
+ {
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 9bbfda462..53e0160cb 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1832,6 +1832,87 @@
+   'returns': 'CrucibleHotForkState',
+   'allow-oob': true }
+ 
++##
++# @CrucibleHotForkChildProcessAction:
++#
++# Parent-owned operation over one exact retained fork-child status record.
++#
++# @query: observe the running or reaped child without releasing its status
++#
++# @release: remove one reaped status record; a running child is rejected
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'enum': 'CrucibleHotForkChildProcessAction',
++  'data': [ 'query', 'release' ] }
++
++##
++# @CrucibleHotForkChildProcessPhase:
++#
++# Parent-owned process state after one retained-template fork.
++#
++# @running: the direct child has not produced a final wait status
++#
++# @exited: the child exited normally and @status is its exit code
++#
++# @signaled: the child terminated from a signal and @status is that signal
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'enum': 'CrucibleHotForkChildProcessPhase',
++  'data': [ 'running', 'exited', 'signaled' ] }
++
++##
++# @CrucibleHotForkChildProcessState:
++#
++# Exact bounded status retained by the source QEMU that owns waitpid(2) for a
++# hot-fork child. Query and release perform a nonblocking wait while the child
++# remains live. The record remains queryable after reap until explicit release,
++# preventing PID reuse from changing its identity.
++#
++# @schema-version: child-process status contract version, currently 1
++#
++# @generation: exact nonzero child-process generation from the fork request
++#
++# @child-pid: positive direct-child process ID returned by fork(2)
++#
++# @phase: current parent-owned process phase
++#
++# @status: zero while running; exit code for @exited; signal for @signaled
++#
++# @retained: true for query and false after successful release
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkChildProcessState',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'child-pid': 'int64',
++            'phase': 'CrucibleHotForkChildProcessPhase',
++            'status': 'int64',
++            'retained': 'bool' } }
++
++##
++# @crucible-hot-fork-child-process:
++#
++# Queries or releases the source QEMU's exact waitpid(2) authority for one
++# fork child. A generation is reserved before fork and is unique among every
++# running or reaped retained child. Release fails until the child is reaped.
++#
++# @action: requested parent-owned status operation
++#
++# @generation: exact child-process generation from the fork request
++#
++# Returns: @CrucibleHotForkChildProcessState
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'crucible-hot-fork-child-process',
++  'data': { 'action': 'CrucibleHotForkChildProcessAction',
++            'generation': 'uint64' },
++  'returns': 'CrucibleHotForkChildProcessState',
++  'allow-oob': true }
++
+ ##
+ # @CrucibleHotForkPrivateRingAction:
+ #
+diff --git a/system/crucible-hot-fork-coordinator.c b/system/crucible-hot-fork-coordinator.c
+index 76c45e406..131fdfd2c 100644
+--- a/system/crucible-hot-fork-coordinator.c
++++ b/system/crucible-hot-fork-coordinator.c
+@@ -13,6 +13,22 @@
+ #include "qemu/thread.h"
+ #include "system/crucible-hot-fork-coordinator.h"
+ 
++#define CRUCIBLE_HOT_FORK_MAX_RETAINED_CHILDREN 4096
++
++typedef enum QemuCrucibleHotForkRetainedChildPhase {
++    CRUCIBLE_HOT_FORK_CHILD_UNUSED,
++    CRUCIBLE_HOT_FORK_CHILD_RESERVED,
++    CRUCIBLE_HOT_FORK_CHILD_RUNNING,
++    CRUCIBLE_HOT_FORK_CHILD_REAPED,
++} QemuCrucibleHotForkRetainedChildPhase;
++
++typedef struct QemuCrucibleHotForkRetainedChild {
++    uint64_t generation;
++    pid_t process_id;
++    int wait_status;
++    QemuCrucibleHotForkRetainedChildPhase phase;
++} QemuCrucibleHotForkRetainedChild;
++
+ typedef struct QemuCrucibleHotForkCoordinator {
+     QemuMutex lock;
+     QemuCond completed_cond;
+@@ -22,15 +38,80 @@ typedef struct QemuCrucibleHotForkCoordinator {
+     int64_t main_thread_id;
+     int result;
+     pid_t child_pid;
++    size_t child_slot;
+     size_t poll_index;
+     bool initialized;
+     bool busy;
+     bool executing;
+     bool completed;
++    QemuCrucibleHotForkRetainedChild
++        children[CRUCIBLE_HOT_FORK_MAX_RETAINED_CHILDREN];
+ } QemuCrucibleHotForkCoordinator;
+ 
+ static QemuCrucibleHotForkCoordinator crucible_hot_fork_coordinator;
+ 
++static int crucible_hot_fork_reserve_child_locked(
++    QemuCrucibleHotForkCoordinator *coordinator, uint64_t generation,
++    size_t *slot)
++{
++    size_t available = CRUCIBLE_HOT_FORK_MAX_RETAINED_CHILDREN;
++
++    if (generation == 0 || !slot) {
++        return -EINVAL;
++    }
++    for (size_t index = 0;
++         index < CRUCIBLE_HOT_FORK_MAX_RETAINED_CHILDREN; index++) {
++        QemuCrucibleHotForkRetainedChild *child =
++            &coordinator->children[index];
++
++        if (child->phase != CRUCIBLE_HOT_FORK_CHILD_UNUSED &&
++            child->generation == generation) {
++            return -EEXIST;
++        }
++        if (available == CRUCIBLE_HOT_FORK_MAX_RETAINED_CHILDREN &&
++            child->phase == CRUCIBLE_HOT_FORK_CHILD_UNUSED) {
++            available = index;
++        }
++    }
++    if (available == CRUCIBLE_HOT_FORK_MAX_RETAINED_CHILDREN) {
++        return -ENOSPC;
++    }
++
++    coordinator->children[available] =
++        (QemuCrucibleHotForkRetainedChild) {
++            .generation = generation,
++            .process_id = -1,
++            .phase = CRUCIBLE_HOT_FORK_CHILD_RESERVED,
++        };
++    *slot = available;
++    return 0;
++}
++
++static void crucible_hot_fork_release_reserved_child_locked(
++    QemuCrucibleHotForkCoordinator *coordinator)
++{
++    QemuCrucibleHotForkRetainedChild *child =
++        &coordinator->children[coordinator->child_slot];
++
++    g_assert(child->phase == CRUCIBLE_HOT_FORK_CHILD_RESERVED);
++    *child = (QemuCrucibleHotForkRetainedChild) { 0 };
++}
++
++static void crucible_hot_fork_retain_child(
++    QemuCrucibleHotForkCoordinator *coordinator, pid_t process_id)
++{
++    QemuCrucibleHotForkRetainedChild *child =
++        &coordinator->children[coordinator->child_slot];
++
++    qemu_mutex_lock(&coordinator->lock);
++    g_assert(child->phase == CRUCIBLE_HOT_FORK_CHILD_RESERVED);
++    g_assert(process_id > 0);
++    child->process_id = process_id;
++    child->phase = CRUCIBLE_HOT_FORK_CHILD_RUNNING;
++    qemu_mutex_unlock(&coordinator->lock);
++
++}
++
+ static void crucible_hot_fork_complete_parent(
+     int result, pid_t child_pid)
+ {
+@@ -92,6 +173,8 @@ static void crucible_hot_fork_execute_main_loop_request(void)
+ 
+     if (child_pid < 0) {
+         result = -errno;
++    } else {
++        crucible_hot_fork_retain_child(coordinator, child_pid);
+     }
+     parent_result = operation.parent(child_pid, operation.opaque);
+     if (parent_result != 0) {
+@@ -168,6 +251,7 @@ void qemu_crucible_hot_fork_main_loop_coordinator_init(Error **errp)
+ 
+ int qemu_crucible_hot_fork_main_loop_fork(
+     const QemuCrucibleHotForkMainLoopOperation *operation,
++    uint64_t child_process_generation,
+     pid_t *child_pid)
+ {
+     QemuCrucibleHotForkCoordinator *coordinator =
+@@ -186,6 +270,12 @@ int qemu_crucible_hot_fork_main_loop_fork(
+         qemu_mutex_unlock(&coordinator->lock);
+         return -EBUSY;
+     }
++    result = crucible_hot_fork_reserve_child_locked(
++        coordinator, child_process_generation, &coordinator->child_slot);
++    if (result != 0) {
++        qemu_mutex_unlock(&coordinator->lock);
++        return result;
++    }
+     coordinator->operation = *operation;
+     coordinator->result = -EINPROGRESS;
+     coordinator->child_pid = -1;
+@@ -197,6 +287,7 @@ int qemu_crucible_hot_fork_main_loop_fork(
+         coordinator->operation =
+             (QemuCrucibleHotForkMainLoopOperation) { 0 };
+         coordinator->busy = false;
++        crucible_hot_fork_release_reserved_child_locked(coordinator);
+         qemu_mutex_unlock(&coordinator->lock);
+         return result;
+     }
+@@ -206,6 +297,9 @@ int qemu_crucible_hot_fork_main_loop_fork(
+ 
+     result = coordinator->result;
+     *child_pid = coordinator->child_pid;
++    if (*child_pid <= 0) {
++        crucible_hot_fork_release_reserved_child_locked(coordinator);
++    }
+     coordinator->operation =
+         (QemuCrucibleHotForkMainLoopOperation) { 0 };
+     coordinator->busy = false;
+@@ -213,3 +307,106 @@ int qemu_crucible_hot_fork_main_loop_fork(
+     qemu_mutex_unlock(&coordinator->lock);
+     return result;
+ }
++
++static int crucible_hot_fork_child_process_state_locked(
++    QemuCrucibleHotForkCoordinator *coordinator, uint64_t generation,
++    QemuCrucibleHotForkChildProcessState *state, size_t *slot)
++{
++    if (generation == 0 || !state) {
++        return -EINVAL;
++    }
++    for (size_t index = 0;
++         index < CRUCIBLE_HOT_FORK_MAX_RETAINED_CHILDREN; index++) {
++        QemuCrucibleHotForkRetainedChild *child =
++            &coordinator->children[index];
++
++        if (child->phase == CRUCIBLE_HOT_FORK_CHILD_UNUSED ||
++            child->phase == CRUCIBLE_HOT_FORK_CHILD_RESERVED ||
++            child->generation != generation) {
++            continue;
++        }
++        if (child->phase == CRUCIBLE_HOT_FORK_CHILD_RUNNING) {
++            pid_t waited;
++
++            do {
++                waited = waitpid(child->process_id, &child->wait_status,
++                                 WNOHANG);
++            } while (waited < 0 && errno == EINTR);
++            if (waited < 0) {
++                return -errno;
++            }
++            if (waited == child->process_id) {
++                child->phase = CRUCIBLE_HOT_FORK_CHILD_REAPED;
++            } else if (waited != 0) {
++                return -EPROTO;
++            }
++        }
++        *state = (QemuCrucibleHotForkChildProcessState) {
++            .generation = child->generation,
++            .process_id = child->process_id,
++            .phase = QEMU_CRUCIBLE_HOT_FORK_CHILD_RUNNING,
++            .retained = true,
++        };
++        if (child->phase == CRUCIBLE_HOT_FORK_CHILD_REAPED) {
++            if (WIFEXITED(child->wait_status)) {
++                state->phase = QEMU_CRUCIBLE_HOT_FORK_CHILD_EXITED;
++                state->status = WEXITSTATUS(child->wait_status);
++            } else if (WIFSIGNALED(child->wait_status)) {
++                state->phase = QEMU_CRUCIBLE_HOT_FORK_CHILD_SIGNALED;
++                state->status = WTERMSIG(child->wait_status);
++            } else {
++                return -EPROTO;
++            }
++        }
++        if (slot) {
++            *slot = index;
++        }
++        return 0;
++    }
++    return -ENOENT;
++}
++
++int qemu_crucible_hot_fork_child_process_query(
++    uint64_t generation, QemuCrucibleHotForkChildProcessState *state)
++{
++    QemuCrucibleHotForkCoordinator *coordinator =
++        &crucible_hot_fork_coordinator;
++    int result;
++
++    if (!coordinator->initialized) {
++        return -EINVAL;
++    }
++    qemu_mutex_lock(&coordinator->lock);
++    result = crucible_hot_fork_child_process_state_locked(
++        coordinator, generation, state, NULL);
++    qemu_mutex_unlock(&coordinator->lock);
++    return result;
++}
++
++int qemu_crucible_hot_fork_child_process_release(
++    uint64_t generation, QemuCrucibleHotForkChildProcessState *state)
++{
++    QemuCrucibleHotForkCoordinator *coordinator =
++        &crucible_hot_fork_coordinator;
++    size_t slot = 0;
++    int result;
++
++    if (!coordinator->initialized) {
++        return -EINVAL;
++    }
++    qemu_mutex_lock(&coordinator->lock);
++    result = crucible_hot_fork_child_process_state_locked(
++        coordinator, generation, state, &slot);
++    if (result == 0 &&
++        coordinator->children[slot].phase !=
++            CRUCIBLE_HOT_FORK_CHILD_REAPED) {
++        result = -EBUSY;
++    }
++    if (result == 0) {
++        coordinator->children[slot] =
++            (QemuCrucibleHotForkRetainedChild) { 0 };
++        state->retained = false;
++    }
++    qemu_mutex_unlock(&coordinator->lock);
++    return result;
++}
+diff --git a/tests/unit/test-crucible-hot-fork-coordinator.c b/tests/unit/test-crucible-hot-fork-coordinator.c
+index 2236413b6..a5e892d01 100644
+--- a/tests/unit/test-crucible-hot-fork-coordinator.c
++++ b/tests/unit/test-crucible-hot-fork-coordinator.c
+@@ -39,6 +39,7 @@ typedef struct CoordinatorTestState {
+     unsigned int parent_calls;
+     unsigned int child_calls;
+     int submission_done;
++    uint64_t child_process_generation;
+ } CoordinatorTestState;
+ 
+ static CoordinatorTestState coordinator_test;
+@@ -98,7 +99,8 @@ static void *coordinator_submit(void *opaque)
+ 
+     state->submitter_thread_id = qemu_get_thread_id();
+     state->submit_result = qemu_crucible_hot_fork_main_loop_fork(
+-        &state->operation, &state->submitted_child_pid);
++        &state->operation, state->child_process_generation,
++        &state->submitted_child_pid);
+     qatomic_set(&state->submission_done, 1);
+     qemu_notify_event();
+     return NULL;
+@@ -107,7 +109,7 @@ static void *coordinator_submit(void *opaque)
+ static void test_main_loop_owns_fork(void)
+ {
+     CoordinatorChildReport report;
+-    int child_status;
++    QemuCrucibleHotForkChildProcessState process = { 0 };
+     ssize_t received;
+ 
+     coordinator_test = (CoordinatorTestState) {
+@@ -121,6 +123,7 @@ static void test_main_loop_owns_fork(void)
+         .submitted_child_pid = -1,
+         .parent_child_pid = -1,
+         .submit_result = -EINPROGRESS,
++        .child_process_generation = 17,
+     };
+     coordinator_test.operation.opaque = &coordinator_test;
+     g_assert_cmpint(pipe2(coordinator_test.report_pipe, O_CLOEXEC), ==, 0);
+@@ -157,11 +160,43 @@ static void test_main_loop_owns_fork(void)
+     g_assert_cmpuint(report.prepare_calls, ==, 1);
+     g_assert_cmpuint(report.parent_calls, ==, 0);
+     g_assert_cmpuint(report.child_calls, ==, 1);
+-    g_assert_cmpint(waitpid(coordinator_test.submitted_child_pid,
+-                            &child_status, 0), ==,
++    for (unsigned int poll = 0; ; poll++) {
++        g_assert_cmpint(qemu_crucible_hot_fork_child_process_query(
++                            coordinator_test.child_process_generation,
++                            &process), ==, 0);
++        if (process.phase != QEMU_CRUCIBLE_HOT_FORK_CHILD_RUNNING) {
++            break;
++        }
++        g_assert_cmpuint(poll, <, 1000);
++        g_usleep(1000);
++    }
++    g_assert_cmpint(process.process_id, ==,
+                     coordinator_test.submitted_child_pid);
+-    g_assert_true(WIFEXITED(child_status));
+-    g_assert_cmpint(WEXITSTATUS(child_status), ==, EXIT_SUCCESS);
++    g_assert_cmpint(process.phase, ==,
++                    QEMU_CRUCIBLE_HOT_FORK_CHILD_EXITED);
++    g_assert_cmpint(process.status, ==, EXIT_SUCCESS);
++    g_assert_true(process.retained);
++
++    qatomic_set(&coordinator_test.submission_done, 0);
++    coordinator_test.submitted_child_pid = 99;
++    coordinator_test.submit_result = -EINPROGRESS;
++    qemu_thread_create(&coordinator_test.submitter, "duplicate submitter",
++                       coordinator_submit, &coordinator_test,
++                       QEMU_THREAD_JOINABLE);
++    while (!qatomic_read(&coordinator_test.submission_done)) {
++        main_loop_wait(false);
++    }
++    qemu_thread_join(&coordinator_test.submitter);
++    g_assert_cmpint(coordinator_test.submit_result, ==, -EEXIST);
++    g_assert_cmpint(coordinator_test.submitted_child_pid, ==, -1);
++
++    g_assert_cmpint(qemu_crucible_hot_fork_child_process_release(
++                        coordinator_test.child_process_generation,
++                        &process), ==, 0);
++    g_assert_false(process.retained);
++    g_assert_cmpint(qemu_crucible_hot_fork_child_process_query(
++                        coordinator_test.child_process_generation,
++                        &process), ==, -ENOENT);
+ 
+     close(coordinator_test.report_pipe[0]);
+     close(coordinator_test.report_pipe[1]);

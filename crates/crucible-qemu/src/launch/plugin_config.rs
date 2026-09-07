@@ -73,6 +73,8 @@ pub struct QemuLaunchAppRandomConfig {
     pub draw_offset: u64,
     /// Per-stream positions already consumed before this process launches.
     pub stream_positions: BTreeMap<String, u64>,
+    /// Immutable node-local campaign selections supplied during setup.
+    branch_plan: crucible_protocol::app_random_branch_plan::AppRandomBranchPlan,
 }
 
 impl QemuLaunchAppRandomConfig {
@@ -99,6 +101,7 @@ impl QemuLaunchAppRandomConfig {
             branch_after_draws: None,
             draw_offset: 0,
             stream_positions: BTreeMap::new(),
+            branch_plan: crucible_protocol::app_random_branch_plan::AppRandomBranchPlan::default(),
         }
     }
 
@@ -149,6 +152,24 @@ impl QemuLaunchAppRandomConfig {
         self.stream_positions = stream_positions;
         self
     }
+
+    /// Returns this configuration with an immutable campaign branch plan.
+    #[must_use]
+    pub fn with_branch_plan(
+        mut self,
+        branch_plan: crucible_protocol::app_random_branch_plan::AppRandomBranchPlan,
+    ) -> Self {
+        self.branch_plan = branch_plan;
+        self
+    }
+
+    /// Returns the immutable campaign branch plan for this node generation.
+    #[must_use]
+    pub const fn branch_plan(
+        &self,
+    ) -> &crucible_protocol::app_random_branch_plan::AppRandomBranchPlan {
+        &self.branch_plan
+    }
 }
 
 impl fmt::Display for QemuLaunchPluginSwitch {
@@ -173,6 +194,8 @@ pub struct QemuLaunchPluginConfig {
     whitebox: QemuLaunchPluginSwitch,
     whitebox_setup: Option<QemuWhiteboxSetupValidation>,
     app_random: Option<QemuLaunchAppRandomConfig>,
+    selectable_catalog_plan:
+        Option<crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan>,
     coverage: QemuLaunchPluginSwitch,
     fingerprint: QemuLaunchPluginSwitch,
     fingerprint_oracle: QemuLaunchPluginSwitch,
@@ -196,6 +219,7 @@ impl QemuLaunchPluginConfig {
             whitebox: QemuLaunchPluginSwitch::Off,
             whitebox_setup: None,
             app_random: None,
+            selectable_catalog_plan: None,
             coverage: QemuLaunchPluginSwitch::Off,
             fingerprint: QemuLaunchPluginSwitch::Off,
             fingerprint_oracle: QemuLaunchPluginSwitch::Off,
@@ -283,6 +307,16 @@ impl QemuLaunchPluginConfig {
         self
     }
 
+    /// Returns a config carrying the launch-authenticated guest-selectable catalog.
+    #[must_use]
+    pub fn with_selectable_catalog_plan(
+        mut self,
+        plan: crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan,
+    ) -> Self {
+        self.selectable_catalog_plan = Some(plan);
+        self
+    }
+
     /// Returns a config with the coverage hook switch set.
     #[must_use]
     pub fn with_coverage(mut self, coverage: QemuLaunchPluginSwitch) -> Self {
@@ -350,6 +384,37 @@ impl QemuLaunchPluginConfig {
     #[must_use]
     pub const fn coverage(&self) -> QemuLaunchPluginSwitch {
         self.coverage
+    }
+
+    /// Returns the immutable app-random plan passed during setup.
+    #[must_use]
+    pub fn app_random_branch_plan(
+        &self,
+    ) -> &crucible_protocol::app_random_branch_plan::AppRandomBranchPlan {
+        match &self.app_random {
+            Some(config) => config.branch_plan(),
+            None => empty_app_random_branch_plan(),
+        }
+    }
+
+    /// Returns the immutable guest-selectable catalog plan passed during setup.
+    #[must_use]
+    pub fn selectable_catalog_plan(
+        &self,
+    ) -> &crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan {
+        match &self.selectable_catalog_plan {
+            Some(plan) => plan,
+            None => empty_selectable_catalog_plan(),
+        }
+    }
+
+    /// Returns the complete process-neutral plugin setup plan.
+    #[must_use]
+    pub fn plugin_setup_plan(&self) -> crucible_protocol::plugin_setup_plan::PluginSetupPlan {
+        crucible_protocol::plugin_setup_plan::PluginSetupPlan::new(
+            self.app_random_branch_plan().clone(),
+            self.selectable_catalog_plan().clone(),
+        )
     }
 
     /// Returns the single-VM fingerprint sampling switch passed to the plugin.
@@ -504,6 +569,12 @@ impl QemuLaunchPluginConfig {
                 return Err(QemuLaunchCommandError::WhiteboxSetupValidationWhileDisabled);
             }
         }
+        if self.selectable_catalog_plan.as_ref().is_some_and(|plan| {
+            plan != &crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::default()
+        }) && self.whitebox != QemuLaunchPluginSwitch::On
+        {
+            return Err(QemuLaunchCommandError::SelectableCatalogWhileWhiteboxDisabled);
+        }
         if let Some(app_random) = &self.app_random {
             if self.whitebox != QemuLaunchPluginSwitch::On {
                 return Err(QemuLaunchCommandError::AppRandomWhileWhiteboxDisabled);
@@ -532,6 +603,20 @@ impl QemuLaunchPluginConfig {
             {
                 return Err(QemuLaunchCommandError::InvalidAppRandomContinuationConfiguration);
             }
+            if app_random
+                .branch_plan
+                .entries()
+                .iter()
+                .any(|entry| {
+                    entry.draw_index() >= app_random.draw_cap
+                        || !crucible_protocol::app_random_transport::app_random_stream_name_belongs_to_node(
+                            entry.stream_name(),
+                            &app_random.node_name,
+                        )
+                })
+            {
+                return Err(QemuLaunchCommandError::InvalidAppRandomBranchConfiguration);
+            }
         }
         if let Some((target_icount, output_path)) = &self.state_dump {
             if self.fingerprint != QemuLaunchPluginSwitch::On || *target_icount == 0 {
@@ -547,6 +632,22 @@ impl QemuLaunchPluginConfig {
         }
         Ok(())
     }
+}
+
+fn empty_app_random_branch_plan()
+-> &'static crucible_protocol::app_random_branch_plan::AppRandomBranchPlan {
+    static EMPTY: std::sync::OnceLock<
+        crucible_protocol::app_random_branch_plan::AppRandomBranchPlan,
+    > = std::sync::OnceLock::new();
+    EMPTY.get_or_init(Default::default)
+}
+
+fn empty_selectable_catalog_plan()
+-> &'static crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan {
+    static EMPTY: std::sync::OnceLock<
+        crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan,
+    > = std::sync::OnceLock::new();
+    EMPTY.get_or_init(Default::default)
 }
 
 fn validate_plugin_resource_limit(

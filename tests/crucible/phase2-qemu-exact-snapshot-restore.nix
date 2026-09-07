@@ -23,6 +23,7 @@
   productionLoop = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs;
   productionCheckpointCapture = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop/checkpoint_capture.rs;
   productionRuntime = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle.rs;
+  productionConstruction = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/construction.rs;
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   failures =
@@ -136,8 +137,12 @@
         needle = "self.capture_exact_checkpoint_set(&configuration)?";
       }
       {
-        label = "production paired capture";
-        needle = ".capture_exact_snapshot(&node, checkpoint)";
+        label = "running-node publication capture";
+        needle = ".capture_exact_snapshot_for_publication(&node, checkpoint)?";
+      }
+      {
+        label = "powered-off paused capture";
+        needle = ".capture_exact_snapshot_paused(&node, checkpoint)?";
       }
     ]
     ++ failuresFor "crates/crucible-api/src/vm_lifecycle/quantum_loop/checkpoint_capture.rs" productionCheckpointCapture [
@@ -155,6 +160,8 @@
         label = "artifact authentication";
         needle = "failed content authentication";
       }
+    ]
+    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/construction.rs" productionConstruction [
       {
         label = "restored fingerprint check";
         needle = "restored_fingerprint != expected_fingerprint";

@@ -1,0 +1,330 @@
+# 10 — Performance model, acceptance targets, and validation gates
+
+Campaigns are useful only if logical width is cheap and active execution stays
+bounded. Correctness gates prove equivalence among realization tiers;
+performance gates prove that QEMU hot forking actually improves the cost model.
+
+## 10.1 Cost model
+
+For a campaign with latent possibilities `L`, branch requests `B`, emitted
+proposals `P`, admitted attempts `A`, runnable worlds `R`, hot parent state `H`,
+branch deltas `D_i`, and durable unique objects `U`, the intended resource model
+is:
+
+```text
+campaign metadata      O(B + P + A + observations + compact projections), not O(L)
+live memory            O(H + active rings + sum(D_i for live branches)), not O(R * H)
+durable storage        O(U), with content and parent-delta deduplication
+planner work           O(log(open source continuations) + source poll + path credit)
+fork setup             O(process/page-table metadata + isolated small resources),
+                       with no eager copy of guest RAM
+```
+
+Operating-system process fork may copy page tables proportional to mapped RAM,
+so this RFC does not claim mathematically constant fork time. It requires that
+guest RAM contents remain shared and that fork cost be dramatically below
+serializing/restoring the same world.
+
+- **[CPERF-1]** Increasing the cardinality of an unenumerated integer domain
+  without admitting more proposals MUST NOT increase stored frontier size or
+  daemon memory beyond constant-size domain metadata.
+- **[CPERF-2]** Creating `N` idle hot children from one template MUST not copy
+  `N * guest RAM`. Unique RSS and storage must be explainable as template state,
+  branch-private rings/metadata, page tables, and actual dirty deltas.
+
+## 10.2 Required metrics
+
+The performance harness records:
+
+```text
+campaign_projection_rebuild_objects
+campaign_projection_rebuild_bytes
+planner_poll_ns
+planner_ready_sources
+branch_request_pending_values
+branch_edge_deduplications
+proposal_publish_bytes
+attempt_queue_latency_operational
+
+template_prepare_latency
+hot_fork_child_ready_latency
+world_fork_ready_latency
+hot_fork_page_table_bytes
+child_private_rss_before_resume
+child_dirty_rss_after_work
+branch_overlay_bytes
+fork_failures_by_stage
+
+exact_capture_latency
+exact_capture_read_bytes
+exact_capture_unique_bytes
+exact_restore_latency
+thin_replay_latency_and_suffix
+
+scenarios_per_core_hour
+useful_observations_per_core_hour
+coverage_gain_per_attempt
+finding_discovery_attempt
+hot_template_hit_rate
+```
+
+Wall-clock values are operational performance metrics only. Benchmark scenario,
+host profile, kernel, QEMU build, guest RAM, vCPU count, device profile, and
+measurement variance are recorded.
+
+## 10.3 Structural hot-fork acceptance
+
+The hot-fork gate uses at least three guest RAM sizes and several sibling counts.
+Before child resume it verifies:
+
+- parent memory contents are not eagerly copied;
+- every guest RAM mapping is private-COW or a validated immutable backing with
+  private mappings, never an inherited writable shared mapping;
+- parent and siblings have distinct writable ring and disk resources;
+- child-private RSS does not scale with full guest RAM;
+- dirtying a known set of guest pages increases private RSS approximately with
+  the dirtied set plus bounded allocator/page-table overhead;
+- parent state remains byte/fingerprint-identical after every child exits;
+- repeated child creation does not leak descriptors, threads, overlays, or
+  shared-memory objects;
+- descendant templates preserve the same isolation and scaling shape over at
+  least three branch depths;
+- failed multi-node transactions publish no partial session.
+
+- **[CPERF-3]** `gate:hot-fork-scaling` MUST fail if idle child private memory or
+  disk storage grows as a full copy of guest RAM or parent disk state.
+
+## 10.4 Latency and throughput targets
+
+Absolute throughput depends on guest work. The gate therefore establishes a
+versioned baseline and regression ratchet on a pinned reference host, consistent
+with RFC-0010's performance policy. Initial engineering targets are:
+
+- single-VM hot-fork child-ready latency below 100 ms at p95 for the reference
+  small guest and substantially below exact restore;
+- multi-node world-fork latency bounded by the slowest node plus orchestration,
+  not the sum of serialized node restores;
+- at least 5x setup-throughput improvement over fresh exact restore for a
+  short sibling-branch corpus before hot fork becomes the default;
+- sustained creation and retirement of at least 10,000 short children from a
+  stable template without unbounded resource growth, with the useful concurrent
+  population limited only by the declared host resource budget;
+- no more than 10% regression in steady-state guest execution throughput when
+  a non-template child runs versus the same launch profile without hot-fork
+  capability armed;
+- planner and queue overhead below 5% of host time for the short-branch corpus;
+- campaign metadata for one million admitted lightweight attempts bounded by a
+  measured compact-object/index budget established in the implementation spike,
+  with paging rather than full in-memory loading.
+
+These targets may be revised only with measured evidence and an RFC decision
+update before implementation is declared complete.
+
+- **[CPERF-4]** Hot fork MUST remain off by default until the equivalence,
+  isolation, resource-leak, and minimum speedup gates all pass on the supported
+  launch profile.
+
+## 10.5 Durable checkpoint performance
+
+The durable gate compares:
+
+- current full artifact staging/chunking;
+- direct streaming through directory and composed content-store graphs;
+- parent-relative disk and RAM delta capture;
+- repeated identical and sparse-dirty captures;
+- restore from loose and packed local objects and a latency-injected archival
+  leaf.
+
+It verifies logical bytes, bytes read from source, bytes uploaded, unique stored
+bytes, memory used by capture, and whole-artifact authentication. A sparse-dirty
+checkpoint should read and publish changed extents plus bounded manifests rather
+than duplicate full guest RAM or overlay content once the parent-delta capability
+is enabled.
+
+- **[CPERF-5]** Streaming capture MUST use bounded buffers independent of
+  artifact size and preserve deterministic object identities under different
+  read chunking.
+
+## 10.6 Lazy-frontier performance
+
+Fixtures include:
+
+- a discrete domain of 10 alternatives;
+- an integer domain with more than `2^32` legal values;
+- one million dormant branch points represented by paged Merkle collections;
+- progressive widening with repeated descendant feedback;
+- a three-value finite request on the huge integer domain, including one value
+  already admitted by a generated source;
+- a maximum-sized finite request consumed with one proposal slot and one worker
+  slot, proving request publication does not create a batch;
+- rejection of exhaustive `--all` above its finite-cardinality ceiling;
+- duplicate attempt and observation delivery;
+- daemon restart with all projection caches deleted;
+- strict and streaming planning under shuffled executor completion.
+
+The gate proves domain cardinality is not enumerated, generator polling is
+bounded, projections paginate, and strict mode produces identical planner steps
+under shuffled completion delivery.
+
+Mutation-scale fixtures also create at least 10,000 sequential, uniquely keyed
+branch-request and lifecycle-control mutations in one campaign. A repository
+instance may remember that an immutable snapshot has passed complete ancestry
+and closure validation. The bounded checkpoint carries validated ancestry
+depth, a conservative reachable-object work bound, and projected lifecycle
+state. An exact local owner transaction may prepare its child from that basis
+without walking unchanged history, but promotes the child only after the
+authoritative ref CAS advances. Reaching a conservative work limit falls back
+to complete validation; reaching the canonical ancestry limit rejects locally
+just as restart/import validation would.
+
+Each successor also carries an authenticated coordination locator for its
+parent transition. The current head is its own direct result; every older
+command, branch request, proposal, admission, or planner result is therefore an
+indexed immutable snapshot lookup, not an ancestry scan. A head first observed
+after restart or import receives complete validation before it can seed this
+process-local checkpoint chain. Checkpoints remain bounded acceleration state,
+never campaign truth, and may be discarded at any time.
+
+- **[CPERF-6]** `gate:lazy-frontier` MUST include allocation instrumentation and
+  fail if validating or polling a huge integral domain allocates proportional to
+  cardinality.
+- **[CPERF-9]** Sequential local campaign mutation validation MUST be
+  proportional to the authenticated delta after the first fully validated head,
+  not to total snapshot ancestry or closure size. Imported and restarted heads
+  MUST still fail closed through complete validation before incremental
+  promotion. Checkpoint memory MUST be bounded, rejected CAS children MUST NOT
+  be promoted, exact replay MUST use authenticated result locators rather than
+  history scans, and deleting every validation checkpoint MUST preserve
+  semantics. Relative to exact anchors authenticated by the parent checkpoint,
+  incremental closure accounting MUST authenticate and charge the complete
+  closure newly reachable relative to those parent anchors, including immutable
+  graphs published before but not reachable from the parent, plus a conservative
+  bound for newly created owner-index nodes.
+
+## 10.7 Correctness gates
+
+| Gate | Contract |
+| --- | --- |
+| `gate:campaign-model` | Canonical policy/snapshot/fact identities, linear CAS history, sole-writer rejection, derivation, and projection rebuild |
+| `gate:campaign-component-contract` | Campaign/planner/executor direct and loopback-RPC adapters share schemas, validation, idempotency, capability negotiation, and canonical results |
+| `gate:branch-point-model` | Choice opportunities form parent-scoped branch points; finite/generated requests share lazy admission and duplicate semantic edges deduplicate without losing cause evidence |
+| `gate:typed-choice` | Guest and environment choices share domain validation, stable IDs, selection replay, and mismatch rejection |
+| `gate:typed-choice-product-checkpoint` | The real network product preserves one pending typed selection across exact checkpoint and replay without internal protocol tooling |
+| `gate:campaign-replay` | Findings replay without campaign/store and strict campaign planner steps reproduce |
+| `gate:lazy-frontier` | Suspended generators resume, widen, wait, exhaust, and recover correctly |
+| `gate:attempt-idempotence` | Duplicate execution/observation/credit is safe; conflicting result is detected |
+| `gate:hot-fork-equivalence` | Hot child next quantum/state equals exact restore and thin replay |
+| `gate:hot-fork-isolation` | Rings, sockets, disks, logs, and host continuation are sibling-private |
+| `gate:hot-fork-scaling` | Fork latency/memory/storage follow the required cost shape |
+| `gate:world-fork-atomicity` | Multi-node partial failure exposes no branch |
+| `gate:exact-closure-streaming` | Direct and delta capture authenticate to equivalent restored state |
+| `gate:campaign-store-equivalence` | Directory, memory, packed, and S3-compatible leaves expose their declared immutable/ref semantics |
+| `gate:campaign-store-composition` | Every supported route/tier/layer order preserves logical IDs, durability, errors, crash recovery, GC roots, and packing invariants |
+| `gate:campaign-continuity-v2` | Pause/restart/restore retains graph, frontier, knowledge, pins, and accounting |
+| `gate:campaign-statistics` | `P`/`Q` support and weight rules; biased campaigns cannot emit probability claims |
+| `gate:license-boundary` | Existing process/license closure including all new QEMU patches |
+| `gate:abi-conformance` | Versioned socket/shmem/guest choice/measurement/fork protocols |
+| `gate:campaign-operator-acceptance` | Independent operator completes the public lifecycle and finding handoff with reviewed evidence |
+| `gate:campaign-destructive-recovery` | Documented process, host, storage, credential, pressure, and partial-fork failures preserve authenticated state |
+| `gate:campaign-dogfood` | A realistic long-running campaign sustains scale, steering, handoff, hibernation, and clean resource accounting |
+
+## 10.8 Equivalence matrix
+
+Every supported checkpoint fixture is executed from:
+
+```text
+thin replay
+durable exact restore
+hot child of an execution-created template
+hot child of an exact-restore-created template
+```
+
+For each path the gate compares:
+
+- first complete scheduler quantum;
+- guest architectural fingerprint;
+- scheduler/fault/adapter/host continuation state;
+- pending ring and device operations;
+- event-log canonical projection;
+- selected value and effect evidence;
+- final state at a bounded horizon.
+
+The matrix covers single-node, multi-node network traffic, block and 9p I/O,
+pending guest choice, pending measurement marker, active signal-driven effects,
+permanently failed nodes, and a failure during fork preparation.
+
+- **[CPERF-7]** A hot or exact path mismatch is a correctness failure. The
+  implementation MUST NOT hide it by falling back after the mismatching runtime
+  has become visible.
+
+## 10.9 Negative and fault-injection tests
+
+Tests corrupt or omit:
+
+- domain, choice-opportunity, and branch-point digests;
+- branch-request bounds, cause evidence, source cursor, and duplicate-edge
+  projection state;
+- policy/generator versions;
+- planner invocation, artifact, state, planning-view basis, and budget;
+- campaign snapshot children;
+- exact closure chunks and lengths;
+- one world node's fork generation;
+- one shared-memory cursor;
+- one inherited writable descriptor disposition;
+- one disk backing identity;
+- one host continuation component;
+- one authoritative conditional ref write and one tier promotion;
+- a pack index publication or repack generation switch;
+- duplicate/conflicting attempt observations;
+- provenance components.
+
+Every fault must fail before guest resume or campaign ref publication, preserve
+the prior valid state, and produce localized evidence.
+
+Component-contract fixtures run the same campaign through direct clients and
+same-host split-process RPC, kill and restart coordinator and executor
+independently, repeat submits and completions at every boundary, race accepted
+cancellation against completion, inject stale assignments, and reject
+oversized, incompatible, stalled, or nondeterministic planner results. Golden
+wire vectors are checked without constructing Rust-native request values.
+
+Store fixtures cover every supported leaf and allowed composition: miss versus
+unavailable/corrupt/unauthorized, read promotion, interrupted write-through and
+write-back journal recovery, directory file/directory flush windows, global GC
+with multiple derived campaign refs, pack-index loss/rebuild, repacking during
+reads, logical identity under loose versus packed placement, physical
+encryption/compression, and stale plan rejection after any root, graph, journal,
+or inventory generation changes.
+
+- **[CPERF-8]** Automated branch-point tests MUST prove that finite and generated
+  sources converge on one semantic edge for a duplicate value, credit it once,
+  retain every request cause and the immutable execution basis, resume both
+  source cursors after restart, and keep operator/debugger execution bases out
+  of statistical estimates unless predeclared by policy.
+
+## 10.10 Benchmark publication
+
+Benchmark baselines and host profiles are content-addressed repository fixtures.
+Updating a baseline is a reviewed change with rationale. Determinism gates do
+not tolerate a performance variance band; performance gates do not substitute
+for exact equivalence.
+
+## 10.11 Automated and manual acceptance boundary
+
+The gates and fixtures in this file are primarily automated. They establish
+canonical equivalence, deterministic failure behavior, resource scaling, and
+repeatable baselines. They cannot prove that a fresh operator can understand a
+frontier, safely steer or stop a campaign, recover from a partial failure,
+predict retention, or hand a finding to another investigator.
+
+[`14-manual-validation-and-dogfooding.md`](14-manual-validation-and-dogfooding.md)
+therefore defines release-blocking manual flights over the same builds and
+fixtures. Automated results are pinned into each manual evidence bundle. A
+manual observation cannot waive a failing automated gate, and green automation
+cannot waive a failed operator, destructive-recovery, dogfood, or handoff
+flight.
+
+Manual gate manifests are machine-checked for build identity, required steps,
+artifacts, outcomes, defect disposition, and sign-offs. Human judgments about
+clarity, safe recovery, and usefulness remain explicit reviewed evidence rather
+than being reduced to an unaudited CI checkbox.

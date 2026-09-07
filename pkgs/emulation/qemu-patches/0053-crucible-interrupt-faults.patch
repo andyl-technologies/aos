@@ -2526,10 +2526,10 @@ index 4ff51630a..92f634dd2 100644
      QEMU_CRUCIBLE_MEMORY_FETCH = 0x01,
      QEMU_CRUCIBLE_MEMORY_CPU_LOAD = 0x02,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index d7668180a..d82a128f6 100644
+index 93b5d5535..e2ecd53ec 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1723,6 +1723,44 @@ size_t qemu_plugin_crucible_fault_instruction_manifest(
+@@ -1741,6 +1741,44 @@ size_t qemu_plugin_crucible_fault_instruction_manifest(
      uint8_t *manifest, size_t capacity, uint8_t sha256[32],
      uint16_t *architecture);
  

@@ -342,6 +342,28 @@ fn observable_event_material(event: &ObservableEvent) -> String {
             node.name,
             marker.name
         ),
+        ObservableEventPayload::GuestMeasurement {
+            retired_icount,
+            node,
+            event: measurement,
+        } => format!(
+            "observable:guest-measurement:at={}:retired_icount={}:node={}:event={measurement:?}",
+            event.at().ticks,
+            retired_icount.retired,
+            node.name,
+        ),
+        ObservableEventPayload::GuestSemanticMarker {
+            retired_icount,
+            node,
+            marker,
+            instance,
+            details,
+        } => format!(
+            "observable:guest-semantic-marker:at={}:retired_icount={}:node={}:marker={marker}:instance={instance}:details={details:?}",
+            event.at().ticks,
+            retired_icount.retired,
+            node.name,
+        ),
         ObservableEventPayload::GuestAssertionMarker {
             retired_icount,
             node,

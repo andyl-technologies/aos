@@ -3,6 +3,18 @@
 use super::*;
 use std::io::Read;
 
+pub(super) struct ExactCheckpointTargetManifestBasis<'a> {
+    pub(super) configuration: ContentHash,
+    pub(super) immutable_backing: Option<ContentHash>,
+    pub(super) node: &'a NodeId,
+    pub(super) counter: u64,
+    pub(super) scheduler_time: VirtualTime,
+    pub(super) snapshot: ContentHash,
+    pub(super) fault_identity: ContentHash,
+    pub(super) overlay: ContentHash,
+    pub(super) vmstate: ContentHash,
+}
+
 pub(super) fn validate_exact_checkpoint_target(
     node: &NodeId,
     target: &ProductionVmExactCheckpointTarget,
@@ -10,20 +22,17 @@ pub(super) fn validate_exact_checkpoint_target(
 ) -> Result<(), LifecycleApiError> {
     validate_exact_checkpoint_artifact(&target.overlay_artifact, "root overlay")?;
     validate_exact_checkpoint_artifact(&target.vmstate_artifact, "VMState")?;
-    let observed = ContentHash::from_canonical_material(
-        "crucible.production-vm-exact-checkpoint.v1",
-        &format!(
-            "configuration={}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\nvmstate={}",
-            target.configuration.id().to_hex(),
-            node.name,
-            target.counter,
-            target.scheduler_time.ticks,
-            target.snapshot.id().to_hex(),
-            fault_identity.to_hex(),
-            target.overlay_artifact.identity.to_hex(),
-            target.vmstate_artifact.identity.to_hex(),
-        ),
-    );
+    let observed = exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
+        configuration: target.configuration.id(),
+        immutable_backing: target.immutable_backing,
+        node,
+        counter: target.counter,
+        scheduler_time: target.scheduler_time,
+        snapshot: target.snapshot.id(),
+        fault_identity,
+        overlay: target.overlay_artifact.identity,
+        vmstate: target.vmstate_artifact.identity,
+    });
     if observed != target.manifest_identity {
         return Err(loop_factory_error(format!(
             "exact checkpoint target for `{}` failed manifest authentication",
@@ -31,6 +40,40 @@ pub(super) fn validate_exact_checkpoint_target(
         )));
     }
     Ok(())
+}
+
+pub(super) fn exact_checkpoint_target_manifest_identity(
+    basis: ExactCheckpointTargetManifestBasis<'_>,
+) -> ContentHash {
+    let ExactCheckpointTargetManifestBasis {
+        configuration,
+        immutable_backing,
+        node,
+        counter,
+        scheduler_time,
+        snapshot,
+        fault_identity,
+        overlay,
+        vmstate,
+    } = basis;
+    let backing = immutable_backing.map_or_else(String::new, |identity| {
+        format!("\nimmutable_backing={}", identity.to_hex())
+    });
+    ContentHash::from_canonical_material(
+        "crucible.production-vm-exact-checkpoint.v1",
+        &format!(
+            "configuration={}{}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\nvmstate={}",
+            configuration.to_hex(),
+            backing,
+            node.name,
+            counter,
+            scheduler_time.ticks,
+            snapshot.to_hex(),
+            fault_identity.to_hex(),
+            overlay.to_hex(),
+            vmstate.to_hex(),
+        ),
+    )
 }
 
 pub(super) const fn production_guest_architecture(
@@ -75,15 +118,7 @@ pub(super) fn production_app_random_launch_config(
     if let Some(branch) = branch
         && let Some(seed) = branch.seed
     {
-        let prefix_draws = branch
-            .base
-            .schedule
-            .decisions()
-            .iter()
-            .filter(
-                |decision| matches!(decision, Decision::AppRandom(random) if random.node == *node),
-            )
-            .count() as u64;
+        let prefix_draws = app_random_request_count(&branch.base, node);
         config = config.with_branch_seed(seed, prefix_draws);
     }
     config
@@ -105,20 +140,17 @@ pub(super) fn production_app_random_checkpoint_config(
             message: format!("decode scheduler checkpoint configuration: {error}"),
         }
     })?;
-    let streams = configuration
-        .schedule
-        .decisions()
+    let decisions = configuration.schedule.decisions();
+    let streams = decisions
         .iter()
-        .filter_map(|decision| match decision {
-            Decision::AppRandom(random) if random.node == *node => Some(random.stream.clone()),
-            _ => None,
-        })
+        .enumerate()
+        .filter_map(|(index, _decision)| app_random_request_stream(decisions, index, node))
         .collect::<std::collections::BTreeSet<_>>();
     let positions = scheduler
         .future_decision_rng_state()
         .positions
         .iter()
-        .filter(|(stream, _position)| streams.contains(*stream))
+        .filter(|(stream, _position)| streams.contains(stream))
         .map(|(stream, position)| (stream.name.clone(), position.draws))
         .collect::<BTreeMap<_, _>>();
     let draw_offset = positions.values().try_fold(0_u64, |sum, draws| {
@@ -139,18 +171,38 @@ pub(super) fn production_app_random_checkpoint_config(
     if let Some(branch) = branch
         && let Some(seed) = branch.seed
     {
-        let prefix_draws = branch
-            .base
-            .schedule
-            .decisions()
-            .iter()
-            .filter(
-                |decision| matches!(decision, Decision::AppRandom(random) if random.node == *node),
-            )
-            .count() as u64;
+        let prefix_draws = app_random_request_count(&branch.base, node);
         config = config.with_branch_seed(seed, prefix_draws);
     }
     Ok(config)
+}
+
+fn app_random_request_count(configuration: &Configuration, node: &NodeId) -> u64 {
+    let decisions = configuration.schedule.decisions();
+    decisions
+        .iter()
+        .enumerate()
+        .filter(|(index, _decision)| app_random_request_stream(decisions, *index, node).is_some())
+        .count() as u64
+}
+
+fn app_random_request_stream<'a>(
+    decisions: &'a [Decision],
+    index: usize,
+    node: &NodeId,
+) -> Option<&'a crucible::RngStreamId> {
+    match decisions.get(index)? {
+        Decision::AppRandom(random) if random.node == *node => Some(&random.stream),
+        Decision::Selection(selection)
+            if selection.is_app_random_model_sample() || selection.is_campaign_branch() =>
+        {
+            let Decision::RngDraw(draw) = decisions.get(index.checked_sub(1)?)? else {
+                return None;
+            };
+            crucible::app_random_stream_belongs_to_node(&draw.stream, node).then_some(&draw.stream)
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn private_backend_gdbstub_path(node_directory: &Path) -> PathBuf {
@@ -158,18 +210,28 @@ pub(super) fn private_backend_gdbstub_path(node_directory: &Path) -> PathBuf {
 }
 
 pub(super) fn live_unix_gdbstub_endpoint(path: &Path) -> Result<String, LifecycleApiError> {
-    let path = path.to_str().ok_or_else(|| {
+    let text = path.to_str().ok_or_else(|| {
         loop_factory_error(format!(
             "QEMU gdbstub path is not valid UTF-8: {}",
             path.display()
         ))
     })?;
-    if path.contains([',', '\n', '\0']) {
+    if text.contains([',', '\n', '\0']) {
         return Err(loop_factory_error(format!(
-            "QEMU gdbstub path contains unsupported syntax: {path}"
+            "QEMU gdbstub path contains unsupported syntax: {text}"
         )));
     }
-    Ok(format!("unix:{path},server=on,wait=off"))
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| loop_factory_error("QEMU gdbstub path must name a private socket file"))?;
+
+    // Like QMP, QEMU binds this name relative to its actual working directory.
+    // Guarded launch may replace the proposed lifecycle directory with a pinned
+    // resource-owned directory. An absolute endpoint would retain the old
+    // authority and can exceed sockaddr_un's path limit before QEMU starts.
+    // The gateway separately resolves the name against the returned directory.
+    Ok(format!("unix:{file_name},server=on,wait=off"))
 }
 
 pub(super) fn no_named_trigger_leaf(_leaf: ConditionLeaf<'_>) -> bool {
@@ -310,10 +372,222 @@ pub(super) fn loop_factory_error(message: impl Into<String>) -> LifecycleApiErro
 mod tests {
     use super::*;
 
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct RecordedLaunch {
+        node: String,
+        generation: u64,
+        router: String,
+        crash_detector: String,
+        preparation: &'static str,
+        exact: Option<(ContentHash, bool)>,
+    }
+
+    struct RecordingRejectingLauncher {
+        calls: Arc<std::sync::Mutex<Vec<RecordedLaunch>>>,
+    }
+
+    impl ProductionVmNodeLauncher for RecordingRejectingLauncher {
+        fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
+            Ok(())
+        }
+
+        fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
+            Ok(())
+        }
+
+        fn launch(
+            &mut self,
+            request: ProductionVmNodeLaunchRequest<'_>,
+        ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+            let preparation = match request.preparation() {
+                ProductionVmNodePreparationKind::Fresh { .. } => "fresh",
+                ProductionVmNodePreparationKind::Exact { .. } => "exact",
+                ProductionVmNodePreparationKind::Replacement { .. } => "replacement",
+            };
+            let exact = match request.kind() {
+                ProductionVmNodeLaunchKind::Fresh => None,
+                ProductionVmNodeLaunchKind::Exact { snapshot, paused } => {
+                    Some((snapshot.id(), paused))
+                }
+            };
+            self.calls
+                .lock()
+                .unwrap_or_else(|_| panic!("launch recorder lock should remain healthy"))
+                .push(RecordedLaunch {
+                    node: request.node_name().to_owned(),
+                    generation: request.generation(),
+                    router: request.router_name().to_owned(),
+                    crash_detector: request.crash_detector().to_owned(),
+                    preparation,
+                    exact,
+                });
+            Err(loop_factory_error(
+                "recording launcher rejects process spawn",
+            ))
+        }
+
+        fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
+            Err(loop_factory_error(
+                "recording launcher rejects replay authority",
+            ))
+        }
+
+        fn finish(&mut self) -> Result<(), LifecycleApiError> {
+            Ok(())
+        }
+    }
+
+    fn launch_snapshot(label: &str) -> ExactSnapshotHandle {
+        let scenario = ScenarioDef::from_canonical_material(
+            "crucible.test.production-launch-authority",
+            label,
+        );
+        let configuration = Configuration::genesis(scenario);
+        let checkpoint = Checkpoint::from_recorded_configuration(
+            &configuration,
+            None,
+            VirtualTime::default(),
+            BTreeMap::new(),
+            CheckpointKind::Fat,
+            BTreeMap::new(),
+        )
+        .unwrap_or_else(|error| panic!("launch checkpoint should build: {error}"));
+        ExactSnapshotHandle::diskless(
+            checkpoint,
+            crucible_qemu::QemuReplayOracleValidation::NotRun,
+        )
+        .unwrap_or_else(|error| panic!("launch snapshot should build: {error}"))
+    }
+
     #[test]
     fn production_vm_loop_can_move_to_the_session_actor() {
         fn assert_send<T: Send>() {}
         assert_send::<ProductionVmLifecycleLoop>();
+    }
+
+    #[test]
+    fn production_lifecycle_routes_every_launch_mode_through_one_authority() {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut launcher = RecordingRejectingLauncher {
+            calls: Arc::clone(&calls),
+        };
+        let profile = ProductionLiveNodeStepGateConfig::new_with_root_image(
+            "qemu",
+            "plugin",
+            "kernel",
+            "root",
+            "run-directory",
+        );
+        let snapshot = launch_snapshot("exact");
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+
+        for (crash_detector, preparation, kind) in [
+            (
+                "fresh",
+                ProductionVmNodePreparationKind::Fresh {
+                    qemu_executable: Path::new("qemu"),
+                    root_image: Path::new("root"),
+                },
+                ProductionVmNodeLaunchKind::Fresh,
+            ),
+            (
+                "exact-running",
+                ProductionVmNodePreparationKind::Replacement {
+                    source_run_directory: Path::new("prior-run-directory"),
+                },
+                ProductionVmNodeLaunchKind::Exact {
+                    snapshot: &snapshot,
+                    paused: false,
+                },
+            ),
+            (
+                "exact-paused",
+                ProductionVmNodePreparationKind::Replacement {
+                    source_run_directory: Path::new("prior-run-directory"),
+                },
+                ProductionVmNodeLaunchKind::Exact {
+                    snapshot: &snapshot,
+                    paused: true,
+                },
+            ),
+        ] {
+            let error = launch_production_node_generation(
+                &mut launcher,
+                ProductionVmNodeLaunchBasis::new(&profile, Path::new("run-directory"), &node, 7),
+                crash_detector,
+                preparation,
+                kind,
+            )
+            .err()
+            .unwrap_or_else(|| panic!("recording launcher should reject process spawn"));
+            assert!(error.to_string().contains("recording launcher rejects"));
+        }
+
+        let zero_generation = launch_production_node_generation(
+            &mut launcher,
+            ProductionVmNodeLaunchBasis::new(&profile, Path::new("run-directory"), &node, 0),
+            "invalid-generation",
+            ProductionVmNodePreparationKind::Fresh {
+                qemu_executable: Path::new("qemu"),
+                root_image: Path::new("root"),
+            },
+            ProductionVmNodeLaunchKind::Fresh,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("zero process generation should fail before launch"));
+        assert!(zero_generation.to_string().contains("must be positive"));
+
+        let mismatched_preparation = launch_production_node_generation(
+            &mut launcher,
+            ProductionVmNodeLaunchBasis::new(&profile, Path::new("run-directory"), &node, 8),
+            "mismatched-preparation",
+            ProductionVmNodePreparationKind::Replacement {
+                source_run_directory: Path::new("prior-run-directory"),
+            },
+            ProductionVmNodeLaunchKind::Fresh,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("mismatched preparation should fail before launch"));
+        assert!(
+            mismatched_preparation
+                .to_string()
+                .contains("preparation does not match")
+        );
+
+        assert!(launcher.replay_candidate().is_err());
+        assert_eq!(
+            *calls
+                .lock()
+                .unwrap_or_else(|_| panic!("launch recorder lock should remain healthy")),
+            vec![
+                RecordedLaunch {
+                    node: String::from("node-a"),
+                    generation: 7,
+                    router: String::from("crucible-router"),
+                    crash_detector: String::from("fresh"),
+                    preparation: "fresh",
+                    exact: None,
+                },
+                RecordedLaunch {
+                    node: String::from("node-a"),
+                    generation: 7,
+                    router: String::from("crucible-router"),
+                    crash_detector: String::from("exact-running"),
+                    preparation: "replacement",
+                    exact: Some((snapshot.id(), false)),
+                },
+                RecordedLaunch {
+                    node: String::from("node-a"),
+                    generation: 7,
+                    router: String::from("crucible-router"),
+                    crash_detector: String::from("exact-paused"),
+                    preparation: "replacement",
+                    exact: Some((snapshot.id(), true)),
+                },
+            ]
+        );
     }
 
     #[test]
@@ -365,6 +639,108 @@ mod tests {
     }
 
     #[test]
+    fn typed_app_random_checkpoint_restores_node_stream_cursors() {
+        let Ok(initial_shift) = Shift::new(0) else {
+            panic!("zero shift should be valid");
+        };
+        let scenario = ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(
+            "crucible.test.production-app-random-checkpoint",
+            "scenario=typed-app-random-checkpoint",
+            Seed::from_u64(0x5eed),
+            8,
+        );
+        let runtime = SchedulerLivenessScenario::from_canonical_material(
+            "typed-app-random-checkpoint-runtime",
+            initial_shift,
+            8,
+            SimInstant { nanos: 8 },
+            Vec::new(),
+            Vec::new(),
+        )
+        .with_scenario_def(scenario.clone());
+        let Ok(mut scheduler) = SingleScheduler::new(runtime) else {
+            panic!("scheduler should build");
+        };
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+        let stream = crucible::RngStreamId::from_name("app-random/node:6:node-a/stream:4:test");
+        let mut expected = scenario
+            .seed()
+            .decision_rng()
+            .fork_in_domain(&stream.domain, &stream.name);
+        let raw = expected.next_u64();
+
+        let Ok((recorded, discoveries, _configuration, _append)) =
+            QuantumLoop::append_backend_causal_decisions(
+                &mut scheduler,
+                vec![Decision::AppRandom(crucible::AppRandomDecision {
+                    node: node.clone(),
+                    stream: stream.clone(),
+                    request_id: 7,
+                    width: 8,
+                    value: raw & 0xff,
+                })],
+            )
+        else {
+            panic!("live app-random decision should normalize");
+        };
+        assert_eq!(discoveries.len(), 1);
+
+        let Ok(checkpoint) = scheduler.checkpoint() else {
+            panic!("scheduler should checkpoint");
+        };
+        let Ok(resumed) =
+            production_app_random_checkpoint_config(&checkpoint, &scenario, None, &node)
+        else {
+            panic!("typed app-random cursor should restore");
+        };
+        assert_eq!(resumed.draw_offset, 1);
+        assert_eq!(resumed.stream_positions.get(&stream.name), Some(&1));
+
+        let [
+            Decision::RngDraw(recorded_draw),
+            Decision::Selection(recorded_selection),
+        ] = recorded.as_slice()
+        else {
+            panic!("live normalization should return one draw and one selection");
+        };
+        let Ok(selection) = recorded_selection.selection() else {
+            panic!("recorded selection should decode");
+        };
+        let Ok(selectable) = crucible::AppRandomSelectable::from_model_sample_records(
+            recorded_draw.stream.clone(),
+            &selection,
+            discoveries[0].declaration(),
+            discoveries[0].opportunity(),
+            discoveries[0].domain(),
+        ) else {
+            panic!("recorded app-random discovery should resolve");
+        };
+        let parent = crucible::step(
+            &Configuration::genesis(scenario.clone()),
+            Decision::RngDraw(recorded_draw.clone()),
+        );
+        let Ok(branch_selection) = selectable.branch_selection(&parent, (raw & 0xff) ^ 1) else {
+            panic!("typed app-random branch should build");
+        };
+        let typed_branch = crucible::step(
+            &parent,
+            Decision::Selection(crucible::SelectionDecision::new(&branch_selection)),
+        );
+        assert_eq!(app_random_request_count(&typed_branch, &node), 1);
+
+        let branch = ProductionVmBranchConfig {
+            base: typed_branch,
+            frontier: scheduler.frontier(),
+            decisions: Vec::new(),
+            seed: Some(Seed::from_u64(0x00b1_2ac4)),
+        };
+        let relaunched = production_app_random_launch_config(&scenario, Some(&branch), &node);
+        assert_eq!(relaunched.branch_after_draws, Some(1));
+    }
+
+    #[test]
     fn private_gdbstub_endpoint_uses_the_node_run_directory() {
         let directory = Path::new("/tmp/crucible-node");
         let path = private_backend_gdbstub_path(directory);
@@ -373,10 +749,27 @@ mod tests {
         let Ok(endpoint) = live_unix_gdbstub_endpoint(&path) else {
             panic!("ordinary private socket path must be accepted");
         };
+        assert_eq!(endpoint, "unix:debug-rsp.sock,server=on,wait=off");
+    }
+
+    #[test]
+    fn private_gdbstub_endpoint_survives_guarded_directory_rebinding()
+    -> Result<(), LifecycleApiError> {
+        let proposed = PathBuf::from("/tmp/campaign-baked-genesis")
+            .join("a".repeat(64))
+            .join("b".repeat(32))
+            .join("run-00000000000000000000/node-0");
+        let guarded = Path::new("/tmp/attempts/run/generation-1");
+        let old_path = private_backend_gdbstub_path(&proposed);
+        let actual_path = private_backend_gdbstub_path(guarded);
+        assert!(old_path.as_os_str().len() > 108);
+        assert_ne!(old_path, actual_path);
         assert_eq!(
-            endpoint,
-            "unix:/tmp/crucible-node/debug-rsp.sock,server=on,wait=off"
+            live_unix_gdbstub_endpoint(&old_path)?,
+            live_unix_gdbstub_endpoint(&actual_path)?
         );
+        assert_eq!(actual_path, guarded.join("debug-rsp.sock"));
+        Ok(())
     }
 
     #[test]

@@ -23,6 +23,11 @@ pub(super) fn emit_constants(out: &mut String) {
     );
     emit_define_u32(
         out,
+        "CRUCIBLE_SHMEM_SELECTABLE_REPLY_QUEUE_CAPACITY",
+        SELECTABLE_REPLY_QUEUE_CAPACITY,
+    );
+    emit_define_u32(
+        out,
         "CRUCIBLE_SHMEM_GUEST_INTROSPECTION_QUEUE_CAPACITY",
         GUEST_INTROSPECTION_QUEUE_CAPACITY,
     );
@@ -230,8 +235,10 @@ pub(super) fn emit_constants(out: &mut String) {
         RING_HEADER_ALIGN,
         &[
             ("READ_IDX", RING_HEADER_READ_IDX_OFFSET),
+            ("CONSUMER_STATE", RING_HEADER_CONSUMER_STATE_OFFSET),
             ("PAD_READ", RING_HEADER_PAD_READ_OFFSET),
             ("WRITE_IDX", RING_HEADER_WRITE_IDX_OFFSET),
+            ("PRODUCER_STATE", RING_HEADER_PRODUCER_STATE_OFFSET),
             ("PAD_WRITE", RING_HEADER_PAD_WRITE_OFFSET),
         ],
     );

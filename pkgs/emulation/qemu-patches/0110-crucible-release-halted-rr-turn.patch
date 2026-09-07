@@ -257,10 +257,10 @@ index 03a9a4506..d410ed751 100644
       * A control wake can arrive while an idle-time advance is between its
       * QEMU clock mutation and plugin commit.  Keep yielding through the same
 diff --git a/plugins/api.c b/plugins/api.c
-index 9f13b2bc4..61022499c 100644
+index 08af8c21c..d24c61f3f 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -510,6 +510,8 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+@@ -522,6 +522,8 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
  static bool qemu_plugin_crucible_vcpu_register_read_allowed(void)
  {
      uint64_t owner = qemu_plugin_crucible_rr_current_vcpu();
@@ -269,7 +269,7 @@ index 9f13b2bc4..61022499c 100644
      bool allowed;
  
      /*
-@@ -517,23 +519,32 @@ static bool qemu_plugin_crucible_vcpu_register_read_allowed(void)
+@@ -529,23 +531,32 @@ static bool qemu_plugin_crucible_vcpu_register_read_allowed(void)
       * owner. Any exact callback that holds the BQL has quiesced every vCPU
       * register file, including the one-shot post-snapshot reselection boundary
       * where the serialized owner is intentionally invalid and `current_cpu`

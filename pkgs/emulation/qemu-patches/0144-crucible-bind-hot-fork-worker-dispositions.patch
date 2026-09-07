@@ -1,0 +1,383 @@
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 7e7dfb627..6bb11600a 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -381,6 +381,10 @@ typedef struct CrucibleHotForkPluginEndpointStage {
+     uint64_t wake_eventfd_id;
+     uint64_t private_ring_generation;
+     uint64_t template_generation;
++    uint64_t plugin_barrier_generation;
++    uint64_t worker_mask;
++    uint64_t parent_resume_worker_mask;
++    uint64_t child_reinitialize_worker_mask;
+     uint64_t generation;
+ } CrucibleHotForkPluginEndpointStage;
+ 
+@@ -389,11 +393,16 @@ static CrucibleHotForkPluginEndpointStage
+ 
+ static void crucible_hot_fork_template_schedule_block_transition(void);
+ 
+-static bool crucible_hot_fork_resource_stage_allowed(Error **errp)
++static bool crucible_hot_fork_resource_stage_allowed(
++    CrucibleHotForkPluginBarrierState **retained_plugin_barrier,
++    Error **errp)
+ {
+     CrucibleHotForkPluginBarrierState *plugin_barrier;
+     bool allowed;
+ 
++    if (retained_plugin_barrier) {
++        *retained_plugin_barrier = NULL;
++    }
+     if (!crucible_hot_fork_template_active) {
+         return true;
+     }
+@@ -415,12 +424,18 @@ static bool crucible_hot_fork_resource_stage_allowed(Error **errp)
+         return false;
+     }
+     allowed = plugin_barrier->quiescent;
+-    g_free(plugin_barrier);
+     if (!allowed) {
+         error_setg(errp, "Crucible hot-fork resources require a quiescent "
+                    "retained plugin barrier");
++        g_free(plugin_barrier);
++        return false;
++    }
++    if (retained_plugin_barrier) {
++        *retained_plugin_barrier = plugin_barrier;
++    } else {
++        g_free(plugin_barrier);
+     }
+-    return allowed;
++    return true;
+ }
+ 
+ static uint64_t crucible_hot_fork_resource_template_generation(void)
+@@ -683,7 +698,7 @@ qmp_crucible_hot_fork_private_rings(
+             report = crucible_hot_fork_private_ring_report();
+             goto out;
+         }
+-        if (!crucible_hot_fork_resource_stage_allowed(errp)) {
++        if (!crucible_hot_fork_resource_stage_allowed(NULL, errp)) {
+             goto out;
+         }
+ 
+@@ -872,7 +887,7 @@ crucible_hot_fork_plugin_endpoint_report(void)
+     CrucibleHotForkPluginEndpointState *report =
+         g_new0(CrucibleHotForkPluginEndpointState, 1);
+ 
+-    report->schema_version = 2;
++    report->schema_version = 3;
+     report->generation = crucible_hot_fork_plugin_endpoint_stage.generation;
+     report->template_generation =
+         crucible_hot_fork_plugin_endpoint_stage.template_generation;
+@@ -889,6 +904,26 @@ crucible_hot_fork_plugin_endpoint_report(void)
+         crucible_hot_fork_plugin_endpoint_stage.wake_eventfd_id;
+     report->private_ring_generation =
+         crucible_hot_fork_plugin_endpoint_stage.private_ring_generation;
++    report->plugin_barrier_generation =
++        crucible_hot_fork_plugin_endpoint_stage.plugin_barrier_generation;
++    report->worker_mask =
++        crucible_hot_fork_plugin_endpoint_stage.worker_mask;
++    report->parent_resume_worker_mask =
++        crucible_hot_fork_plugin_endpoint_stage.parent_resume_worker_mask;
++    report->child_reinitialize_worker_mask =
++        crucible_hot_fork_plugin_endpoint_stage.child_reinitialize_worker_mask;
++    report->pending_worker_mask = 0;
++    report->worker_disposition_planned =
++        crucible_hot_fork_plugin_endpoint_stage.staged &&
++        crucible_hot_fork_plugin_endpoint_stage.template_generation != 0 &&
++        crucible_hot_fork_plugin_endpoint_stage.plugin_barrier_generation !=
++            0 &&
++        crucible_hot_fork_plugin_endpoint_stage.worker_mask != 0 &&
++        crucible_hot_fork_plugin_endpoint_stage.parent_resume_worker_mask ==
++            crucible_hot_fork_plugin_endpoint_stage.worker_mask &&
++        crucible_hot_fork_plugin_endpoint_stage.
++            child_reinitialize_worker_mask ==
++                crucible_hot_fork_plugin_endpoint_stage.worker_mask;
+     report->control_unix_stream =
+         crucible_hot_fork_plugin_endpoint_stage.staged;
+     report->wake_eventfd = crucible_hot_fork_plugin_endpoint_stage.staged;
+@@ -914,6 +949,23 @@ static bool crucible_hot_fork_plugin_endpoint_stage_matches(
+             crucible_hot_fork_private_ring_stage.generation;
+ }
+ 
++static bool crucible_hot_fork_plugin_worker_disposition_matches(
++    const CrucibleHotForkPluginBarrierState *plugin_barrier)
++{
++    return plugin_barrier && plugin_barrier->quiescent &&
++        plugin_barrier->generation ==
++            crucible_hot_fork_plugin_endpoint_stage.plugin_barrier_generation &&
++        plugin_barrier->worker_mask ==
++            crucible_hot_fork_plugin_endpoint_stage.worker_mask &&
++        plugin_barrier->parked_worker_mask == plugin_barrier->worker_mask &&
++        plugin_barrier->pending_worker_mask == 0 &&
++        plugin_barrier->worker_operations_in_flight == 0 &&
++        crucible_hot_fork_plugin_endpoint_stage.parent_resume_worker_mask ==
++            plugin_barrier->worker_mask &&
++        crucible_hot_fork_plugin_endpoint_stage.
++            child_reinitialize_worker_mask == plugin_barrier->worker_mask;
++}
++
+ CrucibleHotForkPluginEndpointState *
+ qmp_crucible_hot_fork_plugin_endpoints(
+     CrucibleHotForkPluginEndpointAction action,
+@@ -924,6 +976,7 @@ qmp_crucible_hot_fork_plugin_endpoints(
+     Error **errp)
+ {
+     CrucibleHotForkPluginEndpointState *report = NULL;
++    CrucibleHotForkPluginBarrierState *plugin_barrier = NULL;
+     uint64_t observed_control_socket_cookie = 0;
+     uint64_t observed_wake_eventfd_id = 0;
+     int control_candidate = -1;
+@@ -983,10 +1036,23 @@ qmp_crucible_hot_fork_plugin_endpoints(
+                            "endpoints are already staged");
+                 goto out;
+             }
++            if (!crucible_hot_fork_resource_stage_allowed(
++                    &plugin_barrier, errp)) {
++                goto out;
++            }
++            if (crucible_hot_fork_template_active &&
++                !crucible_hot_fork_plugin_worker_disposition_matches(
++                    plugin_barrier)) {
++                error_setg(errp, "Crucible hot-fork plugin worker "
++                           "disposition no longer matches the retained "
++                           "plugin barrier");
++                goto out;
++            }
+             report = crucible_hot_fork_plugin_endpoint_report();
+             goto out;
+         }
+-        if (!crucible_hot_fork_resource_stage_allowed(errp)) {
++        if (!crucible_hot_fork_resource_stage_allowed(
++                &plugin_barrier, errp)) {
+             goto out;
+         }
+         if (crucible_hot_fork_private_ring_stage.template_generation !=
+@@ -1012,6 +1078,16 @@ qmp_crucible_hot_fork_plugin_endpoints(
+             crucible_hot_fork_private_ring_stage.generation;
+         crucible_hot_fork_plugin_endpoint_stage.template_generation =
+             crucible_hot_fork_private_ring_stage.template_generation;
++        if (plugin_barrier) {
++            crucible_hot_fork_plugin_endpoint_stage.plugin_barrier_generation =
++                plugin_barrier->generation;
++            crucible_hot_fork_plugin_endpoint_stage.worker_mask =
++                plugin_barrier->worker_mask;
++            crucible_hot_fork_plugin_endpoint_stage.parent_resume_worker_mask =
++                plugin_barrier->worker_mask;
++            crucible_hot_fork_plugin_endpoint_stage.
++                child_reinitialize_worker_mask = plugin_barrier->worker_mask;
++        }
+         crucible_hot_fork_plugin_endpoint_stage.generation++;
+         assert(crucible_hot_fork_plugin_endpoint_stage.generation != 0);
+         report = crucible_hot_fork_plugin_endpoint_report();
+@@ -1067,6 +1143,11 @@ qmp_crucible_hot_fork_plugin_endpoints(
+         crucible_hot_fork_plugin_endpoint_stage.wake_eventfd_id = 0;
+         crucible_hot_fork_plugin_endpoint_stage.private_ring_generation = 0;
+         crucible_hot_fork_plugin_endpoint_stage.template_generation = 0;
++        crucible_hot_fork_plugin_endpoint_stage.plugin_barrier_generation = 0;
++        crucible_hot_fork_plugin_endpoint_stage.worker_mask = 0;
++        crucible_hot_fork_plugin_endpoint_stage.parent_resume_worker_mask = 0;
++        crucible_hot_fork_plugin_endpoint_stage.
++            child_reinitialize_worker_mask = 0;
+         crucible_hot_fork_plugin_endpoint_stage.generation++;
+         assert(crucible_hot_fork_plugin_endpoint_stage.generation != 0);
+         report = crucible_hot_fork_plugin_endpoint_report();
+@@ -1075,6 +1156,7 @@ qmp_crucible_hot_fork_plugin_endpoints(
+         g_assert_not_reached();
+     }
+ out:
++    g_free(plugin_barrier);
+     if (control_candidate >= 0) {
+         close(control_candidate);
+     }
+@@ -1428,7 +1510,8 @@ out:
+ }
+ 
+ static CrucibleHotForkTemplateResourceStageState *
+-crucible_hot_fork_template_resource_stage_report(void)
++crucible_hot_fork_template_resource_stage_report(
++    const CrucibleHotForkPluginBarrierState *plugin_barrier)
+ {
+     CrucibleHotForkTemplateResourceStageState *report =
+         g_new0(CrucibleHotForkTemplateResourceStageState, 1);
+@@ -1449,7 +1532,7 @@ crucible_hot_fork_template_resource_stage_report(void)
+                crucible_hot_fork_template_generation);
+     }
+ 
+-    report->schema_version = 1;
++    report->schema_version = 2;
+     report->template_generation = resources_staged ?
+         crucible_hot_fork_private_ring_stage.template_generation : 0;
+     report->private_ring_staged =
+@@ -1462,9 +1545,24 @@ crucible_hot_fork_template_resource_stage_report(void)
+         crucible_hot_fork_plugin_endpoint_stage.generation;
+     report->plugin_private_ring_generation =
+         crucible_hot_fork_plugin_endpoint_stage.private_ring_generation;
++    report->plugin_barrier_generation =
++        crucible_hot_fork_plugin_endpoint_stage.plugin_barrier_generation;
++    report->worker_mask =
++        crucible_hot_fork_plugin_endpoint_stage.worker_mask;
++    report->parent_resume_worker_mask =
++        crucible_hot_fork_plugin_endpoint_stage.parent_resume_worker_mask;
++    report->child_reinitialize_worker_mask =
++        crucible_hot_fork_plugin_endpoint_stage.child_reinitialize_worker_mask;
++    report->pending_worker_mask = 0;
++    report->worker_disposition_bound =
++        crucible_hot_fork_plugin_endpoint_stage.staged &&
++        crucible_hot_fork_plugin_endpoint_stage.template_generation != 0 &&
++        crucible_hot_fork_plugin_worker_disposition_matches(plugin_barrier);
+     report->transaction_bound = crucible_hot_fork_template_active &&
+         resources_staged && report->template_generation ==
+-            crucible_hot_fork_template_generation;
++            crucible_hot_fork_template_generation &&
++        (!crucible_hot_fork_plugin_endpoint_stage.staged ||
++         report->worker_disposition_bound);
+     report->readiness_proof_acknowledged = false;
+     return report;
+ }
+@@ -1492,7 +1590,7 @@ crucible_hot_fork_template_report(
+         acknowledged |= CRUCIBLE_HOT_FORK_PROOF_BLOCK_SNAPSHOT;
+     }
+ 
+-    report->schema_version = 11;
++    report->schema_version = 12;
+     report->generation = crucible_hot_fork_template_generation;
+     report->outcome = outcome;
+     report->transaction_active = crucible_hot_fork_template_active;
+@@ -1504,7 +1602,7 @@ crucible_hot_fork_template_report(
+     report->bh_timer_barrier = bh_timer_barrier;
+     report->block_barrier = block_barrier;
+     report->resource_stage =
+-        crucible_hot_fork_template_resource_stage_report();
++        crucible_hot_fork_template_resource_stage_report(plugin_barrier);
+     report->rollback_complete = !report->transaction_active &&
+         !plugin_barrier->held && !rcu_barrier->held &&
+         !bh_timer_barrier->held && !block_barrier->held &&
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index ee3510c8f..a045c6a7c 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1313,7 +1313,7 @@
+ # template transaction. This state does not complete a child disposition or
+ # acknowledge a hot-fork readiness proof.
+ #
+-# @schema-version: resource-stage binding contract version, currently 1
++# @schema-version: resource-stage binding contract version, currently 2
+ #
+ # @template-generation: exact template generation that originally admitted the
+ #     retained resources, or zero when none are staged or they were staged
+@@ -1330,8 +1330,27 @@
+ # @plugin-private-ring-generation: private-ring generation captured by the
+ #     retained endpoints, or zero when no endpoint pair is retained
+ #
++# @plugin-barrier-generation: exact quiescent plugin-barrier generation
++#     captured with the endpoint pair, or zero outside a template transaction
++#
++# @worker-mask: exact sealed process-lifetime worker classes captured from the
++#     plugin barrier, or zero outside a template transaction
++#
++# @parent-resume-worker-mask: worker classes retained and resumed only in the
++#     template parent after fork, or zero when no disposition is staged
++#
++# @child-reinitialize-worker-mask: worker classes that a future child
++#     reinitializer must recreate against branch-private resources, or zero
++#     when no disposition is staged
++#
++# @pending-worker-mask: always zero for an accepted disposition; a worker-local
++#     item makes resource staging fail closed so no item is copied ambiguously
++#
++# @worker-disposition-bound: whether the staged worker plan still matches the
++#     exact current quiescent plugin-barrier generation and masks
++#
+ # @transaction-bound: whether every retained resource belongs to the current
+-#     active template generation
++#     active template generation and any worker disposition remains current
+ #
+ # @readiness-proof-acknowledged: always false; exact generation binding alone
+ #     acknowledges no hot-fork readiness proof
+@@ -1346,6 +1365,12 @@
+             'plugin-endpoints-staged': 'bool',
+             'plugin-endpoint-generation': 'uint64',
+             'plugin-private-ring-generation': 'uint64',
++            'plugin-barrier-generation': 'uint64',
++            'worker-mask': 'uint64',
++            'parent-resume-worker-mask': 'uint64',
++            'child-reinitialize-worker-mask': 'uint64',
++            'pending-worker-mask': 'uint64',
++            'worker-disposition-bound': 'bool',
+             'transaction-bound': 'bool',
+             'readiness-proof-acknowledged': 'bool' } }
+ 
+@@ -1362,10 +1387,12 @@
+ # A complete immutable-root binding retained by the block barrier acknowledges
+ # proof bit 5. Version 10 retains a fully drained incomplete transaction so the
+ # host can stage branch-private resources under the same quiescent source-ring
+-# barrier. Version 11 binds those stages to the exact template generation. The
++# barrier. Version 11 binds those stages to the exact template generation.
++# Version 12 additionally binds an explicit empty-local-state parent-resume and
++# child-reinitialize worker plan to the exact plugin-barrier generation. The
+ # caller must explicitly abort to roll the retained barriers back.
+ #
+-# @schema-version: transaction contract version, currently 11
++# @schema-version: transaction contract version, currently 12
+ #
+ # @generation: positive process-local transaction generation after the first
+ #     successful prepare, or zero before any transaction
+@@ -1559,11 +1586,14 @@
+ # @CrucibleHotForkPluginEndpointState:
+ #
+ # Exact QEMU-owned state for one authenticated branch-private plugin endpoint
+-# pair. This is a template-side retention primitive only: it neither installs
+-# the endpoints in a fork child nor recreates plugin workers, so readiness
+-# proof bits 6 through 8 remain clear.
++# pair. For a template-bound stage, version 3 records the exact quiescent
++# plugin-barrier generation and the complete worker masks that the parent must
++# resume and the child must reinitialize. It rejects nonempty worker-local
++# state. This is still a plan: it neither installs the endpoints in a fork
++# child nor recreates plugin workers, so readiness proof bits 6 through 8
++# remain clear.
+ #
+-# @schema-version: retained-endpoint contract version, currently 2
++# @schema-version: retained-endpoint contract version, currently 3
+ #
+ # @generation: process-local positive mutation generation, or zero initially
+ #
+@@ -1584,6 +1614,24 @@
+ # @private-ring-generation: exact retained private-ring generation captured at
+ #     staging, or zero when absent
+ #
++# @plugin-barrier-generation: exact quiescent plugin-barrier generation
++#     captured at template-bound staging, or zero for a standalone stage
++#
++# @worker-mask: exact sealed process-lifetime worker classes captured at
++#     template-bound staging, or zero for a standalone stage
++#
++# @parent-resume-worker-mask: exact worker classes the template parent retains
++#     and resumes after fork, equal to @worker-mask when planned
++#
++# @child-reinitialize-worker-mask: exact worker classes the child must recreate
++#     against branch-private resources, equal to @worker-mask when planned
++#
++# @pending-worker-mask: always zero; staging rejects a barrier with a dequeued
++#     worker-local item rather than assigning that item ambiguously
++#
++# @worker-disposition-planned: whether the complete parent/child worker plan
++#     is retained under a nonzero template and plugin-barrier generation
++#
+ # @control-unix-stream: whether the retained control endpoint is one connected,
+ #     empty AF_UNIX stream socket
+ #
+@@ -1608,6 +1656,12 @@
+             'control-socket-cookie': 'uint64',
+             'wake-eventfd-id': 'uint64',
+             'private-ring-generation': 'uint64',
++            'plugin-barrier-generation': 'uint64',
++            'worker-mask': 'uint64',
++            'parent-resume-worker-mask': 'uint64',
++            'child-reinitialize-worker-mask': 'uint64',
++            'pending-worker-mask': 'uint64',
++            'worker-disposition-planned': 'bool',
+             'control-unix-stream': 'bool',
+             'wake-eventfd': 'bool',
+             'disposition-complete': 'bool',

@@ -5,7 +5,22 @@
 //! by drawing from [`DecisionRng`] forks and appending the resulting
 //! [`Decision`] values in scheduler order.
 
+mod app_random_selectable;
 mod reseed;
+mod signal_fault_selectable;
+
+pub use app_random_selectable::{
+    AppRandomSelectable, AppRandomSelectableError, app_random_stream_belongs_to_node,
+    validate_app_random_model_selection,
+};
+pub(crate) use app_random_selectable::{
+    is_app_random_model_selection, is_app_random_schedule_decision,
+};
+pub use signal_fault_selectable::{
+    MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES, MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES,
+    SIGNAL_FAULT_CAMPAIGN_ADAPTER, SignalFaultCampaignBranch, SignalFaultCampaignReplayPlan,
+    SignalFaultSelectable, SignalFaultSelectableError,
+};
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -15,7 +30,7 @@ use crucible_sim::{DecisionRng, DecisionStream};
 
 use crate::{
     AppRandomDecision, Configuration, Decision, Icount, PreemptionDecision, PreemptionKind,
-    RngDecision, RngStreamId, Schedule, VcpuId, step,
+    RngDecision, RngStreamId, Schedule, SelectionDecision, VcpuId, step,
 };
 
 /// Records intended nondeterminism into a configuration's [`Schedule`].
@@ -108,6 +123,137 @@ impl DecisionRecorder {
         width: u8,
     ) -> Result<u64, DecisionRecordError> {
         self.serve_app_random_with_request_id(node, stream, width, Some(request_id))
+    }
+
+    /// Normalizes one observed guest request into a typed campaign selection.
+    ///
+    /// The recorder derives the raw model draw from the exact named stream,
+    /// requires it to reproduce the guest-served value, then appends one
+    /// [`Decision::RngDraw`] followed by one [`Decision::Selection`]. The
+    /// returned discovery contains the exact declaration, domain, and
+    /// opportunity needed by the observation-candidate handoff.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecisionRecordError`] when the request is malformed, exceeds
+    /// the scenario cap, or differs from the scenario-seeded model sample. No
+    /// recorder state changes on error.
+    pub fn normalize_app_random_request(
+        &mut self,
+        decision: AppRandomDecision,
+    ) -> Result<crucible_campaign::ChoiceDiscovery, DecisionRecordError> {
+        let selectable = AppRandomSelectable::from_decision(&self.configuration.def, &decision)?;
+        self.ensure_app_random_draw_available()?;
+
+        let mut advanced_stream =
+            self.streams
+                .get(&decision.stream)
+                .cloned()
+                .unwrap_or_else(|| {
+                    self.rng
+                        .fork_in_domain(&decision.stream.domain, &decision.stream.name)
+                });
+        let raw_value = advanced_stream.next_u64();
+        let selection = selectable.normalize_sample(&decision, raw_value)?;
+        let discovery = selectable.into_discovery()?;
+
+        self.app_random_draws += 1;
+        self.streams
+            .insert(decision.stream.clone(), advanced_stream);
+        self.append_decision(Decision::RngDraw(RngDecision {
+            stream: decision.stream,
+            value: raw_value,
+        }));
+        self.append_decision(Decision::Selection(SelectionDecision::new(&selection)));
+        Ok(discovery)
+    }
+
+    /// Applies one authenticated campaign selection to an observed live request.
+    ///
+    /// The recorder advances the same named RNG stream and retains its full raw
+    /// draw, constructs the exact branch parent after that draw, validates the
+    /// supplied selection against the reconstructed opportunity and parent, and
+    /// requires the plugin-served value to equal the selected value. No state
+    /// changes if any check fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecisionRecordError`] when the request is malformed, the draw
+    /// cap is exhausted, the selection does not bind the live opportunity and
+    /// exact parent, or the plugin served another value.
+    pub fn apply_app_random_selection(
+        &mut self,
+        decision: AppRandomDecision,
+        selection: &crucible_campaign::Selection,
+    ) -> Result<crucible_campaign::ChoiceDiscovery, DecisionRecordError> {
+        let selectable = AppRandomSelectable::from_decision(&self.configuration.def, &decision)?;
+        self.ensure_app_random_draw_available()?;
+
+        let mut advanced_stream =
+            self.streams
+                .get(&decision.stream)
+                .cloned()
+                .unwrap_or_else(|| {
+                    self.rng
+                        .fork_in_domain(&decision.stream.domain, &decision.stream.name)
+                });
+        let raw_value = advanced_stream.next_u64();
+        let parent = step(
+            &self.configuration,
+            Decision::RngDraw(RngDecision {
+                stream: decision.stream.clone(),
+                value: raw_value,
+            }),
+        );
+        let selected = selectable.apply_selection(selection, &parent)?;
+        if selected != decision {
+            return Err(AppRandomSelectableError::AppliedDecisionMismatch.into());
+        }
+        let discovery = selectable.into_discovery()?;
+
+        self.app_random_draws += 1;
+        self.streams
+            .insert(decision.stream.clone(), advanced_stream);
+        self.configuration = parent;
+        self.append_decision(Decision::Selection(SelectionDecision::new(selection)));
+        Ok(discovery)
+    }
+
+    /// Computes the exact branch parent for one observed live random request.
+    ///
+    /// The returned identity includes the full seeded raw draw that must precede
+    /// a campaign selection. This operation does not mutate the recorder, so a
+    /// scheduler can locate an installed selection before committing either the
+    /// draw or the selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecisionRecordError`] when the request is malformed or the
+    /// scenario app-random draw cap has already been reached.
+    pub fn app_random_selection_parent(
+        &self,
+        decision: &AppRandomDecision,
+    ) -> Result<crate::ContentHash, DecisionRecordError> {
+        AppRandomSelectable::from_decision(&self.configuration.def, decision)?;
+        self.ensure_app_random_draw_available()?;
+
+        let mut advanced_stream =
+            self.streams
+                .get(&decision.stream)
+                .cloned()
+                .unwrap_or_else(|| {
+                    self.rng
+                        .fork_in_domain(&decision.stream.domain, &decision.stream.name)
+                });
+        let raw_value = advanced_stream.next_u64();
+        Ok(step(
+            &self.configuration,
+            Decision::RngDraw(RngDecision {
+                stream: decision.stream.clone(),
+                value: raw_value,
+            }),
+        )
+        .id())
     }
 
     fn serve_app_random_with_request_id(
@@ -245,6 +391,12 @@ impl DecisionRecorder {
     }
 
     fn reserve_app_random_draw(&mut self) -> Result<(), DecisionRecordError> {
+        self.ensure_app_random_draw_available()?;
+        self.app_random_draws += 1;
+        Ok(())
+    }
+
+    fn ensure_app_random_draw_available(&self) -> Result<(), DecisionRecordError> {
         let cap = self.configuration.def.app_random_draw_cap();
         if self.app_random_draws >= cap {
             return Err(DecisionRecordError::AppRandomDrawCapExceeded {
@@ -252,7 +404,6 @@ impl DecisionRecorder {
                 attempted: self.app_random_draws.saturating_add(1),
             });
         }
-        self.app_random_draws += 1;
         Ok(())
     }
 }
@@ -260,6 +411,11 @@ impl DecisionRecorder {
 /// An error produced while recording an intended-randomness decision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DecisionRecordError {
+    /// Typed app-random choice construction or validation failed.
+    InvalidAppRandomSelection {
+        /// Exact producer-contract failure.
+        source: AppRandomSelectableError,
+    },
     /// The requested app-random bit width is outside `1..=64`.
     InvalidAppRandomWidth {
         /// The invalid requested bit width.
@@ -295,6 +451,9 @@ pub enum DecisionRecordError {
 impl fmt::Display for DecisionRecordError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidAppRandomSelection { source } => {
+                write!(f, "invalid typed app-random selection: {source}")
+            }
             Self::InvalidAppRandomWidth { width } => {
                 write!(f, "app-random width {width} is outside 1..=64")
             }
@@ -320,7 +479,20 @@ impl fmt::Display for DecisionRecordError {
     }
 }
 
-impl Error for DecisionRecordError {}
+impl Error for DecisionRecordError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::InvalidAppRandomSelection { source } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+impl From<AppRandomSelectableError> for DecisionRecordError {
+    fn from(source: AppRandomSelectableError) -> Self {
+        Self::InvalidAppRandomSelection { source }
+    }
+}
 
 fn mask_to_width(value: u64, width: u8) -> u64 {
     if width == 64 {
@@ -520,6 +692,141 @@ mod tests {
     }
 
     #[test]
+    fn decision_recorder_normalizes_live_app_random_as_a_typed_selection() {
+        let config = Configuration::genesis(default_scenario());
+        let stream = rng_stream("node-a/typed-app-random");
+        let mut expected_stream = config
+            .def
+            .seed()
+            .decision_rng()
+            .fork_in_domain(&stream.domain, &stream.name);
+        let raw_draw = expected_stream.next_u64();
+        let expected_value = mask_to_width(raw_draw, 16);
+        let observed = AppRandomDecision {
+            node: node("node-a"),
+            stream: stream.clone(),
+            request_id: 0xfeed,
+            width: 16,
+            value: expected_value,
+        };
+        let mut recorder = DecisionRecorder::new(config);
+        let before = recorder.clone();
+        let mismatch = AppRandomDecision {
+            value: expected_value ^ 1,
+            ..observed.clone()
+        };
+        assert!(matches!(
+            recorder.normalize_app_random_request(mismatch),
+            Err(DecisionRecordError::InvalidAppRandomSelection {
+                source: AppRandomSelectableError::SampleMismatch { .. }
+            })
+        ));
+        assert_eq!(recorder, before);
+
+        let discovery = recorder
+            .normalize_app_random_request(observed)
+            .expect("seeded live request should normalize");
+        assert_eq!(recorder.schedule().len(), 2);
+        assert!(matches!(
+            &recorder.schedule().decisions()[0],
+            Decision::RngDraw(RngDecision { stream: recorded, value })
+                if recorded == &stream && *value == raw_draw
+        ));
+        let Decision::Selection(decision) = &recorder.schedule().decisions()[1] else {
+            panic!("live app randomness should record a typed selection")
+        };
+        assert!(decision.is_app_random_model_sample());
+        let selection = decision.selection().expect("canonical selection");
+        assert_eq!(
+            selection.opportunity(),
+            discovery
+                .opportunity()
+                .id()
+                .expect("discovered opportunity id")
+        );
+        validate_app_random_model_selection(
+            &selection,
+            discovery.declaration(),
+            discovery.opportunity(),
+            discovery.domain(),
+        )
+        .expect("normalized choice should verify independently");
+
+        let round_tripped = Schedule::from_compact_binary(&recorder.schedule().to_compact_binary())
+            .expect("typed app-random schedule should round trip");
+        assert!(matches!(
+            &round_tripped.decisions()[1],
+            Decision::Selection(selection) if selection.is_app_random_model_sample()
+        ));
+    }
+
+    #[test]
+    fn decision_recorder_applies_campaign_branch_only_at_the_exact_live_parent() {
+        let config = Configuration::genesis(default_scenario());
+        let stream = rng_stream("app-random/node:6:node-a/stream:6:branch");
+        let mut expected_stream = config
+            .def
+            .seed()
+            .decision_rng()
+            .fork_in_domain(&stream.domain, &stream.name);
+        let raw_draw = expected_stream.next_u64();
+        let selected_value = mask_to_width(raw_draw, 16) ^ 1;
+        let observed = AppRandomDecision {
+            node: node("node-a"),
+            stream: stream.clone(),
+            request_id: 17,
+            width: 16,
+            value: selected_value,
+        };
+        let parent = step(
+            &config,
+            Decision::RngDraw(RngDecision {
+                stream: stream.clone(),
+                value: raw_draw,
+            }),
+        );
+        let selectable = AppRandomSelectable::from_decision(&config.def, &observed)
+            .expect("live request should reconstruct");
+        let selection = selectable
+            .branch_selection(&parent, selected_value)
+            .expect("exact parent should admit a branch");
+
+        let mut recorder = DecisionRecorder::new(config.clone());
+        assert_eq!(
+            recorder
+                .app_random_selection_parent(&observed)
+                .expect("live parent should derive"),
+            parent.id()
+        );
+        recorder
+            .apply_app_random_selection(observed.clone(), &selection)
+            .expect("plugin-served branch value should validate");
+        assert_eq!(
+            recorder.configuration().id(),
+            step(
+                &parent,
+                Decision::Selection(SelectionDecision::new(&selection))
+            )
+            .id()
+        );
+
+        let mut wrong_parent_recorder = DecisionRecorder::new(step(
+            &config,
+            Decision::RngDraw(RngDecision {
+                stream: rng_stream("unrelated"),
+                value: 9,
+            }),
+        ));
+        let before = wrong_parent_recorder.clone();
+        assert!(
+            wrong_parent_recorder
+                .apply_app_random_selection(observed, &selection)
+                .is_err()
+        );
+        assert_eq!(wrong_parent_recorder, before);
+    }
+
+    #[test]
     fn decision_recorder_rejects_invalid_app_random_widths() {
         let config = Configuration::genesis(default_scenario());
         let mut recorder = DecisionRecorder::new(config);
@@ -577,6 +884,53 @@ mod tests {
 
         assert_eq!(
             resumed.serve_app_random(node("node-a"), stream, 8),
+            Err(DecisionRecordError::AppRandomDrawCapExceeded {
+                cap: 1,
+                attempted: 2,
+            })
+        );
+        assert_eq!(resumed.schedule().len(), 2);
+    }
+
+    #[test]
+    fn typed_app_random_selection_counts_against_cap_after_resume() {
+        let seed = Seed::from_u64(0x0010_c020);
+        let config = Configuration::genesis(scenario_from_seed_and_app_random_draw_cap(seed, 1));
+        let stream = rng_stream("node-a/typed-app-random-cap");
+        let mut expected_stream = seed
+            .decision_rng()
+            .fork_in_domain(&stream.domain, &stream.name);
+        let raw_draw = expected_stream.next_u64();
+        let observed = AppRandomDecision {
+            node: node("node-a"),
+            stream: stream.clone(),
+            request_id: 1,
+            width: 8,
+            value: mask_to_width(raw_draw, 8),
+        };
+        let mut recorder = DecisionRecorder::new(config.clone());
+        recorder
+            .normalize_app_random_request(observed.clone())
+            .expect("first typed app-random selection should fit the cap");
+        let recorded = recorder.into_configuration();
+        let typed_selection = recorded.schedule.decisions()[1].clone();
+
+        assert!(reduce(&recorded.def, &recorded.schedule).is_ok());
+        assert_eq!(
+            try_step(&recorded, typed_selection),
+            Err(EngineError::AppRandomDrawCapExceeded {
+                scenario: config.def.id(),
+                cap: 1,
+                actual: 2,
+            })
+        );
+
+        let mut resumed = DecisionRecorder::new(recorded);
+        assert_eq!(
+            resumed.normalize_app_random_request(AppRandomDecision {
+                request_id: 2,
+                ..observed
+            }),
             Err(DecisionRecordError::AppRandomDrawCapExceeded {
                 cap: 1,
                 attempted: 2,

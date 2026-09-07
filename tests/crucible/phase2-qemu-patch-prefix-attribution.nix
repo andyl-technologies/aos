@@ -233,7 +233,10 @@
     };
     "0041-crucible-whitebox-guest-write.patch" = {
       kind = "interface";
-      symbols = ["qemu_plugin_crucible_write_memory_vaddr"];
+      symbols = [
+        "qemu_plugin_crucible_write_memory_vaddr"
+        "qemu_plugin_crucible_write_memory_vaddr_for_vcpu"
+      ];
     };
     "0042-crucible-aarch64-det-ipi-adapter.patch" = {
       kind = "recorded";
@@ -524,11 +527,495 @@
       kind = "recorded";
       symbols = [];
     };
-    "0114-crucible-authenticate-fault-result-payloads.patch" = {
+    "0114-crucible-hot-fork-readiness.patch" = {
       kind = "recorded";
       symbols = [];
     };
-    "0115-crucible-clock-impulse-read-error-policies.patch" = {
+    "0115-crucible-hot-fork-thread-ownership.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0116-crucible-hot-fork-rcu-inventory.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0117-crucible-hot-fork-aio-inventory.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0118-crucible-hot-fork-mutex-inventory.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0119-crucible-hot-fork-timer-inventory.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0120-crucible-hot-fork-bottom-half-inventory.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0121-crucible-hot-fork-aio-handler-inventory.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0122-crucible-hot-fork-block-backend-inventory.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0123-crucible-hot-fork-plugin-resource-inventory.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0124-crucible-hot-fork-plugin-callback-barrier.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0125-crucible-hot-fork-template-coordinator.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0126-crucible-hot-fork-rcu-barrier.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0127-crucible-hot-fork-bh-timer-barrier.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0128-crucible-hot-fork-aio-barrier.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0129-crucible-hot-fork-block-drain-barrier.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0130-crucible-hot-fork-block-template-coordinator.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0131-crucible-hot-fork-block-graph-barrier.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0132-crucible-bind-hot-fork-block-snapshot-roots.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0133-crucible-authenticate-fault-result-payloads.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0134-crucible-clock-impulse-read-error-policies.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0135-crucible-freeze-hot-fork-rings.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0136-crucible-seal-hot-fork-plugin-workers.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0137-crucible-park-hot-fork-plugin-workers.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0138-crucible-drain-hot-fork-ring-consumers.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0139-crucible-retain-hot-fork-private-rings.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0140-crucible-account-hot-fork-worker-local-state.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0141-crucible-stage-hot-fork-plugin-endpoints.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0142-crucible-retain-hot-fork-resource-staging.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0143-crucible-bind-hot-fork-resource-generations.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0144-crucible-bind-hot-fork-worker-dispositions.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0145-crucible-exclude-source-rings-from-fork-children.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0146-crucible-register-hot-fork-child-runtime.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0147-crucible-bind-hot-fork-child-process-generation.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0148-crucible-expose-hot-fork-child-runtime-state.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0149-crucible-bind-hot-fork-endpoint-replacement-slots.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0150-crucible-add-fork-child-endpoint-replacement-primitive.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0151-crucible-authenticate-immediate-hot-fork-children.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0152-crucible-acknowledge-frozen-hot-fork-plugin-rings.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0153-crucible-close-inherited-child-descriptor-tables.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0154-crucible-close-fork-child-descriptor-admission.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0155-crucible-verify-fork-child-mapping-dispositions.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0156-crucible-authenticate-fork-child-shared-mapping-backings.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0157-crucible-compose-fork-child-resource-disposition.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0158-crucible-bind-hot-fork-source-mappings.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0159-crucible-bind-child-runtime-source-mappings.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0160-crucible-compose-registered-fork-child-runtime.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0161-crucible-bind-retained-plugin-child-plan.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0162-crucible-bind-plugin-child-resource-tables.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0163-crucible-compose-child-resource-contributions.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0164-crucible-consume-sealed-child-resource-plans.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0165-crucible-compose-child-descriptor-replacements.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0166-crucible-bind-branch-private-child-diagnostics.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0167-crucible-retain-branch-private-child-qmp.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0168-crucible-bind-child-qmp-reinitializer.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0169-crucible-compose-child-qmp-reinitializer.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0170-crucible-report-complete-child-qmp-disposition.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0171-crucible-preserve-child-qmp-query-basis.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0172-crucible-inventory-qmp-monitor-state.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0173-crucible-bind-supported-child-qmp-profile.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0174-crucible-bind-child-monitor-ownership-basis.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0175-crucible-bind-child-monitor-chardev-disposition.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0176-crucible-bind-child-monitor-socket-resources.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0177-crucible-hold-reconstructed-child-monitor-socket.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0178-crucible-reset-reconstructed-child-qmp-protocol.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0179-crucible-rebuild-reconstructed-child-qmp-dispatcher.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0180-crucible-reconstruct-child-monitor-iothread.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0181-crucible-activate-reconstructed-child-qmp.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0182-crucible-bind-concrete-child-qmp-runtime.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0183-crucible-reconstruct-child-thread-registry.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0184-crucible-compose-rcu-fork-transaction.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0185-crucible-bind-rcu-worker-fork-disposition.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0186-crucible-bind-monitor-iothread-fork-disposition.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0187-crucible-defer-rcu-worker-until-fd-disposition.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0188-crucible-borrow-retained-rcu-barrier-across-fork.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0189-crucible-retain-async-fork-barrier-through-child-release.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0190-crucible-release-child-async-barrier-before-qmp-start.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0191-crucible-coordinate-fork-on-main-loop.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0192-crucible-fork-retained-templates-through-private-qmp.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0193-crucible-retain-hot-fork-child-status.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0194-crucible-contain-hot-fork-children-from-birth.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0195-crucible-replace-fork-child-console-endpoint.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0196-crucible-reset-virtio-net-after-exact-restore.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0197-crucible-retain-read-only-block-sources.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0198-crucible-retire-native-workers-before-hot-fork.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0199-crucible-retain-native-vmstate-source-ownership.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0200-crucible-retain-complete-native-source-sets.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0201-crucible-freeze-retained-template-native-sources.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0202-crucible-adopt-child-private-native-files.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0203-crucible-bind-child-private-files-to-fork.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0204-crucible-allow-out-of-band-descriptor-transfer.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0205-crucible-round-source-mapping-extents.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0206-crucible-report-plugin-child-plan-blockers.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0207-crucible-validate-child-plan-mapping-extents.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0208-crucible-restore-nonblocking-cancellation-eventfd.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0209-crucible-report-fork-preparation-blockers.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0210-crucible-verify-monitor-basis-before-fork.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0211-crucible-report-runtime-transaction-blockers.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0212-crucible-carry-parked-mutexes-across-fork.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0213-crucible-restart-rr-vcpu-thread-in-child.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0214-crucible-place-child-through-cgroup-procs.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0215-crucible-release-registry-before-parent-locks.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0216-crucible-complete-child-placement-before-return.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0217-crucible-identify-failed-child-step-in-exit-status.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0218-crucible-identify-failed-resource-plan-substep.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0219-crucible-admit-mapping-into-backing-partial-page.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0220-crucible-bound-child-iothread-start.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0221-crucible-report-child-failure-result.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0222-crucible-wait-for-plugin-child-workers.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0223-crucible-name-failing-qmp-child-stage.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0224-crucible-drop-inherited-monitor-fd-names.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0225-crucible-rebuild-child-monitor-iothread-context.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0226-crucible-idle-rebuilt-dispatcher-in-child.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0227-crucible-name-failing-console-child-stage.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0228-crucible-admit-default-console-context.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0229-crucible-admit-idle-active-plugin-workers.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0230-crucible-report-child-file-install-failure.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0231-crucible-name-unsettled-source-descriptor.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0232-crucible-retain-child-file-plan-descriptors.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0233-crucible-drop-inherited-current-monitor.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0234-crucible-forkable-template-ram.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0235-crucible-release-stages-under-retained-template.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0236-crucible-restarted-vcpu-thread-current-cpu.patch" = {
       kind = "recorded";
       symbols = [];
     };

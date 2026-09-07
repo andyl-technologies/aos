@@ -6,6 +6,8 @@ pub(crate) fn scripted_node_with_live_host_runtime(
     host_io_runtime: crate::supervision::QemuLiveHostIoRuntime,
 ) -> Result<QemuNode, Box<dyn Error>> {
     let log = shared_log();
+    let child = Command::new("sleep").arg("60").spawn()?;
+    let process_id = child.id();
     let channels = QemuNodeChannels::new(
         ScriptedPluginControl {
             log: Arc::clone(&log),
@@ -21,15 +23,36 @@ pub(crate) fn scripted_node_with_live_host_runtime(
             stale_fault_results: Arc::new(Mutex::new(VecDeque::new())),
             fault_events: Arc::new(Mutex::new(VecDeque::new())),
             fingerprint_retry_countdown: Arc::new(Mutex::new(0)),
+            hot_fork_setup_identity: None,
+            hot_fork_ring_image: None,
         },
         ScriptedQmpMachineControl {
             log,
+            process_id,
+            track_process_endpoint_retirement: false,
             fail_stop: false,
             fail_snapshot: false,
             timeout_snapshot: false,
+            plugin_resources: None,
+            plugin_barriers: None,
+            last_plugin_barrier: Arc::new(Mutex::new(None)),
+            private_ring_state: Arc::new(Mutex::new(None)),
+            diagnostic_state: Arc::new(Mutex::new(None)),
+            child_qmp_state: Arc::new(Mutex::new(None)),
+            child_console_state: Arc::new(Mutex::new(None)),
+            process_contract_state: Arc::new(Mutex::new(None)),
+            child_files_state: Arc::new(Mutex::new(None)),
+            fail_descriptor_install: false,
+            fail_descriptor_close: false,
+            fail_endpoint_install: false,
+            mismatch_endpoint_disposition: false,
+            request_basis_mismatch_after_queries: None,
+            serve_child_qmp: false,
+            template_query_count: Arc::new(Mutex::new(0)),
+            hot_fork_aborted: Arc::new(Mutex::new(false)),
+            hot_fork_script: HotForkScript::Rejected,
         },
     );
-    let child = Command::new("sleep").arg("60").spawn()?;
     Ok(QemuNode::new(
         QemuNodeChild::new(child),
         channels,

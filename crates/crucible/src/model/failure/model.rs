@@ -126,11 +126,13 @@ impl FindingReproductionArtifact {
 
     /// Shrinks this finding while preserving its failure fingerprint.
     ///
-    /// The minimizer enumerates every shorter recorded schedule subsequence in
-    /// deterministic shortest-first order, with seeded content-address tie-breaks.
+    /// The minimizer admits a bounded lexicographic window of shorter recorded
+    /// schedule subsequences in shortest-first order, then applies seeded
+    /// content-address tie-breaks within that admitted window.
     /// Every candidate is replayed as a self-contained artifact before
     /// `failure_fingerprint` is consulted, and the first preserving candidate is
-    /// therefore the stable shortest artifact under the supplied failure oracle.
+    /// therefore the stable shortest artifact within the compiled bounded
+    /// policy under the supplied failure oracle.
     ///
     /// # Errors
     ///
@@ -164,6 +166,7 @@ impl FindingReproductionArtifact {
             config.seed,
             original.artifact.id(),
             original.artifact.schedule(),
+            minimization_candidate_limit(&original.artifact),
         );
 
         for (sequence, candidate) in candidates.into_iter().enumerate() {

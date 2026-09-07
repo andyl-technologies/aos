@@ -1,9 +1,12 @@
-//! Durable checkpoint-store unit tests.
+//! Unit tests for durable exact-checkpoint closure storage.
 
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used)]
 
-use super::*;
+use super::{ExactSnapshotHandle as Snapshot, *};
+
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::MetadataExt as _;
 
 fn wire_string(value: &str) -> decode::FallibleString {
     decode::FallibleString::new(String::from(value))
@@ -11,6 +14,7 @@ fn wire_string(value: &str) -> decode::FallibleString {
 
 fn manifest() -> ClosureManifest {
     ClosureManifest {
+        format_version: MANIFEST_VERSION,
         scenario: ContentHash::default(),
         configuration: ContentHash::default(),
         schedule: ContentHash::default(),
@@ -30,20 +34,560 @@ fn manifest() -> ClosureManifest {
 }
 
 fn target(node: &str) -> TargetManifest {
-    let artifact = ArtifactManifest {
+    let chunk = ContentHash::from_bytes(b"artifact");
+    let overlay_extents = vec![ArtifactExtent {
+        start_chunk: 0,
+        chunks: vec![chunk],
+    }];
+    let overlay = ArtifactManifest {
+        identity: sparse_artifact_identity(8, &overlay_extents)
+            .expect("derive sparse artifact fixture identity"),
+        length: 8,
+        chunks: Vec::new(),
+        sparse: true,
+        extents: overlay_extents,
+    };
+    let vmstate = ArtifactManifest {
         identity: ContentHash::from_bytes(b"artifact"),
         length: 8,
-        chunks: vec![ContentHash::from_bytes(b"artifact")],
+        chunks: vec![chunk],
+        sparse: false,
+        extents: Vec::new(),
     };
     TargetManifest {
         node: wire_string(node),
+        immutable_backing: Some(ContentHash::from_bytes(b"immutable backing")),
         counter: 0,
         scheduler_time: 0,
         snapshot: ContentHash::from_bytes(node.as_bytes()),
-        overlay: artifact.clone(),
-        vmstate: artifact,
+        overlay,
+        vmstate,
         manifest_identity: ContentHash::default(),
     }
+}
+
+struct MemoryPortable {
+    identity: ContentHash,
+    scenario: ContentHash,
+    configuration: ContentHash,
+    manifest: Vec<u8>,
+    objects: Vec<ProductionExactCheckpointObject>,
+    bodies: BTreeMap<ContentHash, Vec<u8>>,
+}
+
+impl ProductionExactCheckpointSource for MemoryPortable {
+    fn identity(&self) -> ContentHash {
+        self.identity
+    }
+
+    fn scenario(&self) -> ContentHash {
+        self.scenario
+    }
+
+    fn configuration(&self) -> ContentHash {
+        self.configuration
+    }
+
+    fn manifest(&self) -> &[u8] {
+        &self.manifest
+    }
+
+    fn objects(&self) -> &[ProductionExactCheckpointObject] {
+        &self.objects
+    }
+
+    fn open_object(
+        &self,
+        identity: ContentHash,
+    ) -> Result<Box<dyn Read + Send>, LifecycleApiError> {
+        let bytes = self
+            .bodies
+            .get(&identity)
+            .ok_or_else(|| loop_factory_error("memory portable object is absent"))?
+            .clone();
+        Ok(Box::new(std::io::Cursor::new(bytes)))
+    }
+}
+
+fn snapshot_portable(mut manifest: ClosureManifest, snapshot: &Snapshot) -> MemoryPortable {
+    let bytes = snapshot
+        .to_canonical_bytes()
+        .expect("encode production snapshot fixture");
+    let object = ContentHash::from_bytes(&bytes);
+    manifest.targets[0].snapshot = object;
+    let configuration = manifest.configuration;
+    let fault_checkpoint = manifest.fault_checkpoint;
+    let target = &mut manifest.targets[0];
+    let node = NodeId {
+        name: target.node.to_string(),
+    };
+    target.manifest_identity =
+        exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
+            configuration,
+            immutable_backing: target.immutable_backing,
+            node: &node,
+            counter: target.counter,
+            scheduler_time: VirtualTime {
+                ticks: target.scheduler_time,
+            },
+            snapshot: snapshot.id(),
+            fault_identity: fault_checkpoint,
+            overlay: target.overlay.identity,
+            vmstate: target.vmstate.identity,
+        });
+    manifest.identity = closure_identity(&manifest).expect("derive snapshot closure identity");
+    MemoryPortable {
+        identity: manifest.identity,
+        scenario: manifest.scenario,
+        configuration: manifest.configuration,
+        manifest: encode_manifest(&manifest).expect("encode snapshot closure fixture"),
+        objects: vec![ProductionExactCheckpointObject::new(
+            object,
+            u64::try_from(bytes.len()).expect("snapshot fixture length fits"),
+        )],
+        bodies: BTreeMap::from([(object, bytes)]),
+    }
+}
+
+fn refresh_target_manifest_identities(manifest: &mut ClosureManifest) {
+    let configuration = manifest.configuration;
+    let fault_checkpoint = manifest.fault_checkpoint;
+    for target in &mut manifest.targets {
+        let node = NodeId {
+            name: target.node.to_string(),
+        };
+        target.manifest_identity =
+            exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
+                configuration,
+                immutable_backing: target.immutable_backing,
+                node: &node,
+                counter: target.counter,
+                scheduler_time: VirtualTime {
+                    ticks: target.scheduler_time,
+                },
+                snapshot: target.snapshot,
+                fault_identity: fault_checkpoint,
+                overlay: target.overlay.identity,
+                vmstate: target.vmstate.identity,
+            });
+    }
+}
+
+fn build_one_node_raw_checkpoint(
+    run_state_root: &Path,
+    selectable_continuation: Option<
+        crucible_protocol::selectable_catalog_plan::SelectablePlanContinuation,
+    >,
+) -> (
+    ScenarioDefForm,
+    ProductionVmExactCheckpointSet,
+    NodeId,
+    ContentHash,
+) {
+    let node = NodeId {
+        name: String::from("vm-a"),
+    };
+    let world = World::from_nodes(vec![crucible::WorldNode {
+        id: node.clone(),
+        arch: VmArchitecture::X86_64,
+        memory_mib: 128,
+        cmdline: String::new(),
+        ready_point: crucible::ReadyPoint::FixedIcount {
+            icount: Icount { retired: 0 },
+        },
+        white_box: if selectable_continuation.is_some() {
+            crucible::WhiteBoxPolicy::Enabled
+        } else {
+            crucible::WhiteBoxPolicy::Disabled
+        },
+        smp_vcpus: 1,
+        icount_shift: 0,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }])
+    .expect("build one-node checkpoint world");
+    let mut source = ScenarioDefForm::from_components_with_app_random_draw_cap(
+        &world,
+        &crucible::Plan::empty(),
+        &crucible::Properties::empty(),
+        Seed::from_u64(0x4f52_4143),
+        0,
+    )
+    .expect("build one-node checkpoint scenario");
+    let selectable_plan = if let Some(continuation) = selectable_continuation {
+        use crucible_protocol::selectable_catalog_plan::{
+            SelectableCatalogPlan, SelectablePlanDeclaration, SelectablePlanLimits,
+            SelectablePlanPresence,
+        };
+
+        let domain = crucible::campaign::ChoiceDomain::Boolean(
+            crucible::campaign::BooleanDomain::new(1).expect("build selectable Boolean domain"),
+        );
+        let default = crucible::campaign::ChoiceValue::Boolean(false);
+        let recovery = crucible::campaign::SelectableDeclaration::new(
+            "checkpoint.recovery",
+            crucible::campaign::ChoiceSource::Guest {
+                node: node.name.clone(),
+                protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
+            },
+            domain.clone(),
+            default.clone(),
+            crucible::campaign::ChoiceClassContext::new(BTreeSet::new())
+                .expect("build selectable choice class"),
+            BTreeSet::new(),
+            true,
+        )
+        .expect("build scenario selectable declaration");
+        let retry = crucible::campaign::SelectableDeclaration::new(
+            "checkpoint.retry",
+            crucible::campaign::ChoiceSource::Guest {
+                node: node.name.clone(),
+                protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
+            },
+            domain.clone(),
+            crucible::campaign::ChoiceValue::Boolean(true),
+            crucible::campaign::ChoiceClassContext::new(BTreeSet::new())
+                .expect("build selectable choice class"),
+            BTreeSet::new(),
+            true,
+        )
+        .expect("build second scenario selectable declaration");
+        let limits = crucible::ScenarioSelectableLimits::new(2, 2, 1, 2)
+            .expect("build scenario selectable limits");
+        let selectables = crucible::ScenarioSelectables::new(&world, limits, vec![recovery, retry])
+            .expect("build scenario selectables");
+        source = source
+            .with_selectables(selectables)
+            .expect("attach scenario selectables");
+
+        let declarations = vec![
+            SelectablePlanDeclaration::new(
+                "checkpoint.recovery",
+                domain.canonical_bytes(),
+                default.canonical_bytes(),
+                Vec::new(),
+                SelectablePlanPresence::Required,
+            )
+            .expect("build checkpoint selectable declaration"),
+            SelectablePlanDeclaration::new(
+                "checkpoint.retry",
+                domain.canonical_bytes(),
+                crucible::campaign::ChoiceValue::Boolean(true).canonical_bytes(),
+                Vec::new(),
+                SelectablePlanPresence::Required,
+            )
+            .expect("build second checkpoint selectable declaration"),
+        ];
+        Some(
+            SelectableCatalogPlan::new(
+                SelectablePlanLimits::new(2, 1, 2).expect("build checkpoint selectable limits"),
+                declarations,
+                continuation,
+            )
+            .expect("build checkpoint selectable plan"),
+        )
+    } else {
+        None
+    };
+    let scenario = source.scenario_def();
+    let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
+        &scenario.id().to_hex(),
+        Shift::new(0).expect("zero shift validates"),
+        4,
+        SimInstant { nanos: 4 },
+        0,
+        source.world(),
+    )
+    .with_scenario_def(scenario.clone());
+    let scheduler = SingleScheduler::new(runtime_scenario).expect("build one-node scheduler");
+    let scheduler_checkpoint = scheduler
+        .checkpoint()
+        .expect("checkpoint one-node scheduler");
+
+    let nodes = ProductionNodeSet::new();
+    let fault_runtime = ProductionFaultRuntime::new(
+        source.plan().fault_signals().clone(),
+        None,
+        SignalBoundarySnapshot::default(),
+        scenario.id(),
+        super::super::fault_implementation::test_host_manifests(),
+        &nodes,
+    )
+    .expect("build inert one-node fault runtime");
+    let fault_checkpoint = fault_runtime
+        .checkpoint(&mut ProductionNodeSet::new())
+        .expect("checkpoint inert fault runtime")
+        .with_unvalidated_test_node(
+            source.plan().fault_signals(),
+            node.clone(),
+            ContentHash::from_bytes(b"one-node execution fingerprint"),
+        )
+        .expect("bind synthetic node fingerprint");
+
+    let configuration = Configuration {
+        def: scenario.clone(),
+        schedule: Schedule::empty(),
+    };
+    let modeled_checkpoint = Checkpoint::from_recorded_configuration(
+        &configuration,
+        None,
+        VirtualTime { ticks: 0 },
+        BTreeMap::from([(node.clone(), Icount { retired: 0 })]),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("build one-node modeled checkpoint");
+    let snapshot = Snapshot::diskless(modeled_checkpoint, QemuReplayOracleValidation::NotRun)
+        .expect("build raw one-node QEMU snapshot");
+    let snapshot_identity = snapshot.id();
+
+    let overlay = run_state_root.join("raw-overlay.qcow2");
+    let vmstate = run_state_root.join("raw-vmstate.bin");
+    fs::write(&overlay, b"overlay fixture").expect("write overlay fixture");
+    fs::write(&vmstate, b"vmstate fixture").expect("write VMState fixture");
+    let overlay_artifact = stage_sparse_checkpoint_artifact_chunks_with_boundary(
+        &overlay,
+        &run_state_root.join("raw-overlay-chunks"),
+        "root overlay fixture",
+        0,
+        source.plan().fault_signals().resource_limits(),
+        &mut || Ok(()),
+    )
+    .expect("stage sparse overlay fixture");
+    let vmstate_artifact = ProductionCheckpointArtifact {
+        source: ProductionCheckpointArtifactSource::File(vmstate.clone()),
+        identity: hash_file(&vmstate).expect("hash VMState fixture"),
+        length: fs::metadata(&vmstate)
+            .expect("inspect VMState fixture")
+            .len(),
+        chunks: Vec::new(),
+        sparse: false,
+        extents: Vec::new(),
+    };
+    let manifest_identity =
+        exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
+            configuration: configuration.id(),
+            immutable_backing: Some(ContentHash::from_bytes(b"immutable backing")),
+            node: &node,
+            counter: 0,
+            scheduler_time: VirtualTime { ticks: 0 },
+            snapshot: snapshot_identity,
+            fault_identity: fault_checkpoint.id(),
+            overlay: overlay_artifact.identity,
+            vmstate: vmstate_artifact.identity,
+        });
+    let checkpoint = ProductionVmExactCheckpointSet {
+        identity: ContentHash::default(),
+        configuration,
+        scheduler: scheduler_checkpoint,
+        event_log_objects: BTreeMap::new(),
+        signal_artifact_objects: BTreeMap::new(),
+        trigger_state: EventGraphState::default(),
+        assertion_state: HostAssertionEvaluator::new(source.properties()).checkpoint(),
+        terminal_verdict: None,
+        terminal_cause: None,
+        initial_lifecycle_observations_pending: true,
+        branch: None,
+        recorded_controls: Vec::new(),
+        selectable_catalog_plans: selectable_plan
+            .map(|plan| BTreeMap::from([(node.clone(), plan)]))
+            .unwrap_or_default(),
+        fault_checkpoint: Some(fault_checkpoint),
+        targets: BTreeMap::from([(
+            node.clone(),
+            ProductionVmExactCheckpointTarget {
+                configuration: Configuration {
+                    def: scenario,
+                    schedule: Schedule::empty(),
+                },
+                immutable_backing: Some(ContentHash::from_bytes(b"immutable backing")),
+                counter: 0,
+                scheduler_time: VirtualTime { ticks: 0 },
+                snapshot,
+                overlay_artifact,
+                vmstate_artifact,
+                manifest_identity,
+            },
+        )]),
+        node_generations: BTreeMap::from([(node.clone(), 1)]),
+        node_service_states: BTreeMap::from([(node.clone(), ProductionNodeServiceState::Running)]),
+    };
+    (source, checkpoint, node, snapshot_identity)
+}
+
+fn publish_one_node_raw_checkpoint(
+    run_state_root: &Path,
+) -> (ScenarioDefForm, ContentHash, NodeId, ContentHash) {
+    let (source, mut checkpoint, node, snapshot_identity) =
+        build_one_node_raw_checkpoint(run_state_root, None);
+    let prepared = prepare_exact_checkpoint_set(
+        run_state_root,
+        source.scenario_def().id(),
+        source.plan().fault_signals().resource_limits(),
+        &mut checkpoint,
+    )
+    .expect("prepare one-node production checkpoint");
+    let identity = prepared.identity();
+    prepared
+        .publish()
+        .expect("publish one-node production checkpoint");
+    (source, identity, node, snapshot_identity)
+}
+
+#[test]
+fn cold_genesis_catalog_checkpoint_round_trips_only_at_initial_boundary() {
+    std::thread::Builder::new()
+        .name(String::from("cold-genesis-selectable-checkpoint"))
+        .stack_size(32 * 1024 * 1024)
+        .spawn(run_cold_genesis_catalog_checkpoint_test)
+        .expect("spawn cold-genesis selectable checkpoint test")
+        .join()
+        .expect("cold-genesis selectable checkpoint test should not panic");
+}
+
+fn run_cold_genesis_catalog_checkpoint_test() {
+    use crucible_protocol::selectable_catalog_plan::{
+        SelectablePlanContinuation, SelectablePlanPhase,
+    };
+
+    let store = tempfile::tempdir().expect("create cold-genesis checkpoint store");
+    let (source, mut checkpoint, node, _) =
+        build_one_node_raw_checkpoint(store.path(), Some(SelectablePlanContinuation::cold()));
+    let expected_plan = checkpoint
+        .selectable_catalog_plans
+        .get(&node)
+        .expect("cold selectable plan should exist")
+        .clone();
+    let prepared = prepare_exact_checkpoint_set(
+        store.path(),
+        source.scenario_def().id(),
+        source.plan().fault_signals().resource_limits(),
+        &mut checkpoint,
+    )
+    .expect("prepare cold-genesis selectable checkpoint");
+    let identity = prepared.identity();
+    prepared
+        .publish()
+        .expect("publish cold-genesis selectable checkpoint");
+
+    let restored =
+        load_exact_checkpoint_set(store.path(), &source.scenario_def(), &source, identity)
+            .expect("load cold-genesis selectable checkpoint");
+    assert_eq!(
+        restored.selectable_catalog_plans.get(&node),
+        Some(&expected_plan)
+    );
+    open_exact_checkpoint_closure(store.path(), &source, identity)
+        .expect("open cold-genesis selectable checkpoint closure")
+        .validate_complete()
+        .expect("authenticate complete cold-genesis selectable checkpoint closure");
+
+    let partial_store = tempfile::tempdir().expect("create partial-registration checkpoint store");
+    let partial = SelectablePlanContinuation::new(
+        SelectablePlanPhase::Registering,
+        BTreeSet::from([String::from("checkpoint.recovery")]),
+        Some(1),
+        BTreeMap::new(),
+        None,
+        None,
+    )
+    .expect("build partial selectable continuation");
+    let (partial_source, mut partial_checkpoint, _, _) =
+        build_one_node_raw_checkpoint(partial_store.path(), Some(partial));
+    let error = prepare_exact_checkpoint_set(
+        partial_store.path(),
+        partial_source.scenario_def().id(),
+        partial_source.plan().fault_signals().resource_limits(),
+        &mut partial_checkpoint,
+    )
+    .err()
+    .expect("partial selectable registration must fail checkpoint preparation");
+    let PersistExactCheckpointError::Unpublished(source) = error else {
+        panic!("partial catalog rejection must precede publication");
+    };
+    assert!(source.to_string().contains(
+        "selectable catalogs are neither frozen nor pristine pre-execution cold-genesis continuations"
+    ));
+
+    let progressed_store = tempfile::tempdir().expect("create progressed checkpoint store");
+    let (progressed_source, mut progressed_checkpoint, _, _) = build_one_node_raw_checkpoint(
+        progressed_store.path(),
+        Some(SelectablePlanContinuation::cold()),
+    );
+    progressed_checkpoint.initial_lifecycle_observations_pending = false;
+    let error = prepare_exact_checkpoint_set(
+        progressed_store.path(),
+        progressed_source.scenario_def().id(),
+        progressed_source.plan().fault_signals().resource_limits(),
+        &mut progressed_checkpoint,
+    )
+    .err()
+    .expect("progressed cold catalog must fail checkpoint preparation");
+    assert!(matches!(error, PersistExactCheckpointError::Unpublished(_)));
+}
+
+fn regular_file_count(path: &Path) -> usize {
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                regular_file_count(&entry.path())
+            } else {
+                usize::from(entry.file_type().is_ok_and(|kind| kind.is_file()))
+            }
+        })
+        .sum()
+}
+
+#[test]
+fn native_checkpoint_retirement_is_crash_safe_and_idempotent() {
+    let root = tempfile::tempdir().expect("create native retirement store");
+    let (source, identity, _, _) = publish_one_node_raw_checkpoint(root.path());
+    let scenario = source.scenario_def().id();
+    let closure = open_exact_checkpoint_closure(root.path(), &source, identity)
+        .expect("open native closure before retirement");
+    let retirement = closure.native_retirement();
+    let scenario_directory = root.path().join(scenario.to_hex());
+
+    let first = retire_production_exact_checkpoint_catalog(&retirement)
+        .expect("retire native checkpoint catalog");
+    assert_eq!(first.scenario(), scenario);
+    assert!(first.retired());
+    assert!(!scenario_directory.exists());
+
+    let second =
+        retire_production_exact_checkpoint_catalog(&retirement).expect("repeat native retirement");
+    assert_eq!(second.scenario(), scenario);
+    assert!(!second.retired());
+}
+
+#[test]
+fn native_checkpoint_retirement_recovers_renamed_generation() {
+    let root = tempfile::tempdir().expect("create interrupted native retirement store");
+    let (source, identity, _, _) = publish_one_node_raw_checkpoint(root.path());
+    let scenario = source.scenario_def().id();
+    let closure = open_exact_checkpoint_closure(root.path(), &source, identity)
+        .expect("open native closure before interrupted retirement");
+    let retirement = closure.native_retirement();
+    let scenario_name = scenario.to_hex();
+    let active = root.path().join(&scenario_name);
+    let retired = root
+        .path()
+        .join(format!(".retired-checkpoint-catalog-{scenario_name}"));
+    fs::rename(&active, &retired).expect("simulate durable catalog rename");
+    File::open(root.path())
+        .and_then(|directory| directory.sync_all())
+        .expect("sync simulated rename");
+
+    let report = retire_production_exact_checkpoint_catalog(&retirement)
+        .expect("finish interrupted retirement");
+    assert!(!report.retired());
+    assert!(!active.exists());
+    assert!(!retired.exists());
 }
 
 #[test]
@@ -64,6 +608,181 @@ fn closure_manifest_round_trip_is_canonical() {
 }
 
 #[test]
+fn legacy_v4_closure_manifest_retains_its_identity_and_canonical_bytes() {
+    let mut legacy = manifest();
+    legacy.format_version = LEGACY_MANIFEST_VERSION;
+    legacy.identity = closure_identity(&legacy).expect("derive legacy identity");
+    let bytes = encode_manifest(&legacy).expect("encode legacy manifest");
+    assert!(bytes.starts_with(LEGACY_MANIFEST_MAGIC));
+
+    let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
+        .expect("decode legacy manifest");
+    assert!(decoded == legacy);
+    assert_eq!(
+        closure_identity(&decoded).expect("derive decoded identity"),
+        legacy.identity
+    );
+    assert_eq!(
+        encode_manifest(&decoded).expect("re-encode legacy manifest"),
+        bytes
+    );
+}
+
+#[test]
+fn previous_v6_closure_manifest_retains_its_identity_and_canonical_bytes() {
+    let mut previous = manifest();
+    previous.format_version = PREVIOUS_MANIFEST_VERSION;
+    previous.identity = closure_identity(&previous).expect("derive previous identity");
+    let bytes = encode_manifest(&previous).expect("encode previous manifest");
+    assert!(bytes.starts_with(PREVIOUS_MANIFEST_MAGIC));
+
+    let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
+        .expect("decode previous manifest");
+    assert!(decoded == previous);
+    assert_eq!(
+        closure_identity(&decoded).expect("derive decoded identity"),
+        previous.identity
+    );
+    assert_eq!(
+        encode_manifest(&decoded).expect("re-encode previous manifest"),
+        bytes
+    );
+}
+
+#[test]
+fn previous_v6_dense_target_retains_its_identity_and_canonical_bytes() {
+    let chunk = ContentHash::from_bytes(b"artifact");
+    let dense = ArtifactManifest {
+        identity: chunk,
+        length: 8,
+        chunks: vec![chunk],
+        sparse: false,
+        extents: Vec::new(),
+    };
+    let mut previous = manifest();
+    previous.format_version = PREVIOUS_MANIFEST_VERSION;
+    let mut prior_target = target("a");
+    prior_target.overlay = dense.clone();
+    prior_target.vmstate = dense;
+    previous.targets.push(prior_target);
+    previous.node_generations.push((wire_string("a"), 1));
+    previous.node_service_states.push((wire_string("a"), 1));
+    previous.identity = closure_identity(&previous).expect("derive previous target identity");
+    let bytes = encode_manifest(&previous).expect("encode previous target manifest");
+
+    let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
+        .expect("decode previous target manifest");
+    assert!(decoded == previous);
+    assert_eq!(
+        encode_manifest(&decoded).expect("re-encode previous target manifest"),
+        bytes
+    );
+}
+
+#[test]
+fn older_v5_closure_manifest_retains_its_identity_and_canonical_bytes() {
+    let mut older = manifest();
+    older.format_version = OLDER_MANIFEST_VERSION;
+    older.identity = closure_identity(&older).expect("derive older identity");
+    let bytes = encode_manifest(&older).expect("encode older manifest");
+    assert!(bytes.starts_with(OLDER_MANIFEST_MAGIC));
+
+    let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
+        .expect("decode older manifest");
+    assert!(decoded == older);
+    assert_eq!(
+        closure_identity(&decoded).expect("derive decoded identity"),
+        older.identity
+    );
+    assert_eq!(
+        encode_manifest(&decoded).expect("re-encode older manifest"),
+        bytes
+    );
+}
+
+#[test]
+fn target_manifest_identity_authenticates_immutable_backing() {
+    let node = NodeId {
+        name: String::from("vm-a"),
+    };
+    let basis = |immutable_backing| ExactCheckpointTargetManifestBasis {
+        configuration: ContentHash::from_bytes(b"configuration"),
+        immutable_backing,
+        node: &node,
+        counter: 17,
+        scheduler_time: VirtualTime { ticks: 23 },
+        snapshot: ContentHash::from_bytes(b"snapshot"),
+        fault_identity: ContentHash::from_bytes(b"fault"),
+        overlay: ContentHash::from_bytes(b"overlay"),
+        vmstate: ContentHash::from_bytes(b"vmstate"),
+    };
+
+    let legacy = exact_checkpoint_target_manifest_identity(basis(None));
+    let first = exact_checkpoint_target_manifest_identity(basis(Some(ContentHash::from_bytes(
+        b"first backing",
+    ))));
+    let second = exact_checkpoint_target_manifest_identity(basis(Some(ContentHash::from_bytes(
+        b"second backing",
+    ))));
+
+    assert_ne!(legacy, first);
+    assert_ne!(first, second);
+}
+
+#[test]
+fn closure_manifest_allows_content_deduplication_between_distinct_nodes() {
+    let mut shared = manifest();
+    let first = target("a");
+    let mut second = target("b");
+    second.snapshot = first.snapshot;
+    shared.targets = vec![first, second];
+    shared.identity = closure_identity(&shared).expect("derive shared-content identity");
+    let bytes = encode_manifest(&shared).expect("encode shared-content manifest");
+    let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
+        .expect("distinct nodes may share immutable snapshot content");
+    assert!(decoded == shared);
+    assert_eq!(
+        encode_manifest(&decoded).expect("re-encode manifest"),
+        bytes
+    );
+
+    shared.targets[1].node = wire_string("a");
+    let bytes = encode_manifest(&shared).expect("encode duplicate-node manifest");
+    assert!(decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err());
+}
+
+#[test]
+fn shared_snapshot_content_does_not_authorize_a_foreign_node_target() {
+    std::thread::Builder::new()
+        .name(String::from("checkpoint-target-ownership"))
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            let store = tempfile::tempdir().expect("create checkpoint store");
+            let (source, identity, node, _) = publish_one_node_raw_checkpoint(store.path());
+            let restored =
+                load_exact_checkpoint_set(store.path(), &source.scenario_def(), &source, identity)
+                    .expect("load authentic checkpoint");
+            let target = restored.targets.get(&node).expect("find target");
+            let fault = restored
+                .fault_checkpoint
+                .as_ref()
+                .expect("find fault state")
+                .id();
+            validate_exact_checkpoint_target(&node, target, fault)
+                .expect("original node owns the snapshot and artifacts");
+            let foreign = NodeId {
+                name: String::from("foreign-node"),
+            };
+            let error = validate_exact_checkpoint_target(&foreign, target, fault)
+                .expect_err("identical content does not transfer node ownership");
+            assert!(error.to_string().contains("failed manifest authentication"));
+        })
+        .expect("spawn large-stack ownership test")
+        .join()
+        .expect("ownership test should not panic");
+}
+
+#[test]
 fn closure_manifest_rejects_unsorted_or_trailing_records() {
     let mut unsorted = manifest();
     unsorted.targets = vec![target("b"), target("a")];
@@ -75,6 +794,41 @@ fn closure_manifest_rejects_unsorted_or_trailing_records() {
     assert!(
         decode::decode_manifest_with_limits(&trailing, FaultResourceLimits::default()).is_err()
     );
+}
+
+#[test]
+fn closure_manifest_versions_enforce_backing_field_ownership() {
+    let mut current_without_backing = manifest();
+    let mut missing = target("a");
+    missing.immutable_backing = None;
+    current_without_backing.targets.push(missing);
+    let bytes = encode_manifest(&current_without_backing).expect("encode missing-backing fixture");
+    assert!(decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err());
+
+    let mut older_with_backing = manifest();
+    older_with_backing.format_version = OLDER_MANIFEST_VERSION;
+    let mut older_target = target("a");
+    older_target.overlay = older_target.vmstate.clone();
+    older_with_backing.targets.push(older_target);
+    let bytes = encode_manifest(&older_with_backing).expect("encode prior-backing fixture");
+    assert!(decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err());
+}
+
+#[test]
+fn current_manifest_requires_sparse_overlay_and_dense_vmstate() {
+    let mut dense_overlay = manifest();
+    let mut dense_target = target("a");
+    dense_target.overlay = dense_target.vmstate.clone();
+    dense_overlay.targets.push(dense_target);
+    let bytes = encode_manifest(&dense_overlay).expect("encode dense-overlay fixture");
+    assert!(decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err());
+
+    let mut sparse_vmstate = manifest();
+    let mut sparse_target = target("a");
+    sparse_target.vmstate = sparse_target.overlay.clone();
+    sparse_vmstate.targets.push(sparse_target);
+    let bytes = encode_manifest(&sparse_vmstate).expect("encode sparse-VMState fixture");
+    assert!(decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err());
 }
 
 #[test]
@@ -90,6 +844,366 @@ fn closure_identity_excludes_only_its_identity_field() {
     assert_ne!(
         closure_identity(&original).expect("derive changed closure identity"),
         identity
+    );
+}
+
+#[test]
+fn replay_oracle_manifest_promotion_changes_only_target_snapshots() {
+    let mut source = manifest();
+    source.targets = vec![target("a"), target("b")];
+    refresh_target_manifest_identities(&mut source);
+    source.identity = closure_identity(&source).expect("derive raw closure identity");
+    let mut promoted = source.clone();
+    promoted.targets[0].snapshot = ContentHash::from_bytes(b"promoted-a");
+    promoted.targets[1].snapshot = ContentHash::from_bytes(b"promoted-b");
+    refresh_target_manifest_identities(&mut promoted);
+    promoted.identity = closure_identity(&promoted).expect("derive promoted closure identity");
+
+    validate_replay_oracle_manifest_basis(&source, &promoted)
+        .expect("snapshot-only promotion should preserve the production basis");
+
+    let mut changed_artifact = promoted.clone();
+    changed_artifact.targets[0].overlay.length += 1;
+    assert!(validate_replay_oracle_manifest_basis(&source, &changed_artifact).is_err());
+
+    let unchanged = source.clone();
+    assert!(validate_replay_oracle_manifest_basis(&source, &unchanged).is_err());
+
+    let mut missing_target = promoted;
+    missing_target.targets.pop();
+    assert!(validate_replay_oracle_manifest_basis(&source, &missing_target).is_err());
+}
+
+#[test]
+fn replay_oracle_source_pair_is_bound_to_every_exact_snapshot() {
+    let scenario = ScenarioDef::from_canonical_material(
+        "crucible.test.production-replay-oracle-pair",
+        "scenario",
+    );
+    let configuration = Configuration::genesis(scenario.clone());
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &configuration,
+        None,
+        VirtualTime::default(),
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("build replay-oracle checkpoint fixture");
+    let raw = Snapshot::diskless(checkpoint.clone(), QemuReplayOracleValidation::NotRun)
+        .expect("build raw production snapshot");
+    let runtime_hash = ContentHash::from_bytes(b"matching production runtime");
+    let promoted = Snapshot::diskless(
+        checkpoint,
+        QemuReplayOracleValidation::Match { runtime_hash },
+    )
+    .expect("build promoted production snapshot");
+    let mut basis = manifest();
+    basis.scenario = scenario.id();
+    basis.configuration = configuration.id();
+    basis.targets = vec![target("vm-a")];
+    let source = snapshot_portable(basis.clone(), &raw);
+    let promoted = snapshot_portable(basis, &promoted);
+
+    authenticate_replay_oracle_source_pair(
+        &source,
+        &promoted,
+        FaultResourceLimits::default(),
+        ContentHash::default(),
+        &mut || Ok(()),
+    )
+    .expect("exact raw-to-match source pair should authenticate");
+
+    let foreign_configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.production-replay-oracle-pair",
+        "foreign",
+    ));
+    let foreign_checkpoint = Checkpoint::from_recorded_configuration(
+        &foreign_configuration,
+        None,
+        VirtualTime::default(),
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("build foreign checkpoint fixture");
+    let foreign = Snapshot::diskless(
+        foreign_checkpoint,
+        QemuReplayOracleValidation::Match { runtime_hash },
+    )
+    .expect("build foreign promoted snapshot");
+    let foreign = snapshot_portable(
+        decode::decode_manifest_with_limits(source.manifest(), FaultResourceLimits::default())
+            .expect("decode source manifest fixture"),
+        &foreign,
+    );
+    assert!(
+        authenticate_replay_oracle_source_pair(
+            &source,
+            &foreign,
+            FaultResourceLimits::default(),
+            ContentHash::default(),
+            &mut || Ok(()),
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn production_replay_oracle_promotion_is_no_write_and_restart_authenticatable() {
+    std::thread::Builder::new()
+        .name(String::from("production-replay-oracle-promotion"))
+        .stack_size(32 * 1024 * 1024)
+        .spawn(run_production_replay_oracle_promotion_test)
+        .expect("spawn large-stack production promotion test")
+        .join()
+        .expect("production promotion test should not panic");
+}
+
+fn run_production_replay_oracle_promotion_test() {
+    let source_store = tempfile::tempdir().expect("create raw production store");
+    let (source, raw_identity, node, raw_snapshot) =
+        publish_one_node_raw_checkpoint(source_store.path());
+    let raw = open_exact_checkpoint_closure(source_store.path(), &source, raw_identity)
+        .expect("open raw production closure");
+    raw.validate_complete()
+        .expect("raw production closure should authenticate");
+    let catalog_source = Arc::new(raw.clone());
+    let catalog = catalog_source
+        .replay_oracle_catalog()
+        .expect("authenticate random-access replay catalog");
+    assert_eq!(catalog.len(), 1);
+    assert_eq!(catalog.nodes().collect::<Vec<_>>(), vec![&node]);
+    let catalog_target = catalog
+        .open_target(&node)
+        .expect("open exact catalog target");
+    assert_eq!(catalog_target.snapshot().id(), raw_snapshot);
+    assert!(
+        catalog
+            .open_target(&NodeId {
+                name: String::from("foreign-node"),
+            })
+            .is_err()
+    );
+    drop(catalog);
+    drop(catalog_source);
+    let mut replay_targets = raw
+        .replay_oracle_targets()
+        .expect("authenticate raw production replay targets");
+    assert_eq!(replay_targets.remaining(), 1);
+    let replay_target = replay_targets
+        .next_target()
+        .expect("stream raw production replay target")
+        .expect("one raw production replay target");
+    assert_eq!(replay_target.node(), &node);
+    assert_eq!(replay_target.snapshot().id(), raw_snapshot);
+    let mut overlay = Vec::new();
+    let mut boundary_calls = 0_u64;
+    {
+        let mut boundary = || {
+            boundary_calls += 1;
+            Ok(())
+        };
+        replay_target
+            .overlay()
+            .stream_into_with_boundary(&mut overlay, &mut boundary)
+            .expect("stream authenticated replay overlay");
+    }
+    assert!(boundary_calls >= 4);
+    assert_eq!(
+        u64::try_from(overlay.len()).expect("overlay length"),
+        replay_target.overlay().length()
+    );
+    assert_eq!(overlay, b"overlay fixture");
+    let mut vmstate = Vec::new();
+    replay_target
+        .vmstate()
+        .stream_into(&mut vmstate)
+        .expect("stream authenticated replay VMState");
+    assert_eq!(
+        u64::try_from(vmstate.len()).expect("VMState length"),
+        replay_target.vmstate().length()
+    );
+    assert_eq!(
+        ContentHash::from_bytes(&vmstate),
+        replay_target.vmstate().identity()
+    );
+    assert_eq!(replay_targets.remaining(), 0);
+    assert!(
+        replay_targets
+            .next_target()
+            .expect("finish raw production replay targets")
+            .is_none()
+    );
+    let mut retry_targets = raw
+        .replay_oracle_targets()
+        .expect("authenticate retryable raw production targets");
+    assert!(
+        retry_targets
+            .next_target_with_boundary(&mut || {
+                Err(LifecycleApiError::LoopFactory {
+                    message: String::from("injected target boundary failure"),
+                })
+            })
+            .is_err()
+    );
+    assert_eq!(retry_targets.remaining(), 1);
+    assert_eq!(
+        retry_targets
+            .next_target()
+            .expect("retry the same production target")
+            .expect("retried production target")
+            .node(),
+        &node,
+    );
+    assert!(
+        !raw.authenticate_resume_basis()
+            .expect("raw production resume basis")
+            .replay_oracle_ready(),
+        "a newly captured NotRun root must not be resume eligible",
+    );
+    let rejected_destination = tempfile::tempdir().expect("create rejected resume store");
+    let scenario = source.scenario_def().id();
+    let rejected_objects = object_parent(rejected_destination.path(), scenario);
+    let rejected_publication =
+        closure_parent(rejected_destination.path(), scenario).join(raw_identity.to_hex());
+    let error = match install_exact_checkpoint_closure_with_boundary_and_admission(
+        rejected_destination.path(),
+        &source,
+        &raw,
+        &mut || Ok(()),
+        &mut |basis| {
+            if basis.replay_oracle_ready() {
+                Ok(())
+            } else {
+                Err(LifecycleApiError::LoopFactory {
+                    message: String::from("raw replay-oracle root is not resume ready"),
+                })
+            }
+        },
+    ) {
+        Ok(_) => panic!("raw root admission must reject before native publication"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, LifecycleApiError::LoopFactory { .. }));
+    assert!(!rejected_objects.exists());
+    assert!(!rejected_publication.exists());
+    let files_before = regular_file_count(source_store.path());
+    let checks = BTreeMap::from([(
+        node.clone(),
+        QemuReplayOracleCheck::from_unvalidated_test_result(
+            raw_snapshot,
+            QemuReplayOracleValidation::Match {
+                runtime_hash: ContentHash::from_bytes(b"matching production runtime"),
+            },
+        ),
+    )]);
+
+    let promotion = raw
+        .prepare_replay_oracle_promotion(&checks)
+        .expect("prepare source-bound production promotion");
+    assert_eq!(promotion.source(), raw_identity);
+    assert_ne!(promotion.promoted(), raw_identity);
+    assert_eq!(regular_file_count(source_store.path()), files_before);
+
+    let promoted_store = tempfile::tempdir().expect("create promoted production store");
+    let promoted_identity = promotion.promoted();
+    install_exact_checkpoint_closure(promoted_store.path(), &source, &promotion)
+        .expect("install promoted production closure");
+    let promoted = open_exact_checkpoint_closure(promoted_store.path(), &source, promoted_identity)
+        .expect("open promoted production closure");
+    assert!(
+        promoted
+            .authenticate_resume_basis()
+            .expect("promoted production resume basis")
+            .replay_oracle_ready(),
+        "the exact source-bound Match replacement must be resume eligible",
+    );
+    let mut promoted_targets = promoted
+        .replay_oracle_targets()
+        .expect("authenticate promoted production replay targets");
+    assert!(
+        promoted_targets.next_target().is_err(),
+        "a promoted snapshot must not be exposed as a raw comparison source",
+    );
+    raw.authenticate_replay_oracle_promotion(&promoted)
+        .expect("restart validation should authenticate the exact root pair");
+    authenticate_portable_exact_checkpoint_replay_oracle_promotion(&source, &raw, &promoted)
+        .expect("portable restart validator should authenticate the exact root pair");
+
+    let foreign_check = BTreeMap::from([(
+        node,
+        QemuReplayOracleCheck::from_unvalidated_test_result(
+            ContentHash::from_bytes(b"foreign source snapshot"),
+            QemuReplayOracleValidation::Match {
+                runtime_hash: ContentHash::from_bytes(b"matching production runtime"),
+            },
+        ),
+    )]);
+    assert!(raw.prepare_replay_oracle_promotion(&foreign_check).is_err());
+    assert_eq!(regular_file_count(source_store.path()), files_before);
+}
+
+#[test]
+fn portable_closure_inventory_streams_only_authenticated_manifest_objects() {
+    let root = tempfile::tempdir().expect("create portable closure root");
+    let source = crucible::happy_path_scenario()
+        .expect("build portable closure scenario")
+        .scenario;
+    let scenario = source.scenario_def().id();
+    let bytes = b"deduplicated portable checkpoint object";
+    let object_identity = ContentHash::from_bytes(bytes);
+    let mut manifest = manifest();
+    manifest.scenario = scenario;
+    manifest.configuration = ContentHash::from_bytes(b"portable configuration");
+    manifest.schedule = object_identity;
+    manifest.scheduler = object_identity;
+    manifest.trigger_state = object_identity;
+    manifest.assertion_state = object_identity;
+    manifest.lifecycle_state = object_identity;
+    manifest.fault_checkpoint = object_identity;
+    manifest.identity = closure_identity(&manifest).expect("derive portable closure identity");
+
+    let object_directory = object_parent(root.path(), scenario);
+    fs::create_dir_all(&object_directory).expect("create portable object directory");
+    persist_object(&object_directory, object_identity, bytes).expect("persist portable object");
+    let publication = closure_parent(root.path(), scenario).join(manifest.identity.to_hex());
+    fs::create_dir_all(&publication).expect("create portable publication directory");
+    fs::write(
+        publication.join(MANIFEST_FILE),
+        encode_manifest(&manifest).expect("encode portable manifest"),
+    )
+    .expect("write portable manifest");
+
+    let closure = open_exact_checkpoint_closure(root.path(), &source, manifest.identity)
+        .expect("open portable checkpoint closure");
+    assert_eq!(closure.identity(), manifest.identity);
+    assert_eq!(closure.scenario(), scenario);
+    assert_eq!(closure.configuration(), manifest.configuration);
+    assert_eq!(closure.objects().len(), 1);
+    assert_eq!(closure.objects()[0].identity(), object_identity);
+    let object_length = u64::try_from(bytes.len()).expect("fixture length fits");
+    assert_eq!(closure.objects()[0].length(), object_length);
+    let mut copied = Vec::new();
+    assert_eq!(
+        closure
+            .copy_object_to(object_identity, &mut copied)
+            .expect("stream portable object"),
+        object_length
+    );
+    assert_eq!(copied, bytes);
+    assert!(
+        closure
+            .copy_object_to(ContentHash::from_bytes(b"unlisted"), &mut Vec::new())
+            .is_err()
+    );
+
+    fs::write(object_path(&object_directory, object_identity), b"changed")
+        .expect("replace portable object fixture");
+    assert!(
+        closure
+            .copy_object_to(object_identity, &mut Vec::new())
+            .is_err()
     );
 }
 
@@ -134,6 +1248,105 @@ fn concurrent_equal_object_publishers_converge_atomically() {
         .expect("published object should authenticate");
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn file_artifact_materialization_streams_and_preserves_sparse_zero_extents() {
+    let root = tempfile::tempdir().expect("create sparse materialization fixture");
+    let source = root.path().join("source");
+    let restored = root.path().join("restored");
+    let length = 16 * 1024 * 1024_u64;
+    let mut source_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&source)
+        .expect("create sparse source");
+    source_file.write_all(b"head").expect("write sparse head");
+    source_file
+        .seek(SeekFrom::Start(length - 4))
+        .expect("seek sparse tail");
+    source_file.write_all(b"tail").expect("write sparse tail");
+    source_file.sync_all().expect("flush sparse source");
+    drop(source_file);
+
+    let identity = hash_file(&source).expect("hash sparse source");
+    let artifact = ProductionCheckpointArtifact {
+        source: ProductionCheckpointArtifactSource::File(source.clone()),
+        identity,
+        length,
+        chunks: Vec::new(),
+        sparse: false,
+        extents: Vec::new(),
+    };
+    materialize_checkpoint_artifact(&artifact, &restored, "sparse test")
+        .expect("materialize sparse source");
+
+    assert_eq!(hash_file(&restored).expect("hash sparse result"), identity);
+    let metadata = fs::metadata(&restored).expect("inspect sparse result");
+    assert_eq!(metadata.len(), length);
+    assert!(metadata.blocks().saturating_mul(512) < length);
+
+    fs::remove_file(&restored).expect("remove sparse result");
+    let mut changed = OpenOptions::new()
+        .write(true)
+        .open(source)
+        .expect("reopen sparse source");
+    changed.write_all(b"fail").expect("change sparse source");
+    changed.sync_all().expect("flush changed sparse source");
+    assert!(materialize_checkpoint_artifact(&artifact, &restored, "changed sparse test").is_err());
+    assert!(!restored.exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn chunked_artifact_materialization_recreates_sparse_zero_extents() {
+    let root = tempfile::tempdir().expect("create sparse chunk fixture");
+    let source = root.path().join("source");
+    let restored = root.path().join("restored");
+    let object_directory = root.path().join("objects");
+    fs::create_dir(&object_directory).expect("create object directory");
+    let length = 16 * 1024 * 1024_u64;
+    let mut source_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&source)
+        .expect("create sparse source");
+    source_file.write_all(b"head").expect("write sparse head");
+    source_file
+        .seek(SeekFrom::Start(length - 4))
+        .expect("seek sparse tail");
+    source_file.write_all(b"tail").expect("write sparse tail");
+    source_file.sync_all().expect("flush sparse source");
+    drop(source_file);
+
+    let identity = hash_file(&source).expect("hash sparse source");
+    let source_artifact = ProductionCheckpointArtifact {
+        source: ProductionCheckpointArtifactSource::File(source),
+        identity,
+        length,
+        chunks: Vec::new(),
+        sparse: false,
+        extents: Vec::new(),
+    };
+    let manifest = artifact_manifest(&source_artifact).expect("derive sparse chunk manifest");
+    persist_chunked_artifact(&object_directory, &manifest, &source_artifact)
+        .expect("persist sparse chunks");
+    let chunked = ProductionCheckpointArtifact {
+        source: ProductionCheckpointArtifactSource::ChunkStore(object_directory),
+        identity,
+        length,
+        chunks: manifest.chunks,
+        sparse: manifest.sparse,
+        extents: manifest.extents,
+    };
+    materialize_checkpoint_artifact(&chunked, &restored, "sparse chunk test")
+        .expect("materialize sparse chunks");
+
+    assert_eq!(hash_file(&restored).expect("hash sparse result"), identity);
+    let metadata = fs::metadata(&restored).expect("inspect sparse result");
+    assert_eq!(metadata.len(), length);
+    assert!(metadata.blocks().saturating_mul(512) < length);
+}
+
 #[test]
 fn chunk_store_deduplicates_and_materializes_complete_artifacts() {
     let root = tempfile::tempdir().expect("create chunk-store fixture");
@@ -149,6 +1362,8 @@ fn chunk_store_deduplicates_and_materializes_complete_artifacts() {
         identity: ContentHash::from_bytes(&bytes),
         length: u64::try_from(bytes.len()).expect("fixture length fits"),
         chunks: Vec::new(),
+        sparse: false,
+        extents: Vec::new(),
     };
     let manifest = artifact_manifest(&artifact).expect("derive chunk manifest");
 
@@ -171,15 +1386,35 @@ fn chunk_store_deduplicates_and_materializes_complete_artifacts() {
         identity: manifest.identity,
         length: manifest.length,
         chunks: manifest.chunks.clone(),
+        sparse: manifest.sparse,
+        extents: manifest.extents.clone(),
     };
+    let mut streamed = Vec::new();
+    ProductionVmNodeCheckpointArtifact {
+        artifact: &chunked,
+        role: "test",
+    }
+    .stream_into(&mut streamed)
+    .expect("stream authenticated chunked artifact");
+    assert_eq!(streamed, bytes);
     materialize_checkpoint_artifact(&chunked, &restored, "test")
         .expect("materialize chunked artifact");
     assert_eq!(fs::read(&restored).expect("read restored artifact"), bytes);
 
     let first_chunk = object_path(&object_directory, manifest.chunks[0]);
     fs::write(&first_chunk, vec![0; ARTIFACT_CHUNK_BYTES]).expect("corrupt first checkpoint chunk");
+    let mut rejected_stream = Vec::new();
+    assert!(
+        ProductionVmNodeCheckpointArtifact {
+            artifact: &chunked,
+            role: "corrupt test",
+        }
+        .stream_into(&mut rejected_stream)
+        .is_err()
+    );
     fs::remove_file(&restored).expect("remove prior materialization");
     assert!(materialize_checkpoint_artifact(&chunked, &restored, "test").is_err());
+    assert!(!restored.exists());
     fs::write(&first_chunk, &bytes[..ARTIFACT_CHUNK_BYTES])
         .expect("restore first checkpoint chunk");
 
@@ -190,6 +1425,256 @@ fn chunk_store_deduplicates_and_materializes_complete_artifacts() {
     fs::remove_file(last_chunk).expect("remove tail checkpoint chunk");
     assert!(!restored.exists());
     assert!(materialize_checkpoint_artifact(&chunked, &restored, "test").is_err());
+    assert!(!restored.exists());
+}
+
+#[test]
+fn paused_artifact_staging_writes_only_deduplicated_chunks() {
+    let root = tempfile::tempdir().expect("create direct chunk-staging fixture");
+    let source = root.path().join("active-overlay.qcow2");
+    let object_directory = root.path().join("staged-objects");
+    let repeated = vec![0x6d; ARTIFACT_CHUNK_BYTES];
+    let mut bytes = repeated.clone();
+    bytes.extend_from_slice(&repeated);
+    bytes.extend_from_slice(b"tail");
+    fs::write(&source, &bytes).expect("write active overlay fixture");
+
+    let artifact = stage_checkpoint_artifact_chunks_with_boundary(
+        &source,
+        &object_directory,
+        "root overlay",
+        0,
+        FaultResourceLimits::compiled_maximum(),
+        &mut || Ok(()),
+    )
+    .expect("stage paused overlay directly into chunks");
+
+    assert_eq!(artifact.identity, ContentHash::from_bytes(&bytes));
+    assert_eq!(artifact.length, bytes.len() as u64);
+    assert_eq!(artifact.chunks.len(), 3);
+    assert_eq!(artifact.chunks[0], artifact.chunks[1]);
+    assert!(matches!(
+        artifact.source,
+        ProductionCheckpointArtifactSource::ChunkStore(ref directory)
+            if directory == &object_directory
+    ));
+    assert!(!object_directory.join("active-overlay.qcow2").exists());
+
+    let stored_count = fs::read_dir(&object_directory)
+        .expect("read staged object directory")
+        .map(|entry| {
+            fs::read_dir(entry.expect("read staged object prefix").path())
+                .expect("read staged object prefix directory")
+                .count()
+        })
+        .sum::<usize>();
+    assert_eq!(stored_count, 2);
+
+    let restored = root.path().join("restored-overlay.qcow2");
+    materialize_checkpoint_artifact(&artifact, &restored, "direct chunk staging")
+        .expect("materialize directly staged chunks");
+    assert_eq!(fs::read(restored).expect("read restored overlay"), bytes);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sparse_overlay_staging_persists_only_changed_chunks_and_reconstructs_holes() {
+    let root = tempfile::tempdir().expect("create sparse staging fixture");
+    let source = root.path().join("active-overlay.qcow2");
+    let object_directory = root.path().join("staged-objects");
+    let restored = root.path().join("restored-overlay.qcow2");
+    let length = 64 * 1024 * 1024_u64;
+    let mut source_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&source)
+        .expect("create sparse overlay");
+    source_file
+        .write_all(b"changed-head")
+        .expect("write changed head");
+    source_file
+        .seek(SeekFrom::Start(length - 12))
+        .expect("seek changed tail");
+    source_file
+        .write_all(b"changed-tail")
+        .expect("write changed tail");
+    source_file.sync_all().expect("flush sparse overlay");
+    drop(source_file);
+
+    let artifact = stage_sparse_checkpoint_artifact_chunks_with_boundary(
+        &source,
+        &object_directory,
+        "root overlay",
+        0,
+        FaultResourceLimits::compiled_maximum(),
+        &mut || Ok(()),
+    )
+    .expect("stage sparse overlay extents");
+    assert!(artifact.sparse);
+    assert!(artifact.chunks.is_empty());
+    assert_eq!(artifact.extents.len(), 2);
+    assert_eq!(artifact.extents[0].start_chunk, 0);
+    assert_eq!(artifact.extents[1].start_chunk, 15);
+    assert_eq!(
+        artifact
+            .extents
+            .iter()
+            .map(|extent| extent.chunks.len())
+            .sum::<usize>(),
+        2
+    );
+    assert_eq!(regular_file_count(&object_directory), 2);
+
+    let mut streamed = Vec::new();
+    stream_checkpoint_artifact(&artifact, &mut streamed, "sparse staged overlay")
+        .expect("stream sparse staged overlay");
+    assert_eq!(
+        streamed.len(),
+        usize::try_from(length).expect("fixture length fits")
+    );
+    assert_eq!(&streamed[..12], b"changed-head");
+    assert!(
+        streamed[12..streamed.len() - 12]
+            .iter()
+            .all(|byte| *byte == 0)
+    );
+    assert_eq!(&streamed[streamed.len() - 12..], b"changed-tail");
+
+    materialize_checkpoint_artifact(&artifact, &restored, "sparse staged overlay")
+        .expect("materialize sparse staged overlay");
+    let metadata = fs::metadata(&restored).expect("inspect materialized sparse overlay");
+    assert_eq!(metadata.len(), length);
+    assert!(metadata.blocks().saturating_mul(512) < length / 2);
+    assert_eq!(
+        fs::read(&restored).expect("read materialized overlay"),
+        streamed
+    );
+
+    let first = artifact.extents[0].chunks[0];
+    fs::write(
+        object_path(&object_directory, first),
+        vec![0x5a; ARTIFACT_CHUNK_BYTES],
+    )
+    .expect("corrupt sparse extent object");
+    assert!(validate_chunked_artifact(&object_directory, &artifact).is_err());
+    fs::remove_file(object_path(&object_directory, first)).expect("remove sparse extent object");
+    assert!(validate_chunked_artifact(&object_directory, &artifact).is_err());
+    fs::remove_file(&restored).expect("remove prior sparse materialization");
+    assert!(
+        materialize_checkpoint_artifact(&artifact, &restored, "corrupt sparse overlay").is_err()
+    );
+    assert!(!restored.exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn all_zero_sparse_overlay_has_no_stored_chunks() {
+    let root = tempfile::tempdir().expect("create all-zero sparse fixture");
+    let source = root.path().join("zero-overlay.qcow2");
+    let object_directory = root.path().join("staged-objects");
+    let length = 8 * 1024 * 1024_u64;
+    let source_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&source)
+        .expect("create all-zero sparse overlay");
+    source_file
+        .set_len(length)
+        .expect("size all-zero sparse overlay");
+    source_file
+        .sync_all()
+        .expect("flush all-zero sparse overlay");
+    drop(source_file);
+
+    let artifact = stage_sparse_checkpoint_artifact_chunks_with_boundary(
+        &source,
+        &object_directory,
+        "all-zero root overlay",
+        0,
+        FaultResourceLimits::compiled_maximum(),
+        &mut || Ok(()),
+    )
+    .expect("stage all-zero sparse overlay");
+    assert!(artifact.sparse);
+    assert!(artifact.extents.is_empty());
+    assert_eq!(regular_file_count(&object_directory), 0);
+    validate_chunked_artifact(&object_directory, &artifact)
+        .expect("authenticate all-zero sparse overlay");
+
+    let mut streamed = Vec::new();
+    stream_checkpoint_artifact(&artifact, &mut streamed, "all-zero sparse overlay")
+        .expect("stream all-zero sparse overlay");
+    assert_eq!(
+        streamed.len(),
+        usize::try_from(length).expect("fixture length fits")
+    );
+    assert!(streamed.iter().all(|byte| *byte == 0));
+}
+
+#[test]
+fn sparse_manifest_rejects_noncanonical_extent_geometry() {
+    let chunk = ContentHash::from_bytes(b"chunk");
+    let mut invalid = target("a").overlay;
+    invalid.length = 3 * ARTIFACT_CHUNK_BYTES_U64;
+    invalid.extents = vec![
+        ArtifactExtent {
+            start_chunk: 0,
+            chunks: vec![chunk],
+        },
+        ArtifactExtent {
+            start_chunk: 1,
+            chunks: vec![chunk],
+        },
+    ];
+    assert!(validate_sparse_artifact_shape(&invalid).is_err());
+
+    invalid.extents[1].start_chunk = 0;
+    assert!(validate_sparse_artifact_shape(&invalid).is_err());
+
+    invalid.extents = vec![ArtifactExtent {
+        start_chunk: 3,
+        chunks: vec![chunk],
+    }];
+    assert!(validate_sparse_artifact_shape(&invalid).is_err());
+
+    invalid.extents = vec![ArtifactExtent {
+        start_chunk: 0,
+        chunks: Vec::new(),
+    }];
+    assert!(validate_sparse_artifact_shape(&invalid).is_err());
+}
+
+#[test]
+fn paused_artifact_staging_rejects_length_before_writing_chunks() {
+    let root = tempfile::tempdir().expect("create chunk-staging limit fixture");
+    let source = root.path().join("active-vmstate.qcow2");
+    let object_directory = root.path().join("staged-objects");
+    fs::write(&source, b"over-limit").expect("write over-limit artifact fixture");
+
+    let error = stage_checkpoint_artifact_chunks_with_boundary(
+        &source,
+        &object_directory,
+        "VMState",
+        0,
+        FaultResourceLimits {
+            fat_checkpoint_bytes: 4,
+            ..FaultResourceLimits::default()
+        },
+        &mut || Ok(()),
+    )
+    .expect_err("over-limit artifact must be rejected");
+
+    assert!(matches!(
+        error,
+        SchedulerError::ResourceLimit {
+            field: "fat_checkpoint_bytes",
+            current: 0,
+            requested: 10,
+            configured: 4,
+            ..
+        }
+    ));
+    assert!(!object_directory.exists());
 }
 
 #[test]
@@ -199,6 +1684,43 @@ fn lifecycle_wire_restores_terminal_branch_and_controls() {
         .scenario
         .scenario_def();
     let schedule = Schedule::empty().to_compact_binary();
+    let selectable_plan = {
+        use crucible_protocol::selectable_catalog_plan::{
+            SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
+            SelectablePlanLimits, SelectablePlanPendingRequest, SelectablePlanPhase,
+            SelectablePlanPresence,
+        };
+        let declaration = SelectablePlanDeclaration::new(
+            "network.policy",
+            vec![1, 2],
+            vec![1],
+            vec!["network".to_owned()],
+            SelectablePlanPresence::Required,
+        )
+        .expect("build selectable declaration");
+        let pending = SelectablePlanPendingRequest::new(
+            crucible_protocol::SelectionRequest::new(9, "network.policy", "epoch/1", None, 128)
+                .expect("build pending request"),
+            700,
+            2,
+            0x8000,
+        );
+        let continuation = SelectablePlanContinuation::new(
+            SelectablePlanPhase::Frozen,
+            BTreeSet::from(["network.policy".to_owned()]),
+            Some(4),
+            BTreeMap::new(),
+            None,
+            Some(pending),
+        )
+        .expect("build selectable continuation");
+        SelectableCatalogPlan::new(
+            SelectablePlanLimits::new(1, 8, 8).expect("build selectable limits"),
+            vec![declaration],
+            continuation,
+        )
+        .expect("build selectable plan")
+    };
     let wire = LifecycleWire {
         terminal: Some(TerminalWire::Failed(vec![wire_string("failed")])),
         terminal_cause: Some(TerminalCauseWire::Failed(vec![wire_string("failed")])),
@@ -216,6 +1738,10 @@ fn lifecycle_wire_restores_terminal_branch_and_controls() {
                 sequence: 1,
                 kind: crucible::ControlOperationKind::Snapshot,
             }],
+        }],
+        selectable_catalog_plans: vec![SelectableCatalogWire {
+            node: wire_string("vm-0"),
+            plan: selectable_plan.encode().expect("encode selectable plan"),
         }],
     };
     let mut bytes = Vec::new();
@@ -239,5 +1765,11 @@ fn lifecycle_wire_restores_terminal_branch_and_controls() {
     assert_eq!(branch.frontier, VirtualTime { ticks: 7 });
     assert_eq!(branch.seed, Some(Seed::from_u64(9)));
     assert_eq!(decoded.recorded_controls.len(), 1);
+    assert_eq!(
+        decoded.selectable_catalog_plans.get(&NodeId {
+            name: String::from("vm-0")
+        }),
+        Some(&selectable_plan)
+    );
     assert_eq!(decoded.recorded_controls[0].control[0].sequence, 1);
 }

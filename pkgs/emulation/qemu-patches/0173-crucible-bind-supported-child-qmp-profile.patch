@@ -1,0 +1,530 @@
+diff --git a/include/system/crucible-hot-fork-plugin-child.h b/include/system/crucible-hot-fork-plugin-child.h
+index 0d8ed90c8..0adb6da5a 100644
+--- a/include/system/crucible-hot-fork-plugin-child.h
++++ b/include/system/crucible-hot-fork-plugin-child.h
+@@ -14,7 +14,7 @@
+ #define QEMU_CRUCIBLE_HOT_FORK_PLUGIN_CHILD_RETAINED_FD_COUNT 3
+ #define QEMU_CRUCIBLE_HOT_FORK_PLUGIN_CHILD_SHARED_MAPPING_COUNT 1
+ #define QEMU_CRUCIBLE_HOT_FORK_DIAGNOSTIC_TARGET_FD 2
+-#define QEMU_CRUCIBLE_HOT_FORK_QMP_CHILD_REINITIALIZER_VERSION 1
++#define QEMU_CRUCIBLE_HOT_FORK_QMP_CHILD_REINITIALIZER_VERSION 2
+ 
+ #define QEMU_CRUCIBLE_HOT_FORK_QMP_CHILD_FLAG_INHERITED_DISPOSED (1U << 0)
+ #define QEMU_CRUCIBLE_HOT_FORK_QMP_CHILD_FLAG_DISPATCHER_REBUILT (1U << 1)
+@@ -55,6 +55,7 @@ typedef struct QemuCrucibleHotForkQmpChildResourcePlan {
+     uint64_t socket_cookie;
+     uint64_t template_generation;
+     uint64_t qmp_generation;
++    uint64_t monitor_generation;
+     int retained_fd;
+     bool prepared;
+ } QemuCrucibleHotForkQmpChildResourcePlan;
+@@ -64,6 +65,7 @@ typedef struct QemuCrucibleHotForkQmpChildStatus {
+     uint32_t struct_size;
+     uint64_t template_generation;
+     uint64_t qmp_generation;
++    uint64_t monitor_generation;
+     uint64_t socket_cookie;
+     int retained_fd;
+     uint32_t flags;
+@@ -75,14 +77,15 @@ typedef struct QemuCrucibleHotForkQmpChildStatus {
+ 
+ typedef int (*QemuCrucibleHotForkQmpChildRuntime)(
+     int retained_fd, uint64_t socket_cookie, uint64_t template_generation,
+-    uint64_t qmp_generation, QemuCrucibleHotForkQmpChildStatus *status,
+-    void *opaque);
++    uint64_t qmp_generation, uint64_t monitor_generation,
++    QemuCrucibleHotForkQmpChildStatus *status, void *opaque);
+ 
+ typedef struct QemuCrucibleHotForkQmpChildReinitializer {
+     int retained_fd;
+     uint64_t socket_cookie;
+     uint64_t template_generation;
+     uint64_t qmp_generation;
++    uint64_t monitor_generation;
+     QemuCrucibleHotForkQmpChildStatus status;
+     bool prepared;
+     bool attempted;
+@@ -184,8 +187,6 @@ void qemu_crucible_hot_fork_reset_plugin_child_resources(
+  * @resources: caller-owned diagnostics resource contribution
+  * @source_fd: retained branch-private connected stream descriptor
+  * @socket_cookie: exact nonzero Linux SO_COOKIE authenticated at staging
+- * @template_generation: exact positive retained template generation
+- * @qmp_generation: exact positive child-QMP mutation generation
+  *
+  * Builds the supported-profile diagnostics contribution that replaces the
+  * child's inherited stderr slot while leaving the template parent's stderr
+@@ -224,6 +225,9 @@ void qemu_crucible_hot_fork_reset_diagnostics_child_resources(
+  * @resources: caller-owned QMP resource contribution
+  * @source_fd: retained branch-private connected stream descriptor
+  * @socket_cookie: exact nonzero Linux SO_COOKIE authenticated at staging
++ * @template_generation: exact positive retained template generation
++ * @qmp_generation: exact positive child-QMP mutation generation
++ * @monitor_generation: exact positive supported monitor-profile generation
+  *
+  * Builds the supported-profile QMP contribution that keeps one fresh private
+  * endpoint through immediate-child descriptor closure.  It deliberately does
+@@ -236,7 +240,8 @@ void qemu_crucible_hot_fork_reset_diagnostics_child_resources(
+ int qemu_crucible_hot_fork_prepare_qmp_child_resources(
+     QemuCrucibleHotForkQmpChildResourcePlan *resources,
+     int source_fd, uint64_t socket_cookie,
+-    uint64_t template_generation, uint64_t qmp_generation);
++    uint64_t template_generation, uint64_t qmp_generation,
++    uint64_t monitor_generation);
+ 
+ /**
+  * qemu_crucible_hot_fork_qmp_child_resources_prepared_for() - match QMP basis
+@@ -245,6 +250,7 @@ int qemu_crucible_hot_fork_prepare_qmp_child_resources(
+  * @socket_cookie: exact staged Linux SO_COOKIE
+  * @template_generation: expected retained template generation
+  * @qmp_generation: expected child-QMP mutation generation
++ * @monitor_generation: expected supported monitor-profile generation
+  *
+  * Returns true exactly when @resources contains the canonical retained QMP
+  * endpoint contribution for the supplied basis.
+@@ -252,7 +258,8 @@ int qemu_crucible_hot_fork_prepare_qmp_child_resources(
+ bool qemu_crucible_hot_fork_qmp_child_resources_prepared_for(
+     const QemuCrucibleHotForkQmpChildResourcePlan *resources,
+     int source_fd, uint64_t socket_cookie,
+-    uint64_t template_generation, uint64_t qmp_generation);
++    uint64_t template_generation, uint64_t qmp_generation,
++    uint64_t monitor_generation);
+ 
+ /**
+  * qemu_crucible_hot_fork_reset_qmp_child_resources() - clear QMP adapter
+diff --git a/monitor/monitor-internal.h b/monitor/monitor-internal.h
+index de4ce7017..a2805ac15 100644
+--- a/monitor/monitor-internal.h
++++ b/monitor/monitor-internal.h
+@@ -198,6 +198,8 @@ void monitor_data_destroy(Monitor *mon);
+ int monitor_can_read(void *opaque);
+ void monitor_list_append(Monitor *mon);
+ void monitor_hot_fork_inventory(MonitorHotForkInventory *inventory);
++bool monitor_hot_fork_inventory_is_supported(
++    const MonitorHotForkInventory *inventory);
+ void monitor_fdsets_cleanup(void);
+ 
+ void qmp_send_response(MonitorQMP *mon, const QDict *rsp);
+diff --git a/monitor/monitor.c b/monitor/monitor.c
+index a66a2942b..fed75edd2 100644
+--- a/monitor/monitor.c
++++ b/monitor/monitor.c
+@@ -702,6 +702,22 @@ void monitor_hot_fork_inventory(MonitorHotForkInventory *inventory)
+     qemu_mutex_unlock(&monitor_lock);
+ }
+ 
++bool monitor_hot_fork_inventory_is_supported(
++    const MonitorHotForkInventory *inventory)
++{
++    return inventory && inventory->generation != 0 && inventory->complete &&
++        !inventory->overflowed && inventory->monitor_count == 1 &&
++        inventory->qmp_monitors == 1 && inventory->hmp_monitors == 0 &&
++        inventory->io_thread_monitors == 1 &&
++        inventory->suspended_monitors == 0 &&
++        inventory->negotiating_monitors == 0 &&
++        inventory->oob_enabled_monitors == 1 &&
++        inventory->queued_requests == 0 &&
++        inventory->parser_buffered_bytes == 0 &&
++        inventory->partial_parsers == 0 &&
++        inventory->unstable_monitors == 0;
++}
++
+ static void monitor_iothread_init(void)
+ {
+     mon_iothread = iothread_create("mon_iothread", &error_abort);
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 1f7fab220..7a402d57e 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -418,6 +418,7 @@ typedef struct CrucibleHotForkQmpStage {
+     char *fdname;
+     uint64_t socket_cookie;
+     uint64_t template_generation;
++    uint64_t monitor_generation;
+     uint64_t generation;
+ } CrucibleHotForkQmpStage;
+ 
+@@ -1507,7 +1508,8 @@ static bool crucible_hot_fork_qmp_resource_plan_bound(void)
+             crucible_hot_fork_qmp_stage.fd,
+             crucible_hot_fork_qmp_stage.socket_cookie,
+             crucible_hot_fork_qmp_stage.template_generation,
+-            crucible_hot_fork_qmp_stage.generation) &&
++            crucible_hot_fork_qmp_stage.generation,
++            crucible_hot_fork_qmp_stage.monitor_generation) &&
+         qemu_crucible_hot_fork_qmp_child_reinitializer_bound_for(
+             &crucible_hot_fork_qmp_child_reinitializer,
+             &crucible_hot_fork_qmp_child_resources) &&
+@@ -1521,10 +1523,12 @@ static CrucibleHotForkQmpState *crucible_hot_fork_qmp_report(void)
+     CrucibleHotForkQmpState *report =
+         g_new0(CrucibleHotForkQmpState, 1);
+ 
+-    report->schema_version = 2;
++    report->schema_version = 3;
+     report->generation = crucible_hot_fork_qmp_stage.generation;
+     report->template_generation =
+         crucible_hot_fork_qmp_stage.template_generation;
++    report->monitor_generation =
++        crucible_hot_fork_qmp_stage.monitor_generation;
+     report->staged = crucible_hot_fork_qmp_stage.staged;
+     if (report->staged) {
+         report->fdname = g_strdup(crucible_hot_fork_qmp_stage.fdname);
+@@ -1562,6 +1566,7 @@ CrucibleHotForkQmpState *qmp_crucible_hot_fork_child_qmp(
+ {
+     CrucibleHotForkQmpState *report = NULL;
+     CrucibleHotForkPluginBarrierState *plugin_barrier = NULL;
++    MonitorHotForkInventory monitor_inventory;
+     uint64_t observed_socket_cookie = 0;
+     uint64_t next_generation;
+     int candidate = -1;
+@@ -1596,6 +1601,12 @@ CrucibleHotForkQmpState *qmp_crucible_hot_fork_child_qmp(
+                 &plugin_barrier, errp)) {
+             goto out;
+         }
++        monitor_hot_fork_inventory(&monitor_inventory);
++        if (!monitor_hot_fork_inventory_is_supported(&monitor_inventory)) {
++            error_setg(errp, "Crucible hot-fork child QMP requires the "
++                       "complete supported monitor profile");
++            goto out;
++        }
+         candidate = monitor_dup_fd(monitor_cur(), fdname, errp);
+         if (candidate < 0) {
+             goto out;
+@@ -1625,7 +1636,9 @@ CrucibleHotForkQmpState *qmp_crucible_hot_fork_child_qmp(
+             if (!crucible_hot_fork_qmp_stage_matches(
+                     fdname, expected_socket_cookie) ||
+                 crucible_hot_fork_qmp_stage.template_generation !=
+-                    crucible_hot_fork_template_generation) {
++                    crucible_hot_fork_template_generation ||
++                crucible_hot_fork_qmp_stage.monitor_generation !=
++                    monitor_inventory.generation) {
+                 error_setg(errp, "Different Crucible hot-fork child QMP "
+                            "endpoint is already staged");
+                 goto out;
+@@ -1647,7 +1660,7 @@ CrucibleHotForkQmpState *qmp_crucible_hot_fork_child_qmp(
+         result = qemu_crucible_hot_fork_prepare_qmp_child_resources(
+             &crucible_hot_fork_qmp_child_resources, candidate,
+             expected_socket_cookie, crucible_hot_fork_template_generation,
+-            next_generation);
++            next_generation, monitor_inventory.generation);
+         if (result != 0) {
+             error_setg_errno(errp, -result,
+                              "Could not prepare Crucible hot-fork child QMP "
+@@ -1672,6 +1685,8 @@ CrucibleHotForkQmpState *qmp_crucible_hot_fork_child_qmp(
+         crucible_hot_fork_qmp_stage.socket_cookie = expected_socket_cookie;
+         crucible_hot_fork_qmp_stage.template_generation =
+             crucible_hot_fork_template_generation;
++        crucible_hot_fork_qmp_stage.monitor_generation =
++            monitor_inventory.generation;
+         crucible_hot_fork_qmp_stage.generation = next_generation;
+         report = crucible_hot_fork_qmp_report();
+         break;
+@@ -1707,6 +1722,7 @@ CrucibleHotForkQmpState *qmp_crucible_hot_fork_child_qmp(
+         crucible_hot_fork_qmp_stage.staged = false;
+         crucible_hot_fork_qmp_stage.socket_cookie = 0;
+         crucible_hot_fork_qmp_stage.template_generation = 0;
++        crucible_hot_fork_qmp_stage.monitor_generation = 0;
+         qemu_crucible_hot_fork_reset_qmp_child_resources(
+             &crucible_hot_fork_qmp_child_resources);
+         qemu_crucible_hot_fork_reset_qmp_child_reinitializer(
+@@ -1861,7 +1877,8 @@ qmp_crucible_hot_fork_plugin_endpoints(
+                  crucible_hot_fork_qmp_stage.fd,
+                  crucible_hot_fork_qmp_stage.socket_cookie,
+                  crucible_hot_fork_qmp_stage.template_generation,
+-                 crucible_hot_fork_qmp_stage.generation))) {
++                 crucible_hot_fork_qmp_stage.generation,
++                 crucible_hot_fork_qmp_stage.monitor_generation))) {
+             error_setg(errp, "Crucible hot-fork plugin endpoints require "
+                        "branch-private QMP from the same template");
+             goto out;
+@@ -2569,7 +2586,7 @@ crucible_hot_fork_template_resource_stage_report(
+                crucible_hot_fork_template_generation);
+     }
+ 
+-    report->schema_version = 8;
++    report->schema_version = 9;
+     report->template_generation = resources_staged ?
+         crucible_hot_fork_private_ring_stage.template_generation : 0;
+     report->private_ring_staged =
+@@ -2694,7 +2711,7 @@ crucible_hot_fork_template_report(
+     uint64_t acknowledged = crucible_hot_fork_template_acknowledged_proofs(
+         plugin_barrier, rcu_barrier, bh_timer_barrier, block_barrier);
+ 
+-    report->schema_version = 18;
++    report->schema_version = 19;
+     report->generation = crucible_hot_fork_template_generation;
+     report->outcome = outcome;
+     report->transaction_active = crucible_hot_fork_template_active;
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 68f1d92ce..6005c2429 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1467,11 +1467,12 @@
+ # reports the sealed complete child resource plan. Version 6 additionally
+ # binds one branch-private nonblocking diagnostics stream into that plan.
+ # Version 7 also retains one fresh branch-private QMP stream in the same plan.
+-# Version 8 binds its exact one-shot child-monitor reinitializer. It does not
+-# close the inherited monitor, attach the new endpoint, or complete a child
+-# descriptor disposition.
++# Version 8 binds its exact one-shot child-monitor reinitializer. Version 9
++# additionally binds the complete supported parent-monitor profile and exact
++# lifecycle generation. It does not close the inherited monitor, attach the new
++# endpoint, or complete a child descriptor disposition.
+ #
+-# @schema-version: resource-stage binding contract version, currently 8
++# @schema-version: resource-stage binding contract version, currently 9
+ #
+ # @template-generation: exact template generation that originally admitted the
+ #     retained resources, or zero when none are staged or they were staged
+@@ -1600,11 +1601,13 @@
+ # retains one authenticated branch-private QMP stream in that plan without
+ # closing or reconstructing the inherited monitor. Version 18 binds the exact
+ # endpoint and transaction generations into a one-shot child-monitor adapter.
+-# Complete QEMU child disposition remains open, so this does not acknowledge
+-# proof bit 7 or 8.
++# Version 19 additionally admits only the complete supported parent-monitor
++# profile and carries its exact lifecycle generation through the sealed child
++# plan. Complete QEMU child disposition remains open, so this does not
++# acknowledge proof bit 7 or 8.
+ # The caller must explicitly abort to roll the retained barriers back.
+ #
+-# @schema-version: transaction contract version, currently 18
++# @schema-version: transaction contract version, currently 19
+ #
+ # @generation: positive process-local transaction generation after the first
+ #     successful prepare, or zero before any transaction
+@@ -2079,19 +2082,23 @@
+ # @CrucibleHotForkQmpState:
+ #
+ # Exact QEMU-owned state for one branch-private nonblocking QMP stream. Version
+-# 2 authenticates the connected AF_UNIX stream by Linux SO_COOKIE, retains its
+-# descriptor in the sealed child resource plan, and prepares a generation-bound
+-# one-shot child reinitializer contract.  After successful child application,
+-# the immutable retained basis remains queryable without making the consumed
+-# adapter reusable.  The concrete inherited-monitor runtime remains open.
++# 3 authenticates the connected AF_UNIX stream by Linux SO_COOKIE, retains its
++# descriptor in the sealed child resource plan, and binds the complete supported
++# parent-monitor profile and its lifecycle generation into the one-shot child
++# reinitializer.  After successful child application, the immutable retained
++# basis remains queryable without making the consumed adapter reusable.  The
++# concrete inherited-monitor runtime remains open.
+ #
+-# @schema-version: retained QMP endpoint contract version, currently 2
++# @schema-version: retained QMP endpoint contract version, currently 3
+ #
+ # @generation: process-local positive mutation generation, or zero initially
+ #
+ # @template-generation: exact template transaction generation that admitted
+ #     the stream, or zero when absent
+ #
++# @monitor-generation: exact positive parent-monitor lifecycle generation
++#     accepted at staging, or zero when absent
++#
+ # @staged: whether QEMU retains one independently duplicated stream
+ #
+ # @fdname: exact standard-QMP descriptor name while @staged
+@@ -2128,6 +2135,7 @@
+   'data': { 'schema-version': 'uint32',
+             'generation': 'uint64',
+             'template-generation': 'uint64',
++            'monitor-generation': 'uint64',
+             'staged': 'bool',
+             '*fdname': 'str',
+             'socket-cookie': 'uint64',
+@@ -2144,9 +2152,10 @@
+ #
+ # Retains or observes one authenticated duplicate of a standard-QMP `getfd`
+ # entry for a future child's private QMP connection. Stage accepts only one
+-# connected, empty AF_UNIX stream with the exact Linux SO_COOKIE and makes the
+-# retained description nonblocking. Query accepts no identity fields. Release
+-# requires the exact retained basis and does not close the standard-QMP name.
++# connected, empty AF_UNIX stream with the exact Linux SO_COOKIE while the
++# complete supported monitor profile is stable, and makes the retained
++# description nonblocking. Query accepts no identity fields. Release requires
++# the exact retained basis and does not close the standard-QMP name.
+ #
+ # @action: requested retained-descriptor operation
+ #
+diff --git a/system/crucible-hot-fork-plugin-child.c b/system/crucible-hot-fork-plugin-child.c
+index d9bfb5457..98396fbdd 100644
+--- a/system/crucible-hot-fork-plugin-child.c
++++ b/system/crucible-hot-fork-plugin-child.c
+@@ -257,10 +257,12 @@ void qemu_crucible_hot_fork_reset_diagnostics_child_resources(
+ int qemu_crucible_hot_fork_prepare_qmp_child_resources(
+     QemuCrucibleHotForkQmpChildResourcePlan *resources,
+     int source_fd, uint64_t socket_cookie,
+-    uint64_t template_generation, uint64_t qmp_generation)
++    uint64_t template_generation, uint64_t qmp_generation,
++    uint64_t monitor_generation)
+ {
+     if (!resources || source_fd < 0 || socket_cookie == 0 ||
+-        template_generation == 0 || qmp_generation == 0) {
++        template_generation == 0 || qmp_generation == 0 ||
++        monitor_generation == 0) {
+         return -EINVAL;
+     }
+ 
+@@ -268,6 +270,7 @@ int qemu_crucible_hot_fork_prepare_qmp_child_resources(
+         .socket_cookie = socket_cookie,
+         .template_generation = template_generation,
+         .qmp_generation = qmp_generation,
++        .monitor_generation = monitor_generation,
+         .retained_fd = source_fd,
+         .prepared = true,
+     };
+@@ -277,17 +280,19 @@ int qemu_crucible_hot_fork_prepare_qmp_child_resources(
+ bool qemu_crucible_hot_fork_qmp_child_resources_prepared_for(
+     const QemuCrucibleHotForkQmpChildResourcePlan *resources,
+     int source_fd, uint64_t socket_cookie,
+-    uint64_t template_generation, uint64_t qmp_generation)
++    uint64_t template_generation, uint64_t qmp_generation,
++    uint64_t monitor_generation)
+ {
+     QemuCrucibleHotForkQmpChildResourcePlan expected = { 0 };
+ 
+     return resources && resources->prepared &&
+         qemu_crucible_hot_fork_prepare_qmp_child_resources(
+             &expected, source_fd, socket_cookie,
+-            template_generation, qmp_generation) == 0 &&
++            template_generation, qmp_generation, monitor_generation) == 0 &&
+         resources->socket_cookie == expected.socket_cookie &&
+         resources->template_generation == expected.template_generation &&
+         resources->qmp_generation == expected.qmp_generation &&
++        resources->monitor_generation == expected.monitor_generation &&
+         resources->retained_fd == expected.retained_fd;
+ }
+ 
+@@ -305,7 +310,8 @@ int qemu_crucible_hot_fork_prepare_qmp_child_reinitializer(
+ {
+     if (!reinitializer || !resources || !resources->prepared ||
+         resources->retained_fd < 0 || resources->socket_cookie == 0 ||
+-        resources->template_generation == 0 || resources->qmp_generation == 0) {
++        resources->template_generation == 0 ||
++        resources->qmp_generation == 0 || resources->monitor_generation == 0) {
+         return -EINVAL;
+     }
+ 
+@@ -314,6 +320,7 @@ int qemu_crucible_hot_fork_prepare_qmp_child_reinitializer(
+         .socket_cookie = resources->socket_cookie,
+         .template_generation = resources->template_generation,
+         .qmp_generation = resources->qmp_generation,
++        .monitor_generation = resources->monitor_generation,
+         .prepared = true,
+     };
+     return 0;
+@@ -340,7 +347,8 @@ bool qemu_crucible_hot_fork_qmp_child_reinitializer_bound_for(
+         reinitializer->retained_fd == expected.retained_fd &&
+         reinitializer->socket_cookie == expected.socket_cookie &&
+         reinitializer->template_generation == expected.template_generation &&
+-        reinitializer->qmp_generation == expected.qmp_generation;
++        reinitializer->qmp_generation == expected.qmp_generation &&
++        reinitializer->monitor_generation == expected.monitor_generation;
+ }
+ 
+ static bool crucible_hot_fork_qmp_child_status_matches(
+@@ -353,6 +361,7 @@ static bool crucible_hot_fork_qmp_child_status_matches(
+         status->struct_size == sizeof(*status) &&
+         status->template_generation == reinitializer->template_generation &&
+         status->qmp_generation == reinitializer->qmp_generation &&
++        status->monitor_generation == reinitializer->monitor_generation &&
+         status->socket_cookie == reinitializer->socket_cookie &&
+         status->retained_fd == reinitializer->retained_fd &&
+         status->flags == QEMU_CRUCIBLE_HOT_FORK_QMP_CHILD_FLAGS_COMPLETE &&
+@@ -388,6 +397,7 @@ int qemu_crucible_hot_fork_reinitialize_qmp_child(
+                      reinitializer->socket_cookie,
+                      reinitializer->template_generation,
+                      reinitializer->qmp_generation,
++                     reinitializer->monitor_generation,
+                      &reinitializer->status, opaque);
+     if (result != 0) {
+         return result;
+@@ -969,7 +979,8 @@ int qemu_crucible_hot_fork_merge_qmp_child_resources(
+     if (!resources || !qmp || !qmp->prepared ||
+         !qemu_crucible_hot_fork_qmp_child_resources_prepared_for(
+             qmp, qmp->retained_fd, qmp->socket_cookie,
+-            qmp->template_generation, qmp->qmp_generation)) {
++            qmp->template_generation, qmp->qmp_generation,
++            qmp->monitor_generation)) {
+         return -EINVAL;
+     }
+     if (!resources->building || resources->sealed || resources->attempted ||
+@@ -979,7 +990,8 @@ int qemu_crucible_hot_fork_merge_qmp_child_resources(
+     if (resources->qmp.prepared &&
+         !qemu_crucible_hot_fork_qmp_child_resources_prepared_for(
+             &resources->qmp, qmp->retained_fd, qmp->socket_cookie,
+-            qmp->template_generation, qmp->qmp_generation)) {
++            qmp->template_generation, qmp->qmp_generation,
++            qmp->monitor_generation)) {
+         return -EINVAL;
+     }
+     for (index = 0; index < resources->replacement_count; index++) {
+@@ -1103,7 +1115,8 @@ static bool crucible_hot_fork_plan_contains_qmp(
+     if (!qmp || !qmp->prepared ||
+         !qemu_crucible_hot_fork_qmp_child_resources_prepared_for(
+             &resources->qmp, qmp->retained_fd, qmp->socket_cookie,
+-            qmp->template_generation, qmp->qmp_generation) ||
++            qmp->template_generation, qmp->qmp_generation,
++            qmp->monitor_generation) ||
+         !crucible_hot_fork_fd_table_contains(
+             resources->retained_fds, resources->retained_fd_count,
+             qmp->retained_fd)) {
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index a1a8da81d..4ee49e408 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -57,8 +57,8 @@ typedef struct FakeQmpChildRuntime {
+ 
+ static int reinitialize_qmp_child(
+     int retained_fd, uint64_t socket_cookie, uint64_t template_generation,
+-    uint64_t qmp_generation, QemuCrucibleHotForkQmpChildStatus *status,
+-    void *opaque)
++    uint64_t qmp_generation, uint64_t monitor_generation,
++    QemuCrucibleHotForkQmpChildStatus *status, void *opaque)
+ {
+     FakeQmpChildRuntime *runtime = opaque;
+ 
+@@ -72,6 +72,7 @@ static int reinitialize_qmp_child(
+         .struct_size = sizeof(*status),
+         .template_generation = template_generation,
+         .qmp_generation = qmp_generation,
++        .monitor_generation = monitor_generation,
+         .socket_cookie = socket_cookie,
+         .retained_fd = retained_fd,
+         .flags = runtime->flags,
+@@ -223,7 +224,7 @@ static void test_qmp_child_reinitializer_is_exact_and_one_shot(void)
+     };
+ 
+     g_assert_cmpint(qemu_crucible_hot_fork_prepare_qmp_child_resources(
+-                        &resources, 41, 73, 11, 13),
++                        &resources, 41, 73, 11, 13, 17),
+                     ==, 0);
+     g_assert_cmpint(qemu_crucible_hot_fork_prepare_qmp_child_reinitializer(
+                         &reinitializer, &resources),
+@@ -238,6 +239,10 @@ static void test_qmp_child_reinitializer_is_exact_and_one_shot(void)
+     g_assert_false(qemu_crucible_hot_fork_qmp_child_reinitializer_prepared_for(
+         &reinitializer, &resources));
+     resources.qmp_generation--;
++    resources.monitor_generation++;
++    g_assert_false(qemu_crucible_hot_fork_qmp_child_reinitializer_prepared_for(
++        &reinitializer, &resources));
++    resources.monitor_generation--;
+     g_assert_cmpint(qemu_crucible_hot_fork_reinitialize_qmp_child(
+                         &reinitializer, reinitialize_qmp_child, &runtime),
+                     ==, 0);
+@@ -329,7 +334,7 @@ static void merge_fake_qmp(
+     QemuCrucibleHotForkQmpChildResourcePlan qmp = { 0 };
+ 
+     g_assert_cmpint(qemu_crucible_hot_fork_prepare_qmp_child_resources(
+-                        &qmp, source_fd, socket_cookie, 11, 13),
++                        &qmp, source_fd, socket_cookie, 11, 13, 17),
+                     ==, 0);
+     g_assert_cmpint(qemu_crucible_hot_fork_merge_qmp_child_resources(
+                         resources, &qmp),
+@@ -1134,7 +1139,7 @@ static void test_child_resource_plan_composition_is_exact(void)
+                         &qmp_target_alias.target_fd, 1, NULL, 0),
+                     ==, 0);
+     g_assert_cmpint(qemu_crucible_hot_fork_prepare_qmp_child_resources(
+-                        &qmp, 42, 43, 11, 13),
++                        &qmp, 42, 43, 11, 13, 17),
+                     ==, 0);
+     g_assert_cmpint(qemu_crucible_hot_fork_merge_qmp_child_resources(
+                         resources, &qmp),

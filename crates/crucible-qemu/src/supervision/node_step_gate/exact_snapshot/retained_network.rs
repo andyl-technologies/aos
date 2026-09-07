@@ -72,7 +72,7 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
     let mut source = build_live_node(
         &capture_config,
         &capture_directory,
-        LiveNodeIdentity {
+        QemuLiveNodeIdentity {
             node: GATE_NODE,
             router: GATE_ROUTER,
             crash_detector: "retained-network-capture",

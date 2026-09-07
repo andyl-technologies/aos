@@ -8,7 +8,10 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libSource = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 

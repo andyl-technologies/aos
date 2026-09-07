@@ -65,6 +65,22 @@
       package = "crucible-harness";
       expected = "library";
     }
+    {
+      package = "crucible-debug-gateway";
+      expected = "gateway-binary";
+    }
+    {
+      package = "crucible-campaign";
+      expected = "library";
+    }
+    {
+      package = "crucible-linux-resource";
+      expected = "library";
+    }
+    {
+      package = "crucible-s3-store";
+      expected = "library";
+    }
   ];
 
   expectedPackages = lib.sort builtins.lessThan (map (spec: spec.package) specs);
@@ -199,6 +215,41 @@
         ]
         ++ lib.optionals layout.hasSrcBinDir [
           "${spec.package}: guest emitter must not add extra implicit binary targets under src/bin"
+        ]
+      # The debug gateway ships its mediated-transport library and one
+      # `crucible-debug-gateway` binary built from src/main.rs.
+      else if spec.expected == "gateway-binary"
+      then let
+        bins = binTargets manifest;
+        binCount = builtins.length bins;
+        bin =
+          if binCount == 1
+          then builtins.elemAt bins 0
+          else {};
+      in
+        lib.optionals (!(declaresOrImpliesLibTarget manifest layout)) [
+          "${spec.package}: gateway package must expose a library target"
+        ]
+        ++ lib.concatMap (
+          crateType:
+            lib.optionals (!(builtins.elem crateType ["lib" "rlib"])) [
+              "${spec.package}: forbidden crate-type `${crateType}` for gateway library target"
+            ]
+        ) (crateTypes manifest)
+        ++ lib.optionals (binCount != 1) [
+          "${spec.package}: gateway package must declare exactly one [[bin]] target, found ${builtins.toString binCount}"
+        ]
+        ++ lib.optionals (binCount == 1 && (!(bin ? name) || bin.name != "crucible-debug-gateway")) [
+          "${spec.package}: gateway [[bin]] name must be `crucible-debug-gateway`"
+        ]
+        ++ lib.optionals (binCount == 1 && (!(bin ? path) || bin.path != "src/main.rs")) [
+          "${spec.package}: gateway [[bin]] path must be `src/main.rs`"
+        ]
+        ++ lib.optionals (!layout.hasMainRs) [
+          "${spec.package}: gateway binary must live at src/main.rs"
+        ]
+        ++ lib.optionals layout.hasSrcBinDir [
+          "${spec.package}: gateway package must not add implicit binary targets under src/bin"
         ]
       else if spec.expected == "fleet-store-binary"
       then let

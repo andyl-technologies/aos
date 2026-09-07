@@ -10,13 +10,35 @@ schema unless explicitly marked `specification-only`.
 Every scenario using this system declares:
 
 ```toml
-schema = "crucible.scenario.v5"
+schema = "crucible.scenario.v7"
 
 [plan]
 kind = "event_graph"
 fault_model = "signal_bindings_v2"
 seed = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 ```
+
+Version 6 adds the scenario-owned measurement-definition component specified
+by RFC-0020 §08.2-§08.3. Version 7 adds the scenario-owned selectable catalog
+and its declaration/request ceilings specified by RFC-0020 §02. Readers accept
+version 5 only as the exact legacy form with empty measurement and selectable
+components, and version 6 only with an empty selectable component. New writes
+use version 7. A version-5 document that attempts to carry `[[measurement]]`,
+or a version-5/version-6 document that attempts to carry `[[selectable]]`, is
+rejected. The compact scenario envelope follows the same
+`scenario-def-form.v5`/v6 legacy-read and v7-write rule; reproduction artifacts
+containing v7 scenarios write outer version 7 while outer versions 5 and 6
+remain readable for prior artifacts.
+
+The canonical v7 `[scenario]` table additionally carries the nonzero bounded
+`selectable_declarations_per_node`, `selectable_declarations_per_world`,
+`selectable_requests_per_selectable`, and `selectable_requests_per_node`
+ceilings. Each `[[selectable]]` entry contains one `canonical_hex` field holding
+the lowercase hexadecimal strict `SelectableDeclaration` v1 bytes. This
+normalized representation preserves the complete typed declaration and stable
+campaign identity without introducing a second scenario-only choice grammar;
+authoring tools may render the friendlier RFC-0020 §02.6 projection before
+normalization.
 
 - All tables are closed. Unknown or duplicate keys, duplicate IDs, implicit
   numeric conversions, TOML floats, datetimes, and heterogeneous arrays fail.

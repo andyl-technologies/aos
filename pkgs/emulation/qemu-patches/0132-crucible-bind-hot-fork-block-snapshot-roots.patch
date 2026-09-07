@@ -1,0 +1,1174 @@
+diff --git a/block/block-backend.c b/block/block-backend.c
+index abff474fe..9e6d81013 100644
+--- a/block/block-backend.c
++++ b/block/block-backend.c
+@@ -140,6 +140,14 @@ static uint64_t crucible_hot_fork_block_backend_generation;
+ static uint64_t crucible_hot_fork_block_barrier_generation;
+ static int64_t crucible_hot_fork_block_barrier_owner;
+ static bool crucible_hot_fork_block_barrier_held;
++static uint64_t crucible_hot_fork_block_snapshot_generation;
++static uint64_t crucible_hot_fork_block_snapshot_backend_generation;
++static uint64_t crucible_hot_fork_block_snapshot_graph_generation;
++static int64_t crucible_hot_fork_block_snapshot_owner;
++static bool crucible_hot_fork_block_snapshot_bound;
++static size_t crucible_hot_fork_block_snapshot_root_count;
++static QemuBlockBackendHotForkSnapshotRoot
++    *crucible_hot_fork_block_snapshot_roots;
+ 
+ static void __attribute__((__constructor__))
+ crucible_hot_fork_block_backend_inventory_init(void)
+@@ -263,6 +271,88 @@ static void qemu_block_backend_hot_fork_inventory_locked(
+     }
+ }
+ 
++static void crucible_hot_fork_block_snapshot_clear_locked(void)
++{
++    g_clear_pointer(&crucible_hot_fork_block_snapshot_roots, g_free);
++    crucible_hot_fork_block_snapshot_root_count = 0;
++    crucible_hot_fork_block_snapshot_backend_generation = 0;
++    crucible_hot_fork_block_snapshot_graph_generation = 0;
++    crucible_hot_fork_block_snapshot_owner = 0;
++    crucible_hot_fork_block_snapshot_bound = false;
++    crucible_hot_fork_block_snapshot_generation++;
++    assert(crucible_hot_fork_block_snapshot_generation != 0);
++}
++
++static bool crucible_hot_fork_content_id_valid(const char *content_id)
++{
++    size_t index;
++
++    if (strlen(content_id) !=
++        QEMU_BLOCK_BACKEND_HOT_FORK_CONTENT_ID_HEX_LENGTH) {
++        return false;
++    }
++    for (index = 0;
++         index < QEMU_BLOCK_BACKEND_HOT_FORK_CONTENT_ID_HEX_LENGTH;
++         index++) {
++        if (!g_ascii_isdigit(content_id[index]) &&
++            !(content_id[index] >= 'a' && content_id[index] <= 'f')) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static bool crucible_hot_fork_overlay_is_empty(
++    BlockDriverState *overlay, BlockDriverState *snapshot,
++    uint64_t *virtual_size, Error **errp)
++{
++    int64_t length = bdrv_getlength(overlay);
++    int64_t snapshot_length;
++    int64_t offset = 0;
++
++    if (length < 0) {
++        error_setg_errno(errp, -length,
++                         "cannot read Crucible hot-fork overlay length");
++        return false;
++    }
++    snapshot_length = bdrv_getlength(snapshot);
++    if (snapshot_length < 0) {
++        error_setg_errno(errp, -snapshot_length,
++                         "cannot read Crucible hot-fork snapshot length");
++        return false;
++    }
++    if (snapshot_length != length) {
++        error_setg(errp, "Crucible hot-fork overlay and snapshot lengths "
++                   "differ");
++        return false;
++    }
++    while (offset < length) {
++        int64_t bytes = length - offset;
++        int64_t pnum = 0;
++        int allocated = bdrv_is_allocated_above(
++            overlay, snapshot, false, offset, bytes, &pnum);
++
++        if (allocated < 0) {
++            error_setg_errno(errp, -allocated,
++                             "cannot inspect Crucible hot-fork overlay");
++            return false;
++        }
++        if (allocated != 0) {
++            error_setg(errp, "Crucible hot-fork overlay contains allocated "
++                       "guest data at offset %" PRId64, offset);
++            return false;
++        }
++        if (pnum <= 0 || pnum > bytes) {
++            error_setg(errp, "Crucible hot-fork overlay allocation scan "
++                       "made no bounded progress");
++            return false;
++        }
++        offset += pnum;
++    }
++    *virtual_size = length;
++    return true;
++}
++
+ void qemu_block_backend_hot_fork_inventory(
+     QemuBlockBackendHotForkInventory *inventory)
+ {
+@@ -285,6 +375,7 @@ bool qemu_block_backend_hot_fork_barrier(
+     QemuBlockBackendHotForkInventory backends;
+     BdrvGraphHotForkBarrierState graph;
+     uint64_t previous_backend_id = 0;
++    uint64_t writable_rooted_backends = 0;
+     bool valid_entries = true;
+     size_t index;
+ 
+@@ -294,6 +385,9 @@ bool qemu_block_backend_hot_fork_barrier(
+     case QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_HOLD:
+         GLOBAL_STATE_CODE();
+         if (!crucible_hot_fork_block_barrier_held) {
++            if (crucible_hot_fork_block_snapshot_bound) {
++                return false;
++            }
+             if (replay_events_enabled() ||
+                 qemu_get_current_aio_context() != qemu_get_aio_context()) {
+                 return false;
+@@ -316,6 +410,13 @@ bool qemu_block_backend_hot_fork_barrier(
+     case QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE:
+         GLOBAL_STATE_CODE();
+         if (crucible_hot_fork_block_barrier_held) {
++            {
++                QEMU_LOCK_GUARD(&crucible_hot_fork_block_backend_lock);
++
++                if (crucible_hot_fork_block_snapshot_bound) {
++                    crucible_hot_fork_block_snapshot_clear_locked();
++                }
++            }
+             if (!bdrv_graph_hot_fork_barrier(
+                     BDRV_GRAPH_HOT_FORK_BARRIER_RELEASE, &graph)) {
+                 return false;
+@@ -346,10 +447,27 @@ bool qemu_block_backend_hot_fork_barrier(
+     inventory->held_graph_mutation_generation =
+         graph.held_mutation_generation;
+     inventory->graph_owner_thread_id = graph.owner_thread_id;
++    inventory->snapshot_generation =
++        crucible_hot_fork_block_snapshot_generation;
++    inventory->snapshot_backend_generation =
++        crucible_hot_fork_block_snapshot_backend_generation;
++    inventory->snapshot_graph_mutation_generation =
++        crucible_hot_fork_block_snapshot_graph_generation;
++    inventory->snapshot_owner_thread_id =
++        crucible_hot_fork_block_snapshot_owner;
+     inventory->graph_waiting_writers = graph.waiting_writers;
+     inventory->graph_held = graph.held;
+     inventory->graph_writer_active = graph.writer_active;
+     inventory->graph_stable = graph.stable;
++    inventory->snapshot_bound = crucible_hot_fork_block_snapshot_bound;
++    inventory->snapshot_root_count =
++        crucible_hot_fork_block_snapshot_root_count;
++    if (inventory->snapshot_root_count != 0) {
++        inventory->snapshot_roots = g_memdup2(
++            crucible_hot_fork_block_snapshot_roots,
++            inventory->snapshot_root_count *
++                sizeof(*inventory->snapshot_roots));
++    }
+     inventory->held = crucible_hot_fork_block_barrier_held;
+     inventory->backend_count = backends.entry_count;
+     for (index = 0; index < backends.entry_count; index++) {
+@@ -365,6 +483,8 @@ bool qemu_block_backend_hot_fork_barrier(
+         inventory->rooted_backends += entry->root_present;
+         inventory->writable_backends +=
+             (entry->permissions & BLK_PERM_WRITE) != 0;
++        writable_rooted_backends += entry->root_present &&
++            (entry->permissions & BLK_PERM_WRITE) != 0;
+         inventory->quiesced_rooted_backends +=
+             entry->root_present && entry->quiesce_depth != 0;
+         inventory->in_flight += entry->in_flight;
+@@ -374,6 +494,14 @@ bool qemu_block_backend_hot_fork_barrier(
+         (!inventory->held ||
+          (inventory->owner_thread_id == inventory->graph_owner_thread_id &&
+           inventory->graph_stable));
++    inventory->snapshot_complete = inventory->snapshot_bound &&
++        inventory->held && inventory->complete &&
++        inventory->snapshot_owner_thread_id == inventory->owner_thread_id &&
++        inventory->snapshot_backend_generation == backends.generation &&
++        inventory->snapshot_graph_mutation_generation ==
++            inventory->held_graph_mutation_generation &&
++        inventory->snapshot_root_count == writable_rooted_backends;
++    inventory->writable_rooted_backends = writable_rooted_backends;
+     inventory->quiescent = inventory->held && inventory->complete &&
+         inventory->in_flight == 0 &&
+         inventory->quiesced_rooted_backends == inventory->rooted_backends;
+@@ -381,6 +509,143 @@ bool qemu_block_backend_hot_fork_barrier(
+     return true;
+ }
+ 
++void qemu_block_backend_hot_fork_barrier_inventory_destroy(
++    QemuBlockBackendHotForkBarrierInventory *inventory)
++{
++    g_free(inventory->snapshot_roots);
++    *inventory = (QemuBlockBackendHotForkBarrierInventory) { 0 };
++}
++
++bool qemu_block_backend_hot_fork_snapshot_bind(
++    const QemuBlockBackendHotForkSnapshotBinding *bindings,
++    size_t binding_count,
++    QemuBlockBackendHotForkBarrierInventory *inventory,
++    Error **errp)
++{
++    QemuBlockBackendHotForkBarrierInventory barrier;
++    QemuBlockBackendHotForkSnapshotRoot *roots;
++    BlockBackend *blk;
++    size_t binding_index = 0;
++    uint64_t previous_backend_id = 0;
++    uint64_t backend_generation;
++    uint64_t graph_generation;
++
++    GLOBAL_STATE_CODE();
++    if (binding_count > QEMU_BLOCK_BACKEND_HOT_FORK_INVENTORY_MAX) {
++        error_setg(errp, "too many Crucible hot-fork snapshot roots");
++        return false;
++    }
++    if (!qemu_block_backend_hot_fork_barrier(
++            QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_QUERY, &barrier)) {
++        error_setg(errp, "cannot inspect Crucible hot-fork block barrier");
++        return false;
++    }
++    if (!barrier.quiescent || barrier.snapshot_bound) {
++        error_setg(errp, "Crucible hot-fork snapshot binding requires one "
++                   "unbound quiescent block barrier");
++        qemu_block_backend_hot_fork_barrier_inventory_destroy(&barrier);
++        return false;
++    }
++    graph_generation = barrier.held_graph_mutation_generation;
++    qemu_block_backend_hot_fork_barrier_inventory_destroy(&barrier);
++
++    {
++        QEMU_LOCK_GUARD(&crucible_hot_fork_block_backend_lock);
++
++        backend_generation = crucible_hot_fork_block_backend_generation;
++    }
++
++    roots = g_new0(QemuBlockBackendHotForkSnapshotRoot, binding_count);
++    QTAILQ_FOREACH(blk, &block_backends, link) {
++        const QemuBlockBackendHotForkSnapshotBinding *binding;
++        QemuBlockBackendHotForkSnapshotRoot *root;
++        BlockDriverState *overlay;
++        BlockDriverState *snapshot;
++
++        if (!blk->root || !(blk->perm & BLK_PERM_WRITE)) {
++            continue;
++        }
++        if (binding_index == binding_count) {
++            error_setg(errp, "missing Crucible hot-fork snapshot root for "
++                       "writable backend");
++            goto fail;
++        }
++        binding = &bindings[binding_index];
++        root = &roots[binding_index];
++        if (binding->backend_id == 0 ||
++            binding->backend_id <= previous_backend_id ||
++            binding->backend_id != blk->crucible_hot_fork_id ||
++            strcmp(binding->backend_name, blk->name ?: "") != 0 ||
++            !id_wellformed(binding->backend_name) ||
++            !id_wellformed(binding->overlay_node_name) ||
++            !id_wellformed(binding->snapshot_node_name) ||
++            !crucible_hot_fork_content_id_valid(
++                binding->snapshot_content_id)) {
++            error_setg(errp, "invalid or out-of-order Crucible hot-fork "
++                       "snapshot binding");
++            goto fail;
++        }
++
++        GRAPH_RDLOCK_GUARD_MAINLOOP();
++        overlay = blk_bs(blk);
++        snapshot = overlay ? bdrv_cow_bs(overlay) : NULL;
++        if (!overlay || !snapshot ||
++            strcmp(bdrv_get_node_name(overlay),
++                   binding->overlay_node_name) != 0 ||
++            strcmp(bdrv_get_node_name(snapshot),
++                   binding->snapshot_node_name) != 0 ||
++            !bdrv_is_writable(overlay) || !bdrv_is_read_only(snapshot)) {
++            error_setg(errp, "Crucible hot-fork snapshot graph did not match "
++                       "the requested writable-overlay/read-only-root basis");
++            goto fail;
++        }
++        if (!crucible_hot_fork_overlay_is_empty(
++                overlay, snapshot, &root->virtual_size, errp)) {
++            goto fail;
++        }
++
++        root->binding = *binding;
++        root->overlay_empty = true;
++        root->snapshot_read_only = true;
++        previous_backend_id = binding->backend_id;
++        binding_index++;
++    }
++    if (binding_index != binding_count) {
++        error_setg(errp, "extra Crucible hot-fork snapshot root binding");
++        goto fail;
++    }
++
++    {
++        QEMU_LOCK_GUARD(&crucible_hot_fork_block_backend_lock);
++
++        if (!crucible_hot_fork_block_barrier_held ||
++            crucible_hot_fork_block_snapshot_bound ||
++            backend_generation !=
++                crucible_hot_fork_block_backend_generation) {
++            error_setg(errp, "Crucible hot-fork block barrier changed during "
++                       "snapshot binding");
++            goto fail;
++        }
++        crucible_hot_fork_block_snapshot_generation++;
++        assert(crucible_hot_fork_block_snapshot_generation != 0);
++        crucible_hot_fork_block_snapshot_backend_generation =
++            backend_generation;
++        crucible_hot_fork_block_snapshot_graph_generation = graph_generation;
++        crucible_hot_fork_block_snapshot_owner =
++            crucible_hot_fork_block_barrier_owner;
++        crucible_hot_fork_block_snapshot_bound = true;
++        crucible_hot_fork_block_snapshot_root_count = binding_count;
++        crucible_hot_fork_block_snapshot_roots = roots;
++    }
++
++    return qemu_block_backend_hot_fork_barrier(
++        QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_QUERY, inventory);
++
++fail:
++    g_free(roots);
++    return false;
++}
++
+ static int coroutine_mixed_fn GRAPH_RDLOCK
+ blk_set_perm_locked(BlockBackend *blk, uint64_t perm, uint64_t shared_perm,
+                     Error **errp);
+diff --git a/include/system/block-backend-global-state.h b/include/system/block-backend-global-state.h
+index ae1d6918a..89202187a 100644
+--- a/include/system/block-backend-global-state.h
++++ b/include/system/block-backend-global-state.h
+@@ -17,6 +17,8 @@
+ 
+ #define QEMU_BLOCK_BACKEND_HOT_FORK_INVENTORY_MAX 65536
+ #define QEMU_BLOCK_BACKEND_HOT_FORK_NAME_MAX 255
++#define QEMU_BLOCK_BACKEND_HOT_FORK_NODE_NAME_MAX 31
++#define QEMU_BLOCK_BACKEND_HOT_FORK_CONTENT_ID_HEX_LENGTH 64
+ 
+ typedef struct QemuBlockBackendHotForkInventoryEntry {
+     uint64_t backend_id;
+@@ -48,6 +50,22 @@ typedef enum QemuBlockBackendHotForkBarrierOperation {
+     QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE,
+ } QemuBlockBackendHotForkBarrierOperation;
+ 
++typedef struct QemuBlockBackendHotForkSnapshotBinding {
++    uint64_t backend_id;
++    char backend_name[QEMU_BLOCK_BACKEND_HOT_FORK_NAME_MAX + 1];
++    char overlay_node_name[QEMU_BLOCK_BACKEND_HOT_FORK_NODE_NAME_MAX + 1];
++    char snapshot_node_name[QEMU_BLOCK_BACKEND_HOT_FORK_NODE_NAME_MAX + 1];
++    char snapshot_content_id[
++        QEMU_BLOCK_BACKEND_HOT_FORK_CONTENT_ID_HEX_LENGTH + 1];
++} QemuBlockBackendHotForkSnapshotBinding;
++
++typedef struct QemuBlockBackendHotForkSnapshotRoot {
++    QemuBlockBackendHotForkSnapshotBinding binding;
++    uint64_t virtual_size;
++    bool overlay_empty;
++    bool snapshot_read_only;
++} QemuBlockBackendHotForkSnapshotRoot;
++
+ typedef struct QemuBlockBackendHotForkBarrierInventory {
+     uint64_t generation;
+     int64_t owner_thread_id;
+@@ -55,16 +73,25 @@ typedef struct QemuBlockBackendHotForkBarrierInventory {
+     uint64_t graph_mutation_generation;
+     uint64_t held_graph_mutation_generation;
+     int64_t graph_owner_thread_id;
++    uint64_t snapshot_generation;
++    uint64_t snapshot_backend_generation;
++    uint64_t snapshot_graph_mutation_generation;
++    int64_t snapshot_owner_thread_id;
+     uint64_t backend_count;
+     uint64_t rooted_backends;
+     uint64_t writable_backends;
++    uint64_t writable_rooted_backends;
+     uint64_t quiesced_rooted_backends;
+     uint64_t in_flight;
+     uint32_t graph_waiting_writers;
++    size_t snapshot_root_count;
++    QemuBlockBackendHotForkSnapshotRoot *snapshot_roots;
+     bool held;
+     bool graph_held;
+     bool graph_writer_active;
+     bool graph_stable;
++    bool snapshot_bound;
++    bool snapshot_complete;
+     bool complete;
+     bool quiescent;
+ } QemuBlockBackendHotForkBarrierInventory;
+@@ -88,6 +115,22 @@ bool qemu_block_backend_hot_fork_barrier(
+     QemuBlockBackendHotForkBarrierOperation operation,
+     QemuBlockBackendHotForkBarrierInventory *inventory);
+ 
++/*
++ * Bind every writable rooted backend to an exact empty overlay over one
++ * read-only immutable snapshot while the retained graph and drain barriers
++ * are quiescent.  The caller supplies already-authenticated content IDs; QEMU
++ * binds them to the exact live graph and retains that scalar proof until
++ * barrier release.
++ */
++bool qemu_block_backend_hot_fork_snapshot_bind(
++    const QemuBlockBackendHotForkSnapshotBinding *bindings,
++    size_t binding_count,
++    QemuBlockBackendHotForkBarrierInventory *inventory,
++    Error **errp);
++
++void qemu_block_backend_hot_fork_barrier_inventory_destroy(
++    QemuBlockBackendHotForkBarrierInventory *inventory);
++
+ /*
+  * Global state (GS) API. These functions run under the BQL.
+  *
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 5667592f0..34ac98fe5 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -241,6 +241,8 @@ crucible_hot_fork_block_barrier(
+ {
+     QemuBlockBackendHotForkBarrierInventory inventory;
+     CrucibleHotForkBlockBarrierState *report;
++    CrucibleHotForkBlockSnapshotRootList **root_tail;
++    size_t index;
+ 
+     if (!qemu_block_backend_hot_fork_barrier(operation, &inventory)) {
+         error_setg(errp, "Crucible hot-fork block drain is unavailable in "
+@@ -249,7 +251,7 @@ crucible_hot_fork_block_barrier(
+     }
+ 
+     report = g_new0(CrucibleHotForkBlockBarrierState, 1);
+-    report->schema_version = 2;
++    report->schema_version = 3;
+     report->generation = inventory.generation;
+     report->owner_thread_id = inventory.owner_thread_id;
+     report->graph_barrier_generation =
+@@ -264,14 +266,49 @@ crucible_hot_fork_block_barrier(
+     report->graph_writer_active = inventory.graph_writer_active;
+     report->graph_waiting_writers = inventory.graph_waiting_writers;
+     report->graph_stable = inventory.graph_stable;
++    report->snapshot_generation = inventory.snapshot_generation;
++    report->snapshot_backend_generation =
++        inventory.snapshot_backend_generation;
++    report->snapshot_graph_mutation_generation =
++        inventory.snapshot_graph_mutation_generation;
++    report->snapshot_owner_thread_id =
++        inventory.snapshot_owner_thread_id;
++    report->snapshot_bound = inventory.snapshot_bound;
++    report->snapshot_complete = inventory.snapshot_complete;
++    root_tail = &report->snapshot_roots;
++    for (index = 0; index < inventory.snapshot_root_count; index++) {
++        const QemuBlockBackendHotForkSnapshotRoot *source =
++            &inventory.snapshot_roots[index];
++        CrucibleHotForkBlockSnapshotRoot *root =
++            g_new0(CrucibleHotForkBlockSnapshotRoot, 1);
++        CrucibleHotForkBlockSnapshotRootList *node =
++            g_new0(CrucibleHotForkBlockSnapshotRootList, 1);
++
++        root->backend_id = source->binding.backend_id;
++        root->backend_name = g_strdup(source->binding.backend_name);
++        root->overlay_node_name =
++            g_strdup(source->binding.overlay_node_name);
++        root->snapshot_node_name =
++            g_strdup(source->binding.snapshot_node_name);
++        root->snapshot_content_id =
++            g_strdup(source->binding.snapshot_content_id);
++        root->virtual_size = source->virtual_size;
++        root->overlay_empty = source->overlay_empty;
++        root->snapshot_read_only = source->snapshot_read_only;
++        node->value = root;
++        *root_tail = node;
++        root_tail = &node->next;
++    }
+     report->complete = inventory.complete;
+     report->backend_count = inventory.backend_count;
+     report->rooted_backends = inventory.rooted_backends;
+     report->writable_backends = inventory.writable_backends;
++    report->writable_rooted_backends = inventory.writable_rooted_backends;
+     report->quiesced_rooted_backends =
+         inventory.quiesced_rooted_backends;
+     report->in_flight = inventory.in_flight;
+     report->quiescent = inventory.quiescent;
++    qemu_block_backend_hot_fork_barrier_inventory_destroy(&inventory);
+     return report;
+ }
+ 
+@@ -279,6 +316,7 @@ typedef enum CrucibleHotForkTemplatePhase {
+     CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_IDLE,
+     CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HOLD_PENDING,
+     CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HELD,
++    CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_SNAPSHOT_BIND_PENDING,
+     CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BARRIERS_HELD,
+     CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_RELEASE_PENDING,
+     CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_COMPLETED,
+@@ -291,12 +329,17 @@ static bool crucible_hot_fork_template_block_transition_scheduled;
+ static bool crucible_hot_fork_template_abort_requested;
+ static CrucibleHotForkTemplatePhase crucible_hot_fork_template_phase;
+ static CrucibleHotForkTemplateOutcome crucible_hot_fork_template_completion;
++static size_t crucible_hot_fork_template_snapshot_binding_count;
++static QemuBlockBackendHotForkSnapshotBinding
++    *crucible_hot_fork_template_snapshot_bindings;
+ 
+ static void crucible_hot_fork_template_schedule_block_transition(void);
+ 
+ static void crucible_hot_fork_template_complete(
+     CrucibleHotForkTemplateOutcome outcome)
+ {
++    g_clear_pointer(&crucible_hot_fork_template_snapshot_bindings, g_free);
++    crucible_hot_fork_template_snapshot_binding_count = 0;
+     crucible_hot_fork_template_active = false;
+     crucible_hot_fork_template_abort_requested = false;
+     crucible_hot_fork_template_phase =
+@@ -304,9 +347,90 @@ static void crucible_hot_fork_template_complete(
+     crucible_hot_fork_template_completion = outcome;
+ }
+ 
++static bool crucible_hot_fork_template_copy_snapshot_bindings(
++    CrucibleHotForkBlockSnapshotBindingList *bindings,
++    Error **errp)
++{
++    CrucibleHotForkBlockSnapshotBindingList *node;
++    QemuBlockBackendHotForkSnapshotBinding *copy;
++    size_t count = 0;
++    size_t index = 0;
++
++    for (node = bindings; node; node = node->next) {
++        if (count == QEMU_BLOCK_BACKEND_HOT_FORK_INVENTORY_MAX) {
++            error_setg(errp, "too many Crucible hot-fork block snapshot "
++                       "bindings");
++            return false;
++        }
++        count++;
++    }
++    copy = g_new0(QemuBlockBackendHotForkSnapshotBinding, count);
++    for (node = bindings; node; node = node->next, index++) {
++        CrucibleHotForkBlockSnapshotBinding *source = node->value;
++
++        copy[index].backend_id = source->backend_id;
++        if (strlen(source->backend_name) >
++                QEMU_BLOCK_BACKEND_HOT_FORK_NAME_MAX ||
++            strlen(source->overlay_node_name) >
++                QEMU_BLOCK_BACKEND_HOT_FORK_NODE_NAME_MAX ||
++            strlen(source->snapshot_node_name) >
++                QEMU_BLOCK_BACKEND_HOT_FORK_NODE_NAME_MAX ||
++            strlen(source->snapshot_content_id) >
++                QEMU_BLOCK_BACKEND_HOT_FORK_CONTENT_ID_HEX_LENGTH) {
++            error_setg(errp, "oversized Crucible hot-fork block snapshot "
++                       "binding");
++            g_free(copy);
++            return false;
++        }
++        g_strlcpy(copy[index].backend_name, source->backend_name,
++                  sizeof(copy[index].backend_name));
++        g_strlcpy(copy[index].overlay_node_name, source->overlay_node_name,
++                  sizeof(copy[index].overlay_node_name));
++        g_strlcpy(copy[index].snapshot_node_name,
++                  source->snapshot_node_name,
++                  sizeof(copy[index].snapshot_node_name));
++        g_strlcpy(copy[index].snapshot_content_id,
++                  source->snapshot_content_id,
++                  sizeof(copy[index].snapshot_content_id));
++    }
++
++    crucible_hot_fork_template_snapshot_binding_count = count;
++    crucible_hot_fork_template_snapshot_bindings = copy;
++    return true;
++}
++
++static bool crucible_hot_fork_template_snapshot_bindings_match(
++    CrucibleHotForkBlockSnapshotBindingList *bindings)
++{
++    CrucibleHotForkBlockSnapshotBindingList *node;
++    size_t index = 0;
++
++    for (node = bindings; node; node = node->next, index++) {
++        QemuBlockBackendHotForkSnapshotBinding *expected;
++        CrucibleHotForkBlockSnapshotBinding *actual = node->value;
++
++        if (index == crucible_hot_fork_template_snapshot_binding_count) {
++            return false;
++        }
++        expected = &crucible_hot_fork_template_snapshot_bindings[index];
++        if (expected->backend_id != actual->backend_id ||
++            strcmp(expected->backend_name, actual->backend_name) != 0 ||
++            strcmp(expected->overlay_node_name,
++                   actual->overlay_node_name) != 0 ||
++            strcmp(expected->snapshot_node_name,
++                   actual->snapshot_node_name) != 0 ||
++            strcmp(expected->snapshot_content_id,
++                   actual->snapshot_content_id) != 0) {
++            return false;
++        }
++    }
++    return index == crucible_hot_fork_template_snapshot_binding_count;
++}
++
+ static void crucible_hot_fork_template_block_transition(void *opaque)
+ {
+     QemuBlockBackendHotForkBarrierInventory inventory;
++    Error *local_err = NULL;
+     bool success;
+ 
+     (void)opaque;
+@@ -322,17 +446,28 @@ static void crucible_hot_fork_template_block_transition(void *opaque)
+         success = qemu_block_backend_hot_fork_barrier(
+             QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_HOLD, &inventory);
+         if (!success || !inventory.held) {
++            if (success) {
++                qemu_block_backend_hot_fork_barrier_inventory_destroy(
++                    &inventory);
++            }
+             crucible_hot_fork_template_complete(
+                 CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_BLOCKED);
+             break;
+         }
+         if (inventory.owner_thread_id <= 0) {
++            qemu_block_backend_hot_fork_barrier_inventory_destroy(&inventory);
+             success = qemu_block_backend_hot_fork_barrier(
+                 QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE, &inventory);
+             if (success && !inventory.held) {
++                qemu_block_backend_hot_fork_barrier_inventory_destroy(
++                    &inventory);
+                 crucible_hot_fork_template_complete(
+                     CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_BLOCKED);
+             } else {
++                if (success) {
++                    qemu_block_backend_hot_fork_barrier_inventory_destroy(
++                        &inventory);
++                }
+                 crucible_hot_fork_template_completion =
+                     CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_BLOCKED;
+                 crucible_hot_fork_template_phase =
+@@ -341,6 +476,36 @@ static void crucible_hot_fork_template_block_transition(void *opaque)
+             }
+             break;
+         }
++        qemu_block_backend_hot_fork_barrier_inventory_destroy(&inventory);
++        crucible_hot_fork_template_phase =
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HELD;
++        break;
++    case CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_SNAPSHOT_BIND_PENDING:
++        if (crucible_hot_fork_template_abort_requested) {
++            crucible_hot_fork_template_completion =
++                CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_ABORTED;
++            crucible_hot_fork_template_phase =
++                CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_RELEASE_PENDING;
++            crucible_hot_fork_template_schedule_block_transition();
++            break;
++        }
++        success = qemu_block_backend_hot_fork_snapshot_bind(
++            crucible_hot_fork_template_snapshot_bindings,
++            crucible_hot_fork_template_snapshot_binding_count,
++            &inventory, &local_err);
++        if (success) {
++            success = inventory.snapshot_complete;
++            qemu_block_backend_hot_fork_barrier_inventory_destroy(&inventory);
++        }
++        if (!success) {
++            error_free(local_err);
++            crucible_hot_fork_template_completion =
++                CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_BLOCKED;
++            crucible_hot_fork_template_phase =
++                CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_RELEASE_PENDING;
++            crucible_hot_fork_template_schedule_block_transition();
++            break;
++        }
+         crucible_hot_fork_template_phase =
+             CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HELD;
+         break;
+@@ -348,8 +513,11 @@ static void crucible_hot_fork_template_block_transition(void *opaque)
+         success = qemu_block_backend_hot_fork_barrier(
+             QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE, &inventory);
+         if (success && !inventory.held) {
++            qemu_block_backend_hot_fork_barrier_inventory_destroy(&inventory);
+             crucible_hot_fork_template_complete(
+                 crucible_hot_fork_template_completion);
++        } else if (success) {
++            qemu_block_backend_hot_fork_barrier_inventory_destroy(&inventory);
+         }
+         break;
+     default:
+@@ -527,8 +695,12 @@ crucible_hot_fork_template_report(
+     if (crucible_hot_fork_template_active && bh_timer_barrier->quiescent) {
+         acknowledged |= CRUCIBLE_HOT_FORK_PROOF_AIO_BH_TIMERS;
+     }
++    if (crucible_hot_fork_template_active &&
++        block_barrier->snapshot_complete) {
++        acknowledged |= CRUCIBLE_HOT_FORK_PROOF_BLOCK_SNAPSHOT;
++    }
+ 
+-    report->schema_version = 6;
++    report->schema_version = 7;
+     report->generation = crucible_hot_fork_template_generation;
+     report->outcome = outcome;
+     report->transaction_active = crucible_hot_fork_template_active;
+@@ -541,17 +713,22 @@ crucible_hot_fork_template_report(
+     report->block_barrier = block_barrier;
+     report->rollback_complete = !report->transaction_active &&
+         !plugin_barrier->held && !rcu_barrier->held &&
+-        !bh_timer_barrier->held && !block_barrier->held;
++        !bh_timer_barrier->held && !block_barrier->held &&
++        !block_barrier->snapshot_bound;
+     report->ready = outcome == CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_PREPARED &&
+         report->transaction_active && plugin_barrier->quiescent &&
+         rcu_barrier->quiescent && bh_timer_barrier->quiescent &&
+-        block_barrier->quiescent && report->missing_proofs == 0;
++        block_barrier->quiescent && block_barrier->snapshot_complete &&
++        report->missing_proofs == 0;
+     return report;
+ }
+ 
+ CrucibleHotForkTemplateState *
+ qmp_crucible_hot_fork_template(
+-    CrucibleHotForkTemplateAction action, Error **errp)
++    CrucibleHotForkTemplateAction action,
++    bool has_block_snapshot_bindings,
++    CrucibleHotForkBlockSnapshotBindingList *block_snapshot_bindings,
++    Error **errp)
+ {
+     CrucibleHotForkPluginBarrierState *plugin_barrier = NULL;
+     CrucibleHotForkRcuBarrierState *rcu_barrier = NULL;
+@@ -562,6 +739,12 @@ qmp_crucible_hot_fork_template(
+     uint64_t acknowledged;
+ 
+     g_mutex_lock(&crucible_hot_fork_template_lock);
++    if (action != CRUCIBLE_HOT_FORK_TEMPLATE_ACTION_PREPARE &&
++        has_block_snapshot_bindings) {
++        error_setg(errp, "Crucible hot-fork block snapshot bindings are "
++                   "valid only for template preparation");
++        goto out;
++    }
+     plugin_barrier = crucible_hot_fork_plugin_barrier(
+         QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, errp);
+     if (!plugin_barrier) {
+@@ -598,6 +781,7 @@ qmp_crucible_hot_fork_template(
+         }
+         break;
+     case CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HELD:
++    case CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_SNAPSHOT_BIND_PENDING:
+     case CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_RELEASE_PENDING:
+         if (!crucible_hot_fork_template_active || plugin_barrier->held ||
+             rcu_barrier->held || bh_timer_barrier->held ||
+@@ -617,6 +801,11 @@ qmp_crucible_hot_fork_template(
+                        "subsystem barrier");
+             goto out;
+         }
++        if (!block_barrier->snapshot_complete) {
++            error_setg(errp, "Crucible hot-fork template lost its immutable "
++                       "block snapshot binding");
++            goto out;
++        }
+         break;
+     default:
+         g_assert_not_reached();
+@@ -634,7 +823,19 @@ qmp_crucible_hot_fork_template(
+     case CRUCIBLE_HOT_FORK_TEMPLATE_ACTION_PREPARE:
+         if (crucible_hot_fork_template_phase ==
+             CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_IDLE) {
++            if (!has_block_snapshot_bindings ||
++                !crucible_hot_fork_template_copy_snapshot_bindings(
++                    block_snapshot_bindings, errp)) {
++                if (!has_block_snapshot_bindings) {
++                    error_setg(errp, "Crucible hot-fork template preparation "
++                               "requires the complete block snapshot binding");
++                }
++                goto out;
++            }
+             if (!crucible_hot_fork_exact_paused_boundary()) {
++                g_clear_pointer(
++                    &crucible_hot_fork_template_snapshot_bindings, g_free);
++                crucible_hot_fork_template_snapshot_binding_count = 0;
+                 error_setg(errp, "Crucible hot-fork template preparation "
+                            "requires an exact paused/device-flush boundary");
+                 goto out;
+@@ -650,6 +851,14 @@ qmp_crucible_hot_fork_template(
+             break;
+         }
+ 
++        if (!has_block_snapshot_bindings ||
++            !crucible_hot_fork_template_snapshot_bindings_match(
++                block_snapshot_bindings)) {
++            error_setg(errp, "Crucible hot-fork template preparation changed "
++                       "its block snapshot binding");
++            goto out;
++        }
++
+         if (crucible_hot_fork_template_phase ==
+             CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HOLD_PENDING) {
+             crucible_hot_fork_template_schedule_block_transition();
+@@ -657,6 +866,13 @@ qmp_crucible_hot_fork_template(
+             break;
+         }
+ 
++        if (crucible_hot_fork_template_phase ==
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_SNAPSHOT_BIND_PENDING) {
++            crucible_hot_fork_template_schedule_block_transition();
++            outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
++            break;
++        }
++
+         if (crucible_hot_fork_template_phase ==
+             CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_RELEASE_PENDING) {
+             crucible_hot_fork_template_schedule_block_transition();
+@@ -671,6 +887,17 @@ qmp_crucible_hot_fork_template(
+                            "paused/device-flush boundary");
+                 goto out;
+             }
++            if (!block_barrier->snapshot_complete) {
++                if (!block_barrier->quiescent) {
++                    outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
++                    break;
++                }
++                crucible_hot_fork_template_phase =
++                    CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_SNAPSHOT_BIND_PENDING;
++                crucible_hot_fork_template_schedule_block_transition();
++                outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
++                break;
++            }
+             g_clear_pointer(&rcu_barrier, g_free);
+             rcu_barrier = crucible_hot_fork_rcu_barrier(
+                 QEMU_RCU_HOT_FORK_BARRIER_HOLD);
+@@ -705,7 +932,8 @@ qmp_crucible_hot_fork_template(
+         }
+         acknowledged = crucible_hot_fork_acknowledged_proofs() |
+             CRUCIBLE_HOT_FORK_PROOF_AIO_BH_TIMERS |
+-            CRUCIBLE_HOT_FORK_PROOF_RCU;
++            CRUCIBLE_HOT_FORK_PROOF_RCU |
++            CRUCIBLE_HOT_FORK_PROOF_BLOCK_SNAPSHOT;
+         if (acknowledged == CRUCIBLE_HOT_FORK_REQUIRED_PROOFS) {
+             outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_PREPARED;
+             break;
+@@ -735,9 +963,11 @@ qmp_crucible_hot_fork_template(
+             outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_IDLE;
+         } else if (plugin_barrier->quiescent && rcu_barrier->quiescent &&
+                    bh_timer_barrier->quiescent && block_barrier->quiescent &&
++                   block_barrier->snapshot_complete &&
+                    (crucible_hot_fork_acknowledged_proofs() |
+                     CRUCIBLE_HOT_FORK_PROOF_AIO_BH_TIMERS |
+-                    CRUCIBLE_HOT_FORK_PROOF_RCU) ==
++                    CRUCIBLE_HOT_FORK_PROOF_RCU |
++                    CRUCIBLE_HOT_FORK_PROOF_BLOCK_SNAPSHOT) ==
+                    CRUCIBLE_HOT_FORK_REQUIRED_PROOFS) {
+             outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_PREPARED;
+         } else {
+@@ -758,6 +988,14 @@ qmp_crucible_hot_fork_template(
+             break;
+         }
+ 
++        if (crucible_hot_fork_template_phase ==
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_SNAPSHOT_BIND_PENDING) {
++            crucible_hot_fork_template_abort_requested = true;
++            crucible_hot_fork_template_schedule_block_transition();
++            outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
++            break;
++        }
++
+         if (crucible_hot_fork_template_phase ==
+             CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HELD) {
+             crucible_hot_fork_template_completion =
+@@ -812,7 +1050,7 @@ out:
+     g_free(plugin_barrier);
+     g_free(rcu_barrier);
+     g_free(bh_timer_barrier);
+-    g_free(block_barrier);
++    qapi_free_CrucibleHotForkBlockBarrierState(block_barrier);
+     g_mutex_unlock(&crucible_hot_fork_template_lock);
+     return report;
+ }
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 9dad4daab..faad7d858 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -677,6 +677,68 @@
+ { 'enum': 'CrucibleHotForkBlockBarrierAction',
+   'data': [ 'hold', 'query', 'release' ] }
+ 
++##
++# @CrucibleHotForkBlockSnapshotBinding:
++#
++# Host-authenticated immutable-root identity to bind to one exact live block
++# graph edge during template preparation.
++#
++# @backend-id: positive process-local BlockBackend identity
++#
++# @backend-name: exact monitor-visible backend name
++#
++# @overlay-node-name: expected active empty-overlay graph node
++#
++# @snapshot-node-name: expected immediate read-only backing graph node
++#
++# @snapshot-content-id: 64-character lowercase hexadecimal BLAKE3 identity
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkBlockSnapshotBinding',
++  'data': { 'backend-id': 'uint64',
++            'backend-name': 'str',
++            'overlay-node-name': 'str',
++            'snapshot-node-name': 'str',
++            'snapshot-content-id': 'str' } }
++
++##
++# @CrucibleHotForkBlockSnapshotRoot:
++#
++# One exact writable-root boundary retained by the hot-fork block barrier.
++# The active overlay contains no allocated guest data and its immediate
++# backing node is opened read-only.  @snapshot-content-id is the lowercase
++# BLAKE3 identity authenticated by the controlling host and bound by QEMU to
++# this exact graph edge.
++#
++# @backend-id: positive process-local BlockBackend identity
++#
++# @backend-name: exact monitor-visible backend name
++#
++# @overlay-node-name: exact active empty-overlay graph node
++#
++# @snapshot-node-name: exact immediate read-only backing graph node
++#
++# @snapshot-content-id: 64-character lowercase hexadecimal BLAKE3 identity
++#
++# @virtual-size: exact guest-visible byte length of the overlay and snapshot
++#
++# @overlay-empty: whether no guest-visible range is allocated above snapshot
++#
++# @snapshot-read-only: whether QEMU opened the snapshot node read-only
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkBlockSnapshotRoot',
++  'data': { 'backend-id': 'uint64',
++            'backend-name': 'str',
++            'overlay-node-name': 'str',
++            'snapshot-node-name': 'str',
++            'snapshot-content-id': 'str',
++            'virtual-size': 'uint64',
++            'overlay-empty': 'bool',
++            'snapshot-read-only': 'bool' } }
++
+ ##
+ # @CrucibleHotForkBlockBarrierState:
+ #
+@@ -684,7 +746,7 @@
+ # native all-block drain section. This barrier does not create or authenticate
+ # an immutable external snapshot.
+ #
+-# @schema-version: barrier contract version, currently 2
++# @schema-version: barrier contract version, currently 3
+ #
+ # @generation: process-local hold/release generation
+ #
+@@ -713,6 +775,24 @@
+ # @graph-stable: whether writer admission remains closed, no writer is active,
+ #     and the completed graph-write generation still equals the held generation
+ #
++# @snapshot-generation: process-local immutable-root binding generation
++#
++# @snapshot-backend-generation: BlockBackend generation captured by binding,
++#     or zero when no binding is retained
++#
++# @snapshot-graph-mutation-generation: completed graph-write generation bound
++#     to the snapshot roots, or zero when no binding is retained
++#
++# @snapshot-owner-thread-id: coordinator retaining the snapshot binding, or
++#     zero when no binding is retained
++#
++# @snapshot-bound: whether one exact immutable-root binding is retained
++#
++# @snapshot-complete: whether the binding still matches the retained backend,
++#     graph-generation, ownership, and writable-root count
++#
++# @snapshot-roots: exact roots in increasing @backend-id order
++#
+ # @complete: whether the bounded BlockBackend inventory was complete and the
+ #     native drain and graph barriers have consistent ownership
+ #
+@@ -722,6 +802,8 @@
+ #
+ # @writable-backends: exact backends requesting write permission
+ #
++# @writable-rooted-backends: exact rooted backends requesting write permission
++#
+ # @quiesced-rooted-backends: exact rooted backends inside a drain section
+ #
+ # @in-flight: checked aggregate BlockBackend I/O count
+@@ -744,10 +826,18 @@
+             'graph-writer-active': 'bool',
+             'graph-waiting-writers': 'uint32',
+             'graph-stable': 'bool',
++            'snapshot-generation': 'uint64',
++            'snapshot-backend-generation': 'uint64',
++            'snapshot-graph-mutation-generation': 'uint64',
++            'snapshot-owner-thread-id': 'int64',
++            'snapshot-bound': 'bool',
++            'snapshot-complete': 'bool',
++            'snapshot-roots': [ 'CrucibleHotForkBlockSnapshotRoot' ],
+             'complete': 'bool',
+             'backend-count': 'uint64',
+             'rooted-backends': 'uint64',
+             'writable-backends': 'uint64',
++            'writable-rooted-backends': 'uint64',
+             'quiesced-rooted-backends': 'uint64',
+             'in-flight': 'uint64',
+             'quiescent': 'bool' } }
+@@ -1181,11 +1271,11 @@
+ # Rollback releases the asynchronous barrier before it reopens graph and block
+ # I/O admission on the main AioContext. A quiescent RCU barrier acknowledges
+ # proof bit 4. A quiescent asynchronous barrier acknowledges AIO proof bit 3.
+-# The block barrier remains a prerequisite and does not acknowledge proof bit 5
+-# without an immutable external-snapshot root. Other unresolved proof classes
+-# still make a drained transaction roll back as @blocked.
++# A complete immutable-root binding retained by the block barrier acknowledges
++# proof bit 5. Other unresolved proof classes still make a drained transaction
++# roll back as @blocked.
+ #
+-# @schema-version: transaction contract version, currently 6
++# @schema-version: transaction contract version, currently 7
+ #
+ # @generation: positive process-local transaction generation after the first
+ #     successful prepare, or zero before any transaction
+@@ -1240,12 +1330,17 @@
+ #
+ # @action: requested coordinator operation
+ #
++# @block-snapshot-bindings: complete increasing-backend-id immutable-root
++#     binding supplied only with a new @prepare transaction
++#
+ # Returns: @CrucibleHotForkTemplateState
+ #
+ # Since: 10.0 (Crucible downstream extension)
+ ##
+ { 'command': 'crucible-hot-fork-template',
+-  'data': { 'action': 'CrucibleHotForkTemplateAction' },
++  'data': { 'action': 'CrucibleHotForkTemplateAction',
++            '*block-snapshot-bindings':
++                [ 'CrucibleHotForkBlockSnapshotBinding' ] },
+   'returns': 'CrucibleHotForkTemplateState',
+   'allow-oob': true }
+ 
+diff --git a/tests/unit/test-block-backend.c b/tests/unit/test-block-backend.c
+index 12e80df49..f0fb267d5 100644
+--- a/tests/unit/test-block-backend.c
++++ b/tests/unit/test-block-backend.c
+@@ -24,13 +24,17 @@
+ 
+ #include "qemu/osdep.h"
+ #include "block/block.h"
++#include "block/block-global-state.h"
+ #include "system/block-backend.h"
+ #include "qapi/error.h"
+ #include "qobject/qdict.h"
+ #include "qemu/main-loop.h"
++#include "qemu/option.h"
+ #include "qemu/thread.h"
+ #include "system/block-backend-global-state.h"
+ 
++#define HOT_FORK_SNAPSHOT_SIZE (1024 * 1024)
++
+ static void test_drain_aio_error_flush_cb(void *opaque, int ret)
+ {
+     bool *completed = opaque;
+@@ -211,6 +215,97 @@ static void test_hot_fork_graph_writer_waits(void)
+     g_assert_cmpuint(barrier.graph_waiting_writers, ==, 0);
+ }
+ 
++static void test_hot_fork_snapshot_binding(void)
++{
++    char snapshot_path[] = "/tmp/qemu-hot-fork-snapshot-XXXXXX";
++    char overlay_path[] = "/tmp/qemu-hot-fork-overlay-XXXXXX";
++    QemuBlockBackendHotForkInventory backends;
++    QemuBlockBackendHotForkSnapshotBinding binding = { 0 };
++    QemuBlockBackendHotForkBarrierInventory barrier;
++    QDict *options;
++    BlockBackend *blk;
++    int snapshot_fd;
++    int overlay_fd;
++    size_t index;
++
++    options = qdict_new();
++    snapshot_fd = mkstemp(snapshot_path);
++    overlay_fd = mkstemp(overlay_path);
++    g_assert_cmpint(snapshot_fd, >=, 0);
++    g_assert_cmpint(overlay_fd, >=, 0);
++    close(snapshot_fd);
++    close(overlay_fd);
++    bdrv_img_create(snapshot_path, "qcow2", NULL, NULL, NULL,
++                    HOT_FORK_SNAPSHOT_SIZE,
++                    BDRV_O_RDWR, true, &error_abort);
++    bdrv_img_create(overlay_path, "qcow2", NULL, NULL, NULL,
++                    HOT_FORK_SNAPSHOT_SIZE,
++                    BDRV_O_RDWR, true, &error_abort);
++
++    qdict_put_str(options, "driver", "qcow2");
++    qdict_put_str(options, "node-name", "crucible-overlay0");
++    qdict_put_str(options, "file.driver", "file");
++    qdict_put_str(options, "file.filename", overlay_path);
++    qdict_put_str(options, "backing.driver", "qcow2");
++    qdict_put_str(options, "backing.node-name", "crucible-snapshot0");
++    qdict_put_bool(options, "backing.read-only", true);
++    qdict_put_str(options, "backing.file.driver", "file");
++    qdict_put_str(options, "backing.file.filename", snapshot_path);
++    blk = blk_new_open(NULL, NULL, options, BDRV_O_RDWR, &error_abort);
++    g_assert_nonnull(blk);
++    g_assert_true(monitor_add_blk(blk, "crucible-root0", &error_abort));
++
++    qemu_block_backend_hot_fork_inventory(&backends);
++    for (index = 0; index < backends.entry_count; index++) {
++        if (strcmp(backends.entries[index].name, "crucible-root0") == 0) {
++            binding.backend_id = backends.entries[index].backend_id;
++            break;
++        }
++    }
++    g_assert_cmpuint(binding.backend_id, >, 0);
++    qemu_block_backend_hot_fork_inventory_destroy(&backends);
++    g_strlcpy(binding.backend_name, "crucible-root0",
++              sizeof(binding.backend_name));
++    g_strlcpy(binding.overlay_node_name, "crucible-overlay0",
++              sizeof(binding.overlay_node_name));
++    g_strlcpy(binding.snapshot_node_name, "crucible-snapshot0",
++              sizeof(binding.snapshot_node_name));
++    memset(binding.snapshot_content_id, 'a',
++           QEMU_BLOCK_BACKEND_HOT_FORK_CONTENT_ID_HEX_LENGTH);
++    binding.snapshot_content_id[
++        QEMU_BLOCK_BACKEND_HOT_FORK_CONTENT_ID_HEX_LENGTH] = '\0';
++
++    g_assert_true(qemu_block_backend_hot_fork_barrier(
++        QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_HOLD, &barrier));
++    qemu_block_backend_hot_fork_barrier_inventory_destroy(&barrier);
++    g_assert_true(qemu_block_backend_hot_fork_snapshot_bind(
++        &binding, 1, &barrier, &error_abort));
++    g_assert_true(barrier.snapshot_bound);
++    g_assert_true(barrier.snapshot_complete);
++    g_assert_cmpuint(barrier.snapshot_root_count, ==, 1);
++    g_assert_cmpuint(barrier.snapshot_roots[0].binding.backend_id,
++                     ==, binding.backend_id);
++    g_assert_cmpstr(barrier.snapshot_roots[0].binding.snapshot_content_id,
++                    ==, binding.snapshot_content_id);
++    g_assert_cmpuint(barrier.snapshot_roots[0].virtual_size, ==,
++                     HOT_FORK_SNAPSHOT_SIZE);
++    g_assert_true(barrier.snapshot_roots[0].overlay_empty);
++    g_assert_true(barrier.snapshot_roots[0].snapshot_read_only);
++    qemu_block_backend_hot_fork_barrier_inventory_destroy(&barrier);
++
++    g_assert_true(qemu_block_backend_hot_fork_barrier(
++        QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE, &barrier));
++    g_assert_false(barrier.snapshot_bound);
++    g_assert_false(barrier.snapshot_complete);
++    g_assert_cmpuint(barrier.snapshot_root_count, ==, 0);
++    qemu_block_backend_hot_fork_barrier_inventory_destroy(&barrier);
++
++    monitor_remove_blk(blk);
++    blk_unref(blk);
++    unlink(overlay_path);
++    unlink(snapshot_path);
++}
++
+ int main(int argc, char **argv)
+ {
+     bdrv_init();
+@@ -225,6 +320,8 @@ int main(int argc, char **argv)
+                     test_hot_fork_block_barrier);
+     g_test_add_func("/block-backend/hot_fork_graph_writer_waits",
+                     test_hot_fork_graph_writer_waits);
++    g_test_add_func("/block-backend/hot_fork_snapshot_binding",
++                    test_hot_fork_snapshot_binding);
+ 
+     return g_test_run();
+ }

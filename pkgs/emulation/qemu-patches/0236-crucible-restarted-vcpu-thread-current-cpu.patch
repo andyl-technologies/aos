@@ -1,0 +1,19 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index 833d6a2a2..54ce83c22 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -1047,6 +1047,14 @@ static void *rr_hot_fork_child_cpu_thread_fn(void *arg)
+     CPU_FOREACH(sibling) {
+         cpu_thread_signal_created(sibling);
+     }
++    /*
++     * The original thread leaves its thread-local current CPU set by the
++     * initial-wait work it processed; the steady-state loop handles the
++     * icount deadline on that thread before it selects a CPU and asserts
++     * that it runs on a vCPU thread.  The replacement starts in the loop,
++     * so it names the CPU it restarted for first.
++     */
++    current_cpu = cpu;
+ 
+     rr_cpu_thread_loop(cpu);
+ }

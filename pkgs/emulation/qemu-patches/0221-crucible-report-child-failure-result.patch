@@ -1,0 +1,83 @@
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 387bba11b..e34d25dc4 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -4602,10 +4602,28 @@ static int crucible_hot_fork_apply_child_process_contract(
+ #define CRUCIBLE_HOT_FORK_CHILD_STEP_EXIT_BASE 64
+ #define CRUCIBLE_HOT_FORK_CHILD_DETAIL_EXIT_BASE 96
+ 
+-static void G_NORETURN crucible_hot_fork_child_exit_at(unsigned int step)
++static void G_NORETURN crucible_hot_fork_child_exit_at(unsigned int step,
++                                                       int result)
+ {
+     unsigned int detail = qemu_crucible_hot_fork_child_detail();
++    char report[96];
++    int length;
+ 
++    /*
++     * The exit status names the failing step or detail, but not the result
++     * that failed it.  Once descriptor application has routed this process's
++     * stderr to the branch-private diagnostics stream, the host reads the
++     * exact result there; before that the line goes wherever the source's
++     * stderr went.
++     */
++    length = snprintf(report, sizeof(report),
++                      "crucible hot-fork child failed: step %u detail %u "
++                      "result %d\n", step, detail, result);
++    if (length > 0 && length < (int)sizeof(report)) {
++        ssize_t written = write(STDERR_FILENO, report, (size_t)length);
++
++        (void)written;
++    }
+     if (step == 9 && detail != 0) {
+         _exit(CRUCIBLE_HOT_FORK_CHILD_DETAIL_EXIT_BASE + detail);
+     }
+@@ -4696,19 +4714,19 @@ static int crucible_hot_fork_finish_child_operation(void *opaque)
+     }
+     qemu_block_backend_hot_fork_barrier_inventory_destroy(&block);
+     if (result != 0) {
+-        crucible_hot_fork_child_exit_at(step);
++        crucible_hot_fork_child_exit_at(step, result);
+     }
+     if (crucible_hot_fork_child_files_plan) {
+         /* Adoption consumes both the inherited plan and the source set. */
+         if (!qemu_block_hot_fork_child_files_install(
+                 crucible_hot_fork_child_files_plan, NULL)) {
+-            crucible_hot_fork_child_exit_at(13);
++            crucible_hot_fork_child_exit_at(13, -EPROTO);
+         }
+         crucible_hot_fork_child_files_plan = NULL;
+         operation->child_files = NULL;
+     } else if (!qemu_block_hot_fork_source_set_release_empty_child(
+                    crucible_hot_fork_template_sources, NULL)) {
+-        crucible_hot_fork_child_exit_at(14);
++        crucible_hot_fork_child_exit_at(14, -EPROTO);
+     }
+     crucible_hot_fork_template_sources = NULL;
+     /* Inherited destination duplicates were closed by descriptor disposition. */
+@@ -4741,7 +4759,7 @@ static int crucible_hot_fork_finish_child_operation(void *opaque)
+     result = monitor_hot_fork_release_child_protocol_input(
+         &crucible_hot_fork_qmp_child_basis);
+     if (result != 0) {
+-        crucible_hot_fork_child_exit_at(15);
++        crucible_hot_fork_child_exit_at(15, result);
+     }
+     return 0;
+ }
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 0a167c04b..94bd9f4ce 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1968,7 +1968,11 @@
+ #     reinitializer, 16 QMP reinitializer, 17 console reinitializer; a
+ #     rebuilt monitor iothread that does not start within its bound reports
+ #     70, or its last progress mark 71 entered, 72 disposition set, 73 RCU
+-#     registered, 74 context pushed, 75 started).
++#     registered, 74 context pushed, 75 started).  A failing child also
++#     writes "crucible hot-fork child failed: step S detail D result R" to
++#     its stderr, which descriptor application has routed to the
++#     branch-private diagnostics stream, so the host learns the exact
++#     negative errno alongside the exit status.
+ #
+ # @retained: true for query and false after successful release
+ #

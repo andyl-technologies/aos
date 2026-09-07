@@ -120,7 +120,7 @@ index b9d0c5a72..952a779b0 100644
  void qemu_plugin_crucible_exact_boundary_enter(void);
  void qemu_plugin_crucible_exact_boundary_leave(void);
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index d2e89855f..0db640157 100644
+index 1fbdb3e45..97d50ef81 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1082,15 +1082,16 @@ void qemu_plugin_force_vcpu_exit(void);

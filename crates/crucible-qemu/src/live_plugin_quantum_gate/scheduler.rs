@@ -11,7 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crucible::{AdvanceOutcome, ExecutionHorizon, Icount, SimDoubleHostScheduleEvent};
-use crucible_shmem::FingerprintSample;
+use crucible_shmem::{FingerprintSample, STATUS_IDLE};
 
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
 use crate::{
@@ -147,6 +147,10 @@ pub(super) fn run_quantum(
         .map_err(|source| channel_error("read pre-quantum icount", source))?
         .current_icount
         .retired;
+    let initial_publish_generation = hot_path
+        .node_snapshot()
+        .map_err(|source| channel_error("read pre-quantum publication", source))?
+        .publish_gen;
     let mut pending = QemuShmemHotPathChannel::start_quantum(
         hot_path,
         ExecutionHorizon {
@@ -170,7 +174,8 @@ pub(super) fn run_quantum(
         .map_err(|source| channel_error("wake plugin for next quantum", source))?;
     HostAdversary::certify_mapped_quantum_pending(host_adversary, hot_path, &mut pending)
         .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
-    let stop = wait_for_quantum_boundary(hot_path, child, ceiling, config)?;
+    let stop =
+        wait_for_quantum_boundary(hot_path, child, ceiling, initial_publish_generation, config)?;
     let completion = QemuShmemHotPathChannel::finish_quantum(hot_path, pending)
         .map_err(|source| channel_error("finish quantum", source))?;
     match (&stop, &completion.outcome) {
@@ -202,19 +207,32 @@ fn wait_for_quantum_boundary(
     hot_path: &mut QemuMappedQuantumShmemHotPath,
     child: &mut crate::QemuNodeChild,
     ceiling: u64,
+    initial_publish_generation: u32,
     config: &LivePluginQuantumGateConfig,
 ) -> Result<QuantumStop, LivePluginQuantumGateError> {
     let started = Instant::now();
     loop {
-        let idle: QemuNodeIdleState = QemuShmemHotPathChannel::idle_state(hot_path)
+        let snapshot = hot_path
+            .node_snapshot()
             .map_err(|source| channel_error("poll idle state", source))?;
+        let idle = QemuNodeIdleState {
+            current_icount: Icount {
+                retired: snapshot.current_icount,
+            },
+            next_deadline: (snapshot.status == STATUS_IDLE).then_some(Icount {
+                retired: snapshot.idle_wake_icount,
+            }),
+        };
         match classify_quantum_boundary(&idle, ceiling) {
             QuantumBoundary::Reached { icount } => {
                 return Ok(QuantumStop::ReachedCeiling { icount });
             }
-            QuantumBoundary::Paused { at, deadline } => {
+            QuantumBoundary::Paused { at, deadline }
+                if at != deadline || snapshot.publish_gen != initial_publish_generation =>
+            {
                 return Ok(QuantumStop::Paused { at, deadline });
             }
+            QuantumBoundary::Paused { .. } => {}
             QuantumBoundary::Pending => {}
         }
         if let Some(status) = child

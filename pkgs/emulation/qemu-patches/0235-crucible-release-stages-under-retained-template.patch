@@ -1,0 +1,97 @@
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index be059067b..8f63db0c1 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -737,6 +737,31 @@ static int crucible_hot_fork_reinitialize_child_console(
+ 
+ static void crucible_hot_fork_template_schedule_block_transition(void);
+ 
++/*
++ * A staged child resource may be released while no fork operation is active
++ * and the template is either absent or retained at its barrier phase: a
++ * stage the last fork consumed must give way to the next child's, and an
++ * unconsumed one may be withdrawn.  The transitional phases still refuse,
++ * since the template's proofs are being computed from the stages then.
++ */
++static bool crucible_hot_fork_stage_release_allowed(const char *what,
++                                                    Error **errp)
++{
++    if (crucible_hot_fork_operation_active) {
++        error_setg(errp, "Cannot release Crucible hot-fork %s during a fork "
++                   "operation", what);
++        return false;
++    }
++    if (crucible_hot_fork_template_active &&
++        crucible_hot_fork_template_phase !=
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BARRIERS_HELD) {
++        error_setg(errp, "Cannot release Crucible hot-fork %s during template "
++                   "preparation", what);
++        return false;
++    }
++    return true;
++}
++
+ static bool crucible_hot_fork_resource_stage_allowed(
+     CrucibleHotForkPluginBarrierState **retained_plugin_barrier,
+     Error **errp)
+@@ -1281,9 +1306,7 @@ qmp_crucible_hot_fork_private_rings(
+                        "does not match the retained descriptor");
+             goto out;
+         }
+-        if (crucible_hot_fork_template_active) {
+-            error_setg(errp, "Cannot release Crucible hot-fork private rings "
+-                       "during template preparation");
++        if (!crucible_hot_fork_stage_release_allowed("private rings", errp)) {
+             goto out;
+         }
+         if (crucible_hot_fork_plugin_endpoint_stage.staged) {
+@@ -1957,9 +1980,7 @@ qmp_crucible_hot_fork_child_diagnostics(
+                        "the exact retained basis");
+             goto out;
+         }
+-        if (crucible_hot_fork_template_active) {
+-            error_setg(errp, "Cannot release Crucible hot-fork diagnostics "
+-                       "during template preparation");
++        if (!crucible_hot_fork_stage_release_allowed("diagnostics", errp)) {
+             goto out;
+         }
+         if (crucible_hot_fork_plugin_endpoint_stage.staged) {
+@@ -2292,9 +2313,7 @@ CrucibleHotForkQmpState *qmp_crucible_hot_fork_child_qmp(
+                        "the exact retained basis");
+             goto out;
+         }
+-        if (crucible_hot_fork_template_active) {
+-            error_setg(errp, "Cannot release Crucible hot-fork child QMP "
+-                       "during template preparation");
++        if (!crucible_hot_fork_stage_release_allowed("child QMP", errp)) {
+             goto out;
+         }
+         if (crucible_hot_fork_plugin_endpoint_stage.staged) {
+@@ -2566,10 +2585,12 @@ CrucibleHotForkConsoleState *qmp_crucible_hot_fork_child_console(
+                        "requires the exact retained basis");
+             goto out;
+         }
+-        if (crucible_hot_fork_template_active ||
+-            crucible_hot_fork_plugin_endpoint_stage.staged) {
++        if (!crucible_hot_fork_stage_release_allowed("child console", errp)) {
++            goto out;
++        }
++        if (crucible_hot_fork_plugin_endpoint_stage.staged) {
+             error_setg(errp, "Cannot release Crucible hot-fork child console "
+-                       "before its template and plugin endpoints");
++                       "before its plugin endpoints");
+             goto out;
+         }
+         close(crucible_hot_fork_console_stage.fd);
+@@ -2954,9 +2975,8 @@ qmp_crucible_hot_fork_plugin_endpoints(
+                        "does not match the retained endpoints");
+             goto out;
+         }
+-        if (crucible_hot_fork_template_active) {
+-            error_setg(errp, "Cannot release Crucible hot-fork plugin "
+-                       "endpoints during template preparation");
++        if (!crucible_hot_fork_stage_release_allowed("plugin endpoints",
++                                                     errp)) {
+             goto out;
+         }
+         close(crucible_hot_fork_plugin_endpoint_stage.control_fd);

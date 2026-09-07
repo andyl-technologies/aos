@@ -1,0 +1,321 @@
+diff --git a/include/qemu/crucible-hot-fork-child.h b/include/qemu/crucible-hot-fork-child.h
+index abe0218de..602b36a42 100644
+--- a/include/qemu/crucible-hot-fork-child.h
++++ b/include/qemu/crucible-hot-fork-child.h
+@@ -46,6 +46,10 @@ typedef struct QemuCrucibleHotForkRuntimeTransaction {
+ 
+ int qemu_crucible_hot_fork_begin_runtime_transaction(
+     QemuCrucibleHotForkRuntimeTransaction *transaction);
++/* Borrow one exact retained template barrier without releasing its parent. */
++int qemu_crucible_hot_fork_begin_retained_runtime_transaction(
++    QemuCrucibleHotForkRuntimeTransaction *transaction,
++    uint64_t expected_rcu_barrier_generation);
+ int qemu_crucible_hot_fork_release_parent_runtime_transaction(
+     QemuCrucibleHotForkRuntimeTransaction *transaction);
+ /* Prepare copied child state while the descriptor transaction stays active. */
+diff --git a/include/qemu/rcu.h b/include/qemu/rcu.h
+index 32adc3a6a..a370abc95 100644
+--- a/include/qemu/rcu.h
++++ b/include/qemu/rcu.h
+@@ -123,10 +123,12 @@ typedef struct QemuRcuHotForkBarrierInventory {
+ typedef struct QemuRcuHotForkTransaction {
+     uint64_t reader_generation;
+     uint64_t barrier_generation;
++    int64_t barrier_owner_thread_id;
+     int64_t parent_process_id;
+     int64_t parent_thread_id;
+     void *coordinator_reader;
+     bool active;
++    bool parent_barrier_retained;
+     bool child_prepared;
+     bool child_reconstructed;
+ } QemuRcuHotForkTransaction;
+@@ -199,6 +201,9 @@ void qemu_rcu_hot_fork_barrier(QemuRcuHotForkBarrierOperation operation,
+                                QemuRcuHotForkBarrierInventory *inventory);
+ int qemu_rcu_hot_fork_begin_transaction(
+     QemuRcuHotForkTransaction *transaction);
++int qemu_rcu_hot_fork_begin_retained_transaction(
++    QemuRcuHotForkTransaction *transaction,
++    uint64_t expected_barrier_generation);
+ int qemu_rcu_hot_fork_release_parent_transaction(
+     QemuRcuHotForkTransaction *transaction);
+ int qemu_rcu_hot_fork_prepare_child(
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index 1bac71ab5..60309b9a4 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -440,6 +440,33 @@ static void *monitor_registry_worker(void *opaque)
+     return result;
+ }
+ 
++static void *monitor_registry_worker_with_rcu_barrier(void *opaque)
++{
++    RegistryWorker *worker = opaque;
++    QemuRcuHotForkBarrierInventory inventory;
++    int result = 0;
++
++    qemu_thread_hot_fork_set_current_disposition(
++        QEMU_THREAD_HOT_FORK_MONITOR_RESTART);
++    rcu_register_thread();
++    qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_HOLD, &inventory);
++    if (!inventory.held || !inventory.quiescent ||
++        inventory.owner_thread_id != qemu_get_thread_id()) {
++        result = -EPROTO;
++    }
++    write_child_result(worker->ready_fd, result);
++    if (result == 0) {
++        (void)read_child_result(worker->release_fd);
++    }
++    if (inventory.held &&
++        inventory.owner_thread_id == qemu_get_thread_id()) {
++        qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_RELEASE,
++                                  &inventory);
++    }
++    rcu_unregister_thread();
++    return NULL;
++}
++
+ static void start_registry_worker_thread(
+     RegistryWorkerThread *worker, const char *name,
+     void *(*start_routine)(void *))
+@@ -737,6 +764,7 @@ static void test_immediate_child_applies_sealed_resource_plan(void)
+     QemuCrucibleHotForkDiagnosticsChildResourcePlan diagnostics = { 0 };
+     QemuCrucibleHotForkPluginChildReinitializer plugin_reinitializer = { 0 };
+     QemuCrucibleHotForkQmpChildReinitializer qmp_reinitializer = { 0 };
++    QemuRcuHotForkBarrierInventory retained_rcu_barrier;
+     FakeQmpChildRuntime qmp_runtime = {
+         .flags = QEMU_CRUCIBLE_HOT_FORK_QMP_CHILD_FLAGS_COMPLETE,
+     };
+@@ -762,8 +790,15 @@ static void test_immediate_child_applies_sealed_resource_plan(void)
+     pid_t child;
+     int result;
+ 
+-    start_registry_worker_thread(&monitor_worker, "IO mon_iothread",
+-                                 monitor_registry_worker);
++    start_registry_worker_thread(
++        &monitor_worker, "IO mon_iothread",
++        monitor_registry_worker_with_rcu_barrier);
++    qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_QUERY,
++                              &retained_rcu_barrier);
++    g_assert_true(retained_rcu_barrier.held);
++    g_assert_true(retained_rcu_barrier.quiescent);
++    g_assert_cmpint(retained_rcu_barrier.owner_thread_id, !=,
++                    qemu_get_thread_id());
+     g_assert_cmpint(qemu_crucible_hot_fork_capture_parent_identity(&identity),
+                     ==, 0);
+     g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, old_control), ==, 0);
+@@ -860,9 +895,13 @@ static void test_immediate_child_applies_sealed_resource_plan(void)
+     g_assert_cmpint(qemu_crucible_hot_fork_seal_child_resource_plan(
+                         resource_plan),
+                     ==, 0);
++    g_assert_cmpint(
++        qemu_crucible_hot_fork_begin_retained_runtime_transaction(
++            &runtime_transaction, retained_rcu_barrier.generation + 1),
++        ==, -EBUSY);
+     for (unsigned int attempt = 0; attempt < 1000; attempt++) {
+-        result = qemu_crucible_hot_fork_begin_runtime_transaction(
+-            &runtime_transaction);
++        result = qemu_crucible_hot_fork_begin_retained_runtime_transaction(
++            &runtime_transaction, retained_rcu_barrier.generation);
+         if (result != -EBUSY) {
+             break;
+         }
+@@ -1004,6 +1043,10 @@ static void test_immediate_child_applies_sealed_resource_plan(void)
+     g_assert_cmpint(qemu_crucible_hot_fork_release_parent_runtime_transaction(
+                         &runtime_transaction),
+                     ==, 0);
++    qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_QUERY,
++                              &retained_rcu_barrier);
++    g_assert_true(retained_rcu_barrier.held);
++    g_assert_true(retained_rcu_barrier.quiescent);
+     g_assert_cmpint(read_child_result(child_result[0]), ==, 0);
+     g_assert_false(resource_plan->attempted);
+     g_assert_false(resource_plan->applied);
+@@ -1028,6 +1071,9 @@ static void test_immediate_child_applies_sealed_resource_plan(void)
+     close(private_mapping_fd);
+     g_assert_cmpint(munmap(source_mapping, page_size), ==, 0);
+     stop_registry_worker_thread(&monitor_worker);
++    qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_QUERY,
++                              &retained_rcu_barrier);
++    g_assert_false(retained_rcu_barrier.held);
+ }
+ 
+ static void test_child_resource_preflight_preserves_descriptors(void)
+diff --git a/util/crucible-hot-fork-child.c b/util/crucible-hot-fork-child.c
+index fbf12a5a0..25de400d2 100644
+--- a/util/crucible-hot-fork-child.c
++++ b/util/crucible-hot-fork-child.c
+@@ -12,8 +12,9 @@
+ 
+ #include "qemu/crucible-hot-fork-child.h"
+ 
+-int qemu_crucible_hot_fork_begin_runtime_transaction(
+-    QemuCrucibleHotForkRuntimeTransaction *transaction)
++static int qemu_crucible_hot_fork_begin_runtime_transaction_common(
++    QemuCrucibleHotForkRuntimeTransaction *transaction,
++    bool retain_parent_barrier, uint64_t expected_rcu_barrier_generation)
+ {
+     int result;
+ 
+@@ -23,7 +24,10 @@ int qemu_crucible_hot_fork_begin_runtime_transaction(
+         return -EINVAL;
+     }
+ 
+-    result = qemu_rcu_hot_fork_begin_transaction(&transaction->rcu);
++    result = retain_parent_barrier ?
++        qemu_rcu_hot_fork_begin_retained_transaction(
++            &transaction->rcu, expected_rcu_barrier_generation) :
++        qemu_rcu_hot_fork_begin_transaction(&transaction->rcu);
+     if (result < 0) {
+         return result;
+     }
+@@ -40,6 +44,24 @@ int qemu_crucible_hot_fork_begin_runtime_transaction(
+     return 0;
+ }
+ 
++int qemu_crucible_hot_fork_begin_runtime_transaction(
++    QemuCrucibleHotForkRuntimeTransaction *transaction)
++{
++    return qemu_crucible_hot_fork_begin_runtime_transaction_common(
++        transaction, false, 0);
++}
++
++int qemu_crucible_hot_fork_begin_retained_runtime_transaction(
++    QemuCrucibleHotForkRuntimeTransaction *transaction,
++    uint64_t expected_rcu_barrier_generation)
++{
++    if (expected_rcu_barrier_generation == 0) {
++        return -EINVAL;
++    }
++    return qemu_crucible_hot_fork_begin_runtime_transaction_common(
++        transaction, true, expected_rcu_barrier_generation);
++}
++
+ int qemu_crucible_hot_fork_release_parent_runtime_transaction(
+     QemuCrucibleHotForkRuntimeTransaction *transaction)
+ {
+diff --git a/util/rcu.c b/util/rcu.c
+index 5ec5364a1..4d0187a65 100644
+--- a/util/rcu.c
++++ b/util/rcu.c
+@@ -561,8 +561,9 @@ static bool qemu_rcu_hot_fork_reader_is_registered(
+     return matches == 1;
+ }
+ 
+-int qemu_rcu_hot_fork_begin_transaction(
+-    QemuRcuHotForkTransaction *transaction)
++static int qemu_rcu_hot_fork_begin_transaction_common(
++    QemuRcuHotForkTransaction *transaction,
++    bool retain_parent_barrier, uint64_t expected_barrier_generation)
+ {
+     QemuRcuHotForkBarrierInventory inventory;
+     struct rcu_reader_data *reader = get_ptr_rcu_reader();
+@@ -576,10 +577,18 @@ int qemu_rcu_hot_fork_begin_transaction(
+         return -EINVAL;
+     }
+ 
+-    qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_HOLD, &inventory);
++    qemu_rcu_hot_fork_barrier(
++        retain_parent_barrier ? QEMU_RCU_HOT_FORK_BARRIER_QUERY :
++                                QEMU_RCU_HOT_FORK_BARRIER_HOLD,
++        &inventory);
+     if (!inventory.held || !inventory.quiescent ||
+-        inventory.owner_thread_id != thread_id) {
+-        if (inventory.held && inventory.owner_thread_id == thread_id) {
++        inventory.owner_thread_id <= 0 ||
++        (retain_parent_barrier &&
++         inventory.generation != expected_barrier_generation) ||
++        (!retain_parent_barrier &&
++         inventory.owner_thread_id != thread_id)) {
++        if (!retain_parent_barrier && inventory.held &&
++            inventory.owner_thread_id == thread_id) {
+             qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_RELEASE,
+                                       &inventory);
+         }
+@@ -593,8 +602,10 @@ int qemu_rcu_hot_fork_begin_transaction(
+         qatomic_read(&reader->ctr) != 0 ||
+         rcu_hot_fork_generation == UINT64_MAX) {
+         qemu_mutex_unlock(&rcu_registry_lock);
+-        qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_RELEASE,
+-                                  &inventory);
++        if (!retain_parent_barrier) {
++            qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_RELEASE,
++                                      &inventory);
++        }
+         qatomic_set(&rcu_hot_fork_transaction_active, 0);
+         return -EBUSY;
+     }
+@@ -602,16 +613,36 @@ int qemu_rcu_hot_fork_begin_transaction(
+     *transaction = (QemuRcuHotForkTransaction) {
+         .reader_generation = rcu_hot_fork_generation,
+         .barrier_generation = inventory.generation,
++        .barrier_owner_thread_id = inventory.owner_thread_id,
+         .parent_process_id = getpid(),
+         .parent_thread_id = thread_id,
+         .coordinator_reader = reader,
+         .active = true,
++        .parent_barrier_retained = retain_parent_barrier,
+     };
+     qemu_mutex_unlock(&rcu_registry_lock);
+     rcu_disable_atfork();
+     return 0;
+ }
+ 
++int qemu_rcu_hot_fork_begin_transaction(
++    QemuRcuHotForkTransaction *transaction)
++{
++    return qemu_rcu_hot_fork_begin_transaction_common(
++        transaction, false, 0);
++}
++
++int qemu_rcu_hot_fork_begin_retained_transaction(
++    QemuRcuHotForkTransaction *transaction,
++    uint64_t expected_barrier_generation)
++{
++    if (expected_barrier_generation == 0) {
++        return -EINVAL;
++    }
++    return qemu_rcu_hot_fork_begin_transaction_common(
++        transaction, true, expected_barrier_generation);
++}
++
+ int qemu_rcu_hot_fork_release_parent_transaction(
+     QemuRcuHotForkTransaction *transaction)
+ {
+@@ -641,13 +672,16 @@ int qemu_rcu_hot_fork_release_parent_transaction(
+     qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_QUERY, &inventory);
+     if (!inventory.held || !inventory.quiescent ||
+         inventory.generation != transaction->barrier_generation ||
+-        inventory.owner_thread_id != transaction->parent_thread_id) {
++        inventory.owner_thread_id != transaction->barrier_owner_thread_id) {
+         return -EPERM;
+     }
+ 
+     transaction->active = false;
+     rcu_enable_atfork();
+-    qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_RELEASE, &inventory);
++    if (!transaction->parent_barrier_retained) {
++        qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_RELEASE,
++                                  &inventory);
++    }
+     qatomic_set(&rcu_hot_fork_transaction_active, 0);
+     return 0;
+ }
+@@ -703,7 +737,7 @@ int qemu_rcu_hot_fork_prepare_child(
+     qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_QUERY, &inventory);
+     if (!inventory.held || !inventory.quiescent ||
+         inventory.generation != transaction->barrier_generation ||
+-        inventory.owner_thread_id != transaction->parent_thread_id ||
++        inventory.owner_thread_id != transaction->barrier_owner_thread_id ||
+         inventory.registered_readers != 1) {
+         return -EPROTO;
+     }
+@@ -731,7 +765,7 @@ int qemu_rcu_hot_fork_start_child_worker(
+     qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_QUERY, &inventory);
+     if (!inventory.held || !inventory.quiescent ||
+         inventory.generation != transaction->barrier_generation ||
+-        inventory.owner_thread_id != transaction->parent_thread_id ||
++        inventory.owner_thread_id != transaction->barrier_owner_thread_id ||
+         inventory.registered_readers != 1) {
+         return -EPROTO;
+     }

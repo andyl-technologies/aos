@@ -23,9 +23,8 @@ mod unsupported_live;
 
 #[cfg(not(target_os = "linux"))]
 pub(crate) use unsupported_live::{
-    ProductionLiveNode, ProductionLiveNodeStepGateConfig, ProductionNodeSet,
-    launch_production_live_node, launch_production_live_node_exact_snapshot,
-    launch_production_live_node_exact_snapshot_paused,
+    ProductionLiveNodeStepGateConfig, ProductionNodeSet, launch_production_live_node,
+    launch_production_live_node_exact_snapshot, launch_production_live_node_exact_snapshot_paused,
 };
 #[cfg(not(target_os = "linux"))]
 pub use unsupported_live::{
@@ -48,6 +47,9 @@ pub use crucible_qemu::LivePluginInstallReport as ProductionPluginInstallReport;
 pub(crate) use crucible_qemu::QemuLaunchAppRandomConfig as ProductionAppRandomConfig;
 /// Production plugin feature switch pinned into launch identity.
 pub use crucible_qemu::QemuLaunchPluginSwitch as ProductionPluginSwitch;
+/// Validated production live-node launch profile.
+#[cfg(target_os = "linux")]
+pub use crucible_qemu::QemuLiveNodeStepGateConfig as ProductionLiveNodeStepGateConfig;
 /// Root-image format pinned into production launch identity.
 pub use crucible_qemu::QemuRootImageFormat as ProductionRootImageFormat;
 /// Runs the bounded production plugin-installation probe.
@@ -58,16 +60,15 @@ pub(crate) use crucible_qemu::{
     DEFAULT_VMSTATE_FILE_NAME as PRODUCTION_VMSTATE_FILE_NAME,
     QemuGdbstubChannelConfig as ProductionGdbstubChannelConfig,
 };
-#[cfg(target_os = "linux")]
-pub(crate) use crucible_qemu::{
-    QemuLiveNodeStepGateConfig as ProductionLiveNodeStepGateConfig,
-    QemuNodeSet as ProductionNodeSet, launch_qemu_live_node as launch_production_live_node,
-    launch_qemu_live_node_exact_snapshot as launch_production_live_node_exact_snapshot,
-    launch_qemu_live_node_exact_snapshot_paused as launch_production_live_node_exact_snapshot_paused,
-};
 #[cfg(not(target_os = "linux"))]
 pub(crate) use crucible_qemu::{
     QemuNode as ProductionNodeBackend, QemuNodeSet as ProductionNodeBackends,
+};
+#[cfg(target_os = "linux")]
+pub(crate) use crucible_qemu::{
+    QemuNodeSet as ProductionNodeSet, launch_qemu_live_node as launch_production_live_node,
+    launch_qemu_live_node_exact_snapshot as launch_production_live_node_exact_snapshot,
+    launch_qemu_live_node_exact_snapshot_paused as launch_production_live_node_exact_snapshot_paused,
 };
 
 /// Errors returned while deriving a process-local VM resume realization proof.

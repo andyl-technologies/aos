@@ -8,9 +8,15 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   manifest = builtins.readFile ../../crates/crucible/Cargo.toml;
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libSource = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  eventCatalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
+  eventCatalog = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/event_catalog.rs;
+  };
   bridge = builtins.readFile ../../crates/crucible/src/tracing_bridge.rs;
   bridgeTest = builtins.readFile ../../crates/crucible/tests/event_log_tracing_bridge.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;

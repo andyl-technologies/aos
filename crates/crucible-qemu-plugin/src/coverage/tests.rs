@@ -19,6 +19,7 @@ static CALLBACK_MODEL_SCOREBOARD_SIZE: AtomicUsize = AtomicUsize::new(0);
 static CALLBACK_MODEL_SEEN_OFFSET: AtomicUsize = AtomicUsize::new(usize::MAX);
 static CALLBACK_MODEL_SEEN_VCPU: AtomicUsize = AtomicUsize::new(usize::MAX);
 static CALLBACK_MODEL_SEEN_VALUE: AtomicU64 = AtomicU64::new(0);
+static CALLBACK_MODEL_SCOREBOARD_SET_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 struct TestInsn {
     size: usize,
@@ -236,6 +237,7 @@ fn test_coverage_capabilities() -> CoverageCapabilities {
         test_scoreboard_new,
         test_scoreboard_free,
         test_u64_set,
+        test_num_vcpus,
     ))
 }
 
@@ -290,6 +292,10 @@ extern "C" fn test_scoreboard_new(_element_size: usize) -> *mut QemuPluginScoreb
 extern "C" fn test_scoreboard_free(_score: *mut QemuPluginScoreboard) {}
 
 extern "C" fn test_u64_set(_entry: QemuPluginU64, _vcpu_index: c_uint, _value: u64) {}
+
+extern "C" fn test_num_vcpus() -> c_int {
+    4
+}
 
 #[test]
 fn coverage_exec_callback_rejects_zero_length_basic_block() {
@@ -541,6 +547,7 @@ fn callback_model_apis() -> QemuBasicBlockCoverageApis {
         callback_model_scoreboard_new,
         callback_model_scoreboard_free,
         callback_model_u64_set,
+        test_num_vcpus,
     )
 }
 
@@ -603,6 +610,7 @@ extern "C" fn callback_model_scoreboard_new_failure(
 extern "C" fn callback_model_scoreboard_free(_score: *mut QemuPluginScoreboard) {}
 
 extern "C" fn callback_model_u64_set(entry: QemuPluginU64, vcpu_index: c_uint, value: u64) {
+    CALLBACK_MODEL_SCOREBOARD_SET_CALLS.fetch_add(1, Ordering::SeqCst);
     CALLBACK_MODEL_SEEN_OFFSET.store(entry.offset, Ordering::SeqCst);
     CALLBACK_MODEL_SEEN_VCPU.store(vcpu_index as usize, Ordering::SeqCst);
     CALLBACK_MODEL_SEEN_VALUE.store(value, Ordering::SeqCst);

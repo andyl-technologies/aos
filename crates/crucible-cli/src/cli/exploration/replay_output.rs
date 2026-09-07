@@ -108,7 +108,8 @@ pub(crate) fn replay_machine_readable_trace_entries(
             &mut entries,
             "replay_live_qemu",
             format!(
-                "validation=passed producer={} reproduced_status={} reproduced_outcome={} terminal_configuration={} event_stream={} fingerprint_stream={} controls={}",
+                "validation=passed owner={} producer={} reproduced_status={} reproduced_outcome={} terminal_configuration={} event_stream={} fingerprint_stream={} controls={}",
+                live.execution_owner,
                 live.producer,
                 live.terminal_status,
                 live.terminal_outcome,

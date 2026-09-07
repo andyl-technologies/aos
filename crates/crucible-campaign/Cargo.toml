@@ -1,0 +1,22 @@
+[package]
+name = "crucible-campaign"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+blake3 = { workspace = true }
+crucible-cas = { workspace = true }
+num-bigint = { workspace = true }
+num-integer = { workspace = true }
+num-traits = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+unicode-normalization = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

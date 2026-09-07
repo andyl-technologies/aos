@@ -148,6 +148,16 @@ pub struct RegionLayout {
     pub accelerator_ring_data_off: u64,
     /// Byte stride between accelerator entries.
     pub accelerator_entry_stride: u64,
+    /// Number of host-to-plugin selectable-reply rings, one per logical VM.
+    pub selectable_reply_ring_count: u32,
+    /// Fixed entry capacity of every selectable-reply ring.
+    pub selectable_reply_queue_capacity: u32,
+    /// Byte offset from region base to the first selectable-reply ring header.
+    pub selectable_reply_ring_hdr_off: u64,
+    /// Byte offset from region base to the first selectable-reply entry.
+    pub selectable_reply_ring_data_off: u64,
+    /// Byte stride between selectable-reply entries.
+    pub selectable_reply_entry_stride: u64,
     /// Total mapped region size in bytes.
     pub region_size: u64,
     /// Fixed icount shift used to derive virtual nanoseconds.
@@ -458,10 +468,36 @@ impl RegionLayout {
         let accelerator_entry_count = u64::from(accelerator_ring_count)
             .checked_mul(u64::from(accelerator_queue_capacity))
             .ok_or(RegionLayoutError::GeometryOverflow)?;
-        let region_size = accelerator_ring_data_off
+        let accelerator_data_end = accelerator_ring_data_off
             .checked_add(
                 accelerator_entry_count
                     .checked_mul(accelerator_entry_stride)
+                    .ok_or(RegionLayoutError::GeometryOverflow)?,
+            )
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+
+        // ABI v18 appends one single-entry host-to-plugin selectable reply
+        // ring per logical VM. A catalog owns at most one pending request, so
+        // additional queue capacity would permit only invalid pipelining.
+        let selectable_reply_ring_count = config.vm_node_count;
+        let selectable_reply_queue_capacity = SELECTABLE_REPLY_QUEUE_CAPACITY;
+        let selectable_reply_ring_hdr_off =
+            checked_align_up(accelerator_data_end, usize_to_u64(RING_HEADER_ALIGN)?)?;
+        let selectable_reply_ring_data_off = selectable_reply_ring_hdr_off
+            .checked_add(
+                u64::from(selectable_reply_ring_count)
+                    .checked_mul(usize_to_u64(RING_HEADER_SIZE)?)
+                    .ok_or(RegionLayoutError::GeometryOverflow)?,
+            )
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+        let selectable_reply_entry_stride = usize_to_u64(WHITEBOX_MARKER_ENTRY_SIZE)?;
+        let selectable_reply_entry_count = u64::from(selectable_reply_ring_count)
+            .checked_mul(u64::from(selectable_reply_queue_capacity))
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+        let region_size = selectable_reply_ring_data_off
+            .checked_add(
+                selectable_reply_entry_count
+                    .checked_mul(selectable_reply_entry_stride)
                     .ok_or(RegionLayoutError::GeometryOverflow)?,
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
@@ -522,6 +558,11 @@ impl RegionLayout {
             accelerator_ring_hdr_off,
             accelerator_ring_data_off,
             accelerator_entry_stride,
+            selectable_reply_ring_count,
+            selectable_reply_queue_capacity,
+            selectable_reply_ring_hdr_off,
+            selectable_reply_ring_data_off,
+            selectable_reply_entry_stride,
             region_size,
             icount_shift: config.icount_shift,
             fault_payload_arena_bytes: config.fault_payload_arena_bytes,
@@ -575,5 +616,12 @@ impl RegionLayout {
     #[must_use]
     pub fn accelerator_entry_count(&self) -> u64 {
         u64::from(self.accelerator_ring_count) * u64::from(self.accelerator_queue_capacity)
+    }
+
+    /// Returns the number of selectable-reply entries in the allocation.
+    #[must_use]
+    pub fn selectable_reply_entry_count(&self) -> u64 {
+        u64::from(self.selectable_reply_ring_count)
+            * u64::from(self.selectable_reply_queue_capacity)
     }
 }

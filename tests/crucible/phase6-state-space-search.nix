@@ -106,7 +106,7 @@
       }
       {
         label = "non-search decisions excluded";
-        needle = "Decision::Preemption(_) | Decision::AppRandom(_) => false";
+        needle = "Decision::Preemption(_) | Decision::AppRandom(_) | Decision::Selection(_) => false";
       }
       {
         label = "search result reports realized frontier";

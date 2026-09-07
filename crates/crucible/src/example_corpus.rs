@@ -1930,7 +1930,9 @@ fn encode_observation(
         | ObservableEventPayload::MemorySample { .. }
         | ObservableEventPayload::AssertionProximity { .. }
         | ObservableEventPayload::AssertionEvaluated { .. }
-        | ObservableEventPayload::GuestMarker { .. } => Err(invalid_replay_schedule(
+        | ObservableEventPayload::GuestMarker { .. }
+        | ObservableEventPayload::GuestMeasurement { .. }
+        | ObservableEventPayload::GuestSemanticMarker { .. } => Err(invalid_replay_schedule(
             scenario_name,
             "unsupported observation kind in example replay script",
         )),

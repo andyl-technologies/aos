@@ -1,0 +1,843 @@
+diff --git a/block/block-backend.c b/block/block-backend.c
+index deedaa8a8..2be51a3ef 100644
+--- a/block/block-backend.c
++++ b/block/block-backend.c
+@@ -213,14 +213,13 @@ static void crucible_hot_fork_block_backend_unregister(BlockBackend *blk)
+     crucible_hot_fork_block_backend_generation++;
+ }
+ 
+-void qemu_block_backend_hot_fork_inventory(
++static void qemu_block_backend_hot_fork_inventory_locked(
+     QemuBlockBackendHotForkInventory *inventory)
+ {
+     BlockBackend *blk;
+     size_t count = 0;
+ 
+     *inventory = (QemuBlockBackendHotForkInventory) { 0 };
+-    QEMU_LOCK_GUARD(&crucible_hot_fork_block_backend_lock);
+     inventory->generation = crucible_hot_fork_block_backend_generation;
+     QTAILQ_FOREACH(blk, &crucible_hot_fork_block_backends,
+                    crucible_hot_fork_node) {
+@@ -264,6 +263,14 @@ void qemu_block_backend_hot_fork_inventory(
+     }
+ }
+ 
++void qemu_block_backend_hot_fork_inventory(
++    QemuBlockBackendHotForkInventory *inventory)
++{
++    QEMU_LOCK_GUARD(&crucible_hot_fork_block_backend_lock);
++
++    qemu_block_backend_hot_fork_inventory_locked(inventory);
++}
++
+ void qemu_block_backend_hot_fork_inventory_destroy(
+     QemuBlockBackendHotForkInventory *inventory)
+ {
+@@ -280,17 +287,19 @@ bool qemu_block_backend_hot_fork_barrier(
+     bool valid_entries = true;
+     size_t index;
+ 
+-    GLOBAL_STATE_CODE();
+     *inventory = (QemuBlockBackendHotForkBarrierInventory) { 0 };
+ 
+     switch (operation) {
+     case QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_HOLD:
++        GLOBAL_STATE_CODE();
+         if (!crucible_hot_fork_block_barrier_held) {
+             if (replay_events_enabled() ||
+                 qemu_get_current_aio_context() != qemu_get_aio_context()) {
+                 return false;
+             }
+             bdrv_drain_all_begin_nopoll();
++            QEMU_LOCK_GUARD(&crucible_hot_fork_block_backend_lock);
++
+             crucible_hot_fork_block_barrier_owner = qemu_get_thread_id();
+             crucible_hot_fork_block_barrier_held = true;
+             crucible_hot_fork_block_barrier_generation++;
+@@ -300,8 +309,11 @@ bool qemu_block_backend_hot_fork_barrier(
+     case QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_QUERY:
+         break;
+     case QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE:
++        GLOBAL_STATE_CODE();
+         if (crucible_hot_fork_block_barrier_held) {
+             bdrv_drain_all_end();
++            QEMU_LOCK_GUARD(&crucible_hot_fork_block_backend_lock);
++
+             crucible_hot_fork_block_barrier_held = false;
+             crucible_hot_fork_block_barrier_owner = 0;
+             crucible_hot_fork_block_barrier_generation++;
+@@ -312,7 +324,8 @@ bool qemu_block_backend_hot_fork_barrier(
+         g_assert_not_reached();
+     }
+ 
+-    qemu_block_backend_hot_fork_inventory(&backends);
++    QEMU_LOCK_GUARD(&crucible_hot_fork_block_backend_lock);
++    qemu_block_backend_hot_fork_inventory_locked(&backends);
+     inventory->generation = crucible_hot_fork_block_barrier_generation;
+     inventory->owner_thread_id = crucible_hot_fork_block_barrier_owner;
+     inventory->held = crucible_hot_fork_block_barrier_held;
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index ee7400b2b..4b6907755 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -235,9 +235,135 @@ crucible_hot_fork_bh_timer_barrier(
+     return report;
+ }
+ 
++static CrucibleHotForkBlockBarrierState *
++crucible_hot_fork_block_barrier(
++    QemuBlockBackendHotForkBarrierOperation operation, Error **errp)
++{
++    QemuBlockBackendHotForkBarrierInventory inventory;
++    CrucibleHotForkBlockBarrierState *report;
++
++    if (!qemu_block_backend_hot_fork_barrier(operation, &inventory)) {
++        error_setg(errp, "Crucible hot-fork block drain is unavailable in "
++                   "the current replay or AioContext mode");
++        return NULL;
++    }
++
++    report = g_new0(CrucibleHotForkBlockBarrierState, 1);
++    report->schema_version = 1;
++    report->generation = inventory.generation;
++    report->owner_thread_id = inventory.owner_thread_id;
++    report->held = inventory.held;
++    report->complete = inventory.complete;
++    report->backend_count = inventory.backend_count;
++    report->rooted_backends = inventory.rooted_backends;
++    report->writable_backends = inventory.writable_backends;
++    report->quiesced_rooted_backends =
++        inventory.quiesced_rooted_backends;
++    report->in_flight = inventory.in_flight;
++    report->quiescent = inventory.quiescent;
++    return report;
++}
++
++typedef enum CrucibleHotForkTemplatePhase {
++    CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_IDLE,
++    CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HOLD_PENDING,
++    CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HELD,
++    CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BARRIERS_HELD,
++    CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_RELEASE_PENDING,
++    CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_COMPLETED,
++} CrucibleHotForkTemplatePhase;
++
+ static GMutex crucible_hot_fork_template_lock;
+ static uint64_t crucible_hot_fork_template_generation;
+ static bool crucible_hot_fork_template_active;
++static bool crucible_hot_fork_template_block_transition_scheduled;
++static bool crucible_hot_fork_template_abort_requested;
++static CrucibleHotForkTemplatePhase crucible_hot_fork_template_phase;
++static CrucibleHotForkTemplateOutcome crucible_hot_fork_template_completion;
++
++static void crucible_hot_fork_template_schedule_block_transition(void);
++
++static void crucible_hot_fork_template_complete(
++    CrucibleHotForkTemplateOutcome outcome)
++{
++    crucible_hot_fork_template_active = false;
++    crucible_hot_fork_template_abort_requested = false;
++    crucible_hot_fork_template_phase =
++        CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_COMPLETED;
++    crucible_hot_fork_template_completion = outcome;
++}
++
++static void crucible_hot_fork_template_block_transition(void *opaque)
++{
++    QemuBlockBackendHotForkBarrierInventory inventory;
++    bool success;
++
++    (void)opaque;
++    g_mutex_lock(&crucible_hot_fork_template_lock);
++    crucible_hot_fork_template_block_transition_scheduled = false;
++    switch (crucible_hot_fork_template_phase) {
++    case CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HOLD_PENDING:
++        if (crucible_hot_fork_template_abort_requested) {
++            crucible_hot_fork_template_complete(
++                CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_ABORTED);
++            break;
++        }
++        success = qemu_block_backend_hot_fork_barrier(
++            QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_HOLD, &inventory);
++        if (!success || !inventory.held) {
++            crucible_hot_fork_template_complete(
++                CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_BLOCKED);
++            break;
++        }
++        if (inventory.owner_thread_id <= 0) {
++            success = qemu_block_backend_hot_fork_barrier(
++                QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE, &inventory);
++            if (success && !inventory.held) {
++                crucible_hot_fork_template_complete(
++                    CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_BLOCKED);
++            } else {
++                crucible_hot_fork_template_completion =
++                    CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_BLOCKED;
++                crucible_hot_fork_template_phase =
++                    CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_RELEASE_PENDING;
++                crucible_hot_fork_template_schedule_block_transition();
++            }
++            break;
++        }
++        crucible_hot_fork_template_phase =
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HELD;
++        break;
++    case CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_RELEASE_PENDING:
++        success = qemu_block_backend_hot_fork_barrier(
++            QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE, &inventory);
++        if (success && !inventory.held) {
++            crucible_hot_fork_template_complete(
++                crucible_hot_fork_template_completion);
++        }
++        break;
++    default:
++        break;
++    }
++    g_mutex_unlock(&crucible_hot_fork_template_lock);
++}
++
++static void crucible_hot_fork_template_schedule_block_transition(void)
++{
++    if (crucible_hot_fork_template_block_transition_scheduled) {
++        return;
++    }
++
++    crucible_hot_fork_template_block_transition_scheduled = true;
++    aio_bh_schedule_oneshot(qemu_get_aio_context(),
++                            crucible_hot_fork_template_block_transition,
++                            NULL);
++}
++
++static bool crucible_hot_fork_template_reserves_barriers(void)
++{
++    return crucible_hot_fork_template_phase !=
++        CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_IDLE;
++}
+ 
+ CrucibleHotForkPluginBarrierState *
+ qmp_crucible_hot_fork_plugin_barrier(
+@@ -249,7 +375,7 @@ qmp_crucible_hot_fork_plugin_barrier(
+     g_mutex_lock(&crucible_hot_fork_template_lock);
+     switch (action) {
+     case CRUCIBLE_HOT_FORK_PLUGIN_BARRIER_ACTION_HOLD:
+-        if (crucible_hot_fork_template_active) {
++        if (crucible_hot_fork_template_reserves_barriers()) {
+             error_setg(errp, "Crucible hot-fork template transaction owns "
+                        "the plugin barrier");
+             goto out;
+@@ -265,7 +391,7 @@ qmp_crucible_hot_fork_plugin_barrier(
+         operation = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY;
+         break;
+     case CRUCIBLE_HOT_FORK_PLUGIN_BARRIER_ACTION_RELEASE:
+-        if (crucible_hot_fork_template_active) {
++        if (crucible_hot_fork_template_reserves_barriers()) {
+             error_setg(errp, "Crucible hot-fork template transaction owns "
+                        "the plugin barrier");
+             goto out;
+@@ -293,7 +419,7 @@ qmp_crucible_hot_fork_rcu_barrier(
+     g_mutex_lock(&crucible_hot_fork_template_lock);
+     switch (action) {
+     case CRUCIBLE_HOT_FORK_RCU_BARRIER_ACTION_HOLD:
+-        if (crucible_hot_fork_template_active) {
++        if (crucible_hot_fork_template_reserves_barriers()) {
+             error_setg(errp, "Crucible hot-fork template transaction owns "
+                        "the RCU barrier");
+             goto out;
+@@ -309,7 +435,7 @@ qmp_crucible_hot_fork_rcu_barrier(
+         operation = QEMU_RCU_HOT_FORK_BARRIER_QUERY;
+         break;
+     case CRUCIBLE_HOT_FORK_RCU_BARRIER_ACTION_RELEASE:
+-        if (crucible_hot_fork_template_active) {
++        if (crucible_hot_fork_template_reserves_barriers()) {
+             error_setg(errp, "Crucible hot-fork template transaction owns "
+                        "the RCU barrier");
+             goto out;
+@@ -337,7 +463,7 @@ qmp_crucible_hot_fork_bh_timer_barrier(
+     g_mutex_lock(&crucible_hot_fork_template_lock);
+     switch (action) {
+     case CRUCIBLE_HOT_FORK_BH_TIMER_BARRIER_ACTION_HOLD:
+-        if (crucible_hot_fork_template_active) {
++        if (crucible_hot_fork_template_reserves_barriers()) {
+             error_setg(errp, "Crucible hot-fork template transaction owns "
+                        "the bottom-half/timer barrier");
+             goto out;
+@@ -353,7 +479,7 @@ qmp_crucible_hot_fork_bh_timer_barrier(
+         operation = QEMU_BH_TIMER_HOT_FORK_BARRIER_QUERY;
+         break;
+     case CRUCIBLE_HOT_FORK_BH_TIMER_BARRIER_ACTION_RELEASE:
+-        if (crucible_hot_fork_template_active) {
++        if (crucible_hot_fork_template_reserves_barriers()) {
+             error_setg(errp, "Crucible hot-fork template transaction owns "
+                        "the bottom-half/timer barrier");
+             goto out;
+@@ -377,7 +503,8 @@ crucible_hot_fork_template_report(
+     CrucibleHotForkTemplateOutcome outcome,
+     CrucibleHotForkPluginBarrierState *plugin_barrier,
+     CrucibleHotForkRcuBarrierState *rcu_barrier,
+-    CrucibleHotForkBhTimerBarrierState *bh_timer_barrier)
++    CrucibleHotForkBhTimerBarrierState *bh_timer_barrier,
++    CrucibleHotForkBlockBarrierState *block_barrier)
+ {
+     CrucibleHotForkTemplateState *report =
+         g_new0(CrucibleHotForkTemplateState, 1);
+@@ -390,7 +517,7 @@ crucible_hot_fork_template_report(
+         acknowledged |= CRUCIBLE_HOT_FORK_PROOF_AIO_BH_TIMERS;
+     }
+ 
+-    report->schema_version = 4;
++    report->schema_version = 5;
+     report->generation = crucible_hot_fork_template_generation;
+     report->outcome = outcome;
+     report->transaction_active = crucible_hot_fork_template_active;
+@@ -400,13 +527,14 @@ crucible_hot_fork_template_report(
+     report->plugin_barrier = plugin_barrier;
+     report->rcu_barrier = rcu_barrier;
+     report->bh_timer_barrier = bh_timer_barrier;
++    report->block_barrier = block_barrier;
+     report->rollback_complete = !report->transaction_active &&
+         !plugin_barrier->held && !rcu_barrier->held &&
+-        !bh_timer_barrier->held;
++        !bh_timer_barrier->held && !block_barrier->held;
+     report->ready = outcome == CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_PREPARED &&
+         report->transaction_active && plugin_barrier->quiescent &&
+         rcu_barrier->quiescent && bh_timer_barrier->quiescent &&
+-        report->missing_proofs == 0;
++        block_barrier->quiescent && report->missing_proofs == 0;
+     return report;
+ }
+ 
+@@ -417,45 +545,121 @@ qmp_crucible_hot_fork_template(
+     CrucibleHotForkPluginBarrierState *plugin_barrier = NULL;
+     CrucibleHotForkRcuBarrierState *rcu_barrier = NULL;
+     CrucibleHotForkBhTimerBarrierState *bh_timer_barrier = NULL;
++    CrucibleHotForkBlockBarrierState *block_barrier = NULL;
+     CrucibleHotForkTemplateState *report = NULL;
+     CrucibleHotForkTemplateOutcome outcome;
+     uint64_t acknowledged;
+ 
+     g_mutex_lock(&crucible_hot_fork_template_lock);
++    plugin_barrier = crucible_hot_fork_plugin_barrier(
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, errp);
++    if (!plugin_barrier) {
++        goto out;
++    }
++    rcu_barrier = crucible_hot_fork_rcu_barrier(
++        QEMU_RCU_HOT_FORK_BARRIER_QUERY);
++    bh_timer_barrier = crucible_hot_fork_bh_timer_barrier(
++        QEMU_BH_TIMER_HOT_FORK_BARRIER_QUERY);
++    block_barrier = crucible_hot_fork_block_barrier(
++        QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_QUERY, errp);
++    if (!block_barrier) {
++        goto out;
++    }
++
++    switch (crucible_hot_fork_template_phase) {
++    case CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_IDLE:
++    case CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_COMPLETED:
++        if (crucible_hot_fork_template_active || plugin_barrier->held ||
++            rcu_barrier->held || bh_timer_barrier->held ||
++            block_barrier->held) {
++            error_setg(errp, "Crucible hot-fork barrier was held outside "
++                       "the template coordinator");
++            goto out;
++        }
++        break;
++    case CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HOLD_PENDING:
++        if (!crucible_hot_fork_template_active || plugin_barrier->held ||
++            rcu_barrier->held || bh_timer_barrier->held ||
++            block_barrier->held) {
++            error_setg(errp, "Crucible hot-fork template block-hold "
++                       "transition was inconsistent");
++            goto out;
++        }
++        break;
++    case CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HELD:
++    case CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_RELEASE_PENDING:
++        if (!crucible_hot_fork_template_active || plugin_barrier->held ||
++            rcu_barrier->held || bh_timer_barrier->held ||
++            !block_barrier->held || block_barrier->owner_thread_id <= 0) {
++            error_setg(errp, "Crucible hot-fork template lost its retained "
++                       "block barrier");
++            goto out;
++        }
++        break;
++    case CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BARRIERS_HELD:
++        if (!crucible_hot_fork_template_active || !plugin_barrier->held ||
++            plugin_barrier->teardown_closed || !rcu_barrier->held ||
++            rcu_barrier->owner_thread_id <= 0 || !bh_timer_barrier->held ||
++            bh_timer_barrier->owner_thread_id <= 0 ||
++            !block_barrier->held || block_barrier->owner_thread_id <= 0) {
++            error_setg(errp, "Crucible hot-fork template lost a retained "
++                       "subsystem barrier");
++            goto out;
++        }
++        break;
++    default:
++        g_assert_not_reached();
++    }
++
++    if (crucible_hot_fork_template_phase ==
++        CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_COMPLETED) {
++        outcome = crucible_hot_fork_template_completion;
++        crucible_hot_fork_template_phase =
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_IDLE;
++        goto make_report;
++    }
++
+     switch (action) {
+     case CRUCIBLE_HOT_FORK_TEMPLATE_ACTION_PREPARE:
+-        if (!crucible_hot_fork_template_active) {
++        if (crucible_hot_fork_template_phase ==
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_IDLE) {
+             if (!crucible_hot_fork_exact_paused_boundary()) {
+                 error_setg(errp, "Crucible hot-fork template preparation "
+                            "requires an exact paused/device-flush boundary");
+                 goto out;
+             }
+-            plugin_barrier = crucible_hot_fork_plugin_barrier(
+-                QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, errp);
+-            if (!plugin_barrier) {
+-                goto out;
+-            }
+-            if (plugin_barrier->held) {
+-                error_setg(errp, "Crucible hot-fork plugin barrier was held "
+-                           "outside the template coordinator");
+-                goto out;
+-            }
+-            rcu_barrier = crucible_hot_fork_rcu_barrier(
+-                QEMU_RCU_HOT_FORK_BARRIER_QUERY);
+-            if (rcu_barrier->held) {
+-                error_setg(errp, "Crucible hot-fork RCU barrier was held "
+-                           "outside the template coordinator");
+-                goto out;
+-            }
+-            bh_timer_barrier = crucible_hot_fork_bh_timer_barrier(
+-                QEMU_BH_TIMER_HOT_FORK_BARRIER_QUERY);
+-            if (bh_timer_barrier->held) {
+-                error_setg(errp, "Crucible hot-fork bottom-half/timer "
+-                           "barrier was held outside the template "
+-                           "coordinator");
++            crucible_hot_fork_template_active = true;
++            crucible_hot_fork_template_abort_requested = false;
++            crucible_hot_fork_template_phase =
++                CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HOLD_PENDING;
++            crucible_hot_fork_template_generation++;
++            assert(crucible_hot_fork_template_generation != 0);
++            crucible_hot_fork_template_schedule_block_transition();
++            outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
++            break;
++        }
++
++        if (crucible_hot_fork_template_phase ==
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HOLD_PENDING) {
++            crucible_hot_fork_template_schedule_block_transition();
++            outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
++            break;
++        }
++
++        if (crucible_hot_fork_template_phase ==
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_RELEASE_PENDING) {
++            crucible_hot_fork_template_schedule_block_transition();
++            outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
++            break;
++        }
++
++        if (crucible_hot_fork_template_phase ==
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HELD) {
++            if (!crucible_hot_fork_exact_paused_boundary()) {
++                error_setg(errp, "Crucible hot-fork template lost its exact "
++                           "paused/device-flush boundary");
+                 goto out;
+             }
+-
+             g_clear_pointer(&rcu_barrier, g_free);
+             rcu_barrier = crucible_hot_fork_rcu_barrier(
+                 QEMU_RCU_HOT_FORK_BARRIER_HOLD);
+@@ -472,40 +676,19 @@ qmp_crucible_hot_fork_template(
+                 g_clear_pointer(&rcu_barrier, g_free);
+                 rcu_barrier = crucible_hot_fork_rcu_barrier(
+                     QEMU_RCU_HOT_FORK_BARRIER_RELEASE);
++                crucible_hot_fork_template_completion =
++                    CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_BLOCKED;
++                crucible_hot_fork_template_phase =
++                    CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_RELEASE_PENDING;
++                crucible_hot_fork_template_schedule_block_transition();
+                 goto out;
+             }
+-            crucible_hot_fork_template_active = true;
+-            crucible_hot_fork_template_generation++;
+-            assert(crucible_hot_fork_template_generation != 0);
+-        } else {
+-            plugin_barrier = crucible_hot_fork_plugin_barrier(
+-                QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, errp);
+-            if (!plugin_barrier) {
+-                goto out;
+-            }
+-            rcu_barrier = crucible_hot_fork_rcu_barrier(
+-                QEMU_RCU_HOT_FORK_BARRIER_QUERY);
+-            bh_timer_barrier = crucible_hot_fork_bh_timer_barrier(
+-                QEMU_BH_TIMER_HOT_FORK_BARRIER_QUERY);
+-        }
+-        if (!plugin_barrier->held || plugin_barrier->teardown_closed) {
+-            error_setg(errp, "Crucible hot-fork template lost its retained "
+-                       "plugin barrier");
+-            goto out;
+-        }
+-        if (!rcu_barrier->held || rcu_barrier->owner_thread_id <= 0) {
+-            error_setg(errp, "Crucible hot-fork template lost its retained "
+-                       "RCU barrier");
+-            goto out;
+-        }
+-        if (!bh_timer_barrier->held ||
+-            bh_timer_barrier->owner_thread_id <= 0) {
+-            error_setg(errp, "Crucible hot-fork template lost its retained "
+-                       "bottom-half/timer barrier");
+-            goto out;
++            crucible_hot_fork_template_phase =
++                CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BARRIERS_HELD;
+         }
++
+         if (!plugin_barrier->quiescent || !rcu_barrier->quiescent ||
+-            !bh_timer_barrier->quiescent) {
++            !bh_timer_barrier->quiescent || !block_barrier->quiescent) {
+             outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
+             break;
+         }
+@@ -529,57 +712,18 @@ qmp_crucible_hot_fork_template(
+         g_clear_pointer(&rcu_barrier, g_free);
+         rcu_barrier = crucible_hot_fork_rcu_barrier(
+             QEMU_RCU_HOT_FORK_BARRIER_RELEASE);
+-        crucible_hot_fork_template_active = false;
+-        outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_BLOCKED;
++        crucible_hot_fork_template_completion =
++            CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_BLOCKED;
++        crucible_hot_fork_template_phase =
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_RELEASE_PENDING;
++        crucible_hot_fork_template_schedule_block_transition();
++        outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
+         break;
+     case CRUCIBLE_HOT_FORK_TEMPLATE_ACTION_QUERY:
+-        plugin_barrier = crucible_hot_fork_plugin_barrier(
+-            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, errp);
+-        if (!plugin_barrier) {
+-            goto out;
+-        }
+-        rcu_barrier = crucible_hot_fork_rcu_barrier(
+-            QEMU_RCU_HOT_FORK_BARRIER_QUERY);
+-        bh_timer_barrier = crucible_hot_fork_bh_timer_barrier(
+-            QEMU_BH_TIMER_HOT_FORK_BARRIER_QUERY);
+-        if (crucible_hot_fork_template_active &&
+-            (!plugin_barrier->held || plugin_barrier->teardown_closed)) {
+-            error_setg(errp, "Crucible hot-fork template lost its retained "
+-                       "plugin barrier");
+-            goto out;
+-        }
+-        if (crucible_hot_fork_template_active &&
+-            (!rcu_barrier->held || rcu_barrier->owner_thread_id <= 0)) {
+-            error_setg(errp, "Crucible hot-fork template lost its retained "
+-                       "RCU barrier");
+-            goto out;
+-        }
+-        if (crucible_hot_fork_template_active &&
+-            (!bh_timer_barrier->held ||
+-             bh_timer_barrier->owner_thread_id <= 0)) {
+-            error_setg(errp, "Crucible hot-fork template lost its retained "
+-                       "bottom-half/timer barrier");
+-            goto out;
+-        }
+-        if (!crucible_hot_fork_template_active && plugin_barrier->held) {
+-            error_setg(errp, "Crucible hot-fork plugin barrier was held "
+-                       "outside the template coordinator");
+-            goto out;
+-        }
+-        if (!crucible_hot_fork_template_active && rcu_barrier->held) {
+-            error_setg(errp, "Crucible hot-fork RCU barrier was held "
+-                       "outside the template coordinator");
+-            goto out;
+-        }
+-        if (!crucible_hot_fork_template_active && bh_timer_barrier->held) {
+-            error_setg(errp, "Crucible hot-fork bottom-half/timer barrier "
+-                       "was held outside the template coordinator");
+-            goto out;
+-        }
+         if (!crucible_hot_fork_template_active) {
+             outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_IDLE;
+         } else if (plugin_barrier->quiescent && rcu_barrier->quiescent &&
+-                   bh_timer_barrier->quiescent &&
++                   bh_timer_barrier->quiescent && block_barrier->quiescent &&
+                    (crucible_hot_fork_acknowledged_proofs() |
+                     CRUCIBLE_HOT_FORK_PROOF_AIO_BH_TIMERS |
+                     CRUCIBLE_HOT_FORK_PROOF_RCU) ==
+@@ -591,34 +735,38 @@ qmp_crucible_hot_fork_template(
+         break;
+     case CRUCIBLE_HOT_FORK_TEMPLATE_ACTION_ABORT:
+         if (!crucible_hot_fork_template_active) {
+-            plugin_barrier = crucible_hot_fork_plugin_barrier(
+-                QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, errp);
+-            if (!plugin_barrier) {
+-                goto out;
+-            }
+-            rcu_barrier = crucible_hot_fork_rcu_barrier(
+-                QEMU_RCU_HOT_FORK_BARRIER_QUERY);
+-            bh_timer_barrier = crucible_hot_fork_bh_timer_barrier(
+-                QEMU_BH_TIMER_HOT_FORK_BARRIER_QUERY);
+-            if (plugin_barrier->held) {
+-                error_setg(errp, "Crucible hot-fork plugin barrier was held "
+-                           "outside the template coordinator");
+-                goto out;
+-            }
+-            if (rcu_barrier->held) {
+-                error_setg(errp, "Crucible hot-fork RCU barrier was held "
+-                           "outside the template coordinator");
+-                goto out;
+-            }
+-            if (bh_timer_barrier->held) {
+-                error_setg(errp, "Crucible hot-fork bottom-half/timer "
+-                           "barrier was held outside the template "
+-                           "coordinator");
+-                goto out;
+-            }
+             outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_IDLE;
+             break;
+         }
++
++        if (crucible_hot_fork_template_phase ==
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HOLD_PENDING) {
++            crucible_hot_fork_template_abort_requested = true;
++            crucible_hot_fork_template_schedule_block_transition();
++            outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
++            break;
++        }
++
++        if (crucible_hot_fork_template_phase ==
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HELD) {
++            crucible_hot_fork_template_completion =
++                CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_ABORTED;
++            crucible_hot_fork_template_phase =
++                CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_RELEASE_PENDING;
++            crucible_hot_fork_template_schedule_block_transition();
++            outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
++            break;
++        }
++
++        if (crucible_hot_fork_template_phase ==
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_RELEASE_PENDING) {
++            crucible_hot_fork_template_completion =
++                CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_ABORTED;
++            crucible_hot_fork_template_schedule_block_transition();
++            outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
++            break;
++        }
++
+         plugin_barrier = crucible_hot_fork_plugin_barrier(
+             QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE, errp);
+         if (!plugin_barrier) {
+@@ -628,24 +776,32 @@ qmp_crucible_hot_fork_template(
+             QEMU_BH_TIMER_HOT_FORK_BARRIER_RELEASE);
+         rcu_barrier = crucible_hot_fork_rcu_barrier(
+             QEMU_RCU_HOT_FORK_BARRIER_RELEASE);
+-        crucible_hot_fork_template_active = false;
+-        outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_ABORTED;
++        crucible_hot_fork_template_completion =
++            CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_ABORTED;
++        crucible_hot_fork_template_phase =
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_RELEASE_PENDING;
++        crucible_hot_fork_template_schedule_block_transition();
++        outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
+         break;
+     default:
+         error_setg(errp, "Unknown Crucible hot-fork template action");
+         goto out;
+     }
+ 
++make_report:
+     report = crucible_hot_fork_template_report(outcome, plugin_barrier,
+                                                 rcu_barrier,
+-                                                bh_timer_barrier);
++                                                bh_timer_barrier,
++                                                block_barrier);
+     plugin_barrier = NULL;
+     rcu_barrier = NULL;
+     bh_timer_barrier = NULL;
++    block_barrier = NULL;
+ out:
+     g_free(plugin_barrier);
+     g_free(rcu_barrier);
+     g_free(bh_timer_barrier);
++    g_free(block_barrier);
+     g_mutex_unlock(&crucible_hot_fork_template_lock);
+     return report;
+ }
+@@ -958,15 +1114,20 @@ qmp_crucible_hot_fork_block_barrier(
+     CrucibleHotForkBlockBarrierAction action, Error **errp)
+ {
+     QemuBlockBackendHotForkBarrierOperation operation;
+-    QemuBlockBackendHotForkBarrierInventory inventory;
+-    CrucibleHotForkBlockBarrierState *report;
++    CrucibleHotForkBlockBarrierState *report = NULL;
+ 
++    g_mutex_lock(&crucible_hot_fork_template_lock);
+     switch (action) {
+     case CRUCIBLE_HOT_FORK_BLOCK_BARRIER_ACTION_HOLD:
++        if (crucible_hot_fork_template_reserves_barriers()) {
++            error_setg(errp, "Crucible hot-fork template transaction owns "
++                       "the block barrier");
++            goto out;
++        }
+         if (!crucible_hot_fork_exact_paused_boundary()) {
+             error_setg(errp, "Crucible hot-fork block barrier hold requires "
+                        "an exact paused/device-flush boundary");
+-            return NULL;
++            goto out;
+         }
+         operation = QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_HOLD;
+         break;
+@@ -974,31 +1135,20 @@ qmp_crucible_hot_fork_block_barrier(
+         operation = QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_QUERY;
+         break;
+     case CRUCIBLE_HOT_FORK_BLOCK_BARRIER_ACTION_RELEASE:
++        if (crucible_hot_fork_template_reserves_barriers()) {
++            error_setg(errp, "Crucible hot-fork template transaction owns "
++                       "the block barrier");
++            goto out;
++        }
+         operation = QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE;
+         break;
+     default:
+         g_assert_not_reached();
+     }
+ 
+-    if (!qemu_block_backend_hot_fork_barrier(operation, &inventory)) {
+-        error_setg(errp, "Crucible hot-fork block drain is unavailable in "
+-                   "the current replay or AioContext mode");
+-        return NULL;
+-    }
+-
+-    report = g_new0(CrucibleHotForkBlockBarrierState, 1);
+-    report->schema_version = 1;
+-    report->generation = inventory.generation;
+-    report->owner_thread_id = inventory.owner_thread_id;
+-    report->held = inventory.held;
+-    report->complete = inventory.complete;
+-    report->backend_count = inventory.backend_count;
+-    report->rooted_backends = inventory.rooted_backends;
+-    report->writable_backends = inventory.writable_backends;
+-    report->quiesced_rooted_backends =
+-        inventory.quiesced_rooted_backends;
+-    report->in_flight = inventory.in_flight;
+-    report->quiescent = inventory.quiescent;
++    report = crucible_hot_fork_block_barrier(operation, errp);
++out:
++    g_mutex_unlock(&crucible_hot_fork_template_lock);
+     return report;
+ }
+ 
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index a992e5541..a4d38e5bd 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1142,14 +1142,18 @@
+ ##
+ # @CrucibleHotForkTemplateState:
+ #
+-# QEMU-owned state for one retained template-preparation transaction. Version 4
++# QEMU-owned state for one retained template-preparation transaction. Version 5
++# first acquires QEMU's native all-block drain on the main AioContext, then
+ # acquires the Crucible plugin callback barrier and QEMU's RCU admission/drain
+-# and asynchronous-source barriers. A quiescent RCU barrier acknowledges proof
+-# bit 4. A quiescent asynchronous barrier acknowledges AIO proof bit 3. Other
+-# unresolved proof classes still make a drained transaction roll back as
++# and asynchronous-source barriers. Rollback releases the asynchronous barrier
++# before it schedules block release on the main AioContext. A quiescent RCU
++# barrier acknowledges proof bit 4. A quiescent asynchronous barrier
++# acknowledges AIO proof bit 3. The block barrier remains a prerequisite and
++# does not acknowledge proof bit 5 without an immutable external-snapshot root.
++# Other unresolved proof classes still make a drained transaction roll back as
+ # @blocked.
+ #
+-# @schema-version: transaction contract version, currently 4
++# @schema-version: transaction contract version, currently 5
+ #
+ # @generation: positive process-local transaction generation after the first
+ #     successful prepare, or zero before any transaction
+@@ -1169,7 +1173,10 @@
+ # @rcu-barrier: RCU barrier state after the operation and any rollback
+ #
+ # @bh-timer-barrier: asynchronous-source barrier state after the operation and
+-#     any rollback; the legacy field name is retained by schema version 4
++#     any rollback; the legacy field name is retained by schema version 5
++#
++# @block-barrier: native all-block drain state after the operation and any
++#     asynchronous main-loop transition
+ #
+ # @rollback-complete: whether no transaction barrier remains acquired
+ #
+@@ -1188,6 +1195,7 @@
+             'plugin-barrier': 'CrucibleHotForkPluginBarrierState',
+             'rcu-barrier': 'CrucibleHotForkRcuBarrierState',
+             'bh-timer-barrier': 'CrucibleHotForkBhTimerBarrierState',
++            'block-barrier': 'CrucibleHotForkBlockBarrierState',
+             'rollback-complete': 'bool',
+             'ready': 'bool' } }
+ 
+diff --git a/tests/unit/test-block-backend.c b/tests/unit/test-block-backend.c
+index d999107a7..f54a918a4 100644
+--- a/tests/unit/test-block-backend.c
++++ b/tests/unit/test-block-backend.c
+@@ -28,6 +28,7 @@
+ #include "qapi/error.h"
+ #include "qobject/qdict.h"
+ #include "qemu/main-loop.h"
++#include "qemu/thread.h"
+ #include "system/block-backend-global-state.h"
+ 
+ static void test_drain_aio_error_flush_cb(void *opaque, int ret)
+@@ -72,11 +73,27 @@ static void test_drain_all_aio_error(void)
+     blk_unref(blk);
+ }
+ 
++typedef struct HotForkBlockBarrierQuery {
++    bool success;
++    QemuBlockBackendHotForkBarrierInventory inventory;
++} HotForkBlockBarrierQuery;
++
++static void *test_hot_fork_block_barrier_query(void *opaque)
++{
++    HotForkBlockBarrierQuery *query = opaque;
++
++    query->success = qemu_block_backend_hot_fork_barrier(
++        QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_QUERY, &query->inventory);
++    return NULL;
++}
++
+ static void test_hot_fork_block_barrier(void)
+ {
+     QDict *options = qdict_new();
+     BlockBackend *blk;
+     QemuBlockBackendHotForkBarrierInventory barrier;
++    HotForkBlockBarrierQuery query = { 0 };
++    QemuThread thread;
+ 
+     qdict_put_str(options, "driver", "null-co");
+     qdict_put_int(options, "size", 4096);
+@@ -96,6 +113,20 @@ static void test_hot_fork_block_barrier(void)
+                      ==, barrier.rooted_backends);
+     g_assert_cmpuint(barrier.in_flight, ==, 0);
+ 
++    qemu_thread_create(&thread, "block-barrier-query",
++                       test_hot_fork_block_barrier_query, &query,
++                       QEMU_THREAD_JOINABLE);
++    qemu_thread_join(&thread);
++    g_assert_true(query.success);
++    g_assert_cmpuint(query.inventory.generation, ==, barrier.generation);
++    g_assert_true(query.inventory.held);
++    g_assert_true(query.inventory.complete);
++    g_assert_true(query.inventory.quiescent);
++    g_assert_cmpuint(query.inventory.backend_count,
++                     ==, barrier.backend_count);
++    g_assert_cmpuint(query.inventory.rooted_backends,
++                     ==, barrier.rooted_backends);
++
+     g_assert_true(qemu_block_backend_hot_fork_barrier(
+         QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE, &barrier));
+     g_assert_false(barrier.held);

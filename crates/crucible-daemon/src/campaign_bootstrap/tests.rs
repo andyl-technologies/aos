@@ -1,0 +1,2033 @@
+//! Durable campaign-service bootstrap regressions.
+
+// crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for failure localization.
+#![allow(clippy::expect_used)]
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, Permissions};
+use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+use std::os::unix::net::UnixStream;
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
+use std::time::Duration;
+
+use crucible_api::ProductionVmLifecycleConfig;
+use crucible_campaign::{
+    AttemptResourceLimits, CampaignClient, CampaignClientError, CampaignExecutorStore,
+    CampaignLineage, CampaignLineageId, CampaignMode, CampaignName, CampaignPolicy,
+    CampaignPrincipal, CampaignSeed, CampaignServiceFailure, CancelAttemptExecutionRequest,
+    CancelAttemptExecutionResponse, CandidateGeneratorAlgorithm, CandidateGeneratorSpec,
+    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, ConfigurationId,
+    DaemonEpoch, ExecutorCapabilityService, ExecutorCapabilitySet, ExecutorCapacityReport,
+    ExecutorCompatibilityProfile, ExecutorControlService, ExecutorDescription,
+    ExecutorMaterializationCapability, ExecutorResumeService, ExecutorService,
+    ExecutorStatusService, ExplorerPolicy, FairnessPolicy, GetAttemptExecutionRequest,
+    GetAttemptExecutionResponse, GetCampaignRequest, ProgressiveWideningPolicy, PuctPolicy,
+    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, RetentionPolicy, ScenarioDefId,
+    SubmitAttemptRequest, SubmitAttemptResponse, WatchExecutorCapacityRequest,
+};
+use crucible_cas::content_store::{
+    BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, MemoryBlobBackend,
+    MemoryRefBackend, ObjectKind, StoreError, StoreGraph, StoreGraphConfig, StoreGraphKeyring,
+    StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers, StoreGraphPhysicalQuotaBinders,
+    StoreGraphS3Clients, StoreNodeId, StoreNodeSpec, StoreS3Client, StoreS3ConditionalPutOutcome,
+    StoreS3EndpointId, StoreS3MultipartListCursor, StoreS3MultipartListPage,
+    StoreS3MultipartUpload, StoreS3MultipartUploadRecord, StoreS3ObjectDownload,
+    StoreS3UploadedPart,
+};
+use crucible_qemu::{
+    LinuxQemuAttemptHostConfig, QemuChildProcessContract, QemuLaunchResourceRequirements,
+    QemuNodeChild, QemuPreparedRunDirectory, QemuVmRealizationError,
+};
+use tempfile::tempdir;
+
+use crate::{
+    AllowAllAttemptAdmission, AttachCampaignRuntimeRequest, CampaignRuntimeAttachmentDisposition,
+    CanonicalPlannerProcessConfig, DirectoryHotCheckpointFallbackRetentionStore, ExecutorCapacity,
+    ExecutorLoopbackEndpointConfig, ExecutorLoopbackServerConfig,
+    HotCheckpointFallbackRetentionStore, LocalExecutorCapabilityService, LocalExecutorSupervisor,
+    LoopbackCampaignService, LoopbackCampaignServiceError, LoopbackCampaignTimeouts,
+    LoopbackExecutorTimeouts, MAX_EXECUTOR_REQUESTS_PER_CONNECTION, MemoryAssignmentLedger,
+    PackagedQemuExecutorConfig, QemuAttemptCancellationSignal, QemuAttemptHostResourceFactory,
+    QemuAttemptHostResourceOwner, QemuHotForkTemplateKey,
+    serve_loopback_executor_component_connection_with_limits,
+    serve_loopback_executor_component_once,
+};
+
+use super::*;
+
+#[derive(Debug)]
+struct UnusedPackagedHostFactory;
+
+#[derive(Debug)]
+struct UnusedPackagedHostOwner;
+
+#[derive(Clone, Debug)]
+struct UnusedPackagedCancellation;
+
+struct FailingMaintenanceS3Client {
+    endpoint: StoreS3EndpointId,
+}
+
+struct PagedMaintenanceS3Client {
+    endpoint: StoreS3EndpointId,
+    pages: Mutex<BTreeMap<String, u32>>,
+    aborted: Mutex<u64>,
+}
+
+impl PagedMaintenanceS3Client {
+    fn completed(&self) -> bool {
+        let pages = self.pages.lock().expect("paged maintenance lock");
+        pages.len() == 2 && pages.values().all(|calls| *calls >= 2)
+    }
+
+    fn aborted(&self) -> u64 {
+        *self.aborted.lock().expect("paged abort lock")
+    }
+}
+
+impl StoreS3Client for FailingMaintenanceS3Client {
+    fn endpoint_id(&self) -> &StoreS3EndpointId {
+        &self.endpoint
+    }
+
+    fn head_object(&self, _bucket: &str, _key: &str) -> Result<Option<u64>, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn get_object(&self, _bucket: &str, _key: &str) -> Result<StoreS3ObjectDownload, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn put_empty_if_absent(
+        &self,
+        _bucket: &str,
+        _key: &str,
+    ) -> Result<StoreS3ConditionalPutOutcome, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn begin_multipart(
+        &self,
+        _bucket: &str,
+        _key: &str,
+    ) -> Result<StoreS3MultipartUpload, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn upload_part(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _upload: &StoreS3MultipartUpload,
+        _part_number: u32,
+        _bytes: Arc<[u8]>,
+    ) -> Result<StoreS3UploadedPart, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn complete_multipart_if_absent(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _upload: &StoreS3MultipartUpload,
+        _parts: &[StoreS3UploadedPart],
+    ) -> Result<StoreS3ConditionalPutOutcome, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn abort_multipart(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _upload: &StoreS3MultipartUpload,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn list_multipart_uploads(
+        &self,
+        _bucket: &str,
+        _prefix: &str,
+        _after: Option<&StoreS3MultipartListCursor>,
+        _maximum_items: u16,
+    ) -> Result<StoreS3MultipartListPage, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+}
+
+impl StoreS3Client for PagedMaintenanceS3Client {
+    fn endpoint_id(&self) -> &StoreS3EndpointId {
+        &self.endpoint
+    }
+
+    fn head_object(&self, _bucket: &str, _key: &str) -> Result<Option<u64>, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn get_object(&self, _bucket: &str, _key: &str) -> Result<StoreS3ObjectDownload, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn put_empty_if_absent(
+        &self,
+        _bucket: &str,
+        _key: &str,
+    ) -> Result<StoreS3ConditionalPutOutcome, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn begin_multipart(
+        &self,
+        _bucket: &str,
+        _key: &str,
+    ) -> Result<StoreS3MultipartUpload, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn upload_part(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _upload: &StoreS3MultipartUpload,
+        _part_number: u32,
+        _bytes: Arc<[u8]>,
+    ) -> Result<StoreS3UploadedPart, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn complete_multipart_if_absent(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _upload: &StoreS3MultipartUpload,
+        _parts: &[StoreS3UploadedPart],
+    ) -> Result<StoreS3ConditionalPutOutcome, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn abort_multipart(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _upload: &StoreS3MultipartUpload,
+    ) -> Result<(), StoreError> {
+        let mut aborted = self.aborted.lock().expect("paged abort lock");
+        *aborted = aborted.saturating_add(1);
+        Ok(())
+    }
+
+    fn list_multipart_uploads(
+        &self,
+        _bucket: &str,
+        prefix: &str,
+        after: Option<&StoreS3MultipartListCursor>,
+        maximum_items: u16,
+    ) -> Result<StoreS3MultipartListPage, StoreError> {
+        let mut pages = self.pages.lock().expect("paged maintenance lock");
+        let calls = pages.entry(prefix.to_owned()).or_default();
+        let id = ContentId::for_bytes(ObjectKind::Finding, 1, prefix.as_bytes());
+        let key = format!("{prefix}{id}");
+        let upload = StoreS3MultipartUpload::new(format!("upload-{prefix}"))?;
+        let page = match (*calls, after) {
+            (0, None) => {
+                let record = StoreS3MultipartUploadRecord::new(key.clone(), upload.clone())?;
+                let next = StoreS3MultipartListCursor::new(key, upload)?;
+                StoreS3MultipartListPage::new(vec![record], Some(next), None, maximum_items)?
+            }
+            (1, Some(cursor))
+                if cursor.key_marker() == key && cursor.upload_id_marker() == &upload =>
+            {
+                StoreS3MultipartListPage::new(Vec::new(), None, after, maximum_items)?
+            }
+            (2.., None) => StoreS3MultipartListPage::new(Vec::new(), None, None, maximum_items)?,
+            _ => return Err(StoreError::Incompatible),
+        };
+        *calls = calls.saturating_add(1);
+        Ok(page)
+    }
+}
+
+impl QemuAttemptCancellationSignal for UnusedPackagedCancellation {
+    fn signal(&self) -> Result<(), QemuVmRealizationError> {
+        Ok(())
+    }
+}
+
+impl QemuAttemptHostResourceFactory for UnusedPackagedHostFactory {
+    type Owner = UnusedPackagedHostOwner;
+
+    fn begin(
+        &mut self,
+        _resources: AttemptResourceLimits,
+    ) -> Result<Self::Owner, QemuVmRealizationError> {
+        Err(unused_packaged_host_error())
+    }
+}
+
+impl QemuAttemptHostResourceOwner for UnusedPackagedHostOwner {
+    type CancellationSignal = UnusedPackagedCancellation;
+
+    fn resource_limits(&self) -> AttemptResourceLimits {
+        AttemptResourceLimits::new(2, 512 * 1024 * 1024, 1024 * 1024 * 1024, 50_000)
+            .expect("packaged resource ceiling")
+    }
+
+    fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
+        Err(unused_packaged_host_error())
+    }
+
+    fn prepare_generation_run_directory(
+        &mut self,
+        _requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        Err(unused_packaged_host_error())
+    }
+
+    fn cancellation_signal(&self) -> Result<Self::CancellationSignal, QemuVmRealizationError> {
+        Ok(UnusedPackagedCancellation)
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
+        Err(unused_packaged_host_error())
+    }
+
+    fn retain_failed_launch_child(&mut self, _child: QemuNodeChild) {}
+
+    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+        Ok(())
+    }
+
+    fn quarantine(&mut self) {}
+}
+
+fn unused_packaged_host_error() -> QemuVmRealizationError {
+    QemuVmRealizationError::Executor {
+        operation: "use unused packaged bootstrap host",
+        message: String::from("test does not execute a guest"),
+    }
+}
+
+fn fixture() -> (tempfile::TempDir, CampaignLocalServiceConfig) {
+    let directory = tempdir().expect("bootstrap directory");
+    fs::set_permissions(directory.path(), Permissions::from_mode(0o700))
+        .expect("secure bootstrap directory");
+    let metadata = fs::metadata(directory.path()).expect("bootstrap metadata");
+    let policy = directory.path().join("campaign-policy.toml");
+    fs::write(
+        &policy,
+        format!(
+            r#"schema = "crucible.campaign-local-policy"
+version = 1
+
+[[bindings]]
+user_id = {}
+group_id = {}
+principal = "operator"
+
+[[grants]]
+principal = "operator"
+operation = "get-campaign"
+campaign = "*"
+
+[[grants]]
+principal = "operator"
+operation = "create-campaign"
+campaign = "*"
+
+[[grants]]
+principal = "operator"
+operation = "attach-campaign-runtime"
+campaign = "*"
+"#,
+            metadata.uid(),
+            metadata.gid()
+        ),
+    )
+    .expect("write policy");
+    fs::set_permissions(&policy, Permissions::from_mode(0o600)).expect("secure policy mode");
+    let endpoint = CampaignLoopbackEndpointConfig::new(
+        directory.path().join("campaign.sock"),
+        metadata.uid(),
+        metadata.gid(),
+        0o600,
+    )
+    .expect("endpoint config");
+    let state = directory.path().join("state");
+    fs::create_dir(&state).expect("state directory");
+    fs::set_permissions(&state, Permissions::from_mode(0o700)).expect("secure state mode");
+    let config = CampaignLocalServiceConfig::new(
+        endpoint,
+        state,
+        policy,
+        CampaignLocalServiceMode::ReadWrite,
+        CampaignLoopbackServerConfig::default(),
+    )
+    .expect("local service config");
+    (directory, config)
+}
+
+fn write_component_authorities(path: &Path, planner: [u8; 32], debugger: [u8; 32]) {
+    let mut bytes = Vec::with_capacity(COMPONENT_AUTHORITY_FILE_BYTES);
+    bytes.extend_from_slice(COMPONENT_AUTHORITY_MAGIC);
+    bytes.extend_from_slice(&planner);
+    bytes.extend_from_slice(&debugger);
+    fs::write(path, bytes).expect("write component authorities");
+    fs::set_permissions(path, Permissions::from_mode(0o600))
+        .expect("secure component-authority mode");
+}
+
+fn runtime_config() -> CanonicalCampaignRuntimeConfig {
+    named_runtime_config("attached")
+}
+
+fn named_runtime_config(name: &str) -> CanonicalCampaignRuntimeConfig {
+    CanonicalCampaignRuntimeConfig::canonical_defaults(
+        CampaignName::new(name).expect("campaign name"),
+        CanonicalPlannerProcessConfig::new("/planner", Duration::from_secs(1))
+            .expect("planner process configuration"),
+    )
+    .expect("runtime configuration")
+}
+
+fn create_runtime_campaign(repository: &Arc<CampaignRepository>, name: &str) -> CampaignLineage {
+    create_runtime_campaign_for_scenario(repository, name, b"bootstrap-scenario")
+}
+
+fn create_runtime_campaign_for_scenario(
+    repository: &Arc<CampaignRepository>,
+    name: &str,
+    scenario_label: &[u8],
+) -> CampaignLineage {
+    let scenario = ScenarioDefId::from_hash(CampaignHash::derive("test", scenario_label));
+    let genesis = ConfigurationId::from_hash(CampaignHash::derive("test", b"bootstrap-genesis"));
+    let scenario_content = repository
+        .publish_scenario_artifact(scenario, 1, scenario_label.to_vec())
+        .expect("scenario artifact");
+    let genesis_content = repository
+        .publish_configuration_artifact(scenario, scenario_content, genesis, 1, b"genesis".to_vec())
+        .expect("genesis artifact");
+    let lineage = CampaignLineage::new(
+        scenario,
+        scenario_content,
+        genesis,
+        genesis_content,
+        "crucible-test",
+        "qemu-test",
+        BTreeMap::from([(String::from("control"), 1)]),
+        1,
+        1,
+    )
+    .expect("lineage");
+    let widening = ProgressiveWideningPolicy::new(
+        crucible_campaign::ExactRational::new(1, 1).expect("widening coefficient"),
+        crucible_campaign::ExactRational::new(1, 2).expect("widening exponent"),
+        1,
+        100,
+        1,
+    )
+    .expect("widening policy");
+    let policy = CampaignPolicy::new(
+        scenario,
+        CampaignSeed::from_bytes([7; 32]),
+        CampaignMode::Strict,
+        ExplorerPolicy::TreeSearch {
+            widening: Some(widening),
+            puct: PuctPolicy::new(1_000_000, 1, 0),
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeSet::new(),
+        FairnessPolicy::new(0, 0).expect("fairness"),
+        RetentionPolicy::new(true, 1, true, true),
+        true,
+    )
+    .expect("policy");
+    repository
+        .create(name, &lineage, &policy, &BTreeMap::new())
+        .expect("create campaign");
+    lineage
+}
+
+fn executor_capability_service(
+    lineage: &CampaignLineage,
+    epoch_byte: u8,
+    store_label: &[u8],
+) -> LocalExecutorCapabilityService<MemoryAssignmentLedger, AllowAllAttemptAdmission> {
+    let epoch = DaemonEpoch::from_bytes([epoch_byte; 16]).expect("daemon epoch");
+    let resources =
+        AttemptResourceLimits::new(4, 1024 * 1024, 1024 * 1024, 10_000).expect("resources");
+    let capabilities = ExecutorCapabilitySet::new(
+        ExecutorCompatibilityProfile::from_lineage(lineage),
+        "x86_64",
+        BTreeSet::from([String::from("deterministic-tcg")]),
+        BTreeSet::from([ExecutorMaterializationCapability::ThinReplay]),
+        2,
+        resources,
+        BTreeSet::from([CampaignHash::derive("test", store_label)]),
+    )
+    .expect("executor capabilities");
+    let description = crucible_campaign::ExecutorDescription::new(epoch, capabilities)
+        .expect("executor description");
+    let supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        ExecutorCapacity::new(2, 4, 1024 * 1024, 1024 * 1024, 10_000).expect("executor capacity"),
+    );
+    LocalExecutorCapabilityService::new(supervisor, description).expect("capability service")
+}
+
+fn executor_pair(lineage: &CampaignLineage) -> (UnixStream, thread::JoinHandle<()>) {
+    let mut service = executor_capability_service(lineage, 0x41, b"store");
+    let (client, mut server) = UnixStream::pair().expect("executor stream pair");
+    let worker = thread::spawn(move || {
+        serve_loopback_executor_component_once(
+            &mut server,
+            &mut service,
+            LoopbackExecutorTimeouts::default(),
+        )
+        .expect("serve executor description");
+    });
+    (client, worker)
+}
+
+type TestExecutorService =
+    LocalExecutorCapabilityService<MemoryAssignmentLedger, AllowAllAttemptAdmission>;
+
+struct BlockingDescribeExecutorService {
+    inner: TestExecutorService,
+    observed: Option<mpsc::Sender<()>>,
+    release: mpsc::Receiver<()>,
+}
+
+impl ExecutorService for BlockingDescribeExecutorService {
+    type Error = <TestExecutorService as ExecutorService>::Error;
+
+    fn submit_attempt(
+        &mut self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<SubmitAttemptResponse, Self::Error> {
+        self.inner.submit_attempt(request)
+    }
+}
+
+impl ExecutorStatusService for BlockingDescribeExecutorService {
+    fn get_attempt_execution(
+        &mut self,
+        request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        self.inner.get_attempt_execution(request)
+    }
+}
+
+impl ExecutorControlService for BlockingDescribeExecutorService {
+    fn checkpoint_attempt_execution(
+        &mut self,
+        request: &CheckpointAttemptExecutionRequest,
+    ) -> Result<CheckpointAttemptExecutionResponse, Self::Error> {
+        self.inner.checkpoint_attempt_execution(request)
+    }
+
+    fn cancel_attempt_execution(
+        &mut self,
+        request: &CancelAttemptExecutionRequest,
+    ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
+        self.inner.cancel_attempt_execution(request)
+    }
+}
+
+impl ExecutorResumeService for BlockingDescribeExecutorService {
+    fn resume_attempt_execution(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        self.inner.resume_attempt_execution(request)
+    }
+}
+
+impl ExecutorCapabilityService for BlockingDescribeExecutorService {
+    fn describe_executor(&mut self) -> Result<ExecutorDescription, Self::Error> {
+        if let Some(observed) = self.observed.take() {
+            observed.send(()).expect("report blocked describe request");
+        }
+        self.release.recv().expect("release describe response");
+        self.inner.describe_executor()
+    }
+
+    fn watch_capacity(
+        &mut self,
+        request: &WatchExecutorCapacityRequest,
+    ) -> Result<ExecutorCapacityReport, Self::Error> {
+        self.inner.watch_capacity(request)
+    }
+}
+
+#[test]
+fn runtime_attachment_requires_writable_component_authority_before_executor_io() {
+    let (_directory, config) = fixture();
+    let prepared = config
+        .prepare()
+        .expect("prepare service without authorities");
+    let (executor, mut peer) = UnixStream::pair().expect("executor stream pair");
+    assert!(matches!(
+        prepared.prepare_runtime(executor, &runtime_config()),
+        Err(CampaignLocalServiceError::RuntimeAuthorityUnavailable)
+    ));
+    peer.set_nonblocking(true).expect("nonblocking peer");
+    let mut byte = [0_u8; 1];
+    assert_eq!(peer.read(&mut byte).expect("closed executor peer"), 0);
+
+    let (_directory, config) = fixture();
+    let read_only = CampaignLocalServiceConfig::new(
+        config.endpoint().clone(),
+        config.state_directory(),
+        config.policy_path(),
+        CampaignLocalServiceMode::ReadOnly,
+        config.server(),
+    )
+    .expect("read-only service configuration");
+    let prepared = read_only.prepare().expect("prepare read-only service");
+    let (executor, mut peer) = UnixStream::pair().expect("executor stream pair");
+    assert!(matches!(
+        prepared.prepare_runtime(executor, &runtime_config()),
+        Err(CampaignLocalServiceError::RuntimeReadOnly)
+    ));
+    peer.set_nonblocking(true).expect("nonblocking peer");
+    assert_eq!(peer.read(&mut byte).expect("closed executor peer"), 0);
+}
+
+#[test]
+fn post_bind_attachment_rejects_missing_authority_and_read_only_before_executor_io() {
+    let (directory, config) = fixture();
+    let service = config.open().expect("bind service without authorities");
+    let attachments = service.runtime_attachment_handle();
+    let metadata = fs::metadata(directory.path()).expect("endpoint directory metadata");
+    let endpoint = ExecutorLoopbackEndpointConfig::new(
+        directory.path().join("missing-executor.sock"),
+        metadata.uid(),
+        metadata.gid(),
+        0o600,
+    )
+    .expect("missing executor endpoint contract");
+    assert!(matches!(
+        attachments.attach_endpoint(&endpoint, &runtime_config()),
+        Err(CampaignLocalServiceError::RuntimeAuthorityUnavailable)
+    ));
+    drop(service);
+    assert!(matches!(
+        attachments.attached_campaigns(),
+        Err(CampaignLocalServiceError::RuntimeAttachmentClosed)
+    ));
+
+    let (directory, config) = fixture();
+    let read_only = CampaignLocalServiceConfig::new(
+        config.endpoint().clone(),
+        config.state_directory(),
+        config.policy_path(),
+        CampaignLocalServiceMode::ReadOnly,
+        config.server(),
+    )
+    .expect("read-only service configuration");
+    let service = read_only.open().expect("bind read-only service");
+    let attachments = service.runtime_attachment_handle();
+    let metadata = fs::metadata(directory.path()).expect("endpoint directory metadata");
+    let endpoint = ExecutorLoopbackEndpointConfig::new(
+        directory.path().join("missing-executor.sock"),
+        metadata.uid(),
+        metadata.gid(),
+        0o600,
+    )
+    .expect("missing executor endpoint contract");
+    assert!(matches!(
+        attachments.attach_endpoint(&endpoint, &runtime_config()),
+        Err(CampaignLocalServiceError::RuntimeReadOnly)
+    ));
+    drop(service);
+}
+
+#[test]
+fn multi_runtime_bind_rejects_an_empty_set_before_endpoint_mutation() {
+    let (_directory, config) = fixture();
+    let socket = config.endpoint().path().to_owned();
+    let prepared = config.prepare().expect("prepare service");
+
+    assert!(matches!(
+        prepared.bind_with_runtimes(Vec::new()),
+        Err(CampaignLocalServiceError::InvalidRuntimeCount)
+    ));
+    assert!(!socket.exists());
+}
+
+#[test]
+fn multi_runtime_bind_sorts_unique_campaigns_and_joins_every_runtime() {
+    let (directory, config) = fixture();
+    let authority = directory.path().join("component-authority.bin");
+    write_component_authorities(&authority, [0x31; 32], [0x73; 32]);
+    let config = config
+        .with_component_authority_path(&authority)
+        .expect("component authority path");
+    let socket = config.endpoint().path().to_owned();
+    let prepared = config.prepare().expect("prepare service");
+    let lineage = create_runtime_campaign(&prepared.repository, "alpha");
+    assert_eq!(
+        create_runtime_campaign(&prepared.repository, "beta"),
+        lineage
+    );
+
+    let (beta_executor, beta_server) = executor_pair(&lineage);
+    let beta = prepared
+        .prepare_runtime(beta_executor, &named_runtime_config("beta"))
+        .expect("prepare beta runtime");
+    let (alpha_executor, alpha_server) = executor_pair(&lineage);
+    let alpha = prepared
+        .prepare_runtime(alpha_executor, &named_runtime_config("alpha"))
+        .expect("prepare alpha runtime");
+    beta_server.join().expect("join beta executor server");
+    alpha_server.join().expect("join alpha executor server");
+
+    let service = prepared
+        .bind_with_runtimes(vec![beta, alpha])
+        .expect("bind runtime set");
+    assert_eq!(
+        service
+            .runtime_attachment_handle()
+            .attached_campaigns()
+            .expect("attached campaigns")
+            .iter()
+            .map(CampaignName::as_str)
+            .collect::<Vec<_>>(),
+        ["alpha", "beta"]
+    );
+    service.shutdown_handle().shutdown();
+    service.serve().expect("serve and join runtime set");
+    assert!(!socket.exists());
+}
+
+#[test]
+fn packaged_runtime_discovery_authenticates_and_orders_the_complete_catalog() {
+    let (_directory, config) = fixture();
+    let prepared = config.prepare().expect("prepare service");
+    assert!(matches!(
+        prepared.discover_packaged_campaigns(),
+        Err(CampaignLocalServiceError::InvalidRuntimeCount)
+    ));
+
+    create_runtime_campaign_for_scenario(&prepared.repository, "zeta", b"scenario-zeta");
+    create_runtime_campaign_for_scenario(&prepared.repository, "alpha", b"scenario-alpha");
+    assert_eq!(
+        prepared
+            .discover_packaged_campaigns()
+            .expect("discover authenticated campaign catalog")
+            .iter()
+            .map(CampaignName::as_str)
+            .collect::<Vec<_>>(),
+        ["alpha", "zeta"]
+    );
+}
+
+#[test]
+fn packaged_executor_pool_serves_and_joins_two_campaign_runtimes() {
+    let (directory, config) = fixture();
+    let authority = directory.path().join("component-authority.bin");
+    write_component_authorities(&authority, [0x31; 32], [0x73; 32]);
+    let config = config
+        .with_component_authority_path(&authority)
+        .expect("component authority path");
+    let campaign_socket = config.endpoint().path().to_owned();
+    let prepared = config.prepare().expect("prepare service");
+    let alpha_lineage = create_runtime_campaign_for_scenario(
+        &prepared.repository,
+        "alpha",
+        b"packaged-alpha-scenario",
+    );
+    let beta_lineage = create_runtime_campaign_for_scenario(
+        &prepared.repository,
+        "beta",
+        b"packaged-beta-scenario",
+    );
+    assert_ne!(
+        alpha_lineage.scenario_content(),
+        beta_lineage.scenario_content()
+    );
+
+    let metadata = fs::metadata(directory.path()).expect("packaged endpoint directory");
+    let executor_endpoint = ExecutorLoopbackEndpointConfig::new(
+        directory.path().join("shared-executor.sock"),
+        metadata.uid(),
+        metadata.gid(),
+        0o600,
+    )
+    .expect("packaged executor endpoint");
+    let host = LinuxQemuAttemptHostConfig::new(
+        "/sys/fs/cgroup/crucible-packaged-bootstrap-test",
+        "/var/lib/crucible-packaged-bootstrap-test",
+        "packaged-bootstrap-test",
+        1,
+        2,
+        metadata.uid().checked_add(1).expect("child user ID"),
+        metadata.gid().checked_add(1).expect("child group ID"),
+        32,
+        1024,
+        Duration::from_secs(1),
+    )
+    .expect("packaged host configuration");
+    let packaged_config = PackagedQemuExecutorConfig::new(
+        BTreeSet::from([
+            CampaignName::new("beta").expect("beta campaign"),
+            CampaignName::new("alpha").expect("alpha campaign"),
+        ]),
+        executor_endpoint.clone(),
+        ExecutorLoopbackServerConfig::default(),
+        directory.path().join("executor-ledger"),
+        1024 * 1024,
+        DaemonEpoch::from_bytes([0x61; 16]).expect("daemon epoch"),
+        ExecutorCapacity::new(2, 2, 512 * 1024 * 1024, 1024 * 1024 * 1024, 50_000)
+            .expect("executor capacity"),
+        2,
+        "x86_64",
+        "deterministic-tcg-v1",
+        CampaignHash::derive("crucible.test.shared-packaged-store.v1", b"bootstrap"),
+        ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state"),
+        host,
+    )
+    .expect("packaged executor configuration");
+    let packaged = crate::packaged_qemu_executor::compose_packaged_qemu_executor_for_scenarios(
+        Arc::clone(&prepared.repository),
+        prepared
+            .maintenance
+            .as_ref()
+            .expect("composed store maintenance")
+            .store
+            .clone(),
+        ExecutorCompatibilityProfile::from_lineage(&alpha_lineage),
+        BTreeSet::from([
+            alpha_lineage.scenario_content(),
+            beta_lineage.scenario_content(),
+        ]),
+        packaged_config,
+        UnusedPackagedHostFactory,
+    )
+    .expect("compose shared packaged executor");
+    let executor =
+        AttachedPackagedQemuExecutor::start(packaged).expect("start shared packaged executor");
+
+    let beta = prepared
+        .prepare_runtime(
+            executor_endpoint.connect().expect("connect beta runtime"),
+            &named_runtime_config("beta"),
+        )
+        .expect("prepare beta runtime");
+    let alpha = prepared
+        .prepare_runtime(
+            executor_endpoint.connect().expect("connect alpha runtime"),
+            &named_runtime_config("alpha"),
+        )
+        .expect("prepare alpha runtime");
+    let service = prepared
+        .bind_with_runtimes_and_executor(vec![beta, alpha], executor)
+        .expect("bind shared packaged executor pool");
+    assert_eq!(
+        service
+            .runtime_attachment_handle()
+            .attached_campaigns()
+            .expect("attached campaigns")
+            .iter()
+            .map(CampaignName::as_str)
+            .collect::<Vec<_>>(),
+        ["alpha", "beta"]
+    );
+    service.shutdown_handle().shutdown();
+    service
+        .serve()
+        .expect("serve and join shared executor pool");
+    assert!(!campaign_socket.exists());
+    assert!(!executor_endpoint.path().exists());
+}
+
+#[test]
+fn multi_runtime_bind_rejects_duplicate_campaigns_before_endpoint_mutation() {
+    let (directory, config) = fixture();
+    let authority = directory.path().join("component-authority.bin");
+    write_component_authorities(&authority, [0x31; 32], [0x73; 32]);
+    let config = config
+        .with_component_authority_path(&authority)
+        .expect("component authority path");
+    let socket = config.endpoint().path().to_owned();
+    let prepared = config.prepare().expect("prepare service");
+    let lineage = create_runtime_campaign(&prepared.repository, "attached");
+
+    let (first_executor, first_server) = executor_pair(&lineage);
+    let first = prepared
+        .prepare_runtime(first_executor, &runtime_config())
+        .expect("prepare first runtime");
+    let (second_executor, second_server) = executor_pair(&lineage);
+    let second = prepared
+        .prepare_runtime(second_executor, &runtime_config())
+        .expect("prepare second runtime");
+    first_server.join().expect("join first executor server");
+    second_server.join().expect("join second executor server");
+
+    assert!(matches!(
+        prepared.bind_with_runtimes(vec![first, second]),
+        Err(CampaignLocalServiceError::DuplicateRuntimeCampaign)
+    ));
+    assert!(!socket.exists());
+}
+
+#[test]
+fn post_bind_attachment_is_bounded_live_and_does_not_retain_service_ownership() {
+    let (directory, config) = fixture();
+    let authority = directory.path().join("component-authority.bin");
+    write_component_authorities(&authority, [0x31; 32], [0x73; 32]);
+    let config = config
+        .with_component_authority_path(&authority)
+        .expect("component authority path");
+    let prepared = config.prepare().expect("prepare service");
+    let lineage = create_runtime_campaign(&prepared.repository, "dynamic");
+    let service = prepared.bind().expect("bind service without runtimes");
+    let attachments = service.runtime_attachment_handle();
+    let shutdown = service.shutdown_handle();
+    let server = thread::spawn(move || service.serve().expect("serve dynamic runtime"));
+
+    let metadata = fs::metadata(directory.path()).expect("runtime endpoint directory metadata");
+    let endpoint = ExecutorLoopbackEndpointConfig::new(
+        directory.path().join("dynamic-executor.sock"),
+        metadata.uid(),
+        metadata.gid(),
+        0o600,
+    )
+    .expect("runtime executor endpoint");
+    let managed = endpoint.bind().expect("bind runtime executor endpoint");
+    let (listener, endpoint_guard) = managed.into_parts();
+    let mut executor_service = executor_capability_service(&lineage, 0x42, b"dynamic-store");
+    let executor_server = thread::spawn(move || {
+        let _endpoint_guard = endpoint_guard;
+        let (mut stream, _) = listener.accept().expect("accept runtime executor");
+        serve_loopback_executor_component_connection_with_limits(
+            &mut stream,
+            &mut executor_service,
+            LoopbackExecutorTimeouts::default(),
+            MAX_EXECUTOR_REQUESTS_PER_CONNECTION,
+        )
+        .expect("serve runtime executor connection");
+    });
+    attachments
+        .attach_endpoint(&endpoint, &named_runtime_config("dynamic"))
+        .expect("attach runtime after bind");
+    assert_eq!(
+        attachments
+            .attached_campaigns()
+            .expect("attached campaign inventory"),
+        [CampaignName::new("dynamic").expect("campaign name")]
+    );
+
+    let (duplicate, mut duplicate_peer) = UnixStream::pair().expect("duplicate executor pair");
+    assert!(matches!(
+        attachments.attach(duplicate, &named_runtime_config("dynamic")),
+        Err(CampaignLocalServiceError::DuplicateRuntimeCampaign)
+    ));
+    duplicate_peer
+        .set_nonblocking(true)
+        .expect("nonblocking duplicate peer");
+    let mut byte = [0_u8; 1];
+    assert_eq!(
+        duplicate_peer
+            .read(&mut byte)
+            .expect("duplicate executor closed before I/O"),
+        0
+    );
+
+    shutdown.shutdown();
+    server.join().expect("join campaign service");
+    executor_server.join().expect("join executor server");
+    assert!(matches!(
+        attachments.attached_campaigns(),
+        Err(CampaignLocalServiceError::RuntimeAttachmentClosed)
+    ));
+
+    let restarted = config
+        .open()
+        .expect("weak handle does not retain state lock");
+    restarted.shutdown_handle().shutdown();
+    restarted.serve().expect("serve restarted owner");
+}
+
+#[test]
+fn authenticated_post_bind_attachment_replays_without_executor_io() {
+    let (directory, config) = fixture();
+    let authority = directory.path().join("component-authority.bin");
+    write_component_authorities(&authority, [0x31; 32], [0x73; 32]);
+    let config = config
+        .with_component_authority_path(&authority)
+        .expect("component authority path");
+    let socket = config.endpoint().path().to_owned();
+    let prepared = config.prepare().expect("prepare service");
+    let lineage = create_runtime_campaign(&prepared.repository, "dynamic");
+    let prepared = prepared
+        .with_runtime_control(named_runtime_config("dynamic").planner_process().clone())
+        .expect("enable runtime control");
+    let service = prepared.bind().expect("bind service without runtimes");
+    let attachments = service.runtime_attachment_handle();
+    let shutdown = service.shutdown_handle();
+    let server = thread::spawn(move || service.serve().expect("serve dynamic runtime"));
+
+    let metadata = fs::metadata(directory.path()).expect("runtime endpoint directory metadata");
+    let endpoint = ExecutorLoopbackEndpointConfig::new(
+        directory.path().join("dynamic-control-executor.sock"),
+        metadata.uid(),
+        metadata.gid(),
+        0o600,
+    )
+    .expect("runtime executor endpoint");
+    let managed = endpoint.bind().expect("bind runtime executor endpoint");
+    let (listener, endpoint_guard) = managed.into_parts();
+    let mut executor_service = executor_capability_service(&lineage, 0x44, b"control-store");
+    let executor_server = thread::spawn(move || {
+        let _endpoint_guard = endpoint_guard;
+        let (mut stream, _) = listener.accept().expect("accept runtime executor");
+        serve_loopback_executor_component_connection_with_limits(
+            &mut stream,
+            &mut executor_service,
+            LoopbackExecutorTimeouts::default(),
+            MAX_EXECUTOR_REQUESTS_PER_CONNECTION,
+        )
+        .expect("serve runtime executor connection");
+    });
+    let request = AttachCampaignRuntimeRequest::new(
+        CampaignPrincipal::new("operator").expect("principal"),
+        CampaignName::new("dynamic").expect("campaign"),
+        endpoint.path(),
+    )
+    .expect("runtime request");
+    let loopback = LoopbackCampaignService::new(
+        UnixStream::connect(&socket).expect("connect campaign service"),
+    )
+    .expect("campaign loopback");
+    let attached = loopback
+        .attach_campaign_runtime(&request)
+        .expect("attach runtime");
+    assert_eq!(
+        attached.disposition(),
+        CampaignRuntimeAttachmentDisposition::Attached
+    );
+    assert_eq!(attached.attached_runtime_count(), 1);
+
+    let replayed = loopback
+        .attach_campaign_runtime(&request)
+        .expect("replay runtime attachment");
+    assert_eq!(
+        replayed.disposition(),
+        CampaignRuntimeAttachmentDisposition::Replayed
+    );
+    assert_eq!(replayed.attached_runtime_count(), 1);
+    let conflicting = AttachCampaignRuntimeRequest::new(
+        request.principal().clone(),
+        request.campaign().clone(),
+        directory.path().join("other-executor.sock"),
+    )
+    .expect("conflicting request");
+    assert!(matches!(
+        loopback.attach_campaign_runtime(&conflicting),
+        Err(LoopbackCampaignServiceError::Remote(
+            CampaignServiceFailure::CommandReuse
+        ))
+    ));
+    assert_eq!(
+        attachments
+            .attached_campaigns()
+            .expect("attached campaign inventory"),
+        [CampaignName::new("dynamic").expect("campaign")]
+    );
+
+    shutdown.shutdown();
+    server.join().expect("join campaign service");
+    executor_server.join().expect("join executor server");
+}
+
+#[test]
+fn service_shutdown_waits_for_reserved_attachment_and_rejects_its_late_install() {
+    let (directory, config) = fixture();
+    let authority = directory.path().join("component-authority.bin");
+    write_component_authorities(&authority, [0x31; 32], [0x73; 32]);
+    let config = config
+        .with_component_authority_path(&authority)
+        .expect("component authority path");
+    let prepared = config.prepare().expect("prepare service");
+    let lineage = create_runtime_campaign(&prepared.repository, "closing");
+    let service = prepared.bind().expect("bind service without runtimes");
+    let attachments = service.runtime_attachment_handle();
+    let shutdown = service.shutdown_handle();
+    let (service_finished, service_result) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let result = service.serve();
+        service_finished
+            .send(result)
+            .expect("report campaign service result");
+    });
+
+    let (executor, mut executor_peer) = UnixStream::pair().expect("executor stream pair");
+    let (request_observed, request_ready) = mpsc::channel();
+    let (release_executor, executor_released) = mpsc::channel();
+    let mut executor_service = BlockingDescribeExecutorService {
+        inner: executor_capability_service(&lineage, 0x43, b"delayed-store"),
+        observed: Some(request_observed),
+        release: executor_released,
+    };
+    let executor_server = thread::spawn(move || {
+        serve_loopback_executor_component_connection_with_limits(
+            &mut executor_peer,
+            &mut executor_service,
+            LoopbackExecutorTimeouts::default(),
+            MAX_EXECUTOR_REQUESTS_PER_CONNECTION,
+        )
+        .expect("serve delayed executor connection");
+    });
+    let attach_handle = attachments.clone();
+    let attach =
+        thread::spawn(move || attach_handle.attach(executor, &named_runtime_config("closing")));
+    request_ready
+        .recv_timeout(Duration::from_secs(1))
+        .expect("attachment reserved before shutdown");
+
+    shutdown.shutdown();
+    assert!(matches!(
+        service_result.recv_timeout(Duration::from_millis(50)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    release_executor
+        .send(())
+        .expect("release delayed executor response");
+    assert!(matches!(
+        attach.join().expect("join attachment call"),
+        Err(CampaignLocalServiceError::RuntimeAttachmentClosed)
+    ));
+    service_result
+        .recv_timeout(Duration::from_secs(1))
+        .expect("service exits after attachment settles")
+        .expect("service result");
+    server.join().expect("join campaign service thread");
+    executor_server
+        .join()
+        .expect("join delayed executor server");
+    assert!(matches!(
+        attachments.attached_campaigns(),
+        Err(CampaignLocalServiceError::RuntimeAttachmentClosed)
+    ));
+}
+
+#[test]
+fn read_only_mode_denies_policy_granted_mutation() {
+    let (_directory, config) = fixture();
+    let policy = Arc::new(
+        load_policy(
+            config.policy_path(),
+            config.endpoint().owner_user_id(),
+            config.endpoint().owner_group_id(),
+        )
+        .expect("load policy"),
+    );
+    let authorizer = CampaignLocalAuthorizer {
+        policy,
+        mode: CampaignLocalServiceMode::ReadOnly,
+    };
+    let principal = CampaignPrincipal::new("operator").expect("principal");
+    let campaign = CampaignName::new("example").expect("campaign");
+    let digest = CampaignHash::derive("campaign-bootstrap-read-only-test", b"request");
+    assert_eq!(
+        authorizer.authorize(
+            &principal,
+            CampaignServiceOperation::GetCampaign,
+            &campaign,
+            digest,
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        authorizer.authorize(
+            &principal,
+            CampaignServiceOperation::CreateCampaign,
+            &campaign,
+            digest,
+        ),
+        Err(CampaignAuthorizationError::Unauthorized)
+    );
+    assert_eq!(
+        authorizer.authorize(
+            &principal,
+            CampaignServiceOperation::AttachCampaignRuntime,
+            &campaign,
+            digest,
+        ),
+        Err(CampaignAuthorizationError::Unauthorized)
+    );
+}
+
+#[test]
+fn durable_service_bootstrap_authenticates_policy_and_restarts_cleanly() {
+    let (_directory, config) = fixture();
+    let service = config.open().expect("open local service");
+    let shutdown = service.shutdown_handle();
+    let socket = config.endpoint().path().to_owned();
+    let server = thread::spawn(move || service.serve().expect("serve local campaign service"));
+    let stream = UnixStream::connect(&socket).expect("connect local campaign service");
+    let client = CampaignClient::new(
+        LoopbackCampaignService::with_timeouts(stream, LoopbackCampaignTimeouts::default())
+            .expect("configure local campaign service"),
+    );
+    let request = GetCampaignRequest::new(
+        CampaignPrincipal::new("operator").expect("principal"),
+        CampaignName::new("absent").expect("campaign"),
+    )
+    .expect("get request");
+    assert!(matches!(
+        client.get_campaign(&request),
+        Err(CampaignClientError::Service(
+            CampaignServiceFailure::NotFound
+        ))
+    ));
+    shutdown.shutdown();
+    let report = server.join().expect("join service");
+    assert_eq!(report.accepted_connections(), 1);
+    assert!(!socket.exists());
+
+    let restarted = config.open().expect("restart local service");
+    restarted.shutdown_handle().shutdown();
+    restarted.serve().expect("serve pre-stopped restart");
+}
+
+#[test]
+fn repository_lock_excludes_a_second_socket_incarnation() {
+    let (directory, config) = fixture();
+    let first = config.open().expect("first local service");
+    let metadata = fs::metadata(directory.path()).expect("directory metadata");
+    let second_endpoint = CampaignLoopbackEndpointConfig::new(
+        directory.path().join("campaign-second.sock"),
+        metadata.uid(),
+        metadata.gid(),
+        0o600,
+    )
+    .expect("second endpoint");
+    let second = CampaignLocalServiceConfig::new(
+        second_endpoint,
+        config.state_directory(),
+        config.policy_path(),
+        config.mode(),
+        config.server(),
+    )
+    .expect("second config");
+    assert!(matches!(
+        second.open(),
+        Err(CampaignLocalServiceError::StateInUse)
+    ));
+    assert!(!second.endpoint().path().exists());
+    drop(first);
+}
+
+fn external_graph_store(
+    directory: &tempfile::TempDir,
+) -> (CampaignLocalRepositoryStore, Arc<StoreGraph>) {
+    let root = StoreNodeId::new("campaign-external").expect("external graph node");
+    let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([
+            ObjectKind::Scenario,
+            ObjectKind::Configuration,
+            ObjectKind::Policy,
+        ]),
+        nodes: BTreeMap::from([(
+            root,
+            StoreNodeSpec::Directory {
+                root: directory.path().join("external-objects"),
+            },
+        )]),
+    })
+    .expect("external directory store graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(DirectoryRefBackend::new(
+        directory.path().join("external-refs"),
+    ));
+    let store =
+        CampaignLocalRepositoryStore::new_with_maintenance(graph.clone(), refs, maintenance)
+            .expect("durable external repository store");
+    (store, graph)
+}
+
+#[test]
+fn external_store_uses_the_managed_lock_without_creating_default_leafs() {
+    let (directory, config) = fixture();
+    let (store, graph) = external_graph_store(&directory);
+    let prepared = config
+        .prepare_with_store(store)
+        .expect("prepare external repository store");
+    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
+    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
+
+    let scenario = crucible::happy_path_scenario()
+        .expect("happy-path scenario")
+        .scenario;
+    let configuration = prepared
+        .import_configuration(&scenario, &crucible::Schedule::empty())
+        .expect("import through external store graph");
+    assert!(
+        graph
+            .contains(configuration.content_id())
+            .expect("external graph contains configuration")
+    );
+
+    let (contending_store, _contending_graph) = external_graph_store(&directory);
+    assert!(matches!(
+        config.prepare_with_store(contending_store),
+        Err(CampaignLocalServiceError::StateInUse)
+    ));
+    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
+    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
+
+    drop(prepared);
+    drop(graph);
+    let (restarted_store, restarted_graph) = external_graph_store(&directory);
+    let restarted = config
+        .prepare_with_store(restarted_store)
+        .expect("restart external repository store");
+    assert_eq!(
+        restarted
+            .import_configuration(&scenario, &crucible::Schedule::empty())
+            .expect("authenticate imported configuration after restart"),
+        configuration
+    );
+    assert!(
+        restarted_graph
+            .contains(configuration.content_id())
+            .expect("restarted graph contains configuration")
+    );
+}
+
+#[test]
+fn prepared_store_gc_authority_plans_journals_and_applies_under_one_owner() {
+    let (directory, config) = fixture();
+    let (store, graph) = external_graph_store(&directory);
+    let orphan_bytes = b"unreachable imported scenario bytes";
+    let orphan = ContentId::for_bytes(ObjectKind::Scenario, 1, orphan_bytes);
+    graph
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes.to_vec()))
+        .expect("publish unreachable physical object");
+    let prepared = config
+        .prepare_with_store(store)
+        .expect("prepare GC repository owner");
+    let authority = prepared
+        .store_gc_authority()
+        .expect("borrow exact GC authority");
+    let mut ledger = MemoryAssignmentLedger::default();
+
+    let planned = authority
+        .plan(&mut ledger, None)
+        .expect("plan stopped-owner GC");
+    assert_eq!(planned.roots().len(), 0);
+    assert_eq!(planned.candidates().len(), 1);
+    assert_eq!(
+        planned
+            .candidates()
+            .iter()
+            .next()
+            .expect("planned orphan")
+            .id(),
+        orphan
+    );
+    let (mut journal, disposition) = crate::DirectoryCampaignGcJournal::create(
+        directory.path().join("owner-gc-journal"),
+        &planned,
+    )
+    .expect("persist owner GC journal");
+    assert_eq!(
+        disposition,
+        crate::CampaignGcJournalCreateDisposition::Created
+    );
+
+    let report = authority
+        .apply(&mut journal, &mut ledger, None)
+        .expect("apply exact owner GC journal");
+    assert_eq!(report.status(), crate::CampaignGcApplyStatus::Applied);
+    assert_eq!(journal.phase(), crate::CampaignGcJournalPhase::Complete);
+    assert!(!graph.contains(orphan).expect("check deleted orphan"));
+}
+
+#[test]
+fn prepared_store_gc_automatically_retains_durable_hot_fallbacks_across_restart() {
+    let (directory, config) = fixture();
+    let (store, graph) = external_graph_store(&directory);
+    let prepared = config
+        .prepare_with_store(store)
+        .expect("prepare hot-fallback GC owner");
+    let scenario = crucible::happy_path_scenario()
+        .expect("happy-path scenario")
+        .scenario;
+    let configuration = prepared
+        .import_configuration(&scenario, &crucible::Schedule::empty())
+        .expect("import retained configuration");
+    let orphan_bytes = b"unreachable object beside durable hot fallback";
+    let orphan = ContentId::for_bytes(ObjectKind::Scenario, 1, orphan_bytes);
+    graph
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes.to_vec()))
+        .expect("publish unreachable object beside hot fallback");
+    let lineage = CampaignLineageId::parse(&format!(
+        "crucible.campaign.lineage@campaign-fact.1.{}",
+        "71".repeat(32)
+    ))
+    .expect("hot-fallback lineage");
+    let record = crate::HotCheckpointFallbackRecord::new(
+        QemuHotForkTemplateKey::new(lineage, scenario.scenario_def().id()),
+        crate::HotCheckpointFallback::Thin(configuration),
+    );
+    let slot = crate::HotCheckpointFallbackSlot::new(3).expect("hot-fallback slot");
+
+    drop(prepared);
+    drop(graph);
+    let retention = DirectoryHotCheckpointFallbackRetentionStore::open(
+        config.state_directory().join(HOT_FORK_FALLBACK_DIRECTORY),
+    )
+    .expect("open canonical hot-fallback catalog");
+    assert_eq!(
+        retention
+            .compare_exchange_fallback(slot, None, Some(record))
+            .expect("retain hot fallback"),
+        crate::HotCheckpointFallbackRetentionCas::Advanced
+    );
+    drop(retention);
+
+    let (restarted_store, restarted_graph) = external_graph_store(&directory);
+    let restarted = config
+        .prepare_with_store(restarted_store)
+        .expect("restart hot-fallback GC owner");
+    let mut ledger = MemoryAssignmentLedger::default();
+    let planned = restarted
+        .store_gc_authority()
+        .expect("borrow restarted GC authority")
+        .plan(&mut ledger, None)
+        .expect("plan restarted GC with fallback");
+    assert!(
+        planned
+            .roots()
+            .iter()
+            .any(|root| root == configuration.content_id())
+    );
+    assert!(
+        planned
+            .candidates()
+            .iter()
+            .any(|candidate| candidate.id() == orphan)
+    );
+    let (mut journal, disposition) = crate::DirectoryCampaignGcJournal::create(
+        directory.path().join("hot-fallback-restart-gc-journal"),
+        &planned,
+    )
+    .expect("persist restarted hot-fallback GC journal");
+    assert_eq!(
+        disposition,
+        crate::CampaignGcJournalCreateDisposition::Created
+    );
+
+    let report = restarted
+        .store_gc_authority()
+        .expect("borrow restarted GC authority for apply")
+        .apply(&mut journal, &mut ledger, None)
+        .expect("apply restarted GC with hot fallback");
+    assert_eq!(report.status(), crate::CampaignGcApplyStatus::Applied);
+    assert!(
+        !restarted_graph
+            .contains(orphan)
+            .expect("check deleted orphan")
+    );
+    assert!(
+        restarted_graph
+            .contains(configuration.content_id())
+            .expect("check retained configuration")
+    );
+    let executor_store = CampaignExecutorStore::new(Arc::clone(&restarted.repository));
+    let retained_configuration = executor_store
+        .load_configuration_artifact(configuration)
+        .expect("load retained configuration after GC apply");
+    let retained_scenario = executor_store
+        .load_scenario_artifact(retained_configuration.scenario_artifact())
+        .expect("load retained configuration scenario after GC apply");
+    assert_eq!(
+        retained_configuration
+            .id()
+            .expect("derive retained configuration identity"),
+        configuration
+    );
+    assert_eq!(
+        retained_scenario.scenario(),
+        retained_configuration.scenario()
+    );
+    assert_eq!(
+        retained_scenario
+            .id()
+            .expect("derive retained scenario artifact identity"),
+        retained_configuration.scenario_artifact()
+    );
+}
+
+#[test]
+fn external_store_rejects_foreign_graph_maintenance_authority() {
+    let directory = tempdir().expect("external store directory");
+    let first = StoreNodeId::new("campaign-first").expect("first graph node");
+    let (first_graph, _first_maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: first.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([(
+            first,
+            StoreNodeSpec::Directory {
+                root: directory.path().join("first-objects"),
+            },
+        )]),
+    })
+    .expect("first graph");
+    let second = StoreNodeId::new("campaign-second").expect("second graph node");
+    let (_second_graph, second_maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: second.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([(
+            second,
+            StoreNodeSpec::Directory {
+                root: directory.path().join("second-objects"),
+            },
+        )]),
+    })
+    .expect("second graph");
+    let refs = Arc::new(DirectoryRefBackend::new(directory.path().join("refs")));
+
+    assert!(matches!(
+        CampaignLocalRepositoryStore::new_with_maintenance(
+            Arc::new(first_graph),
+            refs,
+            second_maintenance,
+        ),
+        Err(CampaignLocalServiceError::InvalidRepositoryStore)
+    ));
+}
+
+#[test]
+fn managed_service_retains_ref_maintenance_authority_for_its_lifetime() {
+    let (directory, config) = fixture();
+    let root = StoreNodeId::new("campaign-maintained").expect("maintained graph node");
+    let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([(
+            root,
+            StoreNodeSpec::Directory {
+                root: directory.path().join("maintained-objects"),
+            },
+        )]),
+    })
+    .expect("maintained graph");
+    let refs = Arc::new(DirectoryRefBackend::new(
+        directory.path().join("maintained-refs"),
+    ));
+    let weak_refs = Arc::downgrade(&refs);
+    let store = CampaignLocalRepositoryStore::new_with_maintenance(
+        Arc::new(graph),
+        refs.clone(),
+        maintenance,
+    )
+    .expect("maintained repository store");
+    drop(refs);
+    assert!(weak_refs.upgrade().is_some());
+
+    let prepared = config
+        .prepare_with_store(store)
+        .expect("prepare maintained repository store");
+    assert!(weak_refs.upgrade().is_some());
+    let service = prepared.bind().expect("bind maintained repository store");
+    assert!(weak_refs.upgrade().is_some());
+    drop(service);
+    assert!(weak_refs.upgrade().is_none());
+}
+
+#[test]
+fn managed_store_maintenance_flushes_write_back_and_stops_promptly() {
+    let (directory, config) = fixture();
+    let write_back = StoreNodeId::new("maintained-write-back").expect("write-back node");
+    let staging = StoreNodeId::new("maintained-staging").expect("staging node");
+    let destination = StoreNodeId::new("maintained-destination").expect("destination node");
+    let destination_root = directory.path().join("maintained-destination");
+    let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: write_back.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+        nodes: BTreeMap::from([
+            (
+                write_back,
+                StoreNodeSpec::WriteBack {
+                    staging: staging.clone(),
+                    destination: destination.clone(),
+                    journal_root: directory.path().join("maintained-journal"),
+                    maximum_pending_objects: 8,
+                    maximum_pending_bytes: 1_024,
+                },
+            ),
+            (
+                staging,
+                StoreNodeSpec::Directory {
+                    root: directory.path().join("maintained-staging"),
+                },
+            ),
+            (
+                destination,
+                StoreNodeSpec::Directory {
+                    root: destination_root.clone(),
+                },
+            ),
+        ]),
+    })
+    .expect("maintained write-back graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(DirectoryRefBackend::new(
+        directory.path().join("maintained-write-back-refs"),
+    ));
+    let store =
+        CampaignLocalRepositoryStore::new_with_maintenance(Arc::clone(&graph), refs, maintenance)
+            .expect("maintained write-back store");
+    let bytes = b"managed maintenance transfer";
+    let id = ContentId::for_bytes(ObjectKind::Finding, 1, bytes);
+    graph
+        .put_if_absent(id, &BlobHandle::from_bytes(bytes.to_vec()))
+        .expect("stage managed transfer");
+    let maintenance = CampaignStoreMaintenanceConfig::new(Duration::from_millis(100), 1, 1, 1)
+        .expect("managed maintenance policy");
+    let service = config
+        .prepare_with_store(store)
+        .expect("prepare maintained write-back service")
+        .with_store_maintenance(maintenance)
+        .expect("enable maintained write-back service")
+        .bind()
+        .expect("bind maintained write-back service");
+    let destination = DirectoryBlobBackend::new("maintained-check", destination_root);
+    let mut transferred = false;
+    // The hermetic controller suite intentionally runs hundreds of tests in
+    // parallel. Give the independently scheduled maintenance worker enough
+    // wall-clock headroom to receive a timeslice without weakening the
+    // separately bounded shutdown assertion below.
+    for _ in 0..2_000 {
+        if destination
+            .contains(id)
+            .expect("inspect maintained destination")
+        {
+            transferred = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        transferred,
+        "maintenance did not flush the pending transfer"
+    );
+
+    let (dropped, observed) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        drop(service);
+        dropped.send(()).expect("report maintenance shutdown");
+    });
+    observed
+        .recv_timeout(Duration::from_secs(1))
+        .expect("maintenance shutdown must interrupt its interval wait");
+}
+
+#[test]
+fn managed_store_maintenance_failure_stops_the_service_with_exact_operation() {
+    let (directory, config) = fixture();
+    let endpoint = StoreS3EndpointId::new("campaign/failing-maintenance")
+        .expect("failing maintenance endpoint");
+    let client = Arc::new(FailingMaintenanceS3Client {
+        endpoint: endpoint.clone(),
+    });
+    let mut clients = StoreGraphS3Clients::new();
+    clients
+        .insert(endpoint.clone(), client)
+        .expect("failing S3 capability");
+    let root = StoreNodeId::new("failing-maintenance-s3").expect("S3 node");
+    let (graph, maintenance) = StoreGraph::build_with_admin_and_all_capabilities(
+        StoreGraphConfig {
+            root: root.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+            nodes: BTreeMap::from([(
+                root.clone(),
+                StoreNodeSpec::S3 {
+                    endpoint,
+                    bucket: String::from("campaign-maintenance"),
+                    prefix: String::from("objects"),
+                    maximum_logical_object_bytes: 64 * 1024 * 1024,
+                    multipart_part_bytes: 5 * 1024 * 1024,
+                },
+            )]),
+        },
+        &StoreGraphKeyring::new(),
+        &StoreGraphNamespaceAuthorizers::new(),
+        &StoreGraphObjectProfilers::new(),
+        &StoreGraphPhysicalQuotaBinders::new(),
+        &clients,
+    )
+    .expect("failing maintained S3 graph");
+    let refs = Arc::new(DirectoryRefBackend::new(
+        directory.path().join("failing-maintenance-refs"),
+    ));
+    let store =
+        CampaignLocalRepositoryStore::new_with_maintenance(Arc::new(graph), refs, maintenance)
+            .expect("failing maintained S3 store");
+    let service = config
+        .prepare_with_store(store)
+        .expect("prepare failing maintained service")
+        .with_store_maintenance(
+            CampaignStoreMaintenanceConfig::new(Duration::from_millis(100), 1, 1, 1)
+                .expect("failing maintenance policy"),
+        )
+        .expect("enable failing maintained service")
+        .bind()
+        .expect("bind failing maintained service");
+
+    assert!(matches!(
+        service.serve(),
+        Err(CampaignLocalServiceError::StoreMaintenanceFailed {
+            operation: "cleanup-S3-multipart",
+            boundary,
+            source: StoreError::Unavailable,
+        }) if boundary == root.as_str()
+    ));
+}
+
+#[test]
+fn managed_store_maintenance_round_robins_and_resumes_exact_s3_cursors() {
+    let (directory, config) = fixture();
+    let endpoint =
+        StoreS3EndpointId::new("campaign/paged-maintenance").expect("paged maintenance endpoint");
+    let client = Arc::new(PagedMaintenanceS3Client {
+        endpoint: endpoint.clone(),
+        pages: Mutex::new(BTreeMap::new()),
+        aborted: Mutex::new(0),
+    });
+    let mut clients = StoreGraphS3Clients::new();
+    clients
+        .insert(endpoint.clone(), client.clone())
+        .expect("paged S3 capability");
+    let root = StoreNodeId::new("paged-write-through").expect("write-through node");
+    let first = StoreNodeId::new("paged-s3-a").expect("first S3 node");
+    let second = StoreNodeId::new("paged-s3-b").expect("second S3 node");
+    let (graph, maintenance) = StoreGraph::build_with_admin_and_all_capabilities(
+        StoreGraphConfig {
+            root: root.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+            nodes: BTreeMap::from([
+                (
+                    root,
+                    StoreNodeSpec::WriteThrough {
+                        children: vec![first.clone(), second.clone()],
+                    },
+                ),
+                (
+                    first,
+                    StoreNodeSpec::S3 {
+                        endpoint: endpoint.clone(),
+                        bucket: String::from("campaign-maintenance"),
+                        prefix: String::from("first"),
+                        maximum_logical_object_bytes: 64 * 1024 * 1024,
+                        multipart_part_bytes: 5 * 1024 * 1024,
+                    },
+                ),
+                (
+                    second,
+                    StoreNodeSpec::S3 {
+                        endpoint,
+                        bucket: String::from("campaign-maintenance"),
+                        prefix: String::from("second"),
+                        maximum_logical_object_bytes: 64 * 1024 * 1024,
+                        multipart_part_bytes: 5 * 1024 * 1024,
+                    },
+                ),
+            ]),
+        },
+        &StoreGraphKeyring::new(),
+        &StoreGraphNamespaceAuthorizers::new(),
+        &StoreGraphObjectProfilers::new(),
+        &StoreGraphPhysicalQuotaBinders::new(),
+        &clients,
+    )
+    .expect("paged maintained S3 graph");
+    let refs = Arc::new(DirectoryRefBackend::new(
+        directory.path().join("paged-maintenance-refs"),
+    ));
+    let store =
+        CampaignLocalRepositoryStore::new_with_maintenance(Arc::new(graph), refs, maintenance)
+            .expect("paged maintained S3 store");
+    let service = config
+        .prepare_with_store(store)
+        .expect("prepare paged maintained service")
+        .with_store_maintenance(
+            CampaignStoreMaintenanceConfig::new(Duration::from_millis(100), 1, 1, 1)
+                .expect("paged maintenance policy"),
+        )
+        .expect("enable paged maintained service")
+        .bind()
+        .expect("bind paged maintained service");
+    let shutdown = service.shutdown_handle();
+    let owner = thread::spawn(move || service.serve());
+    let mut completed = false;
+    for _ in 0..200 {
+        if client.completed() {
+            completed = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    shutdown.shutdown();
+    owner
+        .join()
+        .expect("join paged maintained service")
+        .expect("paged maintenance service result");
+    assert!(completed, "maintenance did not resume both exact cursors");
+    assert_eq!(client.aborted(), 2);
+}
+
+#[test]
+fn external_store_rejects_a_nondurable_immutable_backend() {
+    let blobs = Arc::new(MemoryBlobBackend::new("volatile-campaign", 1024 * 1024));
+    let refs = Arc::new(MemoryRefBackend::new());
+    assert!(matches!(
+        CampaignLocalRepositoryStore::new(blobs, refs),
+        Err(CampaignLocalServiceError::InvalidRepositoryStore)
+    ));
+}
+
+#[test]
+fn external_store_rejects_a_nondurable_ref_backend() {
+    let directory = tempdir().expect("external store directory");
+    let blobs = Arc::new(DirectoryBlobBackend::new(
+        "durable-campaign",
+        directory.path().join("objects"),
+    ));
+    let refs = Arc::new(MemoryRefBackend::new());
+    assert!(matches!(
+        CampaignLocalRepositoryStore::new(blobs, refs),
+        Err(CampaignLocalServiceError::InvalidRepositoryStore)
+    ));
+}
+
+#[test]
+fn prepared_owner_imports_verified_artifacts_before_socket_bind() {
+    let (_directory, config) = fixture();
+    let prepared = config.prepare().expect("prepare local service");
+    assert!(!config.endpoint().path().exists());
+    assert!(matches!(
+        config.open(),
+        Err(CampaignLocalServiceError::StateInUse)
+    ));
+
+    let scenario = crucible::happy_path_scenario()
+        .expect("happy-path scenario")
+        .scenario;
+    let configuration = prepared
+        .import_configuration(&scenario, &crucible::Schedule::empty())
+        .expect("import verified configuration");
+    let generator =
+        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("generator");
+    let generator_id = prepared
+        .import_generator(&generator)
+        .expect("import verified generator");
+    assert_ne!(configuration.content_id(), generator_id.content_id());
+    assert!(!config.endpoint().path().exists());
+
+    let service = prepared.bind().expect("bind prepared service");
+    assert!(config.endpoint().path().exists());
+    service.shutdown_handle().shutdown();
+    service.serve().expect("serve pre-stopped service");
+}
+
+#[test]
+fn component_authorities_are_authenticated_before_repository_open() {
+    let (directory, config) = fixture();
+    let authority_path = directory.path().join("component-authorities.bin");
+    write_component_authorities(&authority_path, [0x31; 32], [0x73; 32]);
+    let configured = config
+        .clone()
+        .with_component_authority_path(&authority_path)
+        .expect("component-authority path");
+    assert_eq!(
+        configured.component_authority_path(),
+        Some(authority_path.as_path())
+    );
+
+    let prepared = configured.prepare().expect("prepare with authorities");
+    assert!(!configured.endpoint().path().exists());
+    let service = prepared.bind().expect("bind authority-backed service");
+    service.shutdown_handle().shutdown();
+    service.serve().expect("serve pre-stopped service");
+}
+
+#[test]
+fn malformed_component_authorities_fail_before_repository_or_socket_mutation() {
+    let (directory, config) = fixture();
+    let authority_path = directory.path().join("component-authorities.bin");
+    write_component_authorities(&authority_path, [0x31; 32], [0x31; 32]);
+    let configured = config
+        .clone()
+        .with_component_authority_path(&authority_path)
+        .expect("component-authority path");
+    assert!(matches!(
+        configured.prepare(),
+        Err(CampaignLocalServiceError::InvalidComponentAuthorityFile)
+    ));
+    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
+    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
+    assert!(!config.endpoint().path().exists());
+
+    write_component_authorities(&authority_path, [0; 32], [0x73; 32]);
+    assert!(matches!(
+        configured.prepare(),
+        Err(CampaignLocalServiceError::InvalidComponentAuthorityFile)
+    ));
+    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
+    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
+    assert!(!config.endpoint().path().exists());
+
+    write_component_authorities(&authority_path, [0x31; 32], [0x73; 32]);
+    fs::set_permissions(&authority_path, Permissions::from_mode(0o640))
+        .expect("expose authority file");
+    assert!(matches!(
+        configured.prepare(),
+        Err(CampaignLocalServiceError::InvalidComponentAuthorityFile)
+    ));
+    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
+    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
+    assert!(!config.endpoint().path().exists());
+
+    fs::set_permissions(&authority_path, Permissions::from_mode(0o600))
+        .expect("restore authority mode");
+    let target = directory.path().join("component-authority-target.bin");
+    fs::rename(&authority_path, &target).expect("move authority target");
+    symlink(&target, &authority_path).expect("component-authority symlink");
+    assert!(matches!(
+        configured.prepare(),
+        Err(CampaignLocalServiceError::InvalidComponentAuthorityFile)
+    ));
+    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
+    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
+    assert!(!config.endpoint().path().exists());
+}
+
+#[test]
+fn component_authority_path_uses_the_deployment_path_profile() {
+    let (_directory, config) = fixture();
+    assert!(matches!(
+        config.with_component_authority_path("relative-authorities.bin"),
+        Err(CampaignLocalServiceError::InvalidComponentAuthorityPath)
+    ));
+}
+
+#[test]
+fn prepared_read_only_owner_rejects_artifact_import() {
+    let (_directory, config) = fixture();
+    let read_only = CampaignLocalServiceConfig::new(
+        config.endpoint().clone(),
+        config.state_directory(),
+        config.policy_path(),
+        CampaignLocalServiceMode::ReadOnly,
+        config.server(),
+    )
+    .expect("read-only config");
+    let prepared = read_only.prepare().expect("prepare read-only service");
+    let generator =
+        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("generator");
+    assert!(matches!(
+        prepared.import_generator(&generator),
+        Err(CampaignLocalServiceError::ArtifactImportReadOnly)
+    ));
+    let maintenance = CampaignStoreMaintenanceConfig::new(Duration::from_millis(100), 1, 1, 1)
+        .expect("maintenance policy");
+    assert!(matches!(
+        prepared.with_store_maintenance(maintenance),
+        Err(CampaignLocalServiceError::StoreMaintenanceReadOnly)
+    ));
+    assert!(!read_only.endpoint().path().exists());
+}
+
+#[test]
+fn policy_and_state_ownership_fail_before_socket_bind() {
+    let (directory, config) = fixture();
+    fs::set_permissions(config.policy_path(), Permissions::from_mode(0o620))
+        .expect("writable policy");
+    assert!(matches!(
+        config.open(),
+        Err(CampaignLocalServiceError::InvalidPolicyFile)
+    ));
+    assert!(!config.endpoint().path().exists());
+
+    fs::set_permissions(config.policy_path(), Permissions::from_mode(0o600))
+        .expect("restore policy");
+    fs::set_permissions(config.state_directory(), Permissions::from_mode(0o770))
+        .expect("writable state");
+    assert!(matches!(
+        config.open(),
+        Err(CampaignLocalServiceError::InvalidStateDirectory)
+    ));
+    assert!(!config.endpoint().path().exists());
+
+    fs::set_permissions(config.state_directory(), Permissions::from_mode(0o700))
+        .expect("restore state");
+    let objects = config.state_directory().join(OBJECT_DIRECTORY);
+    fs::create_dir(&objects).expect("objects directory");
+    fs::set_permissions(&objects, Permissions::from_mode(0o750))
+        .expect("exposed objects directory");
+    assert!(matches!(
+        config.open(),
+        Err(CampaignLocalServiceError::InvalidStateSubdirectory)
+    ));
+    assert!(!config.endpoint().path().exists());
+    fs::remove_dir(&objects).expect("remove exposed objects directory");
+
+    let target = directory.path().join("policy-target");
+    fs::write(&target, b"not policy").expect("policy target");
+    let redirected = directory.path().join("redirected-policy.toml");
+    symlink(&target, &redirected).expect("policy symlink");
+    let symlink_config = CampaignLocalServiceConfig::new(
+        config.endpoint().clone(),
+        config.state_directory(),
+        redirected,
+        config.mode(),
+        config.server(),
+    )
+    .expect("symlink config");
+    assert!(matches!(
+        symlink_config.open(),
+        Err(CampaignLocalServiceError::InvalidPolicyFile)
+    ));
+    assert!(!config.endpoint().path().exists());
+}
+
+#[test]
+fn malformed_or_oversized_policy_is_read_only_failure() {
+    let (_directory, config) = fixture();
+    fs::write(config.policy_path(), b"schema = [").expect("malformed policy");
+    assert!(matches!(
+        config.open(),
+        Err(CampaignLocalServiceError::Policy(
+            UnixPeerCampaignPolicyLoadError::Toml { .. }
+        ))
+    ));
+    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
+    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
+    assert!(!config.endpoint().path().exists());
+
+    fs::write(
+        config.policy_path(),
+        vec![b' '; MAX_CAMPAIGN_POLICY_BYTES + 1],
+    )
+    .expect("oversized policy");
+    assert!(matches!(
+        config.open(),
+        Err(CampaignLocalServiceError::Policy(
+            UnixPeerCampaignPolicyLoadError::TooLarge
+        ))
+    ));
+    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
+    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
+    assert!(!config.endpoint().path().exists());
+}

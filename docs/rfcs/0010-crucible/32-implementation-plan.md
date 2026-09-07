@@ -43,7 +43,7 @@ IO 16  QEMU 16  API 14  DBG 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11
 DCE 10  PAT 9  TIME 9  TRI 8  WL 6  ARCH 5  EX 5  BOUND 4  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:d31bc7d0b19210a7`
+Checklist sync digest: `rfc0010-checklist-v1:0e4fd5a1187ee04b`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -66,7 +66,8 @@ implemented and an adversarial review confirms the gate exercises that behavior.
   Phase 0  De-risk          spikes that can reshape the design       gate: Phase-0 blockers pass
   Phase 1  Determinism core L0 runtime, decision RNG, time, harness  gate:harness-lint, gate:license-boundary,
                             licensing boundary                            gate:layer0-determinism,
-                            content-addressed store, the test double        gate:content-address, gate:replay-oracle (sim),
+                            content-addressed store, the test double        gate:content-address, gate:campaign-model,
+                                                                            gate:replay-oracle (sim),
                                                                             gate:single-vm-fingerprint (double), gate:divergence-bisect
   Phase 2  Transport+QEMU   shmem ABI, protocol, patch series,       gate:abi-conformance, gate:layer1-injection,
                             host QEMU + plugin, single-VM determinism       gate:patch-microtests, gate:qemu-inert,
@@ -155,9 +156,9 @@ multi-vCPU (RR-TCG)**, where a single-threaded round-robin TCG core under icount
 makes an N-vCPU guest bit-identical (G-10).
 
 **Tasks.**
-- Shmem ABI (incl. the multi-vCPU, coverage-ring, white-box marker-ring, and
-  preemption-mailbox ABI tasks `T-SHM-16 … T-SHM-19`):
-  `T-SHM-1 … T-SHM-19`
+- Shmem ABI (incl. the multi-vCPU, coverage-ring, white-box marker-ring,
+  preemption-mailbox, and selectable-reply ABI tasks `T-SHM-16 … T-SHM-20`):
+  `T-SHM-1 … T-SHM-20`
   ([`13`](13-shmem-abi.md)).
 - Protocol: `T-PROTO-1 … T-PROTO-11` ([`14`](14-protocol.md)).
 - QEMU patch series + rebase pipeline + inertness (incl. the RR-TCG/multi-vCPU
@@ -166,7 +167,8 @@ makes an N-vCPU guest bit-identical (G-10).
 - In-VM plugin (incl. the per-vCPU plugin tasks `T-PLUG-24 … T-PLUG-27`): `T-PLUG-1 … T-PLUG-27` ([`12`](12-qemu-plugin.md)).
 - Patterns realized here: `T-PAT-3, T-PAT-8` ([`29`](29-patterns-and-sketches.md)).
 
-**Exit gates.** `gate:abi-conformance`, `gate:layer1-injection` (L1 injection
+**Exit gates.** `gate:abi-conformance`, `gate:typed-choice`,
+`gate:layer1-injection` (L1 injection
 preflight before L2 gates), `gate:patch-microtests`, `gate:qemu-inert`,
 `gate:single-vm-fingerprint` (real QEMU — Contract A proven, now covering an
 N-vCPU guest), `gate:any-guest` (an unmodified guest boots deterministically, no

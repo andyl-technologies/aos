@@ -68,7 +68,7 @@
       }
       {
         label = "scoped phase2 ABI wrapper dependencies";
-        needle = "dependencies = [\n          phase1.gates.licenseBoundary\n          phase1.gates.harnessLint\n          phase1.gates.layer0Determinism\n          phase1.gates.contentAddress\n          phase1.gates.replayOracle\n          phase1.gates.singleVmFingerprint\n          phase1.gates.divergenceBisect\n        ];";
+        needle = "dependencies = [\n          phase1.gates.licenseBoundary\n          phase1.gates.harnessLint\n          phase1.gates.layer0Determinism\n          phase1.gates.contentAddress\n          phase1.gates.campaignModel\n          phase1.gates.replayOracle\n          phase1.gates.singleVmFingerprint\n          phase1.gates.divergenceBisect\n        ];";
       }
       {
         label = "phase7 package ABI conformance check imported";

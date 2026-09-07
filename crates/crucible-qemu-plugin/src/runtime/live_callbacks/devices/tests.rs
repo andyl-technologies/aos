@@ -8,6 +8,8 @@ use crate::runtime::callback_quiescence::LiveCallbackQuiescence;
 
 use super::*;
 
+use crate::runtime::LiveRuntimeTeardownRouter;
+
 use crucible_shmem::{
     AcceleratorEntry, DirectedRing, KIND_VM, MappedDirectedRingMut, RegionConfig, RegionHeader,
     RegionLayout, SLOT_9P_IO, SLOT_BLK_IO, authorize_advance_ceiling,
@@ -631,7 +633,7 @@ fn live_device_callback_reentry_is_rejected_before_ring_or_freeze_mutation() {
         &header,
         &slot,
         Arc::new(LiveCallbackQuiescence::new()),
-        teardown_sender,
+        LiveRuntimeTeardownRouter::new(teardown_sender),
     )
     .and_then(|state| state.attach_devices(0, block, ninep, 1, storage.accelerator_rings()))
     .unwrap_or_else(|error| panic!("test live state should attach devices: {error}"));
@@ -688,7 +690,7 @@ fn live_ninep_burst_release_is_legal_while_idle_advance_retires() {
         &header,
         &slot,
         Arc::new(LiveCallbackQuiescence::new()),
-        teardown_sender,
+        LiveRuntimeTeardownRouter::new(teardown_sender),
     )
     .and_then(|state| state.attach_devices(0, block, ninep, 1, storage.accelerator_rings()))
     .unwrap_or_else(|error| panic!("test live state should attach devices: {error}"));
@@ -750,7 +752,7 @@ fn live_block_event_poll_consumes_the_wake_during_idle_advance() {
         &header,
         &slot,
         Arc::new(LiveCallbackQuiescence::new()),
-        teardown_sender,
+        LiveRuntimeTeardownRouter::new(teardown_sender),
     )
     .and_then(|state| state.attach_devices(0, block, ninep, 1, storage.accelerator_rings()))
     .unwrap_or_else(|error| panic!("test live state should attach devices: {error}"));
@@ -869,7 +871,7 @@ fn live_device_submits_during_idle_completion_use_the_advance_target() {
         &header,
         &slot,
         Arc::new(LiveCallbackQuiescence::new()),
-        teardown_sender,
+        LiveRuntimeTeardownRouter::new(teardown_sender),
     )
     .and_then(|state| state.attach_devices(0, block, ninep, 1, storage.accelerator_rings()))
     .unwrap_or_else(|error| panic!("test live state should attach devices: {error}"));

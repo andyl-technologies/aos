@@ -5,15 +5,18 @@ use serde::{Deserialize, Serialize};
 use super::*;
 
 const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v2\0";
-const MAX_BYTES: usize = 1_610_612_736;
+/// Maximum canonical byte length of one complete single-scheduler continuation.
+pub const MAX_SINGLE_SCHEDULER_CHECKPOINT_BYTES: usize =
+    MAX_SINGLE_SCHEDULER_CHECKPOINT_PAYLOAD_BYTES + MAGIC.len();
+const MAX_SINGLE_SCHEDULER_CHECKPOINT_PAYLOAD_BYTES: usize = 1_610_612_736;
 
 /// Complete mutable continuation of one admitted scheduler.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SingleSchedulerCheckpoint {
     wire: SingleSchedulerWire,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SingleSchedulerWire {
     scenario: ContentHash,
@@ -50,7 +53,7 @@ struct SingleSchedulerWire {
     last_topology_recompute: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RuntimeNodeWire {
     id: SchedulerNodeId,
@@ -63,7 +66,7 @@ struct RuntimeNodeWire {
     vcpu_idle_states: Vec<SchedulerVcpuIdleState>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EventLogWire {
     prefix: ContentHash,
@@ -75,7 +78,7 @@ struct EventLogWire {
     condition_base_events: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SearchRuntimeFrontierWire {
     scenario: ContentHash,
@@ -92,7 +95,7 @@ impl SingleScheduler {
     /// Returns [`SingleSchedulerCheckpointError`] if a device or network owner
     /// cannot encode its independently validated continuation.
     pub fn checkpoint(&self) -> Result<SingleSchedulerCheckpoint, SingleSchedulerCheckpointError> {
-        if self.lock_held {
+        if self.lock_held || !self.app_random_branch_selections.is_empty() {
             return Err(SingleSchedulerCheckpointError::Transient);
         }
         let device_state = self
@@ -229,6 +232,12 @@ impl From<&SearchRuntimeFrontier> for SearchRuntimeFrontierWire {
 }
 
 impl SingleSchedulerCheckpoint {
+    /// Returns the immutable scenario identity owning this continuation.
+    #[must_use]
+    pub const fn scenario(&self) -> ContentHash {
+        self.wire.scenario
+    }
+
     /// Reconstructs the checkpoint configuration against an authenticated scenario.
     ///
     /// # Errors
@@ -239,7 +248,7 @@ impl SingleSchedulerCheckpoint {
         &self,
         scenario: &ScenarioDef,
     ) -> Result<Configuration, SingleSchedulerCheckpointError> {
-        if self.wire.scenario != scenario.id() {
+        if self.wire.scenario != scenario.id() || self.future_decision_seed() != scenario.seed() {
             return Err(SingleSchedulerCheckpointError::Configuration);
         }
         let schedule = Schedule::from_compact_binary(&self.wire.schedule)
@@ -255,6 +264,29 @@ impl SingleSchedulerCheckpoint {
     pub const fn frontier(&self) -> VirtualTime {
         VirtualTime {
             ticks: self.wire.frontier,
+        }
+    }
+
+    /// Returns the scheduler-state projection retained at this boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleSchedulerCheckpointError::State`] if the internally
+    /// retained scheduler projection is malformed. Canonically decoded and
+    /// locally captured checkpoints have already passed this validation.
+    pub fn scheduler_state(&self) -> Result<SchedulerState, SingleSchedulerCheckpointError> {
+        SchedulerState::from_compact_binary(&self.wire.scheduler_state)
+            .map_err(|_| SingleSchedulerCheckpointError::State)
+    }
+
+    /// Returns the exact unified event-log boundary retained by this continuation.
+    #[must_use]
+    pub fn event_log_offset(&self) -> EventLogOffset {
+        EventLogOffset {
+            prefix: self.wire.event_log.prefix,
+            appended_segment: self.wire.event_log.appended_segment,
+            bytes: self.wire.event_log.bytes,
+            events: self.wire.event_log.events,
         }
     }
 
@@ -285,6 +317,27 @@ impl SingleSchedulerCheckpoint {
         &self.wire.event_log.segment_dependencies
     }
 
+    /// Returns the exact event entries retained for condition and evidence replay.
+    ///
+    /// A scheduler created at run genesis retains a zero-based complete prefix.
+    /// A continuation reconstructed from an offset-only source may instead
+    /// retain a suffix whose first sequence is reported by
+    /// [`Self::retained_event_log_base_events`]. Callers that require complete
+    /// run evidence must reject a nonzero base or load the authenticated prior
+    /// segment closure before interpreting this slice as the whole run.
+    #[must_use]
+    pub fn retained_event_log_entries(&self) -> &[SchedulerEventLogEntry] {
+        &self.wire.event_log.condition_entries
+    }
+
+    /// Returns the dense sequence preceding the retained event-entry suffix.
+    ///
+    /// Zero means [`Self::retained_event_log_entries`] starts at run genesis.
+    #[must_use]
+    pub const fn retained_event_log_base_events(&self) -> u64 {
+        self.wire.event_log.condition_base_events
+    }
+
     /// Encodes the complete scheduler continuation canonically.
     ///
     /// # Errors
@@ -295,7 +348,7 @@ impl SingleSchedulerCheckpoint {
         let mut payload = Vec::new();
         ciborium::ser::into_writer(&self.wire, &mut payload)
             .map_err(|_| SingleSchedulerCheckpointError::Malformed)?;
-        if payload.len() > MAX_BYTES {
+        if payload.len() > MAX_SINGLE_SCHEDULER_CHECKPOINT_PAYLOAD_BYTES {
             return Err(SingleSchedulerCheckpointError::Limit);
         }
         let mut bytes = Vec::with_capacity(MAGIC.len() + payload.len());
@@ -314,7 +367,7 @@ impl SingleSchedulerCheckpoint {
         let payload = bytes
             .strip_prefix(MAGIC)
             .ok_or(SingleSchedulerCheckpointError::Version)?;
-        if payload.len() > MAX_BYTES {
+        if payload.len() > MAX_SINGLE_SCHEDULER_CHECKPOINT_PAYLOAD_BYTES {
             return Err(SingleSchedulerCheckpointError::Limit);
         }
         let wire: SingleSchedulerWire = ciborium::de::from_reader(payload)
@@ -413,6 +466,7 @@ impl SingleSchedulerCheckpoint {
         staged.decision_seed = Seed::from_bytes(self.wire.decision_seed);
         staged.decision_rng_cursor = self.wire.decision_rng_cursor.clone();
         staged.branch_network_choices = self.wire.branch_network_choices.clone();
+        staged.app_random_branch_selections.clear();
         staged.search_frontiers = search_frontiers;
         staged.trigger_actions = self.wire.trigger_actions.clone();
         staged.frontier = VirtualTime {

@@ -45,7 +45,8 @@ pub(in crate::runtime) fn install_app_random_restore_state_for_test(
     let capability = doorbell
         .require_guest_input_capability(WhiteboxDoorbellCapabilities::bidirectional())
         .unwrap_or_else(|error| panic!("test app-random capability should build: {error}"));
-    let mut state = Box::new(LiveAppRandomState::new(config, capability));
+    let branch_plan = AppRandomBranchPlan::default();
+    let mut state = Box::new(LiveAppRandomState::new(config, &branch_plan, capability));
     let pointer = std::ptr::from_mut(state.as_mut());
     LIVE_APP_RANDOM_STATE
         .compare_exchange(

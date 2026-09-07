@@ -1,0 +1,293 @@
+diff --git a/chardev/char-socket.c b/chardev/char-socket.c
+index 8744abb60..ae024581f 100644
+--- a/chardev/char-socket.c
++++ b/chardev/char-socket.c
+@@ -820,6 +820,39 @@ out:
+     return result;
+ }
+ 
++int qemu_chr_socket_hot_fork_rehome_child_context(
++    QemuChrSocketHotForkChildBasis *basis, GMainContext *inherited,
++    GMainContext *replacement)
++{
++    Chardev *chr;
++    int result = 0;
++
++    if (!basis || !basis->prepared || !basis->chardev || !replacement ||
++        !object_dynamic_cast(OBJECT(basis->chardev), TYPE_CHARDEV_SOCKET)) {
++        return -EINVAL;
++    }
++    if (basis->source_pid == getpid() || !basis->input_held) {
++        return -EPERM;
++    }
++
++    chr = basis->chardev;
++    qemu_mutex_lock(&chr->chr_write_lock);
++    if (!tcp_chr_hot_fork_child_is_held_locked(basis, inherited)) {
++        result = -ESTALE;
++        goto out;
++    }
++    /*
++     * The hold proves that no read or HUP source is attached, so the move
++     * is two pointer updates; the sources that release attaches follow the
++     * chardev's context.
++     */
++    chr->gcontext = replacement;
++    basis->context = replacement;
++out:
++    qemu_mutex_unlock(&chr->chr_write_lock);
++    return result;
++}
++
+ static void tcp_chr_connect(void *opaque)
+ {
+     Chardev *chr = CHARDEV(opaque);
+diff --git a/include/chardev/char-socket.h b/include/chardev/char-socket.h
+index bf2664fc2..80f46df2d 100644
+--- a/include/chardev/char-socket.h
++++ b/include/chardev/char-socket.h
+@@ -177,6 +177,25 @@ int qemu_chr_socket_hot_fork_reconstruct_child_held(
+ bool qemu_chr_socket_hot_fork_child_input_is_held(
+     QemuChrSocketHotForkChildBasis *basis, GMainContext *context);
+ 
++/**
++ * qemu_chr_socket_hot_fork_rehome_child_context() - move held input's context
++ * @basis: exact held child socket basis after successful reconstruction
++ * @inherited: exact GMainContext the basis was reconstructed against
++ * @replacement: fresh GMainContext the rebuilt monitor I/O thread runs
++ *
++ * A hot-fork child rebuilds its monitor I/O thread's GMainContext, because
++ * GLib will not let a new thread acquire the inherited one.  While input is
++ * held no source is attached, so the held socket follows by recording the
++ * replacement as the chardev's and the basis's context; the sources that
++ * release attaches then land in it.
++ *
++ * Returns: zero after the move, -EPERM in the source process or after
++ * release, or -ESTALE if the held socket basis does not match @inherited.
++ */
++int qemu_chr_socket_hot_fork_rehome_child_context(
++    QemuChrSocketHotForkChildBasis *basis, GMainContext *inherited,
++    GMainContext *replacement);
++
+ /**
+  * qemu_chr_socket_hot_fork_release_child_input() - attach child input sources
+  * @basis: exact held child socket basis after successful reconstruction
+diff --git a/iothread.c b/iothread.c
+index 50f1c5def..4ac5bb138 100644
+--- a/iothread.c
++++ b/iothread.c
+@@ -459,6 +459,8 @@ int iothread_hot_fork_reconstruct_child(
+ #ifdef CONFIG_LINUX
+     g_autofree char *thread_name = NULL;
+     int64_t current_thread_id = qemu_get_thread_id();
++    GMainContext *replacement_context;
++    GSource *source;
+     long live_thread;
+ 
+     if (!iothread || !replacement_thread_id || inherited_thread_id <= 0 ||
+@@ -483,6 +485,26 @@ int iothread_hot_fork_reconstruct_child(
+         return -EBUSY;
+     }
+ 
++    /*
++     * The inherited GMainContext records the vanished thread as its owner,
++     * and GLib lets no other thread acquire it: the replacement's push of
++     * the thread-default context fails and its main loop waits forever for
++     * a release that cannot come.  Build a fresh context and loop and move
++     * the AioContext's GSource across.  The source's context link is part
++     * of GLib's public, embedded GSource layout; clearing it lets the
++     * attach take the source, with its poll descriptors, into the fresh
++     * context.  The dead copy of the old context keeps a stale entry for
++     * the source and is abandoned rather than unreferenced, since releasing
++     * it would touch the owner that no longer exists.
++     */
++    replacement_context = g_main_context_new();
++    source = aio_get_g_source(iothread->ctx);
++    source->context = NULL;
++    g_source_attach(source, replacement_context);
++    g_source_unref(source);
++    iothread->worker_context = replacement_context;
++    iothread->main_loop = g_main_loop_new(replacement_context, TRUE);
++
+     /*
+      * No caller uses the initialization semaphore after IOThread creation
+      * returns.  Recreate it rather than inheriting any implementation-private
+diff --git a/monitor/monitor.c b/monitor/monitor.c
+index 761725b87..5034c07b4 100644
+--- a/monitor/monitor.c
++++ b/monitor/monitor.c
+@@ -1048,12 +1048,29 @@ out:
+             result = iothread_hot_fork_reconstruct_child(
+                 basis->iothread, basis->iothread_thread_id,
+                 basis->socket.source_pid, &replacement_iothread_id);
+-            if (result == 0) {
+-                basis->iothread_thread_id = replacement_iothread_id;
+-                basis->iothread_rebuilt = true;
+-            } else {
++            if (result != 0) {
+                 monitor_hot_fork_report_child_stage("iothread", result);
+             }
++            if (result == 0) {
++                /*
++                 * The rebuilt thread runs a fresh GMainContext; the held
++                 * monitor socket and the basis follow it before any source
++                 * is attached.
++                 */
++                GMainContext *replacement_context =
++                    iothread_get_g_main_context(basis->iothread);
++
++                result = qemu_chr_socket_hot_fork_rehome_child_context(
++                    &basis->socket, basis->iothread_context,
++                    replacement_context);
++                if (result != 0) {
++                    monitor_hot_fork_report_child_stage("rehome", result);
++                } else {
++                    basis->iothread_context = replacement_context;
++                    basis->iothread_thread_id = replacement_iothread_id;
++                    basis->iothread_rebuilt = true;
++                }
++            }
+         }
+     }
+     return result;
+@@ -1116,37 +1133,79 @@ static void monitor_hot_fork_child_protocol_transition_bh(void *opaque)
+     Monitor *listed;
+ 
+     transition->result = -ESTALE;
+-    if (qemu_get_thread_id() != basis->iothread_thread_id ||
+-        basis->iothread != mon_iothread ||
+-        basis->iothread_context !=
+-            iothread_get_g_main_context(basis->iothread) ||
+-        basis->dispatcher != qmp_dispatcher_co ||
+-        qmp_dispatcher_co_shutdown ||
+-        !monitor_qmp_hot_fork_dispatcher_is_idle(basis->dispatcher)) {
+-        return;
++    {
++        /*
++         * Evaluated one by one so a stale transition names what moved on
++         * the child's diagnostics stream; the result alone says only that
++         * the rebuilt monitor no longer matches its basis.
++         */
++        const bool on_iothread =
++            qemu_get_thread_id() == basis->iothread_thread_id;
++        const bool iothread_matches = basis->iothread == mon_iothread &&
++            basis->iothread_context ==
++                iothread_get_g_main_context(basis->iothread);
++        const bool dispatcher_matches =
++            basis->dispatcher == qmp_dispatcher_co &&
++            !qmp_dispatcher_co_shutdown;
++        const bool dispatcher_idle =
++            monitor_qmp_hot_fork_dispatcher_is_idle(basis->dispatcher);
++
++        if (!on_iothread || !iothread_matches || !dispatcher_matches ||
++            !dispatcher_idle) {
++            fprintf(stderr,
++                    "crucible hot-fork monitor child transition %u is "
++                    "stale: on-iothread %d iothread %d dispatcher %d "
++                    "dispatcher-idle %d\n",
++                    transition->operation, on_iothread, iothread_matches,
++                    dispatcher_matches, dispatcher_idle);
++            return;
++        }
+     }
+ 
+     qemu_mutex_lock(&monitor_lock);
+     listed = QTAILQ_FIRST(&mon_list);
+-    if (monitor_hot_fork_generation_overflowed ||
+-        monitor_hot_fork_generation != basis->generation || !listed ||
+-        QTAILQ_NEXT(listed, entry) || !monitor_is_qmp(listed) ||
+-        basis->monitor != container_of(listed, MonitorQMP, common) ||
+-        basis->chardev != monitor_hot_fork_child_chardev(basis->monitor) ||
+-        !basis->attempted || !basis->inherited_protocol_disposed ||
+-        !basis->dispatcher_rebuilt || !basis->iothread_rebuilt ||
+-        !basis->parser_reset || !basis->capabilities_reset ||
+-        !basis->input_held || basis->input_released ||
+-        !monitor_hot_fork_child_protocol_is_held(basis->monitor) ||
+-        !qemu_chr_socket_hot_fork_child_input_is_held(
+-            &basis->socket, basis->iothread_context)) {
+-        goto out;
++    {
++        const bool generation_matches =
++            !monitor_hot_fork_generation_overflowed &&
++            monitor_hot_fork_generation == basis->generation;
++        const bool single_qmp_monitor = listed &&
++            !QTAILQ_NEXT(listed, entry) && monitor_is_qmp(listed) &&
++            basis->monitor == container_of(listed, MonitorQMP, common);
++        const bool chardev_matches = single_qmp_monitor &&
++            basis->chardev == monitor_hot_fork_child_chardev(basis->monitor);
++        const bool reconstructed = basis->attempted &&
++            basis->inherited_protocol_disposed && basis->dispatcher_rebuilt &&
++            basis->iothread_rebuilt && basis->parser_reset &&
++            basis->capabilities_reset && basis->input_held &&
++            !basis->input_released;
++        const bool protocol_held = single_qmp_monitor &&
++            monitor_hot_fork_child_protocol_is_held(basis->monitor);
++        const bool socket_input_held =
++            qemu_chr_socket_hot_fork_child_input_is_held(
++                &basis->socket, basis->iothread_context);
++
++        if (!generation_matches || !single_qmp_monitor ||
++            !chardev_matches || !reconstructed || !protocol_held ||
++            !socket_input_held) {
++            fprintf(stderr,
++                    "crucible hot-fork monitor child transition %u is "
++                    "stale: generation %d single-qmp-monitor %d chardev %d "
++                    "reconstructed %d protocol-held %d socket-input-held "
++                    "%d\n",
++                    transition->operation, generation_matches,
++                    single_qmp_monitor, chardev_matches, reconstructed,
++                    protocol_held, socket_input_held);
++            goto out;
++        }
+     }
+ 
+     switch (transition->operation) {
+     case MONITOR_HOT_FORK_PROTOCOL_GREET_HELD:
+         if (basis->greeting_emitted ||
+             !monitor_hot_fork_child_local_state_clean(basis->monitor)) {
++            fprintf(stderr, "crucible hot-fork monitor child greeting is "
++                    "stale: greeted %d\n", basis->greeting_emitted);
++            monitor_hot_fork_child_report_local_state(basis->monitor);
+             goto out;
+         }
+         qemu_chr_be_event(basis->chardev, CHR_EVENT_OPENED);
+diff --git a/tests/unit/test-char.c b/tests/unit/test-char.c
+index 00b7285ac..432c23421 100644
+--- a/tests/unit/test-char.c
++++ b/tests/unit/test-char.c
+@@ -1308,6 +1308,8 @@ static void char_socket_server_test(gconstpointer opaque)
+             child = fork();
+             g_assert_cmpint(child, >=, 0);
+             if (child == 0) {
++                GMainContext *inherited_context = chr->gcontext;
++                GMainContext *rehome_context = g_main_context_new();
+                 bool exact;
+ 
+                 exact = qemu_chr_socket_hot_fork_reconstruct_child_held(
+@@ -1329,9 +1331,26 @@ static void char_socket_server_test(gconstpointer opaque)
+                     chr->gsource == NULL &&
+                     socket_chardev->hup_source == NULL &&
+                     socket_chardev->state == TCP_CHARDEV_STATE_CONNECTED;
++                /*
++                 * The child's rebuilt monitor I/O thread runs a fresh
++                 * context; the held socket follows it before release.
++                 */
+                 exact = exact &&
+                     qemu_chr_socket_hot_fork_child_input_is_held(
+                         &child_basis, chr->gcontext) &&
++                    qemu_chr_socket_hot_fork_rehome_child_context(
++                        &child_basis, rehome_context, rehome_context) ==
++                        -ESTALE &&
++                    qemu_chr_socket_hot_fork_rehome_child_context(
++                        &child_basis, chr->gcontext, rehome_context) == 0 &&
++                    chr->gcontext == rehome_context &&
++                    child_basis.context == rehome_context &&
++                    !qemu_chr_socket_hot_fork_child_input_is_held(
++                        &child_basis, inherited_context) &&
++                    qemu_chr_socket_hot_fork_child_input_is_held(
++                        &child_basis, chr->gcontext) &&
++                    qemu_chr_socket_hot_fork_release_child_input(
++                        &child_basis, inherited_context) == -ESTALE &&
+                     qemu_chr_socket_hot_fork_release_child_input(
+                         &child_basis, chr->gcontext) == 0 &&
+                     !child_basis.input_held && chr->gsource != NULL &&

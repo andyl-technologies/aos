@@ -504,6 +504,7 @@ impl QuantumLoop for SimDoubleQuantumLoop {
             advanced_node: None,
             resolved_events,
             decisions: vec![decision],
+            discovered_choices: Vec::new(),
             event_log_entries,
             event_log_segment_bytes: vec![b'x'],
             event_log_segment_text: String::from("x"),

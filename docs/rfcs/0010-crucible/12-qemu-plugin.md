@@ -132,12 +132,13 @@ descriptor handover is [`14-protocol.md`](14-protocol.md) §3.4.
     cross-checked against the `slot_index` the host sends in `HelloAck`
     ([PLUG-19]).
   - **`shmemfd=N`** — *(optional)* a pre-inherited shared-memory descriptor; when
-    absent, the plugin obtains the shmem fd and the wake fd from the `Setup`
-    frame's `SCM_RIGHTS` ancillary data ([`14-protocol.md`](14-protocol.md) §3.4),
+    absent, the plugin obtains the shmem fd, wake fd, and immutable app-random
+    branch-plan fd from the `Setup` frame's `SCM_RIGHTS` ancillary data
+    ([`14-protocol.md`](14-protocol.md) §3.4),
     which is the canonical path.
   - **`wakefd=N`** — *(optional as a command-line source)* a pre-inherited wake
-    `eventfd`; canonically delivered with the shmem fd in the `Setup` frame's
-    ancillary data. The production wake eventfd itself remains required.
+    `eventfd`; canonically delivered with the other setup descriptors. The
+    production wake eventfd itself remains required.
   - **`whitebox=on|off`** — *(optional, default `off`)* enables the guest↔host
     doorbell trap (§12.7).
   - **`coverage=on|off`** — *(optional, default `off`)* enables the basic-block
@@ -192,9 +193,10 @@ fn register(args: &PluginArgs) -> Result<PluginState, RegisterError> {
     let mut control = ControlSocket::from_fd(cfg.sim_fd)?;
     let ack = control.handshake(ABI_VERSION, PROTO_VERSION)?; // §12.9.1
     let time_ctl = TimeControl::request()?;             // [PLUG-8] — before any insn
-    let setup = control.recv_setup()?;                  // shmem fd + wake fd (SCM_RIGHTS)
+    let setup = control.recv_setup()?;                  // shmem + wake + branch plan (SCM_RIGHTS)
     let region = ShmemRegion::map(setup.shmem_fd, setup.region_len)?; // validate ABI
     region.validate_header(ABI_VERSION, ack.slot_index, ack.node_count)?; // [PLUG-19]
+    let branch_plan = SealedBranchPlan::read(setup.branch_plan_fd)?; // bounded canonical v1
     let wake = WakeFd::arm(setup.wake_fd)?;
     let registered_wake = wake.register_with_qemu()?; // required main-loop nudge
     register_net_callbacks(cfg.slot, &region);          // §12.5  (never-mutated ptrs)
@@ -681,6 +683,30 @@ the plugin's part.
   reorder the instruction stream. *Gate:* `gate:single-vm-fingerprint`,
   `gate:layer1-injection`. *Spec:* §12.7; routes [DET-17], [INV-3].
 
+For control-protocol v3, the live white-box owner also reconstructs the
+policy-free guest-selectable catalog from the sealed setup plan. It creates a
+cold incarnation for any throwaway boot-barrier execution and preallocates the
+exact restored incarnation over the same immutable declaration basis. Guest
+registrations reconcile only against that basis. A `setup_complete` marker
+freezes and validates the catalog before the marker can enter the observable
+ring. A runtime request is retained with its exact icount/vCPU coordinate and
+zero-filled reply reservation before QEMU is asked to enter VMStop; no reply
+byte becomes guest-visible until separate semantic authority supplies it. The
+retained request is then published through the lossless white-box marker ring as
+the independently versioned `CRUCSPQ1` process record. Its marker coordinate and
+body identify the exact request and process-neutral guest virtual reply target;
+the host treats the record as untrusted until campaign authority validates it.
+The nested request is capped at 4,576 bytes so the transport remains within one
+4,608-byte marker payload. The
+logical-restore boundary swaps the preallocated exact continuation once, before
+the restore acknowledgement, so priming registrations or requests cannot leak
+into restored execution. Registration and consumed-reply deltas use internal
+marker kinds `0xff08` and `0xff09`; together with the pending kind `0xff06` and
+the ordinary `setup_complete` marker, they maintain the host-owned exact
+checkpoint mirror without placing Rust or QEMU-private state across the process
+boundary. Control-protocol v2 has no selectable plan and fails
+closed on a selectable message.
+
 - **[PLUG-51]** **App-controlled randomness (white-box, optional).** When and
   only when a node opts in (a white-box mode, [PLUG-5] `whitebox=on`), the plugin
   MUST serve a `random_request` doorbell: when the guest agent rings it
@@ -763,14 +789,21 @@ section states the plugin's obligations on that channel and at the boot barrier.
 
 ### 12.9.2 Setup and ABI validation
 
-- **[PLUG-40]** On `Setup` the plugin MUST receive exactly two descriptors via
-  `SCM_RIGHTS` in fixed order — the shmem fd then the wake fd
+- **[PLUG-40]** On control-protocol v2 or v3 `Setup` the plugin MUST receive
+  exactly three descriptors via `SCM_RIGHTS` in fixed order — the shmem fd, the
+  wake fd, then the sealed node-local version-negotiated plugin-plan memfd
   ([`14-protocol.md`](14-protocol.md) [PROTO-8]) — `mmap` the shmem fd for exactly
   the `region_len` the host sent, validate the region header's magic, ABI version,
   and that its `node_count` and the plugin's `slot_index` are consistent
   ([`13-shmem-abi.md`](13-shmem-abi.md) [SHM-30]), and only then arm the wake fd
-  and register callbacks. Receiving any other fd count, a short region, or a
-  failed header validation MUST be a setup failure ([PROTO-21]). *Gate:*
+  and register callbacks. Before readiness it MUST also require the plan fd to
+  be a regular memfd sealed against write/grow/shrink/seal mutation, read at most
+  4 MiB and strictly decode the `CRUCABP1` version-1 body under v2, or read at
+  most 36 MiB plus 28 bytes and strictly decode the `CRUCSUP1` version-1
+  composite with canonical app-random and selectable nested plans under v3.
+  A profile/body mismatch, any other
+  fd count, a short region, mutable/malformed plan, or a failed header validation
+  MUST be a setup failure ([PROTO-21]). *Gate:*
   `gate:abi-conformance`. *Spec:* §12.9.2, forward-ref
   [`14-protocol.md`](14-protocol.md) §3.7, [`13-shmem-abi.md`](13-shmem-abi.md)
   §13.8; routes [G-8], [INV-10].

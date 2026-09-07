@@ -129,6 +129,10 @@ fn write_decision(hasher: &mut MaterialHasher, decision: &Decision) {
             hasher.write_u64(u64::from(random.width));
             hasher.write_u64(random.value);
         }
+        Decision::Selection(selection) => {
+            hasher.write_u64(5);
+            hasher.write_bytes(selection.canonical_bytes());
+        }
     }
 }
 

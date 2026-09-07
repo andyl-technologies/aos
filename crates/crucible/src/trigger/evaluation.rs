@@ -398,7 +398,8 @@ pub(super) fn push_observed_state_facts(
             Decision::RngDraw(_)
             | Decision::Override(_)
             | Decision::Preemption(_)
-            | Decision::AppRandom(_),
+            | Decision::AppRandom(_)
+            | Decision::Selection(_),
         )
         | SchedulerEventLogPayload::EvaluationBoundary(_)
         | SchedulerEventLogPayload::TriggerFired(_)
@@ -522,6 +523,8 @@ pub(super) fn black_box_observation_icount_stamp(
         | ObservableEventPayload::AssertionStateChanged { .. }
         | ObservableEventPayload::AssertionEvaluated { .. }
         | ObservableEventPayload::GuestMarker { .. }
+        | ObservableEventPayload::GuestMeasurement { .. }
+        | ObservableEventPayload::GuestSemanticMarker { .. }
         | ObservableEventPayload::GuestAssertionMarker { .. } => black_box_boundary_icount(at),
     }
 }
@@ -879,6 +882,10 @@ where
             marker == expected_marker
                 && evaluator.white_box_policy_for_node(node) == Some(WhiteBoxPolicy::Enabled)
         }
+        ObservableEventPayload::GuestSemanticMarker { node, marker, .. } => {
+            marker == &expected_marker.name
+                && evaluator.white_box_policy_for_node(node) == Some(WhiteBoxPolicy::Enabled)
+        }
         ObservableEventPayload::GuestAssertionMarker { .. } => false,
         ObservableEventPayload::NetworkDelivered { .. }
         | ObservableEventPayload::ConsoleOutput { .. }
@@ -889,6 +896,7 @@ where
         | ObservableEventPayload::NodeState { .. }
         | ObservableEventPayload::AssertionStateChanged { .. }
         | ObservableEventPayload::AssertionEvaluated { .. }
+        | ObservableEventPayload::GuestMeasurement { .. }
         | ObservableEventPayload::AssertionProximity { .. } => false,
     }
 }
@@ -1146,6 +1154,24 @@ impl<O> ConditionEvaluationPass<O> {
         O: ConditionLeafOracle,
     {
         state.evaluate(graph, &mut self.evaluation)
+    }
+
+    /// Evaluates triggers while deferring time predicates ahead of the shared frontier.
+    ///
+    /// A backend observation from one leading node may have a timestamp later
+    /// than the shared scheduler frontier. Time-conditioned events retain their
+    /// one-shot, edge, and latch state until the frontier reaches that prefix.
+    /// Pure observational triggers keep their ordinary causal evaluation points.
+    pub fn evaluate_event_graph_at_frontier(
+        &mut self,
+        graph: &EventGraph,
+        state: &mut EventGraphState,
+        frontier: VirtualTime,
+    ) -> EventFirings
+    where
+        O: ConditionLeafOracle,
+    {
+        state.evaluate_with_frontier(graph, &mut self.evaluation, Some(frontier))
     }
 }
 

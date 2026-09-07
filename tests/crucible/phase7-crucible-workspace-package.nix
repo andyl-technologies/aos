@@ -118,7 +118,7 @@
       }
       {
         label = "doctests run hermetically";
-        needle = "cargo test \\\n        --doc";
+        needle = "cargo test \\\n            --doc";
       }
       {
         label = "suite runtime closure co-retains controller/QEMU/plugin/source/kernel/fixtures";

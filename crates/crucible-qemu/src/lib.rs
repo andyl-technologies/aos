@@ -24,7 +24,9 @@
 //! synchronous scheduler node steps and real-time child I/O; `crash_detection`
 //! owns typed crashed-node status classification; `node` owns the
 //! scheduler-facing one-child/three-channel QEMU wrapper; `node_factory` owns
-//! the Linux post-setup node composition boundary; `quantum` owns the
+//! the Linux post-setup node composition boundary; `linux_attempt_host`
+//! exposes the sealed combined cgroup/project-quota attempt owner;
+//! `quantum` owns the
 //! per-quantum shared-memory hot path; `qmp` owns the minimal typed QMP client;
 //! `unix_socket_path` keeps QEMU run-directory socket operations within the
 //! kernel pathname limit;
@@ -39,6 +41,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+mod artifact_identity;
 mod async_driver;
 #[cfg(target_os = "linux")]
 mod block_realization_gate;
@@ -55,8 +58,26 @@ mod gdbstub_proxy;
 #[cfg(target_os = "linux")]
 mod host_setup;
 mod host_worker_pool;
+#[cfg(target_os = "linux")]
+mod hot_fork_audit;
 mod inertness;
 mod launch;
+#[cfg(target_os = "linux")]
+mod linux_attempt_host;
+#[cfg(target_os = "linux")]
+mod linux_attempt_process;
+#[cfg(target_os = "linux")]
+// The lifecycle-bound quota/run-directory owner remains behind the combined
+// public host-resource facade.
+// crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
+#[allow(dead_code)]
+mod linux_attempt_storage;
+#[cfg(target_os = "linux")]
+// Raw cgroup mutation stays internal; `linux_attempt_process` exposes only the
+// sealed process owner needed by the still-separate quota/session composition.
+// crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
+#[allow(dead_code)]
+mod linux_cgroup;
 #[cfg(target_os = "linux")]
 mod live_coverage_gate;
 #[cfg(target_os = "linux")]
@@ -87,6 +108,9 @@ mod storage_fault_resolver;
 mod supervision;
 mod unix_socket_path;
 
+pub use artifact_identity::{
+    QemuLaunchArtifactIdentity, QemuLaunchArtifactIdentityError, normalize_qemu_build_id,
+};
 pub use async_driver::{
     QemuAdvanceCompletionFence, QemuAsyncCrashEscalationTarget, QemuAsyncDriverError,
     QemuAsyncDriverOperation, QemuAsyncDriverPolicy, QemuAsyncDriverRuntimeError,
@@ -138,10 +162,20 @@ pub use gdbstub_proxy::{
 #[cfg(target_os = "linux")]
 pub use host_setup::{
     QemuHostPluginSetup, QemuHostPluginSetupError, complete_qemu_host_plugin_setup,
+    complete_qemu_host_plugin_setup_with_app_random_branch_plan,
+    complete_qemu_host_plugin_setup_with_plugin_setup_plan,
 };
 pub use host_worker_pool::{
     QemuHostCompletionOrderKey, QemuHostWorkerOutcome, QemuHostWorkerPool, QemuHostWorkerPoolError,
     QemuHostWorkerPoolReport, QemuHostWorkerRun,
+};
+#[cfg(target_os = "linux")]
+pub use hot_fork_audit::{
+    MAX_QEMU_HOT_FORK_DESCRIPTOR_TARGET_BYTES, MAX_QEMU_HOT_FORK_INVENTORY_BYTES,
+    MAX_QEMU_HOT_FORK_INVENTORY_ENTRIES, MAX_QEMU_HOT_FORK_MAPPING_RECORD_BYTES,
+    MAX_QEMU_HOT_FORK_THREAD_NAME_BYTES, QemuHotForkAudit, QemuHotForkAuditError,
+    QemuHotForkDescriptorInventory, QemuHotForkInventoryError, QemuHotForkMappingInventory,
+    QemuHotForkProcessInventory, QemuHotForkThreadInventory,
 };
 pub use inertness::{
     QemuControlFrameClass, QemuControlPlaneInertnessError, QemuControlPlaneInertnessReport,
@@ -155,20 +189,32 @@ pub use launch::{
     DEFAULT_CRUCIBLE_SHMEM_9P_MOUNT_TAG, DEFAULT_CRUCIBLE_SHMEM_BLOCK_NODE_NAME,
     DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_NETDEV_ID,
     DEFAULT_CRUCIBLE_SHMEM_NETWORK_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_NETWORK_MAC,
-    DEFAULT_ROOT_OVERLAY_FILE_NAME, DEFAULT_VMSTATE_FILE_NAME, DeterministicLaunchProfile,
-    DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, GuestEntropySeed,
-    GuestEntropySeedFile, IcountShiftSetting, InputPolicy, LaunchProfileCandidate,
-    LaunchProfileError, LivePluginGuestArchitecture, MachineResetMode, NodeIcountShift,
-    QEMU_CONSOLE_CHARDEV_ID, QEMU_CONSOLE_SOCKET_FILE_NAME, QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
-    QEMU_DEBUG_GUEST_ACTIVATION_PORT_NAME, QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME,
-    QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID, QEMU_PLUGIN_CONTROL_FD, QEMU_PLUGIN_SHMEM_FD,
-    QEMU_PLUGIN_WAKE_FD, QemuGdbstubChannelConfig, QemuLaunchAppRandomConfig, QemuLaunchArtifact,
-    QemuLaunchCommand, QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchInheritedFds,
-    QemuLaunchPluginConfig, QemuLaunchPluginSwitch, QemuPreSpawnLaunchValidation,
+    DEFAULT_ROOT_OVERLAY_FILE_NAME, DEFAULT_VMSTATE_FILE_NAME, DEFAULT_VMSTATE_NODE_NAME,
+    DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
+    GuestEntropySeed, GuestEntropySeedFile, IcountShiftSetting, InputPolicy,
+    LaunchProfileCandidate, LaunchProfileError, LivePluginGuestArchitecture, MachineResetMode,
+    NodeIcountShift, QEMU_CONSOLE_CHARDEV_ID, QEMU_CONSOLE_SOCKET_FILE_NAME,
+    QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID, QEMU_DEBUG_GUEST_ACTIVATION_PORT_NAME,
+    QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME, QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID,
+    QEMU_PLUGIN_CONTROL_FD, QEMU_PLUGIN_SHMEM_FD, QEMU_PLUGIN_WAKE_FD, QemuGdbstubChannelConfig,
+    QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder,
+    QemuLaunchCommandError, QemuLaunchInheritedFds, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
+    QemuLaunchResourceError, QemuLaunchResourceRequirements, QemuPreSpawnLaunchValidation,
     QemuPreSpawnLaunchValidationError, QemuQmpChannelConfig, QemuRootImageFormat,
-    QemuVmLaunchConfig, QemuWhiteboxSetupError, QemuWhiteboxSetupValidation,
+    QemuVmLaunchConfig, QemuWhiteboxSetupError, QemuWhiteboxSetupValidation, ROOT_DRIVE_ID,
     probe_x86_whitebox_setup, qemu_fault_target_hash, validate_aarch64_whitebox_setup,
     validate_pre_spawn_qemu_launch_args, validate_x86_whitebox_hmp_mtree,
+};
+#[cfg(target_os = "linux")]
+pub use linux_attempt_host::{
+    LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory, LinuxQemuAttemptHostOwner,
+};
+#[cfg(target_os = "linux")]
+pub use linux_attempt_process::{
+    LinuxQemuAttemptCancellationSignal, LinuxQemuAttemptProcessConfig,
+    LinuxQemuAttemptProcessFactory, LinuxQemuAttemptProcessOwner,
+    LinuxQemuHotForkChildProcessAuthority, MAX_LINUX_QEMU_PROCESS_FINISH_TIMEOUT,
+    MIN_LINUX_QEMU_PROCESS_FINISH_TIMEOUT,
 };
 #[cfg(target_os = "linux")]
 pub use live_coverage_gate::{
@@ -188,14 +234,46 @@ pub use live_plugin_quantum_gate::{
 };
 #[cfg(unix)]
 pub use mapped_quantum::{QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError};
+#[cfg(unix)]
+pub use node::QemuHotForkPluginRingImage;
+#[cfg(target_os = "linux")]
+pub use node::{
+    MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES, QemuHotForkChildConsoleObservation,
+    QemuHotForkChildConsoleStageError, QemuHotForkChildConsoleStageProof,
+    QemuHotForkChildConsoleStageState, QemuHotForkChildDiagnosticCapture,
+    QemuHotForkChildDiagnosticConsumer, QemuHotForkChildDiagnosticDrain,
+    QemuHotForkChildDiagnosticStageError, QemuHotForkChildDiagnosticStageProof,
+    QemuHotForkChildDiagnosticStageState, QemuHotForkChildFileDestination,
+    QemuHotForkChildFilesStageProof, QemuHotForkChildLaunch, QemuHotForkChildProcessBasis,
+    QemuHotForkChildProcessContractStageProof, QemuHotForkChildProcessOwner,
+    QemuHotForkChildQmpHandshakeError, QemuHotForkChildQmpHostEndpoint,
+    QemuHotForkChildQmpStageError, QemuHotForkChildQmpStageProof, QemuHotForkChildQmpStageState,
+    QemuHotForkChildResourcePreparationError, QemuHotForkCommandError, QemuHotForkHostContinuation,
+    QemuHotForkLaunchError, QemuHotForkNodeStateContinuation, QemuHotForkPluginEndpointStageError,
+    QemuHotForkPluginEndpointStageProof, QemuHotForkPluginEndpointStageState,
+    QemuHotForkPluginHostContinuation, QemuHotForkPluginHostEndpoint,
+    QemuHotForkPreparedChildResources, QemuHotForkPrivateRingMapping,
+    QemuHotForkPrivateRingStageError, QemuHotForkPrivateRingStageProof,
+    QemuHotForkPrivateRingStageState, QemuHotForkSchedulerNodeAssemblyError,
+    QemuHotForkSchedulerNodeContinuation, QemuHotForkSchedulerNodeInstallError,
+};
 pub use node::{
     QemuLogicalTimeCalibration, QemuNode, QemuNodeChannelError, QemuNodeChannelPlane,
-    QemuNodeChannels, QemuNodeChild, QemuNodeEmittedFrame, QemuNodeError, QemuNodeIdleState,
-    QemuNodeLifecycleState, QemuNodePendingQuantum, QemuPluginIpcControlChannel,
-    QemuQmpMachineControlChannel, QemuShmemHotPathChannel,
+    QemuNodeChannels, QemuNodeChild, QemuNodeEmittedFrame, QemuNodeError,
+    QemuNodeExternalProcessControl, QemuNodeIdleState, QemuNodeLifecycleState,
+    QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuQmpMachineControlChannel,
+    QemuShmemHotPathChannel,
 };
 #[cfg(target_os = "linux")]
 pub use node::{QemuProcessIdentity, linux_process_identity, quarantine_orphaned_qemu_process};
+#[cfg(all(target_os = "linux", feature = "test-support"))]
+pub use node::{
+    QemuTestHotForkOutcome, QemuTestHotForkSourceError, QemuTestQuantumBoundary,
+    scripted_hot_fork_source_for_test,
+    scripted_hot_fork_source_with_observations_for_test,
+    scripted_hot_fork_source_with_script_for_test,
+    scripted_hot_fork_source_with_state_for_test,
+};
 #[cfg(target_os = "linux")]
 pub use node_factory::{
     QemuNodeFactoryError, QemuNodeFactoryRuntime, QemuNodeRestoreAdmission, QemuNodeRestorePlan,
@@ -204,8 +282,12 @@ pub use node_factory::{
     build_qemu_node_from_restored_checkpoint_paused, spawn_setup_and_restore_qemu_node,
 };
 #[cfg(target_os = "linux")]
-pub use node_set::QemuNodeSetBlockBoundaryCheckpoint;
-pub use node_set::{QemuNodeSet, QemuNodeTerminalReplacementPlan};
+pub use node_set::QemuNodeSetPreparedHotForkSource;
+pub use node_set::{
+    QemuNodeSelectablePendingRequest, QemuNodeSet, QemuNodeTerminalReplacementPlan,
+};
+#[cfg(target_os = "linux")]
+pub use node_set::{QemuNodeSetBlockBoundaryCheckpoint, QemuNodeSetPreparedHotForkTemplate};
 pub use production_fault_runtime::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint,
     ProductionFaultRuntimeCheckpointCodecError, ProductionFaultRuntimeError,
@@ -214,14 +296,69 @@ pub use production_fault_runtime::{
 };
 pub use production_fault_sink::ProductionFaultActionSink;
 pub use qmp::{
-    QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_CONT_COMMAND,
-    QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QMP_GREETING_TIMEOUT, QMP_JOB_DISMISS_COMMAND,
-    QMP_JOB_QUERY_INTERVAL, QMP_JOB_QUERY_LIMIT, QMP_QUERY_CPUS_FAST_COMMAND,
-    QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME,
-    QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
-    QMP_SNAPSHOT_VMSTATE_DEVICE, QMP_STOP_COMMAND, QemuQmpVmStateControlChannel, QmpClient,
-    QmpCommandComplete, QmpCommandKind, QmpCpuTopology, QmpError, QmpGreeting, QmpIoTimeoutPolicy,
-    QmpJobPollPolicy, QmpRunState, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QMP_CAPABILITIES_COMMAND, QMP_CLOSEFD_COMMAND, QMP_COMMAND_TIMEOUT, QMP_CONT_COMMAND,
+    QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QMP_DESCRIPTOR_NAME_MAX_BYTES, QMP_GETFD_COMMAND,
+    QMP_GREETING_TIMEOUT, QMP_HOT_FORK_AIO_HANDLER_INVENTORY_MAX,
+    QMP_HOT_FORK_AIO_HANDLER_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_AIO_INVENTORY_MAX,
+    QMP_HOT_FORK_AIO_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND,
+    QMP_HOT_FORK_BH_TIMER_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_BLOCK_BACKEND_INVENTORY_MAX,
+    QMP_HOT_FORK_BLOCK_BACKEND_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_BLOCK_BACKEND_NAME_MAX_BYTES,
+    QMP_HOT_FORK_BLOCK_BARRIER_COMMAND, QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION,
+    QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES, QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION,
+    QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX, QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION,
+    QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES, QMP_HOT_FORK_CHILD_CONSOLE_COMMAND,
+    QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
+    QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD,
+    QMP_HOT_FORK_CHILD_FILES_COMMAND, QMP_HOT_FORK_CHILD_FILES_MAX,
+    QMP_HOT_FORK_CHILD_FILES_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_PROCESS_COMMAND,
+    QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND,
+    QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION,
+    QMP_HOT_FORK_CHILD_QMP_COMMAND, QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION,
+    QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION, QMP_HOT_FORK_COMMAND,
+    QMP_HOT_FORK_MONITOR_INVENTORY_MAX, QMP_HOT_FORK_MONITOR_INVENTORY_SCHEMA_VERSION,
+    QMP_HOT_FORK_MUTEX_INVENTORY_MAX, QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION,
+    QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION,
+    QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND, QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION,
+    QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
+    QMP_HOT_FORK_PRIVATE_RINGS_SCHEMA_VERSION, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
+    QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_RCU_INVENTORY_MAX,
+    QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_READINESS_SCHEMA_VERSION,
+    QMP_HOT_FORK_REQUIRED_PROOFS, QMP_HOT_FORK_SCHEMA_VERSION, QMP_HOT_FORK_TEMPLATE_COMMAND,
+    QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS, QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION,
+    QMP_HOT_FORK_THREAD_INVENTORY_MAX, QMP_HOT_FORK_THREAD_INVENTORY_SCHEMA_VERSION,
+    QMP_HOT_FORK_THREAD_NAME_MAX_BYTES, QMP_HOT_FORK_TIMER_INVENTORY_MAX,
+    QMP_HOT_FORK_TIMER_INVENTORY_SCHEMA_VERSION, QMP_JOB_DISMISS_COMMAND, QMP_JOB_QUERY_INTERVAL,
+    QMP_JOB_QUERY_LIMIT, QMP_QUERY_CPUS_FAST_COMMAND,
+    QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND,
+    QMP_QUERY_HOT_FORK_MONITOR_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND,
+    QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND,
+    QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QMP_STOP_COMMAND,
+    QemuQmpVmStateControlChannel, QmpClient, QmpCommandComplete, QmpCommandKind, QmpCpuTopology,
+    QmpDescriptorName, QmpError, QmpGreeting, QmpHotForkAioContext, QmpHotForkAioHandler,
+    QmpHotForkAioHandlerInventory, QmpHotForkAioInventory, QmpHotForkBhTimerBarrierState,
+    QmpHotForkBlockBackend, QmpHotForkBlockBackendInventory, QmpHotForkBlockBarrierState,
+    QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
+    QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof, QmpHotForkBottomHalf,
+    QmpHotForkBottomHalfInventory, QmpHotForkChildConsoleState, QmpHotForkChildDiagnosticState,
+    QmpHotForkChildFile, QmpHotForkChildFileRoot, QmpHotForkChildFilesState,
+    QmpHotForkChildProcessContractIdentity, QmpHotForkChildProcessContractNames,
+    QmpHotForkChildProcessContractState, QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
+    QmpHotForkChildQmpState, QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState,
+    QmpHotForkMonitorInventory, QmpHotForkMutex, QmpHotForkMutexInventory, QmpHotForkOutcome,
+    QmpHotForkPluginBarrierState, QmpHotForkPluginEndpointDescriptorPlan,
+    QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
+    QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
+    QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
+    QmpHotForkRequest, QmpHotForkRequestError, QmpHotForkState, QmpHotForkTemplateOutcome,
+    QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState, QmpHotForkThread,
+    QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer, QmpHotForkTimerClock,
+    QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunState, QmpRunStateKind,
+    QmpSnapshotTag, QmpTimeoutStream,
 };
 pub use quantum::{
     QemuDeviceIoFreezeObservation, QemuDeviceIoFreezeReport, QemuInboundFrame, QemuOutboundFrame,
@@ -230,16 +367,26 @@ pub use quantum::{
     assert_qemu_quantum_hot_path_is_shmem_only,
 };
 pub use realization::{
-    QemuBackendRealizationExecutor, QemuBakedGenesisRestoreAdmission, QemuBakedGenesisSnapshot,
-    QemuCachedAncestor, QemuVmBakeExecutor, QemuVmRealization, QemuVmRealizationError,
+    MAX_QEMU_VM_SNAPSHOT_CANONICAL_BYTES, QemuBackendRealizationExecutor,
+    QemuBakedGenesisRestoreAdmission, QemuBakedGenesisSnapshot, QemuCachedAncestor,
+    QemuReplayOracleCheck, QemuVmBakeExecutor, QemuVmRealization, QemuVmRealizationError,
     QemuVmRealizationExecutor, QemuVmRealizationKind, QemuVmRealizationOperation,
     QemuVmRealizationStore, QemuVmReplayRequest, QemuVmSnapshot, QemuVmSnapshotCodecError,
-    bake_qemu_genesis_vm, check_qemu_replay_oracle, fork_qemu_vm, instantiate_qemu_vm,
-    resume_qemu_vm, start_qemu_vm,
+    bake_qemu_genesis_vm, check_qemu_replay_oracle, check_qemu_replay_oracle_bound,
+    check_qemu_snapshot_replay_oracle_bound, fork_qemu_vm, instantiate_qemu_vm, resume_qemu_vm,
+    start_qemu_vm, validate_qemu_replay_oracle_promotion,
 };
 #[cfg(target_os = "linux")]
 pub use realization::{
-    QemuNodeRealizationExecutor, QemuNodeRealizationLauncher, QemuRealizedNodeBackend,
+    QemuCapturedVmStateSource, QemuExactProfileWarmRestoreNodeLauncher,
+    QemuExactRootWarmRestoreNodeLauncher, QemuFailedLaunchChildSource,
+    QemuGuardedNodeRealizationLauncher, QemuGuardedThinNodeRealizationLauncher,
+    QemuHotForkTemplateIdentity, QemuHotForkTemplatePreparer, QemuLiveAttemptBackend,
+    QemuLiveBackendShutdown, QemuNodeLauncher, QemuNodeRealizationExecutor,
+    QemuNodeRealizationLauncher, QemuPreparedHotForkTemplate,
+    QemuPreparedHotForkTemplateShutdownFailure, QemuPreparedThinWarmRestoreNodeLauncher,
+    QemuRealizedNodeBackend, QemuReplayValidationNodeLauncher,
+    QemuThinProfileWarmRestoreNodeLauncher, QemuVmLiveRealizationExecutor,
     QemuWarmRestoreNodeLauncher,
 };
 pub use setup_failure::{
@@ -300,7 +447,10 @@ pub use single_vm_fingerprint::{
 };
 #[cfg(target_os = "linux")]
 pub use spawn::{
-    QemuSpawnError, QemuSpawnHostResources, QemuSpawnSetupResources, QemuSpawnedChild,
+    QemuCapturedVmState, QemuChildProcessContract, QemuPreparedRunDirectory,
+    QemuRootOverlayMaterialization, QemuSpawnError, QemuSpawnHostResources,
+    QemuSpawnSetupResources, QemuSpawnedChild, QemuVmStateBinding, QemuVmStateMaterialization,
+    spawn_prepared_qemu_child_with_fds_in_directory_guarded,
     spawn_qemu_child_with_fds_in_directory,
 };
 pub use storage_array::{
@@ -328,6 +478,7 @@ pub use supervision::{
     LIVE_NETWORK_REPLY_LATENCY_ICOUNT, LIVE_NETWORK_REPLY_PAYLOAD, LiveNetworkIoServiceStep,
     LiveNetworkIoSnapshot, LiveNetworkTxObservation, NinepIoAdvanceOutcome, NinepIoDiagnostics,
     NinepIoDiagnosticsSnapshot, QemuBlockFaultCoordinator, QemuDeviceHostWorkDelay,
+    QemuGuardedExactNodeLaunch, QemuGuardedFreshNodeLaunch, QemuGuardedRestoredNodeLaunch,
     QemuLive9pIoGateConfig, QemuLive9pIoGateError, QemuLive9pIoReport, QemuLive9pIoRequestPin,
     QemuLive9pIoServiceStep, QemuLive9pIoServicer, QemuLive9pIoServicerError,
     QemuLive9pIoTransactionCheckpoint, QemuLive9pResponseEvidence, QemuLiveAcceleratorCheckpoint,
@@ -339,15 +490,22 @@ pub use supervision::{
     QemuLiveBlockNodeGateConfig, QemuLiveBlockNodeGateError, QemuLiveBlockNodeReport,
     QemuLiveBlockStorageEvents, QemuLiveExactSnapshotReport, QemuLiveHostIoRuntime,
     QemuLiveHostIoRuntimeError, QemuLiveHostParallelGateError, QemuLiveHostParallelReport,
-    QemuLiveNetworkIoGateConfig, QemuLiveNetworkIoGateError, QemuLiveNetworkIoReport,
-    QemuLiveNetworkIoServicer, QemuLiveNetworkIoServicerError, QemuLiveNodeLifecycleFaultReport,
+    QemuLiveHotForkChildExecutionReport, QemuLiveHotForkChildReport,
+    QemuLiveHotForkChildStressReport, QemuLiveHotForkChildWorldReport, QemuLiveNetworkIoGateConfig,
+    QemuLiveNetworkIoGateError, QemuLiveNetworkIoReport, QemuLiveNetworkIoServicer,
+    QemuLiveNetworkIoServicerError, QemuLiveNodeIdentity, QemuLiveNodeLifecycleFaultReport,
     QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError, QemuLiveNodeStepQuantum,
     QemuLiveNodeStepReport, QemuLiveNodeStepSchedule, QemuLiveRetainedNetworkSnapshotReport,
-    QemuNinepFaultCoordinator, QemuSharedBlockDevice, launch_qemu_live_node,
-    launch_qemu_live_node_exact_snapshot, launch_qemu_live_node_exact_snapshot_paused,
-    launch_qemu_live_node_restored, run_qemu_live_9p_io_gate, run_qemu_live_block_io_gate,
-    run_qemu_live_block_node_gate, run_qemu_live_exact_snapshot_gate,
-    run_qemu_live_host_parallel_gate, run_qemu_live_network_io_gate,
-    run_qemu_live_node_lifecycle_fault_gate, run_qemu_live_node_step_gate,
-    run_qemu_live_retained_network_snapshot_gate,
+    QemuLiveSelectableProductSnapshotReport, QemuLiveSourceSetReport, QemuNinepFaultCoordinator,
+    QemuSharedBlockDevice, launch_qemu_live_node, launch_qemu_live_node_exact_snapshot,
+    launch_qemu_live_node_exact_snapshot_guarded, launch_qemu_live_node_exact_snapshot_paused,
+    launch_qemu_live_node_exact_snapshot_paused_guarded, launch_qemu_live_node_guarded,
+    launch_qemu_live_node_restored, launch_qemu_live_node_restored_guarded,
+    run_qemu_live_9p_io_gate, run_qemu_live_block_io_gate, run_qemu_live_block_node_gate,
+    run_qemu_live_exact_snapshot_gate, run_qemu_live_host_parallel_gate,
+    run_qemu_live_hot_fork_child_execution_gate, run_qemu_live_hot_fork_child_gate,
+    run_qemu_live_hot_fork_child_stress_gate, run_qemu_live_hot_fork_child_world_gate,
+    run_qemu_live_network_io_gate, run_qemu_live_node_lifecycle_fault_gate,
+    run_qemu_live_node_step_gate, run_qemu_live_retained_network_snapshot_gate,
+    run_qemu_live_selectable_product_snapshot_gate, run_qemu_live_source_set_gate,
 };

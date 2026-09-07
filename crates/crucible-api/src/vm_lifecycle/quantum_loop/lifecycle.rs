@@ -312,6 +312,7 @@ impl ProductionVmLifecycleLoop {
             let identity = match (&item.replacement, item.process_owner.as_mut()) {
                 (Some(replacement), Some(owner)) => {
                     let (process_id, start_time_ticks) = replacement
+                        .node()
                         .process_identity_components(&owner.manifest_identity.executable)
                         .map_err(|error| SchedulerError::BoundaryViolation {
                             message: format!(

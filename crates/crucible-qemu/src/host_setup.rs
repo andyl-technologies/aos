@@ -7,13 +7,19 @@
 //! before deterministic guest execution.
 
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 
 use crucible_protocol::{
     CONTROL_PROTOCOL_VERSION, ControlLifecycleIoError, ControlLifecycleState,
     ControlLifecycleStream, HostHandshakeConfig, NegotiatedHandshake, SchedulableNodeSetup,
     SetupDescriptorFds,
+    app_random_branch_plan::AppRandomBranchPlan,
+    plugin_setup_plan::{PluginSetupPlan, PluginSetupPlanError},
+    selectable_catalog_plan::{
+        SelectableCatalogPlan, SelectableCatalogPlanError, SelectablePlanContinuation,
+        SelectablePlanLimits,
+    },
 };
 use crucible_shmem::{
     ABI_VERSION, DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR,
@@ -54,6 +60,7 @@ pub struct QemuHostPluginSetup {
     accelerator_manifest: Option<FaultAcceleratorCapabilityManifestV1>,
     system_manifest: FaultSystemCapabilityManifestV1,
     ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
+    selectable_catalog_plan: SelectableCatalogPlan,
 }
 
 impl QemuHostPluginSetup {
@@ -79,6 +86,12 @@ impl QemuHostPluginSetup {
     #[must_use]
     pub const fn region(&self) -> ValidatedSetupRegion {
         self.region
+    }
+
+    /// Returns the exact selectable plan transferred to this plugin process.
+    #[must_use]
+    pub const fn selectable_catalog_plan(&self) -> &SelectableCatalogPlan {
+        &self.selectable_catalog_plan
     }
 
     /// Returns the first command sequence not consumed by setup admission.
@@ -305,6 +318,70 @@ pub fn complete_qemu_host_plugin_setup(
     slot_index: u32,
     required_capabilities: &QemuFaultCapabilityRequirement,
 ) -> Result<QemuHostPluginSetup, QemuHostPluginSetupError> {
+    complete_qemu_host_plugin_setup_with_app_random_branch_plan(
+        resources,
+        config,
+        slot_index,
+        required_capabilities,
+        &AppRandomBranchPlan::default(),
+    )
+}
+
+/// Runs host-side setup with one immutable app-random branch replay plan.
+///
+/// The plan is combined with an empty selectable catalog. After the control
+/// handshake, v2 receives the raw app-random body and v3 receives the canonical
+/// composite body in the same third sealed descriptor. Setup never relies on
+/// optional descriptor counts.
+///
+/// # Errors
+///
+/// Returns [`QemuHostPluginSetupError`] for the failures documented by
+/// [`complete_qemu_host_plugin_setup`], or when the plan memfd cannot be
+/// created, populated, or sealed before descriptor handoff.
+pub fn complete_qemu_host_plugin_setup_with_app_random_branch_plan(
+    resources: QemuSpawnSetupResources,
+    config: RegionConfig,
+    slot_index: u32,
+    required_capabilities: &QemuFaultCapabilityRequirement,
+    app_random_branch_plan: &AppRandomBranchPlan,
+) -> Result<QemuHostPluginSetup, QemuHostPluginSetupError> {
+    let selectable_catalog_plan = SelectableCatalogPlan::new(
+        SelectablePlanLimits::new(1, 1, 1)
+            .map_err(|source| QemuHostPluginSetupError::SelectableCatalogPlan { source })?,
+        Vec::new(),
+        SelectablePlanContinuation::cold(),
+    )
+    .map_err(|source| QemuHostPluginSetupError::SelectableCatalogPlan { source })?;
+    let plugin_setup_plan =
+        PluginSetupPlan::new(app_random_branch_plan.clone(), selectable_catalog_plan);
+    complete_qemu_host_plugin_setup_with_plugin_setup_plan(
+        resources,
+        config,
+        slot_index,
+        required_capabilities,
+        &plugin_setup_plan,
+    )
+}
+
+/// Completes setup with one version-negotiated composite plugin plan.
+///
+/// Negotiated control-protocol v2 sends only the nested app-random body in the
+/// third descriptor. Version 3 and later send the complete composite setup
+/// plan, so version fallback never changes the meaning of an existing profile.
+///
+/// # Errors
+///
+/// Returns [`QemuHostPluginSetupError`] for the failures documented by
+/// [`complete_qemu_host_plugin_setup`], or when the selected canonical plan
+/// body cannot be encoded, populated, or sealed before descriptor handoff.
+pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
+    resources: QemuSpawnSetupResources,
+    config: RegionConfig,
+    slot_index: u32,
+    required_capabilities: &QemuFaultCapabilityRequirement,
+    plugin_setup_plan: &PluginSetupPlan,
+) -> Result<QemuHostPluginSetup, QemuHostPluginSetupError> {
     let allocation = RegionAllocation::new(config)
         .map_err(|source| QemuHostPluginSetupError::RegionLayout { source })?;
     let layout = allocation.layout();
@@ -397,12 +474,30 @@ pub fn complete_qemu_host_plugin_setup(
             node_count: layout.node_count,
         })
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
+    if negotiated.proto_version < 3
+        && plugin_setup_plan.selectable_catalog_plan() != &SelectableCatalogPlan::default()
+    {
+        return Err(
+            QemuHostPluginSetupError::SelectableCatalogRequiresProtocolV3 {
+                negotiated: negotiated.proto_version,
+            },
+        );
+    }
+    let setup_plan_bytes = if negotiated.proto_version >= 3 {
+        plugin_setup_plan
+            .encode()
+            .map_err(|source| QemuHostPluginSetupError::PluginSetupPlan { source })?
+    } else {
+        plugin_setup_plan.app_random_branch_plan().encode()
+    };
+    let plugin_setup_plan_fd = sealed_plugin_setup_plan_fd(&setup_plan_bytes)?;
     control
         .host_send_setup_with_descriptors(
             region_len,
             SetupDescriptorFds {
                 shmem_fd: shmem_fd.as_raw_fd(),
                 wake_fd: wake_fd.as_raw_fd(),
+                plugin_setup_plan_fd: plugin_setup_plan_fd.as_raw_fd(),
             },
         )
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
@@ -503,7 +598,62 @@ pub fn complete_qemu_host_plugin_setup(
         accelerator_manifest,
         system_manifest,
         ready_markers: required_capabilities.ready_markers().clone(),
+        selectable_catalog_plan: plugin_setup_plan.selectable_catalog_plan().clone(),
     })
+}
+
+fn sealed_plugin_setup_plan_fd(bytes: &[u8]) -> Result<OwnedFd, QemuHostPluginSetupError> {
+    let name = c"crucible-plugin-setup-plan";
+    let raw_fd = unsafe {
+        // SAFETY: `name` is a live NUL-terminated C string and memfd_create
+        // returns a new descriptor or -1 without retaining the pointer.
+        libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
+    };
+    if raw_fd < 0 {
+        return Err(setup_io_error(
+            "create plugin setup-plan memfd",
+            io::Error::last_os_error(),
+        ));
+    }
+    let fd = unsafe {
+        // SAFETY: successful memfd_create returned one uniquely owned descriptor.
+        OwnedFd::from_raw_fd(raw_fd)
+    };
+    let length = libc::off_t::try_from(bytes.len()).map_err(|_error| {
+        setup_io_error(
+            "size plugin setup-plan memfd",
+            io::Error::new(io::ErrorKind::InvalidInput, "setup plan is too large"),
+        )
+    })?;
+    let status = unsafe {
+        // SAFETY: `fd` is a live memfd and `length` is range-checked.
+        libc::ftruncate(fd.as_raw_fd(), length)
+    };
+    if status != 0 {
+        return Err(setup_io_error(
+            "size plugin setup-plan memfd",
+            io::Error::last_os_error(),
+        ));
+    }
+    write_shmem_setup_region(fd.as_raw_fd(), bytes).map_err(|error| match error {
+        QemuHostPluginSetupError::Io { source, .. } => {
+            setup_io_error("write plugin setup-plan memfd", source)
+        }
+        other => other,
+    })?;
+    let seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE | libc::F_SEAL_SEAL;
+    let status = unsafe {
+        // SAFETY: `fd` is a live sealable memfd and `seals` is the reviewed
+        // immutable-descriptor policy.
+        libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, seals)
+    };
+    if status != 0 {
+        return Err(setup_io_error(
+            "seal plugin setup-plan memfd",
+            io::Error::last_os_error(),
+        ));
+    }
+    Ok(fd)
 }
 
 fn enqueue_target_manifest_query(
@@ -1099,6 +1249,26 @@ pub enum QemuHostPluginSetupError {
         /// Underlying serialization error.
         source: RegionSerializationError,
     },
+    /// The compatibility wrapper could not build its empty selectable plan.
+    #[error("empty selectable catalog plan construction failed: {source}")]
+    SelectableCatalogPlan {
+        /// Canonical selectable-plan failure.
+        source: SelectableCatalogPlanError,
+    },
+    /// Negotiation selected the legacy profile for a nonempty selectable plan.
+    #[error(
+        "guest-selectable catalog setup requires control protocol v3, negotiated v{negotiated}"
+    )]
+    SelectableCatalogRequiresProtocolV3 {
+        /// Negotiated legacy control-protocol version.
+        negotiated: u32,
+    },
+    /// The negotiated composite plugin setup plan could not be encoded.
+    #[error("composite plugin setup plan encoding failed: {source}")]
+    PluginSetupPlan {
+        /// Canonical composite-plan failure.
+        source: PluginSetupPlanError,
+    },
     /// A host-side descriptor or memfd write operation failed.
     #[error("{operation} failed: {source}")]
     Io {
@@ -1225,6 +1395,8 @@ pub(crate) mod tests {
     use super::*;
 
     use std::error::Error;
+    use std::fs::File;
+    use std::io::Read;
     use std::os::fd::AsFd;
     use std::thread;
 
@@ -1239,8 +1411,8 @@ pub(crate) mod tests {
     const EVENTFD_WAKE_PROBE: u64 = 7;
 
     #[test]
-    fn qemu_host_rejects_a_v1_plugin_against_the_v15_region() {
-        assert_eq!(ABI_VERSION, 17);
+    fn qemu_host_rejects_a_v1_plugin_against_the_current_region() {
+        assert_eq!(ABI_VERSION, 21);
         let config = HostHandshakeConfig {
             proto_version: CONTROL_PROTOCOL_VERSION,
             abi_version: ABI_VERSION,
@@ -1314,6 +1486,73 @@ pub(crate) mod tests {
         };
         assert_eq!(plugin_region, setup.region());
 
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_host_plugin_setup_preserves_the_raw_v2_third_descriptor() -> Result<(), Box<dyn Error>>
+    {
+        let config = RegionConfig::new(1, 4, 0);
+        let layout = RegionLayout::for_config(config)?;
+        let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        let plugin_peer =
+            thread::spawn(move || plugin_peer_complete_setup_version(plugin_socket, 2));
+
+        let mut setup = complete_qemu_host_plugin_setup(
+            resources.into_setup_resources(),
+            config,
+            0,
+            &QemuFaultCapabilityRequirement::abi_boundary_v1(),
+        )?;
+        assert_eq!(setup.negotiated_handshake().proto_version, 2);
+        QemuPluginIpcControlChannel::send_quit(&mut setup)?;
+        match plugin_peer.join() {
+            Ok(Ok(_region)) => Ok(()),
+            Ok(Err(error)) => Err(error.into()),
+            Err(_panic) => Err("legacy plugin setup peer panicked".into()),
+        }
+    }
+
+    #[test]
+    fn qemu_host_rejects_selectable_catalog_downgrade_to_v2() -> Result<(), Box<dyn Error>> {
+        use crucible_protocol::selectable_catalog_plan::{
+            SelectablePlanDeclaration, SelectablePlanPresence,
+        };
+
+        let config = RegionConfig::new(1, 4, 0);
+        let layout = RegionLayout::for_config(config)?;
+        let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        let plugin_peer =
+            thread::spawn(move || plugin_peer_complete_setup_version(plugin_socket, 2));
+        let declaration = SelectablePlanDeclaration::new(
+            "network.policy",
+            vec![1, 2],
+            vec![1],
+            vec!["recovery".to_owned()],
+            SelectablePlanPresence::Required,
+        )?;
+        let selectable = SelectableCatalogPlan::new(
+            SelectablePlanLimits::new(1, 3, 3)?,
+            vec![declaration],
+            SelectablePlanContinuation::cold(),
+        )?;
+        let plan = PluginSetupPlan::new(AppRandomBranchPlan::default(), selectable);
+
+        let error = match complete_qemu_host_plugin_setup_with_plugin_setup_plan(
+            resources.into_setup_resources(),
+            config,
+            0,
+            &QemuFaultCapabilityRequirement::abi_boundary_v1(),
+            &plan,
+        ) {
+            Ok(_setup) => return Err("v2 discarded a nonempty selectable plan".into()),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            QemuHostPluginSetupError::SelectableCatalogRequiresProtocolV3 { negotiated: 2 }
+        ));
+        assert!(matches!(plugin_peer.join(), Ok(Err(_))));
         Ok(())
     }
 
@@ -1406,19 +1645,42 @@ pub(crate) mod tests {
     fn plugin_peer_complete_setup(
         plugin_socket: UnixStream,
     ) -> Result<ValidatedSetupRegion, String> {
+        plugin_peer_complete_setup_version(plugin_socket, CONTROL_PROTOCOL_VERSION)
+    }
+
+    fn plugin_peer_complete_setup_version(
+        plugin_socket: UnixStream,
+        protocol_version: u32,
+    ) -> Result<ValidatedSetupRegion, String> {
         let requirement = QemuFaultCapabilityRequirement::abi_boundary_v1();
-        plugin_peer_complete_setup_with_rows(plugin_socket, requirement.rows())
+        plugin_peer_complete_setup_with_rows_and_version(
+            plugin_socket,
+            requirement.rows(),
+            protocol_version,
+        )
     }
 
     fn plugin_peer_complete_setup_with_rows(
         plugin_socket: UnixStream,
         rows: &[FaultCapabilityRowV1],
     ) -> Result<ValidatedSetupRegion, String> {
+        plugin_peer_complete_setup_with_rows_and_version(
+            plugin_socket,
+            rows,
+            CONTROL_PROTOCOL_VERSION,
+        )
+    }
+
+    fn plugin_peer_complete_setup_with_rows_and_version(
+        plugin_socket: UnixStream,
+        rows: &[FaultCapabilityRowV1],
+        protocol_version: u32,
+    ) -> Result<ValidatedSetupRegion, String> {
         let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)
             .map_err(|error| error.to_string())?;
         let negotiated = plugin
             .plugin_start_handshake(PluginHandshakeConfig {
-                proto_version: CONTROL_PROTOCOL_VERSION,
+                proto_version: protocol_version,
                 abi_version: ABI_VERSION,
             })
             .map_err(|error| error.to_string())?;
@@ -1440,6 +1702,15 @@ pub(crate) mod tests {
         assert_fd_open(setup.descriptors.wake_fd.as_raw_fd()).map_err(|error| error.to_string())?;
         write_eventfd_counter(setup.descriptors.wake_fd.as_raw_fd(), EVENTFD_WAKE_PROBE)
             .map_err(|error| error.to_string())?;
+        let mut setup_plan_bytes = Vec::new();
+        File::from(setup.descriptors.plugin_setup_plan_fd)
+            .read_to_end(&mut setup_plan_bytes)
+            .map_err(|error| error.to_string())?;
+        if negotiated.proto_version >= 3 {
+            PluginSetupPlan::decode(&setup_plan_bytes).map_err(|error| error.to_string())?;
+        } else {
+            AppRandomBranchPlan::decode(&setup_plan_bytes).map_err(|error| error.to_string())?;
+        }
 
         publish_capability_result(&mut mapped, rows).map_err(|error| error.to_string())?;
         publish_system_manifest_result(&mut mapped).map_err(|error| error.to_string())?;

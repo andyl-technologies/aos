@@ -469,6 +469,34 @@ in
           '';
         }
         {
+          name = "check";
+          script =
+            if applyCruciblePatches
+            then ''
+              build/tests/unit/test-rcu-list --tap -p /rcu/hot-fork/barrier
+              build/tests/unit/test-aio --tap -p /aio/hot-fork/bh-timer-barrier
+              # Keep the exact native fixture output with the package; a
+              # separate certificate checks named cases, not a boot proxy.
+              # Pin GLib's seed so the installed transcript is reproducible.
+              timeout -k 5 60 build/tests/unit/test-block-backend --tap \
+                --seed=R02S00000000000000000000000000000000 \
+                > block-backend-tests.raw.tap
+              cat block-backend-tests.raw.tap
+              # GLib adds wall-time comments for the bounded negative fork
+              # probe. Keep every TAP verdict, but do not put elapsed host
+              # time into the reproducible installed evidence.
+              sed '/^# slow test .* executed in [0-9.]* secs$/d' \
+                block-backend-tests.raw.tap > block-backend-tests.tap
+              build/tests/unit/test-crucible-hot-fork-child --tap
+              build/tests/unit/test-crucible-hot-fork-coordinator --tap
+              build/tests/unit/test-char --tap -p /char/socket/server/mainloop/unix
+              build/tests/unit/test-char --tap -p /char/socket/server/wait-conn/unix
+            ''
+            else ''
+              true
+            '';
+        }
+        {
           name = "install";
           script = ''
             make install${lib.optionalString isDarwinCross ''
@@ -502,6 +530,10 @@ in
             fi
 
             mkdir -p "$out/share/aos/crucible"
+            ${lib.optionalString applyCruciblePatches ''
+              install -m 644 block-backend-tests.tap \
+                "$out/share/aos/crucible/block-backend-tests.tap"
+            ''}
             cat > "$out/share/aos/crucible/qemu-build-identity.env" <<'QEMU_BUILD_IDENTITY'
             qemu_package=${pname}
             qemu_version=${version}

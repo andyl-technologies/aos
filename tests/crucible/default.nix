@@ -295,6 +295,17 @@ in rec {
         };
         dependencies = [layer0Determinism];
       };
+      campaignModel = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase1.gates.campaignModel";
+        # lint needle: campaignModel = import ./phase1-campaign-model.nix
+        gate = import ./phase1-campaign-model.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase1.gates.campaignModel";
+          taskIds = ["T-CAM-1.1" "T-CAM-1.2" "T-CAM-1.3" "T-CAM-1.4" "T-CAM-1.5" "T-CAM-1.6"];
+          dependencies = [contentAddress.rawGate];
+        };
+        dependencies = [contentAddress];
+      };
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.replayOracle";
         # lint needle: replayOracle = import ./phase1-replay-oracle.nix
@@ -430,6 +441,7 @@ in rec {
     qemuLiveBlockReset = import ./phase2-qemu-live-block-reset.nix {inherit pkgs lib;};
     qemuLive9pIo = import ./phase2-qemu-live-9p-io.nix {inherit pkgs lib;};
     qemuLiveNetworkIo = import ./phase2-qemu-live-network-io.nix {inherit pkgs lib;};
+    qemuLiveSelectableProduct = import ./phase2-qemu-live-selectable-product.nix {inherit pkgs lib;};
     qemuLivePluginQuantum = import ./phase2-qemu-live-plugin-quantum.nix {inherit pkgs lib;};
     qemuLivePluginQuantumSmp = import ./phase2-qemu-live-plugin-quantum-smp.nix {inherit pkgs lib;};
     qemuLivePluginPreemption = import ./phase2-qemu-live-plugin-preemption.nix {inherit pkgs lib;};
@@ -465,6 +477,7 @@ in rec {
             phase1.gates.harnessLint.rawGate
             phase1.gates.layer0Determinism.rawGate
             phase1.gates.contentAddress.rawGate
+            phase1.gates.campaignModel.rawGate
             phase1.gates.replayOracle.rawGate
             phase1.gates.singleVmFingerprint.rawGate
             phase1.gates.divergenceBisect.rawGate
@@ -475,10 +488,22 @@ in rec {
           phase1.gates.harnessLint
           phase1.gates.layer0Determinism
           phase1.gates.contentAddress
+          phase1.gates.campaignModel
           phase1.gates.replayOracle
           phase1.gates.singleVmFingerprint
           phase1.gates.divergenceBisect
         ];
+      };
+      typedChoice = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase2.gates.typedChoice";
+        # lint needle: typedChoice = import ./phase2-typed-choice.nix
+        gate = import ./phase2-typed-choice.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase2.gates.typedChoice";
+          taskIds = ["T-CAM-2.1" "T-CAM-2.2" "T-CAM-2.4" "T-CAM-2.5" "T-CAM-2.7"];
+          dependencies = [abiConformance.rawGate];
+        };
+        dependencies = [abiConformance];
       };
       layer1Injection = greenBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.layer1Injection";
@@ -487,9 +512,9 @@ in rec {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase2.gates.layer1Injection";
           taskIds = ["T-HARN-8" "T-DET-11" "T-DET-12" "T-DET-13" "T-DET-14"];
-          dependencies = [abiConformance.rawGate];
+          dependencies = [typedChoice.rawGate];
         };
-        dependencies = [abiConformance];
+        dependencies = [typedChoice];
       };
       patchMicrotests = greenBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.patchMicrotests";
@@ -783,6 +808,9 @@ in rec {
     };
   };
   phase4 = {
+    projectQuotaVm = import ./phase4-project-quota-vm.nix {inherit pkgs lib;};
+    qemuHostOwnerVm = import ./phase4-qemu-host-owner-vm.nix {inherit pkgs lib;};
+    packagedCampaignVm = import ./phase4-packaged-campaign-vm.nix {inherit pkgs lib;};
     eventGraphControlFlow = import ./phase4-event-graph-control-flow.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.eventGraphControlFlow";
@@ -1712,6 +1740,78 @@ in rec {
     };
   };
   phase6 = {
+    qemuSourceSetLifecycle = import ./phase6-qemu-source-set-lifecycle.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase6.qemuSourceSetLifecycle";
+      taskIds = [];
+    };
+    qemuNativeSourceSet = import ./phase6-qemu-native-source-set.nix {
+      inherit pkgs;
+      taskIds = [];
+    };
+    qemuNativeSourceOwnership = import ./phase6-qemu-native-source-ownership.nix {
+      inherit pkgs;
+      taskIds = [];
+    };
+    qemuNativeWorkerRetirement = import ./phase6-qemu-native-worker-retirement.nix {
+      inherit pkgs;
+      taskIds = [];
+    };
+    qemuReadOnlyBlockSource = import ./phase6-qemu-read-only-block-source.nix {
+      inherit pkgs;
+      taskIds = [];
+    };
+    qemuHotForkReadiness = import ./phase6-qemu-hot-fork-readiness.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase6.qemuHotForkReadiness";
+      taskIds = [];
+    };
+    qemuHotForkChildVm = import ./phase6-qemu-hot-fork-child-vm.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase6.qemuHotForkChildVm";
+      taskIds = ["T-CAM-6.3"];
+    };
+    qemuHotForkChildExecutionVm = import ./phase6-qemu-hot-fork-child-execution-vm.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase6.qemuHotForkChildExecutionVm";
+      taskIds = ["T-CAM-6.5"];
+    };
+    # The same comparison at the larger guest RAM sizes the task names.
+    qemuHotForkChildExecution512mVm = import ./phase6-qemu-hot-fork-child-execution-vm.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase6.qemuHotForkChildExecution512mVm";
+      taskIds = ["T-CAM-6.5"];
+      guestMemoryMiB = 512;
+    };
+    qemuHotForkChildExecution1gVm = import ./phase6-qemu-hot-fork-child-execution-vm.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase6.qemuHotForkChildExecution1gVm";
+      taskIds = ["T-CAM-6.5"];
+      guestMemoryMiB = 1024;
+    };
+    qemuPatchLicenseLedger = import ./phase6-qemu-patch-license-ledger.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase6.qemuPatchLicenseLedger";
+      taskIds = ["T-CAM-6.8"];
+    };
+    qemuHotForkChildWorldVm = import ./phase6-qemu-hot-fork-child-world-vm.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase6.qemuHotForkChildWorldVm";
+      taskIds = ["T-CAM-7.4"];
+    };
+    qemuHotForkChildStressVm = import ./phase6-qemu-hot-fork-child-stress-vm.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase6.qemuHotForkChildStressVm";
+      taskIds = ["T-CAM-6.7"];
+    };
+    # The ten-thousand-lifecycle run the stress task names; built on demand.
+    qemuHotForkChildStress10kVm = import ./phase6-qemu-hot-fork-child-stress-vm.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase6.qemuHotForkChildStress10kVm";
+      taskIds = ["T-CAM-6.7"];
+      lifecycles = 10000;
+      lateGrowthBoundKib = 4096;
+    };
     advancedDependencyLadder = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.advancedDependencyLadder";
       gate = import ./phase6-advanced-dependency-ladder.nix {

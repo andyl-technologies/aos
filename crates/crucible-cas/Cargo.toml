@@ -8,14 +8,20 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+test-support = []
+
 [[bin]]
 name = "crucible-fleet-store"
 path = "src/bin/crucible-fleet-store.rs"
 
 [dependencies]
+aes-gcm = { workspace = true, features = ["zeroize"] }
 blake3 = { workspace = true }
 rustix = { workspace = true }
 thiserror = { workspace = true }
+zeroize = { workspace = true }
+zstd = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

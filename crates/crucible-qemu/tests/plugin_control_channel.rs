@@ -65,11 +65,11 @@ fn running_host_lifecycle_stream(
     let mut host = ControlLifecycleStream::connected_unix_stream(stream)?;
 
     peer.write_all(&control_encode_plugin_msg(&PluginMsg::Hello {
-        proto_version: 1,
+        proto_version: 2,
         abi_version: 1,
     }))?;
     host.host_accept_handshake(HostHandshakeConfig {
-        proto_version: 1,
+        proto_version: 2,
         abi_version: 1,
         slot_index: 0,
         node_count: 1,
@@ -83,6 +83,7 @@ fn running_host_lifecycle_stream(
         SetupDescriptorFds {
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
+            plugin_setup_plan_fd: shmem.as_raw_fd(),
         },
     )?;
     let _setup = crucible_protocol::recv_setup_with_descriptors(peer.as_raw_fd())?;

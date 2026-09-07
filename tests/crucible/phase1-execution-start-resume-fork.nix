@@ -32,12 +32,28 @@
         needle = "mod realization;";
       }
       {
-        label = "lifecycle exports instantiate/fork";
-        needle = "bake_qemu_genesis_vm, check_qemu_replay_oracle, fork_qemu_vm, instantiate_qemu_vm,";
+        label = "lifecycle export bake";
+        needle = "bake_qemu_genesis_vm,";
       }
       {
-        label = "lifecycle exports start/resume";
-        needle = "resume_qemu_vm, start_qemu_vm,";
+        label = "lifecycle export replay oracle";
+        needle = "check_qemu_replay_oracle,";
+      }
+      {
+        label = "lifecycle export fork";
+        needle = "fork_qemu_vm,";
+      }
+      {
+        label = "lifecycle export instantiate";
+        needle = "instantiate_qemu_vm,";
+      }
+      {
+        label = "lifecycle export resume";
+        needle = "resume_qemu_vm,";
+      }
+      {
+        label = "lifecycle export start";
+        needle = "start_qemu_vm,";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/realization.rs" realization [

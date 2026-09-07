@@ -116,7 +116,7 @@ pub(super) fn reproduction_artifact_canonical_bytes(
     scenario: &ScenarioDefForm,
     schedule: &Schedule,
 ) -> Vec<u8> {
-    let mut writer = ScenarioBinaryWriter::new(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V5);
+    let mut writer = ScenarioBinaryWriter::new(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V7);
     writer.write_binary_blob(&scenario.to_compact_binary());
     writer.write_binary_blob(&schedule.to_compact_binary());
     writer.finish()
@@ -372,6 +372,13 @@ pub(super) fn push_decision_lines(index: usize, decision: &Decision, lines: &mut
             lines.push(format!("{prefix}.request_id={}", random.request_id));
             lines.push(format!("{prefix}.width={}", random.width));
             lines.push(format!("{prefix}.value={}", random.value));
+        }
+        Decision::Selection(selection) => {
+            lines.push(format!("{prefix}.kind=campaign-selection"));
+            lines.push(format!(
+                "{prefix}.canonical_selection={}",
+                bytes_hex(selection.canonical_bytes())
+            ));
         }
     }
 }

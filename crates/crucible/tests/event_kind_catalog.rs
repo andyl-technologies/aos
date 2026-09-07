@@ -13,11 +13,11 @@ use crucible::{
 };
 
 const EXPECTED_CATALOG_HASH: &str =
-    "256a2fbe140895c90d7ec8fa600902fd1247617c13074e2a736abbde481d4ae8";
+    "ea64dd51eab1e49435c28fd9eeb6d94dafd6d4cd2089f4cba509035ec81facde";
 
 #[test]
 fn event_kind_catalog_is_versioned_sorted_and_single_source_for_classes() {
-    assert_eq!(EVENT_KIND_CATALOG_VERSION, 5);
+    assert_eq!(EVENT_KIND_CATALOG_VERSION, 7);
 
     let mut kinds = BTreeSet::new();
     let mut previous = "";
@@ -45,6 +45,7 @@ fn event_kind_catalog_contains_rfc_19_7_required_kinds() {
         ("signal_state_transition", EventClass::Causal),
         ("binding_activation", EventClass::Causal),
         ("binding_deactivation", EventClass::Causal),
+        ("campaign_selection", EventClass::Causal),
         ("fault_opportunity", EventClass::Causal),
         ("effect_choice", EventClass::Causal),
         ("effect_combined", EventClass::Causal),
@@ -73,6 +74,10 @@ fn event_kind_catalog_contains_rfc_19_7_required_kinds() {
         ("coverage", EventClass::Observational),
         ("assertion_proximity", EventClass::Observational),
         ("guest_marker", EventClass::Observational),
+        ("guest_measurement_begin", EventClass::Observational),
+        ("guest_measurement_end", EventClass::Observational),
+        ("guest_metric_sample", EventClass::Observational),
+        ("guest_semantic_marker", EventClass::Observational),
     ] {
         let entry = event_kind_catalog_entry(kind)
             .unwrap_or_else(|| panic!("catalog should contain RFC kind {kind}"));
@@ -87,6 +92,18 @@ fn event_kind_catalog_records_structural_dependency_map() {
         .map(|dependency| (dependency.consumer(), dependency.kinds()))
         .collect::<BTreeMap<_, _>>();
 
+    assert_eq!(
+        dependencies
+            .get("0016-08-observability-measurement-debugging")
+            .copied()
+            .unwrap_or(&[]),
+        &[
+            "guest_measurement_begin",
+            "guest_measurement_end",
+            "guest_metric_sample",
+            "guest_semantic_marker",
+        ]
+    );
     assert_eq!(
         dependencies
             .get("0012-05-recording-replay-observability")

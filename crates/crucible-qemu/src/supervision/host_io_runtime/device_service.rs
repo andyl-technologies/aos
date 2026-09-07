@@ -11,6 +11,12 @@ impl QemuLiveHostIoRuntime {
         let Some(block) = &mut self.block else {
             return Ok(false);
         };
+        if block.coordinator_required && block.coordinator.is_none() {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "service block io",
+                "branch-private block continuation requires a fresh signal coordinator",
+            ));
+        }
         let serviced = match &mut block.coordinator {
             Some(coordinator) => {
                 coordinator.service_block_io(&mut block.servicer, snapshot.current_icount)?
@@ -43,6 +49,12 @@ impl QemuLiveHostIoRuntime {
         let Some(ninep) = &mut self.ninep else {
             return Ok(false);
         };
+        if ninep.coordinator_required && ninep.coordinator.is_none() {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "service 9p io",
+                "branch-private 9p continuation requires a fresh signal coordinator",
+            ));
+        }
         let serviced = match &mut ninep.coordinator {
             Some(coordinator) => {
                 coordinator.service_ninep_io(&mut ninep.servicer, snapshot.current_icount)?

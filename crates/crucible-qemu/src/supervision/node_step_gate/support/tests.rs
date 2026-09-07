@@ -37,6 +37,48 @@ fn diskless_launch_material_retains_firmware() {
 }
 
 #[test]
+fn pre_directory_resource_admission_matches_the_concrete_launch_command() {
+    let config = QemuLiveNodeStepGateConfig::new_with_root_image(
+        "/nix/store/11111111111111111111111111111111-qemu/bin/qemu-system-x86_64",
+        "/nix/store/22222222222222222222222222222222-plugin/lib/crucible-plugin.so",
+        "/nix/store/33333333333333333333333333333333-kernel/bzImage",
+        "/nix/store/44444444444444444444444444444444-root/root.qcow2",
+        "/run/crucible/generation-1",
+    )
+    .with_vm_shape(384, 3, 0);
+    let profile = launch_profile_candidate(config.architecture)
+        .with_memory_mib(config.memory_mib)
+        .with_smp_vcpus(config.smp_vcpus)
+        .with_icount_shift(IcountShiftSetting::Fixed(config.icount_shift))
+        .with_rr_switch_quantum(config.rr_switch_quantum)
+        .with_scenario_seed(config.scenario_seed)
+        .try_into_deterministic()
+        .unwrap_or_else(|error| panic!("launch profile should validate: {error}"));
+    let vm = vm_launch_config(&config, "vm-a");
+    let plugin =
+        live_node_plugin_config(&config, &profile, &vm, config.run_directory(), "vm-a", None)
+            .unwrap_or_else(|error| panic!("plugin profile should validate: {error}"));
+    let command = QemuLaunchCommandBuilder::new_for_live_gate(
+        profile,
+        vm,
+        path_text(&config.qemu_executable),
+        plugin,
+        config.architecture,
+    )
+    .with_qmp(
+        QemuQmpChannelConfig::new(GATE_QMP_SOCKET_FILE_NAME)
+            .unwrap_or_else(|error| panic!("QMP config should validate: {error}")),
+    )
+    .build()
+    .unwrap_or_else(|error| panic!("launch command should validate: {error}"));
+
+    assert_eq!(
+        config.resource_requirements(),
+        command.resource_requirements()
+    );
+}
+
+#[test]
 fn coverage_switch_reaches_plugin_and_host_drain_configuration() {
     let config = QemuLiveNodeStepGateConfig::new_with_root_image(
         "/aos/bin/qemu-system-x86_64",
@@ -54,6 +96,54 @@ fn coverage_switch_reaches_plugin_and_host_drain_configuration() {
     assert_eq!(
         basic_block_coverage_config(config.coverage),
         BasicBlockCoverageConfig::on()
+    );
+}
+
+#[test]
+fn selectable_catalog_plan_reaches_the_launch_bound_plugin_setup_plan() {
+    use crucible_protocol::selectable_catalog_plan::{
+        SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
+        SelectablePlanLimits, SelectablePlanPresence,
+    };
+
+    let selectable = SelectableCatalogPlan::new(
+        SelectablePlanLimits::new(1, 2, 2)
+            .unwrap_or_else(|error| panic!("selectable limits should validate: {error}")),
+        vec![
+            SelectablePlanDeclaration::new(
+                "retry-mode",
+                b"enum:none,once".to_vec(),
+                b"none".to_vec(),
+                vec![String::from("recovery")],
+                SelectablePlanPresence::Required,
+            )
+            .unwrap_or_else(|error| panic!("selectable declaration should validate: {error}")),
+        ],
+        SelectablePlanContinuation::cold(),
+    )
+    .unwrap_or_else(|error| panic!("selectable plan should validate: {error}"));
+    let config = QemuLiveNodeStepGateConfig::new_with_root_image(
+        "/aos/bin/qemu-system-x86_64",
+        "/aos/lib/crucible-plugin.so",
+        "/aos/kernel",
+        "/aos/root.raw",
+        "/run/crucible",
+    )
+    .with_selectable_catalog_plan(selectable.clone());
+    let profile = launch_profile_candidate(config.architecture)
+        .try_into_deterministic()
+        .unwrap_or_else(|error| panic!("launch profile should validate: {error}"));
+    let vm = vm_launch_config(&config, "vm-a");
+
+    let plugin =
+        live_node_plugin_config(&config, &profile, &vm, config.run_directory(), "vm-a", None)
+            .unwrap_or_else(|error| panic!("plugin profile should validate: {error}"));
+
+    assert_eq!(config.selectable_catalog_plan(), Some(&selectable));
+    assert_eq!(plugin.selectable_catalog_plan(), &selectable);
+    assert_eq!(
+        plugin.plugin_setup_plan().selectable_catalog_plan(),
+        &selectable
     );
 }
 

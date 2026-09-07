@@ -1,0 +1,816 @@
+diff --git a/include/system/crucible-hot-fork-plugin-child.h b/include/system/crucible-hot-fork-plugin-child.h
+index 56968f36a..c9706c79e 100644
+--- a/include/system/crucible-hot-fork-plugin-child.h
++++ b/include/system/crucible-hot-fork-plugin-child.h
+@@ -26,6 +26,17 @@ typedef struct QemuCrucibleHotForkPluginChildResourcePlan {
+     bool prepared;
+ } QemuCrucibleHotForkPluginChildResourcePlan;
+ 
++typedef struct QemuCrucibleHotForkChildResourcePlan {
++    QemuCrucibleHotForkPluginChildResourcePlan plugin;
++    int retained_fds[QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS];
++    size_t retained_fd_count;
++    QemuCrucibleHotForkSharedMapping
++        shared_mappings[QEMU_CRUCIBLE_HOT_FORK_MAX_SHARED_MAPPINGS];
++    size_t shared_mapping_count;
++    bool building;
++    bool sealed;
++} QemuCrucibleHotForkChildResourcePlan;
++
+ typedef struct QemuCrucibleHotForkPluginChildReinitializer {
+     struct qemu_plugin_crucible_hot_fork_child_plan plan;
+     QemuPluginCrucibleHotForkChildRuntimeInventory inventory;
+@@ -98,6 +109,86 @@ bool qemu_crucible_hot_fork_plugin_child_resources_prepared_for(
+ void qemu_crucible_hot_fork_reset_plugin_child_resources(
+     QemuCrucibleHotForkPluginChildResourcePlan *resources);
+ 
++/**
++ * qemu_crucible_hot_fork_begin_child_resource_plan() - start composition
++ * @resources: caller-owned complete-plan storage
++ * @plugin: exact prepared plugin contribution
++ *
++ * Starts a nondestructive child resource plan from the plugin's exact endpoint,
++ * retained-descriptor, and writable-shared-mapping contribution.  The source
++ * contribution is revalidated before it is copied.  A successful call replaces
++ * any prior value in @resources and leaves the plan open for additional
++ * subsystem contributions.
++ *
++ * Returns zero after exact initialization or -EINVAL for an invalid or
++ * self-contradictory plugin contribution.
++ */
++int qemu_crucible_hot_fork_begin_child_resource_plan(
++    QemuCrucibleHotForkChildResourcePlan *resources,
++    const QemuCrucibleHotForkPluginChildResourcePlan *plugin);
++
++/**
++ * qemu_crucible_hot_fork_merge_child_resource_contribution() - merge tables
++ * @resources: open caller-owned complete plan
++ * @retained_fds: strictly increasing final descriptor slots
++ * @retained_fd_count: number of entries in @retained_fds
++ * @shared_mappings: strictly ordered nonoverlapping writable-shared VMAs
++ * @shared_mapping_count: number of entries in @shared_mappings
++ *
++ * Atomically merges one subsystem's immutable contribution into the canonical
++ * plan.  Exact duplicate entries are idempotent.  A replacement source cannot
++ * be retained, every mapping backing must be retained by the resulting union,
++ * and differently described overlapping mappings are rejected.  Inputs must
++ * remain immutable for the duration of the call and must not alias @resources.
++ *
++ * Returns zero after a canonical bounded merge, -EPERM when the plan is not
++ * open, -E2BIG when the union exceeds a fixed table bound, or -EINVAL when an
++ * input table is malformed or conflicts with an existing contribution.
++ */
++int qemu_crucible_hot_fork_merge_child_resource_contribution(
++    QemuCrucibleHotForkChildResourcePlan *resources,
++    const int *retained_fds, size_t retained_fd_count,
++    const QemuCrucibleHotForkSharedMapping *shared_mappings,
++    size_t shared_mapping_count);
++
++/**
++ * qemu_crucible_hot_fork_seal_child_resource_plan() - close composition
++ * @resources: open caller-owned complete plan
++ *
++ * Revalidates the complete canonical union and makes it immutable for a future
++ * authenticated child transaction.  Sealing performs no descriptor or mapping
++ * mutation and does not assert that every QEMU subsystem has contributed.
++ *
++ * Returns zero after exact sealing, -EPERM when the plan is not open, or
++ * -EINVAL when the accumulated plan is contradictory.
++ */
++int qemu_crucible_hot_fork_seal_child_resource_plan(
++    QemuCrucibleHotForkChildResourcePlan *resources);
++
++/**
++ * qemu_crucible_hot_fork_child_resource_plan_contains_plugin() - match basis
++ * @resources: sealed caller-owned complete plan
++ * @plugin: exact plugin contribution required by the retained transaction
++ *
++ * Revalidates the sealed plan and requires its replacement table plus canonical
++ * descriptor and mapping unions to contain the exact plugin contribution.
++ * Other independently validated subsystem entries may also be present.
++ *
++ * Returns true exactly when the sealed plan contains @plugin without conflict.
++ */
++bool qemu_crucible_hot_fork_child_resource_plan_contains_plugin(
++    const QemuCrucibleHotForkChildResourcePlan *resources,
++    const QemuCrucibleHotForkPluginChildResourcePlan *plugin);
++
++/**
++ * qemu_crucible_hot_fork_reset_child_resource_plan() - clear composition
++ * @resources: caller-owned plan no longer admitted by a template
++ *
++ * Clears the parent-process copy when its retained resource stage is released.
++ */
++void qemu_crucible_hot_fork_reset_child_resource_plan(
++    QemuCrucibleHotForkChildResourcePlan *resources);
++
+ /**
+  * qemu_crucible_hot_fork_prepare_plugin_child_reinitializer() - copy a plan
+  * @reinitializer: caller-owned storage inherited by the future fork child
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 13695b316..630507f16 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -406,6 +406,8 @@ static QemuCrucibleHotForkPluginChildReinitializer
+     crucible_hot_fork_plugin_child_reinitializer;
+ static QemuCrucibleHotForkPluginChildResourcePlan
+     crucible_hot_fork_plugin_child_resources;
++static QemuCrucibleHotForkChildResourcePlan
++    crucible_hot_fork_child_resource_plan;
+ 
+ static void crucible_hot_fork_template_schedule_block_transition(void);
+ 
+@@ -1223,7 +1225,10 @@ static bool crucible_hot_fork_plugin_child_resource_plan_bound(
+         qemu_crucible_hot_fork_plugin_child_resources_prepared_for(
+             &crucible_hot_fork_plugin_child_resources, &plan,
+             crucible_hot_fork_plugin_endpoint_stage.control_fd,
+-            crucible_hot_fork_plugin_endpoint_stage.wake_fd);
++            crucible_hot_fork_plugin_endpoint_stage.wake_fd) &&
++        qemu_crucible_hot_fork_child_resource_plan_contains_plugin(
++            &crucible_hot_fork_child_resource_plan,
++            &crucible_hot_fork_plugin_child_resources);
+ }
+ 
+ CrucibleHotForkPluginEndpointState *
+@@ -1397,11 +1402,32 @@ qmp_crucible_hot_fork_plugin_endpoints(
+                                  "plugin child resource tables");
+                 goto out;
+             }
++            result = qemu_crucible_hot_fork_begin_child_resource_plan(
++                &crucible_hot_fork_child_resource_plan,
++                &crucible_hot_fork_plugin_child_resources);
++            if (result == 0) {
++                result = qemu_crucible_hot_fork_seal_child_resource_plan(
++                    &crucible_hot_fork_child_resource_plan);
++            }
++            if (result != 0) {
++                qemu_crucible_hot_fork_reset_plugin_child_reinitializer(
++                    &crucible_hot_fork_plugin_child_reinitializer);
++                qemu_crucible_hot_fork_reset_plugin_child_resources(
++                    &crucible_hot_fork_plugin_child_resources);
++                qemu_crucible_hot_fork_reset_child_resource_plan(
++                    &crucible_hot_fork_child_resource_plan);
++                error_setg_errno(errp, -result,
++                                 "Could not compose the Crucible hot-fork "
++                                 "child resource plan");
++                goto out;
++            }
+         } else {
+             qemu_crucible_hot_fork_reset_plugin_child_reinitializer(
+                 &crucible_hot_fork_plugin_child_reinitializer);
+             qemu_crucible_hot_fork_reset_plugin_child_resources(
+                 &crucible_hot_fork_plugin_child_resources);
++            qemu_crucible_hot_fork_reset_child_resource_plan(
++                &crucible_hot_fork_child_resource_plan);
+         }
+         crucible_hot_fork_plugin_endpoint_stage.staged = true;
+         crucible_hot_fork_plugin_endpoint_stage.control_fd = control_candidate;
+@@ -1505,6 +1531,8 @@ qmp_crucible_hot_fork_plugin_endpoints(
+             &crucible_hot_fork_plugin_child_reinitializer);
+         qemu_crucible_hot_fork_reset_plugin_child_resources(
+             &crucible_hot_fork_plugin_child_resources);
++        qemu_crucible_hot_fork_reset_child_resource_plan(
++            &crucible_hot_fork_child_resource_plan);
+         crucible_hot_fork_plugin_endpoint_stage.generation++;
+         assert(crucible_hot_fork_plugin_endpoint_stage.generation != 0);
+         report = crucible_hot_fork_plugin_endpoint_report();
+diff --git a/system/crucible-hot-fork-plugin-child.c b/system/crucible-hot-fork-plugin-child.c
+index 321d81596..a2062791e 100644
+--- a/system/crucible-hot-fork-plugin-child.c
++++ b/system/crucible-hot-fork-plugin-child.c
+@@ -197,6 +197,404 @@ void qemu_crucible_hot_fork_reset_plugin_child_resources(
+     }
+ }
+ 
++static bool crucible_hot_fork_plugin_resources_valid(
++    const QemuCrucibleHotForkPluginChildResourcePlan *resources)
++{
++    return resources && resources->prepared &&
++        qemu_crucible_hot_fork_plugin_child_resources_prepared_for(
++            resources, &resources->plan,
++            resources->replacements[0].source_fd,
++            resources->replacements[1].source_fd);
++}
++
++static bool crucible_hot_fork_fd_table_valid(const int *fds, size_t count)
++{
++    size_t index;
++
++    if (count != 0 && !fds) {
++        return false;
++    }
++    for (index = 0; index < count; index++) {
++        if (fds[index] < 0 ||
++            (index != 0 && fds[index - 1] >= fds[index])) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static bool crucible_hot_fork_fd_table_contains(
++    const int *fds, size_t count, int fd)
++{
++    size_t low = 0;
++    size_t high = count;
++
++    while (low < high) {
++        size_t middle = low + (high - low) / 2;
++
++        if (fds[middle] < fd) {
++            low = middle + 1;
++        } else {
++            high = middle;
++        }
++    }
++    return low < count && fds[low] == fd;
++}
++
++static bool crucible_hot_fork_mapping_equal(
++    const QemuCrucibleHotForkSharedMapping *left,
++    const QemuCrucibleHotForkSharedMapping *right)
++{
++    return left->start == right->start && left->length == right->length &&
++        left->offset == right->offset &&
++        left->backing_fd == right->backing_fd;
++}
++
++static bool crucible_hot_fork_mapping_valid(
++    const QemuCrucibleHotForkSharedMapping *mapping)
++{
++    uint64_t page_size = qemu_real_host_page_size();
++
++    return mapping->start != 0 && mapping->length != 0 &&
++        mapping->backing_fd >= 0 &&
++        QEMU_IS_ALIGNED(mapping->start, page_size) &&
++        QEMU_IS_ALIGNED(mapping->length, page_size) &&
++        QEMU_IS_ALIGNED(mapping->offset, page_size) &&
++        mapping->start <= UINTPTR_MAX && mapping->length <= SIZE_MAX &&
++        mapping->start <= UINTPTR_MAX - mapping->length &&
++        mapping->offset <= UINT64_MAX - mapping->length;
++}
++
++static bool crucible_hot_fork_mapping_table_valid(
++    const QemuCrucibleHotForkSharedMapping *mappings, size_t count)
++{
++    size_t index;
++
++    if (count != 0 && !mappings) {
++        return false;
++    }
++    for (index = 0; index < count; index++) {
++        if (!crucible_hot_fork_mapping_valid(&mappings[index]) ||
++            (index != 0 && mappings[index - 1].start +
++                    mappings[index - 1].length > mappings[index].start)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static size_t crucible_hot_fork_fd_union_count(
++    const int *left, size_t left_count, const int *right, size_t right_count)
++{
++    size_t left_index = 0;
++    size_t right_index = 0;
++    size_t count = 0;
++
++    while (left_index < left_count || right_index < right_count) {
++        if (right_index == right_count ||
++            (left_index < left_count &&
++             left[left_index] < right[right_index])) {
++            left_index++;
++        } else if (left_index == left_count ||
++                   right[right_index] < left[left_index]) {
++            right_index++;
++        } else {
++            left_index++;
++            right_index++;
++        }
++        count++;
++    }
++    return count;
++}
++
++static int crucible_hot_fork_mapping_union_count(
++    const QemuCrucibleHotForkSharedMapping *left, size_t left_count,
++    const QemuCrucibleHotForkSharedMapping *right, size_t right_count,
++    size_t *union_count)
++{
++    const QemuCrucibleHotForkSharedMapping *previous = NULL;
++    size_t left_index = 0;
++    size_t right_index = 0;
++    size_t count = 0;
++
++    while (left_index < left_count || right_index < right_count) {
++        const QemuCrucibleHotForkSharedMapping *next;
++
++        if (right_index == right_count ||
++            (left_index < left_count &&
++             left[left_index].start < right[right_index].start)) {
++            next = &left[left_index++];
++        } else if (left_index == left_count ||
++                   right[right_index].start < left[left_index].start) {
++            next = &right[right_index++];
++        } else if (crucible_hot_fork_mapping_equal(
++                       &left[left_index], &right[right_index])) {
++            next = &left[left_index++];
++            right_index++;
++        } else {
++            return -EINVAL;
++        }
++
++        if (previous && previous->start + previous->length > next->start) {
++            return -EINVAL;
++        }
++        previous = next;
++        count++;
++    }
++    *union_count = count;
++    return 0;
++}
++
++static void crucible_hot_fork_merge_fd_tables(
++    int *left, size_t left_count, const int *right, size_t right_count,
++    size_t union_count)
++{
++    size_t left_index = left_count;
++    size_t right_index = right_count;
++    size_t output_index = union_count;
++
++    while (output_index != 0) {
++        int value;
++
++        if (right_index == 0 ||
++            (left_index != 0 &&
++             left[left_index - 1] > right[right_index - 1])) {
++            value = left[--left_index];
++        } else if (left_index == 0 ||
++                   right[right_index - 1] > left[left_index - 1]) {
++            value = right[--right_index];
++        } else {
++            value = left[--left_index];
++            right_index--;
++        }
++        left[--output_index] = value;
++    }
++}
++
++static void crucible_hot_fork_merge_mapping_tables(
++    QemuCrucibleHotForkSharedMapping *left, size_t left_count,
++    const QemuCrucibleHotForkSharedMapping *right, size_t right_count,
++    size_t union_count)
++{
++    size_t left_index = left_count;
++    size_t right_index = right_count;
++    size_t output_index = union_count;
++
++    while (output_index != 0) {
++        QemuCrucibleHotForkSharedMapping value;
++
++        if (right_index == 0 ||
++            (left_index != 0 &&
++             left[left_index - 1].start > right[right_index - 1].start)) {
++            value = left[--left_index];
++        } else if (left_index == 0 ||
++                   right[right_index - 1].start > left[left_index - 1].start) {
++            value = right[--right_index];
++        } else {
++            value = left[--left_index];
++            right_index--;
++        }
++        left[--output_index] = value;
++    }
++}
++
++int qemu_crucible_hot_fork_begin_child_resource_plan(
++    QemuCrucibleHotForkChildResourcePlan *resources,
++    const QemuCrucibleHotForkPluginChildResourcePlan *plugin)
++{
++    QemuCrucibleHotForkPluginChildResourcePlan plugin_copy;
++
++    if (!resources || !crucible_hot_fork_plugin_resources_valid(plugin)) {
++        return -EINVAL;
++    }
++
++    plugin_copy = *plugin;
++    *resources = (QemuCrucibleHotForkChildResourcePlan) { 0 };
++    resources->plugin = plugin_copy;
++    memcpy(resources->retained_fds, plugin_copy.retained_fds,
++           sizeof(plugin_copy.retained_fds));
++    resources->retained_fd_count =
++        QEMU_CRUCIBLE_HOT_FORK_PLUGIN_CHILD_RETAINED_FD_COUNT;
++    memcpy(resources->shared_mappings, plugin_copy.shared_mappings,
++           sizeof(plugin_copy.shared_mappings));
++    resources->shared_mapping_count =
++        QEMU_CRUCIBLE_HOT_FORK_PLUGIN_CHILD_SHARED_MAPPING_COUNT;
++    resources->building = true;
++    return 0;
++}
++
++int qemu_crucible_hot_fork_merge_child_resource_contribution(
++    QemuCrucibleHotForkChildResourcePlan *resources,
++    const int *retained_fds, size_t retained_fd_count,
++    const QemuCrucibleHotForkSharedMapping *shared_mappings,
++    size_t shared_mapping_count)
++{
++    size_t fd_union_count;
++    size_t mapping_union_count;
++    size_t index;
++    int result;
++
++    if (!resources || !resources->building || resources->sealed) {
++        return -EPERM;
++    }
++    if (retained_fd_count > QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS ||
++        shared_mapping_count > QEMU_CRUCIBLE_HOT_FORK_MAX_SHARED_MAPPINGS) {
++        return -E2BIG;
++    }
++    if (!crucible_hot_fork_fd_table_valid(retained_fds, retained_fd_count) ||
++        !crucible_hot_fork_mapping_table_valid(
++            shared_mappings, shared_mapping_count)) {
++        return -EINVAL;
++    }
++
++    for (index = 0; index < retained_fd_count; index++) {
++        if (retained_fds[index] ==
++                resources->plugin.replacements[0].source_fd ||
++            retained_fds[index] ==
++                resources->plugin.replacements[1].source_fd) {
++            return -EINVAL;
++        }
++    }
++    fd_union_count = crucible_hot_fork_fd_union_count(
++        resources->retained_fds, resources->retained_fd_count,
++        retained_fds, retained_fd_count);
++    if (fd_union_count > QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS) {
++        return -E2BIG;
++    }
++
++    result = crucible_hot_fork_mapping_union_count(
++        resources->shared_mappings, resources->shared_mapping_count,
++        shared_mappings, shared_mapping_count, &mapping_union_count);
++    if (result != 0) {
++        return result;
++    }
++    if (mapping_union_count > QEMU_CRUCIBLE_HOT_FORK_MAX_SHARED_MAPPINGS) {
++        return -E2BIG;
++    }
++    for (index = 0; index < shared_mapping_count; index++) {
++        int backing_fd = shared_mappings[index].backing_fd;
++
++        if (!crucible_hot_fork_fd_table_contains(
++                resources->retained_fds, resources->retained_fd_count,
++                backing_fd) &&
++            !crucible_hot_fork_fd_table_contains(
++                retained_fds, retained_fd_count, backing_fd)) {
++            return -EINVAL;
++        }
++    }
++
++    crucible_hot_fork_merge_fd_tables(
++        resources->retained_fds, resources->retained_fd_count,
++        retained_fds, retained_fd_count, fd_union_count);
++    resources->retained_fd_count = fd_union_count;
++    crucible_hot_fork_merge_mapping_tables(
++        resources->shared_mappings, resources->shared_mapping_count,
++        shared_mappings, shared_mapping_count, mapping_union_count);
++    resources->shared_mapping_count = mapping_union_count;
++    return 0;
++}
++
++static bool crucible_hot_fork_plan_contains_plugin(
++    const QemuCrucibleHotForkChildResourcePlan *resources,
++    const QemuCrucibleHotForkPluginChildResourcePlan *plugin)
++{
++    const QemuCrucibleHotForkSharedMapping *plugin_mapping;
++    size_t index;
++
++    if (!crucible_hot_fork_plugin_resources_valid(plugin) ||
++        !qemu_crucible_hot_fork_plugin_child_resources_prepared_for(
++            &resources->plugin, &plugin->plan,
++            plugin->replacements[0].source_fd,
++            plugin->replacements[1].source_fd)) {
++        return false;
++    }
++    for (index = 0;
++         index < QEMU_CRUCIBLE_HOT_FORK_PLUGIN_CHILD_RETAINED_FD_COUNT;
++         index++) {
++        if (!crucible_hot_fork_fd_table_contains(
++                resources->retained_fds, resources->retained_fd_count,
++                plugin->retained_fds[index])) {
++            return false;
++        }
++    }
++    plugin_mapping = &plugin->shared_mappings[0];
++    for (index = 0; index < resources->shared_mapping_count; index++) {
++        if (resources->shared_mappings[index].start == plugin_mapping->start) {
++            return crucible_hot_fork_mapping_equal(
++                &resources->shared_mappings[index], plugin_mapping);
++        }
++        if (resources->shared_mappings[index].start > plugin_mapping->start) {
++            break;
++        }
++    }
++    return false;
++}
++
++static bool crucible_hot_fork_child_resource_plan_valid(
++    const QemuCrucibleHotForkChildResourcePlan *resources,
++    const QemuCrucibleHotForkPluginChildResourcePlan *plugin)
++{
++    size_t index;
++
++    if (!resources ||
++        resources->retained_fd_count >
++            QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS ||
++        resources->shared_mapping_count >
++            QEMU_CRUCIBLE_HOT_FORK_MAX_SHARED_MAPPINGS ||
++        !crucible_hot_fork_fd_table_valid(
++            resources->retained_fds, resources->retained_fd_count) ||
++        !crucible_hot_fork_mapping_table_valid(
++            resources->shared_mappings, resources->shared_mapping_count) ||
++        !crucible_hot_fork_plan_contains_plugin(resources, plugin) ||
++        crucible_hot_fork_fd_table_contains(
++            resources->retained_fds, resources->retained_fd_count,
++            resources->plugin.replacements[0].source_fd) ||
++        crucible_hot_fork_fd_table_contains(
++            resources->retained_fds, resources->retained_fd_count,
++            resources->plugin.replacements[1].source_fd)) {
++        return false;
++    }
++    for (index = 0; index < resources->shared_mapping_count; index++) {
++        if (!crucible_hot_fork_fd_table_contains(
++                resources->retained_fds, resources->retained_fd_count,
++                resources->shared_mappings[index].backing_fd)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++int qemu_crucible_hot_fork_seal_child_resource_plan(
++    QemuCrucibleHotForkChildResourcePlan *resources)
++{
++    if (!resources || !resources->building || resources->sealed) {
++        return -EPERM;
++    }
++    if (!crucible_hot_fork_child_resource_plan_valid(
++            resources, &resources->plugin)) {
++        return -EINVAL;
++    }
++    resources->building = false;
++    resources->sealed = true;
++    return 0;
++}
++
++bool qemu_crucible_hot_fork_child_resource_plan_contains_plugin(
++    const QemuCrucibleHotForkChildResourcePlan *resources,
++    const QemuCrucibleHotForkPluginChildResourcePlan *plugin)
++{
++    return resources && resources->sealed && !resources->building &&
++        crucible_hot_fork_child_resource_plan_valid(resources, plugin);
++}
++
++void qemu_crucible_hot_fork_reset_child_resource_plan(
++    QemuCrucibleHotForkChildResourcePlan *resources)
++{
++    if (resources) {
++        *resources = (QemuCrucibleHotForkChildResourcePlan) { 0 };
++    }
++}
++
+ bool qemu_crucible_hot_fork_plugin_child_reinitializer_prepared_for(
+     const QemuCrucibleHotForkPluginChildReinitializer *reinitializer,
+     const struct qemu_plugin_crucible_hot_fork_child_plan *plan)
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index 2a416e48f..f3f3551cf 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -664,6 +664,215 @@ static void test_plugin_child_resource_plan_is_exact(void)
+                     ==, -EINVAL);
+ }
+ 
++static void test_child_resource_plan_composition_is_exact(void)
++{
++    uint64_t page_size = qemu_real_host_page_size();
++    struct qemu_plugin_crucible_hot_fork_child_plan plan = {
++        .schema_version = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PLAN_VERSION,
++        .struct_size = sizeof(plan),
++        .parent_process_generation = 10,
++        .child_process_generation = 11,
++        .template_generation = 1,
++        .private_ring_generation = 2,
++        .plugin_endpoint_generation = 3,
++        .plugin_barrier_generation = 4,
++        .control_socket_cookie = 5,
++        .wake_eventfd_id = 6,
++        .shmem_device = 7,
++        .shmem_inode = 8,
++        .shmem_length = page_size,
++        .source_mapping_start = page_size,
++        .source_mapping_length = page_size,
++        .source_mapping_offset = 0,
++        .private_ring_fd = 7,
++        .control_fd = 3,
++        .wake_fd = 5,
++        .reserved_fd = -1,
++        .worker_mask = QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED,
++    };
++    QemuCrucibleHotForkPluginChildResourcePlan plugin;
++    g_autofree QemuCrucibleHotForkChildResourcePlan *resources =
++        g_new0(QemuCrucibleHotForkChildResourcePlan, 1);
++    const int retained_fds[] = { 4, 9 };
++    const int unsorted_fds[] = { 9, 4 };
++    const int source_fd[] = { 31 };
++    QemuCrucibleHotForkSharedMapping mapping = {
++        .start = 3 * page_size,
++        .length = page_size,
++        .offset = 0,
++        .backing_fd = 9,
++    };
++    QemuCrucibleHotForkSharedMapping overlap = {
++        .start = page_size,
++        .length = page_size,
++        .offset = 0,
++        .backing_fd = 9,
++    };
++    QemuCrucibleHotForkSharedMapping missing_backing = {
++        .start = 5 * page_size,
++        .length = page_size,
++        .offset = 0,
++        .backing_fd = 10,
++    };
++
++    g_assert_cmpint(qemu_crucible_hot_fork_prepare_plugin_child_resources(
++                        &plugin, &plan, 31, 32),
++                    ==, 0);
++    g_assert_cmpint(qemu_crucible_hot_fork_begin_child_resource_plan(
++                        resources, &plugin),
++                    ==, 0);
++    g_assert_true(resources->building);
++    g_assert_false(resources->sealed);
++    g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
++                        resources, retained_fds, G_N_ELEMENTS(retained_fds),
++                        &mapping, 1),
++                    ==, 0);
++    g_assert_cmpuint(resources->retained_fd_count, ==, 5);
++    g_assert_cmpint(resources->retained_fds[0], ==, 3);
++    g_assert_cmpint(resources->retained_fds[1], ==, 4);
++    g_assert_cmpint(resources->retained_fds[2], ==, 5);
++    g_assert_cmpint(resources->retained_fds[3], ==, 7);
++    g_assert_cmpint(resources->retained_fds[4], ==, 9);
++    g_assert_cmpuint(resources->shared_mapping_count, ==, 2);
++    g_assert_cmpuint(resources->shared_mappings[0].start, ==, page_size);
++    g_assert_cmpuint(resources->shared_mappings[1].start, ==, 3 * page_size);
++
++    g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
++                        resources, retained_fds, G_N_ELEMENTS(retained_fds),
++                        &mapping, 1),
++                    ==, 0);
++    g_assert_cmpuint(resources->retained_fd_count, ==, 5);
++    g_assert_cmpuint(resources->shared_mapping_count, ==, 2);
++    g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
++                        resources, unsorted_fds,
++                        G_N_ELEMENTS(unsorted_fds), NULL, 0),
++                    ==, -EINVAL);
++    g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
++                        resources, source_fd, G_N_ELEMENTS(source_fd), NULL,
++                        0),
++                    ==, -EINVAL);
++    g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
++                        resources, NULL, 0, &overlap, 1),
++                    ==, -EINVAL);
++    g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
++                        resources, NULL, 0, &missing_backing, 1),
++                    ==, -EINVAL);
++    g_assert_cmpuint(resources->retained_fd_count, ==, 5);
++    g_assert_cmpuint(resources->shared_mapping_count, ==, 2);
++
++    g_assert_cmpint(qemu_crucible_hot_fork_seal_child_resource_plan(resources),
++                    ==, 0);
++    g_assert_false(resources->building);
++    g_assert_true(resources->sealed);
++    g_assert_true(
++        qemu_crucible_hot_fork_child_resource_plan_contains_plugin(
++            resources, &plugin));
++    g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
++                        resources, NULL, 0, NULL, 0),
++                    ==, -EPERM);
++    resources->retained_fds[1] = resources->retained_fds[0];
++    g_assert_false(
++        qemu_crucible_hot_fork_child_resource_plan_contains_plugin(
++            resources, &plugin));
++    qemu_crucible_hot_fork_reset_child_resource_plan(resources);
++    g_assert_false(
++        qemu_crucible_hot_fork_child_resource_plan_contains_plugin(
++            resources, &plugin));
++}
++
++static void test_child_resource_plan_bounds_are_exact(void)
++{
++    uint64_t page_size = qemu_real_host_page_size();
++    struct qemu_plugin_crucible_hot_fork_child_plan plan = {
++        .schema_version = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PLAN_VERSION,
++        .struct_size = sizeof(plan),
++        .parent_process_generation = 10,
++        .child_process_generation = 11,
++        .template_generation = 1,
++        .private_ring_generation = 2,
++        .plugin_endpoint_generation = 3,
++        .plugin_barrier_generation = 4,
++        .control_socket_cookie = 5,
++        .wake_eventfd_id = 6,
++        .shmem_device = 7,
++        .shmem_inode = 8,
++        .shmem_length = page_size,
++        .source_mapping_start = page_size,
++        .source_mapping_length = page_size,
++        .source_mapping_offset = 0,
++        .private_ring_fd = 7,
++        .control_fd = 3,
++        .wake_fd = 5,
++        .reserved_fd = -1,
++        .worker_mask = QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED,
++    };
++    QemuCrucibleHotForkPluginChildResourcePlan plugin;
++    g_autofree QemuCrucibleHotForkChildResourcePlan *resources =
++        g_new0(QemuCrucibleHotForkChildResourcePlan, 1);
++    g_autofree int *retained_fds = g_new(int,
++        QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS);
++    g_autofree QemuCrucibleHotForkSharedMapping *mappings =
++        g_new(QemuCrucibleHotForkSharedMapping,
++              QEMU_CRUCIBLE_HOT_FORK_MAX_SHARED_MAPPINGS);
++    size_t index;
++
++    g_assert_cmpint(qemu_crucible_hot_fork_prepare_plugin_child_resources(
++                        &plugin, &plan, 31, 32),
++                    ==, 0);
++    for (index = 0;
++         index < QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS;
++         index++) {
++        retained_fds[index] = 100 + index;
++    }
++    g_assert_cmpint(qemu_crucible_hot_fork_begin_child_resource_plan(
++                        resources, &plugin),
++                    ==, 0);
++    g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
++                        resources, retained_fds,
++                        QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS - 3,
++                        NULL, 0),
++                    ==, 0);
++    g_assert_cmpuint(resources->retained_fd_count, ==,
++                     QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS);
++    g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
++                        resources,
++                        &retained_fds[
++                            QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS -
++                            3],
++                        1, NULL, 0),
++                    ==, -E2BIG);
++
++    qemu_crucible_hot_fork_reset_child_resource_plan(resources);
++    g_assert_cmpint(qemu_crucible_hot_fork_begin_child_resource_plan(
++                        resources, &plugin),
++                    ==, 0);
++    for (index = 0;
++         index < QEMU_CRUCIBLE_HOT_FORK_MAX_SHARED_MAPPINGS;
++         index++) {
++        mappings[index] = (QemuCrucibleHotForkSharedMapping) {
++            .start = (3 + 2 * index) * page_size,
++            .length = page_size,
++            .offset = index * page_size,
++            .backing_fd = plan.private_ring_fd,
++        };
++    }
++    g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
++                        resources, NULL, 0, mappings,
++                        QEMU_CRUCIBLE_HOT_FORK_MAX_SHARED_MAPPINGS - 1),
++                    ==, 0);
++    g_assert_cmpuint(resources->shared_mapping_count, ==,
++                     QEMU_CRUCIBLE_HOT_FORK_MAX_SHARED_MAPPINGS);
++    g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
++                        resources,
++                        NULL, 0,
++                        &mappings[
++                            QEMU_CRUCIBLE_HOT_FORK_MAX_SHARED_MAPPINGS - 1],
++                        1),
++                    ==, -E2BIG);
++    g_assert_cmpint(qemu_crucible_hot_fork_seal_child_resource_plan(resources),
++                    ==, 0);
++}
++
+ static void test_source_mapping_binding_is_exact(void)
+ {
+     QemuCrucibleHotForkSourceMapping mapping = { 0 };
+@@ -999,6 +1208,10 @@ int main(int argc, char **argv)
+                     test_plugin_child_reinitializer_is_held_and_one_shot);
+     g_test_add_func("/crucible/hot-fork-child/plugin-resource-plan",
+                     test_plugin_child_resource_plan_is_exact);
++    g_test_add_func("/crucible/hot-fork-child/resource-plan-composition",
++                    test_child_resource_plan_composition_is_exact);
++    g_test_add_func("/crucible/hot-fork-child/resource-plan-bounds",
++                    test_child_resource_plan_bounds_are_exact);
+     g_test_add_func("/crucible/hot-fork-child/source-mapping-binding",
+                     test_source_mapping_binding_is_exact);
+     g_test_add_func("/crucible/hot-fork-child/inactive-descriptor-transaction",

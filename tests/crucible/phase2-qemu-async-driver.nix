@@ -11,6 +11,7 @@
   asyncDriver = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-qemu/src/async_driver.rs;
+    siblingTests = true;
   };
   crashDetection = builtins.readFile ../../crates/crucible-qemu/src/crash_detection.rs;
   nodeLib = import ./_rust-module-source.nix {
@@ -21,7 +22,10 @@
     inherit lib;
     entry = ../../crates/crucible-qemu/src/quantum.rs;
   };
-  qmpLib = builtins.readFile ../../crates/crucible-qemu/src/qmp.rs;
+  qmpLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/qmp.rs;
+  };
   qmpTest = builtins.readFile ../../crates/crucible-qemu/tests/qmp.rs;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;

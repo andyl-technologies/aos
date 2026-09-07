@@ -49,6 +49,23 @@ pub struct QemuLiveAcceleratorServicer {
 }
 
 impl QemuLiveAcceleratorServicer {
+    /// Clones pending accelerator work onto one branch-private ring mapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveAcceleratorServicerError`] when the private mapping is
+    /// invalid or the captured continuation belongs to another VM slot.
+    pub(crate) fn clone_hot_fork_continuation(
+        &self,
+        shmem_fd: BorrowedFd<'_>,
+        region_len: u64,
+    ) -> Result<Self, QemuLiveAcceleratorServicerError> {
+        let checkpoint = self.checkpoint();
+        let mut continuation = Self::from_shmem_fd(shmem_fd, region_len, checkpoint.vm_slot)?;
+        continuation.restore_checkpoint(&checkpoint)?;
+        Ok(continuation)
+    }
+
     /// Maps the shared-memory accelerator rings for `vm_slot`.
     ///
     /// # Errors

@@ -1,6 +1,8 @@
 //! TOML schema types and semantic conversion helpers.
 
 use super::*;
+use crucible_campaign::SelectableDeclaration;
+
 pub(super) fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError> {
     let latency = link.latency();
     let jitter = link.jitter();
@@ -28,9 +30,16 @@ pub(super) fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError>
 }
 
 pub(super) const SCENARIO_FORM_BINARY_MAGIC_V5: &[u8] = b"crucible.scenario-def-form.v5\0";
+pub(super) const SCENARIO_FORM_BINARY_MAGIC_V6: &[u8] = b"crucible.scenario-def-form.v6\0";
+pub(super) const SCENARIO_FORM_BINARY_MAGIC_V7: &[u8] = b"crucible.scenario-def-form.v7\0";
 pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V5: &[u8] =
     b"crucible.reproduction-artifact.v5\0";
-pub(super) const SCHEDULE_BINARY_MAGIC: &[u8] = b"crucible.schedule.v1\0";
+pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V6: &[u8] =
+    b"crucible.reproduction-artifact.v6\0";
+pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V7: &[u8] =
+    b"crucible.reproduction-artifact.v7\0";
+pub(super) const SCHEDULE_BINARY_MAGIC_V1: &[u8] = b"crucible.schedule.v1\0";
+pub(super) const SCHEDULE_BINARY_MAGIC_V2: &[u8] = b"crucible.schedule.v2\0";
 pub(super) const WORLD_BINARY_MAGIC_V4: &[u8] = b"crucible.world.v4\0";
 pub(super) const PLAN_BINARY_MAGIC: &[u8] = b"crucible.plan.v5\0";
 pub(super) const PROPERTIES_BINARY_MAGIC: &[u8] = b"crucible.properties.v1\0";
@@ -39,7 +48,8 @@ pub(super) const ACTION_BINARY_MAGIC: &[u8] = b"crucible.action.v1\0";
 pub(super) const CONTROL_OPERATION_KIND_BINARY_MAGIC: &[u8] =
     b"crucible.control-operation-kind.v1\0";
 pub(super) const SEED_BINARY_MAGIC: &[u8] = b"crucible.seed.v1\0";
-pub(super) const CHECKPOINT_BINARY_MAGIC: &[u8] = b"crucible.checkpoint.v3\0";
+pub(super) const CHECKPOINT_BINARY_MAGIC_V3: &[u8] = b"crucible.checkpoint.v3\0";
+pub(super) const CHECKPOINT_BINARY_MAGIC_V4: &[u8] = b"crucible.checkpoint.v4\0";
 pub(super) const SCHEDULER_STATE_BINARY_MAGIC: &[u8] = b"crucible.scheduler-state.v1\0";
 pub(super) const PREEMPTION_DECISION_BINARY_MAGIC: &[u8] = b"crucible.preemption-decision.v1\0";
 pub(super) const MAX_SCENARIO_BINARY_COLLECTION_ITEMS: usize = 1_000_000;
@@ -67,11 +77,17 @@ pub(super) struct ScenarioDefToml {
     pub(super) world: WorldToml,
     pub(super) plan: PlanToml,
     pub(super) properties: PropertiesToml,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) measurement: Vec<MeasurementDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) selectable: Vec<SelectableDeclarationToml>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum ScenarioSchemaToml {
     V5,
+    V6,
+    V7,
 }
 
 impl Serialize for ScenarioSchemaToml {
@@ -79,7 +95,11 @@ impl Serialize for ScenarioSchemaToml {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str("crucible.scenario.v5")
+        serializer.serialize_str(match self {
+            Self::V5 => "crucible.scenario.v5",
+            Self::V6 => "crucible.scenario.v6",
+            Self::V7 => "crucible.scenario.v7",
+        })
     }
 }
 
@@ -91,14 +111,16 @@ impl<'de> Deserialize<'de> for ScenarioSchemaToml {
         let schema = String::deserialize(deserializer)?;
         match schema.as_str() {
             "crucible.scenario.v5" => Ok(Self::V5),
+            "crucible.scenario.v6" => Ok(Self::V6),
+            "crucible.scenario.v7" => Ok(Self::V7),
             "crucible.scenario.v1"
             | "crucible.scenario.v2"
             | "crucible.scenario.v3"
             | "crucible.scenario.v4" => Err(de::Error::custom(
-                "legacy Crucible scenarios are not supported; rewrite the scenario using the exhaustive signal-driven fault schema `crucible.scenario.v5`",
+                "legacy Crucible scenarios are not supported; rewrite the scenario using `crucible.scenario.v7`",
             )),
             _ => Err(de::Error::custom(format!(
-                "unsupported Crucible scenario schema `{schema}`; expected `crucible.scenario.v5`"
+                "unsupported Crucible scenario schema `{schema}`; expected `crucible.scenario.v5`, `crucible.scenario.v6`, or `crucible.scenario.v7`"
             ))),
         }
     }
@@ -114,6 +136,20 @@ pub(super) struct ScenarioHeaderToml {
         serialize_with = "serialize_u64_toml_number_or_string"
     )]
     pub(super) app_random_draw_cap: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) selectable_declarations_per_node: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) selectable_declarations_per_world: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) selectable_requests_per_selectable: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) selectable_requests_per_node: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SelectableDeclarationToml {
+    pub(super) canonical_hex: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -645,21 +681,90 @@ pub(super) fn scenario_form_to_toml(
     form: &ScenarioDefForm,
 ) -> Result<ScenarioDefToml, EngineError> {
     Ok(ScenarioDefToml {
-        schema: ScenarioSchemaToml::V5,
+        schema: ScenarioSchemaToml::V7,
         scenario: ScenarioHeaderToml {
             id: format_content_hash_ref(form.id()),
             seed: format_seed_ref(form.seed),
             app_random_draw_cap: form.app_random_draw_cap,
+            selectable_declarations_per_node: Some(
+                form.selectables.limits().declarations_per_node(),
+            ),
+            selectable_declarations_per_world: Some(
+                form.selectables.limits().declarations_per_world(),
+            ),
+            selectable_requests_per_selectable: Some(
+                form.selectables.limits().requests_per_selectable(),
+            ),
+            selectable_requests_per_node: Some(form.selectables.limits().requests_per_node()),
         },
         world: world_to_toml(&form.world),
         plan: plan_to_toml(&form.plan)?,
         properties: properties_to_toml(&form.properties),
+        measurement: form.measurements.definitions().to_vec(),
+        selectable: form
+            .selectables
+            .declarations()
+            .values()
+            .map(|declaration| SelectableDeclarationToml {
+                canonical_hex: bytes_hex(&declaration.canonical_bytes()),
+            })
+            .collect(),
     })
 }
 
 pub(super) fn scenario_form_from_toml(
     toml: ScenarioDefToml,
 ) -> Result<ScenarioDefForm, EngineError> {
+    if matches!(toml.schema, ScenarioSchemaToml::V5) && !toml.measurement.is_empty() {
+        return Err(scenario_serialization_error(
+            "scenario v5 cannot carry measurement definitions",
+        ));
+    }
+    if !matches!(toml.schema, ScenarioSchemaToml::V7) && !toml.selectable.is_empty() {
+        return Err(scenario_serialization_error(
+            "scenario v5/v6 cannot carry selectable declarations",
+        ));
+    }
+    let selectable_limits = match toml.schema {
+        ScenarioSchemaToml::V7 => ScenarioSelectableLimits::new(
+            toml.scenario
+                .selectable_declarations_per_node
+                .ok_or_else(|| {
+                    scenario_serialization_error(
+                        "scenario v7 is missing selectable_declarations_per_node",
+                    )
+                })?,
+            toml.scenario
+                .selectable_declarations_per_world
+                .ok_or_else(|| {
+                    scenario_serialization_error(
+                        "scenario v7 is missing selectable_declarations_per_world",
+                    )
+                })?,
+            toml.scenario
+                .selectable_requests_per_selectable
+                .ok_or_else(|| {
+                    scenario_serialization_error(
+                        "scenario v7 is missing selectable_requests_per_selectable",
+                    )
+                })?,
+            toml.scenario.selectable_requests_per_node.ok_or_else(|| {
+                scenario_serialization_error("scenario v7 is missing selectable_requests_per_node")
+            })?,
+        )?,
+        ScenarioSchemaToml::V5 | ScenarioSchemaToml::V6 => {
+            if toml.scenario.selectable_declarations_per_node.is_some()
+                || toml.scenario.selectable_declarations_per_world.is_some()
+                || toml.scenario.selectable_requests_per_selectable.is_some()
+                || toml.scenario.selectable_requests_per_node.is_some()
+            {
+                return Err(scenario_serialization_error(
+                    "scenario v5/v6 cannot carry selectable limits",
+                ));
+            }
+            ScenarioSelectableLimits::default()
+        }
+    };
     let world = world_from_toml(toml.world)?;
     let (properties_id, assertions) = properties_assertions_from_toml(toml.properties)?;
     let plan = plan_from_toml_with_assertions(
@@ -671,13 +776,37 @@ pub(super) fn scenario_form_from_toml(
     let properties = resolve_properties_dsl_for_context(&world, &plan, &raw_properties)?;
     validate_serialized_id("properties", properties_id, properties.content_hash())?;
     let seed = parse_seed_ref(&toml.scenario.seed)?;
-    let form = ScenarioDefForm::from_components_with_app_random_draw_cap(
+    let measurements = MeasurementDefinitions::from_decoded_definitions(
         &world,
         &plan,
         &properties,
+        toml.measurement,
+    )?;
+    let declarations = toml
+        .selectable
+        .into_iter()
+        .map(|declaration| {
+            let bytes = parse_hex_bytes(
+                "scenario selectable canonical bytes",
+                &declaration.canonical_hex,
+            )?;
+            SelectableDeclaration::from_canonical_bytes(&bytes).map_err(|error| {
+                scenario_serialization_error(format!(
+                    "decode scenario selectable declaration: {error}"
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, EngineError>>()?;
+    let selectables = ScenarioSelectables::new(&world, selectable_limits, declarations)?;
+    let form = ScenarioDefForm::from_components_with_measurements_and_app_random_draw_cap(
+        &world,
+        &plan,
+        &properties,
+        &measurements,
         seed,
         toml.scenario.app_random_draw_cap,
-    )?;
+    )?
+    .with_selectables(selectables)?;
     let expected = parse_content_hash_ref("scenario.id", &toml.scenario.id)?;
     validate_serialized_id("scenario", expected, form.id())?;
     Ok(form)

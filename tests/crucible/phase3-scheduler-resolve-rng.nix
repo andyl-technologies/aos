@@ -6,7 +6,10 @@
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  executionRuntime = builtins.readFile ../../crates/crucible/src/model/fault_signal/execution_runtime.rs;
+  executionRuntime = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/model/fault_signal/execution_runtime.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   taskList = builtins.concatStringsSep "," taskIds;

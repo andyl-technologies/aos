@@ -8,7 +8,11 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  quantumLib = builtins.readFile ../../crates/crucible-qemu/src/quantum.rs;
+  quantumLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/quantum.rs;
+    siblingTests = true;
+  };
   # Production-only slice (everything before the `#[cfg(test)]` module): the
   # no-unwrap/no-expect forbids apply to production code; test code is allowed
   # panic shortcuts, matching the workspace clippy allow policy. `splitString`

@@ -256,7 +256,8 @@ fn drive_exchange(
     let mut delay_applied = false;
     let mut discovery_complete = false;
     let mut completion_owned_frames = 0_usize;
-    for _ in 0..bounded_drive_polls(timeout) {
+    let mut discovery_budget = DrivePollBudget::new(timeout);
+    while discovery_budget.begin_attempt() {
         let _ = setup.signal_plugin_wake();
         if completion_owned_frames > 0 {
             let should_delay = !delay_applied && !reply_wall_delay.is_zero();
@@ -396,7 +397,7 @@ fn drive_exchange(
                 status: status.to_string(),
             });
         }
-        thread::park_timeout(DRIVE_POLL_INTERVAL);
+        discovery_budget.park();
     }
     if !discovery_complete {
         let node_evidence = servicer.vm_node_snapshot().map_or_else(
@@ -455,7 +456,8 @@ fn drive_exchange(
         .authorize_guest_ceiling(reply_delivery_icount)
         .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?;
     let mut reply_reached = false;
-    for _ in 0..bounded_drive_polls(timeout) {
+    let mut reply_budget = DrivePollBudget::new(timeout);
+    while reply_budget.begin_attempt() {
         let node_snapshot = servicer
             .vm_node_snapshot()
             .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?;
@@ -471,7 +473,7 @@ fn drive_exchange(
                 status: status.to_string(),
             });
         }
-        thread::park_timeout(DRIVE_POLL_INTERVAL);
+        reply_budget.park();
     }
     if !reply_reached {
         return Err(QemuLiveNetworkIoGateError::ReplyDeliveryDidNotReach {
@@ -486,7 +488,8 @@ fn drive_exchange(
         .signal_plugin_wake()
         .map_err(|source| QemuLiveNetworkIoGateError::drive("wake post-reply guest", source))?;
 
-    for _ in 0..bounded_drive_polls(timeout) {
+    let mut acknowledgement_budget = DrivePollBudget::new(timeout);
+    while acknowledgement_budget.begin_attempt() {
         let _ = setup.signal_plugin_wake();
         let step = servicer
             .service()
@@ -509,7 +512,7 @@ fn drive_exchange(
                 status: status.to_string(),
             });
         }
-        thread::park_timeout(DRIVE_POLL_INTERVAL);
+        acknowledgement_budget.park();
     }
     if acknowledgement_icount.is_none() {
         return Err(QemuLiveNetworkIoGateError::AcknowledgementDidNotArrive {

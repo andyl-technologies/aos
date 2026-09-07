@@ -110,11 +110,14 @@ in
             --list > "$scheduler_test_list"
           for test_name in \
             asynchronous_preemption_completes_while_target_runs \
+            completed_quantum_error_preserves_the_effective_boundary \
             controller_waits_for_pending_work_release \
             disabled_adversary_spawns_no_controller \
             dropping_controller_resumes_and_joins_stopped_target \
+            dropping_prepared_controller_joins_without_stopping_target \
             exited_target_fails_after_pending_work_release \
             first_stop_rejects_an_already_completed_quantum \
+            prepared_watchdog_does_not_expire_during_guest_priming \
             signal_failure_is_reported_and_joined \
             stop_observation_honors_timeout_without_a_state_change \
             watchdog_expiry_directly_resumes_stopped_target; do

@@ -231,6 +231,8 @@ where
 
     Ok(RunWorkflowReport {
         status,
+        execution_owner: RunExecutionOwner::Session,
+        campaign_replay_closure: None,
         created_state: format!("{:?}", created.state).to_ascii_lowercase(),
         final_state: observation.final_state,
         outcome: observation.outcome,

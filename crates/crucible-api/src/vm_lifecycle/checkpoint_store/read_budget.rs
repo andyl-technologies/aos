@@ -86,6 +86,7 @@ impl CheckpointReadBudget {
 
     fn map_read_error(&self, error: BoundedReadError, current: u64) -> LifecycleApiError {
         match error {
+            BoundedReadError::Boundary(error) => *error,
             BoundedReadError::Allocation { requested }
             | BoundedReadError::Representation { length: requested } => resource_limit(
                 current,
@@ -110,6 +111,9 @@ fn resource_limit(current: u64, requested: u64, configured: u64, hard: u64) -> L
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
+    #![allow(clippy::expect_used)]
+
     use super::*;
     use std::cell::Cell;
 

@@ -42,10 +42,14 @@ use crate::{
 };
 
 use super::{
-    LiveRuntimeTeardownTrigger, OwnedCallbackRegistrar, OwnedCallbackRegistrationError,
-    OwnedCallbackRegistrationMask, OwnedCallbackRuntimeState,
+    LiveRuntimeTeardownRouter, LiveRuntimeTeardownTrigger, OwnedCallbackRegistrar,
+    OwnedCallbackRegistrationError, OwnedCallbackRegistrationMask, OwnedCallbackRuntimeState,
     callback_quiescence::{LiveCallbackInFlight, LiveCallbackQuiescence},
-    live_whitebox::{LiveWhiteboxApis, crucible_qemu_plugin_live_whitebox_vcpu_init_cb},
+    live_whitebox::{
+        LiveWhiteboxApis, crucible_qemu_plugin_live_whitebox_vcpu_init_cb,
+        deliver_selectable_reply_on_vcpu_resume,
+    },
+    worker_quiescence::LiveWorkerQuiescence,
 };
 
 mod devices;
@@ -85,6 +89,50 @@ pub(crate) struct LiveVcpuTimeCallbackCapabilities {
     pub(crate) register_accelerator: Option<crate::QemuRegisterAcceleratorCbFn>,
     pub(crate) fault_commands: QemuFaultCommandApis,
     pub(crate) request_shutdown: crate::QemuRequestShutdownFn,
+}
+
+/// One exact handoff from a selectable doorbell to the sim-publication scope.
+///
+/// The guest doorbell runs in an instruction callback, where QEMU deliberately
+/// rejects native VMStop requests. It may force the current vCPU out of its TB,
+/// then this shared handoff lets the exact post-TCG callback admit the stop only
+/// after the pending request and current instruction count are published.
+pub(crate) struct SelectableVmstopHandoff {
+    pending: AtomicBool,
+}
+
+impl SelectableVmstopHandoff {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending: AtomicBool::new(false),
+        }
+    }
+
+    /// Reserves the sole deferred stop and forces the current TB to finish.
+    pub(crate) fn defer(&self, force_vcpu_exit: QemuForceVcpuExitFn) -> bool {
+        if self
+            .pending
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        force_vcpu_exit();
+        true
+    }
+
+    fn claim(&self) -> bool {
+        self.pending.swap(false, Ordering::AcqRel)
+    }
+
+    fn restore(&self) {
+        self.pending.store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_pending(&self) -> bool {
+        self.pending.load(Ordering::Acquire)
+    }
 }
 
 /// Registrar for the joined live vCPU, time, network, block, and 9p callbacks.
@@ -357,6 +405,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                     self.target_architecture,
                     self.execution_model.smp_vcpus(),
                     capabilities.request_shutdown,
+                    capabilities.force_vcpu_exit,
                 )
                 .map_err(|source| {
                     live_callback_registration_error(LiveVcpuTimeCallbackError::WhiteboxCallback {
@@ -479,6 +528,7 @@ impl StableFingerprintSlotHandle {
 /// per-node [`FingerprintSampleSlot`].
 struct LiveFingerprintCallbackState {
     sampling: PluginFingerprintSampling,
+    slot: StableFingerprintSlotHandle,
     worker: LiveFingerprintDigestWorker,
     last_capture_icount: AtomicU64,
     capture_submitted: AtomicBool,
@@ -615,12 +665,13 @@ impl LiveNetworkCallbackState {
 /// rejects callback re-entry before a mutable ring or freeze-state borrow forms.
 pub(crate) struct LiveVcpuTimeCallbackState {
     quiescence: Arc<LiveCallbackQuiescence>,
-    teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
+    teardown_router: Arc<LiveRuntimeTeardownRouter>,
     shared_shutdown_signaled: AtomicBool,
     plugin_id: QemuPluginId,
     icount_raw: QemuIcountRawFn,
     force_vcpu_exit: QemuForceVcpuExitFn,
     request_vmstop: crate::QemuRequestVmstopFn,
+    selectable_vmstop: Arc<SelectableVmstopHandoff>,
     preemption_injector: PluginPreemptionInjector,
     vcpu_count: u32,
     icount_shift: u8,
@@ -632,7 +683,7 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     halted_vcpus: Mutex<VcpuHaltTracker>,
     all_halted_idle_handled: AtomicBool,
     last_raw_icount: AtomicU64,
-    logical_icount_offset: AtomicU64,
+    logical_icount_offset: Arc<AtomicU64>,
     preemption_enqueue_active: AtomicBool,
     fault_command_pump_active: AtomicBool,
     idle_advance_completion_active: AtomicBool,
@@ -710,7 +761,7 @@ impl LiveVcpuTimeCallbackState {
         header: &RegionHeader,
         slot: &NodeSlot,
         quiescence: Arc<LiveCallbackQuiescence>,
-        teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
+        teardown_router: Arc<LiveRuntimeTeardownRouter>,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
         if 1_u64.checked_shl(u32::from(icount_shift)).is_none() {
             return Err(LiveVcpuTimeCallbackError::IcountShiftOutOfRange {
@@ -737,12 +788,13 @@ impl LiveVcpuTimeCallbackState {
             .into_boxed_slice();
         Ok(Self {
             quiescence,
-            teardown_sender,
+            teardown_router,
             shared_shutdown_signaled: AtomicBool::new(false),
             plugin_id,
             icount_raw,
             force_vcpu_exit,
             request_vmstop,
+            selectable_vmstop: Arc::new(SelectableVmstopHandoff::new()),
             preemption_injector,
             vcpu_count,
             icount_shift,
@@ -757,7 +809,7 @@ impl LiveVcpuTimeCallbackState {
             ),
             all_halted_idle_handled: AtomicBool::new(false),
             last_raw_icount: AtomicU64::new(initial_raw_icount),
-            logical_icount_offset: AtomicU64::new(logical_icount_offset),
+            logical_icount_offset: Arc::new(AtomicU64::new(logical_icount_offset)),
             preemption_enqueue_active: AtomicBool::new(false),
             fault_command_pump_active: AtomicBool::new(false),
             idle_advance_completion_active: AtomicBool::new(false),
@@ -801,9 +853,9 @@ impl LiveVcpuTimeCallbackState {
         {
             return Ok(());
         }
-        self.teardown_sender
+        self.teardown_router
             .send(LiveRuntimeTeardownTrigger::SharedShutdown(proof))
-            .map_err(|_error| LiveVcpuTimeCallbackError::TeardownWorkerUnavailable)
+            .map_err(|()| LiveVcpuTimeCallbackError::TeardownWorkerUnavailable)
     }
 
     pub(super) fn attach_network(
@@ -837,16 +889,38 @@ impl LiveVcpuTimeCallbackState {
         sampling: PluginFingerprintSampling,
         slot: &FingerprintSampleSlot,
         synchronous_oracle: bool,
+        worker_quiescence: Arc<LiveWorkerQuiescence>,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
-        let worker = LiveFingerprintDigestWorker::spawn(StableFingerprintSlotHandle::new(slot))?;
+        let slot = StableFingerprintSlotHandle::new(slot);
+        let worker = LiveFingerprintDigestWorker::spawn(slot, worker_quiescence)?;
         self.fingerprint = Some(LiveFingerprintCallbackState {
             sampling,
+            slot,
             worker,
             last_capture_icount: AtomicU64::new(0),
             capture_submitted: AtomicBool::new(false),
             synchronous_oracle,
         });
         Ok(self)
+    }
+
+    /// Replaces the vanished template fingerprint worker in a fork child.
+    ///
+    /// The caller holds callback and worker admission, and the template queue
+    /// was proven empty before `fork(2)`. The inherited `JoinHandle` cannot be
+    /// joined in the child, so it is deliberately abandoned after the fresh
+    /// worker owns the same exact-address slot.
+    pub(super) fn reinitialize_hot_fork_child_workers(
+        &mut self,
+        worker_quiescence: Arc<LiveWorkerQuiescence>,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let Some(fingerprint) = self.fingerprint.as_mut() else {
+            return Ok(());
+        };
+        let worker = LiveFingerprintDigestWorker::spawn(fingerprint.slot, worker_quiescence)?;
+        let inherited = std::mem::replace(&mut fingerprint.worker, worker);
+        std::mem::forget(inherited);
+        Ok(())
     }
 
     /// Binds the optional terminal raw-state exporter to this pinned callback state.
@@ -1150,6 +1224,12 @@ impl LiveVcpuTimeCallbackState {
         if self.idle_advance_is_pending() {
             return Err(LiveVcpuTimeCallbackError::ResumeWhileIdleAdvancePending);
         }
+        let current_icount = self.logical_icount_for_raw(raw_icount)?;
+        deliver_selectable_reply_on_vcpu_resume(vcpu_index, current_icount).map_err(|source| {
+            LiveVcpuTimeCallbackError::WhiteboxCallback {
+                message: source.to_string(),
+            }
+        })?;
         let was_halted = {
             let mut halted_vcpus = self.try_halted_vcpus()?;
             let was_halted = halted_vcpus
@@ -1414,6 +1494,52 @@ impl LiveVcpuTimeCallbackState {
         } else {
             Err(LiveVcpuTimeCallbackError::CheckpointVmStopRejected { boundary, status })
         }
+    }
+
+    /// Publishes and admits a doorbell-deferred stop from this exact callback.
+    fn request_selectable_vmstop_if_pending(
+        &self,
+        raw_icount: u64,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        if !self.selectable_vmstop.claim() {
+            return Ok(());
+        }
+
+        let result = (|| {
+            let current_icount = self.logical_icount_for_raw(raw_icount)?;
+            let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
+            if current_icount > ceiling_icount {
+                return Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
+                    current_icount,
+                    ceiling_icount,
+                });
+            }
+            PluginShmemOrdering::publish_pause_quiesced(
+                self.slot.get(),
+                current_icount,
+                raw_icount,
+                self.icount_shift,
+            )
+            .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
+            self.last_raw_icount.store(raw_icount, Ordering::Release);
+            self.last_icount.store(current_icount, Ordering::Release);
+            self.request_checkpoint_vmstop("selectable-sim-publication")
+        })();
+        if let Err(error) = result {
+            self.selectable_vmstop.restore();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Shares the process-local handoff with the sibling white-box callback.
+    pub(crate) fn selectable_vmstop_handoff(&self) -> Arc<SelectableVmstopHandoff> {
+        Arc::clone(&self.selectable_vmstop)
+    }
+
+    /// Shares the restore-adjusted raw-to-logical icount calibration.
+    pub(crate) fn logical_icount_offset(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.logical_icount_offset)
     }
 
     fn arm_idle_advance(
@@ -2209,9 +2335,10 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_publish_icount_cb(
     let Some(_in_flight) = state.callback_guard() else {
         return;
     };
-    if let Err(error) =
-        state.publish_current_icount_for_boundary(current_icount, true, true, "sim-publication")
-    {
+    let result = state
+        .publish_current_icount_for_boundary(current_icount, true, true, "sim-publication")
+        .and_then(|()| state.request_selectable_vmstop_if_pending(current_icount));
+    if let Err(error) = result {
         abort_live_callback(error);
     }
 }

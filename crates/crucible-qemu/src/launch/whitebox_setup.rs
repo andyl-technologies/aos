@@ -9,6 +9,7 @@ use std::{
     io::Write as _,
     path::Path,
     process::{Command, Stdio},
+    time::Duration,
 };
 
 use crucible_protocol::{
@@ -16,9 +17,15 @@ use crucible_protocol::{
 };
 use thiserror::Error;
 
-use super::QemuLaunchCommand;
+use super::{
+    DEFAULT_VMSTATE_FILE_NAME, QemuLaunchCommand, ROOT_DRIVE_ID, VMSTATE_DRIVE_ID,
+    validate_overlay_file_name,
+};
 
 const UNASSIGNED_X86_IO_REGION: &str = "io";
+const X86_WHITEBOX_MONITOR_QUERY: &[u8] = b"info mtree -f\nquit\n";
+const MAXIMUM_X86_WHITEBOX_PROBE_OUTPUT_BYTES: usize = 1024 * 1024;
+const X86_WHITEBOX_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A setup-time proof for the architecture's frozen white-box instruction.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,6 +41,14 @@ enum QemuWhiteboxSetupTrap {
 }
 
 impl QemuWhiteboxSetupValidation {
+    #[cfg(test)]
+    pub(super) fn test_x86_unclaimed() -> Self {
+        Self {
+            trap: QemuWhiteboxSetupTrap::X86Port,
+            observed_region: UNASSIGNED_X86_IO_REGION.to_owned(),
+        }
+    }
+
     /// Returns the collision-checked x86 reserved port.
     ///
     /// This compatibility accessor is meaningful only for validation returned
@@ -156,6 +171,65 @@ pub fn probe_x86_whitebox_setup(
 ) -> Result<QemuWhiteboxSetupValidation, QemuWhiteboxSetupError> {
     crate::spawn::prepare_vmstate_container(command, run_directory)
         .map_err(|source| QemuWhiteboxSetupError::VmStatePreparation { source })?;
+    let args = x86_whitebox_probe_args(command)?;
+
+    let mut child = Command::new(&command.executable)
+        .args(&args)
+        .current_dir(run_directory)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|source| QemuWhiteboxSetupError::Spawn { source })?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or(QemuWhiteboxSetupError::MonitorStdinUnavailable)?;
+    stdin
+        .write_all(X86_WHITEBOX_MONITOR_QUERY)
+        .map_err(|source| QemuWhiteboxSetupError::MonitorWrite { source })?;
+    drop(stdin);
+    let output = child
+        .wait_with_output()
+        .map_err(|source| QemuWhiteboxSetupError::Wait { source })?;
+    validate_x86_whitebox_probe_output(output)
+}
+
+/// Probes an admitted QEMU machine under its exact attempt process contract.
+///
+/// Unlike [`probe_x86_whitebox_setup`], this path consumes an already prepared
+/// VMState artifact and launches the stopped probe through the same cgroup,
+/// cancellation event, credentials, resource ceilings, and descriptor-pinned
+/// directory as the eventual production VM.
+///
+/// # Errors
+///
+/// Returns [`QemuWhiteboxSetupError`] when containment admission changes, the
+/// bounded probe cannot complete and be reaped, or the reported I/O map fails
+/// the same validation as an unguarded probe.
+#[cfg(target_os = "linux")]
+pub(crate) fn probe_x86_whitebox_setup_guarded(
+    command: &QemuLaunchCommand,
+    run_directory: &crate::QemuPreparedRunDirectory,
+    process_contract: &crate::QemuChildProcessContract,
+) -> Result<QemuWhiteboxSetupValidation, QemuWhiteboxSetupError> {
+    let args = x86_whitebox_probe_args(command)?;
+    let output = crate::spawn::run_guarded_qemu_setup_probe(
+        command,
+        &args,
+        X86_WHITEBOX_MONITOR_QUERY,
+        MAXIMUM_X86_WHITEBOX_PROBE_OUTPUT_BYTES,
+        X86_WHITEBOX_PROBE_TIMEOUT,
+        run_directory,
+        process_contract,
+    )
+    .map_err(|source| QemuWhiteboxSetupError::GuardedProbe { source })?;
+    validate_x86_whitebox_probe_output(output)
+}
+
+fn x86_whitebox_probe_args(
+    command: &QemuLaunchCommand,
+) -> Result<Vec<String>, QemuWhiteboxSetupError> {
     let mut args = Vec::with_capacity(command.args.len() + 1);
     let mut index = 0;
     while index < command.args.len() {
@@ -177,6 +251,20 @@ pub fn probe_x86_whitebox_setup(
                 args.extend(["-monitor".to_owned(), "stdio".to_owned()]);
                 index += 2;
             }
+            option @ ("-blockdev" | "-drive") => {
+                let option = if option == "-blockdev" {
+                    "-blockdev"
+                } else {
+                    "-drive"
+                };
+                let value = command
+                    .args
+                    .get(index + 1)
+                    .ok_or(QemuWhiteboxSetupError::MalformedLaunchCommand { option })?;
+                let read_only = probe_read_only_storage_argument(option, value)?;
+                args.extend([option.to_owned(), read_only]);
+                index += 2;
+            }
             _ => {
                 args.push(command.args[index].clone());
                 index += 1;
@@ -184,26 +272,80 @@ pub fn probe_x86_whitebox_setup(
         }
     }
     args.push("-S".to_owned());
+    Ok(args)
+}
 
-    let mut child = Command::new(&command.executable)
-        .args(&args)
-        .current_dir(run_directory)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|source| QemuWhiteboxSetupError::Spawn { source })?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or(QemuWhiteboxSetupError::MonitorStdinUnavailable)?;
-    stdin
-        .write_all(b"info mtree -f\nquit\n")
-        .map_err(|source| QemuWhiteboxSetupError::MonitorWrite { source })?;
-    drop(stdin);
-    let output = child
-        .wait_with_output()
-        .map_err(|source| QemuWhiteboxSetupError::Wait { source })?;
+// The setup probe retains the launch's machine and device topology while
+// opening its exact storage artifacts read-only. The permission-only change
+// prevents QEMU from dirtying a qcow2 header before the real launch.
+fn probe_read_only_storage_argument(
+    option: &'static str,
+    value: &str,
+) -> Result<String, QemuWhiteboxSetupError> {
+    let supported = match option {
+        "-blockdev" => is_vmstate_blockdev(value),
+        "-drive" => is_root_overlay_drive(value),
+        _ => false,
+    };
+    if !supported {
+        return Err(QemuWhiteboxSetupError::UnsupportedProbeStorageArgument { option });
+    }
+
+    let read_only_property = match option {
+        "-blockdev" => "read-only=on",
+        "-drive" => "readonly=on",
+        _ => unreachable!("supported probe storage options are exhaustive"),
+    };
+    Ok(format!("{value},{read_only_property}"))
+}
+
+fn is_vmstate_blockdev(value: &str) -> bool {
+    value
+        == format!(
+            "driver=qcow2,node-name={VMSTATE_DRIVE_ID},file.driver=file,file.filename={DEFAULT_VMSTATE_FILE_NAME}"
+        )
+}
+
+fn is_root_overlay_drive(value: &str) -> bool {
+    let fields = value.split(',').collect::<Vec<_>>();
+    let [
+        id,
+        overlay,
+        backing_driver,
+        file_driver,
+        backing_file,
+        interface,
+        format,
+        cache,
+        aio,
+        discard,
+    ] = fields.as_slice()
+    else {
+        return false;
+    };
+
+    *id == format!("id={ROOT_DRIVE_ID}")
+        && overlay
+            .strip_prefix("file=")
+            .is_some_and(|path| validate_overlay_file_name(path).is_ok())
+        && matches!(
+            *backing_driver,
+            "backing.driver=qcow2" | "backing.driver=raw"
+        )
+        && *file_driver == "backing.file.driver=file"
+        && backing_file
+            .strip_prefix("backing.file.filename=")
+            .is_some_and(|path| path.starts_with("/nix/store/") && path.len() > "/nix/store/".len())
+        && *interface == "if=none"
+        && *format == "format=qcow2"
+        && *cache == "cache=none"
+        && *aio == "aio=threads"
+        && *discard == "discard=unmap"
+}
+
+fn validate_x86_whitebox_probe_output(
+    output: std::process::Output,
+) -> Result<QemuWhiteboxSetupValidation, QemuWhiteboxSetupError> {
     if !output.status.success() {
         return Err(QemuWhiteboxSetupError::ProbeExit {
             status: output.status.to_string(),
@@ -249,10 +391,24 @@ pub enum QemuWhiteboxSetupError {
         #[source]
         source: crate::QemuSpawnError,
     },
+    /// The contained setup probe violated its attempt or cleanup contract.
+    #[cfg(target_os = "linux")]
+    #[error("contained QEMU white-box setup probe failed: {source}")]
+    GuardedProbe {
+        /// Containment, execution, output-bound, or cleanup failure.
+        #[source]
+        source: crate::spawn::QemuGuardedImagePreparationError,
+    },
     /// The launch command ended with an option lacking its value.
     #[error("QEMU launch option `{option}` is missing its value")]
     MalformedLaunchCommand {
         /// Malformed option.
+        option: &'static str,
+    },
+    /// A storage option did not match a form emitted by the launch builder.
+    #[error("QEMU launch option `{option}` has an unsupported setup-probe storage form")]
+    UnsupportedProbeStorageArgument {
+        /// Rejected storage option.
         option: &'static str,
     },
     /// The stopped QEMU probe could not be spawned.
@@ -316,9 +472,63 @@ pub enum QemuWhiteboxSetupError {
     },
 }
 
+impl QemuWhiteboxSetupError {
+    /// Extracts a contained probe whose bounded cleanup could not reap it.
+    #[must_use]
+    pub(crate) fn take_unreaped_child(&mut self) -> Option<crate::QemuNodeChild> {
+        match self {
+            #[cfg(target_os = "linux")]
+            Self::GuardedProbe { source } => source.take_unreaped_child(),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_probe_opens_builder_storage_forms_read_only() {
+        let vmstate = format!(
+            "driver=qcow2,node-name={VMSTATE_DRIVE_ID},file.driver=file,file.filename={DEFAULT_VMSTATE_FILE_NAME}"
+        );
+        assert_eq!(
+            probe_read_only_storage_argument("-blockdev", &vmstate)
+                .unwrap_or_else(|error| panic!("VMState blockdev should validate: {error}")),
+            format!("{vmstate},read-only=on")
+        );
+
+        for backing_driver in ["qcow2", "raw"] {
+            let root = format!(
+                "id={ROOT_DRIVE_ID},file=custom-root-overlay.qcow2,backing.driver={backing_driver},backing.file.driver=file,backing.file.filename=/nix/store/00000000000000000000000000000000-root/root.img,if=none,format=qcow2,cache=none,aio=threads,discard=unmap"
+            );
+            assert_eq!(
+                probe_read_only_storage_argument("-drive", &root)
+                    .unwrap_or_else(|error| panic!("root drive should validate: {error}")),
+                format!("{root},readonly=on")
+            );
+        }
+    }
+
+    #[test]
+    fn setup_probe_rejects_storage_forms_the_builder_does_not_emit() {
+        for (option, value) in [
+            ("-blockdev", "driver=raw,node-name=vmstate"),
+            ("-drive", "id=foreign,file=/tmp/disk.img,if=none"),
+            (
+                "-drive",
+                "id=crucible-root,file=overlay.qcow2,backing.driver=qcow2,backing.file.driver=file,backing.file.filename=/tmp/root.img,if=none,format=qcow2,cache=none,aio=threads,discard=unmap",
+            ),
+        ] {
+            assert!(matches!(
+                probe_read_only_storage_argument(option, value),
+                Err(QemuWhiteboxSetupError::UnsupportedProbeStorageArgument {
+                    option: rejected,
+                }) if rejected == option
+            ));
+        }
+    }
 
     #[test]
     fn hmp_mtree_accepts_only_the_unassigned_io_fallback() {

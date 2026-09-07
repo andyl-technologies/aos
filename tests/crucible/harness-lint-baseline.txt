@@ -1,10 +1,11 @@
-# Existing production harness-lint findings exposed by the workspace-scoped
-# T-PKG-8 package test path.
+# Capped production harness-lint debt exposed by the canonical workspace crate
+# index. Counts may shrink, but any growth fails the gate.
 #
 # Format:
 # category<TAB>repo-relative path<TAB>reason<TAB>pattern<TAB>suffix<TAB>count
 confinement	crates/crucible-api/src/server.rs	nondeterministic select	select!	; package `crucible-api` is not a host-nondeterminism boundary	2
 confinement	crates/crucible-api/src/streaming.rs	nondeterministic select	select!	; package `crucible-api` is not a host-nondeterminism boundary	1
+confinement	crates/crucible-cas/src/content_store/composition.rs	host monotonic time	Instant	; package `crucible-cas` is not a host-nondeterminism boundary	5
 confinement	crates/crucible-cli/src/cli/artifact_capture.rs	host nondeterminism reaches API/session route	crucible_api		1
 confinement	crates/crucible-cli/src/cli/artifact_capture.rs	host nondeterminism reaches API/session route	Decision		1
 confinement	crates/crucible-cli/src/cli/artifact_capture.rs	host nondeterminism reaches API/session route	ScenarioDef		2
@@ -18,6 +19,14 @@ confinement	crates/crucible-cli/src/cli/backend/evidence.rs	host nondeterminism 
 confinement	crates/crucible-cli/src/cli/backend/evidence.rs	host nondeterminism reaching State	Backend		5
 confinement	crates/crucible-cli/src/cli/backend/routing.rs	host nondeterminism reaches API/session route	Backend		3
 confinement	crates/crucible-cli/src/cli/backend/routing.rs	host nondeterminism reaching State	Backend		3
+confinement	crates/crucible-cli/src/cli/campaign/explain.rs	host nondeterminism reaches API/session route	Configuration		1
+confinement	crates/crucible-cli/src/cli/campaign/explain.rs	host nondeterminism reaches API/session route	step		14
+confinement	crates/crucible-cli/src/cli/campaign/explain.rs	host nondeterminism reaching State	Configuration		1
+confinement	crates/crucible-cli/src/cli/campaign/explain.rs	host nondeterminism reaching State	step		14
+confinement	crates/crucible-cli/src/cli/campaign/fixture.rs	host nondeterminism reaches API/session route	Schedule		3
+confinement	crates/crucible-cli/src/cli/campaign/fixture.rs	host nondeterminism reaching State	Schedule		3
+confinement	crates/crucible-cli/src/cli/campaign/ranking.rs	host nondeterminism reaches API/session route	step		21
+confinement	crates/crucible-cli/src/cli/campaign/ranking.rs	host nondeterminism reaching State	step		21
 confinement	crates/crucible-cli/src/cli/control.rs	host nondeterminism reaches API/session route	ControlClient		5
 confinement	crates/crucible-cli/src/cli/control.rs	host nondeterminism reaches API/session route	crucible_api		16
 confinement	crates/crucible-cli/src/cli/control.rs	host nondeterminism reaches API/session route	crucible_session		5
@@ -41,10 +50,10 @@ confinement	crates/crucible-cli/src/cli/dispatch/support.rs	host nondeterminism 
 confinement	crates/crucible-cli/src/cli/dispatch/support.rs	host nondeterminism reaching State	Backend		2
 confinement	crates/crucible-cli/src/cli/dispatch/support.rs	host nondeterminism reaching State	Configuration		3
 confinement	crates/crucible-cli/src/cli/exploration/search.rs	host nondeterminism reaches API/session route	Configuration		3
-confinement	crates/crucible-cli/src/cli/exploration/search.rs	host nondeterminism reaches API/session route	Decision		6
+confinement	crates/crucible-cli/src/cli/exploration/search.rs	host nondeterminism reaches API/session route	Decision		7
 confinement	crates/crucible-cli/src/cli/exploration/search.rs	host nondeterminism reaches API/session route	Schedule		1
 confinement	crates/crucible-cli/src/cli/exploration/search.rs	host nondeterminism reaching State	Configuration		3
-confinement	crates/crucible-cli/src/cli/exploration/search.rs	host nondeterminism reaching State	Decision		6
+confinement	crates/crucible-cli/src/cli/exploration/search.rs	host nondeterminism reaching State	Decision		7
 confinement	crates/crucible-cli/src/cli/exploration/search.rs	host nondeterminism reaching State	Schedule		1
 confinement	crates/crucible-cli/src/cli/planning/invocations.rs	host nondeterminism reaches API/session route	Configuration		1
 confinement	crates/crucible-cli/src/cli/planning/invocations.rs	host nondeterminism reaches API/session route	crucible_api		1
@@ -67,10 +76,10 @@ confinement	crates/crucible-cli/src/cli/resume_fork.rs	host nondeterminism reach
 confinement	crates/crucible-cli/src/cli/resume_fork.rs	host nondeterminism reaches API/session route	ControlClient		3
 confinement	crates/crucible-cli/src/cli/resume_fork.rs	host nondeterminism reaches API/session route	crucible_api		5
 confinement	crates/crucible-cli/src/cli/resume_fork.rs	host nondeterminism reaches API/session route	crucible_session		5
-confinement	crates/crucible-cli/src/cli/resume_fork.rs	host nondeterminism reaches API/session route	Decision		10
+confinement	crates/crucible-cli/src/cli/resume_fork.rs	host nondeterminism reaches API/session route	Decision		11
 confinement	crates/crucible-cli/src/cli/resume_fork.rs	host nondeterminism reaches API/session route	Schedule		2
 confinement	crates/crucible-cli/src/cli/resume_fork.rs	host nondeterminism reaching State	Configuration		7
-confinement	crates/crucible-cli/src/cli/resume_fork.rs	host nondeterminism reaching State	Decision		10
+confinement	crates/crucible-cli/src/cli/resume_fork.rs	host nondeterminism reaching State	Decision		11
 confinement	crates/crucible-cli/src/cli/resume_fork.rs	host nondeterminism reaching State	Schedule		2
 confinement	crates/crucible-cli/src/cli/resume_fork/remote.rs	host nondeterminism reaches API/session route	crucible_api		3
 confinement	crates/crucible-cli/src/cli/run_save.rs	host nondeterminism reaches API/session route	Configuration		5
@@ -96,8 +105,8 @@ confinement	crates/crucible-cli/src/cli/run_save/qemu_live/replay.rs	host nondet
 confinement	crates/crucible-cli/src/cli/run_save/qemu_live/replay.rs	host nondeterminism reaching State	Schedule		3
 confinement	crates/crucible-cli/src/cli/run_save/qemu_live/search.rs	host nondeterminism reaches API/session route	Configuration		1
 confinement	crates/crucible-cli/src/cli/run_save/qemu_live/search.rs	host nondeterminism reaches API/session route	crucible_api		2
-confinement	crates/crucible-cli/src/cli/run_save/qemu_live/search.rs	host nondeterminism reaches API/session route	Decision		1
 confinement	crates/crucible-cli/src/cli/run_save/qemu_live/search.rs	host nondeterminism reaches API/session route	crucible_session		7
+confinement	crates/crucible-cli/src/cli/run_save/qemu_live/search.rs	host nondeterminism reaches API/session route	Decision		1
 confinement	crates/crucible-cli/src/cli/run_save/qemu_live/search.rs	host nondeterminism reaching State	Configuration		1
 confinement	crates/crucible-cli/src/cli/run_save/qemu_live/search.rs	host nondeterminism reaching State	Decision		1
 confinement	crates/crucible-cli/src/cli/run_save/qemu_live/search/failure.rs	host nondeterminism reaches API/session route	crucible_session		7
@@ -112,21 +121,26 @@ confinement	crates/crucible-cli/src/cli/run_save/test_double.rs	host nondetermin
 confinement	crates/crucible-cli/src/cli/run_save/test_double.rs	host nondeterminism reaching State	QuantumOutcome		2
 confinement	crates/crucible-cli/src/cli/run_save/test_double.rs	host nondeterminism reaching State	ScenarioDef		1
 confinement	crates/crucible-cli/src/cli/verify_serve.rs	host nondeterminism reaches API/session route	ControlClient		6
-confinement	crates/crucible-cli/src/cli/verify_serve.rs	host nondeterminism reaches API/session route	crucible_api		38
-confinement	crates/crucible-cli/src/cli/verify_serve.rs	host nondeterminism reaches API/session route	QuantumLoop		2
-confinement	crates/crucible-cli/src/cli/verify_serve.rs	host nondeterminism reaches API/session route	ScenarioDef		10
-confinement	crates/crucible-cli/src/cli/verify_serve.rs	host nondeterminism reaching State	QuantumLoop		1
-confinement	crates/crucible-cli/src/cli/verify_serve.rs	host nondeterminism reaching State	ScenarioDef		5
+confinement	crates/crucible-cli/src/cli/verify_serve.rs	host nondeterminism reaches API/session route	crucible_api		42
+confinement	crates/crucible-cli/src/cli/verify_serve.rs	host nondeterminism reaches API/session route	QuantumLoop		4
+confinement	crates/crucible-cli/src/cli/verify_serve.rs	host nondeterminism reaches API/session route	ScenarioDef		12
+confinement	crates/crucible-cli/src/cli/verify_serve.rs	host nondeterminism reaching State	QuantumLoop		2
+confinement	crates/crucible-cli/src/cli/verify_serve.rs	host nondeterminism reaching State	ScenarioDef		6
 confinement	crates/crucible-cli/src/cli/verify_serve.rs	public export from nondeterministic boundary source	fn		1
+confinement	crates/crucible-cli/src/cli/verify_serve/campaign_import.rs	host nondeterminism reaches API/session route	Schedule		5
+confinement	crates/crucible-cli/src/cli/verify_serve/campaign_import.rs	host nondeterminism reaching State	Schedule		5
+confinement	crates/crucible-cli/src/cli/verify_serve/packaged_executor.rs	host nondeterminism reaches API/session route	crucible_api		1
 confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/session route	Backend		1
 confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/session route	ControlClient		1
 confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/session route	crucible_api		1
-confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/session route	crucible_session		3
+confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/session route	crucible_session		4
 confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/session route	QuantumLoop		1
-confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/session route	Schedule		1
+confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/session route	Schedule		2
+confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/session route	step		1
 confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaching State	Backend		1
 confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaching State	QuantumLoop		1
-confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaching State	Schedule		1
+confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaching State	Schedule		2
+confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaching State	step		1
 confinement	crates/crucible-cli/src/null_operation_recorder.rs	host nondeterminism reaches API/session route	Backend		1
 confinement	crates/crucible-cli/src/null_operation_recorder.rs	host nondeterminism reaching State	Backend		1
 confinement	crates/crucible-cli/src/test_double_imports.rs	host nondeterminism reaches API/session route	crucible_session		2
@@ -134,6 +148,125 @@ confinement	crates/crucible-cli/src/test_double_imports.rs	host nondeterminism r
 confinement	crates/crucible-cli/src/test_double_imports.rs	host nondeterminism reaches API/session route	QuantumRequest		1
 confinement	crates/crucible-cli/src/test_double_imports.rs	host nondeterminism reaching State	QuantumOutcome		1
 confinement	crates/crucible-cli/src/test_double_imports.rs	host nondeterminism reaching State	QuantumRequest		1
+confinement	crates/crucible-daemon/src/assignment_ledger.rs	host nondeterminism reaches API/session route	Backend		2
+confinement	crates/crucible-daemon/src/assignment_ledger.rs	host nondeterminism reaching State	Backend		2
+confinement	crates/crucible-daemon/src/campaign_bootstrap.rs	host nondeterminism reaches API/session route	Schedule		2
+confinement	crates/crucible-daemon/src/campaign_bootstrap.rs	host nondeterminism reaching State	Schedule		2
+confinement	crates/crucible-daemon/src/campaign_gc/apply.rs	host nondeterminism reaches API/session route	Backend		1
+confinement	crates/crucible-daemon/src/campaign_gc/apply.rs	host nondeterminism reaching State	Backend		1
+confinement	crates/crucible-daemon/src/campaign_gc/planner.rs	host nondeterminism reaches API/session route	Backend		1
+confinement	crates/crucible-daemon/src/campaign_gc/planner.rs	host nondeterminism reaching State	Backend		1
+confinement	crates/crucible-daemon/src/campaign_loopback.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	6
+confinement	crates/crucible-daemon/src/campaign_loopback.rs	public export from nondeterministic boundary source	const		7
+confinement	crates/crucible-daemon/src/campaign_loopback.rs	public export from nondeterministic boundary source	enum		3
+confinement	crates/crucible-daemon/src/campaign_loopback.rs	public export from nondeterministic boundary source	fn		13
+confinement	crates/crucible-daemon/src/campaign_loopback.rs	public export from nondeterministic boundary source	struct		3
+confinement	crates/crucible-daemon/src/campaign_loopback.rs	public export from nondeterministic boundary source	trait		1
+confinement	crates/crucible-daemon/src/campaign_retention.rs	host nondeterminism reaches API/session route	Backend		1
+confinement	crates/crucible-daemon/src/campaign_retention.rs	host nondeterminism reaching State	Backend		1
+confinement	crates/crucible-daemon/src/campaign_runtime.rs	host nondeterminism reaches API/session route	step		4
+confinement	crates/crucible-daemon/src/campaign_runtime.rs	host nondeterminism reaching State	step		4
+confinement	crates/crucible-daemon/src/control_responsiveness.rs	host nondeterminism reaches API/session route	crucible_api		1
+confinement	crates/crucible-daemon/src/crucible_artifact.rs	host nondeterminism reaches API/session route	Configuration		10
+confinement	crates/crucible-daemon/src/crucible_artifact.rs	host nondeterminism reaches API/session route	Decision		5
+confinement	crates/crucible-daemon/src/crucible_artifact.rs	host nondeterminism reaches API/session route	Schedule		4
+confinement	crates/crucible-daemon/src/crucible_artifact.rs	host nondeterminism reaching State	Configuration		10
+confinement	crates/crucible-daemon/src/crucible_artifact.rs	host nondeterminism reaching State	Decision		5
+confinement	crates/crucible-daemon/src/crucible_artifact.rs	host nondeterminism reaching State	Schedule		4
+confinement	crates/crucible-daemon/src/crucible_execution.rs	host nondeterminism reaches API/session route	Configuration		4
+confinement	crates/crucible-daemon/src/crucible_execution.rs	host nondeterminism reaches API/session route	Decision		2
+confinement	crates/crucible-daemon/src/crucible_execution.rs	host nondeterminism reaches API/session route	step		2
+confinement	crates/crucible-daemon/src/crucible_execution.rs	host nondeterminism reaching State	Configuration		4
+confinement	crates/crucible-daemon/src/crucible_execution.rs	host nondeterminism reaching State	Decision		2
+confinement	crates/crucible-daemon/src/crucible_execution.rs	host nondeterminism reaching State	step		2
+confinement	crates/crucible-daemon/src/crucible_qemu_runner.rs	host nondeterminism reaches API/session route	Configuration		14
+confinement	crates/crucible-daemon/src/crucible_qemu_runner.rs	host nondeterminism reaches API/session route	ScenarioDef		2
+confinement	crates/crucible-daemon/src/crucible_qemu_runner.rs	host nondeterminism reaching State	Configuration		14
+confinement	crates/crucible-daemon/src/crucible_qemu_runner.rs	host nondeterminism reaching State	ScenarioDef		2
+confinement	crates/crucible-daemon/src/crucible_qemu_session.rs	host nondeterminism reaches API/session route	BackendInput		2
+confinement	crates/crucible-daemon/src/crucible_qemu_session.rs	host nondeterminism reaches API/session route	Configuration		11
+confinement	crates/crucible-daemon/src/crucible_qemu_session.rs	host nondeterminism reaches API/session route	ExecutionHorizon		2
+confinement	crates/crucible-daemon/src/crucible_qemu_session.rs	host nondeterminism reaches API/session route	RuntimeState		10
+confinement	crates/crucible-daemon/src/crucible_qemu_session.rs	host nondeterminism reaches API/session route	ScenarioDef		1
+confinement	crates/crucible-daemon/src/crucible_qemu_session.rs	host nondeterminism reaching State	BackendInput		2
+confinement	crates/crucible-daemon/src/crucible_qemu_session.rs	host nondeterminism reaching State	Configuration		11
+confinement	crates/crucible-daemon/src/crucible_qemu_session.rs	host nondeterminism reaching State	ExecutionHorizon		2
+confinement	crates/crucible-daemon/src/crucible_qemu_session.rs	host nondeterminism reaching State	RuntimeState		10
+confinement	crates/crucible-daemon/src/crucible_qemu_session.rs	host nondeterminism reaching State	ScenarioDef		1
+confinement	crates/crucible-daemon/src/exact_checkpoint_restore.rs	host nondeterminism reaches API/session route	Configuration		23
+confinement	crates/crucible-daemon/src/exact_checkpoint_restore.rs	host nondeterminism reaches API/session route	crucible_api		1
+confinement	crates/crucible-daemon/src/exact_checkpoint_restore.rs	host nondeterminism reaches API/session route	Decision		3
+confinement	crates/crucible-daemon/src/exact_checkpoint_restore.rs	host nondeterminism reaches API/session route	RuntimeState		5
+confinement	crates/crucible-daemon/src/exact_checkpoint_restore.rs	host nondeterminism reaching State	Configuration		23
+confinement	crates/crucible-daemon/src/exact_checkpoint_restore.rs	host nondeterminism reaching State	Decision		3
+confinement	crates/crucible-daemon/src/exact_checkpoint_restore.rs	host nondeterminism reaching State	RuntimeState		5
+confinement	crates/crucible-daemon/src/exact_checkpoint_store.rs	host nondeterminism reaches API/session route	crucible_api		4
+confinement	crates/crucible-daemon/src/exact_checkpoint_store/production.rs	host nondeterminism reaches API/session route	crucible_api		1
+confinement	crates/crucible-daemon/src/exact_pin_retention.rs	host nondeterminism reaches API/session route	Configuration		3
+confinement	crates/crucible-daemon/src/exact_pin_retention.rs	host nondeterminism reaching State	Configuration		3
+confinement	crates/crucible-daemon/src/executor_loopback.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	6
+confinement	crates/crucible-daemon/src/executor_loopback.rs	public export from nondeterministic boundary source	const		4
+confinement	crates/crucible-daemon/src/executor_loopback.rs	public export from nondeterministic boundary source	enum		2
+confinement	crates/crucible-daemon/src/executor_loopback.rs	public export from nondeterministic boundary source	fn		8
+confinement	crates/crucible-daemon/src/executor_loopback.rs	public export from nondeterministic boundary source	struct		2
+confinement	crates/crucible-daemon/src/packaged_qemu_executor.rs	host nondeterminism reaches API/session route	crucible_api		1
+confinement	crates/crucible-daemon/src/paused_checkpoint_promotion.rs	host nondeterminism reaches API/session route	Configuration		8
+confinement	crates/crucible-daemon/src/paused_checkpoint_promotion.rs	host nondeterminism reaches API/session route	crucible_api		2
+confinement	crates/crucible-daemon/src/paused_checkpoint_promotion.rs	host nondeterminism reaching State	Configuration		8
+confinement	crates/crucible-daemon/src/planner_loopback.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	6
+confinement	crates/crucible-daemon/src/planner_loopback.rs	public export from nondeterministic boundary source	const		2
+confinement	crates/crucible-daemon/src/planner_loopback.rs	public export from nondeterministic boundary source	enum		2
+confinement	crates/crucible-daemon/src/planner_loopback.rs	public export from nondeterministic boundary source	fn		6
+confinement	crates/crucible-daemon/src/planner_loopback.rs	public export from nondeterministic boundary source	struct		2
+confinement	crates/crucible-daemon/src/qemu_baked_genesis.rs	host nondeterminism reaches API/session route	Configuration		6
+confinement	crates/crucible-daemon/src/qemu_baked_genesis.rs	host nondeterminism reaches API/session route	crucible_api		8
+confinement	crates/crucible-daemon/src/qemu_baked_genesis.rs	host nondeterminism reaches API/session route	ScenarioDef		2
+confinement	crates/crucible-daemon/src/qemu_baked_genesis.rs	host nondeterminism reaching State	Configuration		6
+confinement	crates/crucible-daemon/src/qemu_baked_genesis.rs	host nondeterminism reaching State	ScenarioDef		2
+confinement	crates/crucible-daemon/src/qemu_campaign_driver.rs	host nondeterminism reaches API/session route	Backend		1
+confinement	crates/crucible-daemon/src/qemu_campaign_driver.rs	host nondeterminism reaches API/session route	Configuration		2
+confinement	crates/crucible-daemon/src/qemu_campaign_driver.rs	host nondeterminism reaches API/session route	drive_quantum		4
+confinement	crates/crucible-daemon/src/qemu_campaign_driver.rs	host nondeterminism reaches API/session route	QuantumOutcome		7
+confinement	crates/crucible-daemon/src/qemu_campaign_driver.rs	host nondeterminism reaches API/session route	QuantumRequest		4
+confinement	crates/crucible-daemon/src/qemu_campaign_driver.rs	host nondeterminism reaching State	Backend		1
+confinement	crates/crucible-daemon/src/qemu_campaign_driver.rs	host nondeterminism reaching State	Configuration		2
+confinement	crates/crucible-daemon/src/qemu_campaign_driver.rs	host nondeterminism reaching State	drive_quantum		4
+confinement	crates/crucible-daemon/src/qemu_campaign_driver.rs	host nondeterminism reaching State	QuantumOutcome		7
+confinement	crates/crucible-daemon/src/qemu_campaign_driver.rs	host nondeterminism reaching State	QuantumRequest		4
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaches API/session route	Backend		2
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaches API/session route	Configuration		12
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaches API/session route	crucible_api		1
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaches API/session route	Decision		10
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaches API/session route	drive_quantum		6
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaches API/session route	QuantumLoop		4
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaches API/session route	QuantumOutcome		4
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaches API/session route	QuantumRequest		5
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaches API/session route	ScenarioDef		6
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaching State	Backend		2
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaching State	Configuration		12
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaching State	Decision		10
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaching State	drive_quantum		6
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaching State	QuantumLoop		4
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaching State	QuantumOutcome		4
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaching State	QuantumRequest		5
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaching State	ScenarioDef		6
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle/app_random_branch_replay.rs	host nondeterminism reaches API/session route	Configuration		3
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle/app_random_branch_replay.rs	host nondeterminism reaches API/session route	Decision		3
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle/app_random_branch_replay.rs	host nondeterminism reaching State	Configuration		3
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle/app_random_branch_replay.rs	host nondeterminism reaching State	Decision		3
+confinement	crates/crucible-daemon/src/qemu_campaign_resume.rs	host nondeterminism reaches API/session route	Backend		1
+confinement	crates/crucible-daemon/src/qemu_campaign_resume.rs	host nondeterminism reaches API/session route	Configuration		5
+confinement	crates/crucible-daemon/src/qemu_campaign_resume.rs	host nondeterminism reaches API/session route	crucible_api		1
+confinement	crates/crucible-daemon/src/qemu_campaign_resume.rs	host nondeterminism reaches API/session route	ScenarioDef		3
+confinement	crates/crucible-daemon/src/qemu_campaign_resume.rs	host nondeterminism reaching State	Backend		1
+confinement	crates/crucible-daemon/src/qemu_campaign_resume.rs	host nondeterminism reaching State	Configuration		5
+confinement	crates/crucible-daemon/src/qemu_campaign_resume.rs	host nondeterminism reaching State	ScenarioDef		3
+confinement	crates/crucible-daemon/src/qemu_exact_resume_executor.rs	host nondeterminism reaches API/session route	Configuration		14
+confinement	crates/crucible-daemon/src/qemu_exact_resume_executor.rs	host nondeterminism reaches API/session route	RuntimeState		10
+confinement	crates/crucible-daemon/src/qemu_exact_resume_executor.rs	host nondeterminism reaching State	Configuration		14
+confinement	crates/crucible-daemon/src/qemu_exact_resume_executor.rs	host nondeterminism reaching State	RuntimeState		10
+confinement	crates/crucible-daemon/src/qemu_lifecycle_launcher.rs	host nondeterminism reaches API/session route	crucible_api		3
+confinement	crates/crucible-daemon/src/qemu_resource_guard.rs	host nondeterminism reaches API/session route	crucible_api		1
 confinement	crates/crucible-qemu/src/async_driver.rs	host nondeterminism reaches API/session route	ExecutionHorizon		2
 confinement	crates/crucible-qemu/src/async_driver.rs	host nondeterminism reaching State	ExecutionHorizon		2
 confinement	crates/crucible-qemu/src/async_driver/driver.rs	host nondeterminism reaches API/session route	ExecutionHorizon		2
@@ -144,6 +277,17 @@ confinement	crates/crucible-qemu/src/host_worker_pool.rs	host nondeterminism rea
 confinement	crates/crucible-qemu/src/host_worker_pool.rs	host nondeterminism reaching State	Backend		4
 confinement	crates/crucible-qemu/src/host_worker_pool.rs	host nondeterminism reaching State	Decision		2
 confinement	crates/crucible-qemu/src/host_worker_pool.rs	host nondeterminism reaching State	step		10
+confinement	crates/crucible-qemu/src/linux_cgroup.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	3
+confinement	crates/crucible-qemu/src/linux_cgroup.rs	public export from nondeterministic boundary source	const		10
+confinement	crates/crucible-qemu/src/linux_cgroup.rs	public export from nondeterministic boundary source	enum		3
+confinement	crates/crucible-qemu/src/linux_cgroup.rs	public export from nondeterministic boundary source	fn		34
+confinement	crates/crucible-qemu/src/linux_cgroup.rs	public export from nondeterministic boundary source	struct		12
+confinement	crates/crucible-qemu/src/linux_cgroup.rs	public export from nondeterministic boundary source	use		1
+confinement	crates/crucible-qemu/src/linux_cgroup/quarantine.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	3
+confinement	crates/crucible-qemu/src/linux_cgroup/quarantine.rs	public export from nondeterministic boundary source	const		1
+confinement	crates/crucible-qemu/src/linux_cgroup/quarantine.rs	public export from nondeterministic boundary source	enum		1
+confinement	crates/crucible-qemu/src/linux_cgroup/quarantine.rs	public export from nondeterministic boundary source	fn		4
+confinement	crates/crucible-qemu/src/linux_cgroup/quarantine.rs	public export from nondeterministic boundary source	struct		2
 confinement	crates/crucible-qemu/src/live_coverage_gate.rs	host nondeterminism reaches API/session route	ExecutionHorizon		4
 confinement	crates/crucible-qemu/src/live_coverage_gate.rs	host nondeterminism reaching State	ExecutionHorizon		2
 confinement	crates/crucible-qemu/src/live_coverage_gate.rs	public export from nondeterministic boundary source	const		2
@@ -167,22 +311,19 @@ confinement	crates/crucible-qemu/src/node_factory.rs	host nondeterminism reachin
 confinement	crates/crucible-qemu/src/node_set.rs	host nondeterminism reaches API/session route	Decision		2
 confinement	crates/crucible-qemu/src/node_set.rs	host nondeterminism reaching State	Decision		2
 confinement	crates/crucible-qemu/src/node.rs	host nondeterminism reaches API/session route	Backend		2
-confinement	crates/crucible-qemu/src/node.rs	host nondeterminism reaches API/session route	BackendInput		4
-confinement	crates/crucible-qemu/src/node.rs	host nondeterminism reaches API/session route	ExecutionHorizon		6
+confinement	crates/crucible-qemu/src/node.rs	host nondeterminism reaches API/session route	BackendInput		2
+confinement	crates/crucible-qemu/src/node/channels.rs	host nondeterminism reaches API/session route	BackendInput		2
+confinement	crates/crucible-qemu/src/node.rs	host nondeterminism reaches API/session route	ExecutionHorizon		4
+confinement	crates/crucible-qemu/src/node/channels.rs	host nondeterminism reaches API/session route	ExecutionHorizon		2
 confinement	crates/crucible-qemu/src/node.rs	host nondeterminism reaching State	Backend		2
-confinement	crates/crucible-qemu/src/node.rs	host nondeterminism reaching State	BackendInput		4
-confinement	crates/crucible-qemu/src/node.rs	host nondeterminism reaching State	ExecutionHorizon		6
+confinement	crates/crucible-qemu/src/node.rs	host nondeterminism reaching State	BackendInput		2
+confinement	crates/crucible-qemu/src/node/channels.rs	host nondeterminism reaching State	BackendInput		2
+confinement	crates/crucible-qemu/src/node.rs	host nondeterminism reaching State	ExecutionHorizon		4
+confinement	crates/crucible-qemu/src/node/channels.rs	host nondeterminism reaching State	ExecutionHorizon		2
 confinement	crates/crucible-qemu/src/node/async_step.rs	host nondeterminism reaches API/session route	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/node/async_step.rs	host nondeterminism reaching State	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/production_fault_runtime.rs	host nondeterminism reaches API/session route	Backend		1
 confinement	crates/crucible-qemu/src/production_fault_runtime.rs	host nondeterminism reaching State	Backend		1
-confinement	crates/crucible-qemu/src/qmp.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	3
-confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	const		28
-confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	enum		2
-confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	fn		16
-confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	struct		7
-confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	trait		1
-confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	use		3
 confinement	crates/crucible-qemu/src/quantum.rs	host nondeterminism reaches API/session route	BackendInput		1
 confinement	crates/crucible-qemu/src/quantum.rs	host nondeterminism reaches API/session route	ExecutionHorizon		3
 confinement	crates/crucible-qemu/src/quantum.rs	host nondeterminism reaching State	BackendInput		1
@@ -191,12 +332,12 @@ confinement	crates/crucible-qemu/src/quantum/channel.rs	host nondeterminism reac
 confinement	crates/crucible-qemu/src/quantum/channel.rs	host nondeterminism reaches API/session route	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/quantum/channel.rs	host nondeterminism reaching State	BackendInput		1
 confinement	crates/crucible-qemu/src/quantum/channel.rs	host nondeterminism reaching State	ExecutionHorizon		1
-confinement	crates/crucible-qemu/src/realization.rs	host nondeterminism reaches API/session route	Configuration		28
+confinement	crates/crucible-qemu/src/realization.rs	host nondeterminism reaches API/session route	Configuration		30
 confinement	crates/crucible-qemu/src/realization.rs	host nondeterminism reaches API/session route	Decision		5
 confinement	crates/crucible-qemu/src/realization.rs	host nondeterminism reaches API/session route	RuntimeState		12
 confinement	crates/crucible-qemu/src/realization.rs	host nondeterminism reaches API/session route	ScenarioDef		3
 confinement	crates/crucible-qemu/src/realization.rs	host nondeterminism reaches API/session route	step		1
-confinement	crates/crucible-qemu/src/realization.rs	host nondeterminism reaching State	Configuration		28
+confinement	crates/crucible-qemu/src/realization.rs	host nondeterminism reaching State	Configuration		30
 confinement	crates/crucible-qemu/src/realization.rs	host nondeterminism reaching State	Decision		5
 confinement	crates/crucible-qemu/src/realization.rs	host nondeterminism reaching State	RuntimeState		12
 confinement	crates/crucible-qemu/src/realization.rs	host nondeterminism reaching State	ScenarioDef		3
@@ -209,14 +350,16 @@ confinement	crates/crucible-qemu/src/realization/backend_executor.rs	host nondet
 confinement	crates/crucible-qemu/src/realization/backend_executor.rs	host nondeterminism reaching State	Configuration		7
 confinement	crates/crucible-qemu/src/realization/backend_executor.rs	host nondeterminism reaching State	ExecutionHorizon		3
 confinement	crates/crucible-qemu/src/realization/backend_executor.rs	host nondeterminism reaching State	RuntimeState		12
-confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaches API/session route	Backend		2
-confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaches API/session route	Configuration		10
-confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaches API/session route	ExecutionHorizon		2
-confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaches API/session route	RuntimeState		13
-confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaching State	Backend		2
-confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaching State	Configuration		10
-confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaching State	ExecutionHorizon		2
-confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaching State	RuntimeState		13
+confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaches API/session route	Backend		9
+confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaches API/session route	BackendInput		2
+confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaches API/session route	Configuration		34
+confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaches API/session route	ExecutionHorizon		6
+confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaches API/session route	RuntimeState		23
+confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaching State	Backend		9
+confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaching State	BackendInput		2
+confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaching State	Configuration		34
+confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaching State	ExecutionHorizon		6
+confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaching State	RuntimeState		23
 confinement	crates/crucible-qemu/src/shutdown.rs	host nondeterminism reaches API/session route	step		3
 confinement	crates/crucible-qemu/src/shutdown.rs	host nondeterminism reaching State	step		3
 confinement	crates/crucible-qemu/src/single_vm_fingerprint/plugin_live_runner.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	6
@@ -234,6 +377,10 @@ confinement	crates/crucible-qemu/src/supervision/block_io_gate.rs	host nondeterm
 confinement	crates/crucible-qemu/src/supervision/block_io_gate.rs	host nondeterminism reaching State	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/supervision/block_node_gate.rs	host nondeterminism reaches API/session route	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/supervision/block_node_gate.rs	host nondeterminism reaching State	ExecutionHorizon		1
+confinement	crates/crucible-qemu/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	const		5
+confinement	crates/crucible-qemu/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	enum		1
+confinement	crates/crucible-qemu/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	fn		8
+confinement	crates/crucible-qemu/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	struct		3
 confinement	crates/crucible-qemu/src/supervision/host_parallel_gate.rs	host nondeterminism reaches API/session route	Decision		2
 confinement	crates/crucible-qemu/src/supervision/host_parallel_gate.rs	host nondeterminism reaches API/session route	step		8
 confinement	crates/crucible-qemu/src/supervision/host_parallel_gate.rs	host nondeterminism reaching State	Decision		1
@@ -253,24 +400,61 @@ confinement	crates/crucible-qemu/src/supervision/network_io_gate/drive/prime.rs	
 confinement	crates/crucible-qemu/src/supervision/network_io_gate/drive/prime.rs	host nondeterminism reaching State	ExecutionHorizon		2
 confinement	crates/crucible-qemu/src/supervision/network_io_gate/drive/retry.rs	host nondeterminism reaches API/session route	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/supervision/network_io_gate/drive/retry.rs	host nondeterminism reaching State	ExecutionHorizon		1
-confinement	crates/crucible-qemu/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	const		5
-confinement	crates/crucible-qemu/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	enum		1
-confinement	crates/crucible-qemu/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	fn		8
-confinement	crates/crucible-qemu/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	struct		3
 confinement	crates/crucible-qemu/src/supervision/network_io_servicer.rs	host nondeterminism reaches API/session route	step		11
 confinement	crates/crucible-qemu/src/supervision/network_io_servicer.rs	host nondeterminism reaching State	step		11
 confinement	crates/crucible-qemu/src/supervision/ninep_io_gate.rs	host nondeterminism reaches API/session route	ExecutionHorizon		2
 confinement	crates/crucible-qemu/src/supervision/ninep_io_gate.rs	host nondeterminism reaching State	ExecutionHorizon		2
-confinement	crates/crucible-qemu/src/supervision/node_step_gate/support.rs	host nondeterminism reaches API/session route	ExecutionHorizon		1
-confinement	crates/crucible-qemu/src/supervision/node_step_gate/support.rs	host nondeterminism reaching State	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/supervision/node_step_gate.rs	host nondeterminism reaches API/session route	BackendInput		1
 confinement	crates/crucible-qemu/src/supervision/node_step_gate.rs	host nondeterminism reaching State	BackendInput		1
+confinement	crates/crucible-qemu/src/supervision/node_step_gate/support.rs	host nondeterminism reaches API/session route	ExecutionHorizon		1
+confinement	crates/crucible-qemu/src/supervision/node_step_gate/support.rs	host nondeterminism reaching State	ExecutionHorizon		1
 error-logging	crates/crucible-api/src/server.rs	stringly error	Result<_, String>		32
-error-logging	crates/crucible-api/src/server/debug_wire.rs	stringly error	Result<_, String>		10
 error-logging	crates/crucible-api/src/server/debug_reposition.rs	stringly error	Result<_, String>		4
+error-logging	crates/crucible-api/src/server/debug_wire.rs	stringly error	Result<_, String>		10
 error-logging	crates/crucible-api/src/server/query_wire.rs	stringly error	Result<_, String>		1
-error-logging	crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/persistence/recovery.rs	stringly error	Result<_, String>		2
 error-logging	crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/persistence.rs	stringly error	Result<_, String>		2
+error-logging	crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/persistence/recovery.rs	stringly error	Result<_, String>		2
+error-logging	crates/crucible-daemon/src/assignment_ledger.rs	erased error	dyn Error		3
+error-logging	crates/crucible-daemon/src/qemu_campaign_driver.rs	stringly error	Result<_, String>		1
+error-logging	crates/crucible-daemon/src/qemu_campaign_lifecycle/app_random_branch_replay.rs	stringly error	Result<_, String>		1
 error-logging	crates/crucible-qemu/src/node_tests/fault_event_budget.rs	erased error	dyn Error		7
 error-logging	crates/crucible-qemu/src/node_tests/fingerprint.rs	erased error	dyn Error		1
 error-logging	crates/crucible-qemu/src/single_vm_fingerprint/terminal_trace.rs	stringly error	Result<_, String>		4
+confinement	crates/crucible-cli/src/cli/campaign/scenario.rs	host nondeterminism reaching State	Configuration		2
+confinement	crates/crucible-cli/src/cli/campaign.rs	host nondeterminism reaching State	Schedule		4
+confinement	crates/crucible-daemon/src/qemu_campaign_driver.rs	host nondeterminism reaching State	step		2
+confinement	crates/crucible-daemon/src/campaign_endpoint.rs	public export from nondeterministic boundary source	const		6
+confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/session route	Configuration		1
+confinement	crates/crucible-daemon/src/campaign_endpoint.rs	public export from nondeterministic boundary source	struct		5
+confinement	crates/crucible-daemon/src/campaign_endpoint.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	3
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaching State	step		1
+confinement	crates/crucible-daemon/src/executor_worker.rs	host nondeterminism reaches API/session route	crucible_api		2
+confinement	crates/crucible-daemon/src/executor_pool.rs	host nondeterminism reaches API/session route	crucible_api		1
+confinement	crates/crucible-daemon/src/campaign_endpoint.rs	public export from nondeterministic boundary source	type		1
+confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaching State	Configuration		1
+confinement	crates/crucible-cli/src/cli/campaign/configuration.rs	host nondeterminism reaches API/session route	Schedule		2
+confinement	crates/crucible-cli/src/cli/campaign/configuration.rs	host nondeterminism reaches API/session route	Configuration		2
+confinement	crates/crucible-daemon/src/qemu_campaign_lifecycle.rs	host nondeterminism reaches API/session route	step		1
+confinement	crates/crucible-daemon/src/campaign_endpoint.rs	public export from nondeterministic boundary source	enum		1
+confinement	crates/crucible-cli/src/cli/verify_serve/campaign_store.rs	host nondeterminism reaching State	Configuration		2
+confinement	crates/crucible-cli/src/cli/campaign/configuration.rs	host nondeterminism reaching State	Configuration		2
+confinement	crates/crucible-daemon/src/qemu_campaign_driver.rs	host nondeterminism reaching State	Decision		2
+confinement	crates/crucible-daemon/src/qemu_campaign_driver.rs	host nondeterminism reaches API/session route	Decision		2
+confinement	crates/crucible-daemon/src/campaign_bootstrap/maintenance.rs	host nondeterminism reaching State	State		4
+confinement	crates/crucible-daemon/src/campaign_bootstrap/maintenance.rs	host nondeterminism reaches API/session route	State		4
+confinement	crates/crucible-cli/src/cli/campaign/schedule.rs	host nondeterminism reaches API/session route	Schedule		4
+confinement	crates/crucible-cli/src/cli/verify_serve/campaign_store.rs	host nondeterminism reaches API/session route	Configuration		2
+confinement	crates/crucible-cli/src/cli/campaign/schedule.rs	host nondeterminism reaching State	Schedule		4
+confinement	crates/crucible-cli/src/cli/campaign/scenario.rs	host nondeterminism reaches API/session route	Schedule		2
+confinement	crates/crucible-cli/src/cli/campaign.rs	host nondeterminism reaching State	Configuration		4
+confinement	crates/crucible-cli/src/cli/campaign/configuration.rs	host nondeterminism reaching State	Schedule		2
+confinement	crates/crucible-daemon/src/campaign_bootstrap.rs	host nondeterminism reaches API/session route	Configuration		1
+confinement	crates/crucible-cli/src/cli/campaign/schedule.rs	host nondeterminism reaches API/session route	Decision		6
+confinement	crates/crucible-cli/src/cli/campaign.rs	host nondeterminism reaches API/session route	Schedule		4
+confinement	crates/crucible-cli/src/cli/campaign/schedule.rs	host nondeterminism reaching State	Decision		6
+confinement	crates/crucible-cli/src/cli/campaign.rs	host nondeterminism reaches API/session route	Configuration		4
+confinement	crates/crucible-daemon/src/qemu_campaign_driver.rs	host nondeterminism reaches API/session route	step		2
+confinement	crates/crucible-daemon/src/campaign_endpoint.rs	public export from nondeterministic boundary source	fn		12
+confinement	crates/crucible-daemon/src/campaign_bootstrap.rs	host nondeterminism reaching State	Configuration		1
+confinement	crates/crucible-cli/src/cli/campaign/scenario.rs	host nondeterminism reaching State	Schedule		2
+confinement	crates/crucible-cli/src/cli/campaign/scenario.rs	host nondeterminism reaches API/session route	Configuration		2

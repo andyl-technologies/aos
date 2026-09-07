@@ -1,0 +1,52 @@
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 1f529d341..765b5b50a 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -4681,6 +4681,19 @@ static void G_NORETURN crucible_hot_fork_child_exit_at(unsigned int step,
+     _exit(CRUCIBLE_HOT_FORK_CHILD_STEP_EXIT_BASE + step);
+ }
+ 
++/*
++ * Names a block-layer failure on the child's stderr, which descriptor
++ * application has routed to its branch-private diagnostics stream; the exit
++ * status names only the step.
++ */
++static void crucible_hot_fork_child_report_error(const char *stage,
++                                                 Error *error)
++{
++    fprintf(stderr, "crucible hot-fork child %s failed: %s\n", stage,
++            error ? error_get_pretty(error) : "no error detail");
++    error_free(error);
++}
++
+ static int crucible_hot_fork_finish_child_operation(void *opaque)
+ {
+     CrucibleHotForkOperation *operation = opaque;
+@@ -4688,6 +4701,7 @@ static int crucible_hot_fork_finish_child_operation(void *opaque)
+     QemuCrucibleHotForkDescriptorTableProof proof = { 0 };
+     QemuCrucibleHotForkChildResourcePlan resources = { 0 };
+     QemuBlockBackendHotForkBarrierInventory block = { 0 };
++    Error *child_error = NULL;
+     unsigned int step = 1;
+     int result;
+ 
+@@ -4770,13 +4784,17 @@ static int crucible_hot_fork_finish_child_operation(void *opaque)
+     if (crucible_hot_fork_child_files_plan) {
+         /* Adoption consumes both the inherited plan and the source set. */
+         if (!qemu_block_hot_fork_child_files_install(
+-                crucible_hot_fork_child_files_plan, NULL)) {
++                crucible_hot_fork_child_files_plan, &child_error)) {
++            crucible_hot_fork_child_report_error("install child files",
++                                                 child_error);
+             crucible_hot_fork_child_exit_at(13, -EPROTO);
+         }
+         crucible_hot_fork_child_files_plan = NULL;
+         operation->child_files = NULL;
+     } else if (!qemu_block_hot_fork_source_set_release_empty_child(
+-                   crucible_hot_fork_template_sources, NULL)) {
++                   crucible_hot_fork_template_sources, &child_error)) {
++        crucible_hot_fork_child_report_error("release empty child sources",
++                                             child_error);
+         crucible_hot_fork_child_exit_at(14, -EPROTO);
+     }
+     crucible_hot_fork_template_sources = NULL;

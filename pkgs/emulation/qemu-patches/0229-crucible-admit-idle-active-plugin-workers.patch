@@ -1,0 +1,104 @@
+diff --git a/system/crucible-hot-fork-plugin-child.c b/system/crucible-hot-fork-plugin-child.c
+index df4eb34b5..ca14cb74d 100644
+--- a/system/crucible-hot-fork-plugin-child.c
++++ b/system/crucible-hot-fork-plugin-child.c
+@@ -2094,6 +2094,19 @@ static bool crucible_hot_fork_plugin_child_identity_matches(
+         status->source_mapping_length == plan->source_mapping_length &&
+         status->source_mapping_offset == plan->source_mapping_offset &&
+         status->worker_mask == plan->worker_mask &&
++        (status->parked_worker_mask & ~status->worker_mask) == 0;
++}
++
++/*
++ * A held child has every replacement worker parked behind the hold with
++ * nothing pending or in flight.  An active child's workers are live: an
++ * idle worker parks at its receive safe point and a busy one carries an
++ * item, so only the held state constrains those masks.
++ */
++static bool crucible_hot_fork_plugin_child_workers_held(
++    const struct qemu_plugin_crucible_hot_fork_child_status *status)
++{
++    return status->parked_worker_mask == status->worker_mask &&
+         status->pending_worker_mask == 0 &&
+         status->worker_operations_in_flight == 0;
+ }
+@@ -2116,8 +2129,7 @@ static bool crucible_hot_fork_plugin_child_status_matches(
+         status->phase == (active ?
+             QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_ACTIVE :
+             QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_WORKERS_HELD) &&
+-        status->parked_worker_mask ==
+-            (active ? 0 : status->worker_mask);
++        (active || crucible_hot_fork_plugin_child_workers_held(status));
+ }
+ 
+ /*
+@@ -2137,7 +2149,8 @@ static bool crucible_hot_fork_plugin_child_workers_settling(
+              QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED) &&
+         status->phase ==
+             QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_WORKERS_HELD &&
+-        (status->parked_worker_mask & ~status->worker_mask) == 0;
++        status->pending_worker_mask == 0 &&
++        status->worker_operations_in_flight == 0;
+ }
+ 
+ /* Bound on the replacement workers reaching their parked safe point. */
+@@ -2249,11 +2262,15 @@ int qemu_crucible_hot_fork_activate_plugin_child(
+     result = qemu_plugin_crucible_hot_fork_child_runtime(
+         QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_RELEASE, NULL, &inventory);
+     if (result != 0) {
++        crucible_hot_fork_plugin_child_report_status(
++            reinitializer, "release failed", result);
+         return result;
+     }
+     reinitializer->inventory = inventory;
+     if (!crucible_hot_fork_plugin_child_status_matches(
+             reinitializer, true)) {
++        crucible_hot_fork_plugin_child_report_status(
++            reinitializer, "activation status mismatch", -EPROTO);
+         return -EPROTO;
+     }
+     reinitializer->activated = true;
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index 2ac6d12b8..47cc04250 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -51,6 +51,8 @@ typedef struct FakePluginChildRuntime {
+     unsigned int calls;
+     /* Status reports, initialization included, before the workers park. */
+     unsigned int settle_queries;
++    /* Report every released worker idle at its receive safe point. */
++    bool idle_after_release;
+     bool initialized;
+ } FakePluginChildRuntime;
+ 
+@@ -204,7 +206,8 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+         .source_mapping_offset = plan->source_mapping_offset,
+         .worker_mask = plan->worker_mask,
+         .parked_worker_mask =
+-            action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_RELEASE ||
++            (action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_RELEASE &&
++             !fake_plugin_child_runtime.idle_after_release) ||
+             settling ? 0 : plan->worker_mask,
+     };
+     return 0;
+@@ -1681,6 +1684,20 @@ static void test_plugin_child_reinitializer_is_held_and_one_shot(void)
+     g_assert_cmpuint(fake_plugin_child_runtime.calls, ==, 4);
+     g_assert_cmpuint(fake_plugin_child_runtime.settle_queries, ==, 0);
+ 
++    /*
++     * Released workers are live: an idle one parks at its receive safe
++     * point, which activation must admit.
++     */
++    fake_plugin_child_runtime.idle_after_release = true;
++    g_assert_cmpint(qemu_crucible_hot_fork_activate_plugin_child(
++                        &reinitializer),
++                    ==, 0);
++    g_assert_true(reinitializer.activated);
++    g_assert_cmpuint(fake_plugin_child_runtime.calls, ==, 5);
++    g_assert_cmpint(qemu_crucible_hot_fork_activate_plugin_child(
++                        &reinitializer),
++                    ==, -EPERM);
++
+     plan.source_mapping_length--;
+     g_assert_cmpint(qemu_crucible_hot_fork_prepare_plugin_child_reinitializer(
+                         &reinitializer, &plan),

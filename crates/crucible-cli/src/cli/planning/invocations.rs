@@ -95,6 +95,7 @@ pub(crate) const SERVE_SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(1)
 pub(crate) struct RunInvocationPlan {
     pub(crate) scenario: RunScenarioRef,
     pub(crate) save_store_root: Option<PathBuf>,
+    pub(crate) campaign_deployment: Option<PathBuf>,
     pub(crate) request_seed: Option<crucible::Seed>,
     pub(crate) terminal_condition: RunTerminalCondition,
     pub(crate) max_virtual_time: Option<String>,
@@ -787,6 +788,7 @@ impl EngineLoop for SimBackendLifecycleLoop {
             advanced_node: None,
             resolved_events: Vec::new(),
             decisions: Vec::new(),
+            discovered_choices: Vec::new(),
             event_log_entries,
             event_log_segment_bytes: Vec::new(),
             event_log_segment_text: String::new(),
@@ -863,6 +865,7 @@ pub(crate) fn plan_run_invocation(
     Ok(RunInvocationPlan {
         scenario,
         save_store_root: Some(store_root.to_path_buf()),
+        campaign_deployment: None,
         request_seed: None,
         terminal_condition,
         max_virtual_time: args.max_virtual_time.clone(),

@@ -1,0 +1,566 @@
+diff --git a/include/block/aio.h b/include/block/aio.h
+index d21476f3d..77c7abb41 100644
+--- a/include/block/aio.h
++++ b/include/block/aio.h
+@@ -295,6 +295,38 @@ void qemu_aio_hot_fork_inventory(QemuAioHotForkInventory *inventory);
+ void qemu_aio_hot_fork_inventory_destroy(QemuAioHotForkInventory *inventory);
+ void qemu_aio_hot_fork_mark_home(AioContext *ctx);
+ 
++#define QEMU_AIO_HANDLER_HOT_FORK_INVENTORY_MAX 65536
++
++typedef struct QemuAioHandlerHotForkInventoryEntry {
++    uint64_t handler_id;
++    uint64_t context_id;
++    int64_t fd;
++    uint32_t active_callbacks;
++    bool deleted;
++    bool io_read;
++    bool io_write;
++    bool io_poll;
++    bool io_poll_ready;
++    bool io_poll_begin;
++    bool io_poll_end;
++} QemuAioHandlerHotForkInventoryEntry;
++
++typedef struct QemuAioHandlerHotForkInventory {
++    uint64_t generation;
++    size_t entry_count;
++    bool overflowed;
++    QemuAioHandlerHotForkInventoryEntry *entries;
++} QemuAioHandlerHotForkInventory;
++
++/*
++ * Capture every allocated POSIX AioHandler for hot-fork auditing.  This is an
++ * observation and does not drain, park, or authorize handler callbacks.
++ */
++void qemu_aio_handler_hot_fork_inventory(
++    QemuAioHandlerHotForkInventory *inventory);
++void qemu_aio_handler_hot_fork_inventory_destroy(
++    QemuAioHandlerHotForkInventory *inventory);
++
+ #define QEMU_BH_HOT_FORK_INVENTORY_MAX 65536
+ #define QEMU_BH_HOT_FORK_NAME_MAX 128
+ 
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 77f15c927..9ebdfed65 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -309,6 +309,68 @@ qmp_query_crucible_hot_fork_aio_inventory(Error **errp)
+     return report;
+ }
+ 
++CrucibleHotForkAioHandlerInventory *
++qmp_query_crucible_hot_fork_aio_handler_inventory(Error **errp)
++{
++#ifdef CONFIG_POSIX
++    CrucibleHotForkAioHandlerInventory *report =
++        g_new0(CrucibleHotForkAioHandlerInventory, 1);
++    QemuAioHandlerHotForkInventory inventory;
++    CrucibleHotForkAioHandlerList **tail = &report->handlers;
++    uint64_t previous_handler_id = 0;
++    bool valid_entries = true;
++    size_t index;
++
++    (void)errp;
++    report->schema_version = 1;
++    qemu_aio_handler_hot_fork_inventory(&inventory);
++    report->generation = inventory.generation;
++    for (index = 0; index < inventory.entry_count; index++) {
++        QemuAioHandlerHotForkInventoryEntry *source =
++            &inventory.entries[index];
++        CrucibleHotForkAioHandler *handler =
++            g_new0(CrucibleHotForkAioHandler, 1);
++        CrucibleHotForkAioHandlerList *node =
++            g_new0(CrucibleHotForkAioHandlerList, 1);
++
++        handler->handler_id = source->handler_id;
++        handler->context_id = source->context_id;
++        handler->fd = source->fd;
++        handler->deleted = source->deleted;
++        handler->read_callback = source->io_read;
++        handler->write_callback = source->io_write;
++        handler->poll_callback = source->io_poll;
++        handler->poll_ready_callback = source->io_poll_ready;
++        handler->poll_begin_callback = source->io_poll_begin;
++        handler->poll_end_callback = source->io_poll_end;
++        handler->active_callbacks = source->active_callbacks;
++        if (source->handler_id == 0 || source->context_id == 0 ||
++            source->fd < 0 ||
++            (index != 0 && source->handler_id <= previous_handler_id) ||
++            (!source->io_read && !source->io_write && !source->io_poll)) {
++            valid_entries = false;
++        }
++        previous_handler_id = source->handler_id;
++        report->read_handlers += source->io_read;
++        report->write_handlers += source->io_write;
++        report->poll_handlers += source->io_poll;
++        report->deleted_handlers += source->deleted;
++        report->active_callbacks += source->active_callbacks;
++        node->value = handler;
++        *tail = node;
++        tail = &node->next;
++    }
++    report->handler_count = inventory.entry_count;
++    report->overflowed = inventory.overflowed;
++    report->complete = !inventory.overflowed && valid_entries;
++    qemu_aio_handler_hot_fork_inventory_destroy(&inventory);
++    return report;
++#else
++    error_setg(errp, "Crucible hot-fork AIO-handler inventory requires POSIX");
++    return NULL;
++#endif
++}
++
+ CrucibleHotForkMutexInventory *
+ qmp_query_crucible_hot_fork_mutex_inventory(Error **errp)
+ {
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 7570bdf59..42e9f99ab 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -440,6 +440,108 @@
+ { 'command': 'query-crucible-hot-fork-aio-inventory',
+   'returns': 'CrucibleHotForkAioInventory' }
+ 
++##
++# @CrucibleHotForkAioHandler:
++#
++# One allocated POSIX AioHandler in the process-local registry.
++#
++# @handler-id: positive stable process-local handler identity
++#
++# @context-id: positive process-local owning AioContext identity
++#
++# @fd: nonnegative process-local file descriptor
++#
++# @deleted: whether removal has been requested but allocation remains live
++#
++# @read-callback: whether a read callback is installed
++#
++# @write-callback: whether a write callback is installed
++#
++# @poll-callback: whether a userspace polling callback is installed
++#
++# @poll-ready-callback: whether a polling-ready callback is installed
++#
++# @poll-begin-callback: whether a polling-entry callback is installed
++#
++# @poll-end-callback: whether a polling-exit callback is installed
++#
++# @active-callbacks: number of this handler's callbacks currently executing
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkAioHandler',
++  'data': { 'handler-id': 'uint64',
++            'context-id': 'uint64',
++            'fd': 'int64',
++            'deleted': 'bool',
++            'read-callback': 'bool',
++            'write-callback': 'bool',
++            'poll-callback': 'bool',
++            'poll-ready-callback': 'bool',
++            'poll-begin-callback': 'bool',
++            'poll-end-callback': 'bool',
++            'active-callbacks': 'uint32' } }
++
++##
++# @CrucibleHotForkAioHandlerInventory:
++#
++# Bounded observational snapshot of every allocated POSIX AioHandler,
++# including handlers awaiting deferred deletion.  This report does not drain,
++# park, or retain an AIO-handler barrier.
++#
++# @schema-version: inventory contract version, currently 1
++#
++# @generation: monotonic process-local lifecycle and callback-set generation;
++#     active callback counts are instantaneous
++#
++# @complete: true exactly when the registry did not overflow and every entry
++#     is structurally valid
++#
++# @overflowed: whether allocated handlers exceeded the retained bound
++#
++# @handler-count: number of retained allocated handlers
++#
++# @read-handlers: retained handlers with a read callback
++#
++# @write-handlers: retained handlers with a write callback
++#
++# @poll-handlers: retained handlers with a userspace polling callback
++#
++# @deleted-handlers: retained handlers awaiting deferred deletion
++#
++# @active-callbacks: checked sum of retained @active-callbacks
++#
++# @handlers: allocated handlers sorted by @handler-id and bounded to 65536
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkAioHandlerInventory',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'complete': 'bool',
++            'overflowed': 'bool',
++            'handler-count': 'uint32',
++            'read-handlers': 'uint32',
++            'write-handlers': 'uint32',
++            'poll-handlers': 'uint32',
++            'deleted-handlers': 'uint32',
++            'active-callbacks': 'uint64',
++            'handlers': [ 'CrucibleHotForkAioHandler' ] } }
++
++##
++# @query-crucible-hot-fork-aio-handler-inventory:
++#
++# Query every allocated POSIX AioHandler.  This command is observational and
++# cannot acknowledge the AIO/BH/timer readiness proof.
++#
++# Returns: @CrucibleHotForkAioHandlerInventory
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'query-crucible-hot-fork-aio-handler-inventory',
++  'returns': 'CrucibleHotForkAioHandlerInventory',
++  'allow-oob': true }
++
+ ##
+ # @CrucibleHotForkMutex:
+ #
+diff --git a/util/aio-posix.c b/util/aio-posix.c
+index cf6813f50..5d4c9c1c0 100644
+--- a/util/aio-posix.c
++++ b/util/aio-posix.c
+@@ -28,6 +28,138 @@
+ /* Stop userspace polling on a handler if it isn't active for some time */
+ #define POLL_IDLE_INTERVAL_NS (7 * NANOSECONDS_PER_SECOND)
+ 
++static QemuMutex crucible_hot_fork_aio_handler_lock;
++static QTAILQ_HEAD(, AioHandler) crucible_hot_fork_aio_handlers =
++    QTAILQ_HEAD_INITIALIZER(crucible_hot_fork_aio_handlers);
++static uint64_t crucible_hot_fork_aio_handler_next_id = 1;
++static uint64_t crucible_hot_fork_aio_handler_generation;
++
++static void __attribute__((__constructor__))
++crucible_hot_fork_aio_handler_inventory_init(void)
++{
++    qemu_mutex_init(&crucible_hot_fork_aio_handler_lock);
++}
++
++static void crucible_hot_fork_aio_handler_changed(void)
++{
++    crucible_hot_fork_aio_handler_generation++;
++}
++
++static void crucible_hot_fork_aio_handler_register(AioContext *ctx,
++                                                   AioHandler *node)
++{
++    QEMU_LOCK_GUARD(&crucible_hot_fork_aio_handler_lock);
++
++    node->crucible_hot_fork_id = crucible_hot_fork_aio_handler_next_id++;
++    assert(node->crucible_hot_fork_id != 0);
++    node->crucible_hot_fork_context_id = ctx->crucible_hot_fork_id;
++    assert(node->crucible_hot_fork_context_id != 0);
++    QTAILQ_INSERT_TAIL(&crucible_hot_fork_aio_handlers, node,
++                       crucible_hot_fork_node);
++    crucible_hot_fork_aio_handler_changed();
++}
++
++static void crucible_hot_fork_aio_handler_mark_deleted(AioHandler *node)
++{
++    QEMU_LOCK_GUARD(&crucible_hot_fork_aio_handler_lock);
++
++    if (!node->crucible_hot_fork_deleted) {
++        node->crucible_hot_fork_deleted = true;
++        crucible_hot_fork_aio_handler_changed();
++    }
++}
++
++static void crucible_hot_fork_aio_handler_update_poll(
++    AioHandler *node, IOHandler *io_poll_begin, IOHandler *io_poll_end)
++{
++    QEMU_LOCK_GUARD(&crucible_hot_fork_aio_handler_lock);
++
++    if (node->io_poll_begin != io_poll_begin ||
++        node->io_poll_end != io_poll_end) {
++        node->io_poll_begin = io_poll_begin;
++        node->io_poll_end = io_poll_end;
++        crucible_hot_fork_aio_handler_changed();
++    }
++}
++
++static void crucible_hot_fork_aio_handler_callback_begin(AioHandler *node)
++{
++    uint32_t active = qatomic_read(&node->crucible_hot_fork_active_callbacks);
++
++    /* A handler's owning AioContext serializes its callback transitions. */
++    assert(active != UINT32_MAX);
++    qatomic_set(&node->crucible_hot_fork_active_callbacks, active + 1);
++}
++
++static void crucible_hot_fork_aio_handler_callback_end(AioHandler *node)
++{
++    uint32_t active = qatomic_read(&node->crucible_hot_fork_active_callbacks);
++
++    assert(active > 0);
++    qatomic_set(&node->crucible_hot_fork_active_callbacks, active - 1);
++}
++
++static void crucible_hot_fork_aio_handler_free(AioHandler *node)
++{
++    qemu_mutex_lock(&crucible_hot_fork_aio_handler_lock);
++    QTAILQ_REMOVE(&crucible_hot_fork_aio_handlers, node,
++                  crucible_hot_fork_node);
++    crucible_hot_fork_aio_handler_changed();
++    qemu_mutex_unlock(&crucible_hot_fork_aio_handler_lock);
++    g_free(node);
++}
++
++void qemu_aio_handler_hot_fork_inventory(
++    QemuAioHandlerHotForkInventory *inventory)
++{
++    AioHandler *node;
++    size_t count = 0;
++
++    *inventory = (QemuAioHandlerHotForkInventory) { 0 };
++    QEMU_LOCK_GUARD(&crucible_hot_fork_aio_handler_lock);
++    inventory->generation = crucible_hot_fork_aio_handler_generation;
++    QTAILQ_FOREACH(node, &crucible_hot_fork_aio_handlers,
++                   crucible_hot_fork_node) {
++        if (count == QEMU_AIO_HANDLER_HOT_FORK_INVENTORY_MAX) {
++            inventory->overflowed = true;
++            break;
++        }
++        count++;
++    }
++
++    inventory->entries = g_new0(QemuAioHandlerHotForkInventoryEntry, count);
++    inventory->entry_count = count;
++    count = 0;
++    QTAILQ_FOREACH(node, &crucible_hot_fork_aio_handlers,
++                   crucible_hot_fork_node) {
++        QemuAioHandlerHotForkInventoryEntry *entry;
++
++        if (count == inventory->entry_count) {
++            break;
++        }
++        entry = &inventory->entries[count++];
++        entry->handler_id = node->crucible_hot_fork_id;
++        entry->context_id = node->crucible_hot_fork_context_id;
++        entry->fd = node->pfd.fd;
++        entry->active_callbacks =
++            qatomic_read(&node->crucible_hot_fork_active_callbacks);
++        entry->deleted = node->crucible_hot_fork_deleted;
++        entry->io_read = node->io_read != NULL;
++        entry->io_write = node->io_write != NULL;
++        entry->io_poll = node->io_poll != NULL;
++        entry->io_poll_ready = node->io_poll_ready != NULL;
++        entry->io_poll_begin = node->io_poll_begin != NULL;
++        entry->io_poll_end = node->io_poll_end != NULL;
++    }
++}
++
++void qemu_aio_handler_hot_fork_inventory_destroy(
++    QemuAioHandlerHotForkInventory *inventory)
++{
++    g_free(inventory->entries);
++    *inventory = (QemuAioHandlerHotForkInventory) { 0 };
++}
++
+ static void adjust_polling_time(AioContext *ctx, AioPolledEvent *poll,
+                                 int64_t block_ns);
+ 
+@@ -81,6 +213,7 @@ static bool aio_remove_fd_handler(AioContext *ctx, AioHandler *node)
+ 
+     node->pfd.revents = 0;
+     node->poll_ready = false;
++    crucible_hot_fork_aio_handler_mark_deleted(node);
+ 
+     /* If the fd monitor has already marked it deleted, leave it alone */
+     if (QLIST_IS_INSERTED(node, node_deleted)) {
+@@ -158,6 +291,7 @@ void aio_set_fd_handler(AioContext *ctx,
+         new_node->pfd.events = (io_read ? G_IO_IN | G_IO_HUP | G_IO_ERR : 0);
+         new_node->pfd.events |= (io_write ? G_IO_OUT | G_IO_ERR : 0);
+ 
++        crucible_hot_fork_aio_handler_register(ctx, new_node);
+         QLIST_INSERT_HEAD_RCU(&ctx->aio_handlers, new_node, node);
+     }
+ 
+@@ -178,7 +312,7 @@ void aio_set_fd_handler(AioContext *ctx,
+     aio_notify(ctx);
+ 
+     if (deleted) {
+-        g_free(node);
++        crucible_hot_fork_aio_handler_free(node);
+     }
+ }
+ 
+@@ -192,8 +326,8 @@ static void aio_set_fd_poll(AioContext *ctx, int fd,
+         return;
+     }
+ 
+-    node->io_poll_begin = io_poll_begin;
+-    node->io_poll_end = io_poll_end;
++    crucible_hot_fork_aio_handler_update_poll(node, io_poll_begin,
++                                              io_poll_end);
+ }
+ 
+ void aio_set_event_notifier(AioContext *ctx,
+@@ -244,11 +378,21 @@ static bool poll_set_started(AioContext *ctx, AioHandlerList *ready_list,
+         }
+ 
+         if (fn) {
++            crucible_hot_fork_aio_handler_callback_begin(node);
+             fn(node->opaque);
++            crucible_hot_fork_aio_handler_callback_end(node);
+         }
+ 
+         /* Poll one last time in case ->io_poll_end() raced with the event */
+-        if (!started && node->io_poll(node->opaque)) {
++        if (!started) {
++            bool ready;
++
++            crucible_hot_fork_aio_handler_callback_begin(node);
++            ready = node->io_poll(node->opaque);
++            crucible_hot_fork_aio_handler_callback_end(node);
++            if (!ready) {
++                continue;
++            }
+             aio_add_poll_ready_handler(ready_list, node);
+             progress = true;
+         }
+@@ -315,7 +459,7 @@ static void aio_free_deleted_handlers(AioContext *ctx)
+         QLIST_REMOVE(node, node);
+         QLIST_REMOVE(node, node_deleted);
+         QLIST_SAFE_REMOVE(node, node_poll);
+-        g_free(node);
++        crucible_hot_fork_aio_handler_free(node);
+     }
+ 
+     qemu_lockcnt_inc_and_unlock(&ctx->list_lock);
+@@ -344,7 +488,9 @@ static bool aio_dispatch_handler(AioContext *ctx, AioHandler *node)
+         node->io_poll) {
+         trace_poll_add(ctx, node, node->pfd.fd, revents);
+         if (ctx->poll_started && node->io_poll_begin) {
++            crucible_hot_fork_aio_handler_callback_begin(node);
+             node->io_poll_begin(node->opaque);
++            crucible_hot_fork_aio_handler_callback_end(node);
+         }
+         QLIST_INSERT_HEAD(&ctx->poll_aio_handlers, node, node_poll);
+     }
+@@ -357,7 +503,9 @@ static bool aio_dispatch_handler(AioContext *ctx, AioHandler *node)
+          */
+         QLIST_SAFE_REMOVE(node, node_poll);
+ 
++        crucible_hot_fork_aio_handler_callback_begin(node);
+         node->io_poll_ready(node->opaque);
++        crucible_hot_fork_aio_handler_callback_end(node);
+ 
+         if (!QLIST_IS_INSERTED(node, node_poll)) {
+             QLIST_INSERT_HEAD(&ctx->poll_aio_handlers, node, node_poll);
+@@ -373,7 +521,9 @@ static bool aio_dispatch_handler(AioContext *ctx, AioHandler *node)
+     if (!QLIST_IS_INSERTED(node, node_deleted) &&
+         (revents & (G_IO_IN | G_IO_HUP | G_IO_ERR)) &&
+         node->io_read) {
++        crucible_hot_fork_aio_handler_callback_begin(node);
+         node->io_read(node->opaque);
++        crucible_hot_fork_aio_handler_callback_end(node);
+ 
+         /* aio_notify() does not count as progress */
+         if (node->opaque != &ctx->notifier) {
+@@ -383,7 +533,9 @@ static bool aio_dispatch_handler(AioContext *ctx, AioHandler *node)
+     if (!QLIST_IS_INSERTED(node, node_deleted) &&
+         (revents & (G_IO_OUT | G_IO_ERR)) &&
+         node->io_write) {
++        crucible_hot_fork_aio_handler_callback_begin(node);
+         node->io_write(node->opaque);
++        crucible_hot_fork_aio_handler_callback_end(node);
+         progress = true;
+     }
+ 
+@@ -451,7 +603,12 @@ static bool run_poll_handlers_once(AioContext *ctx,
+     AioHandler *tmp;
+ 
+     QLIST_FOREACH_SAFE(node, &ctx->poll_aio_handlers, node_poll, tmp) {
+-        if (node->io_poll(node->opaque)) {
++        bool ready;
++
++        crucible_hot_fork_aio_handler_callback_begin(node);
++        ready = node->io_poll(node->opaque);
++        crucible_hot_fork_aio_handler_callback_end(node);
++        if (ready) {
+             aio_add_poll_ready_handler(ready_list, node);
+ 
+             node->poll_idle_timeout = now + POLL_IDLE_INTERVAL_NS;
+@@ -503,14 +660,21 @@ static bool remove_idle_poll_handlers(AioContext *ctx,
+             node->poll_idle_timeout = 0LL;
+             QLIST_SAFE_REMOVE(node, node_poll);
+             if (ctx->poll_started && node->io_poll_end) {
++                bool ready;
++
++                crucible_hot_fork_aio_handler_callback_begin(node);
+                 node->io_poll_end(node->opaque);
++                crucible_hot_fork_aio_handler_callback_end(node);
+ 
+                 /*
+                  * Final poll in case ->io_poll_end() races with an event.
+                  * Nevermind about re-adding the handler in the rare case where
+                  * this causes progress.
+                  */
+-                if (node->io_poll(node->opaque)) {
++                crucible_hot_fork_aio_handler_callback_begin(node);
++                ready = node->io_poll(node->opaque);
++                crucible_hot_fork_aio_handler_callback_end(node);
++                if (ready) {
+                     aio_add_poll_ready_handler(ready_list, node);
+                     progress = true;
+                 }
+diff --git a/util/aio-posix.h b/util/aio-posix.h
+index 82a0201ea..8b6e883b9 100644
+--- a/util/aio-posix.h
++++ b/util/aio-posix.h
+@@ -39,6 +39,11 @@ struct AioHandler {
+     int64_t poll_idle_timeout; /* when to stop userspace polling */
+     bool poll_ready; /* has polling detected an event? */
+     AioPolledEvent poll;
++    uint64_t crucible_hot_fork_id;
++    uint64_t crucible_hot_fork_context_id;
++    uint32_t crucible_hot_fork_active_callbacks;
++    bool crucible_hot_fork_deleted;
++    QTAILQ_ENTRY(AioHandler) crucible_hot_fork_node;
+ };
+ 
+ /* Add a handler to a ready list */
+diff --git a/util/async.c b/util/async.c
+index b14da687c..d2d472aec 100644
+--- a/util/async.c
++++ b/util/async.c
+@@ -51,12 +51,19 @@ crucible_hot_fork_aio_inventory_init(void)
+     qemu_mutex_init(&crucible_hot_fork_aio_lock);
+ }
+ 
+-static void crucible_hot_fork_aio_register(AioContext *ctx)
++static void crucible_hot_fork_aio_assign_id(AioContext *ctx)
+ {
+     QEMU_LOCK_GUARD(&crucible_hot_fork_aio_lock);
+ 
+     ctx->crucible_hot_fork_id = crucible_hot_fork_aio_next_id++;
+     assert(ctx->crucible_hot_fork_id != 0);
++}
++
++static void crucible_hot_fork_aio_register(AioContext *ctx)
++{
++    QEMU_LOCK_GUARD(&crucible_hot_fork_aio_lock);
++
++    assert(ctx->crucible_hot_fork_id != 0);
+     QTAILQ_INSERT_TAIL(&crucible_hot_fork_aio_contexts, ctx,
+                        crucible_hot_fork_node);
+     crucible_hot_fork_aio_generation++;
+@@ -830,6 +837,7 @@ AioContext *aio_context_new(Error **errp)
+     QSLIST_INIT(&ctx->bh_list);
+     QSIMPLEQ_INIT(&ctx->bh_slice_list);
+     aio_context_setup(ctx);
++    crucible_hot_fork_aio_assign_id(ctx);
+ 
+     ret = event_notifier_init(&ctx->notifier, false);
+     if (ret < 0) {

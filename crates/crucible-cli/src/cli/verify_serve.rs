@@ -2,9 +2,58 @@
 
 use super::*;
 
+use std::os::unix::net::UnixStream;
+
 #[path = "artifact_capture.rs"]
 mod artifact_capture;
 pub(super) use artifact_capture::*;
+
+#[path = "verify_serve/packaged_executor.rs"]
+mod packaged_executor;
+use packaged_executor::prepare_cli_packaged_executor;
+
+#[path = "legacy_campaign.rs"]
+mod legacy_campaign;
+
+// crucible-lint: allow host-nondeterminism-state -- this thin command boundary forwards validated inputs to the daemon owner and only renders its accepted result.
+pub(crate) fn run_local_qemu_campaign_workflow(
+    backend: &ResolvedLocalBackend,
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    run_plan: &RunInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    legacy_campaign::run_local_qemu_campaign_workflow(
+        backend,
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        run_plan,
+    )
+}
+
+pub(crate) fn run_local_qemu_campaign_replay(
+    backend: &ResolvedLocalBackend,
+    run_plan: &RunInvocationPlan,
+    lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    schedule: crucible::Schedule,
+    replay_closure: crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+) -> Result<RunWorkflowReport, CliError> {
+    legacy_campaign::run_local_qemu_campaign_replay(
+        backend,
+        run_plan,
+        lifecycle,
+        schedule,
+        replay_closure,
+    )
+}
+
+use super::cli_campaign_import::apply_campaign_import_manifests;
+use super::cli_campaign_store::load_campaign_repository_store;
+
+const DEFAULT_CAMPAIGN_MAINTENANCE_WRITE_BACK_TRANSFERS: u32 = 64;
+const DEFAULT_CAMPAIGN_MAINTENANCE_S3_NODES: u16 = 8;
+const DEFAULT_CAMPAIGN_MAINTENANCE_S3_UPLOADS: u16 = 128;
 
 pub(super) async fn run_control_client_verify_workflow_async<C>(
     client: &C,
@@ -110,6 +159,7 @@ pub(super) fn verify_run_invocation_plan(
     RunInvocationPlan {
         scenario,
         save_store_root: None,
+        campaign_deployment: None,
         request_seed: Some(request_seed),
         terminal_condition: RunTerminalCondition::Quiescence,
         max_virtual_time: None,
@@ -949,6 +999,20 @@ where
         ),
         _ => None,
     };
+    let mut production_config = if args.production_qemu {
+        let backend = require_selftest_qemu_backend(cli)?;
+        let mut config = production_qemu_lifecycle_config(&backend)?;
+        if let Some(interval) = packaged_executor::production_rendezvous_interval(
+            args.qemu_rendezvous_icount,
+            args.campaign_packaged_executor.is_some(),
+        ) {
+            config = config.with_rendezvous_interval_icount(interval);
+        }
+        Some(config.with_debug_gdbstubs_for_all_nodes("127.0.0.1:0"))
+    } else {
+        None
+    };
+    let campaign_service = open_local_campaign_service(args, production_config.as_ref())?;
     let listener = tokio::net::TcpListener::bind(&args.listen)
         .await
         .map_err(|error| serve_error(format!("serve bind error: {error}")))?;
@@ -967,6 +1031,12 @@ where
             "http"
         };
         println!("crucible: serving API daemon at {scheme}://{address} mode={mode}");
+        if let Some(service) = campaign_service.as_ref() {
+            println!(
+                "crucible: serving local campaign service at {}",
+                service.socket_path().display()
+            );
+        }
     }
     let mode = if args.read_only {
         LifecycleServerMode::read_only()
@@ -974,12 +1044,9 @@ where
         LifecycleServerMode::read_write()
     };
     if args.production_qemu {
-        let backend = require_selftest_qemu_backend(cli)?;
-        let mut config = production_qemu_lifecycle_config(&backend)?;
-        if let Some(interval) = args.qemu_rendezvous_icount {
-            config = config.with_rendezvous_interval_icount(interval);
-        }
-        let config = config.with_debug_gdbstubs_for_all_nodes("127.0.0.1:0");
+        let config = production_config
+            .take()
+            .ok_or_else(|| serve_error("production QEMU configuration disappeared"))?;
         let resume_config = config.clone();
         let mut control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
             "crucible-cli-qemu-daemon",
@@ -1005,13 +1072,14 @@ where
         if let Some(max_sessions) = args.max_sessions {
             control_plane = control_plane.with_max_sessions(max_sessions);
         }
-        return run_bound_lifecycle_server(
+        return run_bound_daemon_services(
             listener,
             control_plane,
             mode,
             tls_acceptor,
             debug_authorization,
             shutdown,
+            campaign_service,
         )
         .await;
     }
@@ -1023,15 +1091,293 @@ where
     if let Some(max_sessions) = args.max_sessions {
         control_plane = control_plane.with_max_sessions(max_sessions);
     }
-    run_bound_lifecycle_server(
+    run_bound_daemon_services(
         listener,
         control_plane,
         mode,
         tls_acceptor,
         debug_authorization,
         shutdown,
+        campaign_service,
     )
     .await
+}
+
+pub(super) struct PreparedLocalCampaignService {
+    service: crucible_daemon::CampaignLocalService,
+    socket_path: PathBuf,
+}
+
+impl PreparedLocalCampaignService {
+    fn socket_path(&self) -> &Path {
+        &self.socket_path
+    }
+}
+
+pub(super) fn open_local_campaign_service(
+    args: &ServeArgs,
+    production_qemu: Option<&crucible_api::ProductionVmLifecycleConfig>,
+) -> Result<Option<PreparedLocalCampaignService>, CliError> {
+    validate_campaign_runtime_attachments(args)?;
+    let (Some(socket), Some(state), Some(policy)) = (
+        args.campaign_socket.as_ref(),
+        args.campaign_state.as_ref(),
+        args.campaign_policy.as_ref(),
+    ) else {
+        return Ok(None);
+    };
+    let endpoint = crucible_daemon::CampaignLoopbackEndpointConfig::new(
+        socket,
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+        args.campaign_socket_mode,
+    )
+    .map_err(|error| serve_error(format!("campaign endpoint configuration error: {error}")))?;
+    let mut config = crucible_daemon::CampaignLocalServiceConfig::new(
+        endpoint,
+        state,
+        policy,
+        if args.read_only {
+            crucible_daemon::CampaignLocalServiceMode::ReadOnly
+        } else {
+            crucible_daemon::CampaignLocalServiceMode::ReadWrite
+        },
+        crucible_daemon::CampaignLoopbackServerConfig::default(),
+    )
+    .map_err(|error| serve_error(format!("campaign service configuration error: {error}")))?;
+    if let Some(path) = args.campaign_component_authority.as_ref() {
+        config = config
+            .with_component_authority_path(path)
+            .map_err(|error| {
+                serve_error(format!("campaign service configuration error: {error}"))
+            })?;
+    }
+    let mut prepared = match args.campaign_store.as_deref() {
+        Some(path) => config.prepare_with_store(load_campaign_repository_store(path)?),
+        None => config.prepare(),
+    }
+    .map_err(|error| serve_error(format!("campaign service bootstrap error: {error}")))?;
+    if let Some(maintenance) = campaign_store_maintenance_config(args)? {
+        prepared = prepared
+            .with_store_maintenance(maintenance)
+            .map_err(|error| serve_error(format!("campaign maintenance error: {error}")))?;
+    }
+    let runtime_control_planner = if args.campaign_component_authority.is_some() && !args.read_only
+    {
+        Some(
+            crucible_daemon::CanonicalPlannerProcessConfig::for_current_executable(
+                Duration::from_secs(30),
+            )
+            .map_err(|error| {
+                serve_error(format!("campaign planner configuration error: {error}"))
+            })?,
+        )
+    } else {
+        None
+    };
+    apply_campaign_import_manifests(&prepared, &args.campaign_import_manifest)?;
+    let selected_campaigns = if args.campaign_runtime_all {
+        prepared
+            .discover_packaged_campaigns()
+            .map_err(|error| serve_error(format!("campaign runtime discovery error: {error}")))?
+    } else {
+        args.campaign_runtime
+            .iter()
+            .map(|campaign| {
+                crucible_campaign::CampaignName::new(campaign)
+                    .map_err(|error| serve_error(format!("campaign runtime name error: {error}")))
+            })
+            .collect::<Result<std::collections::BTreeSet<_>, _>>()?
+    };
+    let packaged_executor = match args.campaign_packaged_executor.as_deref() {
+        Some(deployment) => {
+            let executor_socket = args.campaign_executor_socket.first().ok_or_else(|| {
+                usage_error("--campaign-packaged-executor requires one executor socket")
+            })?;
+            Some(prepare_cli_packaged_executor(
+                &prepared,
+                args,
+                selected_campaigns.clone(),
+                executor_socket,
+                deployment,
+                production_qemu.ok_or_else(|| {
+                    serve_error("--campaign-packaged-executor requires --production-qemu")
+                })?,
+            )?)
+        }
+        None => None,
+    };
+    let runtime_targets = if packaged_executor.is_some() {
+        let executor_socket = args.campaign_executor_socket.first().ok_or_else(|| {
+            usage_error("--campaign-packaged-executor requires one executor socket")
+        })?;
+        selected_campaigns
+            .iter()
+            .cloned()
+            .map(|campaign| (campaign, executor_socket.as_path()))
+            .collect::<Vec<_>>()
+    } else {
+        args.campaign_runtime
+            .iter()
+            .zip(&args.campaign_executor_socket)
+            .map(|(campaign, executor_socket)| {
+                crucible_campaign::CampaignName::new(campaign)
+                    .map(|campaign| (campaign, executor_socket.as_path()))
+                    .map_err(|error| serve_error(format!("campaign runtime name error: {error}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let mut runtimes = Vec::with_capacity(runtime_targets.len());
+    for (index, (campaign, executor_socket)) in runtime_targets.into_iter().enumerate() {
+        let stream = connect_campaign_executor(executor_socket)?;
+        let planner = runtime_control_planner.clone().ok_or_else(|| {
+            serve_error("campaign runtime attachment requires the planner control profile")
+        })?;
+        let runtime_config =
+            crucible_daemon::CanonicalCampaignRuntimeConfig::canonical_defaults(campaign, planner)
+                .map_err(|error| {
+                    serve_error(format!("campaign runtime configuration error: {error}"))
+                })?;
+        runtimes.push(
+            prepared
+                .prepare_runtime(stream, &runtime_config)
+                .map_err(|error| {
+                    serve_error(format!(
+                        "campaign runtime {index} attachment error: {error}"
+                    ))
+                })?,
+        );
+    }
+    let prepared = match runtime_control_planner {
+        Some(planner) => prepared
+            .with_runtime_control(planner)
+            .map_err(|error| serve_error(format!("campaign runtime control error: {error}")))?,
+        None => prepared,
+    };
+    let service = if let Some(executor) = packaged_executor {
+        prepared.bind_with_runtimes_and_executor(runtimes, executor)
+    } else if runtimes.is_empty() {
+        prepared.bind()
+    } else {
+        prepared.bind_with_runtimes(runtimes)
+    }
+    .map_err(|error| serve_error(format!("campaign service bind error: {error}")))?;
+    Ok(Some(PreparedLocalCampaignService {
+        service,
+        socket_path: socket.clone(),
+    }))
+}
+
+pub(super) fn connect_campaign_executor(path: &Path) -> Result<UnixStream, CliError> {
+    let user_id = rustix::process::geteuid().as_raw();
+    let group_id = rustix::process::getegid().as_raw();
+    let endpoint = crucible_daemon::ExecutorLoopbackEndpointConfig::new(
+        path.to_owned(),
+        user_id,
+        group_id,
+        0o600,
+    )
+    .map_err(|error| serve_error(format!("campaign executor endpoint error: {error}")))?;
+    endpoint
+        .connect()
+        .map_err(|error| serve_error(format!("campaign executor connection error: {error}")))
+}
+
+struct RunningLocalCampaignService {
+    shutdown: crucible_daemon::CampaignLoopbackServerShutdown,
+    thread: std::thread::JoinHandle<
+        Result<
+            crucible_daemon::CampaignLoopbackServerReport,
+            crucible_daemon::CampaignLocalServiceError,
+        >,
+    >,
+    done: tokio::sync::oneshot::Receiver<()>,
+}
+
+fn start_local_campaign_service(
+    prepared: PreparedLocalCampaignService,
+) -> Result<RunningLocalCampaignService, CliError> {
+    let shutdown = prepared.service.shutdown_handle();
+    let (done_sender, done) = tokio::sync::oneshot::channel();
+    let thread = std::thread::Builder::new()
+        .name(String::from("crucible-campaign-service"))
+        .spawn(move || {
+            let result = prepared.service.serve();
+            let _ = done_sender.send(());
+            result
+        })
+        .map_err(|error| serve_error(format!("campaign service thread error: {error}")))?;
+    Ok(RunningLocalCampaignService {
+        shutdown,
+        thread,
+        done,
+    })
+}
+
+async fn run_bound_daemon_services<L, F, S>(
+    listener: tokio::net::TcpListener,
+    control_plane: LifecycleControlPlane<L, F>,
+    mode: LifecycleServerMode,
+    tls_acceptor: Option<tokio_rustls::TlsAcceptor>,
+    debug_authorization: DebugAuthorizationPolicy,
+    shutdown: S,
+    campaign: Option<PreparedLocalCampaignService>,
+) -> Result<(), CliError>
+where
+    L: crucible::QuantumLoop + Send + 'static,
+    F: Fn(
+            &crucible::ScenarioDef,
+            Option<&crucible::ScenarioDefForm>,
+            crucible::Seed,
+        ) -> Result<L, crucible_api::LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+    S: Future<Output = Result<(), CliError>> + Send + 'static,
+{
+    let Some(campaign) = campaign else {
+        return run_bound_lifecycle_server(
+            listener,
+            control_plane,
+            mode,
+            tls_acceptor,
+            debug_authorization,
+            shutdown,
+        )
+        .await;
+    };
+    let RunningLocalCampaignService {
+        shutdown: campaign_shutdown,
+        thread: campaign_thread,
+        mut done,
+    } = start_local_campaign_service(campaign)?;
+    let wait_shutdown = campaign_shutdown.clone();
+    let combined_shutdown = async move {
+        // crucible-lint: allow unordered-select -- either daemon service ending stops the process.
+        tokio::select! {
+            result = shutdown => {
+                wait_shutdown.shutdown();
+                result
+            }
+            _ = &mut done => Err(serve_error("campaign service stopped unexpectedly")),
+        }
+    };
+    let lifecycle_result = run_bound_lifecycle_server(
+        listener,
+        control_plane,
+        mode,
+        tls_acceptor,
+        debug_authorization,
+        combined_shutdown,
+    )
+    .await;
+    campaign_shutdown.shutdown();
+    let campaign_result = tokio::task::spawn_blocking(move || campaign_thread.join())
+        .await
+        .map_err(|error| serve_error(format!("campaign service join error: {error}")))?
+        .map_err(|_| serve_error("campaign service thread panicked"))?
+        .map_err(|error| serve_error(format!("campaign service error: {error}")));
+    lifecycle_result.and(campaign_result.map(|_| ()))
 }
 
 async fn run_bound_lifecycle_server<L, F, S>(
@@ -1133,6 +1479,36 @@ pub(super) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError
             "--qemu-rendezvous-icount requires --production-qemu",
         ));
     }
+    let campaign_fields = [
+        args.campaign_socket.is_some(),
+        args.campaign_state.is_some(),
+        args.campaign_policy.is_some(),
+    ];
+    let campaign_field_count = campaign_fields
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+    if campaign_field_count != 0 && campaign_field_count != campaign_fields.len() {
+        return Err(usage_error(
+            "--campaign-socket, --campaign-state, and --campaign-policy must be provided together",
+        ));
+    }
+    let _ = campaign_store_maintenance_config(args)?;
+    validate_campaign_runtime_attachments(args)?;
+    if args.campaign_packaged_executor.is_some() && !args.production_qemu {
+        return Err(usage_error(
+            "--campaign-packaged-executor requires --production-qemu",
+        ));
+    }
+    if args.campaign_socket.is_some()
+        && (args.campaign_socket_mode == 0
+            || args.campaign_socket_mode & !0o777 != 0
+            || args.campaign_socket_mode & 0o222 == 0)
+    {
+        return Err(usage_error(
+            "--campaign-socket-mode must grant write access and contain only permission bits",
+        ));
+    }
     let tls_file_count = [
         args.tls_cert.is_some(),
         args.tls_key.is_some(),
@@ -1157,6 +1533,104 @@ pub(super) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError
         ));
     }
     let _ = debug_authorization_policy(args)?;
+    Ok(())
+}
+
+fn campaign_store_maintenance_config(
+    args: &ServeArgs,
+) -> Result<Option<crucible_daemon::CampaignStoreMaintenanceConfig>, CliError> {
+    let bounds_present = args.campaign_maintenance_write_back_transfers.is_some()
+        || args.campaign_maintenance_s3_nodes.is_some()
+        || args.campaign_maintenance_s3_uploads.is_some();
+    let Some(interval_ms) = args.campaign_maintenance_interval_ms else {
+        if bounds_present {
+            return Err(usage_error(
+                "campaign maintenance bounds require --campaign-maintenance-interval-ms",
+            ));
+        }
+        return Ok(None);
+    };
+    if args.campaign_store.is_none() {
+        return Err(usage_error(
+            "--campaign-maintenance-interval-ms requires --campaign-store",
+        ));
+    }
+    if args.read_only {
+        return Err(usage_error(
+            "--campaign-maintenance-interval-ms conflicts with --read-only",
+        ));
+    }
+    crucible_daemon::CampaignStoreMaintenanceConfig::new(
+        Duration::from_millis(interval_ms),
+        args.campaign_maintenance_write_back_transfers
+            .unwrap_or(DEFAULT_CAMPAIGN_MAINTENANCE_WRITE_BACK_TRANSFERS),
+        args.campaign_maintenance_s3_nodes
+            .unwrap_or(DEFAULT_CAMPAIGN_MAINTENANCE_S3_NODES),
+        args.campaign_maintenance_s3_uploads
+            .unwrap_or(DEFAULT_CAMPAIGN_MAINTENANCE_S3_UPLOADS),
+    )
+    .map(Some)
+    .map_err(|error| usage_error(error.to_string()))
+}
+
+fn validate_campaign_runtime_attachments(args: &ServeArgs) -> Result<(), CliError> {
+    let packaged = args.campaign_packaged_executor.is_some();
+    if packaged {
+        if args.campaign_executor_socket.is_empty()
+            || args
+                .campaign_executor_socket
+                .windows(2)
+                .any(|pair| pair[0] != pair[1])
+        {
+            return Err(usage_error(
+                "--campaign-packaged-executor requires one shared executor socket value",
+            ));
+        }
+    } else if args.campaign_runtime.len() != args.campaign_executor_socket.len() {
+        return Err(usage_error(
+            "--campaign-runtime and --campaign-executor-socket must be repeated the same number of times",
+        ));
+    }
+    if args.campaign_runtime.len() > crucible_daemon::MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES {
+        return Err(usage_error(format!(
+            "--campaign-runtime exceeds the {}-runtime daemon ceiling",
+            crucible_daemon::MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES
+        )));
+    }
+    if args.campaign_runtime.is_empty() && !args.campaign_runtime_all {
+        if packaged {
+            return Err(usage_error(
+                "--campaign-packaged-executor requires --campaign-runtime or --campaign-runtime-all",
+            ));
+        }
+        if !args.campaign_executor_socket.is_empty() {
+            return Err(usage_error(
+                "--campaign-executor-socket requires a campaign runtime",
+            ));
+        }
+        return Ok(());
+    }
+    if args.campaign_socket.is_none() || args.campaign_component_authority.is_none() {
+        return Err(usage_error(
+            "--campaign-runtime requires the complete campaign profile and --campaign-component-authority",
+        ));
+    }
+    if args.read_only {
+        return Err(usage_error(
+            "--campaign-runtime cannot be combined with --read-only",
+        ));
+    }
+
+    let mut campaigns = std::collections::BTreeSet::new();
+    for campaign in &args.campaign_runtime {
+        let campaign = crucible_campaign::CampaignName::new(campaign)
+            .map_err(|error| usage_error(format!("--campaign-runtime is invalid: {error}")))?;
+        if !campaigns.insert(campaign) {
+            return Err(usage_error(
+                "--campaign-runtime cannot attach the same campaign twice",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1400,6 +1874,8 @@ where
     Ok(SaveWorkflowReport {
         run: RunWorkflowReport {
             status: BackendCommandStatus::Passed,
+            execution_owner: RunExecutionOwner::Session,
+            campaign_replay_closure: None,
             created_state: format!("{:?}", created.state).to_ascii_lowercase(),
             final_state,
             outcome: Some(OutcomeKind::Passed),

@@ -50,6 +50,9 @@ pub fn enqueue_fault_command(
     mut header: FaultCommandHeaderV1,
     payload: &[u8],
 ) -> Result<(), FaultTransportError> {
+    let _producer = ring
+        .enter_producer()
+        .ok_or(FaultTransportError::ProducerBarrierHeld)?;
     let (tail, slot_index) = producer_ring_slot(ring, slots.len())?;
     let reservation = reserve_arena(arena_header, arena.len(), payload.len())?;
     copy_payload(arena, reservation.payload_start, payload)?;
@@ -90,8 +93,9 @@ pub fn enqueue_fault_command(
 ///
 /// # Errors
 ///
-/// Returns [`FaultTransportError`] for invalid capacity, corrupt indices,
-/// inconsistent reservation framing, allocation refusal, or arithmetic overflow.
+/// Returns [`FaultTransportError`] when consumer admission is held, or for
+/// invalid capacity, corrupt indices, inconsistent reservation framing,
+/// allocation refusal, or arithmetic overflow.
 pub fn dequeue_fault_command(
     ring: &RingHeader,
     slots: &[FaultCommandSlotV1],
@@ -99,6 +103,9 @@ pub fn dequeue_fault_command(
     arena: &[u8],
     arena_region_offset: u64,
 ) -> Result<Option<DequeuedFaultCommand>, FaultTransportError> {
+    let _consumer = ring
+        .enter_consumer()
+        .ok_or(FaultTransportError::ConsumerBarrierHeld)?;
     let Some((head, slot_index)) = consumer_ring_slot(ring, slots.len())? else {
         return Ok(None);
     };
@@ -177,6 +184,9 @@ pub fn enqueue_fault_result(
     mut header: FaultResultHeaderV1,
     payload: &[u8],
 ) -> Result<(), FaultTransportError> {
+    let _producer = ring
+        .enter_producer()
+        .ok_or(FaultTransportError::ProducerBarrierHeld)?;
     let (tail, slot_index) = producer_ring_slot(ring, slots.len())?;
     let reservation = reserve_arena(arena_header, arena.len(), payload.len())?;
     copy_payload(arena, reservation.payload_start, payload)?;
@@ -246,8 +256,9 @@ pub fn can_enqueue_fault_result(
 ///
 /// # Errors
 ///
-/// Returns [`FaultTransportError`] for invalid capacity, corrupt indices,
-/// inconsistent reservation framing, allocation refusal, or arithmetic overflow.
+/// Returns [`FaultTransportError`] when consumer admission is held, or for
+/// invalid capacity, corrupt indices, inconsistent reservation framing,
+/// allocation refusal, or arithmetic overflow.
 pub fn dequeue_fault_result(
     ring: &RingHeader,
     slots: &[FaultResultSlotV1],
@@ -255,6 +266,9 @@ pub fn dequeue_fault_result(
     arena: &[u8],
     arena_region_offset: u64,
 ) -> Result<Option<DequeuedFaultResult>, FaultTransportError> {
+    let _consumer = ring
+        .enter_consumer()
+        .ok_or(FaultTransportError::ConsumerBarrierHeld)?;
     let Some((head, slot_index)) = consumer_ring_slot(ring, slots.len())? else {
         return Ok(None);
     };

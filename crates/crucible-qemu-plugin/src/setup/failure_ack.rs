@@ -15,6 +15,8 @@ pub enum PluginSetupFailureStage {
     MapRegion,
     /// Validating the mapped shared-memory header failed.
     ValidateRegion,
+    /// Validating the immutable version-negotiated plugin plan failed.
+    ValidatePluginSetupPlan,
     /// Cross-checking the handshake assignment against the mapped header failed.
     CrossCheckSlot,
     /// Arming the wake fd failed.

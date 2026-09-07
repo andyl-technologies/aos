@@ -1125,13 +1125,33 @@ impl ReproductionArtifact {
     /// Returns [`EngineError::ScenarioSerialization`] for malformed artifact,
     /// scenario, or schedule bytes.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V5)?;
+        let outer_v7 = bytes.starts_with(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V7);
+        let outer_v6 = bytes.starts_with(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V6);
+        let mut reader = if outer_v7 {
+            ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V7)?
+        } else if outer_v6 {
+            ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V6)?
+        } else {
+            ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V5)?
+        };
         let scenario_bytes = reader.read_binary_blob_bounded(
             "reproduction-artifact.scenario",
             MAX_REPRODUCTION_SCENARIO_BLOB_BYTES,
         )?;
         let schedule_bytes = reader.read_binary_blob("reproduction-artifact.schedule")?;
         reader.finish()?;
+        let scenario_version_matches = if outer_v7 {
+            scenario_bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V7)
+        } else if outer_v6 {
+            scenario_bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V6)
+        } else {
+            scenario_bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V5)
+        };
+        if !scenario_version_matches {
+            return Err(scenario_serialization_error(
+                "reproduction-artifact scenario version does not match its outer version",
+            ));
+        }
 
         let scenario = ScenarioDefForm::from_compact_binary(scenario_bytes)?;
         let schedule = Schedule::from_compact_binary(schedule_bytes)?;

@@ -1,0 +1,183 @@
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+index fa0f80f22..fb4ed942d 100644
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -210,6 +210,10 @@ int qemu_plugin_crucible_lifecycle_complete_terminal_exit(
+     const char *action_sha256, const char *evidence_sha256,
+     uint64_t process_generation, bool *already_authorized,
+     int *exit_code);
++uint64_t qemu_crucible_fault_lifecycle_process_generation(void);
++int qemu_crucible_fault_lifecycle_rebind_process_generation(
++    uint64_t parent_process_generation,
++    uint64_t child_process_generation);
+ 
+ extern qemu_plugin_crucible_ipi_delivery_cb_t
+     qemu_plugin_crucible_ipi_delivery_cb;
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 83c2bb534..d2bc9658a 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1283,8 +1283,8 @@ int qemu_plugin_crucible_register_hot_fork_barrier(
+     qemu_plugin_crucible_hot_fork_barrier_cb_t cb,
+     void *userdata);
+ 
+-#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PLAN_VERSION 1
+-#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_STATUS_VERSION 1
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PLAN_VERSION 2
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_STATUS_VERSION 2
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_INITIALIZE 1
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_QUERY 2
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_RELEASE 3
+@@ -1306,6 +1306,8 @@ struct qemu_plugin_crucible_hot_fork_child_plan {
+     uint32_t struct_size;
+     uint32_t flags;
+     uint32_t reserved;
++    uint64_t parent_process_generation;
++    uint64_t child_process_generation;
+     uint64_t template_generation;
+     uint64_t private_ring_generation;
+     uint64_t plugin_endpoint_generation;
+@@ -1327,6 +1329,8 @@ struct qemu_plugin_crucible_hot_fork_child_status {
+     uint32_t struct_size;
+     uint32_t flags;
+     uint32_t phase;
++    uint64_t parent_process_generation;
++    uint64_t child_process_generation;
+     uint64_t template_generation;
+     uint64_t private_ring_generation;
+     uint64_t plugin_endpoint_generation;
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index 88f3715cf..66f397d95 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -457,6 +457,10 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+               QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PLAN_VERSION ||
+           plan->struct_size != sizeof(*plan) || plan->flags != 0 ||
+           plan->reserved != 0 || plan->reserved_fd != -1 ||
++          plan->parent_process_generation == 0 ||
++          plan->parent_process_generation == UINT64_MAX ||
++          plan->child_process_generation !=
++              plan->parent_process_generation + 1 ||
+           plan->template_generation == 0 ||
+           plan->private_ring_generation == 0 ||
+           plan->plugin_endpoint_generation == 0 ||
+@@ -485,7 +489,10 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+         qemu_plugin_crucible_resource_inventory.manifest.plugin_id !=
+             qemu_plugin_crucible_child_runtime_inventory.plugin_id ||
+         (action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_INITIALIZE &&
+-         (plan->worker_mask !=
++         (plan->parent_process_generation !=
++              qemu_plugin_crucible_resource_inventory.manifest.
++                  process_generation ||
++          plan->worker_mask !=
+               qemu_plugin_crucible_resource_inventory.manifest.worker_mask ||
+           plan->control_fd !=
+               qemu_plugin_crucible_resource_inventory.manifest.control_fd ||
+@@ -506,6 +513,15 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+         qemu_plugin_crucible_child_runtime_inventory.status;
+     qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
+ 
++    if (action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_INITIALIZE) {
++        result = qemu_crucible_fault_lifecycle_rebind_process_generation(
++            plan->parent_process_generation,
++            plan->child_process_generation);
++        if (result != 0) {
++            qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
++            return result;
++        }
++    }
+     result = cb(action, plan, &status, userdata);
+     if (result != 0) {
+         qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
+@@ -533,15 +549,21 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+          (status.phase ==
+           QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_FAILED)) ||
+         (status.phase == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_TEMPLATE &&
+-         (status.template_generation != 0 ||
++         (status.parent_process_generation != 0 ||
++          status.child_process_generation != 0 ||
++          status.template_generation != 0 ||
+           status.private_ring_generation != 0 ||
+           status.plugin_endpoint_generation != 0 ||
+           status.plugin_barrier_generation != 0 ||
+           status.control_socket_cookie != 0 ||
+           status.wake_eventfd_id != 0)) ||
+         (status.phase >=
+-             QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_WORKERS_HELD &&
+-         (status.template_generation == 0 ||
++         QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_WORKERS_HELD &&
++         (status.parent_process_generation == 0 ||
++          status.parent_process_generation == UINT64_MAX ||
++          status.child_process_generation !=
++              status.parent_process_generation + 1 ||
++          status.template_generation == 0 ||
+           status.private_ring_generation == 0 ||
+           status.plugin_endpoint_generation == 0 ||
+           status.plugin_barrier_generation == 0 ||
+@@ -568,6 +590,10 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD) == 0 ||
+           (status.flags &
+            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED) == 0 ||
++          status.parent_process_generation !=
++              plan->parent_process_generation ||
++          status.child_process_generation !=
++              plan->child_process_generation ||
+           status.template_generation != plan->template_generation ||
+           status.private_ring_generation != plan->private_ring_generation ||
+           status.plugin_endpoint_generation !=
+@@ -579,7 +605,11 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+         (action != QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_INITIALIZE &&
+          previous_status.phase !=
+              QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_TEMPLATE &&
+-         (status.template_generation !=
++         (status.parent_process_generation !=
++              previous_status.parent_process_generation ||
++          status.child_process_generation !=
++              previous_status.child_process_generation ||
++          status.template_generation !=
+               previous_status.template_generation ||
+           status.private_ring_generation !=
+               previous_status.private_ring_generation ||
+@@ -590,6 +620,9 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+           status.control_socket_cookie !=
+               previous_status.control_socket_cookie ||
+           status.wake_eventfd_id != previous_status.wake_eventfd_id)) ||
++        (status.phase != QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_TEMPLATE &&
++         status.child_process_generation !=
++             qemu_crucible_fault_lifecycle_process_generation()) ||
+         (action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_RELEASE &&
+          (status.flags & QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_ACTIVE) ==
+              0)) {
+diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
+index e8b82984c..60a868d9e 100644
+--- a/plugins/crucible-fault-lifecycle.c
++++ b/plugins/crucible-fault-lifecycle.c
+@@ -166,6 +166,28 @@ static bool crucible_lifecycle_mode(void)
+            icount_enabled() == ICOUNT_PRECISE;
+ }
+ 
++uint64_t qemu_crucible_fault_lifecycle_process_generation(void)
++{
++    return crucible_lifecycle_process_generation;
++}
++
++int qemu_crucible_fault_lifecycle_rebind_process_generation(
++    uint64_t parent_process_generation,
++    uint64_t child_process_generation)
++{
++    if (!crucible_lifecycle_mode() || parent_process_generation == 0 ||
++        parent_process_generation == UINT64_MAX ||
++        child_process_generation != parent_process_generation + 1) {
++        return -EINVAL;
++    }
++    if (crucible_lifecycle_process_generation != parent_process_generation ||
++        crucible_lifecycle_terminal_transition != 0) {
++        return -EPROTO;
++    }
++    crucible_lifecycle_process_generation = child_process_generation;
++    return 0;
++}
++
+ static int crucible_lifecycle_terminal_exit_code(uint32_t transition)
+ {
+     switch (transition) {

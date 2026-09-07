@@ -76,6 +76,8 @@ pub(super) fn cli_fork_workflow_routes_local_qemu_into_live_guest_configuration(
     let interactive_report = ForkWorkflowReport {
         run: RunWorkflowReport {
             status: BackendCommandStatus::Passed,
+            execution_owner: RunExecutionOwner::Session,
+            campaign_replay_closure: None,
             created_state: String::from("paused"),
             final_state: String::from("interactive"),
             outcome: Some(OutcomeKind::Stopped),

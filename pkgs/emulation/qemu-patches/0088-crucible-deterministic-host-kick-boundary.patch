@@ -99,10 +99,10 @@ index 5cd7c7eac..cc17de758 100644
  {
      return false;
 diff --git a/plugins/api.c b/plugins/api.c
-index 54d33612c..592d85f46 100644
+index 08a3b2b48..424bcb8d5 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -1126,6 +1126,11 @@ static void crucible_terminal_pause_bh(void *opaque)
+@@ -1138,6 +1138,11 @@ static void crucible_terminal_pause_bh(void *opaque)
      g_free(request);
  }
  

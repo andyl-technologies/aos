@@ -58,6 +58,7 @@ invariants/requirements it enforces.
 | `gate:single-vm-fingerprint` | L2 single VM (Contract A) | DET (Contract A), INV-4; HARN-4, HARN-7 | One VM's execution fingerprint is bit-identical across runs. |
 | `gate:layer1-injection` | L1 co-sim transport (Contract B) | INV-3; HARN-5, HARN-8 | Cross-node injection icount is a pure function of virtual time. |
 | `gate:content-address` | L1/L3 content-addressed store | INV-6; HARN-11 | Equal content hashes equal; unequal content does not collide. |
+| `gate:campaign-model` | L3/L4 canonical campaign owner | RFC-0020 CMOD-1..30, CAPI-1..14 | Canonical campaign identities, linear owner transitions, derivation, restart projection, and stale/conflicting writes remain exact. |
 | `gate:replay-oracle` | L3 temporal graph | INV-1, INV-2; HARN-12, HARN-13 | Fat-checkpoint hash == thin (replay-from-ancestor) hash. |
 | `gate:divergence-bisect` | Cross-layer diagnostic | INV-10; HARN-9, HARN-10 | A seeded divergence is localized to its first differing step. |
 | `gate:scheduler-liveness` | L3 scheduler actor | INV-8; HARN-18 | The scheduler always reaches quiescence or its time limit; no deadlock/livelock. |
@@ -65,6 +66,7 @@ invariants/requirements it enforces.
 | `gate:any-guest` | L2 guest boot | INV-5, G-2; HARN-6 | An unmodified guest boots deterministically with no image mutation. |
 | `gate:qemu-inert` | AOS QEMU package + patch series | INV-7, G-7; HARN-20, HARN-21 | Sim-off guest and upstream management behavior are identical; the exact Crucible host-control extension is rejected without changing stopped run state; each patch has a passing micro-test. |
 | `gate:abi-conformance` | L1 boundary ABIs | G-8; HARN-32, HARN-33, HARN-34 | Shmem layout, protocol, and RPC match frozen golden vectors. |
+| `gate:typed-choice` | L1/L2 guest choice boundary | INV-3, INV-4, G-8; SHM-53, SHM-54 | Typed guest registrations, exact pending tokens, host-authorized replies, and fresh-process continuation match the frozen shared-memory and canonical choice contracts. |
 | `gate:license-boundary` | Repository and Crucible/QEMU boundary (Always) | BOUND-1..BOUND-12 | `crucible-harness` rejects dependency, license-scope, protocol-shape, package-source, or corresponding-source violations. |
 | `gate:patch-microtests` | QEMU patch series (per-patch) | INV-7; HARN-20 | Every patch in the series has a focused, passing behavioral test. |
 | `gate:adversarial-determinism` | Cross-layer (Phase ≥ L2) | INV-1, INV-4, INV-9; HARN-11 | N runs under hostile host conditions yield byte-identical canonical logs. |
@@ -79,11 +81,11 @@ invariants/requirements it enforces.
 
 The first twelve names — `gate:layer0-determinism`, `gate:single-vm-fingerprint`,
 `gate:layer1-injection`, `gate:replay-oracle`, `gate:divergence-bisect`,
-`gate:any-guest`, `gate:content-address`, `gate:qemu-inert`,
+`gate:any-guest`, `gate:content-address`, `gate:campaign-model`, `gate:qemu-inert`,
 `gate:scheduler-liveness`, `gate:control-responsive`, `gate:harness-lint`, and
 `gate:e2e-determinism` — are the names the spine and other topic files already
 reference. `gate:abi-conformance`, `gate:patch-microtests`,
-`gate:adversarial-determinism`, and `gate:perf-bench` (the last owned by
+`gate:typed-choice`, `gate:adversarial-determinism`, and `gate:perf-bench` (the last owned by
 [`25-performance-targets.md`](25-performance-targets.md)) are added here and are
 equally canonical. `gate:basic-block-coverage` is the Phase-6 coverage boundary;
 it remains red until its loaded-QEMU proof is green. `gate:fleet-equivalence`
@@ -856,10 +858,12 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   phase1  gate:license-boundary               (component and process boundary)
   phase1  gate:layer0-determinism            (L0 core)
   phase1  gate:content-address               (store)
+  phase1  gate:campaign-model                (canonical campaign owner)
   phase1  gate:replay-oracle                 (double-backed replay)
   phase1  gate:single-vm-fingerprint         (double-backed fingerprint)
   phase1  gate:divergence-bisect             (diagnostic, exercised on doubles)
   phase2  gate:abi-conformance               (L1 ABIs)
+  phase2  gate:typed-choice                  (typed guest choice boundary)
   phase2  gate:layer1-injection              (L1 injection preflight)
   phase2  gate:patch-microtests              (patch series)
   phase2  gate:qemu-inert                    (sim-off QEMU behavior)

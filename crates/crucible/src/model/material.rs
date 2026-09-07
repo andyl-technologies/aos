@@ -768,11 +768,70 @@ pub(super) fn scenario_world_plan_properties_seed_app_random_cap_material(
     seed: Seed,
     app_random_draw_cap: u64,
 ) -> String {
+    scenario_world_plan_properties_measurements_seed_app_random_cap_material(
+        world,
+        plan,
+        properties,
+        &MeasurementDefinitions::empty(),
+        seed,
+        app_random_draw_cap,
+    )
+}
+
+pub(super) fn scenario_world_plan_properties_measurements_seed_app_random_cap_material(
+    world: &World,
+    plan: &Plan,
+    properties: &Properties,
+    measurements: &MeasurementDefinitions,
+    seed: Seed,
+    app_random_draw_cap: u64,
+) -> String {
+    scenario_world_plan_properties_measurements_selectables_seed_app_random_cap_material(
+        world,
+        plan,
+        properties,
+        measurements,
+        &ScenarioSelectables::empty(),
+        seed,
+        app_random_draw_cap,
+    )
+}
+
+pub(super) fn scenario_world_plan_properties_measurements_selectables_seed_app_random_cap_material(
+    world: &World,
+    plan: &Plan,
+    properties: &Properties,
+    measurements: &MeasurementDefinitions,
+    selectables: &ScenarioSelectables,
+    seed: Seed,
+    app_random_draw_cap: u64,
+) -> String {
+    let measurement_material = if measurements.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nmeasurements_ref={}",
+            content_hash_hex(measurements.content_hash())
+        )
+    };
+    let selectable_material = if selectables == &ScenarioSelectables::empty() {
+        String::new()
+    } else {
+        format!(
+            "\nselectables_ref={}",
+            content_hash_hex(ContentHash::from_canonical_material_bytes(
+                "crucible.model.scenario-selectables.v1",
+                &selectables.canonical_bytes(),
+            ))
+        )
+    };
     format!(
-        "world_ref={}\nplan_ref={}\nproperties_ref={}\n{}\n{}",
+        "world_ref={}\nplan_ref={}\nproperties_ref={}{}{}\n{}\n{}",
         content_hash_hex(canonical_world_identity(world)),
         content_hash_hex(plan.content_hash()),
         content_hash_hex(properties.content_hash()),
+        measurement_material,
+        selectable_material,
         seed_material(seed),
         app_random_draw_cap_material(app_random_draw_cap)
     )

@@ -1,0 +1,1349 @@
+//! Tests for attempt-scoped live-QEMU session ownership.
+
+// crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for failure localization.
+#![allow(clippy::expect_used)]
+
+use std::{
+    collections::BTreeMap,
+    io::Write,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
+
+use crate::ExecutionCheckpointRequest;
+use crucible::{
+    AdvanceOutcome, Backend, BackendError, BackendInput, Checkpoint, Configuration, ContentHash,
+    Decision, EventLog, ExecutionFingerprint, ExecutionHorizon, Icount, RngDecision, RngStreamId,
+    RuntimeState, ScenarioDef, SchedulerLivenessScenario, SchedulerState, Shift, SimInstant,
+    SingleScheduler, SingleSchedulerCheckpoint,
+};
+use crucible_campaign::ExecutionRetentionIntent;
+use crucible_qemu::{
+    QemuCapturedVmState, QemuLiveBackendShutdown, QemuRealizedNodeBackend, QemuVmRealizationKind,
+    QemuVmRealizationOperation,
+};
+
+use super::*;
+
+#[derive(Default)]
+struct FakeBackend;
+
+impl Backend for FakeBackend {
+    fn advance_to_horizon(
+        &mut self,
+        _horizon: ExecutionHorizon,
+    ) -> Result<AdvanceOutcome, BackendError> {
+        Ok(AdvanceOutcome::ReachedHorizon)
+    }
+
+    fn fingerprint(&mut self) -> Result<ExecutionFingerprint, BackendError> {
+        Ok(ExecutionFingerprint {
+            hash: ContentHash::from_canonical_material("crucible.test.live-session", "backend"),
+        })
+    }
+
+    fn deliver_input(&mut self, _input: BackendInput) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    fn snapshot(&mut self) -> Result<Checkpoint, BackendError> {
+        Err(BackendError::NotImplemented {
+            operation: "fake live-session snapshot",
+        })
+    }
+
+    fn restore(&mut self, _checkpoint: &Checkpoint) -> Result<(), BackendError> {
+        Err(BackendError::NotImplemented {
+            operation: "fake live-session restore",
+        })
+    }
+
+    fn shutdown(&mut self) -> Result<(), BackendError> {
+        Ok(())
+    }
+}
+
+impl QemuRealizedNodeBackend for FakeBackend {
+    fn prepare_authoritative_observation_stream(&mut self) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    fn advance_live_to_horizon(
+        &mut self,
+        horizon: ExecutionHorizon,
+        _event_log: &mut EventLog,
+    ) -> Result<AdvanceOutcome, BackendError> {
+        Backend::advance_to_horizon(self, horizon)
+    }
+
+    fn seal_live_observation_boundary(
+        &mut self,
+        _event_log: &mut EventLog,
+    ) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    fn capture_live_exact_snapshot_paused(
+        &mut self,
+        _node: &crucible::NodeId,
+        checkpoint: Checkpoint,
+    ) -> Result<QemuVmSnapshot, BackendError> {
+        QemuVmSnapshot::diskless(
+            checkpoint,
+            crucible_qemu::QemuReplayOracleValidation::NotRun,
+        )
+        .map_err(|source| BackendError::Rejected {
+            message: source.to_string(),
+        })
+    }
+
+    fn shutdown_live_with_event_log(
+        &mut self,
+        _event_log: &mut EventLog,
+    ) -> Result<(), BackendError> {
+        Backend::shutdown(self)?;
+        Ok(())
+    }
+
+    fn current_icount(&mut self) -> Result<Icount, BackendError> {
+        Ok(Icount::default())
+    }
+}
+
+struct FakeExecutor {
+    backend: FakeBackend,
+    event_log: EventLog,
+    counters: TestCounters,
+    active: bool,
+    unreaped_failed_launch: bool,
+    shutdown_error: bool,
+    seal_boundary_changed: bool,
+    shutdown_boundary_changed: bool,
+    guarded_error: bool,
+    failed_realization_reap_error: bool,
+    capture_error: bool,
+    capture_leaves_active: bool,
+    resume_checkpoint: Option<ExactCheckpointId>,
+    resume_initial: Option<ContentHash>,
+    resume_post_selection: Option<ContentHash>,
+    resume_realization: Option<QemuVmRealization>,
+    resume_scheduler: Option<SingleSchedulerCheckpoint>,
+}
+
+impl QemuVmRealizationExecutor for FakeExecutor {
+    fn load_exact_snapshot(
+        &mut self,
+        _config: &Configuration,
+        _snapshot: &QemuVmSnapshot,
+        _authorization: QemuLoadvmCommandAuthorization,
+        _admission: QemuLoadvmRealizationAdmission,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        unreachable!("ownership test does not realize QEMU")
+    }
+
+    fn load_exact_snapshot_for_replay_oracle_probe(
+        &mut self,
+        _config: &Configuration,
+        _snapshot: &QemuVmSnapshot,
+        _authorization: QemuLoadvmCommandAuthorization,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        unreachable!("ownership test does not realize QEMU")
+    }
+
+    fn load_baked_genesis(
+        &mut self,
+        _config: &Configuration,
+        _admission: QemuBakedGenesisRestoreAdmission<'_>,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        unreachable!("ownership test does not realize QEMU")
+    }
+
+    fn replay_one_quantum(
+        &mut self,
+        _runtime: RuntimeState,
+        _request: QemuVmReplayRequest,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        unreachable!("ownership test does not realize QEMU")
+    }
+}
+
+impl QemuVmLiveRealizationExecutor for FakeExecutor {
+    fn live_backend_is_active(&self) -> bool {
+        self.active || self.unreaped_failed_launch
+    }
+
+    fn live_backend_mut(
+        &mut self,
+    ) -> Result<&mut dyn QemuLiveAttemptBackend, QemuVmRealizationError> {
+        Ok(self)
+    }
+
+    fn seal_live_observation_boundary(&mut self) -> Result<bool, QemuVmRealizationError> {
+        Ok(!self.seal_boundary_changed)
+    }
+
+    fn capture_live_exact_snapshot(
+        &mut self,
+        checkpoint: Checkpoint,
+    ) -> Result<QemuVmSnapshot, QemuVmRealizationError> {
+        self.counters.captures.fetch_add(1, Ordering::SeqCst);
+        if self.capture_error {
+            return Err(QemuVmRealizationError::ExecutorUnavailable {
+                operation: "capture fake exact checkpoint",
+                message: String::from("injected capture failure"),
+            });
+        }
+        QemuVmSnapshot::diskless(
+            checkpoint,
+            crucible_qemu::QemuReplayOracleValidation::NotRun,
+        )
+    }
+
+    fn shutdown_live_backend(&mut self) -> Result<QemuLiveBackendShutdown, QemuVmRealizationError> {
+        self.counters.shutdowns.fetch_add(1, Ordering::SeqCst);
+        if self.shutdown_error {
+            self.active = true;
+            return Err(QemuVmRealizationError::ExecutorUnavailable {
+                operation: "reap fake QEMU process",
+                message: String::from("injected reap failure"),
+            });
+        }
+        self.active = false;
+        if self.shutdown_boundary_changed {
+            Ok(QemuLiveBackendShutdown::changed_after_seal())
+        } else {
+            Ok(QemuLiveBackendShutdown::unchanged())
+        }
+    }
+}
+
+impl QemuLiveAttemptBackend for FakeExecutor {
+    fn advance_to_horizon(
+        &mut self,
+        horizon: ExecutionHorizon,
+    ) -> Result<AdvanceOutcome, BackendError> {
+        QemuRealizedNodeBackend::advance_live_to_horizon(
+            &mut self.backend,
+            horizon,
+            &mut self.event_log,
+        )
+    }
+
+    fn fingerprint(&mut self) -> Result<ExecutionFingerprint, BackendError> {
+        Backend::fingerprint(&mut self.backend)
+    }
+
+    fn deliver_input(&mut self, input: BackendInput) -> Result<(), BackendError> {
+        Backend::deliver_input(&mut self.backend, input)
+    }
+
+    fn current_icount(&mut self) -> Result<Icount, BackendError> {
+        QemuRealizedNodeBackend::current_icount(&mut self.backend)
+    }
+
+    fn event_log(&self) -> &EventLog {
+        &self.event_log
+    }
+}
+
+impl QemuGuardedLiveRealizationExecutor<TrackingGuard> for FakeExecutor {
+    fn resume_exact_checkpoint_guarded(
+        &mut self,
+        guard: &mut TrackingGuard,
+        checkpoint: ExactCheckpointId,
+        initial: &Configuration,
+        post_selection: Option<&Configuration>,
+    ) -> Result<QemuExactCheckpointRealization, QemuVmRealizationError> {
+        self.counters.resumes.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(Some(checkpoint), self.resume_checkpoint);
+        assert_eq!(Some(initial.id()), self.resume_initial);
+        assert_eq!(
+            post_selection.map(Configuration::id),
+            self.resume_post_selection
+        );
+        guard.check_operational_boundary()?;
+        self.active = true;
+        self.resume_realization
+            .clone()
+            .zip(self.resume_scheduler.clone())
+            .map(|(realization, scheduler)| {
+                QemuExactCheckpointRealization::new(checkpoint, realization, scheduler)
+            })
+            .ok_or_else(|| QemuVmRealizationError::Executor {
+                operation: "resume fake exact attempt checkpoint",
+                message: String::from("no exact resume fixture was installed"),
+            })
+    }
+
+    fn load_exact_snapshot_guarded(
+        &mut self,
+        _guard: &mut TrackingGuard,
+        _config: &Configuration,
+        _snapshot: &QemuVmSnapshot,
+        _authorization: QemuLoadvmCommandAuthorization,
+        _admission: QemuLoadvmRealizationAdmission,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        unreachable!("ownership test does not realize QEMU")
+    }
+
+    fn load_exact_snapshot_for_replay_oracle_probe_guarded(
+        &mut self,
+        _guard: &mut TrackingGuard,
+        _config: &Configuration,
+        _snapshot: &QemuVmSnapshot,
+        _authorization: QemuLoadvmCommandAuthorization,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        unreachable!("ownership test does not realize QEMU")
+    }
+
+    fn load_baked_genesis_guarded(
+        &mut self,
+        _guard: &mut TrackingGuard,
+        _config: &Configuration,
+        _admission: QemuBakedGenesisRestoreAdmission<'_>,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        unreachable!("ownership test does not realize QEMU")
+    }
+
+    fn replay_one_quantum_guarded(
+        &mut self,
+        guard: &mut TrackingGuard,
+        runtime: RuntimeState,
+        _request: QemuVmReplayRequest,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        self.counters.guarded_calls.fetch_add(1, Ordering::SeqCst);
+        if self.guarded_error {
+            self.unreaped_failed_launch = true;
+            return Err(QemuVmRealizationError::ExecutorUnavailable {
+                operation: "install fake live backend",
+                message: String::from("injected post-spawn failure"),
+            });
+        }
+        self.active = true;
+        guard.check_operational_boundary()?;
+        Ok(runtime)
+    }
+
+    fn capture_exact_checkpoint_artifact_guarded(
+        &mut self,
+        guard: &mut TrackingGuard,
+        checkpoint: Checkpoint,
+    ) -> Result<(QemuVmSnapshot, QemuCapturedVmState), QemuVmRealizationError> {
+        guard.check_operational_boundary()?;
+        let snapshot =
+            QemuVmLiveRealizationExecutor::capture_live_exact_snapshot(self, checkpoint)?;
+        if self.capture_leaves_active {
+            return Ok((snapshot, fake_captured_vmstate()?));
+        }
+        let shutdown = QemuVmLiveRealizationExecutor::shutdown_live_backend(self)?;
+        if !shutdown.observation_boundary_unchanged() {
+            return Err(QemuVmRealizationError::Executor {
+                operation: "capture fake exact checkpoint artifact",
+                message: String::from("final drain changed the sealed observation boundary"),
+            });
+        }
+        Ok((snapshot, fake_captured_vmstate()?))
+    }
+
+    fn shutdown_live_backend_guarded(
+        &mut self,
+        _guard: &mut TrackingGuard,
+    ) -> Result<QemuLiveBackendShutdown, QemuVmRealizationError> {
+        self.counters
+            .guarded_shutdowns
+            .fetch_add(1, Ordering::SeqCst);
+        QemuVmLiveRealizationExecutor::shutdown_live_backend(self)
+    }
+
+    fn reap_failed_realization_guarded(
+        &mut self,
+        _guard: &mut TrackingGuard,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.counters.failed_reaps.fetch_add(1, Ordering::SeqCst);
+        self.counters.shutdowns.fetch_add(1, Ordering::SeqCst);
+        if self.failed_realization_reap_error {
+            return Err(QemuVmRealizationError::ExecutorUnavailable {
+                operation: "reap failed fake realization",
+                message: String::from("injected failed-realization reap failure"),
+            });
+        }
+        self.active = false;
+        self.unreaped_failed_launch = false;
+        Ok(())
+    }
+}
+
+struct UnusedDriver;
+
+impl QemuLiveAttemptDriver for UnusedDriver {
+    type Error = ();
+
+    fn run_attempt(
+        &mut self,
+        _backend: &mut dyn QemuLiveAttemptExecution,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+        _realization: QemuVmRealization,
+        _scheduler: Option<SingleSchedulerCheckpoint>,
+    ) -> Result<QemuLiveAttemptResult, AttemptWorkerFailure<Self::Error>> {
+        unreachable!("ownership test does not drive a modeled attempt")
+    }
+}
+
+#[derive(Clone, Default)]
+struct TestCounters {
+    shutdowns: Arc<AtomicUsize>,
+    guarded_shutdowns: Arc<AtomicUsize>,
+    finishes: Arc<AtomicUsize>,
+    quarantines: Arc<AtomicUsize>,
+    guarded_calls: Arc<AtomicUsize>,
+    failed_reaps: Arc<AtomicUsize>,
+    captures: Arc<AtomicUsize>,
+    resumes: Arc<AtomicUsize>,
+    checks: Arc<AtomicUsize>,
+    quanta: Arc<AtomicUsize>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct SessionBehavior {
+    shutdown_error: bool,
+    seal_boundary_changed: bool,
+    shutdown_boundary_changed: bool,
+    guarded_error: bool,
+    failed_realization_reap_error: bool,
+    replace_cancellation: bool,
+    fail_on_check: Option<usize>,
+    capture_error: bool,
+    capture_leaves_active: bool,
+}
+
+struct TrackingGuardFactory {
+    installed: AttemptResourceLimits,
+    counters: TestCounters,
+    replace_cancellation: bool,
+    fail_on_check: Option<usize>,
+}
+
+impl QemuAttemptResourceGuardFactory for TrackingGuardFactory {
+    type Guard = TrackingGuard;
+
+    fn begin(
+        &mut self,
+        _resources: AttemptResourceLimits,
+        cancellation: ExecutionCancellation,
+    ) -> Result<Self::Guard, QemuVmRealizationError> {
+        Ok(TrackingGuard {
+            installed: self.installed,
+            cancellation: if self.replace_cancellation {
+                ExecutionCancellation::default()
+            } else {
+                cancellation
+            },
+            counters: self.counters.clone(),
+            fail_on_check: self.fail_on_check,
+            quantum_counter: QemuExecutionQuantumCounter::new(self.installed),
+            finished: false,
+        })
+    }
+}
+
+struct TrackingGuard {
+    installed: AttemptResourceLimits,
+    cancellation: ExecutionCancellation,
+    counters: TestCounters,
+    fail_on_check: Option<usize>,
+    quantum_counter: QemuExecutionQuantumCounter,
+    finished: bool,
+}
+
+impl QemuAttemptOperationalBoundary for TrackingGuard {
+    fn resource_limits(&self) -> AttemptResourceLimits {
+        self.installed
+    }
+
+    fn cancellation(&self) -> &ExecutionCancellation {
+        &self.cancellation
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
+        let check = self.counters.checks.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.fail_on_check == Some(check) {
+            return Err(QemuVmRealizationError::Canceled {
+                operation: "guarded fake realization operation",
+            });
+        }
+        Ok(())
+    }
+
+    fn charge_execution_quantum(&mut self) -> Result<(), QemuVmRealizationError> {
+        self.quantum_counter.charge()?;
+        self.counters.quanta.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+impl QemuAttemptResourceGuard for TrackingGuard {
+    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+        if !self.finished {
+            self.counters.finishes.fetch_add(1, Ordering::SeqCst);
+            self.finished = true;
+        }
+        Ok(())
+    }
+
+    fn quarantine(&mut self) {
+        if !self.finished {
+            self.counters.quarantines.fetch_add(1, Ordering::SeqCst);
+            self.finished = true;
+        }
+    }
+}
+
+#[test]
+fn execution_quantum_counter_is_exact_and_failure_atomic() {
+    let resources = AttemptResourceLimits::new(1, 4096, 8192, 2).expect("resource limits");
+    let mut counter = QemuExecutionQuantumCounter::new(resources);
+
+    assert_eq!(counter.ceiling(), 2);
+    assert_eq!(counter.charged(), 0);
+    assert!(counter.charge().is_ok());
+    assert!(counter.charge().is_ok());
+    assert_eq!(counter.charged(), 2);
+    assert!(matches!(
+        counter.charge(),
+        Err(QemuVmRealizationError::Executor { .. })
+    ));
+    assert_eq!(counter.charged(), 2);
+}
+
+#[test]
+fn captured_scheduler_configuration_is_checked_before_qemu_capture() {
+    let initial = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.live-session",
+        "capture-scheduler-basis",
+    ));
+    let scheduler = scheduler_checkpoint(&initial);
+    let matching = Checkpoint::from_recorded_configuration(
+        &initial,
+        None,
+        scheduler.frontier(),
+        BTreeMap::new(),
+        crucible::CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("matching checkpoint")
+    .with_materialized_state(Some(crucible::MaterializedState::from_components(
+        BTreeMap::new(),
+        BTreeMap::new(),
+        scheduler.scheduler_state().expect("scheduler projection"),
+        scheduler.future_decision_rng_state().clone(),
+        scheduler.event_log_offset(),
+    )));
+    assert!(validate_captured_scheduler_configuration(&initial.def, &matching, &scheduler).is_ok());
+
+    let selected = crucible::step(
+        &initial,
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("capture-scheduler-basis"),
+            value: 9,
+        }),
+    );
+    let mismatched = Checkpoint::from_recorded_configuration(
+        &selected,
+        Some(&initial),
+        scheduler.frontier(),
+        BTreeMap::new(),
+        crucible::CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("mismatched checkpoint")
+    .with_materialized_state(Some(crucible::MaterializedState::from_components(
+        BTreeMap::new(),
+        BTreeMap::new(),
+        scheduler.scheduler_state().expect("scheduler projection"),
+        scheduler.future_decision_rng_state().clone(),
+        scheduler.event_log_offset(),
+    )));
+    assert!(matches!(
+        validate_captured_scheduler_configuration(&initial.def, &mismatched, &scheduler),
+        Err(QemuVmRealizationError::InvalidCheckpoint {
+            role: "captured scheduler continuation",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn live_backend_spends_exactly_one_guard_quantum_before_each_advance() {
+    let resources = AttemptResourceLimits::new(1, 4096, 8192, 2).expect("resource limits");
+    let counters = TestCounters::default();
+    let factory = session_factory(resources, counters.clone(), SessionBehavior::default());
+    let (mut executor, _driver, mut guard_factory) = factory.into_parts();
+    let mut guard = guard_factory
+        .begin(resources, ExecutionCancellation::default())
+        .expect("install tracking guard");
+    let mut backend = ChargedQemuLiveAttemptBackend {
+        backend: &mut executor,
+        boundary: &mut guard,
+        operational_failure: None,
+    };
+    let horizon = ExecutionHorizon {
+        icount: Icount { retired: 1 },
+    };
+
+    assert_eq!(
+        backend.advance_to_horizon(horizon),
+        Ok(AdvanceOutcome::ReachedHorizon)
+    );
+    assert_eq!(
+        backend.advance_to_horizon(horizon),
+        Ok(AdvanceOutcome::ReachedHorizon)
+    );
+    assert!(matches!(
+        backend.advance_to_horizon(horizon),
+        Err(BackendError::Rejected { .. })
+    ));
+    assert!(matches!(
+        backend.take_operational_failure(),
+        Some(QemuVmRealizationError::Executor { .. })
+    ));
+    assert_eq!(counters.quanta.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn realization_replay_spends_quantum_before_the_guarded_executor_call() {
+    let resources = AttemptResourceLimits::new(1, 4096, 8192, 1).expect("resource limits");
+    let counters = TestCounters::default();
+    let mut factory = session_factory(resources, counters.clone(), SessionBehavior::default());
+    let context = execution_context(resources);
+    let (runtime, request) = replay_fixture();
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+
+    let first = QemuVmRealizationExecutor::replay_one_quantum(
+        &mut session,
+        runtime.clone(),
+        request.clone(),
+    );
+    assert!(first.is_ok());
+    assert_eq!(counters.guarded_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quanta.load(Ordering::SeqCst), 1);
+
+    let second = QemuVmRealizationExecutor::replay_one_quantum(&mut session, runtime, request);
+    assert!(matches!(
+        second,
+        Err(QemuVmRealizationError::Executor { .. })
+    ));
+    assert_eq!(counters.guarded_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quanta.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn explicit_finish_reaps_backend_before_releasing_exact_resource_guard() {
+    let resources = resource_limits(2);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(resources, counters.clone(), SessionBehavior::default());
+    let context = execution_context(resources);
+
+    let session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+    assert_eq!(session.resource_limits(), resources);
+    session.finish().expect("finish exact session");
+
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.guarded_shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn dropped_session_reaps_backend_and_releases_resources_once() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(resources, counters.clone(), SessionBehavior::default());
+    let context = execution_context(resources);
+
+    {
+        let _session = factory
+            .begin_attempt(&context)
+            .expect("begin exact session");
+    }
+
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn mismatched_guard_is_released_before_launch_authority_is_returned() {
+    let requested = resource_limits(2);
+    let installed = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(installed, counters.clone(), SessionBehavior::default());
+    let context = execution_context(requested);
+
+    let result = factory.begin_attempt(&context);
+    assert!(matches!(
+        result,
+        Err(QemuVmRealizationError::Executor { .. })
+    ));
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn guard_with_wrong_cancellation_incarnation_is_rejected_before_launch() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(
+        resources,
+        counters.clone(),
+        SessionBehavior {
+            replace_cancellation: true,
+            ..SessionBehavior::default()
+        },
+    );
+    let context = execution_context(resources);
+
+    let result = factory.begin_attempt(&context);
+
+    assert!(matches!(
+        result,
+        Err(QemuVmRealizationError::Executor { .. })
+    ));
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn guarded_realization_observes_cancellation_inside_the_executor_operation() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(
+        resources,
+        counters.clone(),
+        SessionBehavior {
+            fail_on_check: Some(2),
+            ..SessionBehavior::default()
+        },
+    );
+    let context = execution_context(resources);
+    let (runtime, request) = replay_fixture();
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+
+    let result = QemuVmRealizationExecutor::replay_one_quantum(&mut session, runtime, request);
+
+    assert!(matches!(
+        result,
+        Err(QemuVmRealizationError::Canceled { .. })
+    ));
+    drop(session);
+    assert_eq!(counters.guarded_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.failed_reaps.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.checks.load(Ordering::SeqCst), 3);
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn failed_reap_quarantines_resources_and_poisons_the_next_launch() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(
+        resources,
+        counters.clone(),
+        SessionBehavior {
+            shutdown_error: true,
+            ..SessionBehavior::default()
+        },
+    );
+    let context = execution_context(resources);
+    let (runtime, request) = replay_fixture();
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+    QemuVmRealizationExecutor::replay_one_quantum(&mut session, runtime, request)
+        .expect("install fake live backend");
+
+    let result = session.finish();
+    assert!(matches!(
+        result,
+        Err(QemuVmRealizationError::ReapQuarantined { .. })
+    ));
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+
+    let next = factory.begin_attempt(&context);
+    assert!(matches!(
+        next,
+        Err(QemuVmRealizationError::ExecutorUnavailable { .. })
+    ));
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn final_observable_events_reject_the_candidate_after_reap_and_release() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(
+        resources,
+        counters.clone(),
+        SessionBehavior {
+            shutdown_boundary_changed: true,
+            ..SessionBehavior::default()
+        },
+    );
+    let context = execution_context(resources);
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+    let expected = session.executor.event_log.offset();
+    assert!(
+        session
+            .seal_result_event_log(expected)
+            .expect("seal exact candidate boundary")
+    );
+
+    let result = session.finish();
+
+    assert!(matches!(
+        result,
+        Err(QemuVmRealizationError::Executor { .. })
+    ));
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+    factory
+        .begin_attempt(&context)
+        .expect("reaped executor remains reusable");
+}
+
+#[test]
+fn exact_driver_event_log_boundary_is_accepted() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(resources, counters.clone(), SessionBehavior::default());
+    let context = execution_context(resources);
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+    let expected = session.executor.event_log.offset();
+
+    assert!(
+        session
+            .seal_result_event_log(expected)
+            .expect("seal exact driver boundary")
+    );
+    session.finish().expect("finish exact session");
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn stale_driver_event_log_boundary_is_rejected() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(resources, counters, SessionBehavior::default());
+    let context = execution_context(resources);
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+    let stale = crucible::EventLogOffset::new(
+        ContentHash::from_canonical_material("crucible.test.live-session", "stale-log"),
+        8,
+        1,
+    );
+
+    assert!(
+        !session
+            .seal_result_event_log(stale)
+            .expect("seal stale driver boundary")
+    );
+}
+
+#[test]
+fn seal_time_observable_event_rejects_the_driver_boundary() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(
+        resources,
+        counters,
+        SessionBehavior {
+            seal_boundary_changed: true,
+            ..SessionBehavior::default()
+        },
+    );
+    let context = execution_context(resources);
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+    let expected = session.executor.event_log.offset();
+
+    assert!(
+        !session
+            .seal_result_event_log(expected)
+            .expect("seal changed observation boundary")
+    );
+}
+
+#[test]
+fn post_spawn_realization_failure_requires_reap_attestation_before_release() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(
+        resources,
+        counters.clone(),
+        SessionBehavior {
+            guarded_error: true,
+            failed_realization_reap_error: true,
+            ..SessionBehavior::default()
+        },
+    );
+    let context = execution_context(resources);
+    let (runtime, request) = replay_fixture();
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+
+    let realization = QemuVmRealizationExecutor::replay_one_quantum(&mut session, runtime, request);
+    assert!(matches!(
+        realization,
+        Err(QemuVmRealizationError::ExecutorUnavailable { .. })
+    ));
+    let finish = session.finish();
+    assert!(matches!(
+        finish,
+        Err(QemuVmRealizationError::ReapQuarantined { .. })
+    ));
+
+    assert_eq!(counters.failed_reaps.load(Ordering::SeqCst), 2);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    assert!(matches!(
+        factory.begin_attempt(&context),
+        Err(QemuVmRealizationError::ExecutorUnavailable { .. })
+    ));
+}
+
+#[test]
+fn exact_checkpoint_capture_reaps_before_explicit_guard_release() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(resources, counters.clone(), SessionBehavior::default());
+    let context = execution_context(resources);
+    let (runtime, request) = replay_fixture();
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+    let runtime =
+        QemuVmRealizationExecutor::replay_one_quantum(&mut session, runtime, request.clone())
+            .expect("install fake live backend");
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &request.to,
+        Some(&request.from),
+        crucible::VirtualTime::default(),
+        runtime.node_icounts,
+        crucible::CheckpointKind::Fat,
+        runtime.node_blobs,
+    )
+    .expect("build exact checkpoint");
+
+    let snapshot = session
+        .capture_exact_checkpoint(checkpoint.clone())
+        .expect("capture guarded exact checkpoint");
+
+    assert_eq!(snapshot.snapshot().checkpoint(), &checkpoint);
+    assert_eq!(snapshot.vmstate_bytes(), 64);
+    assert_eq!(
+        snapshot
+            .vmstate_source()
+            .read_all(128)
+            .expect("read captured VMState"),
+        vec![0x5a; 64]
+    );
+    assert_eq!(counters.captures.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.guarded_shutdowns.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    session.finish().expect("finish captured session");
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.guarded_shutdowns.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn exact_attempt_resume_is_delegated_under_the_same_guard_and_basis() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let factory = session_factory(resources, counters.clone(), SessionBehavior::default());
+    let (mut executor, driver, guard_factory) = factory.into_parts();
+    let initial = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.live-session",
+        "resume-initial",
+    ));
+    let selected = crucible::step(
+        &initial,
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("resume-selection"),
+            value: 11,
+        }),
+    );
+    let checkpoint =
+        ExactCheckpointId::try_from(crucible_cas::content_store::ContentId::for_bytes(
+            crucible_cas::content_store::ObjectKind::ExactManifest,
+            2,
+            b"live-session-exact-resume-root",
+        ))
+        .expect("exact resume root");
+    executor.resume_checkpoint = Some(checkpoint);
+    executor.resume_initial = Some(initial.id());
+    executor.resume_post_selection = Some(selected.id());
+    executor.resume_realization = Some(resume_realization(&selected, Some(&initial)));
+    let scheduler = scheduler_checkpoint(&initial);
+    executor.resume_scheduler = Some(scheduler.clone());
+    let mut factory = QemuLiveAttemptSessionFactory::new(executor, driver, guard_factory);
+    let context = execution_context(resources);
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact resume session");
+
+    let realization = session
+        .resume_exact_checkpoint(checkpoint, &initial, Some(&selected))
+        .expect("resume exact operational checkpoint");
+
+    assert_eq!(realization.checkpoint(), checkpoint);
+    assert_eq!(
+        realization.realization().operation,
+        QemuVmRealizationOperation::Resume
+    );
+    assert_eq!(realization.realization().configuration, selected);
+    assert_eq!(realization.scheduler(), &scheduler);
+    assert_eq!(counters.resumes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.checks.load(Ordering::SeqCst), 3);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    session.finish().expect("finish resumed QEMU session");
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn failed_exact_attempt_resume_reaps_before_releasing_the_guard() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let factory = session_factory(resources, counters.clone(), SessionBehavior::default());
+    let (mut executor, driver, guard_factory) = factory.into_parts();
+    let initial = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.live-session",
+        "resume-failure",
+    ));
+    let checkpoint =
+        ExactCheckpointId::try_from(crucible_cas::content_store::ContentId::for_bytes(
+            crucible_cas::content_store::ObjectKind::ExactManifest,
+            2,
+            b"live-session-failed-exact-resume-root",
+        ))
+        .expect("failed exact resume root");
+    executor.resume_checkpoint = Some(checkpoint);
+    executor.resume_initial = Some(initial.id());
+    let mut factory = QemuLiveAttemptSessionFactory::new(executor, driver, guard_factory);
+    let context = execution_context(resources);
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin failed exact resume session");
+
+    assert!(matches!(
+        session.resume_exact_checkpoint(checkpoint, &initial, None),
+        Err(QemuVmRealizationError::Executor { .. })
+    ));
+    session
+        .finish()
+        .expect("reap failed exact resume and release guard");
+
+    assert_eq!(counters.resumes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.failed_reaps.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn failed_exact_checkpoint_capture_shuts_down_before_releasing_the_guard() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(
+        resources,
+        counters.clone(),
+        SessionBehavior {
+            capture_error: true,
+            ..SessionBehavior::default()
+        },
+    );
+    let context = execution_context(resources);
+    let (runtime, request) = replay_fixture();
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+    let runtime =
+        QemuVmRealizationExecutor::replay_one_quantum(&mut session, runtime, request.clone())
+            .expect("install fake live backend");
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &request.to,
+        Some(&request.from),
+        crucible::VirtualTime::default(),
+        runtime.node_icounts,
+        crucible::CheckpointKind::Fat,
+        runtime.node_blobs,
+    )
+    .expect("build exact checkpoint");
+
+    assert!(matches!(
+        session.capture_exact_checkpoint(checkpoint),
+        Err(QemuVmRealizationError::ExecutorUnavailable { .. })
+    ));
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    session
+        .finish()
+        .expect("shut down after failed capture before releasing resources");
+    assert_eq!(counters.guarded_shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.failed_reaps.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn post_reap_capture_failure_releases_guard_without_a_second_shutdown() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(
+        resources,
+        counters.clone(),
+        SessionBehavior {
+            shutdown_boundary_changed: true,
+            ..SessionBehavior::default()
+        },
+    );
+    let context = execution_context(resources);
+    let (runtime, request) = replay_fixture();
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+    let runtime =
+        QemuVmRealizationExecutor::replay_one_quantum(&mut session, runtime, request.clone())
+            .expect("install fake live backend");
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &request.to,
+        Some(&request.from),
+        crucible::VirtualTime::default(),
+        runtime.node_icounts,
+        crucible::CheckpointKind::Fat,
+        runtime.node_blobs,
+    )
+    .expect("build exact checkpoint");
+
+    assert!(matches!(
+        session.capture_exact_checkpoint(checkpoint),
+        Err(QemuVmRealizationError::Executor { .. })
+    ));
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.guarded_shutdowns.load(Ordering::SeqCst), 0);
+    session
+        .finish()
+        .expect("release guard after post-reap capture rejection");
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.guarded_shutdowns.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn capture_source_is_rejected_until_backend_reap_is_attested() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(
+        resources,
+        counters.clone(),
+        SessionBehavior {
+            capture_leaves_active: true,
+            ..SessionBehavior::default()
+        },
+    );
+    let context = execution_context(resources);
+    let (runtime, request) = replay_fixture();
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+    let runtime =
+        QemuVmRealizationExecutor::replay_one_quantum(&mut session, runtime, request.clone())
+            .expect("install fake live backend");
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &request.to,
+        Some(&request.from),
+        crucible::VirtualTime::default(),
+        runtime.node_icounts,
+        crucible::CheckpointKind::Fat,
+        runtime.node_blobs,
+    )
+    .expect("build exact checkpoint");
+
+    assert!(matches!(
+        session.capture_exact_checkpoint(checkpoint),
+        Err(QemuVmRealizationError::Executor { .. })
+    ));
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 0);
+    session
+        .finish()
+        .expect("reap backend after rejecting premature capture source");
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.guarded_shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+}
+
+fn session_factory(
+    installed: AttemptResourceLimits,
+    counters: TestCounters,
+    behavior: SessionBehavior,
+) -> QemuLiveAttemptSessionFactory<FakeExecutor, UnusedDriver, TrackingGuardFactory> {
+    QemuLiveAttemptSessionFactory::new(
+        FakeExecutor {
+            backend: FakeBackend,
+            event_log: EventLog::new(),
+            counters: counters.clone(),
+            active: false,
+            unreaped_failed_launch: false,
+            shutdown_error: behavior.shutdown_error,
+            seal_boundary_changed: behavior.seal_boundary_changed,
+            shutdown_boundary_changed: behavior.shutdown_boundary_changed,
+            guarded_error: behavior.guarded_error,
+            failed_realization_reap_error: behavior.failed_realization_reap_error,
+            capture_error: behavior.capture_error,
+            capture_leaves_active: behavior.capture_leaves_active,
+            resume_checkpoint: None,
+            resume_initial: None,
+            resume_post_selection: None,
+            resume_realization: None,
+            resume_scheduler: None,
+        },
+        UnusedDriver,
+        TrackingGuardFactory {
+            installed,
+            counters,
+            replace_cancellation: behavior.replace_cancellation,
+            fail_on_check: behavior.fail_on_check,
+        },
+    )
+}
+
+fn execution_context(resources: AttemptResourceLimits) -> AttemptExecutionContext {
+    AttemptExecutionContext::new(
+        resources,
+        ExecutionRetentionIntent::Discard,
+        ExecutionCancellation::default(),
+        ExecutionCheckpointRequest::default(),
+    )
+}
+
+fn scheduler_checkpoint(configuration: &Configuration) -> SingleSchedulerCheckpoint {
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "live-session-resume",
+        Shift::new(0).expect("zero shift"),
+        1,
+        SimInstant { nanos: 1 },
+        Vec::new(),
+        Vec::new(),
+    )
+    .with_scenario_def(configuration.def.clone());
+    SingleScheduler::new(scenario)
+        .expect("build live-session scheduler")
+        .checkpoint()
+        .expect("capture live-session scheduler")
+}
+
+fn fake_captured_vmstate() -> Result<QemuCapturedVmState, QemuVmRealizationError> {
+    let bytes = vec![0x5a; 64];
+    let mut file = tempfile::tempfile().map_err(|source| QemuVmRealizationError::Executor {
+        operation: "create fake captured VMState",
+        message: source.to_string(),
+    })?;
+    file.write_all(&bytes)
+        .map_err(|source| QemuVmRealizationError::Executor {
+            operation: "write fake captured VMState",
+            message: source.to_string(),
+        })?;
+    file.sync_all()
+        .map_err(|source| QemuVmRealizationError::Executor {
+            operation: "synchronize fake captured VMState",
+            message: source.to_string(),
+        })?;
+    Ok(QemuCapturedVmState::from_unvalidated_test_file(
+        file,
+        u64::try_from(bytes.len()).map_err(|_| QemuVmRealizationError::Executor {
+            operation: "size fake captured VMState",
+            message: String::from("fixture length does not fit u64"),
+        })?,
+    ))
+}
+
+fn replay_fixture() -> (RuntimeState, QemuVmReplayRequest) {
+    let from = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.live-session",
+        "scenario=guarded-replay",
+    ));
+    let decision = Decision::RngDraw(RngDecision {
+        stream: RngStreamId::from_name("guarded-replay"),
+        value: 7,
+    });
+    let to = crucible::step(&from, decision.clone());
+    let runtime = RuntimeState {
+        id: ContentHash::from_canonical_material(
+            "crucible.test.live-session",
+            "runtime=guarded-replay",
+        ),
+        configuration: from.id(),
+        node_blobs: BTreeMap::new(),
+        node_icounts: BTreeMap::new(),
+        scheduler: SchedulerState::from_schedule(&from.schedule),
+        event_log: Default::default(),
+    };
+    (runtime, QemuVmReplayRequest { from, to, decision })
+}
+
+fn resume_realization(
+    configuration: &Configuration,
+    parent: Option<&Configuration>,
+) -> QemuVmRealization {
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        configuration,
+        parent,
+        crucible::VirtualTime::default(),
+        BTreeMap::new(),
+        crucible::CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("resume checkpoint");
+    QemuVmRealization {
+        operation: QemuVmRealizationOperation::Resume,
+        configuration: configuration.clone(),
+        runtime: RuntimeState {
+            id: ContentHash::from_canonical_material(
+                "crucible.test.live-session",
+                "resumed-runtime",
+            ),
+            configuration: configuration.id(),
+            node_blobs: BTreeMap::new(),
+            node_icounts: BTreeMap::new(),
+            scheduler: SchedulerState::from_schedule(&configuration.schedule),
+            event_log: Default::default(),
+        },
+        branch: QemuVmRealizationKind::ExactSnapshotLoadvm { checkpoint },
+    }
+}
+
+fn resource_limits(vcpus: u32) -> AttemptResourceLimits {
+    AttemptResourceLimits::new(vcpus, 4096, 8192, 64).expect("resource limits")
+}

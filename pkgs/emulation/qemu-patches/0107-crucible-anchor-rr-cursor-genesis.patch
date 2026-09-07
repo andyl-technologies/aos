@@ -163,10 +163,10 @@ index 3ab3fb95a..f8761d2d4 100644
  CPUState *icount_crucible_rr_select_cpu(CPUState *suggested);
  
 diff --git a/plugins/api.c b/plugins/api.c
-index 29c7905a6..9f13b2bc4 100644
+index 3cbd0a3ce..08af8c21c 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -736,7 +736,8 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
+@@ -748,7 +748,8 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
  
      if (!out || (!cpu && !exact_boundary) ||
          (current_vcpu == UINT64_MAX && !genesis_cursor) ||

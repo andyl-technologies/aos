@@ -42,7 +42,7 @@
       }
       {
         label = "two-fd validation contract";
-        needle = "validate the fixed two-fd order and descriptor count";
+        needle = "validate the fixed three-fd order and descriptor count";
       }
       {
         label = "outbound descriptor type";
@@ -116,7 +116,7 @@
     ++ failuresFor "crates/crucible-protocol/tests/descriptor_handover.rs" descriptorTest [
       {
         label = "fixed-order transfer test";
-        needle = "setup_handover_transfers_two_descriptors_in_fixed_order";
+        needle = "setup_handover_transfers_three_descriptors_in_fixed_order";
       }
       {
         label = "wrong descriptor count test";
@@ -152,12 +152,12 @@
       }
       {
         label = "five unsafe crate count";
-        needle = "five UNSAFE crates";
+        needle = "six UNSAFE crates";
       }
       {
         # crucible-cas registered as the ninth safe crate.
         label = "nine safe crate count";
-        needle = "nine SAFE crates";
+        needle = "twelve SAFE crates";
       }
     ]
     ++ failuresFor "crates/crucible-harness/tests/crate_unsafe_fence.rs" unsafeFenceRust [

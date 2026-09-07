@@ -1481,6 +1481,35 @@ becomes a new `Decided` entry referencing the one it supersedes).
   data-channel decision is unchanged.
 - **Date:** 2026-08-11.
 
+### D-40 — Coverage warm restore resets one exact paused generation in shared memory
+
+- **Status:** Decided
+- **Decision:** ABI v21 makes the existing logical-time restore request and
+  acknowledgement the coverage-generation reset transaction. Before the plugin
+  acknowledges, it retains but zeros every per-vCPU QEMU scoreboard entry,
+  clears its process-local novelty map, and discards setup-era coverage by
+  advancing only its producer cursor to the consumer cursor. After observing
+  the exact acknowledgement and native pause, the host requires the ring empty
+  and clears its consumer novelty and coordinate state. Any partial or
+  conflicting reset kills and reaps the fresh realization before authority is
+  installed. The run-phase control socket remains silent.
+- **Rationale:** Boot-barrier priming executes before `loadvm` and the QEMU
+  conditional callback scoreboard is outside VMState. Draining the ring alone
+  would suppress post-restore blocks whose novelty bits were consumed during
+  priming. Replacing the scoreboard would dangle translated callback metadata;
+  zeroing the retained allocation while QEMU is paused makes those callbacks
+  eligible again. The existing generation already binds the restored logical
+  time and provides the required release/acquire commit point without a second
+  runtime protocol.
+- **Evidence:** `gate:abi-conformance` pins ABI v21; plugin regressions reset
+  every `(vcpu, map_index)` entry and re-emit the same translated block after
+  restore; mapped-host regressions require exact acknowledgement, an empty
+  ring, and duplicate novelty acceptance only after reset; the realization
+  factory commits the host reset only after native-pause confirmation.
+- **Affects:** [SHM-30], [SHM-39], [SHM-40], [SHM-40A], campaign T-CAM-4.9;
+  files 13, 31, and RFC-0020 files 04a and 11.
+- **Date:** 2026-08-30.
+
 ---
 
 ## Relationship to spikes already in the determinism contract

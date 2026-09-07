@@ -1,0 +1,254 @@
+diff --git a/include/qemu/thread.h b/include/qemu/thread.h
+index 36daac2bf..a4256d784 100644
+--- a/include/qemu/thread.h
++++ b/include/qemu/thread.h
+@@ -206,7 +206,7 @@ void qemu_thread_naming(bool enable);
+ typedef enum QemuThreadHotForkDisposition {
+     QEMU_THREAD_HOT_FORK_COORDINATOR,
+     QEMU_THREAD_HOT_FORK_UNCLASSIFIED,
+-    QEMU_THREAD_HOT_FORK_UNCLASSIFIED_RCU,
++    QEMU_THREAD_HOT_FORK_RCU_RESTART,
+     QEMU_THREAD_HOT_FORK_UNCLASSIFIED_AIO,
+ } QemuThreadHotForkDisposition;
+ 
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 8781aa7c1..c37d139c6 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -3172,7 +3172,7 @@ qmp_query_crucible_hot_fork_thread_inventory(Error **errp)
+         g_new0(CrucibleHotForkThreadInventory, 1);
+ 
+     (void)errp;
+-    report->schema_version = 2;
++    report->schema_version = 3;
+ #ifdef CONFIG_POSIX
+     QemuThreadHotForkInventory inventory;
+     CrucibleHotForkThreadList **tail = &report->threads;
+@@ -3202,10 +3202,9 @@ qmp_query_crucible_hot_fork_thread_inventory(Error **errp)
+                 CRUCIBLE_HOT_FORK_THREAD_DISPOSITION_UNCLASSIFIED;
+             unclassified_count++;
+             break;
+-        case QEMU_THREAD_HOT_FORK_UNCLASSIFIED_RCU:
++        case QEMU_THREAD_HOT_FORK_RCU_RESTART:
+             thread->disposition =
+-                CRUCIBLE_HOT_FORK_THREAD_DISPOSITION_UNCLASSIFIED_RCU;
+-            unclassified_count++;
++                CRUCIBLE_HOT_FORK_THREAD_DISPOSITION_RCU_RESTART;
+             break;
+         case QEMU_THREAD_HOT_FORK_UNCLASSIFIED_AIO:
+             thread->disposition =
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 1991bc6ce..e59a42f6c 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -187,8 +187,9 @@
+ # @unclassified: active QEMU-created thread without a child disposition;
+ #     this is never fork-ready
+ #
+-# @unclassified-rcu: the RCU callback worker, still without an accepted
+-#     subsystem barrier or child reinitializer
++# @rcu-restart: the RCU callback worker; the runtime transaction proves its
++#     callback state quiescent, discards the inherited worker, and starts one
++#     fresh child worker
+ #
+ # @unclassified-aio: an AIO-context worker, still without an accepted
+ #     subsystem barrier or child reinitializer
+@@ -196,7 +197,7 @@
+ # Since: 10.0 (Crucible downstream extension)
+ ##
+ { 'enum': 'CrucibleHotForkThreadDisposition',
+-  'data': [ 'coordinator', 'unclassified', 'unclassified-rcu',
++  'data': [ 'coordinator', 'unclassified', 'rcu-restart',
+             'unclassified-aio' ] }
+ 
+ ##
+@@ -230,7 +231,7 @@
+ # sorted by @thread-id.  This report is audit evidence and does not by itself
+ # acknowledge child reinitialization or authorize a fork.
+ #
+-# @schema-version: inventory contract version, currently 2
++# @schema-version: inventory contract version, currently 3
+ #
+ # @generation: monotonic process-local register/unregister/disposition counter
+ #
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index ef6cbc899..9700d4714 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -414,41 +414,28 @@ static void *registry_worker(void *opaque)
+     return NULL;
+ }
+ 
++static void *aio_registry_worker(void *opaque)
++{
++    qemu_thread_hot_fork_set_current_disposition(
++        QEMU_THREAD_HOT_FORK_UNCLASSIFIED_AIO);
++    return registry_worker(opaque);
++}
++
+ static void test_child_registry_rebuild_preserves_parent(void)
+ {
+     QemuCrucibleHotForkRuntimeTransaction transaction = { 0 };
+-    QemuThreadHotForkInventory initial;
+     QemuThreadHotForkInventory before;
+     QemuThreadHotForkInventory after;
+     QemuRcuHotForkInventory rcu_before;
+     QemuRcuHotForkInventory rcu_after;
+-    RegistryWorker worker;
+-    QemuThread thread;
+-    int ready[2];
+-    int release[2];
+     int child_result[2];
+-    size_t initial_entry_count;
+-    int result = -EBUSY;
++    int result;
+     pid_t child;
+ 
+-    qemu_thread_hot_fork_inventory(&initial);
+-    g_assert_cmpuint(initial.overflow_count, ==, 0);
+-    initial_entry_count = initial.entry_count;
+-    qemu_thread_hot_fork_inventory_destroy(&initial);
+-
+-    g_assert_cmpint(pipe2(ready, O_CLOEXEC), ==, 0);
+-    g_assert_cmpint(pipe2(release, O_CLOEXEC), ==, 0);
+     g_assert_cmpint(pipe2(child_result, O_CLOEXEC), ==, 0);
+-    worker = (RegistryWorker) {
+-        .ready_fd = ready[1],
+-        .release_fd = release[0],
+-    };
+-    qemu_thread_create(&thread, "fork-registry-test", registry_worker, &worker,
+-                       QEMU_THREAD_JOINABLE);
+-    g_assert_cmpint(read_child_result(ready[0]), ==, 0);
+ 
+     qemu_thread_hot_fork_inventory(&before);
+-    g_assert_cmpuint(before.entry_count, ==, initial_entry_count + 1);
++    g_assert_cmpuint(before.entry_count, ==, 2);
+     g_assert_cmpuint(before.overflow_count, ==, 0);
+     qemu_rcu_hot_fork_inventory(&rcu_before);
+     g_assert_false(rcu_before.overflowed);
+@@ -495,7 +482,7 @@ static void test_child_registry_rebuild_preserves_parent(void)
+                     continue;
+                 }
+                 if (entry->disposition ==
+-                    QEMU_THREAD_HOT_FORK_UNCLASSIFIED_RCU) {
++                    QEMU_THREAD_HOT_FORK_RCU_RESTART) {
+                     continue;
+                 }
+                 result = -EPROTO;
+@@ -529,19 +516,58 @@ static void test_child_registry_rebuild_preserves_parent(void)
+     g_assert_cmpuint(rcu_after.entry_count, ==, rcu_before.entry_count);
+     g_assert_false(rcu_after.overflowed);
+ 
+-    write_child_result(release[1], 0);
+-    qemu_thread_join(&thread);
+     qemu_thread_hot_fork_inventory_destroy(&after);
+     qemu_thread_hot_fork_inventory_destroy(&before);
+     qemu_rcu_hot_fork_inventory_destroy(&rcu_after);
+     qemu_rcu_hot_fork_inventory_destroy(&rcu_before);
+     close(child_result[0]);
++}
++
++static void assert_runtime_transaction_rejects_worker(
++    const char *name, void *(*start_routine)(void *))
++{
++    QemuCrucibleHotForkRuntimeTransaction transaction = { 0 };
++    QemuRcuHotForkBarrierInventory barrier;
++    RegistryWorker worker;
++    QemuThread thread;
++    int ready[2];
++    int release[2];
++
++    g_assert_cmpint(pipe2(ready, O_CLOEXEC), ==, 0);
++    g_assert_cmpint(pipe2(release, O_CLOEXEC), ==, 0);
++    worker = (RegistryWorker) {
++        .ready_fd = ready[1],
++        .release_fd = release[0],
++    };
++    qemu_thread_create(&thread, name, start_routine, &worker,
++                       QEMU_THREAD_JOINABLE);
++    g_assert_cmpint(read_child_result(ready[0]), ==, 0);
++
++    g_assert_cmpint(qemu_crucible_hot_fork_begin_runtime_transaction(
++                        &transaction),
++                    ==, -EBUSY);
++    g_assert_false(transaction.active);
++    g_assert_false(transaction.rcu.active);
++    g_assert_false(transaction.registry.active);
++    qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_QUERY, &barrier);
++    g_assert_false(barrier.held);
++
++    write_child_result(release[1], 0);
++    qemu_thread_join(&thread);
+     close(release[0]);
+     close(release[1]);
+     close(ready[0]);
+     close(ready[1]);
+ }
+ 
++static void test_runtime_transaction_rejects_unsupported_threads(void)
++{
++    assert_runtime_transaction_rejects_worker("fork-unclassified-test",
++                                              registry_worker);
++    assert_runtime_transaction_rejects_worker("fork-aio-test",
++                                              aio_registry_worker);
++}
++
+ static void test_runtime_transaction_rejects_active_rcu_reader(void)
+ {
+     QemuCrucibleHotForkRuntimeTransaction transaction = { 0 };
+@@ -1836,6 +1862,8 @@ int main(int argc, char **argv)
+                     test_child_registry_rebuild_preserves_parent);
+     g_test_add_func("/crucible/hot-fork-child/active-rcu-reader",
+                     test_runtime_transaction_rejects_active_rcu_reader);
++    g_test_add_func("/crucible/hot-fork-child/unsupported-thread",
++                    test_runtime_transaction_rejects_unsupported_threads);
+     g_test_add_func("/crucible/hot-fork-child/registry-locked-mutex",
+                     test_registry_transaction_rejects_locked_mutex);
+     g_test_add_func("/crucible/hot-fork-child/immediate-child-replacement",
+diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
+index 72d3846f6..8ad3b6864 100644
+--- a/util/qemu-thread-posix.c
++++ b/util/qemu-thread-posix.c
+@@ -976,6 +976,7 @@ int qemu_thread_hot_fork_begin_registry_transaction(
+     QemuHotForkThreadRecord *coordinator;
+     GList *node;
+     size_t coordinator_count = 0;
++    size_t rcu_restart_count = 0;
+     int64_t thread_id = qemu_get_thread_id();
+     int err;
+ 
+@@ -998,12 +999,16 @@ int qemu_thread_hot_fork_begin_registry_transaction(
+ 
+         if (record->disposition == QEMU_THREAD_HOT_FORK_COORDINATOR) {
+             coordinator_count++;
++        } else if (record->disposition ==
++                   QEMU_THREAD_HOT_FORK_RCU_RESTART) {
++            rcu_restart_count++;
+         }
+     }
+     if (qemu_hot_fork_thread_overflow != 0 ||
+         qemu_hot_fork_thread_starts_in_flight != 0 ||
+-        qemu_hot_fork_thread_count == 0 ||
++        qemu_hot_fork_thread_count != 2 ||
+         coordinator_count != 1 ||
++        rcu_restart_count != 1 ||
+         qemu_hot_fork_coordinator_thread_id != thread_id ||
+         qemu_hot_fork_current_thread != coordinator ||
+         coordinator->thread_id != thread_id || !coordinator->tracked ||
+diff --git a/util/rcu.c b/util/rcu.c
+index 0fef54e50..6bd52d911 100644
+--- a/util/rcu.c
++++ b/util/rcu.c
+@@ -296,10 +296,11 @@ static void *call_rcu_thread(void *opaque)
+ 
+ #ifdef CONFIG_POSIX
+     qemu_thread_hot_fork_set_current_disposition(
+-        QEMU_THREAD_HOT_FORK_UNCLASSIFIED_RCU);
++        QEMU_THREAD_HOT_FORK_RCU_RESTART);
+ #endif
+     rcu_register_thread();
+ 
++    /* Child admission reopens only after this replacement worker exists. */
+     for (;;) {
+         int tries = 0;
+         int n = qatomic_read(&rcu_call_count);

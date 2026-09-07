@@ -2659,6 +2659,7 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
         LifecycleApiError::RpcAbi { .. }
         | LifecycleApiError::GenesisGraph { .. }
         | LifecycleApiError::LoopFactory { .. }
+        | LifecycleApiError::AttemptOperational { .. }
         | LifecycleApiError::CommandChannelClosed { .. }
         | LifecycleApiError::StateDidNotAdvance { .. }
         | LifecycleApiError::ActorJoin { .. }

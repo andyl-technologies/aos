@@ -9,11 +9,11 @@ use std::error::Error;
 use crucible::{
     AssertionDef, AssertionId, AssertionQuantifierKind, AssertionRunVerdict, BlackBoxHostOracle,
     ChoiceTag, Configuration, ContentHash, Decision, EngineError, FindingDiscoveryPath,
-    FindingReproductionArtifact, Icount, MarkerId, MinimizationConfig, NodeId, NodeTemplate,
-    ObservableEvent, OfflineAssertionChecker, OverrideDecision, Plan, Predicate, Properties,
-    Property, ReadyPoint, RecordedAssertionLog, RngDecision, RngStreamId, ScenarioDefForm,
-    Schedule, SchedulerEvaluationBoundaryKind, SchedulerEventLogPayload, SchedulingPoint, Seed,
-    VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    FindingReproductionArtifact, Icount, MAX_MINIMIZATION_CANDIDATES, MarkerId, MinimizationConfig,
+    NodeId, NodeTemplate, ObservableEvent, OfflineAssertionChecker, OverrideDecision, Plan,
+    Predicate, Properties, Property, ReadyPoint, RecordedAssertionLog, RngDecision, RngStreamId,
+    ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind, SchedulerEventLogPayload,
+    SchedulingPoint, Seed, VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
 
 #[test]
@@ -123,6 +123,32 @@ fn gate_minimization_validates_public_artifact_before_oracle() -> Result<(), Box
         EngineError::ReproductionArtifactReplayMismatch { .. }
     ));
 
+    Ok(())
+}
+
+#[test]
+fn gate_minimization_caps_exponential_candidate_enumeration() -> Result<(), Box<dyn Error>> {
+    let scenario = scenario_form()?;
+    let schedule = Schedule::from_decisions(
+        (0..16).map(|index| override_decision(&format!("bounded-noise-{index:02}"), "enabled")),
+    );
+    let target = finding_fingerprint("bounded-minimization");
+    let original = finding_artifact(&scenario, schedule, target)?;
+    let original_id = original.artifact.id();
+    let mut calls = 0usize;
+
+    let run = original.minimize(
+        MinimizationConfig::new(Seed::from_u64(0x5154)),
+        |candidate| {
+            calls += 1;
+            Ok((candidate.artifact.id() == original_id).then_some(target))
+        },
+    )?;
+
+    assert_eq!(run.attempts.len(), MAX_MINIMIZATION_CANDIDATES);
+    assert_eq!(calls, MAX_MINIMIZATION_CANDIDATES + 1);
+    assert!(!run.shrank());
+    assert_eq!(run.minimized, run.original);
     Ok(())
 }
 

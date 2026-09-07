@@ -778,7 +778,7 @@
   baselineWiringFailures = failuresFor "tests/crucible/testing-standards-baseline.txt" testingStandardsBaseline [
     {
       label = "thread sleep baseline";
-      needle = "crucible-qemu\tsrc/spawn\tstd::thread::sleep\t1";
+      needle = "crucible-qemu\tsrc/spawn\tthread::sleep\t1";
     }
   ];
 

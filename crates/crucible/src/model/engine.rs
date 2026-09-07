@@ -1398,7 +1398,10 @@ pub(super) fn decision_touched_nodes(decision: &Decision) -> Option<BTreeSet<Nod
     match decision {
         Decision::Preemption(preemption) => Some(BTreeSet::from([preemption.node.clone()])),
         Decision::AppRandom(random) => Some(BTreeSet::from([random.node.clone()])),
-        Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Override(_) => None,
+        Decision::DeliveryOrder(_)
+        | Decision::RngDraw(_)
+        | Decision::Override(_)
+        | Decision::Selection(_) => None,
     }
 }
 
@@ -1492,62 +1495,95 @@ pub(super) fn minimization_candidates(
     seed: Seed,
     artifact: ContentHash,
     schedule: &Schedule,
+    maximum_candidates: usize,
 ) -> Vec<MinimizationCandidate> {
     let decisions = schedule.decisions();
     let mut candidates = Vec::new();
-    for kept_len in 0..decisions.len() {
-        collect_minimization_candidates_for_len(
+    {
+        let mut collector = MinimizationCandidateCollector {
             seed,
             artifact,
             decisions,
-            kept_len,
-            0,
-            &mut Vec::new(),
-            &mut candidates,
-        );
+            candidates: &mut candidates,
+            maximum_candidates,
+        };
+        for kept_len in 0..decisions.len() {
+            if collector.is_full() {
+                break;
+            }
+            collector.collect_for_len(kept_len, 0, &mut Vec::new());
+        }
     }
-    candidates.sort_by_key(|candidate| {
-        (
-            candidate.schedule.len(),
-            candidate.order_key,
-            candidate.removed_indices.clone(),
-        )
+    candidates.sort_by(|left, right| {
+        left.schedule
+            .len()
+            .cmp(&right.schedule.len())
+            .then_with(|| left.order_key.cmp(&right.order_key))
+            .then_with(|| left.removed_indices.cmp(&right.removed_indices))
     });
     candidates
 }
 
-pub(super) fn collect_minimization_candidates_for_len(
+pub(super) fn minimization_candidate_limit(artifact: &ReproductionArtifact) -> usize {
+    // A candidate retains one kept schedule and the complementary removed
+    // decisions. Twice the complete artifact bytes plus fixed metadata is a
+    // conservative language-independent upper bound for that representation.
+    let per_candidate = artifact
+        .to_compact_binary()
+        .len()
+        .checked_mul(2)
+        .and_then(|bytes| {
+            artifact
+                .schedule()
+                .len()
+                .checked_mul(std::mem::size_of::<usize>())
+                .and_then(|index_bytes| bytes.checked_add(index_bytes))
+        })
+        .and_then(|bytes| bytes.checked_add(1_024))
+        .unwrap_or(usize::MAX);
+    MAX_MINIMIZATION_CANDIDATE_WORK_BYTES
+        .checked_div(per_candidate.max(1))
+        .unwrap_or(0)
+        .min(MAX_MINIMIZATION_CANDIDATES)
+}
+
+struct MinimizationCandidateCollector<'a> {
     seed: Seed,
     artifact: ContentHash,
-    decisions: &[Decision],
-    kept_len: usize,
-    start: usize,
-    kept_indices: &mut Vec<usize>,
-    candidates: &mut Vec<MinimizationCandidate>,
-) {
-    if kept_indices.len() == kept_len {
-        candidates.push(minimization_candidate_from_kept_indices(
-            seed,
-            artifact,
-            decisions,
-            kept_indices,
-        ));
-        return;
+    decisions: &'a [Decision],
+    candidates: &'a mut Vec<MinimizationCandidate>,
+    maximum_candidates: usize,
+}
+
+impl MinimizationCandidateCollector<'_> {
+    fn is_full(&self) -> bool {
+        self.candidates.len() >= self.maximum_candidates
     }
-    let remaining = kept_len - kept_indices.len();
-    let max_start = decisions.len().saturating_sub(remaining);
-    for index in start..=max_start {
-        kept_indices.push(index);
-        collect_minimization_candidates_for_len(
-            seed,
-            artifact,
-            decisions,
-            kept_len,
-            index + 1,
-            kept_indices,
-            candidates,
-        );
-        kept_indices.pop();
+
+    fn collect_for_len(&mut self, kept_len: usize, start: usize, kept_indices: &mut Vec<usize>) {
+        if self.is_full() {
+            return;
+        }
+        if kept_indices.len() == kept_len {
+            self.candidates
+                .push(minimization_candidate_from_kept_indices(
+                    self.seed,
+                    self.artifact,
+                    self.decisions,
+                    kept_indices,
+                ));
+            return;
+        }
+        let remaining = kept_len - kept_indices.len();
+        let max_start = self.decisions.len().saturating_sub(remaining);
+        for index in start..=max_start {
+            if self.is_full() {
+                break;
+            }
+            kept_indices.push(index);
+            self.collect_for_len(kept_len, index + 1, kept_indices);
+            kept_indices.pop();
+        }
     }
 }
 

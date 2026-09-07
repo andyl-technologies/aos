@@ -1,9 +1,19 @@
 //! Production runtime evidence and initial-boundary regression tests.
 
+use std::collections::BTreeSet;
+
+use crucible_protocol::selectable_catalog_plan::{
+    SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
+    SelectablePlanLimits, SelectablePlanPhase, SelectablePlanPresence,
+};
+
 use super::*;
 
 #[path = "tests/durable_run_state.rs"]
 mod durable_run_state;
+
+#[path = "tests/trigger_deadlines.rs"]
+mod trigger_deadlines;
 
 fn hash(domain: &str) -> ContentHash {
     ContentHash::from_canonical_material("debug-runtime-evidence-test", domain)
@@ -12,6 +22,208 @@ fn hash(domain: &str) -> ContentHash {
 fn node() -> NodeId {
     NodeId {
         name: String::from("vm-a"),
+    }
+}
+
+fn checkpoint_selectable_plan(continuation: SelectablePlanContinuation) -> SelectableCatalogPlan {
+    let declarations = ["checkpoint.recovery", "checkpoint.retry"]
+        .into_iter()
+        .map(|name| {
+            SelectablePlanDeclaration::new(
+                name,
+                vec![1, 2],
+                vec![1],
+                Vec::new(),
+                SelectablePlanPresence::Required,
+            )
+            .unwrap_or_else(|error| panic!("selectable declaration should build: {error}"))
+        })
+        .collect();
+    SelectableCatalogPlan::new(
+        SelectablePlanLimits::new(2, 1, 2)
+            .unwrap_or_else(|error| panic!("selectable limits should build: {error}")),
+        declarations,
+        continuation,
+    )
+    .unwrap_or_else(|error| panic!("selectable plan should build: {error}"))
+}
+
+struct FailingFinishLauncher {
+    finish_calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+struct RecordingNodeLease {
+    identity: ProductionVmNodeGeneration,
+    finish_calls: Arc<std::sync::atomic::AtomicUsize>,
+    finish_order: Option<Arc<std::sync::Mutex<Vec<&'static str>>>>,
+    fail: bool,
+}
+
+impl ProductionVmNodeLease for RecordingNodeLease {
+    fn identity(&self) -> &ProductionVmNodeGeneration {
+        &self.identity
+    }
+
+    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        self.finish_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Some(order) = &self.finish_order {
+            order
+                .lock()
+                .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy"))
+                .push("lease");
+        }
+        if self.fail {
+            Err(loop_factory_error("test node lease retained quarantine"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl ProductionVmNodeLauncher for FailingFinishLauncher {
+    fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
+    fn launch(
+        &mut self,
+        _request: ProductionVmNodeLaunchRequest<'_>,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        Err(loop_factory_error("test launcher does not spawn"))
+    }
+
+    fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
+        Err(loop_factory_error("test launcher does not admit replay"))
+    }
+
+    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        self.finish_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(loop_factory_error("test launcher retained quarantine"))
+    }
+}
+
+struct RecordingFinishLauncher {
+    finish_order: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+type PreparationObservation = (&'static str, bool, u64);
+
+struct PreparationBoundaryLauncher {
+    observations: Arc<std::sync::Mutex<Vec<PreparationObservation>>>,
+}
+
+struct SelectablePlanRecordingLauncher {
+    plans: Arc<std::sync::Mutex<Vec<SelectableCatalogPlan>>>,
+}
+
+impl ProductionVmNodeLauncher for RecordingFinishLauncher {
+    fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
+    fn launch(
+        &mut self,
+        _request: ProductionVmNodeLaunchRequest<'_>,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        Err(loop_factory_error("test launcher does not spawn"))
+    }
+
+    fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
+        Err(loop_factory_error("test launcher does not admit replay"))
+    }
+
+    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        self.finish_order
+            .lock()
+            .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy"))
+            .push("launcher");
+        Ok(())
+    }
+}
+
+impl ProductionVmNodeLauncher for PreparationBoundaryLauncher {
+    fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
+    fn launch(
+        &mut self,
+        request: ProductionVmNodeLaunchRequest<'_>,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        let preparation = match request.preparation() {
+            ProductionVmNodePreparationKind::Fresh { .. } => "fresh",
+            ProductionVmNodePreparationKind::Exact { .. } => "exact",
+            ProductionVmNodePreparationKind::Replacement { .. } => "replacement",
+        };
+        self.observations
+            .lock()
+            .unwrap_or_else(|_| panic!("preparation observation lock should remain healthy"))
+            .push((
+                preparation,
+                request.run_directory().exists(),
+                request.generation(),
+            ));
+        Err(loop_factory_error(
+            "preparation-boundary launcher rejects before path access",
+        ))
+    }
+
+    fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
+        Err(loop_factory_error("test launcher does not admit replay"))
+    }
+
+    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+}
+
+impl ProductionVmNodeLauncher for SelectablePlanRecordingLauncher {
+    fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
+    fn launch(
+        &mut self,
+        request: ProductionVmNodeLaunchRequest<'_>,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        let Some(plan) = request.launch().selectable_catalog_plan() else {
+            return Err(loop_factory_error("scenario selectable plan is absent"));
+        };
+        self.plans
+            .lock()
+            .unwrap_or_else(|_| panic!("selectable plan recorder should remain healthy"))
+            .push(plan.clone());
+        Err(loop_factory_error(
+            "selectable plan recorder rejects process spawn",
+        ))
+    }
+
+    fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
+        Err(loop_factory_error(
+            "selectable plan recorder rejects replay authority",
+        ))
+    }
+
+    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
     }
 }
 
@@ -59,6 +271,173 @@ fn recorded_control_boundary_waits_until_every_node_reaches_the_exact_time() {
     );
 }
 
+#[test]
+fn checkpoint_readiness_limits_cold_catalog_to_initial_execution_boundary() {
+    let scenario = crucible::happy_path_scenario()
+        .unwrap_or_else(|error| panic!("checkpoint scenario should build: {error}"))
+        .scenario
+        .scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let node = node();
+    let live_nodes = vec![node.clone()];
+    let cold = checkpoint_selectable_plan(SelectablePlanContinuation::cold());
+    assert!(selectable_catalogs_checkpoint_ready(
+        &genesis,
+        true,
+        0,
+        &live_nodes,
+        &BTreeMap::from([(node.clone(), cold.clone())]),
+    ));
+
+    assert!(!selectable_catalogs_checkpoint_ready(
+        &genesis,
+        false,
+        0,
+        &live_nodes,
+        &BTreeMap::from([(node.clone(), cold.clone())]),
+    ));
+    assert!(!selectable_catalogs_checkpoint_ready(
+        &genesis,
+        true,
+        1,
+        &live_nodes,
+        &BTreeMap::from([(node.clone(), cold.clone())]),
+    ));
+
+    let partial = SelectablePlanContinuation::new(
+        SelectablePlanPhase::Registering,
+        BTreeSet::from([String::from("checkpoint.recovery")]),
+        Some(1),
+        BTreeMap::new(),
+        None,
+        None,
+    )
+    .unwrap_or_else(|error| panic!("partial selectable continuation should build: {error}"));
+    assert!(!selectable_catalogs_checkpoint_ready(
+        &genesis,
+        true,
+        0,
+        &live_nodes,
+        &BTreeMap::from([(node.clone(), checkpoint_selectable_plan(partial))]),
+    ));
+
+    let advanced = Configuration {
+        def: scenario,
+        schedule: Schedule::from_decisions([Decision::RngDraw(crucible::RngDecision {
+            stream: crucible::RngStreamId::from_name("checkpoint-catalog"),
+            value: 7,
+        })]),
+    };
+    assert!(!selectable_catalogs_checkpoint_ready(
+        &advanced,
+        true,
+        0,
+        &live_nodes,
+        &BTreeMap::from([(node, cold)]),
+    ));
+}
+
+#[test]
+fn reaped_generation_finishes_only_its_exact_linear_lease() {
+    let source = initially_violated_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    let node = node();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    lifecycle.node_generations.insert(node.clone(), 3);
+    lifecycle.node_leases.insert(
+        node.clone(),
+        Box::new(RecordingNodeLease {
+            identity: ProductionVmNodeGeneration::new(node.clone(), 3)
+                .unwrap_or_else(|error| panic!("test generation should validate: {error}")),
+            finish_calls: Arc::clone(&calls),
+            finish_order: None,
+            fail: false,
+        }),
+    );
+
+    lifecycle
+        .finish_reaped_node_leases(std::slice::from_ref(&node))
+        .unwrap_or_else(|error| panic!("exact reaped lease should finish: {error}"));
+
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(!lifecycle.node_leases.contains_key(&node));
+}
+
+#[test]
+fn mismatched_generation_lease_fails_closed_without_release() {
+    let source = initially_violated_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    let node = node();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    lifecycle.node_generations.insert(node.clone(), 4);
+    lifecycle.node_leases.insert(
+        node.clone(),
+        Box::new(RecordingNodeLease {
+            identity: ProductionVmNodeGeneration::new(node.clone(), 3)
+                .unwrap_or_else(|error| panic!("test generation should validate: {error}")),
+            finish_calls: Arc::clone(&calls),
+            finish_order: None,
+            fail: false,
+        }),
+    );
+
+    let error = lifecycle
+        .finish_reaped_node_leases(std::slice::from_ref(&node))
+        .err()
+        .unwrap_or_else(|| panic!("mismatched lease should fail closed"));
+
+    assert!(error.to_string().contains("mismatched generation lease"));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(!lifecycle.node_leases.contains_key(&node));
+}
+
+#[test]
+fn generation_lease_cleanup_continues_after_an_earlier_mismatch() {
+    let source = initially_violated_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    let first = NodeId {
+        name: String::from("node-first"),
+    };
+    let second = NodeId {
+        name: String::from("node-second"),
+    };
+    let first_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let second_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    lifecycle.node_generations.insert(first.clone(), 2);
+    lifecycle.node_generations.insert(second.clone(), 5);
+    lifecycle.node_leases.insert(
+        first.clone(),
+        Box::new(RecordingNodeLease {
+            identity: ProductionVmNodeGeneration::new(first.clone(), 1)
+                .unwrap_or_else(|error| panic!("test generation should validate: {error}")),
+            finish_calls: Arc::clone(&first_calls),
+            finish_order: None,
+            fail: false,
+        }),
+    );
+    lifecycle.node_leases.insert(
+        second.clone(),
+        Box::new(RecordingNodeLease {
+            identity: ProductionVmNodeGeneration::new(second.clone(), 5)
+                .unwrap_or_else(|error| panic!("test generation should validate: {error}")),
+            finish_calls: Arc::clone(&second_calls),
+            finish_order: None,
+            fail: false,
+        }),
+    );
+
+    let error = lifecycle
+        .finish_reaped_node_leases(&[first.clone(), second.clone()])
+        .err()
+        .unwrap_or_else(|| panic!("mismatched first lease should fail closed"));
+
+    assert!(error.to_string().contains("mismatched generation lease"));
+    assert_eq!(first_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(!lifecycle.node_leases.contains_key(&first));
+    assert!(!lifecycle.node_leases.contains_key(&second));
+}
+
 fn initially_violated_scenario() -> ScenarioDefForm {
     let base = crucible::crash_restart_scenario()
         .unwrap_or_else(|error| panic!("built-in scenario should validate: {error}"))
@@ -102,6 +481,156 @@ fn initially_violated_scenario() -> ScenarioDefForm {
         0,
     )
     .unwrap_or_else(|error| panic!("test scenario should validate: {error}"))
+}
+
+#[test]
+fn app_random_plugin_plan_requires_the_same_scheduler_selection_set()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = initially_violated_scenario();
+    let node = source.world().vm_nodes()[0].id.clone();
+    let stream =
+        crucible_protocol::app_random_transport::app_random_stream_name(&node.name, "branch");
+    let entry = crucible_protocol::app_random_branch_plan::AppRandomBranchPlanEntry::new(
+        0, 7, 9, [0x5a; 32], stream,
+    )?;
+    let plan = crucible_protocol::app_random_branch_plan::AppRandomBranchPlan::new(vec![entry])?;
+    let config = ProductionVmLifecycleConfig::new(
+        "missing-qemu",
+        "missing-plugin",
+        "missing-kernel",
+        "missing-root",
+        "missing-run-state",
+    )
+    .with_app_random_branch_replay(BTreeMap::new(), BTreeMap::from([(node, plan)]));
+
+    let Err(error) = validate_app_random_branch_replay_config(source.world().vm_nodes(), &config)
+    else {
+        panic!("unpaired plugin plan must fail before launch");
+    };
+
+    assert!(error.to_string().contains("differ in count"));
+    Ok(())
+}
+
+#[test]
+fn production_lifecycle_lends_generation_preparation_before_path_access() {
+    let root =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
+    let source = initially_violated_scenario();
+    let scenario = source.scenario_def();
+    let root_image = root.path().join("root.img");
+    fs::write(&root_image, b"root image fixture")
+        .unwrap_or_else(|error| panic!("root image fixture should write: {error}"));
+    let config = ProductionVmLifecycleConfig::new(
+        "missing-qemu",
+        "missing-plugin",
+        "missing-kernel",
+        root_image,
+        root.path(),
+    );
+    let observations = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let error = build_production_vm_lifecycle_loop_with_launcher(
+        &scenario,
+        &source,
+        &config,
+        PreparationBoundaryLauncher {
+            observations: Arc::clone(&observations),
+        },
+    )
+    .err()
+    .unwrap_or_else(|| panic!("preparation-boundary launcher should reject construction"));
+
+    assert!(
+        error.to_string().contains("rejects before path access"),
+        "unexpected lifecycle construction error: {error}"
+    );
+    assert_eq!(
+        *observations
+            .lock()
+            .unwrap_or_else(|_| panic!("preparation observation lock should remain healthy")),
+        vec![("fresh", false, 1)]
+    );
+}
+
+#[test]
+fn production_lifecycle_derives_node_local_selectable_catalog_from_scenario() {
+    let root =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
+    let source = initially_violated_scenario();
+    let node = source.world().vm_nodes()[0].id.clone();
+    let declaration = crucible::campaign::SelectableDeclaration::new(
+        "product.recovery",
+        crucible::campaign::ChoiceSource::Guest {
+            node: node.name.clone(),
+            protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
+        },
+        crucible::campaign::ChoiceDomain::Boolean(
+            crucible::campaign::BooleanDomain::new(1)
+                .unwrap_or_else(|error| panic!("Boolean domain should build: {error}")),
+        ),
+        crucible::campaign::ChoiceValue::Boolean(false),
+        crucible::campaign::ChoiceClassContext::new(BTreeSet::new())
+            .unwrap_or_else(|error| panic!("choice class should build: {error}")),
+        BTreeSet::from([String::from("recovery")]),
+        true,
+    )
+    .unwrap_or_else(|error| panic!("selectable declaration should build: {error}"));
+    let limits = crucible::ScenarioSelectableLimits::new(4, 8, 32, 64)
+        .unwrap_or_else(|error| panic!("selectable limits should build: {error}"));
+    let selectables =
+        crucible::ScenarioSelectables::new(source.world(), limits, vec![declaration.clone()])
+            .unwrap_or_else(|error| panic!("scenario selectables should build: {error}"));
+    let source = source
+        .with_selectables(selectables)
+        .unwrap_or_else(|error| panic!("scenario selectables should attach: {error}"));
+    let scenario = source.scenario_def();
+    let root_image = root.path().join("root.img");
+    fs::write(&root_image, b"root image fixture")
+        .unwrap_or_else(|error| panic!("root image fixture should write: {error}"));
+    let config = ProductionVmLifecycleConfig::new(
+        "missing-qemu",
+        "missing-plugin",
+        "missing-kernel",
+        root_image,
+        root.path(),
+    );
+    let plans = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let error = build_production_vm_lifecycle_loop_with_launcher(
+        &scenario,
+        &source,
+        &config,
+        SelectablePlanRecordingLauncher {
+            plans: Arc::clone(&plans),
+        },
+    )
+    .err()
+    .unwrap_or_else(|| panic!("recording launcher should reject construction"));
+
+    assert!(
+        error.to_string().contains("rejects process spawn"),
+        "unexpected lifecycle construction error: {error}"
+    );
+    let plans = plans
+        .lock()
+        .unwrap_or_else(|_| panic!("selectable plan recorder should remain healthy"));
+    assert_eq!(plans.len(), 1);
+    let plan = &plans[0];
+    assert_eq!(plan.limits().declarations(), 4);
+    assert_eq!(plan.limits().requests_per_selectable(), 32);
+    assert_eq!(plan.limits().total_requests(), 64);
+    let registered = plan
+        .declarations()
+        .get(declaration.name())
+        .unwrap_or_else(|| panic!("scenario declaration should reach launch"));
+    assert_eq!(
+        registered.registration().domain(),
+        declaration.domain().canonical_bytes()
+    );
+    assert_eq!(
+        registered.registration().default_value(),
+        declaration.default().canonical_bytes()
+    );
+    assert_eq!(registered.presence(), SelectablePlanPresence::Required);
 }
 
 #[test]
@@ -209,7 +738,9 @@ fn durable_run_state_fails_closed_on_a_corrupt_manifest() {
     assert!(error.to_string().contains("preflight"));
 }
 
-fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLifecycleLoop {
+pub(in crate::vm_lifecycle) fn production_loop_without_backends(
+    source: &ScenarioDefForm,
+) -> ProductionVmLifecycleLoop {
     let scenario = source.scenario_def();
     let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
         &scenario.id().to_hex(),
@@ -232,9 +763,15 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         .into_event_graph();
     let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state");
     let nodes = ProductionNodeSet::new();
+    let artifacts = (!source.plan().fault_signals().programs().is_empty()).then(|| {
+        let store: Arc<dyn crucible::model::DagStore> =
+            Arc::new(crucible::model::MemoryDagStore::new());
+        Arc::new(crucible::model::OwnedDagSignalArtifactProvider::new(store))
+            as Arc<dyn crucible::model::SignalArtifactProvider>
+    });
     let fault_runtime = ProductionFaultRuntime::new(
         source.plan().fault_signals().clone(),
-        None,
+        artifacts,
         SignalBoundarySnapshot::default(),
         scenario.id(),
         super::super::fault_implementation::test_host_manifests(),
@@ -259,7 +796,7 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
     let run_directory = ProductionRunDirectory::temporary()
         .unwrap_or_else(|error| panic!("test run directory should build: {error}"));
 
-    ProductionVmLifecycleLoop {
+    let mut lifecycle = ProductionVmLifecycleLoop {
         inner: BackendQuantumLoop::with_network_output_interceptor(scheduler, nodes, interceptor),
         trigger_graph,
         trigger_state: EventGraphState::default(),
@@ -271,6 +808,8 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         checkpoint_terminal_cause: None,
         initial_lifecycle_observations_pending: true,
         branch: None,
+        signal_fault_branches: VecDeque::new(),
+        promote_signal_fault_campaign_choices: false,
         launch_configs: BTreeMap::new(),
         block_bindings: BTreeMap::new(),
         ninep_bindings: BTreeMap::new(),
@@ -283,7 +822,10 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         icount_shift: 0,
         node_indexes: BTreeMap::new(),
         node_run_directories: BTreeMap::new(),
+        immutable_root_images: BTreeMap::new(),
         node_generations: BTreeMap::new(),
+        node_leases: BTreeMap::new(),
+        node_lease_cleanup_failed: false,
         node_service_states: BTreeMap::new(),
         lifecycle_journal: ProductionLifecycleJournal {
             version: 1,
@@ -317,9 +859,472 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         debug_gateway_teardown_required: false,
         indeterminate_debug_candidate: None,
         debug_runtime_evidence: Vec::new(),
+        node_launcher: Box::new(PackagedProductionVmNodeLauncher),
         _run_directory: run_directory,
-    }
+    };
+    lifecycle
+        .reserve_lifecycle_state_encoding(source.plan().fault_signals().resource_limits(), 0, 0)
+        .unwrap_or_else(|error| panic!("test lifecycle state should reserve: {error}"));
+    lifecycle
 }
+
+pub(in crate::vm_lifecycle) fn nonterminal_signal_replay_scenario() -> ScenarioDefForm {
+    let base = crucible::crash_restart_scenario()
+        .unwrap_or_else(|error| panic!("built-in scenario should validate: {error}"))
+        .scenario;
+    ScenarioDefForm::from_components(
+        base.world(),
+        &crucible::Plan::empty(),
+        &crucible::Properties::empty(),
+        Seed::from_u64(7),
+    )
+    .unwrap_or_else(|error| panic!("nonterminal signal replay scenario should validate: {error}"))
+}
+
+fn finite_signal_replay_scenario() -> ScenarioDefForm {
+    let base = crucible::crash_restart_scenario()
+        .unwrap_or_else(|error| panic!("built-in scenario should validate: {error}"))
+        .scenario;
+    let signal_id = |value: &str| {
+        crucible::model::SignalId::parse(value)
+            .unwrap_or_else(|error| panic!("signal ID should validate: {error}"))
+    };
+    let world = base
+        .world()
+        .clone()
+        .with_fault_topology(crucible::model::WorldFaultTopology {
+            network_interfaces: vec![
+                crucible::model::WorldNetworkInterface {
+                    id: signal_id("campaign-if-a"),
+                    endpoint: signal_id("db-0"),
+                    technology: crucible::model::WorldNetworkTechnology::Ethernet,
+                    addresses: Vec::new(),
+                    fault_domains: Vec::new(),
+                },
+                crucible::model::WorldNetworkInterface {
+                    id: signal_id("campaign-if-b"),
+                    endpoint: signal_id("db-1"),
+                    technology: crucible::model::WorldNetworkTechnology::Ethernet,
+                    addresses: Vec::new(),
+                    fault_domains: Vec::new(),
+                },
+                crucible::model::WorldNetworkInterface {
+                    id: signal_id("campaign-if-c"),
+                    endpoint: signal_id("db-2"),
+                    technology: crucible::model::WorldNetworkTechnology::Ethernet,
+                    addresses: Vec::new(),
+                    fault_domains: Vec::new(),
+                },
+            ],
+            network_segments: [
+                ("campaign-segment-ab", "campaign-if-a", "campaign-if-b"),
+                ("campaign-segment-bc", "campaign-if-b", "campaign-if-c"),
+                ("campaign-segment-ac", "campaign-if-a", "campaign-if-c"),
+            ]
+            .into_iter()
+            .map(
+                |(segment, interface_a, interface_b)| crucible::model::WorldNetworkSegment {
+                    id: signal_id(segment),
+                    kind: crucible::model::WorldNetworkSegmentKind::Ethernet,
+                    interface_a: signal_id(interface_a),
+                    interface_b: signal_id(interface_b),
+                    minimum_latency_nanos: 1,
+                    mtu_bytes: 1_500,
+                    medium: None,
+                    forwarders: Vec::new(),
+                    fault_domains: Vec::new(),
+                },
+            )
+            .collect(),
+            ..crucible::model::WorldFaultTopology::default()
+        })
+        .unwrap_or_else(|error| panic!("test fault topology should validate: {error}"));
+    let segment = world
+        .fault_topology()
+        .network_segments
+        .first()
+        .unwrap_or_else(|| panic!("built-in scenario should retain a network segment"));
+    let target = crucible::model::ResolvedFaultTarget::NetworkSegment {
+        segment: crucible::model::FaultObjectId::parse(segment.id.as_str())
+            .unwrap_or_else(|error| panic!("network segment should be a fault object: {error}")),
+        direction: crucible::model::FaultDirection::AToB,
+    };
+    let output = crucible::model::SignalId::parse("campaign-signal-output")
+        .unwrap_or_else(|error| panic!("signal ID should validate: {error}"));
+    let program = crucible::model::SignalProgram::new(
+        vec![crucible::model::SignalNode {
+            id: output.clone(),
+            domain: crucible::model::SignalDomain::VirtualTime,
+            output: crucible::model::SignalShape::new(
+                crucible::model::SignalValueType::U64,
+                crucible::model::SignalUnit::VirtualNanoseconds,
+                0,
+            )
+            .unwrap_or_else(|error| panic!("signal shape should validate: {error}")),
+            inputs: Vec::new(),
+            kind: crucible::model::SignalNodeKind::Constant {
+                value: crucible::model::SignalValue::U64(5),
+            },
+        }],
+        vec![output],
+        crucible::model::SignalResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("signal program should validate: {error}"));
+    let targets = crucible::model::ResolvedTargetSet::new(vec![target], false)
+        .unwrap_or_else(|error| panic!("fault target should validate: {error}"));
+    let effect = crucible::model::EffectRequest::new(
+        crucible::model::EFFECT_SEMANTIC_VERSION,
+        crucible::model::EffectLifetime::Persistent,
+        crucible::model::EffectSpecification::Network(
+            crucible::model::NetworkEffectSpecification::PropagationDelay {
+                delay_nanos: Some(
+                    crucible::model::PositiveU64::new("delay_nanos", 1)
+                        .unwrap_or_else(|error| panic!("delay should validate: {error}")),
+                ),
+                distance_velocity_lookup: None,
+            },
+        ),
+    )
+    .unwrap_or_else(|error| panic!("fault effect should validate: {error}"));
+    let binding = crucible::model::FaultBinding::new(
+        crucible::model::FaultObjectId::parse("campaign-signal-binding")
+            .unwrap_or_else(|error| panic!("binding ID should validate: {error}")),
+        program.exported_outputs().to_vec(),
+        crucible::model::BindingSampling::AtBoundary,
+        crucible::model::BindingMapping::PiecewiseParameter {
+            parameter: crucible::model::MappedEffectParameter::DurationNanos,
+            points: vec![
+                crucible::model::BindingMapPoint {
+                    input: crucible::model::SignalValue::U64(0),
+                    output: crucible::model::SignalValue::DurationNanos(10),
+                },
+                crucible::model::BindingMapPoint {
+                    input: crucible::model::SignalValue::U64(10),
+                    output: crucible::model::SignalValue::DurationNanos(30),
+                },
+            ],
+            rounding: crucible::model::SignalRounding::NearestTiesToEven,
+            overflow: crucible::model::SignalOverflow::Error,
+        },
+        crucible::model::TargetSelector::Exact(targets),
+        [crucible::model::FaultPhase::Resolve].into_iter().collect(),
+        effect,
+        None,
+        crucible::model::BindingSearchPolicy::BranchParameter {
+            parameter: crucible::model::MappedEffectParameter::DurationNanos,
+            candidates: vec![
+                crucible::model::SignalValue::DurationNanos(10),
+                crucible::model::SignalValue::DurationNanos(20),
+            ],
+        },
+        crucible::model::BindingObservabilityPolicy {
+            samples: crucible::model::SampleObservation::ChangesAndEffects,
+            record_inactive_opportunities: false,
+            retain_mapped_values: true,
+        },
+        &program,
+    )
+    .unwrap_or_else(|error| panic!("fault binding should validate: {error}"));
+    let faults = crucible::model::FaultSignalPlan::new(
+        vec![program],
+        vec![binding],
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("fault plan should validate: {error}"));
+    let plan = crucible::Plan::empty()
+        .with_fault_signals_for_world(&world, faults)
+        .unwrap_or_else(|error| panic!("fault plan should match the world: {error}"));
+
+    ScenarioDefForm::from_components(
+        &world,
+        &plan,
+        &crucible::Properties::empty(),
+        Seed::from_u64(7),
+    )
+    .unwrap_or_else(|error| panic!("finite signal scenario should validate: {error}"))
+}
+
+fn promoted_signal_branch(
+    parent: &Configuration,
+    frontier: VirtualTime,
+    label: &[u8],
+    selected_index: u32,
+) -> crucible::SignalFaultCampaignBranch {
+    let choice = crucible::model::BindingSearchChoice {
+        id: crucible::model::SearchChoiceId::from_content_hash(ContentHash::from_bytes(label)),
+        candidates_digest: ContentHash::from_canonical_material(
+            "crucible.test.production-signal-branch-candidates",
+            &String::from_utf8_lossy(label),
+        ),
+        candidate_count: 2,
+        selected_index: None,
+        overridden: false,
+    };
+    let runtime = crucible::SearchRuntimeFrontier {
+        configuration: parent.clone(),
+        at: frontier,
+        choices: crucible::SearchFrontierChoices::from_decisions(
+            choice
+                .override_decisions(parent.id())
+                .into_iter()
+                .map(Decision::Override),
+        ),
+    };
+    let selectable = crucible::SignalFaultSelectable::from_frontier(&runtime)
+        .unwrap_or_else(|error| panic!("promoted signal fixture should normalize: {error}"));
+    let selection = selectable
+        .branch_selection(parent, selected_index)
+        .unwrap_or_else(|error| panic!("promoted signal fixture should select: {error}"));
+    selectable
+        .resolve_branch(&selection)
+        .unwrap_or_else(|error| panic!("promoted signal fixture should resolve: {error}"))
+}
+
+#[test]
+fn production_lifecycle_pauses_on_a_new_live_signal_fault_frontier() {
+    let source = finite_signal_replay_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    lifecycle.enable_signal_fault_campaign_promotion();
+    lifecycle.initial_lifecycle_observations_pending = false;
+    let parent = lifecycle.inner.loop_impl().configuration().clone();
+    let at = lifecycle.inner.loop_impl().frontier();
+
+    let outcome = lifecycle
+        .drive_quantum(QuantumRequest {
+            configuration: parent.clone(),
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("live signal-fault frontier should pause: {error}"));
+
+    assert_eq!(outcome.configuration, parent);
+    assert_eq!(outcome.frontier, at);
+    assert!(outcome.advanced_node.is_none());
+    assert!(outcome.decisions.is_empty());
+    let [discovery] = outcome.discovered_choices.as_slice() else {
+        panic!("the exact live producer frontier must yield one campaign discovery")
+    };
+    let normalized = crucible::SignalFaultSelectable::from_records(
+        &outcome.configuration,
+        discovery.declaration(),
+        discovery.opportunity(),
+        discovery.domain(),
+    )
+    .unwrap_or_else(|error| panic!("live discovery must retain the producer contract: {error}"));
+    assert_eq!(normalized.frontier(), at);
+}
+
+#[test]
+fn production_lifecycle_does_not_export_live_frontiers_without_promotion_opt_in() {
+    let source = finite_signal_replay_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    lifecycle.initial_lifecycle_observations_pending = false;
+    let parent = lifecycle.inner.loop_impl().configuration().clone();
+
+    let result = lifecycle.drive_quantum(QuantumRequest {
+        configuration: parent,
+        control: Vec::new(),
+    });
+
+    if let Ok(outcome) = result {
+        assert!(outcome.discovered_choices.is_empty());
+    }
+    assert_eq!(lifecycle.inner.loop_impl().search_frontiers().len(), 1);
+}
+
+#[test]
+fn production_lifecycle_authenticates_typed_signal_branch_before_checkpointing() {
+    let source = finite_signal_replay_scenario();
+    let mut discovery = production_loop_without_backends(&source);
+    discovery.initial_lifecycle_observations_pending = false;
+    let parent = discovery.inner.loop_impl().configuration().clone();
+    discovery
+        .evaluate_signal_fault_boundary()
+        .unwrap_or_else(|error| panic!("finite producer boundary should evaluate: {error}"));
+    let choices = discovery
+        .fault_runtime
+        .lock()
+        .unwrap_or_else(|_| panic!("fault runtime should remain healthy"))
+        .drain_search_choices();
+    discovery
+        .inner
+        .loop_impl_mut()
+        .record_pending_signal_fault_search_frontiers(choices)
+        .unwrap_or_else(|error| panic!("runtime frontier should record: {error}"));
+    let frontier = discovery
+        .inner
+        .loop_impl()
+        .search_frontiers()
+        .first()
+        .cloned()
+        .unwrap_or_else(|| panic!("finite producer should expose one search frontier"));
+    let selectable = crucible::SignalFaultSelectable::from_frontier(&frontier)
+        .unwrap_or_else(|error| panic!("runtime frontier should normalize: {error}"));
+    let selection = selectable
+        .branch_selection(&parent, selectable.candidate_count())
+        .unwrap_or_else(|error| panic!("sentinel branch should select: {error}"));
+    let branch = selectable
+        .resolve_branch(&selection)
+        .unwrap_or_else(|error| panic!("sentinel branch should resolve: {error}"));
+
+    let mut lifecycle = production_loop_without_backends(&source);
+    lifecycle.initial_lifecycle_observations_pending = false;
+    lifecycle.signal_fault_branches = VecDeque::from([branch.clone()]);
+    lifecycle
+        .inner
+        .loop_impl_mut()
+        .set_branch_frontier_cap(branch.frontier())
+        .unwrap_or_else(|error| panic!("promoted frontier should cap replay: {error}"));
+
+    assert_eq!(lifecycle.exact_checkpoint_ready(), Ok(false));
+    let outcome = lifecycle
+        .drive_quantum(QuantumRequest {
+            configuration: parent.clone(),
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("observed sentinel branch should inject: {error}"));
+    assert_eq!(outcome.configuration, *branch.selected());
+    assert_eq!(outcome.decisions, branch.decisions());
+    assert!(outcome.discovered_choices.is_empty());
+    assert!(lifecycle.signal_fault_branches.is_empty());
+}
+
+#[test]
+fn production_lifecycle_rejects_typed_signal_branch_without_producer_choice() {
+    let source = nonterminal_signal_replay_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    lifecycle.initial_lifecycle_observations_pending = false;
+    let parent = lifecycle.inner.loop_impl().configuration().clone();
+    let frontier = lifecycle.inner.loop_impl().frontier();
+    let branch = promoted_signal_branch(&parent, frontier, b"missing-promoted-signal", 2);
+    lifecycle.signal_fault_branches = VecDeque::from([branch.clone()]);
+    lifecycle
+        .inner
+        .loop_impl_mut()
+        .set_branch_frontier_cap(branch.frontier())
+        .unwrap_or_else(|error| panic!("promoted frontier should cap replay: {error}"));
+
+    let error = lifecycle
+        .drive_quantum(QuantumRequest {
+            configuration: parent,
+            control: Vec::new(),
+        })
+        .err()
+        .unwrap_or_else(|| panic!("missing producer choice should fail closed"));
+    assert!(
+        error
+            .to_string()
+            .contains("no exact observed producer choice")
+    );
+    assert_eq!(lifecycle.signal_fault_branches, VecDeque::from([branch]));
+}
+#[test]
+fn lifecycle_reports_launch_authority_cleanup_after_backend_shutdown() {
+    let source = initially_violated_scenario();
+    let finish_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut lifecycle = production_loop_without_backends(&source);
+    lifecycle.node_launcher = Box::new(FailingFinishLauncher {
+        finish_calls: Arc::clone(&finish_calls),
+    });
+
+    let error = QuantumLoop::shutdown(&mut lifecycle)
+        .err()
+        .unwrap_or_else(|| panic!("failed launch-authority cleanup must reject shutdown"));
+
+    assert!(
+        error
+            .to_string()
+            .contains("test launcher retained quarantine")
+    );
+    assert_eq!(finish_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn lifecycle_retains_aggregate_launcher_after_generation_lease_failure() {
+    let source = initially_violated_scenario();
+    let lease_finish_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut lifecycle = production_loop_without_backends(&source);
+    let node = node();
+    lifecycle.node_generations.insert(node.clone(), 9);
+    lifecycle.node_leases.insert(
+        node.clone(),
+        Box::new(RecordingNodeLease {
+            identity: ProductionVmNodeGeneration::new(node, 9)
+                .unwrap_or_else(|error| panic!("test generation should validate: {error}")),
+            finish_calls: Arc::clone(&lease_finish_calls),
+            finish_order: Some(Arc::clone(&order)),
+            fail: true,
+        }),
+    );
+    lifecycle.node_launcher = Box::new(RecordingFinishLauncher {
+        finish_order: Arc::clone(&order),
+    });
+
+    let error = QuantumLoop::shutdown(&mut lifecycle)
+        .err()
+        .unwrap_or_else(|| panic!("failed generation-lease cleanup must reject shutdown"));
+
+    assert!(
+        error
+            .to_string()
+            .contains("test node lease retained quarantine")
+    );
+    assert_eq!(
+        lease_finish_calls.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert_eq!(
+        *order
+            .lock()
+            .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy")),
+        vec!["lease"]
+    );
+
+    let repeated = QuantumLoop::shutdown(&mut lifecycle)
+        .err()
+        .unwrap_or_else(|| panic!("repeated shutdown must retain quarantine failure"));
+    assert!(repeated.to_string().contains("remains owned by quarantine"));
+    assert_eq!(
+        *order
+            .lock()
+            .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy")),
+        vec!["lease"]
+    );
+}
+
+#[test]
+fn lifecycle_finishes_generation_lease_before_aggregate_launcher() {
+    let source = initially_violated_scenario();
+    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let finish_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut lifecycle = production_loop_without_backends(&source);
+    let node = node();
+    lifecycle.node_generations.insert(node.clone(), 11);
+    lifecycle.node_leases.insert(
+        node.clone(),
+        Box::new(RecordingNodeLease {
+            identity: ProductionVmNodeGeneration::new(node, 11)
+                .unwrap_or_else(|error| panic!("test generation should validate: {error}")),
+            finish_calls,
+            finish_order: Some(Arc::clone(&order)),
+            fail: false,
+        }),
+    );
+    lifecycle.node_launcher = Box::new(RecordingFinishLauncher {
+        finish_order: Arc::clone(&order),
+    });
+
+    QuantumLoop::shutdown(&mut lifecycle)
+        .unwrap_or_else(|error| panic!("ordered cleanup should succeed: {error}"));
+
+    assert_eq!(
+        *order
+            .lock()
+            .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy")),
+        vec!["lease", "launcher"]
+    );
+}
+
 #[test]
 fn production_guest_assets_are_kept_per_architecture() {
     let config = ProductionVmLifecycleConfig::new(
@@ -523,6 +1528,105 @@ fn production_lifecycle_emits_initial_started_state_for_every_vm() {
 #[cfg(test)]
 mod initial_terminal_boundary {
     use super::*;
+
+    #[test]
+    fn genesis_entrypoint_pass_returns_without_advancing_a_backend()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let base = initially_violated_scenario();
+        let world = base.world();
+        let graph = crucible::EventGraph::builder()
+            .event("complete")
+            .entrypoint()
+            .action(crucible::Action::Pass)
+            .build_for_world(world)?;
+        let plan = crucible::Plan::from_event_graph_for_world(world, graph)?;
+        let source = ScenarioDefForm::from_components(
+            world,
+            &plan,
+            &crucible::Properties::empty(),
+            crucible::Seed::from_u64(42),
+        )?;
+        let mut lifecycle = production_loop_without_backends(&source);
+        let configuration = lifecycle.inner.loop_impl().configuration().clone();
+        let outcome = lifecycle.drive_quantum(QuantumRequest {
+            configuration: configuration.clone(),
+            control: Vec::new(),
+        })?;
+        assert_eq!(outcome.advanced_node, None);
+        assert!(matches!(
+            outcome.event_log_entries[0].payload(),
+            crucible::SchedulerEventLogPayload::TriggerFired(_)
+        ));
+        assert!(matches!(
+            lifecycle.terminal_verdict_for_stop(),
+            Some(QuantumTerminalVerdict::Passed)
+        ));
+        let repeated = lifecycle.drive_quantum(QuantumRequest {
+            configuration,
+            control: Vec::new(),
+        })?;
+        assert!(repeated.event_log_entries.is_empty());
+        assert_eq!(repeated.advanced_node, None);
+        Ok(())
+    }
+
+    #[test]
+    fn genesis_entrypoint_unblocks_conditional_event_after_initial_observations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let base = initially_violated_scenario();
+        let world = base.world();
+        let graph = crucible::EventGraph::builder()
+            .event("begin")
+            .entrypoint()
+            .action(crucible::Action::Group(Vec::new()))
+            .event("complete")
+            .when(crucible::Condition::After {
+                of: crucible::EventId::from_name("begin"),
+                duration: crucible::SimDuration { nanos: 0 },
+            })
+            .action(crucible::Action::Pass)
+            .build_for_world(world)?;
+        let plan = crucible::Plan::from_event_graph_for_world(world, graph)?;
+        let source = ScenarioDefForm::from_components(
+            world,
+            &plan,
+            &crucible::Properties::empty(),
+            crucible::Seed::from_u64(42),
+        )?;
+        let mut lifecycle = production_loop_without_backends(&source);
+        let configuration = lifecycle.inner.loop_impl().configuration().clone();
+        let outcome = lifecycle.drive_quantum(QuantumRequest {
+            configuration,
+            control: Vec::new(),
+        })?;
+        assert_eq!(outcome.advanced_node, None);
+        assert!(matches!(
+            lifecycle.terminal_verdict_for_stop(),
+            Some(QuantumTerminalVerdict::Passed)
+        ));
+        let initial_state = outcome
+            .event_log_entries
+            .iter()
+            .position(|entry| {
+                matches!(
+                    entry.payload(),
+                    crucible::SchedulerEventLogPayload::Observable(_)
+                )
+            })
+            .ok_or("missing initial node-state observations")?;
+        let completion = outcome
+            .event_log_entries
+            .iter()
+            .rposition(|entry| {
+                matches!(
+                    entry.payload(),
+                    crucible::SchedulerEventLogPayload::TriggerFired(_)
+                )
+            })
+            .ok_or("missing conditional completion")?;
+        assert!(initial_state > 0 && completion > initial_state);
+        Ok(())
+    }
 
     #[test]
     fn initial_terminal_assertion_returns_without_advancing_a_backend() {

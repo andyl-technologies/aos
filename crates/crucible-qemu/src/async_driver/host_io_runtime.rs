@@ -4,6 +4,34 @@ use super::*;
 
 /// Host-I/O runtime used by the bounded async driver.
 pub trait QemuHostIoRuntime: Send {
+    /// Clones the complete host-I/O continuation onto one branch-private ring.
+    ///
+    /// The source runtime must remain unchanged. Implementations must clone
+    /// every host-owned device queue and mutable backing state, bind the clone
+    /// to `execution_binding`, and use only the supplied private shared-memory
+    /// and wake descriptors. A runtime that cannot prove complete branch
+    /// isolation must reject the operation before QEMU creates a child.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when the runtime is not at a
+    /// quiescent boundary, contains an unsupported live host endpoint, or
+    /// cannot reconstruct every attached device onto the private mapping.
+    #[cfg(target_os = "linux")]
+    fn clone_hot_fork_host_io_continuation(
+        &mut self,
+        _execution_binding: crucible::model::ContentHash,
+        _shmem_fd: std::os::fd::BorrowedFd<'_>,
+        _wake_fd: std::os::fd::BorrowedFd<'_>,
+        _region_len: u64,
+        _console: Option<crate::QemuHotForkChildConsoleObservation>,
+    ) -> Result<Box<dyn QemuHostIoRuntime>, QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "clone hot-fork host-I/O continuation",
+            "this host-I/O runtime does not implement branch-private continuation cloning",
+        ))
+    }
+
     /// Sets the aggregate number of fault events this runtime may stage.
     ///
     /// Production runtimes apply the plan-authored remaining event-record

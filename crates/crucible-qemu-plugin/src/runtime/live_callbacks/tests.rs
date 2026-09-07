@@ -89,7 +89,7 @@ fn test_live_state_with_teardown(
         header,
         slot,
         Arc::new(LiveCallbackQuiescence::new()),
-        teardown_sender,
+        LiveRuntimeTeardownRouter::new(teardown_sender),
     )
 }
 
@@ -440,6 +440,58 @@ fn duplicate_checkpoint_vmstop_admission_is_idempotent() {
         .unwrap_or_else(|error| {
             panic!("an already-admitted exact stop satisfies the handoff: {error}")
         });
+    TEST_REQUEST_VMSTOP_STATUS.set(0);
+}
+
+#[test]
+fn selectable_stop_is_admitted_after_exact_sim_publication() {
+    TEST_REQUEST_VMSTOP_CALLS.set(0);
+    TEST_REQUEST_VMSTOP_STATUS.set(0);
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 12, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = Box::new(
+        test_live_state(79, 1, 0, 0, &slot)
+            .unwrap_or_else(|error| panic!("live callback state should build: {error}")),
+    );
+    let handoff = state.selectable_vmstop_handoff();
+    assert!(handoff.defer(test_force_vcpu_exit));
+    assert!(handoff.is_pending());
+    assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 0);
+
+    let userdata = std::ptr::from_ref(state.as_ref()).cast_mut().cast();
+    crucible_qemu_plugin_live_publish_icount_cb(9, userdata);
+
+    let paused = slot.snapshot();
+    assert_eq!(paused.current_icount, 9);
+    assert_eq!(paused.idle_wake_icount, 9);
+    assert_eq!(paused.status, STATUS_IDLE);
+    assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
+    assert!(!handoff.is_pending());
+}
+
+#[test]
+fn rejected_exact_selectable_stop_restores_the_handoff() {
+    TEST_REQUEST_VMSTOP_CALLS.set(0);
+    TEST_REQUEST_VMSTOP_STATUS.set(-7);
+    let slot = NodeSlot::new(KIND_VM);
+    let state = test_live_state(80, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    let handoff = state.selectable_vmstop_handoff();
+    assert!(handoff.defer(test_force_vcpu_exit));
+
+    assert_eq!(
+        state.request_selectable_vmstop_if_pending(0),
+        Err(LiveVcpuTimeCallbackError::CheckpointVmStopRejected {
+            boundary: "selectable-sim-publication",
+            status: -7,
+        })
+    );
+    assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
+    assert!(handoff.is_pending());
+    assert_eq!(slot.snapshot().status, STATUS_IDLE);
     TEST_REQUEST_VMSTOP_STATUS.set(0);
 }
 

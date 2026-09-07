@@ -1,0 +1,140 @@
+diff --git a/include/qemu/crucible-hot-fork-child.h b/include/qemu/crucible-hot-fork-child.h
+index 4a7dcab83..8f218cda3 100644
+--- a/include/qemu/crucible-hot-fork-child.h
++++ b/include/qemu/crucible-hot-fork-child.h
+@@ -273,9 +273,11 @@ int qemu_crucible_hot_fork_apply_descriptor_table(
+  *
+  * Streams Linux /proc/self/maps under the same fixed record, line, and byte
+  * limits as child mapping verification.  Exactly one writable shared VMA must
+- * span @length bytes at file offset zero and carry the registered device and
+- * inode identity.  A second writable mapping of the same backing, or a partial
+- * mapping of that backing, is ambiguous and rejected.
++ * span the page-rounded extent of @length bytes at file offset zero and carry
++ * the registered device and inode identity.  @length is the exact protocol
++ * region length; the returned mapping reports the page-rounded VMA extent.  A
++ * second writable mapping of the same backing, or a partial mapping of that
++ * backing, is ambiguous and rejected.
+  *
+  * This parent-side observation supplies the address basis needed to rebuild
+  * the MADV_DONTFORK plugin setup region in an authenticated child.  It does not
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 59baa216a..592bdd28d 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -961,6 +961,17 @@ crucible_hot_fork_private_ring_report(void)
+     return report;
+ }
+ 
++/* Shared mappings span whole pages; protocol region lengths are exact. */
++static uint64_t crucible_hot_fork_mapping_extent(uint64_t length)
++{
++    uint64_t page_size = qemu_real_host_page_size();
++
++    if (length > UINT64_MAX - (page_size - 1)) {
++        return UINT64_MAX;
++    }
++    return QEMU_ALIGN_UP(length, page_size);
++}
++
+ static bool crucible_hot_fork_private_ring_stage_matches(
+     const char *fdname, uint64_t device, uint64_t inode, uint64_t length)
+ {
+@@ -1441,7 +1452,8 @@ static bool crucible_hot_fork_plugin_worker_disposition_matches(
+         crucible_hot_fork_private_ring_stage.source_mapping_bound &&
+         crucible_hot_fork_private_ring_stage.source_start != 0 &&
+         crucible_hot_fork_private_ring_stage.source_length ==
+-            resources.manifest.shmem_length &&
++            crucible_hot_fork_mapping_extent(
++                resources.manifest.shmem_length) &&
+         crucible_hot_fork_private_ring_stage.source_offset == 0 &&
+         resources.manifest.control_fd !=
+             crucible_hot_fork_private_ring_stage.fd &&
+@@ -1492,7 +1504,8 @@ static bool crucible_hot_fork_build_plugin_child_plan(
+              resources->manifest.shmem_inode) ||
+         crucible_hot_fork_private_ring_stage.source_start == 0 ||
+         crucible_hot_fork_private_ring_stage.source_length !=
+-            resources->manifest.shmem_length ||
++            crucible_hot_fork_mapping_extent(
++                resources->manifest.shmem_length) ||
+         crucible_hot_fork_private_ring_stage.source_offset != 0 ||
+         resources->manifest.control_fd < 0 ||
+         resources->manifest.wake_fd < 0 ||
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index 0493cd793..ecf601e6b 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -1942,6 +1942,45 @@ static void test_source_mapping_binding_is_exact(void)
+     close(backing);
+ }
+ 
++static void test_source_mapping_binding_rounds_exact_lengths_to_pages(void)
++{
++    QemuCrucibleHotForkSourceMapping mapping = { 0 };
++    struct stat metadata;
++    uint64_t page_size = qemu_real_host_page_size();
++    uint64_t exact_length = page_size + 1;
++    void *source;
++    int backing;
++
++    backing = memfd_create(
++        "crucible-hot-fork-unaligned-source-mapping", MFD_CLOEXEC);
++    g_assert_cmpint(backing, >=, 0);
++    g_assert_cmpint(ftruncate(backing, exact_length), ==, 0);
++    source = mmap(NULL, exact_length, PROT_READ | PROT_WRITE, MAP_SHARED,
++                  backing, 0);
++    g_assert_true(source != MAP_FAILED);
++    g_assert_cmpint(fstat(backing, &metadata), ==, 0);
++
++    /* The exact protocol length binds the whole-page VMA that carries it. */
++    g_assert_cmpint(qemu_crucible_hot_fork_find_source_mapping(
++                        metadata.st_dev, metadata.st_ino, exact_length,
++                        &mapping),
++                    ==, 0);
++    g_assert_cmpuint(mapping.start, ==, (uintptr_t)source);
++    g_assert_cmpuint(mapping.length, ==, 2 * page_size);
++    g_assert_cmpuint(mapping.offset, ==, 0);
++    /* A shorter declared length names a different extent and is ambiguous. */
++    g_assert_cmpint(qemu_crucible_hot_fork_find_source_mapping(
++                        metadata.st_dev, metadata.st_ino, page_size,
++                        &mapping),
++                    ==, -EPERM);
++    g_assert_cmpint(qemu_crucible_hot_fork_find_source_mapping(
++                        metadata.st_dev, metadata.st_ino, 0, &mapping),
++                    ==, -EINVAL);
++
++    g_assert_cmpint(munmap(source, exact_length), ==, 0);
++    close(backing);
++}
++
+ static void test_mapping_table_rejects_unlisted_shared_mapping(void)
+ {
+     QemuCrucibleHotForkDescriptorTableTransaction transaction = {
+@@ -2255,6 +2294,8 @@ int main(int argc, char **argv)
+                     test_child_resource_plan_bounds_are_exact);
+     g_test_add_func("/crucible/hot-fork-child/source-mapping-binding",
+                     test_source_mapping_binding_is_exact);
++    g_test_add_func("/crucible-hot-fork-child/source-mapping-rounds-to-pages",
++                    test_source_mapping_binding_rounds_exact_lengths_to_pages);
+     g_test_add_func("/crucible/hot-fork-child/inactive-descriptor-transaction",
+                     test_inactive_descriptor_transaction_is_unchanged);
+     g_test_add_func("/crucible/hot-fork-child/unlisted-shared-mapping",
+diff --git a/util/crucible-hot-fork-child.c b/util/crucible-hot-fork-child.c
+index 14de88ca6..b87aef2db 100644
+--- a/util/crucible-hot-fork-child.c
++++ b/util/crucible-hot-fork-child.c
+@@ -1054,9 +1054,14 @@ int qemu_crucible_hot_fork_find_source_mapping(
+ 
+     if (!mapping || (uint64_t)(dev_t)device != device || inode == 0 ||
+         length == 0 || page_size == 0 ||
+-        length % page_size != 0) {
++        length > UINT64_MAX - (page_size - 1)) {
+         return -EINVAL;
+     }
++    /*
++     * The protocol region length is exact; the kernel maps whole pages, so
++     * the VMA that carries it spans the page-rounded extent.
++     */
++    search.length = QEMU_ALIGN_UP(length, page_size);
+     search.device_major = major((dev_t)device);
+     search.device_minor = minor((dev_t)device);
+     memset(mapping, 0, sizeof(*mapping));

@@ -2169,6 +2169,7 @@ pub(super) async fn cli_interactive_stop_uses_terminal_snapshot_after_registry_c
                 advanced_node: None,
                 resolved_events: Vec::new(),
                 decisions: vec![decision],
+                discovered_choices: Vec::new(),
                 event_log_entries: vec![event],
                 event_log_segment_bytes: Vec::new(),
                 event_log_segment_text: String::new(),

@@ -2,6 +2,14 @@
 
 use super::*;
 
+/// Optional authenticated resources carried by a live-QEMU replay artifact.
+pub(crate) struct LiveQemuReplayResources {
+    pub(crate) campaign_closure:
+        Option<crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure>,
+    pub(crate) effect_trace: Option<crucible::ResolvedEffectTrace>,
+    pub(crate) signal_artifacts: Option<std::sync::Arc<crucible::MemoryDagStore>>,
+}
+
 /// Re-executes a v3 artifact through a fresh packaged-QEMU lifecycle session.
 ///
 /// # Errors
@@ -10,11 +18,11 @@ use super::*;
 /// be reconstructed from the typed schedule, or the QEMU lifecycle fails.
 pub(crate) fn run_live_qemu_artifact_replay(
     backend: &ResolvedLocalBackend,
+    campaign_deployment: Option<&Path>,
     scenario: crucible::ScenarioDefForm,
     schedule: &crucible::Schedule,
     contract: &LiveQemuReplayContract,
-    resolved_effect_trace: Option<crucible::ResolvedEffectTrace>,
-    signal_artifacts: Option<std::sync::Arc<crucible::MemoryDagStore>>,
+    resources: LiveQemuReplayResources,
 ) -> Result<(RunInvocationPlan, RunWorkflowReport), CliError> {
     let terminal_condition = match contract.terminal_condition.as_str() {
         "quiescence" => RunTerminalCondition::Quiescence,
@@ -49,6 +57,7 @@ pub(crate) fn run_live_qemu_artifact_replay(
     let run_plan = RunInvocationPlan {
         request_seed: Some(scenario_def.seed()),
         save_store_root: None,
+        campaign_deployment: campaign_deployment.map(Path::to_path_buf),
         scenario: RunScenarioRef::BuiltInExample {
             name: String::from("artifact-replay"),
             form: scenario.clone(),
@@ -84,7 +93,7 @@ pub(crate) fn run_live_qemu_artifact_replay(
     if let Some(quantum_budget) = contract.lifecycle_quantum_budget {
         config = config.with_quantum_budget(quantum_budget);
     }
-    if let Some(signal_artifacts) = signal_artifacts {
+    if let Some(signal_artifacts) = resources.signal_artifacts {
         config = config.with_signal_artifacts(signal_artifacts);
     }
     let mut branch_evidence = None;
@@ -178,53 +187,81 @@ pub(crate) fn run_live_qemu_artifact_replay(
     if contract.coverage {
         config = config.with_coverage(production_api::ProductionPluginSwitch::On);
     }
-    if let Some(trace) = resolved_effect_trace {
+    if let Some(trace) = resources.effect_trace {
         config = config.with_fault_replay(trace);
     }
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let control_plane = production_qemu_control_plane(config, &scenario);
-    let client = InProcessLifecycleClient::new(control_plane);
-    let report = if contract.producer == "fork" {
-        let evidence = branch_evidence.ok_or_else(|| {
-            artifact_error("live-QEMU fork replay contract requires branch evidence")
-        })?;
-        let resume_plan = ResumeInvocationPlan {
-            savepoint: ResumeSavepointRef::CheckpointHash(evidence.checkpoint.id),
-            store_root: PathBuf::new(),
-            terminal_condition,
-            max_virtual_time: contract
-                .max_virtual_time_ticks
-                .map(|ticks| ticks.to_string()),
-            max_virtual_time_ticks: contract.max_virtual_time_ticks,
-            execution_mode: RunExecutionMode::ToCompletion,
-            watch_streams_live_status: false,
-            startup_commands: vec![SessionCommandKind::Fork, SessionCommandKind::Continue],
-            initial_control_commands: vec![SessionCommandKind::Query],
-            accepted_interactive_commands: Vec::new(),
-        };
-        runtime
-            .block_on(
-                run_remote_control_client_resume_from_evidence_with_driver_async(
-                    &client,
-                    &resume_plan,
-                    evidence,
-                    ResumeInteractiveCommandDriver::Preparsed(&[]),
-                    replay_has_exact_branch_choices(&contract.network_choice_indices),
-                ),
-            )?
-            .run
-    } else {
-        runtime.block_on(run_control_client_workflow_with_interactive_driver(
-            &client,
+    let report = if matches!(
+        expected_live_qemu_execution_owner(&contract.producer),
+        RunExecutionOwner::Campaign
+    ) {
+        crate::cli_verify_serve::run_local_qemu_campaign_replay(
+            backend,
             &run_plan,
-            InteractiveCommandDriver::Preparsed(&[]),
-            false,
-            replay_has_exact_branch_choices(&contract.network_choice_indices),
-        ))?
+            config,
+            schedule.clone(),
+            resources.campaign_closure.ok_or_else(|| {
+                artifact_error("campaign-run replay requires its authenticated choice closure")
+            })?,
+        )?
+    } else {
+        if resources.campaign_closure.is_some() {
+            return Err(artifact_error(
+                "session-owned replay cannot consume a campaign replay closure",
+            ));
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let control_plane = production_qemu_control_plane(config, &scenario);
+        let client = InProcessLifecycleClient::new(control_plane);
+        if contract.producer == "fork" {
+            let evidence = branch_evidence.ok_or_else(|| {
+                artifact_error("live-QEMU fork replay contract requires branch evidence")
+            })?;
+            let resume_plan = ResumeInvocationPlan {
+                savepoint: ResumeSavepointRef::CheckpointHash(evidence.checkpoint.id),
+                store_root: PathBuf::new(),
+                terminal_condition,
+                max_virtual_time: contract
+                    .max_virtual_time_ticks
+                    .map(|ticks| ticks.to_string()),
+                max_virtual_time_ticks: contract.max_virtual_time_ticks,
+                execution_mode: RunExecutionMode::ToCompletion,
+                watch_streams_live_status: false,
+                startup_commands: vec![SessionCommandKind::Fork, SessionCommandKind::Continue],
+                initial_control_commands: vec![SessionCommandKind::Query],
+                accepted_interactive_commands: Vec::new(),
+            };
+            runtime
+                .block_on(
+                    run_remote_control_client_resume_from_evidence_with_driver_async(
+                        &client,
+                        &resume_plan,
+                        evidence,
+                        ResumeInteractiveCommandDriver::Preparsed(&[]),
+                        replay_has_exact_branch_choices(&contract.network_choice_indices),
+                    ),
+                )?
+                .run
+        } else {
+            runtime.block_on(run_control_client_workflow_with_interactive_driver(
+                &client,
+                &run_plan,
+                InteractiveCommandDriver::Preparsed(&[]),
+                false,
+                replay_has_exact_branch_choices(&contract.network_choice_indices),
+            ))?
+        }
     };
     Ok((run_plan, report))
+}
+
+pub(crate) fn expected_live_qemu_execution_owner(producer: &str) -> RunExecutionOwner {
+    if producer == "campaign-run" {
+        RunExecutionOwner::Campaign
+    } else {
+        RunExecutionOwner::Session
+    }
 }
 
 fn replay_has_exact_branch_choices(network_indices: &[u64]) -> bool {
@@ -294,6 +331,21 @@ mod tests {
     fn replay_requires_an_exact_network_choice_stream_when_branching() {
         assert!(!replay_has_exact_branch_choices(&[]));
         assert!(replay_has_exact_branch_choices(&[5]));
+    }
+
+    #[test]
+    fn only_campaign_run_artifacts_route_to_the_campaign_owner() {
+        assert_eq!(
+            expected_live_qemu_execution_owner("campaign-run"),
+            RunExecutionOwner::Campaign
+        );
+        for producer in ["run", "verify", "search", "fuzz", "fork"] {
+            assert_eq!(
+                expected_live_qemu_execution_owner(producer),
+                RunExecutionOwner::Session,
+                "legacy producer {producer} must retain session replay semantics",
+            );
+        }
     }
 
     #[test]

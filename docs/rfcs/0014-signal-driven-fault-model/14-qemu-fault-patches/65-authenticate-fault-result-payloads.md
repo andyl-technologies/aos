@@ -1,6 +1,6 @@
 # Patch 0114: authenticate fault-result payloads
 
-Patch `0114-crucible-authenticate-fault-result-payloads.patch` binds every
+Patch `0133-crucible-authenticate-fault-result-payloads.patch` binds every
 queued fault-result header to the exact payload retained beside it.
 
 ## Problem

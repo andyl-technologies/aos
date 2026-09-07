@@ -92,3 +92,57 @@ fn authored_storage_history_limits_are_explicit_and_fail_closed() {
         })
     );
 }
+
+#[test]
+fn app_random_branch_plan_must_name_the_launched_node() -> Result<(), Box<dyn std::error::Error>> {
+    let stream = crucible_protocol::app_random_transport::app_random_stream_name("b", "draw");
+    let entry = crucible_protocol::app_random_branch_plan::AppRandomBranchPlanEntry::new(
+        0, 7, 9, [0x5a; 32], stream,
+    )?;
+    let plan = crucible_protocol::app_random_branch_plan::AppRandomBranchPlan::new(vec![entry])?;
+    let config = QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0)
+        .with_whitebox(QemuLaunchPluginSwitch::On)
+        .with_whitebox_setup(
+            super::whitebox_setup::QemuWhiteboxSetupValidation::test_x86_unclaimed(),
+        )
+        .with_app_random(QemuLaunchAppRandomConfig::new(11, 8, "a").with_branch_plan(plan));
+
+    assert_eq!(
+        config.validate(),
+        Err(QemuLaunchCommandError::InvalidAppRandomBranchConfiguration)
+    );
+    Ok(())
+}
+
+#[test]
+fn selectable_catalog_requires_whitebox_mode() -> Result<(), Box<dyn std::error::Error>> {
+    use crucible_protocol::selectable_catalog_plan::{
+        SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
+        SelectablePlanLimits, SelectablePlanPresence,
+    };
+
+    let empty = QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0)
+        .with_selectable_catalog_plan(SelectableCatalogPlan::default());
+    assert_eq!(empty.validate(), Ok(()));
+
+    let declaration = SelectablePlanDeclaration::new(
+        "network.policy",
+        vec![1, 2],
+        vec![1],
+        vec!["recovery".to_owned()],
+        SelectablePlanPresence::Required,
+    )?;
+    let plan = SelectableCatalogPlan::new(
+        SelectablePlanLimits::new(1, 3, 3)?,
+        vec![declaration],
+        SelectablePlanContinuation::cold(),
+    )?;
+    let config =
+        QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0).with_selectable_catalog_plan(plan);
+
+    assert_eq!(
+        config.validate(),
+        Err(QemuLaunchCommandError::SelectableCatalogWhileWhiteboxDisabled)
+    );
+    Ok(())
+}

@@ -163,8 +163,10 @@ fixture, catching any disagreement the compile-time checks miss.
 The region is laid out as a fixed-size header followed by a fixed-size array of
 per-node slots, followed by the directed-frame SPSC rings and their frame-entry
 storage, one fixed-capacity plugin-to-host coverage ring per VM, one fingerprint
-sample slot per VM, one bounded plugin-to-host white-box marker ring per VM, and
-one bounded guest-introspection ring in each direction per VM.
+sample slot per VM, one bounded plugin-to-host white-box marker ring per VM, one
+bounded guest-introspection ring in each direction per VM, the later device and
+fault transports, and one single-entry host-to-plugin selectable-reply ring per
+VM at the ABI-v18 tail.
 The header and slots are fixed-size so their offsets are compile-time constants.
 Frame-ring geometry is recorded in the header; ABI v6 derives every trailing
 section from that frame extent, the VM count, and ABI-fixed constants, so no
@@ -201,6 +203,12 @@ process-local pointer or host-layout fact crosses the ABI.
   +--------------------------------------------------+
   | GuestIntrospectionEntry[vm_node_count][2][64]    |   = complete CRGI records
   | ...                                              |
+  +--------------------------------------------------+
+  | ... ABI-v7 through ABI-v17 tail sections ...    |
+  +--------------------------------------------------+  align_up(v17 data end, 128)
+  | Selectable Reply RingHeader[vm_node_count]      |   = host -> plugin
+  +--------------------------------------------------+
+  | WhiteboxMarkerEntry[vm_node_count][1]           |   = SelectionReplyV1
   +--------------------------------------------------+  header.region_size
 ```
 
@@ -209,7 +217,7 @@ process-local pointer or host-layout fact crosses the ABI.
 The region header carries the identity and shape of the region: a magic number,
 the ABI version, the configured node count and queue capacity, the computed
 frame sub-region offsets, the global control flags, and the per-direction fault
-payload-arena size. ABI v15 mappers derive the coverage, fingerprint-sample,
+payload-arena size. ABI v21 mappers derive the coverage, fingerprint-sample,
 white-box marker, device-I/O, guest-introspection, and fault transport tail
 sections from that validated frame extent, the VM count, and fixed ABI
 constants. The header is the first thing a mapper reads and the thing
@@ -222,7 +230,7 @@ touches a slot.
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 
 /// Current ABI version. Bumped on any layout or semantics change (§13.6).
-pub const ABI_VERSION: u32 = 17;
+pub const ABI_VERSION: u32 = 21;
 
 /// Compile-time maximum number of node slots in the region.
 /// An ABI detail (§13.5); the engine's topology model MUST NOT depend on it.
@@ -482,11 +490,17 @@ pub struct RingHeader {
     /// Consumer-owned read index, monotonically increasing (never wraps in the
     /// counter; the slot is `read_idx % capacity`). On its own cache line.
     pub read_idx: AtomicU64, // @ 0
-    pub(crate) _pad_read: [u8; 56], // @ 8..64  (fill the consumer cache line)
+    /// High bit: reversible hot-fork consumer hold. Low bits: consumers that
+    /// passed admission and have not yet returned.
+    pub(crate) consumer_state: AtomicU64, // @ 8
+    pub(crate) _pad_read: [u8; 48], // @ 16..64 (fill the consumer cache line)
     /// Producer-owned write index, monotonically increasing. On its own cache
     /// line so the producer's store never invalidates the consumer's line.
     pub write_idx: AtomicU64, // @ 64
-    pub(crate) _pad_write: [u8; 56], // @ 72..128 (fill the producer cache line)
+    /// High bit: reversible hot-fork producer hold. Low bits: producers that
+    /// passed admission and have not yet returned.
+    pub(crate) producer_state: AtomicU64, // @ 72
+    pub(crate) _pad_write: [u8; 48], // @ 80..128 (fill the producer cache line)
 }
 
 const _: () = assert!(core::mem::size_of::<RingHeader>() == 128);
@@ -608,7 +622,8 @@ and release-stores `read_idx` only after copying the record.
 
 The ring capacity and coverage-map cardinality are both 65,536. The callback
 enqueues only the first transition of a map byte from zero, so a conforming
-producer can publish at most 65,536 records over its process lifetime. It never
+producer can publish at most 65,536 records in one authoritative restore
+generation. It never
 allocates, locks, blocks, performs I/O, evicts an older record, or writes a
 second output stream in the TB callback. `QueueFull` is therefore an invariant
 failure and aborts the run loudly; it is not routine backpressure.
@@ -621,6 +636,26 @@ event log before another backend step. A final teardown drain is returned from
 the backend quantum loop, admitted with the same dense event-log sequence
 validation, and published by the session actor before shutdown completes. No
 host-side coverage collection is a persistent record parallel to that log.
+
+ABI v21 binds coverage reset to the existing logical-time restore request and
+acknowledgement. While the fresh QEMU generation remains stopped, the plugin
+validates the coverage ring, release-publishes `write_idx = read_idx` to discard
+all boot/setup observations, zeros its process-local novelty map, and writes
+zero through `qemu_plugin_u64_set` for every `(vcpu, map_index)` entry in the
+existing QEMU scoreboard allocation. It MUST complete all of those operations
+before release-publishing `logical_time_restore_ack = request_generation`.
+Translated callbacks keep pointers into that same scoreboard allocation; the
+reset MUST NOT replace or free it.
+
+After observing the exact request/ack generation, the host MUST first confirm
+that native QEMU is paused. It then requires `read_idx == write_idx`, adopts
+that unchanged consumer cursor as its next coverage sequence, clears its host
+novelty bitmap and last-coverage coordinate, and only then may install the
+restored node as authoritative. Any malformed ring, missing scoreboard
+capability, invalid vCPU count, partial reset, acknowledgement mismatch, or
+post-ack queued entry fails the realization and requires kill-and-reap. Runtime
+control-socket traffic remains forbidden; the transaction uses only the
+versioned shared-memory request/ack and the already-required plugin wake.
 
 - **[SHM-38]** Each logical VM MUST own exactly one coverage ring with the
   QEMU plugin as sole producer and host adapter as sole consumer. Publication
@@ -639,6 +674,15 @@ host-side coverage collection is a persistent record parallel to that log.
   FIFO batch to the unified event log before the next step or teardown. *Gate:*
   `gate:basic-block-coverage`. *Spec:* §13.3.5, forward-ref
   [`19-observability-event-log.md`](19-observability-event-log.md).
+
+- **[SHM-40A]** A logical-time warm restore with coverage enabled MUST reset the
+  producer scoreboard, producer novelty map, producer ring, and host novelty
+  state at one exact paused restore generation in the ABI-v21 order above. The
+  plugin acknowledgement commits its complete half; the host MUST confirm both
+  that acknowledgement and native pause before committing its half. Any
+  incomplete or conflicting reset fails closed before authoritative execution.
+  *Gate:* `gate:abi-conformance`, `gate:basic-block-coverage`. *Spec:*
+  §13.3.5, §13.8.
 
 ### 13.3.6 Fingerprint sample slots
 
@@ -757,6 +801,37 @@ obeys [SHM-47] and [SHM-48].
   backpressure without overwrite, eviction, or control-socket fallback. *Gate:*
   `gate:abi-conformance`. *Spec:* §13.3.9.
 
+### 13.3.10 Host-to-plugin selectable-reply rings
+
+ABI v18 appends exactly one single-entry SPSC ring per logical VM after every
+ABI-v17 section. The host is the sole producer and the QEMU plugin is the sole
+consumer. The entry reuses the public `WhiteboxMarkerEntry` layout only as a
+fixed process-protocol envelope; kind `0xff07` and a canonical
+`SelectionReplyV1` payload distinguish it from the directionally separate
+observational marker ring. Its header carries the exact pending trap icount and
+vCPU index.
+
+The host MUST validate the reply sequence, reply-reservation capacity, and
+current paused icount before release-publishing the entry. The plugin MUST
+acquire-consume at vCPU resume, compare the entry with its incarnation-bound
+pending catalog request, zero-fill the entire retained guest reservation, write
+through the current vCPU's virtual-memory helper, and only then charge catalog
+completion. Any mismatch, malformed reply, full queue, or guest-memory failure
+fails loudly. Capacity is one because the catalog permits only one pending
+request; a second entry is invalid pipelining rather than useful buffering.
+
+- **[SHM-53]** Each logical VM MUST own one ABI-v18, single-entry selectable
+  reply ring with fixed host-producer/plugin-consumer roles. Publication and
+  reclamation use the common release/acquire SPSC ordering, and no control
+  socket, observational ring, native pointer, or QEMU-private object may carry
+  the reply. *Gate:* `gate:abi-conformance`, `gate:typed-choice`,
+  `gate:license-boundary`. *Spec:* §13.3.10, §13.6.
+
+- **[SHM-54]** The plugin MUST deliver a reply only at the exact retained
+  `(icount, vCPU, sequence)` before resumed guest execution and MUST complete
+  catalog accounting only after the complete zero-padded guest write succeeds.
+  *Gate:* `gate:typed-choice`, `gate:e2e-determinism`. *Spec:* §13.3.10.
+
 ## 13.4 Normative offset and size table
 
 The following constants are the binding ABI for `ABI_VERSION = 6` on
@@ -805,9 +880,11 @@ NodeSlot      (size 128, align 128)
 
 RingHeader    (size 128, align 128)
   @  0  read_idx           u64
-  @  8  _pad_read[56]
+  @  8  consumer_state     u64
+  @ 16  _pad_read[48]
   @ 64  write_idx          u64
-  @ 72  _pad_write[56]
+  @ 72  producer_state     u64
+  @ 80  _pad_write[48]
 
 FrameEntry    (size 24 + MAX_FRAME_DATA, align 8)
   @  0  delivery_icount    u64
@@ -930,6 +1007,78 @@ Both are monotonically increasing 64-bit counters that never wrap in practice
 `entries[i % capacity]`, and because `capacity` is a power of two the modulo is a
 mask. The queue holds `write_idx - read_idx` entries; it is empty when
 `read_idx == write_idx` and full when `write_idx - read_idx == capacity`.
+
+ABI v20 wraps every operation that can advance `read_idx` in consumer
+admission, just as ABI v19 wraps producer publication. A held high bit rejects
+later consumers; low bits count consumers admitted before the hold until their
+operation returns. Read-only peeks do not mutate queue content and need not
+enter consumer admission.
+
+The Apache host also defines a version-1 operational ring image for copying
+held queues into a branch-private setup mapping. It is not configuration
+identity and does not replace the semantic host continuation. Its canonical
+little-endian grammar is:
+
+```text
+HotForkRingImageV1 {
+    magic: [u8; 8] = "CRHFRI01",
+    schema_version: u32 = 1,
+    abi_version: u32 = 21,
+    region_size: u64,
+    vm_node_count: u32,
+    queue_capacity: u32,
+    icount_shift: u32,
+    fault_payload_arena_bytes: u32,
+    directed_and_coverage_segments: [
+        { offset: u64, length: u64, bytes: [u8; length] },
+        { offset: u64, length: u64, bytes: [u8; length] },
+    ],
+    remaining_ring_segment: {
+        offset: u64, length: u64, bytes: [u8; length]
+    },
+    digest: [u8; 32],
+}
+```
+
+The three ranges are fixed by the validated `RegionLayout`: directed ring
+headers/data from `ring_hdr_off` to `coverage_ring_hdr_off`; coverage ring
+headers/data from `coverage_ring_hdr_off` to `fingerprint_sample_off`; and all
+white-box, fault command/result/event (including arena), guest-introspection,
+accelerator, and selectable-reply ring storage from
+`whitebox_marker_ring_hdr_off` to `region_size`. Fingerprint samples and node
+slots are deliberately not ring-image bytes and remain separate continuation
+or child-reinitialization obligations.
+
+Capture requires both endpoints of every source ring held with zero admitted
+operations. Restore requires an identical, inactive, branch-private mapping
+whose endpoints are already held and drained. Every encoded ring header MUST
+retain both held bits, zero admission counts, and a live count no larger than
+that ring class's capacity; malformed input is rejected before the first
+destination write. The complete canonical size is checked against a
+caller-supplied bound before segment allocation. `digest` is BLAKE3 derived
+with context `crucible.shmem.hot-fork-ring-image.v1` over every field after the
+magic except the digest itself. It provides transfer integrity only, not
+campaign authority. A restored mapping stays held until the remaining child
+resources and matching host continuation are authenticated.
+
+The Linux host materializer constructs the destination as a distinct
+shrink-sealed memfd from fresh `RegionAllocation` bytes, holds all destination
+rings before restore, and requires an exact post-restore recapture. The live
+source inventory, mapping identity, and QEMU/host barrier generation are
+checked before and after that work. The resulting owner is opaque at this
+checkpoint: it grants no raw descriptor escape or barrier release. The node may
+consume it into a retained template-process stage by rechecking the live source
+and destination digest, sending one standard QMP `getfd`/`SCM_RIGHTS` duplicate
+under a bounded identity-derived name, and requiring patched QEMU to
+independently duplicate and authenticate that entry's exact device, inode,
+length, regular-file type, and shrink seal. The original mapping remains held.
+Release requires that same exact basis and closes the QEMU-owned duplicate
+before standard `closefd` closes the monitor-owned entry. Transfer or adoption
+ambiguity poisons QMP, retains the mapping, and quarantines the QEMU generation.
+This stage explicitly
+acknowledges neither complete disposition nor readiness and is not evidence
+that a child process inherited, remapped, authenticated, or released the
+region.
 
 The operations the ABI defines:
 
@@ -1191,10 +1340,19 @@ alter the clamped guest coordinate or deadline.
 
 ## 13.8 Versioning and conformance
 
-The region carries an ABI version in its header. ABI v15 assigns byte 18 of
-`FrameEntry` to consumer-owned delivery state while preserving the payload
-offset and total entry size; v14 peers are rejected rather than inferred or
-supported through a compatibility path. The handshake
+The region carries an ABI version in its header. ABI v18 appended the VM-local
+single-entry selectable-reply rings after the complete v17 region. ABI v19
+replaces eight bytes of the producer cache-line padding in every `RingHeader`
+with an atomic reversible producer-admission state. Its high bit rejects later
+producer publications while its low bits count publications admitted before
+the hold. ABI v20 likewise replaces eight bytes of the consumer cache-line
+padding with a reversible consumer-admission state. A hot-fork barrier holds
+both endpoints of every ring and waits for both counts to drain before
+reporting the ring transport quiescent. ABI v21 leaves the layout unchanged and
+changes logical-time restore acknowledgement semantics: coverage-enabled peers
+must complete the producer/consumer generation reset in §13.3.5 before the
+restored guest becomes authoritative. Older peers are rejected rather than
+inferred or supported through a compatibility path. The handshake
 ([`14-protocol.md`](14-protocol.md)) validates it before any node trusts a byte of
 the region. ABI v2 is intentionally incompatible with v1 because v2 adds the
 coverage tail: a v2 host rejects a v1 plugin/region, and a v2 plugin rejects a
@@ -1378,3 +1536,7 @@ by when the producer's store landed in shared memory.
   Completed by `checks.crucible.phase2.shmemAbiConformance`: the ABI-v5 C/Rust
   layouts and golden vector freeze the mailbox, while the Rust mailbox gate
   covers publication, exact round-trip, acknowledgement, and negative cases.
+- [x] **T-SHM-20** Append the ABI-v18 single-entry host-to-plugin selectable
+  reply ring per logical VM, freeze its C/Rust geometry and golden vector, and
+  enforce exact sequence/icount/vCPU/reservation checks before resume-time guest
+  delivery. — satisfies [SHM-53], [SHM-54]; spec §13.3.10, §13.6.

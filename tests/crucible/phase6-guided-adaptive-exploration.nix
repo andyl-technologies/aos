@@ -12,7 +12,10 @@
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  libRs = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libRs = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   guidedTest = builtins.readFile ../../crates/crucible/tests/gate_guided_adaptive_exploration.rs;
   guidanceLintTest = builtins.readFile ../../crates/crucible-harness/tests/support/harness_lint/guidance.rs;
 
@@ -261,8 +264,8 @@
         ];
       };
       T-ADV-21 = {
-        testFilter = "gate_app_random_branching_is_optional_and_bounded";
-        result = "app_random=recorded-sites+bounded-seeded-samples+prefix-replacement+no-draw-equivalence";
+        testFilter = "gate_app_random_branching_is_lazy_typed_and_bounded";
+        result = "app_random=lazy-typed-site+bounded-seeded-samples+prefix-replacement+no-draw-equivalence";
         docNeedles = [
           {
             label = "app-random completion note";
@@ -291,8 +294,8 @@
             needle = "pub struct AppRandomSampleBudget";
           }
           {
-            label = "recorded app-random site derivation";
-            needle = "pub fn app_random_draw_sites_from_schedule";
+            label = "lazy app-random branch decisions";
+            needle = "pub fn app_random_branch_decisions";
           }
         ];
         libNeedles = [
@@ -304,11 +307,11 @@
         testNeedles = [
           {
             label = "app-random test";
-            needle = "gate_app_random_branching_is_optional_and_bounded";
+            needle = "gate_app_random_branching_is_lazy_typed_and_bounded";
           }
           {
-            label = "app-random decision assertion";
-            needle = "Decision::AppRandom";
+            label = "app-random typed selection assertion";
+            needle = "matches!(child.decision, Decision::Selection(_))";
           }
           {
             label = "app-random no-draw graph assertion";

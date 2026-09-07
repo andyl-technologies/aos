@@ -50,6 +50,26 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
+  # The app-random frames entered the white-box doorbell protocol at version
+  # 2; later protocol additions bump the constant again, so the gate holds the
+  # declared version to that floor rather than to one literal value.
+  appRandomProtocolVersion = 2;
+  declaredProtocolVersion = let
+    matched =
+      builtins.match
+      ".*pub const WHITEBOX_DOORBELL_PROTOCOL_VERSION: u16 = ([0-9]+);.*"
+      protocolDoorbellFrame;
+  in
+    if matched == null
+    then null
+    else lib.toInt (builtins.head matched);
+  protocolVersionFailures =
+    if declaredProtocolVersion == null
+    then ["crates/crucible-protocol/src/doorbell_frame.rs: missing declared white-box doorbell protocol version"]
+    else if declaredProtocolVersion < appRandomProtocolVersion
+    then ["crates/crucible-protocol/src/doorbell_frame.rs: white-box doorbell protocol version ${builtins.toString declaredProtocolVersion} predates the app-random bump to ${builtins.toString appRandomProtocolVersion}"]
+    else [];
+
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
       {
@@ -69,11 +89,8 @@
         needle = "decode diagnostic and dropped";
       }
     ]
+    ++ protocolVersionFailures
     ++ failuresFor "crates/crucible-protocol/src/doorbell_frame.rs" protocolDoorbellFrame [
-      {
-        label = "protocol version bumped for app-random";
-        needle = "pub const WHITEBOX_DOORBELL_PROTOCOL_VERSION: u16 = 2;";
-      }
       {
         label = "bounded frame decoder";
         needle = "pub fn decode_bounded(";

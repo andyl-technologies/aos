@@ -5,19 +5,29 @@
 //! This dual-licensed L1 crate implements independently implementable framing,
 //! versioned codecs, and golden vectors over owned buffers, without QEMU headers,
 //! callbacks, native pointers, or private types. Its Unix descriptor handover
-//! attaches the shared-memory and wake descriptors to the setup frame.
+//! attaches the shared-memory, wake, and immutable version-negotiated plugin
+//! plan descriptors to the setup frame.
 //!
 //! Module map: the crate root owns the frame-format constants, closed tag
 //! registry, message bodies, pure codec, frame I/O helpers, handshake
 //! orchestration, setup descriptor passing, and control/data split contract.
+//! `app_random_branch_plan` owns the legacy sealed branch-plan body;
+//! `app_random_transport` owns the app-random observation transport;
+//! `choice` owns the portable typed choice values carried by selectable
+//! registration and reply bodies;
 //! `doorbell_abi` owns the shared white-box doorbell instruction ABI;
 //! `doorbell_frame` owns the shared white-box doorbell marker frame ABI; `doorbell_marker`
-//! owns the marker-kind vocabulary and body codecs; `preemption` owns deterministic IPI arithmetic;
-//! `golden_vectors` owns the frozen ABI corpus; `codec_fuzz` owns its fuzz target and corpus.
+//! owns the marker-kind vocabulary and body codecs; `selectable` owns the
+//! guest choice register/request/reply ABI; `selectable_catalog_plan` owns the
+//! sealed catalog and continuation launch body; `selectable_transport` owns the
+//! deferred-request plugin-to-host record; `plugin_setup_plan` owns the
+//! composite setup descriptor body; `preemption` owns deterministic IPI
+//! arithmetic; `golden_vectors` owns the frozen ABI corpus; `codec_fuzz` owns
+//! its fuzz target and corpus.
 //!
 //! Unsafe boundary discipline: raw `sendmsg`/`recvmsg` and ancillary-buffer
 //! details stay private; public callers use safe setup descriptor handover wrappers.
-//! These validate the fixed two-fd order and descriptor count before exposing
+//! These validate the fixed three-fd order and descriptor count before exposing
 //! owned close-on-exec descriptors.
 //!
 //! Wire-format:
@@ -32,7 +42,9 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
+pub mod app_random_branch_plan;
 pub mod app_random_transport;
+mod choice;
 mod codec_fuzz;
 pub mod debug_gateway;
 mod doorbell_abi;
@@ -41,12 +53,20 @@ mod doorbell_marker;
 mod golden_vectors;
 pub mod guest_introspection;
 pub mod guest_introspection_doorbell;
+pub mod plugin_setup_plan;
 mod preemption;
+mod selectable;
+pub mod selectable_catalog_plan;
+pub mod selectable_transport;
 
 use std::io::{ErrorKind, Read, Write};
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
+pub use choice::{
+    AlternativeId, BooleanDomain, ChoiceCodecError, ChoiceDomain, ChoiceValue, DiscreteAlternative,
+    DiscreteDomain, ExactRational, IntegerDomain, IntegerRepresentation, IntegerValue,
+};
 pub use codec_fuzz::{
     CODEC_FUZZ_REGRESSION_CORPUS, ControlCodecFuzzCase, ControlCodecFuzzOutcome,
     run_control_codec_fuzz_target,
@@ -71,13 +91,20 @@ pub use doorbell_marker::{
     GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS, WHITEBOX_DOORBELL_ASSERTION_FLAVOR_COUNT,
     WHITEBOX_DOORBELL_KIND_ASSERTION, WHITEBOX_DOORBELL_KIND_COVERAGE,
     WHITEBOX_DOORBELL_KIND_EVENT, WHITEBOX_DOORBELL_KIND_LIFECYCLE,
-    WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST, WHITEBOX_DOORBELL_LIFECYCLE_EVENT_COUNT,
+    WHITEBOX_DOORBELL_KIND_MEASUREMENT_BEGIN, WHITEBOX_DOORBELL_KIND_MEASUREMENT_END,
+    WHITEBOX_DOORBELL_KIND_METRIC_SAMPLE, WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
+    WHITEBOX_DOORBELL_KIND_SEMANTIC_MARKER, WHITEBOX_DOORBELL_LIFECYCLE_EVENT_COUNT,
     WHITEBOX_DOORBELL_LIFECYCLE_SETUP_COMPLETE, WHITEBOX_DOORBELL_LIFECYCLE_TEST_DONE,
     WHITEBOX_DOORBELL_MARKER_KIND_COUNT, WHITEBOX_DOORBELL_RANDOM_REQUEST_MAX_WIDTH_BYTES,
-    WhiteboxAssertionMarkerBody, WhiteboxAssertionMarkerFlavor, WhiteboxCoverageMarkerBody,
-    WhiteboxDoorbellMarkerKind, WhiteboxEventMarkerBody, WhiteboxLifecycleMarkerEvent,
-    WhiteboxMarkerDetail, WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError,
-    WhiteboxMarkerPayloadEncodeError, WhiteboxMarkerPayloadGoldenVector, WhiteboxRandomRequestBody,
+    WHITEBOX_MARKER_BODY_MAX_BYTES, WHITEBOX_MEASUREMENT_IDENTIFIER_MAX_BYTES,
+    WHITEBOX_MEASUREMENT_VALUE_KIND_COUNT, WHITEBOX_MEASUREMENT_VECTOR_MAX_ELEMENTS,
+    WHITEBOX_SEMANTIC_MARKER_MAX_DETAILS, WhiteboxAssertionMarkerBody,
+    WhiteboxAssertionMarkerFlavor, WhiteboxCoverageMarkerBody, WhiteboxDoorbellMarkerKind,
+    WhiteboxEventMarkerBody, WhiteboxLifecycleMarkerEvent, WhiteboxMarkerDetail,
+    WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError, WhiteboxMarkerPayloadEncodeError,
+    WhiteboxMarkerPayloadGoldenVector, WhiteboxMeasurementBoundaryBody, WhiteboxMeasurementValue,
+    WhiteboxMeasurementValueKind, WhiteboxMetricSampleBody, WhiteboxRandomRequestBody,
+    WhiteboxReducedRational, WhiteboxSemanticMarkerBody, WhiteboxSemanticMarkerDetail,
     decode_whitebox_marker_payload, encode_whitebox_marker_frame,
     encode_whitebox_marker_payload_body,
 };
@@ -86,6 +113,16 @@ pub use golden_vectors::{
     GOLDEN_VECTOR_PROTOCOL_VERSION, GOLDEN_VECTOR_REGENERATION_RULE,
 };
 pub use preemption::deterministic_ipi_delivery_icount;
+pub use selectable::{
+    SELECTABLE_DIGEST_BYTES, SELECTABLE_GOLDEN_VECTOR_REGENERATION_RULE,
+    SELECTABLE_IDENTIFIER_MAX_BYTES, SELECTABLE_MESSAGE_KIND_REGISTER,
+    SELECTABLE_MESSAGE_KIND_REPLY, SELECTABLE_MESSAGE_KIND_REQUEST, SELECTABLE_MESSAGE_MAX_BYTES,
+    SELECTABLE_PROTOCOL_VERSION, SELECTABLE_REGISTER_HEADER_BYTES,
+    SELECTABLE_SEMANTIC_TAG_MAX_COUNT, SELECTION_REPLY_HEADER_BYTES,
+    SELECTION_REQUEST_HEADER_BYTES, SelectableMessageKind, SelectableProtocolError,
+    SelectableRegister, SelectionReply, SelectionReplyStatus, SelectionRequest,
+    decode_selectable_message_kind, validate_selectable_identifier,
+};
 
 use thiserror::Error;
 
@@ -105,9 +142,9 @@ pub const FRAME_LENGTH_INCLUDES_TAG: bool = true;
 /// Whether all multi-byte integers in frame payloads use big-endian order.
 pub const FRAME_INTEGERS_ARE_BIG_ENDIAN: bool = true;
 /// Lowest control-protocol version this crate can negotiate.
-pub const CONTROL_PROTOCOL_MIN_VERSION: u32 = 1;
+pub const CONTROL_PROTOCOL_MIN_VERSION: u32 = 2;
 /// Highest control-protocol version this crate can negotiate.
-pub const CONTROL_PROTOCOL_VERSION: u32 = 1;
+pub const CONTROL_PROTOCOL_VERSION: u32 = include!("control_protocol_version.in");
 /// Byte length of plugin-to-host per-vCPU register digests.
 pub const PLUGIN_NVCPU_REGISTER_DIGEST_BYTES: usize = 32;
 
@@ -601,7 +638,7 @@ pub enum HostMsg {
 
 /// Number of file descriptors attached to a `Setup` frame.
 #[cfg(unix)]
-pub const SETUP_DESCRIPTOR_COUNT: usize = 2;
+pub const SETUP_DESCRIPTOR_COUNT: usize = 3;
 /// `SetupAck.status` value meaning the plugin is ready to run via shared memory.
 pub const SETUP_ACK_STATUS_READY: u8 = 0;
 /// Generic `SetupAck.status` value for setup failures without a narrower code.
@@ -615,6 +652,8 @@ pub struct SetupDescriptorFds {
     pub shmem_fd: RawFd,
     /// Wake descriptor, sent second in the `SCM_RIGHTS` list.
     pub wake_fd: RawFd,
+    /// Sealed v2 app-random or v3 composite plugin-plan descriptor, sent third.
+    pub plugin_setup_plan_fd: RawFd,
 }
 
 /// Owned descriptors received from an inbound `Setup` frame.
@@ -625,6 +664,8 @@ pub struct ReceivedSetupDescriptors {
     pub shmem_fd: OwnedFd,
     /// Wake descriptor received second in the `SCM_RIGHTS` list.
     pub wake_fd: OwnedFd,
+    /// Sealed v2 app-random or v3 composite plugin-plan descriptor received third.
+    pub plugin_setup_plan_fd: OwnedFd,
 }
 
 /// A decoded `Setup` frame plus its attached descriptors.
@@ -1165,6 +1206,23 @@ impl<S> ControlLifecycleStream<S> {
         let mut lifecycle = ControlLifecycle::new();
         lifecycle.observe(ControlLifecycleEvent::ConnectUnixStreamSocketPair)?;
         Ok(Self { stream, lifecycle })
+    }
+
+    /// Restores an authenticated replacement stream directly into RUN.
+    ///
+    /// A hot-fork child does not replay the template's setup handshake. Its
+    /// child reinitializer first authenticates and installs a fresh private
+    /// control endpoint, then uses this constructor so the only accepted frame
+    /// remains the terminal host `Quit`. Callers must not use this constructor
+    /// for an unvalidated or template-shared endpoint.
+    #[must_use]
+    pub fn restored_run_via_shared_memory(stream: S) -> Self {
+        Self {
+            stream,
+            lifecycle: ControlLifecycle {
+                state: ControlLifecycleState::RunningViaSharedMemory,
+            },
+        }
     }
 
     /// Returns the current lifecycle state.
@@ -2060,7 +2118,8 @@ fn ensure_waiting_for_setup_ack(state: ControlLifecycleState) -> Result<(), Cont
 /// Sends a `Setup` frame and its fixed-order descriptors over a Unix socket.
 ///
 /// The descriptors are attached as `SCM_RIGHTS` ancillary data using
-/// `sendmsg`, in the RFC-defined order `[shmem_fd, wake_fd]`.
+/// `sendmsg`, in the RFC-defined order
+/// `[shmem_fd, wake_fd, plugin_setup_plan_fd]`.
 ///
 /// # Errors
 ///
@@ -2075,21 +2134,25 @@ pub fn send_setup_with_descriptors(
     descriptors: SetupDescriptorFds,
 ) -> Result<(), DescriptorHandoverError> {
     let frame = control_encode_host_msg(&HostMsg::Setup { region_len });
-    let fds = [descriptors.shmem_fd, descriptors.wake_fd];
+    let fds = [
+        descriptors.shmem_fd,
+        descriptors.wake_fd,
+        descriptors.plugin_setup_plan_fd,
+    ];
     send_frame_with_fds(socket_fd, &frame, &fds)
 }
 
 /// Receives a `Setup` frame and its fixed-order descriptors from a Unix socket.
 ///
-/// The frame must carry exactly two `SCM_RIGHTS` descriptors. The returned
+/// The frame must carry exactly three `SCM_RIGHTS` descriptors. The returned
 /// descriptors are owned, marked close-on-exec, and returned in the RFC-defined
-/// order: shmem first, wake second.
+/// order: shmem first, wake second, immutable version-negotiated plugin plan third.
 ///
 /// # Errors
 ///
 /// Returns [`DescriptorHandoverError`] when the socket closes early, the
 /// ancillary data is truncated or malformed, the descriptor count is not
-/// exactly two, or the frame does not decode to [`HostMsg::Setup`].
+/// exactly three, or the frame does not decode to [`HostMsg::Setup`].
 #[cfg(unix)]
 pub fn recv_setup_with_descriptors(
     socket_fd: RawFd,
@@ -2468,21 +2531,26 @@ fn append_rights_fds(
 fn setup_descriptors_from_raw_fds(
     fds: Vec<RawFd>,
 ) -> Result<ReceivedSetupDescriptors, DescriptorHandoverError> {
-    let [shmem_fd, wake_fd] = match <[RawFd; SETUP_DESCRIPTOR_COUNT]>::try_from(fds) {
-        Ok(fds) => fds,
-        Err(fds) => {
-            let count = fds.len();
-            close_raw_fds(fds);
-            return Err(DescriptorHandoverError::WrongDescriptorCount { count });
-        }
-    };
+    let [shmem_fd, wake_fd, plugin_setup_plan_fd] =
+        match <[RawFd; SETUP_DESCRIPTOR_COUNT]>::try_from(fds) {
+            Ok(fds) => fds,
+            Err(fds) => {
+                let count = fds.len();
+                close_raw_fds(fds);
+                return Err(DescriptorHandoverError::WrongDescriptorCount { count });
+            }
+        };
 
     if let Err(error) = set_cloexec_on_raw_fd(shmem_fd) {
-        close_raw_fds(vec![shmem_fd, wake_fd]);
+        close_raw_fds(vec![shmem_fd, wake_fd, plugin_setup_plan_fd]);
         return Err(error);
     }
     if let Err(error) = set_cloexec_on_raw_fd(wake_fd) {
-        close_raw_fds(vec![shmem_fd, wake_fd]);
+        close_raw_fds(vec![shmem_fd, wake_fd, plugin_setup_plan_fd]);
+        return Err(error);
+    }
+    if let Err(error) = set_cloexec_on_raw_fd(plugin_setup_plan_fd) {
+        close_raw_fds(vec![shmem_fd, wake_fd, plugin_setup_plan_fd]);
         return Err(error);
     }
 
@@ -2491,6 +2559,7 @@ fn setup_descriptors_from_raw_fds(
         ReceivedSetupDescriptors {
             shmem_fd: OwnedFd::from_raw_fd(shmem_fd),
             wake_fd: OwnedFd::from_raw_fd(wake_fd),
+            plugin_setup_plan_fd: OwnedFd::from_raw_fd(plugin_setup_plan_fd),
         }
     };
     Ok(descriptors)

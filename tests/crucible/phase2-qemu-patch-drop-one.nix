@@ -161,6 +161,7 @@
     "0040-crucible-9p-sync-kick.patch" = [];
     "0041-crucible-whitebox-guest-write.patch" = [
       "qemu_plugin_crucible_write_memory_vaddr"
+      "qemu_plugin_crucible_write_memory_vaddr_for_vcpu"
     ];
     "0042-crucible-aarch64-det-ipi-adapter.patch" = [];
     "0043-crucible-time-advance-commit-barrier.patch" = [];
@@ -206,6 +207,18 @@
         identifier = "terminal_cursor";
         path = "plugins/api.c";
         fullSourceNeedle = "bool terminal_cursor = !exact_boundary && cpu &&";
+      }
+    ];
+    "0136-crucible-seal-hot-fork-plugin-workers.patch" = [
+      {
+        identifier = "QEMU_PLUGIN_CRUCIBLE_WORKER_ALL";
+        path = "include/qemu/qemu-plugin.h";
+        fullSourceNeedle = "#define QEMU_PLUGIN_CRUCIBLE_WORKER_ALL ((UINT64_C(1) << 3) - 1)";
+      }
+      {
+        identifier = "QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED";
+        path = "include/qemu/qemu-plugin.h";
+        fullSourceNeedle = "#define QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED ((UINT64_C(1) << 2) - 1)";
       }
     ];
   };

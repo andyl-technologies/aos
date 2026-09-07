@@ -13,7 +13,10 @@
   shmemLib =
     import ./_crucible-shmem-source.nix {inherit lib;}
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs
-    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
+    + import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+    }
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/futex.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/preemption_mailbox.rs
@@ -106,16 +109,24 @@
         needle = "const _: () = assert!(RING_HEADER_READ_IDX_OFFSET == 0);";
       }
       {
+        label = "ring header consumer-state Rust static assertion";
+        needle = "const _: () = assert!(RING_HEADER_CONSUMER_STATE_OFFSET == 8);";
+      }
+      {
         label = "ring header read padding Rust static assertion";
-        needle = "const _: () = assert!(RING_HEADER_PAD_READ_OFFSET == 8);";
+        needle = "const _: () = assert!(RING_HEADER_PAD_READ_OFFSET == 16);";
       }
       {
         label = "ring header write index Rust static assertion";
         needle = "const _: () = assert!(RING_HEADER_WRITE_IDX_OFFSET == 64);";
       }
       {
+        label = "ring header producer-state Rust static assertion";
+        needle = "const _: () = assert!(RING_HEADER_PRODUCER_STATE_OFFSET == 72);";
+      }
+      {
         label = "ring header write padding Rust static assertion";
-        needle = "const _: () = assert!(RING_HEADER_PAD_WRITE_OFFSET == 72);";
+        needle = "const _: () = assert!(RING_HEADER_PAD_WRITE_OFFSET == 80);";
       }
       {
         label = "ring header size Rust static assertion";
@@ -385,6 +396,14 @@
         label = "current ABI also rejects future region headers";
         needle = "abi_version: ABI_VERSION + 1";
       }
+      {
+        label = "held ring image clone and private-mapping restore";
+        needle = "hot_fork_ring_image_round_trips_queued_bytes_into_a_held_private_mapping";
+      }
+      {
+        label = "ring image rejects an open or active endpoint";
+        needle = "hot-fork-ring-image-open-or-active-header";
+      }
     ]
     ++ forbiddenFor "crates/crucible-shmem/tests/gate_abi_conformance.rs" shmemGate [
       {
@@ -413,7 +432,7 @@
     ++ failuresFor "crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture" goldenFixture [
       {
         label = "ABI version";
-        needle = "abi_version=17";
+        needle = "abi_version=21";
       }
       {
         label = "total serialized length";
@@ -455,10 +474,22 @@
     ++ failuresFor "crates/crucible-shmem/interface/crucible-shmem-abi.toml" interfaceManifest [
       {
         label = "machine-readable ABI version";
-        needle = "abi_version = 17";
+        needle = "abi_version = 21";
+      }
+      {
+        label = "selectable reply direction";
+        needle = "selectable_reply_direction = \"host-to-plugin\"";
+      }
+      {
+        label = "selectable reply single-entry capacity";
+        needle = "selectable_reply_queue_capacity = 1";
       }
     ]
     ++ failuresFor "crates/crucible-shmem/include/crucible_shmem_abi.h" generatedHeader [
+      {
+        label = "selectable reply capacity constant";
+        needle = "#define CRUCIBLE_SHMEM_SELECTABLE_REPLY_QUEUE_CAPACITY 1u";
+      }
       {
         label = "region header static assert";
         needle = "sizeof(crucible_shmem_region_header) == CRUCIBLE_SHMEM_REGION_HEADER_SIZE";
@@ -626,6 +657,10 @@
       {
         label = "ring header write index offset static assert";
         needle = "offsetof(crucible_shmem_ring_header, write_idx) == CRUCIBLE_SHMEM_RING_HEADER_WRITE_IDX_OFFSET";
+      }
+      {
+        label = "ring header producer-state offset static assert";
+        needle = "offsetof(crucible_shmem_ring_header, producer_state) == CRUCIBLE_SHMEM_RING_HEADER_PRODUCER_STATE_OFFSET";
       }
       {
         label = "ring header write padding offset static assert";
@@ -830,6 +865,16 @@ in
               --test preemption_mailbox \
               -- --test-threads=1
 
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-shmem-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-shmem \
+              --test setup_validation \
+              hot_fork_ring_image_round_trips_queued_bytes_into_a_held_private_mapping \
+              -- --test-threads=1
+
             cargo run \
               --frozen \
               --offline \
@@ -954,7 +999,7 @@ in
                 atomic_init(&header.ring_hdr_off, 4352u);
                 atomic_init(&header.ring_data_off, 5888u);
                 atomic_init(&header.entry_stride, CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE);
-                atomic_init(&header.region_size, 42012416u);
+                atomic_init(&header.region_size, 42022016u);
                 atomic_init(&header.icount_shift, 4u);
                 atomic_init(&header.pause_requested, 1u);
                 atomic_init(&header.shutdown_requested, 0u);
@@ -995,6 +1040,10 @@ in
                 memset(&ring, 0, sizeof(ring));
                 atomic_init(&ring.read_idx, 5u);
                 atomic_init(&ring.write_idx, 9u);
+                atomic_init(
+                    &ring.producer_state,
+                    (UINT64_C(1) << 63) | UINT64_C(3)
+                );
 
                 crucible_shmem_frame_entry frame;
                 memset(&frame, 0, sizeof(frame));
@@ -1074,7 +1123,7 @@ in
                         CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE,
                         2u,
                         CRUCIBLE_FAULT_DEFAULT_PAYLOAD_ARENA_BYTES,
-                        42012416u,
+                        42022016u,
                         &guest_layout
                     ) != 0
                     || guest_layout.ring_count != 4u
@@ -1084,7 +1133,14 @@ in
                     || guest_layout.ring_data_off != 38391040u
                     || guest_layout.entry_stride
                         != CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_SIZE
-                    || guest_layout.region_size != 42012416u
+                    || guest_layout.selectable_reply_ring_count != 2u
+                    || guest_layout.selectable_reply_queue_capacity
+                        != CRUCIBLE_SHMEM_SELECTABLE_REPLY_QUEUE_CAPACITY
+                    || guest_layout.selectable_reply_ring_hdr_off != 42012416u
+                    || guest_layout.selectable_reply_ring_data_off != 42012672u
+                    || guest_layout.selectable_reply_entry_stride
+                        != CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_SIZE
+                    || guest_layout.region_size != 42022016u
                     || crucible_shmem_guest_introspection_layout_compute(
                         5888u,
                         12u,
@@ -1092,7 +1148,7 @@ in
                         CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE,
                         2u,
                         0u,
-                        42012416u,
+                        42022016u,
                         &guest_layout
                     ) == 0
                     || crucible_shmem_guest_introspection_layout_compute(
@@ -1102,7 +1158,7 @@ in
                         CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE,
                         2u,
                         CRUCIBLE_FAULT_DEFAULT_PAYLOAD_ARENA_BYTES,
-                        42012415u,
+                        42022015u,
                         &guest_layout
                     ) == 0) {
                     fprintf(stderr, "guest-introspection geometry validation failed\n");
@@ -1220,7 +1276,7 @@ in
                     || atomic_load_explicit(&header.ring_hdr_off, memory_order_acquire) != 4352u
                     || atomic_load_explicit(&header.ring_data_off, memory_order_acquire) != 5888u
                     || atomic_load_explicit(&header.entry_stride, memory_order_acquire) != CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE
-                    || atomic_load_explicit(&header.region_size, memory_order_acquire) != 42012416u
+                    || atomic_load_explicit(&header.region_size, memory_order_acquire) != 42022016u
                     || atomic_load_explicit(&header.icount_shift, memory_order_acquire) != 4u
                     || atomic_load_explicit(&header.pause_requested, memory_order_acquire) != 1u
                     || atomic_load_explicit(&header.shutdown_requested, memory_order_acquire) != 0u
@@ -1382,7 +1438,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:abi-conformance
-            rust_tests=crucible-shmem::gate_abi_conformance,crucible-shmem::preemption_mailbox
+            rust_tests=crucible-shmem::gate_abi_conformance,crucible-shmem::preemption_mailbox,crucible-shmem::hot_fork_ring_image
             generated_header_diff=checked
             bilateral_static_asserts=compiled
             golden_vector_roundtrip=rust,c

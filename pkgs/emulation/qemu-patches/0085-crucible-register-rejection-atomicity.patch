@@ -108,10 +108,10 @@ index 952a779b0..5cd7c7eac 100644
  bool qemu_plugin_crucible_vmstop_admission_pending(void);
  void qemu_plugin_crucible_vmstop_request_stopped(int flush_status);
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 13569f0ce..cc779123a 100644
+index 5e9734995..cf6cf05ec 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1857,6 +1857,24 @@ struct qemu_plugin_crucible_fault_register_capability {
+@@ -1875,6 +1875,24 @@ struct qemu_plugin_crucible_fault_register_capability {
      size_t mask_bytes;
  };
  
@@ -136,7 +136,7 @@ index 13569f0ce..cc779123a 100644
  /** Copy the immutable register target manifest for the realized CPU model. */
  QEMU_PLUGIN_API
  size_t qemu_plugin_crucible_fault_register_manifest(
-@@ -1888,6 +1906,19 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
+@@ -1906,6 +1924,19 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
                                               size_t out_value_capacity,
                                               size_t *out_value_len);
  
@@ -173,10 +173,10 @@ index cecbf9cc4..4d1142f87 100644
  {
      return qatomic_read(&qemu_plugin_crucible_vmstop_state) !=
 diff --git a/plugins/api.c b/plugins/api.c
-index 1e048e2cb..0330a3da3 100644
+index aca75696c..7f46e0584 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -508,13 +508,17 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+@@ -520,13 +520,17 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
  #ifndef CONFIG_USER_ONLY
  static bool qemu_plugin_crucible_vcpu_register_read_allowed(void)
  {

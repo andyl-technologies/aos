@@ -1,0 +1,20 @@
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index eadefb691..2d4563ecb 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -4690,6 +4690,15 @@ qmp_crucible_hot_fork_child_process_contract(
+         }
+         cancellation_candidate = monitor_dup_fd(
+             monitor_cur(), cancellation_fdname, errp);
++        /*
++         * Socket receive clears O_NONBLOCK on every SCM_RIGHTS descriptor,
++         * and that flag lives on the open file description the host still
++         * shares for its own sticky-cancellation polling.  Restore it before
++         * authenticating so both processes keep the nonblocking contract.
++         */
++        if (cancellation_candidate >= 0) {
++            qemu_socket_set_nonblock(cancellation_candidate);
++        }
+         if (cancellation_candidate < 0 ||
+             !crucible_hot_fork_cgroup_directory_identity(
+                 cgroup_candidate, &observed_device, &observed_inode, errp) ||

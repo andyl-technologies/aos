@@ -17,7 +17,7 @@ use thiserror::Error;
 /// Fixed little-endian doorbell frame magic (`CRBL`).
 pub const WHITEBOX_DOORBELL_FRAME_MAGIC: u32 = 0x4c42_5243;
 /// Current architecture-independent white-box doorbell frame version.
-pub const WHITEBOX_DOORBELL_PROTOCOL_VERSION: u16 = 2;
+pub const WHITEBOX_DOORBELL_PROTOCOL_VERSION: u16 = 3;
 /// Fixed byte length of the architecture-independent doorbell frame header.
 pub const WHITEBOX_DOORBELL_FRAME_HEADER_LEN: usize = 12;
 /// Rule for regenerating the doorbell frame golden-vector corpus.
@@ -249,18 +249,18 @@ pub struct WhiteboxDoorbellFrameGoldenVector {
 pub const GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS: [WhiteboxDoorbellFrameGoldenVector; 2] = [
     WhiteboxDoorbellFrameGoldenVector {
         name: "marker-kind-1-empty",
-        protocol_version: 2,
+        protocol_version: 3,
         kind: 1,
         payload: &[],
-        frame: &[0x43, 0x52, 0x42, 0x4c, 2, 0, 1, 0, 0, 0, 0, 0],
+        frame: &[0x43, 0x52, 0x42, 0x4c, 3, 0, 1, 0, 0, 0, 0, 0],
     },
     WhiteboxDoorbellFrameGoldenVector {
         name: "random-request-kind-5",
-        protocol_version: 2,
+        protocol_version: 3,
         kind: 5,
         payload: &[0x04, 0x03, 0x02, 0x01, 4, 3, 0, 0x72, 0x6e, 0x67],
         frame: &[
-            0x43, 0x52, 0x42, 0x4c, 2, 0, 5, 0, 10, 0, 0, 0, 0x04, 0x03, 0x02, 0x01, 4, 3, 0, 0x72,
+            0x43, 0x52, 0x42, 0x4c, 3, 0, 5, 0, 10, 0, 0, 0, 0x04, 0x03, 0x02, 0x01, 4, 3, 0, 0x72,
             0x6e, 0x67,
         ],
     },

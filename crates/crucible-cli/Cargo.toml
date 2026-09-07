@@ -22,18 +22,27 @@ required-features = ["test-double"]
 workspace = true
 
 [dependencies]
+aws-credential-types = { workspace = true }
+aws-sdk-s3 = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 crucible-api = { path = "../crucible-api" }
+crucible-campaign = { path = "../crucible-campaign" }
+crucible-cas = { path = "../crucible-cas" }
+crucible-daemon = { path = "../crucible-daemon" }
 crucible-session = { path = "../crucible-session" }
-rustix = { workspace = true, features = ["termios"] }
+rustix = { workspace = true, features = ["process", "termios"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tokio-rustls = { workspace = true }
 toml = { workspace = true }
 tempfile = { workspace = true }
+url = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
+crucible-core = { package = "crucible", path = "../crucible" }
 crucible-harness = { path = "../crucible-harness" }
+crucible-protocol = { path = "../crucible-protocol" }
 libc = { workspace = true }

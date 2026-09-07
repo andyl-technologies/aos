@@ -1,0 +1,43 @@
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 8258d929b..1f529d341 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -670,20 +670,24 @@ static int crucible_hot_fork_reinitialize_child_console(
+     QemuChrSocketHotForkChildBasis *basis = opaque;
+     int result;
+ 
++    /*
++     * The console chardev runs on GLib's default main context, which the
++     * basis records as NULL; the child's main thread, the continuation of
++     * the forking thread, still owns that context.  Only the staged
++     * identity and the bound objects are required here.
++     */
+     if (!status || !basis || !crucible_hot_fork_console_stage.staged ||
+         retained_fd != crucible_hot_fork_console_stage.fd ||
+         socket_cookie != crucible_hot_fork_console_stage.socket_cookie ||
+         template_generation !=
+             crucible_hot_fork_console_stage.template_generation ||
+         console_generation != crucible_hot_fork_console_stage.generation ||
+-        !basis->prepared || !basis->chardev || !basis->frontend ||
+-        !basis->context) {
++        !basis->prepared || !basis->chardev || !basis->frontend) {
+         /* Written to the child's diagnostics stream, like the QMP stages. */
+         fprintf(stderr,
+                 "crucible hot-fork console child basis is stale: staged %d "
+                 "fd %d/%d cookie-match %d template-generation-match %d "
+-                "generation-match %d prepared %d chardev %d frontend %d "
+-                "context %d\n",
++                "generation-match %d prepared %d chardev %d frontend %d\n",
+                 crucible_hot_fork_console_stage.staged, retained_fd,
+                 crucible_hot_fork_console_stage.fd,
+                 socket_cookie == crucible_hot_fork_console_stage.socket_cookie,
+@@ -693,8 +697,7 @@ static int crucible_hot_fork_reinitialize_child_console(
+                     crucible_hot_fork_console_stage.generation,
+                 basis ? basis->prepared : 0,
+                 basis ? basis->chardev != NULL : 0,
+-                basis ? basis->frontend != NULL : 0,
+-                basis ? basis->context != NULL : 0);
++                basis ? basis->frontend != NULL : 0);
+         return -ESTALE;
+     }
+ 

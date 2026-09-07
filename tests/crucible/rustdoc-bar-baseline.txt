@@ -27,8 +27,6 @@ crucible-device/src/ninep/server.rs	contains non-ASCII comment/doc text	5
 crucible-device/src/ninep/tree.rs	contains non-ASCII comment/doc text	6
 crucible-device/src/request.rs	contains non-ASCII comment/doc text	1
 crucible-device/src/subnode.rs	contains non-ASCII comment/doc text	7
-crucible-qemu-plugin/src/ninep_io.rs	public Result-returning function `request` is missing `# Errors`	1
-crucible-session/src/session/commands.rs	public Result-returning function `channel` is missing `# Errors`	1
 crucible-session/src/session/core.rs	contains non-ASCII comment/doc text	1
 crucible/src/backend.rs	contains non-ASCII comment/doc text	1
 crucible/src/device_subnode.rs	contains non-ASCII comment/doc text	8

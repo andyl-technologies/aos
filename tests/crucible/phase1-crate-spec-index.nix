@@ -4,6 +4,7 @@
 }: let
   cratesDir = ../../crates;
   rfcDir = ../../docs/rfcs/0010-crucible;
+  campaignRfcDir = ../../docs/rfcs/0020-crucible-campaigns;
 
   specs = [
     {
@@ -64,6 +65,7 @@
       package = "crucible-guest";
       root = "src/lib.rs";
       specFiles = ["16"];
+      campaignSpecFiles = ["02"];
       section6 = true;
     }
     {
@@ -88,6 +90,7 @@
       package = "crucible-daemon";
       root = "src/lib.rs";
       specFiles = ["20" "21"];
+      campaignSpecFiles = ["04a"];
       section6 = true;
     }
     {
@@ -100,6 +103,27 @@
       package = "crucible-harness";
       root = "src/lib.rs";
       specFiles = ["24" "27"];
+      section6 = false;
+    }
+    {
+      package = "crucible-campaign";
+      root = "src/lib.rs";
+      specFiles = [];
+      campaignSpecFiles = ["01" "02" "04a" "06" "09"];
+      section6 = false;
+    }
+    {
+      package = "crucible-linux-resource";
+      root = "src/lib.rs";
+      specFiles = [];
+      campaignSpecFiles = ["04a" "06"];
+      section6 = false;
+    }
+    {
+      package = "crucible-s3-store";
+      root = "src/lib.rs";
+      specFiles = [];
+      campaignSpecFiles = ["06"];
       section6 = false;
     }
   ];
@@ -137,7 +161,19 @@
       then [line] ++ docPrefixLines rest
       else [];
 
-  expectedDocLine = spec: "//! Spec index: RFC-0010 files ${builtins.concatStringsSep ", " spec.specFiles}.";
+  campaignSpecFilesOf = spec: spec.campaignSpecFiles or [];
+  # RFC-0010 references always say `files`; an RFC-0020 reference says `file`
+  # for one chapter and `files` for several, as the crates are written.
+  campaignClause = files: "RFC-0020 ${
+    if builtins.length files == 1
+    then "file"
+    else "files"
+  } ${builtins.concatStringsSep ", " files}";
+  expectedDocLine = spec: let
+    clauses =
+      lib.optional (spec.specFiles != []) "RFC-0010 files ${builtins.concatStringsSep ", " spec.specFiles}"
+      ++ lib.optional (campaignSpecFilesOf spec != []) (campaignClause (campaignSpecFilesOf spec));
+  in "//! Spec index: ${builtins.concatStringsSep "; " clauses}.";
 
   crateDocFailures = spec: content: displayPath: let
     docLines = docPrefixLines (linesOf content);
@@ -159,6 +195,11 @@
     builtins.any (name:
       lib.hasPrefix "${file}-" name && lib.hasSuffix ".md" name)
     rfcFileNames;
+  campaignRfcFileNames = builtins.attrNames (builtins.readDir campaignRfcDir);
+  campaignRfcFileExists = file:
+    builtins.any (name:
+      lib.hasPrefix "${file}-" name && lib.hasSuffix ".md" name)
+    campaignRfcFileNames;
 
   realDocFailures =
     lib.concatMap (
@@ -180,6 +221,12 @@
             ]
         )
         spec.specFiles
+        ++ lib.concatMap (
+          file:
+            lib.optionals (!(campaignRfcFileExists file)) [
+              "${spec.package}: spec index references missing RFC-0020 file `${file}`"
+            ]
+        ) (campaignSpecFilesOf spec)
     )
     specs;
 
