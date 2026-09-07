@@ -211,6 +211,11 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(row[2], expected_owner);
         assert_eq!(row[3], kind.object_kind().as_str());
     }
+    assert_eq!(
+        rows.get("crucible.campaign.fact")
+            .expect("missing campaign fact schema")[1],
+        "12"
+    );
     let mut owned_campaign_schemas = CampaignRecordKind::ALL
         .into_iter()
         .map(CampaignRecordKind::schema_name)

@@ -1356,6 +1356,16 @@ impl AttemptAdmissionValidator for PackagedAttemptAdmission {
         self.validate_scenario(request)
     }
 
+    fn validate_execution_scope(
+        &self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<(), ExecutorRejection> {
+        self.repository
+            .validate_executor_execution_scope_with_profile(request, &self.profile)
+            .map_err(|error| error.executor_rejection())?;
+        self.validate_scenario(request)
+    }
+
     fn validate_completion(
         &self,
         request: &SubmitAttemptRequest,

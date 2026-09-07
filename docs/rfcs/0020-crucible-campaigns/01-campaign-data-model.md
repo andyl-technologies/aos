@@ -292,6 +292,9 @@ pub enum CampaignFact {
     PinChanged(PinChange),
     PinCommandAccepted(PinRequest),
     CampaignDerived(CampaignDerivation),
+    DiscoveryRequested(DiscoveryRequest),
+    SavepointCaptureRequested(SavepointCaptureRequest),
+    SavepointCaptureResolved(SavepointCaptureResolution),
 }
 ```
 
@@ -344,15 +347,13 @@ the child configuration-to-path membership described in §01.6. Schema v5 adds
 parent snapshot, configuration, retention tier or removal, and bounded reason
 in one owner-validated transition. Schema v6 adds
 `ObjectiveEvaluationPublished(ObjectiveEvaluationId)`, which makes one exact
-active-policy evaluation of one canonical observation authoritative. Every
-variant that predates
-`CampaignDerived` continues to encode as schema v2, preserving its canonical
-bytes and `CampaignFactId`; only `CampaignDerived` encodes as v3, only
-`ObservationCredited` encodes as v4, and only `PinCommandAccepted` encodes as
-v5, and only `ObjectiveEvaluationPublished` encodes as v6. Schema-v2 through
-schema-v5 fact bodies and envelopes remain canonically readable for existing
-history. A body cannot carry a variant introduced by another version, and
-body/envelope version mismatches fail closed. Historical schema-v2
+active-policy evaluation of one canonical observation authoritative. Schema v7
+adds branch-request acceptance summaries, schemas v8 and v9 add discovery
+requests and their extended stop conditions, and schema v10 adds terminal
+worker failure. Schema v11 is reserved for `SavepointCaptureRequested`; schema
+v12 is reserved for `SavepointCaptureResolved`. Every older variant retains its
+original version and bytes. A body cannot carry a variant introduced by another
+version, and body/envelope version mismatches fail closed. Historical schema-v2
 `ObservationPublished` successors are
 validated against either their original observation-only delta or the interim
 credit-bearing delta; new publication always uses the unambiguous schema-v4
@@ -392,6 +393,32 @@ pin_request_digest =
 
 The optional retention field uses absence for removal. The reason rejects NUL,
 non-NFC text, and encoded content beyond 4,096 bytes.
+
+Savepoint capture uses the following exact field order:
+
+```text
+SavepointCaptureRequestV1 = command_id | expected_snapshot | attempt_id |
+                            configuration_artifact_id | configuration_id |
+                            stop_condition | nfc_reason_utf8_0_to_4096_bytes
+SavepointCaptureResolutionV1 = command_id | expected_snapshot |
+                               capture_request_fact_id |
+                               ready | canceled | failed | discarded
+CampaignFactV11 = 11:u32be | 18:u8 | SavepointCaptureRequestV1
+CampaignFactV12 = 12:u32be | 19:u8 | SavepointCaptureResolutionV1
+```
+
+The request references an existing immutable attempt and authenticates its exact
+starting configuration and declared stop. It does not admit the attempt, spend
+proposal or attempt budget, advance the semantic frontier, or change
+`roots.pins`. Its fact ID owns a distinct operational execution scope. The
+executor materializes the attempt start, drives to the declared stop, and
+captures that reached boundary without publishing a semantic observation. Thus
+two attempts with one semantic starting configuration and different stops retain
+different physical paused sources. A ready resolution records that the scoped ledger reached an
+authenticated durable pause. A later discarded resolution authorizes explicit
+release of that source; canceled and failed resolutions close captures that
+never became selectable. The assignment ledger remains the physical GC root
+until discard or a chosen-source continuation completes its explicit handoff.
 
 Facts are immutable and carry causal references. They may be represented in
 persistent Merkle maps rather than replayed from a flat log. A projection cache

@@ -18,8 +18,8 @@ use thiserror::Error;
 
 use crate::{
     ActiveAttemptPolicy, AdmissionOrdinal, Attempt, AttemptAdmission, AttemptAdmissionId,
-    AttemptAdmissionRole, AttemptId, AttemptStart, BranchPath, BranchPathId, BranchRequest,
-    BranchRequestCause, BranchRequestId, CampaignCodecError, CampaignControlAction,
+    AttemptAdmissionRole, AttemptId, AttemptStart, AttemptStartMode, BranchPath, BranchPathId,
+    BranchRequest, BranchRequestCause, BranchRequestId, CampaignCodecError, CampaignControlAction,
     CampaignDerivation, CampaignFact, CampaignFactId, CampaignHash, CampaignLineage,
     CampaignLineageId, CampaignMode, CampaignPlanningView, CampaignPolicy, CampaignPolicyId,
     CampaignSnapshot, CampaignSnapshotId, CampaignState, CampaignStoreError,
@@ -31,6 +31,7 @@ use crate::{
     DebuggerSubmission, DiscoveryRequest, ExecutorCompatibilityProfile, ExecutorRejection,
     ExpansionCredit, ExpansionState, ExpansionStateId, Finding, FindingCandidateBundle,
     FindingCandidateBundleId, FindingId, FindingMinimizationEvidence, FindingOccurrenceSet,
+    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
     MeasurementSet, MeasurementSetId, MerkleMap, MerkleMapLookupProof, MerkleMapPage,
     MerkleMapPageProof, MerkleMapRoot, NonModeledAttemptDisposition, ObjectEnvelope,
     ObjectiveEvaluation, ObjectiveEvaluationId, Observation, ObservationId, PinRequest,
@@ -40,7 +41,8 @@ use crate::{
     PlanningScanPosition, PlanningUsage, PolicyActivation, PolicyArtifact, PropertyVerdict,
     PropertyVerdictSet, PropertyVerdictSetId, Proposal, ProposalId, PurePlannerEngine,
     RankingExplanation, RankingExplanationId, ReproductionArtifact, ReproductionArtifactId,
-    RetainedPlannerRequestId, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
+    RetainedPlannerRequestId, SavepointCaptureOutcome, SavepointCaptureRequest,
+    SavepointCaptureResolution, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
     SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition, StopOutcome,
     SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse, SurvivorSelection,
     SurvivorSelectionBundle, SurvivorSelectionId,
@@ -1192,6 +1194,7 @@ mod request_budget;
 
 use planner_scan_index::planner_scan_index_anchor_key;
 mod retention;
+mod savepoint;
 mod status;
 mod supervisor;
 mod transactions;
@@ -1219,6 +1222,10 @@ pub use queue::{
     MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, WorkerSlotId,
 };
 pub use retention::{CampaignPinRetentionRecord, CampaignPinRetentionSummary};
+pub use savepoint::{
+    MAX_SAVEPOINT_CAPTURE_SCAN_PAGE_ITEMS, PendingSavepointCapture, PendingSavepointCapturePage,
+    SavepointCaptureCursor, SavepointCaptureResolutionResult, SavepointCaptureResult,
+};
 pub use supervisor::{
     CampaignSupervisor, CampaignSupervisorConfigError, CampaignSupervisorError,
     CampaignSupervisorStepOutcome, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
@@ -1377,6 +1384,17 @@ fn mutation_result_content_key(namespace: &str, id: ContentId) -> CampaignHash {
 
 fn pin_configuration_key(configuration: ConfigurationId) -> CampaignHash {
     map_key_hash("pins.configuration", configuration.as_hash())
+}
+
+pub(crate) fn savepoint_capture_request_key(request: CampaignFactId) -> CampaignHash {
+    map_key_content("accounting.savepoint-capture.request", request.content_id())
+}
+
+pub(crate) fn savepoint_capture_resolution_key(request: CampaignFactId) -> CampaignHash {
+    map_key_content(
+        "accounting.savepoint-capture.resolution",
+        request.content_id(),
+    )
 }
 
 fn proposal_ordinal_key(request: BranchRequestId, ordinal: u64) -> CampaignHash {
