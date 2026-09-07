@@ -20,7 +20,12 @@ use crate::db::{
 use aos_doc_model::PackageDocumentation;
 use std::fmt::Write as _;
 
-fn entry_href(slug: &str, release: &str, entry: &DocumentationTreeEntry) -> String {
+fn entry_href(
+    slug: &str,
+    release: &str,
+    entry: &DocumentationTreeEntry,
+    package: Option<&str>,
+) -> String {
     let mut href = format!(
         "/{slug}/-/docs?release={}&entry={}",
         urlencode(release),
@@ -29,6 +34,18 @@ fn entry_href(slug: &str, release: &str, entry: &DocumentationTreeEntry) -> Stri
     if let Some(node) = &entry.node_key {
         let _ = write!(href, "&root={}", urlencode(node));
     }
+    if let Some(package) = package {
+        let _ = write!(href, "&package_entry={}", urlencode(package));
+    }
+    href
+}
+
+/// Carries the package guide independently of the selected configuration node.
+fn scoped_node_href(slug: &str, release: &str, key: &str, package: Option<&str>) -> String {
+    let mut href = node_href(slug, release, key);
+    if let Some(package) = package {
+        let _ = write!(href, "&package_entry={}", urlencode(package));
+    }
     href
 }
 
@@ -36,6 +53,7 @@ fn children_html(
     slug: &str,
     release: &str,
     children: &DocumentationTreePage<DocumentationTreeNode>,
+    package: Option<&str>,
 ) -> String {
     let mut html = String::from("<ul class=\"doc-tree-list\">");
     for node in &children.items {
@@ -48,7 +66,7 @@ fn children_html(
         let _ = write!(
             html,
             "<a href=\"{}\">{}</a><span class=\"dim doc-count\">{}</span></li>",
-            escape(&node_href(slug, release, &node.key)),
+            escape(&scoped_node_href(slug, release, &node.key, package)),
             escape(&node.label),
             match (node.child_count, node.entry_count) {
                 (1, _) => "1 child".to_string(),
@@ -81,8 +99,9 @@ fn folder_html(
     node: &DocumentationTreeNode,
     children: &DocumentationTreePage<DocumentationTreeNode>,
     descendants: Option<&DocumentationTreePage<DocumentationTreeNode>>,
+    package: Option<&str>,
 ) -> String {
-    let base = node_href(slug, release, &node.key);
+    let base = scoped_node_href(slug, release, &node.key, package);
     let flattened = descendants.is_some();
     let listing = descendants.unwrap_or(children);
     let heading = if node.path.is_empty() {
@@ -129,7 +148,7 @@ fn folder_html(
             "<tr class=\"{}\" data-node=\"{}\"><td><a href=\"{}\">{}</a>{}</td><td>{}</td><td>{}</td></tr>",
             if is_branch { "doc-folder-branch" } else { "doc-folder-option" },
             escape(&child.key),
-            escape(&node_href(slug, release, &child.key)),
+            escape(&scoped_node_href(slug, release, &child.key, package)),
             escape(&name),
             detail,
             child
@@ -168,31 +187,47 @@ pub(super) fn page(
     results: Option<&DocumentationTreePage<DocumentationTreeEntry>>,
     selected: Option<&DocumentationTreeEntry>,
     document: Option<&PackageDocumentation>,
+    package_guide: Option<(&DocumentationTreeEntry, &PackageDocumentation)>,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
+    let package = query.package_entry.as_deref();
     let slug = &registry.slug;
     let release = context.selected().unwrap_or_default();
-    let base = node_href(slug, release, &node.key);
+    let base = scoped_node_href(slug, release, &node.key, package);
     let mut html = context.nav(slug, "docs");
     html.push_str("<h1>Docs</h1>");
     html.push_str(&context.selector(slug, &format!("/{slug}/-/docs"), &[("root", &node.key)]));
-    let _ = write!(html, "<div class=\"doc-browser\" data-doc-browser data-doc-base=\"/{}/-/docs\" data-doc-release=\"{}\" data-doc-root=\"{}\"><form class=\"doc-search\" action=\"/{}/-/docs\" method=\"get\" role=\"search\"><input type=\"hidden\" name=\"release\" value=\"{}\"><input type=\"hidden\" name=\"root\" value=\"{}\"><label for=\"doc-query\">Search documentation</label><input id=\"doc-query\" type=\"search\" name=\"q\" value=\"{}\" placeholder=\"Option path, purpose, or package…\"><label>Within <select name=\"scope\"><option value=\"release\">Entire release</option><option value=\"subtree\"{}>This subtree</option></select></label><button type=\"submit\">Search</button></form>",
-        escape(slug), escape(release), escape(&node.key), escape(slug), escape(release), escape(&node.key), escape(query.q.as_deref().unwrap_or_default()), if query.scope.as_deref() == Some("subtree") { " selected" } else { "" });
+    let package_input = package
+        .map(|key| {
+            format!(
+                "<input type=\"hidden\" name=\"package_entry\" value=\"{}\">",
+                escape(key),
+            )
+        })
+        .unwrap_or_default();
+    let scope_label = if package.is_some() {
+        "This package"
+    } else {
+        "Entire release"
+    };
+    let _ = write!(html, "<div class=\"doc-browser\" data-doc-browser data-doc-base=\"/{}/-/docs\" data-doc-release=\"{}\" data-doc-root=\"{}\" data-doc-package=\"{}\"><form class=\"doc-search\" action=\"/{}/-/docs\" method=\"get\" role=\"search\"><input type=\"hidden\" name=\"release\" value=\"{}\"><input type=\"hidden\" name=\"root\" value=\"{}\">{}<label for=\"doc-query\">Search documentation</label><input id=\"doc-query\" type=\"search\" name=\"q\" value=\"{}\" placeholder=\"Option path, purpose, or package…\"><label>Within <select name=\"scope\"><option value=\"release\">{}</option><option value=\"subtree\"{}>This subtree</option></select></label><button type=\"submit\">Search</button></form>",
+        escape(slug), escape(release), escape(&node.key), escape(package.unwrap_or_default()), escape(slug), escape(release), escape(&node.key), package_input, escape(query.q.as_deref().unwrap_or_default()), scope_label, if query.scope.as_deref() == Some("subtree") { " selected" } else { "" });
     html.push_str("<nav class=\"doc-breadcrumbs\" aria-label=\"Configuration path\">");
     let _ = write!(
         html,
         "<a class=\"doc-root\" href=\"{}\" aria-label=\"Configuration root\" title=\"Configuration root\">/</a>",
-        escape(&node_href(slug, release, &documentation_node_key(&[])))
+        escape(&scoped_node_href(slug, release, &documentation_node_key(&[]), package))
     );
     for depth in 1..=node.path.len() {
         let _ = write!(
             html,
             "<span aria-hidden=\"true\">›</span><a href=\"{}\">{}</a>",
-            escape(&node_href(
+            escape(&scoped_node_href(
                 slug,
                 release,
-                &documentation_node_key(&node.path[..depth])
+                &documentation_node_key(&node.path[..depth]),
+                package,
             )),
             escape(&path_segment_label(&node.path[depth - 1]))
         );
@@ -204,17 +239,18 @@ pub(super) fn page(
         let _ = write!(
             html,
             "<p><a href=\"{}\">← Parent subtree</a></p>",
-            escape(&node_href(
+            escape(&scoped_node_href(
                 slug,
                 release,
-                &documentation_node_key(&node.path[..node.path.len() - 1])
+                &documentation_node_key(&node.path[..node.path.len() - 1]),
+                package,
             ))
         );
     }
     if children.items.is_empty() {
         html.push_str("<p class=\"dim\">No child options.</p>");
     } else {
-        html.push_str(&children_html(slug, release, children));
+        html.push_str(&children_html(slug, release, children, package));
     }
     if let Some(cursor) = &children.next_cursor {
         let _ = write!(
@@ -225,6 +261,9 @@ pub(super) fn page(
         );
     }
     html.push_str("</aside><div class=\"doc-reader\" data-doc-reader>");
+    if let Some((entry, document)) = package_guide {
+        html.push_str(&guide_html(entry, document, slug, release));
+    }
     if let Some(results) = results {
         let _ = write!(
             html,
@@ -236,7 +275,7 @@ pub(super) fn page(
         }
         for entry in &results.items {
             let _ = write!(html, "<article class=\"doc-result\"><h3><a href=\"{}\">{}</a></h3><p class=\"dim\">{} · {} · {}</p><p>{}</p></article>",
-                escape(&entry_href(slug, release, entry)), escape(&entry.title), escape(&entry.kind), escape(&entry.package_name), escape(&entry.platform), escape(&entry.summary));
+                escape(&entry_href(slug, release, entry, package)), escape(&entry.title), escape(&entry.kind), escape(&entry.package_name), escape(&entry.platform), escape(&entry.summary));
         }
         if let Some(cursor) = &results.next_cursor {
             let _ = write!(
@@ -261,7 +300,7 @@ pub(super) fn page(
             escape(&entry.package_name),
             escape(&entry.package_version),
             escape(&entry.platform),
-            escape(&entry_href(slug, release, entry))
+            escape(&entry_href(slug, release, entry, package))
         );
         if variants.items.len() > 1
             || query.variant_cursor.is_some()
@@ -272,7 +311,7 @@ pub(super) fn page(
                 let _ = write!(
                     html,
                     "<li><a href=\"{}\"{}>{} {} · {}</a></li>",
-                    escape(&entry_href(slug, release, variant)),
+                    escape(&entry_href(slug, release, variant, package)),
                     if variant.key == entry.key {
                         " aria-current=\"true\""
                     } else {
@@ -301,35 +340,21 @@ pub(super) fn page(
             }) {
                 html.push_str(&option(found, slug, release));
             }
-        } else {
-            let _ = write!(
-                html,
-                "<article><h2>{}</h2><p>{}</p>",
-                escape(&entry.title),
-                escape(&entry.summary)
-            );
-            // Remove options before using the model's runtime renderer: the focused
-            // browser must never emit the entire release option reference.
-            let mut guide = document.clone();
-            guide.options.clear();
-            guide.sections.clear();
-            html.push_str(&guide.render_html_fragment());
-            for section in &document.sections {
-                let _ = write!(
-                    html,
-                    "<section id=\"{}\"><h3>{}</h3>{}</section>",
-                    escape(&section.id),
-                    escape(&section.title),
-                    prose(&section.blocks, slug, release)
-                );
-            }
-            html.push_str("</article>");
+        } else if package_guide.is_none() {
+            html.push_str(&guide_html(entry, document, slug, release));
         }
     }
     // A branch always lists what lies beneath it, even under a submodule
     // option's own panel, so readers never face an empty reader.
     if results.is_none() && (node.child_count > 0 || descendants.is_some()) {
-        html.push_str(&folder_html(slug, release, node, children, descendants));
+        html.push_str(&folder_html(
+            slug,
+            release,
+            node,
+            children,
+            descendants,
+            package,
+        ));
     } else if results.is_none() && selected.is_none() {
         let _ = write!(
             html,
@@ -349,4 +374,37 @@ pub(super) fn page(
         &state_line(status, started),
         session,
     )
+}
+
+/// Renders the package overview without expanding its option reference.
+fn guide_html(
+    entry: &DocumentationTreeEntry,
+    document: &PackageDocumentation,
+    slug: &str,
+    release: &str,
+) -> String {
+    let mut html = String::new();
+    let _ = write!(
+        html,
+        "<article data-doc-package-card><h2>{}</h2><p>{}</p>",
+        escape(&entry.title),
+        escape(&entry.summary)
+    );
+    // Remove options before using the model's runtime renderer: the focused
+    // browser must never emit the entire release option reference.
+    let mut guide = document.clone();
+    guide.options.clear();
+    guide.sections.clear();
+    html.push_str(&guide.render_html_fragment());
+    for section in &document.sections {
+        let _ = write!(
+            html,
+            "<section id=\"{}\"><h3>{}</h3>{}</section>",
+            escape(&section.id),
+            escape(&section.title),
+            prose(&section.blocks, slug, release)
+        );
+    }
+    html.push_str("</article>");
+    html
 }
