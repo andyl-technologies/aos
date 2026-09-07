@@ -811,6 +811,26 @@ impl CampaignRepository {
             .map(|(head, lifecycle)| (head, lifecycle.state()))
     }
 
+    /// Resolves one authenticated head and its active campaign policy.
+    ///
+    /// The policy is loaded through the exact identity carried by the returned
+    /// head, so a concurrent ref advance cannot pair a head with a policy from
+    /// a different snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError::NotFound`] for an absent name or an
+    /// integrity/store error for an invalid reachable head or policy record.
+    pub fn head_with_policy(
+        &self,
+        name: &str,
+    ) -> Result<(CampaignHead, CampaignPolicy), CampaignRepositoryError> {
+        let head = self.head(name)?;
+        let policy = self.read_policy(head.snapshot().active_policy().content_id())?;
+
+        Ok((head, policy))
+    }
+
     /// Resolves one authenticated head and its complete lifecycle intent.
     ///
     /// The state and active-attempt policy are projected from the same exact

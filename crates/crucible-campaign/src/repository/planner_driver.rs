@@ -20,6 +20,23 @@ pub struct CampaignPlannerDriver<S> {
     scan_limit: u32,
     budget: PlanningBudget,
     budget_blocked: Option<(CampaignSnapshotId, CampaignBudgetError)>,
+    required_explorer: Option<RequiredExplorerPolicy>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RequiredExplorerPolicy {
+    TreeSearch,
+    Exhaustive,
+}
+
+impl RequiredExplorerPolicy {
+    fn admits(self, explorer: &crate::ExplorerPolicy) -> bool {
+        matches!(
+            (self, explorer),
+            (Self::TreeSearch, crate::ExplorerPolicy::TreeSearch { .. })
+                | (Self::Exhaustive, crate::ExplorerPolicy::Exhaustive { .. })
+        )
+    }
 }
 
 impl<S> CampaignPlannerDriver<S> {
@@ -71,7 +88,48 @@ impl<S> CampaignPlannerDriver<S> {
             scan_limit,
             budget,
             budget_blocked: None,
+            required_explorer: None,
         })
+    }
+
+    /// Restricts this driver to tree-search policy revisions.
+    ///
+    /// A later active-policy change to another explorer family fails before a
+    /// planner invocation is published. This binds an attached PUCT engine to
+    /// the policy family it implements while allowing same-family revisions.
+    #[must_use]
+    pub fn require_tree_search_policy(mut self) -> Self {
+        self.required_explorer = Some(RequiredExplorerPolicy::TreeSearch);
+        self
+    }
+
+    /// Restricts this driver to exhaustive policy revisions.
+    ///
+    /// A later active-policy change to another explorer family fails before a
+    /// planner invocation is published. This binds an attached frontier engine
+    /// to exhaustive expansion while allowing same-family revisions.
+    #[must_use]
+    pub fn require_exhaustive_policy(mut self) -> Self {
+        self.required_explorer = Some(RequiredExplorerPolicy::Exhaustive);
+        self
+    }
+
+    /// Returns the exact planner-engine descriptor owned by this driver.
+    #[must_use]
+    pub const fn engine(&self) -> &PlannerEngine {
+        &self.engine
+    }
+
+    /// Returns the reproducible planner artifact owned by this driver.
+    #[must_use]
+    pub const fn policy_artifact(&self) -> &PolicyArtifact {
+        &self.artifact
+    }
+
+    /// Returns the planner's empty portable-state basis.
+    #[must_use]
+    pub const fn initial_state(&self) -> &PlannerState {
+        &self.initial_state
     }
 
     /// Advances the planner by at most one bounded component invocation.
@@ -136,6 +194,14 @@ impl<S> CampaignPlannerDriver<S> {
         self.budget_blocked = None;
 
         let loaded = self.repository.read_snapshot(snapshot.content_id())?;
+        if let Some(required) = self.required_explorer {
+            let active_policy = self
+                .repository
+                .read_policy(loaded.snapshot.active_policy().content_id())?;
+            if !required.admits(active_policy.explorer()) {
+                return Err(integrity("attached-planner-explorer-policy-changed").into());
+            }
+        }
         let remaining = self.repository.project_campaign_budget(&loaded)?;
         // Bound each batch by available funding. Keep a one-proposal probe when
         // an allowance is empty: the planner may report NoWork, or converge on

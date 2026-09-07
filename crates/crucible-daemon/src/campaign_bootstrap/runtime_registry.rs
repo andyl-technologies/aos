@@ -690,6 +690,7 @@ fn runtime_control_runtime_failure(
         CanonicalCampaignRuntimeError::ExecutorIncompatible
         | CanonicalCampaignRuntimeError::ExecutorResourcesExceedCeiling
         | CanonicalCampaignRuntimeError::ExecutorSlotsExceedCeiling
+        | CanonicalCampaignRuntimeError::UnsupportedExplorerPolicy
         | CanonicalCampaignRuntimeError::PlannerDriver(_)
         | CanonicalCampaignRuntimeError::ExecutorDriver(_)
         | CanonicalCampaignRuntimeError::Supervisor(_) => CampaignServiceFailure::InvalidRequest,
