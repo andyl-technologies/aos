@@ -3,6 +3,7 @@
 //! Effectful filesystem, Nix, signer, Git, and Hub adapters live below this
 //! module. The `aos-release` crate remains the sole semantic contract.
 
+mod assemble;
 mod bootstrap;
 mod build;
 mod capture;
@@ -47,6 +48,7 @@ pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Resu
         ReleaseCommand::Contract(args) => contract::run(args, nix, printer),
         ReleaseCommand::Plan(args) => plan::run(args, nix, printer),
         ReleaseCommand::Build(args) => build::run(args, nix, printer),
+        ReleaseCommand::Assemble(args) => assemble::run(args, nix, printer),
         ReleaseCommand::Status(args) => status::run(args, printer),
         ReleaseCommand::FinalizeImage(_) => {
             anyhow::bail!("release image finalization must use the asynchronous dispatcher")

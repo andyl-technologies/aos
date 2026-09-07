@@ -460,13 +460,52 @@ signed, and existing output paths are never replaced.
 
 ## Close and sign the bundle
 
-Assemble a payload directory containing every regular file named by the
-unsigned `aos.release.manifest/v1` payload except `release-plan.json`; the
-coordinator installs the exact plan itself. The payload includes package NARs,
-signed narinfos, registry objects and catalog data, documentation, provenance,
-source and license material, SBOM and gate evidence, and both finalized Linux
-image sets. It must not contain `release-plan.json`, `release-manifest.json`, a
-link, alias, or special file.
+Before closing the bundle, prepare a reviewed canonical advisory disposition.
+It binds the exact plan and SBOM, identifies each public advisory snapshot used
+for review, and must contain no unresolved release blockers:
+
+```json
+{"authority_id":"release-security-review","plan_digest":"sha256:...","reviewed_at":"2026-09-03T13:30:00Z","sbom_digest":"sha256:...","schema_version":"aos.release.advisory-disposition/v1","sources":[{"name":"osv","snapshot":"sha256:..."}],"unresolved_advisories":[]}
+```
+
+Run the assembler against the exact build, signed cache, finalized registry,
+image, and container outputs:
+
+```sh
+aos release assemble \
+  --plan release-plan.json \
+  --build-report release-build/evidence/build-report.json \
+  --sbom release-build/evidence/sbom.spdx.json \
+  --contributor-authorization contributor-authorization.json \
+  --advisory-disposition advisory-disposition.json \
+  --cache /var/lib/aos-release/2026.9.0/cache \
+  --cache-key cache-2026=/media/trust/cache-2026.pub \
+  --registry /var/lib/aos-release/2026.9.0/registry \
+  --registry-result /var/lib/aos-release/2026.9.0/registry-result.json \
+  --image-set /var/lib/aos-release/2026.9.0/x86_64-linux/finalized \
+  --image-set /var/lib/aos-release/2026.9.0/aarch64-linux/finalized \
+  --container final-container \
+  --completed-at 2026-09-03T14:00:00Z \
+  --output release-assembled
+```
+
+Omit `--container` only when the qualification contract has no applicable
+container target. The command verifies every narinfo signature, compressed-file
+identity, decompressed NAR hash, and complete reference closure. It copies a
+distinct NAR for every planned logical artifact id, verifies registry
+finalization identities, checks finalized image sets and the complete OCI graph
+against the exact sidecar committed into that registry, and derives the exact
+build-phase qualification observation. It emits
+`release-assembled/payload/` and
+`release-assembled/release-manifest-payload.json` atomically without replacing
+an existing path.
+
+The payload includes package NARs, signed narinfos, registry objects,
+provenance, source and license material, the SBOM, build evidence, and finalized
+Linux image and OCI artifacts. It does not contain `release-plan.json` or
+`release-manifest.json`; the finalizer installs the exact plan itself. Links,
+aliases, special files, incomplete closures, unresolved advisories, and bytes
+that differ from a finalized input stop assembly.
 
 Every `package-nar` record must point to its exact signed `narinfo` record with
 an `authenticated-by` relationship. Its outbound relationship graph also names
@@ -476,8 +515,8 @@ qualification downloads that complete transitive graph from the public Hub.
 ```sh
 aos release finalize \
   --plan release-plan.json \
-  --payload release-payload \
-  --manifest-payload release-manifest-payload.json \
+  --payload release-assembled/payload \
+  --manifest-payload release-assembled/release-manifest-payload.json \
   --journal release-build/release-journal.jsonl \
   --signing-key release-1=/media/trust/release-1.pub \
   --signing-key release-2=/media/trust/release-2.pub \

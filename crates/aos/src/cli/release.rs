@@ -17,6 +17,8 @@ pub enum ReleaseCommand {
     Plan(ReleasePlanArgs),
     /// Realize and repeat-check every planned Nix output
     Build(ReleaseBuildArgs),
+    /// Assemble finalized release inputs into a closed unsigned payload
+    Assemble(ReleaseAssembleArgs),
     /// Reconcile and display an append-only release journal
     Status(ReleaseStatusArgs),
     /// Exercise and audit a configured external signing provider
@@ -1116,6 +1118,61 @@ pub struct ReleaseBuildArgs {
 }
 
 #[derive(Args)]
+pub struct ReleaseAssembleArgs {
+    /// Canonical release plan produced by `aos release plan`
+    #[arg(long)]
+    pub plan: PathBuf,
+
+    /// Validated build report for the exact package matrix
+    #[arg(long)]
+    pub build_report: PathBuf,
+
+    /// SPDX document emitted beside the build report
+    #[arg(long)]
+    pub sbom: PathBuf,
+
+    /// Public contributor-authorization summary bound by the plan
+    #[arg(long)]
+    pub contributor_authorization: PathBuf,
+
+    /// Reviewed canonical advisory disposition for the exact SBOM
+    #[arg(long)]
+    pub advisory_disposition: PathBuf,
+
+    /// Externally signed static Nix cache
+    #[arg(long)]
+    pub cache: PathBuf,
+
+    /// Cache-role public Ed25519 key as KEY_ID=PATH
+    #[arg(long, value_name = "KEY_ID=PATH")]
+    pub cache_key: String,
+
+    /// Finalized isolated registry directory
+    #[arg(long)]
+    pub registry: PathBuf,
+
+    /// Canonical registry finalization result
+    #[arg(long)]
+    pub registry_result: PathBuf,
+
+    /// Finalized image-set root; repeat for every planned Linux image cell
+    #[arg(long = "image-set")]
+    pub image_sets: Vec<PathBuf>,
+
+    /// Final externally signed container publication bundle
+    #[arg(long)]
+    pub container: Option<PathBuf>,
+
+    /// RFC 3339 UTC time at which assembly validation completed
+    #[arg(long)]
+    pub completed_at: String,
+
+    /// New directory containing payload and canonical unsigned manifest
+    #[arg(long)]
+    pub output: PathBuf,
+}
+
+#[derive(Args)]
 pub struct ReleasePlanArgs {
     /// Canonical reviewed planner-input JSON
     #[arg(long)]
@@ -1146,9 +1203,60 @@ pub struct ReleaseVerifyArgs {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use clap::Parser as _;
 
+    use super::ReleaseCommand;
     use crate::cli::{Cli, Commands};
+
+    #[test]
+    fn assembler_accepts_repeatable_image_sets_and_optional_container() {
+        let Ok(parsed) = Cli::try_parse_from([
+            "aos",
+            "release",
+            "assemble",
+            "--plan",
+            "plan.json",
+            "--build-report",
+            "build.json",
+            "--sbom",
+            "sbom.json",
+            "--contributor-authorization",
+            "authorization.json",
+            "--advisory-disposition",
+            "advisories.json",
+            "--cache",
+            "cache",
+            "--cache-key",
+            "cache-1=cache-1.pub",
+            "--registry",
+            "registry",
+            "--registry-result",
+            "registry-result.json",
+            "--image-set",
+            "images/amd64",
+            "--image-set",
+            "images/arm64",
+            "--container",
+            "container",
+            "--completed-at",
+            "2026-09-03T14:00:00Z",
+            "--output",
+            "assembled",
+        ]) else {
+            panic!("release assemble arguments should parse");
+        };
+        let Commands::Release {
+            command: ReleaseCommand::Assemble(args),
+        } = parsed.command
+        else {
+            panic!("expected release assemble command");
+        };
+        assert_eq!(args.image_sets.len(), 2);
+        assert_eq!(args.container, Some(PathBuf::from("container")));
+        assert_eq!(args.output, PathBuf::from("assembled"));
+    }
 
     #[test]
     fn verifier_requires_explicit_trust_input() {
