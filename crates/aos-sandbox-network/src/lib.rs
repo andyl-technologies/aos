@@ -6,14 +6,17 @@
 //! in a protected append-only catalog. [`authorization`] adapts the shared
 //! signed authority verifier. [`state`] atomically journals authenticated
 //! authorization links, a durable pre-effect crash boundary, and typed
-//! committed namespace observations. [`broker`] composes those pieces without
-//! exposing Apply or performing netlink, nftables, or BPF work. The current-
-//! resource lifecycle index and kernel helper remain explicit readiness
+//! committed namespace observations. [`namespace_catalog`] publishes only exact
+//! committed default-drop namespaces after reopening their fixed typed pins and
+//! emits authoritative current-boot inventory. [`broker`] composes those pieces
+//! without exposing Apply or performing netlink, nftables, or BPF work. The
+//! kernel helper and remaining lifecycle transitions stay explicit readiness
 //! prerequisites, so no network method is advertised.
 
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
+pub mod namespace_catalog;
 pub mod preparation_catalog;
 pub mod state;
 
@@ -25,6 +28,10 @@ pub use broker::{
 pub use catalog::{
     AuthenticatedNetworkPreparationV1, NetworkCatalogBindingV1, ResolvedEndpointV1,
     ResolvedNetworkPreparationV1,
+};
+pub use namespace_catalog::{
+    NetworkNamespaceCatalogError, NetworkNamespaceCatalogOutcomeV1, NetworkNamespaceCatalogV1,
+    NetworkNamespacePublicationV1,
 };
 pub use preparation_catalog::{
     NetworkPolicyCatalogV1, NetworkPolicyProfileV1, NetworkPreparationCatalogError,

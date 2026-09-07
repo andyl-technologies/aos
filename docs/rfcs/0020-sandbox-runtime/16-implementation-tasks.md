@@ -4011,3 +4011,48 @@ unadvertised: the fixed privileged namespace/veth and policy helper, complete
 typed kernel postcondition verifier, protected current-resource lifecycle
 catalog, inventory producer, service packaging, and controller orchestration
 are still required.
+
+### Authoritative Network namespace inventory
+
+Network now has a protected current-resource catalog that can turn an exact
+committed preparation result into an authoritative default-drop namespace row.
+The admission coordinator first proves that the result is the current committed
+operation record and recovers its exact protected resolution. The separate
+preparation catalog must then reproduce that resolution and its retained
+portable assignment; a caller-supplied manifest, substituted resolution, or
+unretained handle cannot manufacture publication authority.
+
+Publication reopens the fixed handle-derived pin beneath
+`/run/aos/sandbox-pins/netns` through the descriptor-safe Linux boundary and
+requires a kernel-verified Network `nsfs` descriptor. The current boot and
+device/inode identity must exactly match the committed result before a
+canonical versioned row and generation head are atomically journaled. Request
+IDs, handles, sandbox incarnations, and physical namespaces cannot be rebound.
+Exact same-boot retry is idempotent. Rows from earlier boots remain durable
+collision evidence but are omitted from current inventory and cannot be
+silently refreshed from an old committed observation.
+
+Each inventory call validates the complete retained set, reopens every
+current-boot typed pin, emits rows in strict handle order with the protected
+journal boundary and broker-process identity, and decodes its own bounded
+protobuf through the public Network 1.2 validator. The resource digest commits
+the source preparation/result correlation, assignment, physical namespace,
+default-drop lifecycle, and empty lease state.
+
+Focused validation covers exact publication and replay, canonical restart,
+fixed pin derivation, stale-boot omission, result substitution, assignment and
+physical-identity rebinding, pin replacement, committed-identity mismatch,
+unsafe roots, impossible catalog heads, exact preparation lookup, and
+production rejection of ordinary non-`nsfs` files. All 38 Network tests and
+doctests pass, together with strict all-target/all-feature crate-local Clippy,
+warnings-as-errors rustdoc, Rust formatting, and diff checks. The full
+`nix-build -A checks.eval --cores 8 --no-out-link` gate passes the complete
+workspace test phase, configuration evaluation, and system-structure checks at
+`/nix/store/m8sv964rm7zfj2hrk8lwfh12yvlb4a9h-aos-eval-and-system-structure-checks-0`.
+
+This advances `SBX-NET-01` and `SBX-LIFE-06` through authoritative namespace
+inventory production without claiming executable Network effects or a complete
+service. Apply and Inventory remain unadvertised until the fixed privileged
+namespace/veth and policy helper, complete postcondition observation, remaining
+lease/fence/destroy lifecycle transitions, session dispatch, service packaging,
+and controller Apply orchestration are ready.

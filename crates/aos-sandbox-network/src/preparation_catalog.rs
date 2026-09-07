@@ -508,6 +508,23 @@ impl NetworkPreparationCatalogV1 {
             .map_err(|_| NetworkPreparationCatalogError::Authority)?;
         Ok(NetworkPreparationCatalogOutcomeV1::Reserved(preparation))
     }
+
+    // Namespace publication must reproduce this catalog's retained assignment,
+    // not recover it from a caller-supplied manifest or a newer policy head.
+    pub(crate) fn assignment_for_resolution(
+        &self,
+        network_handle: [u8; 32],
+        resolution: &ResolvedNetworkPreparationV1,
+    ) -> Result<BrokerAssignment, NetworkPreparationCatalogError> {
+        let record = self
+            .records
+            .get(&network_handle)
+            .ok_or(NetworkPreparationCatalogError::InvalidCandidate)?;
+        if record.resolution()? != *resolution {
+            return Err(NetworkPreparationCatalogError::InvalidCandidate);
+        }
+        record.assignment.assignment()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1208,6 +1225,27 @@ mod tests {
             manifest.broker_assignment().unwrap()
         );
         assert!(first.preparation().resolution().endpoints().is_empty());
+        assert_eq!(
+            catalog
+                .assignment_for_resolution(handle, first.preparation().resolution())
+                .unwrap(),
+            manifest.broker_assignment().unwrap()
+        );
+        let substituted = ResolvedNetworkPreparationV1::new(
+            2,
+            handle,
+            ObjectDigest::from_bytes([82; 32]),
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(matches!(
+            catalog.assignment_for_resolution(handle, &substituted),
+            Err(NetworkPreparationCatalogError::InvalidCandidate)
+        ));
+        assert!(matches!(
+            catalog.assignment_for_resolution([99; 32], first.preparation().resolution()),
+            Err(NetworkPreparationCatalogError::InvalidCandidate)
+        ));
         assert!(matches!(
             catalog.reserve(reservation.clone(), &authority).unwrap(),
             NetworkPreparationCatalogOutcomeV1::Replay(_)

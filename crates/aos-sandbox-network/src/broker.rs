@@ -18,6 +18,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::authorization::{NetworkAuthorityV1, decode_assignment};
 use crate::catalog::{AuthenticatedNetworkPreparationV1, ResolvedNetworkPreparationV1};
+use crate::namespace_catalog::{NetworkNamespaceCatalogError, NetworkNamespacePublicationV1};
+use crate::preparation_catalog::{NetworkPreparationCatalogError, NetworkPreparationCatalogV1};
 use crate::state::{
     CommittedNetworkResultV1, DurableNetworkPhase, NetworkBeginOutcome, NetworkRecoveryEntry,
     NetworkStateError, NetworkStateStore, PreparedNetworkRecordInput, VerifiedNetworkResultV1,
@@ -36,6 +38,12 @@ pub enum NetworkBrokerError {
     /// Durable admission state was corrupt, conflicting, or unavailable.
     #[error("network durable admission failed: {0}")]
     State(#[from] NetworkStateError),
+    /// Protected preparation history no longer reproduces committed state.
+    #[error("network preparation catalog rejected committed state: {0}")]
+    PreparationCatalog(#[from] NetworkPreparationCatalogError),
+    /// A committed observation cannot form a current namespace publication.
+    #[error("network namespace publication was rejected: {0}")]
+    NamespaceCatalog(#[from] NetworkNamespaceCatalogError),
 }
 
 /// Classifies durable admission without implying an executable effect.
@@ -72,11 +80,9 @@ impl NetworkAdmissionCoordinator {
 
     /// Verifies and journals an unadvertised Apply intent without executing it.
     ///
-    /// Preparation accepts only an opaque token from the future protected
-    /// catalog publisher. Existing-resource actions are categorically rejected.
-    /// No production token constructor exists in this increment, so this path
-    /// remains mechanically unavailable even though its admission theorem is
-    /// tested internally.
+    /// Preparation accepts only an opaque token from the protected preparation
+    /// catalog. Existing-resource actions are categorically rejected, and this
+    /// coordinator does not invoke a privileged kernel helper.
     ///
     /// # Errors
     ///
@@ -197,6 +203,32 @@ impl NetworkAdmissionCoordinator {
             .map_err(Into::into)
     }
 
+    /// Reconstructs one default-drop namespace publication from committed state.
+    ///
+    /// The operation store must reproduce the exact result and protected
+    /// resolution, and the preparation catalog must independently retain that
+    /// resolution with its portable assignment. Pin and current-boot checks are
+    /// performed later by [`crate::NetworkNamespaceCatalogV1::publish`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkBrokerError`] when committed state is not current, the
+    /// preparation reservation is absent or disagrees, or the resulting
+    /// publication is incomplete.
+    pub fn namespace_publication(
+        &self,
+        result: CommittedNetworkResultV1,
+        preparations: &NetworkPreparationCatalogV1,
+    ) -> Result<NetworkNamespacePublicationV1, NetworkBrokerError> {
+        let entry = self.state.committed_recovery_entry(result)?;
+        let resolution = self.state.recover_preparation(&entry)?;
+        let assignment =
+            preparations.assignment_for_resolution(result.network_handle(), &resolution)?;
+
+        NetworkNamespacePublicationV1::from_committed(result, &resolution, assignment)
+            .map_err(Into::into)
+    }
+
     /// Reconstructs the exact protected preparation for a recovery entry.
     ///
     /// # Errors
@@ -243,8 +275,8 @@ fn validate_catalog(
 /// Returns the closed method set safe for the incomplete network service.
 ///
 /// Apply remains absent until tc-BPF/netlink helpers and P0-06 readiness exist.
-/// Inventory also remains absent because durable operation history is not
-/// authoritative current kernel state.
+/// Inventory remains absent until service composition opens the authoritative
+/// namespace catalog and includes it in one complete startup-readiness proof.
 #[must_use]
 pub fn advertised_network_methods() -> Vec<BrokerMethod> {
     Vec::new()
