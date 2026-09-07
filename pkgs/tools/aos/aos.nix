@@ -190,8 +190,8 @@
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
     ];
     inherit cargoEnv;
-    buildDeps = [buildPerl buildPkgConfig openssl sqlite buildProtobuf buildCmake libssh2];
-    runtimeDeps = [openssl sqlite zlib];
+    buildDeps = [buildPerl buildPkgConfig buildProtobuf buildCmake];
+    runtimeDeps = [openssl sqlite libssh2 zlib];
   };
 in
   mkCargoPackage {
@@ -221,8 +221,10 @@ in
       inherit cargoArtifacts cargoDeps cargoEnv;
     };
 
-    # cmake + libssh2: git2's vendored libgit2 is compiled from source here
-    # (CMake build) with SSH smart-transport support against system libssh2.
+    # cmake builds git2's vendored libgit2 from source. OpenSSL, SQLite, and
+    # libssh2 are target libraries; keeping them in runtimeDeps makes cross
+    # builds expose target headers and libraries without splicing in native
+    # Linux shared objects.
     #
     # openssh and zstd are build-only inputs for the check phase: the workspace
     # tests use `ssh-keygen` for repository fixtures and exercise compressed
@@ -230,10 +232,10 @@ in
     # the `aos` runtime closure because maintainer commands create, inspect,
     # commit, and publish isolated Git worktrees without host tools.
     buildDeps =
-      [buildPerl buildPkgConfig openssl sqlite buildProtobuf buildCmake libssh2 buildGitMinimal buildOpenSsh buildZstd remove-references-to]
+      [buildPerl buildPkgConfig buildProtobuf buildCmake buildGitMinimal buildOpenSsh buildZstd remove-references-to]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
-      [openssl sqlite zlib]
+      [openssl sqlite libssh2 zlib]
       ++ aosRuntimeTools
       ++ aprRuntimeTools
       ++ apmRuntimeTools
