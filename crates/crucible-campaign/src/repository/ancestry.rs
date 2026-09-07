@@ -153,6 +153,66 @@ impl CampaignRepository {
         })
     }
 
+    pub(super) fn find_savepoint_capture_result(
+        &self,
+        content_id: ContentId,
+        request: &SavepointCaptureRequest,
+        replayed: bool,
+    ) -> Result<SavepointCaptureResult, CampaignRepositoryError> {
+        let key = mutation_result_hash_key("savepoint-capture", request.command.as_hash());
+        let (result_content, loaded, fact) = self.mutation_result_snapshot(content_id, key)?;
+        let CampaignFact::SavepointCaptureRequested(candidate) = fact else {
+            return Err(integrity("savepoint-capture-result-index-type-mismatch"));
+        };
+        if candidate != *request {
+            return Err(CampaignRepositoryError::CommandReuse);
+        }
+        let prior_snapshot = loaded
+            .snapshot
+            .parent()
+            .ok_or_else(|| integrity("savepoint-capture-result-has-no-parent"))?;
+        let parent = self.read_snapshot(prior_snapshot.content_id())?;
+        self.savepoint_capture_basis(&parent, request)?;
+        Ok(SavepointCaptureResult {
+            prior_snapshot,
+            new_snapshot: CampaignSnapshotId::from_content_id(result_content)?,
+            attempt: request.attempt,
+            request: CampaignFact::SavepointCaptureRequested(request.clone()).id()?,
+            configuration: request.configuration,
+            replayed,
+        })
+    }
+
+    pub(super) fn find_savepoint_capture_resolution_result(
+        &self,
+        content_id: ContentId,
+        resolution: &SavepointCaptureResolution,
+        replayed: bool,
+    ) -> Result<SavepointCaptureResolutionResult, CampaignRepositoryError> {
+        let key =
+            mutation_result_hash_key("savepoint-capture-resolution", resolution.command.as_hash());
+        let (result_content, loaded, fact) = self.mutation_result_snapshot(content_id, key)?;
+        let CampaignFact::SavepointCaptureResolved(candidate) = fact else {
+            return Err(integrity(
+                "savepoint-capture-resolution-result-index-type-mismatch",
+            ));
+        };
+        if candidate != *resolution {
+            return Err(CampaignRepositoryError::CommandReuse);
+        }
+        let prior_snapshot = loaded
+            .snapshot
+            .parent()
+            .ok_or_else(|| integrity("savepoint-capture-resolution-result-has-no-parent"))?;
+        Ok(SavepointCaptureResolutionResult {
+            prior_snapshot,
+            new_snapshot: CampaignSnapshotId::from_content_id(result_content)?,
+            request: resolution.request,
+            outcome: resolution.outcome,
+            replayed,
+        })
+    }
+
     pub(super) fn find_branch_request_result(
         &self,
         content_id: ContentId,
@@ -469,6 +529,13 @@ impl CampaignRepository {
             CampaignFact::DiscoveryRequested(request) => {
                 mutation_result_hash_key("discovery", request.command.as_hash())
             }
+            CampaignFact::SavepointCaptureRequested(request) => {
+                mutation_result_hash_key("savepoint-capture", request.command.as_hash())
+            }
+            CampaignFact::SavepointCaptureResolved(resolution) => mutation_result_hash_key(
+                "savepoint-capture-resolution",
+                resolution.command.as_hash(),
+            ),
             CampaignFact::BranchRequestIssued(request) => {
                 mutation_result_content_key("branch-request", request.content_id())
             }

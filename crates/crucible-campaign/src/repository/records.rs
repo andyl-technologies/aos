@@ -1452,7 +1452,11 @@ impl CampaignRepository {
             }
             CampaignFact::ControlRequested(_)
             | CampaignFact::PinCommandAccepted(_)
-            | CampaignFact::DiscoveryRequested(_) => self.validate_command_fact_references(fact)?,
+            | CampaignFact::DiscoveryRequested(_)
+            | CampaignFact::SavepointCaptureRequested(_)
+            | CampaignFact::SavepointCaptureResolved(_) => {
+                self.validate_command_fact_references(fact)?
+            }
             CampaignFact::BranchRequestIssued(id)
             | CampaignFact::BranchRequestAccepted { request: id, .. } => {
                 self.read_branch_request(id.content_id())?;

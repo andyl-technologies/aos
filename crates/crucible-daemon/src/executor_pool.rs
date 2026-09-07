@@ -198,14 +198,18 @@ where
             return Ok(response);
         }
 
-        let validation =
-            match catch_unwind(AssertUnwindSafe(|| self.shared.validator.validate(request))) {
-                Ok(validation) => validation,
-                Err(_) => {
-                    self.shared.poison();
-                    return Err(LocalExecutorPoolServiceError::WorkerPanicked);
-                }
-            };
+        let validation = match catch_unwind(AssertUnwindSafe(|| {
+            self.shared
+                .validator
+                .validate(request)
+                .and_then(|()| self.shared.validator.validate_execution_scope(request))
+        })) {
+            Ok(validation) => validation,
+            Err(_) => {
+                self.shared.poison();
+                return Err(LocalExecutorPoolServiceError::WorkerPanicked);
+            }
+        };
         self.shared.require_running()?;
         let mut executor = self.shared.lock_executor()?;
         let response = executor
@@ -304,7 +308,10 @@ where
             .map_err(LocalExecutorError::from)
             .map_err(LocalExecutorPoolServiceError::Supervisor)?;
         let validation = match catch_unwind(AssertUnwindSafe(|| {
-            self.shared.validator.validate(&assignment)
+            self.shared
+                .validator
+                .validate(&assignment)
+                .and_then(|()| self.shared.validator.validate_execution_scope(&assignment))
         })) {
             Ok(validation) => validation,
             Err(_) => {

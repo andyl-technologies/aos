@@ -1,4 +1,12 @@
 //! Lifecycle commands and immutable causal campaign facts.
+//!
+//! Savepoint capture facts use these closed canonical layouts:
+//!
+//! ```text
+//! v11 = 11:u32be | 18:u8 | command | expected-snapshot | attempt |
+//!       configuration-artifact | semantic-configuration | stop | reason
+//! v12 = 12:u32be | 19:u8 | command | expected-snapshot | request-fact | outcome
+//! ```
 
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::{
@@ -19,6 +27,8 @@ const BRANCH_ACCEPTANCE_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 7;
 const DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 8;
 const EXTENDED_STOP_DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 9;
 const TERMINAL_WORKER_FAILURE_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 10;
+const SAVEPOINT_CAPTURE_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 11;
+const SAVEPOINT_CAPTURE_RESOLUTION_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 12;
 
 #[derive(Clone, Copy)]
 enum CampaignFactDecodeExtension {
@@ -30,6 +40,8 @@ enum CampaignFactDecodeExtension {
     BranchAcceptance,
     DiscoveryRequest,
     TerminalWorkerFailure,
+    SavepointCapture,
+    SavepointCaptureResolution,
     All,
 }
 
@@ -409,8 +421,8 @@ impl PinChange {
     ///
     /// # Errors
     ///
-    /// Returns [`CampaignCodecError`] for an oversized, NUL-containing, or
-    /// non-normalized reason.
+    /// Returns [`CampaignCodecError`] for an invalid stop condition or an
+    /// oversized, NUL-containing, or non-normalized reason.
     pub fn new(
         configuration: ConfigurationId,
         retention: Option<PinRetention>,
@@ -515,6 +527,192 @@ pub struct DiscoveryRequest {
     pub configuration: ConfigurationArtifactId,
     /// Requested semantic execution boundary.
     pub stop: StopCondition,
+}
+
+/// Durable request to capture one immutable attempt at its declared stop.
+///
+/// The configuration artifact is redundant with the immutable attempt on
+/// purpose. Cold validation authenticates the pair before the request becomes
+/// an operational capture intent. It does not admit or index the described
+/// attempt as semantic campaign work. The capture request fact, rather than
+/// the semantic configuration alone, identifies its retained physical source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavepointCaptureRequest {
+    /// Stable caller-supplied command identity.
+    pub command: CampaignCommandId,
+    /// Snapshot the caller expects to mutate.
+    pub expected_snapshot: CampaignSnapshotId,
+    /// Immutable attempt whose reached stop boundary is captured.
+    pub attempt: AttemptId,
+    /// Exact configuration artifact the worker must materialize and authenticate.
+    pub configuration: ConfigurationArtifactId,
+    /// Semantic identity of the exact starting configuration artifact.
+    pub semantic_configuration: ConfigurationId,
+    /// Semantic execution boundary bound into the immutable attempt.
+    pub stop: StopCondition,
+    /// Bounded operator-facing reason included in campaign history.
+    pub reason: String,
+}
+
+impl SavepointCaptureRequest {
+    /// Builds a validated attempt-stop capture request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for an invalid stop condition or an
+    /// oversized, NUL-containing, or non-normalized reason.
+    pub fn new(
+        command: CampaignCommandId,
+        expected_snapshot: CampaignSnapshotId,
+        attempt: AttemptId,
+        configuration: ConfigurationArtifactId,
+        semantic_configuration: ConfigurationId,
+        stop: StopCondition,
+        reason: impl Into<String>,
+    ) -> Result<Self, CampaignCodecError> {
+        let reason = reason.into();
+        let request = Self {
+            command,
+            expected_snapshot,
+            attempt,
+            configuration,
+            semantic_configuration,
+            stop,
+            reason,
+        };
+        request.validate()?;
+        Ok(request)
+    }
+
+    /// Revalidates mutable public fields before repository publication.
+    pub(crate) fn validate(&self) -> Result<(), CampaignCodecError> {
+        self.stop.validate()?;
+        codec::validate_nfc(&self.reason)?;
+        if self.reason.len() > 4096 || self.reason.contains('\0') {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "savepoint capture reason is invalid",
+            });
+        }
+        Ok(())
+    }
+
+    /// Returns a domain-separated digest of the exact command payload.
+    #[must_use]
+    pub fn request_digest(&self) -> CampaignHash {
+        CampaignHash::derive(
+            "crucible.campaign-savepoint-capture-request.v1",
+            &codec::encode(self),
+        )
+    }
+}
+
+impl Canonical for SavepointCaptureRequest {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.command.encode(encoder);
+        self.expected_snapshot.encode(encoder);
+        self.attempt.encode(encoder);
+        self.configuration.encode(encoder);
+        self.semantic_configuration.encode(encoder);
+        self.stop.encode(encoder);
+        self.reason.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        let command = CampaignCommandId::decode(decoder)?;
+        let expected_snapshot = CampaignSnapshotId::decode(decoder)?;
+        Self::new(
+            command,
+            expected_snapshot,
+            AttemptId::decode(decoder)?,
+            ConfigurationArtifactId::decode(decoder)?,
+            ConfigurationId::decode(decoder)?,
+            StopCondition::decode(decoder)?,
+            decoder.string_bounded(4096, "savepoint-capture-reason-bytes")?,
+        )
+    }
+}
+
+/// Terminal coordinator disposition of one operational savepoint capture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SavepointCaptureOutcome {
+    /// The scoped executor durably paused at an exact checkpoint.
+    Ready,
+    /// Explicit cancellation stopped the scoped capture.
+    Canceled,
+    /// A non-retryable worker failure stopped the scoped capture.
+    Failed,
+    /// The operator released a previously ready capture without selecting it.
+    Discarded,
+}
+
+impl Canonical for SavepointCaptureOutcome {
+    fn encode(&self, encoder: &mut Encoder) {
+        encoder.u8(match self {
+            Self::Ready => 0,
+            Self::Canceled => 1,
+            Self::Failed => 2,
+            Self::Discarded => 3,
+        });
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::Ready),
+            1 => Ok(Self::Canceled),
+            2 => Ok(Self::Failed),
+            3 => Ok(Self::Discarded),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "savepoint-capture-outcome",
+                tag,
+            }),
+        }
+    }
+}
+
+/// Idempotent owner transition resolving one operational savepoint capture.
+///
+/// Executor-local identities and checkpoint roots remain in the operational
+/// ledger. This campaign fact records only that the coordinator authenticated
+/// one terminal scoped outcome for the immutable capture request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavepointCaptureResolution {
+    /// Stable caller-supplied command identity.
+    pub command: CampaignCommandId,
+    /// Snapshot the coordinator expects to mutate.
+    pub expected_snapshot: CampaignSnapshotId,
+    /// Immutable capture request fact being resolved.
+    pub request: CampaignFactId,
+    /// Authenticated terminal operational outcome.
+    pub outcome: SavepointCaptureOutcome,
+}
+
+impl SavepointCaptureResolution {
+    /// Returns a domain-separated digest of the exact resolution request.
+    #[must_use]
+    pub fn request_digest(&self) -> CampaignHash {
+        CampaignHash::derive(
+            "crucible.campaign-savepoint-capture-resolution.v1",
+            &codec::encode(self),
+        )
+    }
+}
+
+impl Canonical for SavepointCaptureResolution {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.command.encode(encoder);
+        self.expected_snapshot.encode(encoder);
+        self.request.encode(encoder);
+        self.outcome.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Ok(Self {
+            command: CampaignCommandId::decode(decoder)?,
+            expected_snapshot: CampaignSnapshotId::decode(decoder)?,
+            request: CampaignFactId::decode(decoder)?,
+            outcome: SavepointCaptureOutcome::decode(decoder)?,
+        })
+    }
 }
 
 impl DiscoveryRequest {
@@ -673,6 +871,10 @@ pub enum CampaignFact {
     PinCommandAccepted(PinRequest),
     /// Idempotent explicit campaign-owned configuration discovery was accepted.
     DiscoveryRequested(DiscoveryRequest),
+    /// Idempotent attempt-stop savepoint capture was accepted.
+    SavepointCaptureRequested(SavepointCaptureRequest),
+    /// One accepted savepoint capture reached a terminal operational outcome.
+    SavepointCaptureResolved(SavepointCaptureResolution),
 }
 
 impl CampaignFact {
@@ -691,6 +893,10 @@ impl CampaignFact {
                 disposition: NonModeledAttemptDisposition::TerminalWorkerFailure,
                 ..
             } => TERMINAL_WORKER_FAILURE_CAMPAIGN_FACT_SCHEMA_VERSION,
+            Self::SavepointCaptureRequested(_) => SAVEPOINT_CAPTURE_CAMPAIGN_FACT_SCHEMA_VERSION,
+            Self::SavepointCaptureResolved(_) => {
+                SAVEPOINT_CAPTURE_RESOLUTION_CAMPAIGN_FACT_SCHEMA_VERSION
+            }
             _ => LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION,
         }
     }
@@ -840,6 +1046,30 @@ impl CampaignFact {
                         }
                         Ok(Self { version, fact })
                     }
+                    SAVEPOINT_CAPTURE_CAMPAIGN_FACT_SCHEMA_VERSION => {
+                        let fact = CampaignFact::decode_versioned(
+                            decoder,
+                            CampaignFactDecodeExtension::SavepointCapture,
+                        )?;
+                        if !matches!(fact, CampaignFact::SavepointCaptureRequested(_)) {
+                            return Err(CampaignCodecError::InvalidValue {
+                                reason: "campaign fact variant requires its original schema version",
+                            });
+                        }
+                        Ok(Self { version, fact })
+                    }
+                    SAVEPOINT_CAPTURE_RESOLUTION_CAMPAIGN_FACT_SCHEMA_VERSION => {
+                        let fact = CampaignFact::decode_versioned(
+                            decoder,
+                            CampaignFactDecodeExtension::SavepointCaptureResolution,
+                        )?;
+                        if !matches!(fact, CampaignFact::SavepointCaptureResolved(_)) {
+                            return Err(CampaignCodecError::InvalidValue {
+                                reason: "campaign fact variant requires its original schema version",
+                            });
+                        }
+                        Ok(Self { version, fact })
+                    }
                     _ => Err(CampaignCodecError::InvalidValue {
                         reason: "unsupported campaign object schema version",
                     }),
@@ -937,6 +1167,14 @@ impl Canonical for CampaignFact {
             Self::DiscoveryRequested(request) => {
                 encoder.u8(17);
                 request.encode(encoder);
+            }
+            Self::SavepointCaptureRequested(request) => {
+                encoder.u8(18);
+                request.encode(encoder);
+            }
+            Self::SavepointCaptureResolved(resolution) => {
+                encoder.u8(19);
+                resolution.encode(encoder);
             }
             Self::AttemptClosed {
                 attempt,
@@ -1042,6 +1280,21 @@ impl CampaignFact {
             ) =>
             {
                 DiscoveryRequest::decode(decoder).map(Self::DiscoveryRequested)
+            }
+            18 if matches!(
+                extension,
+                CampaignFactDecodeExtension::SavepointCapture | CampaignFactDecodeExtension::All
+            ) =>
+            {
+                SavepointCaptureRequest::decode(decoder).map(Self::SavepointCaptureRequested)
+            }
+            19 if matches!(
+                extension,
+                CampaignFactDecodeExtension::SavepointCaptureResolution
+                    | CampaignFactDecodeExtension::All
+            ) =>
+            {
+                SavepointCaptureResolution::decode(decoder).map(Self::SavepointCaptureResolved)
             }
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-fact",

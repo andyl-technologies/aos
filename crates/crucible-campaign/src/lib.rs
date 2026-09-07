@@ -156,7 +156,8 @@ pub use model::{
     CampaignFact, CampaignLineage, CampaignPlanningView, CampaignRoots, CampaignSnapshot,
     CampaignState, ControlRequest, DiscoveryRequest, NonModeledAttemptDisposition, PinChange,
     PinRequest, PinRetention, PlannerEngine, PlannerInvocation, PlannerState, PlanningBudget,
-    PolicyActivation, PolicyArtifact,
+    PolicyActivation, PolicyArtifact, SavepointCaptureOutcome, SavepointCaptureRequest,
+    SavepointCaptureResolution,
 };
 pub use object::{CampaignRecordKind, ChildReference, ObjectEnvelope};
 pub use object_profile::{CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignObjectProfiler};
@@ -222,9 +223,11 @@ pub use repository::{
     ClaimableAttemptPage, FindingPublicationResult, MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS,
     MAX_CAMPAIGN_CLOSURE_OBJECTS, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
     MAX_OBSERVATION_CHOICE_DISCOVERIES, MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES,
-    MAX_PLANNER_SCAN_PAGE_ITEMS, NonModeledAttemptResult, ObjectiveEvaluationPublicationResult,
-    ObservationCandidate, ObservationDisposition, ObservationResult, PlannerStepResult,
-    ProposalResult, ResolvedSelection, WorkerSlotId,
+    MAX_PLANNER_SCAN_PAGE_ITEMS, MAX_SAVEPOINT_CAPTURE_SCAN_PAGE_ITEMS, NonModeledAttemptResult,
+    ObjectiveEvaluationPublicationResult, ObservationCandidate, ObservationDisposition,
+    ObservationResult, PendingSavepointCapture, PendingSavepointCapturePage, PlannerStepResult,
+    ProposalResult, ResolvedSelection, SavepointCaptureCursor, SavepointCaptureResolutionResult,
+    SavepointCaptureResult, WorkerSlotId,
 };
 
 #[cfg(test)]

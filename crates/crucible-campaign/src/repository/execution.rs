@@ -8,6 +8,65 @@
 use super::*;
 
 impl CampaignRepository {
+    /// Authenticates the operational scope of one executor request.
+    ///
+    /// Semantic requests need no authority beyond ordinary immutable attempt
+    /// admission. A savepoint capture must name an exact persisted capture
+    /// request whose parent snapshot, lineage, configuration, attempt, and stop
+    /// boundary all reconstruct consistently.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a scoped owner fact or its parent closure is
+    /// unavailable, corrupt, incompatible with the request, or outside the
+    /// supplied executor profile.
+    pub fn validate_executor_execution_scope_with_profile(
+        &self,
+        request: &SubmitAttemptRequest,
+        profile: &ExecutorCompatibilityProfile,
+    ) -> Result<(), CampaignRepositoryError> {
+        let AttemptStartMode::SavepointCapture {
+            request: capture_id,
+            configuration,
+        } = request.start_mode()
+        else {
+            return Ok(());
+        };
+
+        let CampaignFact::SavepointCaptureRequested(capture) =
+            self.read_fact(capture_id.content_id())?
+        else {
+            return Err(integrity(
+                "executor-savepoint-capture-scope-is-not-capture-request",
+            ));
+        };
+        if capture.configuration != configuration || capture.attempt != request.attempt() {
+            return Err(integrity(
+                "executor-savepoint-capture-scope-request-basis-mismatch",
+            ));
+        }
+
+        let parent = self.read_snapshot(capture.expected_snapshot.content_id())?;
+        self.validate_complete_head(capture.expected_snapshot.content_id())?;
+        if parent.snapshot.lineage() != request.lineage() {
+            return Err(integrity(
+                "executor-savepoint-capture-scope-lineage-mismatch",
+            ));
+        }
+        let attempt = self.savepoint_capture_basis(&parent, &capture)?;
+        if attempt.id()? != request.attempt() {
+            return Err(integrity(
+                "executor-savepoint-capture-scope-attempt-mismatch",
+            ));
+        }
+
+        let lineage = self.read_lineage(parent.snapshot.lineage().content_id())?;
+        if !profile.admits(&lineage) {
+            return Err(integrity("executor-compatibility-profile-mismatch"));
+        }
+        Ok(())
+    }
+
     /// Authenticates one executor request against immutable campaign semantics.
     ///
     /// This read-only boundary is suitable for a local executor admission

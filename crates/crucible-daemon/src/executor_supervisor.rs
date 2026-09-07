@@ -15,8 +15,8 @@ use std::sync::{
 use std::time::Duration;
 
 use crucible_campaign::{
-    AttemptId, AttemptResourceLimits, AttemptStartMode, CampaignCodecError, CampaignLineageId,
-    CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
+    AttemptExecutionScope, AttemptId, AttemptResourceLimits, AttemptStartMode, CampaignCodecError,
+    CampaignLineageId, CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
     CancelAttemptExecutionResponse, CheckpointAttemptExecutionDisposition,
     CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, DaemonEpoch,
     ExactCheckpointId, ExecutionId, ExecutorControlService, ExecutorRejection,
@@ -56,6 +56,28 @@ pub trait AttemptAdmissionValidator {
     /// Returns the stable executor rejection when the immutable request basis
     /// is unavailable, unauthorized, or incompatible with this executor.
     fn validate(&self, request: &SubmitAttemptRequest) -> Result<(), ExecutorRejection>;
+
+    /// Validates the request's operational execution scope.
+    ///
+    /// The default accepts ordinary semantic execution only. Implementations
+    /// that admit an operational scope must authenticate its immutable owner
+    /// independently of the ordinary attempt and lineage validation performed
+    /// by [`Self::validate`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutorRejection::Incompatible`] for every non-semantic
+    /// scope unless the implementation explicitly authenticates that scope.
+    fn validate_execution_scope(
+        &self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<(), ExecutorRejection> {
+        if matches!(request.execution_scope(), AttemptExecutionScope::Semantic) {
+            Ok(())
+        } else {
+            Err(ExecutorRejection::Incompatible)
+        }
+    }
 
     /// Validates a published observation before durable completion admission.
     ///
@@ -2226,7 +2248,10 @@ where
             SubmitPreflight::Resolved(response) => return Ok(response),
             SubmitPreflight::NeedsValidation => {}
         }
-        let validation = self.validator.validate(request);
+        let validation = self
+            .validator
+            .validate(request)
+            .and_then(|()| self.validator.validate_execution_scope(request));
         self.submit_after_validation(request, validation)
     }
 
