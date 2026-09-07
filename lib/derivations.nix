@@ -456,7 +456,7 @@
   # ---------------------------------------------------------------------------
   # Internal: generate the build script from a list of phases
   # ---------------------------------------------------------------------------
-  phasesToScript = phases: shell: let
+  phasesToScript = phases: shell: useStructuredAttrs: let
     phaseScripts =
       builtins.map (phase: ''
         echo ">>> Phase: ${phase.name}"
@@ -464,6 +464,31 @@
         echo "<<< Phase: ${phase.name} complete"
       '')
       phases;
+    structuredAttrsPreSource =
+      if useStructuredAttrs
+      then
+        "\n"
+        + builtins.concatStringsSep "\n" [
+          "  # Nix writes scalar attrs as plain `declare` statements. Mark those"
+          "  # assignments for export while sourcing the file so compiler and build"
+          "  # subprocesses receive the same environment as an unstructured build."
+          "  case \"$-\" in"
+          "    *a*) __attrs_allexport_was_set=1 ;;"
+          "    *) __attrs_allexport_was_set=0; set -a ;;"
+          "  esac"
+        ]
+      else "";
+    structuredAttrsPostSource =
+      if useStructuredAttrs
+      then
+        builtins.concatStringsSep "\n" [
+          "  if [ \"$__attrs_allexport_was_set\" = 0 ]; then"
+          "    set +a"
+          "  fi"
+          "  unset __attrs_allexport_was_set"
+          ""
+        ]
+      else "";
   in ''
     #!${shell}
     set -eu
@@ -477,9 +502,9 @@
     # array (declare -A outputs=([out]=/nix/store/… [dev]=/nix/store/…))
     # but does NOT set each output name as a scalar. Re-declare them so
     # phase scripts that reference $out / $dev / etc. keep working.
-    if [ -n "''${NIX_ATTRS_SH_FILE:-}" ]; then
+    if [ -n "''${NIX_ATTRS_SH_FILE:-}" ]; then${structuredAttrsPreSource}
       . "$NIX_ATTRS_SH_FILE"
-      if declare -p outputs 2>/dev/null | grep -q 'declare -A'; then
+    ${structuredAttrsPostSource}  if declare -p outputs 2>/dev/null | grep -q 'declare -A'; then
         AOS_OUTPUT_NAMES="''${!outputs[*]}"
         for __o in "''${!outputs[@]}"; do
           declare -g "$__o=''${outputs[$__o]}"
@@ -741,7 +766,7 @@
         (targetPlatformMetadataPhase outputPlatform.system)
       ];
 
-    builder = phasesToScript allPhases shell;
+    builder = phasesToScript allPhases shell useStructuredAttrs;
 
     # Extra args to pass through to builtins.derivation
     extraArgs = builtins.removeAttrs args [

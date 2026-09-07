@@ -1241,6 +1241,9 @@ in {
       package-platform-support = import ./tests/build/package-platform-support.nix {
         pkgs = buildPackages;
       };
+      structured-attrs-export = import ./tests/build/structured-attrs-export.nix {
+        pkgs = buildPackages;
+      };
       external-image-assembly = import ./tests/build/external-image-assembly.nix {
         inherit pkgs lib mkSystem;
       };
@@ -1249,7 +1252,7 @@ in {
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in
       {
-        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-smoke package-platform-support package-root-image systemd-verity golden-image-budgets;
+        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-smoke package-platform-support package-root-image structured-attrs-export systemd-verity golden-image-budgets;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
           pname = "aos-build-checks-all";
@@ -1261,7 +1264,7 @@ in {
               then [bootstrap-seed]
               else []
             )
-            ++ [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config package-platform-support package-root-image systemd-verity]
+            ++ [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config package-platform-support package-root-image structured-attrs-export systemd-verity]
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues golden-image-budgets;
           phases = [
