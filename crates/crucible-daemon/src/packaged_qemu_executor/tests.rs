@@ -792,11 +792,14 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         panic!("controlled lifecycle does not handle selections")
     }
 
-    fn enqueue_selectable_reply(
+    fn apply_selectable_reply(
         &mut self,
+        _parent: &crucible::Configuration,
+        _decision: crucible::SelectionDecision,
+        _selected: &crucible::Configuration,
         _pending: &QemuNodeSelectablePendingRequest,
         _reply: &SelectionReply,
-    ) -> Result<(), SchedulerError> {
+    ) -> Result<Vec<crucible::SchedulerEventLogEntry>, SchedulerError> {
         panic!("controlled lifecycle does not handle selections")
     }
 

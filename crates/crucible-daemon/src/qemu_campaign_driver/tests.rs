@@ -140,6 +140,7 @@ struct FakeLifecycle {
 }
 
 struct PendingSelectableLifecycle {
+    frontier: crucible::Configuration,
     outcomes: VecDeque<QuantumOutcome>,
     completed_coordinates: VecDeque<u64>,
     pending: VecDeque<Vec<crucible_qemu::QemuNodeSelectablePendingRequest>>,
@@ -181,11 +182,14 @@ impl QemuFreshAttemptLifecycleOwner for FakeLifecycle {
         Ok(Vec::new())
     }
 
-    fn enqueue_selectable_reply(
+    fn apply_selectable_reply(
         &mut self,
+        _parent: &crucible::Configuration,
+        _decision: crucible::SelectionDecision,
+        _selected: &crucible::Configuration,
         _pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
         _reply: &crucible_protocol::SelectionReply,
-    ) -> Result<(), SchedulerError> {
+    ) -> Result<Vec<crucible::SchedulerEventLogEntry>, SchedulerError> {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("modeled driver fixture has no selectable transport"),
         })
@@ -221,6 +225,13 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
     fn enable_signal_fault_campaign_promotion(&mut self) {}
 
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        if request.configuration != self.frontier {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "selectable lifecycle request is not its authoritative frontier",
+                ),
+            });
+        }
         self.drives += 1;
         let mut outcome =
             self.outcomes
@@ -233,7 +244,8 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
                 message: String::from("selectable lifecycle has no quantum coordinate"),
             }
         })?;
-        outcome.configuration = request.configuration;
+        outcome.configuration = request.configuration.clone();
+        self.frontier = request.configuration;
         Ok(outcome)
     }
 
@@ -255,13 +267,24 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
         Ok(self.pending.pop_front().unwrap_or_default())
     }
 
-    fn enqueue_selectable_reply(
+    fn apply_selectable_reply(
         &mut self,
+        parent: &crucible::Configuration,
+        decision: crucible::SelectionDecision,
+        selected: &crucible::Configuration,
         _pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
         reply: &crucible_protocol::SelectionReply,
-    ) -> Result<(), SchedulerError> {
+    ) -> Result<Vec<crucible::SchedulerEventLogEntry>, SchedulerError> {
+        if parent != &self.frontier
+            || crucible::step(parent, Decision::Selection(decision)) != *selected
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("selectable lifecycle rejected an inconsistent transition"),
+            });
+        }
         self.replies.push(reply.clone());
-        Ok(())
+        self.frontier = selected.clone();
+        Ok(Vec::new())
     }
 
     fn capture_attempt_checkpoint(
@@ -1596,6 +1619,7 @@ fn pending_guest_choice_stops_without_reply_and_retains_scenario_discovery() {
     let (input, node) = input_with_guest_selectable(StopCondition::NextChoice);
     let configuration = starting_configuration(&input);
     let mut owner = PendingSelectableLifecycle {
+        frontier: configuration.clone(),
         outcomes: VecDeque::from([outcome(
             configuration.clone(),
             Vec::new(),
@@ -1640,6 +1664,7 @@ fn pending_guest_choice_applies_and_replies_with_exact_default() {
         )])
         .expect("choice event");
     let mut owner = PendingSelectableLifecycle {
+        frontier: configuration.clone(),
         outcomes: VecDeque::from([outcome(configuration, event.entries, event.offset, 41)]),
         completed_coordinates: VecDeque::from([0]),
         pending: VecDeque::from([vec![pending_guest_request(node, None)]]),
@@ -1690,6 +1715,7 @@ fn zero_progress_choice_discovery_does_not_consume_execution_quanta() {
     let (input, node) = input_with_guest_selectable(StopCondition::ExecutionQuanta(1));
     let configuration = starting_configuration(&input);
     let mut owner = PendingSelectableLifecycle {
+        frontier: configuration.clone(),
         outcomes: VecDeque::from([
             outcome(
                 configuration.clone(),

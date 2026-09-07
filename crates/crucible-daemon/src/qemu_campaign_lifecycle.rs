@@ -13,6 +13,7 @@ use crucible::{
     Configuration, ContentHash, Decision, FingerprintSample, NodeId, QuantumLoop, QuantumOutcome,
     QuantumRequest, QuantumTerminalVerdict, ScenarioDef, ScenarioDefForm, SchedulerError,
     SchedulerEventLogEntry, SchedulerOperationalFailureClass, SchedulerQuiescence,
+    SelectionDecision,
 };
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
@@ -143,17 +144,20 @@ pub trait QemuFreshAttemptLifecycleOwner {
         &mut self,
     ) -> Result<Vec<QemuNodeSelectablePendingRequest>, SchedulerError>;
 
-    /// Enqueues one exact semantic reply before the owning guest resumes.
+    /// Applies one exact semantic reply at the authoritative scheduler frontier.
     ///
     /// # Errors
     ///
     /// Returns [`SchedulerError`] when the request is stale, names another node
     /// generation, or the reply violates the retained reservation.
-    fn enqueue_selectable_reply(
+    fn apply_selectable_reply(
         &mut self,
+        parent: &Configuration,
+        decision: SelectionDecision,
+        selected: &Configuration,
         pending: &QemuNodeSelectablePendingRequest,
         reply: &SelectionReply,
-    ) -> Result<(), SchedulerError>;
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError>;
 
     /// Captures the exact current attempt continuation without CAS publication.
     ///
@@ -260,12 +264,17 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         ProductionVmLifecycleLoop::drain_pending_selectable_requests(self)
     }
 
-    fn enqueue_selectable_reply(
+    fn apply_selectable_reply(
         &mut self,
+        parent: &Configuration,
+        decision: SelectionDecision,
+        selected: &Configuration,
         pending: &QemuNodeSelectablePendingRequest,
         reply: &SelectionReply,
-    ) -> Result<(), SchedulerError> {
-        ProductionVmLifecycleLoop::enqueue_selectable_reply(self, pending, reply)
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        ProductionVmLifecycleLoop::apply_selectable_reply(
+            self, parent, decision, selected, pending, reply,
+        )
     }
 
     fn capture_attempt_checkpoint(
@@ -400,17 +409,21 @@ impl QemuFreshAttemptLifecycle<'_> {
         self.owner.drain_pending_selectable_requests()
     }
 
-    /// Enqueues one exact semantic reply before the owning guest resumes.
+    /// Applies one exact semantic reply at the authoritative scheduler frontier.
     ///
     /// # Errors
     ///
     /// Returns [`SchedulerError`] when the live request/reply binding fails.
-    pub fn enqueue_selectable_reply(
+    pub fn apply_selectable_reply(
         &mut self,
+        parent: &Configuration,
+        decision: SelectionDecision,
+        selected: &Configuration,
         pending: &QemuNodeSelectablePendingRequest,
         reply: &SelectionReply,
-    ) -> Result<(), SchedulerError> {
-        self.owner.enqueue_selectable_reply(pending, reply)
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        self.owner
+            .apply_selectable_reply(parent, decision, selected, pending, reply)
     }
 
     /// Captures read-only production fault evidence at the current boundary.
@@ -1409,17 +1422,20 @@ pub(crate) fn materialize_start_from<F, D>(
             ));
         }
         let terminal = lifecycle.terminal_verdict_for_stop();
-        if terminal.is_none() {
+        let selection_entries = if terminal.is_none() {
             apply_replayed_guest_selectables(
                 lifecycle,
                 input.lineage().scenario(),
                 input.scenario(),
                 target,
                 &mut next,
-            )?;
-        }
+            )?
+        } else {
+            Vec::new()
+        };
 
         append_start_replay_events(&mut replay, &outcome.event_log_entries)?;
+        append_start_replay_events(&mut replay, &selection_entries)?;
         replay.terminal_quiescence = outcome.scheduler_quiescence;
         current = next;
         if current == *target {
@@ -1446,7 +1462,8 @@ fn apply_replayed_guest_selectables<F, D>(
     source: &ScenarioDefForm,
     target: &Configuration,
     current: &mut Configuration,
-) -> Result<(), AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>> {
+) -> Result<Vec<SchedulerEventLogEntry>, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
+{
     let pending = lifecycle
         .drain_pending_selectable_requests()
         .map_err(map_start_replay_scheduler_failure)?;
@@ -1490,16 +1507,19 @@ fn apply_replayed_guest_selectables<F, D>(
         .map_err(start_replay_guest_selectable_failure)?;
         let reply = selected_guest_reply(pending.pending(), &discovery, &selection)
             .map_err(start_replay_guest_selectable_failure)?;
-        replies.push((pending, reply));
+        replies.push((pending, reply, decision.clone(), replayed.clone()));
         replayed = crucible::step(&replayed, Decision::Selection(decision.clone()));
     }
-    for (pending, reply) in replies {
-        lifecycle
-            .enqueue_selectable_reply(&pending, &reply)
+    let mut selection_entries = Vec::new();
+    for (pending, reply, decision, parent) in replies {
+        let selected = crucible::step(&parent, Decision::Selection(decision.clone()));
+        let entries = lifecycle
+            .apply_selectable_reply(&parent, decision, &selected, &pending, &reply)
             .map_err(map_start_replay_scheduler_failure)?;
+        selection_entries.extend(entries);
     }
     *current = replayed;
-    Ok(())
+    Ok(selection_entries)
 }
 
 fn start_replay_guest_selectable_failure<F, D>(

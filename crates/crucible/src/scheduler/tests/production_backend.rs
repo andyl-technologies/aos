@@ -510,6 +510,94 @@ fn signal_fault_branch_admission_requires_the_exact_typed_boundary() {
 }
 
 #[test]
+fn external_selection_advances_the_authoritative_scheduler_frontier() {
+    let mut scheduler = test_scheduler(Vec::new(), Vec::new());
+    let prior = scheduler
+        .append_observable_events([ObservableEvent::console_output(
+            VirtualTime { ticks: 37 },
+            NodeId {
+                name: String::from("node-a"),
+            },
+            b"prior-node-local-event".to_vec(),
+        )])
+        .expect("a prior event ahead of the conservative frontier should append");
+    let parent = scheduler.configuration().clone();
+    let quanta = scheduler.quanta();
+    let live = AppRandomDecision {
+        node: NodeId {
+            name: String::from("node-a"),
+        },
+        stream: RngStreamId::from_name("app-random/node:6:node-a/stream:8:external"),
+        request_id: 11,
+        width: 64,
+        value: 7,
+    };
+    let selectable = AppRandomSelectable::from_decision(&parent.def, &live)
+        .expect("app-random selectable should reconstruct");
+    let selection = selectable
+        .branch_selection(&parent, live.value)
+        .expect("selection should bind to the exact parent");
+    let decision = SelectionDecision::new(&selection);
+    let selected = step(&parent, Decision::Selection(decision.clone()));
+    let configuration_before_failure = scheduler.configuration().clone();
+    let quanta_before_failure = scheduler.quanta();
+    let offset_before_failure = scheduler.event_log_offset();
+    let point_before_failure = scheduler.condition_event_log_prefix().point();
+    let rejected_publisher_called = std::cell::Cell::new(false);
+
+    let error =
+        match scheduler.apply_external_selection(&parent, decision.clone(), &selected, || {
+            rejected_publisher_called.set(true);
+            Err(SchedulerError::BoundaryViolation {
+                message: String::from("fixture publisher rejected selection"),
+            })
+        }) {
+            Ok(_) => panic!("a publisher failure must reject the transition"),
+            Err(error) => error,
+        };
+    assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
+    assert!(rejected_publisher_called.get());
+    assert_eq!(scheduler.configuration(), &configuration_before_failure);
+    assert_eq!(scheduler.quanta(), quanta_before_failure);
+    assert_eq!(scheduler.event_log_offset(), offset_before_failure);
+    assert_eq!(
+        scheduler.condition_event_log_prefix().point(),
+        point_before_failure
+    );
+
+    let append = scheduler
+        .apply_external_selection(&parent, decision.clone(), &selected, || Ok(()))
+        .expect("exact external selection should append");
+
+    assert_eq!(scheduler.configuration(), &selected);
+    assert_eq!(scheduler.quanta(), quanta);
+    assert_eq!(append.entries[0].sequence(), prior.offset.events);
+    assert_eq!(append.entries[0].at(), VirtualTime { ticks: 37 });
+    assert!(append.entries.iter().any(|entry| {
+        entry.payload()
+            == &SchedulerEventLogPayload::Decision(Decision::Selection(decision.clone()))
+    }));
+    scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: selected,
+            control: Vec::new(),
+        })
+        .expect("the selected configuration should drive the next quantum");
+
+    let current = scheduler.configuration().clone();
+    let stale_publisher_called = std::cell::Cell::new(false);
+    let error = match scheduler.apply_external_selection(&parent, decision, &current, || {
+        stale_publisher_called.set(true);
+        Ok(())
+    }) {
+        Ok(_) => panic!("a stale parent must be rejected"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
+    assert!(!stale_publisher_called.get());
+}
+
+#[test]
 fn branch_reseed_drives_live_app_random_and_resets_world_network_cursors() {
     fn app_random_decisions(
         seed: Seed,

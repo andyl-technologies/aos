@@ -58,6 +58,34 @@ fn selectable_catalogs_checkpoint_ready(
     })
 }
 
+fn validate_selectable_reply_pairing(
+    decision: &SelectionDecision,
+    pending: &crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+    reply: &crucible_protocol::SelectionReply,
+) -> Result<(), SchedulerError> {
+    let selection = decision
+        .selection()
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("external selection decision is invalid: {error}"),
+        })?;
+    let opportunity = selection.opportunity().content_id().digest();
+    let domain = selection.domain().content_id().digest();
+    let value = selection.value().canonical_bytes();
+    if reply.sequence() != pending.request().sequence()
+        || reply.status() != crucible_protocol::SelectionReplyStatus::Selected
+        || reply.opportunity_id() != &opportunity
+        || reply.domain_id() != &domain
+        || reply.selected_value() != Some(value.as_slice())
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "external selection decision does not match its pending guest reply",
+            ),
+        });
+    }
+    Ok(())
+}
+
 impl ProductionVmLifecycleLoop {
     /// Drains node-qualified guest selectable requests at the paused boundary.
     ///
@@ -78,21 +106,34 @@ impl ProductionVmLifecycleLoop {
             .map_err(SchedulerError::Backend)
     }
 
-    /// Enqueues one exact host-authorized selectable reply before guest resume.
+    /// Applies one exact host-authorized selectable reply at the scheduler frontier.
+    ///
+    /// The scheduler stages its event-log transition before publishing the reply
+    /// to QEMU and rolls that stage back if transport publication fails. Its
+    /// authoritative configuration advances only after publication succeeds.
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerError`] when the node generation is absent or its
-    /// shared-memory transport rejects the request/reply binding.
-    pub fn enqueue_selectable_reply(
+    /// Returns [`SchedulerError`] when the decision does not exactly match the
+    /// pending request and reply, the parent or selected configuration is not
+    /// the scheduler's exact transition, event-log append fails, the node
+    /// generation is absent, or its shared-memory transport rejects the binding.
+    pub fn apply_selectable_reply(
         &mut self,
+        parent: &Configuration,
+        decision: SelectionDecision,
+        selected: &Configuration,
         pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
         reply: &crucible_protocol::SelectionReply,
-    ) -> Result<(), SchedulerError> {
-        self.inner
-            .backend_mut()
-            .enqueue_selectable_reply(pending, reply)
-            .map_err(SchedulerError::Backend)
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        validate_selectable_reply_pairing(&decision, pending.pending(), reply)?;
+        let (scheduler, backend) = self.inner.parts_mut();
+        let append = scheduler.apply_external_selection(parent, decision, selected, || {
+            backend
+                .enqueue_selectable_reply(pending, reply)
+                .map_err(SchedulerError::Backend)
+        })?;
+        Ok(append.entries)
     }
 
     /// Copies the exact scenario-aware live-node profiles for background replay.

@@ -251,17 +251,20 @@ pub trait QemuModeledAttemptLifecycle {
         &mut self,
     ) -> Result<Vec<QemuNodeSelectablePendingRequest>, SchedulerError>;
 
-    /// Enqueues one exact host-authorized selectable reply.
+    /// Applies one exact host-authorized selectable reply at the scheduler frontier.
     ///
     /// # Errors
     ///
     /// Returns [`SchedulerError`] when the request is stale or the reply is
     /// incompatible with its retained reservation.
-    fn enqueue_selectable_reply(
+    fn apply_selectable_reply(
         &mut self,
+        parent: &crucible::Configuration,
+        decision: SelectionDecision,
+        selected: &crucible::Configuration,
         pending: &QemuNodeSelectablePendingRequest,
         reply: &SelectionReply,
-    ) -> Result<(), SchedulerError>;
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError>;
 
     /// Returns the number of guest frames not yet globally committed.
     #[must_use]
@@ -291,12 +294,17 @@ impl QemuModeledAttemptLifecycle for QemuFreshAttemptLifecycle<'_> {
         QemuFreshAttemptLifecycle::drain_pending_selectable_requests(self)
     }
 
-    fn enqueue_selectable_reply(
+    fn apply_selectable_reply(
         &mut self,
+        parent: &crucible::Configuration,
+        decision: SelectionDecision,
+        selected: &crucible::Configuration,
         pending: &QemuNodeSelectablePendingRequest,
         reply: &SelectionReply,
-    ) -> Result<(), SchedulerError> {
-        QemuFreshAttemptLifecycle::enqueue_selectable_reply(self, pending, reply)
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        QemuFreshAttemptLifecycle::apply_selectable_reply(
+            self, parent, decision, selected, pending, reply,
+        )
     }
 
     fn pending_network_output_count(&self) -> usize {
@@ -635,10 +643,13 @@ fn resolve_pending_guest_choices(
         }
     }
     for (pending, reply, decision) in continuations {
-        lifecycle
-            .enqueue_selectable_reply(&pending, &reply)
+        let parent = outcome.configuration.clone();
+        let selected = step(&parent, Decision::Selection(decision.clone()));
+        let entries = lifecycle
+            .apply_selectable_reply(&parent, decision, &selected, &pending, &reply)
             .map_err(classify_scheduler_error)?;
-        outcome.configuration = step(&outcome.configuration, Decision::Selection(decision));
+        outcome.configuration = selected;
+        outcome.event_log_entries.extend(entries);
     }
     Ok(())
 }

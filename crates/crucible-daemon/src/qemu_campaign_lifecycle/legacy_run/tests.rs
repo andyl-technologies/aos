@@ -117,12 +117,15 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
         Ok(Vec::new())
     }
 
-    fn enqueue_selectable_reply(
+    fn apply_selectable_reply(
         &mut self,
+        _parent: &crucible::Configuration,
+        _decision: crucible::SelectionDecision,
+        _selected: &crucible::Configuration,
         _pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
         _reply: &crucible_protocol::SelectionReply,
-    ) -> Result<(), SchedulerError> {
-        Ok(())
+    ) -> Result<Vec<crucible::SchedulerEventLogEntry>, SchedulerError> {
+        Ok(Vec::new())
     }
 
     fn capture_attempt_checkpoint(
@@ -248,18 +251,21 @@ impl QemuFreshAttemptLifecycleOwner for SelectableLifecycle {
         Ok(std::mem::take(&mut self.pending))
     }
 
-    fn enqueue_selectable_reply(
+    fn apply_selectable_reply(
         &mut self,
+        _parent: &crucible::Configuration,
+        _decision: crucible::SelectionDecision,
+        _selected: &crucible::Configuration,
         _pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
         reply: &crucible_protocol::SelectionReply,
-    ) -> Result<(), SchedulerError> {
+    ) -> Result<Vec<crucible::SchedulerEventLogEntry>, SchedulerError> {
         if reply.selected_value().is_none() {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("selectable fixture received a non-selected reply"),
             });
         }
         self.selection_received = true;
-        Ok(())
+        Ok(Vec::new())
     }
 
     fn capture_attempt_checkpoint(

@@ -605,16 +605,19 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
         Ok(std::mem::take(&mut self.pending))
     }
 
-    fn enqueue_selectable_reply(
+    fn apply_selectable_reply(
         &mut self,
+        _parent: &crucible::Configuration,
+        _decision: crucible::SelectionDecision,
+        _selected: &crucible::Configuration,
         _pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
         reply: &crucible_protocol::SelectionReply,
-    ) -> Result<(), crucible::SchedulerError> {
+    ) -> Result<Vec<crucible::SchedulerEventLogEntry>, crucible::SchedulerError> {
         self.replies
             .lock()
             .expect("fresh lifecycle replies")
             .push(reply.clone());
-        Ok(())
+        Ok(Vec::new())
     }
 
     fn capture_attempt_checkpoint(
@@ -834,11 +837,14 @@ impl QemuFreshAttemptLifecycleOwner for FakeGenesisCheckpointLifecycle {
         Ok(Vec::new())
     }
 
-    fn enqueue_selectable_reply(
+    fn apply_selectable_reply(
         &mut self,
+        _parent: &crucible::Configuration,
+        _decision: crucible::SelectionDecision,
+        _selected: &crucible::Configuration,
         _pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
         _reply: &crucible_protocol::SelectionReply,
-    ) -> Result<(), crucible::SchedulerError> {
+    ) -> Result<Vec<crucible::SchedulerEventLogEntry>, crucible::SchedulerError> {
         Err(crucible::SchedulerError::BoundaryViolation {
             message: String::from("genesis checkpoint fixture has no selectable transport"),
         })
