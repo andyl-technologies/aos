@@ -3549,3 +3549,52 @@ publication dispatch. Backend readiness, cleanup-authorized identity reclaim,
 source-handle materialization, native attachment replay, lease-expiry
 scheduling, internal-reboot anchor handoff, and live namespace VM qualification
 remain open.
+
+### Authenticated Host catalog publication dispatch
+
+Host protocol 1.4 now exposes the protected catalog publisher only to the fixed
+node-controller peer. The request envelope binds one nonzero catalog generation,
+exact byte length, SHA-256 digest, and a single `HOST_CATALOG` descriptor role.
+The complete catalog travels in a fully write/grow/shrink/seal-protected memfd,
+so the existing bounded sequence-packet carrier never has to embed a catalog of
+up to sixteen MiB in one socket record. Host maps only the declared bounded
+length, verifies the complete seal set and digest, requires the unique compact
+JSON encoding and declared generation, and then invokes the existing atomic
+publisher. Its response accounts for the closed request descriptor and confirms
+the exact visible generation and digest as either a new publication or an
+idempotent replay.
+
+The controller-side one-shot client validates the caller's BOOTTIME deadline,
+negotiates only the new method, and authenticates every Host response through
+kernel record credentials, a retained pidfd, and exact membership in the
+deployment-selected service cgroup. It verifies the same Host execution again
+immediately before transferring the sealed catalog and around the final reply,
+then accepts success only when the descriptor disposition, generation, and
+digest exactly match its draft. Host 1.1 through 1.3 remain compatible for their
+existing methods, and Host Apply accepts the 1.4 carrier without changing its
+1.1 signed semantics. The packaged host daemon opens the same protected root
+for its reader and publisher and advertises publication only when that publisher
+is configured.
+
+Focused coverage includes protocol-version and descriptor-role separation,
+bounded request and receipt decoding, canonical Host JSON rejection, sealed-file
+generation and digest matching, protected published/replay receipts, 1.1-through-
+1.4 Apply compatibility, and a three-MiB in-process catalog transfer that
+authenticates the responding service and verifies the mapped bytes. All 339
+hermetic `aos-sandbox` tests pass; its 340th real-cgroup exchange passes in the
+explicit all-feature kernel suite. All 95 `aos-sandbox-host` and 88
+`aos-sandbox-protocol` library tests also pass. Strict all-target/all-feature
+crate-local Clippy without dependency linting, warnings-as-errors rustdoc,
+targeted Rust formatting, and diff checks pass. The hermetic
+`nix-build -A checks.eval --cores 8 --no-out-link` gate passes all 4,724
+workspace tests, with five skipped, and every system-structure check at
+`/nix/store/hmbrk37j1qgmvgss5wvf5i5rzkqvc8w8-aos-eval-and-system-structure-checks-0`.
+
+This supplies the authenticated privileged dispatch left open by the preceding
+increment and advances `SBX-BPROTO-04`, `SBX-CTRL-03`, and `SBX-HOST-01`. It does
+not yet build or schedule the complete catalog from production reconciler state:
+combined projection still depends on workspace and network realizers plus the
+existing Mount inventory. Backend readiness, cleanup-authorized identity
+reclaim, source-handle materialization, native attachment replay, lease-expiry
+scheduling, internal-reboot anchor handoff, and live namespace VM qualification
+remain open.

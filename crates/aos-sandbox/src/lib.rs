@@ -28,6 +28,8 @@ pub mod destination_slot_effect;
 pub mod destination_slot_inventory;
 pub mod dispatch;
 pub mod filesystem_view_state;
+#[cfg(target_os = "linux")]
+pub mod host_catalog_publication;
 pub mod journal;
 #[cfg(target_os = "linux")]
 mod local_channel;

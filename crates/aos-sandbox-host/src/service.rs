@@ -2,14 +2,24 @@
 //!
 //! The service verifies the accepted peer's kernel service identity before it
 //! reads bytes, admits a two-packet hello/request session, uses `CLOCK_BOOTTIME`
-//! for request expiry, and returns a bounded envelope containing either one
-//! durable runtime observation or one path-free error.
+//! for request expiry, and returns a bounded envelope containing a fixed-method
+//! result or one path-free error.
 
 mod mount_scope;
 
-use aos_proto::aos::sandbox::local::v1::{Audience, BrokerErrorCode, BrokerMethod};
+use std::os::fd::OwnedFd;
+
+use aos_proto::aos::sandbox::local::v1::{
+    Audience, BrokerDescriptorDisposition, BrokerDescriptorRole, BrokerErrorCode, BrokerMethod,
+    HostCatalogPublicationStatus, PublishHostCatalogResponse,
+};
 use aos_sandbox_core::{FeatureRef, ProtocolId, RawClockProvenance, RawPairedClockSample};
 use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
+use aos_sandbox_protocol::host_catalog::{
+    HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES, MAXIMUM_HOST_CATALOG_BYTES,
+    ValidatedHostCatalogPublication, decode_host_catalog_publication_request,
+};
 use aos_sandbox_protocol::payload_scope::{
     PAYLOAD_SCOPE_DESCRIPTOR_ROLES, decode_payload_scope_request,
 };
@@ -21,9 +31,13 @@ use aos_sandbox_protocol::{
 };
 use buffa::Message as _;
 use rustix::time::{ClockId, clock_gettime};
+use sha2::{Digest as _, Sha256};
 
 use crate::KERNEL_CLOCK_PROVENANCE;
 use crate::broker::{HostBroker, RuntimeEffectQueryContext};
+use crate::catalog::{
+    FileHostCatalogPublisher, HostCatalogPublicationOutcome, HostCatalogSnapshot,
+};
 use crate::observation::{
     decode_inventory_runtime_request, decode_observe_runtime_request,
     decode_query_runtime_effect_request,
@@ -38,7 +52,7 @@ use crate::{HostError, Result};
 /// Classifies the completed handling of one accepted connection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConnectionOutcome {
-    /// One runtime request completed successfully.
+    /// One broker request completed successfully.
     Served,
     /// A kernel-credential or service-cgroup check rejected the peer silently.
     PeerRejected,
@@ -51,6 +65,7 @@ pub enum ConnectionOutcome {
 /// Owns fixed peer policy and the serialized durable host broker.
 pub struct HostService<C, S, W> {
     broker: HostBroker<C, S, W>,
+    catalog_publisher: Option<FileHostCatalogPublisher>,
     verifier: ControllerPeerVerifier,
     peer_policy: PeerPolicy,
 }
@@ -70,6 +85,7 @@ where
     ) -> Self {
         Self {
             broker,
+            catalog_publisher: None,
             verifier,
             peer_policy: PeerPolicy {
                 uid: controller_identity.0,
@@ -77,6 +93,17 @@ where
                 audience: Audience::AUDIENCE_NODE_CONTROLLER,
             },
         }
+    }
+
+    /// Enables protected Host catalog publication for the fixed controller peer.
+    ///
+    /// The publisher must name the same protected catalog root used by the
+    /// broker's reader. Deployment owns that invariant; publication readback
+    /// and subsequent launch resolution independently validate the file.
+    #[must_use]
+    pub fn with_catalog_publisher(mut self, publisher: FileHostCatalogPublisher) -> Self {
+        self.catalog_publisher = Some(publisher);
+        self
     }
 
     /// Accepts, verifies, serves, and closes one sequence-packet connection.
@@ -125,7 +152,10 @@ where
                 &HostError::Protocol(ProtocolValidationError::DescriptorTableMismatch),
             ));
         }
-        let advertised_methods = advertised_methods(self.broker.launch_available());
+        let advertised_methods = advertised_methods(
+            self.broker.launch_available(),
+            self.catalog_publisher.is_some(),
+        );
         let advertised_features = [signed_plan_lease_feature()?];
         let session = match negotiate_client_hello(
             &hello.bytes,
@@ -153,12 +183,75 @@ where
         let Ok(request) = session.decode_request(&packet.bytes, packet.descriptors.len()) else {
             return Ok(ConnectionOutcome::RequestRejected);
         };
-        if validate_request_descriptor_roles(&request, &[]).is_err() {
+        let expected_roles: &[BrokerDescriptorRole] =
+            if request.method() == BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG {
+                &HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES
+            } else {
+                &[]
+            };
+        if validate_request_descriptor_roles(&request, expected_roles).is_err() {
             return Ok(ConnectionOutcome::RequestRejected);
         }
         if !valid_service_authorization_profile(request.method(), request.authorization().is_some())
         {
             return Ok(ConnectionOutcome::RequestRejected);
+        }
+        if request.method() == BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG {
+            let now = trusted_paired_clock_sample()?.boottime_nanoseconds();
+            let Ok(validated) = decode_host_catalog_publication_request(
+                request.body(),
+                peer.credentials(),
+                self.peer_policy,
+                now,
+            ) else {
+                return Ok(ConnectionOutcome::RequestRejected);
+            };
+            if session.validate_header(validated.header()).is_err() {
+                return Ok(ConnectionOutcome::RequestRejected);
+            }
+            let request_id = *validated.header().request_id();
+            let ceiling = validated.header().maximum_response_bytes();
+            let Ok([catalog_file]) =
+                <Vec<OwnedFd> as TryInto<[OwnedFd; 1]>>::try_into(packet.descriptors)
+            else {
+                return Ok(ConnectionOutcome::RequestRejected);
+            };
+            let result = self.publish_catalog(&validated, catalog_file);
+            let dispositions = [BrokerDescriptorDisposition::BROKER_DESCRIPTOR_DISPOSITION_CLOSED];
+            return match result {
+                Ok(body) => {
+                    let Ok((response, outcome)) = encode_method_success_with_dispositions(
+                        &request_id,
+                        &request,
+                        body,
+                        &dispositions,
+                        ceiling,
+                    ) else {
+                        return Ok(ConnectionOutcome::TransportRejected);
+                    };
+                    Ok(if connection.send(&response).is_ok() {
+                        outcome
+                    } else {
+                        ConnectionOutcome::TransportRejected
+                    })
+                }
+                Err(error) => {
+                    let Ok(response) = encode_method_error_with_dispositions(
+                        &request_id,
+                        &request,
+                        &error,
+                        &dispositions,
+                        ceiling,
+                    ) else {
+                        return Ok(ConnectionOutcome::TransportRejected);
+                    };
+                    Ok(if connection.send(&response).is_ok() {
+                        ConnectionOutcome::RequestRejected
+                    } else {
+                        ConnectionOutcome::TransportRejected
+                    })
+                }
+            };
         }
         if request.method() == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE {
             let Some(artifacts) = request.authorization() else {
@@ -381,10 +474,67 @@ where
             }
         }
     }
+
+    fn publish_catalog(
+        &self,
+        request: &ValidatedHostCatalogPublication,
+        catalog_file: OwnedFd,
+    ) -> Result<Vec<u8>> {
+        let publisher = self.catalog_publisher.as_ref().ok_or_else(|| {
+            HostError::State("host catalog publisher is not configured".to_owned())
+        })?;
+        publish_catalog_request(publisher, request, catalog_file)
+    }
 }
 
-fn advertised_methods(launch_available: bool) -> Vec<BrokerMethod> {
-    let mut methods = Vec::with_capacity(5);
+fn publish_catalog_request(
+    publisher: &FileHostCatalogPublisher,
+    request: &ValidatedHostCatalogPublication,
+    catalog_file: OwnedFd,
+) -> Result<Vec<u8>> {
+    SealedMemfdMapping::run(
+        catalog_file,
+        request.catalog_bytes(),
+        u64::try_from(MAXIMUM_HOST_CATALOG_BYTES)
+            .map_err(|_| HostError::Catalog("host catalog byte ceiling is invalid".to_owned()))?,
+        |catalog, _identity| {
+            let digest = aos_sandbox_core::ObjectDigest::from_bytes(Sha256::digest(catalog).into());
+            if digest != request.catalog_digest() {
+                return Err(HostError::Catalog(
+                    "sealed host catalog digest does not match the request".to_owned(),
+                ));
+            }
+            let snapshot = HostCatalogSnapshot::decode_canonical(catalog)?;
+            if snapshot.generation() != request.catalog_generation() {
+                return Err(HostError::Catalog(
+                    "sealed host catalog generation does not match the request".to_owned(),
+                ));
+            }
+            let status = match publisher.publish(&snapshot)? {
+                HostCatalogPublicationOutcome::Published => {
+                    HostCatalogPublicationStatus::HOST_CATALOG_PUBLICATION_STATUS_PUBLISHED
+                }
+                HostCatalogPublicationOutcome::Replay => {
+                    HostCatalogPublicationStatus::HOST_CATALOG_PUBLICATION_STATUS_REPLAY
+                }
+            };
+            Ok(PublishHostCatalogResponse {
+                status: status.into(),
+                generation: request.catalog_generation(),
+                catalog_sha256: request.catalog_digest().as_bytes().to_vec(),
+                ..Default::default()
+            }
+            .encode_to_vec())
+        },
+    )
+    .map_err(|error| HostError::Catalog(error.to_string()))?
+}
+
+fn advertised_methods(
+    launch_available: bool,
+    catalog_publication_available: bool,
+) -> Vec<BrokerMethod> {
+    let mut methods = Vec::with_capacity(6);
     if launch_available {
         methods.push(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME);
     }
@@ -392,6 +542,9 @@ fn advertised_methods(launch_available: bool) -> Vec<BrokerMethod> {
     methods.push(BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME);
     methods.push(BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT);
     methods.push(BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE);
+    if catalog_publication_available {
+        methods.push(BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG);
+    }
     methods
 }
 
@@ -410,15 +563,33 @@ fn encode_method_success(
     body: Vec<u8>,
     maximum_bytes: u32,
 ) -> std::result::Result<(Vec<u8>, ConnectionOutcome), ProtocolValidationError> {
-    match encode_success_response_envelope(request_id, request, body, &[], &[], maximum_bytes) {
+    encode_method_success_with_dispositions(request_id, request, body, &[], maximum_bytes)
+}
+
+fn encode_method_success_with_dispositions(
+    request_id: &[u8; 16],
+    request: &aos_sandbox_protocol::ValidatedBrokerRequestEnvelope,
+    body: Vec<u8>,
+    request_descriptor_dispositions: &[BrokerDescriptorDisposition],
+    maximum_bytes: u32,
+) -> std::result::Result<(Vec<u8>, ConnectionOutcome), ProtocolValidationError> {
+    match encode_success_response_envelope(
+        request_id,
+        request,
+        body,
+        &[],
+        request_descriptor_dispositions,
+        maximum_bytes,
+    ) {
         Ok(response) => Ok((response, ConnectionOutcome::Served)),
         Err(
             ProtocolValidationError::ResponseTooLarge
             | ProtocolValidationError::InvalidResponseBound,
-        ) => encode_method_error(
+        ) => encode_method_error_with_dispositions(
             request_id,
             request,
             &HostError::ResourceExhausted,
+            request_descriptor_dispositions,
             maximum_bytes,
         )
         .map(|response| (response, ConnectionOutcome::RequestRejected)),
@@ -464,6 +635,16 @@ fn encode_method_error(
     error: &HostError,
     maximum_bytes: u32,
 ) -> std::result::Result<Vec<u8>, ProtocolValidationError> {
+    encode_method_error_with_dispositions(request_id, request, error, &[], maximum_bytes)
+}
+
+fn encode_method_error_with_dispositions(
+    request_id: &[u8; 16],
+    request: &aos_sandbox_protocol::ValidatedBrokerRequestEnvelope,
+    error: &HostError,
+    request_descriptor_dispositions: &[BrokerDescriptorDisposition],
+    maximum_bytes: u32,
+) -> std::result::Result<Vec<u8>, ProtocolValidationError> {
     let (code, safe_message, retryable) = classify_error(error);
     encode_error_response_envelope(
         request_id,
@@ -472,7 +653,7 @@ fn encode_method_error(
         safe_message,
         retryable,
         None,
-        &[],
+        request_descriptor_dispositions,
         maximum_bytes,
     )
 }
@@ -546,7 +727,12 @@ fn classify_error(error: &HostError) -> (BrokerErrorCode, &'static str, bool) {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use aos_proto::aos::sandbox::local::v1::{BrokerClientHello, BrokerRequestEnvelope};
+    use std::io::Write as _;
+
+    use aos_proto::aos::sandbox::local::v1::{
+        BrokerClientHello, BrokerRequestEnvelope, PublishHostCatalogRequest, RequestHeader,
+    };
+    use aos_sandbox_protocol::host_catalog::decode_host_catalog_publication_response;
     use aos_sandbox_protocol::{decode_request_envelope, decode_response_envelope};
 
     use super::*;
@@ -604,9 +790,100 @@ mod tests {
     }
 
     #[test]
+    fn publication_dispatch_returns_exact_published_and_replay_receipts() {
+        let directory = tempfile::tempdir().unwrap();
+        let descriptor = rustix::fs::open(
+            directory.path(),
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let publisher = FileHostCatalogPublisher::new(
+            aos_sandbox_linux::path::BeneathRoot::from_owned(descriptor).unwrap(),
+        );
+        let catalog = HostCatalogSnapshot::new(1, Vec::new(), Vec::new())
+            .unwrap()
+            .encode()
+            .unwrap();
+        let catalog_digest =
+            aos_sandbox_core::ObjectDigest::from_bytes(Sha256::digest(&catalog).into());
+        let credentials = aos_sandbox_protocol::PeerCredentials {
+            uid: 100,
+            gid: 200,
+            pid: Some(300),
+        };
+        let policy = PeerPolicy {
+            uid: 100,
+            gid: Some(200),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        };
+        let body = PublishHostCatalogRequest {
+            header: Some(RequestHeader {
+                protocol_major: 1,
+                protocol_minor: 4,
+                request_id: vec![1; 16],
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                deadline_boottime_nanoseconds: 20,
+                maximum_response_bytes: 4096,
+                ..Default::default()
+            })
+            .into(),
+            catalog_generation: 1,
+            catalog_bytes: u64::try_from(catalog.len()).unwrap(),
+            catalog_sha256: catalog_digest.as_bytes().to_vec(),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let request =
+            decode_host_catalog_publication_request(&body, credentials, policy, 10).unwrap();
+
+        let published = decode_host_catalog_publication_response(
+            &publish_catalog_request(&publisher, &request, sealed_catalog(&catalog)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            published.status(),
+            aos_sandbox_protocol::host_catalog::HostCatalogPublicationStatusV1::Published
+        );
+        assert_eq!(published.generation(), 1);
+        assert_eq!(published.catalog_digest(), catalog_digest);
+
+        let replayed = decode_host_catalog_publication_response(
+            &publish_catalog_request(&publisher, &request, sealed_catalog(&catalog)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            replayed.status(),
+            aos_sandbox_protocol::host_catalog::HostCatalogPublicationStatusV1::Replay
+        );
+    }
+
+    fn sealed_catalog(bytes: &[u8]) -> OwnedFd {
+        let fd = rustix::fs::memfd_create(
+            "host-catalog-test",
+            rustix::fs::MemfdFlags::CLOEXEC | rustix::fs::MemfdFlags::ALLOW_SEALING,
+        )
+        .unwrap();
+        let mut file = std::fs::File::from(fd);
+        file.write_all(bytes).unwrap();
+        rustix::fs::fcntl_add_seals(
+            &file,
+            rustix::fs::SealFlags::SHRINK
+                | rustix::fs::SealFlags::GROW
+                | rustix::fs::SealFlags::WRITE
+                | rustix::fs::SealFlags::SEAL,
+        )
+        .unwrap();
+        file.into()
+    }
+
+    #[test]
     fn launch_method_is_not_advertised_without_readiness() {
         assert_eq!(
-            advertised_methods(false),
+            advertised_methods(false, false),
             [
                 BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
                 BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -615,13 +892,23 @@ mod tests {
             ]
         );
         assert_eq!(
-            advertised_methods(true),
+            advertised_methods(true, false),
             [
                 BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
                 BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
                 BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
                 BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT,
                 BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE,
+            ]
+        );
+        assert_eq!(
+            advertised_methods(false, true),
+            [
+                BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
+                BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+                BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT,
+                BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE,
+                BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG,
             ]
         );
     }
@@ -655,7 +942,7 @@ mod tests {
             policy,
             ProtocolId::HostBroker,
             &[signed_plan_lease_feature().unwrap()],
-            &advertised_methods(false),
+            &advertised_methods(false, false),
         )
         .unwrap();
         assert_eq!(

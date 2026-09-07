@@ -18,6 +18,7 @@ use std::path::Path;
 
 use aos_sandbox_core::ObjectDescriptor;
 use aos_sandbox_linux::path::BeneathRoot;
+use aos_sandbox_protocol::host_catalog::MAXIMUM_HOST_CATALOG_BYTES;
 use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedRuntimePlan};
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +32,6 @@ use crate::{HostError, Result};
 
 const CATALOG_FILE: &str = "catalog.json";
 const CATALOG_NEXT_FILE: &str = "catalog.next";
-const MAXIMUM_CATALOG_BYTES: usize = 16 * 1024 * 1024;
 const MAXIMUM_ENTRIES: usize = 16_384;
 const MAXIMUM_ATTACHMENTS: usize = 256;
 const MINIMUM_IDENTITY_RANGE: u32 = 65_536;
@@ -420,7 +420,7 @@ impl HostCatalogSnapshot {
         self.validate()?;
         let bytes =
             serde_json::to_vec(self).map_err(|error| HostError::Catalog(error.to_string()))?;
-        if bytes.len() > MAXIMUM_CATALOG_BYTES {
+        if bytes.len() > MAXIMUM_HOST_CATALOG_BYTES {
             return Err(HostError::Catalog(
                 "encoded host catalog exceeds sixteen MiB".to_owned(),
             ));
@@ -428,10 +428,39 @@ impl HostCatalogSnapshot {
         Ok(bytes)
     }
 
+    /// Decodes an exact canonical Host catalog encoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed JSON, unknown fields, invalid catalog
+    /// semantics, an oversized encoding, or bytes that are not the unique
+    /// compact encoding produced by [`Self::encode`].
+    pub fn decode_canonical(bytes: &[u8]) -> Result<Self> {
+        Self::decode(bytes)
+    }
+
+    /// Returns the nonzero publication generation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
     fn decode(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() > MAXIMUM_HOST_CATALOG_BYTES {
+            return Err(HostError::Catalog(
+                "encoded host catalog exceeds sixteen MiB".to_owned(),
+            ));
+        }
         let value: Self =
             serde_json::from_slice(bytes).map_err(|error| HostError::Catalog(error.to_string()))?;
         value.validate()?;
+        let canonical =
+            serde_json::to_vec(&value).map_err(|error| HostError::Catalog(error.to_string()))?;
+        if canonical != bytes {
+            return Err(HostError::Catalog(
+                "host catalog encoding is not canonical".to_owned(),
+            ));
+        }
         Ok(value)
     }
 
@@ -549,7 +578,7 @@ impl FileHostCatalog {
         let bytes = self
             .root
             .open_regular(Path::new(CATALOG_FILE))
-            .and_then(|file| file.read_bounded(MAXIMUM_CATALOG_BYTES))
+            .and_then(|file| file.read_bounded(MAXIMUM_HOST_CATALOG_BYTES))
             .map_err(|error| HostError::Catalog(error.to_string()))?;
         HostCatalogSnapshot::decode(&bytes)
     }
@@ -777,7 +806,7 @@ fn read_catalog_snapshot(root: &BeneathRoot) -> Result<Option<(HostCatalogSnapsh
     }
     let declared_size = usize::try_from(metadata.st_size)
         .map_err(|_| HostError::Catalog("host catalog size is invalid".to_owned()))?;
-    if declared_size == 0 || declared_size > MAXIMUM_CATALOG_BYTES {
+    if declared_size == 0 || declared_size > MAXIMUM_HOST_CATALOG_BYTES {
         return Err(HostError::Catalog(
             "host catalog size is invalid".to_owned(),
         ));
@@ -785,10 +814,10 @@ fn read_catalog_snapshot(root: &BeneathRoot) -> Result<Option<(HostCatalogSnapsh
 
     let mut bytes = Vec::with_capacity(declared_size);
     File::from(descriptor)
-        .take((MAXIMUM_CATALOG_BYTES + 1) as u64)
+        .take((MAXIMUM_HOST_CATALOG_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|error| HostError::Catalog(error.to_string()))?;
-    if bytes.len() != declared_size || bytes.len() > MAXIMUM_CATALOG_BYTES {
+    if bytes.len() != declared_size || bytes.len() > MAXIMUM_HOST_CATALOG_BYTES {
         return Err(HostError::Catalog(
             "host catalog changed while being read".to_owned(),
         ));
@@ -1239,6 +1268,20 @@ mod tests {
             std::fs::read(directory.path().join(CATALOG_FILE)).unwrap(),
             snapshot.encode().unwrap()
         );
+    }
+
+    #[test]
+    fn wire_catalog_decode_requires_the_unique_canonical_encoding() {
+        let snapshot = empty_snapshot(1);
+        let canonical = snapshot.encode().unwrap();
+        assert_eq!(
+            HostCatalogSnapshot::decode_canonical(&canonical).unwrap(),
+            snapshot
+        );
+
+        let mut whitespace_variant = canonical;
+        whitespace_variant.push(b'\n');
+        assert!(HostCatalogSnapshot::decode_canonical(&whitespace_variant).is_err());
     }
 
     #[test]

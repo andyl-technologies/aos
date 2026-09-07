@@ -75,6 +75,7 @@ enum BrokerMethod {
   BROKER_METHOD_MOUNT_PREPARE_CATALOG = 14;
   BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT = 15;
   BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS = 16;
+  BROKER_METHOD_HOST_PUBLISH_CATALOG = 17;
 }
 
 // Semantic roles for SCM_RIGHTS descriptors carried beside one packet.
@@ -89,6 +90,7 @@ enum BrokerDescriptorRole {
   BROKER_DESCRIPTOR_ROLE_TARGET_SLOT = 7;
   BROKER_DESCRIPTOR_ROLE_PAYLOAD_LEADER_PIDFD = 8;
   BROKER_DESCRIPTOR_ROLE_PAYLOAD_CGROUP = 9;
+  BROKER_DESCRIPTOR_ROLE_HOST_CATALOG = 10;
 }
 
 // Declares response-side ownership of a descriptor received with the request.
@@ -297,12 +299,37 @@ message QueryRuntimeEffectResponse {
   bytes receipt = 2; // Exact prior RuntimeObservation bytes only for Complete.
 }
 
+// Host 1.4 publication carries one sealed memfd containing a complete canonical
+// node-local launch catalog. The fixed controller peer derives these physical
+// bindings through trusted reconciliation; hostd validates the sealed bytes,
+// generation, digest, and identity-allocation continuity before making the
+// snapshot visible.
+message PublishHostCatalogRequest {
+  RequestHeader header = 1;
+  uint64 catalog_generation = 2;
+  uint64 catalog_bytes = 3; // Nonzero and at most 16 MiB.
+  bytes catalog_sha256 = 4; // SHA-256 of the sealed canonical catalog memfd.
+}
+
+enum HostCatalogPublicationStatus {
+  HOST_CATALOG_PUBLICATION_STATUS_UNSPECIFIED = 0;
+  HOST_CATALOG_PUBLICATION_STATUS_PUBLISHED = 1;
+  HOST_CATALOG_PUBLICATION_STATUS_REPLAY = 2;
+}
+
+message PublishHostCatalogResponse {
+  HostCatalogPublicationStatus status = 1;
+  uint64 generation = 2;
+  bytes catalog_sha256 = 3; // SHA-256 of the exact visible canonical bytes.
+}
+
 service HostBroker {
   rpc ApplyRuntime(ApplyRuntimeRequest) returns (RuntimeObservation);
   rpc ObserveRuntime(ObserveRuntimeRequest) returns (RuntimeObservation);
   rpc ObservePayloadScope(ObservePayloadScopeRequest) returns (ObservePayloadScopeResponse);
   rpc InventoryRuntime(InventoryRuntimeRequest) returns (InventoryRuntimeResponse);
   rpc QueryRuntimeEffect(QueryRuntimeEffectRequest) returns (QueryRuntimeEffectResponse);
+  rpc PublishCatalog(PublishHostCatalogRequest) returns (PublishHostCatalogResponse);
 }
 
 enum StorageAction {

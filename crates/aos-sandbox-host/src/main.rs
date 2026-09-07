@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use aos_sandbox_host::activation::take_systemd_listener;
 use aos_sandbox_host::authorization::HostAuthorityV1;
 use aos_sandbox_host::broker::HostBroker;
-use aos_sandbox_host::catalog::FileHostCatalog;
+use aos_sandbox_host::catalog::{FileHostCatalog, FileHostCatalogPublisher};
 use aos_sandbox_host::peer::ControllerPeerVerifier;
 use aos_sandbox_host::plan::{BackendReadinessBlocker, ProtectedBackendReadinessEvidence};
 use aos_sandbox_host::service::HostService;
@@ -59,6 +59,7 @@ fn run() -> Result<()> {
     };
 
     let catalog = FileHostCatalog::open_root_owned(CATALOG_ROOT)?;
+    let catalog_publisher = FileHostCatalogPublisher::open_root_owned(CATALOG_ROOT)?;
     let state = FileHostStateStore::open(STATE_ROOT)?;
     let credential_directory = env::var_os("CREDENTIALS_DIRECTORY").ok_or_else(|| {
         HostError::State("systemd authority credential directory is absent".to_owned())
@@ -96,7 +97,8 @@ fn run() -> Result<()> {
     // shifted payload, so it cannot be promoted into BackendReadiness and
     // Apply remains unadvertised.
     let broker = HostBroker::open(catalog, state, worker, None, authority)?;
-    let mut service = HostService::new(broker, verifier, controller_identity);
+    let mut service = HostService::new(broker, verifier, controller_identity)
+        .with_catalog_publisher(catalog_publisher);
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

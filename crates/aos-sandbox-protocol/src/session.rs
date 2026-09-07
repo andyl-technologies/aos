@@ -28,6 +28,7 @@ use aos_sandbox_core::{
 };
 use buffa::Message as _;
 
+use crate::host_catalog::MAXIMUM_HOST_CATALOG_PUBLICATION_PACKET_BYTES;
 use crate::mount_catalog::MAXIMUM_MOUNT_CATALOG_PREPARATION_PACKET_BYTES;
 use crate::{
     MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES, MINIMUM_RESPONSE_BYTES, PeerCredentials,
@@ -55,7 +56,7 @@ pub const MAXIMUM_HOST_QUERY_PACKET_BYTES: usize =
 /// Maximum exact completed Host Apply receipt carried by an effect query.
 pub const MAXIMUM_RUNTIME_EFFECT_RECEIPT_BYTES: usize = 1024 * 1024;
 const MAXIMUM_AUTHORIZATION_ARTIFACT_BYTES: usize = 960 * 1024;
-const MAXIMUM_BROKER_METHODS: usize = 16;
+const MAXIMUM_BROKER_METHODS: usize = 17;
 const MAXIMUM_REQUIRED_FEATURES: usize = 64;
 const MAXIMUM_SAFE_ERROR_MESSAGE_BYTES: usize = 1024;
 
@@ -580,6 +581,9 @@ pub fn decode_request_envelope(
         BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG => {
             MAXIMUM_MOUNT_CATALOG_PREPARATION_PACKET_BYTES
         }
+        BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => {
+            MAXIMUM_HOST_CATALOG_PUBLICATION_PACKET_BYTES
+        }
         _ => MAXIMUM_REQUEST_BYTES,
     };
     if bytes.len() > maximum {
@@ -694,8 +698,28 @@ pub fn encode_unauthed_request_envelope(
     method: BrokerMethod,
     body: &[u8],
 ) -> Result<Vec<u8>, ProtocolValidationError> {
+    encode_unauthed_request_envelope_with_descriptors(protocol, method, body, &[])
+}
+
+/// Encodes one non-authorizing request with its closed descriptor-role table.
+///
+/// Host catalog publication uses this form to carry one sealed catalog memfd.
+/// Other non-authorizing methods retain their descriptor-free profile, as
+/// enforced by the selected method's carrier validation.
+///
+/// # Errors
+///
+/// Returns [`ProtocolValidationError`] for an empty or oversized body, an
+/// invalid method/protocol pairing, an authority-requiring method, an invalid
+/// descriptor role sequence, or a packet above the method-specific ceiling.
+pub fn encode_unauthed_request_envelope_with_descriptors(
+    protocol: ProtocolId,
+    method: BrokerMethod,
+    body: &[u8],
+    descriptor_roles: &[BrokerDescriptorRole],
+) -> Result<Vec<u8>, ProtocolValidationError> {
     let method = validate_method(Some(method), protocol)?;
-    validate_outbound_carriers(method, &[])?;
+    validate_outbound_carriers(method, descriptor_roles)?;
     if method_requires_authorization(method) {
         return Err(ProtocolValidationError::InvalidField(
             "envelope.authorization profile",
@@ -705,16 +729,22 @@ pub fn encode_unauthed_request_envelope(
         return Err(ProtocolValidationError::InvalidField("envelope.body"));
     }
 
+    let descriptors = outbound_descriptor_table(descriptor_roles)?;
     let envelope = BrokerRequestEnvelope {
         method: method.into(),
         body: body.to_vec(),
+        descriptors,
         ..Default::default()
     };
     let encoded = envelope.encode_to_vec();
-    let maximum = if method == BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG {
-        MAXIMUM_MOUNT_CATALOG_PREPARATION_PACKET_BYTES
-    } else {
-        MAXIMUM_REQUEST_BYTES
+    let maximum = match method {
+        BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG => {
+            MAXIMUM_MOUNT_CATALOG_PREPARATION_PACKET_BYTES
+        }
+        BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => {
+            MAXIMUM_HOST_CATALOG_PUBLICATION_PACKET_BYTES
+        }
+        _ => MAXIMUM_REQUEST_BYTES,
     };
     if encoded.len() > maximum {
         return Err(ProtocolValidationError::RequestTooLarge);
@@ -1084,6 +1114,9 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY
         | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
         | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY => roles.is_empty(),
+        BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => {
+            roles == crate::host_catalog::HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES
+        }
         BrokerMethod::BROKER_METHOD_UNSPECIFIED => false,
     };
     if valid {
@@ -1460,6 +1493,7 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+                | BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG
         ) | (
             ProtocolId::MountBroker,
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY
@@ -1485,6 +1519,9 @@ fn validate_method(
 }
 
 fn method_available_in_version(method: BrokerMethod, version: ProtocolVersion) -> bool {
+    if method == BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG {
+        return version.minor() >= 4;
+    }
     if method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE {
         return version.minor() >= 3;
     }
@@ -3378,6 +3415,66 @@ mod tests {
                 ProtocolId::MountBroker,
                 &client_features(),
                 &methods,
+            ),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+    }
+
+    #[test]
+    fn host_catalog_publication_is_available_only_in_host_one_four() {
+        let method = BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG;
+        assert!(!method_available_in_version(
+            method,
+            ProtocolVersion::new(1, 3)
+        ));
+        assert!(method_available_in_version(
+            method,
+            ProtocolVersion::new(1, 4)
+        ));
+
+        let hello = BrokerClientHello {
+            protocol_major: 1,
+            protocol_minor: 4,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            maximum_response_bytes: 4096,
+            required_methods: vec![method.into()],
+            ..Default::default()
+        };
+        let session = negotiate_client_hello(
+            &hello.encode_to_vec(),
+            peer(),
+            policy(),
+            ProtocolId::HostBroker,
+            &client_features(),
+            &[method],
+        )
+        .unwrap();
+        assert_eq!(
+            session.maximum_request_bytes(),
+            MAXIMUM_HOST_QUERY_PACKET_BYTES
+        );
+
+        let body = vec![1];
+        assert!(encode_unauthed_request_envelope(ProtocolId::HostBroker, method, &body,).is_err());
+        let packet = encode_unauthed_request_envelope_with_descriptors(
+            ProtocolId::HostBroker,
+            method,
+            &body,
+            &crate::host_catalog::HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES,
+        )
+        .unwrap();
+        assert!(session.decode_request(&packet, 1).is_ok());
+
+        let mut legacy = hello;
+        legacy.protocol_minor = 3;
+        assert_eq!(
+            negotiate_client_hello(
+                &legacy.encode_to_vec(),
+                peer(),
+                policy(),
+                ProtocolId::HostBroker,
+                &client_features(),
+                &[method],
             ),
             Err(ProtocolValidationError::MethodMismatch)
         );

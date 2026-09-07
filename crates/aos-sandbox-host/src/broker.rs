@@ -714,7 +714,7 @@ fn historical_clock(effect: &BrokerEffectIntentV2) -> Result<RawPairedClockSampl
 }
 
 fn host_apply_carrier_version(version: ProtocolVersion) -> bool {
-    matches!(version.minor(), 1..=3) && version.major() == 1
+    matches!(version.minor(), 1..=4) && version.major() == 1
 }
 
 fn encode_observation(
@@ -1480,7 +1480,7 @@ mod tests {
         let header = request.header.get_or_insert_default();
         header.protocol_major = u32::from(protocol_version.major());
         header.protocol_minor = u32::from(protocol_version.minor());
-        if protocol_version == ProtocolVersion::new(1, 3) {
+        if protocol_version.major() == 1 && protocol_version.minor() >= 3 {
             request
                 .launch_plan
                 .get_or_insert_default()
@@ -2116,7 +2116,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_accepts_1_1_through_1_3_carriers_with_1_1_signed_semantics() {
+    async fn apply_accepts_1_1_through_1_4_carriers_with_1_1_signed_semantics() {
         let fixture = AuthorityFixture::new();
         let store = MemoryStore::default();
         let worker = FakeWorker::default();
@@ -2132,6 +2132,7 @@ mod tests {
         let request_1_1 = request_at_protocol(1, 2, ProtocolVersion::new(1, 1));
         let request_1_2 = request_at_protocol(2, 8, ProtocolVersion::new(1, 2));
         let request_1_3 = request_at_protocol(3, 9, ProtocolVersion::new(1, 3));
+        let request_1_4 = request_at_protocol(4, 10, ProtocolVersion::new(1, 4));
 
         assert!(
             apply_protocol(
@@ -2161,7 +2162,17 @@ mod tests {
             .await
             .is_ok()
         );
-        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert!(
+            apply_protocol(
+                &mut broker,
+                &fixture,
+                &request_1_4,
+                ProtocolVersion::new(1, 4),
+            )
+            .await
+            .is_ok()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
 
         let artifacts = fixture.artifacts(&request_1_2, 1);
         let query = broker
@@ -2194,7 +2205,7 @@ mod tests {
             .await
             .is_err()
         );
-        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
     }
 
     #[tokio::test]
