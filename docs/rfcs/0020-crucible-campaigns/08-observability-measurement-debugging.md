@@ -372,7 +372,25 @@ generic evidence children but never treats a caller-asserted hash as semantic
 proof. For Crucible payload schema 1, the daemon recomputes
 `crucible.model.measurement-evaluation.v1`, exact-compares the payload, and
 checks both hashes before the value can be consumed as verified measurement
-input. Immutable storage alone does not confer that semantic status.
+input. This compatibility verifier receives the authenticated scheduler log,
+normalized samples, and terminal state separately; payload schema 1 does not
+claim ownership of a replay leaf.
+
+Crucible payload schema 2 retains the same canonical
+`crucible.model.measurement-evaluation.v1` body and adds an exact raw-input
+contract. Its `evidence` set contains exactly one `Trace` content ID using
+`crucible.executor.measurement-replay-evidence.v1`. The strict canonical CBOR
+leaf binds the scenario-definition ID, configuration ID, measurement-definition
+hash, complete authenticated scheduler-event sequence, and terminal ready,
+frontier, per-node icount, and quiescence state. The leaf is bounded at 64 MiB;
+its event and node collections use the model's deterministic count limits and
+reject oversized declared lengths before reserving their contents. Verification
+requires the supplied leaf's ID to equal that singleton edge, rederives all
+guest and model samples solely from the leaf, evaluates the windows again, and
+exact-compares the definition hash, evaluation hash, and payload bytes. A
+missing or additional evidence edge, stale binding, forged or non-dense log,
+invalid guest message, noncanonical leaf, or replay disagreement fails closed.
+Immutable storage alone does not confer semantic status on either payload.
 
 Legacy measurement-set schema v1 remains readable and preserves its original
 content identity. It contains named `MeasurementSeries` values with a nonempty
@@ -380,8 +398,10 @@ sample vector and claimed same-type aggregate, and is explicitly not a verified
 evaluation or valid new policy input. `PropertyVerdictSet` and
 `CoverageProjection` remain bounded name/identity maps or sets with generic
 child-bearing envelopes. Model-owned sample production is implemented by
-T-CAM-3.3. Complete raw event-log retention and automatic finding-pin policy
-remain T-CAM-3.5 work.
+T-CAM-3.3. Payload schema 2 provides the codec and replay foundation for
+complete raw measurement-event retention. Wiring live QEMU results through the
+prepared-result journal and child-first publication, plus automatic finding-pin
+policy, remains T-CAM-3.5 work.
 
 The observation stores both `ConfigurationId` and
 `ConfigurationArtifactId`. The former is semantic graph identity; the latter is
@@ -435,11 +455,14 @@ floating point.
 
 The execution-model adapter owns the semantic projection from a verified model
 measurement payload to objective values. For Crucible measurement payload
-schema 1, objective names are `measurement-id.metric-id`; the adapter verifies
-the definition hash, evaluation hash, payload bytes, and observation's exact
-measurement-set identity, accepts only scalar numeric aggregates, and rejects
-ambiguous qualified names or nonnumeric aggregates. The generic campaign layer
-then applies the immutable policy and filtering rules.
+schemas 1 and 2, objective names are `measurement-id.metric-id`; the adapter
+verifies the definition hash, evaluation hash, payload bytes, and observation's
+exact measurement-set identity, accepts only scalar numeric aggregates, and
+rejects ambiguous qualified names or nonnumeric aggregates. A caller accepting
+schema 2 for projection must first perform the singleton raw-leaf replay above;
+the objective adapter cannot infer that provenance from a supplied typed
+evaluation. The generic campaign layer then applies the immutable policy and
+filtering rules.
 
 ```text
 RankingExplanationV1:
