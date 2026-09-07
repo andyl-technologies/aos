@@ -164,6 +164,11 @@ impl ReleaseContext {
         &self.releases
     }
 
+    /// Returns channel assignments used by release catalog filters.
+    pub(crate) fn channels(&self) -> &[ChannelSummary] {
+        &self.channels
+    }
+
     /// Returns the selected publication metadata.
     #[must_use]
     pub fn release(&self) -> Option<&ReleaseRow> {
@@ -219,13 +224,10 @@ impl ReleaseContext {
         let channel_targets = self.channel_targets();
 
         let mut body = String::from("<div class=\"release-selector\" data-release-picker>");
-        if !channel_targets.is_empty() {
-            body.push_str("<div class=\"release-rail\" role=\"group\" aria-label=\"Channels\">");
+        if !channel_targets.is_empty() || self.selected().is_some() {
+            body.push_str("<div class=\"release-rail\" role=\"group\" aria-label=\"Releases\">");
             for (name, version) in &channel_targets {
-                let mut href = format!("{}?release={}", escape(action), urlencode(version));
-                for (key, value) in filters {
-                    let _ = write!(href, "&amp;{}={}", urlencode(key), urlencode(value));
-                }
+                let href = escape(&release_href(slug, version));
                 let _ = write!(
                     body,
                     "<a class=\"release-pill\" href=\"{href}\"{}>{} <strong>{}</strong></a>",
@@ -235,6 +237,18 @@ impl ReleaseContext {
                         ""
                     },
                     escape(name),
+                    escape(version)
+                );
+            }
+            if let Some(version) = self.selected().filter(|selected| {
+                !channel_targets
+                    .iter()
+                    .any(|(_, version)| version == selected)
+            }) {
+                let _ = write!(
+                    body,
+                    "<a class=\"release-pill\" href=\"{}\" aria-current=\"true\"><strong>{}</strong></a>",
+                    escape(&release_href(slug, version)),
                     escape(version)
                 );
             }
@@ -321,13 +335,6 @@ impl ReleaseContext {
             "<a class=\"release-link\" href=\"/{}/-/releases\">Browse releases →</a>",
             escape(slug)
         );
-        if let Some(release) = self.release() {
-            let _ = write!(
-                body,
-                "<a class=\"release-link\" href=\"{}\">View release →</a>",
-                escape(&release_href(slug, &release.semver))
-            );
-        }
         body.push_str(&self.index_json());
         body.push_str("</div>");
         if self.releases.is_empty() {
@@ -700,11 +707,13 @@ mod tests {
         assert!(html.contains(
             "<optgroup label=\"Selected\"><option value=\"0.1.0\" selected>0.1.0</option>"
         ));
-        assert!(html.contains(
-            "class=\"release-pill\" href=\"/org/main/-/docs?release=1.100.0&amp;root=abc\""
-        ));
+        assert!(html.contains("class=\"release-pill\" href=\"/org/main/-/releases/1.100.0\""));
         assert!(html.contains("name=\"release\" data-release-jump"));
         assert!(html.contains("Browse releases →"));
+        assert!(!html.contains("View release →"));
+        assert!(html.contains(
+            "href=\"/org/main/-/releases/0.1.0\" aria-current=\"true\"><strong>0.1.0</strong>"
+        ));
         assert!(html.contains("\"channels\":[{\"name\":\"stable\",\"release\":\"1.100.0\"}]"));
         assert!(html.contains("<input type=\"hidden\" name=\"root\" value=\"abc\">"));
         assert_eq!(html.matches("name=\"root\" value=\"abc\"").count(), 2);

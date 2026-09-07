@@ -978,3 +978,12 @@
   window.addEventListener("hashchange", selectAnchor);
   selectAnchor();
 })();
+
+// Keep keyboard focus on the disclosure after dismissing account navigation.
+document.addEventListener("keydown", function (event) {
+  if (event.key !== "Escape") return;
+  var menu = event.target.closest && event.target.closest("details.masthead-menu[open]");
+  if (!menu) return;
+  menu.open = false;
+  menu.querySelector("summary").focus();
+});
