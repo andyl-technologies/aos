@@ -15,10 +15,11 @@ use super::{
 };
 use crucible::{Configuration, Decision, FindingReproductionArtifact, SignalFaultSelectable};
 use crucible_campaign::{
-    CampaignCodecError, ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity, ConfigurationArtifact,
-    ConfigurationArtifactId, CoverageProjection, FindingKind, FindingSignature, FindingTarget,
-    MeasurementSet, PropertyVerdict, PropertyVerdictSet, SelectableDeclaration, Selection,
-    SelectionOrigin,
+    CampaignCodecError, ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity, ChoiceOpportunityId,
+    ConfigurationArtifact, ConfigurationArtifactId, CoverageProjection, CoverageProjectionId,
+    FindingKind, FindingSignature, FindingTarget, MeasurementSet, MeasurementSetId,
+    PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId, SelectableDeclaration, Selection,
+    SelectionId, SelectionOrigin,
 };
 use crucible_cas::content_store::ContentId;
 
@@ -296,6 +297,11 @@ pub(super) struct PreparedFindingReplayRecords {
 pub(super) struct RecordedFindingReplay {
     pub(super) signature: Option<FindingSignature>,
     pub(super) configuration: ConfigurationArtifactId,
+    pub(super) measurements: MeasurementSetId,
+    pub(super) properties: PropertyVerdictSetId,
+    pub(super) coverage: CoverageProjectionId,
+    pub(super) opportunities: Vec<ChoiceOpportunityId>,
+    pub(super) selections: Vec<SelectionId>,
 }
 
 /// Incrementally bounded raw oracle transcript for both minimization passes.
@@ -404,10 +410,28 @@ impl ReplayRecordAccumulator {
     ) -> Result<RecordedFindingReplay, CrucibleArtifactError> {
         replay.validate_signature_ownership()?;
         let configuration = replay.configuration.id()?;
+        let measurements = replay.measurements.id()?;
+        let properties = replay.properties.id()?;
+        let coverage = replay.coverage.id()?;
+        let opportunities = replay
+            .opportunities
+            .iter()
+            .map(ChoiceOpportunity::id)
+            .collect::<Result<Vec<_>, _>>()?;
+        let selections = replay
+            .selections
+            .iter()
+            .map(Selection::id)
+            .collect::<Result<Vec<_>, _>>()?;
         let next_canonical_bytes = self.preflight(&replay)?;
         let recorded = RecordedFindingReplay {
             signature: replay.signature,
             configuration,
+            measurements,
+            properties,
+            coverage,
+            opportunities,
+            selections,
         };
 
         if self.ids.insert(configuration.content_id()) {
