@@ -15,19 +15,25 @@ use aos_sandbox_core::ObjectDigest;
 use hmac::{Hmac, Mac as _};
 use sha2::{Digest as _, Sha256};
 
-use crate::{CatalogBindingV1, PostconditionPolicyV1, ResolvedCatalogCommitmentV1};
+use crate::{CatalogBindingV1, CatalogPlanV1, PostconditionPolicyV1, ResolvedCatalogCommitmentV1};
 
 type HmacSha256 = Hmac<Sha256>;
 
 const MAGIC: &[u8; 8] = b"AOSSTX01";
-const VERSION: u16 = 2;
+const VERSION: u16 = 3;
+const LEGACY_VERSION: u16 = 2;
 const RECORD_DOMAIN: &[u8] = b"aos.sandbox.storage.state.record.v1\0";
 const MUTATION_DOMAIN: &[u8] = b"aos.sandbox.storage.mutation.v1\0";
 const POSTCONDITION_DOMAIN: &[u8] = b"aos.sandbox.storage.postcondition.v1\0";
+const RESOURCE_HANDLE_DOMAIN: &[u8] = b"aos.sandbox.storage.resource-handle.v1\0";
 const MAXIMUM_RECORD_BYTES: usize = 64 * 1024;
 const FIXED_PREFIX_BYTES: usize = 8 + 2 + 1 + 16 + 16 + 16 + 32 + 32 + 8 + 32 + 32 + 4;
-const RESULT_BYTES: usize = 8 + 32 + 32;
+const LEGACY_RESULT_BYTES: usize = 8 + 32 + 32;
+const RESULT_BYTES: usize = LEGACY_RESULT_BYTES + 1 + 32 + 32 + 8;
 const MAC_BYTES: usize = 32;
+const RESULT_HAS_STORAGE_HANDLE: u8 = 1;
+const RESULT_HAS_VERSION_HANDLE: u8 = 1 << 1;
+const RESULT_HAS_OBJECT_GUID: u8 = 1 << 2;
 const MAXIMUM_OPERATIONS: usize = 256;
 
 /// Reports durable storage state validation or transition failure.
@@ -102,6 +108,9 @@ pub enum DurableStoragePhase {
 pub struct CommittedStorageResultV1 {
     catalog: CatalogBindingV1,
     result_digest: ObjectDigest,
+    storage_handle: Option<[u8; 32]>,
+    immutable_version_handle: Option<[u8; 32]>,
+    object_guid: Option<u64>,
 }
 
 impl CommittedStorageResultV1 {
@@ -116,6 +125,46 @@ impl CommittedStorageResultV1 {
     pub const fn result_digest(self) -> ObjectDigest {
         self.result_digest
     }
+
+    /// Returns the broker-minted workspace handle addressed by the result.
+    #[must_use]
+    pub const fn storage_handle(self) -> Option<[u8; 32]> {
+        self.storage_handle
+    }
+
+    /// Returns the broker-minted immutable-version handle, when applicable.
+    #[must_use]
+    pub const fn immutable_version_handle(self) -> Option<[u8; 32]> {
+        self.immutable_version_handle
+    }
+
+    /// Returns the freshly observed exact ZFS object GUID, when one must exist.
+    #[must_use]
+    pub const fn object_guid(self) -> Option<u64> {
+        self.object_guid
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VerifiedResourceIdentity {
+    MintWorkspace {
+        object_guid: u64,
+    },
+    MintVersion {
+        storage_handle: [u8; 32],
+        object_guid: u64,
+    },
+    Existing {
+        storage_handle: [u8; 32],
+        immutable_version_handle: Option<[u8; 32]>,
+        object_guid: Option<u64>,
+    },
+}
+
+struct DecodedResultIdentity {
+    storage_handle: Option<[u8; 32]>,
+    immutable_version_handle: Option<[u8; 32]>,
+    object_guid: Option<u64>,
 }
 
 /// Carries a mechanically checked, transaction-bound observation assertion.
@@ -130,7 +179,9 @@ pub struct VerifiedStorageResultV1 {
     mutation_digest: ObjectDigest,
     catalog: CatalogBindingV1,
     postcondition_digest: ObjectDigest,
-    result: CommittedStorageResultV1,
+    result_catalog: CatalogBindingV1,
+    result_digest: ObjectDigest,
+    resource_identity: VerifiedResourceIdentity,
 }
 
 impl VerifiedStorageResultV1 {
@@ -145,12 +196,16 @@ impl VerifiedStorageResultV1 {
     ///
     /// Returns [`StorageStateError::InvalidValue`] for a zero result digest and
     /// [`StorageStateError::InvalidTransition`] when `observed` differs from
-    /// the complete typed postcondition derived from `catalog`.
+    /// the complete typed postcondition derived from `catalog`, or when the
+    /// observed object GUID is absent, unexpected, or differs from the exact
+    /// pre-existing object selected by that postcondition.
+    #[allow(clippy::too_many_arguments)]
     pub fn verify_observation(
         operation_id: [u8; 16],
         request_digest: ObjectDigest,
         catalog: &ResolvedCatalogCommitmentV1,
         observed: &PostconditionPolicyV1,
+        observed_object_guid: Option<u64>,
         result_catalog: CatalogBindingV1,
         result_digest: ObjectDigest,
     ) -> Result<Self, StorageStateError> {
@@ -163,16 +218,16 @@ impl VerifiedStorageResultV1 {
         if &catalog.plan().postcondition() != observed {
             return Err(StorageStateError::InvalidTransition);
         }
+        let resource_identity = verified_resource_identity(catalog.plan(), observed_object_guid)?;
         Ok(Self {
             operation_id,
             request_digest,
             mutation_digest: mutation_digest(operation_id, request_digest, catalog.binding()),
             catalog: catalog.binding(),
             postcondition_digest: postcondition_digest(catalog.canonical_bytes()),
-            result: CommittedStorageResultV1 {
-                catalog: result_catalog,
-                result_digest,
-            },
+            result_catalog,
+            result_digest,
+            resource_identity,
         })
     }
 }
@@ -355,6 +410,41 @@ impl StorageTransactionStore {
             mutation_digest: record.mutation_digest,
             catalog: record.catalog,
         })
+    }
+
+    /// Reconstructs the exact typed catalog for one enumerated recovery entry.
+    ///
+    /// The returned plan contains node-local dataset names and is intended only
+    /// for the privileged observation helper. The entry must still name the
+    /// exact current operation record; copying an entry from another store or
+    /// from an older phase cannot select different persisted bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageStateError::InvalidTransition`] when `entry` is not the
+    /// current exact record, and [`StorageStateError::CorruptRecord`] when its
+    /// authenticated catalog bytes cannot reproduce the committed binding.
+    pub fn recover_catalog(
+        &self,
+        entry: StorageRecoveryEntry,
+    ) -> Result<ResolvedCatalogCommitmentV1, StorageStateError> {
+        let record = self
+            .records
+            .get(&entry.operation_id)
+            .filter(|record| {
+                record.sandbox_id == entry.sandbox_id
+                    && record.request_id == entry.request_id
+                    && record.phase == entry.phase
+                    && record.mutation_digest == entry.mutation_digest
+                    && record.catalog == entry.catalog
+            })
+            .ok_or(StorageStateError::InvalidTransition)?;
+        let catalog = ResolvedCatalogCommitmentV1::from_canonical_bytes(&record.catalog_bytes)
+            .map_err(|_| StorageStateError::CorruptRecord)?;
+        if catalog.binding() != record.catalog {
+            return Err(StorageStateError::CorruptRecord);
+        }
+        Ok(catalog)
     }
 
     #[cfg(test)]
@@ -573,21 +663,80 @@ impl StorageTransactionStore {
             || verified.mutation_digest != record.mutation_digest
             || verified.catalog != record.catalog
             || verified.postcondition_digest != record.postcondition_digest
-            || verified.result.catalog.generation() <= record.catalog.generation()
-            || verified.result.catalog.generation() < latest_generation
+            || verified.result_catalog.generation() <= record.catalog.generation()
+            || verified.result_catalog.generation() < latest_generation
             || self.records.values().any(|existing| {
-                catalog_forks(existing.catalog, verified.result.catalog)
+                catalog_forks(existing.catalog, verified.result_catalog)
                     || existing.result.is_some_and(|result| {
-                        catalog_forks(result.catalog, verified.result.catalog)
+                        catalog_forks(result.catalog, verified.result_catalog)
                     })
             })
         {
             return Err(StorageStateError::InvalidTransition);
         }
+        let result = self.committed_result(&verified)?;
         record.phase = DurableStoragePhase::Committed;
-        record.result = Some(verified.result);
+        record.result = Some(result);
         self.publish(record)?;
-        Ok(verified.result)
+        Ok(result)
+    }
+
+    fn committed_result(
+        &self,
+        verified: &VerifiedStorageResultV1,
+    ) -> Result<CommittedStorageResultV1, StorageStateError> {
+        let (storage_handle, immutable_version_handle, object_guid) =
+            match verified.resource_identity {
+                VerifiedResourceIdentity::MintWorkspace { object_guid } => (
+                    Some(self.mint_resource_handle(1, verified, object_guid)?),
+                    None,
+                    Some(object_guid),
+                ),
+                VerifiedResourceIdentity::MintVersion {
+                    storage_handle,
+                    object_guid,
+                } => (
+                    Some(storage_handle),
+                    Some(self.mint_resource_handle(2, verified, object_guid)?),
+                    Some(object_guid),
+                ),
+                VerifiedResourceIdentity::Existing {
+                    storage_handle,
+                    immutable_version_handle,
+                    object_guid,
+                } => (Some(storage_handle), immutable_version_handle, object_guid),
+            };
+
+        Ok(CommittedStorageResultV1 {
+            catalog: verified.result_catalog,
+            result_digest: verified.result_digest,
+            storage_handle,
+            immutable_version_handle,
+            object_guid,
+        })
+    }
+
+    fn mint_resource_handle(
+        &self,
+        kind: u8,
+        verified: &VerifiedStorageResultV1,
+        object_guid: u64,
+    ) -> Result<[u8; 32], StorageStateError> {
+        let mut mac = HmacSha256::new_from_slice(&self.key.secret)
+            .map_err(|_| StorageStateError::InvalidValue)?;
+        mac.update(RESOURCE_HANDLE_DOMAIN);
+        mac.update(&self.key.key_id);
+        mac.update(&[kind]);
+        mac.update(&verified.operation_id);
+        mac.update(verified.request_digest.as_bytes());
+        mac.update(&object_guid.to_be_bytes());
+        mac.update(&verified.result_catalog.generation().to_be_bytes());
+        mac.update(verified.result_catalog.digest().as_bytes());
+        let mut handle: [u8; 32] = mac.finalize().into_bytes().into();
+        if handle == [0; 32] {
+            handle[31] = 1;
+        }
+        Ok(handle)
     }
 
     fn exact_current(
@@ -678,6 +827,80 @@ fn postcondition_digest(catalog_bytes: &[u8]) -> ObjectDigest {
     ObjectDigest::from_bytes(hash.finalize().into())
 }
 
+fn verified_resource_identity(
+    plan: &CatalogPlanV1,
+    observed_object_guid: Option<u64>,
+) -> Result<VerifiedResourceIdentity, StorageStateError> {
+    match plan {
+        CatalogPlanV1::CreateWorkspace { .. } | CatalogPlanV1::Clone { .. } => {
+            let object_guid = nonzero_observed_guid(observed_object_guid)?;
+            Ok(VerifiedResourceIdentity::MintWorkspace { object_guid })
+        }
+        CatalogPlanV1::Snapshot { source, .. } => {
+            let object_guid = nonzero_observed_guid(observed_object_guid)?;
+            Ok(VerifiedResourceIdentity::MintVersion {
+                storage_handle: source.storage_handle(),
+                object_guid,
+            })
+        }
+        CatalogPlanV1::HoldSnapshot { snapshot, .. }
+        | CatalogPlanV1::ReleaseHold { snapshot, .. } => {
+            require_observed_guid(observed_object_guid, snapshot.guid())?;
+            Ok(VerifiedResourceIdentity::Existing {
+                storage_handle: snapshot.dataset().storage_handle(),
+                immutable_version_handle: Some(snapshot.version_handle()),
+                object_guid: Some(snapshot.guid()),
+            })
+        }
+        CatalogPlanV1::SetQuota { dataset, .. } => {
+            require_observed_guid(observed_object_guid, dataset.guid())?;
+            Ok(VerifiedResourceIdentity::Existing {
+                storage_handle: dataset.storage_handle(),
+                immutable_version_handle: None,
+                object_guid: Some(dataset.guid()),
+            })
+        }
+        CatalogPlanV1::DestroyDataset { dataset } => {
+            require_absent_guid(observed_object_guid)?;
+            Ok(VerifiedResourceIdentity::Existing {
+                storage_handle: dataset.storage_handle(),
+                immutable_version_handle: None,
+                object_guid: None,
+            })
+        }
+        CatalogPlanV1::DestroySnapshot { snapshot } => {
+            require_absent_guid(observed_object_guid)?;
+            Ok(VerifiedResourceIdentity::Existing {
+                storage_handle: snapshot.dataset().storage_handle(),
+                immutable_version_handle: Some(snapshot.version_handle()),
+                object_guid: None,
+            })
+        }
+    }
+}
+
+fn nonzero_observed_guid(value: Option<u64>) -> Result<u64, StorageStateError> {
+    value
+        .filter(|guid| *guid != 0)
+        .ok_or(StorageStateError::InvalidTransition)
+}
+
+fn require_observed_guid(value: Option<u64>, expected: u64) -> Result<(), StorageStateError> {
+    if value == Some(expected) {
+        Ok(())
+    } else {
+        Err(StorageStateError::InvalidTransition)
+    }
+}
+
+fn require_absent_guid(value: Option<u64>) -> Result<(), StorageStateError> {
+    if value.is_none() {
+        Ok(())
+    } else {
+        Err(StorageStateError::InvalidTransition)
+    }
+}
+
 fn transaction_id(operation_id: [u8; 16], phase: DurableStoragePhase) -> [u8; 16] {
     let mut hash = Sha256::new();
     hash.update(RECORD_DOMAIN);
@@ -704,8 +927,23 @@ fn encode_record(
     record: &DurableRecord,
     key: &StorageStateKey,
 ) -> Result<Vec<u8>, StorageStateError> {
+    encode_record_version(record, key, VERSION)
+}
+
+fn encode_record_version(
+    record: &DurableRecord,
+    key: &StorageStateKey,
+    version: u16,
+) -> Result<Vec<u8>, StorageStateError> {
+    if !matches!(version, LEGACY_VERSION | VERSION) {
+        return Err(StorageStateError::CorruptRecord);
+    }
     let result_len = if record.result.is_some() {
-        RESULT_BYTES
+        if version == VERSION {
+            RESULT_BYTES
+        } else {
+            LEGACY_RESULT_BYTES
+        }
     } else {
         0
     };
@@ -718,7 +956,7 @@ fn encode_record(
     }
     let mut bytes = Vec::with_capacity(capacity);
     bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&VERSION.to_be_bytes());
+    bytes.extend_from_slice(&version.to_be_bytes());
     bytes.push(phase_code(record.phase));
     bytes.extend_from_slice(&record.operation_id);
     bytes.extend_from_slice(&record.sandbox_id);
@@ -735,6 +973,15 @@ fn encode_record(
         bytes.extend_from_slice(&result.catalog.generation().to_be_bytes());
         bytes.extend_from_slice(result.catalog.digest().as_bytes());
         bytes.extend_from_slice(result.result_digest.as_bytes());
+        if version == VERSION {
+            let flags = (u8::from(result.storage_handle.is_some()) * RESULT_HAS_STORAGE_HANDLE)
+                | (u8::from(result.immutable_version_handle.is_some()) * RESULT_HAS_VERSION_HANDLE)
+                | (u8::from(result.object_guid.is_some()) * RESULT_HAS_OBJECT_GUID);
+            bytes.push(flags);
+            bytes.extend_from_slice(&result.storage_handle.unwrap_or([0; 32]));
+            bytes.extend_from_slice(&result.immutable_version_handle.unwrap_or([0; 32]));
+            bytes.extend_from_slice(&result.object_guid.unwrap_or(0).to_be_bytes());
+        }
     }
     let mut mac =
         HmacSha256::new_from_slice(&key.secret).map_err(|_| StorageStateError::InvalidValue)?;
@@ -756,7 +1003,11 @@ fn decode_record(bytes: &[u8], key: &StorageStateKey) -> Result<DurableRecord, S
     mac.verify_slice(tag)
         .map_err(|_| StorageStateError::CorruptRecord)?;
     let mut cursor = Cursor::new(body);
-    if cursor.take(8)? != MAGIC || cursor.u16()? != VERSION {
+    if cursor.take(8)? != MAGIC {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    let version = cursor.u16()?;
+    if !matches!(version, LEGACY_VERSION | VERSION) {
         return Err(StorageStateError::CorruptRecord);
     }
     let phase = match cursor.u8()? {
@@ -781,13 +1032,27 @@ fn decode_record(bytes: &[u8], key: &StorageStateKey) -> Result<DurableRecord, S
         return Err(StorageStateError::CorruptRecord);
     }
     let result = if phase == DurableStoragePhase::Committed {
+        let catalog = CatalogBindingV1::from_publisher(
+            cursor.u64()?,
+            ObjectDigest::from_bytes(cursor.array()?),
+        )
+        .map_err(|_| StorageStateError::CorruptRecord)?;
+        let result_digest = ObjectDigest::from_bytes(cursor.array()?);
+        let identity = if version == VERSION {
+            decode_result_identity(&mut cursor)?
+        } else {
+            DecodedResultIdentity {
+                storage_handle: None,
+                immutable_version_handle: None,
+                object_guid: None,
+            }
+        };
         Some(CommittedStorageResultV1 {
-            catalog: CatalogBindingV1::from_publisher(
-                cursor.u64()?,
-                ObjectDigest::from_bytes(cursor.array()?),
-            )
-            .map_err(|_| StorageStateError::CorruptRecord)?,
-            result_digest: ObjectDigest::from_bytes(cursor.array()?),
+            catalog,
+            result_digest,
+            storage_handle: identity.storage_handle,
+            immutable_version_handle: identity.immutable_version_handle,
+            object_guid: identity.object_guid,
         })
     } else {
         None
@@ -816,6 +1081,48 @@ fn decode_record(bytes: &[u8], key: &StorageStateKey) -> Result<DurableRecord, S
         catalog_bytes,
         result,
     })
+}
+
+fn decode_result_identity(
+    cursor: &mut Cursor<'_>,
+) -> Result<DecodedResultIdentity, StorageStateError> {
+    let flags = cursor.u8()?;
+    if flags & !(RESULT_HAS_STORAGE_HANDLE | RESULT_HAS_VERSION_HANDLE | RESULT_HAS_OBJECT_GUID)
+        != 0
+    {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    let storage_bytes = cursor.array()?;
+    let version_bytes = cursor.array()?;
+    let guid = cursor.u64()?;
+    let storage_handle =
+        optional_nonzero_array(storage_bytes, flags & RESULT_HAS_STORAGE_HANDLE != 0)?;
+    let immutable_version_handle =
+        optional_nonzero_array(version_bytes, flags & RESULT_HAS_VERSION_HANDLE != 0)?;
+    let object_guid = match (flags & RESULT_HAS_OBJECT_GUID != 0, guid) {
+        (true, 1..) => Some(guid),
+        (false, 0) => None,
+        _ => return Err(StorageStateError::CorruptRecord),
+    };
+    if immutable_version_handle.is_some() && storage_handle.is_none() {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    Ok(DecodedResultIdentity {
+        storage_handle,
+        immutable_version_handle,
+        object_guid,
+    })
+}
+
+fn optional_nonzero_array<const N: usize>(
+    bytes: [u8; N],
+    present: bool,
+) -> Result<Option<[u8; N]>, StorageStateError> {
+    match (present, bytes == [0; N]) {
+        (true, false) => Ok(Some(bytes)),
+        (false, true) => Ok(None),
+        _ => Err(StorageStateError::CorruptRecord),
+    }
 }
 
 struct Cursor<'a> {
@@ -873,9 +1180,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        CatalogPlanV1, ManagedDatasetRoot, PlannedDataset, ProjectAncestorPolicyV1,
-        ReservationPolicy, ResolvedDataset, StorageDomainsV1, StorageOperation,
-        WorkspaceSpacePolicyV1, ZfsTransaction,
+        CatalogPlanV1, ManagedDatasetRoot, PlannedDataset, PlannedSnapshot,
+        ProjectAncestorPolicyV1, ReservationPolicy, ResolvedDataset, StorageDomainsV1,
+        StorageOperation, WorkspaceSpacePolicyV1, ZfsTransaction,
     };
 
     fn key(byte: u8) -> StorageStateKey {
@@ -916,6 +1223,27 @@ mod tests {
         ZfsTransaction::from_catalog(
             StorageOperation::CreateWorkspace { quota_bytes: 4096 },
             catalog,
+        )
+        .unwrap()
+    }
+
+    fn snapshot_catalog(generation: u64) -> ResolvedCatalogCommitmentV1 {
+        let source = ResolvedDataset::from_catalog(
+            ManagedDatasetRoot::from_catalog("tank", "tank/aos", 10).unwrap(),
+            "tank/aos/project/work",
+            11,
+            [81; 32],
+            domains(),
+        )
+        .unwrap();
+        let destination = PlannedSnapshot::from_catalog(source.clone(), "revision-1").unwrap();
+        ResolvedCatalogCommitmentV1::new(
+            generation,
+            domains(),
+            CatalogPlanV1::Snapshot {
+                source,
+                destination,
+            },
         )
         .unwrap()
     }
@@ -1046,6 +1374,7 @@ mod tests {
         assert_eq!(entries[0].operation_id(), [39; 16]);
         assert_eq!(entries[0].phase(), DurableStoragePhase::Prepared);
         assert_eq!(entries[0].catalog(), catalog.binding());
+        assert_eq!(store.recover_catalog(entries[0]).unwrap(), catalog);
     }
 
     #[test]
@@ -1073,6 +1402,7 @@ mod tests {
                 request_digest,
                 &initial_catalog,
                 program.postcondition(),
+                Some(91),
                 next_catalog.binding(),
                 digest(44),
             )
@@ -1083,6 +1413,13 @@ mod tests {
         };
         let mut recovered =
             StorageTransactionStore::open_for_test(directory.path(), key(1), 7).unwrap();
+        assert_eq!(expected.object_guid(), Some(91));
+        assert!(
+            expected
+                .storage_handle()
+                .is_some_and(|handle| handle != [0; 32])
+        );
+        assert_eq!(expected.immutable_version_handle(), None);
         assert!(matches!(
             recovered
                 .begin([45; 16], digest(46), &next_catalog)
@@ -1095,6 +1432,82 @@ mod tests {
                 .unwrap(),
             BeginStorageTransaction::Replay(expected)
         );
+    }
+
+    #[test]
+    fn snapshot_result_retains_workspace_and_mints_a_version_handle() {
+        let directory = TempDir::new().unwrap();
+        let catalog = snapshot_catalog(7);
+        let operation_id = [47; 16];
+        let request_digest = digest(48);
+        let mut store =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        let BeginStorageTransaction::Prepared { mutation_digest } =
+            store.begin(operation_id, request_digest, &catalog).unwrap()
+        else {
+            panic!("new snapshot operation was not prepared")
+        };
+        store
+            .mark_mutation_ambiguous(operation_id, mutation_digest)
+            .unwrap();
+        let verified = VerifiedStorageResultV1::verify_observation(
+            operation_id,
+            request_digest,
+            &catalog,
+            &catalog.plan().postcondition(),
+            Some(91),
+            CatalogBindingV1::from_publisher(8, digest(49)).unwrap(),
+            digest(50),
+        )
+        .unwrap();
+        let result = store
+            .commit_verified(operation_id, mutation_digest, verified)
+            .unwrap();
+
+        assert_eq!(result.storage_handle(), Some([81; 32]));
+        assert_eq!(result.object_guid(), Some(91));
+        assert!(
+            result
+                .immutable_version_handle()
+                .is_some_and(|handle| handle != [0; 32] && handle != [81; 32])
+        );
+
+        let legacy_bytes = encode_record_version(
+            store.records.get(&operation_id).unwrap(),
+            &store.key,
+            LEGACY_VERSION,
+        )
+        .unwrap();
+        let legacy = decode_record(&legacy_bytes, &store.key)
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(legacy.storage_handle(), None);
+        assert_eq!(legacy.immutable_version_handle(), None);
+        assert_eq!(legacy.object_guid(), None);
+    }
+
+    #[test]
+    fn malformed_result_identity_shapes_fail_closed() {
+        let cases = [
+            (8, [0; 32], [0; 32], 0_u64),
+            (RESULT_HAS_STORAGE_HANDLE, [0; 32], [0; 32], 0_u64),
+            (RESULT_HAS_VERSION_HANDLE, [0; 32], [1; 32], 0_u64),
+            (RESULT_HAS_OBJECT_GUID, [0; 32], [0; 32], 0_u64),
+        ];
+
+        for (flags, storage_handle, version_handle, object_guid) in cases {
+            let mut bytes = Vec::with_capacity(RESULT_BYTES - LEGACY_RESULT_BYTES);
+            bytes.push(flags);
+            bytes.extend_from_slice(&storage_handle);
+            bytes.extend_from_slice(&version_handle);
+            bytes.extend_from_slice(&object_guid.to_be_bytes());
+
+            assert!(matches!(
+                decode_result_identity(&mut Cursor::new(&bytes)),
+                Err(StorageStateError::CorruptRecord)
+            ));
+        }
     }
 
     #[test]
@@ -1137,11 +1550,26 @@ mod tests {
                 digest(62),
                 &original,
                 &fork.plan().postcondition(),
+                Some(91),
                 CatalogBindingV1::from_publisher(8, digest(65)).unwrap(),
                 digest(66),
             ),
             Err(StorageStateError::InvalidTransition)
         ));
+        for invalid_guid in [None, Some(0)] {
+            assert!(matches!(
+                VerifiedStorageResultV1::verify_observation(
+                    [61; 16],
+                    digest(62),
+                    &original,
+                    &original.plan().postcondition(),
+                    invalid_guid,
+                    CatalogBindingV1::from_publisher(8, digest(65)).unwrap(),
+                    digest(66),
+                ),
+                Err(StorageStateError::InvalidTransition)
+            ));
+        }
 
         let BeginStorageTransaction::ObserveOnly {
             mutation_digest: first_mutation,
@@ -1158,6 +1586,7 @@ mod tests {
             digest(62),
             &original,
             &original.plan().postcondition(),
+            Some(91),
             catalog(8, "tank/aos/project/next").binding(),
             digest(67),
         )

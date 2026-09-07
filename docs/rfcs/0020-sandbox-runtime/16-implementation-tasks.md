@@ -3812,3 +3812,49 @@ lifecycle index, and authoritative namespace producer. Cleanup-authorized
 identity reclamation, source-handle materialization, native attachment replay,
 lease-expiry scheduling, internal-reboot anchor handoff, and live namespace VM
 qualification also remain open.
+
+### Recoverable Storage result identity
+
+Storage transaction results now retain the exact ZFS object GUID required by
+their typed postcondition and the opaque resource identities needed by every
+subsequent operation. Create and clone results mint a workspace handle with a
+broker-secret HMAC over the exact operation, request, observed GUID, result
+catalog, and handle kind. Snapshot results retain the source workspace handle
+and mint a separately domain-separated immutable-version handle. Hold, release,
+quota, and exact destroy results reproduce only the already-catalogued handles
+they addressed. Missing or zero capture GUIDs, a changed GUID for an existing
+object, and a GUID reported for an absence postcondition all fail before the
+result can become durable.
+
+The authenticated `AOSSTX01` record is version three and commits the optional
+workspace handle, version handle, and observed GUID in a closed fixed-width
+result extension. Version-two records remain readable without fabricating
+identities that they never stored. The same operation replay returns the exact
+minted values after restart, while malformed presence bits, zero sentinels, or
+a version handle without its workspace are rejected.
+
+Resolved Storage catalog bytes are now independently recoverable as typed
+plans. Format version two adds the owning dataset GUID omitted by snapshot-
+based operations and the exact project-ancestor handle omitted by the former
+format. A strict bounded decoder reconstructs all eight operation variants
+only through their checked constructors and then requires byte-for-byte
+canonical re-encoding, including the redundant postcondition. The transaction
+store accepts a recovery entry only while every operation, phase, mutation,
+assignment, request, and catalog binding still names the exact current record.
+Format-one bytes remain distinguishable and digest-checkable as history, but
+fail typed recovery instead of inventing missing inputs.
+
+Focused validation covers all eight catalog-operation round trips, legacy and
+trailing bytes, redundant-field corruption, capture/existing/absence GUID
+shape, keyed workspace and version handles, exact replay, and version-two
+journal recovery. All 33 Storage library tests pass. Strict all-target,
+all-feature crate-local Clippy without dependency linting, warnings-as-errors
+rustdoc, Rust formatting, and diff checks pass. Full hermetic evaluation also
+passes at
+`/nix/store/kqqx0awkw17vzdivd1pd82bq0clcd4iz-aos-eval-and-system-structure-checks-0`.
+
+This advances `SBX-STOR-01` and `SBX-LIFE-06` without claiming runnable ZFS
+effects or authoritative workspace publication. Storage Apply remains
+unadvertised: the fixed process backend, protected resource catalog and root
+pin lifecycle, inventory response producer, service packaging, and controller
+Apply orchestration are still required.

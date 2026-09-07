@@ -20,6 +20,7 @@
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
+mod catalog_decode;
 #[allow(
     dead_code,
     reason = "sealed helper boundary is not wired until Apply readiness exists"
@@ -35,10 +36,10 @@ pub use broker::{
     advertised_storage_methods,
 };
 pub use catalog::{
-    ActiveHoldEvidence, CatalogObjectKind, CatalogPlanV1, HoldId, ManagedDatasetRoot,
-    PlannedDataset, PlannedSnapshot, PostconditionPolicyV1, ProjectAncestorPolicyV1,
-    ReservationPolicy, ResolvedCatalogCommitmentV1, ResolvedDataset, ResolvedSnapshot,
-    StorageDomainsV1, WorkspaceSpacePolicyV1,
+    ActiveHoldEvidence, CatalogObjectKind, CatalogPlanV1, CatalogSemanticError, HoldId,
+    ManagedDatasetRoot, PlannedDataset, PlannedSnapshot, PostconditionPolicyV1,
+    ProjectAncestorPolicyV1, ReservationPolicy, ResolvedCatalogCommitmentV1, ResolvedDataset,
+    ResolvedSnapshot, StorageDomainsV1, WorkspaceSpacePolicyV1,
 };
 pub use request::{
     CanonicalStorageSemanticsV1, CatalogBindingV1, StorageOperation, StorageRequestError,

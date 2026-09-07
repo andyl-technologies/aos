@@ -17,7 +17,7 @@ use aos_sandbox_protocol::semantics::CatalogBindingV1;
 use sha2::{Digest as _, Sha256};
 
 const FORMAT_MAGIC: &[u8; 8] = b"AOSSCAT1";
-const FORMAT_VERSION: u16 = 1;
+const FORMAT_VERSION: u16 = 2;
 const DIGEST_DOMAIN: &[u8] = b"aos-sandbox-storage-resolved-catalog-v1\0";
 const MAXIMUM_NAME_BYTES: usize = 255;
 const MAXIMUM_CANONICAL_BYTES: usize = 16 * 1024;
@@ -40,6 +40,12 @@ pub enum CatalogSemanticError {
     /// Canonical bytes exceeded the fixed V1 ceiling.
     #[error("resolved storage catalog semantics exceed the V1 byte ceiling")]
     EncodingTooLarge,
+    /// Persisted canonical bytes are malformed, incomplete, or noncanonical.
+    #[error("resolved storage catalog encoding is malformed or noncanonical")]
+    MalformedEncoding,
+    /// Persisted bytes use a format that cannot reconstruct every typed input.
+    #[error("resolved storage catalog encoding version is unsupported for typed recovery")]
+    UnsupportedEncodingVersion,
 }
 
 /// Identifies the kind of one exact ZFS catalog object.
@@ -851,6 +857,27 @@ impl ResolvedCatalogCommitmentV1 {
         })
     }
 
+    /// Reconstructs a complete typed plan from exact canonical node-local bytes.
+    ///
+    /// Format version two commits every ZFS GUID and opaque handle needed to
+    /// reproduce the original preconditions after a broker crash. Version one
+    /// remains digest-authenticatable for historical journal validation, but
+    /// cannot be reconstructed because it omitted the owning dataset GUID for
+    /// snapshot operations and the project-ancestor handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CatalogSemanticError`] for malformed, oversized,
+    /// noncanonical, semantically invalid, or pre-v2 bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CatalogSemanticError> {
+        let (generation, domains, plan) = crate::catalog_decode::decode_catalog(bytes)?;
+        let catalog = Self::new(generation, domains, plan)?;
+        if catalog.canonical_bytes() != bytes {
+            return Err(CatalogSemanticError::MalformedEncoding);
+        }
+        Ok(catalog)
+    }
+
     /// Returns the exact catalog generation.
     #[must_use]
     pub const fn generation(&self) -> u64 {
@@ -1003,7 +1030,16 @@ fn encode_operation(
     encoder: &mut Encoder,
     plan: &CatalogPlanV1,
 ) -> Result<(), CatalogSemanticError> {
-    let (code, primary_name, primary_guid, destination_name, hold, space, ancestor) = match plan {
+    let (
+        code,
+        primary_name,
+        primary_guid,
+        primary_dataset_guid,
+        destination_name,
+        hold,
+        space,
+        ancestor,
+    ) = match plan {
         CatalogPlanV1::CreateWorkspace {
             destination,
             space,
@@ -1011,6 +1047,7 @@ fn encode_operation(
         } => (
             1,
             "",
+            0,
             0,
             destination.name(),
             None,
@@ -1024,6 +1061,7 @@ fn encode_operation(
             2,
             source.name(),
             source.guid(),
+            0,
             destination.name(),
             None,
             None,
@@ -1033,6 +1071,7 @@ fn encode_operation(
             3,
             snapshot.name(),
             snapshot.guid(),
+            snapshot.dataset().guid(),
             "",
             Some(*hold_id),
             None,
@@ -1042,6 +1081,7 @@ fn encode_operation(
             4,
             snapshot.name(),
             snapshot.guid(),
+            snapshot.dataset().guid(),
             "",
             Some(*hold_id),
             None,
@@ -1057,6 +1097,7 @@ fn encode_operation(
             5,
             source.name(),
             source.guid(),
+            source.dataset().guid(),
             destination.name(),
             Some(origin_hold.hold_id()),
             Some(*space),
@@ -1070,17 +1111,25 @@ fn encode_operation(
             6,
             dataset.name(),
             dataset.guid(),
+            0,
             "",
             None,
             Some(*space),
             Some(ancestor),
         ),
         CatalogPlanV1::DestroyDataset { dataset } => {
-            (7, dataset.name(), dataset.guid(), "", None, None, None)
+            (7, dataset.name(), dataset.guid(), 0, "", None, None, None)
         }
-        CatalogPlanV1::DestroySnapshot { snapshot } => {
-            (8, snapshot.name(), snapshot.guid(), "", None, None, None)
-        }
+        CatalogPlanV1::DestroySnapshot { snapshot } => (
+            8,
+            snapshot.name(),
+            snapshot.guid(),
+            snapshot.dataset().guid(),
+            "",
+            None,
+            None,
+            None,
+        ),
     };
     encoder.field(11, &[code])?;
     encoder.field(12, primary_name.as_bytes())?;
@@ -1093,6 +1142,14 @@ fn encode_operation(
             .map_or(&[], <[u8; 16]>::as_slice),
     )?;
     encode_space(encoder, space, ancestor)?;
+    encoder.field(23, &primary_dataset_guid.to_be_bytes())?;
+    encoder.field(
+        24,
+        ancestor
+            .map(|policy| policy.dataset().storage_handle())
+            .as_ref()
+            .map_or(&[], <[u8; 32]>::as_slice),
+    )?;
     let (storage_handle, version_handle) = match plan {
         CatalogPlanV1::CreateWorkspace { .. } => (None, None),
         CatalogPlanV1::Snapshot { source, .. }
@@ -1458,8 +1515,8 @@ mod tests {
         assert_eq!(
             baseline.digest().as_bytes(),
             &[
-                61, 44, 81, 98, 56, 242, 203, 70, 139, 233, 9, 63, 193, 90, 59, 94, 9, 248, 228,
-                134, 241, 195, 239, 31, 68, 193, 61, 151, 204, 176, 21, 113,
+                55, 17, 220, 168, 16, 7, 57, 198, 235, 156, 203, 126, 1, 227, 49, 23, 102, 208, 58,
+                244, 165, 209, 88, 187, 1, 76, 53, 117, 234, 162, 8, 245,
             ]
         );
         assert_eq!(baseline.binding().generation(), 7);
@@ -1469,6 +1526,110 @@ mod tests {
                 .canonical_bytes()
                 .windows(8)
                 .any(|value| value == b"tank/aos")
+        );
+    }
+
+    #[test]
+    fn canonical_v2_recovers_every_typed_operation() {
+        let dataset =
+            ResolvedDataset::from_catalog(root(), "tank/aos/project/work", 11, [1; 32], domains())
+                .unwrap();
+        let snapshot =
+            ResolvedSnapshot::from_catalog(dataset.clone(), "revision-1", 12, [2; 32]).unwrap();
+        let hold = HoldId::from_bytes([31; 16]).unwrap();
+        let plans = vec![
+            CatalogPlanV1::CreateWorkspace {
+                destination: PlannedDataset::from_catalog(
+                    root(),
+                    "tank/aos/project/new",
+                    domains(),
+                )
+                .unwrap(),
+                space: space(),
+                ancestor: ancestor(),
+            },
+            CatalogPlanV1::Snapshot {
+                source: dataset.clone(),
+                destination: PlannedSnapshot::from_catalog(dataset.clone(), "revision-2").unwrap(),
+            },
+            CatalogPlanV1::HoldSnapshot {
+                snapshot: snapshot.clone(),
+                hold_id: hold,
+            },
+            CatalogPlanV1::ReleaseHold {
+                snapshot: snapshot.clone(),
+                hold_id: hold,
+            },
+            CatalogPlanV1::Clone {
+                source: Box::new(snapshot.clone()),
+                origin_hold: ActiveHoldEvidence::from_catalog(snapshot.guid(), hold).unwrap(),
+                destination: PlannedDataset::from_catalog(
+                    root(),
+                    "tank/aos/project/clone",
+                    domains(),
+                )
+                .unwrap(),
+                space: space(),
+                ancestor: ancestor(),
+            },
+            CatalogPlanV1::SetQuota {
+                dataset: dataset.clone(),
+                space: space(),
+                ancestor: ancestor(),
+            },
+            CatalogPlanV1::DestroyDataset {
+                dataset: dataset.clone(),
+            },
+            CatalogPlanV1::DestroySnapshot { snapshot },
+        ];
+
+        for (index, plan) in plans.into_iter().enumerate() {
+            let catalog =
+                ResolvedCatalogCommitmentV1::new(7 + index as u64, domains(), plan).unwrap();
+            let recovered =
+                ResolvedCatalogCommitmentV1::from_canonical_bytes(catalog.canonical_bytes())
+                    .unwrap();
+            assert_eq!(recovered, catalog);
+        }
+    }
+
+    #[test]
+    fn typed_recovery_rejects_legacy_trailing_and_redundant_field_corruption() {
+        let catalog = ResolvedCatalogCommitmentV1::new(
+            7,
+            domains(),
+            CatalogPlanV1::CreateWorkspace {
+                destination: PlannedDataset::from_catalog(
+                    root(),
+                    "tank/aos/project/new",
+                    domains(),
+                )
+                .unwrap(),
+                space: space(),
+                ancestor: ancestor(),
+            },
+        )
+        .unwrap();
+
+        let mut legacy = catalog.canonical_bytes().to_vec();
+        legacy[18..20].copy_from_slice(&1_u16.to_be_bytes());
+        assert_eq!(
+            ResolvedCatalogCommitmentV1::from_canonical_bytes(&legacy),
+            Err(CatalogSemanticError::UnsupportedEncodingVersion)
+        );
+
+        let mut trailing = catalog.canonical_bytes().to_vec();
+        trailing.push(0);
+        assert_eq!(
+            ResolvedCatalogCommitmentV1::from_canonical_bytes(&trailing),
+            Err(CatalogSemanticError::MalformedEncoding)
+        );
+
+        let mut corrupted_postcondition = catalog.canonical_bytes().to_vec();
+        *corrupted_postcondition.last_mut().unwrap() ^= 1;
+        assert_eq!(
+            ResolvedCatalogCommitmentV1::from_canonical_bytes(&corrupted_postcondition),
+            Err(CatalogSemanticError::MalformedEncoding)
         );
     }
 

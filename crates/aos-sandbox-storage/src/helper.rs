@@ -55,6 +55,7 @@ pub(crate) struct ZfsProcessOutput {
 pub(crate) struct ZfsPostconditionObservation {
     observed: PostconditionPolicyV1,
     ancestor: Option<ProjectAncestorPolicyV1>,
+    object_guid: Option<u64>,
     catalog: CatalogBindingV1,
     digest: ObjectDigest,
 }
@@ -161,6 +162,7 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
             request_digest,
             catalog,
             &observation.observed,
+            observation.object_guid,
             observation.catalog,
             observation.digest,
         )
@@ -321,6 +323,7 @@ mod tests {
                     CatalogPlanV1::CreateWorkspace { ancestor, .. } => Some(ancestor.clone()),
                     _ => None,
                 },
+                object_guid: Some(91),
                 catalog: CatalogBindingV1::from_publisher(8, ObjectDigest::from_bytes([8; 32]))
                     .unwrap(),
                 digest: ObjectDigest::from_bytes([9; 32]),
