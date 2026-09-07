@@ -118,6 +118,7 @@ impl ResolvedProductionPausedCheckpointPromotionRecovery {
             matches!(
                 self.recovery.promotion_basis().start_mode(),
                 AttemptStartMode::CaptureMaterializedStart { .. }
+                    | AttemptStartMode::SavepointCapture { .. }
             ),
         )
     }
@@ -535,7 +536,9 @@ fn validate_capture_attempt_start(
     input: &crate::AttemptExecutionInput,
     start_mode: AttemptStartMode,
 ) -> Result<(), PausedCheckpointPromotionRecoveryResolutionError> {
-    if let AttemptStartMode::CaptureMaterializedStart { configuration } = start_mode {
+    if let AttemptStartMode::CaptureMaterializedStart { configuration }
+    | AttemptStartMode::SavepointCapture { configuration, .. } = start_mode
+    {
         let AttemptStart::Discover {
             configuration: resolved,
         } = input.attempt().start()
@@ -607,7 +610,10 @@ where
             }
             let execution = decode_crucible_attempt_execution(store, &input)?;
             let materialized_start = match promotion_basis.map(|basis| basis.start_mode()) {
-                Some(AttemptStartMode::CaptureMaterializedStart { .. }) => {
+                Some(
+                    AttemptStartMode::CaptureMaterializedStart { .. }
+                    | AttemptStartMode::SavepointCapture { .. },
+                ) => {
                     let CrucibleResolvedAttemptStart::Discover { configuration } =
                         execution.start()
                     else {

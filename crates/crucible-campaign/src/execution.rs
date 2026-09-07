@@ -9,6 +9,9 @@
 //! SubmitAttemptRequestV3 = version | assignment | daemon-epoch | lineage |
 //!                          attempt | resource-limits | retention-intent |
 //!                          start-mode
+//! SubmitAttemptRequestV4 = version | assignment | daemon-epoch | lineage |
+//!                          attempt | resource-limits | retention-intent |
+//!                          scoped-start-mode
 //! SubmitAttemptResponseV2/V3 = version | assignment | daemon-epoch | attempt |
 //!                              request-digest | disposition
 //! SubmitAttemptResponseV4 = version | assignment | daemon-epoch | attempt |
@@ -16,6 +19,8 @@
 //!                           finding-candidate
 //! GetAttemptExecutionRequestV2 = version | daemon-epoch | lineage | attempt |
 //!                                execution | execution-basis-digest
+//! GetAttemptExecutionRequestV3 = version | daemon-epoch | lineage | attempt |
+//!                                execution | execution-basis-digest | scope
 //! GetAttemptExecutionResponseV2/V3 = version | daemon-epoch | attempt |
 //!                                    execution | request-digest | disposition
 //! GetAttemptExecutionResponseV4 = version | daemon-epoch | attempt | execution |
@@ -39,6 +44,9 @@
 //! CheckpointAttemptExecutionRequestV2 = version | daemon-epoch | lineage |
 //!                                       attempt | execution |
 //!                                       execution-basis-digest
+//! CheckpointAttemptExecutionRequestV3 = version | daemon-epoch | lineage |
+//!                                       attempt | execution |
+//!                                       execution-basis-digest | scope
 //! CheckpointAttemptExecutionResponseV2 = version | daemon-epoch | attempt |
 //!                                        execution | request-digest |
 //!                                        disposition
@@ -47,6 +55,8 @@
 //!                                        completed-disposition | finding-candidate
 //! CancelAttemptExecutionRequestV2 = version | daemon-epoch | lineage | attempt |
 //!                                   execution | execution-basis-digest
+//! CancelAttemptExecutionRequestV3 = version | daemon-epoch | lineage | attempt |
+//!                                   execution | execution-basis-digest | scope
 //! CancelAttemptExecutionResponseV2 = version | daemon-epoch | attempt | execution |
 //!                                    request-digest | disposition
 //! CancelAttemptExecutionResponseV4 = version | daemon-epoch | attempt | execution |
@@ -66,12 +76,15 @@ use std::collections::BTreeMap;
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::policy::validate_identifier;
 use crate::{
-    AttemptId, CampaignCodecError, CampaignHash, CampaignLineage, CampaignLineageId,
-    ConfigurationArtifactId, ExactCheckpointId, FindingCandidateBundleId, ObservationId,
+    AttemptId, CampaignCodecError, CampaignFactId, CampaignHash, CampaignLineage,
+    CampaignLineageId, ConfigurationArtifactId, ExactCheckpointId, FindingCandidateBundleId,
+    ObservationId,
 };
 
 const EXECUTOR_MESSAGE_SCHEMA_VERSION: u32 = 2;
-const SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION: u32 = 3;
+const MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION: u32 = 3;
+const SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION: u32 = 4;
+const SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION: u32 = 3;
 const RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION: u32 = 3;
 const SUBMIT_ATTEMPT_RESPONSE_SCHEMA_VERSION: u32 = 3;
 const GET_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION: u32 = 3;
@@ -442,6 +455,61 @@ impl Canonical for ExecutionRetentionIntent {
     }
 }
 
+/// Durable namespace for one operational execution record.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AttemptExecutionScope {
+    /// Ordinary semantic attempt execution and exact-checkpoint continuation.
+    #[default]
+    Semantic,
+    /// Preparatory savepoint capture identified by its immutable request fact.
+    SavepointCapture {
+        /// Exact campaign fact that requested this operational capture.
+        request: CampaignFactId,
+    },
+}
+
+impl AttemptExecutionScope {
+    /// Returns the strict canonical bytes used in durable execution keys.
+    #[must_use]
+    pub fn canonical_bytes(self) -> Vec<u8> {
+        codec::encode(&self)
+    }
+
+    /// Decodes one strict canonical durable execution scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, noncanonical, or trailing input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        codec::decode(bytes)
+    }
+}
+
+impl Canonical for AttemptExecutionScope {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Self::Semantic => encoder.u8(0),
+            Self::SavepointCapture { request } => {
+                encoder.u8(1);
+                request.encode(encoder);
+            }
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::Semantic),
+            1 => Ok(Self::SavepointCapture {
+                request: CampaignFactId::decode(decoder)?,
+            }),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "attempt-execution-scope",
+                tag,
+            }),
+        }
+    }
+}
+
 /// Operational behavior requested immediately after start materialization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttemptStartMode {
@@ -452,6 +520,28 @@ pub enum AttemptStartMode {
         /// Exact configuration artifact the worker must authenticate at start.
         configuration: ConfigurationArtifactId,
     },
+    /// Captures a campaign-requested savepoint in its own operational scope.
+    SavepointCapture {
+        /// Exact campaign fact that requested this operational capture.
+        request: CampaignFactId,
+        /// Exact configuration artifact the worker must authenticate at start.
+        configuration: ConfigurationArtifactId,
+    },
+}
+
+impl AttemptStartMode {
+    /// Returns the durable operational namespace selected by this start mode.
+    #[must_use]
+    pub const fn execution_scope(self) -> AttemptExecutionScope {
+        match self {
+            Self::Execute | Self::CaptureMaterializedStart { .. } => {
+                AttemptExecutionScope::Semantic
+            }
+            Self::SavepointCapture { request, .. } => {
+                AttemptExecutionScope::SavepointCapture { request }
+            }
+        }
+    }
 }
 
 impl Canonical for AttemptStartMode {
@@ -462,6 +552,14 @@ impl Canonical for AttemptStartMode {
                 encoder.u8(1);
                 configuration.encode(encoder);
             }
+            Self::SavepointCapture {
+                request,
+                configuration,
+            } => {
+                encoder.u8(2);
+                request.encode(encoder);
+                configuration.encode(encoder);
+            }
         }
     }
 
@@ -469,6 +567,10 @@ impl Canonical for AttemptStartMode {
         match decoder.u8()? {
             0 => Ok(Self::Execute),
             1 => Ok(Self::CaptureMaterializedStart {
+                configuration: ConfigurationArtifactId::decode(decoder)?,
+            }),
+            2 => Ok(Self::SavepointCapture {
+                request: CampaignFactId::decode(decoder)?,
                 configuration: ConfigurationArtifactId::decode(decoder)?,
             }),
             tag => Err(CampaignCodecError::UnknownTag {
@@ -549,7 +651,7 @@ impl SubmitAttemptRequest {
         configuration: ConfigurationArtifactId,
     ) -> Result<Self, CampaignCodecError> {
         let request = Self {
-            schema_version: SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION,
+            schema_version: MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION,
             assignment,
             daemon_epoch,
             lineage,
@@ -557,6 +659,48 @@ impl SubmitAttemptRequest {
             resources,
             retention,
             start_mode: AttemptStartMode::CaptureMaterializedStart { configuration },
+        };
+        codec::ensure_encoded_size(
+            &request,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "submit-attempt-request-encoded-bytes",
+        )?;
+        Ok(request)
+    }
+
+    /// Builds a campaign savepoint capture in its isolated operational scope.
+    ///
+    /// The capture request fact is part of both the canonical assignment and
+    /// its durable execution scope. This permits the same immutable attempt to
+    /// have an ordinary semantic execution without sharing runtime state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resulting component message exceeds its strict
+    /// encoded bound.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_savepoint_capture(
+        assignment: AssignmentId,
+        daemon_epoch: DaemonEpoch,
+        lineage: CampaignLineageId,
+        attempt: AttemptId,
+        resources: AttemptResourceLimits,
+        retention: ExecutionRetentionIntent,
+        request: CampaignFactId,
+        configuration: ConfigurationArtifactId,
+    ) -> Result<Self, CampaignCodecError> {
+        let request = Self {
+            schema_version: SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION,
+            assignment,
+            daemon_epoch,
+            lineage,
+            attempt,
+            resources,
+            retention,
+            start_mode: AttemptStartMode::SavepointCapture {
+                request,
+                configuration,
+            },
         };
         codec::ensure_encoded_size(
             &request,
@@ -608,13 +752,24 @@ impl SubmitAttemptRequest {
         self.start_mode
     }
 
+    /// Returns the durable operational namespace selected by this assignment.
+    #[must_use]
+    pub const fn execution_scope(&self) -> AttemptExecutionScope {
+        self.start_mode.execution_scope()
+    }
+
     /// Returns the domain-separated digest of every canonical request field.
     #[must_use]
     pub fn request_digest(&self) -> CampaignHash {
-        let domain = if self.schema_version == EXECUTOR_MESSAGE_SCHEMA_VERSION {
-            "crucible.campaign.submit-attempt-request.v2"
-        } else {
-            "crucible.campaign.submit-attempt-request.v3"
+        let domain = match self.schema_version {
+            EXECUTOR_MESSAGE_SCHEMA_VERSION => "crucible.campaign.submit-attempt-request.v2",
+            MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION => {
+                "crucible.campaign.submit-attempt-request.v3"
+            }
+            SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION => {
+                "crucible.campaign.submit-attempt-request.v4"
+            }
+            _ => unreachable!("validated submit request schema"),
         };
         CampaignHash::derive(domain, &self.canonical_bytes())
     }
@@ -661,7 +816,9 @@ impl Canonical for SubmitAttemptRequest {
         self.attempt.encode(encoder);
         self.resources.encode(encoder);
         self.retention.encode(encoder);
-        if self.schema_version == SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION {
+        if self.schema_version == MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION
+            || self.schema_version == SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION
+        {
             self.start_mode.encode(encoder);
         }
     }
@@ -687,20 +844,47 @@ impl Canonical for SubmitAttemptRequest {
         }
 
         let start_mode = AttemptStartMode::decode(decoder)?;
-        let AttemptStartMode::CaptureMaterializedStart { configuration } = start_mode else {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "submit attempt request version 3 requires materialized-start capture",
-            });
-        };
-        Self::new_capture_materialized_start(
-            assignment,
-            daemon_epoch,
-            lineage,
-            attempt,
-            resources,
-            retention,
-            configuration,
-        )
+        match (schema_version, start_mode) {
+            (
+                MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION,
+                AttemptStartMode::CaptureMaterializedStart { configuration },
+            ) => Self::new_capture_materialized_start(
+                assignment,
+                daemon_epoch,
+                lineage,
+                attempt,
+                resources,
+                retention,
+                configuration,
+            ),
+            (
+                SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION,
+                AttemptStartMode::SavepointCapture {
+                    request,
+                    configuration,
+                },
+            ) => Self::new_savepoint_capture(
+                assignment,
+                daemon_epoch,
+                lineage,
+                attempt,
+                resources,
+                retention,
+                request,
+                configuration,
+            ),
+            (MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION, _) => {
+                Err(CampaignCodecError::InvalidValue {
+                    reason: "submit attempt request version 3 requires materialized-start capture",
+                })
+            }
+            (SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION, _) => {
+                Err(CampaignCodecError::InvalidValue {
+                    reason: "submit attempt request version 4 requires savepoint capture",
+                })
+            }
+            _ => unreachable!("validated submit request schema"),
+        }
     }
 }
 
@@ -1099,6 +1283,7 @@ pub struct GetAttemptExecutionRequest {
     attempt: AttemptId,
     execution: ExecutionId,
     execution_basis: CampaignHash,
+    scope: AttemptExecutionScope,
 }
 
 impl GetAttemptExecutionRequest {
@@ -1112,12 +1297,13 @@ impl GetAttemptExecutionRequest {
         execution: ExecutionId,
     ) -> Result<Self, CampaignCodecError> {
         let request = Self {
-            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            schema_version: SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION,
             daemon_epoch: assignment.daemon_epoch(),
             lineage: assignment.lineage(),
             attempt: assignment.attempt(),
             execution,
             execution_basis: assignment.execution_basis_digest(),
+            scope: assignment.execution_scope(),
         };
         codec::ensure_encoded_size(
             &request,
@@ -1157,13 +1343,21 @@ impl GetAttemptExecutionRequest {
         self.execution_basis
     }
 
+    /// Returns the exact durable execution namespace being queried.
+    #[must_use]
+    pub const fn execution_scope(&self) -> AttemptExecutionScope {
+        self.scope
+    }
+
     /// Returns a domain-separated digest of every canonical request field.
     #[must_use]
     pub fn request_digest(&self) -> CampaignHash {
-        CampaignHash::derive(
-            "crucible.campaign.get-attempt-execution-request.v2",
-            &self.canonical_bytes(),
-        )
+        let domain = if self.schema_version == EXECUTOR_MESSAGE_SCHEMA_VERSION {
+            "crucible.campaign.get-attempt-execution-request.v2"
+        } else {
+            "crucible.campaign.get-attempt-execution-request.v3"
+        };
+        CampaignHash::derive(domain, &self.canonical_bytes())
     }
 
     /// Returns strict canonical component-message bytes.
@@ -1191,17 +1385,32 @@ impl Canonical for GetAttemptExecutionRequest {
         self.attempt.encode(encoder);
         self.execution.encode(encoder);
         self.execution_basis.encode(encoder);
+        if self.schema_version == SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION {
+            self.scope.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_executor_message_version(u32::decode(decoder)?)?;
+        let schema_version = u32::decode(decoder)?;
+        require_executor_control_request_version(schema_version)?;
+        let daemon_epoch = DaemonEpoch::decode(decoder)?;
+        let lineage = CampaignLineageId::decode(decoder)?;
+        let attempt = AttemptId::decode(decoder)?;
+        let execution = ExecutionId::decode(decoder)?;
+        let execution_basis = CampaignHash::decode(decoder)?;
+        let scope = if schema_version == SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION {
+            AttemptExecutionScope::decode(decoder)?
+        } else {
+            AttemptExecutionScope::Semantic
+        };
         let request = Self {
-            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
-            daemon_epoch: DaemonEpoch::decode(decoder)?,
-            lineage: CampaignLineageId::decode(decoder)?,
-            attempt: AttemptId::decode(decoder)?,
-            execution: ExecutionId::decode(decoder)?,
-            execution_basis: CampaignHash::decode(decoder)?,
+            schema_version,
+            daemon_epoch,
+            lineage,
+            attempt,
+            execution,
+            execution_basis,
+            scope,
         };
         codec::ensure_encoded_size(
             &request,
@@ -2110,6 +2319,7 @@ pub struct CheckpointAttemptExecutionRequest {
     attempt: AttemptId,
     execution: ExecutionId,
     execution_basis: CampaignHash,
+    scope: AttemptExecutionScope,
 }
 
 impl CheckpointAttemptExecutionRequest {
@@ -2123,12 +2333,13 @@ impl CheckpointAttemptExecutionRequest {
         execution: ExecutionId,
     ) -> Result<Self, CampaignCodecError> {
         let request = Self {
-            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            schema_version: SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION,
             daemon_epoch: assignment.daemon_epoch(),
             lineage: assignment.lineage(),
             attempt: assignment.attempt(),
             execution,
             execution_basis: assignment.execution_basis_digest(),
+            scope: assignment.execution_scope(),
         };
         codec::ensure_encoded_size(
             &request,
@@ -2168,13 +2379,21 @@ impl CheckpointAttemptExecutionRequest {
         self.execution_basis
     }
 
+    /// Returns the exact durable execution namespace to checkpoint.
+    #[must_use]
+    pub const fn execution_scope(&self) -> AttemptExecutionScope {
+        self.scope
+    }
+
     /// Returns a domain-separated digest of every canonical request field.
     #[must_use]
     pub fn request_digest(&self) -> CampaignHash {
-        CampaignHash::derive(
-            "crucible.campaign.checkpoint-attempt-execution-request.v2",
-            &self.canonical_bytes(),
-        )
+        let domain = if self.schema_version == EXECUTOR_MESSAGE_SCHEMA_VERSION {
+            "crucible.campaign.checkpoint-attempt-execution-request.v2"
+        } else {
+            "crucible.campaign.checkpoint-attempt-execution-request.v3"
+        };
+        CampaignHash::derive(domain, &self.canonical_bytes())
     }
 
     /// Returns strict canonical component-message bytes.
@@ -2202,17 +2421,32 @@ impl Canonical for CheckpointAttemptExecutionRequest {
         self.attempt.encode(encoder);
         self.execution.encode(encoder);
         self.execution_basis.encode(encoder);
+        if self.schema_version == SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION {
+            self.scope.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_executor_message_version(u32::decode(decoder)?)?;
+        let schema_version = u32::decode(decoder)?;
+        require_executor_control_request_version(schema_version)?;
+        let daemon_epoch = DaemonEpoch::decode(decoder)?;
+        let lineage = CampaignLineageId::decode(decoder)?;
+        let attempt = AttemptId::decode(decoder)?;
+        let execution = ExecutionId::decode(decoder)?;
+        let execution_basis = CampaignHash::decode(decoder)?;
+        let scope = if schema_version == SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION {
+            AttemptExecutionScope::decode(decoder)?
+        } else {
+            AttemptExecutionScope::Semantic
+        };
         let request = Self {
-            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
-            daemon_epoch: DaemonEpoch::decode(decoder)?,
-            lineage: CampaignLineageId::decode(decoder)?,
-            attempt: AttemptId::decode(decoder)?,
-            execution: ExecutionId::decode(decoder)?,
-            execution_basis: CampaignHash::decode(decoder)?,
+            schema_version,
+            daemon_epoch,
+            lineage,
+            attempt,
+            execution,
+            execution_basis,
+            scope,
         };
         codec::ensure_encoded_size(
             &request,
@@ -2525,6 +2759,7 @@ pub struct CancelAttemptExecutionRequest {
     attempt: AttemptId,
     execution: ExecutionId,
     execution_basis: CampaignHash,
+    scope: AttemptExecutionScope,
 }
 
 impl CancelAttemptExecutionRequest {
@@ -2538,12 +2773,13 @@ impl CancelAttemptExecutionRequest {
         execution: ExecutionId,
     ) -> Result<Self, CampaignCodecError> {
         let request = Self {
-            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            schema_version: SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION,
             daemon_epoch: assignment.daemon_epoch(),
             lineage: assignment.lineage(),
             attempt: assignment.attempt(),
             execution,
             execution_basis: assignment.execution_basis_digest(),
+            scope: assignment.execution_scope(),
         };
         codec::ensure_encoded_size(
             &request,
@@ -2583,13 +2819,21 @@ impl CancelAttemptExecutionRequest {
         self.execution_basis
     }
 
+    /// Returns the exact durable execution namespace to cancel.
+    #[must_use]
+    pub const fn execution_scope(&self) -> AttemptExecutionScope {
+        self.scope
+    }
+
     /// Returns a domain-separated digest of every canonical request field.
     #[must_use]
     pub fn request_digest(&self) -> CampaignHash {
-        CampaignHash::derive(
-            "crucible.campaign.cancel-attempt-execution-request.v2",
-            &self.canonical_bytes(),
-        )
+        let domain = if self.schema_version == EXECUTOR_MESSAGE_SCHEMA_VERSION {
+            "crucible.campaign.cancel-attempt-execution-request.v2"
+        } else {
+            "crucible.campaign.cancel-attempt-execution-request.v3"
+        };
+        CampaignHash::derive(domain, &self.canonical_bytes())
     }
 
     /// Returns strict canonical component-message bytes.
@@ -2617,17 +2861,32 @@ impl Canonical for CancelAttemptExecutionRequest {
         self.attempt.encode(encoder);
         self.execution.encode(encoder);
         self.execution_basis.encode(encoder);
+        if self.schema_version == SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION {
+            self.scope.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_executor_message_version(u32::decode(decoder)?)?;
+        let schema_version = u32::decode(decoder)?;
+        require_executor_control_request_version(schema_version)?;
+        let daemon_epoch = DaemonEpoch::decode(decoder)?;
+        let lineage = CampaignLineageId::decode(decoder)?;
+        let attempt = AttemptId::decode(decoder)?;
+        let execution = ExecutionId::decode(decoder)?;
+        let execution_basis = CampaignHash::decode(decoder)?;
+        let scope = if schema_version == SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION {
+            AttemptExecutionScope::decode(decoder)?
+        } else {
+            AttemptExecutionScope::Semantic
+        };
         let request = Self {
-            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
-            daemon_epoch: DaemonEpoch::decode(decoder)?,
-            lineage: CampaignLineageId::decode(decoder)?,
-            attempt: AttemptId::decode(decoder)?,
-            execution: ExecutionId::decode(decoder)?,
-            execution_basis: CampaignHash::decode(decoder)?,
+            schema_version,
+            daemon_epoch,
+            lineage,
+            attempt,
+            execution,
+            execution_basis,
+            scope,
         };
         codec::ensure_encoded_size(
             &request,
@@ -3193,19 +3452,22 @@ fn response_schema_version(
     Ok(EXECUTOR_MESSAGE_SCHEMA_VERSION)
 }
 
-const fn require_executor_message_version(version: u32) -> Result<(), CampaignCodecError> {
-    if version == EXECUTOR_MESSAGE_SCHEMA_VERSION {
+const fn require_executor_control_request_version(version: u32) -> Result<(), CampaignCodecError> {
+    if version == EXECUTOR_MESSAGE_SCHEMA_VERSION
+        || version == SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION
+    {
         Ok(())
     } else {
         Err(CampaignCodecError::InvalidValue {
-            reason: "unsupported executor component-message schema version",
+            reason: "unsupported executor control-request schema version",
         })
     }
 }
 
 const fn require_submit_attempt_request_version(version: u32) -> Result<(), CampaignCodecError> {
     if version == EXECUTOR_MESSAGE_SCHEMA_VERSION
-        || version == SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION
+        || version == MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION
+        || version == SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION
     {
         Ok(())
     } else {

@@ -6,8 +6,8 @@
 use std::fs;
 
 use crucible_campaign::{
-    AttemptResourceLimits, AttemptStartMode, CampaignLineageId, ConfigurationArtifactId,
-    ExecutionRetentionIntent, ExecutorRejection, SubmitAttemptDisposition,
+    AttemptResourceLimits, AttemptStartMode, CampaignFactId, CampaignLineageId,
+    ConfigurationArtifactId, ExecutionRetentionIntent, ExecutorRejection, SubmitAttemptDisposition,
 };
 
 use super::*;
@@ -134,6 +134,110 @@ fn directory_ledger_reopens_exact_records_and_attempt_state() {
         .expect("stream reopened roots");
     assert_eq!(roots, vec![observation(0x71)]);
     assert_eq!(response.validate_for(&request), Ok(()));
+}
+
+#[test]
+fn scoped_capture_and_semantic_attempt_states_are_physically_isolated() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let semantic = request(0x12, 0x32, 1);
+    let capture =
+        savepoint_capture_request(0x13, 0x32, 1, campaign_fact(0x52), configuration(0x53));
+    let semantic_key = AttemptExecutionKey::for_request(&semantic);
+    let capture_key = AttemptExecutionKey::for_request(&capture);
+    let semantic_state = AttemptRuntimeState::Running {
+        execution_basis: semantic.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: semantic.daemon_epoch(),
+        execution: execution(0x54),
+    };
+    let capture_state = AttemptRuntimeState::CheckpointRequested {
+        execution_basis: capture.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: capture.daemon_epoch(),
+        execution: execution(0x55),
+    };
+
+    assert_eq!(semantic_key.scope(), AttemptExecutionScope::Semantic);
+    assert_eq!(capture_key.scope(), capture.execution_scope());
+    assert_ne!(semantic_key.storage_digest(), capture_key.storage_digest());
+
+    let mut memory = MemoryAssignmentLedger::default();
+    assert_eq!(
+        memory
+            .compare_exchange_attempt(semantic_key, None, Some(semantic_state))
+            .expect("store semantic state"),
+        AttemptStateCas::Advanced
+    );
+    assert_eq!(
+        memory
+            .compare_exchange_attempt(capture_key, None, Some(capture_state))
+            .expect("store capture state"),
+        AttemptStateCas::Advanced
+    );
+    assert_eq!(memory.load_attempt(semantic_key), Ok(Some(semantic_state)));
+    assert_eq!(memory.load_attempt(capture_key), Ok(Some(capture_state)));
+
+    let mut durable = DirectoryAssignmentLedger::open(directory.path()).expect("durable ledger");
+    assert_ne!(
+        durable.attempt_path(semantic_key),
+        durable.attempt_path(capture_key)
+    );
+    durable
+        .compare_exchange_attempt(semantic_key, None, Some(semantic_state))
+        .expect("store durable semantic state");
+    durable
+        .compare_exchange_attempt(capture_key, None, Some(capture_state))
+        .expect("store durable capture state");
+    assert_eq!(
+        durable
+            .load_attempt(semantic_key)
+            .expect("load semantic state"),
+        Some(semantic_state)
+    );
+    assert_eq!(
+        durable
+            .load_attempt(capture_key)
+            .expect("load capture state"),
+        Some(capture_state)
+    );
+}
+
+#[test]
+fn scoped_capture_state_rejects_semantic_and_mismatched_promotion_shapes() {
+    let capture =
+        savepoint_capture_request(0x14, 0x34, 1, campaign_fact(0x56), configuration(0x57));
+    let key = AttemptExecutionKey::for_request(&capture);
+    let running = AttemptRuntimeState::Running {
+        execution_basis: capture.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: capture.daemon_epoch(),
+        execution: execution(0x58),
+    };
+    let wrong_promotion = AttemptRuntimeState::Paused {
+        execution_basis: capture.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: capture.daemon_epoch(),
+        execution: execution(0x58),
+        checkpoint: checkpoint(0x59),
+        promotion_basis: Some(CheckpointPromotionExecutionBasis::new_for_start_mode(
+            capture.resources(),
+            capture.retention(),
+            AttemptStartMode::CaptureMaterializedStart {
+                configuration: configuration(0x57),
+            },
+        )),
+    };
+    let mut memory = MemoryAssignmentLedger::default();
+
+    assert_eq!(
+        memory.compare_exchange_attempt(key, None, Some(running)),
+        Ok(AttemptStateCas::Conflict { current: None })
+    );
+    assert_eq!(
+        memory.compare_exchange_attempt(key, None, Some(wrong_promotion)),
+        Ok(AttemptStateCas::Conflict { current: None })
+    );
+    assert!(decode_attempt_state(&encode_attempt_state(key, wrong_promotion)).is_err());
 }
 
 #[test]
@@ -1158,6 +1262,51 @@ fn directory_ledger_reads_legacy_v9_promotion_basis_as_execute_mode() {
     assert_eq!(promotion_basis.start_mode(), AttemptStartMode::Execute);
 }
 
+#[test]
+fn directory_ledger_reads_legacy_v10_materialized_capture_basis_as_semantic() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let configuration = configuration(0x91);
+    let request = capture_request(0x22, 0x42, 1, configuration);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let promotion_basis = CheckpointPromotionExecutionBasis::new_for_start_mode(
+        request.resources(),
+        request.retention(),
+        request.start_mode(),
+    );
+    let state = AttemptRuntimeState::Paused {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x62),
+        checkpoint: checkpoint(0x82),
+        promotion_basis: Some(promotion_basis),
+    };
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
+
+    let mut payload = Vec::with_capacity(512);
+    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V10);
+    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
+    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
+    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
+    encode_attempt_origin(&mut payload, AttemptExecutionOrigin::Initial);
+    payload.push(6);
+    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
+    payload.extend_from_slice(&execution(0x62).as_bytes());
+    push_bytes(&mut payload, checkpoint(0x82).to_text().as_bytes());
+    encode_checkpoint_promotion_basis(&mut payload, Some(promotion_basis));
+    let path = ledger.attempt_path(key);
+    fs::create_dir_all(path.parent().expect("attempt-state parent"))
+        .expect("create legacy attempt-state parent");
+    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V10))
+        .expect("write legacy attempt state");
+
+    assert_eq!(
+        ledger.load_attempt(key).expect("load legacy paused state"),
+        Some(state)
+    );
+    assert_eq!(key.scope(), AttemptExecutionScope::Semantic);
+}
+
 fn request(assignment_byte: u8, attempt_byte: u8, vcpus: u32) -> SubmitAttemptRequest {
     SubmitAttemptRequest::new(
         AssignmentId::from_bytes([assignment_byte; 16]).expect("assignment"),
@@ -1206,6 +1355,44 @@ fn capture_request(
         configuration,
     )
     .expect("capture request")
+}
+
+fn savepoint_capture_request(
+    assignment_byte: u8,
+    attempt_byte: u8,
+    vcpus: u32,
+    request: CampaignFactId,
+    configuration: ConfigurationArtifactId,
+) -> SubmitAttemptRequest {
+    SubmitAttemptRequest::new_savepoint_capture(
+        AssignmentId::from_bytes([assignment_byte; 16]).expect("assignment"),
+        DaemonEpoch::from_bytes([0x21; 16]).expect("daemon epoch"),
+        CampaignLineageId::parse(&typed_id(
+            "crucible.campaign.lineage",
+            "campaign-fact",
+            0x41,
+        ))
+        .expect("lineage"),
+        AttemptId::parse(&typed_id(
+            "crucible.campaign.attempt",
+            "campaign-fact",
+            attempt_byte,
+        ))
+        .expect("attempt"),
+        AttemptResourceLimits::new(vcpus, 4096, 8192, 16).expect("resources"),
+        ExecutionRetentionIntent::RetainOnFailure,
+        request,
+        configuration,
+    )
+    .expect("savepoint capture request")
+}
+
+fn campaign_fact(byte: u8) -> CampaignFactId {
+    CampaignFactId::parse(&format!(
+        "crucible.campaign.fact@campaign-fact.10.{}",
+        encode_hex(&[byte; 32])
+    ))
+    .expect("campaign fact")
 }
 
 fn configuration(byte: u8) -> ConfigurationArtifactId {

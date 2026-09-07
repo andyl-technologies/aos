@@ -25,15 +25,17 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crucible_campaign::{
-    AssignmentId, AttemptId, AttemptResourceLimits, AttemptStartMode, CampaignCodecError,
-    CampaignHash, CampaignLineageId, ConfigurationArtifactId, DaemonEpoch, ExactCheckpointId,
-    ExecutionId, ExecutionRetentionIntent, FindingCandidateBundleId, ObservationId,
-    SubmitAttemptRequest, SubmitAttemptResponse, attempt_execution_basis_digest_for_start_mode,
+    AssignmentId, AttemptExecutionScope, AttemptId, AttemptResourceLimits, AttemptStartMode,
+    CampaignCodecError, CampaignFactId, CampaignHash, CampaignLineageId, ConfigurationArtifactId,
+    DaemonEpoch, ExactCheckpointId, ExecutionId, ExecutionRetentionIntent,
+    FindingCandidateBundleId, ObservationId, SubmitAttemptRequest, SubmitAttemptResponse,
+    attempt_execution_basis_digest_for_start_mode,
 };
 use rustix::fs::{FlockOperation, flock};
 
 const ASSIGNMENT_MAGIC: &[u8] = b"crucible.executor.assignment-record.v1\0";
-const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v10\0";
+const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v11\0";
+const ATTEMPT_STATE_MAGIC_V10: &[u8] = b"crucible.executor.attempt-state-record.v10\0";
 const ATTEMPT_STATE_MAGIC_V9: &[u8] = b"crucible.executor.attempt-state-record.v9\0";
 const ATTEMPT_STATE_MAGIC_V8: &[u8] = b"crucible.executor.attempt-state-record.v8\0";
 const ATTEMPT_STATE_MAGIC_V7: &[u8] = b"crucible.executor.attempt-state-record.v7\0";
@@ -44,7 +46,8 @@ const ATTEMPT_STATE_MAGIC_V3: &[u8] = b"crucible.executor.attempt-state-record.v
 const ATTEMPT_STATE_MAGIC_V2: &[u8] = b"crucible.executor.attempt-state-record.v2\0";
 const ATTEMPT_STATE_MAGIC_V1: &[u8] = b"crucible.executor.attempt-state-record.v1\0";
 const ASSIGNMENT_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-record.v1";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v10";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v11";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN_V10: &str = "crucible.executor.attempt-state-record.v10";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V9: &str = "crucible.executor.attempt-state-record.v9";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V8: &str = "crucible.executor.attempt-state-record.v8";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V7: &str = "crucible.executor.attempt-state-record.v7";
@@ -100,11 +103,12 @@ impl AssignmentRecord {
     }
 }
 
-/// Exact lineage-qualified semantic key for operational attempt runtime state.
+/// Exact lineage, attempt, and scope key for operational execution state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AttemptExecutionKey {
     lineage: CampaignLineageId,
     attempt: AttemptId,
+    scope: AttemptExecutionScope,
 }
 
 /// Durable operational origin of one local execution incarnation.
@@ -246,7 +250,35 @@ impl AttemptExecutionKey {
     /// Builds the runtime key for one exact lineage and semantic attempt.
     #[must_use]
     pub const fn new(lineage: CampaignLineageId, attempt: AttemptId) -> Self {
-        Self { lineage, attempt }
+        Self {
+            lineage,
+            attempt,
+            scope: AttemptExecutionScope::Semantic,
+        }
+    }
+
+    /// Builds a runtime key in one explicit durable execution namespace.
+    #[must_use]
+    pub const fn new_scoped(
+        lineage: CampaignLineageId,
+        attempt: AttemptId,
+        scope: AttemptExecutionScope,
+    ) -> Self {
+        Self {
+            lineage,
+            attempt,
+            scope,
+        }
+    }
+
+    /// Builds the exact runtime key explicitly carried by an assignment.
+    #[must_use]
+    pub const fn for_request(request: &SubmitAttemptRequest) -> Self {
+        Self::new_scoped(
+            request.lineage(),
+            request.attempt(),
+            request.execution_scope(),
+        )
     }
 
     /// Returns the exact compatibility lineage.
@@ -260,9 +292,33 @@ impl AttemptExecutionKey {
     pub const fn attempt(self) -> AttemptId {
         self.attempt
     }
+
+    /// Returns the exact durable operational namespace.
+    #[must_use]
+    pub const fn scope(self) -> AttemptExecutionScope {
+        self.scope
+    }
+
+    /// Returns the stable digest used for ledger and journal storage paths.
+    ///
+    /// Semantic keys preserve the original version 1 digest exactly. Scoped
+    /// capture keys use a separate version 2 domain and bind the canonical
+    /// scope bytes, so no capture can alias semantic state.
+    #[must_use]
+    pub fn storage_digest(self) -> CampaignHash {
+        let mut material = Vec::with_capacity(256);
+        push_bytes(&mut material, self.lineage.to_text().as_bytes());
+        push_bytes(&mut material, self.attempt.to_text().as_bytes());
+        if self.scope == AttemptExecutionScope::Semantic {
+            return CampaignHash::derive("crucible.executor.attempt-execution-key.v1", &material);
+        }
+
+        push_bytes(&mut material, &self.scope.canonical_bytes());
+        CampaignHash::derive("crucible.executor.attempt-execution-key.v2", &material)
+    }
 }
 
-/// Durable operational state for one semantic attempt.
+/// Durable operational state for one scoped attempt execution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttemptRuntimeState {
     /// One execution is currently owned by a daemon incarnation.
@@ -611,6 +667,36 @@ impl AttemptRuntimeState {
             Some(*checkpoint) != current && Some(*checkpoint) != promotion_source
         });
         [current, promotion_source, origin]
+    }
+
+    fn validates_for_key(self, key: AttemptExecutionKey) -> bool {
+        let scoped_capture = matches!(key.scope(), AttemptExecutionScope::SavepointCapture { .. });
+        if scoped_capture
+            && (self.origin() != AttemptExecutionOrigin::Initial
+                || matches!(
+                    self,
+                    Self::Running { .. } | Self::Publishing { .. } | Self::Completed { .. }
+                ))
+        {
+            return false;
+        }
+
+        let promotion_basis = match self {
+            Self::Paused {
+                promotion_basis, ..
+            }
+            | Self::CheckpointPromoting {
+                promotion_basis, ..
+            } => promotion_basis,
+            _ => None,
+        };
+        if scoped_capture
+            && matches!(self, Self::Paused { .. } | Self::CheckpointPromoting { .. })
+            && promotion_basis.is_none()
+        {
+            return false;
+        }
+        promotion_basis.is_none_or(|basis| basis.start_mode().execution_scope() == key.scope())
     }
 }
 
@@ -1055,6 +1141,9 @@ impl AssignmentLedger for MemoryAssignmentLedger {
         next: Option<AttemptRuntimeState>,
     ) -> Result<AttemptStateCas, Self::Error> {
         let current = self.attempts.get(&key).copied();
+        if next.is_some_and(|state| !state.validates_for_key(key)) {
+            return Ok(AttemptStateCas::Conflict { current });
+        }
         if current != expected {
             return Ok(AttemptStateCas::Conflict { current });
         }
@@ -1274,11 +1363,7 @@ impl DirectoryAssignmentLedger {
 }
 
 fn attempt_path_at(root: &Path, key: AttemptExecutionKey) -> PathBuf {
-    let mut material = Vec::with_capacity(256);
-    push_bytes(&mut material, key.lineage.to_text().as_bytes());
-    push_bytes(&mut material, key.attempt.to_text().as_bytes());
-    let encoded =
-        CampaignHash::derive("crucible.executor.attempt-execution-key.v1", &material).to_hex();
+    let encoded = key.storage_digest().to_hex();
     root.join("attempts").join(&encoded[..2]).join(encoded)
 }
 
@@ -1484,6 +1569,9 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         expected: Option<AttemptRuntimeState>,
         next: Option<AttemptRuntimeState>,
     ) -> Result<AttemptStateCas, Self::Error> {
+        if next.is_some_and(|state| !state.validates_for_key(key)) {
+            return Err(corrupt("attempt-state-does-not-match-execution-scope"));
+        }
         let current = self.load_attempt(key)?;
         if current != expected {
             return Ok(AttemptStateCas::Conflict { current });
@@ -1614,6 +1702,7 @@ fn encode_attempt_state(key: AttemptExecutionKey, state: AttemptRuntimeState) ->
     payload.extend_from_slice(ATTEMPT_STATE_MAGIC);
     push_bytes(&mut payload, key.lineage.to_text().as_bytes());
     push_bytes(&mut payload, key.attempt.to_text().as_bytes());
+    push_bytes(&mut payload, &key.scope.canonical_bytes());
     payload.extend_from_slice(&state.execution_basis().as_bytes());
     encode_attempt_origin(&mut payload, state.origin());
     match state {
@@ -1728,6 +1817,8 @@ fn decode_attempt_state(
 ) -> Result<(AttemptExecutionKey, AttemptRuntimeState), AssignmentLedgerError> {
     let (payload, magic) = if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN) {
         (payload, ATTEMPT_STATE_MAGIC)
+    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V10) {
+        (payload, ATTEMPT_STATE_MAGIC_V10)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V9) {
         (payload, ATTEMPT_STATE_MAGIC_V9)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V8) {
@@ -1754,8 +1845,14 @@ fn decode_attempt_state(
     cursor.require(magic)?;
     let lineage = parse_typed(cursor.bytes()?, CampaignLineageId::parse)?;
     let attempt = parse_typed(cursor.bytes()?, AttemptId::parse)?;
+    let scope = if magic == ATTEMPT_STATE_MAGIC {
+        AttemptExecutionScope::from_canonical_bytes(cursor.bytes()?)?
+    } else {
+        AttemptExecutionScope::Semantic
+    };
     let execution_basis = CampaignHash::from_bytes(cursor.fixed()?);
     let origin = if magic == ATTEMPT_STATE_MAGIC
+        || magic == ATTEMPT_STATE_MAGIC_V10
         || magic == ATTEMPT_STATE_MAGIC_V9
         || magic == ATTEMPT_STATE_MAGIC_V8
         || magic == ATTEMPT_STATE_MAGIC_V7
@@ -1781,6 +1878,7 @@ fn decode_attempt_state(
             let observation = parse_typed(cursor.bytes()?, ObservationId::parse)?;
             let finding_candidate = decode_optional_finding_candidate(&mut cursor, magic)?;
             let finding_candidate_acknowledged = if magic == ATTEMPT_STATE_MAGIC
+                || magic == ATTEMPT_STATE_MAGIC_V10
                 || magic == ATTEMPT_STATE_MAGIC_V9
             {
                 match cursor.byte()? {
@@ -1817,6 +1915,7 @@ fn decode_attempt_state(
             execution,
         },
         8 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
             || magic == ATTEMPT_STATE_MAGIC_V8
             || magic == ATTEMPT_STATE_MAGIC_V7 =>
@@ -1829,6 +1928,7 @@ fn decode_attempt_state(
             }
         }
         3 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
             || magic == ATTEMPT_STATE_MAGIC_V8
             || magic == ATTEMPT_STATE_MAGIC_V7
@@ -1848,6 +1948,7 @@ fn decode_attempt_state(
             }
         }
         4 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
             || magic == ATTEMPT_STATE_MAGIC_V8
             || magic == ATTEMPT_STATE_MAGIC_V7
@@ -1864,6 +1965,7 @@ fn decode_attempt_state(
             }
         }
         5 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
             || magic == ATTEMPT_STATE_MAGIC_V8
             || magic == ATTEMPT_STATE_MAGIC_V7
@@ -1881,6 +1983,7 @@ fn decode_attempt_state(
             }
         }
         6 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
             || magic == ATTEMPT_STATE_MAGIC_V8
             || magic == ATTEMPT_STATE_MAGIC_V7
@@ -1898,18 +2001,24 @@ fn decode_attempt_state(
                 promotion_basis: if matches!(
                     magic,
                     ATTEMPT_STATE_MAGIC
+                        | ATTEMPT_STATE_MAGIC_V10
                         | ATTEMPT_STATE_MAGIC_V9
                         | ATTEMPT_STATE_MAGIC_V8
                         | ATTEMPT_STATE_MAGIC_V7
                         | ATTEMPT_STATE_MAGIC_V6
                 ) {
-                    decode_checkpoint_promotion_basis(&mut cursor, magic == ATTEMPT_STATE_MAGIC)?
+                    decode_checkpoint_promotion_basis(
+                        &mut cursor,
+                        magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V10,
+                        magic == ATTEMPT_STATE_MAGIC,
+                    )?
                 } else {
                     None
                 },
             }
         }
         7 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
             || magic == ATTEMPT_STATE_MAGIC_V8
             || magic == ATTEMPT_STATE_MAGIC_V7
@@ -1926,12 +2035,17 @@ fn decode_attempt_state(
                 promotion_basis: if matches!(
                     magic,
                     ATTEMPT_STATE_MAGIC
+                        | ATTEMPT_STATE_MAGIC_V10
                         | ATTEMPT_STATE_MAGIC_V9
                         | ATTEMPT_STATE_MAGIC_V8
                         | ATTEMPT_STATE_MAGIC_V7
                         | ATTEMPT_STATE_MAGIC_V6
                 ) {
-                    decode_checkpoint_promotion_basis(&mut cursor, magic == ATTEMPT_STATE_MAGIC)?
+                    decode_checkpoint_promotion_basis(
+                        &mut cursor,
+                        magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V10,
+                        magic == ATTEMPT_STATE_MAGIC,
+                    )?
                 } else {
                     None
                 },
@@ -1965,8 +2079,12 @@ fn decode_attempt_state(
     {
         return Err(corrupt("checkpoint-promotion-execution-basis-mismatch"));
     }
+    let key = AttemptExecutionKey::new_scoped(lineage, attempt, scope);
+    if !state.validates_for_key(key) {
+        return Err(corrupt("attempt-state-does-not-match-execution-scope"));
+    }
     cursor.finish()?;
-    Ok((AttemptExecutionKey::new(lineage, attempt), state))
+    Ok((key, state))
 }
 
 fn encode_optional_finding_candidate(
@@ -1987,6 +2105,7 @@ fn decode_optional_finding_candidate(
     magic: &[u8],
 ) -> Result<Option<FindingCandidateBundleId>, AssignmentLedgerError> {
     if magic != ATTEMPT_STATE_MAGIC
+        && magic != ATTEMPT_STATE_MAGIC_V10
         && magic != ATTEMPT_STATE_MAGIC_V9
         && magic != ATTEMPT_STATE_MAGIC_V8
     {
@@ -2024,12 +2143,21 @@ fn encode_checkpoint_promotion_basis(
             payload.push(1);
             push_bytes(payload, configuration.to_text().as_bytes());
         }
+        AttemptStartMode::SavepointCapture {
+            request,
+            configuration,
+        } => {
+            payload.push(2);
+            push_bytes(payload, request.to_text().as_bytes());
+            push_bytes(payload, configuration.to_text().as_bytes());
+        }
     }
 }
 
 fn decode_checkpoint_promotion_basis(
     cursor: &mut RecordCursor<'_>,
     has_start_mode: bool,
+    has_savepoint_capture: bool,
 ) -> Result<Option<CheckpointPromotionExecutionBasis>, AssignmentLedgerError> {
     match cursor.byte()? {
         0 => Ok(None),
@@ -2050,6 +2178,13 @@ fn decode_checkpoint_promotion_basis(
                 match cursor.byte()? {
                     0 => AttemptStartMode::Execute,
                     1 => AttemptStartMode::CaptureMaterializedStart {
+                        configuration: parse_typed(
+                            cursor.bytes()?,
+                            ConfigurationArtifactId::parse,
+                        )?,
+                    },
+                    2 if has_savepoint_capture => AttemptStartMode::SavepointCapture {
+                        request: parse_typed(cursor.bytes()?, CampaignFactId::parse)?,
                         configuration: parse_typed(
                             cursor.bytes()?,
                             ConfigurationArtifactId::parse,

@@ -9,8 +9,9 @@ use std::thread;
 use std::time::Duration;
 
 use crucible_campaign::{
-    AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId, ConfigurationArtifactId,
-    ExecutionRetentionIntent, ExecutorClient, FindingCandidateBundleId, SubmitAttemptDisposition,
+    AssignmentId, AttemptId, AttemptResourceLimits, CampaignFactId, CampaignLineageId,
+    ConfigurationArtifactId, ExecutionRetentionIntent, ExecutorClient, FindingCandidateBundleId,
+    SubmitAttemptDisposition,
 };
 
 use super::*;
@@ -170,6 +171,56 @@ fn exact_replay_running_dedup_and_capacity_are_bounded() {
         supervisor
             .submit_attempt(&retry_after_capacity)
             .expect("capacity released")
+            .disposition(),
+        SubmitAttemptDisposition::Accepted { .. }
+    ));
+}
+
+#[test]
+fn unauthenticated_savepoint_scope_is_stably_rejected_without_reserving_capacity() {
+    let epoch = daemon_epoch(0x22);
+    let capacity = ExecutorCapacity::new(1, 2, 4096, 8192, 64).expect("capacity");
+    let supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        capacity,
+    );
+    let mut client = ExecutorClient::new(supervisor);
+    let capture = savepoint_capture_request(
+        0x15,
+        0x35,
+        epoch,
+        resources(1, 2048, 4096),
+        campaign_fact(0x55),
+        configuration(0x56),
+    );
+
+    let rejected = client
+        .submit_attempt(&capture)
+        .expect("reject unauthenticated capture");
+    assert_eq!(
+        rejected.disposition(),
+        SubmitAttemptDisposition::Rejected {
+            reason: ExecutorRejection::Incompatible,
+        }
+    );
+    assert_eq!(
+        client
+            .submit_attempt(&capture)
+            .expect("replay exact rejection"),
+        rejected
+    );
+
+    let mut supervisor = client.into_inner();
+    assert_eq!(supervisor.active_count(), 0);
+    assert_eq!(supervisor.queued_count(), 0);
+
+    let semantic = request(0x16, 0x35, epoch, resources(1, 2048, 4096));
+    assert!(matches!(
+        supervisor
+            .submit_attempt(&semantic)
+            .expect("same semantic attempt remains admissible")
             .disposition(),
         SubmitAttemptDisposition::Accepted { .. }
     ));
@@ -1865,7 +1916,7 @@ fn accepted_execution(response: &SubmitAttemptResponse) -> ExecutionId {
 }
 
 fn execution_key(request: &SubmitAttemptRequest) -> AttemptExecutionKey {
-    AttemptExecutionKey::new(request.lineage(), request.attempt())
+    AttemptExecutionKey::for_request(request)
 }
 
 fn request(
@@ -1922,6 +1973,27 @@ fn capture_request(
     .expect("capture request")
 }
 
+fn savepoint_capture_request(
+    assignment_byte: u8,
+    attempt_byte: u8,
+    epoch: DaemonEpoch,
+    resources: AttemptResourceLimits,
+    request: CampaignFactId,
+    configuration: ConfigurationArtifactId,
+) -> SubmitAttemptRequest {
+    SubmitAttemptRequest::new_savepoint_capture(
+        AssignmentId::from_bytes([assignment_byte; 16]).expect("assignment"),
+        epoch,
+        lineage(0x11),
+        attempt(attempt_byte),
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        request,
+        configuration,
+    )
+    .expect("savepoint capture request")
+}
+
 fn lineage(byte: u8) -> CampaignLineageId {
     CampaignLineageId::parse(&typed_id(
         "crucible.campaign.lineage",
@@ -1947,6 +2019,14 @@ fn configuration(byte: u8) -> ConfigurationArtifactId {
         byte,
     ))
     .expect("configuration")
+}
+
+fn campaign_fact(byte: u8) -> CampaignFactId {
+    CampaignFactId::parse(&format!(
+        "crucible.campaign.fact@campaign-fact.10.{}",
+        encode_hex(&[byte; 32])
+    ))
+    .expect("campaign fact")
 }
 
 fn resources(vcpus: u32, resident: u64, disk: u64) -> AttemptResourceLimits {
