@@ -1662,13 +1662,13 @@ SubmitAttemptRequestV2 = version | assignment_id | daemon_epoch | lineage_id |
 resource_limits = maximum_vcpus | maximum_resident_bytes |
                   maximum_disk_bytes | maximum_execution_quanta
 
-SubmitAttemptResponseV2 = version | assignment_id | daemon_epoch | attempt_id |
+SubmitAttemptResponseV2/V3 = version | assignment_id | daemon_epoch | attempt_id |
                           request_digest | disposition
 
 GetAttemptExecutionRequestV2 = version | daemon_epoch | lineage_id | attempt_id |
                                execution_id | execution_basis_digest
 
-GetAttemptExecutionResponseV2 = version | daemon_epoch | attempt_id | execution_id |
+GetAttemptExecutionResponseV2/V3 = version | daemon_epoch | attempt_id | execution_id |
                                 request_digest | disposition
 
 ResumeAttemptExecutionRequestV2 = version | assignment_id | daemon_epoch |
@@ -1676,7 +1676,7 @@ ResumeAttemptExecutionRequestV2 = version | assignment_id | daemon_epoch |
                                   exact_checkpoint_id | resource_limits |
                                   retention_intent
 
-ResumeAttemptExecutionResponseV2 = version | assignment_id | daemon_epoch |
+ResumeAttemptExecutionResponseV2/V3 = version | assignment_id | daemon_epoch |
                                    attempt_id | prior_execution_id |
                                    exact_checkpoint_id | request_digest |
                                    disposition
@@ -1694,6 +1694,17 @@ CancelAttemptExecutionRequestV2 = version | daemon_epoch | lineage_id | attempt_
 CancelAttemptExecutionResponseV2 = version | daemon_epoch | attempt_id | execution_id |
                                    request_digest | disposition
 ```
+
+Version 3 of `GetAttemptExecutionResponse` adds the `TerminalFailure`
+disposition. Version 3 of the submit and resume responses adds the matching
+`TerminalFailure` rejection for a new assignment or resume that encounters the
+durable quarantine. The executor records that state in attempt-state record v7
+when a non-retryable worker failure stops an execution. The coordinator closes
+the admitted ordinal with `AttemptClosed(TerminalWorkerFailure)` in campaign
+fact v10. Campaign fact version 9 remains reserved for the extended-stop
+addition. This operational classification does not synthesize a guest
+observation or modeled stop outcome. Every older response disposition and
+campaign closure reason retains its prior schema version and bytes.
 
 The canonical `AttemptId` names the immutable `Attempt` record and is itself
 the execution specification; the protocol deliberately does not create a
@@ -1715,7 +1726,7 @@ already-running(execution ID)
 already-paused(execution ID, exact-checkpoint ID)
 already-completed(observation ID)
 rejected(incompatible | backpressure | unavailable-input | unauthorized |
-         conflicting-assignment)
+         conflicting-assignment | terminal-failure)
 ```
 
 Exact retry of one assignment ID and byte-identical request reproduces its
@@ -2009,13 +2020,16 @@ limits and retention intent, but excludes assignment and daemon-epoch
 identities. Restart therefore reads only requested and active IDs; it does not
 load assignment history into memory. The in-memory ledger implements the
 identical trait only for fake components and tests.
-The version-6 attempt-state reader retains strict read compatibility for
-versions 1 through 5. Only versions 5 and 6 may encode
+The version-7 attempt-state reader retains strict read compatibility for
+versions 1 through 6. Only versions 5 through 7 may encode
 `checkpoint-promoting`; version 6 additionally retains the exact resource and
 retention basis in `paused` and `checkpoint-promoting` records. A legacy pause
 without that basis remains a durable GC root but cannot launch a new guarded
 comparison after restart. A legacy staged pair remains discoverable because a
 complete replacement can be authenticated and reconciled without QEMU.
+Version 7 adds the terminal-worker-failure state, which retains its exact
+execution basis and prevents submission or resume from starting another
+incarnation.
 
 `checkpoint-publishing` and `paused` records are durable GC roots for their
 exact output checkpoint IDs. `checkpoint-promoting` retains both its raw source
@@ -2206,6 +2220,10 @@ means no eligible executor remains and atomically publishes the exact
 `AttemptClosed(PermanentlyIncompatible)` ordinal disposition. That transition
 is replayable before staleness, excludes the attempt from future claim pages,
 and conflicts with modeled observation publication.
+An executor's durable `terminal-failure` status or rejection instead publishes
+`AttemptClosed(TerminalWorkerFailure)`. It is independently replayable across
+coordinator and executor restart and cannot be reclassified as incompatibility,
+cancellation, a modeled observation, or a retryable assignment.
 
 The supervisor actor takes at most one queued assignment through a linear token
 and releases its mutable state before guest execution, candidate preflight, and

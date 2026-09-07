@@ -62,6 +62,51 @@ impl ExecutorResumeService for CompletingExecutor {
     }
 }
 
+struct TerminalExecutor {
+    requests: Vec<SubmitAttemptRequest>,
+    status_requests: Vec<GetAttemptExecutionRequest>,
+    execution: ExecutionId,
+}
+
+impl ExecutorService for TerminalExecutor {
+    type Error = &'static str;
+
+    fn submit_attempt(
+        &mut self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<SubmitAttemptResponse, Self::Error> {
+        self.requests.push(request.clone());
+        SubmitAttemptResponse::new(
+            request,
+            SubmitAttemptDisposition::Accepted {
+                execution: self.execution,
+            },
+        )
+        .map_err(|_| "response encoding")
+    }
+}
+
+impl ExecutorStatusService for TerminalExecutor {
+    fn get_attempt_execution(
+        &mut self,
+        request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        self.status_requests.push(request.clone());
+        GetAttemptExecutionResponse::new(request, GetAttemptExecutionDisposition::TerminalFailure)
+            .map_err(|_| "response encoding")
+    }
+}
+
+impl ExecutorResumeService for TerminalExecutor {
+    fn resume_attempt_execution(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        ResumeAttemptExecutionResponse::new(request, ResumeAttemptExecutionDisposition::NotCurrent)
+            .map_err(|_| "response encoding")
+    }
+}
+
 struct RejectingExecutor {
     reason: ExecutorRejection,
 }
@@ -2122,6 +2167,134 @@ fn campaign_executor_driver_resumes_the_exact_paused_root() {
         resumed.assignment(),
         service.submit_requests[0].assignment()
     );
+}
+
+#[test]
+fn campaign_executor_driver_closes_terminal_failure_without_reassignment() {
+    let (repository, lineage, policy) = fixture();
+    let (_, admitted, _) = admitted_observation_fixture(
+        &repository,
+        &lineage,
+        &policy,
+        "executor-driver-terminal-failure",
+    );
+    repository
+        .apply_control(
+            "executor-driver-terminal-failure",
+            &command(
+                "executor-driver-terminal-failure-resume",
+                admitted.new_snapshot,
+                CampaignControlAction::Resume,
+            ),
+        )
+        .expect("start campaign");
+    let repository = Arc::new(repository);
+    let resources =
+        AttemptResourceLimits::new(2, 512 * 1024 * 1024, 0, 50_000).expect("executor limits");
+    let service = TerminalExecutor {
+        requests: Vec::new(),
+        status_requests: Vec::new(),
+        execution: ExecutionId::from_bytes([0x93; 16]).expect("execution"),
+    };
+    let mut driver = CampaignExecutorDriver::new(
+        Arc::clone(&repository),
+        ExecutorClient::new(service),
+        DaemonEpoch::from_bytes([0x94; 16]).expect("daemon epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        10_000,
+    )
+    .expect("executor driver");
+
+    assert!(matches!(
+        driver
+            .step("executor-driver-terminal-failure", WorkerSlotId::new(0))
+            .expect("accept assignment"),
+        CampaignExecutorStepOutcome::Running {
+            attempt,
+            newly_accepted: true,
+            ..
+        } if attempt == admitted.attempt
+    ));
+    let closed = driver
+        .step("executor-driver-terminal-failure", WorkerSlotId::new(0))
+        .expect("close terminal attempt");
+    let CampaignExecutorStepOutcome::Closed(closed) = closed else {
+        panic!("terminal failure should close the attempt");
+    };
+    assert_eq!(closed.attempt, admitted.attempt);
+    assert_eq!(
+        closed.disposition,
+        NonModeledAttemptDisposition::TerminalWorkerFailure
+    );
+    assert_eq!(driver.reservation_count(), 0);
+
+    loop {
+        match driver
+            .step("executor-driver-terminal-failure", WorkerSlotId::new(0))
+            .expect("settle closed campaign")
+        {
+            CampaignExecutorStepOutcome::ScanPending { .. } => {}
+            CampaignExecutorStepOutcome::Idle { snapshot } => {
+                assert_eq!(snapshot, closed.new_snapshot);
+                break;
+            }
+            outcome => panic!("closed attempt must not be assigned again: {outcome:?}"),
+        }
+    }
+
+    let service = driver.into_executor().into_inner();
+    assert_eq!(service.requests.len(), 1);
+    assert_eq!(service.status_requests.len(), 1);
+    assert_eq!(
+        repository
+            .head("executor-driver-terminal-failure")
+            .expect("closed campaign head")
+            .snapshot_id(),
+        closed.new_snapshot
+    );
+
+    let mut restarted = CampaignExecutorDriver::new(
+        Arc::clone(&repository),
+        ExecutorClient::new(TerminalExecutor {
+            requests: Vec::new(),
+            status_requests: Vec::new(),
+            execution: ExecutionId::from_bytes([0x95; 16]).expect("restart execution"),
+        }),
+        DaemonEpoch::from_bytes([0x96; 16]).expect("restart epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        1,
+    )
+    .expect("restart executor driver");
+    loop {
+        match restarted
+            .step("executor-driver-terminal-failure", WorkerSlotId::new(0))
+            .expect("rebuild closed campaign")
+        {
+            CampaignExecutorStepOutcome::ScanPending { .. } => {}
+            CampaignExecutorStepOutcome::Idle { snapshot } => {
+                assert_eq!(snapshot, closed.new_snapshot);
+                break;
+            }
+            outcome => panic!("restart must preserve terminal closure: {outcome:?}"),
+        }
+    }
+    let restarted_service = restarted.into_executor().into_inner();
+    assert!(restarted_service.requests.is_empty());
+    assert!(restarted_service.status_requests.is_empty());
+    let replay = repository
+        .close_attempt_non_modeled(
+            "executor-driver-terminal-failure",
+            closed.new_snapshot,
+            admitted.attempt,
+            NonModeledAttemptDisposition::TerminalWorkerFailure,
+        )
+        .expect("restart preserves the exact terminal closure reason");
+    assert!(replay.replayed);
+    assert_eq!(replay.disposition, closed.disposition);
 }
 
 #[test]

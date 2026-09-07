@@ -295,6 +295,14 @@ pub enum CampaignFact {
 }
 ```
 
+`NonModeledAttemptDisposition` distinguishes operator cancellation, permanent
+executor incompatibility, invalid input, authorization denial, and terminal
+worker failure. A terminal worker failure is an operational quarantine: it
+closes the admitted ordinal without manufacturing an observation or modeled
+stop outcome. Campaign fact v10 is used only for that new disposition. Version
+9 is reserved for the extended-stop addition, and older closure dispositions
+retain their version-2 bytes.
+
 New branch-request transitions use `BranchRequestAccepted`. Its immutable
 summary records the validated addressable source cardinality, the existing
 semantic edges and remaining candidates within the request's proposal-visible

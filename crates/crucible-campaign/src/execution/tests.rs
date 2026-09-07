@@ -139,6 +139,36 @@ fn submit_attempt_messages_are_strict_bounded_and_request_bound() {
         SubmitAttemptRequest::from_canonical_bytes(&request_bytes[..request_bytes.len() - 1]),
         Err(CampaignCodecError::Truncated)
     );
+
+    let terminal = SubmitAttemptResponse::new(
+        &request,
+        SubmitAttemptDisposition::Rejected {
+            reason: ExecutorRejection::TerminalFailure,
+        },
+    )
+    .expect("terminal submit response");
+    let terminal_bytes = terminal.canonical_bytes();
+    assert_eq!(
+        SubmitAttemptResponse::from_canonical_bytes_for(&request, &terminal_bytes)
+            .expect("terminal submit response decode"),
+        terminal
+    );
+    let mut terminal_as_v2 = terminal_bytes;
+    terminal_as_v2[..4].copy_from_slice(&2_u32.to_be_bytes());
+    assert_eq!(
+        SubmitAttemptResponse::from_canonical_bytes(&terminal_as_v2),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "submit attempt response schema/disposition mismatch"
+        })
+    );
+    let mut accepted_as_v3 = response_bytes;
+    accepted_as_v3[..4].copy_from_slice(&3_u32.to_be_bytes());
+    assert_eq!(
+        SubmitAttemptResponse::from_canonical_bytes(&accepted_as_v3),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "submit attempt response schema/disposition mismatch"
+        })
+    );
 }
 
 #[test]
@@ -207,6 +237,24 @@ fn get_attempt_execution_messages_are_strict_and_exact_request_bound() {
         Err(CampaignCodecError::UnknownTag {
             kind: "get-attempt-execution-disposition",
             tag: 0xff
+        })
+    );
+
+    let terminal =
+        GetAttemptExecutionResponse::new(&request, GetAttemptExecutionDisposition::TerminalFailure)
+            .expect("terminal status response");
+    let terminal_bytes = terminal.canonical_bytes();
+    assert_eq!(
+        GetAttemptExecutionResponse::from_canonical_bytes_for(&request, &terminal_bytes)
+            .expect("terminal status decode"),
+        terminal
+    );
+    let mut terminal_as_v2 = terminal_bytes;
+    terminal_as_v2[..4].copy_from_slice(&2_u32.to_be_bytes());
+    assert_eq!(
+        GetAttemptExecutionResponse::from_canonical_bytes(&terminal_as_v2),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "get attempt execution response schema/disposition mismatch"
         })
     );
 }
@@ -286,6 +334,36 @@ fn resume_attempt_execution_messages_bind_the_exact_paused_root() {
         Err(CampaignCodecError::UnknownTag {
             kind: "resume-attempt-execution-disposition",
             tag: 0xff
+        })
+    );
+
+    let terminal = ResumeAttemptExecutionResponse::new(
+        &request,
+        ResumeAttemptExecutionDisposition::Rejected {
+            reason: ExecutorRejection::TerminalFailure,
+        },
+    )
+    .expect("terminal resume response");
+    let terminal_bytes = terminal.canonical_bytes();
+    assert_eq!(
+        ResumeAttemptExecutionResponse::from_canonical_bytes_for(&request, &terminal_bytes)
+            .expect("terminal resume response decode"),
+        terminal
+    );
+    let mut terminal_as_v2 = terminal_bytes;
+    terminal_as_v2[..4].copy_from_slice(&2_u32.to_be_bytes());
+    assert_eq!(
+        ResumeAttemptExecutionResponse::from_canonical_bytes(&terminal_as_v2),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "resume attempt execution response schema/disposition mismatch"
+        })
+    );
+    let mut accepted_as_v3 = response_bytes;
+    accepted_as_v3[..4].copy_from_slice(&3_u32.to_be_bytes());
+    assert_eq!(
+        ResumeAttemptExecutionResponse::from_canonical_bytes(&accepted_as_v3),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "resume attempt execution response schema/disposition mismatch"
         })
     );
 }

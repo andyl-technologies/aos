@@ -24,6 +24,7 @@ use crate::{
     CompletionOutcome, ExactCheckpointStore, ExactCheckpointStoreError, ExecutionCancellation,
     ExecutionCheckpointRequest, LocalExecutorError, LocalExecutorSupervisor,
     ObservationPublicationOutcome, PreparedAttemptCheckpoint, QueuedAttempt,
+    TerminalFailureOutcome,
 };
 
 /// Fully authenticated discovery or branch start supplied to an execution model.
@@ -1042,6 +1043,14 @@ pub enum AttemptWorkerReconcileError<W, L> {
         /// Durable operational cancellation race outcome.
         cancellation: CancellationOutcome,
     },
+    /// A non-retryable failure was durably retained without retry.
+    #[error("local attempt worker failed terminally without retry")]
+    TerminalStopped {
+        /// Stable worker-failure classification and diagnostic payload.
+        failure: AttemptWorkerFailure<W>,
+        /// Durable terminal-state publication race outcome.
+        terminal_failure: TerminalFailureOutcome,
+    },
     /// Failure-stop staging did not take ownership; retry with this exact token.
     #[error("local executor failure reconciliation is pending")]
     FailurePending {
@@ -1423,7 +1432,7 @@ where
             supervisor.requeue(queued);
             Err(AttemptWorkerReconcileError::Worker(failure))
         }
-        failure @ (AttemptWorkerFailure::Canceled(_) | AttemptWorkerFailure::Terminal(_)) => {
+        failure @ AttemptWorkerFailure::Canceled(_) => {
             let cancellation = supervisor.stage_and_reconcile_cancellation(&queued);
             let cancellation = match cancellation {
                 Ok(cancellation) => cancellation,
@@ -1438,6 +1447,23 @@ where
             Err(AttemptWorkerReconcileError::Stopped {
                 failure,
                 cancellation,
+            })
+        }
+        failure @ AttemptWorkerFailure::Terminal(_) => {
+            let terminal_failure = supervisor.stage_and_reconcile_terminal_failure(&queued);
+            let terminal_failure = match terminal_failure {
+                Ok(terminal_failure) => terminal_failure,
+                Err(source) => {
+                    return Err(AttemptWorkerReconcileError::FailurePending {
+                        queued: Box::new(queued),
+                        failure,
+                        source,
+                    });
+                }
+            };
+            Err(AttemptWorkerReconcileError::TerminalStopped {
+                failure,
+                terminal_failure,
             })
         }
     }

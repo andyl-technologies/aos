@@ -302,6 +302,21 @@ impl<S> CampaignExecutorDriver<S> {
                 attempt: reservation.attempt(),
                 reason: ExecutorRejection::Unauthorized,
             }),
+            SubmitAttemptDisposition::Rejected {
+                reason: ExecutorRejection::TerminalFailure,
+            } => {
+                let expected = self.repository.head(campaign)?.snapshot_id();
+                let result = self.repository.close_attempt_non_modeled(
+                    campaign,
+                    expected,
+                    reservation.attempt(),
+                    NonModeledAttemptDisposition::TerminalWorkerFailure,
+                )?;
+                self.queue.release(reservation)?;
+                self.active_executions.remove(&worker_slot);
+                self.reset_scan();
+                Ok(CampaignExecutorStepOutcome::Closed(result))
+            }
             SubmitAttemptDisposition::Rejected { reason } => {
                 let disposition = NonModeledAttemptDisposition::PermanentlyIncompatible;
                 if reason != ExecutorRejection::Incompatible {
@@ -608,6 +623,19 @@ impl<S> CampaignExecutorDriver<S> {
                 self.reset_scan();
                 Ok(CampaignExecutorStepOutcome::Incorporated(result))
             }
+            GetAttemptExecutionDisposition::TerminalFailure => {
+                let expected = self.repository.head(campaign)?.snapshot_id();
+                let result = self.repository.close_attempt_non_modeled(
+                    campaign,
+                    expected,
+                    active.reservation.attempt(),
+                    NonModeledAttemptDisposition::TerminalWorkerFailure,
+                )?;
+                self.queue.release(active.reservation)?;
+                self.active_executions.remove(&worker_slot);
+                self.reset_scan();
+                Ok(CampaignExecutorStepOutcome::Closed(result))
+            }
             GetAttemptExecutionDisposition::Canceled
             | GetAttemptExecutionDisposition::NotCurrent => {
                 self.queue.release(active.reservation)?;
@@ -723,6 +751,21 @@ impl<S> CampaignExecutorDriver<S> {
                 attempt: reservation.attempt(),
                 reason: ExecutorRejection::Unauthorized,
             }),
+            ResumeAttemptExecutionDisposition::Rejected {
+                reason: ExecutorRejection::TerminalFailure,
+            } => {
+                let expected = self.repository.head(campaign)?.snapshot_id();
+                let result = self.repository.close_attempt_non_modeled(
+                    campaign,
+                    expected,
+                    reservation.attempt(),
+                    NonModeledAttemptDisposition::TerminalWorkerFailure,
+                )?;
+                self.queue.release(reservation)?;
+                self.active_executions.remove(&worker_slot);
+                self.reset_scan();
+                Ok(CampaignExecutorStepOutcome::Closed(result))
+            }
             ResumeAttemptExecutionDisposition::Rejected { reason } => {
                 if reason != ExecutorRejection::Incompatible {
                     return Ok(CampaignExecutorStepOutcome::Blocked {

@@ -17,6 +17,20 @@ const PIN_COMMAND_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 5;
 const CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 6;
 const BRANCH_ACCEPTANCE_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 7;
 const DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 8;
+const TERMINAL_WORKER_FAILURE_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 10;
+
+#[derive(Clone, Copy)]
+enum CampaignFactDecodeExtension {
+    None,
+    Derivation,
+    CreditedObservation,
+    PinCommand,
+    ObjectiveEvaluation,
+    BranchAcceptance,
+    DiscoveryRequest,
+    TerminalWorkerFailure,
+    All,
+}
 
 /// Durable user intent projected from campaign accounting facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -566,6 +580,8 @@ pub enum NonModeledAttemptDisposition {
     InvalidInput,
     /// Policy permanently forbids the attempt from executing.
     Unauthorized,
+    /// A non-retryable worker failure quarantined this admitted attempt.
+    TerminalWorkerFailure,
 }
 
 impl Canonical for NonModeledAttemptDisposition {
@@ -575,6 +591,7 @@ impl Canonical for NonModeledAttemptDisposition {
             Self::PermanentlyIncompatible => 1,
             Self::InvalidInput => 2,
             Self::Unauthorized => 3,
+            Self::TerminalWorkerFailure => 4,
         });
     }
 
@@ -584,6 +601,7 @@ impl Canonical for NonModeledAttemptDisposition {
             1 => Ok(Self::PermanentlyIncompatible),
             2 => Ok(Self::InvalidInput),
             3 => Ok(Self::Unauthorized),
+            4 => Ok(Self::TerminalWorkerFailure),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "non-modeled-attempt-disposition",
                 tag,
@@ -661,6 +679,10 @@ impl CampaignFact {
             Self::ObjectiveEvaluationPublished(_) => CAMPAIGN_FACT_SCHEMA_VERSION,
             Self::BranchRequestAccepted { .. } => BRANCH_ACCEPTANCE_CAMPAIGN_FACT_SCHEMA_VERSION,
             Self::DiscoveryRequested(_) => DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION,
+            Self::AttemptClosed {
+                disposition: NonModeledAttemptDisposition::TerminalWorkerFailure,
+                ..
+            } => TERMINAL_WORKER_FAILURE_CAMPAIGN_FACT_SCHEMA_VERSION,
             _ => LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION,
         }
     }
@@ -696,13 +718,14 @@ impl CampaignFact {
             fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
                 let version = u32::decode(decoder)?;
                 match version {
-                    LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION => CampaignFact::decode_versioned(
-                        decoder, false, false, false, false, false, false,
-                    )
-                    .map(|fact| Self { version, fact }),
+                    LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION => {
+                        CampaignFact::decode_versioned(decoder, CampaignFactDecodeExtension::None)
+                            .map(|fact| Self { version, fact })
+                    }
                     DERIVATION_CAMPAIGN_FACT_SCHEMA_VERSION => {
                         let fact = CampaignFact::decode_versioned(
-                            decoder, true, false, false, false, false, false,
+                            decoder,
+                            CampaignFactDecodeExtension::Derivation,
                         )?;
                         if !matches!(fact, CampaignFact::CampaignDerived(_)) {
                             return Err(CampaignCodecError::InvalidValue {
@@ -713,7 +736,8 @@ impl CampaignFact {
                     }
                     CREDITED_OBSERVATION_CAMPAIGN_FACT_SCHEMA_VERSION => {
                         let fact = CampaignFact::decode_versioned(
-                            decoder, false, true, false, false, false, false,
+                            decoder,
+                            CampaignFactDecodeExtension::CreditedObservation,
                         )?;
                         if !matches!(fact, CampaignFact::ObservationCredited(_)) {
                             return Err(CampaignCodecError::InvalidValue {
@@ -724,7 +748,8 @@ impl CampaignFact {
                     }
                     PIN_COMMAND_CAMPAIGN_FACT_SCHEMA_VERSION => {
                         let fact = CampaignFact::decode_versioned(
-                            decoder, false, false, true, false, false, false,
+                            decoder,
+                            CampaignFactDecodeExtension::PinCommand,
                         )?;
                         if !matches!(fact, CampaignFact::PinCommandAccepted(_)) {
                             return Err(CampaignCodecError::InvalidValue {
@@ -735,7 +760,8 @@ impl CampaignFact {
                     }
                     CAMPAIGN_FACT_SCHEMA_VERSION => {
                         let fact = CampaignFact::decode_versioned(
-                            decoder, false, false, false, true, false, false,
+                            decoder,
+                            CampaignFactDecodeExtension::ObjectiveEvaluation,
                         )?;
                         if !matches!(fact, CampaignFact::ObjectiveEvaluationPublished(_)) {
                             return Err(CampaignCodecError::InvalidValue {
@@ -746,7 +772,8 @@ impl CampaignFact {
                     }
                     BRANCH_ACCEPTANCE_CAMPAIGN_FACT_SCHEMA_VERSION => {
                         let fact = CampaignFact::decode_versioned(
-                            decoder, false, false, false, false, true, false,
+                            decoder,
+                            CampaignFactDecodeExtension::BranchAcceptance,
                         )?;
                         if !matches!(fact, CampaignFact::BranchRequestAccepted { .. }) {
                             return Err(CampaignCodecError::InvalidValue {
@@ -757,9 +784,28 @@ impl CampaignFact {
                     }
                     DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION => {
                         let fact = CampaignFact::decode_versioned(
-                            decoder, false, false, false, false, false, true,
+                            decoder,
+                            CampaignFactDecodeExtension::DiscoveryRequest,
                         )?;
                         if !matches!(fact, CampaignFact::DiscoveryRequested(_)) {
+                            return Err(CampaignCodecError::InvalidValue {
+                                reason: "campaign fact variant requires its original schema version",
+                            });
+                        }
+                        Ok(Self { version, fact })
+                    }
+                    TERMINAL_WORKER_FAILURE_CAMPAIGN_FACT_SCHEMA_VERSION => {
+                        let fact = CampaignFact::decode_versioned(
+                            decoder,
+                            CampaignFactDecodeExtension::TerminalWorkerFailure,
+                        )?;
+                        if !matches!(
+                            fact,
+                            CampaignFact::AttemptClosed {
+                                disposition: NonModeledAttemptDisposition::TerminalWorkerFailure,
+                                ..
+                            }
+                        ) {
                             return Err(CampaignCodecError::InvalidValue {
                                 reason: "campaign fact variant requires its original schema version",
                             });
@@ -878,19 +924,14 @@ impl Canonical for CampaignFact {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        Self::decode_versioned(decoder, true, true, true, true, true, true)
+        Self::decode_versioned(decoder, CampaignFactDecodeExtension::All)
     }
 }
 
 impl CampaignFact {
     fn decode_versioned(
         decoder: &mut Decoder<'_>,
-        derivation_supported: bool,
-        credited_observation_supported: bool,
-        pin_command_supported: bool,
-        objective_evaluation_supported: bool,
-        branch_acceptance_supported: bool,
-        discovery_request_supported: bool,
+        extension: CampaignFactDecodeExtension,
     ) -> Result<Self, CampaignCodecError> {
         match decoder.u8()? {
             0 => Ok(Self::ChoiceOpportunityDiscovered {
@@ -908,28 +949,70 @@ impl CampaignFact {
             8 => BudgetGrant::decode(decoder).map(Self::BudgetGranted),
             9 => ControlRequest::decode(decoder).map(Self::ControlRequested),
             10 => PinChange::decode(decoder).map(Self::PinChanged),
-            11 => Ok(Self::AttemptClosed {
-                attempt: AttemptId::decode(decoder)?,
-                ordinal: AdmissionOrdinal::decode(decoder)?,
-                disposition: NonModeledAttemptDisposition::decode(decoder)?,
-            }),
-            12 if derivation_supported => {
+            11 => {
+                let attempt = AttemptId::decode(decoder)?;
+                let ordinal = AdmissionOrdinal::decode(decoder)?;
+                let disposition = NonModeledAttemptDisposition::decode(decoder)?;
+                if disposition == NonModeledAttemptDisposition::TerminalWorkerFailure
+                    && !matches!(
+                        extension,
+                        CampaignFactDecodeExtension::TerminalWorkerFailure
+                            | CampaignFactDecodeExtension::All
+                    )
+                {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "terminal worker failure disposition requires campaign fact v10",
+                    });
+                }
+                Ok(Self::AttemptClosed {
+                    attempt,
+                    ordinal,
+                    disposition,
+                })
+            }
+            12 if matches!(
+                extension,
+                CampaignFactDecodeExtension::Derivation | CampaignFactDecodeExtension::All
+            ) =>
+            {
                 CampaignDerivation::decode(decoder).map(Self::CampaignDerived)
             }
-            13 if credited_observation_supported => {
+            13 if matches!(
+                extension,
+                CampaignFactDecodeExtension::CreditedObservation | CampaignFactDecodeExtension::All
+            ) =>
+            {
                 ObservationId::decode(decoder).map(Self::ObservationCredited)
             }
-            14 if pin_command_supported => {
+            14 if matches!(
+                extension,
+                CampaignFactDecodeExtension::PinCommand | CampaignFactDecodeExtension::All
+            ) =>
+            {
                 PinRequest::decode(decoder).map(Self::PinCommandAccepted)
             }
-            15 if objective_evaluation_supported => {
+            15 if matches!(
+                extension,
+                CampaignFactDecodeExtension::ObjectiveEvaluation | CampaignFactDecodeExtension::All
+            ) =>
+            {
                 ObjectiveEvaluationId::decode(decoder).map(Self::ObjectiveEvaluationPublished)
             }
-            16 if branch_acceptance_supported => Ok(Self::BranchRequestAccepted {
-                request: BranchRequestId::decode(decoder)?,
-                summary: BranchAcceptanceSummary::decode(decoder)?,
-            }),
-            17 if discovery_request_supported => {
+            16 if matches!(
+                extension,
+                CampaignFactDecodeExtension::BranchAcceptance | CampaignFactDecodeExtension::All
+            ) =>
+            {
+                Ok(Self::BranchRequestAccepted {
+                    request: BranchRequestId::decode(decoder)?,
+                    summary: BranchAcceptanceSummary::decode(decoder)?,
+                })
+            }
+            17 if matches!(
+                extension,
+                CampaignFactDecodeExtension::DiscoveryRequest | CampaignFactDecodeExtension::All
+            ) =>
+            {
                 DiscoveryRequest::decode(decoder).map(Self::DiscoveryRequested)
             }
             tag => Err(CampaignCodecError::UnknownTag {

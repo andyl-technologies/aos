@@ -273,7 +273,8 @@ where
                 | AttemptRuntimeState::Paused { .. }
                 | AttemptRuntimeState::Publishing { .. }
                 | AttemptRuntimeState::Completed { .. }
-                | AttemptRuntimeState::Canceled { .. } => {}
+                | AttemptRuntimeState::Canceled { .. }
+                | AttemptRuntimeState::TerminalFailure { .. } => {}
             })
             .map_err(LocalExecutorError::Ledger)
     }
@@ -351,7 +352,8 @@ where
             | AttemptRuntimeState::CheckpointPromoting { .. }
             | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
-            | AttemptRuntimeState::Canceled { .. } => {
+            | AttemptRuntimeState::Canceled { .. }
+            | AttemptRuntimeState::TerminalFailure { .. } => {
                 Ok(CheckpointPromotionStageOutcome::NotCurrent)
             }
         }
@@ -417,7 +419,8 @@ where
             | AttemptRuntimeState::CheckpointPromoting { .. }
             | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
-            | AttemptRuntimeState::Canceled { .. } => {
+            | AttemptRuntimeState::Canceled { .. }
+            | AttemptRuntimeState::TerminalFailure { .. } => {
                 Ok(CheckpointPromotionCompletionOutcome::NotCurrent)
             }
         }
@@ -483,7 +486,8 @@ where
             | AttemptRuntimeState::CheckpointPromoting { .. }
             | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
-            | AttemptRuntimeState::Canceled { .. } => {
+            | AttemptRuntimeState::Canceled { .. }
+            | AttemptRuntimeState::TerminalFailure { .. } => {
                 Ok(CheckpointPromotionCompletionOutcome::NotCurrent)
             }
         }

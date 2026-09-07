@@ -626,7 +626,9 @@ pub(super) fn operational_phase(
         AttemptRuntimeState::CheckpointPromoting { .. } => {
             Ok(Some(OperationalPhase::Checkpointing))
         }
-        AttemptRuntimeState::Completed { .. } => Ok(None),
+        AttemptRuntimeState::Completed { .. } | AttemptRuntimeState::TerminalFailure { .. } => {
+            Ok(None)
+        }
         AttemptRuntimeState::Canceled {
             daemon_epoch: epoch,
             ..

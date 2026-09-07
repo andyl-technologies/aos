@@ -326,6 +326,23 @@ fn current_checkpoint_promotion_basis_must_match_the_execution_digest() {
 }
 
 #[test]
+fn terminal_failure_state_round_trips_through_current_ledger_format() {
+    let request = request(0x1c, 0x3c, 1);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let state = AttemptRuntimeState::TerminalFailure {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x5c),
+    };
+
+    assert_eq!(
+        decode_attempt_state(&encode_attempt_state(key, state)).expect("decode terminal state"),
+        (key, state)
+    );
+}
+
+#[test]
 fn resumed_origin_round_trips_and_retains_input_and_output_roots() {
     let directory = tempfile::tempdir().expect("ledger tempdir");
     let request = request(0x19, 0x39, 1);
@@ -869,6 +886,47 @@ fn directory_ledger_reads_legacy_v5_promotion_without_execution_basis_details() 
     fs::create_dir_all(path.parent().expect("attempt-state parent"))
         .expect("create legacy attempt-state parent");
     fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V5))
+        .expect("write legacy attempt state");
+
+    assert_eq!(
+        ledger.load_attempt(key).expect("load legacy attempt state"),
+        Some(state)
+    );
+}
+
+#[test]
+fn directory_ledger_reads_legacy_v6_state_with_execution_basis_details() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let request = request(0x1d, 0x3d, 1);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let origin = AttemptExecutionOrigin::Initial;
+    let promotion_basis =
+        CheckpointPromotionExecutionBasis::new(request.resources(), request.retention());
+    let state = AttemptRuntimeState::Paused {
+        execution_basis: request.execution_basis_digest(),
+        origin,
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x5d),
+        checkpoint: checkpoint(0x7d),
+        promotion_basis: Some(promotion_basis),
+    };
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
+
+    let mut payload = Vec::with_capacity(512);
+    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V6);
+    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
+    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
+    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
+    encode_attempt_origin(&mut payload, origin);
+    payload.push(6);
+    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
+    payload.extend_from_slice(&execution(0x5d).as_bytes());
+    push_bytes(&mut payload, checkpoint(0x7d).to_text().as_bytes());
+    encode_checkpoint_promotion_basis(&mut payload, Some(promotion_basis));
+    let path = ledger.attempt_path(key);
+    fs::create_dir_all(path.parent().expect("attempt-state parent"))
+        .expect("create legacy attempt-state parent");
+    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V6))
         .expect("write legacy attempt state");
 
     assert_eq!(

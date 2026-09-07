@@ -826,7 +826,7 @@ fn unsolicited_checkpoint_fails_closed_without_publication() {
         service
             .get_attempt_execution(&status_request)
             .is_ok_and(|response| {
-                response.disposition() == GetAttemptExecutionDisposition::Canceled
+                response.disposition() == GetAttemptExecutionDisposition::TerminalFailure
             })
     });
 
