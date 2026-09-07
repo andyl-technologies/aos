@@ -123,6 +123,7 @@ pub struct GuardedDefaultCampaignRunRequest {
     initial_schedule: Schedule,
     initial_replay_closure: Option<GuardedCampaignReplayClosure>,
     discovery_stop: StopCondition,
+    collect_watch_frames: bool,
 }
 
 impl GuardedDefaultCampaignRunRequest {
@@ -148,6 +149,7 @@ impl GuardedDefaultCampaignRunRequest {
             initial_schedule: Schedule::empty(),
             initial_replay_closure: None,
             discovery_stop: StopCondition::NextChoice,
+            collect_watch_frames: false,
         }
     }
 
@@ -175,6 +177,13 @@ impl GuardedDefaultCampaignRunRequest {
     #[must_use]
     pub fn with_discovery_stop(mut self, stop: StopCondition) -> Self {
         self.discovery_stop = stop;
+        self
+    }
+
+    /// Retains bounded authenticated campaign progress frames for CLI watch output.
+    #[must_use]
+    pub const fn with_watch_frames(mut self) -> Self {
+        self.collect_watch_frames = true;
         self
     }
 }
@@ -207,6 +216,55 @@ impl GuardedDefaultCampaignObservation {
     }
 }
 
+/// One authenticated campaign head paired with its exact execution boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuardedDefaultCampaignWatchFrame {
+    campaign: CampaignName,
+    snapshot: CampaignSnapshotId,
+    state: CampaignState,
+    frontier: crucible::VirtualTime,
+    quanta: u64,
+    observation: Option<ObservationId>,
+}
+
+impl GuardedDefaultCampaignWatchFrame {
+    /// Returns the campaign whose authenticated head produced this frame.
+    #[must_use]
+    pub const fn campaign(&self) -> &CampaignName {
+        &self.campaign
+    }
+
+    /// Returns the exact authenticated campaign snapshot observed by the owner.
+    #[must_use]
+    pub const fn snapshot(&self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the lifecycle state projected from the exact snapshot.
+    #[must_use]
+    pub const fn state(&self) -> CampaignState {
+        self.state
+    }
+
+    /// Returns the scheduler frontier recorded when the frame was captured.
+    #[must_use]
+    pub const fn frontier(&self) -> crucible::VirtualTime {
+        self.frontier
+    }
+
+    /// Returns the absolute scheduler-quantum coordinate at that frontier.
+    #[must_use]
+    pub const fn quanta(&self) -> u64 {
+        self.quanta
+    }
+
+    /// Returns the incorporated observation that advanced execution, if any.
+    #[must_use]
+    pub const fn observation(&self) -> Option<ObservationId> {
+        self.observation
+    }
+}
+
 /// Bounded immutable result of one completed guarded default campaign.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GuardedDefaultCampaignRun {
@@ -217,6 +275,7 @@ pub struct GuardedDefaultCampaignRun {
     terminal_configuration: Configuration,
     branch_request_count: usize,
     state_updates: Vec<CampaignState>,
+    watch_frames: Vec<GuardedDefaultCampaignWatchFrame>,
     evidence: QemuAttemptExecutionEvidenceSnapshot,
     replay_closure: GuardedCampaignReplayClosure,
 }
@@ -263,6 +322,12 @@ impl GuardedDefaultCampaignRun {
     #[must_use]
     pub fn state_updates(&self) -> &[CampaignState] {
         &self.state_updates
+    }
+
+    /// Returns authenticated campaign heads and their captured execution boundaries.
+    #[must_use]
+    pub fn watch_frames(&self) -> &[GuardedDefaultCampaignWatchFrame] {
+        &self.watch_frames
     }
 
     /// Returns the bounded scheduler-authored evidence from the terminal attempt.
@@ -563,6 +628,26 @@ where
     )
     .map_err(GuardedDefaultCampaignRunError::SupervisorConfiguration)?;
 
+    let mut watch_frames = Vec::new();
+    if request.collect_watch_frames {
+        let initial_evidence = execution_evidence
+            .snapshot()
+            .map_err(GuardedDefaultCampaignRunError::Evidence)?;
+        watch_frames.push(campaign_watch_frame(
+            &repository,
+            &campaign,
+            created.snapshot(),
+            &initial_evidence,
+            None,
+        )?);
+        watch_frames.push(campaign_watch_frame(
+            &repository,
+            &campaign,
+            running,
+            &initial_evidence,
+            None,
+        )?);
+    }
     let execution = drive_default_campaign(
         DefaultRunContext {
             repository: &repository,
@@ -573,6 +658,8 @@ where
             policy: policy.id().map_err(GuardedDefaultCampaignRunError::Codec)?,
         },
         vec![created_state, running_state],
+        watch_frames,
+        request.collect_watch_frames,
         &mut supervisor,
     )?;
     materialize_result(
@@ -737,6 +824,7 @@ struct DefaultRunExecution {
     branch_request_count: usize,
     final_snapshot: CampaignSnapshotId,
     state_updates: Vec<CampaignState>,
+    watch_frames: Vec<GuardedDefaultCampaignWatchFrame>,
 }
 
 struct DefaultRunAcceptedObservation {
@@ -756,6 +844,8 @@ struct DefaultRunContext<'a, S> {
 fn drive_default_campaign<R, S>(
     context: DefaultRunContext<'_, S>,
     mut state_updates: Vec<CampaignState>,
+    mut watch_frames: Vec<GuardedDefaultCampaignWatchFrame>,
+    collect_watch_frames: bool,
     supervisor: &mut CampaignSupervisor<DefaultPlannerService, DefaultExecutorService<R>>,
 ) -> Result<DefaultRunExecution, GuardedDefaultCampaignRunError<R::Error>>
 where
@@ -781,12 +871,11 @@ where
         };
         let snapshot = result.new_snapshot;
         let observation_id = result.observation;
-        let virtual_time_ticks = context
+        let execution_boundary = context
             .execution_evidence
             .snapshot()
-            .map_err(GuardedDefaultCampaignRunError::Evidence)?
-            .frontier()
-            .ticks;
+            .map_err(GuardedDefaultCampaignRunError::Evidence)?;
+        let virtual_time_ticks = execution_boundary.frontier().ticks;
         let observation = context
             .repository
             .load_observation(observation_id)
@@ -795,6 +884,15 @@ where
             id: observation_id,
             virtual_time_ticks,
         });
+        if collect_watch_frames {
+            watch_frames.push(campaign_watch_frame(
+                context.repository,
+                context.campaign,
+                snapshot,
+                &execution_boundary,
+                Some(observation_id),
+            )?);
+        }
 
         if observation.stop() == &StopOutcome::Reached(StopCondition::NextChoice) {
             let opportunity_id = observation
@@ -857,14 +955,47 @@ where
                 .state(context.campaign.as_str())
                 .map_err(GuardedDefaultCampaignRunError::Repository)?,
         );
+        if collect_watch_frames {
+            watch_frames.push(campaign_watch_frame(
+                context.repository,
+                context.campaign,
+                final_snapshot,
+                &execution_boundary,
+                None,
+            )?);
+        }
         return Ok(DefaultRunExecution {
             observations,
             branch_request_count,
             final_snapshot,
             state_updates,
+            watch_frames,
         });
     }
     Err(GuardedDefaultCampaignInvariantError::SupervisorStepLimit.into())
+}
+
+fn campaign_watch_frame<E>(
+    repository: &CampaignRepository,
+    campaign: &CampaignName,
+    snapshot: CampaignSnapshotId,
+    evidence: &QemuAttemptExecutionEvidenceSnapshot,
+    observation: Option<ObservationId>,
+) -> Result<GuardedDefaultCampaignWatchFrame, GuardedDefaultCampaignRunError<E>>
+where
+    E: Error + 'static,
+{
+    let state = repository
+        .state_at_snapshot(snapshot)
+        .map_err(GuardedDefaultCampaignRunError::Repository)?;
+    Ok(GuardedDefaultCampaignWatchFrame {
+        campaign: campaign.clone(),
+        snapshot,
+        state,
+        frontier: evidence.frontier(),
+        quanta: evidence.quanta(),
+        observation,
+    })
 }
 
 fn materialize_result<E>(
@@ -935,6 +1066,7 @@ where
         terminal_configuration,
         branch_request_count: execution.branch_request_count,
         state_updates: execution.state_updates,
+        watch_frames: execution.watch_frames,
         evidence,
         replay_closure,
     })

@@ -114,6 +114,15 @@ the backend's collected run evidence. Table output prints collected updates as
 human-readable `run-watch` lines. JSON and JSONL remain canonical event-log
 renderings and do not add a separate non-canonical status stream.
 
+The non-interactive local-QEMU `run` path reports authenticated campaign
+snapshots instead of session summaries. Each collected status retains the
+campaign name, exact snapshot identity, lifecycle state, scheduler frontier,
+absolute quantum coordinate, and any observation incorporated at that head.
+The CLI's synchronous backend contract buffers these statuses until the
+guarded owner returns; it does not promise terminal output before completion.
+A successful scenario-default run retains at most 65,540 status frames under
+the owner's fixed choice bound.
+
 ## Debug command
 
 `debug` accepts either an artifact/savepoint target or a running session:

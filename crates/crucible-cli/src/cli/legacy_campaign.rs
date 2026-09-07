@@ -14,7 +14,7 @@ use crucible_campaign::{AttemptResourceLimits, CampaignState, StopCondition, Sto
 use crucible_api as campaign_output_api;
 use crucible_daemon::qemu_campaign_lifecycle::{
     GuardedCampaignReplayClosure, GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest,
-    run_guarded_default_campaign,
+    GuardedDefaultCampaignWatchFrame, run_guarded_default_campaign,
 };
 
 pub(super) fn run_local_qemu_campaign_replay(
@@ -52,6 +52,11 @@ pub(super) fn run_local_qemu_campaign_replay(
     )
     .with_discovery_stop(guarded_discovery_stop(run_plan)?)
     .with_initial_replay(schedule, replay_closure);
+    let request = if run_plan.watch_streams_live_status {
+        request.with_watch_frames()
+    } else {
+        request
+    };
     let campaign = run_guarded_default_campaign(request)
         .map_err(|error| campaign_run_error("replay through shared campaign owner", error))?;
     let (status, terminal_outcome) = campaign_terminal_status(run_plan, &campaign)?;
@@ -63,7 +68,6 @@ pub(super) fn guarded_campaign_run_eligible(plan: &RunInvocationPlan) -> bool {
     guarded_discovery_stop(plan).is_ok()
         && plan.execution_mode == RunExecutionMode::ToCompletion
         && plan.save_policy == RunSavePolicy::Never
-        && !plan.watch_streams_live_status
         && plan.startup_commands == [SessionCommandKind::Start, SessionCommandKind::Continue]
         && plan.initial_control_commands == [SessionCommandKind::Query]
         && plan.accepted_interactive_commands.is_empty()
@@ -81,7 +85,7 @@ pub(super) fn run_local_qemu_campaign_workflow(
 ) -> Result<BackendCommandOutcome, CliError> {
     if !guarded_campaign_run_eligible(run_plan) {
         return Err(backend_error(
-            "the requested stop, budget, save, watch, or interactive mode does not have an exact campaign-backed QEMU adapter",
+            "the requested stop, budget, save, or interactive mode does not have an exact campaign-backed QEMU adapter",
         ));
     }
 
@@ -113,6 +117,11 @@ pub(super) fn run_local_qemu_campaign_workflow(
         resources,
     )
     .with_discovery_stop(guarded_discovery_stop(run_plan)?);
+    let request = if run_plan.watch_streams_live_status {
+        request.with_watch_frames()
+    } else {
+        request
+    };
     let campaign = run_guarded_default_campaign(request)
         .map_err(|error| campaign_run_error("execute shared campaign owner", error))?;
 
@@ -260,13 +269,15 @@ fn campaign_run_outcome(
         node: String::from("campaign"),
         kind: String::from("campaign_completed"),
         summary: format!(
-            "campaign={} snapshot={} observation={} configuration={} decisions={} defaults={}",
+            "campaign={} snapshot={} observation={} configuration={} decisions={} defaults={} frontier_ticks={} quanta={}",
             campaign.campaign().as_str(),
             campaign.final_snapshot(),
             terminal.id(),
             observation.child(),
             configuration.schedule.len(),
             campaign.branch_request_count(),
+            campaign.evidence().frontier().ticks,
+            campaign.evidence().quanta(),
         ),
     });
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
@@ -344,6 +355,15 @@ pub(super) fn campaign_run_report(
             })
         })
         .collect();
+    let watch_statuses = if run_plan.watch_streams_live_status {
+        campaign
+            .watch_frames()
+            .iter()
+            .map(|frame| campaign_watch_status(frame, campaign.final_snapshot(), terminal_outcome))
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(RunWorkflowReport {
         status,
         execution_owner: RunExecutionOwner::Campaign,
@@ -375,8 +395,29 @@ pub(super) fn campaign_run_report(
         execution_fingerprints: evidence.execution_fingerprints().to_vec(),
         resolved_effect_trace: evidence.resolved_effect_trace().map(ToOwned::to_owned),
         acknowledged_commands: Vec::new(),
-        watch_statuses: Vec::new(),
+        watch_statuses,
     })
+}
+
+fn campaign_watch_status(
+    frame: &GuardedDefaultCampaignWatchFrame,
+    final_snapshot: crucible_campaign::CampaignSnapshotId,
+    terminal_outcome: OutcomeKind,
+) -> String {
+    let outcome = (frame.snapshot() == final_snapshot).then_some(terminal_outcome);
+    let observation = frame
+        .observation()
+        .map(|observation| observation.to_string())
+        .unwrap_or_else(|| String::from("none"));
+    format!(
+        "state={}\tfrontier_ticks={}\tquanta={}\toutcome={}\tsavepoint=none\towner=campaign\tcampaign={}\tsnapshot={}\tobservation={observation}",
+        campaign_state_label(frame.state()),
+        frame.frontier().ticks,
+        frame.quanta(),
+        terminal_outcome_label(outcome),
+        frame.campaign().as_str(),
+        frame.snapshot(),
+    )
 }
 
 fn campaign_stop_label(stop: &StopOutcome) -> String {
@@ -536,7 +577,7 @@ mod tests {
 
         let mut plan = default.clone();
         plan.watch_streams_live_status = true;
-        assert!(!guarded_campaign_run_eligible(&plan));
+        assert!(guarded_campaign_run_eligible(&plan));
 
         let mut plan = default.clone();
         plan.startup_commands.pop();

@@ -124,7 +124,7 @@ Output-format values:
 | `--max-quanta <n>` | Optional | Stop at an exact scheduler-quantum boundary unless another terminal condition occurs first. |
 | `--interactive` | Off | Pause at genesis and read interactive commands from standard input. |
 | `--save-on <fail\|always\|never>` | Default `never` | Materialize an outcome savepoint only on failure, for every outcome, or never. |
-| `--watch` | Off | Collect live session-status updates alongside run evidence. |
+| `--watch` | Off | Collect authenticated campaign-head updates alongside local-QEMU run evidence; other backends collect session status. |
 
 `--save-on` values:
 

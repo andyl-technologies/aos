@@ -5,6 +5,7 @@
 // crucible-lint: allow panic-shortcut -- assertions localize failures in one hermetic VM flight.
 #![allow(clippy::disallowed_methods, clippy::expect_used, clippy::unwrap_used)]
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -48,6 +49,7 @@ fn public_default_run_executes_through_an_authenticated_campaign() -> Result<(),
         .arg(&artifact_dir)
         .arg("run")
         .arg(&scenario_path)
+        .arg("--watch")
         .arg("--campaign-deployment")
         .arg(required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?)
         .env("CRUCIBLE_RUN_STATE_ROOT", &run_state)
@@ -64,6 +66,100 @@ fn public_default_run_executes_through_an_authenticated_campaign() -> Result<(),
         .map(|entry| entry["summary"].as_str().unwrap_or_default())
         .collect::<Vec<_>>();
     assert_eq!(states, ["created", "running", "completed"]);
+    let watch_summaries = entries
+        .iter()
+        .filter(|entry| entry["kind"] == "run_watch_status")
+        .filter_map(|entry| entry["summary"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(watch_summaries.len(), 4);
+    assert!(watch_summaries[0].starts_with("state=created\tfrontier_ticks=0\tquanta=0"));
+    assert!(watch_summaries[1].starts_with("state=running\tfrontier_ticks=0\tquanta=0"));
+    assert!(watch_summaries[2].starts_with("state=running\t"));
+    assert!(watch_summaries[2].contains("\tobservation=crucible.campaign.observation@"));
+    assert!(watch_summaries[3].starts_with("state=completed\t"));
+    assert!(watch_summaries[3].contains("\toutcome=passed\t"));
+    assert!(watch_summaries[3].ends_with("\tobservation=none"));
+    let watch_frontiers = watch_summaries
+        .iter()
+        .map(|summary| {
+            summary_field(summary, "frontier_ticks")
+                .unwrap_or_default()
+                .parse::<u64>()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let watch_quanta = watch_summaries
+        .iter()
+        .map(|summary| {
+            summary_field(summary, "quanta")
+                .unwrap_or_default()
+                .parse::<u64>()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(watch_frontiers.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert!(watch_quanta.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert_eq!(watch_frontiers[2], watch_frontiers[3]);
+    assert_eq!(watch_quanta[2], watch_quanta[3]);
+    assert!(watch_quanta[2] > 0);
+    let watch_campaigns = watch_summaries
+        .iter()
+        .filter_map(|summary| {
+            summary
+                .split('\t')
+                .find_map(|field| field.strip_prefix("campaign="))
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(watch_campaigns.len(), 1);
+    assert!(
+        watch_campaigns
+            .first()
+            .is_some_and(|campaign| campaign.starts_with("legacy-run-"))
+    );
+    assert!(watch_summaries.iter().all(|summary| {
+        summary.contains("\towner=campaign\t")
+            && summary.contains("\tsnapshot=crucible.campaign.snapshot@")
+    }));
+    let incorporated_observation = summary_field(watch_summaries[2], "observation")
+        .ok_or("campaign watch frame omitted its incorporated observation")?;
+    let incorporated_entry = entries
+        .iter()
+        .find(|entry| {
+            entry["kind"] == "authenticated_observation"
+                && entry["summary"]
+                    .as_str()
+                    .is_some_and(|summary| summary.contains(incorporated_observation))
+        })
+        .ok_or("campaign watch observation was absent from authenticated output")?;
+    assert_eq!(
+        incorporated_entry["virtual_time"].as_u64(),
+        Some(watch_frontiers[2])
+    );
+    let completed_entry = entries
+        .iter()
+        .find(|entry| entry["kind"] == "campaign_completed")
+        .ok_or("campaign completion entry was absent")?;
+    let completed_summary = completed_entry["summary"]
+        .as_str()
+        .ok_or("campaign completion summary was not text")?;
+    assert_eq!(
+        summary_field(watch_summaries[3], "campaign"),
+        summary_field(completed_summary, "campaign")
+    );
+    assert_eq!(
+        summary_field(watch_summaries[3], "snapshot"),
+        summary_field(completed_summary, "snapshot")
+    );
+    assert_eq!(
+        summary_field(watch_summaries[2], "observation"),
+        summary_field(completed_summary, "observation")
+    );
+    assert_eq!(
+        summary_field(watch_summaries[3], "frontier_ticks"),
+        summary_field(completed_summary, "frontier_ticks")
+    );
+    assert_eq!(
+        summary_field(watch_summaries[3], "quanta"),
+        summary_field(completed_summary, "quanta")
+    );
     assert!(
         entries
             .iter()
@@ -90,6 +186,12 @@ fn public_default_run_executes_through_an_authenticated_campaign() -> Result<(),
 
     println!("\nlegacy_default_run_campaign=true");
     Ok(())
+}
+
+fn summary_field<'a>(summary: &'a str, name: &str) -> Option<&'a str> {
+    summary
+        .split_ascii_whitespace()
+        .find_map(|field| field.strip_prefix(name)?.strip_prefix('='))
 }
 
 #[test]
