@@ -74,7 +74,7 @@ fn public_campaign_store_flight_survives_gc_and_service_restart() -> Result<(), 
             .args(["--start-command", START_COMMAND]),
         "create and start imported campaign",
     )?;
-    assert_eq!(created["schema"], "crucible.cli.campaign-acceptance.v2");
+    assert_eq!(created["schema"], "crucible.cli.campaign-acceptance.v3");
     assert_eq!(created["campaign"], CAMPAIGN);
     assert_eq!(created["replayed"], false);
     assert_eq!(created["start"]["command"], START_COMMAND);
