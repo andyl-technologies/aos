@@ -5,6 +5,9 @@
 //! whenever ownership or any sampled generation changes during projection.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::error::Error;
+use std::fmt::{self, Write as _};
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -44,6 +47,9 @@ use crate::{
 };
 
 const MAX_PACKAGED_STATUS_ATTEMPT_RECORDS: usize = 65_536;
+pub(super) const MAX_PACKAGED_ATTEMPT_FAILURE_DIAGNOSTIC_BYTES: usize = 8 * 1024;
+const MAX_PACKAGED_ATTEMPT_FAILURE_SOURCES: usize = 16;
+const PACKAGED_ATTEMPT_FAILURE_TRUNCATION_SUFFIX: &str = "\n  ... diagnostic truncated";
 
 pub(super) struct PackagedQemuOperationalStatusProvider {
     pub(super) repository: Arc<CampaignRepository>,
@@ -89,6 +95,11 @@ pub(super) struct PackagedAttemptLifecycleLease {
 pub(super) struct PackagedStatusAttemptWorker<W> {
     pub(super) inner: W,
     pub(super) lifecycles: PackagedWorldLifecycleTracker,
+}
+
+struct BoundedAttemptFailureDiagnostic {
+    text: String,
+    truncated: bool,
 }
 
 pub(super) struct PackagedStatusLifecycleFactory<F> {
@@ -240,17 +251,95 @@ impl Drop for PackagedAttemptLifecycleLease {
     }
 }
 
+impl BoundedAttemptFailureDiagnostic {
+    fn new() -> Self {
+        Self {
+            text: String::new(),
+            truncated: false,
+        }
+    }
+
+    fn finish(mut self) -> String {
+        if self.truncated {
+            self.text
+                .push_str(PACKAGED_ATTEMPT_FAILURE_TRUNCATION_SUFFIX);
+        }
+        self.text
+    }
+}
+
+impl fmt::Write for BoundedAttemptFailureDiagnostic {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        if self.truncated {
+            return Ok(());
+        }
+
+        let retained_limit = MAX_PACKAGED_ATTEMPT_FAILURE_DIAGNOSTIC_BYTES
+            .saturating_sub(PACKAGED_ATTEMPT_FAILURE_TRUNCATION_SUFFIX.len());
+        let available = retained_limit.saturating_sub(self.text.len());
+        if value.len() <= available {
+            self.text.push_str(value);
+            return Ok(());
+        }
+
+        let mut boundary = available.min(value.len());
+        while boundary > 0 && !value.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        self.text.push_str(&value[..boundary]);
+        self.truncated = true;
+        Ok(())
+    }
+}
+
+/// Renders one bounded operational diagnostic without changing canonical evidence.
+// crucible-lint: allow erased-error -- diagnostic formatting follows Error::source while preserving the typed worker failure.
+pub(super) fn packaged_attempt_failure_diagnostic(
+    execution: ExecutionId,
+    failure: &(dyn Error + 'static),
+) -> String {
+    let mut diagnostic = BoundedAttemptFailureDiagnostic::new();
+    let _ = write!(diagnostic, "packaged campaign execution ");
+    for byte in execution.as_bytes() {
+        let _ = write!(diagnostic, "{byte:02x}");
+    }
+    let _ = write!(diagnostic, " failed: {failure}");
+
+    let mut source = failure.source();
+    for depth in 1..=MAX_PACKAGED_ATTEMPT_FAILURE_SOURCES {
+        let Some(current) = source else {
+            return diagnostic.finish();
+        };
+        let _ = write!(diagnostic, "\n  caused by [{depth}]: {current}");
+        source = current.source();
+    }
+
+    if source.is_some() {
+        let _ = write!(
+            diagnostic,
+            "\n  ... source chain truncated after {MAX_PACKAGED_ATTEMPT_FAILURE_SOURCES} causes"
+        );
+    }
+    diagnostic.finish()
+}
+
 impl<W> LocalAttemptWorker for PackagedStatusAttemptWorker<W>
 where
     W: LocalAttemptWorker,
+    W::Error: Error + 'static,
 {
     type Error = W::Error;
 
     fn execute(&mut self, queued: QueuedAttempt) -> AttemptWorkResult<Self::Error> {
-        let lease = self.lifecycles.begin(queued.execution());
-        let result = self.inner.execute(queued);
+        let execution = queued.execution();
+        let lease = self.lifecycles.begin(execution);
+        let (queued, result) = self.inner.execute(queued).into_parts();
+        if let Err(failure) = &result {
+            let diagnostic = packaged_attempt_failure_diagnostic(execution, failure);
+            let _ = writeln!(std::io::stderr().lock(), "{diagnostic}");
+        }
         lease.finish();
-        result
+        AttemptWorkResult::new(queued, result)
     }
 
     fn reconcile_execution(
