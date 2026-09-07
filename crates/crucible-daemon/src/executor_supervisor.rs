@@ -1050,6 +1050,19 @@ where
                 )
                 .map(SubmitPreflight::Resolved);
         }
+        if matches!(
+            request.start_mode(),
+            AttemptStartMode::SavepointCapture { .. }
+        ) {
+            return self
+                .persist_response(
+                    request,
+                    SubmitAttemptDisposition::Rejected {
+                        reason: ExecutorRejection::Incompatible,
+                    },
+                )
+                .map(SubmitPreflight::Resolved);
+        }
         Ok(SubmitPreflight::NeedsValidation)
     }
 
@@ -1067,6 +1080,17 @@ where
                 request,
                 SubmitAttemptDisposition::Rejected {
                     reason: ExecutorRejection::Unauthorized,
+                },
+            );
+        }
+        if matches!(
+            request.start_mode(),
+            AttemptStartMode::SavepointCapture { .. }
+        ) {
+            return self.persist_response(
+                request,
+                SubmitAttemptDisposition::Rejected {
+                    reason: ExecutorRejection::Incompatible,
                 },
             );
         }
@@ -1088,7 +1112,7 @@ where
         execution: ExecutionId,
     ) -> Result<CancellationOutcome, LocalExecutorError<L::Error>> {
         if let Some(active) = self.active.get_mut(&execution) {
-            if AttemptExecutionKey::new(active.request.lineage(), active.request.attempt()) != key {
+            if AttemptExecutionKey::for_request(&active.request) != key {
                 return Err(LocalExecutorError::LedgerInvariant {
                     reason: "panicked worker execution basis does not match active reservation",
                 });
@@ -1131,9 +1155,7 @@ where
                 let Some(active) = self.active.get(&execution) else {
                     return Ok(CheckpointRequestOutcome::NotCurrent);
                 };
-                if AttemptExecutionKey::new(active.request.lineage(), active.request.attempt())
-                    != key
-                {
+                if AttemptExecutionKey::for_request(&active.request) != key {
                     return Err(LocalExecutorError::LedgerInvariant {
                         reason: "checkpoint request attempt does not match active reservation",
                     });
@@ -1244,7 +1266,7 @@ where
         worker_finished: bool,
     ) -> Result<CheckpointPublicationOutcome, LocalExecutorError<L::Error>> {
         self.validate_pending_basis(queued)?;
-        let key = AttemptExecutionKey::new(queued.request.lineage(), queued.request.attempt());
+        let key = AttemptExecutionKey::for_request(&queued.request);
         let current = self
             .ledger
             .load_attempt(key)
@@ -1329,7 +1351,7 @@ where
         checkpoint: ExactCheckpointId,
     ) -> Result<CheckpointCompletionOutcome, LocalExecutorError<L::Error>> {
         self.validate_pending_basis(queued)?;
-        let key = AttemptExecutionKey::new(queued.request.lineage(), queued.request.attempt());
+        let key = AttemptExecutionKey::for_request(&queued.request);
         let current = self
             .ledger
             .load_attempt(key)
@@ -1449,7 +1471,7 @@ where
     ) -> Result<ObservationPublicationOutcome, LocalExecutorError<L::Error>> {
         self.validate_pending_basis(queued)?;
         self.mark_worker_finished(queued.execution);
-        let key = AttemptExecutionKey::new(queued.request.lineage(), queued.request.attempt());
+        let key = AttemptExecutionKey::for_request(&queued.request);
         let current = self
             .ledger
             .load_attempt(key)
@@ -1583,7 +1605,7 @@ where
         observation: ObservationId,
     ) -> Result<CompletionOutcome, LocalExecutorError<L::Error>> {
         let execution = queued.execution;
-        let key = AttemptExecutionKey::new(queued.request.lineage(), queued.request.attempt());
+        let key = AttemptExecutionKey::for_request(&queued.request);
         let pending = PendingCompletion { key, observation };
         if self
             .pending_completions
@@ -1622,7 +1644,7 @@ where
         observation: ObservationId,
         finding_candidate: Option<FindingCandidateBundleId>,
     ) -> Result<CompletionOutcome, LocalExecutorError<L::Error>> {
-        let key = AttemptExecutionKey::new(queued.request.lineage(), queued.request.attempt());
+        let key = AttemptExecutionKey::for_request(&queued.request);
         let current = self
             .ledger
             .load_attempt(key)
@@ -1729,7 +1751,7 @@ where
         queued: &QueuedAttempt,
     ) -> Result<CancellationOutcome, LocalExecutorError<L::Error>> {
         let execution = queued.execution;
-        let key = AttemptExecutionKey::new(queued.request.lineage(), queued.request.attempt());
+        let key = AttemptExecutionKey::for_request(&queued.request);
         if !self.pending_cancellations.contains_key(&execution) {
             self.validate_pending_basis(queued)?;
             self.require_pending_capacity()?;
@@ -1751,7 +1773,7 @@ where
         self.validate_pending_basis(queued)?;
         self.mark_worker_finished(queued.execution);
 
-        let key = AttemptExecutionKey::new(queued.request.lineage(), queued.request.attempt());
+        let key = AttemptExecutionKey::for_request(&queued.request);
         self.fail_execution_terminally(key, queued.execution)
     }
 
@@ -1809,13 +1831,12 @@ where
         &self,
         queued: &QueuedAttempt,
     ) -> Result<(), LocalExecutorError<L::Error>> {
-        let key = AttemptExecutionKey::new(queued.request.lineage(), queued.request.attempt());
+        let key = AttemptExecutionKey::for_request(&queued.request);
         let basis = queued.request.execution_basis_digest();
         let active_matches = self.active.get(&queued.execution).is_some_and(|active| {
             active.request == queued.request
                 && active.origin == queued.origin
-                && AttemptExecutionKey::new(active.request.lineage(), active.request.attempt())
-                    == key
+                && AttemptExecutionKey::for_request(&active.request) == key
         });
         if active_matches {
             return Ok(());
@@ -1973,9 +1994,7 @@ where
                 let Some(active) = self.active.get(&execution) else {
                     return Ok(CompletionOutcome::NotCurrent);
                 };
-                if AttemptExecutionKey::new(active.request.lineage(), active.request.attempt())
-                    != key
-                {
+                if AttemptExecutionKey::for_request(&active.request) != key {
                     return Err(LocalExecutorError::LedgerInvariant {
                         reason: "active execution attempt mismatch",
                     });
@@ -2022,7 +2041,7 @@ where
         execution: ExecutionId,
     ) -> Result<CancellationOutcome, LocalExecutorError<L::Error>> {
         if let Some(active) = self.active.get(&execution)
-            && AttemptExecutionKey::new(active.request.lineage(), active.request.attempt()) == key
+            && AttemptExecutionKey::for_request(&active.request) == key
         {
             active.cancellation.cancel();
         }
@@ -2231,6 +2250,17 @@ where
                 request,
                 ResumeAttemptExecutionDisposition::Rejected {
                     reason: ExecutorRejection::Unauthorized,
+                },
+            )
+            .map_err(Into::into);
+        }
+        if request.prior_start_mode().execution_scope()
+            != crucible_campaign::AttemptExecutionScope::Semantic
+        {
+            return ResumeAttemptExecutionResponse::new(
+                request,
+                ResumeAttemptExecutionDisposition::Rejected {
+                    reason: ExecutorRejection::Incompatible,
                 },
             )
             .map_err(Into::into);
@@ -2569,7 +2599,7 @@ where
             );
         }
 
-        let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+        let key = AttemptExecutionKey::for_request(request);
         let execution_basis = request.execution_basis_digest();
         let mut prior = self
             .ledger
@@ -2958,6 +2988,7 @@ where
         let capture_materialized_start = matches!(
             request.start_mode(),
             AttemptStartMode::CaptureMaterializedStart { .. }
+                | AttemptStartMode::SavepointCapture { .. }
         );
         let initial_state = if capture_materialized_start {
             AttemptRuntimeState::CheckpointRequested {
@@ -3293,7 +3324,11 @@ where
         &mut self,
         request: &GetAttemptExecutionRequest,
     ) -> Result<GetAttemptExecutionResponse, Self::Error> {
-        let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+        let key = AttemptExecutionKey::new_scoped(
+            request.lineage(),
+            request.attempt(),
+            request.execution_scope(),
+        );
         let state = self
             .ledger
             .load_attempt(key)
@@ -3380,7 +3415,11 @@ where
         &mut self,
         request: &CheckpointAttemptExecutionRequest,
     ) -> Result<CheckpointAttemptExecutionResponse, Self::Error> {
-        let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+        let key = AttemptExecutionKey::new_scoped(
+            request.lineage(),
+            request.attempt(),
+            request.execution_scope(),
+        );
         let state = self
             .ledger
             .load_attempt(key)
@@ -3452,7 +3491,11 @@ where
         &mut self,
         request: &CancelAttemptExecutionRequest,
     ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
-        let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+        let key = AttemptExecutionKey::new_scoped(
+            request.lineage(),
+            request.attempt(),
+            request.execution_scope(),
+        );
         let state = self
             .ledger
             .load_attempt(key)
