@@ -1626,17 +1626,31 @@ mod tests {
         VirtualTime,
     };
     use crucible_campaign::{
-        BooleanDomain, BudgetGrant, CampaignCommandId, CampaignControlAction, CampaignLineage,
-        CampaignMode, CampaignPolicy, CampaignRepository, CampaignSeed, ChoiceClassContext,
-        ChoiceCoordinate, ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity, ChoiceSource,
-        ChoiceValue, ControlRequest, CoverageProjection, ExplorerPolicy, FairnessPolicy,
-        FindingKind, FindingTarget, MeasurementSet, Observation, ObservationCandidate,
-        ProgressiveWideningPolicy, PropertyVerdictSet, PuctPolicy, RetentionPolicy,
-        SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
+        AssignmentId, AttemptResourceLimits, BooleanDomain, BudgetGrant, CampaignCommandId,
+        CampaignControlAction, CampaignLineage, CampaignMode, CampaignName, CampaignPolicy,
+        CampaignRepository, CampaignSeed, ChoiceClassContext, ChoiceCoordinate, ChoiceDiscovery,
+        ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue, ControlRequest,
+        CoverageProjection, DaemonEpoch, ExecutionRetentionIntent, ExecutorService, ExplorerPolicy,
+        FairnessPolicy, FindingCandidateBundleId, FindingKind, FindingTarget, MeasurementSet,
+        Observation, ObservationCandidate, ProgressiveWideningPolicy, PropertyVerdictSet,
+        PuctPolicy, RetentionPolicy, SelectableDeclaration, Selection, SelectionOrigin,
+        StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
     };
-    use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
+    use crucible_cas::content_store::{
+        ContentId, DirectoryBlobBackend, MemoryBlobBackend, MemoryRefBackend, ObjectKind,
+    };
 
     use super::*;
+    use crate::{
+        AllowAllAttemptAdmission, AssignmentLedger, AttemptExecutionKey, AttemptExecutionProduct,
+        AttemptResultStageOutcome, AttemptRuntimeState, AttemptWorkResult,
+        AttemptWorkerReconcileOutcome, CompletedFindingCandidate, CompletionOutcome,
+        ExactCheckpointStore, ExecutorCapacity, LocalExecutorError, LocalExecutorSupervisor,
+        MemoryAssignmentLedger, PreparedAttemptWorkResult,
+        incorporate_and_acknowledge_finding_candidate, prepare_attempt_result,
+        publish_prepared_attempt_result, reconcile_published_attempt_result,
+        stage_prepared_attempt_result,
+    };
 
     fn selection_decision(scenario: ScenarioDefId) -> Decision {
         let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("Boolean domain"));
@@ -2451,9 +2465,10 @@ mod tests {
         )
         .expect("observation candidate");
         let executor_store = CampaignExecutorStore::new(Arc::clone(&repository));
-        let observation = executor_store
-            .publish_observation_candidate(&observation_candidate)
-            .expect("publish admitted observation");
+        let observation = observation_candidate
+            .observation()
+            .id()
+            .expect("observation ID");
 
         let fingerprint = ContentHash::from_bytes(b"published-finding-fingerprint");
         let finding = FindingReproductionArtifact::capture(
@@ -2550,22 +2565,159 @@ mod tests {
         );
 
         let expected = prepared.id().expect("prepared candidate ID");
-        assert_eq!(
-            prepared
-                .publish_for_executor(&executor_store)
-                .expect("publish prepared finding closure"),
-            expected
+        let expected_bundle = prepared.bundle().clone();
+        let epoch = DaemonEpoch::from_bytes([0x57; 16]).expect("daemon epoch");
+        let request = SubmitAttemptRequest::new(
+            AssignmentId::from_bytes([0x58; 16]).expect("assignment"),
+            epoch,
+            lineage.id().expect("lineage ID"),
+            attempt,
+            AttemptResourceLimits::new(1, 4096, 4096, 64).expect("attempt resources"),
+            ExecutionRetentionIntent::RetainOnFailure,
+        )
+        .expect("submit request");
+        let mut supervisor = LocalExecutorSupervisor::new(
+            MemoryAssignmentLedger::default(),
+            AllowAllAttemptAdmission,
+            epoch,
+            ExecutorCapacity::new(1, 1, 4096, 4096, 64).expect("executor capacity"),
         );
+        let response = supervisor
+            .submit_attempt(&request)
+            .expect("admit finding attempt");
+        let SubmitAttemptDisposition::Accepted { execution } = response.disposition() else {
+            panic!("finding attempt should be accepted")
+        };
+        let queued = supervisor.next_queued().expect("queued finding attempt");
+        let checkpoint_directory = tempfile::tempdir().expect("checkpoint directory");
+        let checkpoints = ExactCheckpointStore::new(
+            Arc::new(DirectoryBlobBackend::new(
+                "prepared-finding-checkpoints",
+                checkpoint_directory.path(),
+            )),
+            1024 * 1024,
+        )
+        .expect("checkpoint store");
+        let work = AttemptWorkResult::<()>::new(
+            queued,
+            Ok(AttemptExecutionProduct::observation_with_finding(
+                observation_candidate,
+                prepared,
+            )),
+        );
+        let prepared = prepare_attempt_result(&executor_store, &checkpoints, work)
+            .expect("prepare paired worker result");
+        let PreparedAttemptWorkResult::Observation(prepared) = prepared else {
+            panic!("finding worker returned an exact checkpoint")
+        };
+        assert_eq!(prepared.observation(), observation);
+        assert_eq!(prepared.finding_candidate(), Some(expected));
+
+        let staged = stage_prepared_attempt_result(&mut supervisor, *prepared)
+            .expect("stage paired publication");
+        let AttemptResultStageOutcome::Publish(staged) = staged else {
+            panic!("current finding result should publish")
+        };
+        let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+        assert!(matches!(
+            supervisor
+                .ledger()
+                .load_attempt(key)
+                .expect("load staged finding pair"),
+            Some(AttemptRuntimeState::Publishing {
+                observation: retained_observation,
+                finding_candidate: Some(retained_candidate),
+                ..
+            }) if retained_observation == observation && retained_candidate == expected
+        ));
+        assert_eq!(
+            supervisor
+                .stage_observation_and_finding_candidate_publication(
+                    staged.queued(),
+                    observation,
+                    expected,
+                )
+                .expect("retry exact staged pair"),
+            crate::ObservationPublicationOutcome::AlreadyStaged
+        );
+        let wrong_candidate_content =
+            ContentId::for_bytes(ObjectKind::Finding, 1, b"wrong staged finding candidate");
+        let wrong_candidate = FindingCandidateBundleId::parse(&format!(
+            "crucible.campaign.finding-candidate-bundle@{wrong_candidate_content}"
+        ))
+        .expect("wrong finding candidate ID");
+        assert!(matches!(
+            supervisor.stage_and_reconcile_completion_with_finding_candidate(
+                staged.queued(),
+                observation,
+                Some(wrong_candidate),
+            ),
+            Err(LocalExecutorError::ConflictingCompletion)
+        ));
+
+        let published = publish_prepared_attempt_result(&executor_store, staged)
+            .expect("publish paired finding result");
+        assert_eq!(published.finding_candidate(), Some(expected));
+        let reconciled = reconcile_published_attempt_result::<_, _, ()>(&mut supervisor, published)
+            .expect("reconcile paired finding result");
+        assert_eq!(
+            reconciled,
+            AttemptWorkerReconcileOutcome::Reconciled {
+                observation,
+                completion: CompletionOutcome::Completed,
+            }
+        );
+
         let loaded = repository
             .load_finding_candidate_bundle(expected)
             .expect("load and authenticate finding closure");
-        assert_eq!(loaded, *prepared.bundle());
+        assert_eq!(loaded, expected_bundle);
         assert_eq!(loaded.observation(), observation);
         assert_eq!(loaded.signature().target(), signature.target());
         assert_eq!(
             loaded.signature().causal_evidence(),
             signature.causal_evidence()
         );
+
+        let campaign = CampaignName::new("prepared-finding").expect("campaign name");
+        let observation_parent = repository
+            .head(campaign.as_str())
+            .expect("current finding campaign head")
+            .snapshot_id();
+        let observation_record = repository
+            .load_observation(observation)
+            .expect("load paired observation");
+        let incorporated_observation = repository
+            .publish_observation(campaign.as_str(), observation_parent, &observation_record)
+            .expect("incorporate paired observation");
+        let mut ledger = supervisor.into_ledger();
+        let handoff = incorporate_and_acknowledge_finding_candidate(
+            &repository,
+            &mut ledger,
+            &campaign,
+            incorporated_observation.new_snapshot,
+            key,
+            execution,
+            observation,
+            expected,
+        )
+        .expect("incorporate and acknowledge exact finding pair");
+        let crate::FindingCandidateRetentionOutcome::Released(acknowledgement) =
+            handoff.acknowledgement()
+        else {
+            panic!("exact finding pair should release its operational root")
+        };
+        assert_eq!(acknowledgement.bundle(), expected);
+        assert!(matches!(
+            ledger
+                .load_attempt(key)
+                .expect("load acknowledged finding pair"),
+            Some(AttemptRuntimeState::Completed {
+                observation: retained_observation,
+                finding_candidate: CompletedFindingCandidate::Acknowledged(retained_candidate),
+                ..
+            }) if retained_observation == observation && retained_candidate == expected
+        ));
     }
 
     #[test]
