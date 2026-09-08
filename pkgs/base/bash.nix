@@ -28,13 +28,20 @@ in
       then [ncurses]
       else [];
     postPatch =
-      if stdenv.hostPlatform.isDarwin
-      then ''
-        # tparam.c calls write(2) but relies on an implicit declaration, which
-        # modern Clang rejects when cross-compiling Bash for Darwin.
-        sed -i '/#include <config.h>/a#include <unistd.h>' lib/termcap/tparam.c
       ''
-      else "";
+        # Configure is generated with a host /bin/sh shebang. Run it through the
+        # AOS stdenv shell instead of the sandbox host shell.
+        sed -i '1c#!${stdenv.shell}' configure
+      ''
+      + (
+        if stdenv.isCross
+        then ''
+          # tparam.c calls write(2) but relies on an implicit declaration, which
+          # current target compilers reject while cross-building Bash.
+          sed -i '/#include <config.h>/a#include <unistd.h>' lib/termcap/tparam.c
+        ''
+        else ""
+      );
     preConfigure =
       if stdenv.isCross && stdenv.hostPlatform.isDarwin
       then ''
@@ -61,10 +68,28 @@ in
         then " --with-curses"
         else ""
       );
-    makeFlags = "-j1";
+    # Bash's makefiles invoke helper scripts through $(SHELL).
+    makeFlags = "SHELL=${stdenv.shell} -j1";
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -e "$out/bin/sh" ] && ln -s bash "$out/bin/sh"
       rm -f "$out/bin/bashbug"
+
+      # Loadable builtins have no shared-library suffix, so the generic fixup
+      # cannot identify them by name. Strip their build-only compiler paths.
+      for module in "$out/lib/bash"/*; do
+        if readelf -h "$module" >/dev/null 2>&1; then
+          "$STRIP" --strip-unneeded "$module"
+        fi
+      done
+
+      # Keep the installed loadable-builtin sample usable on its target host
+      # without retaining the Linux cross compiler or native coreutils.
+      sed -i \
+        -e 's|^INSTALL = .*|INSTALL = install|' \
+        -e 's|^CC = .*|CC = cc|' \
+        -e 's|^SHOBJ_CC = .*|SHOBJ_CC = cc|' \
+        -e 's|^SHELL = .*|SHELL = bash|' \
+        "$out/lib/bash/Makefile.inc"
     '';
 
     meta = {

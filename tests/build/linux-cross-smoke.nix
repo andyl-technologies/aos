@@ -6,7 +6,42 @@
     system = buildSystem;
     crossSystem = targetSystem;
   };
-  compilerRuntimeDirectory = "${cross.stdenv.gcc}/${cross.stdenv.hostPlatform.config}/lib64";
+  sharedPhases = import ../../stdenv/phases.nix;
+  compilerRuntimeDirectory = "${cross.stdenv.gccRuntime}/lib";
+  targetBash = cross.pkgs.bash;
+  targetCoreutils = cross.pkgs.coreutils;
+  customFixup = cross.pkgs.mkDerivation {
+    pname = "linux-cross-custom-fixup-smoke";
+    version = "0";
+    src = null;
+    phases = [
+      {
+        name = "fixup";
+        script = ''
+          printf 'package fixup preserved\n' > "$out/custom-fixup"
+        '';
+      }
+    ];
+  };
+  sharedFixup = cross.pkgs.mkDerivation {
+    pname = "linux-cross-shared-fixup-smoke";
+    version = "0";
+    src = null;
+    phases = [
+      {
+        name = "build";
+        script = ''
+          mkdir -p "$out/bin"
+          printf '%s\n' \
+            '#include <stdio.h>' \
+            'int main(void) { return puts("shared fixup") < 0; }' \
+            > shared-fixup.c
+          "$CC" -g shared-fixup.c -o "$out/bin/shared-fixup"
+        '';
+      }
+      sharedPhases.fixupPhase
+    ];
+  };
 in
   assert cross.stdenv.isCross;
   assert cross.stdenv.system == targetSystem;
@@ -44,6 +79,22 @@ in
 
             ${cross.stdenv.binutils}/bin/readelf -d "$out/bin/aos-linux-cxx-smoke" | grep -Fq 'Shared library: [libstdc++.so.6]'
             ${cross.stdenv.binutils}/bin/readelf -d "$out/bin/aos-linux-cxx-smoke" | grep -Fq '${compilerRuntimeDirectory}'
+
+            for package in ${targetBash} ${targetCoreutils}; do
+              grep -Fx '${targetSystem}' "$package/nix-support/aos-target-platform"
+            done
+            for executable in ${targetBash}/bin/bash ${targetCoreutils}/bin/coreutils; do
+              ${cross.stdenv.binutils}/bin/readelf -h "$executable" | grep -Fq 'Machine:                           AArch64'
+            done
+
+            grep -Fx 'package fixup preserved' ${customFixup}/custom-fixup
+            shared_sections=$(${cross.stdenv.binutils}/bin/readelf -S ${sharedFixup}/bin/shared-fixup)
+            case "$shared_sections" in
+              *.debug_info*)
+                echo 'shared cross fixup retained debug sections' >&2
+                exit 1
+                ;;
+            esac
           '';
         }
       ];
