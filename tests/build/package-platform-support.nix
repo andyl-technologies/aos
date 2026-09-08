@@ -79,6 +79,7 @@
   armPackages = publicationMatrix.aarch64-darwin;
   x86LinuxPackages = publicationMatrix.x86_64-linux;
   armLinuxPackages = publicationMatrix.aarch64-linux;
+  eligibleOnAnyPlatform = support.publicationEligibleNamesAny packageNames;
   requiredDarwinTools = [
     "aos"
     "bash"
@@ -195,6 +196,28 @@ in
   assert builtins.attrNames publicationMatrix == builtins.sort builtins.lessThan support.canonicalSystems;
   assert x86LinuxPackages == support.targetPackageNames "x86_64-linux" packageNames;
   assert armLinuxPackages == support.targetPackageNames "aarch64-linux" packageNames;
+  assert support.publicationEligibleNames "x86_64-linux" packageNames
+  == map (package: package.name) releaseDerivations.packages;
+  assert builtins.elem "aos-recovery" eligibleOnAnyPlatform;
+  assert !(builtins.elem "aos-hub-e2e" eligibleOnAnyPlatform);
+  assert (releasePackageByName "dnsutils").outputs
+  == [
+    {
+      name = "out";
+      store_path = builtins.unsafeDiscardStringContext (toString pkgs.dnsutils);
+    }
+  ];
+  assert (releasePackageByName "getent").outputs
+  == [
+    {
+      name = "out";
+      store_path = builtins.unsafeDiscardStringContext (toString pkgs.getent);
+    }
+  ];
+  assert builtins.toString pkgs.dnsutils == builtins.toString pkgs.bind.dnsutils;
+  assert builtins.toString pkgs.dnsutils != builtins.toString pkgs.bind.out;
+  assert builtins.toString pkgs.getent == builtins.toString pkgs.glibc.getent;
+  assert builtins.toString pkgs.getent != builtins.toString pkgs.glibc.out;
   assert builtins.all (
     package: builtins.length package.platforms == 4
   )

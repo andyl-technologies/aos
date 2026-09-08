@@ -862,6 +862,22 @@ in rec {
       inherit rule reason;
     };
 
+  publicationEligibleNames = system: names:
+    builtins.filter (
+      name: (publicationDecision system name).state == "eligible"
+    )
+    names;
+
+  publicationEligibleNamesAny = names:
+    builtins.filter (
+      name:
+        builtins.any (
+          system: (publicationDecision system name).state == "eligible"
+        )
+        canonicalSystems
+    )
+    names;
+
   releaseInventory = names: {
     schema_version = "aos.release.package-inventory/v1";
     platforms = canonicalSystems;
@@ -884,6 +900,11 @@ in rec {
     packages = map (
       name: let
         package = packages.${name};
+        selectedOutput = package.outputName or "out";
+        publishedOutputs =
+          if selectedOutput == "out"
+          then package.outputs or ["out"]
+          else [selectedOutput];
         normalizeSource = source: let
           sourcePath = toString source;
           storePath = builtins.match "^(/nix/store/[0-9a-z]{32}-[^/]+)(/.*)?$" sourcePath;
@@ -946,11 +967,17 @@ in rec {
           };
         derivation = builtins.unsafeDiscardStringContext package.drvPath;
         outputs = map (output: {
-          name = output;
+          # A public alias of one non-default derivation output is itself a
+          # single-output package root. Normalize that selected root to `out`
+          # so package qualification cannot silently exercise a sibling output.
+          name =
+            if selectedOutput == "out"
+            then output
+            else "out";
           store_path = builtins.unsafeDiscardStringContext (toString package.${output});
-        }) (package.outputs or ["out"]);
+        }) publishedOutputs;
       }
-    ) (builtins.filter (name: (publicationDecision system name).state == "eligible") names);
+    ) (publicationEligibleNames system names);
   };
 
   publicationMatrix = names:

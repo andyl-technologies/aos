@@ -294,9 +294,60 @@
   qualificationPackageProbes = import ./qualification/package-probes {
     inherit testing;
   };
+  qualificationPackageNamesByPlatform = builtins.listToAttrs (
+    map (platform: {
+      name = platform;
+      value =
+        pkgs.platformSupport.publicationEligibleNames
+        platform
+        pkgs.allPackageNames;
+    })
+    pkgs.platformSupport.canonicalSystems
+  );
+  qualificationPackageNames =
+    pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
+  unknownQualificationPackageProbes = builtins.filter (
+    name: !(builtins.elem name pkgs.allPackageNames)
+  )
+  (builtins.attrNames qualificationPackageProbes);
+  qualificationPackageProbesFor = packageNames:
+    lib.filterAttrs (name: _: builtins.elem name packageNames) qualificationPackageProbes;
+  qualificationPackageCoverageFor = packageNames: let
+    implementedPackages = builtins.filter (
+      name: builtins.hasAttr name qualificationPackageProbes
+    )
+    packageNames;
+    missingPackages = builtins.filter (
+      name: !(builtins.hasAttr name qualificationPackageProbes)
+    )
+    packageNames;
+  in {
+    complete = missingPackages == [];
+    implemented = builtins.length implementedPackages;
+    total = builtins.length packageNames;
+    inherit implementedPackages missingPackages;
+  };
+  qualificationPackageCoverage = qualificationPackageCoverageFor qualificationPackageNames;
+  qualificationPackageCoverageByPlatform =
+    lib.mapAttrs (
+      _: names: qualificationPackageCoverageFor names
+    )
+    qualificationPackageNamesByPlatform;
+  neverPublicationEligiblePackageNames = builtins.filter (
+    name: !(builtins.elem name qualificationPackageNames)
+  )
+  pkgs.allPackageNames;
+  qualificationPackageCoverageReport =
+    assert unknownQualificationPackageProbes == [];
+      qualificationPackageCoverage
+      // {
+        schema_version = "aos.release.package-probe-coverage/v1";
+        platforms = qualificationPackageCoverageByPlatform;
+        neverPublicationEligiblePackages = neverPublicationEligiblePackageNames;
+      };
   releaseQualification = import ./qualification {
     inherit lib;
-    packageNames = pkgs.allPackageNames;
+    packageNames = qualificationPackageNames;
   };
   qualificationExecutorIdentity = "aos-${hostPlatform.system}-qualification-v1";
   qualificationReportScenario = testing.mkQualificationReportScenario {
@@ -317,8 +368,10 @@
   qualificationPackageScenario = testing.mkQualificationPackageScenario {
     name = "aos-qualification-${hostPlatform.system}-package-function";
     identity = qualificationExecutorIdentity;
-    packageNames = pkgs.allPackageNames;
-    probes = qualificationPackageProbes;
+    packageNames = qualificationPackageNamesByPlatform.${hostPlatform.system};
+    probes = qualificationPackageProbesFor (
+      qualificationPackageNamesByPlatform.${hostPlatform.system}
+    );
     trustKeys = discoverSystems."aos-testing".config.aos.release.trustKeys;
   };
   containerLifecycleScenario =
@@ -1210,12 +1263,7 @@
     };
 in {
   inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions releaseQualificationExecutor;
-  packageQualificationCoverage =
-    qualificationPackageScenario.passthru.qualification.probeCoverage
-    // {
-      implementedPackages = qualificationPackageScenario.passthru.qualification.probes;
-      missingPackages = qualificationPackageScenario.passthru.qualification.missingProbes;
-    };
+  packageQualificationCoverage = qualificationPackageCoverageReport;
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
   # this value with strict JSON evaluation before resolving any derivation.
@@ -1240,6 +1288,7 @@ in {
   checks = rec {
     qualification = import ./tests/qualification {
       inherit pkgs lib build fleet container;
+      packageCoverage = qualificationPackageCoverageReport;
       releaseExecutor = releaseQualificationExecutor;
     };
     rust = {

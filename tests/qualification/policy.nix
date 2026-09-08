@@ -2,11 +2,13 @@
 {
   pkgs,
   lib,
+  packageCoverage,
   releaseExecutor,
 }: let
+  packageNames = pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
   contract = import ../../qualification {
     inherit lib;
-    packageNames = pkgs.allPackageNames;
+    inherit packageNames;
   };
   fixture = import ../../qualification {
     inherit lib;
@@ -159,6 +161,22 @@
     .success;
   names = map (rule: rule.name) contract.package_rules;
   phases = map (gate: gate.phase) contract.requirements;
+  coveredAndMissingPackageNames = builtins.sort builtins.lessThan (
+    packageCoverage.implementedPackages ++ packageCoverage.missingPackages
+  );
+  coveragePartitions = builtins.all (
+    platform: let
+      coverage = packageCoverage.platforms.${platform};
+      eligible = pkgs.platformSupport.publicationEligibleNames platform pkgs.allPackageNames;
+      coveredAndMissing = builtins.sort builtins.lessThan (
+        coverage.implementedPackages ++ coverage.missingPackages
+      );
+    in
+      coverage.total == builtins.length eligible
+      && coverage.total == coverage.implemented + builtins.length coverage.missingPackages
+      && coveredAndMissing == eligible
+  )
+  pkgs.platformSupport.canonicalSystems;
   composed = import ../../qualification/_eval.nix {
     inherit lib;
     packageNames = ["aos" "fixture"];
@@ -219,7 +237,17 @@ in
   assert fixture == capturedFixture;
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" (builtins.toString sourceRoot) != null;
   assert builtins.readFile (sourceRoot + "/server.nix") == builtins.readFile (nestedSource + "/server.nix");
-  assert names == builtins.sort builtins.lessThan pkgs.allPackageNames;
+  assert names == builtins.sort builtins.lessThan packageNames;
+  assert packageCoverage.schema_version == "aos.release.package-probe-coverage/v1";
+  assert packageCoverage.total == builtins.length packageNames;
+  assert packageCoverage.total
+  == packageCoverage.implemented + builtins.length packageCoverage.missingPackages;
+  assert coveredAndMissingPackageNames == packageNames;
+  assert coveragePartitions;
+  assert builtins.all (
+    name: !(builtins.elem name packageNames)
+  )
+  packageCoverage.neverPublicationEligiblePackages;
   assert builtins.all (rule: rule.inherit_dependency_obligations) contract.package_rules;
   assert builtins.all (phase: builtins.elem phase phases) ["build" "staging" "rollout" "complete"];
   assert builtins.length contract.targets == 4;

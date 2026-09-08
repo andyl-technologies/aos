@@ -5,11 +5,13 @@
   build,
   fleet,
   container,
+  packageCoverage,
   releaseExecutor,
 }: let
+  packageNames = pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
   contract = import ../../qualification {
     inherit lib;
-    packageNames = pkgs.allPackageNames;
+    inherit packageNames;
   };
   available = {checks = {inherit build fleet container;};};
   resolve = path:
@@ -37,8 +39,8 @@
 in
   groups
   // {
-    policy = import ./policy.nix {inherit pkgs lib releaseExecutor;};
-    all = aggregate "all-regressions" ([(import ./policy.nix {inherit pkgs lib releaseExecutor;})] ++ builtins.attrValues groups);
+    policy = import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;};
+    all = aggregate "all-regressions" ([(import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;})] ++ builtins.attrValues groups);
     # Evaluating this inventory resolves every reference, including sparse
     # groups, before an expensive VM campaign starts.
     inventory = builtins.listToAttrs (map (requirement: {
