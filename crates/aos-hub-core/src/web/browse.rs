@@ -362,6 +362,8 @@ pub struct BrowseQuery {
     pub status: Option<String>,
     /// Exact documented option or guide variant.
     pub entry: Option<String>,
+    /// Exact package guide entry anchoring document-scoped navigation.
+    pub package_entry: Option<String>,
     /// Search scope: release (default) or subtree.
     pub scope: Option<String>,
     /// Opaque cursor for additional variants at the selected node.
@@ -386,7 +388,7 @@ pub struct BrowseQuery {
     pub release: Option<String>,
     /// Exact system-image channel filter.
     pub channel: Option<String>,
-    /// Exact system-image architecture filter.
+    /// Exact image or OCI container architecture filter.
     pub architecture: Option<String>,
     /// Exact system-image format filter.
     pub format: Option<String>,
@@ -470,6 +472,7 @@ impl BrowseQuery {
                 "minor" => out.minor = Some(value.into_owned()),
                 "status" => out.status = Some(value.into_owned()),
                 "entry" => out.entry = Some(value.into_owned()),
+                "package_entry" => out.package_entry = Some(value.into_owned()),
                 "scope" => out.scope = Some(value.into_owned()),
                 "variant_cursor" => out.variant_cursor = Some(value.into_owned()),
                 "q" => out.q = Some(value.into_owned()),
@@ -807,8 +810,7 @@ pub async fn containers(
         &context,
         &containers,
         authority.ok().flatten().as_deref(),
-        query.query(),
-        query.page_number(),
+        query,
         started,
         &session,
     ))
@@ -941,8 +943,7 @@ pub async fn container_repository(
             &context,
             &containers,
             authority.as_deref(),
-            None,
-            query.page_number(),
+            query,
             started,
             &session_indicator(svc, headers).await,
         ));
@@ -1333,7 +1334,7 @@ pub async fn package(
         ));
     };
     let detail = super::release_browse::package_detail(package);
-    let closure = super::release_browse::package_closure(&catalog, &detail, REVERSE_DEP_CAP);
+    let closures = super::release_browse::package_closures(&catalog, &detail, REVERSE_DEP_CAP);
     let (session, caches, external, documentation_result) = futures_util::future::join4(
         session_indicator(svc, headers),
         svc.db.registry_cache_stack_entries(registry.id),
@@ -1357,7 +1358,7 @@ pub async fn package(
         &registry,
         status.as_ref(),
         &detail,
-        &closure,
+        &closures,
         &setup,
         &context,
         documentation.as_ref(),

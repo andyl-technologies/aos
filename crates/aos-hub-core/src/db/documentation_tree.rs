@@ -6,6 +6,7 @@
 //! never continues into a replacement release generation.
 
 mod indexing;
+mod scope;
 pub(super) use indexing::extend_tree_projection;
 
 use anyhow::{ensure, Result};
@@ -270,17 +271,32 @@ impl Database {
         commit: &str,
         key: &str,
     ) -> Result<Option<DocumentationTreeNode>> {
-        self.backend
-            .query_opt(
-                &format!(
-                    "SELECT {NODE_COLUMNS} FROM release_browse_tree_nodes node
+        self.documentation_tree_node_in_document(registry_id, commit, key, None)
+            .await
+    }
+
+    /// Reads the same bounded projection within one immutable document.
+    ///
+    /// # Errors
+    /// Returns an error for invalid cursors, database failures, or malformed rows.
+    pub(crate) async fn documentation_tree_node_in_document(
+        &self,
+        registry_id: i64,
+        commit: &str,
+        key: &str,
+        document: Option<&str>,
+    ) -> Result<Option<DocumentationTreeNode>> {
+        self.query_documentation_node(
+            &format!(
+                "SELECT {NODE_COLUMNS} FROM release_browse_tree_nodes node
             WHERE node.registry_id = ?1 AND node.source_commit = ?2 AND node.node_key = ?3"
-                ),
-                &vals![registry_id, commit, key],
-            )
-            .await?
-            .map(node_from_row)
-            .transpose()
+            ),
+            &vals![registry_id, commit, key],
+            document,
+        )
+        .await?
+        .map(node_from_row)
+        .transpose()
     }
 
     /// Lists one bounded page of a node's immediate children.
@@ -295,11 +311,30 @@ impl Database {
         parent: &str,
         after: Option<&str>,
     ) -> Result<DocumentationTreePage<DocumentationTreeNode>> {
-        let scope = cursor_scope(registry_id, commit, &format!("children:{parent}"));
+        self.documentation_tree_children_in_document(registry_id, commit, parent, after, None)
+            .await
+    }
+
+    /// Reads the same bounded projection within one immutable document.
+    ///
+    /// # Errors
+    /// Returns an error for invalid cursors, database failures, or malformed rows.
+    pub(crate) async fn documentation_tree_children_in_document(
+        &self,
+        registry_id: i64,
+        commit: &str,
+        parent: &str,
+        after: Option<&str>,
+        document: Option<&str>,
+    ) -> Result<DocumentationTreePage<DocumentationTreeNode>> {
+        let scope = cursor_scope(
+            registry_id,
+            commit,
+            &format!("children:{parent}:{document:?}"),
+        );
         let cursor = decode_cursor(after, &scope)?;
         let rows = self
-            .backend
-            .query(
+            .query_documentation(
                 &format!(
                     "SELECT {NODE_COLUMNS} FROM release_browse_tree_nodes node
             WHERE node.registry_id = ?1 AND node.source_commit = ?2 AND node.parent_key = ?3
@@ -314,6 +349,7 @@ impl Database {
                     cursor.as_ref().map(|cursor| cursor.key.as_str()),
                     (DOCUMENTATION_TREE_PAGE_SIZE + 1) as i64
                 ],
+                document,
             )
             .await?;
         let mut items = rows
@@ -357,14 +393,33 @@ impl Database {
         root: &str,
         after: Option<&str>,
     ) -> Result<DocumentationTreePage<DocumentationTreeNode>> {
-        let scope = cursor_scope(registry_id, commit, &format!("descendants:{root}"));
+        self.documentation_tree_descendants_in_document(registry_id, commit, root, after, None)
+            .await
+    }
+
+    /// Reads the same bounded projection within one immutable document.
+    ///
+    /// # Errors
+    /// Returns an error for invalid cursors, database failures, or malformed rows.
+    pub(crate) async fn documentation_tree_descendants_in_document(
+        &self,
+        registry_id: i64,
+        commit: &str,
+        root: &str,
+        after: Option<&str>,
+        document: Option<&str>,
+    ) -> Result<DocumentationTreePage<DocumentationTreeNode>> {
+        let scope = cursor_scope(
+            registry_id,
+            commit,
+            &format!("descendants:{root}:{document:?}"),
+        );
         let cursor = decode_cursor(after, &scope)?;
         // Ordering by the serialized path keeps each subtree contiguous and its
         // siblings in label order; a documented branch sorts after its own
         // descendants because the closing bracket outranks a continuing comma.
         let rows = self
-            .backend
-            .query(
+            .query_documentation(
                 &format!(
                     "SELECT {NODE_COLUMNS} FROM release_browse_tree_ancestors ancestor
             JOIN release_browse_tree_nodes node
@@ -383,6 +438,7 @@ impl Database {
                     cursor.as_ref().map(|cursor| cursor.key.as_str()),
                     (DOCUMENTATION_TREE_PAGE_SIZE + 1) as i64
                 ],
+                document,
             )
             .await?;
         let mut items = rows
@@ -420,11 +476,30 @@ impl Database {
         node: &str,
         after: Option<&str>,
     ) -> Result<DocumentationTreePage<DocumentationTreeEntry>> {
-        let scope = cursor_scope(registry_id, commit, &format!("variants:{node}"));
+        self.documentation_tree_variants_in_document(registry_id, commit, node, after, None)
+            .await
+    }
+
+    /// Reads the same bounded projection within one immutable document.
+    ///
+    /// # Errors
+    /// Returns an error for invalid cursors, database failures, or malformed rows.
+    pub(crate) async fn documentation_tree_variants_in_document(
+        &self,
+        registry_id: i64,
+        commit: &str,
+        node: &str,
+        after: Option<&str>,
+        document: Option<&str>,
+    ) -> Result<DocumentationTreePage<DocumentationTreeEntry>> {
+        let scope = cursor_scope(
+            registry_id,
+            commit,
+            &format!("variants:{node}:{document:?}"),
+        );
         let cursor = decode_cursor(after, &scope)?;
         let rows = self
-            .backend
-            .query(
+            .query_documentation(
                 &format!(
                     "SELECT {ENTRY_COLUMNS}, 0 FROM release_browse_tree_entries
             WHERE registry_id = ?1 AND source_commit = ?2 AND node_key = ?3
@@ -437,6 +512,7 @@ impl Database {
                     cursor.as_ref().map(|cursor| cursor.key.as_str()),
                     (DOCUMENTATION_TREE_PAGE_SIZE + 1) as i64
                 ],
+                document,
             )
             .await?;
         entry_page(rows, scope)
@@ -482,6 +558,32 @@ impl Database {
         kind: Option<&str>,
         after: Option<&str>,
     ) -> Result<DocumentationTreePage<DocumentationTreeEntry>> {
+        self.search_documentation_tree_in_document(
+            registry_id,
+            commit,
+            root,
+            query,
+            kind,
+            after,
+            None,
+        )
+        .await
+    }
+
+    /// Reads the same bounded projection within one immutable document.
+    ///
+    /// # Errors
+    /// Returns an error for invalid cursors, database failures, or malformed rows.
+    pub(crate) async fn search_documentation_tree_in_document(
+        &self,
+        registry_id: i64,
+        commit: &str,
+        root: Option<&str>,
+        query: &str,
+        kind: Option<&str>,
+        after: Option<&str>,
+        document: Option<&str>,
+    ) -> Result<DocumentationTreePage<DocumentationTreeEntry>> {
         let terms = aos_doc_model::tokenize(query)
             .iter()
             .map(|term| search_token(term))
@@ -495,7 +597,7 @@ impl Database {
                 next_cursor: None,
             });
         }
-        let selection = serde_json::to_string(&(root, &terms, kind))?;
+        let selection = serde_json::to_string(&(root, &terms, kind, document))?;
         let scope = cursor_scope(registry_id, commit, &format!("search:{selection}"));
         let cursor = decode_cursor(after, &scope)?;
         let mut values = vals![registry_id, commit].to_vec();
@@ -536,7 +638,10 @@ impl Database {
             ORDER BY ranked.score DESC, entry.entry_key LIMIT ?{}",
             scores.join(" + "), predicates.join(" OR "), root_arg + 1, root_arg + 1,
             root_arg + 2, root_arg + 2, root_arg + 2, root_arg + 3, root_arg + 4);
-        entry_page(self.backend.query(&sql, &values).await?, scope)
+        entry_page(
+            self.query_documentation(&sql, &values, document).await?,
+            scope,
+        )
     }
 }
 
@@ -688,6 +793,166 @@ mod tests {
             .await
             .unwrap()
             .next_cursor
+    }
+
+    #[tokio::test]
+    async fn package_scope_filters_paths_counts_variants_search_and_cursors() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("package-docs", "Package docs").await.unwrap();
+        let registry = db
+            .create_managed_registry(org, "", "main", "public", &[], false)
+            .await
+            .unwrap();
+        let package = document(137);
+        let digest = package.artifact.document_sha256.as_str();
+        let mut other = document(1);
+        other.package_name = "other".into();
+        other.artifact.document_sha256 = format!("sha256:{}", "d".repeat(64));
+        other.options[0].type_signature = "string".into();
+        other.search[0].summary = "Unrelated package".into();
+        let mut foreign_option = other.options[0].clone();
+        foreign_option.key = "unrelated.enable".into();
+        foreign_option.path = vec![literal("unrelated"), literal("enable")];
+        other.options.push(foreign_option);
+        let mut foreign_search = other.search[0].clone();
+        foreign_search.key = "unrelated.enable".into();
+        foreign_search.title = "Unrelated option".into();
+        other.search.push(foreign_search);
+        db.retain_release_browse_catalog(
+            registry,
+            "commit",
+            &[],
+            None,
+            &[package.clone(), other.clone()],
+        )
+        .await
+        .unwrap();
+
+        let root = documentation_node_key(&[]);
+        let scoped_root = db
+            .documentation_tree_node_in_document(registry, "commit", &root, Some(digest))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(scoped_root.child_count, 1);
+        let roots = db
+            .documentation_tree_children_in_document(registry, "commit", &root, None, Some(digest))
+            .await
+            .unwrap();
+        assert_eq!(roots.items.len(), 1);
+        assert_eq!(roots.items[0].label, "services");
+        assert_eq!(roots.items[0].child_count, 137);
+        let foreign = documentation_node_key(&[literal("unrelated")]);
+        assert!(db
+            .documentation_tree_node_in_document(registry, "commit", &foreign, Some(digest))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(db
+            .documentation_tree_node(registry, "commit", &foreign)
+            .await
+            .unwrap()
+            .is_some());
+
+        let mut seen = std::collections::BTreeSet::new();
+        let mut cursor = None;
+        loop {
+            let page = db
+                .documentation_tree_descendants_in_document(
+                    registry,
+                    "commit",
+                    &root,
+                    cursor.as_deref(),
+                    Some(digest),
+                )
+                .await
+                .unwrap();
+            assert!(page.items.len() <= DOCUMENTATION_TREE_PAGE_SIZE);
+            for node in page.items {
+                assert_eq!(node.entry_count, 1);
+                assert_eq!(node.type_signature.as_deref(), Some("bool"));
+                assert_eq!(node.summary.as_deref(), Some("Enable service"));
+                assert!(seen.insert(node.key));
+            }
+            cursor = page.next_cursor;
+            let Some(after) = cursor.as_deref() else {
+                break;
+            };
+            assert!(db
+                .documentation_tree_descendants_in_document(
+                    registry,
+                    "commit",
+                    &root,
+                    Some(after),
+                    Some(&other.artifact.document_sha256)
+                )
+                .await
+                .is_err());
+            assert!(db
+                .documentation_tree_descendants(registry, "commit", &root, Some(after))
+                .await
+                .is_err());
+        }
+        assert_eq!(seen.len(), 137);
+
+        let leaf =
+            documentation_node_key(&[literal("services"), literal("child000"), literal("enable")]);
+        let variants = db
+            .documentation_tree_variants_in_document(registry, "commit", &leaf, None, Some(digest))
+            .await
+            .unwrap();
+        assert_eq!(variants.items.len(), 1);
+        assert_eq!(variants.items[0].document_sha256, digest);
+        assert_eq!(
+            db.documentation_tree_variants(registry, "commit", &leaf, None)
+                .await
+                .unwrap()
+                .items
+                .len(),
+            2
+        );
+        let search = db
+            .search_documentation_tree_in_document(
+                registry,
+                "commit",
+                None,
+                "enable",
+                None,
+                None,
+                Some(digest),
+            )
+            .await
+            .unwrap();
+        assert_eq!(search.items.len(), 50);
+        assert!(search
+            .items
+            .iter()
+            .all(|entry| entry.document_sha256 == digest));
+        assert!(db
+            .search_documentation_tree_in_document(
+                registry,
+                "commit",
+                None,
+                "enable",
+                None,
+                search.next_cursor.as_deref(),
+                Some(&other.artifact.document_sha256)
+            )
+            .await
+            .is_err());
+        let foreign_search = db
+            .search_documentation_tree_in_document(
+                registry,
+                "commit",
+                Some(&foreign),
+                "enable",
+                None,
+                None,
+                Some(digest),
+            )
+            .await
+            .unwrap();
+        assert!(foreign_search.items.is_empty());
     }
 
     #[tokio::test]

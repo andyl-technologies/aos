@@ -4456,6 +4456,14 @@ mod tests {
             )
             .await
             .unwrap());
+        let containers = db
+            .list_release_browse_containers(registry_id)
+            .await
+            .unwrap();
+        assert_eq!(containers.len(), 1);
+        assert_eq!(containers[0].digest, catalog.root_digest);
+        assert_eq!(containers[0].architectures, ["amd64"]);
+
         let placement = db.surface_placement(placement_id).await.unwrap().unwrap();
         let revision = db
             .placement_publication_write_revision(placement_id)
