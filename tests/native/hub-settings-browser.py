@@ -507,6 +507,21 @@ class HubSettingsSmoke:
         raise AssertionError(f"timed out waiting for {description}")
 
     def navigate(self, path):
+        # Finish the current page's reads before ordinary full navigation. The
+        # explicit cancellation test uses a held response and an SPA link.
+        deadline = time.monotonic() + self.timeout
+        while True:
+            self.chrome.drain_events(0.1)
+            pending = [
+                request for identifier, request in self.chrome.requests.items()
+                if "finishedAtSeconds" not in request
+                and identifier not in self.chrome.expected_cancellation_ids
+            ]
+            if not pending:
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"page requests did not finish before navigating to {path}")
+
         url = urllib.parse.urljoin(self.base_url + "/", path.lstrip("/"))
         self.chrome.call("Page.navigate", {"url": url})
         self.wait_for("document.readyState === 'complete'", f"{path} to load")
@@ -552,6 +567,71 @@ class HubSettingsSmoke:
         )
         self.chrome.drain_events(0.2)
         self.check(self.chrome.evaluate("location.pathname") == "/-/instance", "browser login completed")
+
+    def appearance(self):
+        """Checks shared font loading and saved appearance across both shells."""
+        self.chrome.evaluate("document.fonts.ready")
+        typography = self.chrome.evaluate("""
+            (() => ({
+                body: getComputedStyle(document.body).fontFamily,
+                identity: getComputedStyle(document.querySelector('.scope-identity strong')).fontFamily,
+                loaded: Array.from(document.fonts).filter(font => font.status === 'loaded').map(font => font.family),
+            }))()
+        """)
+        self.check("Geist Sans" in typography["body"], "interface text uses Geist Sans")
+        self.check("Geist Mono" in typography["identity"], "machine identity uses Geist Mono")
+        self.check(
+            {"Geist Sans", "Geist Mono"}.issubset(typography["loaded"]),
+            "both self-hosted font files loaded in the console",
+        )
+
+        self.chrome.call("Emulation.setEmulatedMedia", {
+            "features": [{"name": "prefers-color-scheme", "value": "light"}],
+        })
+        self.check(
+            self.chrome.evaluate("getComputedStyle(document.body).backgroundColor") == "rgb(255, 255, 255)",
+            "system light mode uses a white canvas",
+        )
+        self.chrome.evaluate("document.querySelector('[data-theme-toggle]').click()")
+        self.chrome.call("Emulation.setEmulatedMedia", {
+            "features": [{"name": "prefers-color-scheme", "value": "dark"}],
+        })
+        self.check(
+            self.chrome.evaluate("getComputedStyle(document.body).backgroundColor") == "rgb(255, 255, 255)",
+            "explicit light preference overrides the OS",
+        )
+
+        self.chrome.evaluate("document.querySelector('[data-theme-toggle]').click()")
+        self.check(
+            self.chrome.evaluate("getComputedStyle(document.body).backgroundColor") == "rgb(16, 17, 16)",
+            "dark mode uses the Stone & ocean canvas",
+        )
+        self.screenshot_pair("instance-dark")
+
+        self.chrome.call("Page.navigate", {"url": self.base_url + "/"})
+        self.wait_for(
+            "location.pathname === '/' && document.readyState === 'complete' && "
+            "document.querySelector('[data-theme-toggle]') !== null",
+            "browse appearance control",
+        )
+        self.check(
+            self.chrome.evaluate("document.documentElement.dataset.theme") == "dark",
+            "saved dark preference carries from the console to browse pages",
+        )
+        self.chrome.evaluate("document.querySelector('[data-theme-toggle]').click()")
+        self.chrome.call("Emulation.setEmulatedMedia", {
+            "features": [{"name": "prefers-color-scheme", "value": "light"}],
+        })
+        self.check(
+            self.chrome.evaluate("getComputedStyle(document.body).backgroundColor") == "rgb(255, 255, 255)",
+            "returning to system appearance resumes following OS changes",
+        )
+        self.navigate("/-/instance")
+        self.assert_settings_page("instance settings after appearance changes")
+        self.check(
+            self.chrome.evaluate("document.documentElement.dataset.themeMode") == "system",
+            "system appearance remains selected on a fresh console mount",
+        )
 
     def assert_settings_page(self, description):
         self.wait_for(
@@ -1045,6 +1125,7 @@ class HubSettingsSmoke:
             "persistent instance scope header rendered",
         )
         self.screenshot_pair("instance-overview")
+        self.appearance()
         self.exercise_inflight_plan_navigation()
         self.review_identity_and_invalidate()
 

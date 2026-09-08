@@ -346,6 +346,7 @@ pub(crate) async fn management_app(deps: ConsoleDeps, headers: HeaderMap) -> Res
          <meta name=\"aos-app-version\" content=\"{app_version}\">\n\
          <meta name=\"aos-container-gc-enabled\" content=\"{container_gc_enabled}\">\n\
          <title>AOS Hub</title>\n\
+         <script src=\"/_assets/theme.js?v={asset_version}\"></script>\n\
          <link rel=\"stylesheet\" href=\"/_assets/style.css?v={asset_version}\">\n\
          <link rel=\"stylesheet\" href=\"/_assets/{css}\">\n\
          <script src=\"/_assets/app.js?v={asset_version}\" defer></script>\n\

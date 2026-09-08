@@ -27,7 +27,7 @@ use std::sync::{OnceLock, RwLock};
 
 use crate::db::{ChannelSummary, WebauthnCredentialRecord};
 use crate::domain::Permission;
-use crate::web::render::{authenticated_navigation, escape, table as render_table};
+use crate::web::render::{authenticated_navigation, escape, masthead, table as render_table};
 
 /// Items per page for the console's paginated lists (orgs, members, tokens,
 /// keys, audit). Mirrors the browse tier's list size so both paginate alike.
@@ -203,15 +203,6 @@ pub(crate) fn app_version() -> &'static str {
         .unwrap_or(concat!("aos-hub ", env!("CARGO_PKG_VERSION")))
 }
 
-/// The masthead brand element for `brand`: a home link, or empty when unset.
-fn brand_span(brand: &str) -> String {
-    if brand.is_empty() {
-        String::new()
-    } else {
-        format!("<a class=\"brand\" href=\"/\">{}</a>", escape(brand))
-    }
-}
-
 /// The `<title>` text: `"<page> — <brand>"`, or `"<page> — Registry Hub"`
 /// when no brand is configured.
 fn page_title(brand: &str, title: &str) -> String {
@@ -307,20 +298,19 @@ impl SessionIndicator {
     fn render(&self) -> String {
         // Signed-in users always see the caches tab; logged-out visitors see it
         // only when the instance opts caches into anonymous visibility.
-        let caches = "<a href=\"/-/caches\">caches</a> · ";
+        let caches = "<a href=\"/-/caches\">caches</a>";
         match &self.email {
             Some(email) => format!(
-                "<span class=\"session\">\
-                 {} · \
-                 <span class=\"who\">{}</span> · \
-                 <a href=\"/logout\">log out</a></span>",
+                "<nav class=\"session\" aria-label=\"Account navigation\">\
+                 {}<span class=\"who\">{}</span>\
+                 <a href=\"/logout\">log out</a></nav>",
                 authenticated_navigation(),
                 escape(email),
             ),
             None => format!(
-                "<span class=\"session\">\
-                 <a href=\"/\">registries</a> · {}\
-                 <a href=\"/login\">log in</a></span>",
+                "<nav class=\"session\" aria-label=\"Account navigation\">\
+                 <a href=\"/\">registries</a>{}\
+                 <a class=\"session-action\" href=\"/login\">log in</a></nav>",
                 if caches_public() { caches } else { "" },
             ),
         }
@@ -359,23 +349,6 @@ pub fn page_with_session(
     state: &StateLine,
     session: &SessionIndicator,
 ) -> String {
-    let mut crumb_html = String::new();
-    for (i, (href, label)) in crumbs.iter().enumerate() {
-        if i > 0 {
-            crumb_html.push_str(" / ");
-        }
-        if href.is_empty() {
-            let _ = write!(crumb_html, "{}", escape(label));
-        } else {
-            let _ = write!(
-                crumb_html,
-                "<a href=\"{}\">{}</a>",
-                escape(href),
-                escape(label)
-            );
-        }
-    }
-
     let mut statline = String::new();
     if let Some(commit) = &state.surface_commit {
         let _ = write!(
@@ -417,16 +390,7 @@ pub fn page_with_session(
 
     // The brand is operator-configurable through instance settings.
     let brand = effective_brand();
-    let mut brand_span = brand_span(&brand);
-    // A configured tagline rides beside the brand as a dim subtitle.
-    let tagline = site_tagline();
-    if !brand_span.is_empty() && !tagline.is_empty() {
-        let _ = write!(
-            brand_span,
-            "<span class=\"tagline\">{}</span>",
-            escape(&tagline)
-        );
-    }
+    let header = masthead(&brand, &site_tagline(), crumbs, &session.render());
     let page_title = page_title(&brand, title);
     // The announcement banner (when set) sits above the content on every page;
     // the footer carries the configured legal/contact links beside the statline.
@@ -437,15 +401,19 @@ pub fn page_with_session(
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <title>{page_title}</title>\n\
+         <script src=\"/_assets/theme.js?v={ver}\"></script>\n\
          <link rel=\"stylesheet\" href=\"/_assets/style.css?v={ver}\">\n\
          <script src=\"/_assets/app.js?v={ver}\" defer></script>\n</head>\n<body>\n\
          <a class=\"skip-link\" href=\"#main-content\">Skip to content</a>\
-         <header class=\"masthead\">{brand_span}\
-         <span class=\"crumbs\">{crumb_html}</span>{session}</header>\n\
+         {header}\n\
          {announcement}\
          <main id=\"main-content\">\n{body}\n</main>\n\
-         <footer class=\"statline\">{statline}{footer_links}</footer>\n</body>\n</html>\n",
-        session = session.render(),
+         <footer class=\"statline\">{statline}{footer_links}\
+         <button class=\"theme-toggle\" type=\"button\" data-theme-toggle \
+         title=\"Switch theme: system, light, dark\">Theme: \
+         <span data-theme-label=\"system\">System</span>\
+         <span data-theme-label=\"light\">Light</span>\
+         <span data-theme-label=\"dark\">Dark</span></button></footer>\n</body>\n</html>\n",
         ver = crate::web::assets::asset_version(),
     )
 }
@@ -1375,7 +1343,8 @@ mod tests {
         assert!(html.contains("class=\"token-list\""));
         assert!(html.contains("class=\"token-head\""));
         assert!(html.contains("class=\"token-permissions\""));
-        assert!(html.contains("<a href=\"/-/instance\">settings</a>"));
+        assert!(html.contains("<a href=\"/-/instance\"><svg class=\"menu-icon\""));
+        assert!(html.contains("</svg>settings</a>"));
         assert!(html.contains(&format!("title=\"{id}\"")));
         assert!(html.contains(">0123456789ab…</code>"));
         assert!(!html.contains("<th>permissions</th>"));

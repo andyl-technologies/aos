@@ -1077,19 +1077,18 @@ pub struct ResolvedDependency {
     pub version: Option<String>,
 }
 
-/// The closure neighborhood of a package, resolved against the registry.
+/// The dependency neighborhood of one architecture's exact package version.
 ///
-/// Bundles the forward dependencies of the latest version's primary platform
-/// (the `refs` edges, resolved to package names where possible) and the set of
-/// packages whose closures reference this one. Both are computed by the
-/// handler via [`crate::db::Database::resolve_reference_names`] and
-/// [`crate::db::Database::reverse_dependencies`] so the renderer stays a pure
-/// function of its inputs.
+/// Both directions resolve against the selected release catalog and only
+/// match artifacts of this architecture. The renderer receives resolved data
+/// and performs no database or object-store reads.
 #[derive(Debug, Clone, Default)]
 pub struct PackageClosure {
-    /// The platform the forward dependencies were resolved for.
-    pub platform: Option<String>,
-    /// Forward dependencies of the latest version's primary platform.
+    /// The architecture and operating system of the artifact.
+    pub platform: String,
+    /// The latest package version available for this architecture in the release.
+    pub version: String,
+    /// Forward references of this architecture's artifact.
     pub dependencies: Vec<ResolvedDependency>,
     /// Packages that reference this one, as `(name, version)`, capped by the
     /// handler. [`PackageClosure::reverse_total`] carries the uncapped count.
@@ -1141,25 +1140,22 @@ impl From<crate::db::PackageDocumentationLocator> for PackageDocumentationRefere
     }
 }
 
-/// One package's detail page — the data-rich closure browser.
+/// Renders package metadata, artifacts, documentation, and dependency neighborhoods.
 ///
-/// Renders, in order: a header with name + latest version + the prominent
-/// description; "available platforms" chips; a metadata definition table
-/// (license, maintainer, homepage, platforms, sysroot, latest version,
-/// version count); an `apm` install snippet; the resolved dependency list
-/// (the `refs` closure edges of the latest version's primary platform, linked
-/// to their package pages where resolvable); the "required by" reverse-dep
-/// list; the per-version × platform artifact tables with narinfo + source
-/// derivation links; sysroot images; and a `<details>` raw-metadata dump.
+/// Each architecture has its own forward and reverse dependency lists for
+/// the latest package version available on that architecture in the selected
+/// release. Resolvable dependencies link to package pages; other references
+/// retain their narinfo links. Artifact tables and raw metadata retain every
+/// version published in the release.
 ///
-/// `closure` carries the resolved forward and reverse dependencies the handler
+/// `closures` carries the resolved forward and reverse dependencies the handler
 /// computed; `setup` is the same canonical consumer configuration rendered on
 /// the registry overview.
 pub fn package_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
     detail: &PackageDetail,
-    closure: &PackageClosure,
+    closures: &[PackageClosure],
     setup: &RegistrySetup,
     context: &ReleaseContext,
     documentation: Option<&PackageDocumentationReference>,
@@ -1343,75 +1339,78 @@ pub fn package_page(
     }
     body.push_str("</section>");
 
-    // Dependencies: the closure edges of the latest primary platform, made
-    // legible — resolvable hashes link to their package page, the rest fall
-    // back to a narinfo permalink.
-    let _ = writeln!(
-        body,
-        "<h2 id=\"dependencies\">Dependencies ({})</h2>",
-        closure.dependencies.len(),
+    body.push_str(
+        "<h2 id=\"dependencies\">Dependencies</h2>\n<div class=\"package-dependencies\">",
     );
-    if closure.dependencies.is_empty() {
-        body.push_str("<p class=\"dim\">No runtime dependencies recorded.</p>\n");
-    } else {
-        if let Some(platform) = &closure.platform {
-            let _ = writeln!(
-                body,
-                "<p class=\"dim\">runtime closure of the latest version on {}:</p>",
-                escape(platform),
-            );
-        }
-        body.push_str("<ul class=\"deps\">\n");
-        for dep in &closure.dependencies {
-            match (&dep.name, &dep.version) {
-                (Some(name), version) => {
-                    let _ = write!(
-                        body,
-                        "<li><a href=\"/{}/-/packages/{}?release={}\">{}</a>",
-                        escape(slug),
-                        urlencode(name),
-                        urlencode(snapshot.unwrap_or_default()),
-                        escape(name),
-                    );
-                    if let Some(version) = version {
-                        let _ = write!(body, " <span class=\"dim\">{}</span>", escape(version));
+    if closures.is_empty() {
+        body.push_str("<p class=\"dim\">No architecture artifacts recorded in this release.</p>");
+    }
+    for closure in closures {
+        let _ = write!(
+            body,
+            "<section class=\"package-dependency-platform\"><h3>{}</h3><p class=\"dim\">Version <code>{}</code> in this release.</p><h4>Dependencies ({})</h4>",
+            escape(&closure.platform),
+            escape(&closure.version),
+            closure.dependencies.len(),
+        );
+        if closure.dependencies.is_empty() {
+            body.push_str("<p class=\"dim\">No runtime dependencies recorded.</p>\n");
+        } else {
+            body.push_str("<ul class=\"deps\">\n");
+            for dep in &closure.dependencies {
+                match (&dep.name, &dep.version) {
+                    (Some(name), version) => {
+                        let _ = write!(
+                            body,
+                            "<li><a href=\"/{}/-/packages/{}?release={}\">{}</a>",
+                            escape(slug),
+                            urlencode(name),
+                            urlencode(snapshot.unwrap_or_default()),
+                            escape(name),
+                        );
+                        if let Some(version) = version {
+                            let _ = write!(body, " <span class=\"dim\">{}</span>", escape(version));
+                        }
+                        body.push_str("</li>\n");
                     }
-                    body.push_str("</li>\n");
-                }
-                (None, _) => {
-                    let _ = writeln!(body, "<li>{}</li>", narinfo_link(setup, &dep.hash));
+                    (None, _) => {
+                        let _ = writeln!(body, "<li>{}</li>", narinfo_link(setup, &dep.hash));
+                    }
                 }
             }
+            body.push_str("</ul>\n");
         }
-        body.push_str("</ul>\n");
-    }
 
-    // Reverse dependencies: who requires this package.
-    let _ = writeln!(body, "<h2>Required by ({})</h2>", closure.reverse_total);
-    if closure.reverse.is_empty() {
-        body.push_str("<p class=\"dim\">No packages in this registry require it.</p>\n");
-    } else {
-        body.push_str("<ul class=\"deps\">\n");
-        for (name, version) in &closure.reverse {
-            let _ = writeln!(
-                body,
-                "<li><a href=\"/{}/-/packages/{}?release={}\">{}</a> <span class=\"dim\">{}</span></li>",
-                escape(slug),
-                urlencode(name),
-                urlencode(snapshot.unwrap_or_default()),
-                escape(name),
-                escape(version),
-            );
+        // Reverse dependencies: who requires this package.
+        let _ = writeln!(body, "<h4>Required by ({})</h4>", closure.reverse_total);
+        if closure.reverse.is_empty() {
+            body.push_str("<p class=\"dim\">No packages in this registry require it.</p>\n");
+        } else {
+            body.push_str("<ul class=\"deps\">\n");
+            for (name, version) in &closure.reverse {
+                let _ = writeln!(
+                    body,
+                    "<li><a href=\"/{}/-/packages/{}?release={}\">{}</a> <span class=\"dim\">{}</span></li>",
+                    escape(slug),
+                    urlencode(name),
+                    urlencode(snapshot.unwrap_or_default()),
+                    escape(name),
+                    escape(version),
+                );
+            }
+            body.push_str("</ul>\n");
+            if closure.reverse_total > closure.reverse.len() {
+                let _ = writeln!(
+                    body,
+                    "<p class=\"dim\">… and {} more</p>",
+                    closure.reverse_total - closure.reverse.len(),
+                );
+            }
         }
-        body.push_str("</ul>\n");
-        if closure.reverse_total > closure.reverse.len() {
-            let _ = writeln!(
-                body,
-                "<p class=\"dim\">… and {} more</p>",
-                closure.reverse_total - closure.reverse.len(),
-            );
-        }
+
+        body.push_str("</section>");
     }
+    body.push_str("</div>");
 
     for version in &detail.versions {
         let image_rows: Vec<Vec<String>> = version
@@ -2302,15 +2301,17 @@ fn selected(value: &str, current: Option<&str>) -> &'static str {
     }
 }
 
-fn image_select(
+/// Renders a shared catalog facet with an explicit unfiltered choice.
+pub(crate) fn catalog_select(
     name: &str,
+    label: &str,
     all_label: &str,
     values: &[(String, String)],
     current: Option<&str>,
 ) -> String {
     let mut html = format!(
         "<label>{}<select name=\"{}\"><option value=\"\">{}</option>",
-        escape(name),
+        escape(label),
         escape(name),
         escape(all_label),
     );
@@ -2631,24 +2632,26 @@ pub fn images_page(
     ];
     let _ = write!(
         body,
-        "<form method=\"get\" data-live class=\"image-filters\"><div class=\"image-filter-fields\">{}{}{}{}{}\
-         <label>search<input type=\"search\" name=\"q\" value=\"{}\" \
-         placeholder=\"package, checksum, or filename\"></label></div>\
-         <div class=\"image-filter-actions\"><button>filter</button>\
-         <a href=\"/{}/-/images?release={}\">Clear filters</a></div></form>",
-        format!("<input type=\"hidden\" name=\"release\" value=\"{}\">", escape(context.query_value().unwrap_or(""))),
-        image_select("channel", "all channels", &channel_options, channel),
-        image_select(
-            "architecture",
-            "all architectures",
-            &architecture_options,
-            architecture
-        ),
-        image_select("format", "all formats", &format_options, format),
-        image_select("target", "all targets", &target_options, target),
+        "<form method=\"get\" data-live class=\"catalog-filters\" role=\"search\" aria-label=\"Search images\">\
+         <input type=\"hidden\" name=\"release\" value=\"{}\">\
+         <div class=\"catalog-search\"><label>Search<input type=\"search\" name=\"q\" value=\"{}\" \
+         placeholder=\"Package, checksum, or filename\"></label><button type=\"submit\">Search</button>\
+         <a href=\"/{}/-/images?release={}\">Clear filters</a></div>\
+         <div class=\"catalog-filter-fields\">{}{}{}{}</div></form>",
+        escape(context.query_value().unwrap_or("")),
         escape(browse.query.unwrap_or("")),
         escape(slug),
         urlencode(context.query_value().unwrap_or("")),
+        catalog_select("channel", "Channel", "All channels", &channel_options, channel),
+        catalog_select(
+            "architecture",
+            "Architecture",
+            "All architectures",
+            &architecture_options,
+            architecture
+        ),
+        catalog_select("format", "Format", "All formats", &format_options, format),
+        catalog_select("target", "Target", "All targets", &target_options, target),
     );
     if total_matches == 0 {
         body.push_str("<p class=\"dim\">No matching signed disk images are published.</p>\n");
@@ -3162,8 +3165,8 @@ mod tests {
         assert!(default.contains("name=\"architecture\""));
         assert!(default.contains("name=\"format\""));
         assert!(default.contains("name=\"target\""));
-        assert!(default.contains("class=\"image-filter-fields\""));
-        assert!(default.contains("class=\"image-filter-actions\""));
+        assert!(default.contains("class=\"catalog-filter-fields\""));
+        assert!(default.contains("class=\"catalog-search\""));
         assert!(default.contains("class=\"image-summary\""));
         assert!(default.contains("class=\"image-facts\""));
         assert!(default.contains("<th scope=\"row\">file SHA-256</th>"));
@@ -3528,7 +3531,7 @@ mod tests {
             &registry,
             None,
             &detail,
-            &closure,
+            std::slice::from_ref(&closure),
             &setup,
             &release_context("1.0.0"),
             None,
@@ -3547,7 +3550,7 @@ mod tests {
             &registry,
             None,
             &detail,
-            &closure,
+            std::slice::from_ref(&closure),
             &setup,
             &release_context("1.0.0"),
             None,
@@ -3578,7 +3581,8 @@ mod tests {
             }],
         };
         let closure = PackageClosure {
-            platform: Some("x86_64-linux".into()),
+            platform: "x86_64-linux".into(),
+            version: "8.5.0".into(),
             dependencies: vec![
                 ResolvedDependency {
                     hash: "bbbb".into(),
@@ -3601,7 +3605,7 @@ mod tests {
             &registry,
             None,
             &detail,
-            &closure,
+            std::slice::from_ref(&closure),
             &setup,
             &release_context("1.0.0"),
             None,
@@ -3622,6 +3626,13 @@ mod tests {
         // A resolved dependency links to its package page; an unresolved one
         // falls back to its narinfo permalink.
         assert!(html.contains("Dependencies (2)"));
+        assert!(html.contains("<h3>x86_64-linux</h3>"));
+        assert!(html.contains("Version <code>8.5.0</code> in this release."));
+        assert_eq!(
+            html.matches("class=\"package-dependency-platform\"")
+                .count(),
+            1
+        );
         assert!(html.contains("<a href=\"/demo/-/packages/zlib?release=1.0.0\">zlib</a>"));
         assert!(html.contains("href=\"http://hub.example/demo/cccc.narinfo\""));
         // Reverse dependency.
@@ -3667,7 +3678,7 @@ mod tests {
             &registry,
             None,
             &detail,
-            &PackageClosure::default(),
+            &[],
             &setup,
             &release_context("1.0.0"),
             None,
@@ -3704,7 +3715,7 @@ mod tests {
             &registry,
             None,
             &detail,
-            &PackageClosure::default(),
+            &[],
             &setup,
             &release_context("1.0.0"),
             None,
@@ -3744,7 +3755,7 @@ mod tests {
             &registry,
             None,
             &detail,
-            &PackageClosure::default(),
+            &[],
             &setup,
             &release_context("1.0.0"),
             Some(&reference),
