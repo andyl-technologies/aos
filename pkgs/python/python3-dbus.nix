@@ -8,6 +8,7 @@
   python3,
   bash,
   dbus,
+  systemd,
   glib,
   buildPackages,
 }: let
@@ -23,7 +24,9 @@ in
       hash = "sha256-rWeBkwhhi1BpU3viN/jmjKHH/Mle5KEh/mhFsUGCSPg=";
     };
 
-    buildDeps = [meson ninja pkg-config python3 bash dbus glib.dev];
+    # dbus-1.pc exposes libsystemd through Requires.private, including for
+    # compile flags, so consumers must provide it while resolving D-Bus.
+    buildDeps = [meson ninja pkg-config python3 bash dbus systemd glib.dev];
     runtimeDeps = [python3 dbus glib];
     propagatedDeps = [python3 dbus glib];
 
