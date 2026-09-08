@@ -391,6 +391,7 @@ mod tests {
             BrokerVerb::StorageSetQuota,
             BrokerVerb::StorageDestroy,
             BrokerVerb::StorageInventory,
+            BrokerVerb::StoragePrepareCatalog,
             BrokerVerb::NetworkPrepare,
             BrokerVerb::NetworkArmLease,
             BrokerVerb::NetworkRenewLease,
@@ -413,6 +414,7 @@ mod tests {
                 | BrokerVerb::MountInventoryResources
                 | BrokerVerb::StorageCreateWorkspace
                 | BrokerVerb::StorageInventory
+                | BrokerVerb::StoragePrepareCatalog
                 | BrokerVerb::NetworkPrepare
                 | BrokerVerb::NetworkInventory => BrokerGrantTarget::Assignment,
                 BrokerVerb::MountReplace => BrokerGrantTarget::ResourcePair {

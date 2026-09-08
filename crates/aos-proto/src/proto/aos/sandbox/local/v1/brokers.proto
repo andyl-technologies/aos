@@ -78,6 +78,7 @@ enum BrokerMethod {
   BROKER_METHOD_HOST_PUBLISH_CATALOG = 17;
   BROKER_METHOD_STORAGE_INVENTORY_RESOURCES = 18;
   BROKER_METHOD_NETWORK_INVENTORY_RESOURCES = 19;
+  BROKER_METHOD_STORAGE_PREPARE_CATALOG = 20;
 }
 
 // Semantic roles for SCM_RIGHTS descriptors carried beside one packet.
@@ -355,6 +356,37 @@ message ApplyStorageRequest {
   bytes operation_id = 7;
 }
 
+// Storage 1.3 resolves one future operation from protected physical state.
+// This independently authorized request cannot execute the operation. UID,
+// GID, cgroup, ZFS names, GUIDs, roots, and policy domains are deliberately
+// absent: the broker observes or derives them locally.
+message PrepareStorageCatalogRequest {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  StorageAction action = 3;
+  bytes operation_id = 4; // Exactly 16 bytes.
+  bytes storage_handle = 5; // Empty or exactly 32 bytes by action.
+  bytes source_version_handle = 6; // Empty or exactly 32 bytes by action.
+  uint64 requested_quota_bytes = 7;
+  uint64 requested_reservation_bytes = 8;
+  bytes requested_hold_id = 9; // Empty or exactly 16 bytes by action.
+  uint64 inventory_generation = 10;
+  bytes inventory_digest = 11; // Exactly 32 bytes.
+  uint64 expected_catalog_generation = 12;
+  bytes expected_catalog_digest = 13; // Exactly 32 bytes.
+  uint64 preparation_expires_boottime_nanoseconds = 14;
+}
+
+// The receipt is broker-local replay evidence, not Apply authority. Apply must
+// carry fresh independent plan and lease signatures that bind catalog_digest.
+message PrepareStorageCatalogResponse {
+  bytes operation_id = 1;
+  uint64 catalog_generation = 2;
+  bytes catalog_digest = 3;
+  uint64 preparation_expires_boottime_nanoseconds = 4;
+  bytes non_authorizing_receipt = 5;
+}
+
 message StorageResult {
   bytes storage_handle = 1;
   bytes immutable_version_handle = 2;
@@ -391,6 +423,7 @@ message InventoryStorageResourcesResponse {
 }
 
 service StorageBroker {
+  rpc PrepareCatalog(PrepareStorageCatalogRequest) returns (PrepareStorageCatalogResponse);
   rpc ApplyStorage(ApplyStorageRequest) returns (StorageResult);
   rpc InventoryStorage(InventoryStorageRequest) returns (InventoryStorageResponse);
   rpc InventoryStorageResources(InventoryStorageRequest)

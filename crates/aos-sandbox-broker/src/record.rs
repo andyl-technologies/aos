@@ -542,7 +542,9 @@ impl BrokerEffectIntentV2 {
                 },
             ) => previous != successor,
             (
-                BrokerVerb::StorageCreateWorkspace | BrokerVerb::NetworkPrepare,
+                BrokerVerb::StorageCreateWorkspace
+                | BrokerVerb::StoragePrepareCatalog
+                | BrokerVerb::NetworkPrepare,
                 BrokerGrantTarget::Assignment,
             ) => true,
             (
@@ -1163,6 +1165,7 @@ const fn verb_code(domain: BrokerDomain, verb: BrokerVerb) -> u8 {
         | (BrokerDomain::Network, BrokerVerb::NetworkDestroy) => 5,
         (BrokerDomain::Storage, BrokerVerb::StorageSetQuota) => 6,
         (BrokerDomain::Storage, BrokerVerb::StorageDestroy) => 7,
+        (BrokerDomain::Storage, BrokerVerb::StoragePrepareCatalog) => 8,
         _ => 0,
     }
 }
@@ -1189,6 +1192,7 @@ fn decode_verb(domain: BrokerDomain, code: u8) -> Result<BrokerVerb, Authorizati
         (BrokerDomain::Storage, 5) => Ok(BrokerVerb::StorageClone),
         (BrokerDomain::Storage, 6) => Ok(BrokerVerb::StorageSetQuota),
         (BrokerDomain::Storage, 7) => Ok(BrokerVerb::StorageDestroy),
+        (BrokerDomain::Storage, 8) => Ok(BrokerVerb::StoragePrepareCatalog),
         (BrokerDomain::Network, 1) => Ok(BrokerVerb::NetworkPrepare),
         (BrokerDomain::Network, 2) => Ok(BrokerVerb::NetworkArmLease),
         (BrokerDomain::Network, 3) => Ok(BrokerVerb::NetworkRenewLease),
@@ -1590,6 +1594,7 @@ mod tests {
             (BrokerDomain::Storage, BrokerVerb::StorageClone, 5),
             (BrokerDomain::Storage, BrokerVerb::StorageSetQuota, 6),
             (BrokerDomain::Storage, BrokerVerb::StorageDestroy, 7),
+            (BrokerDomain::Storage, BrokerVerb::StoragePrepareCatalog, 8),
             (BrokerDomain::Network, BrokerVerb::NetworkPrepare, 1),
             (BrokerDomain::Network, BrokerVerb::NetworkArmLease, 2),
             (BrokerDomain::Network, BrokerVerb::NetworkRenewLease, 3),
@@ -1615,6 +1620,7 @@ mod tests {
                 | BrokerVerb::MountCreate
                 | BrokerVerb::MountMaterializeDestinationSlot
                 | BrokerVerb::StorageCreateWorkspace
+                | BrokerVerb::StoragePrepareCatalog
                 | BrokerVerb::NetworkPrepare => BrokerGrantTarget::Assignment,
                 BrokerVerb::MountReplace => BrokerGrantTarget::ResourcePair {
                     previous: resource,

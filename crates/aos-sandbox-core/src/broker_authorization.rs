@@ -142,6 +142,8 @@ pub enum BrokerVerb {
     StorageDestroy,
     /// Inventories storage resources for an assignment.
     StorageInventory,
+    /// Resolves and retains one operation-specific physical storage catalog.
+    StoragePrepareCatalog,
     /// Prepares assignment networking and mints its network handle.
     NetworkPrepare,
     /// Arms the ownership-lease gate for an existing network.
@@ -196,6 +198,7 @@ impl BrokerVerb {
             29 => Ok(Self::MountMaterializeDestinationSlot),
             30 => Ok(Self::MountReapDestinationSlot),
             31 => Ok(Self::MountRematerializeDestinationSlot),
+            32 => Ok(Self::StoragePrepareCatalog),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -235,6 +238,7 @@ impl BrokerVerb {
             Self::MountMaterializeDestinationSlot => 29,
             Self::MountReapDestinationSlot => 30,
             Self::MountRematerializeDestinationSlot => 31,
+            Self::StoragePrepareCatalog => 32,
         }
     }
 
@@ -266,7 +270,8 @@ impl BrokerVerb {
             | Self::StorageClone
             | Self::StorageSetQuota
             | Self::StorageDestroy
-            | Self::StorageInventory => BrokerAudience::Storage,
+            | Self::StorageInventory
+            | Self::StoragePrepareCatalog => BrokerAudience::Storage,
             Self::NetworkPrepare
             | Self::NetworkArmLease
             | Self::NetworkRenewLease
@@ -286,6 +291,7 @@ impl BrokerVerb {
             | Self::MountMaterializeDestinationSlot
             | Self::StorageCreateWorkspace
             | Self::StorageInventory
+            | Self::StoragePrepareCatalog
             | Self::NetworkPrepare
             | Self::NetworkInventory => BrokerGrantTargetShape::Assignment,
             Self::HostStop
@@ -1424,6 +1430,7 @@ mod tests {
             (29, BrokerVerb::MountMaterializeDestinationSlot),
             (30, BrokerVerb::MountReapDestinationSlot),
             (31, BrokerVerb::MountRematerializeDestinationSlot),
+            (32, BrokerVerb::StoragePrepareCatalog),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)
@@ -1432,7 +1439,15 @@ mod tests {
             assert_eq!(verb.get(), code);
         }
         assert_eq!(
-            BrokerVerb::from_code(32),
+            BrokerVerb::from_code(33),
+            Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
+        );
+        assert_eq!(
+            BrokerVerb::from_code(0),
+            Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
+        );
+        assert_eq!(
+            BrokerVerb::from_code(u32::MAX),
             Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
         );
         assert_eq!(
@@ -1546,6 +1561,7 @@ mod tests {
             BrokerVerb::MountMaterializeDestinationSlot,
             BrokerVerb::StorageCreateWorkspace,
             BrokerVerb::StorageInventory,
+            BrokerVerb::StoragePrepareCatalog,
             BrokerVerb::NetworkPrepare,
             BrokerVerb::NetworkInventory,
         ];
@@ -1583,7 +1599,7 @@ mod tests {
             BrokerGrantTargetShape::ResourcePair
         );
 
-        for code in 15..=22 {
+        for code in (15..=22).chain(std::iter::once(32)) {
             assert_eq!(
                 BrokerVerb::from_code(code)
                     .unwrap_or_else(|error| panic!("storage verb {code}: {error}"))

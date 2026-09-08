@@ -80,7 +80,8 @@ use aos_proto::aos::sandbox::local::v1::{
     ApplyGuardianRequest, ApplyGuestExecutionRequest, ApplyMountRequest, ApplyNetworkRequest,
     ApplyRuntimeRequest, ApplyStorageRequest, AssignmentFence, Audience, BrokerClientHello,
     BrokerErrorCode, BrokerRequestEnvelope, BrokerResponseEnvelope, Descriptor, MountAction,
-    MountSourceConsistency, RequestHeader, RuntimeAction, RuntimePlan,
+    MountSourceConsistency, PrepareStorageCatalogRequest, RequestHeader, RuntimeAction,
+    RuntimePlan,
 };
 use aos_sandbox_core::{
     DescriptorRole, FeatureRef, MediaType, ObjectDescriptor, ObjectDigest, ProtocolId,
@@ -1200,6 +1201,7 @@ pub fn exercise_malformed_request_decoders(bytes: &[u8]) {
     }
     let _ = ApplyRuntimeRequest::decode_from_slice(bytes);
     let _ = ApplyStorageRequest::decode_from_slice(bytes);
+    let _ = PrepareStorageCatalogRequest::decode_from_slice(bytes);
     let _ = ApplyMountRequest::decode_from_slice(bytes);
     let _ = ApplyNetworkRequest::decode_from_slice(bytes);
     let _ = ApplyGuardianRequest::decode_from_slice(bytes);

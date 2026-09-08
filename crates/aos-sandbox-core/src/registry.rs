@@ -463,7 +463,8 @@ const fn protocol_version(protocol: ProtocolId) -> ProtocolVersion {
     match protocol {
         ProtocolId::HostBroker => ProtocolVersion::new(1, 4),
         ProtocolId::MountBroker => ProtocolVersion::new(1, 5),
-        ProtocolId::StorageBroker | ProtocolId::NetworkBroker => ProtocolVersion::new(1, 2),
+        ProtocolId::StorageBroker => ProtocolVersion::new(1, 3),
+        ProtocolId::NetworkBroker => ProtocolVersion::new(1, 2),
         ProtocolId::OwnershipAuthority => ProtocolVersion::new(1, 1),
         ProtocolId::PublicApi
         | ProtocolId::PublisherAuthority
@@ -654,16 +655,26 @@ mod tests {
             negotiate_protocol(ProtocolId::OwnershipAuthority, ProtocolVersion::new(1, 1)),
             Ok(ProtocolVersion::new(1, 1))
         );
-        for protocol in [ProtocolId::StorageBroker, ProtocolId::NetworkBroker] {
-            assert_eq!(
-                negotiate_protocol(protocol, ProtocolVersion::new(1, 2)),
-                Ok(ProtocolVersion::new(1, 2))
-            );
-            assert!(matches!(
-                negotiate_protocol(protocol, ProtocolVersion::new(1, 3)),
-                Err(RegistryError::IncompatibleProtocol { .. })
-            ));
-        }
+        assert_eq!(
+            negotiate_protocol(ProtocolId::StorageBroker, ProtocolVersion::new(1, 3)),
+            Ok(ProtocolVersion::new(1, 3))
+        );
+        assert_eq!(
+            negotiate_protocol(ProtocolId::StorageBroker, ProtocolVersion::new(1, 2)),
+            Ok(ProtocolVersion::new(1, 2))
+        );
+        assert!(matches!(
+            negotiate_protocol(ProtocolId::StorageBroker, ProtocolVersion::new(1, 4)),
+            Err(RegistryError::IncompatibleProtocol { .. })
+        ));
+        assert_eq!(
+            negotiate_protocol(ProtocolId::NetworkBroker, ProtocolVersion::new(1, 2)),
+            Ok(ProtocolVersion::new(1, 2))
+        );
+        assert!(matches!(
+            negotiate_protocol(ProtocolId::NetworkBroker, ProtocolVersion::new(1, 3)),
+            Err(RegistryError::IncompatibleProtocol { .. })
+        ));
         assert!(matches!(
             negotiate_protocol(ProtocolId::MountBroker, ProtocolVersion::new(1, 6)),
             Err(RegistryError::IncompatibleProtocol { .. })

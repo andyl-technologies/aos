@@ -11,6 +11,7 @@ pub mod mount_scope;
 pub mod network;
 pub mod payload_scope;
 pub mod storage;
+pub mod storage_prepare;
 
 pub use destination_slot::{
     CanonicalDestinationSlotSemanticsV1, DestinationSlotSemanticError,
@@ -29,4 +30,8 @@ pub use network::{
 };
 pub use storage::{
     CanonicalStorageSemanticsV1, CatalogBindingV1, StorageOperation, StorageSemanticsError,
+};
+pub use storage_prepare::{
+    CanonicalStoragePreparationSemanticsV1, StoragePreparationOperationV1,
+    StoragePreparationSemanticsError,
 };
