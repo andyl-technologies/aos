@@ -182,8 +182,8 @@ pub use assignment_ledger::{
     AssignmentRetentionInventoryError, AssignmentRetentionRoot, AssignmentRetentionSummary,
     AssignmentRetentionVisitorError, AttemptExecutionKey, AttemptExecutionOrigin,
     AttemptRuntimeState, AttemptStateCas, CheckpointPromotionExecutionBasis,
-    CompletedFindingCandidate, DirectoryAssignmentLedger, MemoryAssignmentLedger,
-    visit_directory_attempt_states_bounded,
+    CompletedFindingCandidate, DirectoryAssignmentLedger, ExactCheckpointResumeBasis,
+    MemoryAssignmentLedger, visit_directory_attempt_states_bounded,
 };
 pub use campaign_attachment::{
     AttachedCanonicalCampaignRuntime, CanonicalCampaignRuntimeConfig,
@@ -293,6 +293,7 @@ pub use crucible_execution::{
     CrucibleAttemptExecution, CrucibleExecutionModel, CrucibleExecutionModelError,
     CrucibleExecutionOutcome, CrucibleExecutionRunner, CrucibleMaterializationTier,
     CrucibleResolvedAttemptStart, decode_crucible_attempt_execution,
+    decode_crucible_attempt_execution_with_resources,
 };
 pub use crucible_measurement::{
     CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V1,
@@ -309,7 +310,7 @@ pub use crucible_qemu::LinuxQemuAttemptHostConfig;
 pub use crucible_qemu_runner::{
     QemuAttemptExecutionRouter, QemuAttemptExecutionRouterError, QemuCrucibleAttemptSession,
     QemuCrucibleRealizationStore, QemuCrucibleSessionFactory, QemuExactThinExecutionRunner,
-    QemuExactThinRunnerError,
+    QemuExactThinRunnerError, QemuSelectedOriginResumeRunner, QemuSelectedOriginVerifier,
 };
 pub use crucible_qemu_session::{
     QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard,
@@ -410,8 +411,9 @@ pub use executor_worker::{
     prepare_attempt_result, publish_prepared_attempt_result, publish_staged_checkpoint_result,
     reconcile_attempt_failure, reconcile_published_attempt_result,
     reconcile_published_checkpoint_result, recover_prepared_attempt_result,
-    resolve_attempt_execution_input, retry_pending_attempt_result, retry_pending_checkpoint_result,
-    stage_prepared_attempt_result, stage_prepared_checkpoint_result,
+    resolve_attempt_execution_input, resolve_attempt_execution_input_with_resources,
+    retry_pending_attempt_result, retry_pending_checkpoint_result, stage_prepared_attempt_result,
+    stage_prepared_checkpoint_result,
 };
 pub use guest_selectable::GuestSelectableError;
 #[cfg(target_os = "linux")]

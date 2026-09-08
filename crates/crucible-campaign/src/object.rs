@@ -223,13 +223,13 @@ impl CampaignRecordKind {
     pub const fn schema_version(self) -> u32 {
         match self {
             Self::Snapshot => 3,
-            Self::Fact => 12,
+            Self::Fact => 13,
             Self::PlannerInvocation => 2,
             Self::PlannerStep => 4,
             Self::ExpansionState => 2,
             Self::BranchRequest => 6,
             Self::BranchPath => 2,
-            Self::Attempt => 2,
+            Self::Attempt => 3,
             Self::AttemptAdmission => 2,
             Self::MeasurementSet => 2,
             Self::Observation => 8,
@@ -707,11 +707,12 @@ impl ObjectEnvelope {
         let version_supported = envelope.schema_version() == record_kind.schema_version()
             || record_kind == CampaignRecordKind::Snapshot && envelope.schema_version() == 2
             || record_kind == CampaignRecordKind::Fact
-                && matches!(envelope.schema_version(), 2..=11)
+                && matches!(envelope.schema_version(), 2..=12)
             || record_kind == CampaignRecordKind::BranchPath && envelope.schema_version() == 1
             || record_kind == CampaignRecordKind::BranchRequest
                 && matches!(envelope.schema_version(), 1..=5)
-            || record_kind == CampaignRecordKind::Attempt && envelope.schema_version() == 1
+            || record_kind == CampaignRecordKind::Attempt
+                && matches!(envelope.schema_version(), 1..=2)
             || record_kind == CampaignRecordKind::AttemptAdmission
                 && envelope.schema_version() == 1
             || record_kind == CampaignRecordKind::Observation
@@ -1044,6 +1045,15 @@ fn fact_children(fact: &CampaignFact) -> Result<BTreeSet<ContentChild>, Campaign
                 resolution.expected_snapshot.content_id(),
             ),
             ("capture-request", resolution.request.content_id()),
+        ],
+        CampaignFact::SavepointContinuationSelected(selection) => vec![
+            (
+                "expected-snapshot",
+                selection.expected_snapshot.content_id(),
+            ),
+            ("capture-request", selection.request.content_id()),
+            ("ready-resolution", selection.ready.content_id()),
+            ("continuation-attempt", selection.continuation.content_id()),
         ],
         CampaignFact::ControlRequested(request) => {
             let mut values = vec![("expected-snapshot", request.expected_snapshot.content_id())];

@@ -72,6 +72,8 @@ pub const MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES: usize = 32 * 1024 * 1024;
 const CRUCIBLE_SCHEDULE_V2_MAGIC: &[u8] = b"crucible.schedule.v2\0";
 const MAX_CONFIGURATION_SELECTION_DECISIONS: usize = 4_096;
 const MAX_CONFIGURATION_BRANCH_PREFIX_BYTES: usize = 256 * 1024 * 1024;
+type RetainedConfigurationMemoryGuard<'a> =
+    dyn FnMut(&Configuration, usize) -> Result<usize, CrucibleArtifactError> + 'a;
 const CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V2: u32 = 2;
 const CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V2: &[u8] = b"crucible.finding-minimization-policy.v2\0";
 const CRUCIBLE_MINIMIZATION_CANDIDATES: u32 = 4_096;
@@ -1254,6 +1256,12 @@ pub enum CrucibleArtifactError {
     /// A configuration exceeds the bounded selection-resolution contract.
     #[error("Crucible configuration exceeds the campaign selection resolution limit")]
     SelectionResolutionLimit,
+    /// Selected-continuation decoding exceeds its admitted logical memory budget.
+    #[error("Crucible selected-continuation decoding exceeds `{resource}`")]
+    ResourceLimit {
+        /// Stable resource category that refused the decoded representation.
+        resource: &'static str,
+    },
     /// A derived schedule prefix was inconsistent with its source schedule.
     #[error(transparent)]
     SelectionPrefix(#[from] crucible::ScheduleError),
@@ -1463,7 +1471,41 @@ fn decode_crucible_configuration_artifact_with_resolver(
 ) -> Result<(Configuration, SignalFaultCampaignReplayPlan), CrucibleArtifactError> {
     let configuration =
         decode_crucible_configuration_artifact_structural(scenario, scenario_artifact, artifact)?;
-    let replay = resolve_selection_decisions(&configuration, artifact, resolver)?;
+    let replay = resolve_selection_decisions(&configuration, artifact, None, |ids, _| {
+        resolver
+            .resolve_configuration_selections(ids)
+            .map_err(Into::into)
+    })?;
+    Ok((configuration, replay))
+}
+
+pub(crate) fn decode_crucible_configuration_artifact_with_signal_fault_replay_guarded(
+    scenario: &ScenarioDefForm,
+    scenario_artifact: &ScenarioArtifact,
+    artifact: &ConfigurationArtifact,
+    store: &CampaignExecutorStore,
+    retained_memory_guard: Option<&mut RetainedConfigurationMemoryGuard<'_>>,
+) -> Result<(Configuration, SignalFaultCampaignReplayPlan), CrucibleArtifactError> {
+    let configuration =
+        decode_crucible_configuration_artifact_structural(scenario, scenario_artifact, artifact)?;
+    let replay = resolve_selection_decisions(
+        &configuration,
+        artifact,
+        retained_memory_guard,
+        |ids, selection_resolution_limit| match selection_resolution_limit {
+            Some(maximum_canonical_bytes) => store
+                .resolve_selections_with_canonical_byte_limit(ids, maximum_canonical_bytes)
+                .map_err(|error| match error {
+                    CampaignRepositoryError::SelectionResolutionBudgetExceeded { .. } => {
+                        CrucibleArtifactError::ResourceLimit {
+                            resource: "selected-origin-decoded-resident-bytes",
+                        }
+                    }
+                    error => CrucibleArtifactError::SelectionRepository(error),
+                }),
+            None => store.resolve_selections(ids).map_err(Into::into),
+        },
+    )?;
     Ok((configuration, replay))
 }
 
@@ -1532,11 +1574,18 @@ fn decode_crucible_configuration_artifact_structural(
     Ok(configuration)
 }
 
-fn resolve_selection_decisions(
+fn resolve_selection_decisions<R>(
     configuration: &Configuration,
     artifact: &ConfigurationArtifact,
-    resolver: &impl ConfigurationSelectionResolver,
-) -> Result<SignalFaultCampaignReplayPlan, CrucibleArtifactError> {
+    retained_memory_guard: Option<&mut RetainedConfigurationMemoryGuard<'_>>,
+    resolve: R,
+) -> Result<SignalFaultCampaignReplayPlan, CrucibleArtifactError>
+where
+    R: FnOnce(
+        &[SelectionId],
+        Option<usize>,
+    ) -> Result<Vec<ResolvedSelection>, CrucibleArtifactError>,
+{
     let mut selections = Vec::new();
     let mut campaign_branch_count = 0usize;
     for (index, decision) in configuration.schedule.decisions().iter().enumerate() {
@@ -1565,6 +1614,9 @@ fn resolve_selection_decisions(
     if branch_prefix_bytes > MAX_CONFIGURATION_BRANCH_PREFIX_BYTES {
         return Err(CrucibleArtifactError::SelectionResolutionLimit);
     }
+    let selection_resolution_limit = retained_memory_guard
+        .map(|guard| guard(configuration, campaign_branch_count))
+        .transpose()?;
     if selections.is_empty() {
         if configuration.schedule.decisions().iter().any(|decision| {
             matches!(decision, Decision::Override(override_decision) if override_decision.point.key.starts_with("signal-fault/"))
@@ -1578,7 +1630,7 @@ fn resolve_selection_decisions(
         .iter()
         .map(|(_, selection)| selection.id())
         .collect::<Result<Vec<_>, _>>()?;
-    let resolved = resolver.resolve_configuration_selections(&selection_ids)?;
+    let resolved = resolve(&selection_ids, selection_resolution_limit)?;
     let mut signal_fault_branches = Vec::new();
     let mut covered_signal_fault_overrides = BTreeSet::new();
     for ((index, selection), resolved) in selections.into_iter().zip(resolved) {
@@ -1697,15 +1749,16 @@ mod tests {
         VirtualTime,
     };
     use crucible_campaign::{
-        AssignmentId, AttemptResourceLimits, BooleanDomain, BudgetGrant, CampaignCommandId,
-        CampaignControlAction, CampaignLineage, CampaignMode, CampaignName, CampaignPolicy,
-        CampaignRepository, CampaignSeed, ChoiceClassContext, ChoiceCoordinate, ChoiceDiscovery,
-        ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue, ControlRequest,
-        CoverageProjection, DaemonEpoch, ExecutionRetentionIntent, ExecutorService, ExplorerPolicy,
-        FairnessPolicy, FindingCandidateBundleId, FindingKind, FindingTarget, MeasurementSet,
-        Observation, ObservationCandidate, ProgressiveWideningPolicy, PropertyVerdictSet,
-        PuctPolicy, RetentionPolicy, SelectableDeclaration, Selection, SelectionOrigin,
-        StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
+        AlternativeId, AssignmentId, AttemptResourceLimits, BooleanDomain, BudgetGrant,
+        CampaignCommandId, CampaignControlAction, CampaignLineage, CampaignMode, CampaignName,
+        CampaignPolicy, CampaignRepository, CampaignSeed, ChoiceClassContext, ChoiceCoordinate,
+        ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue,
+        ControlRequest, CoverageProjection, DaemonEpoch, DiscreteAlternative, DiscreteDomain,
+        ExecutionRetentionIntent, ExecutorService, ExplorerPolicy, FairnessPolicy,
+        FindingCandidateBundleId, FindingKind, FindingTarget, MeasurementSet, Observation,
+        ObservationCandidate, ProgressiveWideningPolicy, PropertyVerdictSet, PuctPolicy,
+        RetentionPolicy, SelectableDeclaration, Selection, SelectionOrigin, StopCondition,
+        StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
     };
     use crucible_cas::content_store::{
         ContentId, DirectoryBlobBackend, MemoryBlobBackend, MemoryRefBackend, ObjectKind,
@@ -2005,6 +2058,102 @@ mod tests {
         )
         .expect("standardized model sample should pass executor verification");
         assert_eq!(decoded.schedule, schedule);
+    }
+
+    #[test]
+    fn selected_decode_refuses_a_large_domain_that_exceeds_its_remaining_budget() {
+        let scenario = crucible::happy_path_scenario()
+            .expect("happy-path scenario")
+            .scenario;
+        let scenario_artifact =
+            encode_crucible_scenario_artifact(&scenario).expect("scenario artifact");
+        let selected = AlternativeId::from_hash(CampaignHash::derive(
+            "crucible.test.large-selected-domain.v1",
+            &0_u32.to_be_bytes(),
+        ));
+        let alternatives = (0_u32..512)
+            .map(|index| {
+                let id = AlternativeId::from_hash(CampaignHash::derive(
+                    "crucible.test.large-selected-domain.v1",
+                    &index.to_be_bytes(),
+                ));
+                let alternative =
+                    DiscreteAlternative::new(id, "x".repeat(1024), None).expect("alternative");
+                (id, alternative)
+            })
+            .collect();
+        let domain = ChoiceDomain::Discrete(
+            DiscreteDomain::new(1, alternatives).expect("large discrete domain"),
+        );
+        let declaration = SelectableDeclaration::new(
+            "product.test.large-selected-domain",
+            ChoiceSource::Scheduler {
+                producer: String::from("large-domain-test"),
+            },
+            domain.clone(),
+            ChoiceValue::Discrete(selected),
+            ChoiceClassContext::new(BTreeSet::new()).expect("class context"),
+            BTreeSet::new(),
+            true,
+        )
+        .expect("selectable declaration");
+        let opportunity = ChoiceOpportunity::new(
+            campaign_scenario_id(scenario.scenario_def().id()),
+            &declaration,
+            &domain,
+            ChoiceCoordinate {
+                scheduler: CampaignHash::derive("test", b"large-domain-scheduler"),
+                producer: CampaignHash::derive("test", b"large-domain-producer"),
+            },
+            "large-selected-domain",
+            None,
+        )
+        .expect("choice opportunity");
+        let selection = Selection::new(
+            &opportunity,
+            &domain,
+            ChoiceValue::Discrete(selected),
+            SelectionOrigin::Default,
+        )
+        .expect("default selection");
+        let schedule =
+            Schedule::empty().appended(Decision::Selection(SelectionDecision::new(&selection)));
+        let artifact = encode_crucible_configuration_artifact(&scenario_artifact, &schedule)
+            .expect("configuration artifact");
+        let repository = Arc::new(CampaignRepository::new(
+            Arc::new(MemoryBlobBackend::new("large-selected-domain", u64::MAX)),
+            Arc::new(MemoryRefBackend::new()),
+        ));
+        repository
+            .publish_choice_domain(&domain)
+            .expect("publish domain");
+        repository
+            .publish_selectable(&declaration)
+            .expect("publish declaration");
+        repository
+            .publish_choice_opportunity(&opportunity)
+            .expect("publish opportunity");
+        repository
+            .publish_selection(&selection)
+            .expect("publish selection");
+        let store = CampaignExecutorStore::new(repository);
+        let mut guard = |_configuration: &Configuration, _branches: usize| Ok(64 * 1024);
+
+        let error = decode_crucible_configuration_artifact_with_signal_fault_replay_guarded(
+            &scenario,
+            &scenario_artifact,
+            &artifact,
+            &store,
+            Some(&mut guard),
+        )
+        .expect_err("large resolution closure must fit the selected decode budget");
+
+        assert!(matches!(
+            error,
+            CrucibleArtifactError::ResourceLimit {
+                resource: "selected-origin-decoded-resident-bytes"
+            }
+        ));
     }
 
     #[test]

@@ -9,7 +9,7 @@ pub use facts::{
     ActiveAttemptPolicy, BudgetGrant, CampaignControlAction, CampaignDerivation, CampaignFact,
     CampaignState, ControlRequest, DiscoveryRequest, NonModeledAttemptDisposition, PinChange,
     PinRequest, PinRetention, PolicyActivation, SavepointCaptureOutcome, SavepointCaptureRequest,
-    SavepointCaptureResolution,
+    SavepointCaptureResolution, SavepointContinuationSelection,
 };
 
 use std::collections::{BTreeMap, BTreeSet};

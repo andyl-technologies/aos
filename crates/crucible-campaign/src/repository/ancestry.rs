@@ -213,6 +213,58 @@ impl CampaignRepository {
         })
     }
 
+    pub(super) fn find_savepoint_continuation_result(
+        &self,
+        content_id: ContentId,
+        selection: &SavepointContinuationSelection,
+        continuation: &Attempt,
+        replayed: bool,
+    ) -> Result<SavepointContinuationResult, CampaignRepositoryError> {
+        let key = mutation_result_hash_key("savepoint-continuation", selection.command.as_hash());
+        let (result_content, loaded, fact) = self.mutation_result_snapshot(content_id, key)?;
+        let CampaignFact::SavepointContinuationSelected(candidate) = fact else {
+            return Err(integrity(
+                "savepoint-continuation-result-index-type-mismatch",
+            ));
+        };
+        if candidate != *selection || continuation.id()? != selection.continuation {
+            return Err(CampaignRepositoryError::CommandReuse);
+        }
+        let prior_snapshot = loaded
+            .snapshot
+            .parent()
+            .ok_or_else(|| integrity("savepoint-continuation-result-has-no-parent"))?;
+        self.validate_savepoint_continuation_basis(
+            &self.read_snapshot(prior_snapshot.content_id())?,
+            selection,
+            continuation,
+        )?;
+        let accounting = loaded.snapshot.roots().accounting;
+        let admission = self
+            .merkle
+            .get(
+                accounting,
+                attempt_execution_basis_key(selection.continuation),
+            )?
+            .ok_or_else(|| integrity("savepoint-continuation-result-basis-is-missing"))?;
+        let source = self
+            .merkle
+            .get(
+                accounting,
+                savepoint_continuation_source_key(selection.continuation),
+            )?
+            .ok_or_else(|| integrity("savepoint-continuation-result-source-is-missing"))?;
+        Ok(SavepointContinuationResult {
+            prior_snapshot,
+            new_snapshot: CampaignSnapshotId::from_content_id(result_content)?,
+            continuation: selection.continuation,
+            admission: AttemptAdmissionId::from_content_id(admission)?,
+            selection: CampaignFact::SavepointContinuationSelected(selection.clone()).id()?,
+            source: CampaignFactId::from_content_id(source)?,
+            replayed,
+        })
+    }
+
     pub(super) fn find_branch_request_result(
         &self,
         content_id: ContentId,
@@ -536,6 +588,9 @@ impl CampaignRepository {
                 "savepoint-capture-resolution",
                 resolution.command.as_hash(),
             ),
+            CampaignFact::SavepointContinuationSelected(selection) => {
+                mutation_result_hash_key("savepoint-continuation", selection.command.as_hash())
+            }
             CampaignFact::BranchRequestIssued(request) => {
                 mutation_result_content_key("branch-request", request.content_id())
             }

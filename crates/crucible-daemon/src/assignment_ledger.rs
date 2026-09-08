@@ -26,15 +26,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crucible_campaign::{
     AssignmentId, AttemptExecutionScope, AttemptId, AttemptResourceLimits, AttemptStartMode,
-    CampaignCodecError, CampaignFactId, CampaignHash, CampaignLineageId, ConfigurationArtifactId,
-    DaemonEpoch, ExactCheckpointId, ExecutionId, ExecutionRetentionIntent,
+    CampaignCodecError, CampaignFactId, CampaignHash, CampaignLineageId, CampaignSnapshotId,
+    ConfigurationArtifactId, DaemonEpoch, ExactCheckpointId, ExecutionId, ExecutionRetentionIntent,
     FindingCandidateBundleId, ObservationId, SubmitAttemptRequest, SubmitAttemptResponse,
     attempt_execution_basis_digest_for_start_mode,
 };
 use rustix::fs::{FlockOperation, flock};
 
 const ASSIGNMENT_MAGIC: &[u8] = b"crucible.executor.assignment-record.v1\0";
-const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v11\0";
+const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v12\0";
+const ATTEMPT_STATE_MAGIC_V11: &[u8] = b"crucible.executor.attempt-state-record.v11\0";
 const ATTEMPT_STATE_MAGIC_V10: &[u8] = b"crucible.executor.attempt-state-record.v10\0";
 const ATTEMPT_STATE_MAGIC_V9: &[u8] = b"crucible.executor.attempt-state-record.v9\0";
 const ATTEMPT_STATE_MAGIC_V8: &[u8] = b"crucible.executor.attempt-state-record.v8\0";
@@ -46,7 +47,8 @@ const ATTEMPT_STATE_MAGIC_V3: &[u8] = b"crucible.executor.attempt-state-record.v
 const ATTEMPT_STATE_MAGIC_V2: &[u8] = b"crucible.executor.attempt-state-record.v2\0";
 const ATTEMPT_STATE_MAGIC_V1: &[u8] = b"crucible.executor.attempt-state-record.v1\0";
 const ASSIGNMENT_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-record.v1";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v11";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v12";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN_V11: &str = "crucible.executor.attempt-state-record.v11";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V10: &str = "crucible.executor.attempt-state-record.v10";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V9: &str = "crucible.executor.attempt-state-record.v9";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V8: &str = "crucible.executor.attempt-state-record.v8";
@@ -111,6 +113,19 @@ pub struct AttemptExecutionKey {
     scope: AttemptExecutionScope,
 }
 
+/// Exact resume request bound to one later checkpoint of an execution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExactCheckpointResumeBasis {
+    /// Idempotent assignment identity for the resume operation.
+    pub assignment: AssignmentId,
+    /// Digest of every canonical resume-request field.
+    pub request_digest: CampaignHash,
+    /// Execution incarnation that produced the paused root.
+    pub prior_execution: ExecutionId,
+    /// Exact checkpoint from which execution must resume.
+    pub checkpoint: ExactCheckpointId,
+}
+
 /// Durable operational origin of one local execution incarnation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttemptExecutionOrigin {
@@ -127,6 +142,21 @@ pub enum AttemptExecutionOrigin {
         /// Exact checkpoint from which execution must resume.
         checkpoint: ExactCheckpointId,
     },
+    /// Execution adopts the first authenticated source of a semantic continuation.
+    SelectedSavepoint {
+        /// Immutable continuation-selection fact that certifies this source.
+        certificate: CampaignFactId,
+        /// Capture request whose operational scope first owned the source.
+        request: CampaignFactId,
+        /// Immutable attempt executed by the source capture.
+        source_attempt: AttemptId,
+        /// Execution incarnation that published the source checkpoint.
+        source_execution: ExecutionId,
+        /// First physical source fixed by the immutable certificate.
+        source_checkpoint: ExactCheckpointId,
+        /// Later checkpoint of this semantic execution, when resuming after a pause.
+        resume: Option<ExactCheckpointResumeBasis>,
+    },
 }
 
 impl AttemptExecutionOrigin {
@@ -136,6 +166,73 @@ impl AttemptExecutionOrigin {
         match self {
             Self::Initial => None,
             Self::ExactCheckpoint { checkpoint, .. } => Some(checkpoint),
+            Self::SelectedSavepoint {
+                source_checkpoint,
+                resume,
+                ..
+            } => Some(match resume {
+                Some(resume) => resume.checkpoint,
+                None => source_checkpoint,
+            }),
+        }
+    }
+
+    /// Returns the immutable selected-source root retained by the certificate.
+    #[must_use]
+    pub const fn certificate_source_checkpoint(self) -> Option<ExactCheckpointId> {
+        match self {
+            Self::SelectedSavepoint {
+                source_checkpoint, ..
+            } => Some(source_checkpoint),
+            Self::Initial | Self::ExactCheckpoint { .. } => None,
+        }
+    }
+
+    /// Returns the later own-checkpoint resume basis, when one is present.
+    #[must_use]
+    pub const fn resume_basis(self) -> Option<ExactCheckpointResumeBasis> {
+        match self {
+            Self::ExactCheckpoint {
+                assignment,
+                request_digest,
+                prior_execution,
+                checkpoint,
+            } => Some(ExactCheckpointResumeBasis {
+                assignment,
+                request_digest,
+                prior_execution,
+                checkpoint,
+            }),
+            Self::SelectedSavepoint { resume, .. } => resume,
+            Self::Initial => None,
+        }
+    }
+
+    /// Preserves a selected certificate while replacing its later resume input.
+    #[must_use]
+    pub const fn with_resume_basis(self, resume: ExactCheckpointResumeBasis) -> Self {
+        match self {
+            Self::SelectedSavepoint {
+                certificate,
+                request,
+                source_attempt,
+                source_execution,
+                source_checkpoint,
+                ..
+            } => Self::SelectedSavepoint {
+                certificate,
+                request,
+                source_attempt,
+                source_execution,
+                source_checkpoint,
+                resume: Some(resume),
+            },
+            Self::Initial | Self::ExactCheckpoint { .. } => Self::ExactCheckpoint {
+                assignment: resume.assignment,
+                request_digest: resume.request_digest,
+                prior_execution: resume.prior_execution,
+                checkpoint: resume.checkpoint,
+            },
         }
     }
 }
@@ -638,19 +735,27 @@ impl AttemptRuntimeState {
         }
     }
 
-    pub(crate) fn retained_checkpoint_roots(self) -> [Option<ExactCheckpointId>; 3] {
+    pub(crate) fn retained_checkpoint_roots(self) -> [Option<ExactCheckpointId>; 4] {
         let current = self.checkpoint();
         let promotion_source = self
             .promotion_source_checkpoint()
             .filter(|checkpoint| Some(*checkpoint) != current);
-        let origin = self.origin_checkpoint().filter(|checkpoint| {
+        let resume_input = self.origin_checkpoint().filter(|checkpoint| {
             Some(*checkpoint) != current && Some(*checkpoint) != promotion_source
         });
-        [current, promotion_source, origin]
+        let certificate_source =
+            self.origin()
+                .certificate_source_checkpoint()
+                .filter(|checkpoint| {
+                    Some(*checkpoint) != current
+                        && Some(*checkpoint) != promotion_source
+                        && Some(*checkpoint) != resume_input
+                });
+        [current, promotion_source, resume_input, certificate_source]
     }
 
     /// Returns complete checkpoint roots known to be materialized in this state.
-    pub(crate) fn materialized_checkpoint_roots(self) -> [Option<ExactCheckpointId>; 3] {
+    pub(crate) fn materialized_checkpoint_roots(self) -> [Option<ExactCheckpointId>; 4] {
         let current = match self {
             Self::Paused { checkpoint, .. } => Some(checkpoint),
             Self::Running { .. }
@@ -663,10 +768,18 @@ impl AttemptRuntimeState {
             | Self::TerminalFailure { .. } => None,
         };
         let promotion_source = self.promotion_source_checkpoint();
-        let origin = self.origin_checkpoint().filter(|checkpoint| {
+        let resume_input = self.origin_checkpoint().filter(|checkpoint| {
             Some(*checkpoint) != current && Some(*checkpoint) != promotion_source
         });
-        [current, promotion_source, origin]
+        let certificate_source =
+            self.origin()
+                .certificate_source_checkpoint()
+                .filter(|checkpoint| {
+                    Some(*checkpoint) != current
+                        && Some(*checkpoint) != promotion_source
+                        && Some(*checkpoint) != resume_input
+                });
+        [current, promotion_source, resume_input, certificate_source]
     }
 
     fn validates_for_key(self, key: AttemptExecutionKey) -> bool {
@@ -1817,6 +1930,8 @@ fn decode_attempt_state(
 ) -> Result<(AttemptExecutionKey, AttemptRuntimeState), AssignmentLedgerError> {
     let (payload, magic) = if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN) {
         (payload, ATTEMPT_STATE_MAGIC)
+    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V11) {
+        (payload, ATTEMPT_STATE_MAGIC_V11)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V10) {
         (payload, ATTEMPT_STATE_MAGIC_V10)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V9) {
@@ -1845,13 +1960,14 @@ fn decode_attempt_state(
     cursor.require(magic)?;
     let lineage = parse_typed(cursor.bytes()?, CampaignLineageId::parse)?;
     let attempt = parse_typed(cursor.bytes()?, AttemptId::parse)?;
-    let scope = if magic == ATTEMPT_STATE_MAGIC {
+    let scope = if magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V11 {
         AttemptExecutionScope::from_canonical_bytes(cursor.bytes()?)?
     } else {
         AttemptExecutionScope::Semantic
     };
     let execution_basis = CampaignHash::from_bytes(cursor.fixed()?);
     let origin = if magic == ATTEMPT_STATE_MAGIC
+        || magic == ATTEMPT_STATE_MAGIC_V11
         || magic == ATTEMPT_STATE_MAGIC_V10
         || magic == ATTEMPT_STATE_MAGIC_V9
         || magic == ATTEMPT_STATE_MAGIC_V8
@@ -1860,7 +1976,7 @@ fn decode_attempt_state(
         || magic == ATTEMPT_STATE_MAGIC_V5
         || magic == ATTEMPT_STATE_MAGIC_V4
     {
-        decode_attempt_origin(&mut cursor)?
+        decode_attempt_origin(&mut cursor, magic == ATTEMPT_STATE_MAGIC)?
     } else {
         AttemptExecutionOrigin::Initial
     };
@@ -1878,6 +1994,7 @@ fn decode_attempt_state(
             let observation = parse_typed(cursor.bytes()?, ObservationId::parse)?;
             let finding_candidate = decode_optional_finding_candidate(&mut cursor, magic)?;
             let finding_candidate_acknowledged = if magic == ATTEMPT_STATE_MAGIC
+                || magic == ATTEMPT_STATE_MAGIC_V11
                 || magic == ATTEMPT_STATE_MAGIC_V10
                 || magic == ATTEMPT_STATE_MAGIC_V9
             {
@@ -1915,6 +2032,7 @@ fn decode_attempt_state(
             execution,
         },
         8 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V11
             || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
             || magic == ATTEMPT_STATE_MAGIC_V8
@@ -1928,6 +2046,7 @@ fn decode_attempt_state(
             }
         }
         3 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V11
             || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
             || magic == ATTEMPT_STATE_MAGIC_V8
@@ -1948,6 +2067,7 @@ fn decode_attempt_state(
             }
         }
         4 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V11
             || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
             || magic == ATTEMPT_STATE_MAGIC_V8
@@ -1965,6 +2085,7 @@ fn decode_attempt_state(
             }
         }
         5 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V11
             || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
             || magic == ATTEMPT_STATE_MAGIC_V8
@@ -1983,6 +2104,7 @@ fn decode_attempt_state(
             }
         }
         6 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V11
             || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
             || magic == ATTEMPT_STATE_MAGIC_V8
@@ -2001,6 +2123,7 @@ fn decode_attempt_state(
                 promotion_basis: if matches!(
                     magic,
                     ATTEMPT_STATE_MAGIC
+                        | ATTEMPT_STATE_MAGIC_V11
                         | ATTEMPT_STATE_MAGIC_V10
                         | ATTEMPT_STATE_MAGIC_V9
                         | ATTEMPT_STATE_MAGIC_V8
@@ -2009,7 +2132,10 @@ fn decode_attempt_state(
                 ) {
                     decode_checkpoint_promotion_basis(
                         &mut cursor,
-                        magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V10,
+                        magic == ATTEMPT_STATE_MAGIC
+                            || magic == ATTEMPT_STATE_MAGIC_V11
+                            || magic == ATTEMPT_STATE_MAGIC_V10,
+                        magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V11,
                         magic == ATTEMPT_STATE_MAGIC,
                     )?
                 } else {
@@ -2018,6 +2144,7 @@ fn decode_attempt_state(
             }
         }
         7 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V11
             || magic == ATTEMPT_STATE_MAGIC_V10
             || magic == ATTEMPT_STATE_MAGIC_V9
             || magic == ATTEMPT_STATE_MAGIC_V8
@@ -2035,6 +2162,7 @@ fn decode_attempt_state(
                 promotion_basis: if matches!(
                     magic,
                     ATTEMPT_STATE_MAGIC
+                        | ATTEMPT_STATE_MAGIC_V11
                         | ATTEMPT_STATE_MAGIC_V10
                         | ATTEMPT_STATE_MAGIC_V9
                         | ATTEMPT_STATE_MAGIC_V8
@@ -2043,7 +2171,10 @@ fn decode_attempt_state(
                 ) {
                     decode_checkpoint_promotion_basis(
                         &mut cursor,
-                        magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V10,
+                        magic == ATTEMPT_STATE_MAGIC
+                            || magic == ATTEMPT_STATE_MAGIC_V11
+                            || magic == ATTEMPT_STATE_MAGIC_V10,
+                        magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V11,
                         magic == ATTEMPT_STATE_MAGIC,
                     )?
                 } else {
@@ -2105,6 +2236,7 @@ fn decode_optional_finding_candidate(
     magic: &[u8],
 ) -> Result<Option<FindingCandidateBundleId>, AssignmentLedgerError> {
     if magic != ATTEMPT_STATE_MAGIC
+        && magic != ATTEMPT_STATE_MAGIC_V11
         && magic != ATTEMPT_STATE_MAGIC_V10
         && magic != ATTEMPT_STATE_MAGIC_V9
         && magic != ATTEMPT_STATE_MAGIC_V8
@@ -2151,6 +2283,16 @@ fn encode_checkpoint_promotion_basis(
             push_bytes(payload, request.to_text().as_bytes());
             push_bytes(payload, configuration.to_text().as_bytes());
         }
+        AttemptStartMode::SelectedSavepoint {
+            snapshot,
+            selection,
+            request,
+        } => {
+            payload.push(3);
+            push_bytes(payload, snapshot.to_text().as_bytes());
+            push_bytes(payload, selection.to_text().as_bytes());
+            push_bytes(payload, request.to_text().as_bytes());
+        }
     }
 }
 
@@ -2158,6 +2300,7 @@ fn decode_checkpoint_promotion_basis(
     cursor: &mut RecordCursor<'_>,
     has_start_mode: bool,
     has_savepoint_capture: bool,
+    has_selected_savepoint: bool,
 ) -> Result<Option<CheckpointPromotionExecutionBasis>, AssignmentLedgerError> {
     match cursor.byte()? {
         0 => Ok(None),
@@ -2190,6 +2333,11 @@ fn decode_checkpoint_promotion_basis(
                             ConfigurationArtifactId::parse,
                         )?,
                     },
+                    3 if has_selected_savepoint => AttemptStartMode::SelectedSavepoint {
+                        snapshot: parse_typed(cursor.bytes()?, CampaignSnapshotId::parse)?,
+                        selection: parse_typed(cursor.bytes()?, CampaignFactId::parse)?,
+                        request: parse_typed(cursor.bytes()?, CampaignFactId::parse)?,
+                    },
                     _ => return Err(corrupt("checkpoint-promotion-start-mode-tag")),
                 }
             } else {
@@ -2218,11 +2366,37 @@ fn encode_attempt_origin(payload: &mut Vec<u8>, origin: AttemptExecutionOrigin) 
             payload.extend_from_slice(&prior_execution.as_bytes());
             push_bytes(payload, checkpoint.to_text().as_bytes());
         }
+        AttemptExecutionOrigin::SelectedSavepoint {
+            certificate,
+            request,
+            source_attempt,
+            source_execution,
+            source_checkpoint,
+            resume,
+        } => {
+            payload.push(2);
+            push_bytes(payload, certificate.to_text().as_bytes());
+            push_bytes(payload, request.to_text().as_bytes());
+            push_bytes(payload, source_attempt.to_text().as_bytes());
+            payload.extend_from_slice(&source_execution.as_bytes());
+            push_bytes(payload, source_checkpoint.to_text().as_bytes());
+            match resume {
+                Some(resume) => {
+                    payload.push(1);
+                    payload.extend_from_slice(&resume.assignment.as_bytes());
+                    payload.extend_from_slice(&resume.request_digest.as_bytes());
+                    payload.extend_from_slice(&resume.prior_execution.as_bytes());
+                    push_bytes(payload, resume.checkpoint.to_text().as_bytes());
+                }
+                None => payload.push(0),
+            }
+        }
     }
 }
 
 fn decode_attempt_origin(
     cursor: &mut RecordCursor<'_>,
+    has_selected_savepoint: bool,
 ) -> Result<AttemptExecutionOrigin, AssignmentLedgerError> {
     match cursor.byte()? {
         0 => Ok(AttemptExecutionOrigin::Initial),
@@ -2232,6 +2406,31 @@ fn decode_attempt_origin(
             prior_execution: ExecutionId::from_bytes(cursor.fixed()?)?,
             checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
         }),
+        2 if has_selected_savepoint => {
+            let certificate = parse_typed(cursor.bytes()?, CampaignFactId::parse)?;
+            let request = parse_typed(cursor.bytes()?, CampaignFactId::parse)?;
+            let source_attempt = parse_typed(cursor.bytes()?, AttemptId::parse)?;
+            let source_execution = ExecutionId::from_bytes(cursor.fixed()?)?;
+            let source_checkpoint = parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?;
+            let resume = match cursor.byte()? {
+                0 => None,
+                1 => Some(ExactCheckpointResumeBasis {
+                    assignment: AssignmentId::from_bytes(cursor.fixed()?)?,
+                    request_digest: CampaignHash::from_bytes(cursor.fixed()?),
+                    prior_execution: ExecutionId::from_bytes(cursor.fixed()?)?,
+                    checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
+                }),
+                _ => return Err(corrupt("attempt-state-selected-resume-option-tag")),
+            };
+            Ok(AttemptExecutionOrigin::SelectedSavepoint {
+                certificate,
+                request,
+                source_attempt,
+                source_execution,
+                source_checkpoint,
+                resume,
+            })
+        }
         _ => Err(corrupt("attempt-state-origin-unknown-tag")),
     }
 }

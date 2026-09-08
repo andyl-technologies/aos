@@ -20,7 +20,7 @@ crucible.content-store.pack-repack-plan	1	crucible-cas::content_store	administra
 crucible.campaign.lineage	1	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.policy	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
 crucible.campaign.snapshot	3	crucible-campaign::object	campaign-snapshot	gate:campaign-model,gate:content-address
-crucible.campaign.fact	12	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
+crucible.campaign.fact	13	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.budget-ledger	2	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.planning-view	1	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.planner-engine	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
@@ -45,7 +45,7 @@ crucible.campaign.configuration-artifact	1	crucible-campaign::artifact	configura
 crucible.campaign.branch-request	6	crucible-campaign::exploration	campaign-fact	gate:branch-point-model,gate:content-address
 crucible.campaign.proposal	1	crucible-campaign::exploration	campaign-fact	gate:lazy-frontier,gate:content-address
 crucible.campaign.branch-path	2	crucible-campaign::exploration	campaign-fact	gate:campaign-replay,gate:content-address
-crucible.campaign.attempt	2	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
+crucible.campaign.attempt	3	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
 crucible.campaign.attempt-admission	2	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
 crucible.campaign.planner-step	4	crucible-campaign::exploration	campaign-fact	gate:component-contract,gate:content-address
 crucible.campaign.planner-step-proposal	1	crucible-campaign::exploration	component-message	gate:component-contract
@@ -55,11 +55,11 @@ crucible.campaign.planner-response	1	crucible-campaign::planner_service	componen
 crucible.campaign.retained-planner-request	1	crucible-campaign::object	policy	gate:component-contract,gate:content-address
 crucible.campaign.debugger-submission	1	crucible-campaign::authority	component-message	gate:component-contract
 crucible.campaign.attempt-execution-scope	1	crucible-campaign::execution	component-message	gate:component-contract
-crucible.campaign.submit-attempt-request	4	crucible-campaign::execution	component-message	gate:component-contract
+crucible.campaign.submit-attempt-request	5	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.submit-attempt-response	4	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.get-attempt-execution-request	3	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.get-attempt-execution-response	4	crucible-campaign::execution	component-message	gate:component-contract
-crucible.campaign.resume-attempt-execution-request	3	crucible-campaign::execution	component-message	gate:component-contract
+crucible.campaign.resume-attempt-execution-request	4	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.resume-attempt-execution-response	4	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.cancel-attempt-execution-request	3	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.cancel-attempt-execution-response	4	crucible-campaign::execution	component-message	gate:component-contract

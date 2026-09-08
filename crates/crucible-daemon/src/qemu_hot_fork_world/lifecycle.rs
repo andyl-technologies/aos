@@ -81,8 +81,15 @@ where
     /// Returns a scheduler error when the adopted lifecycle cannot expose its
     /// exact boundary, retained only a suffix, or its event bytes overflow.
     pub fn start_materialization(&self) -> Result<QemuFreshStartMaterialization, SchedulerError> {
-        let (event_log, base_events, completed_quanta, frontier, quiescence, terminal_verdict) =
-            self.lifecycle.resume_state()?.into_parts();
+        let (
+            configuration,
+            event_log,
+            base_events,
+            completed_quanta,
+            frontier,
+            quiescence,
+            terminal_verdict,
+        ) = self.lifecycle.resume_state()?.into_parts();
         if base_events != 0 {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
@@ -98,6 +105,7 @@ where
                 })
         })?;
         Ok(QemuFreshStartMaterialization::from_resume_parts(
+            configuration,
             event_log,
             event_log_bytes,
             completed_quanta,

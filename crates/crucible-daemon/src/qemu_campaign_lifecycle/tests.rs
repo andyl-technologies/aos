@@ -37,14 +37,17 @@ use crucible_qemu::{
 };
 
 use super::*;
+use crate::crucible_execution::{CrucibleAttemptOrigin, CrucibleAttemptOrigins};
 use crate::exact_checkpoint_store::AttemptCheckpointResultState;
 use crate::executor_supervisor::{AttemptCheckpointHandoff, ExecutionCheckpointHandoff};
 use crate::{
-    AttemptExecutionProduct, CapturedAttemptCheckpoint, CheckpointHandoffFailure,
-    CrucibleAttemptExecution, CrucibleMaterializationTier, CrucibleResolvedAttemptStart,
+    AttemptExecutionOrigin, AttemptExecutionProduct, CapturedAttemptCheckpoint,
+    CheckpointHandoffFailure, CrucibleAttemptExecution, CrucibleExecutionOutcome,
+    CrucibleExecutionRunner, CrucibleMaterializationTier, CrucibleResolvedAttemptStart,
     ExactCheckpointStore, ExecutionCancellation, ExecutionCheckpointRequest,
-    PreparedAttemptCheckpoint, QemuAttemptOperationalBoundary, QemuAttemptResourceGuard,
-    QemuFreshModeledDriver,
+    PreparedAttemptCheckpoint, QemuAttemptExecutionRouter, QemuAttemptOperationalBoundary,
+    QemuAttemptResourceGuard, QemuFreshModeledDriver, QemuSavepointReplayProof,
+    QemuSelectedOriginResumeRunner,
 };
 
 #[test]
@@ -1260,6 +1263,99 @@ impl QemuFreshAttemptDriver for FakeFreshDriver {
     }
 }
 
+struct AbsentSelectedSourceResume {
+    authentications: Arc<AtomicUsize>,
+}
+
+impl CrucibleExecutionRunner for AbsentSelectedSourceResume {
+    type Error = &'static str;
+
+    fn execute(
+        &mut self,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+    ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+        panic!("selected source absence must route to cold execution")
+    }
+}
+
+impl QemuSelectedOriginResumeRunner for AbsentSelectedSourceResume {
+    fn authenticate_selected_resume_boundary(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<
+        Option<crate::qemu_campaign_driver::QemuSelectedResumeBoundary>,
+        AttemptWorkerFailure<Self::Error>,
+    > {
+        assert!(matches!(
+            input.start(),
+            CrucibleResolvedAttemptStart::AfterAttempt { .. }
+        ));
+        assert!(context.resume_checkpoint().is_some());
+        self.authentications.fetch_add(1, Ordering::SeqCst);
+        Ok(None)
+    }
+
+    fn execute_verified_selected_origin(
+        &mut self,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+        _proof: QemuSavepointReplayProof,
+    ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+        panic!("an absent selected source has no physical execution path")
+    }
+}
+
+#[test]
+fn router_cold_executes_an_initial_selected_origin_when_its_source_is_absent() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let authentications = Arc::new(AtomicUsize::new(0));
+    let fresh = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+            terminal_after_replay: false,
+            checkpoint_ready: true,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let mut router = QemuAttemptExecutionRouter::new(
+        fresh,
+        AbsentSelectedSourceResume {
+            authentications: Arc::clone(&authentications),
+        },
+    );
+    let (input, source_attempt, source_checkpoint) = selected_after_genesis_input();
+    let origin = AttemptExecutionOrigin::SelectedSavepoint {
+        certificate: campaign_fact_id(0xa1),
+        request: campaign_fact_id(0xa2),
+        source_attempt,
+        source_execution: crucible_campaign::ExecutionId::from_bytes([0xa3; 16])
+            .expect("source execution"),
+        source_checkpoint,
+        resume: None,
+    };
+    let context = fresh_runner_context().with_execution_origin(origin);
+
+    let outcome = router
+        .execute(&input, &context)
+        .expect("absent initial selected source should cold execute");
+
+    assert!(matches!(
+        outcome.product(),
+        AttemptExecutionProduct::ExactCheckpoint(_)
+    ));
+    assert_eq!(authentications.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "replay", "drive", "shutdown", "seal"]
+    );
+}
+
 #[test]
 fn fresh_runner_captures_a_sticky_checkpoint_before_shutdown_and_seal() {
     let order = Arc::new(Mutex::new(Vec::new()));
@@ -2206,7 +2302,7 @@ fn fresh_runner_replay_is_bounded_by_admitted_quanta() {
     assert!(matches!(
         error,
         AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
-            QemuFreshStartReplayError::QuantumLimit
+            QemuFreshStartReplayError::ResourceRefusal(_)
         ))
     ));
     assert_eq!(
@@ -2242,7 +2338,10 @@ fn fresh_runner_rejects_producer_override_before_factory_invocation() {
         }));
     let expected = match input.start() {
         CrucibleResolvedAttemptStart::Discover { configuration } => configuration.id(),
-        CrucibleResolvedAttemptStart::Branch { .. } => panic!("expected discovery fixture"),
+        CrucibleResolvedAttemptStart::Branch { .. }
+        | CrucibleResolvedAttemptStart::AfterAttempt { .. } => {
+            panic!("expected discovery fixture")
+        }
     };
 
     let error = runner
@@ -2407,6 +2506,90 @@ fn fresh_runner_input_for_stop(stop: StopCondition) -> CrucibleAttemptExecution 
         path,
         CrucibleResolvedAttemptStart::Discover { configuration },
     )
+}
+
+fn selected_after_genesis_input() -> (
+    CrucibleAttemptExecution,
+    crucible_campaign::AttemptId,
+    ExactCheckpointId,
+) {
+    let base = fresh_runner_input();
+    let configuration = base.start().configuration().clone();
+    let reached = step(
+        &configuration,
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("fresh-runner-non-genesis"),
+            value: 7,
+        }),
+    );
+    let AttemptStart::Discover {
+        configuration: configuration_artifact,
+    } = base.attempt().start()
+    else {
+        panic!("fresh fixture must discover from genesis");
+    };
+    let origin = Attempt::new(
+        AttemptStart::Discover {
+            configuration: configuration_artifact,
+        },
+        base.attempt().path(),
+        StopCondition::ExecutionQuanta(1),
+    )
+    .expect("selected origin attempt");
+    let source_attempt = origin.id().expect("selected origin attempt ID");
+    let reached_id = ConfigurationId::from_hash(CampaignHash::from_bytes(reached.id().bytes));
+    let reached_artifact = ConfigurationArtifact::new(
+        base.lineage().scenario(),
+        base.lineage().scenario_content(),
+        reached_id,
+        1,
+        b"selected-origin-reached".to_vec(),
+    )
+    .expect("selected reached configuration artifact")
+    .id()
+    .expect("selected reached configuration artifact ID");
+    let continuation = Attempt::new(
+        AttemptStart::AfterAttempt {
+            origin: source_attempt,
+            reached: reached_artifact,
+        },
+        base.attempt().path(),
+        StopCondition::Terminal,
+    )
+    .expect("selected continuation attempt");
+    let base_replay = crucible::SignalFaultCampaignReplayPlan::empty(configuration.clone());
+    let reached_replay = crucible::SignalFaultCampaignReplayPlan::empty(reached.clone());
+    let origins = CrucibleAttemptOrigins::new(
+        CrucibleAttemptOrigin::new(origin, reached, reached_replay),
+        Vec::new(),
+    );
+    let input = CrucibleAttemptExecution::from_test_parts(
+        base.lineage().clone(),
+        base.scenario().clone(),
+        continuation,
+        base.path().clone(),
+        CrucibleResolvedAttemptStart::AfterAttempt {
+            base: Box::new(CrucibleResolvedAttemptStart::Discover {
+                configuration: configuration.clone(),
+            }),
+            base_signal_fault_replay: base_replay,
+            origins: Box::new(origins),
+        },
+    );
+    let source_checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
+        ObjectKind::ExactManifest,
+        2,
+        b"absent-selected-source-checkpoint",
+    ))
+    .expect("selected source checkpoint");
+
+    (input, source_attempt, source_checkpoint)
+}
+
+fn campaign_fact_id(byte: u8) -> CampaignFactId {
+    let content = ContentId::for_bytes(ObjectKind::CampaignFact, 10, &[byte; 32]);
+    CampaignFactId::parse(&format!("crucible.campaign.fact@{}", content.encode()))
+        .expect("campaign fact")
 }
 
 fn non_genesis_fresh_runner_input() -> CrucibleAttemptExecution {

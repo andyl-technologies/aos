@@ -569,10 +569,7 @@ fn foreign_key(basis: AttemptExecutionRuntimeBasis) -> QemuHotForkTemplateKey {
 }
 
 fn input_configuration(input: &CrucibleAttemptExecution) -> crucible::ContentHash {
-    match input.start() {
-        crate::CrucibleResolvedAttemptStart::Discover { configuration } => configuration.id(),
-        crate::CrucibleResolvedAttemptStart::Branch { parent, .. } => parent.id(),
-    }
+    input.start().configuration().id()
 }
 
 fn execution_input() -> CrucibleAttemptExecution {

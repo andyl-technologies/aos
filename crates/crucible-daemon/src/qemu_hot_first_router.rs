@@ -182,3 +182,26 @@ where
         }
     }
 }
+
+impl<F, D, R> crate::QemuSelectedOriginVerifier for QemuHotFirstExecutionRouter<F, D, R>
+where
+    F: QemuHotForkWorldLifecycleFactory,
+    D: QemuFreshAttemptDriver,
+    R: crate::QemuSelectedOriginVerifier,
+{
+    fn verify_selected_origin(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
+    ) -> Result<crate::QemuSavepointReplayProof, AttemptWorkerFailure<Self::Error>> {
+        if self.pending.is_some() {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuHotFirstExecutionRouterError::PriorReconciliationPending,
+            ));
+        }
+        self.fallback
+            .verify_selected_origin(input, context, target)
+            .map_err(|failure| failure.map(QemuHotFirstExecutionRouterError::Fallback))
+    }
+}

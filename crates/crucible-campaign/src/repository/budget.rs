@@ -317,7 +317,8 @@ impl CampaignRepository {
             | CampaignFact::PinCommandAccepted(_)
             | CampaignFact::DiscoveryRequested(_)
             | CampaignFact::SavepointCaptureRequested(_)
-            | CampaignFact::SavepointCaptureResolved(_) => 0,
+            | CampaignFact::SavepointCaptureResolved(_)
+            | CampaignFact::SavepointContinuationSelected(_) => 0,
         };
         let prior_attempts = self.accounted_attempts(parent.snapshot.roots().accounting)?;
         let attempts = self

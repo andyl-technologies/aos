@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use crucible_campaign::{
     AssignmentId, AttemptId, AttemptResourceLimits, CampaignFactId, CampaignLineageId,
-    ConfigurationArtifactId, ExecutionRetentionIntent, ExecutorClient, FindingCandidateBundleId,
-    SubmitAttemptDisposition,
+    CampaignSnapshotId, ConfigurationArtifactId, ExecutionRetentionIntent, ExecutorClient,
+    FindingCandidateBundleId, SubmitAttemptDisposition,
 };
 
 use super::*;
@@ -679,6 +679,316 @@ fn paused_execution_resumes_from_the_exact_root_and_survives_restart() {
     );
     assert_eq!(third.active_count(), 0);
     assert_eq!(third.queued_count(), 0);
+}
+
+#[test]
+fn selected_savepoint_origin_survives_source_discard_resume_and_restart() {
+    let first_epoch = daemon_epoch(0x81);
+    let capacity = ExecutorCapacity::new(2, 2, 4096, 8192, 64).expect("capacity");
+    let capture_fact = campaign_fact(0x81);
+    let source = savepoint_capture_request(
+        0x81,
+        0x82,
+        first_epoch,
+        resources(1, 1024, 2048),
+        capture_fact,
+        configuration(0x81),
+    );
+    let source_attempt = source.attempt();
+    let source_key = execution_key(&source);
+    let source_checkpoint = checkpoint(0x81);
+    let mut first = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        SelectedSavepointAdmission { source_attempt },
+        first_epoch,
+        capacity,
+    );
+    let source_execution = accepted_execution(
+        &first
+            .submit_attempt(&source)
+            .expect("admit savepoint capture"),
+    );
+    let source_token = first.next_queued().expect("capture token");
+    assert_eq!(
+        first
+            .stage_checkpoint_publication(&source_token, source_checkpoint)
+            .expect("stage source checkpoint"),
+        CheckpointPublicationOutcome::Staged
+    );
+    assert_eq!(
+        first
+            .complete_checkpoint(&source_token, source_checkpoint)
+            .expect("pause source capture"),
+        CheckpointCompletionOutcome::Paused
+    );
+
+    let selection = campaign_fact(0x82);
+    let selected = selected_savepoint_request(
+        0x82,
+        0x83,
+        first_epoch,
+        resources(1, 1024, 2048),
+        0x82,
+        selection,
+        capture_fact,
+    );
+    let selected_execution = accepted_execution(
+        &first
+            .submit_attempt(&selected)
+            .expect("admit selected continuation"),
+    );
+    let selected_token = first.next_queued().expect("selected continuation token");
+    assert_eq!(selected_token.execution(), selected_execution);
+    assert_eq!(
+        selected_token.origin(),
+        AttemptExecutionOrigin::SelectedSavepoint {
+            certificate: selection,
+            request: capture_fact,
+            source_attempt,
+            source_execution,
+            source_checkpoint,
+            resume: None,
+        }
+    );
+
+    first
+        .checkpoint_attempt_execution(
+            &CheckpointAttemptExecutionRequest::new(&selected, selected_execution)
+                .expect("selected checkpoint request"),
+        )
+        .expect("request selected checkpoint");
+    let continuation_checkpoint = checkpoint(0x82);
+    first
+        .stage_checkpoint_publication(&selected_token, continuation_checkpoint)
+        .expect("stage selected continuation checkpoint");
+    first
+        .complete_checkpoint(&selected_token, continuation_checkpoint)
+        .expect("pause selected continuation");
+
+    let mut ledger = first.into_ledger();
+    let source_state = ledger
+        .load_attempt(source_key)
+        .expect("load source state")
+        .expect("source state");
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(source_key, Some(source_state), None)
+            .expect("discard source capture state"),
+        AttemptStateCas::Advanced
+    );
+
+    let resumed_assignment = selected_savepoint_request(
+        0x83,
+        0x83,
+        first_epoch,
+        resources(1, 1024, 2048),
+        0x82,
+        selection,
+        capture_fact,
+    );
+    let mut resumed = LocalExecutorSupervisor::new(
+        ledger,
+        SelectedSavepointAdmission { source_attempt },
+        first_epoch,
+        capacity,
+    );
+    let resume = ResumeAttemptExecutionRequest::new(
+        &resumed_assignment,
+        selected_execution,
+        continuation_checkpoint,
+    )
+    .expect("resume selected continuation");
+    let resumed_execution = match resumed
+        .resume_attempt_execution(&resume)
+        .expect("resume after source discard")
+        .disposition()
+    {
+        ResumeAttemptExecutionDisposition::Accepted { execution } => execution,
+        other => panic!("unexpected resume disposition: {other:?}"),
+    };
+    let resumed_token = resumed.next_queued().expect("resumed continuation token");
+    let expected_resume = ExactCheckpointResumeBasis {
+        assignment: resumed_assignment.assignment(),
+        request_digest: resume.request_digest(),
+        prior_execution: selected_execution,
+        checkpoint: continuation_checkpoint,
+    };
+    assert_eq!(
+        resumed_token.origin(),
+        AttemptExecutionOrigin::SelectedSavepoint {
+            certificate: selection,
+            request: capture_fact,
+            source_attempt,
+            source_execution,
+            source_checkpoint,
+            resume: Some(expected_resume),
+        }
+    );
+
+    let restart_epoch = daemon_epoch(0x84);
+    let restart_assignment = selected_savepoint_request(
+        0x84,
+        0x83,
+        restart_epoch,
+        resources(1, 1024, 2048),
+        0x82,
+        selection,
+        capture_fact,
+    );
+    let mut restarted = LocalExecutorSupervisor::new(
+        resumed.into_ledger(),
+        SelectedSavepointAdmission { source_attempt },
+        restart_epoch,
+        capacity,
+    );
+    assert_eq!(
+        restarted
+            .submit_attempt(&restart_assignment)
+            .expect("rediscover selected continuation after source discard")
+            .disposition(),
+        SubmitAttemptDisposition::AlreadyPaused {
+            execution: selected_execution,
+            checkpoint: continuation_checkpoint,
+        }
+    );
+    let restart_resume = ResumeAttemptExecutionRequest::new(
+        &restart_assignment,
+        selected_execution,
+        continuation_checkpoint,
+    )
+    .expect("restart selected continuation resume");
+    let restarted_execution = match restarted
+        .resume_attempt_execution(&restart_resume)
+        .expect("restart selected continuation after source discard")
+        .disposition()
+    {
+        ResumeAttemptExecutionDisposition::Accepted { execution } => execution,
+        other => panic!("unexpected restart resume disposition: {other:?}"),
+    };
+    let restarted_token = restarted
+        .next_queued()
+        .expect("restarted continuation token");
+    assert_eq!(
+        restarted_token.origin(),
+        AttemptExecutionOrigin::SelectedSavepoint {
+            certificate: selection,
+            request: capture_fact,
+            source_attempt,
+            source_execution,
+            source_checkpoint,
+            resume: Some(ExactCheckpointResumeBasis {
+                assignment: restart_assignment.assignment(),
+                request_digest: restart_resume.request_digest(),
+                prior_execution: selected_execution,
+                checkpoint: continuation_checkpoint,
+            }),
+        }
+    );
+    assert_eq!(restarted_token.execution(), restarted_execution);
+    assert_ne!(restarted_execution, resumed_execution);
+}
+
+#[test]
+fn selected_savepoint_origin_without_own_checkpoint_survives_stale_epoch_recovery() {
+    let first_epoch = daemon_epoch(0x91);
+    let capacity = ExecutorCapacity::new(2, 2, 4096, 8192, 64).expect("capacity");
+    let capture_fact = campaign_fact(0x91);
+    let source = savepoint_capture_request(
+        0x91,
+        0x92,
+        first_epoch,
+        resources(1, 1024, 2048),
+        capture_fact,
+        configuration(0x91),
+    );
+    let source_attempt = source.attempt();
+    let source_key = execution_key(&source);
+    let source_checkpoint = checkpoint(0x91);
+    let mut first = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        SelectedSavepointAdmission { source_attempt },
+        first_epoch,
+        capacity,
+    );
+    let source_execution = accepted_execution(
+        &first
+            .submit_attempt(&source)
+            .expect("admit savepoint capture"),
+    );
+    let source_token = first.next_queued().expect("capture token");
+    first
+        .stage_checkpoint_publication(&source_token, source_checkpoint)
+        .expect("stage source checkpoint");
+    first
+        .complete_checkpoint(&source_token, source_checkpoint)
+        .expect("pause source capture");
+
+    let selection = campaign_fact(0x92);
+    let selected = selected_savepoint_request(
+        0x92,
+        0x93,
+        first_epoch,
+        resources(1, 1024, 2048),
+        0x92,
+        selection,
+        capture_fact,
+    );
+    let first_execution = accepted_execution(
+        &first
+            .submit_attempt(&selected)
+            .expect("admit selected continuation"),
+    );
+    let first_token = first.next_queued().expect("selected continuation token");
+    let expected_origin = AttemptExecutionOrigin::SelectedSavepoint {
+        certificate: selection,
+        request: capture_fact,
+        source_attempt,
+        source_execution,
+        source_checkpoint,
+        resume: None,
+    };
+    assert_eq!(first_token.origin(), expected_origin);
+
+    let mut ledger = first.into_ledger();
+    let source_state = ledger
+        .load_attempt(source_key)
+        .expect("load source state")
+        .expect("source state");
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(source_key, Some(source_state), None)
+            .expect("discard source capture state"),
+        AttemptStateCas::Advanced
+    );
+
+    let restart_epoch = daemon_epoch(0x93);
+    let restarted_assignment = selected_savepoint_request(
+        0x93,
+        0x93,
+        restart_epoch,
+        resources(1, 1024, 2048),
+        0x92,
+        selection,
+        capture_fact,
+    );
+    let mut restarted = LocalExecutorSupervisor::new(
+        ledger,
+        SelectedSavepointAdmission { source_attempt },
+        restart_epoch,
+        capacity,
+    );
+    let restarted_execution = accepted_execution(
+        &restarted
+            .submit_attempt(&restarted_assignment)
+            .expect("recover selected continuation without source state"),
+    );
+    let restarted_token = restarted
+        .next_queued()
+        .expect("recovered selected continuation token");
+
+    assert_eq!(restarted_token.origin(), expected_origin);
+    assert_eq!(restarted_token.origin().resume_basis(), None);
+    assert_ne!(restarted_execution, first_execution);
 }
 
 #[test]
@@ -1704,6 +2014,35 @@ impl AttemptAdmissionValidator for CompletionValidator {
     }
 }
 
+#[derive(Clone, Copy)]
+struct SelectedSavepointAdmission {
+    source_attempt: AttemptId,
+}
+
+impl AttemptAdmissionValidator for SelectedSavepointAdmission {
+    fn validate(&self, _request: &SubmitAttemptRequest) -> Result<(), ExecutorRejection> {
+        Ok(())
+    }
+
+    fn validate_execution_scope(
+        &self,
+        _request: &SubmitAttemptRequest,
+    ) -> Result<(), ExecutorRejection> {
+        Ok(())
+    }
+
+    fn selected_savepoint_source_attempt(
+        &self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<Option<AttemptId>, ExecutorRejection> {
+        Ok(matches!(
+            request.start_mode(),
+            AttemptStartMode::SelectedSavepoint { .. }
+        )
+        .then_some(self.source_attempt))
+    }
+}
+
 #[derive(Debug)]
 struct InjectedFailure;
 
@@ -1992,6 +2331,35 @@ fn savepoint_capture_request(
         configuration,
     )
     .expect("savepoint capture request")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn selected_savepoint_request(
+    assignment_byte: u8,
+    attempt_byte: u8,
+    epoch: DaemonEpoch,
+    resources: AttemptResourceLimits,
+    snapshot_byte: u8,
+    selection: CampaignFactId,
+    request: CampaignFactId,
+) -> SubmitAttemptRequest {
+    let snapshot = CampaignSnapshotId::parse(&format!(
+        "crucible.campaign.snapshot@campaign-snapshot.2.{}",
+        encode_hex(&[snapshot_byte; 32])
+    ))
+    .expect("campaign snapshot");
+    SubmitAttemptRequest::new_selected_savepoint(
+        AssignmentId::from_bytes([assignment_byte; 16]).expect("assignment"),
+        epoch,
+        lineage(0x11),
+        attempt(attempt_byte),
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        snapshot,
+        selection,
+        request,
+    )
+    .expect("selected savepoint request")
 }
 
 fn lineage(byte: u8) -> CampaignLineageId {

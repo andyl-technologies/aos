@@ -325,6 +325,7 @@ impl CampaignRepository {
                                 &loaded,
                                 transition.content_id(),
                                 &request,
+                                choice_cache,
                             )?;
                             actions.push(LifecycleValidationAction::RequireRunning(
                                 "savepoint-capture-parent-is-not-running",
@@ -342,7 +343,26 @@ impl CampaignRepository {
                                 &loaded,
                                 transition.content_id(),
                                 &resolution,
+                                choice_cache,
                             )?;
+                        }
+                        CampaignFact::SavepointContinuationSelected(selection) => {
+                            if !seen_commands.insert(selection.command) {
+                                return Err(integrity("snapshot-ancestry-reused-mutation-command"));
+                            }
+                            if selection.expected_snapshot != parent {
+                                return Err(integrity("transition-precondition-parent-mismatch"));
+                            }
+                            self.validate_savepoint_continuation_successor(
+                                &parent_snapshot,
+                                &loaded,
+                                transition.content_id(),
+                                &selection,
+                                choice_cache,
+                            )?;
+                            actions.push(LifecycleValidationAction::RequireRunning(
+                                "savepoint-continuation-parent-is-not-running",
+                            ));
                         }
                         CampaignFact::BranchRequestIssued(request) => {
                             let request_record = self.read_branch_request(request.content_id())?;
@@ -1466,7 +1486,8 @@ impl CampaignRepository {
             | CampaignFact::PinCommandAccepted(_)
             | CampaignFact::DiscoveryRequested(_)
             | CampaignFact::SavepointCaptureRequested(_)
-            | CampaignFact::SavepointCaptureResolved(_) => {}
+            | CampaignFact::SavepointCaptureResolved(_)
+            | CampaignFact::SavepointContinuationSelected(_) => {}
         }
         Ok(anchors)
     }
@@ -1629,11 +1650,14 @@ impl CampaignRepository {
                     self.validate_proposal_references_shallow(&proposal)?;
                 }
                 crate::CampaignRecordKind::Attempt => {
-                    self.read_attempt(id)?;
+                    self.read_attempt_cached(id, choice_cache)?;
                 }
                 crate::CampaignRecordKind::AttemptAdmission => {
                     let admission = self.decode_attempt_admission(id)?;
-                    self.validate_attempt_admission_references_shallow(&admission)?;
+                    self.validate_attempt_admission_references_shallow_cached(
+                        &admission,
+                        choice_cache,
+                    )?;
                 }
                 crate::CampaignRecordKind::PlannerStep => {
                     self.read_planner_step(id)?;

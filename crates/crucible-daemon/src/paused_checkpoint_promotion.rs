@@ -105,6 +105,9 @@ impl ResolvedProductionPausedCheckpointPromotionRecovery {
             CrucibleResolvedAttemptStart::Branch {
                 parent, selected, ..
             } => (parent, Some(selected)),
+            CrucibleResolvedAttemptStart::AfterAttempt { .. } => {
+                (self.execution.start().configuration(), None)
+            }
         };
         ProductionPausedCheckpointPromotionTarget::new(
             self.recovery.key(),
@@ -534,9 +537,14 @@ pub fn resolve_production_paused_checkpoint_promotion_recovery(
         recovery.key().attempt(),
         basis.start_mode(),
     )?;
-    let input = resolve_attempt_execution_input(store, recovery.key())?;
+    let input = crate::resolve_attempt_execution_input_with_resources(
+        store,
+        recovery.key(),
+        basis.resources(),
+    )?;
     validate_capture_attempt_start(&input, basis.start_mode())?;
-    let execution = decode_crucible_attempt_execution(store, &input)?;
+    let execution =
+        crate::decode_crucible_attempt_execution_with_resources(store, &input, basis.resources())?;
     Ok(ResolvedProductionPausedCheckpointPromotionRecovery {
         recovery,
         execution,
@@ -582,8 +590,15 @@ fn validate_capture_attempt_start(
             let resolved = match input.attempt().start() {
                 AttemptStart::Discover { configuration } => configuration,
                 AttemptStart::Branch { parent, .. } => parent,
+                AttemptStart::AfterAttempt { reached, .. } => reached,
             };
             (resolved == configuration).then_some(configuration)
+        }
+        AttemptStartMode::SelectedSavepoint { .. } => {
+            let AttemptStart::AfterAttempt { reached, .. } = input.attempt().start() else {
+                return Err(PausedCheckpointPromotionRecoveryResolutionError::CaptureStartMismatch);
+            };
+            Some(reached)
         }
     };
     if configuration.is_none() {
@@ -649,11 +664,25 @@ where
                     basis.start_mode(),
                 )?;
             }
-            let input = resolve_attempt_execution_input(store, recovery.key())?;
+            let input = match promotion_basis {
+                Some(basis) => crate::resolve_attempt_execution_input_with_resources(
+                    store,
+                    recovery.key(),
+                    basis.resources(),
+                )?,
+                None => resolve_attempt_execution_input(store, recovery.key())?,
+            };
             if let Some(basis) = promotion_basis {
                 validate_capture_attempt_start(&input, basis.start_mode())?;
             }
-            let execution = decode_crucible_attempt_execution(store, &input)?;
+            let execution = match promotion_basis {
+                Some(basis) => crate::decode_crucible_attempt_execution_with_resources(
+                    store,
+                    &input,
+                    basis.resources(),
+                )?,
+                None => decode_crucible_attempt_execution(store, &input)?,
+            };
             if matches!(
                 promotion_basis.map(|basis| basis.start_mode()),
                 Some(AttemptStartMode::SavepointCapture { .. })
@@ -701,6 +730,7 @@ where
                     Some(configuration)
                 }
                 Some(AttemptStartMode::SavepointCapture { .. } | AttemptStartMode::Execute)
+                | Some(AttemptStartMode::SelectedSavepoint { .. })
                 | None => None,
             };
             let published = recover_published_production_paused_checkpoint_promotion(
@@ -725,6 +755,9 @@ fn execution_start_parts(
         CrucibleResolvedAttemptStart::Branch {
             parent, selected, ..
         } => (parent, Some(selected)),
+        CrucibleResolvedAttemptStart::AfterAttempt { .. } => {
+            (execution.start().configuration(), None)
+        }
     }
 }
 
@@ -862,6 +895,7 @@ where
             )?;
         }
         AttemptStartMode::Execute => {}
+        AttemptStartMode::SelectedSavepoint { .. } => {}
     }
     let mut boundary = || {
         if target.cancellation.is_canceled() {
