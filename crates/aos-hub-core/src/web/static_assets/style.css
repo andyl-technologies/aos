@@ -2047,7 +2047,7 @@ label.inline {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
   gap: 1.5rem;
 }
-.package-dependency-platform { min-width: 0; padding-top: 1rem; border-top: 1px solid var(--rule); }
+.package-dependency-platform { min-width: 0; padding-top: 1rem; }
 .package-dependency-platform h3 { margin-top: 0; font-family: var(--font-mono); font-size: 0.95rem; }
 .package-dependency-platform h4 { margin: 1.25rem 0 0.5rem; font-size: 0.85rem; font-weight: 600; }
 .package-dependency-platform .deps { margin-top: 0; }
