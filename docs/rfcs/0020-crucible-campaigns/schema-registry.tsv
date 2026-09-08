@@ -169,3 +169,5 @@ crucible.campaign.survivor-selection	1	crucible-campaign::objective	campaign-fac
 crucible.campaign.reproduction-artifact	2	crucible-campaign::finding	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.finding	3	crucible-campaign::finding	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.finding-candidate-bundle	1	crucible-campaign::finding_candidate	finding	gate:campaign-replay,gate:content-address
+crucible.campaign.archive-manifest	1	crucible-campaign::archive	projection	gate:campaign-store-composition,gate:content-address
+crucible.campaign.archive-inventory-page	1	crucible-campaign::archive	projection	gate:campaign-store-composition,gate:content-address

@@ -13,27 +13,27 @@ use std::time::Duration;
 
 use crucible_api::ProductionVmLifecycleConfig;
 use crucible_campaign::{
-    AttemptResourceLimits, CampaignClient, CampaignClientError, CampaignExecutorStore,
-    CampaignLineage, CampaignLineageId, CampaignMode, CampaignName, CampaignPolicy,
-    CampaignPrincipal, CampaignSeed, CampaignServiceFailure, CancelAttemptExecutionRequest,
-    CancelAttemptExecutionResponse, CandidateGeneratorAlgorithm, CandidateGeneratorSpec,
-    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, ConfigurationId,
-    DaemonEpoch, ExecutorCapabilityService, ExecutorCapabilitySet, ExecutorCapacityReport,
-    ExecutorCompatibilityProfile, ExecutorControlService, ExecutorDescription,
-    ExecutorMaterializationCapability, ExecutorResumeService, ExecutorService,
+    AttemptResourceLimits, CampaignArchivePolicy, CampaignClient, CampaignClientError,
+    CampaignExecutorStore, CampaignLineage, CampaignLineageId, CampaignMode, CampaignName,
+    CampaignPolicy, CampaignPrincipal, CampaignSeed, CampaignServiceFailure,
+    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse, CandidateGeneratorAlgorithm,
+    CandidateGeneratorSpec, CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse,
+    ConfigurationId, DaemonEpoch, ExecutorCapabilityService, ExecutorCapabilitySet,
+    ExecutorCapacityReport, ExecutorCompatibilityProfile, ExecutorControlService,
+    ExecutorDescription, ExecutorMaterializationCapability, ExecutorResumeService, ExecutorService,
     ExecutorStatusService, ExplorerPolicy, FairnessPolicy, GetAttemptExecutionRequest,
     GetAttemptExecutionResponse, GetCampaignRequest, ProgressiveWideningPolicy, PuctPolicy,
     ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, RetentionPolicy, ScenarioDefId,
     SubmitAttemptRequest, SubmitAttemptResponse, WatchExecutorCapacityRequest,
 };
 use crucible_cas::content_store::{
-    BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, MemoryBlobBackend,
-    MemoryRefBackend, ObjectKind, StoreError, StoreGraph, StoreGraphConfig, StoreGraphKeyring,
-    StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers, StoreGraphPhysicalQuotaBinders,
-    StoreGraphS3Clients, StoreNodeId, StoreNodeSpec, StoreS3Client, StoreS3ConditionalPutOutcome,
-    StoreS3EndpointId, StoreS3MultipartListCursor, StoreS3MultipartListPage,
-    StoreS3MultipartUpload, StoreS3MultipartUploadRecord, StoreS3ObjectDownload,
-    StoreS3UploadedPart,
+    BlobHandle, ContentId, DirectoryBlobBackend, DurabilityRequirement, ImmutableBlobBackend,
+    MemoryBlobBackend, MemoryRefBackend, ObjectKind, StoreError, StoreGraph, StoreGraphConfig,
+    StoreGraphKeyring, StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers,
+    StoreGraphPhysicalQuotaBinders, StoreGraphS3Clients, StoreNodeId, StoreNodeSpec, StoreS3Client,
+    StoreS3ConditionalPutOutcome, StoreS3EndpointId, StoreS3MultipartListCursor,
+    StoreS3MultipartListPage, StoreS3MultipartUpload, StoreS3MultipartUploadRecord,
+    StoreS3ObjectDownload, StoreS3UploadedPart,
 };
 use crucible_qemu::{
     LinuxQemuAttemptHostConfig, QemuChildProcessContract, QemuLaunchResourceRequirements,
@@ -1225,6 +1225,65 @@ fn repository_lock_excludes_a_second_socket_incarnation() {
     drop(first);
 }
 
+#[test]
+fn repository_transfer_identity_survives_rename_and_distinguishes_replacement() {
+    let directory = tempdir().expect("temporary state parent");
+    let original = directory.path().join("original");
+    let renamed = directory.path().join("renamed");
+    fs::create_dir(&original).expect("create original state");
+    fs::set_permissions(&original, Permissions::from_mode(0o700)).expect("secure original state");
+    let owner = fs::metadata(&original).expect("state metadata");
+
+    let first = CampaignStateOwner::open(&original, owner.uid(), owner.gid(), false)
+        .expect("open original state");
+    let first_identity = first.transfer_identity().to_owned();
+    drop(first);
+
+    fs::rename(&original, &renamed).expect("rename state namespace");
+    let reopened = CampaignStateOwner::open(&renamed, owner.uid(), owner.gid(), false)
+        .expect("open renamed state");
+    assert_eq!(reopened.transfer_identity(), first_identity);
+    drop(reopened);
+
+    fs::create_dir(&original).expect("create replacement state");
+    fs::set_permissions(&original, Permissions::from_mode(0o700))
+        .expect("secure replacement state");
+    let replacement = CampaignStateOwner::open(&original, owner.uid(), owner.gid(), false)
+        .expect("open replacement state");
+    assert_ne!(replacement.transfer_identity(), first_identity);
+}
+
+#[test]
+fn repository_transfer_identity_recovers_torn_staging_but_rejects_malformed_final() {
+    let directory = tempdir().expect("temporary state parent");
+    let recoverable = directory.path().join("recoverable");
+    fs::create_dir(&recoverable).expect("create recoverable state");
+    fs::set_permissions(&recoverable, Permissions::from_mode(0o700))
+        .expect("secure recoverable state");
+    let owner = fs::metadata(&recoverable).expect("recoverable metadata");
+    let staging = recoverable.join(STATE_IDENTITY_STAGING_FILE);
+    fs::write(&staging, b"torn identity prefix").expect("write torn identity staging");
+    fs::set_permissions(&staging, Permissions::from_mode(0o600)).expect("secure identity staging");
+
+    let recovered = CampaignStateOwner::open(&recoverable, owner.uid(), owner.gid(), false)
+        .expect("recover torn identity staging");
+    assert!(!staging.exists());
+    assert_eq!(recovered.transfer_identity().len(), 64);
+    drop(recovered);
+
+    let malformed = directory.path().join("malformed");
+    fs::create_dir(&malformed).expect("create malformed state");
+    fs::set_permissions(&malformed, Permissions::from_mode(0o700)).expect("secure malformed state");
+    let final_path = malformed.join(STATE_IDENTITY_FILE);
+    fs::write(&final_path, b"torn final identity").expect("write malformed final identity");
+    fs::set_permissions(&final_path, Permissions::from_mode(0o600))
+        .expect("secure malformed final identity");
+    assert!(matches!(
+        CampaignStateOwner::open(&malformed, owner.uid(), owner.gid(), false),
+        Err(CampaignLocalServiceError::InvalidStateIdentity)
+    ));
+}
+
 fn external_graph_store(
     directory: &tempfile::TempDir,
 ) -> (CampaignLocalRepositoryStore, Arc<StoreGraph>) {
@@ -1350,6 +1409,81 @@ fn prepared_store_gc_authority_plans_journals_and_applies_under_one_owner() {
     assert_eq!(report.status(), crate::CampaignGcApplyStatus::Applied);
     assert_eq!(journal.phase(), crate::CampaignGcJournalPhase::Complete);
     assert!(!graph.contains(orphan).expect("check deleted orphan"));
+}
+
+#[test]
+fn prepared_store_gc_automatically_inventories_registered_transfer_journal() {
+    let (_source_directory, source_config) = fixture();
+    let (_destination_directory, destination_config) = fixture();
+    let mut source = source_config.prepare().expect("prepare source service");
+    let mut destination = destination_config
+        .prepare()
+        .expect("prepare destination service");
+    create_runtime_campaign(&source.repository, "source");
+    let source_head = source.repository.head("source").expect("source head");
+    let plan = source
+        .repository
+        .plan_campaign_archive(
+            source_head.snapshot_id(),
+            CampaignArchivePolicy::Metadata,
+            [],
+            None,
+        )
+        .expect("plan metadata archive");
+    let transfer_objects = plan
+        .transfer_objects()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect::<BTreeSet<_>>();
+
+    let transfer = {
+        let mut source_endpoint = source.archive_transfer_endpoint();
+        let mut destination_endpoint = destination.archive_transfer_endpoint();
+        crate::transfer_campaign_archive_durably(
+            &mut source_endpoint,
+            &mut destination_endpoint,
+            &plan,
+            "metadata",
+            None,
+            DurabilityRequirement::new(2, false).expect("unsatisfied durability"),
+        )
+    };
+    assert!(matches!(
+        transfer,
+        Err(crate::CampaignArchiveTransferError::Repository(
+            CampaignRepositoryError::Store(StoreError::DurabilityUnsatisfied {
+                minimum_durable_placements: 2,
+                observed_durable_placements: 1,
+                ..
+            })
+        ))
+    ));
+
+    let mut source_ledger = MemoryAssignmentLedger::default();
+    let source_gc = source
+        .store_gc_authority()
+        .expect("source GC authority")
+        .plan(&mut source_ledger, None)
+        .expect("plan source GC with transfer roots");
+    for id in &transfer_objects {
+        assert!(
+            source_gc.roots().iter().any(|root| root == *id),
+            "source GC omitted registered transfer root {id}"
+        );
+    }
+
+    let mut destination_ledger = MemoryAssignmentLedger::default();
+    let destination_gc = destination
+        .store_gc_authority()
+        .expect("destination GC authority")
+        .plan(&mut destination_ledger, None)
+        .expect("plan destination GC with transfer roots");
+    for id in transfer_objects {
+        assert!(
+            destination_gc.roots().iter().any(|root| root == id),
+            "destination GC omitted registered transfer root {id}"
+        );
+    }
 }
 
 #[test]

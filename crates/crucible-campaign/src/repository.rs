@@ -1285,6 +1285,7 @@ mod savepoint;
 mod status;
 mod supervisor;
 mod transactions;
+mod transfer;
 
 pub use budget::CampaignBudgetProjection;
 
