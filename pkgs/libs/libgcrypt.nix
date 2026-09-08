@@ -91,6 +91,32 @@ in
               --disable-static \
               --with-libgpg-error-prefix=${libgpg-error}
           ''
+          else if stdenv.isCross && stdenv.hostPlatform.isLinux
+          then ''
+            mkdir -p .aos-build-tools
+            # The Linux cross wrapper intentionally resets per-package
+            # hardening for native generators. Preserve this package's
+            # flexible-array exception for yat2m explicitly.
+            export CC_FOR_BUILD="$BUILD_CC -fstrict-flex-arrays=1"
+
+
+            # gpgrt-config is a target shell script. Execute it with the native
+            # configure shell while making it resolve the target .pc metadata.
+            cat > .aos-build-tools/gpgrt-config <<EOF
+            #!$CONFIG_SHELL
+            exec "$CONFIG_SHELL" ${libgpg-error}/bin/gpgrt-config "\$@"
+            EOF
+            chmod +x .aos-build-tools/gpgrt-config
+            export GPGRT_CONFIG="$PWD/.aos-build-tools/gpgrt-config"
+            export PKG_CONFIG_LIBDIR=
+            export PKG_CONFIG_PATH="${libgpg-error}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --disable-static \
+              --with-libgpg-error-prefix=${libgpg-error}
+          ''
           else ''
             ./configure \
               $configureFlags \
