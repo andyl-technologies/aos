@@ -1,6 +1,6 @@
-//! Implements the scheduler half of `gate:e2e-determinism` for host-level
-//! concurrency (RFC-0010 T-SCHED-25, [SCHED-40], [SCHED-41], §8.12) on the REAL
-//! scheduler RESOLVE path.
+//! Tests the scheduler component of `gate:e2e-determinism` for host-level
+//! concurrency (RFC-0010 T-SCHED-25, [SCHED-40], [SCHED-41], §8.12) on the
+//! authoritative scheduler RESOLVE path. This target does not execute QEMU.
 //!
 //! Lookahead is the parallelism budget: nodes whose horizons cannot constrain
 //! each other within the conservative lookahead window may run in parallel on the

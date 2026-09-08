@@ -50,6 +50,8 @@
 #                      caller can redirect CLI stdout/stderr into for parsing
 #   FLEET_STORE        a writable content-addressed store root for the CLI
 #   FLEET_ARTIFACTS    a writable reproduction-artifact directory for the CLI
+#   CRUCIBLE_RUN_STATE_ROOT
+#                      writable durable process-recovery state for live QEMU
 #
 # Discovery note: the CLI resolves `qemu-crucible` + plugin through the
 # compile-time `CRUCIBLE_AOS_QEMU` / `CRUCIBLE_AOS_PLUGIN` hints baked into
@@ -131,8 +133,9 @@
             CRUCIBLE_SCRATCH="$FLEET_WORKDIR"
             FLEET_STORE="$FLEET_WORKDIR/store"
             FLEET_ARTIFACTS="$FLEET_WORKDIR/artifacts"
-            mkdir -p "$FLEET_STORE" "$FLEET_ARTIFACTS"
-            export FLEET_WORKDIR CRUCIBLE_SCRATCH FLEET_STORE FLEET_ARTIFACTS
+            CRUCIBLE_RUN_STATE_ROOT="$FLEET_WORKDIR/run-state"
+            mkdir -p "$FLEET_STORE" "$FLEET_ARTIFACTS" "$CRUCIBLE_RUN_STATE_ROOT"
+            export FLEET_WORKDIR CRUCIBLE_SCRATCH FLEET_STORE FLEET_ARTIFACTS CRUCIBLE_RUN_STATE_ROOT
 
             # The whole closure must be present as a build input.
             test -x "$CRUCIBLE/bin/crucible"
@@ -163,6 +166,7 @@
             crucible_plugin=${pluginLibrary}
             linux_crucible=${linuxCrucible}
             crucible_fixtures=${crucibleFixtures}
+            durable_process_recovery_state=$CRUCIBLE_RUN_STATE_ROOT
             ${extraResultText}RESULT
           '';
         }

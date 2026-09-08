@@ -1087,32 +1087,22 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   fingerprints. It also carries negative controls for profile-dependent logs,
   fingerprints, observer output, and empty evidence; shared artifact
   machine-profile reproduction is completed by T-HARN-25. This hostile-profile
-  proof is composed with the live-QEMU production fleet run in
+  proof is complemented by the live-QEMU production fleet run in
   `checks.fleet.crucible-e2e-determinism`, which executes each independent
-  reduction through the packaged QEMU/plugin probe before comparing the
-  session-level canonical evidence.
-- [x] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
+  reduction through the packaged QEMU/plugin lifecycle before comparing live
+  event and execution-fingerprint streams. Its adversarial profiles perturb
+  observer polling; they do not provide physical host variation.
+- [ ] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
   and implement `gate:e2e-determinism` (adversarial comparison + cross-machine
   reproduce-from-artifact). — satisfies [HARN-22], [HARN-23]; spec §11.
-  Completed by `checks.crucible.phase7.gates.e2eDeterminism` and
-  `checks.fleet.crucible-e2e-determinism`: the `crucible-cli` gate target runs
-  the representative self-contained e2e artifact
-  through the shared harness final-acceptance route, exercises the canonical
-  adversarial host profile matrix, verifies byte-identical logs/fingerprints,
-  replays from the artifact on different machine profiles, and rejects build
-  identity drift and missing cross-machine-profile coverage. The phase4
-  scheduler/mock gate remains the lower-layer e2e coverage; this phase7 target
-  closes the package-owned final acceptance target for the shared mock artifact
-  route without adding new CLI subcommand semantics. The versioned shared
-  artifact format and CLI produce/replay seam are completed by T-HARN-24; the
-  shared artifact machine-profile verifier is completed by T-HARN-25.
-  Production closure evidence is provided by `checks.fleet.crucible-e2e-determinism`,
-  which runs every independent reduction with `--backend qemu`, launches the
-  closure-owned patched QEMU and production plugin under TCG against the
-  AOS-built kernel/root fixture, then requires byte-identical canonical logs
-  across the adversarial profile matrix and successful reproduce/bisect
-  outcomes. The phase-7 Nix gate is green-before-advance and the fleet check
-  consumes its raw result as a required precondition.
+  T-HARN-23 remains open. The phase-4 and phase-7 `.rawGate` checks are
+  component checks over the scheduler and shared mock artifact. The fleet slice
+  runs every reduction with `--backend qemu`, launches the closure-owned patched QEMU and
+  plugin under TCG against the AOS-built kernel/root fixture, requires non-empty
+  live fingerprints, and compares live event and fingerprint streams across
+  observer scheduling perturbations. It does not replay the emitted artifact
+  under a different effective CPU-affinity and scheduler-preemption profile,
+  so it cannot discharge [HARN-23].
 - [x] **T-HARN-24** Implement the reproduction-artifact format `(seed,
   ScenarioDef, Schedule)` with pinned engine/ABI/QEMU identities and
   content-addressed component references, plus produce/reproduce wiring into
