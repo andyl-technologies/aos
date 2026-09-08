@@ -520,6 +520,7 @@ pub use cache_write_admission::*;
 mod delivery_identity;
 pub use delivery_identity::*;
 mod delivery_workflow;
+mod direct_delivery;
 pub use delivery_workflow::*;
 mod egress_nonce;
 mod gc_topology;

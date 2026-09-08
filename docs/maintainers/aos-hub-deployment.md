@@ -22,7 +22,7 @@ values:
 | Concern | Staging | Production |
 | --- | --- | --- |
 | Public origin | `https://aos.staging.andyl.org` | `https://aos.andyl.org` |
-| Direct R2 CDN | `https://cdn.aos.staging.andyl.org` | Not configured |
+| Direct R2 CDN | `https://cdn.aos.staging.andyl.org` | `https://cdn.aos.andyl.org` |
 | Worker | `aos-hub-staging` | `aos-hub` |
 | R2 bucket | `aos-hub-staging-surfaces` | `aos-hub-v2-surfaces` |
 | KV namespace title | `aos-hub-staging-sessions` | `aos-hub-v2-sessions` |
@@ -254,6 +254,18 @@ SQLite migration DDL and its marker commit together. MySQL implicitly commits DD
 so each new migration must also be safe to replay after every possible interruption.
 A deployment rollback must remain compatible with the applied schema; otherwise
 roll forward with a repair migration or use the reviewed backup recovery procedure.
+
+### Initial production delivery state
+
+The September 8, 2026 production setup creates only `andyl/testing`. It does not
+publish packages, system images, OCI containers, or releases. The direct R2
+attachment at `cdn.aos.andyl.org` targets `aos-hub-v2-surfaces`; activating its
+registry delivery route remains a separate step requiring controller observations
+and verified publication evidence. A prepared attachment is not a usable registry.
+
+The baked release profile uses the CDN URL. Browser setup instructions remain
+unavailable while the requested delivery switch is pending. Complete the delivery
+workflow and validate its advertised Git and cache URLs before enrolling clients.
 
 ## Deploy staging
 

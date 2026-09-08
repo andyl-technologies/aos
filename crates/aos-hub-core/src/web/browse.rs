@@ -661,7 +661,7 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
         return Rendered::ServiceUnavailable;
     };
     let caches = resolved_cache_urls(caches);
-    let external = svc.registry_consumer_url(&registry).await.ok();
+    let external = svc.registry_setup_url(&registry).await.ok();
     let setup = pages::RegistrySetup::new(&registry, status.as_ref(), external.as_deref(), &caches);
     Rendered::Html(pages::registry_home(
         &registry,
@@ -743,7 +743,7 @@ pub async fn images(
     let (Ok(images), Ok(channels)) = (images, channels) else {
         return Rendered::ServiceUnavailable;
     };
-    let download_base = svc.registry_consumer_url(&registry).await.ok();
+    let download_base = svc.registry_setup_url(&registry).await.ok();
     Rendered::Html(pages::images_page(
         &registry,
         status.as_ref(),
@@ -1340,7 +1340,7 @@ pub async fn package(
     let (session, caches, external, documentation_result) = futures_util::future::join4(
         session_indicator(svc, headers),
         svc.db.registry_cache_stack_entries(registry.id),
-        svc.registry_consumer_url(&registry),
+        svc.registry_setup_url(&registry),
         package_documentation_reference(&svc.db, registry.id, &detail, Some(release)),
     )
     .await;

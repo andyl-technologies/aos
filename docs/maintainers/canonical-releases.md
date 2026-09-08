@@ -7,7 +7,7 @@ experimental pipeline and its keys. Testing releases never become main releases
 by changing a channel or copying signed artifacts.
 
 Disk images and OCI containers must configure APM for their exact publishing
-registry. The shared `aos.release` profile supplies the URL, trust alias, root
+registry. The shared `aos.release` profile supplies the CDN URL (`https://cdn.aos.andyl.org/<registry>/`), trust alias, root
 epoch, channel, and testing notice. Planning, building, and image finalization
 check this profile from the clean source commit frozen in the plan, on every
 selected platform. A testing profile fails a main plan and vice versa. Package

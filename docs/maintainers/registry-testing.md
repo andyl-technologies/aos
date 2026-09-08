@@ -3,7 +3,8 @@
 This runbook owns every routine operation for the experimental hosted registry.
 The registry is public but uses experimental build and release infrastructure
 and may be rebuilt from scratch. It supports `edge`, `candidate`, and `stable`;
-these classify software maturity, not pipeline provenance. The default is `edge`. Its signing material remains separate from `andyl/main`.
+these classify software maturity, not pipeline provenance. The default is `edge`.
+Its signing material remains separate from `andyl/main`.
 
 `andyl/testing` does not use an HSM. The intended key management for
 `andyl/main` is documented in [Registry key management](registry-key-management.md).
@@ -17,6 +18,19 @@ maintained separately from the public inventory.
 Use the shared [qualification contract](qualification.md) and
 [release checklist](release-checklist.md). This runbook owns registry-specific
 identity and lifecycle operations, not a separate testing qualification process.
+
+The package-manager delivery endpoint baked into testing disk images and OCI
+containers is `https://cdn.aos.andyl.org/andyl/testing/`, with alias
+`andyl-testing` and the epoch-one trust key below. The Hub management API stays
+at `https://aos.andyl.org`. A CDN attachment alone does not activate delivery:
+the explicit delivery workflow must verify the storage publication and route
+before advertising that URL.
+
+While a requested CDN destination is pending, browse pages withhold consumer
+setup commands instead of enrolling new clients on the outgoing Hub route.
+After activation, public OCI blob GETs may redirect to the CDN when the exact
+object has matching publication and placement evidence. Distribution control,
+manifests, private requests, and conditional requests continue through the Hub.
 
 ## Preconditions
 

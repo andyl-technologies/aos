@@ -21,7 +21,7 @@ in {
       registry = "andyl/testing";
       rootEpoch = 1;
       clientName = "andyl-testing";
-      url = "https://aos.andyl.org/andyl/testing/";
+      url = "https://cdn.aos.andyl.org/andyl/testing/";
       channel = lib.mkDefault "edge";
       warning = ''
         ANDYL OS TESTING
