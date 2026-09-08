@@ -308,9 +308,10 @@ pub use crucible_measurement::{
 };
 pub use crucible_qemu::LinuxQemuAttemptHostConfig;
 pub use crucible_qemu_runner::{
-    QemuAttemptExecutionRouter, QemuAttemptExecutionRouterError, QemuCrucibleAttemptSession,
-    QemuCrucibleRealizationStore, QemuCrucibleSessionFactory, QemuExactThinExecutionRunner,
-    QemuExactThinRunnerError, QemuSelectedOriginResumeRunner, QemuSelectedOriginVerifier,
+    QemuAttemptExecutionRouter, QemuAttemptExecutionRouterError, QemuAttemptStartVerifier,
+    QemuCrucibleAttemptSession, QemuCrucibleRealizationStore, QemuCrucibleSessionFactory,
+    QemuExactThinExecutionRunner, QemuExactThinRunnerError, QemuOrdinaryResumeRunner,
+    QemuSelectedOriginResumeRunner, QemuSelectedOriginVerifier,
 };
 pub use crucible_qemu_session::{
     QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard,
@@ -525,8 +526,8 @@ pub use qemu_baked_genesis::{
 pub(crate) use qemu_campaign_driver::QemuSavepointReplayProbe;
 pub use qemu_campaign_driver::{
     MAX_QEMU_CAMPAIGN_ASSERTION_EVENT_VISITS, MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
-    MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES, QemuFreshModeledDriver, QemuFreshModeledDriverError,
-    QemuModeledAttemptLifecycle, QemuSavepointReplayProof,
+    MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES, QemuAttemptStartReplayProof, QemuFreshModeledDriver,
+    QemuFreshModeledDriverError, QemuModeledAttemptLifecycle, QemuSavepointReplayProof,
 };
 #[cfg(target_os = "linux")]
 pub use qemu_campaign_driver::{QemuHotForkModeledDriver, QemuHotForkModeledDriverError};

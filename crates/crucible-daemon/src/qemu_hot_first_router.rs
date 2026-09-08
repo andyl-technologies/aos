@@ -205,3 +205,25 @@ where
             .map_err(|failure| failure.map(QemuHotFirstExecutionRouterError::Fallback))
     }
 }
+
+impl<F, D, R> crate::QemuAttemptStartVerifier for QemuHotFirstExecutionRouter<F, D, R>
+where
+    F: QemuHotForkWorldLifecycleFactory,
+    D: QemuFreshAttemptDriver,
+    R: crate::QemuAttemptStartVerifier,
+{
+    fn verify_attempt_start(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<crate::QemuAttemptStartReplayProof, AttemptWorkerFailure<Self::Error>> {
+        if self.pending.is_some() {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuHotFirstExecutionRouterError::PriorReconciliationPending,
+            ));
+        }
+        self.fallback
+            .verify_attempt_start(input, context)
+            .map_err(|failure| failure.map(QemuHotFirstExecutionRouterError::Fallback))
+    }
+}

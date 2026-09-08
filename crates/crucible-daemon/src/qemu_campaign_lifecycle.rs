@@ -43,8 +43,8 @@ use crate::{
     ProductionAttemptCheckpointRestoreError, QemuAttemptGenerationResourceOwner,
     QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard,
     QemuAttemptProductionVmNodeLauncher, QemuAttemptResourceGuard, QemuAttemptResourceGuardFactory,
-    QemuSavepointReplayProof, QemuSelectedOriginVerifier,
-    install_attempt_production_resume_checkpoint,
+    QemuAttemptStartReplayProof, QemuAttemptStartVerifier, QemuSavepointReplayProof,
+    QemuSelectedOriginVerifier, install_attempt_production_resume_checkpoint,
 };
 
 mod app_random_branch_replay;
@@ -793,6 +793,13 @@ impl QemuFreshStartMaterialization {
         .and_then(|proof| proof.with_attempt_event_count(self.attempt_event_count))
     }
 
+    fn attempt_start_proof(
+        &self,
+        configuration: &Configuration,
+    ) -> Result<QemuAttemptStartReplayProof, crate::QemuFreshModeledDriverError> {
+        QemuAttemptStartReplayProof::from_reached_boundary(configuration, &self.event_log)
+    }
+
     /// Returns the actual scheduler configuration restored from a physical checkpoint.
     #[must_use]
     pub(crate) const fn restored_configuration(&self) -> Option<&Configuration> {
@@ -844,9 +851,15 @@ pub enum QemuFreshStartReplayError {
     /// One selected origin attempt failed modeled replay validation.
     #[error("selected continuation origin replay failed")]
     Origin(#[source] Box<crate::QemuFreshModeledDriverError>),
+    /// The independently replayed attempt-start evidence could not be represented.
+    #[error("ordinary attempt-start replay proof construction failed")]
+    AttemptStartProof(#[source] Box<crate::QemuFreshModeledDriverError>),
     /// Origin verification was requested for an ordinary discovery or branch start.
     #[error("selected continuation origin verification received no origin chain")]
     OriginMissing,
+    /// Attempt-start verification was requested for a selected continuation.
+    #[error("ordinary attempt-start verification received a selected continuation")]
+    OrdinaryStartMissing,
     /// Origin replay attempted an operational checkpoint before the continuation boundary.
     #[error("selected continuation origin replay requested an operational checkpoint")]
     OriginUnexpectedCheckpoint,
@@ -1524,6 +1537,72 @@ where
             product,
             CrucibleMaterializationTier::ThinReplay,
         ))
+    }
+}
+
+impl<F, D> QemuAttemptStartVerifier for QemuFreshExecutionRunner<F, D>
+where
+    F: QemuFreshAttemptLifecycleFactory,
+    D: QemuFreshAttemptDriver,
+{
+    fn verify_attempt_start(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<QemuAttemptStartReplayProof, AttemptWorkerFailure<Self::Error>> {
+        let start = match input.start() {
+            CrucibleResolvedAttemptStart::Discover { configuration } => configuration,
+            CrucibleResolvedAttemptStart::Branch { selected, .. } => selected,
+            CrucibleResolvedAttemptStart::AfterAttempt { .. } => {
+                return Err(AttemptWorkerFailure::Terminal(
+                    QemuFreshExecutionRunnerError::StartReplay(
+                        QemuFreshStartReplayError::OrdinaryStartMissing,
+                    ),
+                ));
+            }
+        };
+        let signal_fault_replay = input.signal_fault_replay();
+        if let Some(decision) = unsupported_fresh_replay_decision(start, signal_fault_replay) {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartDecisionUnsupported {
+                    configuration: start.id(),
+                    decision,
+                },
+            ));
+        }
+
+        let replay_context = context.for_origin_replay();
+        let scenario = input.scenario().scenario_def();
+        let mut lifecycle = self
+            .lifecycles
+            .start_fresh_lifecycle(
+                &scenario,
+                input.scenario(),
+                start,
+                signal_fault_replay,
+                &replay_context,
+            )
+            .map_err(map_fresh_lifecycle_failure)?;
+        let replay = materialize_fresh_start(&mut lifecycle, input, start, &replay_context)
+            .and_then(|materialization| {
+                materialization.attempt_start_proof(start).map_err(|error| {
+                    AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+                        QemuFreshStartReplayError::AttemptStartProof(Box::new(error)),
+                    ))
+                })
+            });
+        let cleanup = lifecycle.shutdown();
+
+        match (replay, cleanup) {
+            (Ok(proof), Ok(_)) => Ok(proof),
+            (Err(failure), Ok(_)) => Err(failure),
+            (Ok(_), Err(cleanup)) => Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::Cleanup(cleanup),
+            )),
+            (Err(failure), Err(cleanup)) => Err(AttemptWorkerFailure::Terminal(
+                cleanup_after_fresh_runner_failure(failure, cleanup),
+            )),
+        }
     }
 }
 
