@@ -867,8 +867,8 @@ fn extend_catalog_identity_guards(
              WHERE registry_id = ?1
                AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
                  WHERE registry_lock.registry_id = ?1)
-               AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
-                 WHERE purge.registry_id = ?1 AND purge.state = 'collecting')
+               AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge_fence
+                 WHERE purge_fence.registry_id = ?1 AND purge_fence.state = 'collecting')
                AND (SELECT COUNT(*) FROM oci_manifests
                  WHERE registry_id = ?1) >= ?3
                AND (SELECT COUNT(*) FROM oci_descriptor_edges
@@ -1427,8 +1427,8 @@ fn build_oci_catalog_statements(
              WHERE id = ?1
                AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
                  WHERE registry_lock.registry_id = ?1)
-               AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
-                 WHERE purge.registry_id = ?1 AND purge.state = 'collecting')",
+               AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge_fence
+                 WHERE purge_fence.registry_id = ?1 AND purge_fence.state = 'collecting')",
             vals![input.registry_id],
         )
         .expecting(1),
@@ -2186,8 +2186,8 @@ impl Database {
                      WHERE registry_id = ?1
                        AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
                          WHERE registry_lock.registry_id = ?1)
-                       AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
-                         WHERE purge.registry_id = ?1 AND purge.state = 'collecting')",
+                       AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge_fence
+                         WHERE purge_fence.registry_id = ?1 AND purge_fence.state = 'collecting')",
                     vals![registry_id, now],
                 )
                 .expecting(1),

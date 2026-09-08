@@ -43,9 +43,7 @@ use async_trait::async_trait;
 use worker::{SqlStorage, SqlStorageValue, Storage};
 
 use aos_hub_core::backend::{prepare, split_statements, Backend, CheckedStatement, Statement};
-use aos_hub_core::db::{
-    MIGRATIONS, PREVIOUS_SCHEMA_IDENTITY, SCHEMA_IDENTITY, TOPOLOGY_V1_TO_V2_SQLITE,
-};
+use aos_hub_core::db::{MIGRATIONS, SCHEMA_IDENTITY};
 use aos_hub_core::dialect::Dialect;
 use aos_hub_core::value::{Row, Value};
 
@@ -280,7 +278,7 @@ impl SqlDoBackend {
 ///
 /// Durable Object SQLite forbids `PRAGMA`, so a private one-row table records
 /// the applied migration count. Every reopened store must also carry the exact
-/// hard-cutover schema identity.
+/// production schema identity.
 ///
 /// # Errors
 ///
@@ -294,51 +292,31 @@ pub(crate) async fn ensure_migrated(backend: &SqlDoBackend) -> Result<()> {
                applied INTEGER NOT NULL)",
         )
         .await?;
-    let applied = backend
-        .query("SELECT applied FROM _do_migrations WHERE id = 0", &[])
-        .await?
-        .first()
-        .and_then(|row| row.get::<i64>(0).ok())
-        .unwrap_or(0)
-        .max(0) as usize;
-    let previous_identity = if applied == 0 {
-        false
-    } else {
-        require_schema_identity(backend, true).await?
-    };
-    if applied > MIGRATIONS.len() {
-        anyhow::bail!(
-            "HubDb schema {applied} is newer than this Worker supports ({})",
-            MIGRATIONS.len()
+    let rows = backend
+        .query("SELECT applied, id FROM _do_migrations", &[])
+        .await?;
+    anyhow::ensure!(rows.len() <= 1, "HubDb migration ledger has duplicate rows");
+    if let Some(row) = rows.first() {
+        anyhow::ensure!(
+            row.get::<i64>(1)? == 0,
+            "HubDb migration ledger has an invalid singleton id"
         );
     }
-    if previous_identity {
-        let statements = split_statements(TOPOLOGY_V1_TO_V2_SQLITE)
-            .into_iter()
-            .map(|sql| Statement::new(sql, Vec::new()))
-            .collect::<Vec<_>>();
-        backend.batch(&statements).await?;
+    let applied = rows
+        .first()
+        .map(|row| row.get::<i64>(0))
+        .transpose()?
+        .unwrap_or(0);
+    anyhow::ensure!(applied >= 0, "HubDb schema version cannot be negative");
+    anyhow::ensure!(
+        applied <= MIGRATIONS.len() as i64,
+        "HubDb schema {applied} is newer than this Worker supports ({})",
+        MIGRATIONS.len()
+    );
+    if applied > 0 {
+        require_schema_identity(backend).await?;
     }
-    if applied == MIGRATIONS.len() && previous_identity {
-        let migration = MIGRATIONS
-            .last()
-            .ok_or_else(|| anyhow!("HubDb has no identity-adoption migration"))?;
-        let mut statements = split_statements(migration)
-            .into_iter()
-            .map(|sql| Statement::new(sql, Vec::new()))
-            .collect::<Vec<_>>();
-        statements.push(Statement::new(
-            "INSERT INTO _do_migrations (id, applied) VALUES (0, ?1) \
-             ON CONFLICT(id) DO UPDATE SET applied = ?1",
-            vec![Value::Int(MIGRATIONS.len() as i64)],
-        ));
-        backend.batch(&statements).await?;
-        require_schema_identity(backend, false).await?;
-        return Ok(());
-    }
-    if applied == MIGRATIONS.len() {
-        return Ok(());
-    }
+    let applied = applied as usize;
     for (offset, migration) in MIGRATIONS[applied..].iter().enumerate() {
         let next = applied + offset + 1;
         let mut statements = split_statements(migration)
@@ -355,28 +333,26 @@ pub(crate) async fn ensure_migrated(backend: &SqlDoBackend) -> Result<()> {
         // every statement back, leaving the migration safe to retry.
         backend.batch(&statements).await?;
     }
-    require_schema_identity(backend, false).await?;
+    require_schema_identity(backend).await?;
     Ok(())
 }
 
-async fn require_schema_identity(backend: &SqlDoBackend, allow_previous: bool) -> Result<bool> {
-    let row = backend
+async fn require_schema_identity(backend: &SqlDoBackend) -> Result<()> {
+    let rows = backend
         .query("SELECT identity FROM hub_schema_identity", &[])
         .await
-        .map_err(|error| {
-            anyhow!(
-                "HubDb has no supported topology schema identity; restore a current backup: {error:#}"
-            )
-        })?
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow!("topology schema identity row is missing"))?;
+        .map_err(|error| anyhow!("HubDb has no production schema identity: {error:#}"))?;
+    anyhow::ensure!(
+        rows.len() == 1,
+        "HubDb schema identity ledger must contain exactly one row"
+    );
+    let row = &rows[0];
     let identity: String = row.get(0)?;
     anyhow::ensure!(
-        identity == SCHEMA_IDENTITY || (allow_previous && identity == PREVIOUS_SCHEMA_IDENTITY),
+        identity == SCHEMA_IDENTITY,
         "unsupported Hub schema identity '{identity}'; expected '{SCHEMA_IDENTITY}'"
     );
-    Ok(identity == PREVIOUS_SCHEMA_IDENTITY)
+    Ok(())
 }
 
 /// Converts a bound [`Value`] into the [`SqlStorageValue`] the DO engine binds.
