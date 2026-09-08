@@ -164,19 +164,27 @@ in {
       sed -i "s|'/bin/pwd'|'${prev.coreutils}/bin/pwd', '/bin/pwd'|" lib/Cwd.pm
     '';
     buildScript = ''
-      make -j"$NIX_BUILD_CORES"
+      # Perl 5.10's extension driver recreates shared source directories and
+      # cannot safely run more than one extension recipe at a time.
+      make -j"$NIX_BUILD_CORES" libperl.a
+      ./miniperl -Ilib -MAutoSplit -e \
+        'autosplit("ext/POSIX/POSIX.pm", "lib/auto", 0, 1, 0)'
+      test -f lib/auto/POSIX/autosplit.ix
+      make
     '';
     installScript = ''
       make install ${autotoolsVars} || true
       test -f "$out/bin/perl" || { echo "FATAL: perl not installed"; exit 1; }
       perl_arch="$("$out/bin/perl" -MConfig -e 'print $Config{archname}')"
-      "$out/bin/perl" -MAutoSplit -e 'autosplit(shift, shift, 0, 1, 0)' \
-        "$out/lib/5.10.1/$perl_arch/POSIX.pm" \
-        "$out/lib/5.10.1/$perl_arch/auto"
+      test -f "$out/lib/5.10.1/$perl_arch/auto/POSIX/autosplit.ix" || {
+        echo "FATAL: perl POSIX autosplit index not installed"
+        exit 1
+      }
       test -f "$out/lib/5.10.1/$perl_arch/auto/POSIX/load_imports.al" || {
         echo "FATAL: perl POSIX autoload files not installed"
         exit 1
       }
+      "$out/bin/perl" -MPOSIX -e 'POSIX::load_imports()'
     '';
     meta = gnuMeta "Practical Extraction and Report Language, version 5.10.1" "https://www.perl.org/" "Artistic-1.0-Perl OR GPL-1.0-or-later";
   };
