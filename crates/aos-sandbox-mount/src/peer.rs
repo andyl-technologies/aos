@@ -12,7 +12,7 @@ use aos_sandbox_protocol::{PeerCredentials, ProtocolValidationError};
 
 use crate::{MountError, Result};
 
-const NODE_CONTROLLER_CGROUP: &str = "aos-control.slice/aos-sandboxd.service";
+const NODE_CONTROLLER_CGROUP: &str = "aos.slice/aos-control.slice/aos-sandboxd.service";
 
 /// Retains proof that one accepted peer belongs to `aos-sandboxd.service`.
 ///
@@ -77,12 +77,20 @@ impl ControllerPeerVerifier {
         &self,
         identity: &'a ConnectionPeerIdentity,
     ) -> Result<VerifiedControllerPeer<'a>> {
+        self.verify_in_cgroup(identity, Path::new(NODE_CONTROLLER_CGROUP))
+    }
+
+    fn verify_in_cgroup<'a>(
+        &self,
+        identity: &'a ConnectionPeerIdentity,
+        expected_relative_cgroup: &Path,
+    ) -> Result<VerifiedControllerPeer<'a>> {
         let mismatch = || MountError::Protocol(ProtocolValidationError::PeerCredentialMismatch);
         let observed = identity.credentials();
         let pid = observed.pid();
         let expected = self
             .cgroup_root
-            .resolve(Path::new(NODE_CONTROLLER_CGROUP))
+            .resolve(expected_relative_cgroup)
             .map_err(|_| mismatch())?;
         let info = expected
             .verify_exact_membership(identity.pidfd())
@@ -99,5 +107,48 @@ impl ControllerPeerVerifier {
             _identity: identity,
             _cgroup: expected,
         })
+    }
+}
+
+#[cfg(all(test, feature = "kernel-tests"))]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::fs::File;
+    use std::os::fd::OwnedFd;
+
+    use super::*;
+
+    #[test]
+    fn controller_path_rejects_flat_and_alternate_same_named_services() {
+        let root: OwnedFd = File::open("/sys/fs/cgroup").unwrap().into();
+        let verifier = ControllerPeerVerifier::new(CgroupV2Root::from_owned(root).unwrap());
+        let (socket, _other) = rustix::net::socketpair(
+            rustix::net::AddressFamily::UNIX,
+            rustix::net::SocketType::SEQPACKET,
+            rustix::net::SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        let identity =
+            ConnectionPeerIdentity::from_socket(std::os::fd::AsFd::as_fd(&socket)).unwrap();
+
+        assert_eq!(verifier.verify(&identity).unwrap().credentials().uid, 0);
+        assert!(
+            verifier
+                .verify_in_cgroup(
+                    &identity,
+                    Path::new("aos-control.slice/aos-sandboxd.service"),
+                )
+                .is_err()
+        );
+        assert!(
+            verifier
+                .verify_in_cgroup(
+                    &identity,
+                    Path::new("aos.slice/decoy.slice/aos-sandboxd.service"),
+                )
+                .is_err()
+        );
     }
 }

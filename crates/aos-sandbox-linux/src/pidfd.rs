@@ -528,14 +528,16 @@ mod tests {
             .uid(65_534)
             .gid(65_534)
             .stdin(Stdio::from(observer_pidfd))
-            .stdout(Stdio::piped())
+            // Keep the control marker off libtest's stdout status line.
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let mut output = BufReader::new(observer.stdout.take().unwrap());
+        let mut control = BufReader::new(observer.stderr.take().unwrap());
         let mut observed_live = false;
         loop {
             let mut line = String::new();
-            if output.read_line(&mut line).unwrap() == 0 {
+            if control.read_line(&mut line).unwrap() == 0 {
                 break;
             }
             if line.trim() == LIVE_MARKER {
@@ -581,8 +583,8 @@ mod tests {
             Err(Error::Syscall { source, .. }) if source.raw_os_error() == Some(libc::EPERM)
         ));
         assert!(pidfd.is_alive().unwrap());
-        println!("{LIVE_MARKER}");
-        std::io::stdout().flush().unwrap();
+        eprintln!("{LIVE_MARKER}");
+        std::io::stderr().flush().unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(5);
         while pidfd.is_alive().unwrap() {

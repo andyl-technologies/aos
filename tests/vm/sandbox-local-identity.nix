@@ -98,10 +98,20 @@ in
       run_tests ${fixtures}/bin/aos_sandbox_mount broker::tests::host_scope_exchange::
       run_tests ${fixtures}/bin/aos_sandbox_network service::kernel_tests::controller_records_authenticated_netd_inventory_over_record_subject_session
 
-      # Verify the distinct fixed RootMount peer profile under its deployed
-      # cgroup name, without granting controller-method identity to that peer.
+      # Same-named flattened and alternate branches are decoys. This focused
+      # membership check accepts only the hierarchy implied by the slice name;
+      # the installed-service fleet test separately proves systemd creates it.
+      mkdir -p /sys/fs/cgroup/aos-control.slice/aos-sandboxd.service
+      mkdir -p /sys/fs/cgroup/aos.slice/decoy.slice/aos-sandboxd.service
       mkdir -p /sys/fs/cgroup/aos-control.slice/aos-sandbox-mountd.service
-      echo $$ > /sys/fs/cgroup/aos-control.slice/aos-sandbox-mountd.service/cgroup.procs
+      mkdir -p /sys/fs/cgroup/aos.slice/decoy.slice/aos-sandbox-mountd.service
+      mkdir -p /sys/fs/cgroup/aos.slice/aos-control.slice/aos-sandboxd.service
+      mkdir -p /sys/fs/cgroup/aos.slice/aos-control.slice/aos-sandbox-mountd.service
+
+      echo $$ > /sys/fs/cgroup/aos.slice/aos-control.slice/aos-sandboxd.service/cgroup.procs
+      run_tests ${fixtures}/bin/aos_sandbox_mount peer::tests::controller_path_rejects_flat_and_alternate_same_named_services
+
+      echo $$ > /sys/fs/cgroup/aos.slice/aos-control.slice/aos-sandbox-mountd.service/cgroup.procs
       run_tests ${fixtures}/bin/aos_sandbox_host peer::tests::registered_root_mount_path_accepts_only_the_distinct_peer_profile
     '';
   }

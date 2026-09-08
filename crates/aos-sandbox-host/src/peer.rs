@@ -14,8 +14,8 @@ use aos_sandbox_protocol::PeerCredentials;
 
 use crate::{HostError, Result};
 
-const NODE_CONTROLLER_CGROUP: &str = "aos-control.slice/aos-sandboxd.service";
-const ROOT_MOUNT_CGROUP: &str = "aos-control.slice/aos-sandbox-mountd.service";
+const NODE_CONTROLLER_CGROUP: &str = "aos.slice/aos-control.slice/aos-sandboxd.service";
+const ROOT_MOUNT_CGROUP: &str = "aos.slice/aos-control.slice/aos-sandbox-mountd.service";
 
 /// Retains a root-account proof for the fixed Mount broker service only.
 #[derive(Debug)]
@@ -205,6 +205,22 @@ mod tests {
         assert_eq!(mount_peer.credentials().uid, 0);
         assert_eq!(mount_peer.credentials().gid, 0);
         assert!(verifier.verify(&identity).is_err());
+        assert!(
+            verifier
+                .verify_service(
+                    &identity,
+                    Path::new("aos-control.slice/aos-sandbox-mountd.service"),
+                )
+                .is_err()
+        );
+        assert!(
+            verifier
+                .verify_service(
+                    &identity,
+                    Path::new("aos.slice/decoy.slice/aos-sandbox-mountd.service"),
+                )
+                .is_err()
+        );
     }
 
     #[test]
