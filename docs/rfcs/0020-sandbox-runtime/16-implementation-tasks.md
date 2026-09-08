@@ -4430,6 +4430,46 @@ runtime result. That run must still exercise the real worker boundary and
 deadline behavior. `SBX-STOR-01` remains open, and no completion is claimed for
 `SBX-P0-07`.
 
+### Authenticated Storage physical catalog transitions (in progress)
+
+The local commit `1913849fe` adds a coordinator-owned authenticated physical
+catalog provider in
+[`catalog_transition.rs`](../../../crates/aos-sandbox-storage/src/catalog_transition.rs).
+It bootstraps only from an explicit complete protected snapshot; it does not
+infer authority from ambient ZFS discovery. Before a mutation can cross into
+Ambiguous state, the provider records the worst-case transition bound and runs
+an ordered, non-mutating journal-capacity preflight for the physical
+transition, catalog head, and Committed records. The sole controller holds the
+store-lifetime lock and must perform no unmodeled intervening commits; the
+preflight does not itself reserve journal bytes. The provider then joins the
+three records atomically under that lock.
+
+Recovery validates a unique connected transition chain and independently
+recomputes its resulting state. Every transition must join the authenticated
+request, mutation, catalog generation, and physical object GUID; semantic
+conflicts and branches fail closed even when their individual records are
+authenticated. The provider and
+[`state.rs`](../../../crates/aos-sandbox-storage/src/state.rs) distinguish
+legacy v2/v3 operation records from the new v4 catalog-bearing form and poison
+cached authority after a commit failure so a later request cannot continue
+from a possibly divergent in-memory view.
+
+The current Storage library suite passes 65 tests with one real-systemd test
+ignored. Coverage includes deterministic post-durable-error and reopen cases,
+capacity preflight, transition-chain reconstruction, state recomputation,
+and authenticated conflict and branch rejection. Crate-local all-target Clippy
+without default features or dependency linting passes with warnings denied;
+warning-denied rustdoc, Rust formatting, and diff whitespace checks also pass.
+
+This remains foundation toward `SBX-STOR-01`, not its completion. No production
+coordinator or `storaged` startup path yet provisions the trusted bootstrap
+publisher, journal authentication key, and protected trust anchors; constructs
+this authority under the same lifetime lock; or exposes the production broker
+handler. The legacy migration source, root-pin and workspace publication, and
+Storage Apply advertisement also remain unimplemented. The real worker VM
+handles are still pre-QEMU, so neither the production mutation boundary nor
+`SBX-P0-07` has runtime qualification. Both tasks remain open.
+
 ### Canonical Network kernel plan (in progress)
 
 The Network broker can now compile one exact assignment, namespace allocation,
