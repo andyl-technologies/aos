@@ -450,22 +450,42 @@ pub(crate) fn package_detail(package: &PackageToml) -> PackageDetail {
     }
 }
 
-/// Resolves both dependency directions inside the selected release catalog.
-pub(crate) fn package_closure(
+/// Resolves the latest available version of each architecture in this release.
+pub(crate) fn package_closures(
     catalog: &[PackageToml],
     detail: &PackageDetail,
+    reverse_limit: usize,
+) -> Vec<super::browse_pages::PackageClosure> {
+    let mut platforms = std::collections::BTreeMap::new();
+
+    // Versions are newest first. An architecture may only exist in an older
+    // version, so choose its newest artifact independently of other platforms.
+    for version in &detail.versions {
+        for platform in &version.platforms {
+            platforms
+                .entry(&platform.platform)
+                .or_insert((version, platform));
+        }
+    }
+
+    platforms
+        .into_values()
+        .map(|(version, platform)| {
+            platform_closure(catalog, &version.version, platform, reverse_limit)
+        })
+        .collect()
+}
+
+/// Keeps both dependency directions within one exact architecture artifact.
+fn platform_closure(
+    catalog: &[PackageToml],
+    version: &str,
+    platform: &PlatformDetail,
     reverse_limit: usize,
 ) -> super::browse_pages::PackageClosure {
     use super::browse_pages::{PackageClosure, ResolvedDependency};
     use std::collections::{BTreeMap, BTreeSet};
 
-    let Some(primary) = detail
-        .versions
-        .first()
-        .and_then(|version| version.platforms.first())
-    else {
-        return PackageClosure::default();
-    };
     let hash = |path: &str| {
         path.rsplit('/')
             .next()
@@ -474,23 +494,23 @@ pub(crate) fn package_closure(
     };
     let mut owners = BTreeMap::new();
     let mut reverse = BTreeSet::new();
-    let primary_hash = hash(&primary.store_path);
+    let artifact_hash = hash(&platform.store_path);
     for package in catalog {
         for version in &package.versions {
-            if let Some(platform) = version.platforms.get(&primary.platform) {
-                if let Some(hash) = hash(&platform.store_path) {
+            if let Some(candidate) = version.platforms.get(&platform.platform) {
+                if let Some(hash) = hash(&candidate.store_path) {
                     owners.insert(hash, (&package.package.name, &version.version));
                 }
-                if primary_hash
+                if artifact_hash
                     .as_ref()
-                    .is_some_and(|hash| platform.references.hashes().contains(hash))
+                    .is_some_and(|hash| candidate.references.hashes().contains(hash))
                 {
                     reverse.insert((package.package.name.clone(), version.version.clone()));
                 }
             }
         }
     }
-    let dependencies = primary
+    let dependencies = platform
         .refs
         .iter()
         .map(|hash| {
@@ -503,7 +523,8 @@ pub(crate) fn package_closure(
         })
         .collect();
     PackageClosure {
-        platform: Some(primary.platform.clone()),
+        platform: platform.platform.clone(),
+        version: version.to_string(),
         dependencies,
         reverse_total: reverse.len(),
         reverse: reverse.into_iter().take(reverse_limit).collect(),
@@ -513,6 +534,91 @@ pub(crate) fn package_closure(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Builds a release-catalog artifact without involving the live package index.
+    fn closure_package(
+        name: &str,
+        version: &str,
+        platform: &str,
+        hash: &str,
+        refs: &[&str],
+    ) -> PackageToml {
+        serde_json::from_value(serde_json::json!({
+            "package": {"name": name, "description": "", "license": "MIT", "maintainer": ""},
+            "versions": [{"version": version, "platforms": {(platform): {
+                "store_path": format!("/aos/store/{hash}-{name}"),
+                "closure_size": 1,
+                "source_drv": "",
+                "source_nar_hash": "",
+                "references": refs
+            }}}]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn dependency_neighborhoods_use_each_architectures_latest_artifact() {
+        let mut package = closure_package("app", "2.0.0", "x86_64-linux", "rootx", &["shared"]);
+        package.versions.extend(
+            closure_package(
+                "app",
+                "1.0.0",
+                "aarch64-linux",
+                "rootarm",
+                &["shared", "outside"],
+            )
+            .versions,
+        );
+        package.versions.extend(
+            closure_package("app", "1.0.0", "x86_64-linux", "oldroot", &["stale"]).versions,
+        );
+        package
+            .versions
+            .extend(closure_package("app", "1.0.0", "riscv64-linux", "rootriscv", &[]).versions);
+        let catalog = vec![
+            package.clone(),
+            closure_package("lib-x86", "3.0.0", "x86_64-linux", "shared", &[]),
+            closure_package("lib-arm", "4.0.0", "aarch64-linux", "shared", &[]),
+            closure_package("tool-x86", "1.0.0", "x86_64-linux", "toolx", &["rootx"]),
+            closure_package("other-x86", "1.0.0", "x86_64-linux", "otherx", &["rootx"]),
+            closure_package(
+                "tool-arm",
+                "1.0.0",
+                "aarch64-linux",
+                "toolarm",
+                &["rootarm"],
+            ),
+            closure_package(
+                "wrong-architecture",
+                "1.0.0",
+                "aarch64-linux",
+                "wrong",
+                &["rootx"],
+            ),
+        ];
+
+        let closures = package_closures(&catalog, &package_detail(&package), 1);
+
+        assert_eq!(closures.len(), 3);
+        let arm = &closures[0];
+        assert_eq!((&*arm.platform, &*arm.version), ("aarch64-linux", "1.0.0"));
+        assert_eq!(arm.dependencies.len(), 2);
+        assert_eq!(arm.dependencies[0].name.as_deref(), Some("lib-arm"));
+        assert!(arm.dependencies[1].name.is_none());
+        assert_eq!(arm.reverse, vec![("tool-arm".into(), "1.0.0".into())]);
+
+        let riscv = &closures[1];
+        assert_eq!(riscv.platform, "riscv64-linux");
+        assert!(riscv.dependencies.is_empty());
+        assert!(riscv.reverse.is_empty());
+
+        let x86 = &closures[2];
+        assert_eq!((&*x86.platform, &*x86.version), ("x86_64-linux", "2.0.0"));
+        assert_eq!(x86.dependencies.len(), 1);
+        assert_eq!(x86.dependencies[0].name.as_deref(), Some("lib-x86"));
+        assert_eq!(x86.reverse_total, 2);
+        assert_eq!(x86.reverse.len(), 1);
+    }
+
     fn release(version: &str, commit: &str, verified: bool) -> ReleaseRow {
         ReleaseRow {
             semver: version.into(),

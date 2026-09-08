@@ -1334,7 +1334,7 @@ pub async fn package(
         ));
     };
     let detail = super::release_browse::package_detail(package);
-    let closure = super::release_browse::package_closure(&catalog, &detail, REVERSE_DEP_CAP);
+    let closures = super::release_browse::package_closures(&catalog, &detail, REVERSE_DEP_CAP);
     let (session, caches, external, documentation_result) = futures_util::future::join4(
         session_indicator(svc, headers),
         svc.db.registry_cache_stack_entries(registry.id),
@@ -1358,7 +1358,7 @@ pub async fn package(
         &registry,
         status.as_ref(),
         &detail,
-        &closure,
+        &closures,
         &setup,
         &context,
         documentation.as_ref(),
