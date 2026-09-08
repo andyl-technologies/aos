@@ -38,6 +38,7 @@ APM = os.environ["AOS_QUALIFICATION_APM"]
 NIX_STORE = os.environ["AOS_QUALIFICATION_NIX_STORE"]
 ZSTD = os.environ["AOS_QUALIFICATION_ZSTD"]
 UNAME = os.environ["AOS_QUALIFICATION_UNAME"]
+BOUND_IMAGE_VARIANT = os.environ.get("AOS_QUALIFICATION_BOUND_IMAGE_VARIANT")
 
 EXPECTED_CHECKS = {
     "anonymous-download",
@@ -350,6 +351,7 @@ class PackageScenario:
         self.staging_url = ""
         self.probe = ""
         self.outputs: dict[str, str] = {}
+        self.package_artifact_ids: list[str] = []
         self.closure: dict[str, NarInfo] = {}
         self.closure_artifacts: dict[str, str] = {}
         self.imported_nar_hashes: dict[str, str] = {}
@@ -427,7 +429,27 @@ class PackageScenario:
         if decision.get("state") != "artifact":
             raise RuntimeError("package case refers to a non-artifact platform cell")
         artifact_ids = decision["artifact"]["artifact_ids"]
-        if artifact_ids != self.case["subjects"]:
+        self.package_artifact_ids = list(artifact_ids)
+        expected_subjects = list(artifact_ids)
+        if BOUND_IMAGE_VARIANT is not None:
+            image = one(
+                [
+                    entry
+                    for entry in payload["images"]
+                    if entry["system_variant"] == BOUND_IMAGE_VARIANT
+                ],
+                "bound image manifest entry",
+            )
+            image_cell = one(
+                [entry for entry in image["platforms"] if entry["platform"] == PLATFORM],
+                "bound image platform cell",
+            )
+            image_decision = image_cell["decision"]
+            if image_decision.get("state") != "artifact":
+                raise RuntimeError("bound image case refers to a non-artifact platform cell")
+            expected_subjects.extend(image_decision["artifact"]["artifact_ids"])
+        expected_subjects = sorted(set(expected_subjects))
+        if expected_subjects != self.case["subjects"]:
             raise RuntimeError("package cell artifacts differ from the exact case subjects")
 
         for artifact_id in artifact_ids:
@@ -570,7 +592,7 @@ class PackageScenario:
             active.remove(artifact_id)
             visited.add(artifact_id)
 
-        for subject in self.case["subjects"]:
+        for subject in self.package_artifact_ids:
             visit(subject)
 
     def _store_path_for_artifact(self, artifact_id: str) -> str:

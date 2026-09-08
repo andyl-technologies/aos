@@ -113,6 +113,17 @@ pub enum PackageRole {
     SystemIntegrity,
 }
 
+/// Image execution required to prove a package's functional behavior.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum PackageExecution {
+    /// Exercises the package from recovery UKIs in one system image variant.
+    RecoveryImage {
+        /// Exact system image variant carrying the package.
+        system_variant: String,
+    },
+}
+
 /// Classification for one package in the complete discovered inventory.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -123,6 +134,9 @@ pub struct PackageRule {
     pub role: PackageRole,
     /// Requires dependencies to inherit the consuming root's obligations.
     pub inherit_dependency_obligations: bool,
+    /// Special execution environment required by this package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<PackageExecution>,
 }
 
 /// Shared requirement with applicability at one hold point.
@@ -251,6 +265,14 @@ impl QualificationContract {
                 .any(|rule| !rule.inherit_dependency_obligations)
         {
             bail!("qualification must classify packages and inherit dependency obligations");
+        }
+        for rule in &self.package_rules {
+            if let Some(PackageExecution::RecoveryImage { system_variant }) = &rule.execution {
+                if !current {
+                    bail!("archival contracts cannot select package execution environments");
+                }
+                require_identifier(system_variant, "package recovery image variant")?;
+            }
         }
         for target in &self.targets {
             if !target.platform.supports_images() {

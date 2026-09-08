@@ -28,8 +28,8 @@ use crate::qualification::claims::{
 use crate::qualification::claims::{ClaimDisposition, ClaimOutcome};
 use crate::qualification::environment::EnvironmentInventory;
 use crate::qualification::{
-    CONTRACT_V2, QualificationMethod, QualificationPhase, QualificationRequirement,
-    QualificationScope, QualificationTarget, TargetKind,
+    CONTRACT_V2, PackageExecution, QualificationMethod, QualificationPhase,
+    QualificationRequirement, QualificationScope, QualificationTarget, TargetKind,
 };
 
 /// A prior accepted snapshot selected before qualification begins.
@@ -259,6 +259,22 @@ pub fn cases(
                     requirement.id
                 );
             }
+            let package_rule = if requirement.scope == QualificationScope::Packages {
+                let (name, _) = suffix
+                    .rsplit_once('/')
+                    .ok_or_else(|| anyhow::anyhow!("invalid package case identity"))?;
+                Some(
+                    contract
+                        .package_rules
+                        .iter()
+                        .find(|rule| rule.name == name)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("package case lacks its criticality classification")
+                        })?,
+                )
+            } else {
+                None
+            };
             let predecessor = if requirement.id == "image-update-recovery"
                 || claim.as_ref().is_some_and(|claim| {
                     claim.minimum_assurance >= AssuranceLevel::A2
@@ -266,25 +282,17 @@ pub fn cases(
                             .requirements
                             .iter()
                             .any(|id| id == "image-update-recovery")
-                }) {
+                })
+                || package_rule.is_some_and(|rule| rule.execution.is_some())
+            {
                 Some(plan.qualification_predecessor.clone().ok_or_else(|| {
-                    anyhow::anyhow!("image update qualification requires a frozen predecessor")
+                    anyhow::anyhow!("qualification execution requires a frozen predecessor")
                 })?)
             } else {
                 None
             };
-            let package_role = if requirement.scope == QualificationScope::Packages {
-                let (name, _) = suffix
-                    .rsplit_once('/')
-                    .ok_or_else(|| anyhow::anyhow!("invalid package case identity"))?;
-                let direct = contract
-                    .package_rules
-                    .iter()
-                    .find(|rule| rule.name == name)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("package case lacks its criticality classification")
-                    })?
-                    .role;
+            let package_role = if let Some(rule) = package_rule {
+                let direct = rule.role;
                 let inherited = subjects
                     .iter()
                     .filter_map(|subject| package_roles.get(subject))
@@ -364,11 +372,55 @@ pub fn cases(
                 for package in &manifest.packages {
                     for cell in &package.platforms {
                         if let MatrixCell::Artifact { artifact } = &cell.decision {
+                            let rule = contract
+                                .package_rules
+                                .iter()
+                                .find(|rule| rule.name == package.name)
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!("package lacks its criticality classification")
+                                })?;
+                            let mut subjects = artifact.artifact_ids.clone();
+                            if let Some(PackageExecution::RecoveryImage { system_variant }) =
+                                &rule.execution
+                            {
+                                let image = manifest
+                                    .images
+                                    .iter()
+                                    .find(|image| image.system_variant == *system_variant)
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!(
+                                            "package {} requires absent recovery image variant {}",
+                                            package.name,
+                                            system_variant
+                                        )
+                                    })?;
+                                let image_cell = image
+                                    .platforms
+                                    .iter()
+                                    .find(|image_cell| image_cell.platform == cell.platform)
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!(
+                                            "package {} recovery image lacks platform {}",
+                                            package.name,
+                                            cell.platform
+                                        )
+                                    })?;
+                                let MatrixCell::Artifact {
+                                    artifact: image_artifact,
+                                } = &image_cell.decision
+                                else {
+                                    bail!(
+                                        "package {} recovery image platform is not an artifact",
+                                        package.name
+                                    );
+                                };
+                                subjects.extend(image_artifact.artifact_ids.iter().cloned());
+                            }
                             add(
                                 format!("{}/{}", package.name, cell.platform),
                                 Some(cell.platform),
                                 None,
-                                artifact.artifact_ids.clone(),
+                                subjects,
                             )?;
                         }
                     }

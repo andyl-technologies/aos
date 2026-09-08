@@ -40,6 +40,7 @@
     pkgs.swtpm
     pkgs.tar
     pkgs.zstd
+    pkgs.nix
   ];
   scenario = pkgs.writeTextFile {
     name = "${name}-scenario.py";
@@ -47,7 +48,7 @@
     text = builtins.readFile ./qualification-image.py;
     checkPhase = ''
       PYTHONPYCACHEPREFIX=$TMPDIR/qualification-image-pycache \
-        ${pkgs.python3}/bin/python3 -m py_compile \
+        ${pkgs.buildPackages.python3}/bin/python3 -m py_compile \
         $out/share/aos-release/qualification-image.py
     '';
   };
@@ -79,6 +80,8 @@ in
       export AOS_QUALIFICATION_SCP=${lib.escapeShellArg "${pkgs.openssh}/bin/scp"}
       export AOS_QUALIFICATION_SSH_KEYGEN=${lib.escapeShellArg "${pkgs.openssh}/bin/ssh-keygen"}
       export AOS_QUALIFICATION_OPENSSL=${lib.escapeShellArg "${pkgs.openssl}/bin/openssl"}
+      export AOS_QUALIFICATION_OBJCOPY=${lib.escapeShellArg "${pkgs.binutils}/bin/objcopy"}
+      export AOS_QUALIFICATION_NIX_STORE=${lib.escapeShellArg "${pkgs.nix}/bin/nix-store"}
 
       umask 077
       mkdir -p "$HOME" "$TMPDIR"

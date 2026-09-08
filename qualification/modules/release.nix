@@ -58,7 +58,11 @@ in {
             })
           cfg.targets);
           requirements = named "id" cfg.requirements;
-          package_rules = named "name" cfg.packageRules;
+          package_rules = named "name" (builtins.mapAttrs (_: rule:
+            if rule.execution == null
+            then removeAttrs rule ["execution"]
+            else rule
+          ) cfg.packageRules);
           claims = named "id" cfg.claims;
           support = {
             inherit (cfg.support) default trains;

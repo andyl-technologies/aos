@@ -390,6 +390,16 @@
         identity = qualificationExecutorIdentity;
       }
     else null;
+  recoveryPackageScenario =
+    if hostPlatform.isLinux
+    then
+      testing.mkQualificationRecoveryPackageScenario {
+        name = "aos-qualification-${hostPlatform.system}-aos-recovery";
+        packageExecutable = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";
+        imageExecutable = "${imageLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-image-lifecycle";
+        systemVariant = "server";
+      }
+    else null;
   qualificationTargetIds = map (target: target.id) (
     builtins.filter (target: target.platform == hostPlatform.system) releaseQualification.targets
   );
@@ -437,6 +447,9 @@
         operator-recovery = "${operatorRecoveryScenario}/bin/aos-qualification-operator-recovery";
         production-recovery = "${productionRecoveryScenario}/bin/aos-qualification-production-recovery";
       };
+    caseScenarios = lib.optionalAttrs hostPlatform.isLinux {
+      "package-function/aos-recovery/${hostPlatform.system}" = "${recoveryPackageScenario}/bin/aos-qualification-${hostPlatform.system}-aos-recovery";
+    };
     workRoot = "/var/lib/aos-release/qualification/${hostPlatform.system}";
     timeoutSeconds = 21600;
   };

@@ -43,6 +43,12 @@ in {
   packageRule = closed {
     role = option (lib.types.enum ["general-catalog" "qualified-workload" "system-integrity"]) "Functional consequences and inherited dependency obligations.";
     inherit_dependency_obligations = (option lib.types.bool "Preserves obligations inherited through runtime dependencies.") // {default = true;};
+    execution =
+      (option (lib.types.nullOr (closed {
+        kind = option (lib.types.enum ["recovery-image"]) "Special execution environment required by this package.";
+        system_variant = text "System image variant carrying the package.";
+      })) "Image execution required to prove this package's behavior.")
+      // {default = null;};
   };
   claim = closed {
     target = text "Target defining the exact compatibility scope.";
