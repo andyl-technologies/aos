@@ -380,6 +380,15 @@ class PackageScenario:
 
         if self.request["platform"] != PLATFORM:
             raise RuntimeError("request platform differs from native executor")
+        native = os.uname()
+        architecture = {"arm64": "aarch64"}.get(native.machine, native.machine)
+        native_platform = f"{architecture}-{native.sysname.lower()}"
+        if native_platform != PLATFORM:
+            raise RuntimeError(
+                f"native machine platform {native_platform!r} differs from "
+                f"the configured executor platform {PLATFORM!r}"
+            )
+
         match = PACKAGE_CASE.fullmatch(self.case["id"])
         if match is None or match.group("platform") != PLATFORM:
             raise RuntimeError("scenario received an invalid package case identity")
