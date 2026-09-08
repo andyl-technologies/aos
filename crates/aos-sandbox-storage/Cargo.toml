@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[[bin]]
+name = "aos-sandbox-zfs-worker"
+path = "src/bin/aos-sandbox-zfs-worker.rs"
+
 [dependencies]
 aos-proto.workspace = true
 aos-sandbox.workspace = true
@@ -13,7 +17,7 @@ aos-sandbox-linux.workspace = true
 aos-sandbox-protocol.workspace = true
 buffa.workspace = true
 hmac.workspace = true
-rustix.workspace = true
+rustix = { workspace = true, features = ["event", "fs", "time"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

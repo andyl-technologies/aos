@@ -453,6 +453,7 @@ let
     "aos-registry-server"
     "aos-sandbox-hostd"
     "aos-sandbox-mountd"
+    "aos-sandbox-zfs-worker"
     "aos-service-root"
     "aos-selinux-run"
     "aos-var-policy-migrate"

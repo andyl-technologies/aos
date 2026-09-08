@@ -103,6 +103,7 @@ pub enum ZfsPrecondition {
 pub struct AncestorPolicyTransaction {
     precondition: ZfsPrecondition,
     policy: ProjectAncestorPolicyV1,
+    mutation_arguments: Vec<OsString>,
 }
 
 impl AncestorPolicyTransaction {
@@ -122,6 +123,10 @@ impl AncestorPolicyTransaction {
     #[must_use]
     pub const fn postcondition(&self) -> &ProjectAncestorPolicyV1 {
         &self.policy
+    }
+
+    pub(crate) fn mutation_arguments(&self) -> &[OsString] {
+        &self.mutation_arguments
     }
 }
 
@@ -329,12 +334,20 @@ fn program_guards(
 }
 
 fn ancestor_transaction(policy: &ProjectAncestorPolicyV1) -> AncestorPolicyTransaction {
+    let mutation_arguments = vec![
+        "set".into(),
+        format!("quota={}", policy.quota_bytes()).into(),
+        format!("filesystem_limit={}", policy.filesystem_limit()).into(),
+        format!("snapshot_limit={}", policy.snapshot_limit()).into(),
+        policy.dataset().name().into(),
+    ];
     AncestorPolicyTransaction {
         precondition: ZfsPrecondition::Guid {
             name: policy.dataset().name().to_owned(),
             guid: policy.dataset().guid(),
         },
         policy: policy.clone(),
+        mutation_arguments,
     }
 }
 
@@ -559,6 +572,22 @@ mod tests {
                 .postcondition()
                 .quota_bytes(),
             65_536
+        );
+        assert_eq!(
+            transaction
+                .ancestor_transaction()
+                .unwrap()
+                .mutation_arguments()
+                .iter()
+                .map(|value| value.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "set",
+                "quota=65536",
+                "filesystem_limit=8",
+                "snapshot_limit=16",
+                "tank/aos/project",
+            ]
         );
     }
 

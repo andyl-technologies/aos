@@ -12,6 +12,8 @@ use std::rc::Rc;
 use crate::uapi::{self, NamespaceIoctl};
 use crate::{Error, Result};
 
+const LIVENESS_POLL_INTERRUPT_LIMIT: usize = 8;
+
 /// A process pinned against PID reuse by an owned pidfd.
 #[derive(Debug)]
 pub struct PidFd {
@@ -86,20 +88,73 @@ impl PidFd {
         })
     }
 
-    /// Tests whether the pinned process still exists without sending a signal.
+    /// Tests whether the pinned process has not exited without sending a signal.
+    ///
+    /// Pidfd exit readiness is independent of signal permissions. An exited
+    /// process reports `false` even while it remains waitable as a zombie or
+    /// while this descriptor continues to pin its identity.
     ///
     /// # Errors
     ///
-    /// Returns an error for failures other than the expected `ESRCH` after
-    /// process exit.
+    /// Returns an error when polling fails, is interrupted too many times, or
+    /// reports invalid or unexpected readiness flags.
     pub fn is_alive(&self) -> Result<bool> {
-        match uapi::pidfd_send_signal_zero(self.fd.as_fd()) {
-            Ok(()) => Ok(true),
-            Err(Error::Syscall { source, .. }) if source.raw_os_error() == Some(libc::ESRCH) => {
-                Ok(false)
+        let timeout = rustix::event::Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        for attempt in 0..LIVENESS_POLL_INTERRUPT_LIMIT {
+            let mut descriptors = [rustix::event::PollFd::new(
+                &self.fd,
+                rustix::event::PollFlags::IN | rustix::event::PollFlags::RDNORM,
+            )];
+            match rustix::event::poll(&mut descriptors, Some(&timeout)) {
+                Ok(0) => return Ok(true),
+                Ok(_) => {
+                    let readiness = descriptors[0].revents();
+                    let exit_readiness = rustix::event::PollFlags::IN
+                        | rustix::event::PollFlags::RDNORM
+                        | rustix::event::PollFlags::HUP;
+                    if readiness
+                        .intersects(rustix::event::PollFlags::ERR | rustix::event::PollFlags::NVAL)
+                    {
+                        return Err(Error::MalformedKernelResponse {
+                            object: "pidfd poll",
+                            message: "kernel reported an invalid descriptor state".to_owned(),
+                        });
+                    }
+                    if !readiness.difference(exit_readiness).is_empty() {
+                        return Err(Error::MalformedKernelResponse {
+                            object: "pidfd poll",
+                            message: "kernel reported unexpected readiness flags".to_owned(),
+                        });
+                    }
+                    if readiness.intersects(exit_readiness) {
+                        return Ok(false);
+                    }
+                    return Err(Error::MalformedKernelResponse {
+                        object: "pidfd poll",
+                        message: "kernel reported unexpected readiness flags".to_owned(),
+                    });
+                }
+                Err(source)
+                    if source == rustix::io::Errno::INTR
+                        && attempt + 1 < LIVENESS_POLL_INTERRUPT_LIMIT =>
+                {
+                    continue;
+                }
+                Err(source) => {
+                    return Err(Error::Syscall {
+                        operation: "poll pidfd liveness",
+                        source: source.into(),
+                    });
+                }
             }
-            Err(error) => Err(error),
         }
+        Err(Error::MalformedKernelResponse {
+            object: "pidfd poll",
+            message: "bounded liveness poll exhausted without a result".to_owned(),
+        })
     }
 
     /// Duplicates one descriptor from the pinned process with `pidfd_getfd`.
@@ -335,8 +390,35 @@ impl SingleThreadedProcess {
 #[cfg(test)]
 mod tests {
     use std::fs::File;
+    #[cfg(feature = "kernel-tests")]
+    use std::io::Write as _;
+    #[cfg(feature = "kernel-tests")]
+    use std::io::{BufRead as _, BufReader};
+    use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
 
     use super::*;
+
+    const LIVENESS_TARGET_ENV: &str = "AOS_PIDFD_LIVENESS_TARGET_V1";
+    #[cfg(feature = "kernel-tests")]
+    const LIVENESS_OBSERVER_ENV: &str = "AOS_PIDFD_CROSS_UID_OBSERVER_V1";
+    #[cfg(feature = "kernel-tests")]
+    const LIVE_MARKER: &str = "AOS_PIDFD_CROSS_UID_LIVE";
+
+    fn spawn_liveness_target() -> Child {
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "pidfd::tests::liveness_target_fixture",
+                "--nocapture",
+            ])
+            .env(LIVENESS_TARGET_ENV, "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
 
     #[test]
     fn ordinary_file_cannot_become_namespace() {
@@ -394,6 +476,118 @@ mod tests {
                 if matches!(source.raw_os_error(), Some(libc::ENOTTY | libc::ENOSYS)) => {}
             Err(Error::WrongDescriptorType { .. }) => {}
             Err(error) => panic!("unexpected pidfd failure: {error}"),
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "host time only bounds a disposable child-process fixture"
+    )]
+    fn child_pidfd_reports_exit_without_requiring_reap_state() {
+        let mut child = spawn_liveness_target();
+        let pid = NonZeroU32::new(child.id()).unwrap();
+        let pidfd = PidFd::open(pid).unwrap();
+        assert!(pidfd.is_alive().unwrap());
+
+        child.kill().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pidfd.is_alive().unwrap() {
+            assert!(Instant::now() < deadline, "child did not become exited");
+            std::thread::yield_now();
+        }
+        assert!(!pidfd.is_alive().unwrap());
+
+        child.wait().unwrap();
+
+        assert!(!pidfd.is_alive().unwrap());
+    }
+
+    #[cfg(feature = "kernel-tests")]
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "host time only bounds a disposable cross-UID kernel fixture"
+    )]
+    fn cross_uid_pidfd_liveness_does_not_require_signal_permission() {
+        use std::os::unix::process::CommandExt as _;
+
+        assert_eq!(rustix::process::geteuid().as_raw(), 0);
+        let mut target = spawn_liveness_target();
+        let target_pid = NonZeroU32::new(target.id()).unwrap();
+        let pidfd = PidFd::open(target_pid).unwrap();
+        let observer_pidfd = pidfd.as_fd().try_clone_to_owned().unwrap();
+        let mut observer = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "pidfd::tests::cross_uid_observer_fixture",
+                "--nocapture",
+            ])
+            .env(LIVENESS_OBSERVER_ENV, "1")
+            .uid(65_534)
+            .gid(65_534)
+            .stdin(Stdio::from(observer_pidfd))
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut output = BufReader::new(observer.stdout.take().unwrap());
+        let mut observed_live = false;
+        loop {
+            let mut line = String::new();
+            if output.read_line(&mut line).unwrap() == 0 {
+                break;
+            }
+            if line.trim() == LIVE_MARKER {
+                observed_live = true;
+                break;
+            }
+        }
+
+        target.kill().unwrap();
+        target.wait().unwrap();
+        assert!(
+            observed_live,
+            "cross-UID observer did not report live pidfd"
+        );
+        assert!(observer.wait().unwrap().success());
+        assert!(!pidfd.is_alive().unwrap());
+    }
+
+    #[test]
+    #[ignore = "launched alone by pidfd liveness tests"]
+    fn liveness_target_fixture() {
+        if std::env::var_os(LIVENESS_TARGET_ENV).as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(10));
+    }
+
+    #[cfg(feature = "kernel-tests")]
+    #[test]
+    #[ignore = "launched as an unprivileged cross-UID pidfd observer"]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "host time only bounds a disposable cross-UID kernel fixture"
+    )]
+    fn cross_uid_observer_fixture() {
+        if std::env::var_os(LIVENESS_OBSERVER_ENV).as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return;
+        }
+        let stdin = std::io::stdin();
+        let pidfd = PidFd::from_owned(stdin.as_fd().try_clone_to_owned().unwrap()).unwrap();
+        assert!(matches!(
+            uapi::pidfd_send_signal_zero_for_test(pidfd.as_fd()),
+            Err(Error::Syscall { source, .. }) if source.raw_os_error() == Some(libc::EPERM)
+        ));
+        assert!(pidfd.is_alive().unwrap());
+        println!("{LIVE_MARKER}");
+        std::io::stdout().flush().unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pidfd.is_alive().unwrap() {
+            assert!(Instant::now() < deadline, "target did not become exited");
+            std::thread::yield_now();
         }
     }
 }

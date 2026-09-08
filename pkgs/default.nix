@@ -1203,6 +1203,7 @@
     "aos-boot-identity"
     "aos-ebpf-lsm-policy"
     "aos-ebpf-net-policy"
+    "aos-sandbox-zfs-worker"
     "aos-hub"
     "aos-hub-cloudflare"
     "aos-hub-console-dist"

@@ -68,7 +68,7 @@ in {
 
       ZFS = "${zfs}/sbin/zfs"
       ZPOOL = "${zfs}/sbin/zpool"
-      MODPROBE = "${pkgs.kmod}/bin/modprobe"
+      MODPROBE = "${pkgs.kmod}/sbin/modprobe"
       TRUNCATE = "${pkgs.coreutils}/bin/truncate"
       DD = "${pkgs.coreutils}/bin/dd"
       RM = "${pkgs.coreutils}/bin/rm"

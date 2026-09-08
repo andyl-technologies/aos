@@ -1,17 +1,16 @@
 //! Lock-coupled privileged ZFS observation and execution boundary.
 //!
 //! This module intentionally keeps executable argv crate-private. The fixed
-//! backend contract receives only a compiler-produced sealed program with an
-//! absolute configured executable, empty environment, no inherited
-//! descriptors, finite output ceilings, and a finite process-tree timeout.
-//! No production spawning primitive is claimed here; the eventual in-crate
-//! adapter must implement all of those guarantees before Apply is advertised.
+//! backend contract receives only typed resolved semantics. The production
+//! adapter sends those types to a systemd-contained one-shot worker, which
+//! independently recompiles argv before invoking its fixed executable. ZFS
+//! observations remain a separate backend and never trust child output.
 
-use std::ffi::OsString;
 use std::time::Duration;
 
 use aos_sandbox_core::ObjectDigest;
 
+use crate::process::{SystemdZfsExecutor, WorkerObservationOutcome, ZfsWorkerError};
 use crate::{
     AncestorPolicyTransaction, CatalogBindingV1, DurableStoragePhase, PostconditionPolicyV1,
     ProjectAncestorPolicyV1, ResolvedCatalogCommitmentV1, StorageOperation, StorageStateError,
@@ -33,8 +32,8 @@ pub(crate) enum ZfsHelperError {
     PreconditionMismatch,
     #[error("ZFS postcondition observation did not match")]
     PostconditionMismatch,
-    #[error("fixed ZFS process backend failed")]
-    Backend,
+    #[error("fixed ZFS process backend failed: {0}")]
+    Backend(#[from] ZfsWorkerError),
     #[error("fixed ZFS process output or timeout contract was violated")]
     ProcessContract,
 }
@@ -62,8 +61,8 @@ pub(crate) struct ZfsPostconditionObservation {
 
 struct SealedZfsProgram<'a> {
     executable: &'a std::path::Path,
-    arguments: &'a [OsString],
-    ancestor: Option<&'a AncestorPolicyTransaction>,
+    operation: StorageOperation,
+    catalog: &'a ResolvedCatalogCommitmentV1,
     environment_is_empty: bool,
     inherited_descriptor_count: u8,
     maximum_stdout_bytes: usize,
@@ -74,6 +73,7 @@ struct SealedZfsProgram<'a> {
 trait ZfsProcessBackend {
     fn observe_preconditions(
         &mut self,
+        program: &SealedZfsProgram<'_>,
         expected: &[ZfsPrecondition],
     ) -> Result<Vec<ZfsPrecondition>, ZfsHelperError>;
 
@@ -84,9 +84,96 @@ trait ZfsProcessBackend {
 
     fn observe_postcondition(
         &mut self,
+        program: &SealedZfsProgram<'_>,
         expected: &PostconditionPolicyV1,
         expected_ancestor: Option<&ProjectAncestorPolicyV1>,
     ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError>;
+}
+
+struct SystemdZfsProcessBackend {
+    executor: SystemdZfsExecutor,
+}
+
+impl SystemdZfsProcessBackend {
+    fn new(executor: SystemdZfsExecutor) -> Self {
+        Self { executor }
+    }
+}
+
+impl ZfsProcessBackend for SystemdZfsProcessBackend {
+    fn observe_preconditions(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+        expected: &[ZfsPrecondition],
+    ) -> Result<Vec<ZfsPrecondition>, ZfsHelperError> {
+        let contract = ZfsHelperContract::new(program.executable.to_path_buf())?;
+        match self
+            .executor
+            .observe_preconditions(&contract, program.operation, program.catalog)?
+        {
+            WorkerObservationOutcome::Matched {
+                object_guid: None, ..
+            } => Ok(expected.to_vec()),
+            WorkerObservationOutcome::Matched { .. } => Err(ZfsHelperError::PreconditionMismatch),
+            WorkerObservationOutcome::Incomplete | WorkerObservationOutcome::Mismatch => {
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    fn execute_once(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+    ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+        let contract = ZfsHelperContract::new(program.executable.to_path_buf())?;
+        let output = self
+            .executor
+            .execute_once(&contract, program.operation, program.catalog)?;
+        Ok(ZfsProcessOutput {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            success: output.success,
+            timed_out: output.timed_out,
+        })
+    }
+
+    fn observe_postcondition(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+        expected: &PostconditionPolicyV1,
+        expected_ancestor: Option<&ProjectAncestorPolicyV1>,
+    ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError> {
+        let contract = ZfsHelperContract::new(program.executable.to_path_buf())?;
+        match self
+            .executor
+            .observe_postcondition(&contract, program.operation, program.catalog)?
+        {
+            WorkerObservationOutcome::Matched {
+                object_guid,
+                observation_digest,
+            } => {
+                let captures_guid = matches!(
+                    expected,
+                    PostconditionPolicyV1::CaptureDataset { .. }
+                        | PostconditionPolicyV1::CaptureSnapshot { .. }
+                );
+                if captures_guid != object_guid.is_some() {
+                    return Err(ZfsHelperError::PostconditionMismatch);
+                }
+                Ok(Some(ZfsPostconditionObservation {
+                    observed: expected.clone(),
+                    ancestor: expected_ancestor.cloned(),
+                    object_guid,
+                    // The worker reports physical facts only. This binding is
+                    // taken from the still-locked local transaction catalog.
+                    catalog: program.catalog.binding(),
+                    digest: observation_digest,
+                }))
+            }
+            WorkerObservationOutcome::Incomplete => Ok(None),
+            WorkerObservationOutcome::Mismatch => Err(ZfsHelperError::PostconditionMismatch),
+        }
+    }
 }
 
 struct StorageMutationHelper<B> {
@@ -113,10 +200,20 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
         store.validate_mutation_exact(operation_id, request_digest, mutation_digest, catalog)?;
         let transaction = ZfsTransaction::from_catalog(operation, catalog)?;
         let expected_preconditions = all_preconditions(&transaction);
+        let program = SealedZfsProgram {
+            executable: self.contract.executable(),
+            operation,
+            catalog,
+            environment_is_empty: true,
+            inherited_descriptor_count: 0,
+            maximum_stdout_bytes: MAXIMUM_STDOUT_BYTES,
+            maximum_stderr_bytes: MAXIMUM_STDERR_BYTES,
+            process_tree_timeout: PROCESS_TREE_TIMEOUT,
+        };
         if phase == DurableStoragePhase::Prepared {
             let observed = self
                 .backend
-                .observe_preconditions(&expected_preconditions)?;
+                .observe_preconditions(&program, &expected_preconditions)?;
             if observed != expected_preconditions {
                 return Err(ZfsHelperError::PreconditionMismatch);
             }
@@ -126,22 +223,13 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
                 mutation_digest,
                 catalog,
             )?;
-            let program = SealedZfsProgram {
-                executable: self.contract.executable(),
-                arguments: transaction.mutation_arguments(),
-                ancestor: transaction.ancestor_transaction(),
-                environment_is_empty: true,
-                inherited_descriptor_count: 0,
-                maximum_stdout_bytes: MAXIMUM_STDOUT_BYTES,
-                maximum_stderr_bytes: MAXIMUM_STDERR_BYTES,
-                process_tree_timeout: PROCESS_TREE_TIMEOUT,
-            };
             validate_process_output(self.backend.execute_once(&program)?)?;
         } else if phase != DurableStoragePhase::Ambiguous {
             return Err(StorageStateError::InvalidTransition.into());
         }
 
         let Some(observation) = self.backend.observe_postcondition(
+            &program,
             transaction.postcondition(),
             transaction
                 .ancestor_transaction()
@@ -217,6 +305,7 @@ mod tests {
     impl ZfsProcessBackend for FakeBackend {
         fn observe_preconditions(
             &mut self,
+            _program: &SealedZfsProgram<'_>,
             expected: &[ZfsPrecondition],
         ) -> Result<Vec<ZfsPrecondition>, ZfsHelperError> {
             self.precondition_observation_count += 1;
@@ -232,8 +321,10 @@ mod tests {
             program: &SealedZfsProgram<'_>,
         ) -> Result<ZfsProcessOutput, ZfsHelperError> {
             assert!(program.executable.is_absolute());
-            assert!(!program.arguments.is_empty());
-            assert!(program.ancestor.is_some());
+            let transaction =
+                ZfsTransaction::from_catalog(program.operation, program.catalog).unwrap();
+            assert!(!transaction.mutation_arguments().is_empty());
+            assert!(transaction.ancestor_transaction().is_some());
             assert!(program.environment_is_empty);
             assert_eq!(program.inherited_descriptor_count, 0);
             assert_eq!(program.maximum_stdout_bytes, MAXIMUM_STDOUT_BYTES);
@@ -241,7 +332,7 @@ mod tests {
             assert_eq!(program.process_tree_timeout, PROCESS_TREE_TIMEOUT);
             self.execute_count += 1;
             if self.fail_execution {
-                return Err(ZfsHelperError::Backend);
+                return Err(ZfsHelperError::ProcessContract);
             }
             Ok(ZfsProcessOutput {
                 stdout: vec![
@@ -260,6 +351,7 @@ mod tests {
 
         fn observe_postcondition(
             &mut self,
+            _program: &SealedZfsProgram<'_>,
             _expected: &PostconditionPolicyV1,
             _expected_ancestor: Option<&ProjectAncestorPolicyV1>,
         ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError> {

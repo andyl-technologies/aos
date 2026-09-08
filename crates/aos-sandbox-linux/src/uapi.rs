@@ -434,7 +434,8 @@ pub(crate) fn pidfd_open(pid: u32) -> Result<OwnedFd> {
     fd_result(result, "pidfd_open")
 }
 
-pub(crate) fn pidfd_send_signal_zero(pidfd: BorrowedFd<'_>) -> Result<()> {
+#[cfg(all(test, feature = "kernel-tests"))]
+pub(crate) fn pidfd_send_signal_zero_for_test(pidfd: BorrowedFd<'_>) -> Result<()> {
     // SAFETY: the borrowed fd remains live for the call; signal 0 has no
     // side-effect and the siginfo pointer is intentionally null.
     let result = unsafe {

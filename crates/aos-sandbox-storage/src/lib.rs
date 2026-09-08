@@ -15,9 +15,10 @@
 //! machine and its exclusive catalog lock. [`workspace_catalog`] binds an exact
 //! committed creation to its operation-scoped authority fence and fixed root
 //! pin, retains non-recycled dataset and subordinate-identity allocations, and
-//! emits the bounded authoritative inventory. Postcondition observation, the
-//! long-running storage service, and the one-shot helper executable remain
-//! intentionally separate layers. This crate does not spawn processes.
+//! emits the bounded authoritative inventory. Postcondition observation and
+//! the long-running storage service remain intentionally separate layers.
+//! [`process`] reaches ZFS only through a fixed, systemd-contained one-shot
+//! worker that recompiles typed catalog input.
 
 pub mod authorization;
 pub mod broker;
@@ -28,6 +29,8 @@ mod catalog_decode;
     reason = "sealed helper boundary is not wired until Apply readiness exists"
 )]
 mod helper;
+mod observation;
+pub mod process;
 pub mod request;
 pub mod state;
 pub mod workspace_catalog;
@@ -43,6 +46,9 @@ pub use catalog::{
     ManagedDatasetRoot, PlannedDataset, PlannedSnapshot, PostconditionPolicyV1,
     ProjectAncestorPolicyV1, ReservationPolicy, ResolvedCatalogCommitmentV1, ResolvedDataset,
     ResolvedSnapshot, StorageDomainsV1, WorkspaceSpacePolicyV1,
+};
+pub use process::{
+    SystemdZfsExecutor, WorkerProcessOutput, ZfsWorkerError, process_timeout, run_inherited_worker,
 };
 pub use request::{
     CanonicalStorageSemanticsV1, CatalogBindingV1, StorageOperation, StorageRequestError,

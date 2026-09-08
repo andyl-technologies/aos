@@ -82,6 +82,7 @@ in
       }
 
       run_tests ${fixtures}/bin/aos_sandbox_linux cgroup::tests::real_readonly_hierarchy_resolves_exact_current_membership
+      run_tests ${fixtures}/bin/aos_sandbox_linux pidfd::tests::cross_uid_pidfd_liveness_does_not_require_signal_permission
       run_tests ${fixtures}/bin/aos_sandbox_linux seqpacket::descriptor_subject::tests::
       run_tests ${fixtures}/bin/aos_sandbox runtime_scope::kernel_tests::
       run_tests ${fixtures}/bin/aos_sandbox local_sessions::tests::
