@@ -4529,6 +4529,37 @@ HTTP remote-helper capability exchange passed. Native build-time Bash and
 gettext paths are absent from the output and its closure. This is focused
 `git-minimal` Linux qualification, not full Git or Darwin qualification.
 
+The system-image generators now make the same build-machine/target split.
+Native Python produces the composefs dump; native `mkcomposefs` and
+`fsck.erofs` create and validate its EROFS metadata image; and native `sed`
+generates the activation script. The Bash, coreutils, util-linux, EROFS, APM,
+and systemd paths substituted into that script remain AArch64 target paths.
+The target composefs library also restores the target OpenSSL runtime path
+after Meson removes build paths during installation, and asserts that the
+patched library directly needs `libcrypto.so.3`. No composefs feature or
+system-image validation step was disabled.
+
+The exact native and target composefs packages passed at
+`/nix/store/fskm17i70p2zni1plk3snqafy7d7qppy-composefs-1.0.8` and
+`/nix/store/i3wkmnrfygmjvn3mr8vl5f74ysq42pfh-composefs-1.0.8`. All four
+target ELF objects are AArch64; the shared library directly needs
+`libcrypto.so.3` and its runtime path contains the target OpenSSL and glibc.
+In a clean environment, native `mkcomposefs` and the target binary under the
+AArch64 runner produced byte-identical, `fsck.erofs`-valid images with SHA-256
+`a54c35c03aa70cb08f43351c954ba176c596c761051e761329eca91bca317676` from
+the same source tree.
+
+The coherent candidate evaluates the complete fleet proof as
+`/nix/store/l6rgwy2zf9whpjv7al6rsjzcha2hicr7-aos-fleet-test-sandbox-nspawn-platform-proof-0.drv`.
+Its generator derivations reference the exact native Python, composefs,
+EROFS, and sed outputs, whose executable objects are all x86-64, while the
+five already-built substituted target tool packages are all AArch64. The first
+realization stopped earlier in the candidate's AOS package when the native
+Rust 1.93.1 compiler aborted with `malloc(): unaligned fastbin chunk detected`.
+That is a host compiler-process failure, not a passing fleet result; an exact
+same-source retry with two build cores is in progress at the time of this
+record.
+
 The complete AArch64 fleet proof remains unqualified. Earlier focused package
 results, including PostgreSQL, libgpg-error, libgcrypt, Linux, Git, D-Bus, and
 EROFS, record the fixes that advanced prior candidates, but later cross-stdenv

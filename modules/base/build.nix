@@ -426,7 +426,7 @@ in {
         # The dump is a single text file, so drop the dir and write
         # straight to $out.
         rmdir "$out"
-        ${pkgs.python3}/bin/python3 \
+        ${pkgs.buildPackages.python3}/bin/python3 \
           ${../../pkgs/system/build-composefs-dump.py} \
           ${etcJson}/etc.json > $out
       '';
@@ -439,8 +439,9 @@ in {
       # AOS stdenv pre-creates $out as a directory; the EROFS image is
       # a single file, so drop the dir first.
       rmdir "$out"
-      ${pkgs.composefs}/bin/mkcomposefs --from-file ${config.system.build.etcDump} $out
-      ${pkgs.erofs-utils}/bin/fsck.erofs $out
+      ${pkgs.buildPackages.composefs}/bin/mkcomposefs \
+        --from-file ${config.system.build.etcDump} $out
+      ${pkgs.buildPackages.erofs-utils}/bin/fsck.erofs $out
     '';
 
     # Enforce `config.assertions` and surface `config.warnings` at
@@ -547,12 +548,13 @@ in {
 
     # Substitute the `@tool@` placeholders in activate.sh.in for store
     # paths. AOS's stdenv has no `substituteAll`, so this uses the
-    # `pkgs.runCommand` + `pkgs.sed` idiom. The body is kept in a
-    # committed `.sh.in` file (not an inline Nix string) so the script's
-    # shell `${N}` / `${prev_gen:-}` expansions don't collide with Nix's
-    # own `${…}` interpolation. `@apm@` resolves to the private package-runtime
-    # output; this does not create a cycle since it does not depend on the
-    # toplevel.
+    # `pkgs.runCommand` + native `pkgs.buildPackages.sed` idiom. Only sed runs
+    # on the build machine; every path substituted into the generated script
+    # remains a target package. The body is kept in a committed `.sh.in` file
+    # (not an inline Nix string) so the script's shell `${N}` /
+    # `${prev_gen:-}` expansions don't collide with Nix's own `${…}`
+    # interpolation. `@apm@` resolves to the private package-runtime output;
+    # this does not create a cycle since it does not depend on the toplevel.
     # The activate script is an image-fixed artifact (it just
     # substitutes pkgs store paths into activate.sh.in). Reference the resolved
     # artifact; register the source guarded on frozenArtifacts so the stage-2
@@ -566,7 +568,7 @@ in {
           # AOS stdenv pre-creates $out as a directory; this output is a
           # single executable file, so drop the dir and write to $out.
           rmdir "$out"
-          ${pkgs.sed}/bin/sed \
+          ${pkgs.buildPackages.sed}/bin/sed \
             -e "s|@bash@|${pkgs.bash}|g" \
             -e "s|@coreutils@|${pkgs.coreutils}|g" \
             -e "s|@util-linux@|${pkgs.util-linux}|g" \
