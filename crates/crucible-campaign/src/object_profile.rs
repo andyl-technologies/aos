@@ -70,6 +70,15 @@ fn profile_record(kind: CampaignRecordKind, logical_length: u64) -> ObjectProfil
             RetentionRole::ExactState,
         );
     }
+    if matches!(kind, Record::ArchiveManifest | Record::ArchiveInventoryPage) {
+        return ObjectProfile::new(
+            kind.object_kind(),
+            logical_length,
+            SensitivityClass::Metadata,
+            Reconstructibility::Canonical,
+            RetentionRole::CampaignMetadata,
+        );
+    }
     if matches!(
         kind,
         Record::MeasurementSet

@@ -57,10 +57,54 @@ use crate::{
     acknowledge_incorporated_finding_candidate, incorporate_and_acknowledge_finding_candidate,
 };
 use crate::{
-    CompletionValidationFailure, ExecutorCapacity, LocalExecutorError, LocalExecutorSupervisor,
+    CampaignTransferJournalError, CampaignTransferRetentionAdmin, CampaignTransferRetentionFence,
+    CampaignTransferRetentionGeneration, CampaignTransferRetentionRoot,
+    CampaignTransferRetentionSummary, CompletionValidationFailure, ExecutorCapacity,
+    LocalExecutorError, LocalExecutorSupervisor,
 };
 
 mod s3;
+
+#[derive(Default)]
+struct TestCampaignTransferRoots {
+    roots: Mutex<Vec<CampaignTransferRetentionRoot>>,
+}
+
+impl TestCampaignTransferRoots {
+    fn replace(&self, roots: Vec<CampaignTransferRetentionRoot>) {
+        *self.roots.lock().expect("transfer roots") = roots;
+    }
+}
+
+impl CampaignTransferRetentionAdmin for TestCampaignTransferRoots {
+    fn acquire_campaign_transfer_retention_fence(
+        &self,
+    ) -> Result<Box<dyn CampaignTransferRetentionFence + '_>, CampaignTransferJournalError> {
+        Ok(Box::new(TestCampaignTransferFence {
+            roots: self.roots.lock().expect("transfer roots"),
+        }))
+    }
+}
+
+struct TestCampaignTransferFence<'a> {
+    roots: MutexGuard<'a, Vec<CampaignTransferRetentionRoot>>,
+}
+
+impl CampaignTransferRetentionFence for TestCampaignTransferFence<'_> {
+    fn visit_roots(
+        &mut self,
+        visitor: &mut dyn FnMut(CampaignTransferRetentionRoot) -> Result<(), StoreError>,
+    ) -> Result<CampaignTransferRetentionSummary, CampaignTransferJournalError> {
+        for root in self.roots.iter().copied() {
+            visitor(root).map_err(CampaignTransferJournalError::Visitor)?;
+        }
+        Ok(CampaignTransferRetentionSummary::new(
+            CampaignTransferRetentionGeneration::from_bytes([0x73; 32]),
+            u64::from(!self.roots.is_empty()),
+            self.roots.len() as u64,
+        ))
+    }
+}
 
 fn hash(domain: &str, byte: u8) -> CampaignHash {
     CampaignHash::derive(domain, &[byte])
@@ -1453,6 +1497,155 @@ fn hot_checkpoint_fallback_is_a_fenced_gc_root_until_durable_removal() {
         Err(CampaignGcApplyError::RootSetChanged)
     ));
     assert_eq!(blobs.object_count().expect("object count"), 2);
+}
+
+#[test]
+fn direct_transfer_root_promoted_to_hot_root_revalidates_its_closure() {
+    let blobs = Arc::new(MemoryBlobBackend::new(
+        "combined-hot-transfer-gc",
+        1024 * 1024,
+    ));
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+
+    let transfer_scenario =
+        ScenarioDefId::from_hash(hash("crucible.test.gc.transfer-scenario.v1", 1));
+    let transfer_scenario_artifact = repository
+        .publish_scenario_artifact(transfer_scenario, 1, b"transfer scenario".to_vec())
+        .expect("transfer scenario artifact");
+    let transfer_configuration =
+        ConfigurationId::from_hash(hash("crucible.test.gc.transfer-configuration.v1", 2));
+    let transfer_configuration_artifact = repository
+        .publish_configuration_artifact(
+            transfer_scenario,
+            transfer_scenario_artifact,
+            transfer_configuration,
+            1,
+            b"transfer configuration".to_vec(),
+        )
+        .expect("transfer configuration artifact");
+
+    let hot_scenario = ScenarioDefId::from_hash(hash("crucible.test.gc.hot-scenario.v1", 3));
+    let hot_scenario_artifact = repository
+        .publish_scenario_artifact(hot_scenario, 1, b"hot scenario".to_vec())
+        .expect("hot scenario artifact");
+    let hot_configuration =
+        ConfigurationId::from_hash(hash("crucible.test.gc.hot-configuration.v1", 4));
+    let hot_configuration_artifact = repository
+        .publish_configuration_artifact(
+            hot_scenario,
+            hot_scenario_artifact,
+            hot_configuration,
+            1,
+            b"hot configuration".to_vec(),
+        )
+        .expect("hot configuration artifact");
+
+    let hot = MemoryHotCheckpointFallbackRetentionStore::new();
+    let lineage = CampaignLineageId::parse(&format!(
+        "crucible.campaign.lineage@campaign-fact.1.{}",
+        hash("crucible.test.gc.combined-lineage.v1", 5).to_hex()
+    ))
+    .expect("lineage");
+    let hot_record = HotCheckpointFallbackRecord::new(
+        QemuHotForkTemplateKey::new(
+            lineage,
+            ContentHash::from_bytes(b"combined hot semantic basis"),
+        ),
+        HotCheckpointFallback::Thin(hot_configuration_artifact),
+    );
+    let hot_slot = HotCheckpointFallbackSlot::new(8).expect("hot slot");
+    assert_eq!(
+        hot.compare_exchange_fallback(hot_slot, None, Some(hot_record))
+            .expect("install hot fallback"),
+        HotCheckpointFallbackRetentionCas::Advanced
+    );
+
+    let transfers = TestCampaignTransferRoots::default();
+    let transfer_length = blobs
+        .read(transfer_configuration_artifact.content_id(), None)
+        .expect("transfer root")
+        .logical_length();
+    transfers.replace(vec![CampaignTransferRetentionRoot::new(
+        transfer_configuration_artifact.content_id(),
+        transfer_length,
+    )]);
+    let mut ledger = MemoryAssignmentLedger::default();
+    let graph = hash("crucible.test.gc.combined-store-graph.v1", 6);
+    let physical = CampaignGcPhysicalStore::new("combined-hot-transfer-gc", blobs.as_ref())
+        .expect("physical store");
+    let prepared = plan_single_host_campaign_gc_with_physical_and_hot_checkpoints(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
+        graph,
+        &[physical],
+    )
+    .expect("plan combined hot and transfer roots");
+    assert!(
+        prepared
+            .roots()
+            .iter()
+            .any(|root| root == hot_configuration_artifact.content_id())
+    );
+    assert!(
+        prepared
+            .roots()
+            .iter()
+            .any(|root| root == transfer_configuration_artifact.content_id())
+    );
+    assert!(
+        prepared
+            .candidates()
+            .iter()
+            .any(|candidate| candidate.id() == transfer_scenario_artifact.content_id())
+    );
+
+    let temporary = tempfile::tempdir().expect("temporary GC journal");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(temporary.path().join("journal"), &prepared)
+            .expect("create GC journal");
+    transfers.replace(Vec::new());
+    let promoted_record = HotCheckpointFallbackRecord::new(
+        QemuHotForkTemplateKey::new(
+            lineage,
+            ContentHash::from_bytes(b"promoted transfer semantic basis"),
+        ),
+        HotCheckpointFallback::Thin(transfer_configuration_artifact),
+    );
+    assert_eq!(
+        hot.compare_exchange_fallback(
+            HotCheckpointFallbackSlot::new(9).expect("promotion slot"),
+            None,
+            Some(promoted_record),
+        )
+        .expect("promote transfer root"),
+        HotCheckpointFallbackRetentionCas::Advanced
+    );
+
+    assert!(matches!(
+        apply_single_host_campaign_gc(
+            &mut journal,
+            CampaignGcApplySources::new_with_retention_sources(
+                &repository,
+                refs.as_ref(),
+                &mut ledger,
+                None,
+                CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers).into_sources(),
+            ),
+            graph,
+            &[physical],
+        ),
+        Err(CampaignGcApplyError::CandidateBecameReachable { id })
+            if id == transfer_scenario_artifact.content_id()
+    ));
+    assert!(
+        blobs
+            .contains(transfer_scenario_artifact.content_id())
+            .expect("promoted child retained")
+    );
 }
 
 #[test]

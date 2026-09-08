@@ -31,6 +31,7 @@ impl CampaignLocalService {
             server,
             executor,
             mut maintenance,
+            _transfer_journal,
             runtime_registry,
         } = self;
         let executor_monitor = match spawn_executor_monitor(&server, executor.as_ref()) {

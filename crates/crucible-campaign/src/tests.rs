@@ -206,6 +206,9 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
                 "crucible-campaign::finding"
             }
             CampaignRecordKind::FindingCandidateBundle => "crucible-campaign::finding_candidate",
+            CampaignRecordKind::ArchiveManifest | CampaignRecordKind::ArchiveInventoryPage => {
+                "crucible-campaign::archive"
+            }
             _ => "crucible-campaign::object",
         };
         assert_eq!(row[2], expected_owner);

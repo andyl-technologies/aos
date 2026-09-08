@@ -658,10 +658,12 @@ fn runtime_control_failure(error: &CampaignLocalServiceError) -> CampaignService
         | CampaignLocalServiceError::InvalidStateDirectory
         | CampaignLocalServiceError::StateInUse
         | CampaignLocalServiceError::InvalidStateLock
+        | CampaignLocalServiceError::InvalidStateIdentity
         | CampaignLocalServiceError::InvalidStateSubdirectory
         | CampaignLocalServiceError::InvalidRepositoryStore
         | CampaignLocalServiceError::StoreMaintenanceUnavailable
         | CampaignLocalServiceError::HotForkRetention(_)
+        | CampaignLocalServiceError::CampaignTransfer(_)
         | CampaignLocalServiceError::StoreMaintenancePanicked
         | CampaignLocalServiceError::InvalidPolicyFile
         | CampaignLocalServiceError::InvalidComponentAuthorityFile

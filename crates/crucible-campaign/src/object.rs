@@ -15,13 +15,14 @@ use crate::choice::{
 };
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::{
-    Attempt, AttemptAdmission, BranchPath, BranchRequest, CampaignCodecError,
-    CampaignControlAction, CampaignFact, CampaignLineage, CampaignPlanningView, CampaignPolicy,
-    CampaignSnapshot, ConfigurationArtifact, ContinuationProjection, CoverageProjection,
-    ExpansionCredit, ExpansionState, Finding, FindingCandidateBundle, MeasurementSet,
-    ObjectiveEvaluation, Observation, PlannerEngine, PlannerInvocation, PlannerRequest,
-    PlannerState, PlannerStep, PolicyArtifact, PropertyVerdictSet, Proposal, RankingExplanation,
-    ReproductionArtifact, ScenarioArtifact, SurvivorSelection,
+    Attempt, AttemptAdmission, BranchPath, BranchRequest, CampaignArchiveInventoryPage,
+    CampaignArchiveManifest, CampaignCodecError, CampaignControlAction, CampaignFact,
+    CampaignLineage, CampaignPlanningView, CampaignPolicy, CampaignSnapshot, ConfigurationArtifact,
+    ContinuationProjection, CoverageProjection, ExpansionCredit, ExpansionState, Finding,
+    FindingCandidateBundle, MeasurementSet, ObjectiveEvaluation, Observation, PlannerEngine,
+    PlannerInvocation, PlannerRequest, PlannerState, PlannerStep, PolicyArtifact,
+    PropertyVerdictSet, Proposal, RankingExplanation, ReproductionArtifact, ScenarioArtifact,
+    SurvivorSelection,
 };
 
 pub use crucible_cas::content_envelope::ContentChild as ChildReference;
@@ -113,11 +114,15 @@ pub enum CampaignRecordKind {
     PlannerCandidateBudget,
     /// Durable executor-produced finding candidate handoff.
     FindingCandidateBundle,
+    /// Authenticated partial or complete campaign archive boundary.
+    ArchiveManifest,
+    /// Bounded direct-object inventory page owned by an archive manifest.
+    ArchiveInventoryPage,
 }
 
 impl CampaignRecordKind {
     /// Every campaign record schema admitted by this crate.
-    pub const ALL: [Self; 41] = [
+    pub const ALL: [Self; 43] = [
         Self::Lineage,
         Self::Policy,
         Self::Snapshot,
@@ -159,6 +164,8 @@ impl CampaignRecordKind {
         Self::BudgetLedger,
         Self::PlannerCandidateBudget,
         Self::FindingCandidateBundle,
+        Self::ArchiveManifest,
+        Self::ArchiveInventoryPage,
     ];
 
     /// Returns the globally registered canonical schema name.
@@ -206,6 +213,8 @@ impl CampaignRecordKind {
             Self::BudgetLedger => "crucible.campaign.budget-ledger",
             Self::PlannerCandidateBudget => "crucible.campaign.planner-candidate-budget",
             Self::FindingCandidateBundle => "crucible.campaign.finding-candidate-bundle",
+            Self::ArchiveManifest => "crucible.campaign.archive-manifest",
+            Self::ArchiveInventoryPage => "crucible.campaign.archive-inventory-page",
         }
     }
 
@@ -228,6 +237,7 @@ impl CampaignRecordKind {
             Self::ReproductionArtifact => 2,
             Self::Finding => 3,
             Self::FindingCandidateBundle => RECORD_SCHEMA_VERSION,
+            Self::ArchiveManifest | Self::ArchiveInventoryPage => RECORD_SCHEMA_VERSION,
             Self::PlannerCandidateGuidance | Self::PlannerCandidateBudget | Self::BudgetLedger => 2,
             _ => RECORD_SCHEMA_VERSION,
         }
@@ -259,6 +269,7 @@ impl CampaignRecordKind {
             | Self::PlannerCandidateBudget
             | Self::CoverageProjection
             | Self::RankingExplanation => ObjectKind::Projection,
+            Self::ArchiveManifest | Self::ArchiveInventoryPage => ObjectKind::Projection,
             Self::MeasurementSet
             | Self::PropertyVerdictSet
             | Self::Observation
@@ -332,6 +343,8 @@ impl Canonical for CampaignRecordKind {
             Self::BudgetLedger => 38,
             Self::PlannerCandidateBudget => 39,
             Self::FindingCandidateBundle => 40,
+            Self::ArchiveManifest => 41,
+            Self::ArchiveInventoryPage => 42,
         });
     }
 
@@ -378,6 +391,8 @@ impl Canonical for CampaignRecordKind {
             38 => Ok(Self::BudgetLedger),
             39 => Ok(Self::PlannerCandidateBudget),
             40 => Ok(Self::FindingCandidateBundle),
+            41 => Ok(Self::ArchiveManifest),
+            42 => Ok(Self::ArchiveInventoryPage),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-record-kind",
                 tag,
@@ -394,6 +409,42 @@ pub struct ObjectEnvelope {
 }
 
 impl ObjectEnvelope {
+    /// Builds an archive manifest whose child table contains only inventory pages.
+    ///
+    /// Selected campaign objects are deliberately direct inventory entries,
+    /// rather than transitive envelope children, because a partial archive
+    /// declares omitted descendants explicitly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if the manifest or child table is invalid.
+    pub fn for_archive_manifest(
+        value: &CampaignArchiveManifest,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_versioned(
+            CampaignRecordKind::ArchiveManifest,
+            value.schema_version(),
+            content_children(value.content_children())?,
+            value.canonical_bytes(),
+        )
+    }
+
+    /// Builds one childless archive inventory page.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if the page is invalid.
+    pub fn for_archive_inventory_page(
+        value: &CampaignArchiveInventoryPage,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_versioned(
+            CampaignRecordKind::ArchiveInventoryPage,
+            value.schema_version(),
+            BTreeSet::new(),
+            value.canonical_bytes(),
+        )
+    }
+
     /// Builds a budget envelope with the exact versioned request-spending child.
     ///
     /// # Errors
@@ -709,6 +760,8 @@ impl ObjectEnvelope {
                 | CampaignRecordKind::Finding
                 | CampaignRecordKind::FindingCandidateBundle
                 | CampaignRecordKind::PlannerCandidateGuidance
+                | CampaignRecordKind::ArchiveManifest
+                | CampaignRecordKind::ArchiveInventoryPage
         ) {
             let version = self
                 .envelope
@@ -893,6 +946,14 @@ fn expected_children(
         CampaignRecordKind::PlannerCandidateBudget => {
             let value = crate::PlannerCandidateBudget::from_canonical_bytes(body)?;
             content_children(value.content_children())
+        }
+        CampaignRecordKind::ArchiveManifest => {
+            let value = CampaignArchiveManifest::from_canonical_bytes(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::ArchiveInventoryPage => {
+            CampaignArchiveInventoryPage::from_canonical_bytes(body)?;
+            Ok(BTreeSet::new())
         }
         CampaignRecordKind::MerkleNode => Err(CampaignCodecError::InvalidValue {
             reason: "opaque campaign record requires its owning validator",

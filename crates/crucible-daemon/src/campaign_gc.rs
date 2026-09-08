@@ -34,7 +34,7 @@ pub use apply::apply_single_host_campaign_gc_with_hot_checkpoints;
 use apply::apply_single_host_campaign_gc_with_physical;
 pub use apply::{
     CampaignGcApplyError, CampaignGcApplyReport, CampaignGcApplyStatus,
-    apply_single_host_campaign_gc,
+    apply_single_host_campaign_gc, apply_single_host_campaign_gc_with_transfers,
 };
 pub use journal::{
     CampaignGcJournalCreateDisposition, CampaignGcJournalError, CampaignGcJournalPhase,
@@ -52,7 +52,7 @@ use planner::plan_single_host_campaign_gc_with_physical;
 use planner::plan_single_host_campaign_gc_with_physical_and_hot_checkpoints;
 pub use planner::{
     CampaignGcPhysicalStore, CampaignGcPlanningError, CampaignGcPreparedPlan,
-    plan_single_host_campaign_gc,
+    plan_single_host_campaign_gc, plan_single_host_campaign_gc_with_transfers,
 };
 
 use crucible_campaign::CampaignHash;
@@ -92,7 +92,22 @@ impl<'a> CampaignGcHotCheckpointRoots<'a> {
     #[must_use]
     pub const fn new(hot_fallbacks: &'a dyn HotCheckpointFallbackRetentionAdmin) -> Self {
         Self {
-            sources: CampaignGcRetentionSources::with_hot_checkpoints(None, hot_fallbacks),
+            sources: CampaignGcRetentionSources::with_hot_checkpoints(None, hot_fallbacks, None),
+        }
+    }
+
+    /// Binds hot-checkpoint fallbacks and incomplete archive-transfer roots.
+    #[must_use]
+    pub const fn with_transfers(
+        hot_fallbacks: &'a dyn HotCheckpointFallbackRetentionAdmin,
+        transfers: &'a dyn crate::CampaignTransferRetentionAdmin,
+    ) -> Self {
+        Self {
+            sources: CampaignGcRetentionSources::with_hot_checkpoints(
+                None,
+                hot_fallbacks,
+                Some(transfers),
+            ),
         }
     }
 
@@ -106,6 +121,23 @@ impl<'a> CampaignGcHotCheckpointRoots<'a> {
             sources: CampaignGcRetentionSources::with_hot_checkpoints(
                 Some(exact_pins),
                 hot_fallbacks,
+                None,
+            ),
+        }
+    }
+
+    /// Binds exact pins, hot fallbacks, and incomplete archive transfers.
+    #[must_use]
+    pub const fn with_exact_pins_and_transfers(
+        exact_pins: &'a mut dyn ExactPinRetentionAdmin,
+        hot_fallbacks: &'a dyn HotCheckpointFallbackRetentionAdmin,
+        transfers: &'a dyn crate::CampaignTransferRetentionAdmin,
+    ) -> Self {
+        Self {
+            sources: CampaignGcRetentionSources::with_hot_checkpoints(
+                Some(exact_pins),
+                hot_fallbacks,
+                Some(transfers),
             ),
         }
     }
@@ -117,6 +149,7 @@ impl<'a> CampaignGcHotCheckpointRoots<'a> {
 
 pub(super) struct CampaignGcRetentionSources<'a> {
     pub(super) exact_pins: Option<&'a mut dyn ExactPinRetentionAdmin>,
+    pub(super) transfers: Option<&'a dyn crate::CampaignTransferRetentionAdmin>,
     #[cfg(target_os = "linux")]
     pub(super) hot_fallbacks: Option<&'a dyn HotCheckpointFallbackRetentionAdmin>,
 }
@@ -127,6 +160,7 @@ impl<'a> CampaignGcRetentionSources<'a> {
     ) -> Self {
         Self {
             exact_pins,
+            transfers: None,
             #[cfg(target_os = "linux")]
             hot_fallbacks: None,
         }
@@ -136,10 +170,24 @@ impl<'a> CampaignGcRetentionSources<'a> {
     const fn with_hot_checkpoints(
         exact_pins: Option<&'a mut dyn ExactPinRetentionAdmin>,
         hot_fallbacks: &'a dyn HotCheckpointFallbackRetentionAdmin,
+        transfers: Option<&'a dyn crate::CampaignTransferRetentionAdmin>,
     ) -> Self {
         Self {
             exact_pins,
+            transfers,
             hot_fallbacks: Some(hot_fallbacks),
+        }
+    }
+
+    pub(super) const fn with_transfers(
+        exact_pins: Option<&'a mut dyn ExactPinRetentionAdmin>,
+        transfers: &'a dyn crate::CampaignTransferRetentionAdmin,
+    ) -> Self {
+        Self {
+            exact_pins,
+            transfers: Some(transfers),
+            #[cfg(target_os = "linux")]
+            hot_fallbacks: None,
         }
     }
 }

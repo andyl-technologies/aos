@@ -109,6 +109,7 @@ pub mod campaign_runtime_control;
 pub mod campaign_server;
 pub mod campaign_store_composition;
 pub mod campaign_store_quota;
+pub mod campaign_transfer;
 pub mod control_responsiveness;
 pub mod crucible_artifact;
 pub mod crucible_execution;
@@ -212,7 +213,9 @@ pub use campaign_gc::{
     CampaignGcPlanId, CampaignGcPlanningError, CampaignGcPreparedPlan, CampaignGcRootManifest,
     CampaignGcRootSetId, DirectoryCampaignGcJournal, MAX_CAMPAIGN_GC_BACKEND_ID_BYTES,
     MAX_CAMPAIGN_GC_MANIFEST_ENTRIES, MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
-    MAX_CAMPAIGN_GC_PLAN_BYTES, apply_single_host_campaign_gc, plan_single_host_campaign_gc,
+    MAX_CAMPAIGN_GC_PLAN_BYTES, apply_single_host_campaign_gc,
+    apply_single_host_campaign_gc_with_transfers, plan_single_host_campaign_gc,
+    plan_single_host_campaign_gc_with_transfers,
 };
 #[cfg(target_os = "linux")]
 pub use campaign_gc::{
@@ -260,6 +263,13 @@ pub use campaign_server::{
     MAX_CAMPAIGN_PENDING_CONNECTIONS,
 };
 pub use campaign_store_quota::LinuxProjectQuotaBinder;
+pub use campaign_transfer::{
+    CampaignArchiveTransferEndpoint, CampaignArchiveTransferError, CampaignTransferJournalError,
+    CampaignTransferOperationId, CampaignTransferRetentionAdmin, CampaignTransferRetentionFence,
+    CampaignTransferRetentionGeneration, CampaignTransferRetentionRoot,
+    CampaignTransferRetentionSummary, DirectoryCampaignTransferJournal,
+    ExactPinCampaignArchiveCheckpointResolver, transfer_campaign_archive_durably,
+};
 pub use control_responsiveness::{
     DAEMON_CONTROL_RESPONSIVE_QUANTUM_BOUND, DaemonControlResponsiveRoute,
     validate_daemon_control_responsiveness,

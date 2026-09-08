@@ -14,8 +14,8 @@ use thiserror::Error;
 
 use crate::{
     AssignmentRetentionAdmin, AssignmentRetentionInventoryError, AssignmentRetentionRoot,
-    AssignmentRetentionSummary, AssignmentRetentionVisitorError, ExactPinRetentionAdmin,
-    ExactPinRetentionError,
+    AssignmentRetentionSummary, AssignmentRetentionVisitorError, CampaignTransferJournalError,
+    CampaignTransferRetentionAdmin, ExactPinRetentionAdmin, ExactPinRetentionError,
 };
 #[cfg(target_os = "linux")]
 use crate::{HotCheckpointFallbackRetentionAdmin, HotCheckpointFallbackRetentionError};
@@ -173,6 +173,48 @@ where
     )
 }
 
+/// Builds a GC plan while retaining every incomplete archive-transfer object.
+///
+/// Transfer records are inventoried after write-back roots under the fixed
+/// ref, exact-pin, ledger, hot-fallback, write-back, transfer lock order. Their
+/// roots are direct archive-boundary objects and are not traversed as complete
+/// campaign closures.
+///
+/// # Errors
+///
+/// Returns [`CampaignGcPlanningError`] under the same conditions as
+/// [`plan_single_host_campaign_gc`], and when transfer inventory is invalid.
+pub fn plan_single_host_campaign_gc_with_transfers<'a, L>(
+    repository: &CampaignRepository,
+    refs: &dyn RefStoreAdmin,
+    ledger: &mut L,
+    write_back: Option<&dyn WriteBackRetentionAdmin>,
+    transfers: &'a dyn CampaignTransferRetentionAdmin,
+    exact_pins: Option<&'a mut dyn ExactPinRetentionAdmin>,
+    store_graph: &StoreGraphAdmin,
+) -> Result<CampaignGcPreparedPlan, CampaignGcPlanningError<L::Error>>
+where
+    L: AssignmentRetentionAdmin,
+    L::Error: StdError + Send + Sync + 'static,
+{
+    let borrowed = store_graph.physical();
+    let physical = borrowed
+        .iter()
+        .copied()
+        .map(CampaignGcPhysicalStore::from_graph_leaf)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(CampaignGcPlanningError::Plan)?;
+    plan_single_host_campaign_gc_with_physical_and_root_sources(
+        repository,
+        refs,
+        ledger,
+        write_back,
+        CampaignGcRetentionSources::with_transfers(exact_pins, transfers),
+        CampaignHash::from_bytes(store_graph.configuration_id().as_bytes()),
+        &physical,
+    )
+}
+
 /// Builds a GC plan that also retains every durable hot-checkpoint fallback.
 ///
 /// This is the production single-host boundary when a hot-checkpoint manager
@@ -265,7 +307,7 @@ where
     )
 }
 
-fn plan_single_host_campaign_gc_with_physical_and_root_sources<L>(
+pub(super) fn plan_single_host_campaign_gc_with_physical_and_root_sources<L>(
     repository: &CampaignRepository,
     refs: &dyn RefStoreAdmin,
     ledger: &mut L,
@@ -296,11 +338,13 @@ where
     #[cfg(target_os = "linux")]
     inventory_hot_fallbacks(root_sources.hot_fallbacks, &mut roots)?;
     inventory_write_back(write_back, &mut roots)?;
+    inventory_transfers(root_sources.transfers, &mut roots)?;
     let root_manifest = CampaignGcRootManifest::new(roots.unique.iter().copied())?;
 
-    let reachable = repository
-        .authenticated_closure_ids(root_manifest.iter())
+    let mut reachable = repository
+        .authenticated_closure_ids(roots.ordinary.iter().copied())
         .map_err(CampaignGcPlanningError::Campaign)?;
+    reachable.extend(roots.direct.iter().copied());
     let reachable_objects = u64::try_from(reachable.len())
         .map_err(|_| CampaignGcPlanningError::Manifest(CampaignGcManifestError::EntryLimit))?;
 
@@ -380,6 +424,9 @@ where
     /// A pending write-back root set could not be fenced or enumerated.
     #[error("campaign GC write-back retention inventory failed")]
     WriteBack(#[source] StoreError),
+    /// An incomplete archive-transfer root set could not be inventoried.
+    #[error("campaign GC transfer retention inventory failed")]
+    Transfer(#[source] CampaignTransferJournalError),
     /// The durable hot-checkpoint fallback catalog could not be inventoried.
     #[error("campaign GC hot-checkpoint fallback inventory failed")]
     #[cfg(target_os = "linux")]
@@ -391,6 +438,12 @@ where
     #[error("campaign GC authoritative campaign ref is invalid: {name}")]
     InvalidCampaignRef {
         /// Exact invalid authoritative ref spelling.
+        name: String,
+    },
+    /// An archive ref had an invalid namespace, target, or inventory.
+    #[error("campaign GC authoritative archive ref is invalid: {name}")]
+    InvalidArchiveRef {
+        /// Exact invalid archive ref spelling.
         name: String,
     },
     /// A current exact semantic pin has no matching selected checkpoint.
@@ -468,6 +521,9 @@ where
         CampaignGcRootInventoryError::InvalidCampaignRef { name } => {
             CampaignGcPlanningError::InvalidCampaignRef { name }
         }
+        CampaignGcRootInventoryError::InvalidArchiveRef { name } => {
+            CampaignGcPlanningError::InvalidArchiveRef { name }
+        }
         CampaignGcRootInventoryError::MissingExactPinMaterialization {
             campaign,
             configuration,
@@ -529,6 +585,29 @@ where
     fence
         .visit_roots(&mut |root| roots.insert(root.id()).map_err(|()| StoreError::Quota))
         .map_err(CampaignGcPlanningError::WriteBack)?;
+    Ok(())
+}
+
+fn inventory_transfers<E>(
+    transfers: Option<&dyn CampaignTransferRetentionAdmin>,
+    roots: &mut RootAccumulator,
+) -> Result<(), CampaignGcPlanningError<E>>
+where
+    E: StdError + 'static,
+{
+    let Some(transfers) = transfers else {
+        return Ok(());
+    };
+    let mut fence = transfers
+        .acquire_campaign_transfer_retention_fence()
+        .map_err(CampaignGcPlanningError::Transfer)?;
+    fence
+        .visit_roots(&mut |root| {
+            roots
+                .insert_direct(root.id())
+                .map_err(|()| StoreError::Quota)
+        })
+        .map_err(CampaignGcPlanningError::Transfer)?;
     Ok(())
 }
 

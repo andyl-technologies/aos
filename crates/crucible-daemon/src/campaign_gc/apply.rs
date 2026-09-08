@@ -6,14 +6,15 @@ use crucible_campaign::{
     CampaignFactId, CampaignName, CampaignRepository, CampaignRepositoryError, ConfigurationId,
 };
 use crucible_cas::content_store::{
-    BlobInventoryFence, PlannedDeleteDisposition, RefStoreAdmin, StoreError, StoreGraphAdmin,
-    WriteBackRetentionAdmin,
+    BlobInventoryFence, ContentId, PlannedDeleteDisposition, RefStoreAdmin, StoreError,
+    StoreGraphAdmin, WriteBackRetentionAdmin,
 };
 use thiserror::Error;
 
 use crate::{
     AssignmentRetentionAdmin, AssignmentRetentionInventoryError, AssignmentRetentionRoot,
-    AssignmentRetentionVisitorError, ExactPinRetentionAdmin, ExactPinRetentionError,
+    AssignmentRetentionVisitorError, CampaignTransferJournalError, CampaignTransferRetentionAdmin,
+    ExactPinRetentionAdmin, ExactPinRetentionError,
 };
 #[cfg(target_os = "linux")]
 use crate::{HotCheckpointFallbackRetentionAdmin, HotCheckpointFallbackRetentionError};
@@ -121,6 +122,51 @@ where
     )
 }
 
+/// Applies a GC plan while retaining every incomplete archive-transfer object.
+///
+/// The transfer inventory fence follows write-back in the fixed operational
+/// root lock order and remains held through candidate deletion.
+///
+/// # Errors
+///
+/// Returns [`CampaignGcApplyError`] under the same conditions as
+/// [`apply_single_host_campaign_gc`], and when transfer-root inventory is
+/// invalid or differs from the planned root set.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_single_host_campaign_gc_with_transfers<'a, L>(
+    journal: &mut DirectoryCampaignGcJournal,
+    repository: &CampaignRepository,
+    refs: &dyn RefStoreAdmin,
+    ledger: &mut L,
+    write_back: Option<&dyn WriteBackRetentionAdmin>,
+    transfers: &'a dyn CampaignTransferRetentionAdmin,
+    exact_pins: Option<&'a mut dyn ExactPinRetentionAdmin>,
+    store_graph: &StoreGraphAdmin,
+) -> Result<CampaignGcApplyReport, CampaignGcApplyError<L::Error>>
+where
+    L: AssignmentRetentionAdmin,
+    L::Error: StdError + Send + Sync + 'static,
+{
+    let borrowed = store_graph.physical();
+    let physical = borrowed
+        .iter()
+        .copied()
+        .map(CampaignGcPhysicalStore::from_graph_leaf)
+        .collect::<Result<Vec<_>, _>>()?;
+    apply_single_host_campaign_gc_with_physical(
+        journal,
+        CampaignGcApplySources::new_with_retention_sources(
+            repository,
+            refs,
+            ledger,
+            write_back,
+            CampaignGcRetentionSources::with_transfers(exact_pins, transfers),
+        ),
+        crucible_campaign::CampaignHash::from_bytes(store_graph.configuration_id().as_bytes()),
+        &physical,
+    )
+}
+
 /// Applies a GC plan while retaining every durable hot-checkpoint fallback.
 ///
 /// This is the production single-host boundary when a hot-checkpoint manager
@@ -210,13 +256,13 @@ impl<'repository, 'refs, 'ledger, 'write_back, 'retention, L>
             write_back,
             retention: CampaignGcRetentionSources {
                 exact_pins,
+                transfers: None,
                 hot_fallbacks,
             },
         }
     }
 
-    #[cfg(target_os = "linux")]
-    const fn new_with_retention_sources(
+    pub(super) const fn new_with_retention_sources(
         repository: &'repository CampaignRepository,
         refs: &'refs dyn RefStoreAdmin,
         ledger: &'ledger mut L,
@@ -287,6 +333,11 @@ where
         .map(WriteBackRetentionAdmin::acquire_write_back_retention_fence)
         .transpose()
         .map_err(CampaignGcApplyError::WriteBack)?;
+    let mut transfer_fence = retention
+        .transfers
+        .map(CampaignTransferRetentionAdmin::acquire_campaign_transfer_retention_fence)
+        .transpose()
+        .map_err(CampaignGcApplyError::Transfer)?;
 
     let mut roots = RootAccumulator::default();
     let ref_summary = inventory_authoritative_refs(
@@ -341,9 +392,33 @@ where
             .visit_roots(&mut |root| roots.insert(root.id()).map_err(|()| StoreError::Quota))
             .map_err(CampaignGcApplyError::WriteBack)?;
     }
+    if let Some(fence) = transfer_fence.as_mut() {
+        fence
+            .visit_roots(&mut |root| {
+                roots
+                    .insert_direct(root.id())
+                    .map_err(|()| StoreError::Quota)
+            })
+            .map_err(CampaignGcApplyError::Transfer)?;
+    }
     let current_roots = CampaignGcRootManifest::new(roots.unique.iter().copied())?;
     if current_roots != *journal.roots() {
         return Err(CampaignGcApplyError::RootSetChanged);
+    }
+    // Root-manifest v1 binds unique IDs but predates direct-versus-transitive
+    // archive roots. Recompute current reachability under the classified root
+    // inventory so promoting an archive object to an operational root cannot
+    // leave its newly required descendants eligible under an older plan.
+    let mut current_reachable = repository
+        .authenticated_closure_ids(roots.ordinary.iter().copied())
+        .map_err(CampaignGcApplyError::Campaign)?;
+    current_reachable.extend(roots.direct.iter().copied());
+    if let Some(candidate) = journal
+        .candidates()
+        .iter()
+        .find(|candidate| current_reachable.contains(&candidate.id()))
+    {
+        return Err(CampaignGcApplyError::CandidateBecameReachable { id: candidate.id() });
     }
 
     for (target, planned) in physical.iter().zip(journal.plan().physical()) {
@@ -437,6 +512,9 @@ where
     /// Pending write-back roots could not be fenced or enumerated.
     #[error("campaign GC write-back retention revalidation failed")]
     WriteBack(#[source] StoreError),
+    /// Incomplete archive-transfer roots could not be revalidated.
+    #[error("campaign GC transfer retention revalidation failed")]
+    Transfer(#[source] CampaignTransferJournalError),
     /// Durable hot-checkpoint fallback roots could not be fenced or enumerated.
     #[error("campaign GC hot-checkpoint fallback revalidation failed")]
     #[cfg(target_os = "linux")]
@@ -452,6 +530,18 @@ where
     InvalidCampaignRef {
         /// Exact invalid authoritative ref spelling.
         name: String,
+    },
+    /// An archive ref had an invalid namespace, target, or inventory.
+    #[error("campaign GC authoritative archive ref is invalid: {name}")]
+    InvalidArchiveRef {
+        /// Exact invalid archive ref spelling.
+        name: String,
+    },
+    /// A planned deletion became reachable under the current classified roots.
+    #[error("campaign GC candidate {id} became reachable after planning")]
+    CandidateBecameReachable {
+        /// Newly reachable planned candidate.
+        id: ContentId,
     },
     /// A current exact semantic pin has no matching selected checkpoint.
     #[error(
@@ -495,6 +585,9 @@ where
         CampaignGcRootInventoryError::ExactPin(source) => CampaignGcApplyError::ExactPin(source),
         CampaignGcRootInventoryError::InvalidCampaignRef { name } => {
             CampaignGcApplyError::InvalidCampaignRef { name }
+        }
+        CampaignGcRootInventoryError::InvalidArchiveRef { name } => {
+            CampaignGcApplyError::InvalidArchiveRef { name }
         }
         CampaignGcRootInventoryError::MissingExactPinMaterialization {
             campaign,

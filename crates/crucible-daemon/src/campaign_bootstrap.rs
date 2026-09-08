@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error as StdError;
 use std::fs::{self, File, Permissions};
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Component, Path, PathBuf};
@@ -45,9 +45,14 @@ use crate::{
 };
 
 const STATE_LOCK_FILE: &str = ".crucible-campaign-repository.lock";
+const STATE_IDENTITY_FILE: &str = ".crucible-campaign-repository.identity";
+const STATE_IDENTITY_STAGING_FILE: &str = ".crucible-campaign-repository.identity.staging";
+const STATE_IDENTITY_MAGIC: &[u8; 8] = b"CRUCRID1";
+const STATE_IDENTITY_BYTES: usize = STATE_IDENTITY_MAGIC.len() + 32 + 32;
 const OBJECT_DIRECTORY: &str = "objects";
 const REF_DIRECTORY: &str = "refs";
 const HOT_FORK_FALLBACK_DIRECTORY: &str = "hot-checkpoint-fallbacks";
+const CAMPAIGN_TRANSFER_DIRECTORY: &str = "campaign-transfers";
 const MAX_DEPLOYMENT_PATH_BYTES: usize = 4_095;
 const CAMPAIGN_REPOSITORY_OBJECT_KINDS: [ObjectKind; 14] = [
     ObjectKind::CampaignFact,
@@ -461,6 +466,10 @@ impl CampaignLocalServiceConfig {
             Arc::new(crate::DirectoryHotCheckpointFallbackRetentionStore::open(
                 self.state_directory.join(HOT_FORK_FALLBACK_DIRECTORY),
             )?);
+        let transfer_journal = crate::DirectoryCampaignTransferJournal::open(
+            self.state_directory.join(CAMPAIGN_TRANSFER_DIRECTORY),
+        )?;
+        let transfer_identity = state.transfer_identity().to_owned();
         let (repository, planner_authority) = match component_authorities {
             Some((planner, debugger)) => {
                 let retained_planner = planner.clone();
@@ -488,6 +497,8 @@ impl CampaignLocalServiceConfig {
             maintenance_config: None,
             runtime_control_planner: None,
             hot_fork_retention,
+            transfer_journal,
+            transfer_identity,
         })
     }
 
@@ -523,6 +534,8 @@ pub struct PreparedCampaignLocalService {
     maintenance_config: Option<CampaignStoreMaintenanceConfig>,
     runtime_control_planner: Option<CanonicalPlannerProcessConfig>,
     hot_fork_retention: Arc<crate::DirectoryHotCheckpointFallbackRetentionStore>,
+    transfer_journal: crate::DirectoryCampaignTransferJournal,
+    transfer_identity: String,
 }
 
 /// Borrowed destructive-maintenance authority for one stopped local service.
@@ -535,6 +548,7 @@ pub struct CampaignLocalStoreGcAuthority<'a> {
     repository: &'a CampaignRepository,
     maintenance: &'a CampaignLocalRepositoryMaintenance,
     hot_fallbacks: Arc<dyn crate::HotCheckpointFallbackRetentionAdmin>,
+    transfers: &'a crate::DirectoryCampaignTransferJournal,
 }
 
 impl CampaignLocalStoreGcAuthority<'_> {
@@ -560,11 +574,15 @@ impl CampaignLocalStoreGcAuthority<'_> {
         L::Error: StdError + Send + Sync + 'static,
     {
         let roots = match exact_pins {
-            Some(exact_pins) => crate::CampaignGcHotCheckpointRoots::with_exact_pins(
+            Some(exact_pins) => crate::CampaignGcHotCheckpointRoots::with_exact_pins_and_transfers(
                 exact_pins,
                 self.hot_fallbacks.as_ref(),
+                self.transfers,
             ),
-            None => crate::CampaignGcHotCheckpointRoots::new(self.hot_fallbacks.as_ref()),
+            None => crate::CampaignGcHotCheckpointRoots::with_transfers(
+                self.hot_fallbacks.as_ref(),
+                self.transfers,
+            ),
         };
         crate::plan_single_host_campaign_gc_with_hot_checkpoints(
             self.repository,
@@ -599,11 +617,15 @@ impl CampaignLocalStoreGcAuthority<'_> {
         L::Error: StdError + Send + Sync + 'static,
     {
         let roots = match exact_pins {
-            Some(exact_pins) => crate::CampaignGcHotCheckpointRoots::with_exact_pins(
+            Some(exact_pins) => crate::CampaignGcHotCheckpointRoots::with_exact_pins_and_transfers(
                 exact_pins,
                 self.hot_fallbacks.as_ref(),
+                self.transfers,
             ),
-            None => crate::CampaignGcHotCheckpointRoots::new(self.hot_fallbacks.as_ref()),
+            None => crate::CampaignGcHotCheckpointRoots::with_transfers(
+                self.hot_fallbacks.as_ref(),
+                self.transfers,
+            ),
         };
         crate::apply_single_host_campaign_gc_with_hot_checkpoints(
             journal,
@@ -618,6 +640,57 @@ impl CampaignLocalStoreGcAuthority<'_> {
 }
 
 impl PreparedCampaignLocalService {
+    /// Builds one authenticated archive plan under this repository owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError`] when the snapshot closure, archive
+    /// policy, retained roots, or exact-checkpoint selections are invalid.
+    pub fn plan_campaign_archive(
+        &self,
+        snapshot: crucible_campaign::CampaignSnapshotId,
+        policy: crucible_campaign::CampaignArchivePolicy,
+        retained_roots: impl IntoIterator<Item = crucible_cas::content_store::ContentId>,
+        checkpoint_resolver: Option<&mut dyn crucible_campaign::CampaignArchiveCheckpointResolver>,
+    ) -> Result<crucible_campaign::CampaignArchivePlan, CampaignRepositoryError> {
+        self.repository
+            .plan_campaign_archive(snapshot, policy, retained_roots, checkpoint_resolver)
+    }
+
+    /// Borrows this deployment's GC-registered archive-transfer endpoint.
+    ///
+    /// Every transfer begun through this capability writes the same durable
+    /// journal inventoried by [`Self::store_gc_authority`]. The borrow excludes
+    /// concurrent GC authority from this prepared owner.
+    #[must_use]
+    pub fn archive_transfer_endpoint(&mut self) -> crate::CampaignArchiveTransferEndpoint<'_> {
+        crate::CampaignArchiveTransferEndpoint::new(
+            self.repository.as_ref(),
+            &mut self.transfer_journal,
+            &self.transfer_identity,
+            self.mode == CampaignLocalServiceMode::ReadWrite,
+        )
+    }
+
+    /// Borrows an archive-transfer endpoint with destination exact-checkpoint authentication.
+    ///
+    /// Executable and mirror imports use this form so every manifest selection
+    /// is decoded from the destination checkpoint store and matched to its
+    /// declared configuration before either destination ref is advanced.
+    #[must_use]
+    pub fn archive_transfer_endpoint_with_checkpoints<'a>(
+        &'a mut self,
+        checkpoints: &'a crate::ExactCheckpointStore,
+    ) -> crate::CampaignArchiveTransferEndpoint<'a> {
+        crate::CampaignArchiveTransferEndpoint::new_with_checkpoints(
+            self.repository.as_ref(),
+            &mut self.transfer_journal,
+            &self.transfer_identity,
+            self.mode == CampaignLocalServiceMode::ReadWrite,
+            checkpoints,
+        )
+    }
+
     /// Borrows the complete owner-only destructive-store maintenance boundary.
     ///
     /// The returned authority cannot outlive this prepared owner and disappears
@@ -640,6 +713,7 @@ impl PreparedCampaignLocalService {
             repository: self.repository.as_ref(),
             maintenance,
             hot_fallbacks: self.hot_fork_retention.clone(),
+            transfers: &self.transfer_journal,
         })
     }
 
@@ -985,6 +1059,8 @@ impl PreparedCampaignLocalService {
             maintenance_config,
             runtime_control_planner,
             hot_fork_retention: _hot_fork_retention,
+            transfer_journal,
+            transfer_identity: _transfer_identity,
         } = self;
         let endpoint_owner_user_id = endpoint.owner_user_id();
         let endpoint_owner_group_id = endpoint.owner_group_id();
@@ -1068,6 +1144,7 @@ impl PreparedCampaignLocalService {
             server,
             executor,
             maintenance,
+            _transfer_journal: transfer_journal,
             runtime_registry,
         })
     }
@@ -1110,6 +1187,7 @@ pub struct CampaignLocalService {
     server: CampaignLoopbackServer<UnixPeerCampaignPolicy, CampaignLocalAuthorizer>,
     executor: Option<AttachedPackagedQemuExecutor>,
     maintenance: Option<CampaignStoreMaintenanceOwner>,
+    _transfer_journal: crate::DirectoryCampaignTransferJournal,
     // This owner is last so its repository lock outlives runtime and executor
     // cleanup even when the containing service is dropped without `serve`.
     runtime_registry: CampaignRuntimeRegistryOwner,
@@ -1183,6 +1261,9 @@ pub enum CampaignLocalServiceError {
     /// The durable repository lock was not an owner-only regular file.
     #[error("campaign service repository lock is invalid")]
     InvalidStateLock,
+    /// The durable repository identity was absent, malformed, or not owner-only.
+    #[error("campaign service repository identity is invalid")]
+    InvalidStateIdentity,
     /// A required object/ref subdirectory was not a secure exact-owner directory.
     #[error("campaign service repository subdirectory is invalid")]
     InvalidStateSubdirectory,
@@ -1195,6 +1276,9 @@ pub enum CampaignLocalServiceError {
     /// The canonical durable hot-fallback catalog could not be opened.
     #[error(transparent)]
     HotForkRetention(#[from] crate::HotCheckpointFallbackRetentionError),
+    /// The canonical durable archive-transfer journal could not be opened.
+    #[error(transparent)]
+    CampaignTransfer(#[from] crate::CampaignTransferJournalError),
     /// Store maintenance was requested through a read-only service profile.
     #[error("campaign store maintenance is unavailable in read-only mode")]
     StoreMaintenanceReadOnly,
@@ -1318,6 +1402,7 @@ pub enum CampaignLocalServiceError {
 struct CampaignStateOwner {
     _root: File,
     _lock: File,
+    transfer_identity: String,
 }
 
 impl CampaignStateOwner {
@@ -1387,6 +1472,9 @@ impl CampaignStateOwner {
         })?;
         revalidate_state_path(&root, &metadata, path, user_id, group_id)?;
 
+        let transfer_identity = load_or_create_state_identity(path, user_id, group_id)?;
+        revalidate_state_path(&root, &metadata, path, user_id, group_id)?;
+
         if prepare_directory_repository {
             prepare_subdirectory(path, OBJECT_DIRECTORY, user_id, group_id)?;
             prepare_subdirectory(path, REF_DIRECTORY, user_id, group_id)?;
@@ -1397,8 +1485,134 @@ impl CampaignStateOwner {
         Ok(Self {
             _root: root,
             _lock: lock,
+            transfer_identity,
         })
     }
+
+    fn transfer_identity(&self) -> &str {
+        &self.transfer_identity
+    }
+}
+
+fn load_or_create_state_identity(
+    root: &Path,
+    user_id: u32,
+    group_id: u32,
+) -> Result<String, CampaignLocalServiceError> {
+    let path = root.join(STATE_IDENTITY_FILE);
+    let file = match rustix::fs::open(
+        &path,
+        OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    ) {
+        Ok(file) => File::from(file),
+        Err(rustix::io::Errno::NOENT) => {
+            cleanup_state_identity_staging(root, user_id, group_id)?;
+            let mut instance = [0_u8; 32];
+            let random_path = Path::new("/dev/urandom");
+            File::open(random_path)
+                .and_then(|mut source| source.read_exact(&mut instance))
+                .map_err(|source| {
+                    io_error("read-state-identity-randomness", random_path, source)
+                })?;
+
+            let mut bytes = Vec::with_capacity(STATE_IDENTITY_BYTES);
+            bytes.extend_from_slice(STATE_IDENTITY_MAGIC);
+            bytes.extend_from_slice(&instance);
+            let checksum = CampaignHash::derive("crucible.campaign.state-identity.v1", &bytes);
+            bytes.extend_from_slice(&checksum.as_bytes());
+
+            let staging = root.join(STATE_IDENTITY_STAGING_FILE);
+            let mut file: File = rustix::fs::open(
+                &staging,
+                OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                Mode::RUSR | Mode::WUSR,
+            )
+            .map_err(|source| {
+                io_error(
+                    "create-state-identity-staging",
+                    &staging,
+                    io::Error::from_raw_os_error(source.raw_os_error()),
+                )
+            })?
+            .into();
+            file.write_all(&bytes)
+                .map_err(|source| io_error("write-state-identity-staging", &staging, source))?;
+            file.sync_all()
+                .map_err(|source| io_error("sync-state-identity-staging", &staging, source))?;
+            rustix::fs::renameat_with(
+                rustix::fs::CWD,
+                &staging,
+                rustix::fs::CWD,
+                &path,
+                rustix::fs::RenameFlags::NOREPLACE,
+            )
+            .map_err(io::Error::from)
+            .map_err(|source| io_error("publish-state-identity", &path, source))?;
+            File::open(root)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|source| io_error("sync-state-identity-parent", root, source))?;
+            file.rewind()
+                .map_err(|source| io_error("rewind-state-identity", &path, source))?;
+            file
+        }
+        Err(source) => {
+            return Err(io_error(
+                "open-state-identity",
+                &path,
+                io::Error::from_raw_os_error(source.raw_os_error()),
+            ));
+        }
+    };
+
+    let metadata = file
+        .metadata()
+        .map_err(|source| io_error("stat-state-identity", &path, source))?;
+    if !metadata.is_file()
+        || metadata.uid() != user_id
+        || metadata.gid() != group_id
+        || metadata.mode() & 0o777 != 0o600
+        || metadata.len() != STATE_IDENTITY_BYTES as u64
+    {
+        return Err(CampaignLocalServiceError::InvalidStateIdentity);
+    }
+    let mut bytes = [0_u8; STATE_IDENTITY_BYTES];
+    (&file)
+        .read_exact(&mut bytes)
+        .map_err(|source| io_error("read-state-identity", &path, source))?;
+    if &bytes[..STATE_IDENTITY_MAGIC.len()] != STATE_IDENTITY_MAGIC {
+        return Err(CampaignLocalServiceError::InvalidStateIdentity);
+    }
+    let payload_end = STATE_IDENTITY_MAGIC.len() + 32;
+    let expected =
+        CampaignHash::derive("crucible.campaign.state-identity.v1", &bytes[..payload_end]);
+    if bytes[payload_end..] != expected.as_bytes()[..] {
+        return Err(CampaignLocalServiceError::InvalidStateIdentity);
+    }
+    let instance = &bytes[STATE_IDENTITY_MAGIC.len()..payload_end];
+    Ok(CampaignHash::derive("crucible.campaign.transfer-endpoint.v1", instance).to_hex())
+}
+
+fn cleanup_state_identity_staging(
+    root: &Path,
+    user_id: u32,
+    group_id: u32,
+) -> Result<(), CampaignLocalServiceError> {
+    let staging = root.join(STATE_IDENTITY_STAGING_FILE);
+    let metadata = match fs::symlink_metadata(&staging) {
+        Ok(metadata) => metadata,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => return Err(io_error("stat-state-identity-staging", &staging, source)),
+    };
+    if !metadata.is_file()
+        || metadata.uid() != user_id
+        || metadata.gid() != group_id
+        || metadata.mode() & 0o777 != 0o600
+    {
+        return Err(CampaignLocalServiceError::InvalidStateIdentity);
+    }
+    fs::remove_file(&staging)
+        .map_err(|source| io_error("remove-state-identity-staging", &staging, source))
 }
 
 fn load_policy(
@@ -1445,7 +1659,7 @@ fn load_policy(
     }
 
     let mut bytes = Vec::with_capacity(file_metadata.len() as usize);
-    file.by_ref()
+    Read::by_ref(&mut file)
         .take((MAX_CAMPAIGN_POLICY_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|source| io_error("read-policy-file", path, source))?;

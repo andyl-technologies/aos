@@ -18,6 +18,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+mod archive;
 mod artifact;
 mod authority;
 mod campaign_service;
@@ -41,6 +42,13 @@ mod repository;
 
 pub use model::{CampaignBudgetError, CampaignBudgetLedger};
 
+pub use archive::{
+    ArchiveInventoryDisposition, ArchiveObjectEntry, CampaignArchiveCheckpointResolver,
+    CampaignArchiveCheckpointSelection, CampaignArchiveInspection, CampaignArchiveInventoryPage,
+    CampaignArchiveManifest, CampaignArchivePlan, CampaignArchivePolicy, CampaignArchiveReport,
+    CampaignArchiveTransferReport, MAX_ARCHIVE_INVENTORY_ENTRIES,
+    MAX_ARCHIVE_INVENTORY_PAGE_ENTRIES,
+};
 pub use artifact::{ConfigurationArtifact, ScenarioArtifact};
 pub use authority::{
     DebuggerAuthorityKey, DebuggerSubmission, PlannerAuthorityKey, PlannerSubmission,
@@ -135,17 +143,18 @@ pub use finding_candidate::{
 };
 pub use identity::{
     AlternativeId, AttemptAdmissionId, AttemptId, BranchEdgeId, BranchPathId, BranchPointId,
-    BranchRequestId, CampaignBudgetLedgerId, CampaignCommandId, CampaignFactId, CampaignHash,
-    CampaignLineageId, CampaignPolicyId, CampaignSnapshotId, CampaignViewId,
-    CandidateGeneratorSpecId, ChoiceClassId, ChoiceDomainId, ChoiceDomainSemanticId, ChoiceGroupId,
-    ChoiceOpportunityId, ChoiceOpportunitySemanticId, ChoiceRngStreamId, ConfigurationArtifactId,
-    ConfigurationId, ContinuationProjectionId, CoverageProjectionId, CreditId, DebugSessionId,
-    ExactCheckpointId, ExpansionStateId, FindingCandidateBundleId, FindingId, MeasurementSetId,
-    ObjectiveEvaluationId, ObservationId, PlannerCandidateBudgetId, PlannerCandidateGuidanceId,
-    PlannerEngineId, PlannerInvocationId, PlannerStateId, PlannerStepId, PolicyArtifactId,
-    ProbabilityModelId, PropertyVerdictSetId, ProposalId, RankingExplanationId,
-    ReproductionArtifactId, RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId,
-    SelectableId, SelectableSemanticId, SelectionId, SurvivorSelectionId,
+    BranchRequestId, CampaignArchiveInventoryPageId, CampaignArchiveManifestId,
+    CampaignBudgetLedgerId, CampaignCommandId, CampaignFactId, CampaignHash, CampaignLineageId,
+    CampaignPolicyId, CampaignSnapshotId, CampaignViewId, CandidateGeneratorSpecId, ChoiceClassId,
+    ChoiceDomainId, ChoiceDomainSemanticId, ChoiceGroupId, ChoiceOpportunityId,
+    ChoiceOpportunitySemanticId, ChoiceRngStreamId, ConfigurationArtifactId, ConfigurationId,
+    ContinuationProjectionId, CoverageProjectionId, CreditId, DebugSessionId, ExactCheckpointId,
+    ExpansionStateId, FindingCandidateBundleId, FindingId, MeasurementSetId, ObjectiveEvaluationId,
+    ObservationId, PlannerCandidateBudgetId, PlannerCandidateGuidanceId, PlannerEngineId,
+    PlannerInvocationId, PlannerStateId, PlannerStepId, PolicyArtifactId, ProbabilityModelId,
+    PropertyVerdictSetId, ProposalId, RankingExplanationId, ReproductionArtifactId,
+    RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId, SelectableId,
+    SelectableSemanticId, SelectionId, SurvivorSelectionId,
 };
 pub use merkle::{
     CampaignStoreError, MAX_PROVEN_PAGE_ITEMS, MerkleMap, MerkleMapLookupProof, MerkleMapPage,
