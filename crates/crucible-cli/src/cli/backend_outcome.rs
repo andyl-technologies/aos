@@ -75,7 +75,7 @@ impl BackendCommandStatus {
         !matches!(self, Self::Passed)
     }
 
-    pub(crate) fn failure_slug(self) -> &'static str {
+    pub(crate) fn artifact_slug(self) -> &'static str {
         match self {
             Self::Passed => "passed",
             Self::Failed => "failed",

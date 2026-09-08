@@ -503,7 +503,7 @@ pub(crate) fn execute_determinism_ergonomics_plan(
     }
     if !BackendCommandStatus::non_passing_variants()
         .iter()
-        .all(|status| status.is_non_passing() && status.failure_slug() != "passed")
+        .all(|status| status.is_non_passing() && status.artifact_slug() != "passed")
     {
         return Err(CliError::Backend(
             "non-passing outcomes are not all artifact-producing statuses".to_string(),
@@ -845,16 +845,16 @@ pub(crate) fn canonical_state_wall_clock_guard() -> bool {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FailureReproductionFooter {
+pub(crate) struct ReproductionFooter {
     pub(crate) artifact_path: PathBuf,
     pub(crate) replay_command: String,
     pub(crate) debug_command: String,
     pub(crate) self_contained_artifact: bool,
 }
 
-pub(crate) fn failure_reproduction_footer(path: PathBuf) -> FailureReproductionFooter {
+pub(crate) fn reproduction_footer(path: PathBuf) -> ReproductionFooter {
     let artifact = path.display().to_string();
-    FailureReproductionFooter {
+    ReproductionFooter {
         replay_command: format!(
             "crucible replay {}",
             shell_quote_command_argument(&artifact)
