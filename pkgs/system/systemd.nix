@@ -1,5 +1,7 @@
 ##! systemd — System and service manager
 {
+  lib,
+  stdenv,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -42,6 +44,33 @@
   # when ukify runs (both also needed during meson configure — see
   # the configure phase's PYTHONPATH export). python3.nix pins 3.14.
   ukifyPythonPath = "${python3-pefile}/lib/python3.14/site-packages:${python3-pyelftools}/lib/python3.14/site-packages";
+
+  systemdRuntimeDeps = [
+    util-linux
+    kmod
+    zlib
+    xz
+    lz4
+    zstd
+    openssl
+    libcap
+    libxcrypt
+    audit
+    libselinux
+    libsepol
+    pcre2
+    libseccomp
+    acl
+    cryptsetup
+    elfutils
+    linux-pam
+    # TPM2 (RFC-0006 phase 3): libtss2-esys/rc/mu + the device TCTI for
+    # systemd-cryptsetup's TPM2 token, systemd-pcrextend, systemd-measure.
+    tpm2-tss
+  ];
+
+  linuxCrossRuntimeSearchPath =
+    lib.concatMapStringsSep ":" (dependency: "${dependency}/lib") systemdRuntimeDeps;
 in
   mkDerivation {
     pname = "systemd";
@@ -115,29 +144,7 @@ in
       # shared library) and keeps the 7 MiB header tree out of the closure.
       linux-headers
     ];
-    runtimeDeps = [
-      util-linux
-      kmod
-      zlib
-      xz
-      lz4
-      zstd
-      openssl
-      libcap
-      libxcrypt
-      audit
-      libselinux
-      libsepol
-      pcre2
-      libseccomp
-      acl
-      cryptsetup
-      elfutils
-      linux-pam
-      # TPM2 (RFC-0006 phase 3): libtss2-esys/rc/mu + the device TCTI for
-      # systemd-cryptsetup's TPM2 token, systemd-pcrextend, systemd-measure.
-      tpm2-tss
-    ];
+    runtimeDeps = systemdRuntimeDeps;
     propagatedDeps = [];
 
     # systemd's many [0]/[1] trailing-array structs get narrowed to a fixed
@@ -406,7 +413,139 @@ in
             # already use the target interpreter. Preserve real grep errors.
             [ "$grepStatus" -eq 1 ] || exit "$grepStatus"
           fi
-          rm -f "$nativePythonRefs"
+          rm -f "$nativePythonRefs"${lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+
+            # Meson removes cross-library directories that it classifies as
+            # build RPATHs during install. Restore only directories needed by
+            # direct ELF dependencies from the declared runtime closure.
+            runtimeSearchPath=${lib.escapeShellArg linuxCrossRuntimeSearchPath}
+
+            case "$AOS_TARGET_ARCH" in
+              aarch64 | arm64) expectedMachine=AArch64 ;;
+              x86_64) expectedMachine='Advanced Micro Devices X86-64' ;;
+              *)
+                echo "ERROR: unsupported Linux cross target architecture $AOS_TARGET_ARCH" >&2
+                exit 1
+                ;;
+            esac
+
+            findRpathDirectory() (
+              elfDirectory="$1"
+              searchPath="$2"
+              libraryName="$3"
+              matchedDirectory=""
+              originToken='$ORIGIN'
+              bracedOriginToken='$'{ORIGIN}
+              savedIFS="$IFS"
+              IFS=:
+
+              for storedDirectory in $searchPath; do
+                case "$storedDirectory" in
+                  "$originToken" | "$originToken"/*)
+                    suffix="''${storedDirectory#"$originToken"}"
+                    resolvedDirectory="$elfDirectory$suffix"
+                    ;;
+                  "$bracedOriginToken" | "$bracedOriginToken"/*)
+                    suffix="''${storedDirectory#"$bracedOriginToken"}"
+                    resolvedDirectory="$elfDirectory$suffix"
+                    ;;
+                  *'$'*)
+                    echo "ERROR: unsupported loader token in RPATH $storedDirectory" >&2
+                    exit 2
+                    ;;
+                  *) resolvedDirectory="$storedDirectory" ;;
+                esac
+
+                case "$resolvedDirectory" in
+                  *'$'*)
+                    echo "ERROR: unsupported loader token in RPATH $storedDirectory" >&2
+                    exit 2
+                    ;;
+                esac
+
+                if [ -z "$matchedDirectory" ] && \
+                  [ -e "$resolvedDirectory/$libraryName" ]; then
+                  matchedDirectory="$resolvedDirectory"
+                fi
+              done
+
+              IFS="$savedIFS"
+              if [ -n "$matchedDirectory" ]; then
+                printf '%s\n' "$matchedDirectory"
+                exit 0
+              fi
+
+              exit 1
+            )
+
+            validateRuntimeCandidate() {
+              candidate="$1"
+              candidateMachine="$(
+                readelf -h "$candidate" 2>/dev/null |
+                  sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p'
+              )"
+
+              if [ "$candidateMachine" != "$expectedMachine" ]; then
+                echo "ERROR: $candidate has machine $candidateMachine, expected $expectedMachine" >&2
+                return 1
+              fi
+            }
+
+            elfList="$(mktemp)"
+            find "$out" -type f \( -name '*.so*' -o -perm -u+x \) > "$elfList"
+
+            while IFS= read -r elf; do
+              neededLibraries="$(patchelf --print-needed "$elf" 2>/dev/null)" || continue
+              elfDirectory="$(dirname "$elf")"
+              currentRpath="$(patchelf --print-rpath "$elf")"
+              additionalRpath=""
+
+              for libraryName in $neededLibraries; do
+                effectiveRpath="$currentRpath''${additionalRpath:+:$additionalRpath}"
+                if runtimeDirectory="$(findRpathDirectory \
+                  "$elfDirectory" "$effectiveRpath" "$libraryName")"; then
+                  validateRuntimeCandidate "$runtimeDirectory/$libraryName"
+                  continue
+                else
+                  rpathStatus=$?
+                  [ "$rpathStatus" -eq 1 ] || exit "$rpathStatus"
+                fi
+
+                if runtimeDirectory="$(findRpathDirectory \
+                  "$elfDirectory" "$runtimeSearchPath" "$libraryName")"; then
+                  validateRuntimeCandidate "$runtimeDirectory/$libraryName"
+                else
+                  rpathStatus=$?
+                  [ "$rpathStatus" -eq 1 ] || exit "$rpathStatus"
+                  echo "ERROR: $elf needs $libraryName outside the declared runtime closure" >&2
+                  exit 1
+                fi
+
+                case ":$currentRpath:$additionalRpath:" in
+                  *":$runtimeDirectory:"*) ;;
+                  *) additionalRpath="''${additionalRpath:+$additionalRpath:}$runtimeDirectory" ;;
+                esac
+              done
+
+              if [ -n "$additionalRpath" ]; then
+                patchelf --add-rpath "$additionalRpath" "$elf"
+              fi
+
+              installedRpath="$(patchelf --print-rpath "$elf")"
+              for libraryName in $neededLibraries; do
+                if runtimeDirectory="$(findRpathDirectory \
+                  "$elfDirectory" "$installedRpath" "$libraryName")"; then
+                  validateRuntimeCandidate "$runtimeDirectory/$libraryName"
+                  continue
+                fi
+
+                echo "ERROR: $elf cannot resolve direct dependency $libraryName" >&2
+                exit 1
+              done
+            done < "$elfList"
+
+            rm -f "$elfList"
+          ''}
         '';
       }
       {
