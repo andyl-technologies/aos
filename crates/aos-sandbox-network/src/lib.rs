@@ -8,8 +8,10 @@
 //! exact portable assignment, mints the opaque handle, and retains reservations
 //! in a protected append-only catalog. [`kernel_plan`] compiles one exact
 //! assignment, namespace allocation, and packet policy into a canonical
-//! architecture-neutral pre-effect artifact. [`authorization`] adapts the
-//! shared signed authority verifier. [`state`] atomically journals
+//! architecture-neutral pre-effect artifact. [`namespace_store`] validates
+//! restart-retained namespace descriptors and admits systemd FD-store mutations
+//! only after complete manager readback. [`authorization`] adapts the shared
+//! signed authority verifier. [`state`] atomically journals
 //! authenticated authorization links, a durable pre-effect crash boundary, and
 //! typed committed namespace observations. [`namespace_catalog`] retains
 //! verified namespace identity and lease lifecycle, then emits authoritative
@@ -27,6 +29,7 @@ pub mod broker;
 pub mod catalog;
 pub mod kernel_plan;
 pub mod namespace_catalog;
+pub mod namespace_store;
 pub mod policy;
 pub mod preparation_catalog;
 pub mod service;
@@ -56,6 +59,12 @@ pub use namespace_catalog::{
     NetworkNamespaceLifecycleObservationV1, NetworkNamespaceLifecycleOutcomeV1,
     NetworkNamespaceLifecycleTransitionV1, NetworkNamespaceObservedStateKindV1,
     NetworkNamespaceObservedStateV1, NetworkNamespacePublicationV1,
+};
+pub use namespace_store::{
+    ActivatedNetworkDescriptors, MAXIMUM_RETAINED_NETWORK_NAMESPACES,
+    NetworkNamespaceCustodyRequirementV1, NetworkNamespaceStoreError, NetworkNamespaceStoreName,
+    NetworkNamespaceStoreOutcome, RetainedNetworkNamespace, SystemdNetworkNamespaceStore,
+    adopt_systemd_activation, validate_activation_replay,
 };
 pub use policy::{
     NetworkEndpointPolicyV1, NetworkFlowDirectionV1, NetworkFlowPolicyV1, NetworkIpPrefixV1,

@@ -389,8 +389,11 @@ completes. The Git history remains authoritative for code details.
 - `22e19a5cf`, `461bea8c3` — foundation toward `SBX-MOUNT-01`: one stable
   handle across preparation and publication plus a pluggable synchronous
   systemd descriptor-store keeper with canonical names, restart adoption,
-  removal, barriers, and bounded service configuration. Daemon adoption and
-  durable resource reconciliation remain open.
+  removal, processing barriers, and bounded service configuration. The Mount
+  keeper does not yet perform complete manager readback: on systemd 259.8 a
+  successful barrier does not prove that an add or removal survived capacity,
+  allocation, or descriptor-inspection failure. Acceptance readback, daemon
+  adoption, and durable resource reconciliation remain open.
 - `bf0e7dcc6` — foundation toward `SBX-MOUNT-01` and `SBX-LIFE-06`: strict
   current-kernel boot identity for rejecting numerically reused mount IDs after
   reboot.
@@ -4409,20 +4412,23 @@ and checks the broker deadline around worker I/O. It also adds exact ZFS
 pre/post-state evaluator, typed v2 observation verbs and results, and a private
 `SystemdZfsProcessBackend` adapter under the existing store-lifetime lock.
 
-The Storage library suite without default features currently enumerates 57
-tests: 56 pass, none fail, and the real-systemd VM client remains intentionally
-ignored. The scoped formatter check, all-target no-dependency Clippy with
-warnings denied, warning-denied rustdoc without dependencies, and diff
-whitespace check all pass.
+At the committed `e44660eb0` baseline, the worker and observer use poll-based
+pidfd liveness so cross-UID monitoring does not depend on
+`pidfd_send_signal(0)` and its `CAP_KILL` permission check. Nix-backed reruns at
+that baseline pass 56 Storage library tests with one real-systemd test ignored,
+and 92 Linux boundary tests with two privileged tests ignored. The scoped
+formatter check, all-target no-dependency Clippy with warnings denied,
+warning-denied rustdoc without dependencies, and diff whitespace check all
+pass.
 
 This evidence does not qualify the production path or worker VM. No production
 coordinator or `storaged` construction path exposes the concrete process
-backend, and Apply remains unadvertised. The frozen retry was stopped without a
-result or output path and therefore produced no VM evidence. A fresh integrated
-VM instantiation is running but waiting on the shared GCC stage-2 store lock;
-the top derivation has not yet been emitted. That run must still exercise the
-real worker boundary and deadline behavior. `SBX-STOR-01` remains open, and no
-completion is claimed for `SBX-P0-07`.
+backend, and Apply remains unadvertised. The earlier worker diagnostic predates
+the liveness fix and is not qualification evidence. A fresh integrated
+cross-UID VM build has emitted its top derivation but has not produced a passing
+runtime result. That run must still exercise the real worker boundary and
+deadline behavior. `SBX-STOR-01` remains open, and no completion is claimed for
+`SBX-P0-07`.
 
 ### Canonical Network kernel plan (in progress)
 
@@ -4439,18 +4445,19 @@ The focused `aos-sandbox-network` kernel-plan suite passes six tests. Coverage
 includes the shared published-IPv4 golden vector and malformed mutation corpus,
 loopback-only isolation without a veth or tail, dual-stack allocation with an
 IPv6 route and flow, exact reserved and length fields, and a duplicate-family
-attack with its namespace digest recomputed. The scoped formatter, all-target
+attack with its namespace digest recomputed. A Nix-backed current-source run of
+the complete Network library suite passes all 76 tests, including these six and
+the custody tests described below. The scoped formatter, all-target
 no-dependency Clippy with warnings denied, and warning-denied rustdoc checks
-pass. The canonical reproduction command is:
+pass. The canonical focused reproduction command is:
 
 ```text
 nix develop -c cargo test --manifest-path crates/Cargo.toml -p aos-sandbox-network --lib kernel_plan
 ```
 
-This recorded run used the already provisioned workspace toolchain because the
-current development-shell evaluation was blocked by stale platform
-classifications from concurrent package work; it does not claim that the
-canonical command ran successfully on this snapshot.
+The complete current-source run used a realized AOS development-shell
+derivation and the workspace manifest; it does not rely on a bare host Cargo
+environment.
 
 The checked-in structural C reader at
 `tests/sandbox/network-kernel-plan-codec.c` accepts the same golden vector and
@@ -4467,3 +4474,52 @@ No privileged Network worker, authenticated descriptor transfer, durable
 namespace custody, netlink mutation, or mandatory packet-policy installation is
 implemented by this increment. Apply remains unadvertised. The related Network
 runtime and end-to-end qualification tasks remain open.
+
+### Restart-retained Network namespace custody (in progress)
+
+The Network library now has a typed systemd descriptor-store adapter for
+restart-retained network namespace custody. It derives one reversible canonical
+store name from each namespace handle, takes ownership of systemd activation
+descriptors, independently retypes every descriptor as an `nsfs`
+`CLONE_NEWNET` namespace, rejects the trusted host namespace and duplicate
+physical identities, and requires activation to match the exact complete
+protected replay set. The simultaneous custody ceiling is 1024 namespaces so
+the complete `LISTEN_FDNAMES` value remains below Linux's per-string exec
+limit.
+
+Each add and removal sends a bounded `FDSTORE` or `FDSTOREREMOVE` notification,
+waits for a processing barrier, then takes a complete
+`DumpUnitFileDescriptorStore` snapshot and service-property readback. The
+adapter reports success only when the expected name-to-FD identity mapping,
+`FileDescriptorStoreMax`, and current descriptor count are exact. An unreadable
+or divergent post-mutation snapshot poisons the adapter until restart because
+the mutation may have taken effect even though its outcome cannot be proven.
+The manager inspector uses the fixed local system-bus socket and a cancellable
+worker so a missing bus or stalled authentication handshake cannot leave an
+unbounded thread behind.
+
+The systemd service configuration reserves the matching descriptor-store and
+file-descriptor capacity, preserves the descriptor store across service exit,
+allows notifications only from the main process, orders the broker after the
+local D-Bus socket, and rejects enabling the broker when the AOS D-Bus service
+is disabled. Evaluation confirms the default capacity of 1024,
+`FileDescriptorStorePreserve=yes`, `LimitNOFILE=1152`, and
+`NotifyAccess=main`; bounds of 0 and 1025 fail closed.
+
+Twelve focused custody tests and the complete 76-test Network library suite
+pass in the AOS development shell. Coverage includes activation ownership and
+retyping, host and duplicate-namespace rejection, exact protected replay,
+zero-handle rejection before activation or mutation, capacity rejection,
+complete add/remove readback, poisoning after ambiguous mutation, malformed
+manager rows, a missing system bus, and a stalled local authentication
+handshake. Scoped formatting, all-target no-dependency Clippy with warnings
+denied, and warning-denied rustdoc checks also pass.
+
+This is a custody primitive, not an integrated Network runtime. `aos-netd`
+does not yet adopt activation descriptors or store newly created namespaces,
+and the real systemd path has not demonstrated capacity rejection, add/remove
+acceptance, restart recovery, or deliberate stop/start semantics. SELinux
+authorization for the manager inspection API and the protected-catalog policy
+remain to be qualified. Authenticated worker descriptor transfer, namespace and
+veth mutation, netlink/nftables effects, BPF installation, and authoritative
+publication also remain open. Apply remains unadvertised.

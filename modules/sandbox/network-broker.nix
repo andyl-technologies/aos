@@ -17,9 +17,27 @@ in {
       defaultText = "pkgs.aos-netd";
       description = "The independently packaged Network inventory broker.";
     };
+
+    maximumRetainedNamespaces = lib.mkOption {
+      type = lib.types.addCheck lib.types.int (value: value > 0 && value <= 1024);
+      # Keep the boundary active in the evaluated value as well as its option metadata.
+      apply = value:
+        if builtins.isInt value && value > 0 && value <= 1024
+        then value
+        else throw "aos.sandbox.networkBroker.maximumRetainedNamespaces must be an integer from 1 through 1024";
+      default = 1024;
+      description = "The simultaneous Network namespace custody ceiling; 1024 keeps systemd's LISTEN_FDNAMES environment string below Linux's per-string exec limit.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = config.aos.services.dbus.enable;
+        message = "aos.sandbox.networkBroker requires aos.services.dbus for bounded systemd FD-store readback";
+      }
+    ];
+
     systemd.sockets.aos-netd = {
       description = "AOS sandbox Network broker socket";
       wantedBy = ["sockets.target"];
@@ -43,17 +61,20 @@ in {
 
     systemd.services.aos-netd = {
       description = "AOS authenticated sandbox Network inventory broker";
-      requires = ["aos-netd.socket"];
-      after = ["aos-netd.socket" "local-fs.target"];
+      requires = ["aos-netd.socket" "dbus.socket"];
+      after = ["aos-netd.socket" "dbus.socket" "local-fs.target"];
       unitConfig = {
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
       };
       serviceConfig = {
         Type = "simple";
+        NotifyAccess = "main";
         ExecStart = "${cfg.package}/bin/aos-netd ${toString controller.uid} ${toString controller.gid}";
         Restart = "on-failure";
         RestartSec = "2s";
+        FileDescriptorStoreMax = cfg.maximumRetainedNamespaces;
+        FileDescriptorStorePreserve = "yes";
         StateDirectory = "aos/sandbox-network";
         StateDirectoryMode = "0700";
         RuntimeDirectory = "aos/sandbox-pins/netns";
@@ -66,6 +87,7 @@ in {
         # are complete.
         CapabilityBoundingSet = "";
         DevicePolicy = "closed";
+        LimitNOFILE = cfg.maximumRetainedNamespaces + 128;
         LockPersonality = true;
         MemoryDenyWriteExecute = true;
         NoNewPrivileges = true;
