@@ -39,16 +39,39 @@
     pname = "aos-nspawn-host-observer";
     version = "1";
     src = null;
+    buildDeps =
+      if pkgs.stdenv.isCross
+      then [pkgs.buildPackages.qemu-aarch64-linux-user]
+      else [];
     # Kernel UAPI is a target input; buildDeps would splice native headers.
     runtimeDeps = [pkgs.linux-headers];
     phases = [
       {
         name = "build";
         script = ''
+          cp ${../sandbox/nspawn-host-observer.c} nspawn-host-observer.c
+          cp ${../sandbox/nspawn-host-observer-scan-regression.c} \
+            nspawn-host-observer-scan-regression.c
           $CC -std=c17 -Wall -Wextra -Werror \
             -I${pkgs.linux-headers}/include \
-            ${../sandbox/nspawn-host-observer.c} -o aos-nspawn-host-observer
+            nspawn-host-observer.c -o aos-nspawn-host-observer
+          $CC -std=c17 -Wall -Wextra -Werror \
+            -I${pkgs.linux-headers}/include \
+            nspawn-host-observer-scan-regression.c \
+            -o aos-nspawn-host-observer-scan-regression
         '';
+      }
+      {
+        name = "check";
+        script =
+          if pkgs.stdenv.isCross
+          then ''
+            ${pkgs.buildPackages.qemu-aarch64-linux-user}/bin/qemu-aarch64 \
+              ./aos-nspawn-host-observer-scan-regression
+          ''
+          else ''
+            ./aos-nspawn-host-observer-scan-regression
+          '';
       }
       {
         name = "install";

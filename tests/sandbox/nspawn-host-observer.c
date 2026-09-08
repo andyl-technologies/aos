@@ -69,6 +69,84 @@ struct budget {
         size_t bytes;
 };
 
+struct scan_failure {
+        const char *operation;
+        char path[MAX_PATH];
+        pid_t pid;
+        int error_number;
+};
+
+static void reset_scan_failure(struct scan_failure *failure) {
+        *failure = (struct scan_failure) {
+                .operation = "none",
+                .pid = 0,
+                .error_number = 0,
+        };
+}
+
+static void record_scan_failure(struct scan_failure *failure, const char *operation,
+                                const char *path, pid_t pid, int error_number) {
+        failure->operation = operation;
+        failure->pid = pid;
+        failure->error_number = error_number;
+        if (snprintf(failure->path, sizeof(failure->path), "%s", path) < 0)
+                failure->path[0] = '\0';
+        errno = error_number;
+}
+
+static bool retryable_scan_churn(const char *cgroup,
+                                 const struct scan_failure *failure) {
+        static const char *const operations[] = {
+                "open-cgroup-directory",
+                "read-cgroup-directory",
+                "stat-cgroup-entry",
+                "open-cgroup-procs",
+                "read-cgroup-procs",
+                "read-candidate-status",
+        };
+        char root[MAX_PATH];
+        size_t index;
+        size_t root_length;
+        int written;
+
+        if (failure->error_number != ENOENT) return false;
+        written = snprintf(root, sizeof(root), "/sys/fs/cgroup%s", cgroup);
+        if (written < 0 || (size_t) written >= sizeof(root)) return false;
+
+        root_length = (size_t) written;
+        if (strncmp(failure->path, root, root_length) != 0 ||
+            failure->path[root_length] != '/')
+                return false;
+
+        for (index = 0; index < sizeof(operations) / sizeof(operations[0]); index++)
+                if (strcmp(failure->operation, operations[index]) == 0) return true;
+        return false;
+}
+
+static bool can_retry_discovery_failure(const char *cgroup,
+                                        const struct scan_failure *failure,
+                                        int old_alive, int supervisor_is_alive) {
+        char root[MAX_PATH];
+        int written;
+
+        if (!supervisor_is_alive) return false;
+        if (retryable_scan_churn(cgroup, failure)) return true;
+
+        /* The payload root itself may disappear only after the retained old
+         * PID 1 has exited. Interior churn is handled above by discarding the
+         * incomplete scan and retrying from the same pinned root authority. */
+        written = snprintf(root, sizeof(root), "/sys/fs/cgroup%s", cgroup);
+        if (written < 0 || (size_t) written >= sizeof(root)) return false;
+        return failure->error_number == ENOENT && !old_alive &&
+                strcmp(failure->path, root) == 0 &&
+                (strcmp(failure->operation, "open-cgroup-directory") == 0 ||
+                 strcmp(failure->operation, "read-cgroup-directory") == 0);
+}
+
+static bool discovered_new_candidate(int result, pid_t candidate, pid_t old_pid) {
+        return result == 1 && candidate != old_pid;
+}
+
 static void close_observation(struct observation *o) {
         int *fds[] = { &o->pidfd, &o->rootfd, &o->cgroupfd, &o->mntfd, &o->netfd,
                        &o->pidnsfd, &o->userfd };
@@ -381,28 +459,46 @@ fail:
 }
 
 static int candidates_file(const char *path, pid_t supervisor, pid_t *candidate, int *count,
-                           struct budget *budget) {
+                           struct budget *budget, struct scan_failure *failure) {
         FILE *stream = fopen(path, "re");
         char line[64];
-        if (!stream) return -1;
+        if (!stream) {
+                record_scan_failure(failure, "open-cgroup-procs", path, 0, errno);
+                return -1;
+        }
         while (fgets(line, sizeof(line), stream)) {
                 char *end;
                 long value;
                 bool nested_one = false;
                 size_t length = strlen(line);
                 if (charge(budget, &budget->candidates, MAX_CANDIDATES, length) < 0) {
+                        int error_number = errno;
+                        record_scan_failure(failure, "candidate-budget", path, 0, error_number);
                         (void) fclose(stream);
+                        errno = error_number;
                         return -1;
                 }
                 errno = 0;
                 value = strtol(line, &end, 10);
                 if (errno != 0 || end == line || (*end != '\n' && *end != '\0')) {
+                        int error_number = errno;
+                        record_scan_failure(failure, "parse-cgroup-procs", path, 0, error_number);
                         (void) fclose(stream);
+                        errno = error_number;
                         return -1;
                 }
-                if (value <= 0 || value > INT_MAX ||
-                    read_status((pid_t) value, 0, &nested_one, budget) < 0) {
+                if (value <= 0 || value > INT_MAX) {
+                        record_scan_failure(failure, "invalid-cgroup-pid", path, 0, 0);
                         (void) fclose(stream);
+                        errno = 0;
+                        return -1;
+                }
+                if (read_status((pid_t) value, 0, &nested_one, budget) < 0) {
+                        int error_number = errno;
+                        record_scan_failure(failure, "read-candidate-status", path,
+                                            (pid_t) value, error_number);
+                        (void) fclose(stream);
+                        errno = error_number;
                         return -1;
                 }
                 if (nested_one) {
@@ -410,51 +506,109 @@ static int candidates_file(const char *path, pid_t supervisor, pid_t *candidate,
                         (*count)++;
                 }
         }
-        if (ferror(stream)) { (void) fclose(stream); return -1; }
+        if (ferror(stream)) {
+                int error_number = errno;
+                record_scan_failure(failure, "read-cgroup-procs", path, 0, error_number);
+                (void) fclose(stream);
+                errno = error_number;
+                return -1;
+        }
         (void) supervisor;
-        return fclose(stream);
+        if (fclose(stream) != 0) {
+                record_scan_failure(failure, "close-cgroup-procs", path, 0, errno);
+                return -1;
+        }
+        return 0;
 }
 
 static int scan_tree(const char *path, pid_t supervisor, pid_t *candidate, int *count,
-                     unsigned depth, struct budget *budget) {
+                     unsigned depth, struct budget *budget, struct scan_failure *failure) {
         DIR *dir;
         struct dirent *entry;
         char child[MAX_PATH];
-        if (depth > MAX_DEPTH || charge(budget, &budget->directories, MAX_DIRECTORIES, strlen(path)) < 0)
+        if (depth > MAX_DEPTH ||
+            charge(budget, &budget->directories, MAX_DIRECTORIES, strlen(path)) < 0) {
+                record_scan_failure(failure, "directory-budget", path, 0, errno);
                 return -1;
+        }
         dir = opendir(path);
-        if (!dir) return -1;
+        if (!dir) {
+                record_scan_failure(failure, "open-cgroup-directory", path, 0, errno);
+                return -1;
+        }
         errno = 0;
         while ((entry = readdir(dir)) != NULL) {
                 struct stat st = { 0 };
                 int written;
                 if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
                 if (charge(budget, &budget->entries, MAX_DIRECTORY_ENTRIES, strlen(entry->d_name)) < 0) {
+                        int error_number = errno;
+                        record_scan_failure(failure, "entry-budget", path, 0, error_number);
                         (void) closedir(dir);
+                        errno = error_number;
                         return -1;
                 }
                 written = snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
-                if (written < 0 || (size_t) written >= sizeof(child)) { (void) closedir(dir); return -1; }
+                if (written < 0 || (size_t) written >= sizeof(child)) {
+                        int error_number = errno;
+                        record_scan_failure(failure, "format-cgroup-path", path, 0, error_number);
+                        (void) closedir(dir);
+                        errno = error_number;
+                        return -1;
+                }
                 if (!strcmp(entry->d_name, "cgroup.procs")) {
-                        if (candidates_file(child, supervisor, candidate, count, budget) < 0) { (void) closedir(dir); return -1; }
+                        if (candidates_file(child, supervisor, candidate, count, budget,
+                                            failure) < 0) {
+                                int error_number = errno;
+                                (void) closedir(dir);
+                                errno = error_number;
+                                return -1;
+                        }
                 } else {
-                        if (lstat(child, &st) < 0) { (void) closedir(dir); return -1; }
-                        if (S_ISDIR(st.st_mode) && scan_tree(child, supervisor, candidate, count, depth + 1, budget) < 0) {
-                                (void) closedir(dir); return -1;
+                        if (lstat(child, &st) < 0) {
+                                int error_number = errno;
+                                record_scan_failure(failure, "stat-cgroup-entry", child, 0,
+                                                    error_number);
+                                (void) closedir(dir);
+                                errno = error_number;
+                                return -1;
+                        }
+                        if (S_ISDIR(st.st_mode) &&
+                            scan_tree(child, supervisor, candidate, count, depth + 1,
+                                      budget, failure) < 0) {
+                                int error_number = errno;
+                                (void) closedir(dir);
+                                errno = error_number;
+                                return -1;
                         }
                 }
                 errno = 0;
         }
-        if (errno != 0) { (void) closedir(dir); return -1; }
-        return closedir(dir);
+        if (errno != 0) {
+                int error_number = errno;
+                record_scan_failure(failure, "read-cgroup-directory", path, 0, error_number);
+                (void) closedir(dir);
+                errno = error_number;
+                return -1;
+        }
+        if (closedir(dir) != 0) {
+                record_scan_failure(failure, "close-cgroup-directory", path, 0, errno);
+                return -1;
+        }
+        return 0;
 }
 
-static int discover(const char *cgroup, pid_t supervisor, pid_t *candidate, struct budget *budget) {
+static int discover(const char *cgroup, pid_t supervisor, pid_t *candidate,
+                    struct budget *budget, struct scan_failure *failure) {
         char path[MAX_PATH];
         int count = 0;
         int written = snprintf(path, sizeof(path), "/sys/fs/cgroup%s", cgroup);
-        if (written < 0 || (size_t) written >= sizeof(path) ||
-            scan_tree(path, supervisor, candidate, &count, 0, budget) < 0)
+        reset_scan_failure(failure);
+        if (written < 0 || (size_t) written >= sizeof(path)) {
+                record_scan_failure(failure, "format-cgroup-root", cgroup, 0, errno);
+                return -1;
+        }
+        if (scan_tree(path, supervisor, candidate, &count, 0, budget, failure) < 0)
                 return -1;
         return count;
 }
@@ -505,59 +659,181 @@ int main(int argc, char **argv) {
         struct observation old = { .pidfd = -1, .rootfd = -1, .cgroupfd = -1, .mntfd = -1, .netfd = -1, .pidnsfd = -1, .userfd = -1 };
         struct observation cur = { .pidfd = -1, .rootfd = -1, .cgroupfd = -1, .mntfd = -1, .netfd = -1, .pidnsfd = -1, .userfd = -1 };
         struct supervisor pinned = { .pidfd = -1, .exefd = -1, .cgroupfd = -1 };
+        struct scan_failure scan_failure;
         struct budget budget;
         struct timespec interval = { .tv_sec = 0, .tv_nsec = 100000000L };
+        const char *failure_stage = "argument-validation";
         sigset_t signals;
         char *end;
         long supervisor;
+        unsigned long expected_generation = 0;
         unsigned long generation = 0;
-        int received, result;
+        int failure_errno = 0;
+        int generation_result = -1;
+        int observe_result = -1;
+        int old_alive = -1;
+        int current_alive = -1;
+        int supervisor_is_alive = -1;
+        int same_root = -1;
+        int same_mount = -1;
+        int same_network = -1;
+        int same_pid = -1;
+        int same_user = -1;
+        int received = 0;
+        int result = -1;
         pid_t candidate = 0;
+
+        reset_scan_failure(&scan_failure);
         if (argc != 10) return EXIT_FAILURE;
         errno = 0; supervisor = strtol(argv[1], &end, 10);
         if (errno || *argv[1] == '\0' || *end || supervisor <= 0 || supervisor > INT_MAX) return EXIT_FAILURE;
+
+        failure_stage = "signal-setup";
         if (sigemptyset(&signals) < 0 || sigaddset(&signals, SIGUSR1) < 0 ||
-            sigprocmask(SIG_BLOCK, &signals, NULL) < 0) goto fail;
+            sigprocmask(SIG_BLOCK, &signals, NULL) < 0) {
+                failure_errno = errno;
+                goto fail;
+        }
+
+        failure_stage = "supervisor-pin";
         if (pin_supervisor((pid_t) supervisor, argv[6], argv[5], argv[9], &pinned) < 0 ||
-            start_budget(&budget, DISCOVERY_SECONDS) < 0) goto fail;
+            start_budget(&budget, DISCOVERY_SECONDS) < 0) {
+                failure_errno = errno;
+                goto fail;
+        }
+
+        failure_stage = "initial-discovery";
         reset_scan_work(&budget);
-        result = discover(argv[4], (pid_t) supervisor, &candidate, &budget);
-        if (result != 1 || observe(candidate, (pid_t) supervisor, argv[2], argv[3], argv[4], &cur) < 0 ||
-            !supervisor_alive(&pinned, argv[5], argv[9]) ||
-            read_generation(argv[7], &generation) < 0 || generation != 1 ||
-            report(argv[8], "observing", generation, NULL, &cur) < 0) goto fail;
-        for (unsigned long expected_generation = 2; expected_generation <= 3; expected_generation++) {
-                if (sigwait(&signals, &received) != 0 || received != SIGUSR1) goto fail;
-                if (!supervisor_alive(&pinned, argv[5], argv[9])) goto fail;
-                if (!pidfd_alive(cur.pidfd) || syscall(SYS_pidfd_send_signal, cur.pidfd, SIGRTMIN + 5, NULL, 0U) < 0) goto fail;
+        result = discover(argv[4], (pid_t) supervisor, &candidate, &budget, &scan_failure);
+        failure_errno = errno;
+        if (result != 1) goto fail;
+
+        failure_stage = "initial-observation";
+        observe_result = observe(candidate, (pid_t) supervisor, argv[2], argv[3], argv[4], &cur);
+        if (observe_result < 0) {
+                failure_errno = errno;
+                goto fail;
+        }
+        supervisor_is_alive = supervisor_alive(&pinned, argv[5], argv[9]);
+        if (!supervisor_is_alive) {
+                failure_errno = errno;
+                goto fail;
+        }
+        generation_result = read_generation(argv[7], &generation);
+        if (generation_result < 0 || generation != 1) {
+                failure_errno = errno;
+                goto fail;
+        }
+        if (report(argv[8], "observing", generation, NULL, &cur) < 0) {
+                failure_errno = errno;
+                goto fail;
+        }
+
+        for (expected_generation = 2; expected_generation <= 3; expected_generation++) {
+                failure_stage = "reboot-request";
+                result = sigwait(&signals, &received);
+                if (result != 0 || received != SIGUSR1) {
+                        failure_errno = result;
+                        goto fail;
+                }
+                supervisor_is_alive = supervisor_alive(&pinned, argv[5], argv[9]);
+                if (!supervisor_is_alive) {
+                        failure_errno = errno;
+                        goto fail;
+                }
+                current_alive = pidfd_alive(cur.pidfd);
+                if (!current_alive) {
+                        failure_errno = errno;
+                        goto fail;
+                }
+                if (syscall(SYS_pidfd_send_signal, cur.pidfd, SIGRTMIN + 5, NULL, 0U) < 0) {
+                        failure_errno = errno;
+                        goto fail;
+                }
+
                 close_observation(&old);
                 old = cur;
                 cur = (struct observation) { .pidfd = -1, .rootfd = -1, .cgroupfd = -1, .mntfd = -1, .netfd = -1, .pidnsfd = -1, .userfd = -1 };
-                if (start_budget(&budget, DISCOVERY_SECONDS) < 0) goto fail;
+                failure_stage = "reboot-budget";
+                if (start_budget(&budget, DISCOVERY_SECONDS) < 0) {
+                        failure_errno = errno;
+                        goto fail;
+                }
+
+                failure_stage = "payload-discovery";
                 while (before_deadline(&budget)) {
                         candidate = 0;
                         reset_scan_work(&budget);
-                        result = discover(argv[4], (pid_t) supervisor, &candidate, &budget);
-                        /* The old empty payload root is removed before the next boot. Only tolerate its
-                         * disappearance after the old PID 1 has exited, with the supervisor still pinned. */
-                        if (result < 0 && (errno != ENOENT || pidfd_alive(old.pidfd) ||
-                                           !supervisor_alive(&pinned, argv[5], argv[9]))) goto fail;
-                        if (result == 1 && candidate != old.pid &&
-                            observe(candidate, (pid_t) supervisor, argv[2], argv[3], argv[4], &cur) == 0 &&
-                            read_generation(argv[7], &generation) == 0 && generation == expected_generation) break;
+                        result = discover(argv[4], (pid_t) supervisor, &candidate, &budget,
+                                          &scan_failure);
+                        failure_errno = errno;
+                        /* Any tolerated churn invalidates the whole inventory and
+                         * retries from the pinned payload root. Root disappearance
+                         * additionally requires the retained old PID 1 to be dead. */
+                        if (result < 0) {
+                                old_alive = pidfd_alive(old.pidfd);
+                                supervisor_is_alive = supervisor_alive(&pinned, argv[5], argv[9]);
+                                if (!can_retry_discovery_failure(argv[4], &scan_failure,
+                                                                 old_alive,
+                                                                 supervisor_is_alive))
+                                        goto fail;
+                        }
+                        observe_result = -1;
+                        generation_result = -1;
+                        if (discovered_new_candidate(result, candidate, old.pid)) {
+                                observe_result = observe(candidate, (pid_t) supervisor, argv[2],
+                                                         argv[3], argv[4], &cur);
+                                if (observe_result == 0)
+                                        generation_result = read_generation(argv[7], &generation);
+                                if (observe_result == 0 && generation_result == 0 &&
+                                    generation == expected_generation)
+                                        break;
+                        }
                         close_observation(&cur);
-                        if (nanosleep(&interval, NULL) < 0 && errno != EINTR) goto fail;
+                        if (nanosleep(&interval, NULL) < 0 && errno != EINTR) {
+                                failure_stage = "reboot-scan-sleep";
+                                failure_errno = errno;
+                                goto fail;
+                        }
                 }
-                if (cur.pidfd < 0 || pidfd_alive(old.pidfd) || !pidfd_alive(cur.pidfd) ||
-                    !supervisor_alive(&pinned, argv[5], argv[9]) ||
-                    same_identity(old.mnt, cur.mnt) ||
-                    same_identity(old.pidns, cur.pidns) || same_identity(old.user, cur.user) ||
-                    !same_identity(old.net, cur.net) || !same_identity(old.root, cur.root) ||
-                    report(argv[8], "rebooted", generation, &old, &cur) < 0) goto fail;
+
+                failure_stage = "reboot-validation";
+                failure_errno = 0;
+                old_alive = pidfd_alive(old.pidfd);
+                current_alive = cur.pidfd >= 0 ? pidfd_alive(cur.pidfd) : 0;
+                supervisor_is_alive = supervisor_alive(&pinned, argv[5], argv[9]);
+                if (cur.pidfd >= 0) {
+                        same_mount = same_identity(old.mnt, cur.mnt);
+                        same_network = same_identity(old.net, cur.net);
+                        same_pid = same_identity(old.pidns, cur.pidns);
+                        same_user = same_identity(old.user, cur.user);
+                        same_root = same_identity(old.root, cur.root);
+                }
+                if (cur.pidfd < 0 || old_alive || !current_alive || !supervisor_is_alive ||
+                    same_mount || same_pid || same_user || !same_network || !same_root)
+                        goto fail;
+
+                failure_stage = "reboot-report";
+                if (report(argv[8], "rebooted", generation, &old, &cur) < 0) {
+                        failure_errno = errno;
+                        goto fail;
+                }
         }
         for (;;) pause();
 fail:
-        fprintf(stderr, "nspawn host observer validation or lifecycle proof failed\n");
+        fprintf(stderr,
+                "nspawn host observer failed: stage=%s errno=%d discover_result=%d "
+                "scan_operation=%s scan_errno=%d scan_path=%s scan_pid=%ld "
+                "candidate=%ld expected_generation=%lu generation_result=%d "
+                "observed_generation=%lu old_pid=%ld current_pid=%ld old_alive=%d "
+                "current_alive=%d supervisor_alive=%d same_root=%d same_mount=%d "
+                "same_network=%d same_pid=%d same_user=%d observe_result=%d\n",
+                failure_stage, failure_errno, result, scan_failure.operation,
+                scan_failure.error_number, scan_failure.path, (long) scan_failure.pid,
+                (long) candidate, expected_generation, generation_result, generation,
+                (long) old.pid, (long) cur.pid, old_alive, current_alive,
+                supervisor_is_alive, same_root, same_mount, same_network, same_pid,
+                same_user, observe_result);
         close_observation(&cur);
         close_observation(&old);
         close_supervisor(&pinned);
