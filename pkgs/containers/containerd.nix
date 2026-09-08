@@ -2,8 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  buildPackages,
   gnumake,
-  go,
   runc,
   kmod,
   bash,
@@ -19,9 +19,9 @@
       ];
       hash = "sha256-r1cHomiRSGMyFCzAreTwxUP3B9OVSDj1zs7nO4M8+bQ=";
     };
-    buildDeps = [gnumake go];
+    buildDeps = [gnumake buildPackages.go];
     runtimeDeps = [runc];
-    disallowedReferences = [go];
+    disallowedReferences = [buildPackages.go];
     phases = [
       {
         name = "unpack";
@@ -46,6 +46,10 @@
           export CGO_ENABLED=0
           export GOPROXY=off
           export GOFLAGS="-trimpath"
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            export GOOS="$AOS_GOOS"
+            export GOARCH="$AOS_GOARCH"
+          fi
           mkdir -p "$GOCACHE"
           make SHELL="$CONFIG_SHELL" VERSION=v${version} \
             REVISION=v${version} \
@@ -230,6 +234,9 @@ in
           for program in ${payload}/bin/*; do
             ln -s "$program" "$out/bin/$(basename "$program")"
           done
+          # containerd resolves its default OCI runtime by executable name.
+          # Retain that declared runtime inside the standalone package closure.
+          ln -s ${runc}/sbin/runc $out/bin/runc
           ln -s ${payload}/lib/systemd/system/containerd.service \
             $out/lib/systemd/system/containerd.service
         '';

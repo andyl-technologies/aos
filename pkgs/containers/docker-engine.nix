@@ -2,8 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  buildPackages,
   gnumake,
-  go,
   bash,
   pkg-config,
   btrfs-progs,
@@ -54,8 +54,9 @@ in
       hash = "sha256-i2Svt1YjR9LOnxAn4ybOmkXI9BpIYQbOIDT36xq+Dg8=";
     };
 
-    buildDeps = [gnumake go bash pkg-config];
+    buildDeps = [gnumake buildPackages.go bash pkg-config];
     runtimeDeps = [
+      bash
       btrfs-progs
       containerd
       e2fsprogs
@@ -78,7 +79,7 @@ in
       xz
     ];
     propagatedDeps = [];
-    disallowedReferences = [go];
+    disallowedReferences = [buildPackages.go];
 
     phases = [
       {
@@ -91,7 +92,13 @@ in
       {
         name = "patch";
         script = ''
-          find hack contrib -type f -exec sed -i             -e "1s|^#!/usr/bin/env bash|#!${bash}/bin/bash|"             -e "1s|^#!/bin/bash|#!${bash}/bin/bash|"             -e "1s|^#!/usr/bin/env sh|#!$CONFIG_SHELL|"             -e "1s|^#!/bin/sh|#!$CONFIG_SHELL|" {} +
+          # Source-tree scripts run on the build platform. The installed
+          # rootless entry point receives its target shell during installation.
+          find hack contrib -type f -exec sed -i \
+            -e "1s|^#!/usr/bin/env bash|#!$CONFIG_SHELL|" \
+            -e "1s|^#!/bin/bash|#!$CONFIG_SHELL|" \
+            -e "1s|^#!/usr/bin/env sh|#!$CONFIG_SHELL|" \
+            -e "1s|^#!/bin/sh|#!$CONFIG_SHELL|" {} +
         '';
       }
       {
@@ -102,6 +109,10 @@ in
           export GOFLAGS="-trimpath -mod=vendor"
           export GOPROXY=off
           export CGO_ENABLED=1
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            export GOOS="$AOS_GOOS"
+            export GOARCH="$AOS_GOARCH"
+          fi
           export AUTO_GOPATH=1
           export VERSION="${version}"
           export DOCKER_GITCOMMIT="v${version}"
@@ -131,6 +142,7 @@ in
           chmod 755 "$out/bin/dockerd"
 
           install -m 755 contrib/dockerd-rootless.sh "$out/libexec/docker/dockerd-rootless.sh"
+          sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/libexec/docker/dockerd-rootless.sh"
           cat > "$out/bin/dockerd-rootless" <<'EOF_WRAPPER'
           #!${bash}/bin/bash
           export PATH="@out@/libexec/docker:${runtimePath}''${PATH:+:$PATH}"

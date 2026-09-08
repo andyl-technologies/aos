@@ -3,8 +3,8 @@
   mkDerivation,
   fetchurl,
   fetchGoModules,
+  buildPackages,
   gnumake,
-  go,
 }: let
   version = "1.9.0";
   flannelVersion = "1.9.0-flannel1";
@@ -32,7 +32,7 @@ in
 
     buildDeps = [
       gnumake
-      go
+      buildPackages.go
     ];
     runtimeDeps = [];
     propagatedDeps = [];
@@ -54,6 +54,10 @@ in
           export CGO_ENABLED=0
           export GOFLAGS="-trimpath -mod=vendor"
           export GOPROXY=off
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            export GOOS="$AOS_GOOS"
+            export GOARCH="$AOS_GOARCH"
+          fi
           GO_LDFLAGS="-s -w -X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=v${version}"
           mkdir -p "$GOCACHE"
 
