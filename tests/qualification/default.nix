@@ -36,7 +36,12 @@
     name = requirement.id;
     value = aggregate requirement.id (map resolve requirement.regressions);
   }) (builtins.filter (requirement: requirement.regressions != []) contract.requirements));
+  imageRecovery = builtins.head (
+    builtins.filter (requirement: requirement.id == "image-update-recovery") contract.requirements
+  );
 in
+  assert builtins.elem "checks.fleet.measured-boot" imageRecovery.regressions;
+  assert (resolve "checks.fleet.measured-boot").drvPath == fleet.measured-boot.drvPath;
   groups
   // {
     policy = import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;};

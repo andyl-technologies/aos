@@ -161,6 +161,9 @@
     .success;
   names = map (rule: rule.name) contract.package_rules;
   phases = map (gate: gate.phase) contract.requirements;
+  imageRecovery = builtins.head (
+    builtins.filter (requirement: requirement.id == "image-update-recovery") contract.requirements
+  );
   coveredAndMissingPackageNames = builtins.sort builtins.lessThan (
     packageCoverage.implementedPackages ++ packageCoverage.missingPackages
   );
@@ -238,6 +241,12 @@ in
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" (builtins.toString sourceRoot) != null;
   assert builtins.readFile (sourceRoot + "/server.nix") == builtins.readFile (nestedSource + "/server.nix");
   assert names == builtins.sort builtins.lessThan packageNames;
+  assert imageRecovery.regressions
+  == [
+    "checks.fleet.system-image-rollback"
+    "checks.fleet.boot-identity-fail-closed"
+    "checks.fleet.measured-boot"
+  ];
   assert packageCoverage.schema_version == "aos.release.package-probe-coverage/v1";
   assert packageCoverage.total == builtins.length packageNames;
   assert packageCoverage.total
