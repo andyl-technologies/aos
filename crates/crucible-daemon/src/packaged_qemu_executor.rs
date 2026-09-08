@@ -38,6 +38,9 @@ use crucible_qemu::{
 use crate::assignment_ledger::AttemptRuntimeState;
 #[cfg(test)]
 use crate::executor_pool::LocalExecutorOperationalSnapshot;
+use crate::executor_pool::{
+    PreparedResultJournalConfig, reconcile_stable_prepared_result_journals,
+};
 #[cfg(test)]
 use crate::executor_supervisor::LocalExecutionActivity;
 use crate::qemu_hot_fork_world_factory::AttemptWorkerFailureExt;
@@ -54,7 +57,7 @@ use crate::{
     ExecutorLoopbackServerConfig, HotCheckpointFallback, HotCheckpointFallbackRetentionError,
     HotCheckpointHotnessSignals, HotCheckpointLimits, LinuxQemuAttemptHostResourceFactory,
     LocalCheckpointPromotionWorker, LocalExecutorCapabilityService, LocalExecutorPoolConfigError,
-    LocalExecutorSupervisor, LocalExecutorWorkerPool,
+    LocalExecutorSupervisor, LocalExecutorWorkerPool, MAX_PREPARED_SEMANTIC_RESULT_BYTES,
     ManagedQemuHotForkAuthenticatedAdmissionError, ManagedQemuHotForkAuthenticatedAdmissionFailure,
     ManagedQemuHotForkSourceWorldAdmissionError, ManagedQemuHotForkSourceWorldPool,
     ManagedQemuHotForkSourceWorldPoolConstructionError, ProductionBakedGenesisCaptureError,
@@ -1045,8 +1048,29 @@ where
 {
     let campaigns = config.campaigns.clone();
     let ledger_root = config.ledger_root.clone();
+    let admission = PackagedAttemptAdmission::new(
+        Arc::clone(&repository),
+        basis.profile.clone(),
+        basis.scenarios.clone(),
+    );
+
+    // Acquire process-wide ownership before mutating any native run-state
+    // namespace. A competing daemon must fail without retiring live state.
+    let gc_exclusion = repository.acquire_gc_exclusion_guard()?;
     let ledger = DirectoryAssignmentLedger::open(&config.ledger_root)?;
     reconcile_packaged_native_catalogs(config.lifecycle.run_state_root())?;
+    let prepared_result_root =
+        prepare_packaged_prepared_result_namespace(config.lifecycle.run_state_root())?;
+    let prepared_results =
+        PreparedResultJournalConfig::new(prepared_result_root, MAX_PREPARED_SEMANTIC_RESULT_BYTES);
+    reconcile_stable_prepared_result_journals(
+        &ledger,
+        &admission,
+        &prepared_results,
+        &gc_exclusion,
+    )?;
+    drop(gc_exclusion);
+
     let checkpoints = Arc::new(ExactCheckpointStore::new(
         checkpoint_backend,
         config.maximum_checkpoint_bytes,
@@ -1117,16 +1141,8 @@ where
         BTreeSet::from([config.store_namespace]),
     )?;
     let description = ExecutorDescription::new(config.daemon_epoch, capabilities)?;
-    let supervisor = LocalExecutorSupervisor::new(
-        ledger,
-        PackagedAttemptAdmission::new(
-            Arc::clone(&repository),
-            basis.profile,
-            basis.scenarios.clone(),
-        ),
-        config.daemon_epoch,
-        config.capacity,
-    );
+    let supervisor =
+        LocalExecutorSupervisor::new(ledger, admission, config.daemon_epoch, config.capacity);
     let executor = LocalExecutorCapabilityService::new(supervisor, description)?;
     let workers = initial_runner_build
         .runners
@@ -1165,6 +1181,7 @@ where
             workers,
             promotion_workers,
             checkpoint_observer,
+            Some(prepared_results.clone()),
         )?
     } else {
         LocalExecutorWorkerPool::start_with_checkpoint_observer(
@@ -1173,6 +1190,7 @@ where
             checkpoints,
             workers,
             checkpoint_observer,
+            Some(prepared_results),
         )?
     };
     let pool_status = pool.service();
@@ -1212,6 +1230,24 @@ where
 
 const PACKAGED_NATIVE_NAMESPACES: [&str; 2] =
     ["campaign-workers", "campaign-checkpoint-promotions"];
+const PACKAGED_PREPARED_RESULT_NAMESPACE: &str = "campaign-prepared-results";
+
+fn prepare_packaged_prepared_result_namespace(
+    run_state_root: &Path,
+) -> Result<PathBuf, PackagedNativeCatalogRecoveryError> {
+    let namespace = run_state_root.join(PACKAGED_PREPARED_RESULT_NAMESPACE);
+    fs::create_dir_all(&namespace).map_err(|source| PackagedNativeCatalogRecoveryError::Io {
+        operation: "create",
+        path: namespace.clone(),
+        source,
+    })?;
+    if !packaged_directory_presence(&namespace)? {
+        return Err(PackagedNativeCatalogRecoveryError::InvalidPath { path: namespace });
+    }
+    sync_packaged_native_parent(&namespace)?;
+    sync_packaged_native_parent(run_state_root)?;
+    Ok(namespace)
+}
 
 fn reconcile_packaged_native_catalogs(
     run_state_root: &Path,

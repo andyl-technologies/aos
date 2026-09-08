@@ -562,11 +562,18 @@ where
         let outcome = runner
             .execute(attempt, &context)
             .map_err(map_savepoint_replay_failure)?;
-        if !matches!(outcome.product(), AttemptExecutionProduct::Observation(_)) {
-            return Err(QemuVmRealizationError::InvalidCheckpoint {
-                role: "savepoint capture replay",
-                message: String::from("independent attempt replay did not produce an observation"),
-            });
+        match outcome.product() {
+            AttemptExecutionProduct::Observation(_)
+            | AttemptExecutionProduct::ObservationWithFinding { .. }
+            | AttemptExecutionProduct::PreparedSemantic(_) => {}
+            AttemptExecutionProduct::ExactCheckpoint(_) => {
+                return Err(QemuVmRealizationError::InvalidCheckpoint {
+                    role: "savepoint capture replay",
+                    message: String::from(
+                        "independent attempt replay did not produce an observation",
+                    ),
+                });
+            }
         }
         receipt
             .take()

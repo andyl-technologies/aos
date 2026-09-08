@@ -13,17 +13,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use crucible::model::{
-    BoundarySelector, CohortPolicy, MeasurementDefinitions, MeasurementId, MeasurementInstanceKey,
-    MeasurementRuntimeSample, MeasurementSampleValue, MeasurementTerminalState, MetricDefinition,
-    MetricId, MetricSource, MetricValueType, ReducedRational, append_model_measurement_samples,
-};
+use crucible::model::MeasurementTerminalState;
 use crucible::{
-    Configuration, ContentHash, Decision, EventLogCoverageObservation, GuestMeasurementEvent,
-    GuestMeasurementValue, HostAssertionOutcomeKind, NodeId, ObservableEventPayload,
-    OfflineAssertionCheckError, OfflineAssertionChecker, QuantumOutcome, QuantumRequest,
-    QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
-    SchedulerOperationalFailureClass, SchedulerQuiescence, SelectionDecision, VirtualTime, step,
+    Configuration, ContentHash, Decision, EventLogCoverageObservation, HostAssertionOutcomeKind,
+    ObservableEventPayload, OfflineAssertionCheckError, OfflineAssertionChecker, QuantumOutcome,
+    QuantumRequest, QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, SchedulerOperationalFailureClass, SchedulerQuiescence,
+    SelectionDecision, VirtualTime, step,
 };
 use crucible_campaign::{
     AttemptStartMode, CampaignCodecError, CampaignHash, ChoiceDiscovery, ChoiceDomainId,
@@ -43,9 +39,10 @@ use crate::guest_selectable::{
 use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure, CrucibleArtifactError,
     CrucibleAttemptExecution, CrucibleMeasurementError, CrucibleResolvedAttemptStart,
-    QemuFreshAttemptDriver, QemuFreshAttemptLifecycle, QemuFreshDriveOutcome,
-    QemuFreshStartMaterialization, encode_crucible_configuration_artifact,
-    encode_crucible_scenario_artifact, evaluate_crucible_measurement_set,
+    PreparedSemanticAttemptResult, PreparedSemanticResultCodecError, QemuFreshAttemptDriver,
+    QemuFreshAttemptLifecycle, QemuFreshDriveOutcome, QemuFreshStartMaterialization,
+    encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
+    evaluate_crucible_measurement_publication,
 };
 #[cfg(target_os = "linux")]
 use crate::{QemuHotForkAttemptDriver, QemuHotForkLiveExecution};
@@ -83,6 +80,9 @@ pub enum QemuFreshModeledDriverError {
     /// Measurement evaluation or campaign binding rejected the retained run.
     #[error("fresh campaign measurement evaluation failed: {0}")]
     Measurements(#[source] CrucibleMeasurementError),
+    /// Prepared semantic result construction rejected the complete closure.
+    #[error("fresh campaign prepared-result projection failed: {0}")]
+    PreparedResult(#[source] PreparedSemanticResultCodecError),
     /// A guest measurement or semantic-marker message violated the scenario contract.
     #[error("fresh campaign guest measurement protocol failed at sequence {sequence}: {reason}")]
     GuestMeasurementProtocol {
@@ -150,6 +150,12 @@ impl From<CampaignCodecError> for QemuFreshModeledDriverError {
 impl From<OfflineAssertionCheckError> for QemuFreshModeledDriverError {
     fn from(error: OfflineAssertionCheckError) -> Self {
         Self::Assertions(error)
+    }
+}
+
+impl From<PreparedSemanticResultCodecError> for QemuFreshModeledDriverError {
+    fn from(error: PreparedSemanticResultCodecError) -> Self {
+        Self::PreparedResult(error)
     }
 }
 
@@ -447,9 +453,7 @@ impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
             final_events,
         )
         .map_err(AttemptWorkerFailure::Terminal)?;
-        build_observation_candidate(pending)
-            .map(AttemptExecutionProduct::observation)
-            .map_err(AttemptWorkerFailure::Terminal)
+        build_observation_candidate(pending).map_err(AttemptWorkerFailure::Terminal)
     }
 }
 
@@ -548,7 +552,6 @@ impl QemuHotForkAttemptDriver for QemuHotForkModeledDriver {
         live.check_operational_boundary()
             .map_err(classify_hot_lifecycle_failure)?;
         build_observation_candidate(pending)
-            .map(AttemptExecutionProduct::observation)
             .map_err(QemuHotForkModeledDriverError::Modeled)
             .map_err(AttemptWorkerFailure::Terminal)
     }
@@ -1135,7 +1138,7 @@ fn initial_requested_stop_reached(
 
 fn build_observation_candidate(
     pending: QemuFreshPendingObservation,
-) -> Result<ObservationCandidate, QemuFreshModeledDriverError> {
+) -> Result<AttemptExecutionProduct, QemuFreshModeledDriverError> {
     let assertion_count = pending
         .input
         .scenario()
@@ -1161,8 +1164,6 @@ fn build_observation_candidate(
     }
     let report = checker.check_run(pending.input.scenario().properties(), &pending.event_log)?;
     let properties = property_verdicts(&report)?;
-    let measurements = campaign_measurements(&pending)?;
-    let stop = stop_outcome(pending.stop, &report);
 
     let scenario_artifact = encode_crucible_scenario_artifact(pending.input.scenario())?;
     if scenario_artifact.id()? != pending.input.lineage().scenario_content()
@@ -1174,6 +1175,9 @@ fn build_observation_candidate(
         &scenario_artifact,
         &pending.configuration.schedule,
     )?;
+    let measurement_publication = campaign_measurements(&pending, child.configuration())?;
+    let (measurement_evidence, _, measurements) = measurement_publication.into_parts();
+    let stop = stop_outcome(pending.stop, &report);
     let coverage = coverage_projection(&pending.event_log)?;
     let discovered_choices = pending.discoveries.into_values().collect::<Vec<_>>();
     let discovered_ids = discovered_choices
@@ -1205,7 +1209,7 @@ fn build_observation_candidate(
         coverage.id()?,
         discovered_ids,
     )?;
-    ObservationCandidate::new(
+    let candidate = ObservationCandidate::new(
         child,
         measurements,
         properties,
@@ -1213,18 +1217,20 @@ fn build_observation_candidate(
         discovered_choices,
         observation,
     )
-    .and_then(|candidate| candidate.with_produced_selections(produced_selections))
-    .map_err(Into::into)
+    .and_then(|candidate| candidate.with_produced_selections(produced_selections))?;
+    let result = PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
+        candidate,
+        vec![measurement_evidence],
+        None,
+    )?;
+    Ok(AttemptExecutionProduct::prepared_semantic(result))
 }
 
 fn campaign_measurements(
     pending: &QemuFreshPendingObservation,
-) -> Result<crucible_campaign::MeasurementSet, QemuFreshModeledDriverError> {
+    configuration: crucible_campaign::ConfigurationId,
+) -> Result<crate::CrucibleMeasurementPublication, QemuFreshModeledDriverError> {
     let definitions = pending.input.scenario().measurements();
-    let mut samples = normalize_guest_measurements(definitions, &pending.event_log)?;
-    append_model_measurement_samples(definitions, &pending.event_log, &mut samples)
-        .map_err(CrucibleMeasurementError::from)
-        .map_err(QemuFreshModeledDriverError::Measurements)?;
     let mut node_icounts = BTreeMap::new();
     for entry in &pending.event_log {
         if let Some(node) = &entry.time().icount.node {
@@ -1254,355 +1260,15 @@ fn campaign_measurements(
             .as_ref()
             .is_some_and(SchedulerQuiescence::is_quiescent),
     };
-    evaluate_crucible_measurement_set(
+    evaluate_crucible_measurement_publication(
+        pending.input.lineage().scenario(),
+        configuration,
         definitions,
-        &pending.event_log,
-        samples,
-        &terminal,
-        BTreeSet::new(),
+        pending.event_log.clone(),
+        terminal,
+        MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
     )
     .map_err(QemuFreshModeledDriverError::Measurements)
-}
-
-fn normalize_guest_measurements(
-    definitions: &MeasurementDefinitions,
-    entries: &[SchedulerEventLogEntry],
-) -> Result<Vec<MeasurementRuntimeSample>, QemuFreshModeledDriverError> {
-    let definitions_by_id = definitions
-        .definitions()
-        .iter()
-        .map(|definition| (definition.id.clone(), definition))
-        .collect::<BTreeMap<_, _>>();
-    let mut open = BTreeSet::<(NodeId, MeasurementId, MeasurementInstanceKey)>::new();
-    let mut samples = Vec::new();
-
-    for entry in entries {
-        match entry.payload() {
-            SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMeasurement {
-                node,
-                event,
-                ..
-            }) => match event {
-                GuestMeasurementEvent::Begin {
-                    measurement,
-                    instance,
-                } => {
-                    let (measurement, instance, definition) = guest_measurement_basis(
-                        &definitions_by_id,
-                        node,
-                        measurement,
-                        instance,
-                        entry.sequence(),
-                    )?;
-                    if open.len() >= MAX_QEMU_CAMPAIGN_OPEN_MEASUREMENT_INSTANCES {
-                        return Err(guest_measurement_error(
-                            entry.sequence(),
-                            "open measurement instance limit exceeded",
-                        ));
-                    }
-                    if !open.insert((node.clone(), measurement, instance)) {
-                        return Err(guest_measurement_error(
-                            entry.sequence(),
-                            format!("measurement `{}` instance is already open", definition.id),
-                        ));
-                    }
-                }
-                GuestMeasurementEvent::Sample {
-                    measurement,
-                    instance,
-                    metric,
-                    value,
-                } => {
-                    let (measurement, instance, definition) = guest_measurement_basis(
-                        &definitions_by_id,
-                        node,
-                        measurement,
-                        instance,
-                        entry.sequence(),
-                    )?;
-                    if !open.contains(&(node.clone(), measurement.clone(), instance)) {
-                        return Err(guest_measurement_error(
-                            entry.sequence(),
-                            format!("measurement `{measurement}` instance is not open"),
-                        ));
-                    }
-                    let metric = MetricId::parse(metric.clone()).map_err(|error| {
-                        guest_measurement_error(entry.sequence(), error.to_string())
-                    })?;
-                    let contract = definition
-                        .metrics
-                        .iter()
-                        .find(|candidate| candidate.id == metric)
-                        .ok_or_else(|| {
-                            guest_measurement_error(
-                                entry.sequence(),
-                                format!(
-                                    "measurement `{measurement}` does not declare metric `{metric}`"
-                                ),
-                            )
-                        })?;
-                    if contract.source != MetricSource::Guest {
-                        return Err(guest_measurement_error(
-                            entry.sequence(),
-                            format!("metric `{metric}` is not guest-sourced"),
-                        ));
-                    }
-                    let value = normalize_guest_measurement_value(value)
-                        .map_err(|reason| guest_measurement_error(entry.sequence(), reason))?;
-                    if !guest_sample_matches_type(&value, contract) {
-                        return Err(guest_measurement_error(
-                            entry.sequence(),
-                            format!("metric `{metric}` value does not match its declared type"),
-                        ));
-                    }
-                    samples.push(MeasurementRuntimeSample::new(
-                        entry.sequence(),
-                        measurement,
-                        metric,
-                        value,
-                    ));
-                }
-                GuestMeasurementEvent::End {
-                    measurement,
-                    instance,
-                } => {
-                    let (measurement, instance, _definition) = guest_measurement_basis(
-                        &definitions_by_id,
-                        node,
-                        measurement,
-                        instance,
-                        entry.sequence(),
-                    )?;
-                    if !open.remove(&(node.clone(), measurement.clone(), instance)) {
-                        return Err(guest_measurement_error(
-                            entry.sequence(),
-                            format!("measurement `{measurement}` instance is not open"),
-                        ));
-                    }
-                }
-            },
-            SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestSemanticMarker {
-                node,
-                marker,
-                instance,
-                ..
-            }) => {
-                let instance =
-                    MeasurementInstanceKey::parse(instance.clone()).map_err(|error| {
-                        guest_measurement_error(entry.sequence(), error.to_string())
-                    })?;
-                if !definitions.definitions().iter().any(|definition| {
-                    cohort_contains(&definition.cohort, node)
-                        && (boundary_accepts_semantic_marker(&definition.begin, marker, &instance)
-                            || boundary_accepts_semantic_marker(&definition.end, marker, &instance))
-                }) {
-                    return Err(guest_measurement_error(
-                        entry.sequence(),
-                        format!("semantic marker `{marker}` instance `{instance}` is not declared"),
-                    ));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if let Some((_node, measurement, instance)) = open.into_iter().next() {
-        return Err(guest_measurement_error(
-            entries
-                .last()
-                .map_or(0, SchedulerEventLogEntry::sequence)
-                .saturating_add(1),
-            format!("measurement `{measurement}` instance `{instance}` was not ended"),
-        ));
-    }
-    Ok(samples)
-}
-
-fn guest_measurement_basis<'a>(
-    definitions: &'a BTreeMap<MeasurementId, &'a crucible::model::MeasurementDefinition>,
-    node: &NodeId,
-    measurement: &str,
-    instance: &str,
-    sequence: u64,
-) -> Result<
-    (
-        MeasurementId,
-        MeasurementInstanceKey,
-        &'a crucible::model::MeasurementDefinition,
-    ),
-    QemuFreshModeledDriverError,
-> {
-    let measurement = MeasurementId::parse(measurement.to_owned())
-        .map_err(|error| guest_measurement_error(sequence, error.to_string()))?;
-    let instance = MeasurementInstanceKey::parse(instance.to_owned())
-        .map_err(|error| guest_measurement_error(sequence, error.to_string()))?;
-    let definition = definitions.get(&measurement).copied().ok_or_else(|| {
-        guest_measurement_error(
-            sequence,
-            format!("measurement `{measurement}` is not declared"),
-        )
-    })?;
-    if !cohort_contains(&definition.cohort, node) {
-        return Err(guest_measurement_error(
-            sequence,
-            format!(
-                "node `{}` is outside measurement `{measurement}` cohort",
-                node.name
-            ),
-        ));
-    }
-    let expected_instance = guest_measurement_instance(definition, sequence)?;
-    if &instance != expected_instance {
-        return Err(guest_measurement_error(
-            sequence,
-            format!(
-                "measurement `{measurement}` requires instance `{expected_instance}`, got `{instance}`"
-            ),
-        ));
-    }
-    Ok((measurement, instance, definition))
-}
-
-fn guest_measurement_instance(
-    definition: &crucible::model::MeasurementDefinition,
-    sequence: u64,
-) -> Result<&MeasurementInstanceKey, QemuFreshModeledDriverError> {
-    let mut instances = BTreeSet::new();
-    collect_boundary_instances(&definition.begin, &mut instances);
-    collect_boundary_instances(&definition.end, &mut instances);
-    let mut instances = instances.into_iter();
-    let Some(instance) = instances.next() else {
-        return Err(guest_measurement_error(
-            sequence,
-            format!(
-                "guest-sourced measurement `{}` does not declare an exact marker instance",
-                definition.id
-            ),
-        ));
-    };
-    if instances.next().is_some() {
-        return Err(guest_measurement_error(
-            sequence,
-            format!(
-                "guest-sourced measurement `{}` declares conflicting marker instances",
-                definition.id
-            ),
-        ));
-    }
-    Ok(instance)
-}
-
-fn collect_boundary_instances<'a>(
-    selector: &'a BoundarySelector,
-    instances: &mut BTreeSet<&'a MeasurementInstanceKey>,
-) {
-    match selector {
-        BoundarySelector::GuestMarker {
-            instance: Some(instance),
-            ..
-        } => {
-            instances.insert(instance);
-        }
-        BoundarySelector::All { selectors } | BoundarySelector::Any { selectors } => {
-            for selector in selectors {
-                collect_boundary_instances(selector, instances);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn cohort_contains(cohort: &CohortPolicy, node: &NodeId) -> bool {
-    match cohort {
-        CohortPolicy::All(nodes) | CohortPolicy::Any(nodes) => nodes.binary_search(node).is_ok(),
-        CohortPolicy::Quorum { nodes, .. } => nodes.binary_search(node).is_ok(),
-    }
-}
-
-fn normalize_guest_measurement_value(
-    value: &GuestMeasurementValue,
-) -> Result<MeasurementSampleValue, String> {
-    match value {
-        GuestMeasurementValue::Signed(value) => Ok(MeasurementSampleValue::Signed(*value)),
-        GuestMeasurementValue::Unsigned(value) => Ok(MeasurementSampleValue::Unsigned(*value)),
-        GuestMeasurementValue::Rational(value) => {
-            let reduced = ReducedRational::new(value.negative, value.numerator, value.denominator)
-                .map_err(|error| error.to_string())?;
-            if reduced.is_negative() != value.negative
-                || reduced.numerator() != value.numerator
-                || reduced.denominator() != value.denominator
-            {
-                return Err(String::from(
-                    "rational sample is not canonical reduced form",
-                ));
-            }
-            Ok(MeasurementSampleValue::Rational(reduced))
-        }
-        GuestMeasurementValue::Boolean(value) => Ok(MeasurementSampleValue::Boolean(*value)),
-        GuestMeasurementValue::Enumerated(value) => {
-            Ok(MeasurementSampleValue::Enumerated(value.clone()))
-        }
-        GuestMeasurementValue::SignedVector(value) => {
-            Ok(MeasurementSampleValue::SignedVector(value.clone()))
-        }
-        GuestMeasurementValue::UnsignedVector(value) => {
-            Ok(MeasurementSampleValue::UnsignedVector(value.clone()))
-        }
-    }
-}
-
-fn guest_sample_matches_type(value: &MeasurementSampleValue, metric: &MetricDefinition) -> bool {
-    match (value, &metric.value_type) {
-        (MeasurementSampleValue::Signed(_), MetricValueType::SignedInteger)
-        | (MeasurementSampleValue::Unsigned(_), MetricValueType::UnsignedInteger)
-        | (MeasurementSampleValue::Rational(_), MetricValueType::ReducedRational)
-        | (MeasurementSampleValue::Boolean(_), MetricValueType::Boolean) => true,
-        (MeasurementSampleValue::Enumerated(value), MetricValueType::Enumerated { variants }) => {
-            variants.binary_search(value).is_ok()
-        }
-        (
-            MeasurementSampleValue::SignedVector(values),
-            MetricValueType::IntegerVector {
-                signed: true,
-                maximum_elements,
-            },
-        ) => values.len() <= *maximum_elements as usize,
-        (
-            MeasurementSampleValue::UnsignedVector(values),
-            MetricValueType::IntegerVector {
-                signed: false,
-                maximum_elements,
-            },
-        ) => values.len() <= *maximum_elements as usize,
-        _ => false,
-    }
-}
-
-fn boundary_accepts_semantic_marker(
-    selector: &BoundarySelector,
-    marker: &str,
-    instance: &MeasurementInstanceKey,
-) -> bool {
-    match selector {
-        BoundarySelector::GuestMarker {
-            marker: expected,
-            instance: Some(expected_instance),
-        } => expected.name == marker && expected_instance == instance,
-        BoundarySelector::All { selectors } | BoundarySelector::Any { selectors } => selectors
-            .iter()
-            .any(|selector| boundary_accepts_semantic_marker(selector, marker, instance)),
-        _ => false,
-    }
-}
-
-fn guest_measurement_error(
-    sequence: u64,
-    reason: impl Into<String>,
-) -> QemuFreshModeledDriverError {
-    QemuFreshModeledDriverError::GuestMeasurementProtocol {
-        sequence,
-        reason: reason.into(),
-    }
 }
 
 fn property_verdicts(

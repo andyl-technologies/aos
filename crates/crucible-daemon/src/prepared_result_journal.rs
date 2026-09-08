@@ -82,6 +82,7 @@ pub struct PreparedResultJournalCleanupDisposition {
 }
 
 /// Exclusive authenticated owner of one prepared semantic result journal.
+#[derive(Debug)]
 pub struct DirectoryPreparedResultJournal {
     root: PathBuf,
     key: AttemptExecutionKey,
@@ -116,15 +117,26 @@ impl DirectoryPreparedResultJournal {
         validate_result_key(key, &result)?;
         let namespace_lock = acquire_namespace_lock(namespace, key)?;
         let root = journal_path(namespace, key);
-        if root.exists() {
-            let journal =
-                Self::open_locked(root, key, execution, maximum_payload_bytes, namespace_lock)?;
+        if path_presence(&root, "inspect-journal-before-create")? {
+            let journal = Self::open_locked(
+                root,
+                key,
+                Some(execution),
+                maximum_payload_bytes,
+                namespace_lock,
+            )?;
             if journal.result != result {
                 return Err(PreparedResultJournalError::ResultMismatch);
             }
             return Ok((journal, PreparedResultJournalCreateDisposition::Existing));
         }
-        if staged_path(namespace, key).exists() || retired_path(namespace, key).exists() {
+        if path_presence(
+            &staged_path(namespace, key),
+            "inspect-staged-journal-before-create",
+        )? || path_presence(
+            &retired_path(namespace, key),
+            "inspect-retired-journal-before-create",
+        )? {
             return Err(PreparedResultJournalError::RecoveryRequired);
         }
 
@@ -180,13 +192,87 @@ impl DirectoryPreparedResultJournal {
         let maximum_payload_bytes = validate_payload_limit(maximum_payload_bytes)?;
         let namespace_lock = acquire_namespace_lock(namespace, key)?;
         let root = journal_path(namespace, key);
-        Self::open_locked(root, key, execution, maximum_payload_bytes, namespace_lock)
+        Self::open_locked(
+            root,
+            key,
+            Some(execution),
+            maximum_payload_bytes,
+            namespace_lock,
+        )
+    }
+
+    /// Opens a complete journal without replacing its producer execution.
+    ///
+    /// This is the restart path used after the supervisor allocates a fresh
+    /// process-local recovery execution. The execution authenticated in journal
+    /// state remains available through [`Self::execution`] and is never
+    /// rewritten. Absence is returned separately from malformed or incomplete
+    /// journal state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreparedResultJournalError`] when the namespace, key, locking,
+    /// journal authentication, or exact result validation fails.
+    pub fn open_for_recovery(
+        namespace: impl AsRef<Path>,
+        key: AttemptExecutionKey,
+        maximum_payload_bytes: usize,
+    ) -> Result<Option<Self>, PreparedResultJournalError> {
+        let namespace = namespace.as_ref();
+        validate_namespace(namespace)?;
+        validate_semantic_key(key)?;
+        let maximum_payload_bytes = validate_payload_limit(maximum_payload_bytes)?;
+        let namespace_lock = acquire_namespace_lock(namespace, key)?;
+        let root = journal_path(namespace, key);
+        if !path_presence(&root, "inspect-journal-for-recovery")? {
+            if path_presence(
+                &staged_path(namespace, key),
+                "inspect-staged-journal-for-recovery",
+            )? || path_presence(
+                &retired_path(namespace, key),
+                "inspect-retired-journal-for-recovery",
+            )? {
+                return Err(PreparedResultJournalError::RecoveryRequired);
+            }
+            return Ok(None);
+        }
+        Self::open_locked(root, key, None, maximum_payload_bytes, namespace_lock).map(Some)
+    }
+
+    /// Reports whether this key has a visible journal or interrupted transition.
+    ///
+    /// This inventory probe does not acquire the per-key journal lock. Callers
+    /// must already exclude ledger writers and repository GC, and must use a
+    /// locked open or cleanup operation before trusting or removing any bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreparedResultJournalError`] when the namespace or key is
+    /// invalid or any owned path cannot be inspected safely.
+    pub(crate) fn artifacts_present(
+        namespace: impl AsRef<Path>,
+        key: AttemptExecutionKey,
+    ) -> Result<bool, PreparedResultJournalError> {
+        let namespace = namespace.as_ref();
+        validate_namespace(namespace)?;
+        validate_semantic_key(key)?;
+
+        Ok(path_presence(
+            &journal_path(namespace, key),
+            "inventory-prepared-result-journal",
+        )? || path_presence(
+            &staged_path(namespace, key),
+            "inventory-staged-prepared-result-journal",
+        )? || path_presence(
+            &retired_path(namespace, key),
+            "inventory-retired-prepared-result-journal",
+        )?)
     }
 
     fn open_locked(
         root: PathBuf,
         key: AttemptExecutionKey,
-        execution: ExecutionId,
+        expected_execution: Option<ExecutionId>,
         maximum_payload_bytes: usize,
         namespace_lock: File,
     ) -> Result<Self, PreparedResultJournalError> {
@@ -200,7 +286,13 @@ impl DirectoryPreparedResultJournal {
             MAX_JOURNAL_STATE_BYTES,
             "read-journal-state",
         )?;
-        let envelope = decode_state(&state, key, execution, maximum_payload_bytes, version)?;
+        let envelope = decode_state(
+            &state,
+            key,
+            expected_execution,
+            maximum_payload_bytes,
+            version,
+        )?;
         let payload = read_bounded_file(
             &root.join(result_file),
             maximum_payload_bytes,
@@ -222,7 +314,7 @@ impl DirectoryPreparedResultJournal {
         Ok(Self {
             root,
             key,
-            execution,
+            execution: envelope.execution,
             maximum_payload_bytes,
             result,
             namespace_lock,
@@ -277,30 +369,36 @@ impl DirectoryPreparedResultJournal {
     /// Returns [`PreparedResultJournalError`] if a file or directory cannot be
     /// removed or the parent cannot be synced. The caller must treat an error as
     /// indeterminate cleanup and retry without rerunning guest execution.
-    pub fn remove(self) -> Result<(), PreparedResultJournalError> {
-        let Self {
-            root,
-            key: _,
-            execution: _,
-            maximum_payload_bytes: _,
-            result: _,
-            namespace_lock,
-        } = self;
-        let tombstone = retire_directory(&root)?;
+    pub fn remove(&self) -> Result<(), PreparedResultJournalError> {
+        let _held_lock = &self.namespace_lock;
+        let namespace = self
+            .root
+            .parent()
+            .ok_or(PreparedResultJournalError::InvalidDirectory)?;
+        let tombstone = retired_path(namespace, self.key);
+        let root_present = path_presence(&self.root, "inspect-journal-before-retire")?;
+        let tombstone_present = path_presence(&tombstone, "inspect-retired-journal")?;
+        match (root_present, tombstone_present) {
+            (true, false) => {
+                rename_noreplace(&self.root, &tombstone)
+                    .map_err(|source| io_error("retire-journal-directory", &self.root, source))?;
+            }
+            (false, true) | (false, false) => {}
+            (true, true) => return Err(PreparedResultJournalError::RecoveryRequired),
+        }
         sync_parent(&tombstone, "sync-journal-parent-after-retire")?;
         remove_orphan_directory(&tombstone)?;
-        drop(namespace_lock);
         sync_parent(&tombstone, "sync-journal-parent-after-remove")
     }
 
     /// Removes at most the fixed staged and retired orphans for `key`.
     ///
-    /// The caller must first acquire the production ledger/ref exclusion, prove
-    /// that `key` has no result requiring recovery, and retain that exclusion
-    /// through this call. The common lock order is repository/ref exclusion,
-    /// then ledger exclusion, then this module's per-key namespace lock.
-    /// Journal code never calls back into either outer layer while holding its
-    /// lock.
+    /// The caller must first acquire the production repository-GC and ledger
+    /// exclusions, prove that `key` has no result requiring recovery, and retain
+    /// those exclusions through this call. An active publication may already
+    /// hold this key's journal lock while it enters repository or ledger code,
+    /// so namespace acquisition is nonblocking. Contention returns an I/O error;
+    /// callers must release outer fences before retrying.
     ///
     /// # Errors
     ///
@@ -493,6 +591,7 @@ fn encode_state(
 }
 
 struct JournalStateEnvelope<'a> {
+    execution: ExecutionId,
     observation: &'a [u8],
     measurement_evidence: Option<(usize, [u8; 32])>,
     finding: Option<&'a [u8]>,
@@ -553,7 +652,7 @@ impl JournalStateEnvelope<'_> {
 fn decode_state<'a>(
     state: &'a [u8],
     key: AttemptExecutionKey,
-    execution: ExecutionId,
+    expected_execution: Option<ExecutionId>,
     maximum_payload_bytes: usize,
     version: JournalVersion,
 ) -> Result<JournalStateEnvelope<'a>, PreparedResultJournalError> {
@@ -573,7 +672,15 @@ fn decode_state<'a>(
     decoder.expect_bytes(key.lineage().content_id().encode().as_bytes())?;
     decoder.expect_bytes(key.attempt().content_id().encode().as_bytes())?;
     decoder.expect_bytes(&key.scope().canonical_bytes())?;
-    decoder.expect(execution.as_bytes().as_slice())?;
+    let execution_bytes: [u8; 16] = decoder
+        .take(16)?
+        .try_into()
+        .map_err(|_| PreparedResultJournalError::InvalidState)?;
+    let execution = ExecutionId::from_bytes(execution_bytes)
+        .map_err(|_| PreparedResultJournalError::InvalidState)?;
+    if expected_execution.is_some_and(|expected| expected != execution) {
+        return Err(PreparedResultJournalError::InvalidState);
+    }
     let expected_payload_limit = u64::try_from(maximum_payload_bytes)
         .map_err(|_| PreparedResultJournalError::InvalidPayloadLimit)?;
     if decoder.u64()? != expected_payload_limit {
@@ -609,6 +716,7 @@ fn decode_state<'a>(
     decoder.finish()?;
 
     Ok(JournalStateEnvelope {
+        execution,
         observation,
         measurement_evidence,
         finding,
@@ -792,23 +900,12 @@ fn validate_payload_limit(maximum: usize) -> Result<usize, PreparedResultJournal
     }
 }
 
-fn retire_directory(root: &Path) -> Result<PathBuf, PreparedResultJournalError> {
-    let namespace = root
-        .parent()
-        .ok_or(PreparedResultJournalError::InvalidDirectory)?;
-    let name = root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or(PreparedResultJournalError::InvalidDirectory)?;
-    let tombstone = namespace.join(format!("{JOURNAL_RETIRED_PREFIX}{name}"));
-    rename_noreplace(root, &tombstone).map_err(|source| {
-        if source.kind() == io::ErrorKind::AlreadyExists {
-            PreparedResultJournalError::RecoveryRequired
-        } else {
-            io_error("retire-journal-directory", root, source)
-        }
-    })?;
-    Ok(tombstone)
+fn path_presence(path: &Path, operation: &'static str) -> Result<bool, PreparedResultJournalError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(io_error(operation, path, source)),
+    }
 }
 
 fn rename_noreplace(source: &Path, destination: &Path) -> io::Result<()> {
@@ -1114,6 +1211,7 @@ mod tests {
         )
         .expect("open complete journal");
         journal.remove().expect("remove journal");
+        journal.remove().expect("repeat durable removal");
         assert!(!root.exists());
         assert_eq!(
             fs::metadata(&namespace_lock)
@@ -1121,6 +1219,7 @@ mod tests {
                 .ino(),
             lock_inode
         );
+        drop(journal);
         let (recreated, disposition) = DirectoryPreparedResultJournal::create(
             namespace.path(),
             key,

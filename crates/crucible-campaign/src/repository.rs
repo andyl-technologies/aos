@@ -833,6 +833,37 @@ impl CampaignExecutorStore {
         self.repository.publish_observation_candidate(candidate)
     }
 
+    /// Publishes one executor-authenticated opaque evidence leaf.
+    ///
+    /// The caller supplies the exact content identity derived from independently
+    /// verified bytes. Only trace leaves are accepted, keeping this capability
+    /// narrower than arbitrary immutable-store access.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `expected` is not a trace identity, the bytes do
+    /// not derive that identity, or durable placement returns another identity.
+    pub fn publish_executor_trace_leaf(
+        &self,
+        expected: ContentId,
+        payload_schema: u32,
+        bytes: &[u8],
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        if expected.kind() != ObjectKind::Trace
+            || ContentId::for_bytes(ObjectKind::Trace, payload_schema, bytes) != expected
+        {
+            return Err(integrity("executor-trace-leaf-identity-mismatch"));
+        }
+        let receipt = self
+            .repository
+            .blobs
+            .put_if_absent(expected, &BlobHandle::from_bytes(bytes.to_vec()))?;
+        if receipt.id != expected {
+            return Err(integrity("executor-trace-leaf-publication-mismatch"));
+        }
+        Ok(expected)
+    }
+
     /// Publishes one executor-verified replay choice domain.
     ///
     /// # Errors
@@ -932,6 +963,46 @@ impl CampaignExecutorStore {
         candidate: &ObservationCandidate,
     ) -> Result<(), CampaignRepositoryError> {
         self.repository.validate_observation_candidate(candidate)
+    }
+
+    /// Validates a candidate whose exact trace bytes are owned by its caller.
+    ///
+    /// Owned leaves count as closure anchors during the no-write preflight only
+    /// after their kind, schema, content hash, uniqueness, and direct candidate
+    /// reference are checked. The executor must independently authenticate the
+    /// trace codec and semantics before invoking this capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an owned leaf is duplicated, is not an exact
+    /// candidate trace dependency, disagrees with its bytes, or when the
+    /// remaining bundle and already-published dependencies are invalid.
+    pub fn validate_observation_candidate_with_owned_trace_leaf_bytes(
+        &self,
+        candidate: &ObservationCandidate,
+        owned_trace_leaves: &[(ContentId, u32, &[u8])],
+    ) -> Result<(), CampaignRepositoryError> {
+        let candidate_trace_dependencies = candidate
+            .measurements()
+            .content_children()
+            .into_iter()
+            .map(|(_, content)| content)
+            .filter(|content| content.kind() == ObjectKind::Trace)
+            .collect::<BTreeSet<_>>();
+        let mut owned = BTreeSet::new();
+        for (expected, payload_schema, bytes) in owned_trace_leaves {
+            if expected.kind() != ObjectKind::Trace
+                || ContentId::for_bytes(ObjectKind::Trace, *payload_schema, bytes) != *expected
+                || !candidate_trace_dependencies.contains(expected)
+            {
+                return Err(integrity("executor-owned-trace-leaf-mismatch"));
+            }
+            if !owned.insert(*expected) {
+                return Err(integrity("executor-owned-trace-leaf-duplicate"));
+            }
+        }
+        self.repository
+            .validate_observation_candidate_with_owned_evidence(candidate, &owned)
     }
 
     /// Publishes one executor-derived configuration artifact.
