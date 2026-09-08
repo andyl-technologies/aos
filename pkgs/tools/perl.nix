@@ -5,7 +5,7 @@
   gnumake,
   # Explicit toolchain inputs needed for the postInstall Config scrub.
   # `cc` is the wrapped cc (aos-cc-wrapper); `gcc` is the wrapped
-  # gcc-14.3.0-wrapped; `gccUnwrapped` is the bare gcc-14.3.0-stage2
+  # gcc-16.2.0-wrapped; `gccUnwrapped` is the bare gcc-16.2.0-stage2
   # whose path Configure records into Config_heavy.pl via specs / PATH;
   # `glibc` is the multi-output glibc.
   cc,
@@ -15,7 +15,7 @@
   stdenv,
   buildPackages,
 }: let
-  version = "5.40.1";
+  version = "5.44.0";
   isDarwin = stdenv.hostPlatform.isDarwin;
   targetCpu = stdenv.hostPlatform.constraints.cpu;
   archDirectory =
@@ -65,7 +65,7 @@ in
       urls = [
         "https://www.cpan.org/src/5.0/perl-${version}.tar.xz"
       ];
-      hash = "sha256-36IMLu8rSvEzUlYQu7Zd0Td37PmYycWxzPDTCOcy7j8=";
+      hash = "sha256-UFz0ORLpSASVw0THAmBFLjKqKnPFRqAms/EABTsjzpE=";
     };
 
     buildDeps =

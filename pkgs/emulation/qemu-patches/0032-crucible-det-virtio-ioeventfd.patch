@@ -1,5 +1,5 @@
 diff --git a/hw/virtio/virtio-pci.c b/hw/virtio/virtio-pci.c
-index 3ca3f849d..fbcf68f0e 100644
+index 6f5db5fc4..cbeaee1b8 100644
 --- a/hw/virtio/virtio-pci.c
 +++ b/hw/virtio/virtio-pci.c
 @@ -16,6 +16,8 @@
@@ -11,7 +11,7 @@ index 3ca3f849d..fbcf68f0e 100644
  
  #include "exec/memop.h"
  #include "standard-headers/linux/virtio_pci.h"
-@@ -313,6 +315,35 @@ static bool virtio_pci_ioeventfd_enabled(DeviceState *d)
+@@ -357,6 +359,35 @@ static bool virtio_pci_ioeventfd_enabled(DeviceState *d)
  {
      VirtIOPCIProxy *proxy = to_virtio_pci_proxy(d);
  
@@ -47,8 +47,3 @@ index 3ca3f849d..fbcf68f0e 100644
      return (proxy->flags & VIRTIO_PCI_FLAG_USE_IOEVENTFD) != 0;
  }
  
-@@ -2630,4 +2661,3 @@ static void virtio_pci_register_types(void)
- }
- 
- type_init(virtio_pci_register_types)
--

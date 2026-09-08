@@ -9,7 +9,7 @@
   fetchurl,
   fetchGoModules,
 }: let
-  version = "0.13.0";
+  version = "0.16.0";
 in
   mkGoPackage {
     pname = "opkssh";
@@ -19,7 +19,7 @@ in
       urls = [
         "https://github.com/openpubkey/opkssh/archive/v${version}/opkssh-${version}.tar.gz"
       ];
-      hash = "sha256-ewGAyL2g3xXGJ6maEF5B921CHBmo9/jyVtp+sv7JkbU=";
+      hash = "sha256-t8Mmsk1v6XBW1Fny1e9+r7JYkLcCeVN3RqNoRn/i3Ds=";
     };
 
     goModules = fetchGoModules {
@@ -27,9 +27,9 @@ in
         urls = [
           "https://github.com/openpubkey/opkssh/archive/v${version}/opkssh-${version}.tar.gz"
         ];
-        hash = "sha256-ewGAyL2g3xXGJ6maEF5B921CHBmo9/jyVtp+sv7JkbU=";
+        hash = "sha256-t8Mmsk1v6XBW1Fny1e9+r7JYkLcCeVN3RqNoRn/i3Ds=";
       };
-      hash = "sha256-JLVeQ1HlNnH5QFwMfSX/MBGqFPCyCcZfZGL7t1KjIOE=";
+      hash = "sha256-p9FvUta7eqkc8y8zzhwnAVAKEbdX4aWE6L6f/F+hEKQ=";
     };
 
     goPackage = ".";

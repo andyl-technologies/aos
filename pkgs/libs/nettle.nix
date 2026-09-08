@@ -6,7 +6,7 @@
   gmp,
   stdenv,
 }: let
-  version = "3.10.1";
+  version = "4.0";
 in
   mkDerivation {
     pname = "nettle";
@@ -17,7 +17,7 @@ in
         "https://ftp.gnu.org/gnu/nettle/nettle-${version}.tar.gz"
         "https://mirrors.dotsrc.org/gnu/nettle/nettle-${version}.tar.gz"
       ];
-      hash = "sha256-sPzdf8DN6m6A3PHdhbp5SvDVtKV+Jjl+7jvBkyctkTI=";
+      hash = "sha256-Ot28ANoBhGsjL7O8RTU46lRo2kMDPyG7NFyx6Qc/UJQ=";
     };
 
     buildDeps = [gnumake m4];

@@ -10,7 +10,7 @@
   json-c,
   openssl,
 }: let
-  version = "2.8.4";
+  version = "2.8.7";
   majorMinor = "2.8";
 in
   mkDerivation {
@@ -22,7 +22,7 @@ in
         "https://www.kernel.org/pub/linux/utils/cryptsetup/v${majorMinor}/cryptsetup-${version}.tar.xz"
         "https://mirrors.kernel.org/linux/utils/cryptsetup/v${majorMinor}/cryptsetup-${version}.tar.xz"
       ];
-      hash = "sha256-RD5G+JZMmsx4D0Va+7jiOqDo7X7FBM/FngT0BvoeioM=";
+      hash = "sha256-53bw04HobKYQQsRXBpSR/o4KwoZ4DHw7Hk+ZIavJYdo=";
     };
 
     patches = [

@@ -5,10 +5,10 @@
   fetchCargoDeps,
   fetchurl,
 }: let
-  version = "11.25.0";
+  version = "12.3.4";
   upstreamSrc = fetchurl {
     urls = ["https://github.com/pnpm/pnpm/archive/refs/tags/v${version}.tar.gz"];
-    hash = "sha256-paGneVnkw2IYOuqUeJ46xGbm8hFCLjQhonDzSKz5P7E=";
+    hash = "sha256-T0AGabNiWSeO/kQnjkrfx/RJ+8y0wlVnDGYzKnp5KqE=";
   };
   src = mkDerivation {
     pname = "pnpm-source";
@@ -65,7 +65,7 @@
   };
   cargoDeps = fetchCargoDeps {
     inherit src;
-    hash = "sha256-HlfLLP5VYdCOXzm3PtgLtGyyMTwWU2AGtfpHzGHtzyI=";
+    hash = "sha256-Ig6hy9mbpxazB0Ycn761e2A7y5NCuwUyCJ4lBf4JoBc=";
   };
 in
   mkCargoPackage {

@@ -12,9 +12,10 @@
     family = "nerdctl";
     stream = "2";
     owner = "pkgs/containers/nerdctl.nix";
-    version = "2.2.1";
-    upstreamId = "v2.2.1";
+    version = "2.3.5";
+    upstreamId = "v2.3.5";
     repository = "containerd/nerdctl";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 2;
     source = {
@@ -47,7 +48,7 @@
           ];
         }
       ];
-      hash = "sha256-85w006KF4IfysoafBv6jQ9goWtm/uUF7nFtt1OeNb60=";
+      hash = "sha256-oiXdGAklsz4MYPPlCUjS2hfXhFFcNF5ru8ZAr8s3UZ0=";
     };
     artifacts.goModules = {
       inputs = [
@@ -57,7 +58,7 @@
           slot = "source";
         }
       ];
-      hash = "sha256-TitWJFzldbNExet5WHAQMc+mDZzlI28fpAC8a1/0XVo=";
+      hash = "sha256-cG6P8OCQTgGEBi9t72RRcs5TizPbfRS6zLy7ePdMbwU=";
       materializer = {
         kind = "go-modules";
         sourceRoot = ".";

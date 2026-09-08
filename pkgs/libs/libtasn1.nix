@@ -3,7 +3,7 @@
   fetchurl,
   gnumake,
 }: let
-  version = "4.19.0";
+  version = "4.21.0";
 in
   mkDerivation {
     pname = "libtasn1";
@@ -14,7 +14,7 @@ in
         "https://ftp.gnu.org/gnu/libtasn1/libtasn1-${version}.tar.gz"
         "https://mirrors.dotsrc.org/gnu/libtasn1/libtasn1-${version}.tar.gz"
       ];
-      hash = "sha256-FhPwrBz0hNbsDOO4wG1WJjzHJC8cI7MNgtI940WmP3o=";
+      hash = "sha256-HYpESiI8xUZCQHdzRuEl3lHY5qvwuLrHQqyEYJFn3Ic=";
     };
 
     buildDeps = [gnumake];

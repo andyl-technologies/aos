@@ -7,8 +7,7 @@
   buildPackages,
   stdenv,
 }: let
-  version = "77.1";
-  sourceVersion = builtins.replaceStrings ["."] ["_"] version;
+  version = "78.3";
 in
   mkDerivation {
     pname = "icu";
@@ -17,9 +16,9 @@ in
 
     src = fetchurl {
       urls = [
-        "https://github.com/unicode-org/icu/releases/download/release-77-1/icu4c-${sourceVersion}-src.tgz"
+        "https://github.com/unicode-org/icu/releases/download/release-${version}/icu4c-${version}-sources.tgz"
       ];
-      hash = "sha256-WI5DH3cyfDkDH/u4hDwOO8EiwhE3RIX6h9xfP6/yQGE=";
+      hash = "sha256-Oi56R2BLpwLzRYeDCOb+/sphLuiVz0pfIi55Vfq/4MA=";
     };
 
     buildDeps = [

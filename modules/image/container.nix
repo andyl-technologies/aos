@@ -50,7 +50,8 @@
       inherit lib pkgs evidenceOverrides;
       goldenRoots = config.environment.systemPackages;
       aosSystem = pkgs.stdenv.hostPlatform.system;
-    }).config;
+    })
+    .config;
   systemIdentity = {
     inherit
       (config.aos.system)

@@ -4,7 +4,7 @@
   fetchurl,
   python3,
 }: let
-  version = "0.22.4";
+  version = "0.23";
   sitePackages = "lib/python3.14/site-packages";
   entryPoints = {
     docutils = "docutils.__main__:main";
@@ -28,7 +28,7 @@ in
       urls = [
         "https://sourceforge.net/projects/docutils/files/docutils/${version}/docutils-${version}.tar.gz/download"
       ];
-      hash = "sha256-TbU7H96avsu3TZEjDTKrYm2U9rrfxXXW25GUpJ3ymWg=";
+      hash = "sha256-dG9QYDIlESgKHlDrdoRu1r8jQphLKsBNxCyqGo14eZ4=";
     };
 
     buildDeps = [];

@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index 219cadef1..f08eb93d9 100644
+index 02d952ced..b4f642ba1 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -284,6 +284,37 @@ static void icount_crucible_rr_account(CPUState *cpu, uint64_t executed)
@@ -41,10 +41,10 @@ index 219cadef1..f08eb93d9 100644
   * Update the global shared timer_state.qemu_icount to take into
   * account executed instructions. This is done by the TCG vCPU
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index 90840e631..c223f89d0 100644
+index 89b356160..7432d0f3a 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -471,6 +471,7 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+@@ -472,6 +472,7 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
      CPUState *cpu = *cpu_ptr;
  
      while (true) {
@@ -52,7 +52,7 @@ index 90840e631..c223f89d0 100644
          int r;
          uint64_t service_before;
          uint64_t service_after;
-@@ -606,9 +607,48 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+@@ -607,9 +608,48 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
              icount_prepare_for_run(cpu, *cpu_budget);
          }
          r = tcg_cpu_exec(cpu);
@@ -101,7 +101,7 @@ index 90840e631..c223f89d0 100644
          if (rr_crucible_sim_mode() &&
              crucible_sim_shmem_dispatch_registered()) {
              crucible_sim_shmem_publish_current_icount(qemu_plugin_icount_raw());
-@@ -1116,10 +1156,23 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -1124,10 +1164,23 @@ static void *rr_cpu_thread_fn(void *arg)
                  suggested_cpu = first_cpu;
              }
              cpu = icount_crucible_rr_select_cpu(suggested_cpu);
@@ -129,11 +129,23 @@ index 90840e631..c223f89d0 100644
              }
              if (wrapped) {
                  cpu = NULL;
+diff --git a/include/exec/icount.h b/include/exec/icount.h
+index d451fd93d..3c99c4b3f 100644
+--- a/include/exec/icount.h
++++ b/include/exec/icount.h
+@@ -83,6 +83,7 @@ void icount_crucible_rr_snapshot_resume_prepare(void);
+ void icount_crucible_rr_initialize_genesis(CPUState *cpu);
+ uint64_t icount_crucible_rr_cursor_position_observed(CPUState *cpu);
+ CPUState *icount_crucible_rr_select_cpu(CPUState *suggested);
++void icount_crucible_rr_yield_cpu(CPUState *cpu);
+ 
+ /* if the CPUs are idle, start accounting real time to virtual clock. */
+ void icount_start_warp_timer(void);
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index fea949d6e..f200149a7 100644
+index c5f31c7cf..56c058fea 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
-@@ -479,6 +479,8 @@ struct qemu_work_item;
+@@ -497,6 +497,8 @@ struct qemu_work_item;
   *   translation for application before the generated TB executes.
   * @crucible_fetch_transaction: Opaque fetch transaction staged until TB
   *   generation succeeds or is discarded.
@@ -141,8 +153,8 @@ index fea949d6e..f200149a7 100644
 + *   after TCG returns to the serialized RR loop.
   * @cpu_ases: Pointer to array of CPUAddressSpaces (which define the
   *            AddressSpaces this CPU has)
-  * @num_ases: number of CPUAddressSpaces in @cpu_ases
-@@ -558,6 +560,7 @@ struct CPUState {
+  * @as: Pointer to the first AddressSpace, for the convenience of targets which
+@@ -574,6 +576,7 @@ struct CPUState {
      uint64_t crucible_page_table_walk_instruction_pc;
      uint64_t crucible_register_before_icount;
      bool crucible_register_instruction_active;
@@ -151,10 +163,10 @@ index fea949d6e..f200149a7 100644
      sigjmp_buf jmp_env;
  
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index cc17de758..fa0f80f22 100644
+index 343752a14..249cd001b 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
-@@ -193,6 +193,10 @@ extern qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_control_boundary_cb;
+@@ -201,6 +201,10 @@ extern qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_control_boundary_cb;
  extern void *qemu_plugin_control_boundary_userdata;
  void qemu_plugin_fire_control_boundary_cb(CPUState *cpu);
  
@@ -165,20 +177,8 @@ index cc17de758..fa0f80f22 100644
  void qemu_plugin_crucible_exact_boundary_enter(void);
  void qemu_plugin_crucible_exact_boundary_leave(void);
  bool qemu_plugin_crucible_exact_boundary_active(void);
-diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
-index 84ff4dc3c..9a95b3a52 100644
---- a/include/system/cpu-timers.h
-+++ b/include/system/cpu-timers.h
-@@ -86,6 +86,7 @@ void icount_crucible_rr_snapshot_resume_prepare(void);
- void icount_crucible_rr_initialize_genesis(CPUState *cpu);
- uint64_t icount_crucible_rr_cursor_position_observed(CPUState *cpu);
- CPUState *icount_crucible_rr_select_cpu(CPUState *suggested);
-+void icount_crucible_rr_yield_cpu(CPUState *cpu);
- 
- /* if the CPUs are idle, start accounting real time to virtual clock. */
- void icount_start_warp_timer(void);
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index 03a9a4506..d410ed751 100644
+index a32258c13..33f363d04 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -139,6 +139,43 @@ static void qemu_plugin_schedule_control_boundary(void);
@@ -225,7 +225,7 @@ index 03a9a4506..d410ed751 100644
  
  bool qemu_plugin_has_time_control(void)
  {
-@@ -264,6 +301,30 @@ static void qemu_plugin_control_boundary_complete_bh(void *opaque)
+@@ -267,6 +304,30 @@ static void qemu_plugin_control_boundary_complete_bh(void *opaque)
  {
      (void)opaque;
  
@@ -257,10 +257,10 @@ index 03a9a4506..d410ed751 100644
       * A control wake can arrive while an idle-time advance is between its
       * QEMU clock mutation and plugin commit.  Keep yielding through the same
 diff --git a/plugins/api.c b/plugins/api.c
-index 9f13b2bc4..61022499c 100644
+index 15bca6015..166864f12 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -510,6 +510,8 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+@@ -689,6 +689,8 @@ bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr)
  static bool qemu_plugin_crucible_vcpu_register_read_allowed(void)
  {
      uint64_t owner = qemu_plugin_crucible_rr_current_vcpu();
@@ -269,7 +269,7 @@ index 9f13b2bc4..61022499c 100644
      bool allowed;
  
      /*
-@@ -517,23 +519,32 @@ static bool qemu_plugin_crucible_vcpu_register_read_allowed(void)
+@@ -696,23 +698,32 @@ static bool qemu_plugin_crucible_vcpu_register_read_allowed(void)
       * owner. Any exact callback that holds the BQL has quiesced every vCPU
       * register file, including the one-shot post-snapshot reselection boundary
       * where the serialized owner is intentionally invalid and `current_cpu`
@@ -307,18 +307,18 @@ index 9f13b2bc4..61022499c 100644
      return allowed;
  }
 diff --git a/target/i386/tcg/misc_helper.c b/target/i386/tcg/misc_helper.c
-index 970cd9a6b..b83e8ca49 100644
+index 68bdceffa..282038c11 100644
 --- a/target/i386/tcg/misc_helper.c
 +++ b/target/i386/tcg/misc_helper.c
-@@ -21,6 +21,7 @@
- #include "qemu/crucible-fault.h"
+@@ -22,6 +22,7 @@
  #include "qemu/error-report.h"
  #include "qemu/log.h"
+ #include "accel/tcg/cpu-loop.h"
 +#include "qemu/plugin.h"
  #include "cpu.h"
  #include "exec/helper-proto.h"
  #include "exec/cputlb.h"
-@@ -115,6 +116,11 @@ G_NORETURN void helper_pause(CPUX86State *env)
+@@ -116,6 +117,11 @@ G_NORETURN void helper_pause(CPUX86State *env)
      helper_rechecking_single_step(env);
  
      /* Just let another CPU run.  */

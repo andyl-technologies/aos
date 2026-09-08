@@ -27,7 +27,7 @@ without receiving a spurious invalid-cursor result.
 
 ## Files and license scope
 
-The patch modifies MIT-licensed `include/qemu/qemu-plugin.h` and
+The patch modifies MIT-licensed `include/plugins/qemu-plugin.h` and
 `plugins/api.c`. It creates no QEMU file, changes no wire or shared-memory ABI,
 and does not cross the Apache/GPL process boundary.
 

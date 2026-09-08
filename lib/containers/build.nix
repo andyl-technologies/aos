@@ -13,7 +13,8 @@
   definitionAttribute,
 }: let
   releaseIdentity =
-    systemIdentity.release or {
+    systemIdentity.release
+    or {
       enabled = false;
       tier = "production";
       registry = "andyl/main";
@@ -43,7 +44,8 @@
         seen = [];
         result = [];
       }
-      values).result;
+      values)
+    .result;
 
   auditRoots = uniqueByPath (builtins.concatMap (layer: layer.roots) container.layers);
   runtimeAudit = import ../build/runtime-closure-audit.nix {

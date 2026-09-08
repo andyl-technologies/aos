@@ -6,7 +6,7 @@
   gnumake,
   go,
 }: let
-  version = "1.9.0";
+  version = "1.9.1";
   flannelVersion = "1.9.0-flannel1";
   flannelSrc = fetchurl {
     urls = [
@@ -27,7 +27,7 @@ in
       urls = [
         "https://github.com/containernetworking/plugins/archive/v${version}/cni-plugins-${version}.tar.gz"
       ];
-      hash = "sha256-UJGEGk83mrYVkVK1Ru/EUj1VaUyK3E8ZzHxo+dHbbXU=";
+      hash = "sha256-NL2C1H6YGUB1FhnJzETAlbuQv8r41xhly7giw3aQp2Q=";
     };
 
     buildDeps = [

@@ -6,7 +6,7 @@
   bash,
   stdenv,
 }: let
-  version = "4.0.44";
+  version = "4.0.49";
 in
   mkDerivation {
     pname = "mtools";
@@ -17,7 +17,7 @@ in
         "https://ftp.gnu.org/gnu/mtools/mtools-${version}.tar.gz"
         "https://mirrors.kernel.org/gnu/mtools/mtools-${version}.tar.gz"
       ];
-      hash = "sha256-EL52FIhw+YT6RN8pdHOk5FGERyzbGaTQXvF/21m11aQ=";
+      hash = "sha256-EM0REdqHvyQAo4DBY5psuov7k3ok+cUfX4jTk65fb3Y=";
     };
 
     buildDeps = [gnumake];

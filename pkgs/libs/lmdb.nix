@@ -4,7 +4,7 @@
   fetchurl,
   gnumake,
 }: let
-  version = "0.9.35";
+  version = "1.0.1";
 in
   mkDerivation {
     pname = "lmdb";
@@ -14,7 +14,7 @@ in
       urls = [
         "https://github.com/LMDB/lmdb/archive/refs/tags/LMDB_${version}.tar.gz"
       ];
-      hash = "sha256-GLAh/VidMMwIhgqVUKMK5RY3EXRROF6VgWFtp1EyZjI=";
+      hash = "sha256-fOHbS4wT9g4IgfElNzQMc/teASXbpNqmZJojFDQYVds=";
     };
 
     buildDeps = [gnumake];

@@ -11,7 +11,7 @@
   stdenv,
   buildPackages,
 }: let
-  version = "4.9.1";
+  version = "4.9.4";
 in
   mkDerivation {
     pname = "libslirp";
@@ -21,7 +21,7 @@ in
       urls = [
         "https://gitlab.freedesktop.org/slirp/libslirp/-/archive/v${version}/libslirp-v${version}.tar.gz"
       ];
-      hash = "sha256-OXBUIUO3wR5qCaTStQ8woTNHPEHxXtC9zDt6HEUNmlw=";
+      hash = "sha256-OZiGOwIK7aNL3cVnCXxu+6VaeM327u5rzULBHvI5Z9o=";
     };
 
     buildDeps =

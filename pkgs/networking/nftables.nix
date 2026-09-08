@@ -9,7 +9,7 @@
   readline,
   jansson,
 }: let
-  version = "1.1.1";
+  version = "1.1.7";
 in
   mkDerivation {
     pname = "nftables";
@@ -19,7 +19,7 @@ in
       urls = [
         "https://www.netfilter.org/projects/nftables/files/nftables-${version}.tar.xz"
       ];
-      hash = "sha256-Y1iDDzpk8x45sK1CHX2tzSQLcjQ97UjY7xO4+vIEhlo=";
+      hash = "sha256-pvvwYNjU//ABUXorlPNWu0Nmv78Lo2Y2b50nzDjKpY8=";
     };
 
     buildDeps = [

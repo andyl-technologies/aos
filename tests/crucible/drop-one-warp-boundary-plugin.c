@@ -45,9 +45,8 @@ on_vcpu_idle(unsigned int vcpu_index, uint64_t icount, void *userdata)
 }
 
 static void
-on_plugin_exit(qemu_plugin_id_t id, void *userdata)
+on_plugin_exit(void *userdata)
 {
-  (void)id;
   (void)userdata;
 
   if (result_file != NULL) {

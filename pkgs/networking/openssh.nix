@@ -10,7 +10,7 @@
   bash,
   stdenv,
 }: let
-  version = "10.3p1";
+  version = "10.5p1";
 in
   mkDerivation {
     pname = "openssh";
@@ -20,7 +20,7 @@ in
       urls = [
         "https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${version}.tar.gz"
       ];
-      hash = "sha256-VmgqNruS3PS08Bb9jsjnQFm3mo3iXBXWcNcx59GORfQ=";
+      hash = "sha256-1E0oqDnqna+WnMaRUP3lmRCys5Nh2tgaO9bL0ZIY2xE=";
     };
 
     buildDeps = [gnumake];

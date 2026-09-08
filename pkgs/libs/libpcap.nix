@@ -10,7 +10,7 @@
   bash,
   stdenv,
 }: let
-  version = "1.10.6";
+  version = "1.10.7";
   captureBackend =
     if stdenv.hostPlatform.isDarwin
     then "bpf"
@@ -24,7 +24,7 @@ in
       urls = [
         "https://www.tcpdump.org/release/libpcap-${version}.tar.gz"
       ];
-      hash = "sha256-hy3REzf+GrAq2dT+4EfJ2iRNaVxt3zTi67cz79Ttiqk=";
+      hash = "sha256-CzlKyQ28Cpg4/5dGjgXJyaPoc97CUUzVjbZdhZ0pbjE=";
     };
 
     buildDeps = [

@@ -1,6 +1,6 @@
 ##! ANDYL OS — Package set composition.
 ##! Imports all package definitions and wires dependencies together.
-##! The stdenv argument provides the production toolchain (GCC 14.3.0) and all
+##! The stdenv argument provides the production toolchain (GCC 16.2.0) and all
 ##! build infrastructure. All packages are built hermetically from source — no nixpkgs.
 {
   lib,
@@ -468,6 +468,8 @@
           stdenv.coreutils
           stdenv.tar
           stdenv.gzip
+          resolvedBuildPackages.xz
+          stdenv.patch
           stdenv.bash
         ];
         extraLibPaths =
@@ -1497,7 +1499,7 @@
             then darwinGcc
             else stdenv.gcc
           ))
-        // {version = "14.3.0";};
+        // {version = "16.2.0";};
       glibc =
         (withDistributionMeta {
             description = "GNU C Library for the AOS target runtime";
@@ -1536,8 +1538,8 @@
             else stdenv.cc
           ))
         // {version = "0.1.0";};
-      # The unwrapped gcc-14.3.0-stage2. `pkgs.gcc` is the wrapped
-      # gcc-14.3.0-wrapped; the perl Config scrub needs to substitute
+      # The unwrapped gcc-16.2.0-stage2. `pkgs.gcc` is the wrapped
+      # gcc-16.2.0-wrapped; the perl Config scrub needs to substitute
       # and block the unwrapped one, since that's what Configure
       # records via specs/PATH.
       gccUnwrapped =
@@ -1552,7 +1554,7 @@
             then stdenv.gccStage2
             else stdenv.gcc
           ))
-        // {version = "14.3.0";};
+        // {version = "16.2.0";};
       gcc-libs =
         if stdenv.hostPlatform.isDarwin
         then withDefaultMaintainers darwinGcc

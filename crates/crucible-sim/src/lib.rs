@@ -242,14 +242,11 @@ impl StableHasher {
     pub fn write_bytes(&mut self, bytes: &[u8]) {
         self.write_u64(bytes.len() as u64);
 
-        let mut chunks = bytes.chunks_exact(8);
-        for chunk in &mut chunks {
-            let mut word = [0; 8];
-            word.copy_from_slice(chunk);
-            self.mix_word(u64::from_le_bytes(word));
+        let (chunks, remainder) = bytes.as_chunks::<8>();
+        for word in chunks {
+            self.mix_word(u64::from_le_bytes(*word));
         }
 
-        let remainder = chunks.remainder();
         if !remainder.is_empty() {
             let mut word = [0; 8];
             for (index, byte) in remainder.iter().enumerate() {

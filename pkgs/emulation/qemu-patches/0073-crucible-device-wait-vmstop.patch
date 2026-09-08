@@ -1,11 +1,11 @@
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
-index 157a65596..501f55f6c 100644
+index 366dc97de..724c5e9f8 100644
 --- a/block/crucible-shmem.c
 +++ b/block/crucible-shmem.c
 @@ -24,6 +24,7 @@
  #include "block/block-io.h"
  #include "block/block_int.h"
- #include "qemu/qemu-plugin.h"
+ #include "plugins/qemu-plugin.h"
 +#include "qemu/plugin.h"
  
  #define CRUCIBLE_SHMEM_OPT_SIZE BLOCK_OPT_SIZE
@@ -22,13 +22,13 @@ index 157a65596..501f55f6c 100644
              /*
               * A single wake may publish a primary completion followed by an
 diff --git a/hw/9pfs/virtio-9p-device.c b/hw/9pfs/virtio-9p-device.c
-index 6ab1622ce..d58bf5d4b 100644
+index 7ae1ff425..ef4bed220 100644
 --- a/hw/9pfs/virtio-9p-device.c
 +++ b/hw/9pfs/virtio-9p-device.c
 @@ -27,6 +27,7 @@
  #include "qemu/iov.h"
  #include "qemu/module.h"
- #include "qemu/qemu-plugin.h"
+ #include "plugins/qemu-plugin.h"
 +#include "qemu/plugin.h"
  #include "system/crucible-plugin-wake.h"
  #include "system/runstate.h"
@@ -55,13 +55,13 @@ index 6ab1622ce..d58bf5d4b 100644
          return CRUCIBLE_9P_FORWARD_PENDING;
      }
 diff --git a/hw/virtio/virtio-crucible-accelerator.c b/hw/virtio/virtio-crucible-accelerator.c
-index 49756ef03..d74054192 100644
+index dea3f1724..eace06807 100644
 --- a/hw/virtio/virtio-crucible-accelerator.c
 +++ b/hw/virtio/virtio-crucible-accelerator.c
 @@ -14,6 +14,7 @@
  #include "qemu/module.h"
  #include "qemu/crucible-fault.h"
- #include "qemu/qemu-plugin.h"
+ #include "plugins/qemu-plugin.h"
 +#include "qemu/plugin.h"
  #include "hw/virtio/virtio-crucible-accelerator.h"
  #include "migration/qemu-file-types.h"
@@ -105,25 +105,11 @@ index 49756ef03..d74054192 100644
  
          if (len == QEMU_PLUGIN_ACCELERATOR_POLL_PENDING) {
              accelerator_wait_cb(le64_to_cpu(request->job.sequence),
-diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index b9d0c5a72..952a779b0 100644
---- a/include/qemu/plugin.h
-+++ b/include/qemu/plugin.h
-@@ -189,6 +189,9 @@ extern qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_vcpu_idle_resume_resume_cb;
- extern void *qemu_plugin_vcpu_idle_resume_userdata;
- void qemu_plugin_fire_vcpu_idle_cb(CPUState *cpu);
- void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu);
-+extern qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_control_boundary_cb;
-+extern void *qemu_plugin_control_boundary_userdata;
-+void qemu_plugin_fire_control_boundary_cb(CPUState *cpu);
- 
- void qemu_plugin_crucible_exact_boundary_enter(void);
- void qemu_plugin_crucible_exact_boundary_leave(void);
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index d2e89855f..0db640157 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -1082,15 +1082,16 @@ void qemu_plugin_force_vcpu_exit(void);
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index 73689da28..e4d780e1b 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -1180,15 +1180,16 @@ void qemu_plugin_force_vcpu_exit(void);
  /**
   * qemu_plugin_request_vmstop() - stop the VM from an exact plugin boundary
   *
@@ -146,7 +132,7 @@ index d2e89855f..0db640157 100644
   * channel; stop also reports a retained block flush failure from the request.
   */
  QEMU_PLUGIN_API
-@@ -1190,6 +1191,21 @@ void qemu_plugin_register_vcpu_idle_resume_cb(qemu_plugin_vcpu_idle_resume_cb_t
+@@ -1288,6 +1289,21 @@ void qemu_plugin_register_vcpu_idle_resume_cb(qemu_plugin_vcpu_idle_resume_cb_t
                                                qemu_plugin_vcpu_idle_resume_cb_t resume_cb,
                                                void *userdata);
  
@@ -168,8 +154,22 @@ index d2e89855f..0db640157 100644
  /**
   * qemu_plugin_register_sim_shmem_dispatch_cb() - register sim shmem clock hooks
   * @publish_icount_cb: callback that publishes the current raw icount
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+index 370664a85..dc01cbbec 100644
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -197,6 +197,9 @@ extern qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_vcpu_idle_resume_resume_cb;
+ extern void *qemu_plugin_vcpu_idle_resume_userdata;
+ void qemu_plugin_fire_vcpu_idle_cb(CPUState *cpu);
+ void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu);
++extern qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_control_boundary_cb;
++extern void *qemu_plugin_control_boundary_userdata;
++void qemu_plugin_fire_control_boundary_cb(CPUState *cpu);
+ 
+ void qemu_plugin_crucible_exact_boundary_enter(void);
+ void qemu_plugin_crucible_exact_boundary_leave(void);
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index f3b6a53bc..cecbf9cc4 100644
+index ae2c5ddc9..0bedaf6c4 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -15,6 +15,7 @@
@@ -204,7 +204,7 @@ index f3b6a53bc..cecbf9cc4 100644
  bool qemu_plugin_has_time_control(void)
  {
      return has_control;
-@@ -244,11 +252,58 @@ static void qemu_plugin_time_advance_complete_bh(void *opaque)
+@@ -247,11 +255,58 @@ static void qemu_plugin_time_advance_complete_bh(void *opaque)
       */
      notifier_list_notify(&qemu_plugin_wake_notifiers,
                           (void *)(intptr_t)QEMU_PLUGIN_WAKE_EVENT_DRAINED);
@@ -263,7 +263,7 @@ index f3b6a53bc..cecbf9cc4 100644
  int qemu_plugin_advance_time_ns(int64_t new_time)
  {
      if (new_time < 0) {
-@@ -336,6 +391,7 @@ void qemu_plugin_force_vcpu_exit(void)
+@@ -339,6 +394,7 @@ void qemu_plugin_force_vcpu_exit(void)
  }
  
  static __thread unsigned int qemu_plugin_crucible_exact_boundary_depth;
@@ -271,7 +271,7 @@ index f3b6a53bc..cecbf9cc4 100644
  static int qemu_plugin_crucible_vmstop_state;
  static int qemu_plugin_crucible_vmstop_flush_result;
  
-@@ -345,10 +401,8 @@ enum {
+@@ -348,10 +404,8 @@ enum {
      QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED,
  };
  
@@ -283,7 +283,7 @@ index f3b6a53bc..cecbf9cc4 100644
      if (icount_enabled() != ICOUNT_PRECISE ||
          !qemu_plugin_crucible_single_threaded_rr()) {
          return -EPERM;
-@@ -362,13 +416,49 @@ int qemu_plugin_crucible_vmstop_admit_internal(void)
+@@ -365,13 +419,49 @@ int qemu_plugin_crucible_vmstop_admit_internal(void)
          return -EALREADY;
      }
  
@@ -337,7 +337,7 @@ index f3b6a53bc..cecbf9cc4 100644
      if (status != 0) {
          qatomic_set(&qemu_plugin_crucible_vmstop_state,
                      QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE);
-@@ -378,9 +468,12 @@ int qemu_plugin_crucible_vmstop_admit_internal(void)
+@@ -381,9 +471,12 @@ int qemu_plugin_crucible_vmstop_admit_internal(void)
  
  int qemu_plugin_request_vmstop(void)
  {
@@ -351,7 +351,7 @@ index f3b6a53bc..cecbf9cc4 100644
      return qemu_plugin_crucible_vmstop_admit_internal();
  }
  
-@@ -496,6 +589,14 @@ static void qemu_plugin_wake_fd_read(void *opaque)
+@@ -499,6 +592,14 @@ static void qemu_plugin_wake_fd_read(void *opaque)
                                       (void *)(intptr_t)QEMU_PLUGIN_WAKE_EVENT_DRAINED);
              }
              if (drained && first_cpu) {
@@ -366,7 +366,7 @@ index f3b6a53bc..cecbf9cc4 100644
                  qemu_cpu_kick(first_cpu);
              }
              return;
-@@ -601,6 +702,28 @@ void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu)
+@@ -604,6 +705,28 @@ void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu)
      }
  }
  

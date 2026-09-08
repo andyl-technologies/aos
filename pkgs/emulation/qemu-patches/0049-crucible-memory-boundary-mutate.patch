@@ -1,20 +1,20 @@
 diff --git a/MAINTAINERS b/MAINTAINERS
-index c03d7973b..b5b12db2e 100644
+index 7cd1f8de1..460768363 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -3839,6 +3839,7 @@ S: Maintained
+@@ -4204,6 +4204,7 @@ S: Maintained
  F: docs/devel/tcg-plugins.rst
  F: plugins/
  F: include/qemu/crucible-fault.h
 +F: plugins/crucible-fault-memory.c
  F: tests/tcg/plugins/
- F: tests/functional/test_aarch64_tcg_plugins.py
- F: contrib/plugins/
+ F: tests/tcg/multiarch/plugin/
+ F: tests/functional/aarch64/test_tcg_plugins.py
 diff --git a/hw/core/cpu-system.c b/hw/core/cpu-system.c
-index aed5076ec..6d1775e9b 100644
+index 14eb4ed87..74daec3f7 100644
 --- a/hw/core/cpu-system.c
 +++ b/hw/core/cpu-system.c
-@@ -303,3 +303,18 @@ void cpu_vmstate_unregister(CPUState *cpu)
+@@ -294,3 +294,18 @@ void cpu_vmstate_unregister(CPUState *cpu)
          vmstate_unregister(NULL, &vmstate_cpu_common, cpu);
      }
  }
@@ -33,40 +33,14 @@ index aed5076ec..6d1775e9b 100644
 +    memset(result, 0, sizeof(*result));
 +    return ops->get_fault_translation(cpu, addr, result);
 +}
-diff --git a/include/exec/memory.h b/include/exec/memory.h
-index 2b1dd7183..1a444df77 100644
---- a/include/exec/memory.h
-+++ b/include/exec/memory.h
-@@ -2027,6 +2027,21 @@ MemoryRegion *memory_region_from_host(void *ptr, ram_addr_t *offset);
-  */
- void *memory_region_get_ram_ptr(MemoryRegion *mr);
- 
-+/**
-+ * memory_region_fault_commit_ram: Commits an already validated RAM mutation.
-+ * @mr: Normal writable RAM MemoryRegion selected during preparation.
-+ * @addr: Byte offset within @mr.
-+ * @bytes: Replacement bytes.
-+ * @length: Positive number of bytes to replace.
-+ *
-+ * This deterministic-fault helper is deliberately infallible: callers must
-+ * resolve and validate the complete range before the first call.  It copies
-+ * directly to RAM, updates migration/display dirty state, and invalidates any
-+ * translated code covering the range.
-+ */
-+void memory_region_fault_commit_ram(MemoryRegion *mr, hwaddr addr,
-+                                    const uint8_t *bytes, hwaddr length);
-+
- /* memory_region_ram_resize: Resize a RAM region.
-  *
-  * Resizing RAM while migrating can result in the migration being canceled.
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index abd8764e8..025827193 100644
+index b54035fb1..0a109ed9b 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
-@@ -702,6 +702,44 @@ enum CPUDumpFlags {
+@@ -738,6 +738,44 @@ enum CPUDumpFlags {
+  */
  void cpu_dump_state(CPUState *cpu, FILE *f, int flags);
  
- #ifndef CONFIG_USER_ONLY
 +/**
 + * CPUFaultTranslation:
 + * @physical_address: Exact physical address corresponding to the input byte.
@@ -106,16 +80,16 @@ index abd8764e8..025827193 100644
 +                               CPUFaultTranslation *result);
 +
  /**
-  * cpu_get_phys_page_attrs_debug:
-  * @cpu: The CPU to obtain the physical page address for.
+  * TranslateForDebugResult: gives result of cpu_translate_for_debug()
+  *
 diff --git a/include/hw/core/sysemu-cpu-ops.h b/include/hw/core/sysemu-cpu-ops.h
-index 877892373..06b7cb016 100644
+index 9a4559616..bdb42b311 100644
 --- a/include/hw/core/sysemu-cpu-ops.h
 +++ b/include/hw/core/sysemu-cpu-ops.h
-@@ -42,6 +42,12 @@ typedef struct SysemuCPUOps {
+@@ -58,6 +58,12 @@ typedef struct SysemuCPUOps {
       */
-     hwaddr (*get_phys_page_attrs_debug)(CPUState *cpu, vaddr addr,
-                                         MemTxAttrs *attrs);
+     bool (*translate_for_debug)(CPUState *cpu, vaddr addr,
+                                 TranslateForDebugResult *result);
 +    /**
 +     * @get_fault_translation: Side-effect-free exact translation used by the
 +     *       deterministic fault boundary.
@@ -125,23 +99,11 @@ index 877892373..06b7cb016 100644
      /**
       * @asidx_from_attrs: Callback to return the CPU AddressSpace to use for
       *       a memory access with the specified memory transaction attributes.
-diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 926623a8f..bbe9daa2b 100644
---- a/include/qemu/crucible-fault.h
-+++ b/include/qemu/crucible-fault.h
-@@ -48,6 +48,7 @@ struct QemuCrucibleFaultHandler {
- };
- 
- void qemu_crucible_fault_register(const QemuCrucibleFaultHandler *handler);
-+void qemu_crucible_fault_memory_register(uint16_t scope, const char *name);
- void qemu_crucible_fault_registry_seal(void);
- void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
-                                            uint64_t observed_icount);
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 6d0f55c51..0b30e2f01 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -1378,6 +1378,22 @@ QEMU_PLUGIN_API
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index 83b5fb039..a256a781c 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -1641,6 +1641,22 @@ QEMU_PLUGIN_API
  bool qemu_plugin_read_memory_vaddr(uint64_t addr,
                                     GByteArray *data, size_t len);
  
@@ -164,11 +126,49 @@ index 6d0f55c51..0b30e2f01 100644
  /**
   * qemu_plugin_crucible_write_memory_vaddr() - write guest virtual memory
   * @addr: virtual address at which to begin the write
+diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
+index 89c3a6d19..720bd7e52 100644
+--- a/include/qemu/crucible-fault.h
++++ b/include/qemu/crucible-fault.h
+@@ -48,6 +48,7 @@ struct QemuCrucibleFaultHandler {
+ };
+ 
+ void qemu_crucible_fault_register(const QemuCrucibleFaultHandler *handler);
++void qemu_crucible_fault_memory_register(uint16_t scope, const char *name);
+ void qemu_crucible_fault_registry_seal(void);
+ void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
+                                            uint64_t observed_icount);
+diff --git a/include/system/memory.h b/include/system/memory.h
+index 91f75a9b0..ec2dc47d9 100644
+--- a/include/system/memory.h
++++ b/include/system/memory.h
+@@ -1800,6 +1800,21 @@ MemoryRegion *memory_region_from_host(void *ptr, ram_addr_t *offset);
+  */
+ void *memory_region_get_ram_ptr(const MemoryRegion *mr);
+ 
++/**
++ * memory_region_fault_commit_ram: Commits an already validated RAM mutation.
++ * @mr: Normal writable RAM MemoryRegion selected during preparation.
++ * @addr: Byte offset within @mr.
++ * @bytes: Replacement bytes.
++ * @length: Positive number of bytes to replace.
++ *
++ * This deterministic-fault helper is deliberately infallible: callers must
++ * resolve and validate the complete range before the first call.  It copies
++ * directly to RAM, updates migration/display dirty state, and invalidates any
++ * translated code covering the range.
++ */
++void memory_region_fault_commit_ram(MemoryRegion *mr, hwaddr addr,
++                                    const uint8_t *bytes, hwaddr length);
++
+ /* memory_region_ram_resize: Resize a RAM region.
+  *
+  * Resizing RAM while migrating can result in the migration being canceled.
 diff --git a/plugins/api.c b/plugins/api.c
-index 8c1f5b41d..964a40aa4 100644
+index fd9d2ff48..4c7efeeb7 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -468,6 +468,21 @@ bool qemu_plugin_read_memory_vaddr(uint64_t addr, GByteArray *data, size_t len)
+@@ -540,6 +540,21 @@ bool qemu_plugin_read_memory_vaddr(uint64_t addr, GByteArray *data, size_t len)
      return true;
  }
  
@@ -1733,10 +1733,10 @@ index 17a0eb3b4..b2e1dfca2 100644
                                            command->semantic_version);
      if (!handler) {
 diff --git a/plugins/meson.build b/plugins/meson.build
-index 955a3ec97..e5bd2ce7c 100644
+index 011e5829d..b4fea8466 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
-@@ -59,6 +59,7 @@ if host_os == 'windows'
+@@ -79,7 +79,8 @@ else
  endif
  
  user_ss.add(files('user.c', 'api-user.c'))
@@ -1744,13 +1744,14 @@ index 955a3ec97..e5bd2ce7c 100644
 +system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
 +                    'crucible-fault-memory.c'))
  
- common_ss.add(files('loader.c', 'api.c', 'core.c'))
+ user_ss.add(files('api.c', 'core.c'))
+ system_ss.add(files('api.c', 'core.c'))
 diff --git a/system/physmem.c b/system/physmem.c
-index 333a5eb94..a16c3ad01 100644
+index c21ea9291..c3e5335a5 100644
 --- a/system/physmem.c
 +++ b/system/physmem.c
-@@ -2835,6 +2835,26 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
-     cpu_physical_memory_set_dirty_range(addr, length, dirty_log_mask);
+@@ -3145,6 +3145,26 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
+     physical_memory_set_dirty_range(addr, length, dirty_log_mask);
  }
  
 +void memory_region_fault_commit_ram(MemoryRegion *mr, hwaddr addr,
@@ -1777,26 +1778,26 @@ index 333a5eb94..a16c3ad01 100644
  {
      /*
 diff --git a/target/arm/cpu.c b/target/arm/cpu.c
-index 7413b57aa..6657597e5 100644
+index d4bf6a01b..70a62488e 100644
 --- a/target/arm/cpu.c
 +++ b/target/arm/cpu.c
-@@ -37,6 +37,7 @@
- #include "exec/exec-all.h"
- #include "hw/qdev-properties.h"
+@@ -38,6 +38,7 @@
+ #include "exec/target_page.h"
+ #include "hw/core/qdev-properties.h"
  #if !defined(CONFIG_USER_ONLY)
 +#include "qemu/crucible-fault.h"
- #include "hw/loader.h"
- #include "hw/boards.h"
- #ifdef CONFIG_TCG
-@@ -2696,6 +2697,7 @@ static const gchar *arm_gdb_arch_name(CPUState *cs)
+ #include "hw/core/loader.h"
+ #include "hw/core/boards.h"
+ #include "hw/intc/arm_gicv5_stream.h"
+@@ -2588,6 +2589,7 @@ static vaddr aarch64_untagged_addr(CPUState *cs, vaddr x)
  static const struct SysemuCPUOps arm_sysemu_ops = {
      .has_work = arm_cpu_has_work,
-     .get_phys_page_attrs_debug = arm_cpu_get_phys_page_attrs_debug,
+     .translate_for_debug = arm_cpu_translate_for_debug,
 +    .get_fault_translation = arm_cpu_get_fault_translation,
      .asidx_from_attrs = arm_asidx_from_attrs,
      .write_elf32_note = arm_cpu_write_elf32_note,
      .write_elf64_note = arm_cpu_write_elf64_note,
-@@ -2812,6 +2814,11 @@ static const TypeInfo arm_cpu_type_info = {
+@@ -2736,6 +2738,11 @@ static const TypeInfo arm_cpu_type_info = {
  static void arm_cpu_register_types(void)
  {
      type_register_static(&arm_cpu_type_info);
@@ -1809,25 +1810,26 @@ index 7413b57aa..6657597e5 100644
  
  type_init(arm_cpu_register_types)
 diff --git a/target/arm/cpu.h b/target/arm/cpu.h
-index a8177c6c2..290efb9c2 100644
+index c0492c8df..7753337cd 100644
 --- a/target/arm/cpu.h
 +++ b/target/arm/cpu.h
-@@ -1204,6 +1204,8 @@ void arm_v7m_cpu_do_interrupt(CPUState *cpu);
- 
- hwaddr arm_cpu_get_phys_page_attrs_debug(CPUState *cpu, vaddr addr,
-                                          MemTxAttrs *attrs);
+@@ -1276,6 +1276,9 @@ bool arm_granule_protection_check(ARMGranuleProtectionConfig config,
+                                   ARMSecuritySpace pspace,
+                                   ARMSecuritySpace ss,
+                                   ARMMMUFaultInfo *fi);
++
 +bool arm_cpu_get_fault_translation(CPUState *cpu, vaddr addr,
 +                                   CPUFaultTranslation *result);
  #endif /* !CONFIG_USER_ONLY */
  
  int arm_cpu_gdb_read_register(CPUState *cpu, GByteArray *buf, int reg);
 diff --git a/target/arm/ptw.c b/target/arm/ptw.c
-index 433090034..011358e86 100644
+index a29de0385..964d20831 100644
 --- a/target/arm/ptw.c
 +++ b/target/arm/ptw.c
-@@ -3645,3 +3645,32 @@ hwaddr arm_cpu_get_phys_page_attrs_debug(CPUState *cs, vaddr addr,
+@@ -4140,3 +4140,32 @@ bool arm_cpu_translate_for_debug(CPUState *cs, vaddr addr,
+         return false;
      }
-     return res.f.phys_addr;
  }
 +
 +bool arm_cpu_get_fault_translation(CPUState *cs, vaddr addr,
@@ -1859,26 +1861,26 @@ index 433090034..011358e86 100644
 +    return true;
 +}
 diff --git a/target/i386/cpu.c b/target/i386/cpu.c
-index 1b64ceaab..deee0bfa7 100644
+index 5805d33ab..2271e5dc3 100644
 --- a/target/i386/cpu.c
 +++ b/target/i386/cpu.c
-@@ -36,6 +36,7 @@
- #include "hw/qdev-properties.h"
+@@ -41,6 +41,7 @@
  #include "hw/i386/topology.h"
+ #include "exec/watchpoint.h"
  #ifndef CONFIG_USER_ONLY
 +#include "qemu/crucible-fault.h"
+ #include "confidential-guest.h"
+ #include "monitor/hmp.h"
  #include "system/reset.h"
- #include "qapi/qapi-commands-machine-target.h"
- #include "exec/address-spaces.h"
-@@ -8895,6 +8896,7 @@ static const struct SysemuCPUOps i386_sysemu_ops = {
+@@ -10886,6 +10887,7 @@ static const struct SysemuCPUOps i386_sysemu_ops = {
      .get_memory_mapping = x86_cpu_get_memory_mapping,
      .get_paging_enabled = x86_cpu_get_paging_enabled,
-     .get_phys_page_attrs_debug = x86_cpu_get_phys_page_attrs_debug,
+     .translate_for_debug = x86_cpu_translate_for_debug,
 +    .get_fault_translation = x86_cpu_get_fault_translation,
      .asidx_from_attrs = x86_asidx_from_attrs,
      .get_crash_info = x86_cpu_get_crash_info,
      .write_elf32_note = x86_cpu_write_elf32_note,
-@@ -9028,6 +9030,11 @@ static void x86_cpu_register_types(void)
+@@ -11029,6 +11031,11 @@ static void x86_cpu_register_types(void)
      }
      type_register_static(&max_x86_cpu_type_info);
      type_register_static(&x86_base_cpu_type_info);
@@ -1891,23 +1893,23 @@ index 1b64ceaab..deee0bfa7 100644
  
  type_init(x86_cpu_register_types)
 diff --git a/target/i386/cpu.h b/target/i386/cpu.h
-index 76f24446a..0b07cae57 100644
+index e6a197602..23770e4f0 100644
 --- a/target/i386/cpu.h
 +++ b/target/i386/cpu.h
-@@ -2375,6 +2375,8 @@ int x86_cpu_pending_interrupt(CPUState *cs, int interrupt_request);
+@@ -2588,6 +2588,8 @@ int x86_cpu_pending_interrupt(CPUState *cs, int interrupt_request);
  
- hwaddr x86_cpu_get_phys_page_attrs_debug(CPUState *cpu, vaddr addr,
-                                          MemTxAttrs *attrs);
+ bool x86_cpu_translate_for_debug(CPUState *cpu, vaddr addr,
+                                  TranslateForDebugResult *result);
 +bool x86_cpu_get_fault_translation(CPUState *cpu, vaddr addr,
 +                                   CPUFaultTranslation *result);
  int cpu_get_pic_interrupt(CPUX86State *s);
  
  /* MS-DOS compatibility mode FPU exception support */
 diff --git a/target/i386/tcg/system/excp_helper.c b/target/i386/tcg/system/excp_helper.c
-index 6876329de..f7e228874 100644
+index d7ea77c85..7b5192d6d 100644
 --- a/target/i386/tcg/system/excp_helper.c
 +++ b/target/i386/tcg/system/excp_helper.c
-@@ -31,6 +31,7 @@ typedef struct TranslateParams {
+@@ -34,6 +34,7 @@ typedef struct TranslateParams {
      int mmu_idx;
      int ptw_idx;
      MMUAccessType access_type;
@@ -1915,7 +1917,7 @@ index 6876329de..f7e228874 100644
  } TranslateParams;
  
  typedef struct TranslateResult {
-@@ -182,7 +183,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+@@ -185,7 +186,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
                  if (pte & (rsvd_mask | PG_PSE_MASK)) {
                      goto do_fault_rsvd;
                  }
@@ -1925,7 +1927,7 @@ index 6876329de..f7e228874 100644
                      goto restart_5;
                  }
                  ptep = pte ^ PG_NX_MASK;
-@@ -206,7 +208,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+@@ -209,7 +211,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
              if (pte & (rsvd_mask | PG_PSE_MASK)) {
                  goto do_fault_rsvd;
              }
@@ -1935,7 +1937,7 @@ index 6876329de..f7e228874 100644
                  goto restart_4;
              }
              ptep &= pte ^ PG_NX_MASK;
-@@ -226,7 +229,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+@@ -229,7 +232,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
              if (pte & rsvd_mask) {
                  goto do_fault_rsvd;
              }
@@ -1945,7 +1947,7 @@ index 6876329de..f7e228874 100644
                  goto restart_3_lma;
              }
              ptep &= pte ^ PG_NX_MASK;
-@@ -254,7 +258,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+@@ -257,7 +261,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
              if (pte & (rsvd_mask | PG_NX_MASK)) {
                  goto do_fault_rsvd;
              }
@@ -1955,7 +1957,7 @@ index 6876329de..f7e228874 100644
                  goto restart_3_nolma;
              }
              ptep = PG_NX_MASK | PG_USER_MASK | PG_RW_MASK;
-@@ -281,7 +286,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+@@ -284,7 +289,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
              ptep &= pte ^ PG_NX_MASK;
              goto do_check_protect;
          }
@@ -1965,7 +1967,7 @@ index 6876329de..f7e228874 100644
              goto restart_2_pae;
          }
          ptep &= pte ^ PG_NX_MASK;
-@@ -329,7 +335,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+@@ -332,7 +338,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
              rsvd_mask = 0x200000;
              goto do_check_protect_pse36;
          }
@@ -1975,7 +1977,7 @@ index 6876329de..f7e228874 100644
              goto restart_2_nopae;
          }
  
-@@ -423,7 +430,7 @@ do_check_protect_pse36:
+@@ -426,7 +433,7 @@ do_check_protect_pse36:
               */
              prot &= ~PAGE_WRITE;
          }
@@ -1984,7 +1986,7 @@ index 6876329de..f7e228874 100644
              /*
               * We can arrive here from any of 3 levels and 2 formats.
               * The only safe thing is to restart the entire lookup.
-@@ -550,6 +557,7 @@ static bool get_physical_address(CPUX86State *env, vaddr addr,
+@@ -553,6 +560,7 @@ static bool get_physical_address(CPUX86State *env, vaddr addr,
  
      in.addr = addr;
      in.access_type = access_type;
@@ -1992,7 +1994,7 @@ index 6876329de..f7e228874 100644
  
      switch (mmu_idx) {
      case MMU_PHYS_IDX:
-@@ -606,6 +614,60 @@ static bool get_physical_address(CPUX86State *env, vaddr addr,
+@@ -610,6 +618,60 @@ static bool get_physical_address(CPUX86State *env, vaddr addr,
      return true;
  }
  
@@ -3014,28 +3016,13 @@ index 000000000..e3b95f917
 +    return 0;
 +}
 diff --git a/tests/tcg/plugins/meson.build b/tests/tcg/plugins/meson.build
-index 41f02f2c7..24a8a7b92 100644
+index d7f8f0ae0..854e888e7 100644
 --- a/tests/tcg/plugins/meson.build
 +++ b/tests/tcg/plugins/meson.build
-@@ -1,15 +1,18 @@
- t = []
- if get_option('plugins')
--  foreach i : ['bb', 'empty', 'inline', 'insn', 'mem', 'reset', 'syscall']
-+  foreach i : ['bb', 'crucible-memory', 'empty', 'inline', 'insn', 'mem',
-+               'reset', 'syscall']
-     if host_os == 'windows'
-       t += shared_module(i, files(i + '.c') + '../../../contrib/plugins/win32_linker.c',
--                        include_directories: '../../../include/qemu',
-+                        include_directories: ['../../../include/qemu',
-+                                              '../../../include'],
-                         link_depends: [win32_qemu_plugin_api_lib],
-                         link_args: win32_qemu_plugin_api_link_flags,
-                         dependencies: glib)
-     else
-       t += shared_module(i, files(i + '.c'),
--                        include_directories: '../../../include/qemu',
-+                        include_directories: ['../../../include/qemu',
-+                                              '../../../include'],
-                         dependencies: glib)
-     endif
-   endforeach
+@@ -1,5 +1,6 @@
+ test_plugins = [
+ 'bb.c',
++'crucible-memory.c',
+ 'discons.c',
+ 'empty.c',
+ 'inline.c',

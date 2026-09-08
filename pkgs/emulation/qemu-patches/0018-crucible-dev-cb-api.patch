@@ -1,12 +1,12 @@
 diff --git a/hw/9pfs/virtio-9p-device.c b/hw/9pfs/virtio-9p-device.c
-index bb2843da0..cd7cd42e4 100644
+index 2774fc229..099445116 100644
 --- a/hw/9pfs/virtio-9p-device.c
 +++ b/hw/9pfs/virtio-9p-device.c
 @@ -26,8 +26,34 @@
  #include "hw/virtio/virtio-access.h"
  #include "qemu/iov.h"
  #include "qemu/module.h"
-+#include "qemu/qemu-plugin.h"
++#include "plugins/qemu-plugin.h"
  #include "system/qtest.h"
  
 +static qemu_plugin_9p_burst_cb_t crucible_9p_burst_start_cb;
@@ -34,14 +34,14 @@ index bb2843da0..cd7cd42e4 100644
 +        && crucible_9p_poll_cb != NULL && crucible_9p_burst_done_cb != NULL;
 +}
 +
- static void virtio_9p_push_and_notify(V9fsPDU *pdu)
+ static void coroutine_fn virtio_9p_push_and_notify(V9fsPDU *pdu)
  {
      V9fsState *s = pdu->s;
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 9d8a6c37e..f8b4b7f77 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -202,6 +202,49 @@ typedef int64_t (*qemu_plugin_blk_poll_cb_t)(uint32_t request_id,
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index e785fa9ff..7f16cb347 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -246,6 +246,49 @@ typedef int64_t (*qemu_plugin_blk_poll_cb_t)(uint32_t request_id,
  #define QEMU_PLUGIN_BLK_OP_FLUSH 2u
  #define QEMU_PLUGIN_BLK_POLL_PENDING (-2)
  
@@ -91,7 +91,7 @@ index 9d8a6c37e..f8b4b7f77 100644
  /**
   * qemu_plugin_uninstall() - Uninstall a plugin
   * @id: this plugin's opaque ID
-@@ -928,6 +971,25 @@ void qemu_plugin_register_blk_cb(qemu_plugin_blk_submit_cb_t submit_cb,
+@@ -1026,6 +1069,25 @@ void qemu_plugin_register_blk_cb(qemu_plugin_blk_submit_cb_t submit_cb,
                                   qemu_plugin_blk_poll_cb_t poll_cb,
                                   void *userdata);
  
@@ -115,5 +115,5 @@ index 9d8a6c37e..f8b4b7f77 100644
 +                                void *userdata);
 +
  /**
-  * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
+  * qemu_plugin_net_inject() - injects an inbound frame into the default NIC
   * @data: Ethernet frame bytes

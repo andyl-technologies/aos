@@ -52,6 +52,11 @@ in
             export GOROOT_FINAL=$out
             export GOCACHE=$TMPDIR/go-cache
             export CGO_ENABLED=0
+
+            # Go 1.4 defines bool as a C typedef. GCC 15 and newer default to
+            # C23, where bool is a keyword, so keep this bootstrap in C17.
+            export CC="''${CC:-gcc} -std=gnu17"
+
             cd src
             bash make.bash
             cd ..

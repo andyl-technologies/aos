@@ -4,14 +4,14 @@
   fetchGoModules,
   fetchurl,
 }: let
-  version = "3.7.1";
+  version = "3.8.0";
   src = fetchurl {
     urls = ["https://github.com/git-lfs/git-lfs/archive/refs/tags/v${version}.tar.gz"];
-    hash = "sha256-DoNWap4kd+A2J+f9a/gfAfrb+T3K9qvSaG/KkPa6x90=";
+    hash = "sha256-oS7PwX6+4ALR9qzKeUQgKdQcv15bS6ngIkntlt4gMA8=";
   };
   goModules = fetchGoModules {
     inherit src;
-    hash = "sha256-ctWlg+YBADZfhRywCyjxqoSWN559exavLS+J010R7T8=";
+    hash = "sha256-e/oSsIW+Qi67mpl6f22TjPxDpwqZ894w7hgtstarwdk=";
   };
 in
   mkGoPackage {

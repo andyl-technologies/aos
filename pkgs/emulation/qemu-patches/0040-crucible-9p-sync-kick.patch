@@ -1,5 +1,5 @@
 diff --git a/block/file-posix.c b/block/file-posix.c
-index 56d1972d1..9f58a7584 100644
+index 3c985da94..fcbc363b2 100644
 --- a/block/file-posix.c
 +++ b/block/file-posix.c
 @@ -23,6 +23,7 @@
@@ -10,7 +10,7 @@ index 56d1972d1..9f58a7584 100644
  #include "qapi/error.h"
  #include "qemu/cutils.h"
  #include "qemu/error-report.h"
-@@ -2417,6 +2418,15 @@ out:
+@@ -2500,6 +2501,15 @@ out:
  
  static int coroutine_fn raw_thread_pool_submit(ThreadPoolFunc func, void *arg)
  {
@@ -27,7 +27,7 @@ index 56d1972d1..9f58a7584 100644
  }
  
 diff --git a/hw/block/virtio-blk.c b/hw/block/virtio-blk.c
-index 5077793e5..b69d0997a 100644
+index 6b92066af..695fe0058 100644
 --- a/hw/block/virtio-blk.c
 +++ b/hw/block/virtio-blk.c
 @@ -12,6 +12,7 @@
@@ -38,7 +38,7 @@ index 5077793e5..b69d0997a 100644
  #include "qemu/defer-call.h"
  #include "qapi/error.h"
  #include "qemu/iov.h"
-@@ -255,6 +256,26 @@ static inline void submit_requests(VirtIOBlock *s, MultiReqBuffer *mrb,
+@@ -260,6 +261,26 @@ static inline void submit_requests(VirtIOBlock *s, MultiReqBuffer *mrb,
          flags |= BDRV_REQ_REGISTERED_BUF;
      }
  
@@ -66,7 +66,7 @@ index 5077793e5..b69d0997a 100644
          blk_aio_pwritev(blk, sector_num << BDRV_SECTOR_BITS, qiov,
                          flags, virtio_blk_rw_complete,
 diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
-index 85110bce3..5c1154221 100644
+index daa560733..bfc2a4ff6 100644
 --- a/hw/virtio/virtio.c
 +++ b/hw/virtio/virtio.c
 @@ -12,6 +12,8 @@
@@ -78,7 +78,7 @@ index 85110bce3..5c1154221 100644
  #include "qapi/error.h"
  #include "qapi/qapi-commands-virtio.h"
  #include "trace.h"
-@@ -2498,7 +2500,25 @@ void virtio_queue_notify(VirtIODevice *vdev, int n)
+@@ -2530,7 +2532,25 @@ void virtio_queue_notify(VirtIODevice *vdev, int n)
      }
  
      trace_virtio_queue_notify(vdev, vq - vdev->vq, vq);

@@ -410,8 +410,8 @@ in
 
             grep -F -q "system_ss.add(files('crucible-shmem.c'))" block/meson.build
             grep -F -q 'block_init(bdrv_crucible_shmem_init)' block/crucible-shmem.c
-            grep -q 'qemu_plugin_register_blk_cb' include/qemu/qemu-plugin.h
-            grep -q '#define QEMU_PLUGIN_BLK_POLL_PENDING (-2)' include/qemu/qemu-plugin.h
+            grep -q 'qemu_plugin_register_blk_cb' include/plugins/qemu-plugin.h
+            grep -q '#define QEMU_PLUGIN_BLK_POLL_PENDING (-2)' include/plugins/qemu-plugin.h
             ${lib.optionalString (!(builtins.elem patchName [
                 "0060-crucible-block-typed-errors.patch"
                 "0061-crucible-block-discard.patch"
@@ -945,7 +945,7 @@ in
 
             cp stock-block-negative.err "$out/stock-negative-control.err"
             cp block/crucible-shmem.c "$out/crucible-shmem.c.patched"
-            cp include/qemu/qemu-plugin.h "$out/qemu-plugin.h.patched"
+            cp include/plugins/qemu-plugin.h "$out/qemu-plugin.h.patched"
             cp block/meson.build "$out/block-meson.build.patched"
 
             cat > "$out/result" <<'RESULT'

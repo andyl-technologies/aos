@@ -45,7 +45,7 @@ execution and fresh-process restore; it never depends on a stale
 
 ## Files and license scope
 
-The patch modifies `plugins/api.c` and `include/qemu/qemu-plugin.h`, preserving
+The patch modifies `plugins/api.c` and `include/plugins/qemu-plugin.h`, preserving
 their existing licenses. It creates no QEMU source file and changes no Unix
 socket or shared-memory protocol.
 

@@ -9,7 +9,7 @@
   libunistring,
   zlib,
 }: let
-  version = "3.8.5";
+  version = "3.8.13";
   majorMinor = "3.8";
 in
   mkDerivation {
@@ -21,7 +21,7 @@ in
         "https://www.gnupg.org/ftp/gcrypt/gnutls/v${majorMinor}/gnutls-${version}.tar.xz"
         "https://mirrors.dotsrc.org/gcrypt/gnutls/v${majorMinor}/gnutls-${version}.tar.xz"
       ];
-      hash = "sha256-ZiaaLP4OHC2r7Ie9u9irZW85bt2aQN0AaXjgA8+lK/w=";
+      hash = "sha256-/+2Owb8JwkJtTxSq43feR1O1PlN9aF5gTpmosWypyX4=";
     };
 
     buildDeps = [gnumake pkg-config];

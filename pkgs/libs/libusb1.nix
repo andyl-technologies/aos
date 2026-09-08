@@ -11,9 +11,10 @@
     member = "libusb1";
     stream = "1";
     owner = "pkgs/libs/libusb1.nix";
-    version = "1.0.29";
-    upstreamId = "v1.0.29";
+    version = "1.0.30";
+    upstreamId = "v1.0.30";
     repository = "libusb/libusb";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 1;
     source = {
@@ -47,7 +48,7 @@
           ];
         }
       ];
-      hash = "sha256-WXf8lQ+NE5XM6pvUjAaz+Aj9PCyWG0Swwubin8OnCoU=";
+      hash = "sha256-/qNvNPkVZAAglZXjAIQHZ6saOF7eHcfuiTAVrqnG268=";
     };
   };
   inherit (upstream) version;
