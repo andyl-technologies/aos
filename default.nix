@@ -1191,10 +1191,13 @@ in {
       };
       package-root-image = import ./lib/testing/package-root-image.nix {inherit pkgs lib;};
       systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
+      vm-rootfs-adapter = import ./lib/testing/vm-rootfs-adapter.nix {
+        inherit pkgs lib mkSystem;
+      };
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in
       {
-        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-smoke package-platform-support package-root-image sandbox-linux-uapi systemd-verity golden-image-budgets;
+        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-smoke package-platform-support package-root-image sandbox-linux-uapi systemd-verity vm-rootfs-adapter golden-image-budgets;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
           pname = "aos-build-checks-all";
@@ -1206,7 +1209,7 @@ in {
               then [bootstrap-seed]
               else []
             )
-            ++ [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config package-platform-support package-root-image sandbox-linux-uapi systemd-verity]
+            ++ [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config package-platform-support package-root-image sandbox-linux-uapi systemd-verity vm-rootfs-adapter]
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues golden-image-budgets;
           phases = [

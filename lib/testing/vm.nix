@@ -342,6 +342,8 @@
       inherit pkgs lib system;
       pname = "vm-disk-${name}-rootfs";
       label = "aos-root";
+      kernelModulePackages = system.config.aos.kernel.modulePackages;
+      firmwarePackages = system.config.aos.kernel.firmwarePackages;
       # Leave the image at its initial over-provisioned size — tests
       # can write a lot during execution. 2048 MiB floor matches the
       # pre-refactor behavior.
@@ -389,6 +391,8 @@
 
       ROOT_IMG = "${rootfs}/root.img";
       ROOT_SIZE_FILE = "${rootfs}/rootfs-size-bytes";
+
+      passthru = {inherit rootfs;};
 
       phases = [
         {
