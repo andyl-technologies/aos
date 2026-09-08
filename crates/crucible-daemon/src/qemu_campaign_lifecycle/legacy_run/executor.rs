@@ -4,11 +4,16 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 
+use crate::executor_worker::{
+    publish_prepared_semantic_attempt_result, validate_prepared_semantic_attempt_result,
+};
 use crate::{
     AttemptAdmissionValidator, AttemptExecutionContext, AttemptExecutionDisposition,
     AttemptExecutionKey, AttemptExecutionModel, AttemptExecutionProduct,
-    AttemptExecutionReconciliationStep, CompletionValidationFailure, ExecutionCancellation,
-    ExecutionCheckpointRequest, RepositoryAttemptAdmission, resolve_attempt_execution_input,
+    AttemptExecutionReconciliationStep, AttemptResultPreparationFailure,
+    AttemptResultPublicationFailure, CompletionValidationFailure, ExecutionCancellation,
+    ExecutionCheckpointRequest, PreparedSemanticAttemptResult, RepositoryAttemptAdmission,
+    resolve_attempt_execution_input,
 };
 use crucible_campaign::{
     AssignmentId, AttemptExecutionScope, AttemptResourceLimits, CampaignCodecError,
@@ -103,6 +108,8 @@ impl<M> SynchronousCampaignExecutor<M> {
 pub(super) enum SynchronousCampaignExecutorError<E> {
     Protocol(crucible_campaign::CampaignCodecError),
     Repository(crucible_campaign::CampaignRepositoryError),
+    Preparation(AttemptResultPreparationFailure),
+    Publication(AttemptResultPublicationFailure),
     Execution(crate::AttemptWorkerFailure<E>),
     Reconciliation(crate::AttemptWorkerFailure<E>),
     Completion(CompletionValidationFailure),
@@ -115,6 +122,8 @@ impl<E: fmt::Display> fmt::Display for SynchronousCampaignExecutorError<E> {
         match self {
             Self::Protocol(error) => write!(formatter, "executor protocol: {error}"),
             Self::Repository(error) => write!(formatter, "executor repository: {error}"),
+            Self::Preparation(error) => write!(formatter, "executor result preflight: {error}"),
+            Self::Publication(error) => write!(formatter, "executor result publication: {error}"),
             Self::Execution(error) => write!(formatter, "executor model: {error}"),
             Self::Reconciliation(error) => write!(formatter, "executor reconciliation: {error}"),
             Self::Completion(reason) => {
@@ -136,6 +145,8 @@ where
         match self {
             Self::Protocol(error) => Some(error),
             Self::Repository(error) => Some(error),
+            Self::Preparation(error) => Some(error),
+            Self::Publication(error) => Some(error),
             Self::Execution(error) | Self::Reconciliation(error) => Some(error),
             Self::Completion(_) | Self::UnexpectedCheckpoint | Self::ReconciliationLimit => None,
         }
@@ -231,15 +242,38 @@ where
                 return Err(SynchronousCampaignExecutorError::Execution(failure));
             }
         };
-        let AttemptExecutionProduct::Observation(candidate) = product else {
-            reconcile_model(&mut self.model, AttemptExecutionDisposition::Failed)?;
-            return Err(SynchronousCampaignExecutorError::UnexpectedCheckpoint);
+        let result = match product {
+            AttemptExecutionProduct::Observation(candidate) => {
+                PreparedSemanticAttemptResult::new(*candidate, None)
+            }
+            AttemptExecutionProduct::ObservationWithFinding {
+                observation,
+                finding,
+            } => PreparedSemanticAttemptResult::new(*observation, Some(*finding)),
+            AttemptExecutionProduct::PreparedSemantic(result) => Ok(*result),
+            AttemptExecutionProduct::ExactCheckpoint(_) => {
+                reconcile_model(&mut self.model, AttemptExecutionDisposition::Failed)?;
+                return Err(SynchronousCampaignExecutorError::UnexpectedCheckpoint);
+            }
         };
-        let observation = match self.store.publish_observation_candidate(&candidate) {
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                reconcile_model(&mut self.model, AttemptExecutionDisposition::Failed)?;
+                return Err(SynchronousCampaignExecutorError::Preparation(
+                    AttemptResultPreparationFailure::Result(error),
+                ));
+            }
+        };
+        if let Err(error) = validate_prepared_semantic_attempt_result(&self.store, key, &result) {
+            reconcile_model(&mut self.model, AttemptExecutionDisposition::Failed)?;
+            return Err(SynchronousCampaignExecutorError::Preparation(error));
+        }
+        let observation = match publish_prepared_semantic_attempt_result(&self.store, &result) {
             Ok(observation) => observation,
             Err(error) => {
                 reconcile_model(&mut self.model, AttemptExecutionDisposition::Failed)?;
-                return Err(SynchronousCampaignExecutorError::Repository(error));
+                return Err(SynchronousCampaignExecutorError::Publication(error));
             }
         };
         if let Err(reason) = self.admission.validate_completion(request, observation) {

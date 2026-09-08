@@ -8,11 +8,11 @@ use crucible::model::{
     MeasurementId, MetricDefinition, MetricId, MetricSource, MetricValueType, UnitId,
 };
 use crucible::{
-    Configuration, EventLog, EventLogOffset, Icount, MarkerId, NodeId, NodeTemplate,
-    ObservableEvent, Plan, Properties, QuantumOutcome, QuantumTerminalVerdict, ReadyPoint,
-    ScenarioDefForm, ScenarioSelectableLimits, ScenarioSelectables, SchedulerError,
-    SchedulerEventLogEntry, SchedulerQuiescence, Seed, VirtualTime, WhiteBoxPolicy, World,
-    WorldNode,
+    Configuration, EventLog, EventLogOffset, GuestMeasurementEvent, GuestMeasurementValue, Icount,
+    MarkerId, NodeId, NodeTemplate, ObservableEvent, Plan, Properties, QuantumOutcome,
+    QuantumTerminalVerdict, ReadyPoint, ScenarioDefForm, ScenarioSelectableLimits,
+    ScenarioSelectables, SchedulerError, SchedulerEventLogEntry, SchedulerQuiescence, Seed,
+    VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
 use crucible_campaign::{
     Attempt, AttemptResourceLimits, AttemptStart, BooleanDomain, BranchPath, CampaignFactId,
@@ -30,6 +30,38 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use super::*;
 use crate::{ExecutionCancellation, ExecutionCheckpointRequest, QemuFreshAttemptLifecycleOwner};
+
+fn prepared_semantic_observation(product: AttemptExecutionProduct) -> ObservationCandidate {
+    let AttemptExecutionProduct::PreparedSemantic(result) = product else {
+        panic!("modeled driver must return a prepared semantic result")
+    };
+    result.into_parts().0
+}
+
+fn evaluate_test_measurements(
+    definitions: &MeasurementDefinitions,
+    entries: Vec<SchedulerEventLogEntry>,
+) -> Result<crate::CrucibleMeasurementPublication, CrucibleMeasurementError> {
+    evaluate_crucible_measurement_publication(
+        ScenarioDefId::from_hash(CampaignHash::derive(
+            "test",
+            b"qemu-driver-measurement-scenario",
+        )),
+        ConfigurationId::from_hash(CampaignHash::derive(
+            "test",
+            b"qemu-driver-measurement-configuration",
+        )),
+        definitions,
+        entries,
+        MeasurementTerminalState {
+            scenario_ready_at: None,
+            at: VirtualTime { ticks: 4 },
+            node_icounts: BTreeMap::new(),
+            scheduler_quiescent: true,
+        },
+        MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
+    )
+}
 
 #[cfg(target_os = "linux")]
 struct HotModeledLive<'a> {
@@ -594,9 +626,7 @@ fn event_count_seals_final_drain_coverage_into_exact_candidate() {
     let product = driver
         .seal(pending, final_append.entries.clone())
         .expect("final coverage projection");
-    let AttemptExecutionProduct::Observation(candidate) = product else {
-        panic!("fresh modeled driver must return an observation")
-    };
+    let candidate = prepared_semantic_observation(product);
 
     assert_eq!(
         candidate.child().configuration(),
@@ -665,9 +695,7 @@ fn hot_fork_driver_reuses_the_common_modeled_loop_and_seals_a_candidate() {
     let product =
         crate::QemuHotForkAttemptDriver::seal(&mut driver, pending, &mut live, &input, &context)
             .expect("hot-fork modeled candidate");
-    let AttemptExecutionProduct::Observation(candidate) = product else {
-        panic!("hot-fork modeled driver must return an observation")
-    };
+    let candidate = prepared_semantic_observation(product);
 
     assert_eq!(
         candidate.child().configuration(),
@@ -729,9 +757,7 @@ fn hot_fork_absolute_quantum_stop_uses_the_complete_source_materialization() {
     let product =
         crate::QemuHotForkAttemptDriver::seal(&mut driver, pending, &mut live, &input, &context)
             .expect("hot-source observation");
-    let AttemptExecutionProduct::Observation(candidate) = product else {
-        panic!("hot-source modeled driver must return an observation")
-    };
+    let candidate = prepared_semantic_observation(product);
 
     assert_eq!(owner.drives, 0);
     assert_eq!(
@@ -901,9 +927,7 @@ fn modeled_scheduler_metrics_are_derived_from_the_canonical_log() {
     let product = driver
         .seal(pending, Vec::new())
         .expect("model-owned measurement projection");
-    let AttemptExecutionProduct::Observation(candidate) = product else {
-        panic!("model-owned measurement run must return an observation")
-    };
+    let candidate = prepared_semantic_observation(product);
     let retained = candidate
         .measurements()
         .evaluation()
@@ -968,14 +992,18 @@ fn guest_measurement_messages_normalize_against_the_exact_scenario_contract() {
         ),
     ];
 
-    let samples = normalize_guest_measurements(&definitions, &entries)
-        .expect("declared guest measurement sequence");
+    let publication = evaluate_test_measurements(&definitions, entries)
+        .expect("declared guest measurement publication");
+    let evaluation = publication
+        .measurement_set()
+        .evaluation()
+        .expect("verified measurement evaluation");
+    let payload = std::str::from_utf8(evaluation.payload()).expect("canonical evaluation JSON");
 
-    assert_eq!(samples.len(), 1);
-    assert_eq!(samples[0].sequence(), 1);
-    assert_eq!(samples[0].measurement().as_str(), "driver-window");
-    assert_eq!(samples[0].metric().as_str(), "healthy-peers");
-    assert_eq!(samples[0].value(), &MeasurementSampleValue::Unsigned(3));
+    assert!(payload.contains("\"driver-window\""));
+    assert!(payload.contains("\"healthy-peers\""));
+    assert!(payload.contains("\"sequence\":1"));
+    assert!(payload.contains("\"value\":3"));
 }
 
 #[test]
@@ -1056,9 +1084,7 @@ fn fresh_driver_retains_verified_guest_measurement_evaluation() {
     let product = driver
         .seal(pending, Vec::new())
         .expect("verified guest measurement projection");
-    let AttemptExecutionProduct::Observation(candidate) = product else {
-        panic!("fresh modeled driver must return an observation")
-    };
+    let candidate = prepared_semantic_observation(product);
     let evaluation = candidate
         .measurements()
         .evaluation()
@@ -1121,32 +1147,32 @@ fn guest_measurement_messages_fail_closed_on_type_and_lifecycle_mismatch() {
         Vec::new(),
     );
 
-    let error = normalize_guest_measurements(&definitions, &[begin.clone(), wrong_type])
+    let error = evaluate_test_measurements(&definitions, vec![begin.clone(), wrong_type])
         .expect_err("declared unsigned metric must reject a boolean");
     assert!(matches!(
         error,
-        QemuFreshModeledDriverError::GuestMeasurementProtocol { sequence: 1, .. }
+        CrucibleMeasurementError::GuestMeasurementProtocol { sequence: 1, .. }
     ));
 
-    let error = normalize_guest_measurements(&definitions, &[wrong_instance])
+    let error = evaluate_test_measurements(&definitions, vec![wrong_instance])
         .expect_err("a guest message must bind the declared exact instance");
     assert!(matches!(
         error,
-        QemuFreshModeledDriverError::GuestMeasurementProtocol { sequence: 0, .. }
+        CrucibleMeasurementError::GuestMeasurementProtocol { sequence: 0, .. }
     ));
 
-    let error = normalize_guest_measurements(&definitions, &[wrong_cohort_marker])
+    let error = evaluate_test_measurements(&definitions, vec![wrong_cohort_marker])
         .expect_err("a semantic marker must come from the declared cohort");
     assert!(matches!(
         error,
-        QemuFreshModeledDriverError::GuestMeasurementProtocol { sequence: 0, .. }
+        CrucibleMeasurementError::GuestMeasurementProtocol { sequence: 0, .. }
     ));
 
-    let error = normalize_guest_measurements(&definitions, &[begin])
+    let error = evaluate_test_measurements(&definitions, vec![begin])
         .expect_err("an open measurement instance must be closed");
     assert!(matches!(
         error,
-        QemuFreshModeledDriverError::GuestMeasurementProtocol { sequence: 1, .. }
+        CrucibleMeasurementError::GuestMeasurementProtocol { sequence: 1, .. }
     ));
 }
 
@@ -1528,12 +1554,8 @@ fn execution_quanta_resume_charges_only_the_suffix_and_matches_uninterrupted_evi
         driver.seal(pending, Vec::new()).expect("resumed evidence")
     };
 
-    let AttemptExecutionProduct::Observation(uninterrupted) = uninterrupted else {
-        panic!("uninterrupted modeled driver must return an observation")
-    };
-    let AttemptExecutionProduct::Observation(resumed) = resumed else {
-        panic!("resumed modeled driver must return an observation")
-    };
+    let uninterrupted = prepared_semantic_observation(uninterrupted);
+    let resumed = prepared_semantic_observation(resumed);
     assert_eq!(uninterrupted_owner.drives, stop_quanta);
     assert_eq!(resumed_owner.drives, stop_quanta - checkpoint_quanta);
     assert_eq!(
@@ -1620,9 +1642,7 @@ fn next_choice_retains_the_complete_discovery_bundle() {
             .expect("next-choice stop"),
     );
     let product = driver.seal(pending, Vec::new()).expect("choice candidate");
-    let AttemptExecutionProduct::Observation(candidate) = product else {
-        panic!("fresh modeled driver must return an observation")
-    };
+    let candidate = prepared_semantic_observation(product);
 
     assert_eq!(
         candidate.observation().stop(),
@@ -1670,9 +1690,7 @@ fn next_choice_publishes_the_live_signal_fault_frontier_at_its_exact_parent() {
     let product = driver
         .seal(pending, Vec::new())
         .expect("live signal-fault candidate");
-    let AttemptExecutionProduct::Observation(candidate) = product else {
-        panic!("fresh modeled driver must return an observation")
-    };
+    let candidate = prepared_semantic_observation(product);
 
     assert_eq!(
         candidate.child().configuration(),
@@ -1740,9 +1758,7 @@ fn signal_fault_frontier_is_not_published_after_execution_passes_it() {
     let product = driver
         .seal(pending, Vec::new())
         .expect("non-retrospective candidate");
-    let AttemptExecutionProduct::Observation(candidate) = product else {
-        panic!("fresh modeled driver must return an observation")
-    };
+    let candidate = prepared_semantic_observation(product);
 
     assert_eq!(owner.drives, 2);
     assert!(candidate.discovered_choices().is_empty());
@@ -1924,9 +1940,7 @@ fn terminal_run_projects_offline_property_verdicts() {
     let product = driver
         .seal(pending, Vec::new())
         .expect("property projection");
-    let AttemptExecutionProduct::Observation(candidate) = product else {
-        panic!("fresh modeled driver must return an observation")
-    };
+    let candidate = prepared_semantic_observation(product);
 
     assert_eq!(
         candidate.observation().stop(),
@@ -1990,9 +2004,7 @@ fn terminal_failure_preserves_grouped_reasons_in_scheduler_order() {
     let product = driver
         .seal(pending, Vec::new())
         .expect("scenario failure projection");
-    let AttemptExecutionProduct::Observation(candidate) = product else {
-        panic!("fresh modeled driver must return an observation")
-    };
+    let candidate = prepared_semantic_observation(product);
 
     assert_eq!(
         candidate.observation().stop(),

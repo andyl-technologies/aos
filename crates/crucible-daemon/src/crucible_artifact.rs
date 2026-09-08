@@ -2739,6 +2739,86 @@ mod tests {
             Some(prepared_v2.clone()),
         )
         .expect("bind v2 prepared semantic result");
+        v2_result
+            .verify_measurement_publications(&scenario)
+            .expect("verify every authenticated v2 measurement owner");
+
+        let measurement_records = prepared_v2
+            .replay_records
+            .measurements
+            .iter()
+            .map(|measurement| {
+                (
+                    measurement.id().expect("replay measurement ID"),
+                    measurement,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let shared_evidence = measurement_evidence
+            .iter()
+            .map(|evidence| evidence.id().expect("shared evidence ID"))
+            .find(|evidence| {
+                prepared_v2.minimization_replays.iter().any(|replay| {
+                    measurement_records
+                        .get(&replay.measurements)
+                        .and_then(|measurement| measurement.evaluation())
+                        .is_some_and(|evaluation| evaluation.evidence().contains(evidence))
+                }) && prepared_v2.verification_replays.iter().any(|replay| {
+                    measurement_records
+                        .get(&replay.measurements)
+                        .and_then(|measurement| measurement.evaluation())
+                        .is_some_and(|evaluation| evaluation.evidence().contains(evidence))
+                })
+            })
+            .expect("one raw leaf shared by both replay passes");
+        let verification_replay = prepared_v2
+            .verification_replays
+            .iter()
+            .position(|replay| {
+                measurement_records
+                    .get(&replay.measurements)
+                    .and_then(|measurement| measurement.evaluation())
+                    .is_some_and(|evaluation| evaluation.evidence().contains(&shared_evidence))
+            })
+            .expect("verification owner of shared raw leaf");
+        let original_measurement = measurement_records
+            .get(&prepared_v2.verification_replays[verification_replay].measurements)
+            .copied()
+            .expect("shared replay measurement");
+        let retained = original_measurement
+            .evaluation()
+            .expect("shared replay evaluation");
+        let mut tampered_payload = retained.payload().to_vec();
+        tampered_payload.push(b' ');
+        let tampered_measurement = MeasurementSet::from_evaluation(
+            retained.definitions(),
+            retained.payload_schema(),
+            retained.evaluation(),
+            tampered_payload,
+            retained.evidence().clone(),
+        )
+        .expect("structurally valid tampered replay measurement");
+        let tampered_measurement_id = tampered_measurement
+            .id()
+            .expect("tampered replay measurement ID");
+        let mut tampered_finding = prepared_v2.clone();
+        tampered_finding
+            .replay_records
+            .measurements
+            .push(tampered_measurement);
+        tampered_finding.verification_replays[verification_replay].measurements =
+            tampered_measurement_id;
+        let tampered_result = PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
+            observation_candidate_v2.clone(),
+            measurement_evidence.clone(),
+            Some(tampered_finding),
+        )
+        .expect("retain structurally owned shared evidence");
+        assert!(matches!(
+            tampered_result.verify_measurement_publications(&scenario),
+            Err(PreparedSemanticResultCodecError::Measurement(_))
+        ));
+
         let v2_bytes = v2_result
             .canonical_bytes()
             .expect("encode v2 prepared result");
