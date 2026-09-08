@@ -42,6 +42,33 @@
   # when ukify runs (both also needed during meson configure — see
   # the configure phase's PYTHONPATH export). python3.nix pins 3.14.
   ukifyPythonPath = "${python3-pefile}/lib/python3.14/site-packages:${python3-pyelftools}/lib/python3.14/site-packages";
+
+  systemdRuntimeDeps = [
+    bash
+    python3
+    util-linux
+    kmod
+    zlib
+    xz
+    lz4
+    zstd
+    openssl
+    libcap
+    libxcrypt
+    audit
+    libselinux
+    libsepol
+    pcre2
+    libseccomp
+    acl
+    cryptsetup
+    elfutils
+    linux-pam
+    tpm2-tss
+  ];
+  systemdRuntimeLibraryPath = builtins.concatStringsSep ":" (
+    map (dependency: "${dependency}/lib") systemdRuntimeDeps
+  );
 in
   mkDerivation {
     pname = "systemd";
@@ -100,29 +127,10 @@ in
       # shared library) and keeps the 7 MiB header tree out of the closure.
       linux-headers
     ];
-    runtimeDeps = [
-      util-linux
-      kmod
-      zlib
-      xz
-      lz4
-      zstd
-      openssl
-      libcap
-      libxcrypt
-      audit
-      libselinux
-      libsepol
-      pcre2
-      libseccomp
-      acl
-      cryptsetup
-      elfutils
-      linux-pam
-      # TPM2 (RFC-0006 phase 3): libtss2-esys/rc/mu + the device TCTI for
-      # systemd-cryptsetup's TPM2 token, systemd-pcrextend, systemd-measure.
-      tpm2-tss
-    ];
+    # Installed helpers and the cryptsetup/ukify wrappers execute the target
+    # interpreters. TPM2 supplies libtss2-esys/rc/mu and the device TCTI for
+    # systemd-cryptsetup's TPM2 token, systemd-pcrextend, and systemd-measure.
+    runtimeDeps = systemdRuntimeDeps;
     propagatedDeps = [];
 
     # systemd's many [0]/[1] trailing-array structs get narrowed to a fixed
@@ -392,13 +400,26 @@ in
             [ "$grepStatus" -eq 1 ] || exit "$grepStatus"
           fi
           rm -f "$nativePythonRefs"
+
+          # Upstream leaves several installed helpers on host-global
+          # interpreters, which do not exist on AOS. Keep the explicit list in
+          # sync with the installed systemd and kernel-install entry points.
+          for script in \
+            "$out/lib/kernel/install.d/50-depmod.install" \
+            "$out/lib/kernel/install.d/90-loaderentry.install" \
+            "$out/lib/kernel/install.d/90-uki-copy.install" \
+            "$out/lib/systemd/systemd-update-helper"; do
+            sed -i "1c #!${bash}/bin/bash" "$script"
+          done
+          sed -i "1c #!${python3}/bin/python3" \
+            "$out/lib/kernel/install.d/60-ukify.install"
         '';
       }
       {
-        name = "fixup";
-        # LUKS2 token plugins (libcryptsetup-token-*.so) are loaded via
-        # dlopen from $cryptsetup/lib/cryptsetup/. DT_RPATH on the binary
-        # does NOT propagate to libraries loaded via dlopen, so
+        name = "wrap-runtime-tools";
+        # systemd's LUKS2 token plugins (libcryptsetup-token-*.so) are loaded
+        # via dlopen from $out/lib/cryptsetup/. DT_RPATH on the binary does not
+        # propagate to libraries loaded via dlopen, so
         # systemd-cryptsetup and systemd-cryptenroll need LD_LIBRARY_PATH
         # extended at runtime to find them. nixpkgs handles this with
         # wrapProgram (makeWrapper); AOS has no wrapProgram, so we inline
@@ -413,6 +434,17 @@ in
         # would fire at cat time and produce a trailing-colon path — a
         # classic ld.so CWD-search bug.)
         script = ''
+          # Meson does not preserve the cc-wrapper RPATH on every target. Seed
+          # every installed ELF with the target runtime library directories;
+          # the common fixup phase immediately shrinks each RPATH to the
+          # libraries named by that ELF's DT_NEEDED entries.
+          find "$out" -type f | while read -r executable; do
+            patchelf --print-needed "$executable" >/dev/null 2>&1 || continue
+            patchelf --add-rpath \
+              "$out/lib:$out/lib/systemd:${systemdRuntimeLibraryPath}" \
+              "$executable"
+          done
+
           for f in bin/systemd-cryptsetup bin/systemd-cryptenroll; do
             if [ -x "$out/$f" ]; then
               wrapped="$out/$f"
@@ -437,6 +469,8 @@ in
           if [ -x "$out/bin/ukify" ]; then
             mkdir -p "$tools/bin"
             mv "$out/bin/ukify" "$tools/bin/.ukify-unwrapped"
+            sed -i "1c #!${python3}/bin/python3" \
+              "$tools/bin/.ukify-unwrapped"
             cat > "$tools/bin/ukify" << EOF
           #!${bash}/bin/bash
           export PYTHONPATH="${ukifyPythonPath}\''${PYTHONPATH:+:\$PYTHONPATH}"
