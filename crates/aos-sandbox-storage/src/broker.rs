@@ -8,6 +8,7 @@
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox::journal::RecordNamespace;
+use aos_sandbox_broker::{BrokerAuthorizationFenceV1, BrokerEffectIntentV2};
 use aos_sandbox_core::model::SandboxSpec;
 use aos_sandbox_core::{
     BrokerAssignment, CanonicalAssignmentManifestV1, NodeId, ObjectDigest, ProtocolVersion,
@@ -18,6 +19,10 @@ use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 use sha2::{Digest as _, Sha256};
 
 use crate::authorization::{StorageAuthorityV1, decode_assignment};
+use crate::helper::{
+    PreobservedZfsMutation, StorageMutationHelper, ZfsHelperError, ZfsHelperOutcome,
+    ZfsProcessBackend,
+};
 use crate::workspace_catalog::{StorageWorkspacePublicationV1, StorageWorkspaceRetirementV1};
 use crate::{
     BeginStorageTransaction, CommittedStorageResultV1, DurableStoragePhase,
@@ -67,6 +72,25 @@ pub struct StorageAdmissionCoordinator {
     transactions: StorageTransactionStore,
 }
 
+/// Proves that one exact persisted effect passed the final authority check.
+///
+/// Only [`StorageAdmissionCoordinator`] constructs this non-clone value. The
+/// coordinator consumes it synchronously rather than returning it to callers.
+pub(crate) struct FreshStorageEffectAuthority {
+    entry: crate::StorageRecoveryEntry,
+}
+
+impl FreshStorageEffectAuthority {
+    pub(crate) const fn entry(&self) -> crate::StorageRecoveryEntry {
+        self.entry
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn new_for_test(entry: crate::StorageRecoveryEntry) -> Self {
+        Self { entry }
+    }
+}
+
 impl StorageAdmissionCoordinator {
     /// Constructs a coordinator from complete protected authority and state.
     #[must_use]
@@ -75,6 +99,35 @@ impl StorageAdmissionCoordinator {
             authority,
             transactions,
         }
+    }
+
+    pub(crate) fn recovery_entries(
+        &self,
+    ) -> Result<Vec<crate::StorageRecoveryEntry>, ZfsHelperError> {
+        Ok(self.transactions.recovery_entries()?.collect())
+    }
+
+    pub(crate) fn reconcile_recovery<B: ZfsProcessBackend>(
+        &mut self,
+        helper: &mut StorageMutationHelper<B>,
+        entry: crate::StorageRecoveryEntry,
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError> {
+        self.authenticate_recovery_entry(entry)?;
+        helper.observe_only(&mut self.transactions, entry.operation_id())
+    }
+
+    pub(crate) fn preobserve_and_execute<B, F>(
+        &mut self,
+        helper: &mut StorageMutationHelper<B>,
+        operation_id: [u8; 16],
+        trusted_clock: &mut F,
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError>
+    where
+        B: ZfsProcessBackend,
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        let prepared = helper.preobserve(&self.transactions, operation_id)?;
+        self.execute_preobserved(helper, prepared, trusted_clock)
     }
 
     /// Verifies and durably records an unadvertised Apply admission intent.
@@ -207,6 +260,123 @@ impl StorageAdmissionCoordinator {
         })
     }
 
+    /// Revalidates current authority and synchronously consumes one mutation.
+    ///
+    /// The slow physical pre-observation has already completed. This method
+    /// reopens the exact durable effect, operation fence, and current sandbox
+    /// fence; rejects superseded authority; samples trusted time; and consumes
+    /// the one-shot proof in the helper call made before returning.
+    pub(crate) fn execute_preobserved<B, F>(
+        &mut self,
+        helper: &mut StorageMutationHelper<B>,
+        prepared: PreobservedZfsMutation,
+        trusted_clock: &mut F,
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError>
+    where
+        B: ZfsProcessBackend,
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        let entry = prepared.entry();
+        let current_entry = self
+            .transactions
+            .current_recovery_entry(entry.operation_id())?;
+        if current_entry != entry || entry.phase() != DurableStoragePhase::Prepared {
+            return Err(crate::StorageStateError::InvalidTransition.into());
+        }
+        let current_fence_bytes = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &entry.sandbox_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?
+            .to_vec();
+        let current_fence = self
+            .authority
+            .open_fence(&entry.sandbox_id(), &current_fence_bytes)
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let (operation_fence, effect) = self.persisted_effect_context(entry)?;
+        if current_fence != operation_fence {
+            return Err(ZfsHelperError::Authority);
+        }
+        self.authority
+            .check_before_effect(&effect, trusted_clock)
+            .map_err(|_| ZfsHelperError::Authority)?;
+
+        let authority = FreshStorageEffectAuthority { entry };
+        let protected_authority = &self.authority;
+        helper.execute_preobserved(&mut self.transactions, prepared, authority, || {
+            protected_authority
+                .check_before_effect(&effect, trusted_clock)
+                .map_err(|_| ZfsHelperError::Authority)
+        })
+    }
+
+    pub(crate) fn authenticate_recovery_entry(
+        &self,
+        entry: crate::StorageRecoveryEntry,
+    ) -> Result<(), ZfsHelperError> {
+        self.persisted_effect_context(entry).map(|_| ())
+    }
+
+    fn persisted_effect_context(
+        &self,
+        entry: crate::StorageRecoveryEntry,
+    ) -> Result<(BrokerAuthorizationFenceV1, BrokerEffectIntentV2), ZfsHelperError> {
+        if self
+            .transactions
+            .current_recovery_entry(entry.operation_id())?
+            != entry
+        {
+            return Err(crate::StorageStateError::InvalidTransition.into());
+        }
+        let catalog = self.transactions.recover_catalog(entry)?;
+        let operation = catalog.plan().operation();
+        let operation_fence_bytes = self
+            .transactions
+            .authority_record(RecordNamespace::AuthorityPublication, &entry.operation_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?
+            .to_vec();
+        let effect_bytes = self
+            .transactions
+            .authority_record(RecordNamespace::Effect, &entry.request_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?
+            .to_vec();
+        let operation_fence = self
+            .authority
+            .open_operation_fence(&entry.operation_id(), &operation_fence_bytes)
+            .map_err(|_| ZfsHelperError::Authority)?;
+        self.authority
+            .check_current_fence(&operation_fence)
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let effect = self
+            .authority
+            .open_admission_intent(&entry.request_id(), &effect_bytes)
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let semantic_commitment = operation
+            .persisted_argument_commitment(
+                operation_fence.assignment(),
+                entry.operation_id(),
+                catalog.binding(),
+            )
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let grant_target = operation
+            .grant_target()
+            .map_err(|_| ZfsHelperError::Authority)?;
+        if operation_fence.assignment().sandbox().as_bytes() != &entry.sandbox_id()
+            || effect.status() != aos_sandbox_broker::BrokerEffectStatusV2::Pending
+            || effect.request_id() != &entry.request_id()
+            || effect.transport_request_digest() != entry.request_digest()
+            || effect.request_digest() != semantic_commitment.digest()
+            || effect.verb() != operation.broker_verb()
+            || effect.target() != grant_target
+            || effect.plan_digest() != operation_fence.plan_digest()
+            || effect.plan_expires_seconds() != operation_fence.plan_expires_seconds()
+            || effect.local_lease_record() != operation_fence.local_lease_record()
+            || effect.lease_digest() != operation_fence.local_lease_record().lease_digest()
+        {
+            return Err(ZfsHelperError::Authority);
+        }
+        Ok((operation_fence, effect))
+    }
+
     /// Reconstructs one launchable workspace publication from committed state.
     ///
     /// The supplied manifest and specification are portable controller objects,
@@ -295,7 +465,9 @@ pub fn advertised_storage_methods(inventory_ready: bool) -> Vec<BrokerMethod> {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use std::cell::Cell;
     use std::num::NonZeroU32;
+    use std::rc::Rc;
 
     use aos_proto::aos::sandbox::local::v1::{
         ApplyStorageRequest, Audience, BrokerAuthorizationArtifactsV1, BrokerRequestEnvelope,
@@ -324,10 +496,13 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::helper::{
+        SealedZfsProgram, ZfsHelperError, ZfsPostconditionObservation, ZfsProcessOutput,
+    };
     use crate::{
         CatalogPlanV1, ManagedDatasetRoot, PlannedDataset, ProjectAncestorPolicyV1,
-        ReservationPolicy, ResolvedDataset, StorageDomainsV1, StorageStateKey,
-        WorkspaceSpacePolicyV1,
+        ReservationPolicy, ResolvedDataset, StorageAdmissionError, StorageDomainsV1,
+        StorageStateKey, WorkspaceSpacePolicyV1, ZfsHelperContract,
     };
 
     const NODE: NodeId = NodeId::from_bytes([31; 16]);
@@ -539,6 +714,10 @@ mod tests {
         .unwrap()
     }
     fn request(operation: u8, handle: u8) -> Vec<u8> {
+        request_with_generation(operation, handle, 5)
+    }
+
+    fn request_with_generation(operation: u8, handle: u8, desired_generation: u64) -> Vec<u8> {
         let mut value = ApplyStorageRequest::default();
         let header = value.header.get_or_insert_default();
         header.protocol_major = 1;
@@ -551,7 +730,7 @@ mod tests {
         fence.sandbox_id = vec![2; 16];
         fence.incarnation_id = vec![3; 16];
         fence.assignment_epoch = 4;
-        fence.desired_generation = 5;
+        fence.desired_generation = desired_generation;
         fence.assignment_digest = vec![6; 32];
         value.action = StorageAction::STORAGE_ACTION_SET_QUOTA.into();
         value.operation_id = vec![operation; 16];
@@ -824,6 +1003,37 @@ mod tests {
         coordinator
     }
 
+    struct CountingBackend {
+        executions: Rc<Cell<usize>>,
+    }
+
+    impl ZfsProcessBackend for CountingBackend {
+        fn observe_preconditions(
+            &mut self,
+            _program: &SealedZfsProgram<'_>,
+            expected: &[crate::ZfsPrecondition],
+        ) -> Result<Vec<crate::ZfsPrecondition>, ZfsHelperError> {
+            Ok(expected.to_vec())
+        }
+
+        fn execute_once(
+            &mut self,
+            _program: &SealedZfsProgram<'_>,
+        ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+            self.executions.set(self.executions.get() + 1);
+            Err(ZfsHelperError::ProcessContract)
+        }
+
+        fn observe_postcondition(
+            &mut self,
+            _program: &SealedZfsProgram<'_>,
+            _expected: &crate::PostconditionPolicyV1,
+            _expected_ancestor: Option<&ProjectAncestorPolicyV1>,
+        ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError> {
+            Ok(None)
+        }
+    }
+
     #[test]
     fn real_authority_prepares_and_exact_replay_is_observation_only() {
         let directory = TempDir::new().unwrap();
@@ -869,6 +1079,184 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn assert_second_clock_rejection(
+        second_sample: Result<RawPairedClockSample, StorageAdmissionError>,
+    ) {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 1),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+
+        let executions = Rc::new(Cell::new(0));
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::clone(&executions),
+            },
+        );
+        let mut samples = 0;
+        let result = broker.preobserve_and_execute(&mut helper, [7; 16], &mut || {
+            samples += 1;
+            if samples == 1 {
+                Ok(clock())
+            } else {
+                second_sample
+            }
+        });
+
+        assert!(matches!(result, Err(ZfsHelperError::Authority)));
+        assert_eq!(samples, 2);
+        assert_eq!(executions.get(), 0);
+        assert_eq!(
+            broker.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Ambiguous)
+        );
+        drop(helper);
+        drop(broker);
+
+        let mut recovered = coordinator(&directory, &fixture);
+        let entry = recovered
+            .recovery_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.operation_id() == [7; 16])
+            .unwrap();
+        let recovery_executions = Rc::new(Cell::new(0));
+        let mut observer = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::clone(&recovery_executions),
+            },
+        );
+        assert!(matches!(
+            recovered.reconcile_recovery(&mut observer, entry).unwrap(),
+            ZfsHelperOutcome::ObservationRequired {
+                phase: DurableStoragePhase::Ambiguous,
+                ..
+            }
+        ));
+        assert_eq!(recovery_executions.get(), 0);
+    }
+
+    #[test]
+    fn failed_second_clock_sample_leaves_ambiguous_without_dispatch() {
+        assert_second_clock_rejection(Err(StorageAdmissionError::VerificationFailed));
+    }
+
+    #[test]
+    fn expired_second_clock_sample_leaves_ambiguous_without_dispatch() {
+        let expired = RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
+            [50; 16],
+            150,
+            200,
+        )
+        .unwrap();
+        assert_second_clock_rejection(Ok(expired));
+    }
+
+    #[test]
+    fn superseded_current_fence_after_preobservation_prevents_dispatch() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let catalog = catalog(8, 9);
+        let original_request = request_with_generation(7, 8, 5);
+        let original_artifacts = fixture.artifacts(
+            &original_request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        broker
+            .admit_apply_intent(
+                &original_request,
+                &original_artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 1),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+
+        let executions = Rc::new(Cell::new(0));
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::clone(&executions),
+            },
+        );
+        let prepared = helper.preobserve(&broker.transactions, [7; 16]).unwrap();
+
+        let superseding_request = request_with_generation(9, 8, 6);
+        let superseding_artifacts = fixture.artifacts(
+            &superseding_request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let superseding_semantics =
+            decode_resolved(&superseding_request, &catalog, peer(), peer_policy(), 100).unwrap();
+        let prior_fence = broker
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &[2; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let superseding_admission = broker
+            .authority
+            .admit(
+                &superseding_artifacts,
+                &superseding_semantics,
+                &superseding_request,
+                ProtocolVersion::new(1, 1),
+                &clock(),
+                Some(&prior_fence),
+            )
+            .unwrap();
+        let superseding_sealed = broker
+            .authority
+            .seal(&[2; 16], &[9; 16], &[9; 16], &superseding_admission)
+            .unwrap();
+        broker.transactions.put_authority_record_for_test(
+            RecordNamespace::DesiredState,
+            &[2; 16],
+            superseding_sealed.current_fence,
+        );
+
+        assert!(matches!(
+            broker.execute_preobserved(&mut helper, prepared, &mut || Ok(clock())),
+            Err(ZfsHelperError::Authority)
+        ));
+        assert_eq!(executions.get(), 0);
+        assert_eq!(
+            broker.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Prepared)
+        );
     }
 
     #[test]

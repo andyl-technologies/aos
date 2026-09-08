@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use aos_sandbox_core::ObjectDigest;
 
+use crate::broker::FreshStorageEffectAuthority;
 use crate::process::{SystemdZfsExecutor, WorkerObservationOutcome, ZfsWorkerError};
 use crate::{
     AncestorPolicyTransaction, DurableStoragePhase, PostconditionPolicyV1, ProjectAncestorPolicyV1,
@@ -36,6 +37,8 @@ pub(crate) enum ZfsHelperError {
     PreparedPostconditionConflict,
     #[error("fixed ZFS process backend failed: {0}")]
     Backend(#[from] ZfsWorkerError),
+    #[error("fresh persisted storage authority was rejected")]
+    Authority,
     #[error("fixed ZFS process output or timeout contract was violated")]
     ProcessContract,
 }
@@ -230,11 +233,19 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
     }
 
     /// Crosses Ambiguous, dispatches exactly once, then observes the result.
-    pub(crate) fn execute_preobserved(
+    pub(crate) fn execute_preobserved<F>(
         &mut self,
         store: &mut StorageTransactionStore,
         prepared: PreobservedZfsMutation,
-    ) -> Result<ZfsHelperOutcome, ZfsHelperError> {
+        authority: FreshStorageEffectAuthority,
+        mut check_after_ambiguous: F,
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError>
+    where
+        F: FnMut() -> Result<(), ZfsHelperError>,
+    {
+        if authority.entry() != prepared.context.entry {
+            return Err(StorageStateError::InvalidTransition.into());
+        }
         let current = persisted_context(store, prepared.context.entry.operation_id())?;
         if current.entry != prepared.context.entry
             || current.catalog != prepared.context.catalog
@@ -254,6 +265,11 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
             current.entry.mutation_digest(),
             &current.catalog,
         )?;
+
+        // The durable sync may outlive the first authority sample. Failure of
+        // this second sample deliberately leaves Ambiguous for observation-only
+        // recovery; dispatch must never resume from that phase.
+        check_after_ambiguous()?;
 
         let program = sealed_program(&self.contract, &current);
         validate_process_output(self.backend.execute_once(&program)?)?;
@@ -542,8 +558,11 @@ mod tests {
         );
         let prepared = helper.preobserve(&store, [3; 16]).unwrap();
         assert_eq!(prepared.entry().mutation_digest(), mutation);
+        let authority = FreshStorageEffectAuthority::new_for_test(prepared.entry());
         assert!(matches!(
-            helper.execute_preobserved(&mut store, prepared).unwrap(),
+            helper
+                .execute_preobserved(&mut store, prepared, authority, || Ok(()))
+                .unwrap(),
             ZfsHelperOutcome::Committed(_)
         ));
         assert_eq!(helper.backend.execute_count, 1);
@@ -566,7 +585,12 @@ mod tests {
             failed,
         );
         let prepared = helper.preobserve(&store, [3; 16]).unwrap();
-        assert!(helper.execute_preobserved(&mut store, prepared).is_err());
+        let authority = FreshStorageEffectAuthority::new_for_test(prepared.entry());
+        assert!(
+            helper
+                .execute_preobserved(&mut store, prepared, authority, || Ok(()))
+                .is_err()
+        );
         assert_eq!(
             store.phase([3; 16]).unwrap(),
             Some(DurableStoragePhase::Ambiguous)
@@ -650,8 +674,9 @@ mod tests {
             oversized,
         );
         let prepared = helper.preobserve(&store, [3; 16]).unwrap();
+        let authority = FreshStorageEffectAuthority::new_for_test(prepared.entry());
         assert!(matches!(
-            helper.execute_preobserved(&mut store, prepared),
+            helper.execute_preobserved(&mut store, prepared, authority, || Ok(())),
             Err(ZfsHelperError::ProcessContract)
         ));
         assert_eq!(

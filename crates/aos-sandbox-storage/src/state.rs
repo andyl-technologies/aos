@@ -30,6 +30,10 @@ const RECORD_DOMAIN: &[u8] = b"aos.sandbox.storage.state.record.v1\0";
 const MUTATION_DOMAIN: &[u8] = b"aos.sandbox.storage.mutation.v1\0";
 const POSTCONDITION_DOMAIN: &[u8] = b"aos.sandbox.storage.postcondition.v1\0";
 const RESOURCE_HANDLE_DOMAIN: &[u8] = b"aos.sandbox.storage.resource-handle.v1\0";
+const RUNTIME_CONFIGURATION_DOMAIN: &[u8] = b"aos.sandbox.storage.runtime-configuration.v1\0";
+const RUNTIME_CONFIGURATION_MAGIC: &[u8; 8] = b"AOSSCFG1";
+const RUNTIME_CONFIGURATION_VERSION: u16 = 1;
+const RUNTIME_CONFIGURATION_KEY: &[u8] = b"current";
 const MAXIMUM_RECORD_BYTES: usize = 64 * 1024;
 const FIXED_PREFIX_BYTES: usize = 8 + 2 + 1 + 16 + 16 + 16 + 32 + 32 + 8 + 32 + 32 + 4;
 const LEGACY_RESULT_BYTES: usize = 8 + 32 + 32;
@@ -40,7 +44,7 @@ const RESULT_HAS_VERSION_HANDLE: u8 = 1 << 1;
 const RESULT_HAS_OBJECT_GUID: u8 = 1 << 2;
 const MAXIMUM_OPERATIONS: usize = 256;
 const MATERIALIZED_RECORDS_PER_OPERATION: usize = 6;
-const GLOBAL_MATERIALIZED_RECORDS: usize = 1;
+const GLOBAL_MATERIALIZED_RECORDS: usize = 2;
 const MAXIMUM_JOURNAL_RECORD_BYTES: usize = MAXIMUM_RECORD_BYTES + 128;
 
 /// Reports durable storage state validation or transition failure.
@@ -347,6 +351,7 @@ pub struct StorageTransactionStore {
     key: StorageStateKey,
     records: BTreeMap<[u8; 16], DurableRecord>,
     catalog_transitions: StorageCatalogTransitionProvider,
+    runtime_configuration: Option<ObjectDigest>,
     commit_failed: bool,
     #[cfg(test)]
     fail_after_next_journal_commit: bool,
@@ -380,6 +385,43 @@ impl StorageTransactionStore {
         Self::from_journal(journal, key, minimum_generation)
     }
 
+    /// Opens initialized runtime state or atomically initializes an unused journal.
+    ///
+    /// Existing state always authenticates and enforces `minimum_generation`
+    /// before it is returned. A physically unused journal is the sole exception
+    /// to opening at generation zero: it is initialized, while the exclusive
+    /// journal lock is held, with the protected runtime binding and complete
+    /// genesis snapshot. Its `genesis_generation` must already satisfy the
+    /// protected minimum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageStateError::Rollback`] when an existing authenticated
+    /// generation or the proposed genesis is below `minimum_generation`.
+    /// Returns [`StorageStateError::InvalidTransition`] when unused-state
+    /// validation or atomic initialization fails, and another
+    /// [`StorageStateError`] for protected-path, authentication, catalog, or
+    /// durable commit failure.
+    pub fn open_root_owned_runtime(
+        directory: &Path,
+        key: StorageStateKey,
+        minimum_generation: u64,
+        configuration_binding: ObjectDigest,
+        genesis_generation: u64,
+        genesis_catalogs: &[ResolvedCatalogCommitmentV1],
+    ) -> Result<Self, StorageStateError> {
+        let (journal, _) =
+            Journal::open_protected_at(directory, "storage-state.journal", journal_limits())?;
+        Self::open_or_initialize_runtime(
+            journal,
+            key,
+            minimum_generation,
+            configuration_binding,
+            genesis_generation,
+            genesis_catalogs,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn open_for_test(
         directory: &Path,
@@ -389,6 +431,27 @@ impl StorageTransactionStore {
         let (journal, _) =
             Journal::open(directory.join("storage-state.journal"), journal_limits())?;
         Self::from_journal(journal, key, minimum_generation)
+    }
+
+    #[cfg(test)]
+    fn open_runtime_for_test(
+        directory: &Path,
+        key: StorageStateKey,
+        minimum_generation: u64,
+        configuration_binding: ObjectDigest,
+        genesis_generation: u64,
+        genesis_catalogs: &[ResolvedCatalogCommitmentV1],
+    ) -> Result<Self, StorageStateError> {
+        let (journal, _) =
+            Journal::open(directory.join("storage-state.journal"), journal_limits())?;
+        Self::open_or_initialize_runtime(
+            journal,
+            key,
+            minimum_generation,
+            configuration_binding,
+            genesis_generation,
+            genesis_catalogs,
+        )
     }
 
     #[cfg(test)]
@@ -415,6 +478,7 @@ impl StorageTransactionStore {
             }
             records.insert(record.operation_id, record);
         }
+        let runtime_configuration = load_runtime_configuration(&journal, &key)?;
         let catalog_transitions =
             StorageCatalogTransitionProvider::load(&journal, key.key_id, &key.secret)?;
         let latest_generation = latest_generation(&records).max(
@@ -466,10 +530,59 @@ impl StorageTransactionStore {
             key,
             records,
             catalog_transitions,
+            runtime_configuration,
             commit_failed: false,
             #[cfg(test)]
             fail_after_next_journal_commit: false,
         })
+    }
+
+    fn open_or_initialize_runtime(
+        journal: Journal,
+        key: StorageStateKey,
+        minimum_generation: u64,
+        configuration_binding: ObjectDigest,
+        genesis_generation: u64,
+        genesis_catalogs: &[ResolvedCatalogCommitmentV1],
+    ) -> Result<Self, StorageStateError> {
+        // The ordinary opener must retain strict rollback behavior. This
+        // runtime-only path first authenticates generation-zero emptiness, then
+        // consumes that state immediately with one durable bootstrap commit.
+        let mut store = Self::from_journal(journal, key, 0)?;
+        if store.is_strictly_unused() {
+            if genesis_generation < minimum_generation {
+                return Err(StorageStateError::Rollback);
+            }
+            store.initialize_runtime_from_protected_snapshot(
+                configuration_binding,
+                genesis_generation,
+                genesis_catalogs,
+            )?;
+        } else {
+            store.enforce_minimum_generation(minimum_generation)?;
+        }
+        Ok(store)
+    }
+
+    fn enforce_minimum_generation(&self, minimum_generation: u64) -> Result<(), StorageStateError> {
+        let latest_generation = latest_generation(&self.records).max(
+            self.catalog_transitions
+                .head_binding()
+                .map_or(0, CatalogBindingV1::generation),
+        );
+        if latest_generation < minimum_generation {
+            Err(StorageStateError::Rollback)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn is_strictly_unused(&self) -> bool {
+        self.records.is_empty()
+            && self.catalog_transitions.head_binding().is_none()
+            && self.runtime_configuration.is_none()
+            && self.journal.is_materialized_empty()
+            && self.journal.snapshot_sequence() == 1
     }
 
     /// Returns the durable crash phase for `operation_id`.
@@ -609,8 +722,91 @@ impl StorageTransactionStore {
         generation: u64,
         catalogs: &[ResolvedCatalogCommitmentV1],
     ) -> Result<CatalogBindingV1, StorageStateError> {
+        self.initialize_catalog(generation, catalogs, None)
+    }
+
+    /// Binds protected runtime authority while initializing an empty catalog.
+    ///
+    /// `catalogs` must come from the separately protected complete-bootstrap
+    /// publisher contract. This function cannot prove completeness from a
+    /// caller flag. It accepts the snapshot only when the journal has no
+    /// operation, catalog, reservation, transition, or runtime binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageStateError::InvalidTransition`] unless the store is
+    /// truly empty, and another [`StorageStateError`] for invalid bootstrap
+    /// state, a zero configuration binding, or durable commit failure.
+    pub fn initialize_runtime_from_protected_snapshot(
+        &mut self,
+        configuration_binding: ObjectDigest,
+        generation: u64,
+        catalogs: &[ResolvedCatalogCommitmentV1],
+    ) -> Result<CatalogBindingV1, StorageStateError> {
+        if configuration_binding.as_bytes() == &[0; 32] || self.runtime_configuration.is_some() {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        self.initialize_catalog(generation, catalogs, Some(configuration_binding))
+    }
+
+    /// Validates current protected authority and the immutable genesis identity.
+    ///
+    /// The authenticated current head may legitimately be newer than the
+    /// static genesis after completed operations. Rollback is checked
+    /// separately by [`Self::open_root_owned`] against its monotonic minimum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageStateError::AuthorityLinkMismatch`] when protected
+    /// authority or genesis identity changed, and
+    /// [`StorageStateError::InvalidTransition`] when runtime configuration was
+    /// never bound.
+    pub fn validate_runtime_restart(
+        &self,
+        configuration_binding: ObjectDigest,
+        genesis_generation: u64,
+        genesis_catalogs: &[ResolvedCatalogCommitmentV1],
+    ) -> Result<CatalogBindingV1, StorageStateError> {
         self.ensure_authority_readable()?;
-        if !self.records.is_empty() {
+        let configured = self
+            .runtime_configuration
+            .ok_or(StorageStateError::InvalidTransition)?;
+        let expected_genesis = StorageCatalogTransitionProvider::bootstrap_binding(
+            genesis_generation,
+            genesis_catalogs,
+        )?;
+        if configured != configuration_binding
+            || self.catalog_transitions.genesis_binding() != Some(expected_genesis)
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        self.catalog_transitions
+            .head_binding()
+            .ok_or(StorageStateError::InvalidTransition)
+    }
+
+    /// Reports whether legacy pending state lacks the runtime binding.
+    ///
+    /// Such state may be observed for recovery but cannot authorize dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageStateError::Journal`] after a commit failure poisons
+    /// the cached authority view.
+    pub fn requires_legacy_recovery(&self) -> Result<bool, StorageStateError> {
+        self.ensure_authority_readable()?;
+        Ok(self.runtime_configuration.is_none()
+            && (!self.records.is_empty() || self.catalog_transitions.head_binding().is_some()))
+    }
+
+    fn initialize_catalog(
+        &mut self,
+        generation: u64,
+        catalogs: &[ResolvedCatalogCommitmentV1],
+        configuration_binding: Option<ObjectDigest>,
+    ) -> Result<CatalogBindingV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        if !self.is_strictly_unused() {
             return Err(StorageStateError::InvalidTransition);
         }
         let bootstrap = self.catalog_transitions.prepare_bootstrap(
@@ -630,9 +826,18 @@ impl StorageTransactionStore {
         if transaction_id == [0; 16] {
             transaction_id[15] = 1;
         }
-        let transaction = JournalTransaction::new(transaction_id, vec![bootstrap.record()])?;
+        let mut journal_records = Vec::with_capacity(2);
+        if let Some(configuration_binding) = configuration_binding {
+            journal_records.push(runtime_configuration_record(
+                &self.key,
+                configuration_binding,
+            )?);
+        }
+        journal_records.push(bootstrap.record());
+        let transaction = JournalTransaction::new(transaction_id, journal_records)?;
         self.commit_journal(&transaction)?;
         self.catalog_transitions.install_bootstrap(bootstrap);
+        self.runtime_configuration = configuration_binding.or(self.runtime_configuration);
         Ok(binding)
     }
 
@@ -713,6 +918,22 @@ impl StorageTransactionStore {
         let transaction = JournalTransaction::new(
             [240_u8.wrapping_add(namespace as u8); 16],
             vec![JournalRecord::delete(namespace, key.to_vec())],
+        )
+        .unwrap();
+        self.journal.commit(&transaction).unwrap();
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used)]
+    pub(crate) fn put_authority_record_for_test(
+        &mut self,
+        namespace: RecordNamespace,
+        key: &[u8],
+        value: Vec<u8>,
+    ) {
+        let transaction = JournalTransaction::new(
+            [230_u8.wrapping_add(namespace as u8); 16],
+            vec![JournalRecord::put(namespace, key.to_vec(), value)],
         )
         .unwrap();
         self.journal.commit(&transaction).unwrap();
@@ -1185,6 +1406,93 @@ fn committed_result_with_key(
     })
 }
 
+fn load_runtime_configuration(
+    journal: &Journal,
+    key: &StorageStateKey,
+) -> Result<Option<ObjectDigest>, StorageStateError> {
+    let mut records = journal.records(RecordNamespace::StorageRuntimeConfiguration);
+    let Some((record_key, bytes)) = records.next() else {
+        return Ok(None);
+    };
+    if record_key != RUNTIME_CONFIGURATION_KEY || records.next().is_some() {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    decode_runtime_configuration(key, bytes).map(Some)
+}
+
+fn runtime_configuration_record(
+    key: &StorageStateKey,
+    binding: ObjectDigest,
+) -> Result<JournalRecord, StorageStateError> {
+    if binding.as_bytes() == &[0; 32] {
+        return Err(StorageStateError::InvalidValue);
+    }
+    let mut bytes = Vec::with_capacity(90);
+    bytes.extend_from_slice(RUNTIME_CONFIGURATION_MAGIC);
+    bytes.extend_from_slice(&RUNTIME_CONFIGURATION_VERSION.to_be_bytes());
+    bytes.extend_from_slice(&key.key_id);
+    bytes.extend_from_slice(binding.as_bytes());
+    let tag = runtime_configuration_tag(key, &bytes)?;
+    bytes.extend_from_slice(&tag);
+    Ok(JournalRecord::put(
+        RecordNamespace::StorageRuntimeConfiguration,
+        RUNTIME_CONFIGURATION_KEY.to_vec(),
+        bytes,
+    ))
+}
+
+fn decode_runtime_configuration(
+    key: &StorageStateKey,
+    bytes: &[u8],
+) -> Result<ObjectDigest, StorageStateError> {
+    if bytes.len() != 90
+        || &bytes[..8] != RUNTIME_CONFIGURATION_MAGIC
+        || u16::from_be_bytes(
+            bytes[8..10]
+                .try_into()
+                .map_err(|_| StorageStateError::CorruptRecord)?,
+        ) != RUNTIME_CONFIGURATION_VERSION
+        || bytes[10..26] != key.key_id
+    {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    let payload = &bytes[..58];
+    runtime_configuration_mac(key, payload)?
+        .verify_slice(&bytes[58..])
+        .map_err(|_| StorageStateError::CorruptRecord)?;
+    let binding = ObjectDigest::from_bytes(
+        bytes[26..58]
+            .try_into()
+            .map_err(|_| StorageStateError::CorruptRecord)?,
+    );
+    if binding.as_bytes() == &[0; 32] {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    Ok(binding)
+}
+
+fn runtime_configuration_tag(
+    key: &StorageStateKey,
+    payload: &[u8],
+) -> Result<[u8; 32], StorageStateError> {
+    let mac = runtime_configuration_mac(key, payload)?;
+    Ok(mac.finalize().into_bytes().into())
+}
+
+fn runtime_configuration_mac(
+    key: &StorageStateKey,
+    payload: &[u8],
+) -> Result<HmacSha256, StorageStateError> {
+    let mut mac =
+        HmacSha256::new_from_slice(&key.secret).map_err(|_| StorageStateError::InvalidValue)?;
+    mac.update(RUNTIME_CONFIGURATION_DOMAIN);
+    mac.update(&[RecordNamespace::StorageRuntimeConfiguration as u8]);
+    mac.update(&(RUNTIME_CONFIGURATION_KEY.len() as u32).to_be_bytes());
+    mac.update(RUNTIME_CONFIGURATION_KEY);
+    mac.update(payload);
+    Ok(mac)
+}
+
 fn mint_resource_handle(
     key: &StorageStateKey,
     kind: u8,
@@ -1651,10 +1959,24 @@ mod tests {
     }
 
     fn catalog(generation: u64, destination_name: &str) -> ResolvedCatalogCommitmentV1 {
-        let root = ManagedDatasetRoot::from_catalog("tank", "tank/aos", 10).unwrap();
-        let ancestor_dataset =
-            ResolvedDataset::from_catalog(root.clone(), "tank/aos/project", 15, [1; 32], domains())
-                .unwrap();
+        catalog_with_physical_identity(generation, destination_name, 10, 15)
+    }
+
+    fn catalog_with_physical_identity(
+        generation: u64,
+        destination_name: &str,
+        root_guid: u64,
+        ancestor_guid: u64,
+    ) -> ResolvedCatalogCommitmentV1 {
+        let root = ManagedDatasetRoot::from_catalog("tank", "tank/aos", root_guid).unwrap();
+        let ancestor_dataset = ResolvedDataset::from_catalog(
+            root.clone(),
+            "tank/aos/project",
+            ancestor_guid,
+            [1; 32],
+            domains(),
+        )
+        .unwrap();
         let ancestor = ProjectAncestorPolicyV1::new(ancestor_dataset, 65_536, 8, 16).unwrap();
         let destination = PlannedDataset::from_catalog(root, destination_name, domains()).unwrap();
         let space = WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1024)).unwrap();
@@ -1743,6 +2065,236 @@ mod tests {
         drop(equal);
         assert!(matches!(
             StorageTransactionStore::open_for_test(directory.path(), key(1), 7),
+            Err(StorageStateError::Rollback)
+        ));
+    }
+
+    #[test]
+    fn runtime_open_initializes_only_unused_state_at_a_valid_floor() {
+        let directory = TempDir::new().unwrap();
+        let catalog = catalog(7, "tank/aos/project/work");
+        let configuration_binding = digest(93);
+
+        assert!(matches!(
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 6),
+            Err(StorageStateError::Rollback)
+        ));
+
+        let initialized = StorageTransactionStore::open_runtime_for_test(
+            directory.path(),
+            key(1),
+            5,
+            configuration_binding,
+            6,
+            std::slice::from_ref(&catalog),
+        )
+        .unwrap();
+        assert_eq!(
+            initialized
+                .validate_runtime_restart(configuration_binding, 6, std::slice::from_ref(&catalog),)
+                .unwrap()
+                .generation(),
+            6
+        );
+        drop(initialized);
+
+        assert!(matches!(
+            StorageTransactionStore::open_runtime_for_test(
+                directory.path(),
+                key(1),
+                7,
+                configuration_binding,
+                6,
+                std::slice::from_ref(&catalog),
+            ),
+            Err(StorageStateError::Rollback)
+        ));
+    }
+
+    #[test]
+    fn runtime_open_rejects_a_new_genesis_below_the_protected_floor() {
+        let directory = TempDir::new().unwrap();
+        let catalog = catalog(7, "tank/aos/project/work");
+        let configuration_binding = digest(94);
+
+        assert!(matches!(
+            StorageTransactionStore::open_runtime_for_test(
+                directory.path(),
+                key(1),
+                7,
+                configuration_binding,
+                6,
+                std::slice::from_ref(&catalog),
+            ),
+            Err(StorageStateError::Rollback)
+        ));
+
+        let initialized = StorageTransactionStore::open_runtime_for_test(
+            directory.path(),
+            key(1),
+            6,
+            configuration_binding,
+            6,
+            std::slice::from_ref(&catalog),
+        )
+        .unwrap();
+        assert!(
+            initialized
+                .validate_runtime_restart(configuration_binding, 6, std::slice::from_ref(&catalog),)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn runtime_open_never_bootstraps_authority_only_or_deleted_history() {
+        for delete_authority in [false, true] {
+            let directory = TempDir::new().unwrap();
+            let catalog = catalog(7, "tank/aos/project/work");
+            let configuration_binding = digest(101);
+            {
+                let mut store =
+                    StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+                store
+                    .commit_journal(
+                        &JournalTransaction::new(
+                            [102; 16],
+                            vec![JournalRecord::put(
+                                RecordNamespace::DesiredState,
+                                vec![103; 16],
+                                b"retained-authority".to_vec(),
+                            )],
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                if delete_authority {
+                    store
+                        .commit_journal(
+                            &JournalTransaction::new(
+                                [104; 16],
+                                vec![JournalRecord::delete(
+                                    RecordNamespace::DesiredState,
+                                    vec![103; 16],
+                                )],
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                }
+            }
+
+            assert!(matches!(
+                StorageTransactionStore::open_runtime_for_test(
+                    directory.path(),
+                    key(1),
+                    6,
+                    configuration_binding,
+                    6,
+                    std::slice::from_ref(&catalog),
+                ),
+                Err(StorageStateError::Rollback)
+            ));
+        }
+    }
+
+    #[test]
+    fn runtime_restart_binds_configuration_and_genesis_while_the_floor_advances() {
+        let directory = TempDir::new().unwrap();
+        let genesis_catalog = catalog(7, "tank/aos/project/work");
+        let equivalent_planned_destination = catalog(7, "tank/aos/project/substituted");
+        let substituted_genesis =
+            catalog_with_physical_identity(7, "tank/aos/project/work", 12, 15);
+        let configuration_binding = digest(95);
+        let operation_id = [96; 16];
+        let request_digest = digest(97);
+
+        let result = {
+            let mut store = StorageTransactionStore::open_runtime_for_test(
+                directory.path(),
+                key(1),
+                6,
+                configuration_binding,
+                6,
+                std::slice::from_ref(&genesis_catalog),
+            )
+            .unwrap();
+            assert!(matches!(
+                store.validate_runtime_restart(
+                    digest(98),
+                    6,
+                    std::slice::from_ref(&genesis_catalog),
+                ),
+                Err(StorageStateError::AuthorityLinkMismatch)
+            ));
+            assert!(matches!(
+                store.validate_runtime_restart(
+                    configuration_binding,
+                    6,
+                    std::slice::from_ref(&substituted_genesis),
+                ),
+                Err(StorageStateError::AuthorityLinkMismatch)
+            ));
+            assert!(
+                store
+                    .validate_runtime_restart(
+                        configuration_binding,
+                        6,
+                        std::slice::from_ref(&equivalent_planned_destination),
+                    )
+                    .is_ok()
+            );
+
+            let BeginStorageTransaction::Prepared { mutation_digest } = store
+                .begin(operation_id, request_digest, &genesis_catalog)
+                .unwrap()
+            else {
+                panic!("runtime fixture did not prepare the physical transition")
+            };
+            store
+                .mark_mutation_ambiguous(operation_id, mutation_digest)
+                .unwrap();
+            store
+                .commit_observed(
+                    operation_id,
+                    mutation_digest,
+                    &genesis_catalog,
+                    &genesis_catalog.plan().postcondition(),
+                    Some(99),
+                    digest(100),
+                )
+                .unwrap()
+        };
+        assert_eq!(result.catalog().generation(), 8);
+
+        let restarted = StorageTransactionStore::open_runtime_for_test(
+            directory.path(),
+            key(1),
+            8,
+            configuration_binding,
+            6,
+            std::slice::from_ref(&genesis_catalog),
+        )
+        .unwrap();
+        assert!(
+            restarted
+                .validate_runtime_restart(
+                    configuration_binding,
+                    6,
+                    std::slice::from_ref(&genesis_catalog),
+                )
+                .is_ok()
+        );
+        drop(restarted);
+
+        assert!(matches!(
+            StorageTransactionStore::open_runtime_for_test(
+                directory.path(),
+                key(1),
+                9,
+                configuration_binding,
+                6,
+                std::slice::from_ref(&genesis_catalog),
+            ),
             Err(StorageStateError::Rollback)
         ));
     }

@@ -50,6 +50,7 @@ fn authenticated_codec_round_trips_each_typed_envelope() {
     let key_id = [31; 16];
     let secret = [32; 32];
     let empty = StorageCatalogTransitionProvider {
+        genesis: None,
         head: None,
         reservations: BTreeMap::new(),
         transitions: BTreeMap::new(),
@@ -63,6 +64,7 @@ fn authenticated_codec_round_trips_each_typed_envelope() {
     assert_eq!(decoded_head.genesis_state, Some(state.wire.clone()));
 
     let mut provider = StorageCatalogTransitionProvider {
+        genesis: Some(state.binding),
         head: Some(state.clone()),
         reservations: BTreeMap::new(),
         transitions: BTreeMap::new(),

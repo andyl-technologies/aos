@@ -334,6 +334,12 @@ impl OwnershipLeaseTrustAnchor {
             public_key,
         })
     }
+
+    /// Returns the exact configured ownership-authority key generation.
+    #[must_use]
+    pub const fn authority(&self) -> &KeyReference {
+        &self.authority
+    }
 }
 
 /// Supplies local facts signed lease authority must match.

@@ -4470,6 +4470,43 @@ Storage Apply advertisement also remain unimplemented. The real worker VM
 handles are still pre-QEMU, so neither the production mutation boundary nor
 `SBX-P0-07` has runtime qualification. Both tasks remain open.
 
+### Protected Storage runtime construction (in progress)
+
+The Storage runtime now reads protected broker authority and its journal key
+from one retained directory descriptor and persists a non-secret binding over
+the exact audience, trust policies, selected public keys, revocation scope,
+node, and journal key ID. A locked runtime-specific state opener distinguishes
+a physically unused journal from any retained or deleted history. First boot
+atomically commits that binding with the complete protected physical genesis
+only when the genesis satisfies the separate monotonic minimum; every nonempty
+restart instead authenticates the current head against the minimum and checks
+the immutable genesis and protected configuration. This single read does not
+make replacement of the separate credential files an atomic live-rotation
+protocol; provisioning must publish a complete directory before restart.
+
+Prepared effects re-open their exact durable operation fence, effect intent,
+current assignment fence, and catalog semantics after physical
+pre-observation. Trusted time is checked immediately before Ambiguous and again
+after its durable commit. A superseded current fence prevents dispatch while
+the record remains Prepared; failure or exact expiry at the second clock sample
+leaves Ambiguous and recovery performs observation only. Runtime construction
+also runs observation-only startup recovery, but an empty recovery queue is
+classified as integration-incomplete. Storage Apply remains unadvertised until
+the root-pin materializer, workspace publication, catalog ingress, service
+transport, and their startup proof are composed.
+
+The current Storage library suite passes 74 tests with one real-systemd test
+ignored. Focused coverage includes first-boot versus rollback-floor handling,
+authority-only and deleted journal history, protected binding and physical
+genesis substitution, an evolved current head above the static genesis,
+superseded current authority after pre-observation, and both source failure and
+actual deadline expiry at the second clock sample with zero mutation dispatch.
+The broker configuration regression independently changes every public-binding
+input. Crate-local all-target Clippy without dependency linting passes with
+warnings denied; warning-denied rustdoc, Rust formatting, and diff whitespace
+checks also pass. The ignored systemd test and the long-running worker builds
+provide no guest qualification, so `SBX-STOR-01` and `SBX-P0-07` remain open.
+
 ### Canonical Network kernel plan (in progress)
 
 The Network broker can now compile one exact assignment, namespace allocation,

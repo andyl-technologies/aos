@@ -14,8 +14,8 @@
 
 use aos_proto::aos::sandbox::local::v1::{ApplyStorageRequest, StorageAction};
 use aos_sandbox_core::{
-    BrokerArgumentCommitment, BrokerGrantTarget, BrokerResourceHandle, BrokerVerb, ObjectDigest,
-    ProtocolId,
+    BrokerArgumentCommitment, BrokerAssignment, BrokerGrantTarget, BrokerResourceHandle,
+    BrokerVerb, ObjectDigest, ProtocolId,
 };
 use buffa::Message as _;
 
@@ -150,6 +150,54 @@ impl StorageOperation {
         }
     }
 
+    /// Returns the exact authority grant target for this operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageSemanticsError::InvalidActionShape`] when an
+    /// existing-resource operation contains the reserved zero handle.
+    pub fn grant_target(self) -> Result<BrokerGrantTarget, StorageSemanticsError> {
+        match self.storage_handle() {
+            None => Ok(BrokerGrantTarget::Assignment),
+            Some(handle) => BrokerResourceHandle::from_bytes(handle)
+                .map(BrokerGrantTarget::Resource)
+                .map_err(|_| StorageSemanticsError::InvalidActionShape),
+        }
+    }
+
+    /// Reconstructs the canonical persisted-effect commitment.
+    ///
+    /// This is the same encoder used for live request admission. It lets a
+    /// broker bind an authenticated durable effect back to its assignment,
+    /// operation, and opaque catalog immediately before dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageSemanticsError`] for a zero operation identity,
+    /// invalid resource target, or canonical-size overflow.
+    pub fn persisted_argument_commitment(
+        self,
+        assignment: BrokerAssignment,
+        operation_id: [u8; 16],
+        catalog: CatalogBindingV1,
+    ) -> Result<BrokerArgumentCommitment, StorageSemanticsError> {
+        if operation_id == [0; 16] {
+            return Err(StorageSemanticsError::InvalidActionShape);
+        }
+        self.grant_target()?;
+        let bytes = encode_canonical(
+            *assignment.sandbox().as_bytes(),
+            *assignment.incarnation().as_bytes(),
+            assignment.epoch().get(),
+            assignment.desired_generation().get(),
+            *assignment.digest().as_bytes(),
+            operation_id,
+            self,
+            catalog,
+        )?;
+        Ok(BrokerArgumentCommitment::for_canonical_bytes(&bytes))
+    }
+
     const fn action_code(self) -> u8 {
         match self {
             Self::CreateWorkspace { .. } => 1,
@@ -271,29 +319,17 @@ impl CanonicalStorageSemanticsV1 {
             .filter(|value| *value != StorageAction::STORAGE_ACTION_UNSPECIFIED)
             .ok_or(ProtocolValidationError::UnknownAction)?;
         let operation = operation_for(action, storage, version, request.quota_bytes)?;
-        let target = match operation.storage_handle() {
-            None => BrokerGrantTarget::Assignment,
-            Some(handle) => BrokerGrantTarget::Resource(
-                BrokerResourceHandle::from_bytes(handle)
-                    .map_err(|_| StorageSemanticsError::InvalidActionShape)?,
-            ),
-        };
-        let mut encoder = Encoder::new();
-        encoder.field(1, FORMAT_MAGIC)?;
-        encoder.field(2, &FORMAT_VERSION.to_be_bytes())?;
-        encoder.field(3, &[operation.action_code()])?;
-        encoder.field(4, &sandbox_id)?;
-        encoder.field(5, &incarnation_id)?;
-        encoder.field(6, &fence.assignment_epoch.to_be_bytes())?;
-        encoder.field(7, &fence.desired_generation.to_be_bytes())?;
-        encoder.field(8, &assignment_digest)?;
-        encoder.field(9, &operation_id)?;
-        encoder.optional_fixed(10, operation.storage_handle().as_ref())?;
-        encoder.optional_fixed(11, operation.version_handle().as_ref())?;
-        encoder.field(12, &operation.quota_bytes().to_be_bytes())?;
-        encoder.field(13, &catalog.generation().to_be_bytes())?;
-        encoder.field(14, catalog.digest().as_bytes())?;
-        let bytes = encoder.finish();
+        let target = operation.grant_target()?;
+        let bytes = encode_canonical(
+            sandbox_id,
+            incarnation_id,
+            fence.assignment_epoch,
+            fence.desired_generation,
+            assignment_digest,
+            operation_id,
+            operation,
+            catalog,
+        )?;
         let commitment = BrokerArgumentCommitment::for_canonical_bytes(&bytes);
         Ok(Self {
             header,
@@ -346,6 +382,35 @@ impl CanonicalStorageSemanticsV1 {
     pub const fn catalog_binding(&self) -> CatalogBindingV1 {
         self.catalog
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_canonical(
+    sandbox_id: [u8; 16],
+    incarnation_id: [u8; 16],
+    assignment_epoch: u64,
+    desired_generation: u64,
+    assignment_digest: [u8; 32],
+    operation_id: [u8; 16],
+    operation: StorageOperation,
+    catalog: CatalogBindingV1,
+) -> Result<Vec<u8>, StorageSemanticsError> {
+    let mut encoder = Encoder::new();
+    encoder.field(1, FORMAT_MAGIC)?;
+    encoder.field(2, &FORMAT_VERSION.to_be_bytes())?;
+    encoder.field(3, &[operation.action_code()])?;
+    encoder.field(4, &sandbox_id)?;
+    encoder.field(5, &incarnation_id)?;
+    encoder.field(6, &assignment_epoch.to_be_bytes())?;
+    encoder.field(7, &desired_generation.to_be_bytes())?;
+    encoder.field(8, &assignment_digest)?;
+    encoder.field(9, &operation_id)?;
+    encoder.optional_fixed(10, operation.storage_handle().as_ref())?;
+    encoder.optional_fixed(11, operation.version_handle().as_ref())?;
+    encoder.field(12, &operation.quota_bytes().to_be_bytes())?;
+    encoder.field(13, &catalog.generation().to_be_bytes())?;
+    encoder.field(14, catalog.digest().as_bytes())?;
+    Ok(encoder.finish())
 }
 
 fn operation_for(

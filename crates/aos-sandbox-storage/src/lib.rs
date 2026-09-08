@@ -33,11 +33,15 @@ mod helper;
 mod observation;
 pub mod process;
 pub mod request;
+pub mod runtime;
 pub mod state;
 pub mod workspace_catalog;
 pub mod zfs;
 
-pub use authorization::{StorageAdmissionError, StorageAuthorityConfigError, StorageAuthorityV1};
+pub use authorization::{
+    StorageAdmissionError, StorageAuthorityConfigError, StorageAuthorityV1,
+    StorageProtectedConfigurationV1,
+};
 pub use broker::{
     StorageAdmissionCoordinator, StorageAdmissionOutcome, StorageBrokerError,
     advertised_storage_methods,
@@ -54,6 +58,10 @@ pub use process::{
 pub use request::{
     CanonicalStorageSemanticsV1, CatalogBindingV1, StorageOperation, StorageRequestError,
     StorageSemanticsError, decode_resolved,
+};
+pub use runtime::{
+    StorageBrokerRuntime, StorageRuntimeError, StorageRuntimeMutationOutcome,
+    StorageRuntimeReadiness,
 };
 pub use state::{
     BeginStorageTransaction, CommittedStorageResultV1, DurableStoragePhase, StorageRecoveryEntry,

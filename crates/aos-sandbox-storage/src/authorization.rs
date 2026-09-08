@@ -10,7 +10,8 @@ use std::path::Path;
 use aos_proto::aos::sandbox::local::v1::ApplyStorageRequest;
 use aos_sandbox_broker::{
     AdmissionRequest, BrokerAdmissionError, BrokerAuthority, BrokerAuthorityConfigError,
-    BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV2, VerifiedBrokerAdmission,
+    BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV2,
+    ProtectedBrokerAuthorityConfiguration, VerifiedBrokerAdmission,
 };
 use aos_sandbox_core::{
     AssignmentEpoch, BrokerAssignment, BrokerAudience, BrokerPlanTrustAnchor, DesiredGeneration,
@@ -21,10 +22,61 @@ use aos_sandbox_protocol::semantics::storage::CanonicalStorageSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use buffa::Message as _;
 
+use crate::StorageStateKey;
+
 /// Storage-audience alias for protected authority configuration failures.
 pub type StorageAuthorityConfigError = BrokerAuthorityConfigError;
 /// Storage-audience alias for signed admission failures.
 pub type StorageAdmissionError = BrokerAdmissionError;
+
+/// Couples Storage authority and durable-state authentication from one read.
+///
+/// The protected directory remains a restart-time configuration boundary. It
+/// must be provisioned completely before startup rather than edited in place.
+pub struct StorageProtectedConfigurationV1 {
+    authority: StorageAuthorityV1,
+    state_key: StorageStateKey,
+    public_binding: ObjectDigest,
+}
+
+impl StorageProtectedConfigurationV1 {
+    /// Loads Storage authority and its matching state key together.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageAuthorityConfigError`] when protected configuration is
+    /// missing, insecure, malformed, oversized, or internally inconsistent.
+    pub fn from_protected_directory(
+        path: impl AsRef<Path>,
+    ) -> Result<Self, StorageAuthorityConfigError> {
+        let configuration = ProtectedBrokerAuthorityConfiguration::from_protected_directory(
+            path,
+            BrokerDomain::Storage,
+        )?;
+        let public_binding = configuration.public_binding();
+        let (authority, key_id, secret) = configuration.into_parts();
+        let state_key = StorageStateKey::new(key_id, *secret)
+            .map_err(|_| StorageAuthorityConfigError::Invalid("journal-mac-key"))?;
+
+        Ok(Self {
+            authority: StorageAuthorityV1(authority),
+            state_key,
+            public_binding,
+        })
+    }
+
+    /// Separates the coupled configuration for lifetime-owned runtime state.
+    #[must_use]
+    pub fn into_parts(self) -> (StorageAuthorityV1, StorageStateKey, ObjectDigest) {
+        (self.authority, self.state_key, self.public_binding)
+    }
+
+    /// Returns the non-secret binding persisted with Storage runtime state.
+    #[must_use]
+    pub const fn public_binding(&self) -> ObjectDigest {
+        self.public_binding
+    }
+}
 
 /// Groups the three location-bound records committed with one Storage intent.
 pub(crate) struct SealedStorageAdmission {
@@ -143,6 +195,24 @@ impl StorageAuthorityV1 {
         bytes: &[u8],
     ) -> Result<BrokerEffectIntentV2, StorageAdmissionError> {
         self.0.open_effect(request_id, bytes)
+    }
+
+    pub(crate) fn check_before_effect<F>(
+        &self,
+        effect: &BrokerEffectIntentV2,
+        trusted_clock: &mut F,
+    ) -> Result<(), StorageAdmissionError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        self.0.check_before_effect(effect, trusted_clock)
+    }
+
+    pub(crate) fn check_current_fence(
+        &self,
+        fence: &BrokerAuthorizationFenceV1,
+    ) -> Result<(), StorageAdmissionError> {
+        self.0.check_current_fence(fence)
     }
 }
 

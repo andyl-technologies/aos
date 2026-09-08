@@ -423,6 +423,7 @@ impl PreparedCatalogTransition {
 
 #[derive(Debug)]
 pub(crate) struct StorageCatalogTransitionProvider {
+    genesis: Option<CatalogBindingV1>,
     head: Option<PhysicalCatalogState>,
     reservations: BTreeMap<[u8; 16], CatalogReservation>,
     transitions: BTreeMap<[u8; 16], TransitionPayload>,
@@ -500,8 +501,10 @@ impl StorageCatalogTransitionProvider {
             &reservations,
             &transitions,
         )?;
+        let genesis = genesis_binding(head_payload.as_ref(), &reservations, &transitions)?;
 
         Ok(Self {
+            genesis,
             head,
             reservations,
             transitions,
@@ -535,7 +538,19 @@ impl StorageCatalogTransitionProvider {
         self.head.as_ref().map(PhysicalCatalogState::binding)
     }
 
+    pub(crate) const fn genesis_binding(&self) -> Option<CatalogBindingV1> {
+        self.genesis
+    }
+
+    pub(crate) fn bootstrap_binding(
+        generation: u64,
+        catalogs: &[ResolvedCatalogCommitmentV1],
+    ) -> Result<CatalogBindingV1, StorageStateError> {
+        PhysicalCatalogState::bootstrap(generation, catalogs).map(|state| state.binding)
+    }
+
     pub(crate) fn install_bootstrap(&mut self, bootstrap: PreparedCatalogBootstrap) {
+        self.genesis = Some(bootstrap.state.binding());
         self.head = Some(bootstrap.state);
     }
 
@@ -822,6 +837,34 @@ impl StorageCatalogTransitionProvider {
             Ok(())
         }
     }
+}
+
+fn genesis_binding(
+    head: Option<&HeadPayload>,
+    reservations: &BTreeMap<[u8; 16], CatalogReservation>,
+    transitions: &BTreeMap<[u8; 16], TransitionPayload>,
+) -> Result<Option<CatalogBindingV1>, StorageStateError> {
+    let Some(head) = head else {
+        return Ok(None);
+    };
+    if head.genesis_state.is_some() {
+        return head.binding.binding().map(Some);
+    }
+
+    let transition_results = transitions
+        .values()
+        .map(|transition| transition.result.binding())
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut roots = reservations
+        .values()
+        .filter(|reservation| transitions.contains_key(&reservation.payload.operation_id))
+        .filter(|reservation| !transition_results.contains(&reservation.predecessor.binding))
+        .map(|reservation| reservation.predecessor.binding);
+    let root = roots.next().ok_or(StorageStateError::CorruptRecord)?;
+    if roots.next().is_some() {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    Ok(Some(root))
 }
 
 fn capture_guid(plan: &CatalogPlanV1) -> bool {

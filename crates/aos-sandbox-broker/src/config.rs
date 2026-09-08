@@ -64,6 +64,66 @@ pub enum BrokerAuthorityConfigError {
     Invalid(&'static str),
 }
 
+/// Holds one protected authority and the journal key read with it.
+///
+/// Audience crates that authenticate their own durable records should consume
+/// this value once and construct both objects from the same protected read.
+/// The loader does not support live in-place rotation: provision the complete
+/// directory before startup and restart the broker to rotate it.
+pub struct ProtectedBrokerAuthorityConfiguration {
+    authority: BrokerAuthority,
+    public_binding: ObjectDigest,
+    journal_key_id: [u8; 16],
+    journal_secret: Zeroizing<[u8; 32]>,
+}
+
+impl ProtectedBrokerAuthorityConfiguration {
+    /// Loads one protected fixed-file configuration snapshot.
+    ///
+    /// Every child is opened relative to the same retained root directory.
+    /// This guarantees that the returned authority and journal key use the
+    /// same bytes; it does not make concurrent replacement of multiple child
+    /// files an atomic rotation protocol.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerAuthorityConfigError`] when the directory or any fixed
+    /// child is absent, insecure, malformed, oversized, or inconsistent.
+    pub fn from_protected_directory(
+        path: impl AsRef<Path>,
+        domain: BrokerDomain,
+    ) -> Result<Self, BrokerAuthorityConfigError> {
+        let directory = open(
+            path.as_ref(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|source| filesystem("directory", source))?;
+        validate_directory(&directory)?;
+
+        load_from_directory(&directory, domain)
+    }
+
+    /// Separates the authority and its exact journal-key bytes.
+    ///
+    /// The returned secret must be transferred immediately into an
+    /// audience-specific zeroizing key owner.
+    #[must_use]
+    pub fn into_parts(self) -> (BrokerAuthority, [u8; 16], Zeroizing<[u8; 32]>) {
+        (self.authority, self.journal_key_id, self.journal_secret)
+    }
+
+    /// Returns the non-secret binding of the complete protected authority.
+    ///
+    /// The binding covers the domain, exact trust policies and selected public
+    /// keys, revocation scope, node identity, and journal key identifier. It
+    /// deliberately excludes the journal secret.
+    #[must_use]
+    pub const fn public_binding(&self) -> ObjectDigest {
+        self.public_binding
+    }
+}
+
 impl BrokerAuthority {
     /// Loads authority exclusively from a protected root-owned directory.
     ///
@@ -81,77 +141,128 @@ impl BrokerAuthority {
         path: impl AsRef<Path>,
         domain: BrokerDomain,
     ) -> Result<Self, BrokerAuthorityConfigError> {
-        let directory = open(
-            path.as_ref(),
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|source| filesystem("directory", source))?;
-        validate_directory(&directory)?;
-
-        let plan_policy = read_protected(&directory, PLAN_POLICY_FILE, MAXIMUM_POLICY_BYTES)?;
-        let plan_public_key = read_exact::<32>(&directory, PLAN_PUBLIC_KEY_FILE)?;
-        let revocation_scope = read_exact::<16>(&directory, PLAN_REVOCATION_SCOPE_FILE)?;
-        let lease_policy = read_protected(&directory, LEASE_POLICY_FILE, MAXIMUM_POLICY_BYTES)?;
-        let lease_public_key = read_exact::<32>(&directory, LEASE_PUBLIC_KEY_FILE)?;
-        let node = read_exact::<16>(&directory, NODE_ID_FILE)?;
-        let journal_key = Zeroizing::new(read_exact::<48>(&directory, JOURNAL_MAC_KEY_FILE)?);
-
-        let plan_signer = select_policy_key(
-            &plan_policy,
-            &plan_public_key,
-            SignaturePurpose::BrokerAuthorization,
-            KeyUsage::BrokerAuthorization,
-        )?;
-        let lease_authority = select_policy_key(
-            &lease_policy,
-            &lease_public_key,
-            SignaturePurpose::OwnershipLease,
-            KeyUsage::OwnershipLease,
-        )?;
-        let plan_policy_model = decode_trust_policy(&plan_policy, policy_limits())
-            .map_err(|_| BrokerAuthorityConfigError::Invalid(PLAN_POLICY_FILE))?;
-        let lease_policy_model = decode_trust_policy(&lease_policy, policy_limits())
-            .map_err(|_| BrokerAuthorityConfigError::Invalid(LEASE_POLICY_FILE))?;
-        let policy_media_type = MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned())
-            .map_err(|_| BrokerAuthorityConfigError::Invalid("trust-policy media type"))?;
-        let plan_descriptor = descriptor_for_bytes(policy_media_type.clone(), &plan_policy);
-        let lease_descriptor = descriptor_for_bytes(policy_media_type, &lease_policy);
-
-        let plan_anchor = BrokerPlanTrustAnchor::from_trusted_configuration(
-            plan_policy,
-            plan_descriptor,
-            plan_policy_model.trust_scope(),
-            plan_signer,
-            plan_public_key,
-            RevocationScopeId::from_bytes(revocation_scope),
-            policy_limits(),
-        )
-        .map_err(|_| BrokerAuthorityConfigError::Invalid("broker plan trust anchor"))?;
-        let lease_anchor = OwnershipLeaseTrustAnchor::from_trusted_configuration(
-            lease_policy,
-            lease_descriptor,
-            lease_policy_model.trust_scope(),
-            lease_authority,
-            lease_public_key,
-            policy_limits(),
-        )
-        .map_err(|_| BrokerAuthorityConfigError::Invalid("ownership lease trust anchor"))?;
-        let (journal_key_id, journal_secret) = journal_key.split_at(16);
-        Self::new(
-            domain,
-            plan_anchor,
-            lease_anchor,
-            NodeId::from_bytes(node),
-            journal_key_id
-                .try_into()
-                .map_err(|_| BrokerAuthorityConfigError::Invalid(JOURNAL_MAC_KEY_FILE))?,
-            journal_secret
-                .try_into()
-                .map_err(|_| BrokerAuthorityConfigError::Invalid(JOURNAL_MAC_KEY_FILE))?,
-        )
-        .map_err(|_| BrokerAuthorityConfigError::Invalid("broker authority"))
+        ProtectedBrokerAuthorityConfiguration::from_protected_directory(path, domain)
+            .map(|configuration| configuration.authority)
     }
+}
+
+fn load_from_directory(
+    directory: &OwnedFd,
+    domain: BrokerDomain,
+) -> Result<ProtectedBrokerAuthorityConfiguration, BrokerAuthorityConfigError> {
+    let plan_policy = read_protected(directory, PLAN_POLICY_FILE, MAXIMUM_POLICY_BYTES)?;
+    let plan_public_key = read_exact::<32>(directory, PLAN_PUBLIC_KEY_FILE)?;
+    let revocation_scope = read_exact::<16>(directory, PLAN_REVOCATION_SCOPE_FILE)?;
+    let lease_policy = read_protected(directory, LEASE_POLICY_FILE, MAXIMUM_POLICY_BYTES)?;
+    let lease_public_key = read_exact::<32>(directory, LEASE_PUBLIC_KEY_FILE)?;
+    let node = read_exact::<16>(directory, NODE_ID_FILE)?;
+    let journal_key = Zeroizing::new(read_exact::<48>(directory, JOURNAL_MAC_KEY_FILE)?);
+
+    let plan_signer = select_policy_key(
+        &plan_policy,
+        &plan_public_key,
+        SignaturePurpose::BrokerAuthorization,
+        KeyUsage::BrokerAuthorization,
+    )?;
+    let lease_authority = select_policy_key(
+        &lease_policy,
+        &lease_public_key,
+        SignaturePurpose::OwnershipLease,
+        KeyUsage::OwnershipLease,
+    )?;
+    let plan_policy_model = decode_trust_policy(&plan_policy, policy_limits())
+        .map_err(|_| BrokerAuthorityConfigError::Invalid(PLAN_POLICY_FILE))?;
+    let lease_policy_model = decode_trust_policy(&lease_policy, policy_limits())
+        .map_err(|_| BrokerAuthorityConfigError::Invalid(LEASE_POLICY_FILE))?;
+    let policy_media_type = MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned())
+        .map_err(|_| BrokerAuthorityConfigError::Invalid("trust-policy media type"))?;
+    let plan_descriptor = descriptor_for_bytes(policy_media_type.clone(), &plan_policy);
+    let lease_descriptor = descriptor_for_bytes(policy_media_type, &lease_policy);
+    let journal_key_id = journal_key[..16]
+        .try_into()
+        .map_err(|_| BrokerAuthorityConfigError::Invalid(JOURNAL_MAC_KEY_FILE))?;
+    let journal_secret = Zeroizing::new(
+        journal_key[16..]
+            .try_into()
+            .map_err(|_| BrokerAuthorityConfigError::Invalid(JOURNAL_MAC_KEY_FILE))?,
+    );
+    let public_binding = protected_configuration_binding(
+        domain,
+        &plan_policy,
+        &plan_public_key,
+        &revocation_scope,
+        &lease_policy,
+        &lease_public_key,
+        &node,
+        &journal_key_id,
+    );
+
+    let plan_anchor = BrokerPlanTrustAnchor::from_trusted_configuration(
+        plan_policy,
+        plan_descriptor,
+        plan_policy_model.trust_scope(),
+        plan_signer,
+        plan_public_key,
+        RevocationScopeId::from_bytes(revocation_scope),
+        policy_limits(),
+    )
+    .map_err(|_| BrokerAuthorityConfigError::Invalid("broker plan trust anchor"))?;
+    let lease_anchor = OwnershipLeaseTrustAnchor::from_trusted_configuration(
+        lease_policy,
+        lease_descriptor,
+        lease_policy_model.trust_scope(),
+        lease_authority,
+        lease_public_key,
+        policy_limits(),
+    )
+    .map_err(|_| BrokerAuthorityConfigError::Invalid("ownership lease trust anchor"))?;
+    let authority = BrokerAuthority::new(
+        domain,
+        plan_anchor,
+        lease_anchor,
+        NodeId::from_bytes(node),
+        journal_key_id,
+        *journal_secret,
+    )
+    .map_err(|_| BrokerAuthorityConfigError::Invalid("broker authority"))?;
+
+    Ok(ProtectedBrokerAuthorityConfiguration {
+        authority,
+        public_binding,
+        journal_key_id,
+        journal_secret,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn protected_configuration_binding(
+    domain: BrokerDomain,
+    plan_policy: &[u8],
+    plan_public_key: &[u8; 32],
+    revocation_scope: &[u8; 16],
+    lease_policy: &[u8],
+    lease_public_key: &[u8; 32],
+    node: &[u8; 16],
+    journal_key_id: &[u8; 16],
+) -> ObjectDigest {
+    let mut hash = Sha256::new();
+    hash.update(b"aos.sandbox.broker.protected-configuration.v1\0");
+    hash.update([match domain {
+        BrokerDomain::Host => 1,
+        BrokerDomain::Mount => 2,
+        BrokerDomain::Storage => 3,
+        BrokerDomain::Network => 4,
+    }]);
+    hash.update((plan_policy.len() as u64).to_be_bytes());
+    hash.update(plan_policy);
+    hash.update(plan_public_key);
+    hash.update(revocation_scope);
+    hash.update((lease_policy.len() as u64).to_be_bytes());
+    hash.update(lease_policy);
+    hash.update(lease_public_key);
+    hash.update(node);
+    hash.update(journal_key_id);
+    ObjectDigest::from_bytes(hash.finalize().into())
 }
 
 fn validate_directory(directory: &OwnedFd) -> Result<(), BrokerAuthorityConfigError> {
@@ -169,7 +280,9 @@ fn read_exact<const N: usize>(
     directory: &OwnedFd,
     name: &'static str,
 ) -> Result<[u8; N], BrokerAuthorityConfigError> {
-    let bytes = Zeroizing::new(read_protected(directory, name, N)?);
+    let (fd, declared_size) = open_protected(directory, name, N)?;
+    let mut bytes = Zeroizing::new(Vec::with_capacity(declared_size));
+    read_bounded(fd, name, N, declared_size, &mut bytes)?;
     bytes
         .as_slice()
         .try_into()
@@ -181,6 +294,17 @@ fn read_protected(
     name: &'static str,
     maximum_bytes: usize,
 ) -> Result<Vec<u8>, BrokerAuthorityConfigError> {
+    let (fd, declared_size) = open_protected(directory, name, maximum_bytes)?;
+    let mut bytes = Vec::with_capacity(declared_size);
+    read_bounded(fd, name, maximum_bytes, declared_size, &mut bytes)?;
+    Ok(bytes)
+}
+
+fn open_protected(
+    directory: &OwnedFd,
+    name: &'static str,
+    maximum_bytes: usize,
+) -> Result<(OwnedFd, usize), BrokerAuthorityConfigError> {
     let fd = openat(
         directory,
         name,
@@ -202,10 +326,19 @@ fn read_protected(
         return Err(BrokerAuthorityConfigError::Invalid(name));
     }
 
-    let mut bytes = Vec::with_capacity(declared_size);
+    Ok((fd, declared_size))
+}
+
+fn read_bounded(
+    fd: OwnedFd,
+    name: &'static str,
+    maximum_bytes: usize,
+    declared_size: usize,
+    bytes: &mut Vec<u8>,
+) -> Result<(), BrokerAuthorityConfigError> {
     std::fs::File::from(fd)
         .take((maximum_bytes + 1) as u64)
-        .read_to_end(&mut bytes)
+        .read_to_end(bytes)
         .map_err(|source| BrokerAuthorityConfigError::Filesystem {
             object: name,
             source,
@@ -213,7 +346,7 @@ fn read_protected(
     if bytes.len() != declared_size || bytes.len() > maximum_bytes {
         return Err(BrokerAuthorityConfigError::Invalid(name));
     }
-    Ok(bytes)
+    Ok(())
 }
 
 fn select_policy_key(
@@ -353,5 +486,124 @@ mod tests {
         assert!(!protected_file_permissions(0o102600));
         assert!(!protected_file_permissions(0o100640));
         assert!(!protected_file_permissions(0o100700));
+    }
+
+    #[test]
+    fn public_binding_commits_every_non_secret_authority_input() {
+        let plan_policy = b"canonical-plan-policy".as_slice();
+        let plan_public_key = [11; 32];
+        let revocation_scope = [12; 16];
+        let lease_policy = b"canonical-lease-policy".as_slice();
+        let lease_public_key = [13; 32];
+        let node = [14; 16];
+        let journal_key_id = [15; 16];
+        let baseline = protected_configuration_binding(
+            BrokerDomain::Storage,
+            plan_policy,
+            &plan_public_key,
+            &revocation_scope,
+            lease_policy,
+            &lease_public_key,
+            &node,
+            &journal_key_id,
+        );
+
+        let changed = [
+            protected_configuration_binding(
+                BrokerDomain::Network,
+                plan_policy,
+                &plan_public_key,
+                &revocation_scope,
+                lease_policy,
+                &lease_public_key,
+                &node,
+                &journal_key_id,
+            ),
+            protected_configuration_binding(
+                BrokerDomain::Storage,
+                b"changed-plan-policy",
+                &plan_public_key,
+                &revocation_scope,
+                lease_policy,
+                &lease_public_key,
+                &node,
+                &journal_key_id,
+            ),
+            protected_configuration_binding(
+                BrokerDomain::Storage,
+                plan_policy,
+                &[21; 32],
+                &revocation_scope,
+                lease_policy,
+                &lease_public_key,
+                &node,
+                &journal_key_id,
+            ),
+            protected_configuration_binding(
+                BrokerDomain::Storage,
+                plan_policy,
+                &plan_public_key,
+                &[22; 16],
+                lease_policy,
+                &lease_public_key,
+                &node,
+                &journal_key_id,
+            ),
+            protected_configuration_binding(
+                BrokerDomain::Storage,
+                plan_policy,
+                &plan_public_key,
+                &revocation_scope,
+                b"changed-lease-policy",
+                &lease_public_key,
+                &node,
+                &journal_key_id,
+            ),
+            protected_configuration_binding(
+                BrokerDomain::Storage,
+                plan_policy,
+                &plan_public_key,
+                &revocation_scope,
+                lease_policy,
+                &[23; 32],
+                &node,
+                &journal_key_id,
+            ),
+            protected_configuration_binding(
+                BrokerDomain::Storage,
+                plan_policy,
+                &plan_public_key,
+                &revocation_scope,
+                lease_policy,
+                &lease_public_key,
+                &[24; 16],
+                &journal_key_id,
+            ),
+            protected_configuration_binding(
+                BrokerDomain::Storage,
+                plan_policy,
+                &plan_public_key,
+                &revocation_scope,
+                lease_policy,
+                &lease_public_key,
+                &node,
+                &[25; 16],
+            ),
+        ];
+
+        assert!(changed.into_iter().all(|binding| binding != baseline));
+        assert_eq!(
+            protected_configuration_binding(
+                BrokerDomain::Storage,
+                plan_policy,
+                &plan_public_key,
+                &revocation_scope,
+                lease_policy,
+                &lease_public_key,
+                &node,
+                &journal_key_id,
+            ),
+            baseline
+        );
     }
 }

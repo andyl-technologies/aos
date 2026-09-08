@@ -253,6 +253,12 @@ impl BrokerAuthorizationFenceV1 {
         self.plan_digest
     }
 
+    /// Returns the exclusive broker-plan wall-clock expiry.
+    #[must_use]
+    pub const fn plan_expires_seconds(&self) -> i64 {
+        self.plan_expires_seconds
+    }
+
     /// Returns the exact ownership-authority key generation.
     #[must_use]
     pub const fn ownership_authority(&self) -> &KeyReference {
@@ -489,6 +495,12 @@ impl BrokerEffectIntentV2 {
     #[must_use]
     pub const fn effect_deadline_boottime_nanoseconds(&self) -> u64 {
         self.effect_deadline_boottime_nanoseconds
+    }
+
+    /// Returns the exact node-local lease record retained at admission.
+    #[must_use]
+    pub const fn local_lease_record(&self) -> &LocalLeaseRecord {
+        &self.local_lease_record
     }
 
     /// Returns the completion receipt, or an empty slice while pending.

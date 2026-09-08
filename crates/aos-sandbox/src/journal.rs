@@ -140,6 +140,8 @@ pub enum RecordNamespace {
     StorageCatalogTransition = 29,
     /// Current authenticated Storage physical-catalog head.
     StorageCatalogHead = 30,
+    /// Protected Storage runtime-authority configuration binding.
+    StorageRuntimeConfiguration = 31,
 }
 
 impl RecordNamespace {
@@ -175,6 +177,7 @@ impl RecordNamespace {
             28 => Ok(Self::StorageCatalogReservation),
             29 => Ok(Self::StorageCatalogTransition),
             30 => Ok(Self::StorageCatalogHead),
+            31 => Ok(Self::StorageRuntimeConfiguration),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -751,6 +754,12 @@ impl Journal {
             .range((namespace, Vec::new())..)
             .take_while(move |((record_namespace, _), _)| *record_namespace == namespace)
             .map(|((_, key), value)| (key.as_slice(), value.as_slice()))
+    }
+
+    /// Reports whether replay produced no materialized record in any namespace.
+    #[must_use]
+    pub fn is_materialized_empty(&self) -> bool {
+        self.state.is_empty()
     }
 
     /// Returns the next monotonic frame sequence defining the current snapshot boundary.
@@ -2017,13 +2026,14 @@ mod tests {
             RecordNamespace::StorageCatalogReservation,
             RecordNamespace::StorageCatalogTransition,
             RecordNamespace::StorageCatalogHead,
+            RecordNamespace::StorageRuntimeConfiguration,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 31, 255] {
+        for code in [0, 32, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }

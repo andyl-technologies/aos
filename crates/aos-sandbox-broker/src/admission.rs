@@ -323,6 +323,29 @@ impl BrokerAuthority {
         self.validate_effect_clock(effect, &current_clock)
     }
 
+    /// Checks that a durable fence still belongs to current protected identity.
+    ///
+    /// The journal MAC key must be rotated whenever the protected broker-plan
+    /// trust anchor changes because the V1 fence retains the accepted plan
+    /// digest but not its signing-key identity. Ownership-authority and node
+    /// changes are rejected directly here even if an operator incorrectly
+    /// reuses the journal key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerAdmissionError::FenceRejected`] when the fence names a
+    /// different configured node or ownership-authority generation.
+    pub fn check_current_fence(
+        &self,
+        fence: &BrokerAuthorizationFenceV1,
+    ) -> Result<(), BrokerAdmissionError> {
+        if fence.node() != self.node || fence.ownership_authority() != self.lease_anchor.authority()
+        {
+            return Err(BrokerAdmissionError::FenceRejected);
+        }
+        Ok(())
+    }
+
     /// Validates a freshly sampled protected clock against a durable effect.
     ///
     /// # Errors
