@@ -164,7 +164,7 @@ in {
       sed -i "s|'/bin/pwd'|'${prev.coreutils}/bin/pwd', '/bin/pwd'|" lib/Cwd.pm
     '';
     buildScript = ''
-      make -j1
+      make -j"$NIX_BUILD_CORES"
     '';
     installScript = ''
       make install ${autotoolsVars} || true
@@ -390,7 +390,7 @@ in {
     # The generated builtins have an undeclared executable-permission
     # dependency in this release and race under a parallel first build.
     buildScript = ''
-      make -j1
+      make -j"$NIX_BUILD_CORES"
     '';
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"
