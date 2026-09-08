@@ -14,7 +14,7 @@
 }: let
   version = "1.10.6";
   majorMinor = "1.10";
-  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isCross = stdenv.isCross;
 in
   mkDerivation {
     pname = "json-glib";
@@ -28,7 +28,7 @@ in
     };
 
     buildDeps =
-      if isDarwinCross
+      if isCross
       then [
         buildPackages.gnumake
         buildPackages.pkg-config
@@ -76,7 +76,7 @@ in
       {
         name = "configure";
         script =
-          if isDarwinCross
+          if isCross
           then ''
             # Keep generator programs native while exposing the target
             # GLib headers, linker names, and pkg-config metadata.
