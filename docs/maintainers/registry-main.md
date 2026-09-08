@@ -6,6 +6,10 @@ Use the shared [qualification contract](qualification.md) and [release checklist
 domain from `andyl/testing`; testing releases and testing roots never promote
 into it.
 
+Follow [Registry key management](registry-key-management.md) for the intended
+hardware-backed custody, independent authorities, rotation, and recovery
+requirements. GCP/AWS signer integration remains separate implementation work.
+
 Main remains closed until the launch gates in
 [`canonical-releases.md`](canonical-releases.md) are complete and a maintainer
 records an explicit go-live decision. Before any operation:
