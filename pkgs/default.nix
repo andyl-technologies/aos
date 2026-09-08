@@ -1428,7 +1428,7 @@
       nuke-references = import ../lib/build-support/nuke-references {
         mkDerivation = args:
           withDefaultMaintainers (rawMkDerivation args);
-        inherit (self) bash gawk sed;
+        inherit (self) bash coreutils grep sed;
       };
     }
     // discoveredPackages
