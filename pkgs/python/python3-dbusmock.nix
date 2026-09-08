@@ -34,8 +34,24 @@ in
         name = "install";
         script = ''
           site="$out/${sitePackages}"
-          mkdir -p "$site"
+          mkdir -p "$site" "$out/bin"
           cp -R dbusmock python_dbusmock.egg-info "$site/"
+
+          # The installed modules contain no store paths of their own. Keep
+          # their interpreter, Python D-Bus bindings, and daemon reachable from
+          # the runtime closure through the documented module entry point.
+          cat > "$out/bin/python3-dbusmock" <<'PY'
+          #!${python3}/bin/python3
+          import os
+          import runpy
+          import sys
+
+          sys.path.insert(0, "${builtins.placeholder "out"}/${sitePackages}")
+          sys.path.insert(0, "${python3-dbus}/${sitePackages}")
+          os.environ["PATH"] = "${dbus}/bin:" + os.environ.get("PATH", "")
+          runpy.run_module("dbusmock", run_name="__main__")
+          PY
+          chmod 0755 "$out/bin/python3-dbusmock"
 
           PYTHONPATH="$site:${python3-dbus}/${sitePackages}" \
             ${python3}/bin/python3 -c \
@@ -48,5 +64,6 @@ in
       description = "Mock D-Bus objects for service test suites";
       homepage = "https://github.com/martinpitt/python-dbusmock";
       license = "LGPL-3.0-or-later";
+      mainProgram = "python3-dbusmock";
     };
   }
