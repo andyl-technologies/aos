@@ -4556,9 +4556,54 @@ EROFS, and sed outputs, whose executable objects are all x86-64, while the
 five already-built substituted target tool packages are all AArch64. The first
 realization stopped earlier in the candidate's AOS package when the native
 Rust 1.93.1 compiler aborted with `malloc(): unaligned fastbin chunk detected`.
-That is a host compiler-process failure, not a passing fleet result; an exact
-same-source retry with two build cores is in progress at the time of this
-record.
+That was a host compiler-process failure, not a passing fleet result. An exact
+same-source retry with two build cores subsequently built the AOS package and
+entered the fleet VM, where the AArch64 nspawn probe failed because it had been
+compiled with native x86-64 syscall numbers: `clone` 56, `unshare` 272, and
+`setns` 308. Its `clone3` value 435 matched only coincidentally. The result
+diagnosed a target-header dependency-role defect in the probe build, not a
+seccomp-policy failure or a passing AArch64 fleet result.
+
+Commit `0e8d089c034fb7b770272c61d65f43a846728f46` repairs the probe build
+boundary so nspawn, filesystem-capability, and ZFS qualification probes take
+Linux UAPI headers from the target package role. The nspawn probe also adds
+compile-time ABI guards and errno-bearing diagnostics. Its native observer and
+payload passed as
+`/nix/store/25ljr8day8h24k01jhv5d61dlwbfydh7-aos-nspawn-host-observer-1.drv`
+to `/nix/store/4p9wqk0bga3vd2g65lpz39hnxpx2c912-aos-nspawn-host-observer-1`
+and
+`/nix/store/viwciajb8jxzqis8nkzz9ysnibjkrr37-aos-nspawn-platform-probe-1.drv`
+to `/nix/store/gidag2xf1h0ry61x35gkd3ciwzn9pzb0-aos-nspawn-platform-probe-1`.
+The corresponding AArch64 builds passed as
+`/nix/store/14zpl0wda73jfc6la3byvhjkrvqjwwkn-aos-nspawn-host-observer-1.drv`
+to `/nix/store/j28qm7a445fza22864d6k830rzhmrf82-aos-nspawn-host-observer-1`
+and
+`/nix/store/ihkyfrg6amzrj5lba883lrvzc41qcmp2-aos-nspawn-platform-probe-1.drv`
+to `/nix/store/fcciavyk3ka8cvcyymx47ryjywd0pkmr-aos-nspawn-platform-probe-1`.
+The target executables are AArch64 ELF objects, and their derivation
+environments reference only the target-role kernel headers rather than a native
+header input. This is compile-only evidence. The corrected combined AArch64 VM
+candidate is
+`/nix/store/4r7qnik9mqknfrafzxkls0nlcq04s2yh-aos-fleet-test-sandbox-nspawn-platform-proof-0.drv`;
+it has not yet produced a passing runtime result in this record.
+
+Commit `413db34d6e0112d39530daf16dbf9a137d17b06c` selects the Discoverable
+Partitions Specification root GUID from the guest architecture, fails closed
+for an unclassified architecture, and checks the emitted root A/B names and
+GUIDs from `sfdisk --json`. Both focused disk images were actually built. The
+native derivation
+`/nix/store/q9rysm0ln5jq8yzd597bp72qpr26sb16-vm-disk-aos-disk-0.drv`
+produced
+`/nix/store/qvk3ng1g2c0lkp3xqdc0idmnkn7l80xm-vm-disk-aos-disk-0`; its
+`root-a` and `root-b` partitions each have 4,542,464 sectors and type
+`4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709`. The AArch64 derivation
+`/nix/store/cyn0b1rzlsca0bzl5iycfnljkhg17iza-vm-disk-aos-disk-0.drv`
+produced
+`/nix/store/8jb6iv8gbjh8v3sq30gax0iz856cn4k1-vm-disk-aos-disk-0`; its
+`root-a` and `root-b` partitions each have 6,594,560 sectors and type
+`B921B045-1DF0-41C3-AF44-4C6F280D3FAE`. The remaining partition layout was
+preserved. This is focused disk-construction evidence; it does not qualify the
+AArch64 nspawn runtime.
 
 The complete AArch64 fleet proof remains unqualified. Earlier focused package
 results, including PostgreSQL, libgpg-error, libgcrypt, Linux, Git, D-Bus, and
