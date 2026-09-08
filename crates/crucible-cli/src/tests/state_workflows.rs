@@ -275,13 +275,74 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
             .iter()
             .any(|entry| entry.kind == "interactive_ack" && entry.summary == "step-duration")
     );
-    let virtual_time_handle = fs::read_to_string(virtual_time_out)?;
+    let virtual_time_handle = fs::read_to_string(&virtual_time_out)?;
     assert!(virtual_time_handle.contains("label\tat-two-ticks\n"));
     assert!(virtual_time_handle.contains("at\tvirtual-time\n"));
     assert!(virtual_time_handle.contains("selector\tnone\n"));
     assert!(virtual_time_handle.contains("boundary-proof\tcoordinate\t2\t2\n"));
     assert!(virtual_time_handle.contains("boundary-predicate\tnone\n"));
     assert!(virtual_time_handle.contains("oracle\tfat==thin-passed\n"));
+
+    let resume_handle_cli = Cli::parse_from([
+        String::from("crucible"),
+        String::from("--store"),
+        temp.path().display().to_string(),
+        String::from("resume"),
+        virtual_time_out.display().to_string(),
+    ]);
+    let Commands::Resume(args) = &resume_handle_cli.command else {
+        panic!("expected resume command");
+    };
+    let resume_handle_plan = plan_resume_invocation(args, temp.path())?;
+    let resume_handle = resume_handle_evidence(&resume_handle_plan)?;
+
+    let fork_handle_cli = Cli::parse_from([
+        String::from("crucible"),
+        String::from("--store"),
+        temp.path().display().to_string(),
+        String::from("fork"),
+        virtual_time_out.display().to_string(),
+    ]);
+    let Commands::Fork(args) = &fork_handle_cli.command else {
+        panic!("expected fork command");
+    };
+    let fork_handle_plan = plan_fork_invocation(args, None, &artifact_dir, temp.path())?;
+    let fork_handle = fork_handle_evidence(&fork_handle_plan)?;
+
+    let virtual_time_checkpoint = virtual_time_outcome
+        .terminal_savepoint
+        .expect("virtual-time save should expose its logical checkpoint");
+    let checkpoint_ref = format_content_hash_ref(virtual_time_checkpoint);
+    let resume_store_cli = Cli::parse_from([
+        String::from("crucible"),
+        String::from("--store"),
+        temp.path().display().to_string(),
+        String::from("resume"),
+        checkpoint_ref.clone(),
+    ]);
+    let Commands::Resume(args) = &resume_store_cli.command else {
+        panic!("expected resume command");
+    };
+    let resume_store_plan = plan_resume_invocation(args, temp.path())?;
+    let resume_store = resume_handle_evidence(&resume_store_plan)?;
+
+    let fork_store_cli = Cli::parse_from([
+        String::from("crucible"),
+        String::from("--store"),
+        temp.path().display().to_string(),
+        String::from("fork"),
+        checkpoint_ref,
+    ]);
+    let Commands::Fork(args) = &fork_store_cli.command else {
+        panic!("expected fork command");
+    };
+    let fork_store_plan = plan_fork_invocation(args, None, &artifact_dir, temp.path())?;
+    let fork_store = fork_handle_evidence(&fork_store_plan)?;
+
+    assert_eq!(resume_handle, fork_handle);
+    assert_eq!(resume_handle, resume_store);
+    assert_eq!(resume_handle, fork_store);
+
     let contradictory_virtual_time = virtual_time_handle.replace(
         "terminal-condition\tvirtual-time\n",
         "terminal-condition\tquiescence\n",

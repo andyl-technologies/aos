@@ -46,8 +46,19 @@ to-completion path. The deployment capability is resolved in this order:
 The selected packaged-executor file still passes the strict ownership, mode,
 cgroup, project-quota, and resource-limit checks described below. If no
 capability is available, the command fails before launching QEMU and names all
-three configuration methods. Save and interactive execution are not yet
-accepted by this compatibility path.
+three configuration methods. Standard local production-QEMU
+`save --at virtual-time --max-virtual-time DURATION` commands use the same
+resolution order and campaign owner. Quiescence, property, marker, interactive,
+resume, and fork workflows remain on their compatible session paths.
+
+A campaign-backed virtual-time save executes the semantic attempt and then
+replays that attempt once to capture and authenticate the exact reached
+boundary. Its temporary physical checkpoint closure is removed before the CLI
+reports success. The durable output remains the existing version-3 savepoint
+handle and logical `LocalDagStore` closure, so current `resume` and `fork`
+commands consume it unchanged through logical replay. The extra capture replay
+has real QEMU execution and I/O cost, and the emitted handle does not provide
+native exact-resume acceleration.
 
 A failure artifact produced by this path records `campaign-run` as its typed
 producer. Replaying that artifact resolves the deployment capability again and
@@ -342,8 +353,196 @@ record ID and must already occur in the daemon's verified import closure.
 ## Start the single-host owner
 
 The campaign endpoint is a managed Unix socket. Its state directory, peer
-policy, component authority keys, and any initial imports must be fixed before
-the socket becomes visible:
+policy, optional component authority keys, and any initial imports must be fixed
+before the socket becomes visible. This control-only setup creates a policy for
+the current Unix peer and exercises creation, inspection, derivation, and
+lifecycle mutations without planner or debugger component authority:
+
+```sh
+nix build .#pkg-jq -o result-jq
+
+FLIGHT="$(mktemp -d)"
+install -d -m 700 "$FLIGHT/state" "$FLIGHT/socket"
+UID_NOW="$(id -u)"
+GID_NOW="$(id -g)"
+cat >"$FLIGHT/campaign-peers.toml" <<EOF
+schema = "crucible.campaign-local-policy"
+version = 1
+
+[[bindings]]
+user_id = $UID_NOW
+group_id = $GID_NOW
+principal = "operator"
+
+[[grants]]
+principal = "operator"
+operation = "create-campaign"
+campaign = "*"
+
+[[grants]]
+principal = "operator"
+operation = "derive-campaign"
+campaign = "*"
+
+[[grants]]
+principal = "operator"
+operation = "get-campaign"
+campaign = "*"
+
+[[grants]]
+principal = "operator"
+operation = "get-campaign-status"
+campaign = "*"
+
+[[grants]]
+principal = "operator"
+operation = "get-campaign-snapshot"
+campaign = "*"
+
+[[grants]]
+principal = "operator"
+operation = "list-campaigns"
+campaign = "*"
+
+[[grants]]
+principal = "operator"
+operation = "apply-campaign-command"
+campaign = "*"
+EOF
+chmod 600 "$FLIGHT/campaign-peers.toml"
+
+./result/bin/crucible campaign fixture worked-network \
+  --output "$FLIGHT/fixture" --format json
+
+start_campaign_server() {
+  ./result/bin/crucible serve \
+    --listen 127.0.0.1:0 \
+    --trusted-unauthenticated-bind \
+    --campaign-socket "$FLIGHT/socket/campaign.sock" \
+    --campaign-state "$FLIGHT/state" \
+    --campaign-policy "$FLIGHT/campaign-peers.toml" \
+    --campaign-import-manifest "$FLIGHT/fixture/import.toml" \
+    >"$FLIGHT/serve.log" 2>&1 &
+  SERVER_PID=$!
+
+  READY_ATTEMPTS=100
+  while ! ./result/bin/crucible campaign \
+    --socket "$FLIGHT/socket/campaign.sock" \
+    --principal operator list --limit 1 --pages 1 --format json \
+    >/dev/null 2>&1; do
+    READY_ATTEMPTS=$((READY_ATTEMPTS - 1))
+    if ! kill -0 "$SERVER_PID" 2>/dev/null || [ "$READY_ATTEMPTS" -eq 0 ]; then
+      kill "$SERVER_PID" 2>/dev/null || true
+      wait "$SERVER_PID" 2>/dev/null || true
+      cat "$FLIGHT/serve.log" >&2
+      return 1
+    fi
+    sleep 0.1
+  done
+}
+
+campaign() {
+  ./result/bin/crucible campaign \
+    --socket "$FLIGHT/socket/campaign.sock" \
+    --principal operator "$@"
+}
+
+start_campaign_server
+```
+
+The readiness loop probes the service instead of treating socket existence as
+readiness. The daemon owns stale-socket recovery; do not remove its socket by
+hand. Run the daemon and the client commands from the same login context so
+their kernel credentials continue to match the policy's UID/GID binding.
+
+Continue in that shell to create a source campaign, derive an independent head,
+and drive the source through start and pause. Each mutation consumes the exact
+snapshot returned by the preceding accepted operation. The fixed 64-digit
+command values are idempotency keys; use a new value for each new mutation:
+
+```sh
+JQ=./result-jq/bin/jq
+START_COMMAND=1111111111111111111111111111111111111111111111111111111111111111
+STALE_COMMAND=2222222222222222222222222222222222222222222222222222222222222222
+PAUSE_COMMAND=3333333333333333333333333333333333333333333333333333333333333333
+RESUME_COMMAND=4444444444444444444444444444444444444444444444444444444444444444
+
+campaign create flight-source \
+  --lineage "$FLIGHT/fixture/lineage.bin" \
+  --policy "$FLIGHT/fixture/policy.bin" \
+  --format json >"$FLIGHT/create.json"
+SOURCE_CREATED="$($JQ -er '.snapshot' "$FLIGHT/create.json")"
+
+campaign derive flight-source --snapshot "$SOURCE_CREATED" flight-derived \
+  --format json >"$FLIGHT/derive.json"
+DERIVED_SNAPSHOT="$($JQ -er '.new_snapshot' "$FLIGHT/derive.json")"
+campaign snapshot flight-derived --snapshot "$DERIVED_SNAPSHOT" --format json \
+  >"$FLIGHT/derived-snapshot.json"
+
+campaign start flight-source \
+  --expected "$SOURCE_CREATED" --command "$START_COMMAND" \
+  --format json >"$FLIGHT/start.json"
+SOURCE_RUNNING="$($JQ -er '.new_snapshot' "$FLIGHT/start.json")"
+
+if campaign pause flight-source \
+  --expected "$SOURCE_CREATED" --command "$STALE_COMMAND" \
+  --format json >"$FLIGHT/stale.json" 2>"$FLIGHT/stale.err"; then
+  echo "stale campaign mutation was unexpectedly accepted" >&2
+  exit 1
+fi
+case "$(cat "$FLIGHT/stale.err")" in
+  *"campaign request used stale snapshot"*) ;;
+  *)
+    echo "campaign mutation failed for a reason other than a stale snapshot" >&2
+    cat "$FLIGHT/stale.err" >&2
+    exit 1
+    ;;
+esac
+
+campaign pause flight-source \
+  --expected "$SOURCE_RUNNING" --command "$PAUSE_COMMAND" \
+  --format json >"$FLIGHT/pause.json"
+SOURCE_PAUSED="$($JQ -er '.new_snapshot' "$FLIGHT/pause.json")"
+```
+
+Stop the owner cleanly, restart it over the same state directory, and repeat
+the pause request to prove idempotent recovery before resuming from the current
+paused snapshot:
+
+```sh
+kill "$SERVER_PID"
+wait "$SERVER_PID" 2>/dev/null || true
+start_campaign_server
+
+campaign list --limit 32 --pages 1 --format json >"$FLIGHT/list-after-restart.json"
+campaign status flight-source --format json >"$FLIGHT/status-after-restart.json"
+
+campaign pause flight-source \
+  --expected "$SOURCE_RUNNING" --command "$PAUSE_COMMAND" \
+  --format json >"$FLIGHT/pause-replay.json"
+REPLAYED_PAUSED="$($JQ -er '.new_snapshot' "$FLIGHT/pause-replay.json")"
+test "$REPLAYED_PAUSED" = "$SOURCE_PAUSED"
+
+campaign resume flight-source \
+  --expected "$SOURCE_PAUSED" --command "$RESUME_COMMAND" \
+  --format json >"$FLIGHT/resume.json"
+SOURCE_RESUMED="$($JQ -er '.new_snapshot' "$FLIGHT/resume.json")"
+campaign snapshot flight-source --snapshot "$SOURCE_RESUMED" --format json \
+  >"$FLIGHT/resumed-snapshot.json"
+
+kill "$SERVER_PID"
+wait "$SERVER_PID" 2>/dev/null || true
+```
+
+`create` reports `.snapshot`; `derive` and lifecycle mutations report
+`.new_snapshot`. A request with a fresh command ID and an old `--expected`
+snapshot is stale and must fail, while replaying the exact old command after a
+restart returns its original accepted head. The readiness loop makes at most
+100 service probes and prints the server log instead of waiting forever; each
+probe remains subject to the client's own transport deadline.
+
+For a fixed installation, use private state and socket directories and the
+default owner-only socket mode:
 
 ```sh
 ./result/bin/crucible serve \
@@ -352,14 +551,16 @@ the socket becomes visible:
   --campaign-socket /run/user/1000/crucible/campaign.sock \
   --campaign-state ./campaign-state \
   --campaign-policy ./campaign-peers.toml \
-  --campaign-component-authority ./campaign-authority.toml \
   --campaign-import-manifest ./worked-network-fixture/import.toml
 ```
 
-Use a private directory and the default owner-only socket mode. The listener
-authenticates the kernel peer credentials and then applies the configured
-principal policy. A principal string in a request is not authentication by
-itself.
+The listener authenticates the kernel peer credentials and then applies the
+configured principal policy. A principal string in a request is not
+authentication by itself. The optional component-authority file is a
+mode-`0600`, exact 72-byte binary record (`CRUCCA01`, one nonzero 32-byte
+planner key, then one distinct nonzero 32-byte debugger key); it is not TOML.
+Supply it as `--campaign-component-authority ./campaign-authority.bin` only when
+attaching planner/runtime or debugger components.
 
 To attach the long-lived canonical planner/runtime, also supply an existing
 campaign and authenticated executor socket:
@@ -413,7 +614,7 @@ owner-only packaged-executor deployment file:
   --campaign-socket /run/user/1000/crucible/campaign.sock \
   --campaign-state ./campaign-state \
   --campaign-policy ./campaign-peers.toml \
-  --campaign-component-authority ./campaign-authority.toml \
+  --campaign-component-authority ./campaign-authority.bin \
   --campaign-runtime-all \
   --campaign-executor-socket /run/user/1000/crucible/executor.sock \
   --campaign-packaged-executor ./campaign-executor.toml

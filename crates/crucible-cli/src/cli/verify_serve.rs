@@ -30,6 +30,27 @@ pub(crate) fn run_local_qemu_campaign_workflow(
     )
 }
 
+pub(crate) fn guarded_campaign_save_eligible(plan: &SaveInvocationPlan) -> bool {
+    legacy_campaign::guarded_campaign_save_eligible(plan)
+}
+
+// crucible-lint: allow host-nondeterminism-state -- this thin command boundary forwards validated inputs to the daemon owner and only renders its accepted result.
+pub(crate) fn run_local_qemu_campaign_save_workflow(
+    backend: &ResolvedLocalBackend,
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    save_plan: &SaveInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    legacy_campaign::run_local_qemu_campaign_save_workflow(
+        backend,
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        save_plan,
+    )
+}
+
 pub(crate) fn run_local_qemu_campaign_replay(
     backend: &ResolvedLocalBackend,
     run_plan: &RunInvocationPlan,
