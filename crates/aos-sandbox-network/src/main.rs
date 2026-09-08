@@ -17,7 +17,7 @@ use aos_sandbox_network::{
 
 const STATE_ROOT: &str = "/var/lib/aos/sandbox-network";
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
-const CONTROLLER_CGROUP: &str = "aos-control.slice/aos-sandboxd.service";
+const PRODUCTION_CONTROLLER_CGROUP: &str = "aos.slice/aos-control.slice/aos-sandboxd.service";
 
 fn main() -> ExitCode {
     match run() {
@@ -81,6 +81,30 @@ fn open_controller_cgroup() -> Result<RetainedCgroupAnchor, NetworkServiceError>
     )?;
     let root = CgroupV2Root::from_owned(descriptor)?;
 
-    root.resolve(Path::new(CONTROLLER_CGROUP))
+    root.resolve(production_controller_cgroup())
         .map_err(Into::into)
+}
+
+fn production_controller_cgroup() -> &'static Path {
+    Path::new(PRODUCTION_CONTROLLER_CGROUP)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn production_profile_selects_only_the_nested_controller_service() {
+        let selected = production_controller_cgroup();
+
+        assert_eq!(
+            selected,
+            Path::new("aos.slice/aos-control.slice/aos-sandboxd.service")
+        );
+        assert_ne!(
+            selected,
+            Path::new("aos-control.slice/aos-sandboxd.service")
+        );
+        assert_ne!(selected, Path::new("aos.slice/aos-sandboxd.service"));
+    }
 }
