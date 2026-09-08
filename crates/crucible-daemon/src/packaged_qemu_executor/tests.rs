@@ -1307,6 +1307,53 @@ fn packaged_executor_completion_is_sticky_across_owner_panic() {
 }
 
 #[test]
+fn competing_packaged_startup_preserves_live_native_catalogs() {
+    let directory = tempfile::tempdir().expect("packaged competing-start directory");
+    let mut config = config(&directory, 1);
+    config.lifecycle = ProductionVmLifecycleConfig::new(
+        "qemu",
+        "plugin",
+        "kernel",
+        "root",
+        directory.path().join("run-state"),
+    );
+    let run_state_root = config.lifecycle.run_state_root();
+    let workers = run_state_root.join("campaign-workers");
+    let promotions = run_state_root.join("campaign-checkpoint-promotions");
+    std::fs::create_dir_all(&workers).expect("live worker catalog");
+    std::fs::write(workers.join("sentinel"), b"worker").expect("live worker sentinel");
+    std::fs::create_dir_all(&promotions).expect("live promotion catalog");
+    std::fs::write(promotions.join("sentinel"), b"promotion").expect("live promotion sentinel");
+    let _live_ledger =
+        DirectoryAssignmentLedger::open(&config.ledger_root).expect("live assignment ledger");
+
+    let repository = repository_with_campaigns(&[("packaged", b"shared", "qemu-test")]);
+    let result = compose_packaged_qemu_executor(
+        repository,
+        Arc::new(DirectoryBlobBackend::new(
+            "packaged-competing-start-checkpoints",
+            directory.path().join("shared-store"),
+        )),
+        profile(),
+        scenario_artifact(),
+        config,
+        UnusedHostFactory,
+    );
+    let Err(PackagedQemuExecutorError::Ledger(_)) = result else {
+        panic!("competing packaged startup must fail at ledger ownership");
+    };
+
+    assert_eq!(
+        std::fs::read(workers.join("sentinel")).expect("retained worker sentinel"),
+        b"worker"
+    );
+    assert_eq!(
+        std::fs::read(promotions.join("sentinel")).expect("retained promotion sentinel"),
+        b"promotion"
+    );
+}
+
+#[test]
 fn packaged_native_catalog_recovery_is_crash_safe_and_idempotent() {
     let directory = tempfile::tempdir().expect("packaged native catalog root");
     let workers = directory.path().join("campaign-workers");

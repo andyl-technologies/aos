@@ -14,6 +14,9 @@ use crucible_campaign::{
     ExactCheckpointId, ExecutionId, ExecutionRetentionIntent, ExecutorRejection,
     ObservationCandidate, ObservationId, ResolvedSelection, ScenarioArtifact, SubmitAttemptRequest,
 };
+use crucible_cas::content_store::ObjectKind;
+use std::collections::BTreeSet;
+use std::path::Path;
 
 use crate::exact_checkpoint_store::AttemptCheckpointResultState;
 use crate::executor_supervisor::ExecutionCheckpointHandoff;
@@ -21,10 +24,13 @@ use crate::{
     AssignmentLedger, AttemptAdmissionValidator, AttemptCheckpointPublication,
     AttemptCheckpointResult, CancellationOutcome, CapturedAttemptCheckpoint,
     CheckpointCompletionOutcome, CheckpointHandoffFailure, CheckpointPublicationOutcome,
-    CompletionOutcome, ExactCheckpointStore, ExactCheckpointStoreError, ExecutionCancellation,
-    ExecutionCheckpointRequest, LocalExecutorError, LocalExecutorSupervisor,
-    ObservationPublicationOutcome, PreparedAttemptCheckpoint, PreparedCrucibleFindingCandidate,
-    QueuedAttempt, TerminalFailureOutcome,
+    CompletionOutcome, DirectoryPreparedResultJournal, ExactCheckpointStore,
+    ExactCheckpointStoreError, ExecutionCancellation, ExecutionCheckpointRequest,
+    LocalExecutorError, LocalExecutorSupervisor, ObservationPublicationOutcome,
+    PreparedAttemptCheckpoint, PreparedCrucibleFindingCandidate,
+    PreparedResultJournalCreateDisposition, PreparedResultJournalError,
+    PreparedSemanticAttemptResult, PreparedSemanticResultCodecError, QueuedAttempt,
+    TerminalFailureOutcome,
 };
 
 /// Fully authenticated discovery or branch start supplied to an execution model.
@@ -416,6 +422,8 @@ pub enum AttemptExecutionProduct {
         /// Prepared private-replay evidence and finding root.
         finding: Box<PreparedCrucibleFindingCandidate>,
     },
+    /// The complete observation/finding closure with raw measurement evidence.
+    PreparedSemantic(Box<PreparedSemanticAttemptResult>),
     /// A durable checkpoint request won at an exact scheduler boundary.
     ExactCheckpoint(Box<AttemptCheckpointResult>),
 }
@@ -437,6 +445,12 @@ impl AttemptExecutionProduct {
             observation: Box::new(observation),
             finding: Box::new(finding),
         }
+    }
+
+    /// Wraps a complete semantic result with its raw measurement leaves.
+    #[must_use]
+    pub fn prepared_semantic(result: PreparedSemanticAttemptResult) -> Self {
+        Self::PreparedSemantic(Box::new(result))
     }
 
     /// Wraps one complete attempt checkpoint capture.
@@ -678,6 +692,43 @@ where
                 observation: candidate,
                 ..
             } => {
+                if queued.request().execution_scope()
+                    != crucible_campaign::AttemptExecutionScope::Semantic
+                {
+                    return Err(AttemptWorkerFailure::Terminal(
+                        RepositoryAttemptWorkerError::IncompatibleResult {
+                            reason: "savepoint capture returned a semantic observation",
+                        },
+                    ));
+                }
+                if candidate.observation().attempt() != queued.request().attempt() {
+                    return Err(AttemptWorkerFailure::Terminal(
+                        RepositoryAttemptWorkerError::IncompatibleResult {
+                            reason: "observation attempt differs from assignment",
+                        },
+                    ));
+                }
+                if candidate.child().scenario() != input.lineage().scenario()
+                    || candidate.child().scenario_artifact() != input.lineage().scenario_content()
+                {
+                    return Err(AttemptWorkerFailure::Terminal(
+                        RepositoryAttemptWorkerError::IncompatibleResult {
+                            reason: "child configuration differs from assignment lineage",
+                        },
+                    ));
+                }
+            }
+            AttemptExecutionProduct::PreparedSemantic(result) => {
+                let candidate = result.observation();
+                if queued.request().execution_scope()
+                    != crucible_campaign::AttemptExecutionScope::Semantic
+                {
+                    return Err(AttemptWorkerFailure::Terminal(
+                        RepositoryAttemptWorkerError::IncompatibleResult {
+                            reason: "savepoint capture returned a semantic observation",
+                        },
+                    ));
+                }
                 if candidate.observation().attempt() != queued.request().attempt() {
                     return Err(AttemptWorkerFailure::Terminal(
                         RepositoryAttemptWorkerError::IncompatibleResult {
@@ -836,8 +887,42 @@ pub enum AttemptWorkerReconcileOutcome {
 #[derive(Debug)]
 pub struct PendingAttemptResult {
     queued: QueuedAttempt,
-    candidate: ObservationCandidate,
-    finding: Option<PreparedCrucibleFindingCandidate>,
+    result: PendingAttemptResultOwner,
+}
+
+#[derive(Debug)]
+enum PendingAttemptResultOwner {
+    Legacy {
+        observation: ObservationCandidate,
+        finding: Option<PreparedCrucibleFindingCandidate>,
+    },
+    Prepared(PreparedSemanticAttemptResult),
+}
+
+impl PendingAttemptResultOwner {
+    const fn observation(&self) -> &ObservationCandidate {
+        match self {
+            Self::Legacy { observation, .. } => observation,
+            Self::Prepared(result) => result.observation(),
+        }
+    }
+
+    const fn finding(&self) -> Option<&PreparedCrucibleFindingCandidate> {
+        match self {
+            Self::Legacy { finding, .. } => finding.as_ref(),
+            Self::Prepared(result) => result.finding(),
+        }
+    }
+
+    fn prepare(&self) -> Result<PreparedSemanticAttemptResult, PreparedSemanticResultCodecError> {
+        match self {
+            Self::Legacy {
+                observation,
+                finding,
+            } => PreparedSemanticAttemptResult::new(observation.clone(), finding.clone()),
+            Self::Prepared(result) => Ok(result.clone()),
+        }
+    }
 }
 
 /// Captured checkpoint retained for no-write preparation retry.
@@ -870,16 +955,39 @@ impl PendingCheckpointResult {
 /// Read-only-preflighted result ready for a short publication-root CAS.
 #[derive(Debug)]
 pub struct PreparedAttemptResult {
-    pending: PendingAttemptResult,
+    queued: QueuedAttempt,
+    result: PreparedAttemptResultOwner,
     observation: ObservationId,
     finding_candidate: Option<crucible_campaign::FindingCandidateBundleId>,
+}
+
+#[derive(Debug)]
+enum PreparedAttemptResultOwner {
+    Volatile(PreparedSemanticAttemptResult),
+    Journal(DirectoryPreparedResultJournal),
+}
+
+impl PreparedAttemptResultOwner {
+    const fn result(&self) -> &PreparedSemanticAttemptResult {
+        match self {
+            Self::Volatile(result) => result,
+            Self::Journal(journal) => journal.result(),
+        }
+    }
+
+    fn into_journal(self) -> Option<DirectoryPreparedResultJournal> {
+        match self {
+            Self::Volatile(_) => None,
+            Self::Journal(journal) => Some(journal),
+        }
+    }
 }
 
 impl PreparedAttemptResult {
     /// Returns the exact execution token.
     #[must_use]
     pub const fn queued(&self) -> &QueuedAttempt {
-        self.pending.queued()
+        &self.queued
     }
 
     /// Returns the preflighted immutable observation identity.
@@ -893,6 +1001,78 @@ impl PreparedAttemptResult {
     pub const fn finding_candidate(&self) -> Option<crucible_campaign::FindingCandidateBundleId> {
         self.finding_candidate
     }
+
+    /// Returns the exact prepared semantic closure.
+    #[must_use]
+    pub const fn result(&self) -> &PreparedSemanticAttemptResult {
+        self.result.result()
+    }
+
+    /// Recovers the execution token when durable journal ownership was never acquired.
+    pub(crate) fn into_queued_without_journal(self) -> Result<QueuedAttempt, Box<Self>> {
+        let Self {
+            queued,
+            result,
+            observation,
+            finding_candidate,
+        } = self;
+        match result {
+            PreparedAttemptResultOwner::Volatile(_) => Ok(queued),
+            PreparedAttemptResultOwner::Journal(journal) => Err(Box::new(Self {
+                queued,
+                result: PreparedAttemptResultOwner::Journal(journal),
+                observation,
+                finding_candidate,
+            })),
+        }
+    }
+
+    pub(crate) fn remove_journal(&self) -> Result<(), PreparedResultJournalError> {
+        match &self.result {
+            PreparedAttemptResultOwner::Volatile(_) => Ok(()),
+            PreparedAttemptResultOwner::Journal(journal) => journal.remove(),
+        }
+    }
+}
+
+/// Result of probing durable prepared-result recovery before guest execution.
+#[derive(Debug)]
+pub enum PreparedAttemptRecoveryOutcome {
+    /// No complete journal exists; the fresh execution token remains runnable.
+    Missing(Box<QueuedAttempt>),
+    /// A producer result was recovered and must be published without guest work.
+    Prepared(Box<PreparedAttemptResult>),
+}
+
+/// Durable journal creation failure retaining the complete prepared token.
+#[derive(Debug, thiserror::Error)]
+#[error("local prepared-result journal creation failed")]
+pub struct AttemptResultJournalError {
+    /// Prepared result retained for exact journal creation retry.
+    pub prepared: Box<PreparedAttemptResult>,
+    /// Durable journal failure.
+    pub source: PreparedResultJournalError,
+}
+
+/// Durable prepared-result recovery failure retaining the fresh execution token.
+#[derive(Debug, thiserror::Error)]
+#[error("local prepared-result journal recovery failed")]
+pub struct AttemptResultRecoveryError {
+    /// Fresh supervisor execution token that has not run guest work.
+    pub queued: Box<QueuedAttempt>,
+    /// Journal or semantic authentication failure.
+    pub source: AttemptResultRecoveryFailure,
+}
+
+/// Failure while reopening and authenticating one durable prepared result.
+#[derive(Debug, thiserror::Error)]
+pub enum AttemptResultRecoveryFailure {
+    /// Durable journal authentication failed.
+    #[error(transparent)]
+    Journal(#[from] PreparedResultJournalError),
+    /// Recovered semantic content failed repository or scenario authentication.
+    #[error(transparent)]
+    Preparation(#[from] AttemptResultPreparationFailure),
 }
 
 /// Candidate whose immutable objects were published outside the supervisor actor.
@@ -901,6 +1081,7 @@ pub struct PublishedAttemptResult {
     queued: QueuedAttempt,
     observation: ObservationId,
     finding_candidate: Option<crucible_campaign::FindingCandidateBundleId>,
+    journal: Option<DirectoryPreparedResultJournal>,
 }
 
 /// Linear token proving the durable publication root was installed first.
@@ -1085,6 +1266,10 @@ impl StagedAttemptResult {
     pub const fn queued(&self) -> &QueuedAttempt {
         self.prepared.queued()
     }
+
+    pub(crate) fn remove_journal(&self) -> Result<(), PreparedResultJournalError> {
+        self.prepared.remove_journal()
+    }
 }
 
 impl PublishedAttemptResult {
@@ -1099,6 +1284,13 @@ impl PublishedAttemptResult {
     pub const fn finding_candidate(&self) -> Option<crucible_campaign::FindingCandidateBundleId> {
         self.finding_candidate
     }
+
+    pub(crate) fn remove_journal(&self) -> Result<(), PreparedResultJournalError> {
+        match &self.journal {
+            Some(journal) => journal.remove(),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Actor result of consuming one prepared candidate.
@@ -1107,7 +1299,12 @@ pub enum AttemptResultStageOutcome {
     /// Immutable publication may now proceed outside the actor.
     Publish(Box<StagedAttemptResult>),
     /// Publication must not run because another operational outcome won.
-    Finished(AttemptWorkerReconcileOutcome),
+    Finished {
+        /// Prepared ownership retained until journal cleanup is durable.
+        prepared: Box<PreparedAttemptResult>,
+        /// Stable operational outcome that prevented publication.
+        outcome: AttemptWorkerReconcileOutcome,
+    },
 }
 
 impl PendingAttemptResult {
@@ -1120,19 +1317,23 @@ impl PendingAttemptResult {
     /// Returns the already-modeled immutable candidate.
     #[must_use]
     pub const fn candidate(&self) -> &ObservationCandidate {
-        &self.candidate
+        self.result.observation()
     }
 
     /// Returns the prepared finding closure retained with the observation.
     #[must_use]
     pub const fn finding(&self) -> Option<&PreparedCrucibleFindingCandidate> {
-        self.finding.as_ref()
+        self.result.finding()
     }
 
     /// Consumes the pending value into its linear token and immutable records.
     #[must_use]
     pub fn into_parts(self) -> (QueuedAttempt, ObservationCandidate) {
-        (self.queued, self.candidate)
+        let candidate = match self.result {
+            PendingAttemptResultOwner::Legacy { observation, .. } => observation,
+            PendingAttemptResultOwner::Prepared(result) => result.into_parts().0,
+        };
+        (self.queued, candidate)
     }
 }
 
@@ -1176,6 +1377,14 @@ pub enum AttemptWorkerReconcileError<W, L> {
         /// Supervisor or operational-ledger failure.
         source: L,
     },
+    /// Completion is durable but prepared-result journal cleanup must retry.
+    #[error("local prepared-result journal cleanup is pending")]
+    JournalCleanupPending {
+        /// Published result retaining the journal lock for exact cleanup retry.
+        published: Box<PublishedAttemptResult>,
+        /// Durable journal removal failure.
+        source: PreparedResultJournalError,
+    },
 }
 
 /// Read-only candidate preflight failure before the supervisor actor is borrowed.
@@ -1195,7 +1404,7 @@ pub enum AttemptResultPreparationError<W> {
         /// Already-executed candidate retained for direct retry.
         pending: Box<PendingAttemptResult>,
         /// Repository failure from the read-only preflight.
-        source: CampaignRepositoryError,
+        source: AttemptResultPreparationFailure,
     },
     /// Exact capture preparation failed without publishing immutable objects.
     #[error("local exact-checkpoint preparation failed")]
@@ -1207,6 +1416,36 @@ pub enum AttemptResultPreparationError<W> {
     },
 }
 
+/// Failure to authenticate a prepared semantic closure before publication.
+#[derive(Debug, thiserror::Error)]
+pub enum AttemptResultPreparationFailure {
+    /// Required immutable campaign input was unavailable or inconsistent.
+    #[error(transparent)]
+    Repository(#[from] CampaignRepositoryError),
+    /// Authenticated Crucible scenario decoding failed.
+    #[error(transparent)]
+    Artifact(#[from] crate::CrucibleArtifactError),
+    /// A retained raw measurement leaf has an invalid canonical identity.
+    #[error(transparent)]
+    Measurement(#[from] crate::CrucibleMeasurementError),
+    /// Crucible scenario or prepared-result replay validation failed.
+    #[error(transparent)]
+    Result(#[from] PreparedSemanticResultCodecError),
+}
+
+impl AttemptResultPreparationFailure {
+    /// Returns the stable executor classification for this preflight failure.
+    #[must_use]
+    pub fn executor_rejection(&self) -> ExecutorRejection {
+        match self {
+            Self::Repository(error) => error.executor_rejection(),
+            Self::Artifact(_) | Self::Measurement(_) | Self::Result(_) => {
+                ExecutorRejection::Incompatible
+            }
+        }
+    }
+}
+
 /// Immutable publication failure retaining the preflighted candidate.
 #[derive(Debug, thiserror::Error)]
 #[error("local attempt result publication failed")]
@@ -1214,7 +1453,39 @@ pub struct AttemptResultPublicationError {
     /// Staged candidate retained for direct publication retry.
     pub staged: Box<StagedAttemptResult>,
     /// Repository failure from immutable publication.
-    pub source: CampaignRepositoryError,
+    pub source: AttemptResultPublicationFailure,
+}
+
+/// Failure while publishing a verified prepared-result closure.
+#[derive(Debug, thiserror::Error)]
+pub enum AttemptResultPublicationFailure {
+    /// Immutable repository publication failed.
+    #[error(transparent)]
+    Repository(#[from] CampaignRepositoryError),
+    /// A retained raw leaf could not reproduce its canonical identity.
+    #[error(transparent)]
+    Measurement(#[from] crate::CrucibleMeasurementError),
+}
+
+impl AttemptResultPublicationFailure {
+    /// Returns the stable executor classification for this publication failure.
+    #[must_use]
+    pub fn executor_rejection(&self) -> ExecutorRejection {
+        match self {
+            Self::Repository(error) => error.executor_rejection(),
+            Self::Measurement(_) => ExecutorRejection::Incompatible,
+        }
+    }
+
+    /// Returns whether the exact publication can be retried without guest work.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::Repository(error)
+                if error.executor_rejection() == ExecutorRejection::UnavailableInput
+        )
+    }
 }
 
 /// Publication-root staging failure retaining the sole prepared token.
@@ -1405,8 +1676,10 @@ pub fn prepare_attempt_result<W>(
             store,
             PendingAttemptResult {
                 queued,
-                candidate: *candidate,
-                finding: None,
+                result: PendingAttemptResultOwner::Legacy {
+                    observation: *candidate,
+                    finding: None,
+                },
             },
         )
         .map(|prepared| PreparedAttemptWorkResult::Observation(Box::new(prepared))),
@@ -1417,8 +1690,18 @@ pub fn prepare_attempt_result<W>(
             store,
             PendingAttemptResult {
                 queued,
-                candidate: *observation,
-                finding: Some(*finding),
+                result: PendingAttemptResultOwner::Legacy {
+                    observation: *observation,
+                    finding: Some(*finding),
+                },
+            },
+        )
+        .map(|prepared| PreparedAttemptWorkResult::Observation(Box::new(prepared))),
+        AttemptExecutionProduct::PreparedSemantic(result) => prepare_pending_attempt_result(
+            store,
+            PendingAttemptResult {
+                queued,
+                result: PendingAttemptResultOwner::Prepared(*result),
             },
         )
         .map(|prepared| PreparedAttemptWorkResult::Observation(Box::new(prepared))),
@@ -1445,6 +1728,129 @@ pub fn retry_pending_attempt_result<W>(
     prepare_pending_attempt_result(store, pending)
 }
 
+/// Persists a preflighted semantic result before publication can be staged.
+///
+/// An existing journal must contain the exact same result and producer
+/// execution. The returned token owns the per-attempt journal lock until
+/// completion or cancellation becomes durable.
+///
+/// # Errors
+///
+/// Returns [`AttemptResultJournalError`] with the complete prepared token when
+/// journal creation, reopening, authentication, or durability fails.
+pub fn journal_prepared_attempt_result(
+    namespace: impl AsRef<Path>,
+    maximum_payload_bytes: usize,
+    mut prepared: PreparedAttemptResult,
+) -> Result<
+    (
+        PreparedAttemptResult,
+        PreparedResultJournalCreateDisposition,
+    ),
+    AttemptResultJournalError,
+> {
+    let key = crate::AttemptExecutionKey::for_request(prepared.queued.request());
+    let execution = prepared.queued.execution();
+    let result = prepared.result().clone();
+    let (journal, disposition) = match DirectoryPreparedResultJournal::create(
+        namespace,
+        key,
+        execution,
+        maximum_payload_bytes,
+        result,
+    ) {
+        Ok(created) => created,
+        Err(source) => {
+            return Err(AttemptResultJournalError {
+                prepared: Box::new(prepared),
+                source,
+            });
+        }
+    };
+    prepared.result = PreparedAttemptResultOwner::Journal(journal);
+    Ok((prepared, disposition))
+}
+
+/// Reopens a complete producer journal before allowing fresh guest execution.
+///
+/// The fresh `queued` token remains the supervisor reconciliation authority;
+/// the journal retains its separately authenticated producer execution ID.
+/// Recovered semantic bytes are rechecked against immutable repository input
+/// and authenticated scenario measurement definitions.
+///
+/// # Errors
+///
+/// Returns [`AttemptResultRecoveryError`] with the fresh execution token when
+/// journal or semantic authentication fails.
+pub fn recover_prepared_attempt_result(
+    store: &CampaignExecutorStore,
+    namespace: impl AsRef<Path>,
+    maximum_payload_bytes: usize,
+    queued: QueuedAttempt,
+) -> Result<PreparedAttemptRecoveryOutcome, AttemptResultRecoveryError> {
+    let key = crate::AttemptExecutionKey::for_request(queued.request());
+    let journal = match DirectoryPreparedResultJournal::open_for_recovery(
+        namespace,
+        key,
+        maximum_payload_bytes,
+    ) {
+        Ok(Some(journal)) => journal,
+        Ok(None) => return Ok(PreparedAttemptRecoveryOutcome::Missing(Box::new(queued))),
+        Err(source) => {
+            return Err(AttemptResultRecoveryError {
+                queued: Box::new(queued),
+                source: source.into(),
+            });
+        }
+    };
+    let observation = match journal.result().observation().observation().id() {
+        Ok(observation) => observation,
+        Err(source) => {
+            return Err(AttemptResultRecoveryError {
+                queued: Box::new(queued),
+                source: AttemptResultPreparationFailure::Repository(
+                    CampaignRepositoryError::Codec(source),
+                )
+                .into(),
+            });
+        }
+    };
+    let finding_candidate = match journal.result().finding() {
+        Some(finding) => match finding.id() {
+            Ok(finding) => Some(finding),
+            Err(source) => {
+                return Err(AttemptResultRecoveryError {
+                    queued: Box::new(queued),
+                    source: AttemptResultPreparationFailure::Repository(
+                        CampaignRepositoryError::Codec(source),
+                    )
+                    .into(),
+                });
+            }
+        },
+        None => None,
+    };
+    if let Err(source) = validate_prepared_semantic_attempt_result(
+        store,
+        crate::AttemptExecutionKey::for_request(queued.request()),
+        journal.result(),
+    ) {
+        return Err(AttemptResultRecoveryError {
+            queued: Box::new(queued),
+            source: source.into(),
+        });
+    }
+
+    Ok(PreparedAttemptRecoveryOutcome::Prepared(Box::new(
+        PreparedAttemptResult {
+            queued,
+            result: PreparedAttemptResultOwner::Journal(journal),
+            observation,
+            finding_candidate,
+        },
+    )))
+}
+
 /// Retries no-write preparation of an already-captured exact checkpoint.
 ///
 /// # Errors
@@ -1461,29 +1867,24 @@ fn prepare_pending_attempt_result<W>(
     store: &CampaignExecutorStore,
     pending: PendingAttemptResult,
 ) -> Result<PreparedAttemptResult, AttemptResultPreparationError<W>> {
-    if let Err(source) = store.validate_observation_candidate(&pending.candidate) {
-        return Err(AttemptResultPreparationError::Candidate {
-            pending: Box::new(pending),
-            source,
-        });
-    }
-    let observation = match pending.candidate.observation().id() {
+    let observation = match pending.candidate().observation().id() {
         Ok(observation) => observation,
         Err(error) => {
             return Err(AttemptResultPreparationError::Candidate {
                 pending: Box::new(pending),
-                source: CampaignRepositoryError::Codec(error),
+                source: CampaignRepositoryError::Codec(error).into(),
             });
         }
     };
-    let finding_candidate = match &pending.finding {
+    let finding_candidate = match pending.finding() {
         Some(finding) => {
             if finding.bundle().observation() != observation {
                 return Err(AttemptResultPreparationError::Candidate {
                     pending: Box::new(pending),
                     source: CampaignRepositoryError::Integrity {
                         reason: "prepared-finding-observation-mismatch",
-                    },
+                    }
+                    .into(),
                 });
             }
             match finding.id() {
@@ -1491,18 +1892,131 @@ fn prepare_pending_attempt_result<W>(
                 Err(error) => {
                     return Err(AttemptResultPreparationError::Candidate {
                         pending: Box::new(pending),
-                        source: CampaignRepositoryError::Codec(error),
+                        source: CampaignRepositoryError::Codec(error).into(),
                     });
                 }
             }
         }
         None => None,
     };
+    let result = match pending.result.prepare() {
+        Ok(result) => result,
+        Err(source) => {
+            return Err(AttemptResultPreparationError::Candidate {
+                pending: Box::new(pending),
+                source: source.into(),
+            });
+        }
+    };
+    let queued = pending.queued;
+    if let Err(source) = validate_prepared_semantic_attempt_result(
+        store,
+        crate::AttemptExecutionKey::for_request(queued.request()),
+        &result,
+    ) {
+        return Err(AttemptResultPreparationError::Candidate {
+            pending: Box::new(PendingAttemptResult {
+                queued,
+                result: PendingAttemptResultOwner::Prepared(result),
+            }),
+            source,
+        });
+    }
     Ok(PreparedAttemptResult {
-        pending,
+        queued,
+        result: PreparedAttemptResultOwner::Volatile(result),
         observation,
         finding_candidate,
     })
+}
+
+fn validate_prepared_observation_candidate(
+    store: &CampaignExecutorStore,
+    result: &PreparedSemanticAttemptResult,
+) -> Result<(), AttemptResultPreparationFailure> {
+    let observation_trace_leaves = result
+        .observation()
+        .measurements()
+        .evaluation()
+        .into_iter()
+        .flat_map(|evaluation| evaluation.evidence().iter().copied())
+        .filter(|content| content.kind() == ObjectKind::Trace)
+        .collect::<BTreeSet<_>>();
+    let owned_trace_leaves = result
+        .measurement_replay_evidence()
+        .iter()
+        .filter_map(|evidence| match evidence.id() {
+            Ok(content) if observation_trace_leaves.contains(&content) => {
+                Some(evidence.canonical_bytes().map(|bytes| (content, bytes)))
+            }
+            Ok(_) => None,
+            Err(source) => Some(Err(source)),
+        })
+        .collect::<Result<Vec<_>, crate::CrucibleMeasurementError>>()?;
+    let owned_trace_leaf_bytes = owned_trace_leaves
+        .iter()
+        .map(|(content, bytes)| {
+            (
+                *content,
+                crate::CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1,
+                bytes.as_slice(),
+            )
+        })
+        .collect::<Vec<_>>();
+    store.validate_observation_candidate_with_owned_trace_leaf_bytes(
+        result.observation(),
+        &owned_trace_leaf_bytes,
+    )?;
+    Ok(())
+}
+
+/// Authenticates one prepared semantic result against its exact execution key.
+///
+/// # Errors
+///
+/// Returns an error when the key is not semantic, the observation differs from
+/// the assigned attempt or lineage, or any scenario, measurement, or closure
+/// dependency fails authentication.
+pub(crate) fn validate_prepared_semantic_attempt_result(
+    store: &CampaignExecutorStore,
+    expected: crate::AttemptExecutionKey,
+    result: &PreparedSemanticAttemptResult,
+) -> Result<(), AttemptResultPreparationFailure> {
+    if expected.scope() != crucible_campaign::AttemptExecutionScope::Semantic {
+        return Err(CampaignRepositoryError::Integrity {
+            reason: "prepared-result-nonsemantic-scope",
+        }
+        .into());
+    }
+    let lineage = store.load_lineage(expected.lineage())?;
+    let observation = result.observation();
+    if observation.observation().attempt() != expected.attempt() {
+        return Err(CampaignRepositoryError::Integrity {
+            reason: "prepared-result-attempt-mismatch",
+        }
+        .into());
+    }
+    if observation.child().scenario() != lineage.scenario()
+        || observation.child().scenario_artifact() != lineage.scenario_content()
+    {
+        return Err(CampaignRepositoryError::Integrity {
+            reason: "prepared-result-lineage-mismatch",
+        }
+        .into());
+    }
+    authenticate_prepared_measurements(store, &lineage, result)?;
+    validate_prepared_observation_candidate(store, result)
+}
+
+fn authenticate_prepared_measurements(
+    store: &CampaignExecutorStore,
+    lineage: &CampaignLineage,
+    result: &PreparedSemanticAttemptResult,
+) -> Result<(), AttemptResultPreparationFailure> {
+    let artifact = store.load_scenario_artifact(lineage.scenario_content())?;
+    let scenario = crate::decode_crucible_scenario_artifact(&artifact)?;
+    result.verify_measurement_publications(&scenario)?;
+    Ok(())
 }
 
 fn prepare_pending_checkpoint_result<W>(
@@ -1648,24 +2162,29 @@ where
         ObservationPublicationOutcome::Staged | ObservationPublicationOutcome::AlreadyStaged => Ok(
             AttemptResultStageOutcome::Publish(Box::new(StagedAttemptResult { prepared })),
         ),
-        ObservationPublicationOutcome::Canceled => Ok(AttemptResultStageOutcome::Finished(
-            AttemptWorkerReconcileOutcome::Discarded {
+        ObservationPublicationOutcome::Canceled => Ok(AttemptResultStageOutcome::Finished {
+            prepared: Box::new(prepared),
+            outcome: AttemptWorkerReconcileOutcome::Discarded {
                 observation,
                 completion: CompletionOutcome::Canceled,
             },
-        )),
-        ObservationPublicationOutcome::NotCurrent => Ok(AttemptResultStageOutcome::Finished(
-            AttemptWorkerReconcileOutcome::Discarded {
+        }),
+        ObservationPublicationOutcome::NotCurrent => Ok(AttemptResultStageOutcome::Finished {
+            prepared: Box::new(prepared),
+            outcome: AttemptWorkerReconcileOutcome::Discarded {
                 observation,
                 completion: CompletionOutcome::NotCurrent,
             },
-        )),
-        ObservationPublicationOutcome::AlreadyCompleted => Ok(AttemptResultStageOutcome::Finished(
-            AttemptWorkerReconcileOutcome::Reconciled {
-                observation,
-                completion: CompletionOutcome::AlreadyCompleted,
-            },
-        )),
+        }),
+        ObservationPublicationOutcome::AlreadyCompleted => {
+            Ok(AttemptResultStageOutcome::Finished {
+                prepared: Box::new(prepared),
+                outcome: AttemptWorkerReconcileOutcome::Reconciled {
+                    observation,
+                    completion: CompletionOutcome::AlreadyCompleted,
+                },
+            })
+        }
     }
 }
 
@@ -1679,20 +2198,52 @@ pub fn publish_prepared_attempt_result(
     store: &CampaignExecutorStore,
     staged: Box<StagedAttemptResult>,
 ) -> Result<PublishedAttemptResult, AttemptResultPublicationError> {
-    if let Err(source) = store.publish_observation_candidate(&staged.prepared.pending.candidate) {
-        return Err(AttemptResultPublicationError { staged, source });
-    }
-    if let Some(finding) = &staged.prepared.pending.finding
-        && let Err(source) = finding.publish_for_executor(store)
-    {
+    if let Err(source) = publish_prepared_semantic_attempt_result(store, staged.prepared.result()) {
         return Err(AttemptResultPublicationError { staged, source });
     }
     let StagedAttemptResult { prepared } = *staged;
     Ok(PublishedAttemptResult {
-        queued: prepared.pending.queued,
+        queued: prepared.queued,
         observation: prepared.observation,
         finding_candidate: prepared.finding_candidate,
+        journal: prepared.result.into_journal(),
     })
+}
+
+/// Publishes a preflighted semantic closure in dependency order.
+///
+/// Callers must first complete [`validate_prepared_semantic_attempt_result`].
+/// Packaged callers retain the staged publication owner while this function
+/// writes; the synchronous standalone caller owns its private repository.
+///
+/// # Errors
+///
+/// Returns an error when raw evidence cannot derive its declared identity or
+/// any trace, observation, or finding object cannot be published exactly.
+pub(crate) fn publish_prepared_semantic_attempt_result(
+    store: &CampaignExecutorStore,
+    result: &PreparedSemanticAttemptResult,
+) -> Result<ObservationId, AttemptResultPublicationFailure> {
+    for evidence in result.measurement_replay_evidence() {
+        let expected = match evidence.id() {
+            Ok(expected) => expected,
+            Err(source) => return Err(AttemptResultPublicationFailure::Measurement(source)),
+        };
+        let bytes = match evidence.canonical_bytes() {
+            Ok(bytes) => bytes,
+            Err(source) => return Err(AttemptResultPublicationFailure::Measurement(source)),
+        };
+        store.publish_executor_trace_leaf(
+            expected,
+            crate::CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1,
+            &bytes,
+        )?;
+    }
+    let observation = store.publish_observation_candidate(result.observation())?;
+    if let Some(finding) = result.finding() {
+        finding.publish_for_executor(store)?;
+    }
+    Ok(observation)
 }
 
 /// Aborts a stably conflicting prepared publication before immutable writes.
@@ -1704,19 +2255,28 @@ pub fn publish_prepared_attempt_result(
 pub fn abort_prepared_attempt_result<L, V>(
     supervisor: &mut LocalExecutorSupervisor<L, V>,
     prepared: PreparedAttemptResult,
-) -> Result<CancellationOutcome, AttemptResultStagingError<LocalExecutorError<L::Error>>>
+) -> Result<
+    (CancellationOutcome, PreparedAttemptResult),
+    AttemptResultStagingError<LocalExecutorError<L::Error>>,
+>
 where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
     match supervisor.stage_and_reconcile_cancellation(prepared.queued()) {
-        Ok(outcome) => Ok(outcome),
+        Ok(outcome) => Ok((outcome, prepared)),
         Err(source) => Err(AttemptResultStagingError {
             prepared: Box::new(prepared),
             source,
         }),
     }
 }
+
+/// Result of attempting to cancel one staged result without losing its owner.
+pub type AttemptResultAbortOutcome<E> = Result<
+    (CancellationOutcome, Box<StagedAttemptResult>),
+    AttemptResultAbortError<LocalExecutorError<E>>,
+>;
 
 /// Aborts a stably failed staged publication without re-running the guest.
 ///
@@ -1727,13 +2287,13 @@ where
 pub fn abort_staged_attempt_result<L, V>(
     supervisor: &mut LocalExecutorSupervisor<L, V>,
     staged: Box<StagedAttemptResult>,
-) -> Result<CancellationOutcome, AttemptResultAbortError<LocalExecutorError<L::Error>>>
+) -> AttemptResultAbortOutcome<L::Error>
 where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
     match supervisor.stage_and_reconcile_cancellation(staged.prepared.queued()) {
-        Ok(outcome) => Ok(outcome),
+        Ok(outcome) => Ok((outcome, staged)),
         Err(source) => Err(AttemptResultAbortError { staged, source }),
     }
 }
@@ -1751,13 +2311,16 @@ where
 pub fn abort_published_attempt_result<L, V>(
     supervisor: &mut LocalExecutorSupervisor<L, V>,
     published: PublishedAttemptResult,
-) -> Result<CancellationOutcome, PublishedAttemptResultAbortError<LocalExecutorError<L::Error>>>
+) -> Result<
+    (CancellationOutcome, PublishedAttemptResult),
+    PublishedAttemptResultAbortError<LocalExecutorError<L::Error>>,
+>
 where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
     match supervisor.stage_and_reconcile_cancellation(&published.queued) {
-        Ok(outcome) => Ok(outcome),
+        Ok(outcome) => Ok((outcome, published)),
         Err(source) => Err(PublishedAttemptResultAbortError {
             published: Box::new(published),
             source,
@@ -1796,6 +2359,12 @@ where
             });
         }
     };
+    if let Err(source) = published.remove_journal() {
+        return Err(AttemptWorkerReconcileError::JournalCleanupPending {
+            published: Box::new(published),
+            source,
+        });
+    }
     Ok(AttemptWorkerReconcileOutcome::Reconciled {
         observation,
         completion,

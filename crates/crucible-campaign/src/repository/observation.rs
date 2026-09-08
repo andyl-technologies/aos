@@ -967,6 +967,14 @@ impl CampaignRepository {
         &self,
         candidate: &ObservationCandidate,
     ) -> Result<(), CampaignRepositoryError> {
+        self.validate_observation_candidate_with_owned_evidence(candidate, &BTreeSet::new())
+    }
+
+    pub(super) fn validate_observation_candidate_with_owned_evidence(
+        &self,
+        candidate: &ObservationCandidate,
+        owned_evidence: &BTreeSet<ContentId>,
+    ) -> Result<(), CampaignRepositoryError> {
         let observation = candidate.observation();
         let child = candidate.child();
         let attempt = self.read_attempt(observation.attempt().content_id())?;
@@ -1095,12 +1103,13 @@ impl CampaignRepository {
             );
         let dependency_objects = self.verify_campaign_closures_anchored_cached(
             roots,
-            &BTreeSet::new(),
+            owned_evidence,
             &mut choice_cache,
         )?;
         let virtual_records = virtual_choice_records
             .len()
             .checked_add(5)
+            .and_then(|records| records.checked_add(owned_evidence.len()))
             .ok_or_else(|| integrity("campaign-closure-object-limit"))?;
         if dependency_objects
             .checked_add(virtual_records)

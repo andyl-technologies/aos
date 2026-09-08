@@ -33,6 +33,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crucible::ScenarioDefForm;
 use crucible_campaign::{
     CampaignCodecError, ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity, ConfigurationArtifact,
     CoverageProjection, FindingCandidateBundle, FindingKind, FindingTarget, MeasurementSet,
@@ -49,7 +50,7 @@ use super::{
 };
 use crate::{
     CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2, CrucibleMeasurementError,
-    CrucibleMeasurementReplayEvidence,
+    CrucibleMeasurementReplayEvidence, verify_crucible_measurement_publication,
 };
 
 const PREPARED_RESULT_MAGIC_V1: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v1\0";
@@ -134,6 +135,108 @@ impl PreparedSemanticAttemptResult {
     #[must_use]
     pub const fn finding(&self) -> Option<&PreparedCrucibleFindingCandidate> {
         self.finding.as_ref()
+    }
+
+    /// Replays every retained measurement leaf against the authenticated scenario.
+    ///
+    /// Structural construction proves which measurement record owns each raw
+    /// leaf. This operation additionally recomputes every derived evaluation
+    /// from the scenario's exact definitions before any immutable publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreparedSemanticResultCodecError`] when the scenario differs
+    /// from the prepared result or any raw replay disagrees with its retained
+    /// measurement evaluation.
+    pub fn verify_measurement_publications(
+        &self,
+        scenario: &ScenarioDefForm,
+    ) -> Result<(), PreparedSemanticResultCodecError> {
+        validate_measurement_evidence(
+            &self.observation,
+            &self.measurement_replay_evidence,
+            self.finding.as_ref(),
+        )?;
+
+        let expected_scenario = super::campaign_scenario_id(scenario.id());
+        if self.observation.child().scenario() != expected_scenario {
+            return Err(inconsistent("authenticated measurement scenario"));
+        }
+
+        let evidence_by_id = self
+            .measurement_replay_evidence
+            .iter()
+            .map(|leaf| leaf.id().map(|id| (id, leaf)))
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let observation_measurements = self.observation.measurements();
+        verify_measurement_record(
+            observation_measurements,
+            self.observation.child().configuration(),
+            expected_scenario,
+            scenario,
+            &evidence_by_id,
+        )?;
+        // Structural validation above visits every reference. Replay each
+        // distinct retained evaluation/configuration pair once so repeated
+        // minimization steps cannot multiply raw-leaf decoding work.
+        let mut verified_pairs = BTreeSet::from([(
+            observation_measurements.id()?,
+            self.observation.child().configuration(),
+        )]);
+
+        let finding_records = self
+            .finding
+            .as_ref()
+            .map(|finding| {
+                let configurations = finding
+                    .replay_records
+                    .configurations
+                    .iter()
+                    .map(|record| record.id().map(|id| (id, record.configuration())))
+                    .collect::<Result<BTreeMap<_, _>, _>>()?;
+                let measurements = finding
+                    .replay_records
+                    .measurements
+                    .iter()
+                    .map(|record| record.id().map(|id| (id, record)))
+                    .collect::<Result<BTreeMap<_, _>, _>>()?;
+                Ok::<_, PreparedSemanticResultCodecError>((finding, configurations, measurements))
+            })
+            .transpose()?;
+
+        if let Some((finding, configurations, measurements)) = &finding_records {
+            let mut replay_count = 0usize;
+            for replay in finding
+                .minimization_replays
+                .iter()
+                .chain(&finding.verification_replays)
+            {
+                replay_count = replay_count
+                    .checked_add(1)
+                    .ok_or(PreparedSemanticResultCodecError::LimitExceeded)?;
+                if replay_count > MAX_REPLAY_VALIDATION_REFERENCES {
+                    return Err(PreparedSemanticResultCodecError::LimitExceeded);
+                }
+
+                let measurement = measurements
+                    .get(&replay.measurements)
+                    .ok_or_else(|| inconsistent("finding replay measurement record"))?;
+                let configuration = configurations
+                    .get(&replay.configuration)
+                    .copied()
+                    .ok_or_else(|| inconsistent("finding replay measurement configuration"))?;
+                if verified_pairs.insert((replay.measurements, configuration)) {
+                    verify_measurement_record(
+                        measurement,
+                        configuration,
+                        expected_scenario,
+                        scenario,
+                        &evidence_by_id,
+                    )?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Returns strict, bounded journal payload bytes.
@@ -542,6 +645,42 @@ fn measurement_requires_replay_evidence(measurement: &MeasurementSet) -> bool {
     measurement.evaluation().is_some_and(|evaluation| {
         evaluation.payload_schema() == CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
     })
+}
+
+fn verify_measurement_record(
+    measurement: &MeasurementSet,
+    configuration: crucible_campaign::ConfigurationId,
+    expected_scenario: crucible_campaign::ScenarioDefId,
+    scenario: &ScenarioDefForm,
+    evidence_by_id: &BTreeMap<
+        crucible_cas::content_store::ContentId,
+        &CrucibleMeasurementReplayEvidence,
+    >,
+) -> Result<(), PreparedSemanticResultCodecError> {
+    let Some(evaluation) = measurement.evaluation() else {
+        return Ok(());
+    };
+    if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
+        return Ok(());
+    }
+    let evidence_id = evaluation
+        .evidence()
+        .first()
+        .copied()
+        .ok_or_else(|| inconsistent("measurement replay evidence edge"))?;
+    let evidence = evidence_by_id
+        .get(&evidence_id)
+        .copied()
+        .ok_or_else(|| inconsistent("missing measurement replay evidence"))?;
+
+    verify_crucible_measurement_publication(
+        measurement,
+        evidence,
+        expected_scenario,
+        configuration,
+        scenario.measurements(),
+    )?;
+    Ok(())
 }
 
 fn validate_measurement_record(

@@ -8,6 +8,7 @@
 
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
@@ -18,7 +19,8 @@ use crucible_api::{
     ProductionExactCheckpointRetirement, retire_production_exact_checkpoint_catalog,
 };
 use crucible_campaign::{
-    CampaignExecutorStore, CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
+    AttemptExecutionScope, CampaignExecutorStore, CampaignRepositoryGcExclusionGuard,
+    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
     CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, ExactCheckpointId,
     ExecutorCapabilityService, ExecutorCapacityReport, ExecutorControlService, ExecutorDescription,
     ExecutorRejection, ExecutorResumeService, ExecutorService, ExecutorStatusService,
@@ -30,19 +32,21 @@ use crucible_campaign::{
 use crate::executor_supervisor::{AttemptCheckpointHandoff, ExecutionCheckpointHandoff};
 use crate::{
     AssignmentLedger, AttemptAdmissionValidator, AttemptExecutionDisposition, AttemptExecutionKey,
-    AttemptExecutionReconciliationStep, AttemptResultPreparationError, AttemptResultStageOutcome,
+    AttemptExecutionReconciliationStep, AttemptResultPreparationError,
+    AttemptResultRecoveryFailure, AttemptResultStageOutcome, AttemptRuntimeState,
     AttemptWorkerFailure, AttemptWorkerReconcileError, CapturedAttemptCheckpoint,
     CheckpointHandoffFailure, CheckpointPublicationOutcome, CheckpointResultAbortToken,
-    CheckpointResultStageOutcome, CompletionValidationFailure, ExactCheckpointStore,
-    LocalAttemptWorker, LocalExecutorCapabilityService, LocalExecutorError,
-    LocalExecutorSupervisor, PreparedAttemptCheckpoint, PreparedAttemptResult,
-    PreparedAttemptWorkResult, PreparedCheckpointResult, PublishedAttemptResult, QueuedAttempt,
-    StagedAttemptResult, abort_checkpoint_result, abort_prepared_attempt_result,
-    abort_published_attempt_result, abort_staged_attempt_result, prepare_attempt_result,
+    CheckpointResultStageOutcome, CompletionValidationFailure, DirectoryPreparedResultJournal,
+    ExactCheckpointStore, LocalAttemptWorker, LocalExecutorCapabilityService, LocalExecutorError,
+    LocalExecutorSupervisor, PreparedAttemptCheckpoint, PreparedAttemptRecoveryOutcome,
+    PreparedAttemptResult, PreparedAttemptWorkResult, PreparedCheckpointResult,
+    PreparedResultJournalError, PublishedAttemptResult, QueuedAttempt, StagedAttemptResult,
+    abort_checkpoint_result, abort_prepared_attempt_result, abort_published_attempt_result,
+    abort_staged_attempt_result, journal_prepared_attempt_result, prepare_attempt_result,
     publish_prepared_attempt_result, publish_staged_checkpoint_result, reconcile_attempt_failure,
     reconcile_published_attempt_result, reconcile_published_checkpoint_result,
-    retry_pending_attempt_result, retry_pending_checkpoint_result, stage_prepared_attempt_result,
-    stage_prepared_checkpoint_result,
+    recover_prepared_attempt_result, retry_pending_attempt_result, retry_pending_checkpoint_result,
+    stage_prepared_attempt_result, stage_prepared_checkpoint_result,
 };
 
 mod completion;
@@ -79,6 +83,22 @@ pub(crate) const WORKER_SHUTDOWN_WAIT: Duration = Duration::from_secs(30);
 const POOL_RUNNING: u8 = 0;
 const POOL_SHUTTING_DOWN: u8 = 1;
 const POOL_POISONED: u8 = 2;
+
+/// Durable prepared-result location used by production semantic workers.
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedResultJournalConfig {
+    namespace: PathBuf,
+    maximum_payload_bytes: usize,
+}
+
+impl PreparedResultJournalConfig {
+    pub(crate) fn new(namespace: PathBuf, maximum_payload_bytes: usize) -> Self {
+        Self {
+            namespace,
+            maximum_payload_bytes,
+        }
+    }
+}
 
 /// Receives exact roots only after the durable supervisor state is paused.
 ///
@@ -370,6 +390,7 @@ where
             workers,
             Vec::<DisabledCheckpointPromotionWorker>::new(),
             None,
+            None,
         )
     }
 
@@ -380,6 +401,7 @@ where
         checkpoints: Arc<ExactCheckpointStore>,
         workers: Vec<W>,
         checkpoint_observer: Arc<dyn PausedCheckpointObserver>,
+        prepared_results: Option<PreparedResultJournalConfig>,
     ) -> Result<Self, LocalExecutorPoolConfigError>
     where
         W: LocalAttemptWorker + Send + 'static,
@@ -391,6 +413,7 @@ where
             workers,
             Vec::<DisabledCheckpointPromotionWorker>::new(),
             Some(checkpoint_observer),
+            prepared_results,
         )
     }
 
@@ -427,6 +450,7 @@ where
             workers,
             promotion_workers,
             None,
+            None,
         )
     }
 
@@ -438,6 +462,7 @@ where
         workers: Vec<W>,
         promotion_workers: Vec<P>,
         checkpoint_observer: Arc<dyn PausedCheckpointObserver>,
+        prepared_results: Option<PreparedResultJournalConfig>,
     ) -> Result<Self, LocalExecutorPoolConfigError>
     where
         W: LocalAttemptWorker + Send + 'static,
@@ -453,6 +478,7 @@ where
             workers,
             promotion_workers,
             Some(checkpoint_observer),
+            prepared_results,
         )
     }
 
@@ -463,6 +489,7 @@ where
         workers: Vec<W>,
         promotion_workers: Vec<P>,
         checkpoint_observer: Option<Arc<dyn PausedCheckpointObserver>>,
+        prepared_results: Option<PreparedResultJournalConfig>,
     ) -> Result<Self, LocalExecutorPoolConfigError>
     where
         W: LocalAttemptWorker + Send + 'static,
@@ -519,6 +546,7 @@ where
             promotion_worker_count,
             restart_work,
             checkpoint_observer,
+            prepared_results,
         ));
         let total_workers = worker_count
             .checked_add(promotion_worker_count)
@@ -708,6 +736,27 @@ pub enum LocalExecutorPoolConfigError {
     /// Compact durable restart work exceeded the fixed process-local queue bound.
     #[error("local executor checkpoint-promotion restart inventory exceeds 65536 items")]
     TooManyPromotionRestarts,
+    /// Durable attempt-state enumeration failed during prepared-result cleanup.
+    #[error("local executor prepared-result restart inventory is unavailable")]
+    PreparedResultRestartInventory,
+    /// A stable prepared-result journal could not be authenticated or removed.
+    #[error("local executor stable prepared-result cleanup failed")]
+    PreparedResultCleanup {
+        /// Exact durable journal failure.
+        #[source]
+        source: PreparedResultJournalError,
+    },
+    /// A completed ledger result does not match its prepared-result journal.
+    #[error("local executor completed result differs from its prepared-result journal")]
+    PreparedResultCompletionMismatch,
+    /// A completed immutable closure could not be authenticated before journal removal.
+    #[error(
+        "local executor completed result is unavailable or incompatible during journal cleanup"
+    )]
+    PreparedResultCompletionValidation {
+        /// Stable repository-backed validation reason.
+        reason: CompletionValidationFailure,
+    },
     /// The operating system refused to create one fixed worker.
     #[error("local executor worker thread could not be created")]
     Spawn {
@@ -906,6 +955,7 @@ struct SharedExecutor<L, V> {
     worker_count: usize,
     promotion_worker_count: usize,
     checkpoint_observer: Option<Arc<dyn PausedCheckpointObserver>>,
+    prepared_results: Option<PreparedResultJournalConfig>,
     completion: Arc<PoolCompletionState>,
     counters: PoolCounters,
 }
@@ -918,6 +968,7 @@ impl<L, V> SharedExecutor<L, V> {
         promotion_worker_count: usize,
         restart_work: Vec<crate::CheckpointPromotionRestartWork>,
         checkpoint_observer: Option<Arc<dyn PausedCheckpointObserver>>,
+        prepared_results: Option<PreparedResultJournalConfig>,
     ) -> Self {
         let validator = executor.supervisor().admission_validator();
         Self {
@@ -931,6 +982,7 @@ impl<L, V> SharedExecutor<L, V> {
             worker_count,
             promotion_worker_count,
             checkpoint_observer,
+            prepared_results,
             completion: Arc::new(PoolCompletionState::new(
                 worker_count.saturating_add(promotion_worker_count),
             )),
@@ -1171,6 +1223,154 @@ struct PoolCounters {
     worker_panics: AtomicU64,
 }
 
+/// Removes restart journals whose durable ledger state is already terminal.
+///
+/// The caller supplies the repository GC guard acquired before the ledger's
+/// lifetime writer fence. Packaged startup invokes this before any worker or
+/// maintenance thread exists, so the order is repository GC exclusion, ledger
+/// exclusion, then this module's nonblocking per-key journal lock.
+pub(crate) fn reconcile_stable_prepared_result_journals<L, V>(
+    ledger: &L,
+    validator: &V,
+    config: &PreparedResultJournalConfig,
+    _gc_exclusion: &CampaignRepositoryGcExclusionGuard<'_>,
+) -> Result<(), LocalExecutorPoolConfigError>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    let mut cleanup_failure = None;
+    ledger
+        .visit_attempt_states(&mut |key, state| {
+            if cleanup_failure.is_some()
+                || key.scope() != AttemptExecutionScope::Semantic
+                || !matches!(
+                    state,
+                    AttemptRuntimeState::Completed { .. }
+                        | AttemptRuntimeState::Canceled { .. }
+                        | AttemptRuntimeState::TerminalFailure { .. }
+                )
+            {
+                return;
+            }
+
+            let present = DirectoryPreparedResultJournal::artifacts_present(&config.namespace, key);
+            match present {
+                Ok(false) => return,
+                Ok(true) => {}
+                Err(source) => {
+                    cleanup_failure =
+                        Some(LocalExecutorPoolConfigError::PreparedResultCleanup { source });
+                    return;
+                }
+            }
+            cleanup_failure =
+                reconcile_one_stable_prepared_result(validator, config, key, state).err();
+        })
+        .map_err(|_| LocalExecutorPoolConfigError::PreparedResultRestartInventory)?;
+
+    cleanup_failure.map_or(Ok(()), Err)
+}
+
+fn reconcile_one_stable_prepared_result<V>(
+    validator: &V,
+    config: &PreparedResultJournalConfig,
+    key: AttemptExecutionKey,
+    state: AttemptRuntimeState,
+) -> Result<(), LocalExecutorPoolConfigError>
+where
+    V: AttemptAdmissionValidator,
+{
+    match DirectoryPreparedResultJournal::open_for_recovery(
+        &config.namespace,
+        key,
+        config.maximum_payload_bytes,
+    ) {
+        Ok(Some(journal)) => {
+            validate_completed_journal(validator, key, state, &journal)?;
+            journal
+                .remove()
+                .map_err(|source| LocalExecutorPoolConfigError::PreparedResultCleanup { source })
+        }
+        Ok(None) => Ok(()),
+        Err(PreparedResultJournalError::RecoveryRequired) => {
+            validate_completed_ledger_result(validator, key, state)?;
+            DirectoryPreparedResultJournal::cleanup_orphans_after_ledger_check(
+                &config.namespace,
+                key,
+            )
+            .map(|_| ())
+            .map_err(|source| LocalExecutorPoolConfigError::PreparedResultCleanup { source })
+        }
+        Err(source) => Err(LocalExecutorPoolConfigError::PreparedResultCleanup { source }),
+    }
+}
+
+fn validate_completed_journal<V>(
+    validator: &V,
+    key: AttemptExecutionKey,
+    state: AttemptRuntimeState,
+    journal: &DirectoryPreparedResultJournal,
+) -> Result<(), LocalExecutorPoolConfigError>
+where
+    V: AttemptAdmissionValidator,
+{
+    let AttemptRuntimeState::Completed {
+        observation,
+        finding_candidate,
+        ..
+    } = state
+    else {
+        return Ok(());
+    };
+    let journal_observation = journal
+        .result()
+        .observation()
+        .observation()
+        .id()
+        .map_err(|_| LocalExecutorPoolConfigError::PreparedResultCompletionMismatch)?;
+    let journal_finding = journal
+        .result()
+        .finding()
+        .map(crate::PreparedCrucibleFindingCandidate::id)
+        .transpose()
+        .map_err(|_| LocalExecutorPoolConfigError::PreparedResultCompletionMismatch)?;
+    let completed_finding = finding_candidate.candidate();
+    if journal_observation != observation || journal_finding != completed_finding {
+        return Err(LocalExecutorPoolConfigError::PreparedResultCompletionMismatch);
+    }
+
+    validate_completed_ledger_result(validator, key, state)
+}
+
+fn validate_completed_ledger_result<V>(
+    validator: &V,
+    key: AttemptExecutionKey,
+    state: AttemptRuntimeState,
+) -> Result<(), LocalExecutorPoolConfigError>
+where
+    V: AttemptAdmissionValidator,
+{
+    let AttemptRuntimeState::Completed {
+        observation,
+        finding_candidate,
+        ..
+    } = state
+    else {
+        return Ok(());
+    };
+    validator
+        .validate_retained_completion(
+            key.lineage(),
+            key.attempt(),
+            observation,
+            finding_candidate.candidate(),
+        )
+        .map_err(
+            |reason| LocalExecutorPoolConfigError::PreparedResultCompletionValidation { reason },
+        )
+}
+
 fn worker_loop<L, V, W>(
     shared: Arc<SharedExecutor<L, V>>,
     store: CampaignExecutorStore,
@@ -1183,6 +1383,14 @@ fn worker_loop<L, V, W>(
     loop {
         let Some(queued) = take_next_queued(&shared) else {
             return;
+        };
+        let queued = match recover_before_execution(&shared, &store, queued) {
+            RecoveryDisposition::Runnable(queued) => *queued,
+            RecoveryDisposition::Prepared(prepared) => {
+                let _ = reconcile_prepared_result(&shared, &store, *prepared);
+                continue;
+            }
+            RecoveryDisposition::Stopped => continue,
         };
         if queued.cancellation().is_canceled() {
             reconcile_worker_failure(&shared, queued, AttemptWorkerFailure::Canceled(()));
@@ -1215,6 +1423,73 @@ fn worker_loop<L, V, W>(
                 reconcile_panicked_worker(&shared, key, execution);
             }
         }
+    }
+}
+
+enum RecoveryDisposition {
+    Runnable(Box<QueuedAttempt>),
+    Prepared(Box<PreparedAttemptResult>),
+    Stopped,
+}
+
+fn recover_before_execution<L, V>(
+    shared: &SharedExecutor<L, V>,
+    store: &CampaignExecutorStore,
+    mut queued: QueuedAttempt,
+) -> RecoveryDisposition
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    if queued.request().execution_scope() != AttemptExecutionScope::Semantic {
+        return RecoveryDisposition::Runnable(Box::new(queued));
+    }
+    let Some(config) = &shared.prepared_results else {
+        return RecoveryDisposition::Runnable(Box::new(queued));
+    };
+    loop {
+        if queued.cancellation().is_canceled()
+            || shared.state.load(Ordering::Acquire) != POOL_RUNNING
+        {
+            reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Canceled(()));
+            return RecoveryDisposition::Stopped;
+        }
+        match recover_prepared_attempt_result(
+            store,
+            &config.namespace,
+            config.maximum_payload_bytes,
+            queued,
+        ) {
+            Ok(PreparedAttemptRecoveryOutcome::Missing(queued)) => {
+                return RecoveryDisposition::Runnable(queued);
+            }
+            Ok(PreparedAttemptRecoveryOutcome::Prepared(prepared)) => {
+                return RecoveryDisposition::Prepared(prepared);
+            }
+            Err(error) if recovery_failure_is_retryable(&error.source) => {
+                queued = *error.queued;
+                increment(&shared.counters.publication_retries);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(error) => {
+                reconcile_worker_failure(
+                    shared,
+                    *error.queued,
+                    AttemptWorkerFailure::Terminal(error.source),
+                );
+                return RecoveryDisposition::Stopped;
+            }
+        }
+    }
+}
+
+fn recovery_failure_is_retryable(source: &AttemptResultRecoveryFailure) -> bool {
+    match source {
+        AttemptResultRecoveryFailure::Journal(PreparedResultJournalError::Io { .. }) => true,
+        AttemptResultRecoveryFailure::Preparation(source) => {
+            source.executor_rejection() == ExecutorRejection::UnavailableInput
+        }
+        AttemptResultRecoveryFailure::Journal(_) => false,
     }
 }
 
@@ -1367,15 +1642,77 @@ where
         }
     };
 
+    let prepared = match journal_before_stage(shared, prepared) {
+        Some(prepared) => prepared,
+        None => return Some(AttemptExecutionDisposition::Failed),
+    };
+
+    Some(reconcile_prepared_result(shared, store, prepared))
+}
+
+fn journal_before_stage<L, V>(
+    shared: &SharedExecutor<L, V>,
+    mut prepared: PreparedAttemptResult,
+) -> Option<PreparedAttemptResult>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    let Some(config) = &shared.prepared_results else {
+        return Some(prepared);
+    };
+    loop {
+        if prepared.queued().cancellation().is_canceled() {
+            abort_prepared(shared, prepared);
+            return None;
+        }
+        match journal_prepared_attempt_result(
+            &config.namespace,
+            config.maximum_payload_bytes,
+            prepared,
+        ) {
+            Ok((journaled, _)) => return Some(journaled),
+            Err(error) if matches!(error.source, PreparedResultJournalError::Io { .. }) => {
+                prepared = *error.prepared;
+                increment(&shared.counters.publication_retries);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(error) => {
+                let source = error.source;
+                match (*error.prepared).into_queued_without_journal() {
+                    Ok(queued) => {
+                        reconcile_worker_failure(
+                            shared,
+                            queued,
+                            AttemptWorkerFailure::Terminal(source),
+                        );
+                    }
+                    Err(prepared) => retain_forever(shared, prepared),
+                }
+                return None;
+            }
+        }
+    }
+}
+
+fn reconcile_prepared_result<L, V>(
+    shared: &SharedExecutor<L, V>,
+    store: &CampaignExecutorStore,
+    prepared: PreparedAttemptResult,
+) -> AttemptExecutionDisposition
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
     let staged = match stage_prepared(shared, prepared) {
         StageDisposition::Publish(staged) => staged,
-        StageDisposition::Finished(disposition) => return Some(disposition),
+        StageDisposition::Finished(disposition) => return disposition,
     };
     let published = match publish_staged(shared, store, staged) {
         PublishDisposition::Published(published) => *published,
-        PublishDisposition::Finished(disposition) => return Some(disposition),
+        PublishDisposition::Finished(disposition) => return disposition,
     };
-    Some(reconcile_published(shared, published))
+    reconcile_published(shared, published)
 }
 
 fn reconcile_checkpoint_result<L, V>(
@@ -1673,7 +2010,9 @@ where
             Ok(AttemptResultStageOutcome::Publish(staged)) => {
                 return StageDisposition::Publish(staged);
             }
-            Ok(AttemptResultStageOutcome::Finished(outcome)) => {
+            Ok(AttemptResultStageOutcome::Finished { prepared, outcome }) => {
+                drop(executor);
+                cleanup_prepared_journal(shared, *prepared);
                 record_outcome(shared, outcome);
                 return StageDisposition::Finished(worker_reconcile_disposition(outcome));
             }
@@ -1760,6 +2099,21 @@ where
                 abort_published(shared, published);
                 return AttemptExecutionDisposition::Failed;
             }
+            Err(AttemptWorkerReconcileError::JournalCleanupPending {
+                published: next,
+                source: PreparedResultJournalError::Io { .. },
+            }) => {
+                published = *next;
+                increment(&shared.counters.publication_retries);
+                drop(executor);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(AttemptWorkerReconcileError::JournalCleanupPending {
+                published: next, ..
+            }) => {
+                drop(executor);
+                retain_forever(shared, next);
+            }
             Err(_) => {
                 drop(executor);
                 shared.poison();
@@ -1812,7 +2166,10 @@ fn reconcile_worker_failure<L, V, W>(
                 drop(executor);
                 retain_forever(shared, (*next, next_failure));
             }
-            Err(AttemptWorkerReconcileError::CompletionPending { published, .. }) => {
+            Err(
+                AttemptWorkerReconcileError::CompletionPending { published, .. }
+                | AttemptWorkerReconcileError::JournalCleanupPending { published, .. },
+            ) => {
                 drop(executor);
                 retain_forever(shared, published);
             }
@@ -1828,7 +2185,9 @@ where
     loop {
         let mut executor = lock_or_retain(shared, &prepared);
         match abort_prepared_attempt_result(executor.supervisor_mut(), prepared) {
-            Ok(_) => {
+            Ok((_, completed)) => {
+                drop(executor);
+                cleanup_prepared_journal(shared, completed);
                 increment(&shared.counters.terminal_stops);
                 return;
             }
@@ -1854,7 +2213,9 @@ where
     loop {
         let mut executor = lock_or_retain(shared, &staged);
         match abort_staged_attempt_result(executor.supervisor_mut(), staged) {
-            Ok(_) => {
+            Ok((_, completed)) => {
+                drop(executor);
+                cleanup_staged_journal(shared, completed);
                 increment(&shared.counters.terminal_stops);
                 return;
             }
@@ -1880,7 +2241,9 @@ where
     loop {
         let mut executor = lock_or_retain(shared, &published);
         match abort_published_attempt_result(executor.supervisor_mut(), published) {
-            Ok(_) => {
+            Ok((_, completed)) => {
+                drop(executor);
+                cleanup_published_journal(shared, completed);
                 increment(&shared.counters.terminal_stops);
                 return;
             }
@@ -1894,6 +2257,70 @@ where
                 drop(executor);
                 retain_forever(shared, error.published);
             }
+        }
+    }
+}
+
+trait PreparedJournalCleanup {
+    fn remove_prepared_journal(&self) -> Result<(), PreparedResultJournalError>;
+}
+
+impl PreparedJournalCleanup for PreparedAttemptResult {
+    fn remove_prepared_journal(&self) -> Result<(), PreparedResultJournalError> {
+        self.remove_journal()
+    }
+}
+
+impl PreparedJournalCleanup for Box<StagedAttemptResult> {
+    fn remove_prepared_journal(&self) -> Result<(), PreparedResultJournalError> {
+        self.remove_journal()
+    }
+}
+
+impl PreparedJournalCleanup for PublishedAttemptResult {
+    fn remove_prepared_journal(&self) -> Result<(), PreparedResultJournalError> {
+        self.remove_journal()
+    }
+}
+
+fn cleanup_prepared_journal<L, V>(shared: &SharedExecutor<L, V>, prepared: PreparedAttemptResult)
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    cleanup_journal(shared, prepared);
+}
+
+fn cleanup_staged_journal<L, V>(shared: &SharedExecutor<L, V>, staged: Box<StagedAttemptResult>)
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    cleanup_journal(shared, staged);
+}
+
+fn cleanup_published_journal<L, V>(shared: &SharedExecutor<L, V>, published: PublishedAttemptResult)
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    cleanup_journal(shared, published);
+}
+
+fn cleanup_journal<L, V, T>(shared: &SharedExecutor<L, V>, token: T)
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+    T: PreparedJournalCleanup,
+{
+    loop {
+        match token.remove_prepared_journal() {
+            Ok(()) => return,
+            Err(PreparedResultJournalError::Io { .. }) => {
+                increment(&shared.counters.publication_retries);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(_) => retain_forever(shared, token),
         }
     }
 }

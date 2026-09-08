@@ -1309,9 +1309,10 @@ fn hot_world_runner_honors_an_inherited_quantum_boundary_without_driving() {
     let QemuHotForkWorldExecutionAttempt::Executed(outcome) = outcome else {
         panic!("scripted retained source must not decline")
     };
-    let AttemptExecutionProduct::Observation(candidate) = outcome.product() else {
-        panic!("inherited absolute stop must produce an observation")
+    let AttemptExecutionProduct::PreparedSemantic(result) = outcome.product() else {
+        panic!("inherited absolute stop must produce a prepared semantic result")
     };
+    let candidate = result.observation();
 
     assert_eq!(
         outcome.materialization(),
