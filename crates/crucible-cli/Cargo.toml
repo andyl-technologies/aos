@@ -45,5 +45,6 @@ zeroize = { workspace = true }
 crucible-core = { package = "crucible", path = "../crucible" }
 crucible-daemon = { path = "../crucible-daemon", features = ["test-support"] }
 crucible-harness = { path = "../crucible-harness" }
+# Black-box guest protocol tests construct versioned observer frames directly.
 crucible-protocol = { path = "../crucible-protocol" }
 libc = { workspace = true }

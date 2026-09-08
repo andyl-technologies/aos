@@ -11,6 +11,35 @@
   replayOracleGate = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
+  cliManifestToml = builtins.fromTOML cliManifest;
+  cliRuntimeDependencyTables =
+    [
+      {
+        scope = "dependencies";
+        dependencies = cliManifestToml.dependencies or {};
+      }
+    ]
+    ++ map (target: {
+      scope = "target.${target}.dependencies";
+      dependencies = cliManifestToml.target.${target}.dependencies or {};
+    }) (builtins.attrNames (cliManifestToml.target or {}));
+  cliDevDependencies = cliManifestToml."dev-dependencies" or {};
+  cliRuntimeProtocolBypasses =
+    builtins.filter (
+      table: builtins.hasAttr "crucible-protocol" table.dependencies
+    )
+    cliRuntimeDependencyTables;
+  cliManifestDependencyFailures =
+    lib.optional
+    (!(builtins.hasAttr "crucible-api" cliManifestToml.dependencies))
+    "crates/crucible-cli/Cargo.toml: missing CLI control-plane API dependency"
+    ++ lib.optional
+    (!(builtins.hasAttr "crucible-protocol" cliDevDependencies))
+    "crates/crucible-cli/Cargo.toml: missing black-box guest protocol fixture dev dependency"
+    ++ map (
+      table: "crates/crucible-cli/Cargo.toml ${table.scope}: forbidden production CLI bypass of the API protocol re-export"
+    )
+    cliRuntimeProtocolBypasses;
   defaultChecks = builtins.readFile ./default.nix;
   gateCiWiring = builtins.readFile ./phase7-crucible-gate-ci-wiring.nix;
   artifactFormatGate = builtins.readFile ./phase7-reproduction-artifact-format.nix;
@@ -229,18 +258,7 @@
         needle = "plugin_abi: String::from(\"simdouble-mock-plugin-abi\")";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
-      {
-        label = "CLI control-plane API dependency";
-        needle = "crucible-api = { path = \"../crucible-api\" }";
-      }
-    ]
-    ++ forbiddenFor "crates/crucible-cli/Cargo.toml" cliManifest [
-      {
-        label = "CLI bypass of the API protocol re-export";
-        needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
-      }
-    ]
+    ++ cliManifestDependencyFailures
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
       {
         label = "CLI v2 schema";
