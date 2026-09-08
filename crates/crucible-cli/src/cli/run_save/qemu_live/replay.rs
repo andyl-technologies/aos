@@ -7,7 +7,7 @@ pub(crate) struct LiveQemuReplayResources {
     pub(crate) campaign_closure:
         Option<crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure>,
     pub(crate) effect_trace: Option<crucible::ResolvedEffectTrace>,
-    pub(crate) signal_artifacts: Option<std::sync::Arc<crucible::MemoryDagStore>>,
+    pub(crate) lifecycle_artifacts: Option<std::sync::Arc<crucible::MemoryDagStore>>,
     pub(crate) bounded_scheduler_preemption:
         Option<crucible_api::BoundedSchedulerPreemptionEvidence>,
 }
@@ -95,8 +95,10 @@ pub(crate) fn run_live_qemu_artifact_replay(
     if let Some(quantum_budget) = contract.lifecycle_quantum_budget {
         config = config.with_quantum_budget(quantum_budget);
     }
-    if let Some(signal_artifacts) = resources.signal_artifacts {
-        config = config.with_signal_artifacts(signal_artifacts);
+    if let Some(lifecycle_artifacts) = resources.lifecycle_artifacts {
+        config = config
+            .with_world_artifacts(lifecycle_artifacts.clone())
+            .with_signal_artifacts(lifecycle_artifacts);
     }
     if let Some(evidence) = resources.bounded_scheduler_preemption {
         config = config.with_bounded_scheduler_preemption(evidence);

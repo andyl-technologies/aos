@@ -549,6 +549,7 @@ impl RunScenarioRef {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct VerifyInvocationPlan {
     pub(crate) mode: VerifyMode,
+    pub(crate) store_root: PathBuf,
     pub(crate) requested_runs: usize,
     pub(crate) reductions: Vec<VerifyReductionPlan>,
     pub(crate) compare_canonical_logs: bool,

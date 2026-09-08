@@ -741,7 +741,11 @@ pub(crate) fn run_local_qemu_verify_workflow(
     let scenario = verify_plan.scenario().ok_or_else(|| {
         backend_error("QEMU verify compare mode must use the artifact comparison path")
     })?;
-    let mut config = production_qemu_lifecycle_config(backend)?;
+    let lifecycle_artifacts =
+        std::sync::Arc::new(crucible::LocalDagStore::new(verify_plan.store_root.clone()));
+    let mut config = production_qemu_lifecycle_config(backend)?
+        .with_world_artifacts(lifecycle_artifacts.clone())
+        .with_signal_artifacts(lifecycle_artifacts);
     let preemption_evidence = bounded_scheduler_preemption_evidence_from_env(
         VERIFY_BOUNDED_SCHEDULER_PREEMPTION_ENV,
         verify_plan.reductions.len(),

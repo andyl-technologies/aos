@@ -13,9 +13,9 @@
 /// Engine vocabulary exposed through the session boundary for control-plane clients.
 pub mod engine {
     pub use crucible::model::{
-        Aggregation, BoundarySelector, CohortPolicy, MeasurementDefinition, MeasurementDefinitions,
-        MeasurementId, MetricDefinition, MetricId, MetricSource, MetricValueType,
-        ModeledMeasurementTimeout, ResolvedEffectTrace, UnitId,
+        Aggregation, BoundarySelector, CohortPolicy, FaultResourceLimits, MeasurementDefinition,
+        MeasurementDefinitions, MeasurementId, MetricDefinition, MetricId, MetricSource,
+        MetricValueType, ModeledMeasurementTimeout, ResolvedEffectTrace, UnitId,
     };
     pub use crucible::{
         Action, AssertionDef, AssertionId, AssertionPhase, AssertionQuantifierKind,
@@ -59,8 +59,9 @@ pub mod engine {
         TemporalGraph, TemporalGraphSampledSearchRun, TemporalGraphSearchRun,
         TemporalGraphStoreError, TimerId, TopologyShape, TopologySizeRange,
         UnifiedGraphOperationEvidence, UnifiedGraphOperationKind, UnifiedGraphOperationReport,
-        VcpuId, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode, bake,
-        built_in_example_corpus, crash_restart_scenario, fault_campaign_family,
+        VcpuId, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldBlockLatency,
+        WorldIoCoreConfig, WorldIoNode, WorldIoNodeKind, WorldNinePLatency, WorldNode,
+        WorldNodeDef, bake, built_in_example_corpus, crash_restart_scenario, fault_campaign_family,
         happy_path_scenario, is_supported_live_world_network_override,
         live_world_network_override_matches_world, live_world_network_override_point_prefixes,
         materialize_search_plans, partition_recovery_scenario, run_fault_campaign_example,

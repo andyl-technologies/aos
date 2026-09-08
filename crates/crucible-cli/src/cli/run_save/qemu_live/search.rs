@@ -82,7 +82,8 @@ fn search_finding_reproduction_artifact_bytes(
     let mut payloads = model_reproduction_artifact_payloads(&model.artifact, model.replay.state);
     payloads.extend(live_qemu_artifact_payloads(&live));
     let store = crucible::LocalDagStore::new(plan.store_root.clone());
-    payloads.extend(signal_artifact_payloads(
+    payloads.extend(lifecycle_artifact_payloads(
+        scenario.world(),
         scenario.plan().fault_signals(),
         &store,
         mutation,
@@ -180,13 +181,14 @@ fn run_local_qemu_search_scenario(
     } else {
         production_api::ProductionPluginSwitch::Off
     };
+    let lifecycle_artifacts =
+        std::sync::Arc::new(crucible::LocalDagStore::new(plan.store_root.clone()));
     let config = production_qemu_lifecycle_config(backend)?
         .with_run_ceiling_icount(LIVE_EXPLORATION_RUN_CEILING_ICOUNT)
         .with_quantum_budget(LIVE_EXPLORATION_QUANTUM_LIMIT)
         .with_coverage(coverage)
-        .with_signal_artifacts(std::sync::Arc::new(crucible::LocalDagStore::new(
-            plan.store_root.clone(),
-        )));
+        .with_world_artifacts(lifecycle_artifacts.clone())
+        .with_signal_artifacts(lifecycle_artifacts);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;

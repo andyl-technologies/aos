@@ -48,6 +48,7 @@ pub(crate) fn plan_verify_invocation(
     let reductions = verify_reduction_plans(args.runs, args.adversarial, &mode);
     let plan = VerifyInvocationPlan {
         mode,
+        store_root: store_root.to_path_buf(),
         requested_runs: args.runs,
         reductions,
         compare_canonical_logs: true,
