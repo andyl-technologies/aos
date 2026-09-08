@@ -167,6 +167,11 @@ struct CampaignExplainedAttempt {
     selection: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     edge: Option<String>,
+    // Additive v2 fields are emitted only for continuation starts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reached: Option<String>,
     path: String,
     stop: String,
 }
@@ -560,10 +565,13 @@ where
     })?;
 
     let attempt = response.attempt();
-    let (start, configuration, parent, selection_id, edge) = match attempt.start() {
+    let (start, configuration, parent, selection_id, edge, origin, reached) = match attempt.start()
+    {
         AttemptStart::Discover { configuration } => (
             "discover",
             Some(configuration.to_string()),
+            None,
+            None,
             None,
             None,
             None,
@@ -578,6 +586,17 @@ where
             Some(parent.to_string()),
             Some(selection.to_string()),
             Some(edge.to_string()),
+            None,
+            None,
+        ),
+        AttemptStart::AfterAttempt { origin, reached } => (
+            "after-attempt",
+            None,
+            None,
+            None,
+            None,
+            Some(origin.to_string()),
+            Some(reached.to_string()),
         ),
     };
     let AttemptAdmissionRole::ExecutionBasis {
@@ -614,6 +633,8 @@ where
             parent,
             selection: selection_id,
             edge,
+            origin,
+            reached,
             path: attempt.path().to_string(),
             stop: campaign_stop_condition_label(attempt.stop()),
         },
