@@ -317,9 +317,9 @@
           append_keep_paths ''${nukeRefsKeep:-}
         fi
 
-        # Default target set: every executable, every shared lib, every
+        # Default target set: every executable, library, and
         # pkgconfig/.la/Makefile/sysconfig file. These are the locations
-        # autotools/python embed build-tool paths into. Python's
+        # compilers, Autotools, and Python embed build-tool paths into. Python's
         # __pycache__ is included because import compiles _sysconfigdata
         # to .pyc at install time, baking the build-time toolchain refs
         # into a binary blob that the .py-only pattern would miss.
@@ -330,6 +330,7 @@
                -path "*/bin/*" -o -path "*/sbin/*" -o -path "*/libexec/*" \
             -o -name "*.so" -o -name "*.so.*" \
             -o -name "*.dylib" -o -name "*.dylib.*" \
+            -o -name "*.a" -o -name "*.rlib" \
             -o -name "*.pc"  -o -name "*.la" \
             -o -name "Makefile" \
             -o -name "_sysconfigdata*.py"  -o -name "_sysconfigdata*.pyc" \

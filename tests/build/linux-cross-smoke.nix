@@ -34,6 +34,7 @@
           mkdir -p "$out/bin"
           printf '%s\n' \
             '#include <stdio.h>' \
+            'const char *toolchain_reference(void) { return "${cross.stdenv.gcc}"; }' \
             'int main(void) { return puts("shared fixup") < 0; }' \
             > shared-fixup.c
           "$CC" -g shared-fixup.c -o "$out/bin/shared-fixup"
@@ -57,6 +58,7 @@
           mkdir -p "$out"
           printf '%s\n' \
             '#include <stdio.h>' \
+            'const char *toolchain_reference(void) { return "${cross.stdenv.gcc}"; }' \
             'int readonly_archive(void) { return puts("default fixup"); }' \
             > default-fixup.c
           "$CC" -g -c default-fixup.c -o default-fixup.o
@@ -135,6 +137,10 @@ in
                   exit 1
                   ;;
               esac
+              if grep -aFq '${cross.stdenv.gcc}' "$archive"; then
+                echo "cross fixup retained compiler reference in $archive" >&2
+                exit 1
+              fi
             done
           '';
         }
