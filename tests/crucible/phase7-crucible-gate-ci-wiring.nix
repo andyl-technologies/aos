@@ -665,8 +665,39 @@
     }
   ];
 
+  # Component tests remain useful, but their reports must not certify a live
+  # QEMU scenario merely because a separate production check is named there.
+  componentEvidenceFailures = lib.concatMap (file: let
+    source = builtins.readFile file;
+  in
+    failuresFor (toString file) source [
+      {
+        label = "component-only completion status";
+        needle = "status=component-only";
+      }
+      {
+        label = "declared component evidence scope";
+        needle = "evidence_scope=";
+      }
+      {
+        label = "explicit live acceptance limitation";
+        needle = "live_qemu_acceptance=not-established-by-this-check";
+      }
+    ]
+    ++ forbiddenFor (toString file) source [
+      {
+        label = "unqualified completion of modeled evidence";
+        needle = "status=complete";
+      }
+    ]) [
+    ./phase7-perf-bench.nix
+    ./phase7-e2e-determinism.nix
+    ./phase7-crucible-fleet-equivalence.nix
+  ];
+
   failures =
-    gateCatalogFailures
+    componentEvidenceFailures
+    ++ gateCatalogFailures
     ++ phasePlanFailures
     ++ evalClassFailures
     ++ packageClassFailures
