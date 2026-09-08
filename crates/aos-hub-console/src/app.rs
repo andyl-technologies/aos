@@ -20,6 +20,14 @@ use crate::workflows::ResourceWorkflow;
 #[component]
 pub fn App() -> impl IntoView {
     let route = RwSignal::new(current_route());
+    Effect::new(move |_| {
+        let Some(route) = route.get() else {
+            return;
+        };
+        if let Some(document) = leptos::web_sys::window().and_then(|window| window.document()) {
+            document.set_title(&format!("{} — {}", route.page.label, site_brand()));
+        }
+    });
     let workflow_revision = RwSignal::new(0_u64);
     let navigate = Callback::new(move |path: String| {
         let Some(next_route) = ConsoleRoute::resolve(&path) else {
@@ -37,9 +45,6 @@ pub fn App() -> impl IntoView {
             .is_err()
         {
             return;
-        }
-        if let Some(document) = window.document() {
-            document.set_title(&format!("{} — AOS Hub", next_route.page.label));
         }
         window.scroll_to_with_x_and_y(0.0, 0.0);
         route.set(Some(next_route));
@@ -141,9 +146,7 @@ fn ManagementShell(
     let navigation_route = route.clone();
     let context_route = route.clone();
     let workflow_route = route.clone();
-    let brand = shell_meta("aos-site-brand")
-        .filter(|brand| !brand.is_empty())
-        .unwrap_or_else(|| "AOS Hub".to_string());
+    let brand = site_brand();
     let tagline = shell_meta("aos-site-tagline").unwrap_or_default();
     let announcement = shell_meta("aos-site-announcement").unwrap_or_default();
     let app_version = shell_meta("aos-app-version").unwrap_or_else(|| "aos-hub".to_string());
@@ -445,7 +448,7 @@ fn navigation_groups(route: &ConsoleRoute, client: &ApiClient) -> Vec<Navigation
 /// back/forward navigation. The dispatch runs in the next browser task so the
 /// mutation callback can finish its terminal reactive updates before unmount.
 pub(crate) fn navigate(path: &str) {
-    let Some(route) = ConsoleRoute::resolve(path) else {
+    let Some(_) = ConsoleRoute::resolve(path) else {
         return;
     };
     let Some(window) = leptos::web_sys::window() else {
@@ -458,9 +461,6 @@ pub(crate) fn navigate(path: &str) {
     if !pushed {
         let _ = window.location().set_href(path);
         return;
-    }
-    if let Some(document) = window.document() {
-        document.set_title(&format!("{} — AOS Hub", route.page.label));
     }
     window.scroll_to_with_x_and_y(0.0, 0.0);
     let fallback_path = path.to_string();
@@ -504,6 +504,12 @@ pub(crate) fn refresh() {
 fn current_route() -> Option<ConsoleRoute> {
     let path = leptos::web_sys::window()?.location().pathname().ok()?;
     ConsoleRoute::resolve(&path)
+}
+
+fn site_brand() -> String {
+    shell_meta("aos-site-brand")
+        .filter(|brand| !brand.is_empty())
+        .unwrap_or_else(|| "AOS Hub".to_string())
 }
 
 fn shell_meta(name: &str) -> Option<String> {
