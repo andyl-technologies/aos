@@ -523,9 +523,9 @@ where
                         }
                         QemuFreshDriveOutcome::CheckpointRequested => {
                             if !context.checkpoint_request().is_requested() {
-                                return Err(AttemptWorkerFailure::Terminal(
-                            QemuProductionExactResumeExecutionRunnerError::UnsolicitedCheckpoint,
-                        ));
+                                let error = QemuProductionExactResumeExecutionRunnerError::
+                                    UnsolicitedCheckpoint;
+                                return Err(AttemptWorkerFailure::Terminal(error));
                             }
                             let capture = lifecycle
                                 .capture_attempt_checkpoint(context)
