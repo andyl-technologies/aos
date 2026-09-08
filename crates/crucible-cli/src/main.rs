@@ -85,6 +85,8 @@ const LIVE_QEMU_RESOLVED_EFFECT_TRACE_MEDIA_TYPE: &str =
     "application/vnd.crucible.resolved-effect-trace.v1+cbor";
 const CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE: &str =
     "application/vnd.crucible.campaign-replay-closure.v1+binary";
+const LIFECYCLE_ARTIFACT_BUNDLE_MEDIA_TYPE: &str =
+    "application/vnd.crucible.lifecycle-artifact-bundle.v1+binary";
 const SIGNAL_ARTIFACT_BUNDLE_MEDIA_TYPE: &str =
     "application/vnd.crucible.signal-artifact-bundle.v1+binary";
 const SIGNAL_MUTATION_PROVENANCE_MEDIA_TYPE: &str =

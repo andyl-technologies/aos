@@ -2326,6 +2326,7 @@ dependencies = [
  "crucible-campaign",
  "crucible-cas",
  "crucible-daemon",
+ "crucible-device",
  "crucible-harness",
  "crucible-protocol",
  "crucible-session",

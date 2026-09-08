@@ -1,4 +1,16 @@
 //! Failure and verification artifact capture from observed execution evidence.
+//!
+//! Lifecycle object closures use one versioned authenticated record stream:
+//!
+//! ```text
+//! magic = "CLAB\0\0\0\x01"
+//! count = u64le
+//! record = content_hash:[u8; 32] length:u64le bytes:[u8; length]
+//! ```
+//!
+//! Version 1 carries the union of signal objects and immutable World block/9p
+//! objects. Every record is authenticated against its declared BLAKE3 identity
+//! before replay exposes the closure to a production lifecycle.
 
 use super::*;
 
@@ -252,21 +264,56 @@ struct SignalMutationCaseProvenance<'a> {
     artifacts: Vec<String>,
 }
 
-/// Captures every reachable signal object and optional mutation recipe.
-pub(crate) fn signal_artifact_payloads(
+/// Captures every reachable lifecycle object and optional signal-mutation recipe.
+pub(crate) fn lifecycle_artifact_payloads(
+    world: &crucible::World,
     plan: &crucible::FaultSignalPlan,
     store: &dyn crucible::DagStore,
     mutation: Option<&crucible::MaterializedSearchPlan>,
 ) -> Result<Vec<ReproductionArtifactComponentPayload>, CliError> {
-    let objects = crucible_api::collect_signal_artifact_objects(plan, store)
+    let mut objects = crucible_api::collect_signal_artifact_objects(plan, store)
         .map_err(|error| artifact_error(format!("collect signal artifact closure: {error}")))?;
+    let limits = plan.resource_limits();
+    let mut retained_bytes = lifecycle_object_bytes(&objects)?;
+    for node in world.io_nodes() {
+        let identity = match &node.kind {
+            crucible::WorldIoNodeKind::Block { base_image, .. } => base_image.hash(),
+            crucible::WorldIoNodeKind::NineP { tree, .. } => tree.hash(),
+        };
+        if objects.contains_key(&identity) {
+            continue;
+        }
+        let object = store.get(&identity).map_err(|error| {
+            artifact_error(format!(
+                "collect world I/O artifact `{}` for `{}`: {error}",
+                identity.to_hex(),
+                node.id.name,
+            ))
+        })?;
+        if crucible::ContentHash::from_bytes(&object) != identity {
+            return Err(artifact_error(format!(
+                "world I/O artifact `{}` for `{}` failed authentication",
+                identity.to_hex(),
+                node.id.name,
+            )));
+        }
+        let requested_bytes = u64::try_from(object.len())
+            .map_err(|_| artifact_error("world I/O artifact size cannot be represented"))?;
+        limits
+            .reserve("fat_checkpoint_bytes", retained_bytes, requested_bytes)
+            .map_err(|error| artifact_error(error.to_string()))?;
+        retained_bytes = retained_bytes
+            .checked_add(requested_bytes)
+            .ok_or_else(|| artifact_error("lifecycle artifact byte accounting overflow"))?;
+        objects.insert(identity, object);
+    }
     let mut payloads = Vec::new();
     if !objects.is_empty() || !plan.programs().is_empty() {
         payloads.push(ReproductionArtifactComponentPayload {
-            kind: String::from("signal_artifact_bundle"),
-            name: String::from("signal-artifacts.bundle"),
-            media_type: String::from(SIGNAL_ARTIFACT_BUNDLE_MEDIA_TYPE),
-            bytes: encode_signal_artifact_bundle(&objects)?,
+            kind: String::from("lifecycle_artifact_bundle"),
+            name: String::from("lifecycle-artifacts.bundle"),
+            media_type: String::from(LIFECYCLE_ARTIFACT_BUNDLE_MEDIA_TYPE),
+            bytes: encode_lifecycle_artifact_bundle(&objects, limits.fat_checkpoint_bytes)?,
         });
     }
     if let Some(mutation) = mutation {
@@ -301,16 +348,48 @@ pub(crate) fn signal_artifact_payloads(
     Ok(payloads)
 }
 
-fn encode_signal_artifact_bundle(
+fn lifecycle_object_bytes(
     objects: &BTreeMap<crucible::ContentHash, Vec<u8>>,
+) -> Result<u64, CliError> {
+    objects.values().try_fold(0_u64, |total, object| {
+        let object_bytes = u64::try_from(object.len())
+            .map_err(|_| artifact_error("lifecycle artifact size cannot be represented"))?;
+        total
+            .checked_add(object_bytes)
+            .ok_or_else(|| artifact_error("lifecycle artifact byte accounting overflow"))
+    })
+}
+
+fn encode_lifecycle_artifact_bundle(
+    objects: &BTreeMap<crucible::ContentHash, Vec<u8>>,
+    maximum_payload_bytes: u64,
 ) -> Result<Vec<u8>, CliError> {
     let count = u64::try_from(objects.len())
-        .map_err(|_| artifact_error("signal artifact object count cannot be represented"))?;
-    let mut bytes = Vec::from(&b"CSAB\0\0\0\x01"[..]);
+        .map_err(|_| artifact_error("lifecycle artifact object count cannot be represented"))?;
+    let payload_bytes = lifecycle_object_bytes(objects)?;
+    if payload_bytes > maximum_payload_bytes {
+        return Err(artifact_error(format!(
+            "lifecycle artifact payload uses {payload_bytes} bytes, exceeding the {maximum_payload_bytes}-byte aggregate limit"
+        )));
+    }
+    let record_overhead = count
+        .checked_mul(40)
+        .ok_or_else(|| artifact_error("lifecycle artifact record byte accounting overflow"))?;
+    let encoded_bytes = 16_u64
+        .checked_add(record_overhead)
+        .and_then(|total| total.checked_add(payload_bytes))
+        .ok_or_else(|| artifact_error("lifecycle artifact bundle byte accounting overflow"))?;
+    let encoded_bytes = usize::try_from(encoded_bytes)
+        .map_err(|_| artifact_error("lifecycle artifact bundle size cannot be represented"))?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(encoded_bytes)
+        .map_err(|_| artifact_error("lifecycle artifact bundle allocation failed"))?;
+    bytes.extend_from_slice(b"CLAB\0\0\0\x01");
     bytes.extend_from_slice(&count.to_le_bytes());
     for (identity, object) in objects {
         let length = u64::try_from(object.len())
-            .map_err(|_| artifact_error("signal artifact object size cannot be represented"))?;
+            .map_err(|_| artifact_error("lifecycle artifact object size cannot be represented"))?;
         bytes.extend_from_slice(&identity.bytes);
         bytes.extend_from_slice(&length.to_le_bytes());
         bytes.extend_from_slice(object);
@@ -318,9 +397,24 @@ fn encode_signal_artifact_bundle(
     Ok(bytes)
 }
 
-/// Restores and authenticates an embedded signal-object closure.
+/// Restores and authenticates an embedded lifecycle-object closure.
+pub(crate) fn decode_lifecycle_artifact_bundle(
+    bytes: &[u8],
+    maximum_payload_bytes: u64,
+) -> Result<std::sync::Arc<crucible::MemoryDagStore>, CliError> {
+    const HEADER_BYTES: usize = 16;
+    if bytes.len() < HEADER_BYTES || bytes.get(..8) != Some(&b"CLAB\0\0\0\x01"[..]) {
+        return Err(artifact_error(
+            "lifecycle artifact bundle has an invalid header",
+        ));
+    }
+    decode_artifact_object_records(bytes, HEADER_BYTES, "lifecycle", maximum_payload_bytes)
+}
+
+/// Restores and authenticates the legacy signal-only object closure.
 pub(crate) fn decode_signal_artifact_bundle(
     bytes: &[u8],
+    maximum_payload_bytes: u64,
 ) -> Result<std::sync::Arc<crucible::MemoryDagStore>, CliError> {
     const HEADER_BYTES: usize = 16;
     if bytes.len() < HEADER_BYTES || bytes.get(..8) != Some(&b"CSAB\0\0\0\x01"[..]) {
@@ -328,56 +422,88 @@ pub(crate) fn decode_signal_artifact_bundle(
             "signal artifact bundle has an invalid header",
         ));
     }
-    let count = u64::from_le_bytes(
-        bytes[8..16]
-            .try_into()
-            .map_err(|_| artifact_error("signal artifact bundle count is truncated"))?,
-    );
-    let count = usize::try_from(count)
-        .map_err(|_| artifact_error("signal artifact bundle count cannot be represented"))?;
+    decode_artifact_object_records(bytes, HEADER_BYTES, "signal", maximum_payload_bytes)
+}
+
+fn decode_artifact_object_records(
+    bytes: &[u8],
+    header_bytes: usize,
+    bundle_kind: &str,
+    maximum_payload_bytes: u64,
+) -> Result<std::sync::Arc<crucible::MemoryDagStore>, CliError> {
+    let count = u64::from_le_bytes(bytes[8..16].try_into().map_err(|_| {
+        artifact_error(format!("{bundle_kind} artifact bundle count is truncated"))
+    })?);
+    let count = usize::try_from(count).map_err(|_| {
+        artifact_error(format!(
+            "{bundle_kind} artifact bundle count cannot be represented"
+        ))
+    })?;
     let store = std::sync::Arc::new(crucible::MemoryDagStore::new());
-    let mut cursor = HEADER_BYTES;
+    let mut cursor = header_bytes;
+    let mut retained_bytes = 0_u64;
     for _ in 0..count {
-        let identity_end = cursor
-            .checked_add(32)
-            .ok_or_else(|| artifact_error("signal artifact bundle offset overflow"))?;
-        let length_end = identity_end
-            .checked_add(8)
-            .ok_or_else(|| artifact_error("signal artifact bundle offset overflow"))?;
+        let identity_end = cursor.checked_add(32).ok_or_else(|| {
+            artifact_error(format!("{bundle_kind} artifact bundle offset overflow"))
+        })?;
+        let length_end = identity_end.checked_add(8).ok_or_else(|| {
+            artifact_error(format!("{bundle_kind} artifact bundle offset overflow"))
+        })?;
         if length_end > bytes.len() {
-            return Err(artifact_error("signal artifact bundle record is truncated"));
+            return Err(artifact_error(format!(
+                "{bundle_kind} artifact bundle record is truncated"
+            )));
         }
         let identity = crucible::ContentHash {
-            bytes: bytes[cursor..identity_end]
-                .try_into()
-                .map_err(|_| artifact_error("signal artifact identity is truncated"))?,
+            bytes: bytes[cursor..identity_end].try_into().map_err(|_| {
+                artifact_error(format!("{bundle_kind} artifact identity is truncated"))
+            })?,
         };
-        let length = u64::from_le_bytes(
-            bytes[identity_end..length_end]
-                .try_into()
-                .map_err(|_| artifact_error("signal artifact length is truncated"))?,
-        );
-        let length = usize::try_from(length)
-            .map_err(|_| artifact_error("signal artifact length cannot be represented"))?;
-        let object_end = length_end
-            .checked_add(length)
-            .ok_or_else(|| artifact_error("signal artifact bundle offset overflow"))?;
+        let length =
+            u64::from_le_bytes(bytes[identity_end..length_end].try_into().map_err(|_| {
+                artifact_error(format!("{bundle_kind} artifact length is truncated"))
+            })?);
+        let length = usize::try_from(length).map_err(|_| {
+            artifact_error(format!(
+                "{bundle_kind} artifact length cannot be represented"
+            ))
+        })?;
+        let object_end = length_end.checked_add(length).ok_or_else(|| {
+            artifact_error(format!("{bundle_kind} artifact bundle offset overflow"))
+        })?;
         let object = bytes
             .get(length_end..object_end)
-            .ok_or_else(|| artifact_error("signal artifact object is truncated"))?;
+            .ok_or_else(|| artifact_error(format!("{bundle_kind} artifact object is truncated")))?;
+        let requested_bytes = u64::try_from(object.len()).map_err(|_| {
+            artifact_error(format!(
+                "{bundle_kind} artifact object size cannot be represented"
+            ))
+        })?;
+        retained_bytes = retained_bytes.checked_add(requested_bytes).ok_or_else(|| {
+            artifact_error(format!("{bundle_kind} artifact byte accounting overflow"))
+        })?;
+        if retained_bytes > maximum_payload_bytes {
+            return Err(artifact_error(format!(
+                "{bundle_kind} artifact payload uses {retained_bytes} bytes, exceeding the {maximum_payload_bytes}-byte aggregate limit"
+            )));
+        }
         if crucible::ContentHash::from_bytes(object) != identity {
-            return Err(artifact_error(
-                "signal artifact object failed authentication",
-            ));
+            return Err(artifact_error(format!(
+                "{bundle_kind} artifact object failed authentication"
+            )));
         }
         let stored = store.put(object).map_err(CliError::Store)?;
         if stored != identity {
-            return Err(artifact_error("restored signal artifact identity changed"));
+            return Err(artifact_error(format!(
+                "restored {bundle_kind} artifact identity changed"
+            )));
         }
         cursor = object_end;
     }
     if cursor != bytes.len() {
-        return Err(artifact_error("signal artifact bundle has trailing bytes"));
+        return Err(artifact_error(format!(
+            "{bundle_kind} artifact bundle has trailing bytes"
+        )));
     }
     Ok(store)
 }
