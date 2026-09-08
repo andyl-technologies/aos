@@ -1,6 +1,8 @@
 //! Scheduler construction, World/device attachment, materialization, faults, and lifecycle.
 
 use super::*;
+use crate::IoEventKind;
+
 impl SingleScheduler {
     /// Builds a scheduler from a finite generated liveness scenario.
     ///
@@ -484,6 +486,51 @@ impl SingleScheduler {
         node: &NodeId,
     ) -> Option<&mut Vec<crate::device_subnode::DeviceSchedulingSubNode>> {
         self.device_sub_nodes.get_mut(node)
+    }
+
+    /// Projects a resolved World I/O delivery into host-observed trigger input.
+    ///
+    /// The scheduled completion is already authoritative for its exact time,
+    /// owner, and producer sub-node. A 9p producer has an exact public event
+    /// class. Block operations retain the generic completion class because the
+    /// current scheduled-event payload does not carry the original operation.
+    pub(super) fn resolved_io_observation(
+        &self,
+        event: &ScheduledEvent,
+    ) -> Result<Option<ObservableEvent>, SchedulerError> {
+        let ScheduledEventPayload::IoCompletion(completion) = &event.payload else {
+            return Ok(None);
+        };
+        let (owner, device) = self
+            .device_sub_nodes
+            .iter()
+            .flat_map(|(owner, devices)| devices.iter().map(move |device| (owner, device)))
+            .find(|(_owner, device)| device.sub_node() == &completion.sub_node)
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "resolved I/O completion names unknown sub-node `{}`",
+                    completion.sub_node.node.name,
+                ),
+            })?;
+        if owner != &completion.target || device.target() != &completion.target {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "resolved I/O completion from sub-node `{}` targets `{}` instead of owner `{}`",
+                    completion.sub_node.node.name, completion.target.name, owner.name,
+                ),
+            });
+        }
+        let kind = if device.ninep_device().is_some() {
+            IoEventKind::NineP
+        } else {
+            IoEventKind::Any
+        };
+        Ok(Some(ObservableEvent::io_completion(
+            event.key.virtual_time(),
+            completion.target.clone(),
+            kind,
+            completion.payload.clone(),
+        )))
     }
 
     /// **Test-only.** Forces I/O completions to be stamped at the consumer's
