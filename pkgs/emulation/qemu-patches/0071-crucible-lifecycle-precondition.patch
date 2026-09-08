@@ -1,5 +1,5 @@
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index ef4ece29e..225e893f4 100644
+index 7e31001b7..6dc377911 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -479,6 +479,9 @@ void qemu_crucible_fault_vcpu_service_account(
@@ -13,7 +13,7 @@ index ef4ece29e..225e893f4 100644
      const QemuCrucibleFaultRule *rule);
  void qemu_crucible_fault_lifecycle_rules_changed(
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
-index 7f4c1adf4..1ea15d518 100644
+index a5c801d81..2d4b23260 100644
 --- a/plugins/crucible-fault-lifecycle.c
 +++ b/plugins/crucible-fault-lifecycle.c
 @@ -486,6 +486,58 @@ static void crucible_lifecycle_sha256(const uint8_t *data, size_t length,
@@ -109,7 +109,7 @@ index 7f4c1adf4..1ea15d518 100644
                                              uint8_t **state,
                                              size_t *state_len)
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index f3eacac66..d2c7d9d04 100644
+index 50d3dd5a0..603b96ceb 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -3389,6 +3389,16 @@ static int node_prepare(

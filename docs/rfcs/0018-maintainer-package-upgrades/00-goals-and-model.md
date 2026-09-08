@@ -76,7 +76,7 @@ major 9 are different streams.
 The smallest schedulable package-policy and source-mutation object. It owns a
 complete component vector and all package members that must agree on it. Its
 stable ID usually combines family and stream, such as `bazel-8` or
-`linux-6.18`. A campaign owns worktree, branch, validation, and PR atomicity for
+`linux-7.2`. A campaign owns worktree, branch, validation, and PR atomicity for
 one or more units.
 
 ### Member

@@ -1,8 +1,8 @@
 diff --git a/hw/timer/hpet.c b/hw/timer/hpet.c
-index c4d7aa2a9..8e0c01d22 100644
+index 07858a99c..6ca4d01eb 100644
 --- a/hw/timer/hpet.c
 +++ b/hw/timer/hpet.c
-@@ -532,7 +532,8 @@ static void hpet_timer(void *opaque)
+@@ -540,7 +540,8 @@ static void hpet_timer(void *opaque)
      uint64_t period = t->period;
      uint64_t cur_tick = hpet_get_ticks(t->state, false);
  
@@ -13,10 +13,10 @@ index c4d7aa2a9..8e0c01d22 100644
              QEMU_CRUCIBLE_CLOCK_X86_HPET, t->state->hpet_id,
              QEMU_CRUCIBLE_CLOCK_TIMER_PRIMARY, t->tn,
 diff --git a/include/migration/misc.h b/include/migration/misc.h
-index f9cd4f110..0be31c515 100644
+index 7475c7ad8..bd7f32326 100644
 --- a/include/migration/misc.h
 +++ b/include/migration/misc.h
-@@ -68,7 +68,7 @@ bool migration_crucible_raw_state_export_sealed(void);
+@@ -72,7 +72,7 @@ bool migration_crucible_raw_state_export_sealed(void);
  
  /* Track every entry into the central VMState deserialization loop. */
  int migration_crucible_load_begin(void);
@@ -24,9 +24,9 @@ index f9cd4f110..0be31c515 100644
 +void migration_crucible_load_end(bool successful);
  
  typedef enum MigrationEventType {
-     MIG_EVENT_PRECOPY_SETUP,
+     MIG_EVENT_SETUP,
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 829ae3868..74cfebebf 100644
+index 36b58e795..073cdae72 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -438,6 +438,8 @@ bool qemu_crucible_fault_clock_project_ns(
@@ -51,18 +51,18 @@ index 829ae3868..74cfebebf 100644
  /* Deterministic vCPU service and fixed-topology eligibility control. */
  int qemu_crucible_fault_vcpu_service_validate(
 diff --git a/migration/migration.c b/migration/migration.c
-index bc5689ab4..ed3c8db45 100644
+index 69c5e7d13..d522b0acf 100644
 --- a/migration/migration.c
 +++ b/migration/migration.c
-@@ -18,6 +18,7 @@
- #include "qemu/cutils.h"
+@@ -17,6 +17,7 @@
+ #include "qemu/ctype.h"
  #include "qemu/error-report.h"
  #include "qemu/main-loop.h"
 +#include "qemu/crucible-fault.h"
  #include "migration/blocker.h"
  #include "exec.h"
- #include "fd.h"
-@@ -1268,17 +1269,19 @@ int migration_crucible_load_begin(void)
+ #include "file.h"
+@@ -1090,17 +1091,19 @@ int migration_crucible_load_begin(void)
          status = -EOVERFLOW;
      } else {
          crucible_active_loaders++;
@@ -84,10 +84,10 @@ index bc5689ab4..ed3c8db45 100644
  
  static bool migration_is_active(void)
 diff --git a/migration/savevm.c b/migration/savevm.c
-index dc27b9190..08ff0832a 100644
+index c8b7361d0..fb009339a 100644
 --- a/migration/savevm.c
 +++ b/migration/savevm.c
-@@ -3171,7 +3171,7 @@ int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis)
+@@ -3210,7 +3210,7 @@ int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis,
      if (qemu_crucible_terminal_vmstate_exported()) {
          error_report(
              "VMState load rejected after terminal Crucible VMState export");
@@ -96,7 +96,7 @@ index dc27b9190..08ff0832a 100644
          return -EPERM;
      }
  retry:
-@@ -3241,7 +3241,7 @@ out:
+@@ -3284,7 +3284,7 @@ out:
              goto retry;
          }
      }

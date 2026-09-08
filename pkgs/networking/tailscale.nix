@@ -11,14 +11,14 @@
 }: let
   # Newer releases require a Go patch release newer than the self-hosted AOS
   # compiler. Keep the newest release whose declared toolchain floor is met.
-  version = "1.94.2";
+  version = "1.102.3";
   src = fetchurl {
     urls = ["https://github.com/tailscale/tailscale/archive/refs/tags/v${version}.tar.gz"];
-    hash = "sha256-xFl1vrTLe6uAR8+6d+yLFwVw0YTzyAYliETz5Jxg16o=";
+    hash = "sha256-DpTZYcMc59M+i3zkrG/b7IPuVlh4Tu1p63/OMAcp1xc=";
   };
   goModules = fetchGoModules {
     inherit src;
-    hash = "sha256-rIJP7coRNy0as/KaQPI98f60w59+nNkpjARArGll+Y0=";
+    hash = "sha256-tZaxUYDEj3xJ2jxhQTv970MhwK+3cM7nQZunae2nW2s=";
   };
 in
   mkDerivation {

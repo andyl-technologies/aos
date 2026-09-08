@@ -1588,18 +1588,18 @@ exactly, including interior-TB ceilings.
 
 **RISK-16** is resolved by `T-RISK-9` and the Phase-2 regeneration/build-identity
 gate. `checks.crucible.phase2.qemuPatchRegeneration` now verifies the checked-in
-`crucible/qemu-10.0.0` branch bundle, proves the bundle base/head and each
-per-patch commit/tree entry match the manifest, regenerates all 27 committed patch
+`crucible/qemu-11.1.1` branch bundle, proves the bundle base/head and each
+per-patch commit/tree entry match the manifest, regenerates all 113 committed patch
 files byte-for-byte with `--unified=3`, applies the regenerated stack with fuzz
 disabled, and emits a manifest-derived QEMU build identity. The run reported
-`qemu_version=10.0.0`,
-`patch_series_hash=0e9a335295d577f51cf93395f7d8c7ba6a0b3d54083e06a7357f558f115e8566`,
-`patch_branch_bundle_hash=1d969b51af280458fe3fc5405d1a49eb302afdeac2d3cb88382d3aa2f734efd2`,
-`patch_branch_head_commit=1b2b6240a2e0887244f7c4c5aef0653754503365`,
-`patch_branch_material_hash=5167675402324af5e1e5010451bfa1e19c41d34dfa40e5e5c68e0d9ed10ffb8e`,
-`qemu_build_id=ca7044e84a68ebaf9df0c55b52e291803d95f062ff8bfc8d1ee70d44e3fde318`,
-`qemu_nix_hash=35aad46df419155f4ce336d66dd4eac329348b333b1d202937ad05a0d94add09`,
-`qemu_configure_flags_hash=716c3de64e42d5fee65c1b0ebb4dc213f282aba1d916820e1896ee36bc0db5f8`,
+`qemu_version=11.1.1`,
+`patch_series_hash=43d84ee285f51ba7b91972aa8d3df742b7064226f2cb78f3a3249cebfcd9a943`,
+`patch_branch_bundle_hash=ae78641e666d6158f3c70a9d7791a753e8a45e78ea86b8553f642ec0defb5d7b`,
+`patch_branch_head_commit=7273c8ae7bfa040cda1d234fba811767e484df53`,
+`patch_branch_material_hash=ab2d6ce1a61ee29fc3da5446c49fbcea72bd9b7283d48ca32417593cca9eb84a`,
+`qemu_build_id=3e52b6052ef4bb981ea639ddff7b3d8a23a1d6b2fd33bbeda1aa70673d7453c3`,
+`qemu_nix_hash=ac2b13260b4cb0d28623e3c4146a4e43554ac4579608c08962ae69afccec6cd4`,
+`qemu_configure_flags_hash=6f23e9d6eb48a80099040a70cdef9fbf49de7b466dba90aafd769f1f9e8a2c9e`,
 `artifact_build_id_match=true`, `artifact_validator_rejects_mismatch=true`,
 `artifact_mismatch_regates=true`, and
 `qemu_version_bump_regate_enforced=true`. `gate:patch-microtests` consumes that

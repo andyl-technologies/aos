@@ -1,5 +1,5 @@
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index ec7b664f9..8252173a5 100644
+index 1d0df5824..23b73379b 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -128,6 +128,9 @@ void *qemu_plugin_crucible_ipi_delivery_userdata;
@@ -12,7 +12,7 @@ index ec7b664f9..8252173a5 100644
  bool qemu_plugin_has_time_control(void)
  {
      return has_control;
-@@ -170,9 +173,19 @@ int qemu_plugin_register_time_advance_cb(qemu_plugin_time_advance_cb_t cb,
+@@ -173,9 +176,19 @@ int qemu_plugin_register_time_advance_cb(qemu_plugin_time_advance_cb_t cb,
      return 0;
  }
  
@@ -33,7 +33,7 @@ index ec7b664f9..8252173a5 100644
  }
  
  static void qemu_plugin_advance_time_bh(void *opaque)
-@@ -243,11 +256,18 @@ int qemu_plugin_advance_time_ns(int64_t new_time)
+@@ -246,11 +259,18 @@ int qemu_plugin_advance_time_ns(int64_t new_time)
      if (!has_control || !qemu_plugin_time_advance_cb) {
          return -ENODEV;
      }

@@ -1,8 +1,8 @@
 diff --git a/target/i386/tcg/system/excp_helper.c b/target/i386/tcg/system/excp_helper.c
-index f1b4fcbff..921a35905 100644
+index 123fded92..3721ced34 100644
 --- a/target/i386/tcg/system/excp_helper.c
 +++ b/target/i386/tcg/system/excp_helper.c
-@@ -66,6 +66,7 @@ typedef struct PTETranslate {
+@@ -69,6 +69,7 @@ typedef struct PTETranslate {
      void *haddr;
      hwaddr gaddr;
      hwaddr entry_gpa;
@@ -10,7 +10,7 @@ index f1b4fcbff..921a35905 100644
  } PTETranslate;
  
  static bool ptw_translate(PTETranslate *inout, hwaddr addr)
-@@ -92,7 +93,7 @@ static bool ptw_translate(PTETranslate *inout, hwaddr addr)
+@@ -95,7 +96,7 @@ static bool ptw_translate(PTETranslate *inout, hwaddr addr)
      return true;
  }
  
@@ -19,15 +19,15 @@ index f1b4fcbff..921a35905 100644
  {
      uint32_t value;
  
-@@ -101,6 +102,7 @@ static uint32_t ptw_ldl(const PTETranslate *in, uint64_t ra, int level)
+@@ -104,6 +105,7 @@ static uint32_t ptw_ldl(const PTETranslate *in, uint64_t ra, int level)
      } else {
-         value = cpu_ldl_mmuidx_ra(in->env, in->gaddr, in->ptw_idx, ra);
+         value = cpu_ldl_le_mmuidx_ra(in->env, in->gaddr, in->ptw_idx, ra);
      }
 +    in->raw_low = (uint32_t)value;
      if (in->faultable && likely(in->haddr) &&
          qemu_crucible_fault_memory_page_table_walk_context_active(
              env_cpu(in->env)) &&
-@@ -121,7 +123,7 @@ static uint32_t ptw_ldl(const PTETranslate *in, uint64_t ra, int level)
+@@ -124,7 +126,7 @@ static uint32_t ptw_ldl(const PTETranslate *in, uint64_t ra, int level)
      return value;
  }
  
@@ -36,15 +36,15 @@ index f1b4fcbff..921a35905 100644
  {
      uint64_t value;
  
-@@ -130,6 +132,7 @@ static uint64_t ptw_ldq(const PTETranslate *in, uint64_t ra, int level)
+@@ -133,6 +135,7 @@ static uint64_t ptw_ldq(const PTETranslate *in, uint64_t ra, int level)
      } else {
-         value = cpu_ldq_mmuidx_ra(in->env, in->gaddr, in->ptw_idx, ra);
+         value = cpu_ldq_le_mmuidx_ra(in->env, in->gaddr, in->ptw_idx, ra);
      }
 +    in->raw_low = (uint32_t)value;
      if (in->faultable && likely(in->haddr) &&
          qemu_crucible_fault_memory_page_table_walk_context_active(
              env_cpu(in->env)) &&
-@@ -177,13 +180,15 @@ static bool ptw_setl_slow(const PTETranslate *in, uint32_t old, uint32_t new)
+@@ -180,13 +183,15 @@ static bool ptw_setl_slow(const PTETranslate *in, uint32_t old, uint32_t new)
  static inline bool ptw_setl(const PTETranslate *in, uint32_t old, uint32_t set)
  {
      if (set & ~old) {

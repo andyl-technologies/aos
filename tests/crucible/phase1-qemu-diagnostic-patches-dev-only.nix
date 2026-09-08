@@ -81,7 +81,7 @@ in
 
             mkdir -p "$out"
             test -x ${qemuPackage}/bin/qemu-system-x86_64
-            test -f ${qemuPackage}/include/qemu/qemu-plugin.h
+            test -f ${qemuPackage}/include/qemu-plugin.h
 
             if find ${patchDir} -type f \( -name '*crucible-tcg-exec-diag*' \
               -o -name '*crucible-virtserial-socket*' \) | grep -q .; then

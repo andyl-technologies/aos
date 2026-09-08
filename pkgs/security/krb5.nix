@@ -14,7 +14,7 @@
   coreutils,
   writeShellScriptBin,
 }: let
-  version = "1.22.1";
+  version = "1.22.2";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   bootstrapCmdsRevision = "c71d2d72f48995baaea76148f61002e5299841de";
   bootstrapCmdsSrc = fetchurl {
@@ -181,8 +181,12 @@ in
       urls = [
         "https://kerberos.org/dist/krb5/1.22/krb5-${version}.tar.gz"
       ];
-      hash = "sha256-GogyuMrZI+u/E5T2fi789B46SfRgKFpm41reyPoAU68=";
+      hash = "sha256-MkP/vI6k1Kwi3cfdKh3FTFeHTEBki2D/lwCXY1VOrxM=";
     };
+
+    # Upstream's release-branch compatibility fix for OpenSSL 4, where ASN.1
+    # strings are opaque and several X.509 accessors return const pointers.
+    patches = [./krb5-openssl-4.patch];
 
     buildDeps =
       [gnumake bison pkg-config perl]

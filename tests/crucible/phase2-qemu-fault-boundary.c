@@ -50,16 +50,15 @@ static void poll_result(unsigned int cpu_index, void *opaque)
     g_printerr("CRUCIBLE_FAULT_BOUNDARY_LIVE_PASS\n");
 }
 
-static void translate_block(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
+static void translate_block(struct qemu_plugin_tb *tb, void *userdata)
 {
-    (void)id;
+    (void)userdata;
     qemu_plugin_register_vcpu_tb_exec_cb(
         tb, poll_result, QEMU_PLUGIN_CB_NO_REGS, NULL);
 }
 
-static void exit_plugin(qemu_plugin_id_t id, void *opaque)
+static void exit_plugin(void *opaque)
 {
-    (void)id;
     (void)opaque;
     if (!completed) {
         fail("QEMU exited before publishing the boundary result");
@@ -125,7 +124,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     if (qemu_plugin_crucible_fault_submit(&command, NULL, 0) != 0) {
         fail("boundary command was rejected during submission");
     }
-    qemu_plugin_register_vcpu_tb_trans_cb(id, translate_block);
+    qemu_plugin_register_vcpu_tb_trans_cb(id, translate_block, NULL);
     qemu_plugin_register_atexit_cb(id, exit_plugin, NULL);
     return 0;
 }

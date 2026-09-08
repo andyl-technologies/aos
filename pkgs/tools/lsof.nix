@@ -11,7 +11,7 @@
   stdenv,
   buildPackages,
 }: let
-  version = "4.99.4";
+  version = "4.99.7";
 in
   mkDerivation {
     pname = "lsof";
@@ -21,7 +21,7 @@ in
       urls = [
         "https://github.com/lsof-org/lsof/releases/download/${version}/lsof-${version}.tar.gz"
       ];
-      hash = "sha256-DEROLavsFK0UbLt/W1K1q0l2coQC/zSNn+ztmtl0DGY=";
+      hash = "sha256-ShA5GqsLjOH1OegqGWZpOyps8iWXKmUE67fsT6cWdd4=";
     };
 
     buildDeps =

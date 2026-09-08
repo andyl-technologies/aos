@@ -1,4 +1,4 @@
-##! Native-executable GCC 14 cross compiler stages.
+##! Native-executable GCC 16 cross compiler stages.
 {
   buildStdenv,
   buildPackages,
@@ -11,7 +11,7 @@
   stage,
 }: let
   finalStage = stage == "final";
-  version = "14.3.0";
+  version = "16.2.0";
 in
   buildStdenv.mkDerivation {
     pname = "gcc";
@@ -27,6 +27,7 @@ in
       buildPackages.bison
       buildPackages.texinfo
       buildPackages.perl
+      buildPackages.python3
       binutils
     ];
     runtimeDeps = [binutils];
@@ -50,6 +51,10 @@ in
           (cd ${sources.mpc} && tar cf - .) | (cd source/mpc && tar xf -)
           (cd ${sources.isl} && tar cf - .) | (cd source/isl && tar xf -)
           chmod -R u+w source/gmp source/mpfr source/mpc source/isl
+
+          # GCC's option generators rely on unset array elements behaving as
+          # empty strings, while gawk 5.4 can preserve a numeric zero type.
+          patch -p1 -d source < ${./gcc-16-gawk-5.4.patch}
 
           find source -type f \( -name '*.y' -o -name '*.l' -o -name 'Makefile.am' -o -name 'configure.ac' -o -name 'configure.in' \) -exec touch {} + 2>/dev/null || true
           sleep 1
@@ -112,7 +117,7 @@ in
             ${
             if finalStage
             then "--enable-languages=c,c++ --enable-shared --enable-threads=posix"
-            else "--enable-languages=c --disable-shared --disable-threads --with-newlib --without-headers"
+            else "--enable-languages=c --disable-libatomic --disable-shared --disable-threads --with-newlib --without-headers"
           }
         '';
       }
@@ -156,10 +161,15 @@ in
             "${hostPlatform.config}-g++ c++"; do
             set -- $pair
             if test -x "$out/bin/$1"; then
-              ln -s "$1" "$out/bin/$2"
+              if test -e "$out/bin/$2"; then
+                test -x "$out/bin/$2"
+              else
+                ln -s "$1" "$out/bin/$2"
+              fi
             fi
           done
           test -x "$out/bin/gcc"
+          test -x "$out/bin/${hostPlatform.config}-gcc"
         '';
       }
     ];

@@ -446,6 +446,7 @@ fn coverage_callback_model_apis() -> crate::QemuBasicBlockCoverageApis {
 extern "C" fn coverage_callback_model_register_tb_trans_cb(
     plugin_id: QemuPluginId,
     callback: Option<crate::QemuVcpuTbTransCbFn>,
+    _userdata: *mut std::os::raw::c_void,
 ) {
     assert!(callback.is_some());
     CALLBACK_MODEL_REGISTERED_PLUGIN_ID.store(plugin_id, Ordering::SeqCst);
@@ -511,6 +512,7 @@ extern "C" fn coverage_callback_model_icount_at_tb_entry(
 extern "C" fn coverage_callback_model_register_flush_cb(
     _plugin_id: QemuPluginId,
     _callback: crate::QemuPluginSimpleCbFn,
+    _userdata: *mut std::os::raw::c_void,
 ) {
 }
 
@@ -566,11 +568,12 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeThenTestCompletionRegistrar {
 }
 
 extern "C" fn capture_vcpu_init_registration(
-    plugin_id: QemuPluginId,
+    _plugin_id: QemuPluginId,
     callback: crate::QemuVcpuSimpleCbFn,
+    userdata: *mut std::ffi::c_void,
 ) {
     LIVE_VCPU_INIT_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
-    callback(plugin_id, 0);
+    callback(0, userdata);
 }
 
 extern "C" fn capture_vcpu_idle_resume_registration(

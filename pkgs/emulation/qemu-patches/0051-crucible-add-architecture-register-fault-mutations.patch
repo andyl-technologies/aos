@@ -1,8 +1,8 @@
 diff --git a/accel/tcg/cpu-exec-common.c b/accel/tcg/cpu-exec-common.c
-index d752ee41c..fab8b1c89 100644
+index 01c5654ac..2b719a55b 100644
 --- a/accel/tcg/cpu-exec-common.c
 +++ b/accel/tcg/cpu-exec-common.c
-@@ -54,7 +54,8 @@ uint32_t curr_cflags(CPUState *cpu)
+@@ -55,7 +55,8 @@ uint32_t curr_cflags(CPUState *cpu)
      } else if (qemu_loglevel_mask(CPU_LOG_TB_NOCHAIN)) {
          cflags |= CF_NO_GOTO_TB;
      }
@@ -13,10 +13,10 @@ index d752ee41c..fab8b1c89 100644
      }
  
 diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
-index dc1fe9034..777ccacd0 100644
+index 3d443bf8f..4cb51fae4 100644
 --- a/accel/tcg/cpu-exec.c
 +++ b/accel/tcg/cpu-exec.c
-@@ -501,7 +501,8 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
+@@ -491,7 +491,8 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
          cpu_loop_exit(cpu);
      }
  
@@ -26,7 +26,7 @@ index dc1fe9034..777ccacd0 100644
          tb_phys_invalidate(itb, -1);
      }
  
-@@ -531,6 +532,7 @@ static void cpu_exec_longjmp_cleanup(CPUState *cpu)
+@@ -521,6 +522,7 @@ static void cpu_exec_longjmp_cleanup(CPUState *cpu)
  {
      /* Non-buggy compilers preserve this; assert the correct value. */
      g_assert(cpu == current_cpu);
@@ -34,8 +34,8 @@ index dc1fe9034..777ccacd0 100644
      qemu_crucible_fault_memory_fetch_stage_discard(cpu);
  
  #ifdef CONFIG_USER_ONLY
-@@ -581,6 +583,11 @@ void cpu_exec_step_atomic(CPUState *cpu)
-         cpu->running = true;
+@@ -569,6 +571,11 @@ void cpu_exec_step_atomic(CPUState *cpu)
+         TCGTBCPUState s;
  
          do {
 +            if (unlikely(qemu_crucible_fault_register_boundaries_active())) {
@@ -43,10 +43,10 @@ index dc1fe9034..777ccacd0 100644
 +                    cpu, QEMU_CRUCIBLE_MODEL_PHASE_BEFORE_INSTRUCTION,
 +                    qemu_crucible_fault_observed_icount());
 +            }
-             cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+             s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
+             s.cflags = curr_cflags(cpu);
  
-             cflags = curr_cflags(cpu);
-@@ -605,9 +612,13 @@ void cpu_exec_step_atomic(CPUState *cpu)
+@@ -593,9 +600,13 @@ void cpu_exec_step_atomic(CPUState *cpu)
          } while (qemu_crucible_fault_memory_fetch_service_apply(cpu));
  
          cpu_exec_enter(cpu);
@@ -54,13 +54,13 @@ index dc1fe9034..777ccacd0 100644
 +            qemu_crucible_fault_register_execution_begin(cpu);
 +        }
          /* execute the generated code */
-         trace_exec_tb(tb, pc);
+         trace_exec_tb(tb, s.pc);
          cpu_tb_exec(cpu, tb, &tb_exit);
 +        qemu_crucible_fault_register_execution_complete(cpu);
          cpu_exec_exit(cpu);
          qemu_crucible_fault_memory_service_apply(cpu);
      } else {
-@@ -909,9 +920,15 @@ static inline void cpu_loop_exec_tb(CPUState *cpu, TranslationBlock *tb,
+@@ -901,9 +912,15 @@ static inline void cpu_loop_exec_tb(CPUState *cpu, TranslationBlock *tb,
                                      int *tb_exit)
  {
      trace_exec_tb(tb, pc);
@@ -77,39 +77,40 @@ index dc1fe9034..777ccacd0 100644
          return;
      }
  
-@@ -968,6 +985,11 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
-             uint64_t cs_base;
-             uint32_t flags, cflags;
- 
+@@ -957,6 +974,12 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+         while (!cpu_handle_interrupt(cpu, &last_tb)) {
+             TranslationBlock *tb;
+             TCGTBCPUState s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
++
 +            if (unlikely(qemu_crucible_fault_register_boundaries_active())) {
 +                qemu_crucible_fault_register_instruction_boundary(
 +                    cpu, QEMU_CRUCIBLE_MODEL_PHASE_BEFORE_INSTRUCTION,
 +                    qemu_crucible_fault_observed_icount());
 +            }
-             cpu_get_tb_cpu_state(cpu_env(cpu), &pc, &cs_base, &flags);
+             s.cflags = cpu->cflags_next_tb;
  
              /*
-@@ -988,7 +1010,8 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+@@ -976,7 +999,8 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
                  break;
              }
  
 -            if (unlikely(qemu_crucible_fault_memory_fetch_rules_active())) {
 +            if (unlikely(qemu_crucible_fault_memory_fetch_rules_active() ||
 +                         qemu_crucible_fault_register_boundaries_active())) {
-                 cflags &= ~CF_COUNT_MASK;
-                 cflags |= CF_NO_GOTO_TB | CF_NO_GOTO_PTR | 1;
+                 s.cflags &= ~CF_COUNT_MASK;
+                 s.cflags |= CF_NO_GOTO_TB | CF_NO_GOTO_PTR | 1;
                  last_tb = NULL;
 diff --git a/gdbstub/gdbstub.c b/gdbstub/gdbstub.c
-index 282e13e16..30d645b43 100644
+index 0a328b0dd..91035ab37 100644
 --- a/gdbstub/gdbstub.c
 +++ b/gdbstub/gdbstub.c
-@@ -2484,4 +2484,3 @@ void gdb_create_default_process(GDBState *s)
+@@ -2522,4 +2522,3 @@ void gdb_create_default_process(GDBState *s)
      process->attached = false;
      process->target_xml = NULL;
  }
 -
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index 310314cbd..1d4589fd4 100644
+index 42160effa..eab188f17 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
 @@ -63,6 +63,7 @@ typedef int (*WriteCoreDumpFunction)(const void *buf, size_t size,
@@ -161,7 +162,7 @@ index 310314cbd..1d4589fd4 100644
  /**
   * CPUClass:
   * @class_by_name: Callback to map -cpu command line model name to an
-@@ -164,6 +199,13 @@ struct CPUClass {
+@@ -171,6 +206,13 @@ struct CPUClass {
      int (*gdb_write_register)(CPUState *cpu, uint8_t *buf, int reg);
      vaddr (*gdb_adjust_breakpoint)(CPUState *cpu, vaddr addr);
  
@@ -173,9 +174,9 @@ index 310314cbd..1d4589fd4 100644
 +    CrucibleCPURegisterWriteFn crucible_register_write;
 +
      const char *gdb_core_xml_file;
-     const gchar * (*gdb_arch_name)(CPUState *cpu);
- 
-@@ -509,6 +551,8 @@ struct CPUState {
+     const char * (*gdb_arch_name)(CPUState *cpu);
+     const char * (*gdb_get_core_xml_file)(CPUState *cpu);
+@@ -525,6 +567,8 @@ struct CPUState {
      uint32_t crucible_page_table_walk_instruction_ordinal;
      uint64_t crucible_page_table_walk_target_vaddr;
      uint64_t crucible_page_table_walk_instruction_pc;
@@ -184,60 +185,11 @@ index 310314cbd..1d4589fd4 100644
      uint64_t random_seed;
      sigjmp_buf jmp_env;
  
-diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index a9b6bb375..1622d08db 100644
---- a/include/qemu/crucible-fault.h
-+++ b/include/qemu/crucible-fault.h
-@@ -17,6 +17,9 @@
- typedef struct QemuCrucibleFaultHandler QemuCrucibleFaultHandler;
- typedef struct QemuCrucibleFaultRule QemuCrucibleFaultRule;
- 
-+#define QEMU_CRUCIBLE_MODEL_PHASE_BEFORE_INSTRUCTION 11
-+#define QEMU_CRUCIBLE_MODEL_PHASE_AFTER_INSTRUCTION 12
-+
- typedef int (*QemuCrucibleFaultValidateFn)(
-     const struct qemu_plugin_crucible_fault_command *command,
-     const uint8_t *payload, size_t payload_len);
-@@ -88,6 +91,8 @@ void qemu_crucible_fault_boundary_deadline_register(
-     QemuCrucibleFaultBoundaryDeadlineFn deadline);
- uint64_t qemu_crucible_fault_rule_generation(
-     const QemuCrucibleFaultRule *rule);
-+uint16_t qemu_crucible_fault_rule_operation(
-+    const QemuCrucibleFaultRule *rule);
- uint64_t qemu_crucible_fault_rule_command_sequence(
-     const QemuCrucibleFaultRule *rule);
- uint16_t qemu_crucible_fault_rule_model_phase(
-@@ -103,6 +108,8 @@ const uint8_t *qemu_crucible_fault_rule_target_hash(
- bool qemu_crucible_fault_rule_field(const QemuCrucibleFaultRule *rule,
-                                     uint16_t tag, uint16_t expected_type,
-                                     const uint8_t **data, uint32_t *length);
-+bool qemu_crucible_fault_rule_occurs(QemuCrucibleFaultRule *rule,
-+                                     uint16_t policy_tag);
- void qemu_crucible_fault_rule_event(const QemuCrucibleFaultRule *rule,
-                                     uint16_t outcome,
-                                     uint64_t observed_icount,
-@@ -112,6 +119,16 @@ void qemu_crucible_fault_rule_event(const QemuCrucibleFaultRule *rule,
-                                     const uint8_t *evidence,
-                                     size_t evidence_len);
- 
-+int qemu_crucible_fault_register_validate(const QemuCrucibleFaultRule *rule);
-+bool qemu_crucible_fault_register_ensure_registered(void);
-+bool qemu_crucible_fault_register_rules_active(void);
-+bool qemu_crucible_fault_register_boundaries_active(void);
-+void qemu_crucible_fault_register_instruction_boundary(CPUState *cpu,
-+                                                        uint16_t model_phase,
-+                                                        uint64_t icount);
-+void qemu_crucible_fault_register_execution_begin(CPUState *cpu);
-+void qemu_crucible_fault_register_execution_complete(CPUState *cpu);
-+
- enum QemuCrucibleMemoryAccessClass {
-     QEMU_CRUCIBLE_MEMORY_FETCH = 0x01,
-     QEMU_CRUCIBLE_MEMORY_CPU_LOAD = 0x02,
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 8e3a5634e..4cf2a588a 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -1649,14 +1649,78 @@ GArray *qemu_plugin_crucible_get_vcpu_registers(unsigned int vcpu_index);
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index b2e1d8948..8ea783f26 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -2010,14 +2010,78 @@ GArray *qemu_plugin_crucible_get_vcpu_registers(unsigned int vcpu_index);
   * Returns the size of the read register. The content of @buf is in target byte
   * order. On failure returns -1.
   *
@@ -318,7 +270,7 @@ index 8e3a5634e..4cf2a588a 100644
  /**
   * qemu_plugin_read_vcpu_regs() - read canonical register bytes for a vCPU
   * @vcpu_index: the vCPU index to inspect
-@@ -1667,7 +1731,11 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
+@@ -2028,7 +2092,11 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
   *
   * Returns 0 on success and nonzero on failure. The byte stream is a stable
   * canonicalization of each named architectural register descriptor and value
@@ -331,11 +283,60 @@ index 8e3a5634e..4cf2a588a 100644
   */
  QEMU_PLUGIN_API
  int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
+diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
+index 630ec4753..e65445765 100644
+--- a/include/qemu/crucible-fault.h
++++ b/include/qemu/crucible-fault.h
+@@ -17,6 +17,9 @@
+ typedef struct QemuCrucibleFaultHandler QemuCrucibleFaultHandler;
+ typedef struct QemuCrucibleFaultRule QemuCrucibleFaultRule;
+ 
++#define QEMU_CRUCIBLE_MODEL_PHASE_BEFORE_INSTRUCTION 11
++#define QEMU_CRUCIBLE_MODEL_PHASE_AFTER_INSTRUCTION 12
++
+ typedef int (*QemuCrucibleFaultValidateFn)(
+     const struct qemu_plugin_crucible_fault_command *command,
+     const uint8_t *payload, size_t payload_len);
+@@ -88,6 +91,8 @@ void qemu_crucible_fault_boundary_deadline_register(
+     QemuCrucibleFaultBoundaryDeadlineFn deadline);
+ uint64_t qemu_crucible_fault_rule_generation(
+     const QemuCrucibleFaultRule *rule);
++uint16_t qemu_crucible_fault_rule_operation(
++    const QemuCrucibleFaultRule *rule);
+ uint64_t qemu_crucible_fault_rule_command_sequence(
+     const QemuCrucibleFaultRule *rule);
+ uint16_t qemu_crucible_fault_rule_model_phase(
+@@ -103,6 +108,8 @@ const uint8_t *qemu_crucible_fault_rule_target_hash(
+ bool qemu_crucible_fault_rule_field(const QemuCrucibleFaultRule *rule,
+                                     uint16_t tag, uint16_t expected_type,
+                                     const uint8_t **data, uint32_t *length);
++bool qemu_crucible_fault_rule_occurs(QemuCrucibleFaultRule *rule,
++                                     uint16_t policy_tag);
+ void qemu_crucible_fault_rule_event(const QemuCrucibleFaultRule *rule,
+                                     uint16_t outcome,
+                                     uint64_t observed_icount,
+@@ -112,6 +119,16 @@ void qemu_crucible_fault_rule_event(const QemuCrucibleFaultRule *rule,
+                                     const uint8_t *evidence,
+                                     size_t evidence_len);
+ 
++int qemu_crucible_fault_register_validate(const QemuCrucibleFaultRule *rule);
++bool qemu_crucible_fault_register_ensure_registered(void);
++bool qemu_crucible_fault_register_rules_active(void);
++bool qemu_crucible_fault_register_boundaries_active(void);
++void qemu_crucible_fault_register_instruction_boundary(CPUState *cpu,
++                                                        uint16_t model_phase,
++                                                        uint64_t icount);
++void qemu_crucible_fault_register_execution_begin(CPUState *cpu);
++void qemu_crucible_fault_register_execution_complete(CPUState *cpu);
++
+ enum QemuCrucibleMemoryAccessClass {
+     QEMU_CRUCIBLE_MEMORY_FETCH = 0x01,
+     QEMU_CRUCIBLE_MEMORY_CPU_LOAD = 0x02,
 diff --git a/plugins/api.c b/plugins/api.c
-index 5fa29d640..a8d454964 100644
+index bed067f3b..9d0dbb14a 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -505,6 +505,18 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+@@ -684,6 +684,18 @@ bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr)
  }
  
  #ifndef CONFIG_USER_ONLY
@@ -354,7 +355,7 @@ index 5fa29d640..a8d454964 100644
  GArray *qemu_plugin_crucible_get_vcpu_registers(unsigned int vcpu_index)
  {
      CPUState *cpu = qemu_get_cpu(vcpu_index);
-@@ -523,7 +535,8 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
+@@ -702,7 +714,8 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
  {
      CPUState *cpu = qemu_get_cpu(vcpu_index);
  
@@ -364,7 +365,7 @@ index 5fa29d640..a8d454964 100644
          return -1;
      }
  
-@@ -596,7 +609,8 @@ int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
+@@ -775,7 +788,8 @@ int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
      bool ok = true;
  
      if (!out_register_len || !out_retired_instruction_count ||
@@ -375,7 +376,7 @@ index 5fa29d640..a8d454964 100644
      }
  
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 3d7d5024b..6c36ed529 100644
+index b03e579cc..6ca2476d7 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -2719,6 +2719,22 @@ static int node_parse(const struct qemu_plugin_crucible_fault_command *command,
@@ -488,7 +489,7 @@ index 3d7d5024b..6c36ed529 100644
  {
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
 new file mode 100644
-index 000000000..ef2cf2f96
+index 000000000..a26755ddb
 --- /dev/null
 +++ b/plugins/crucible-fault-register.c
 @@ -0,0 +1,1000 @@
@@ -504,7 +505,7 @@ index 000000000..ef2cf2f96
 +#include "hw/core/cpu.h"
 +#include "qemu/crucible-fault.h"
 +#include "qemu/error-report.h"
-+#include "qemu/qemu-plugin.h"
++#include "plugins/qemu-plugin.h"
 +
 +#define CRUCIBLE_REGISTER_CAP_IMPULSE (1U << 0)
 +#define CRUCIBLE_REGISTER_CAP_PERSISTENT (1U << 1)
@@ -1507,10 +1508,10 @@ index 333af60e9..6e96e52f2 100644
      g_mutex_lock(&crucible_fault_lock);
      required = crucible_fault_handlers->len;
 diff --git a/plugins/meson.build b/plugins/meson.build
-index dffdd9734..550ed0dee 100644
+index a4f49727e..1f12b5b4e 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
-@@ -60,6 +60,7 @@ endif
+@@ -80,7 +80,8 @@ endif
  
  user_ss.add(files('user.c', 'api-user.c'))
  system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
@@ -1518,12 +1519,13 @@ index dffdd9734..550ed0dee 100644
 +                    'crucible-fault-memory.c', 'crucible-fault-node.c',
 +                    'crucible-fault-register.c'))
  
- common_ss.add(files('loader.c', 'api.c', 'core.c'))
+ user_ss.add(files('api.c', 'core.c'))
+ system_ss.add(files('api.c', 'core.c'))
 diff --git a/system/vl.c b/system/vl.c
-index 9d56aeb0a..c06dd6f8b 100644
+index a2b51534e..a51e6eec1 100644
 --- a/system/vl.c
 +++ b/system/vl.c
-@@ -2707,12 +2707,18 @@ static void qemu_init_board(void)
+@@ -2723,12 +2723,18 @@ static void qemu_init_board(void)
  {
      MachineClass *machine_class = MACHINE_GET_CLASS(current_machine);
  
@@ -1545,11 +1547,31 @@ index 9d56aeb0a..c06dd6f8b 100644
      if (machine_class->auto_create_sdcard) {
          bool ambigous;
  
+diff --git a/target/arm/cpu.c b/target/arm/cpu.c
+index a6322d6ba..3a6d7ee6c 100644
+--- a/target/arm/cpu.c
++++ b/target/arm/cpu.c
+@@ -2680,6 +2680,15 @@ static void arm_cpu_class_init(ObjectClass *oc, const void *data)
+     cc->gdb_read_register = arm_cpu_gdb_read_register;
+     cc->gdb_write_register = arm_cpu_gdb_write_register;
+ #ifndef CONFIG_USER_ONLY
++#ifdef TARGET_AARCH64
++    cc->crucible_register_scope = 3;
++    cc->crucible_register_count = aarch64_crucible_register_count;
++    cc->crucible_register_describe = aarch64_crucible_register_describe;
++    cc->crucible_register_read = aarch64_crucible_register_read;
++    cc->crucible_register_validate_write =
++        aarch64_crucible_register_validate_write;
++    cc->crucible_register_write = aarch64_crucible_register_write;
++#endif
+     cc->max_as = ARMASIdx_MAX;
+     cc->sysemu_ops = &arm_sysemu_ops;
+ #endif
 diff --git a/target/arm/cpu.h b/target/arm/cpu.h
-index 83b3596b1..e468874bc 100644
+index 8cfb98921..561b60d8b 100644
 --- a/target/arm/cpu.h
 +++ b/target/arm/cpu.h
-@@ -3218,6 +3218,21 @@ void arm_register_el_change_hook(ARMCPU *cpu, ARMELChangeHookFn *hook, void
+@@ -2685,6 +2685,21 @@ void arm_register_el_change_hook(ARMCPU *cpu, ARMELChangeHookFn *hook, void
   */
  void arm_rebuild_hflags(CPUARMState *env);
  
@@ -1571,26 +1593,6 @@ index 83b3596b1..e468874bc 100644
  /**
   * aa32_vfp_dreg:
   * Return a pointer to the Dn register within env in 32-bit mode.
-diff --git a/target/arm/cpu64.c b/target/arm/cpu64.c
-index 8188ede5c..c69f47fdb 100644
---- a/target/arm/cpu64.c
-+++ b/target/arm/cpu64.c
-@@ -824,6 +824,15 @@ static void aarch64_cpu_class_init(ObjectClass *oc, void *data)
- 
-     cc->gdb_read_register = aarch64_cpu_gdb_read_register;
-     cc->gdb_write_register = aarch64_cpu_gdb_write_register;
-+#ifndef CONFIG_USER_ONLY
-+    cc->crucible_register_scope = 3;
-+    cc->crucible_register_count = aarch64_crucible_register_count;
-+    cc->crucible_register_describe = aarch64_crucible_register_describe;
-+    cc->crucible_register_read = aarch64_crucible_register_read;
-+    cc->crucible_register_validate_write =
-+        aarch64_crucible_register_validate_write;
-+    cc->crucible_register_write = aarch64_crucible_register_write;
-+#endif
-     cc->gdb_core_xml_file = "aarch64-core.xml";
-     cc->gdb_arch_name = aarch64_gdb_arch_name;
- 
 diff --git a/target/arm/crucible-register.c b/target/arm/crucible-register.c
 new file mode 100644
 index 000000000..6e1a76766
@@ -2141,30 +2143,22 @@ index 000000000..6e1a76766
 +    return expected;
 +}
 diff --git a/target/arm/meson.build b/target/arm/meson.build
-index 3065081d2..bdc30bcf1 100644
+index 0369f96b4..e20c3d763 100644
 --- a/target/arm/meson.build
 +++ b/target/arm/meson.build
-@@ -21,6 +21,7 @@ arm_system_ss.add(files(
+@@ -54,6 +54,7 @@ arm_common_system_ss.add(when: 'CONFIG_ARM_COMPATIBLE_SEMIHOSTING',
+ arm_common_system_ss.add(files(
    'arch_dump.c',
    'arm-powerctl.c',
-   'arm-qmp-cmds.c',
 +  'crucible-register.c',
    'cortex-regs.c',
-   'machine.c',
-   'ptw.c',
+   'cpregs-omap.c',
+   'cpu-irq.c',
 diff --git a/target/i386/cpu.c b/target/i386/cpu.c
-index f593c0ee4..9375caf99 100644
+index 2344214fc..bcf809734 100644
 --- a/target/i386/cpu.c
 +++ b/target/i386/cpu.c
-@@ -8910,6 +8910,7 @@ static const struct SysemuCPUOps i386_sysemu_ops = {
- };
- #endif
- 
-+
- static void x86_cpu_common_class_init(ObjectClass *oc, void *data)
- {
-     X86CPUClass *xcc = X86_CPU_CLASS(oc);
-@@ -8936,6 +8937,17 @@ static void x86_cpu_common_class_init(ObjectClass *oc, void *data)
+@@ -10928,6 +10928,17 @@ static void x86_cpu_common_class_init(ObjectClass *oc, const void *data)
      cc->get_pc = x86_cpu_get_pc;
      cc->gdb_read_register = x86_cpu_gdb_read_register;
      cc->gdb_write_register = x86_cpu_gdb_write_register;
@@ -2183,10 +2177,10 @@ index f593c0ee4..9375caf99 100644
  
  #ifndef CONFIG_USER_ONLY
 diff --git a/target/i386/cpu.h b/target/i386/cpu.h
-index 1ada85b2e..04a4e5efe 100644
+index 423d8be81..fa49d699b 100644
 --- a/target/i386/cpu.h
 +++ b/target/i386/cpu.h
-@@ -2365,6 +2365,20 @@ void x86_cpu_dump_state(CPUState *cs, FILE *f, int flags);
+@@ -2579,6 +2579,20 @@ void x86_cpu_dump_state(CPUState *cs, FILE *f, int flags);
  
  int x86_cpu_gdb_read_register(CPUState *cpu, GByteArray *buf, int reg);
  int x86_cpu_gdb_write_register(CPUState *cpu, uint8_t *buf, int reg);
@@ -2206,8 +2200,8 @@ index 1ada85b2e..04a4e5efe 100644
 +#endif
  void x86_cpu_gdb_init(CPUState *cs);
  
- void x86_cpu_list(void);
-@@ -2711,6 +2725,7 @@ int get_pg_mode(CPUX86State *env);
+ int cpu_x86_support_mca_broadcast(CPUX86State *env);
+@@ -2957,6 +2971,7 @@ int get_pg_mode(CPUX86State *env);
  void cpu_init_fp_statuses(CPUX86State *env);
  void update_fp_status(CPUX86State *env);
  void update_mxcsr_status(CPUX86State *env);
@@ -3217,10 +3211,10 @@ index 000000000..b2c0c6814
 +    return expected;
 +}
 diff --git a/target/i386/gdbstub.c b/target/i386/gdbstub.c
-index 04c49e802..3805f4967 100644
+index 5c5fa7272..1990caa5e 100644
 --- a/target/i386/gdbstub.c
 +++ b/target/i386/gdbstub.c
-@@ -202,8 +202,7 @@ int x86_cpu_gdb_read_register(CPUState *cs, GByteArray *mem_buf, int n)
+@@ -196,8 +196,7 @@ int x86_cpu_gdb_read_register(CPUState *cs, GByteArray *mem_buf, int n)
              return gdb_get_reg32(mem_buf, 0); /* fop */
  
          case IDX_MXCSR_REG:
@@ -3231,10 +3225,10 @@ index 04c49e802..3805f4967 100644
          case IDX_CTL_CR0_REG:
              return gdb_read_reg_cs64(env->hflags, mem_buf, env->cr[0]);
 diff --git a/target/i386/meson.build b/target/i386/meson.build
-index 2e9c472f4..1257e5425 100644
+index b4fbf8a53..795d516ae 100644
 --- a/target/i386/meson.build
 +++ b/target/i386/meson.build
-@@ -16,6 +16,7 @@ i386_system_ss = ss.source_set()
+@@ -18,6 +18,7 @@ i386_system_ss = ss.source_set()
  i386_system_ss.add(files(
    'arch_dump.c',
    'arch_memory_mapping.c',
@@ -3243,31 +3237,29 @@ index 2e9c472f4..1257e5425 100644
    'monitor.c',
    'cpu-apic.c',
 diff --git a/target/i386/tcg/fpu_helper.c b/target/i386/tcg/fpu_helper.c
-index c1184ca21..ce5a1c7e2 100644
+index b812125ef..08bd8930a 100644
 --- a/target/i386/tcg/fpu_helper.c
 +++ b/target/i386/tcg/fpu_helper.c
-@@ -3267,7 +3267,7 @@ void update_mxcsr_status(CPUX86State *env)
+@@ -3267,17 +3267,23 @@ void update_mxcsr_status(CPUX86State *env)
      set_flush_to_zero((mxcsr & SSE_FZ) ? 1 : 0, &env->sse_status);
  }
  
 -void update_mxcsr_from_sse_status(CPUX86State *env)
 +uint32_t cpu_get_mxcsr(CPUX86State *env)
  {
-     uint8_t flags = get_float_exception_flags(&env->sse_status);
-     /*
-@@ -3277,13 +3277,18 @@ void update_mxcsr_from_sse_status(CPUX86State *env)
-      * only when not flushing them to zero), so is not converted
-      * here.
-      */
+     int flags = get_float_exception_flags(&env->sse_status);
 -    env->mxcsr |= ((flags & float_flag_invalid ? FPUS_IE : 0) |
+-                   (flags & float_flag_input_denormal_used ? FPUS_DE : 0) |
 -                   (flags & float_flag_divbyzero ? FPUS_ZE : 0) |
 -                   (flags & float_flag_overflow ? FPUS_OE : 0) |
 -                   (flags & float_flag_underflow ? FPUS_UE : 0) |
 -                   (flags & float_flag_inexact ? FPUS_PE : 0) |
 -                   (flags & float_flag_output_denormal_flushed ? FPUS_UE | FPUS_PE :
 -                    0));
++
 +    return env->mxcsr |
 +        (flags & float_flag_invalid ? FPUS_IE : 0) |
++        (flags & float_flag_input_denormal_used ? FPUS_DE : 0) |
 +        (flags & float_flag_divbyzero ? FPUS_ZE : 0) |
 +        (flags & float_flag_overflow ? FPUS_OE : 0) |
 +        (flags & float_flag_underflow ? FPUS_UE : 0) |

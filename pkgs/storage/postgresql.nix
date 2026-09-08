@@ -43,7 +43,7 @@
   buildPackages,
   darwin-sdk,
 }: let
-  version = "18.4";
+  version = "18.6";
   isDarwin = stdenv.hostPlatform.isDarwin;
   control = writeShellScriptBin "postgresql-control" ''
     set -euo pipefail
@@ -185,7 +185,7 @@ in
       urls = [
         "https://ftp.postgresql.org/pub/source/v${version}/postgresql-${version}.tar.bz2"
       ];
-      hash = "sha256-gagexpX7DHkBQH3vqh0veXNhcVTPJ7p046erjmRDYJQ=";
+      hash = "sha256-VVYQwk1T5DFtpbfT/CXCedloVtXg4j7jCMMoxfqIHZ8=";
     };
 
     buildDeps =

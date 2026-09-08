@@ -511,7 +511,7 @@ fn parse_required_hash(
         });
     }
     let mut hash = [0_u8; 32];
-    for (output, pair) in hash.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
+    for (output, pair) in hash.iter_mut().zip(value.as_bytes().as_chunks::<2>().0) {
         let high = hex_nibble(pair[0]).ok_or_else(|| PluginArgsParseError::InvalidHash {
             key,
             value: value.to_owned(),

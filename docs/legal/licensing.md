@@ -14,7 +14,7 @@ over the defaults below. Third-party files retain their existing licenses.
 | `crucible-debug-gateway` | GPL-2.0-only |
 | `crucible-qemu-trace-plugin` | GPL-2.0-only |
 | QEMU emulator as a combined work | GPL-2.0-only |
-| Individual QEMU source files | The file's notice; unmarked files default to GPL-2.0-or-later under QEMU 10.0's `LICENSE` |
+| Individual QEMU source files | The file's notice; unmarked files default to GPL-2.0-or-later under QEMU 11.1's `LICENSE` |
 | AOS QEMU patch series | Modified files retain their upstream license; every created file and its license is listed in the [patch inventory](../../pkgs/emulation/qemu-patches/LICENSES.md) |
 
 The complete license texts are in [`LICENSES/`](../../LICENSES/). The root

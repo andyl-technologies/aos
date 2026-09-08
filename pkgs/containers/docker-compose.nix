@@ -6,14 +6,14 @@
 }: let
   # Compose 5.4 requires a Go patch release newer than the self-hosted AOS
   # toolchain; 5.3.1 retains the complete feature set on Go 1.26.0.
-  version = "5.3.1";
+  version = "5.5.1";
   src = fetchurl {
     urls = ["https://github.com/docker/compose/archive/refs/tags/v${version}.tar.gz"];
-    hash = "sha256-GCPhsJxAgnef31zJ89hFO5Xbo9k5EFs5NmF1zhL9tsc=";
+    hash = "sha256-MRB3ZiaY/Y40dpqJT51SQL77FzCZDvqO1Y4PqHJdLYQ=";
   };
   goModules = fetchGoModules {
     inherit src;
-    hash = "sha256-kg7iioXPoEonD7ZTfKMHFTUXiKgykM3rtgTFtW598xE=";
+    hash = "sha256-lC1UiV0bO8YxxP3w2hKAdk1HwvlQvgqNwucQjkNf9yI=";
   };
 in
   mkGoPackage {

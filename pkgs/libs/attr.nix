@@ -5,24 +5,23 @@
   gnumake,
   gettext,
 }: let
-  version = "2.5.2";
+  version = "2.6.0";
 in
   mkDerivation {
     pname = "attr";
     inherit version;
 
     src = fetchurl {
+      name = "attr-${version}.tar.xz";
       urls = [
-        "https://download.savannah.gnu.org/releases/attr/attr-${version}.tar.gz"
-        "https://mirrors.kernel.org/gnu/attr/attr-${version}.tar.gz"
+        "https://mirror.fi.ossplanet.net/nongnu/attr/attr-${version}.tar.xz"
+        "https://download.savannah.gnu.org/releases/attr/attr-${version}.tar.xz"
+        "https://download-mirror.savannah.gnu.org/releases/attr/attr-${version}.tar.xz"
       ];
-      hash = "sha256-Ob9nRS+kHQlIwhl2AQU/SLPXigKTiXNDMqYwmmgMbIc=";
+      hash = "sha256-bIohSKe4UEO2hJK85DMWsOLiFPxOYox+3geOduIWMws=";
     };
 
-    buildDeps = [
-      gnumake
-      gettext
-    ];
+    buildDeps = [gnumake gettext];
     runtimeDeps = [];
     propagatedDeps = [];
 

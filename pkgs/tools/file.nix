@@ -6,7 +6,7 @@
   buildPackages,
   stdenv,
 }: let
-  version = "5.46";
+  version = "5.48";
 in
   mkDerivation {
     pname = "file";
@@ -16,7 +16,7 @@ in
       urls = [
         "https://astron.com/pub/file/file-${version}.tar.gz"
       ];
-      hash = "sha256-ycx3x8VgxUMTXtxVWvYJ1WGdvvARmX6YjOQKPXXYYIg=";
+      hash = "sha256-7RRlaIOyOjZLQFfAVZXZMlLam8Rz0wEGUZUZ0NoUEoM=";
     };
 
     buildDeps =

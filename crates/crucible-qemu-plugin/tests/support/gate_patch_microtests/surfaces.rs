@@ -81,10 +81,10 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
         &qemu_patch_series,
         "decisionRegister = builtins.readFile ../../docs/rfcs/0010-crucible/31-decision-register.md",
     );
-    assert_contains(&qemu_patch_series, "qemu_version=10.0.0");
+    assert_contains(&qemu_patch_series, "qemu_version=11.1.1");
     assert_contains(
         &qemu_patch_series,
-        "qemu_source_hash=sha256-IsB1YB/c+MeyZxqDnr3O8dTylz62c1JU/S4b0PMLOJY=",
+        "qemu_source_hash=sha256-B5/7/4pxEbvIkCIQfLq/O7/WFNX8nXzGdZkRlqyhJII=",
     );
     assert_contains(
         &qemu_patch_series,
@@ -180,7 +180,7 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
     );
     let incoming_setup_tail = required(
         qemu_raw_state_export.split_once(
-            "@@ -697,6 +701,12 @@ migration_incoming_state_setup(MigrationIncomingState *mis, Error **errp)",
+            "@@ -632,6 +636,12 @@ migration_incoming_state_setup(MigrationIncomingState *mis, Error **errp)",
         ),
         "raw-state patch must modify incoming migration state setup",
     )
@@ -209,12 +209,12 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
     );
     let loadvm_main_tail = required(
         qemu_raw_state_export
-            .split_once("int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis)"),
+            .split_once("int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis,"),
         "raw-state patch must modify the central VMState load loop",
     )
     .1;
     let loadvm_main = required(
-        loadvm_main_tail.split_once("int qemu_loadvm_state(QEMUFile *f)"),
+        loadvm_main_tail.split_once("int qemu_loadvm_state(QEMUFile *f, Error **errp)"),
         "central VMState load-loop patch hunk must have a bounded body",
     )
     .0;

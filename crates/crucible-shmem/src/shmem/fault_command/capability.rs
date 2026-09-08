@@ -195,8 +195,10 @@ pub fn decode_fault_capability_manifest(
         return Err(FaultAbiError::HeaderLength);
     }
     let rows = bytes[FAULT_CAPABILITY_MANIFEST_HEADER_V1_BYTES..]
-        .chunks_exact(FAULT_CAPABILITY_ROW_V1_BYTES)
-        .map(FaultCapabilityRowV1::decode)
+        .as_chunks::<FAULT_CAPABILITY_ROW_V1_BYTES>()
+        .0
+        .iter()
+        .map(|bytes| FaultCapabilityRowV1::decode(bytes))
         .collect::<Result<Vec<_>, _>>()?;
     let digest = fault_capability_manifest_digest(&rows)?;
     if bytes[16..48] != digest {

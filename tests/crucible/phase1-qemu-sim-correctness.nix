@@ -327,14 +327,14 @@ in
               grep -F -q 'crucible_shmem_wake' block/crucible-shmem.c
               grep -F -q 'qemu_co_queue_wait(&s->pending_requests, &s->pending_lock)' block/crucible-shmem.c
               grep -F -q 's->wake_generation != observed_generation' block/crucible-shmem.c
-              grep -F -q 'qemu_plugin_register_vcpu_idle_resume_cb' include/qemu/qemu-plugin.h
+              grep -F -q 'qemu_plugin_register_vcpu_idle_resume_cb' include/plugins/qemu-plugin.h
               grep -F -q 'qemu_plugin_maybe_fire_vcpu_idle_cb' accel/tcg/tcg-accel-ops-rr.c
               grep -F -q 'rr_crucible_sim_all_vcpus_halted' accel/tcg/tcg-accel-ops-rr.c
               grep -F -q 'rr_crucible_sim_drain_vcpu_work' accel/tcg/tcg-accel-ops-rr.c
               grep -F -q 'qemu_plugin_time_advance_is_pending()' accel/tcg/tcg-accel-ops-rr.c
               grep -F -q 'rr_crucible_sim_sync_vcpu_halt_callbacks' accel/tcg/tcg-accel-ops-rr.c
               grep -F -q 'tcg-accel-ops-sim-shmem.c' accel/tcg/meson.build
-              grep -F -q 'qemu_plugin_register_sim_shmem_dispatch_cb' include/qemu/qemu-plugin.h
+              grep -F -q 'qemu_plugin_register_sim_shmem_dispatch_cb' include/plugins/qemu-plugin.h
               grep -F -q 'crucible_sim_shmem_publish_current_icount' accel/tcg/tcg-accel-ops-rr.c
               grep -F -q 'crucible_sim_shmem_dispatch_registered()' accel/tcg/tcg-accel-ops-rr.c
               grep -F -q 'crucible_sim_shmem_clamp_cpu_budget' accel/tcg/tcg-accel-ops-sim-shmem.c

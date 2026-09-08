@@ -1,8 +1,8 @@
 diff --git a/accel/tcg/meson.build b/accel/tcg/meson.build
-index f7023978c..24e6a53ca 100644
+index 884ee4dc7..aa1aa17fa 100644
 --- a/accel/tcg/meson.build
 +++ b/accel/tcg/meson.build
-@@ -30,6 +30,7 @@ system_ss.add(when: ['CONFIG_TCG'], if_true: files(
+@@ -36,6 +36,7 @@ system_ss.add(files(
    'tcg-accel-ops-mttcg.c',
    'tcg-accel-ops-rr.c',
    'tcg-accel-ops-sim.c',
@@ -12,7 +12,7 @@ index f7023978c..24e6a53ca 100644
  ))
 diff --git a/accel/tcg/tcg-accel-ops-preemption.c b/accel/tcg/tcg-accel-ops-preemption.c
 new file mode 100644
-index 000000000..b11739b59
+index 000000000..7ebe34f9e
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-preemption.c
 @@ -0,0 +1,170 @@
@@ -23,7 +23,7 @@ index 000000000..b11739b59
 +#include "qemu/osdep.h"
 +#include "qemu/accel.h"
 +#include "qemu/error-report.h"
-+#include "qemu/qemu-plugin.h"
++#include "plugins/qemu-plugin.h"
 +#include "exec/cpu-common.h"
 +#include "system/cpu-timers.h"
 +#include "system/crucible-sim-ipi.h"
@@ -187,10 +187,10 @@ index 000000000..b11739b59
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index 5c70e042c..c792d98b9 100644
+index cf48bceb4..dbe7032f2 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -41,6 +41,7 @@
+@@ -42,6 +42,7 @@
  #include "tcg-accel-ops-icount.h"
  #include "tcg-accel-ops-sim-shmem.h"
  #include "system/crucible-sim-ipi.h"
@@ -198,7 +198,7 @@ index 5c70e042c..c792d98b9 100644
  
  /* Kick all RR vCPUs */
  void rr_kick_vcpu_thread(CPUState *unused)
-@@ -211,9 +212,11 @@ static void rr_crucible_sim_refresh_batch_budget(int64_t *cpu_budget)
+@@ -212,9 +213,11 @@ static void rr_crucible_sim_refresh_batch_budget(int64_t *cpu_budget)
      replay_mutex_unlock();
  }
  
@@ -211,7 +211,7 @@ index 5c70e042c..c792d98b9 100644
  
      while (true) {
          int r;
-@@ -224,8 +227,13 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState *cpu, int64_t *cpu_budget)
+@@ -225,8 +228,13 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState *cpu, int64_t *cpu_budget)
  
              *cpu_budget = crucible_sim_shmem_clamp_cpu_budget(current_icount,
                                                                *cpu_budget);
@@ -225,7 +225,7 @@ index 5c70e042c..c792d98b9 100644
                  qemu_cond_wait_bql(first_cpu->halt_cond);
                  return true;
              }
-@@ -246,6 +254,12 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState *cpu, int64_t *cpu_budget)
+@@ -247,6 +255,12 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState *cpu, int64_t *cpu_budget)
          qemu_plugin_maybe_fire_tcg_exec_cb(cpu);
          bql_lock();
  
@@ -238,7 +238,7 @@ index 5c70e042c..c792d98b9 100644
          runs++;
  
          if (r == EXCP_DEBUG) {
-@@ -518,15 +532,20 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -526,15 +540,20 @@ static void *rr_cpu_thread_fn(void *arg)
  
                  cpu_budget = crucible_sim_shmem_clamp_cpu_budget(current_icount,
                                                                   cpu_budget);
@@ -261,7 +261,7 @@ index 5c70e042c..c792d98b9 100644
                  }
              } else if (cpu->stop) {
 diff --git a/hw/intc/apic.c b/hw/intc/apic.c
-index 4c16ae980..1284d02de 100644
+index 33a1c98a9..114813aaf 100644
 --- a/hw/intc/apic.c
 +++ b/hw/intc/apic.c
 @@ -28,6 +28,7 @@
@@ -270,9 +270,9 @@ index 4c16ae980..1284d02de 100644
  #include "qemu/plugin.h"
 +#include "exec/cpu-common.h"
  #include "system/kvm.h"
- #include "system/cpu-timers.h"
- #include "system/crucible-sim-ipi.h"
-@@ -354,6 +355,43 @@ void crucible_sim_det_ipi_drain_pending(void)
+ #include "system/mshv.h"
+ #include "system/physmem.h"
+@@ -355,6 +356,43 @@ void crucible_sim_det_ipi_drain_pending(void)
      crucible_sim_det_ipi_draining = false;
  }
  
@@ -316,11 +316,11 @@ index 4c16ae980..1284d02de 100644
  static void apic_bus_deliver(CPUState *src_cpu,
                               const uint32_t *deliver_bitmask,
                               uint8_t delivery_mode, uint8_t vector_num,
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index dcd51e30a..c0d54b2bf 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -960,6 +960,35 @@ void qemu_plugin_force_vcpu_exit(void);
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index e741a5219..8582ba314 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -1058,6 +1058,35 @@ void qemu_plugin_force_vcpu_exit(void);
  QEMU_PLUGIN_API
  int qemu_plugin_crucible_single_threaded_rr(void);
  
@@ -397,7 +397,7 @@ index 000000000..769175164
 +
 +#endif /* SYSTEM_CRUCIBLE_SIM_PREEMPTION_H */
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index c3d45be89..b577dc8ac 100644
+index de520b824..ddc9a30fb 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -25,6 +25,7 @@
@@ -408,7 +408,7 @@ index c3d45be89..b577dc8ac 100644
  
  /*
   * In system mode we cannot trace the binary being executed so the
-@@ -305,6 +306,17 @@ void qemu_plugin_wake_notifier_remove(Notifier *notifier)
+@@ -308,6 +309,17 @@ void qemu_plugin_wake_notifier_remove(Notifier *notifier)
      notifier_remove(notifier);
  }
  

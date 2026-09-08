@@ -22,7 +22,7 @@
   bash,
   stdenv,
 }: let
-  version = "2.5.4";
+  version = "2.6.2";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
@@ -33,7 +33,7 @@ in
       urls = [
         "https://ftp.gnu.org/gnu/libtool/libtool-${version}.tar.xz"
       ];
-      hash = "sha256-+B9YYGZrC8fYS63e+mDRy5+m/OsjmMw7rKavqmAmZnU=";
+      hash = "sha256-LvEGfBbJfbkw/XQMybw9O6mlg4BK5axCzD6HGeSeGR4=";
     };
 
     buildDeps = [

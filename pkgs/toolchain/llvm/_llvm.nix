@@ -36,6 +36,8 @@
   # Version-specific workarounds
   needsArc4randomFix ? true,
   needsClOptStringFix ? false,
+  needsCstdintFixes ? false,
+  needsGccIteratorCompat ? false,
   extraRuntimeDeps ? [],
   extraCmakeFlags ? [],
 }: let
@@ -140,6 +142,24 @@ in
             ''
             else ""
           )
+          + (
+            if needsCstdintFixes
+            then ''
+              # GCC 16 no longer exposes fixed-width integer types through
+              # LLVM 17's transitive includes. Include their owning header in
+              # the declarations that use those types directly.
+              sed -i \
+                '/#include <algorithm>/a #include <cstdint>' \
+                llvm/include/llvm/ADT/SmallVector.h
+              sed -i \
+                '/#include <string>/i #include <cstdint>' \
+                llvm/lib/Target/X86/MCTargetDesc/X86MCTargetDesc.h
+              sed -i \
+                '/#include <memory>/i #include <cstdint>' \
+                compiler-rt/lib/orc/error.h
+            ''
+            else ""
+          )
           + ''
             ${
               if needsArc4randomFix
@@ -166,8 +186,36 @@ in
                 REAL_LIBC_DEV=$(cat "$BT/nix-support/orig-libc-dev")
                 GCC_DIR=$(echo "$REAL_CC"/lib/gcc/x86_64-unknown-linux-gnu/*)
                 mkdir -p build/clang-cfg
+                ${
+                  if needsGccIteratorCompat
+                  then ''
+                    # GCC 16 made this mixed-iterator overload a hidden friend
+                    # whose trailing return type inspects the still-incomplete
+                    # class. Clang 17 rejects that form. Keep the GCC header's
+                    # behavior while spelling its established difference type.
+                    CXX_VERSION=$(ls "$REAL_CC/include/c++")
+                    COMPAT_INCLUDE="$out/lib/clang-gcc-compat/include"
+                    mkdir -p "$COMPAT_INCLUDE/bits"
+                    cp \
+                      "$REAL_CC/include/c++/$CXX_VERSION/bits/stl_iterator.h" \
+                      "$COMPAT_INCLUDE/bits/stl_iterator.h"
+                    chmod u+w "$COMPAT_INCLUDE/bits/stl_iterator.h"
+                    sed -i \
+                      's/-> decltype(__lhs.base() - __rhs.base())/-> difference_type/' \
+                      "$COMPAT_INCLUDE/bits/stl_iterator.h"
+                  ''
+                  else ""
+                }
                 DL=$(echo "$REAL_LIBC"/lib/ld-linux-x86-64.so.*)
                 {
+                  ${
+                  if needsGccIteratorCompat
+                  then ''
+                    echo "-isystem"
+                    echo "$COMPAT_INCLUDE"
+                  ''
+                  else ""
+                }
                   echo "--gcc-install-dir=$GCC_DIR"
                   # Use -idirafter so glibc headers come AFTER GCC C++ headers
                   # (needed for #include_next <stdlib.h> in cstdlib to work)

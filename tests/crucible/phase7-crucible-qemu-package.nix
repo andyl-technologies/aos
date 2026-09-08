@@ -28,6 +28,8 @@
         python3 = "/aos-python3";
         setuptools = null;
         distlib = null;
+        pip = null;
+        wheel = null;
         glib = null;
         pixman = null;
         zlib = null;
@@ -185,7 +187,7 @@
       }
       {
         label = "matched qemu header probe";
-        needle = "header=\"" + "$" + "{qemu-crucible}/include/qemu/qemu-plugin.h\"";
+        needle = "header=\"" + "$" + "{qemu-crucible}/include/qemu-plugin.h\"";
       }
       {
         label = "matched sim capability marker";

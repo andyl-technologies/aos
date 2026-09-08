@@ -1849,17 +1849,17 @@ register.
   - **Current checks:** `checks.crucible.phase2.qemuPatchRegeneration`,
     `checks.crucible.phase2.gates.patchMicrotests`, and
     `checks.crucible.phase2.gates.qemuInert`.
-  - **Current result:** `qemu_package=qemu-crucible`, `qemu_version=10.0.0`,
-    `qemu_source_hash=sha256-IsB1YB/c+MeyZxqDnr3O8dTylz62c1JU/S4b0PMLOJY=`,
-    `patch_count=27`,
-    `patch_series_hash=afc0283ef33aa43421e4f1d9aec5523b4226d2044232dc10f1805840ac305a46`,
-    `patch_branch_ref=crucible/qemu-10.0.0`,
-    `patch_branch_bundle_hash=c427d5a6353d4f99455aaeebe2fb81a847372cac2a20fb0fdf84cf99f56ba94d`,
-    `patch_branch_head_commit=b5ca497e6ce46d85328bb1dfac989cd8fef8463c`,
-    `patch_branch_material_hash=539257b708cd802379202b4e8afcdff68c8fde47d5da263a09688e66f7c3d451`,
-    `qemu_build_id=79f90962f7df7740377ef21cd2eab07c03552c0d1f024caea96fddcff21bdd48`,
-    `qemu_nix_hash=35aad46df419155f4ce336d66dd4eac329348b333b1d202937ad05a0d94add09`,
-    `qemu_configure_flags_hash=716c3de64e42d5fee65c1b0ebb4dc213f282aba1d916820e1896ee36bc0db5f8`,
+  - **Current result:** `qemu_package=qemu-crucible`, `qemu_version=11.1.1`,
+    `qemu_source_hash=sha256-B5/7/4pxEbvIkCIQfLq/O7/WFNX8nXzGdZkRlqyhJII=`,
+    `patch_count=113`,
+    `patch_series_hash=3072deda1953d17ada3da05a21634765a402a7f375b293d4b7098569ad603632`,
+    `patch_branch_ref=crucible/qemu-11.1.1`,
+    `patch_branch_bundle_hash=5498b77732bd9708db93bb85e75b685166de5509962e916ed5c26078495d5dd9`,
+    `patch_branch_head_commit=4298aa3596e42bb430f3bd1226cd93e8a571b7c1`,
+    `patch_branch_material_hash=715a36e084c6f1298b4d304a9266880c99b92c4e327bf5010a36f992cd6445ea`,
+    `qemu_build_id=3197fe6576364762eabde6cb237a870d6d07fac5b10de1c674e56f480caf0ecb`,
+    `qemu_nix_hash=b5d26a1cdcebe26a91459af07da6b701a9d704564172af65a905144fe84f8f25`,
+    `qemu_configure_flags_hash=76f0f3594a975cde5063fae373ce074f3115b7208b30e5323adcd826e3ea5f5f`,
     `regenerated_patch_bytes_match_committed=true`,
     `apply_clean_regenerated_series=true`, `apply_clean_patch_fuzz=0`,
     `patch_branch_bundle_verified=true`,
@@ -1894,8 +1894,8 @@ register.
     `fallback_adopted=pin_build_id_and_regate_on_change`,
     `s9_complete=true`.
   - **Current source pin:** T-PATCH-1 advances the carried QEMU source pin to
-    `qemu_version=10.0.0` with
-    `qemu_source_hash=sha256-IsB1YB/c+MeyZxqDnr3O8dTylz62c1JU/S4b0PMLOJY=`,
+    `qemu_version=11.1.1` with
+    `qemu_source_hash=sha256-B5/7/4pxEbvIkCIQfLq/O7/WFNX8nXzGdZkRlqyhJII=`,
     enforced by `checks.crucible.phase2.qemuPatchSeries` and consumed by
     `checks.crucible.phase2.qemuPatchRegeneration`.
   - **Scope:** validates the active no-silent-drift decision for the current AOS
@@ -1906,7 +1906,7 @@ register.
     reproduction-artifact-shaped JSON carrying `qemu_build_id`; mutates the build
     material as a negative control; and verifies that the artifact re-gates rather
     than reproduces against the changed identity.
-  - **Fallback:** retired for the active 10.0.0 package. The historical Phase-0 S9
+  - **Fallback:** retired for the active 11.1.1 package. The historical Phase-0 S9
     fallback remains useful only as provenance for the older 9.2.4 spike.
 
 - **RISK-17 / T-RISK-10 — S10 aarch64 doorbell**
