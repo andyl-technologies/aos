@@ -307,7 +307,7 @@ fn replay_requires_the_exact_complete_protected_set() {
 }
 
 #[test]
-fn systemd_dump_parser_rejects_bad_count_names_rows_and_duplicates() {
+fn systemd_dump_parser_ignores_display_paths_and_rejects_malformed_rows() {
     let valid_row = (
         name(1).as_str().to_owned(),
         0o100444,
@@ -316,7 +316,7 @@ fn systemd_dump_parser_rejects_bad_count_names_rows_and_duplicates() {
         101,
         0,
         0,
-        "net:[101]".to_owned(),
+        "/run/netns/custody-one".to_owned(),
         0,
     );
     assert!(parse_systemd_snapshot(2, 1, vec![valid_row.clone()]).is_ok());
@@ -326,9 +326,23 @@ fn systemd_dump_parser_rejects_bad_count_names_rows_and_duplicates() {
     bad_name.0.push(':');
     assert!(parse_systemd_snapshot(2, 1, vec![bad_name]).is_err());
 
-    let mut bad_path = valid_row.clone();
-    bad_path.7 = "net:[102]".to_owned();
-    assert!(parse_systemd_snapshot(2, 1, vec![bad_path]).is_err());
+    for display_path in [
+        format!("/run/{}/custody-one", "long-segment/".repeat(32)),
+        "/run/netns/custody-one (deleted)".to_owned(),
+        "net:[101]".to_owned(),
+    ] {
+        let mut alternate_path = valid_row.clone();
+        alternate_path.7 = display_path;
+        assert!(parse_systemd_snapshot(2, 1, vec![alternate_path]).is_ok());
+    }
+
+    let mut writable_mode = valid_row.clone();
+    writable_mode.1 = 0o100644;
+    assert!(parse_systemd_snapshot(2, 1, vec![writable_mode]).is_err());
+
+    let mut writable_flags = valid_row.clone();
+    writable_flags.8 = 1;
+    assert!(parse_systemd_snapshot(2, 1, vec![writable_flags]).is_err());
 
     assert!(parse_systemd_snapshot(2, 2, vec![valid_row.clone(), valid_row]).is_err());
     assert!(
@@ -338,6 +352,28 @@ fn systemd_dump_parser_rejects_bad_count_names_rows_and_duplicates() {
             Vec::new(),
         )
         .is_err()
+    );
+}
+
+#[test]
+fn post_mutation_identity_substitution_poison_later_operations() {
+    let namespace = current_network_namespace();
+    let requested_name = name(1);
+    let substituted = (requested_name.clone(), identity(999));
+    let backend = FakeBackend::with_snapshots(vec![
+        snapshot(2, &[]),
+        snapshot(2, &[]),
+        snapshot(2, &[substituted]),
+    ]);
+    let core = StoreCore::new(backend, BTreeMap::new(), 2, identity(u64::MAX)).unwrap();
+
+    assert!(matches!(
+        core.store(&requested_name, &namespace),
+        Err(NetworkNamespaceStoreError::Ambiguous(_))
+    ));
+    assert_eq!(
+        core.retained_identity(&requested_name),
+        Err(NetworkNamespaceStoreError::Poisoned)
     );
 }
 

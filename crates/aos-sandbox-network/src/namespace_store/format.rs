@@ -11,7 +11,6 @@ use super::NetworkNamespaceStoreError;
 
 const NAME_PREFIX: &str = "aos-network-netns-v1-";
 const HANDLE_HEX_LENGTH: usize = 64;
-const SYSTEMD_DUMP_PATH_MAX: usize = 64;
 const LINUX_O_ACCMODE: u32 = 0b11;
 const LINUX_MINIMUM_MAX_ARG_STRLEN: usize = 128 * 1024;
 const LISTEN_FDNAMES_ENV_PREFIX_BYTES: usize = "LISTEN_FDNAMES=".len();
@@ -403,22 +402,23 @@ pub(super) fn parse_systemd_snapshot(
 
     let mut entries = BTreeMap::new();
     let mut identities = BTreeSet::new();
-    for (name, mode, major, minor, inode, rmajor, rminor, path, flags) in rows {
+    for (name, mode, major, minor, inode, rmajor, rminor, _display_path, flags) in rows {
         let name = NetworkNamespaceStoreName::parse(&name)
             .map_err(|_| invalid_snapshot("manager returned a noncanonical name"))?;
         let identity = NamespaceIdentity {
             device: rustix::fs::makedev(major, minor),
             inode,
         };
-        let expected_path = format!("net:[{inode}]");
+
+        // systemd obtains this diagnostic field through `fd_get_path()`. The
+        // same namespace can render as an nsfs name, a bind path, or a deleted
+        // bind path; authority comes from the typed descriptor and identity.
         if FileType::from_raw_mode(mode) != FileType::RegularFile
             || Mode::from_raw_mode(mode).intersects(Mode::WUSR | Mode::WGRP | Mode::WOTH)
             || identity.device == 0
             || identity.inode == 0
             || rmajor != 0
             || rminor != 0
-            || path.len() > SYSTEMD_DUMP_PATH_MAX
-            || path != expected_path
             || flags & LINUX_O_ACCMODE != 0
             || !identities.insert((identity.device, identity.inode))
             || entries.insert(name, identity).is_some()
