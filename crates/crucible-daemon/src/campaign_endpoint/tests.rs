@@ -36,12 +36,19 @@ fn managed_endpoint_is_single_owner_restart_safe_and_exactly_cleaned() {
         Err(CampaignLoopbackEndpointError::EndpointInUse)
     ));
     UnixStream::connect(config.path()).expect("connect managed endpoint");
+    let retained_lock_description = managed
+        .guard
+        ._endpoint_lock
+        .file()
+        .try_clone()
+        .expect("duplicate endpoint lock descriptor");
 
     drop(managed);
     assert!(!config.path().exists());
     let restarted = config.bind().expect("restart managed endpoint");
     assert!(config.path().exists());
     drop(restarted);
+    drop(retained_lock_description);
     assert!(!config.path().exists());
 }
 
@@ -57,6 +64,10 @@ fn managed_endpoint_recovers_only_a_same_owner_stale_socket() {
     drop(managed);
 
     fs::write(config.path(), b"not a socket").expect("foreign regular path");
+    assert!(matches!(
+        config.bind(),
+        Err(CampaignLoopbackEndpointError::InvalidStalePath)
+    ));
     assert!(matches!(
         config.bind(),
         Err(CampaignLoopbackEndpointError::InvalidStalePath)

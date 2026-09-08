@@ -17,9 +17,11 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use rustix::event::{PollFd, PollFlags, poll};
-use rustix::fs::{FlockOperation, Mode, OFlags, flock};
+use rustix::fs::{Mode, OFlags};
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
 use rustix::time::Timespec;
+
+use crate::owned_advisory_lock::OwnedAdvisoryLock;
 
 const CAMPAIGN_ENDPOINT_LOCK_FILE: &str = ".crucible-campaign-listener.lock";
 const EXECUTOR_ENDPOINT_LOCK_FILE: &str = ".crucible-executor-listener.lock";
@@ -163,7 +165,7 @@ impl CampaignLoopbackEndpointConfig {
         })?
         .into();
         validate_lock(self, &lock_path, &endpoint_lock)?;
-        flock(&endpoint_lock, FlockOperation::NonBlockingLockExclusive).map_err(|source| {
+        let endpoint_lock = OwnedAdvisoryLock::try_exclusive(endpoint_lock).map_err(|source| {
             if source == rustix::io::Errno::WOULDBLOCK {
                 CampaignLoopbackEndpointError::EndpointInUse
             } else {
@@ -409,7 +411,7 @@ pub(crate) struct LocalEndpointGuard {
     socket_identity: FileIdentity,
     parent_identity: FileIdentity,
     parent_directory: File,
-    _endpoint_lock: File,
+    _endpoint_lock: OwnedAdvisoryLock,
 }
 
 impl Drop for LocalEndpointGuard {

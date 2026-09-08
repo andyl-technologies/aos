@@ -34,12 +34,12 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rustix::fs::{FlockOperation, flock};
 use thiserror::Error;
 
 use crucible_campaign::{AttemptExecutionScope, ExecutionId};
 
 use crate::crucible_artifact::PreparedSemanticResultVersion;
+use crate::owned_advisory_lock::OwnedAdvisoryLock;
 use crate::{
     AttemptExecutionKey, MAX_PREPARED_SEMANTIC_RESULT_BYTES, PreparedSemanticAttemptResult,
     PreparedSemanticResultCodecError,
@@ -89,7 +89,7 @@ pub struct DirectoryPreparedResultJournal {
     execution: ExecutionId,
     maximum_payload_bytes: usize,
     result: PreparedSemanticAttemptResult,
-    namespace_lock: File,
+    namespace_lock: OwnedAdvisoryLock,
 }
 
 impl DirectoryPreparedResultJournal {
@@ -274,7 +274,7 @@ impl DirectoryPreparedResultJournal {
         key: AttemptExecutionKey,
         expected_execution: Option<ExecutionId>,
         maximum_payload_bytes: usize,
-        namespace_lock: File,
+        namespace_lock: OwnedAdvisoryLock,
     ) -> Result<Self, PreparedResultJournalError> {
         validate_journal_directory(&root)?;
         sync_directory(&root, "sync-journal-directory-on-open")?;
@@ -1013,7 +1013,7 @@ fn read_bounded_file(
 fn acquire_namespace_lock(
     namespace: &Path,
     key: AttemptExecutionKey,
-) -> Result<File, PreparedResultJournalError> {
+) -> Result<OwnedAdvisoryLock, PreparedResultJournalError> {
     let path = namespace_lock_path(namespace, key);
     let lock = OpenOptions::new()
         .read(true)
@@ -1025,10 +1025,12 @@ fn acquire_namespace_lock(
     lock_exclusive(lock, &path)
 }
 
-fn lock_exclusive(lock: File, path: &Path) -> Result<File, PreparedResultJournalError> {
-    flock(&lock, FlockOperation::NonBlockingLockExclusive)
-        .map_err(|source| io_error("lock-journal-namespace", path, io::Error::from(source)))?;
-    Ok(lock)
+fn lock_exclusive(
+    lock: File,
+    path: &Path,
+) -> Result<OwnedAdvisoryLock, PreparedResultJournalError> {
+    OwnedAdvisoryLock::try_exclusive(lock)
+        .map_err(|source| io_error("lock-journal-namespace", path, io::Error::from(source)))
 }
 
 fn validate_namespace(path: &Path) -> Result<(), PreparedResultJournalError> {
@@ -1158,17 +1160,38 @@ mod tests {
             })
         ));
         let root = journal.root().to_path_buf();
+        let retained_owner_description = journal
+            .namespace_lock
+            .file()
+            .try_clone()
+            .expect("duplicate successful owner lock descriptor");
         drop(journal);
 
+        let failed_open_lock = acquire_namespace_lock(namespace.path(), key)
+            .expect("acquire lock for failed authenticated open");
+        let retained_failed_open_description = failed_open_lock
+            .file()
+            .try_clone()
+            .expect("duplicate failed-open lock descriptor");
         assert!(matches!(
-            DirectoryPreparedResultJournal::open(
-                namespace.path(),
+            DirectoryPreparedResultJournal::open_locked(
+                root.clone(),
                 key,
-                ExecutionId::from_bytes([0x52; 16]).expect("other execution"),
+                Some(ExecutionId::from_bytes([0x52; 16]).expect("other execution")),
                 TEST_PAYLOAD_LIMIT,
+                failed_open_lock,
             ),
             Err(PreparedResultJournalError::InvalidState)
         ));
+        let reopened_after_failure = DirectoryPreparedResultJournal::open(
+            namespace.path(),
+            key,
+            execution,
+            TEST_PAYLOAD_LIMIT,
+        )
+        .expect("failed authenticated open releases retained lock description");
+        drop(reopened_after_failure);
+        drop(retained_failed_open_description);
         assert!(matches!(
             DirectoryPreparedResultJournal::open(
                 namespace.path(),
@@ -1236,6 +1259,7 @@ mod tests {
             lock_inode
         );
         recreated.remove().expect("remove recreated journal");
+        drop(retained_owner_description);
     }
 
     #[test]

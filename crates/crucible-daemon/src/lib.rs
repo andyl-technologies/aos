@@ -140,6 +140,7 @@ pub mod hot_checkpoint_retention;
 pub mod managed_hot_checkpoint_pool;
 #[cfg(target_os = "linux")]
 pub mod managed_qemu_hot_fork_source_world_pool;
+mod owned_advisory_lock;
 pub mod packaged_qemu_executor;
 #[cfg(target_os = "linux")]
 pub mod paused_checkpoint_promotion;
