@@ -157,6 +157,7 @@ pub struct ProductionVmLifecycleConfig {
     coverage: ProductionPluginSwitch,
     debug_gateway_executable: Option<PathBuf>,
     debug: Option<ProductionVmDebugConfig>,
+    logical_replay_boundary: Option<ProductionVmLogicalReplayBoundary>,
     branch: Option<ProductionVmBranchConfig>,
     signal_fault_replay: Option<SignalFaultCampaignReplayPlan>,
     branch_network_choices: Vec<crucible::OverrideDecision>,
@@ -211,6 +212,7 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
             .field("completion_timeout", &self.completion_timeout)
             .field("coverage", &self.coverage)
             .field("debug", &self.debug)
+            .field("logical_replay_boundary", &self.logical_replay_boundary)
             .field("branch", &self.branch)
             .field(
                 "signal_fault_replay_branch_count",
@@ -260,6 +262,12 @@ struct ProductionVmBranchConfig {
     frontier: VirtualTime,
     decisions: Vec<Decision>,
     seed: Option<Seed>,
+}
+
+#[derive(Clone, Debug)]
+struct ProductionVmLogicalReplayBoundary {
+    configuration: Configuration,
+    frontier: VirtualTime,
 }
 
 fn production_fault_search_overrides(
@@ -590,6 +598,7 @@ pub struct ProductionVmLifecycleLoop {
     terminal_verdict: Option<QuantumTerminalVerdict>,
     checkpoint_terminal_cause: Option<CheckpointTerminalCause>,
     initial_lifecycle_observations_pending: bool,
+    logical_replay_boundary: Option<ProductionVmLogicalReplayBoundary>,
     branch: Option<ProductionVmBranchConfig>,
     signal_fault_branches: VecDeque<crucible::SignalFaultCampaignBranch>,
     promote_signal_fault_campaign_choices: bool,

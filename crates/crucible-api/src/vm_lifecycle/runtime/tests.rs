@@ -863,6 +863,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         terminal_verdict: None,
         checkpoint_terminal_cause: None,
         initial_lifecycle_observations_pending: true,
+        logical_replay_boundary: None,
         branch: None,
         signal_fault_branches: VecDeque::new(),
         promote_signal_fault_campaign_choices: false,
@@ -922,6 +923,184 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         .reserve_lifecycle_state_encoding(source.plan().fault_signals().resource_limits(), 0, 0)
         .unwrap_or_else(|error| panic!("test lifecycle state should reserve: {error}"));
     lifecycle
+}
+
+#[test]
+fn logical_replay_boundary_preserves_semantic_state_and_disarms_the_attempt_cap() {
+    let source = nonterminal_signal_replay_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    lifecycle.initial_lifecycle_observations_pending = false;
+    let configuration = lifecycle.inner.loop_impl().configuration().clone();
+    let frontier = lifecycle.inner.loop_impl().frontier();
+    lifecycle.logical_replay_boundary = Some(ProductionVmLogicalReplayBoundary {
+        configuration: configuration.clone(),
+        frontier,
+    });
+    lifecycle.config.logical_replay_boundary = lifecycle.logical_replay_boundary.clone();
+    lifecycle
+        .inner
+        .loop_impl_mut()
+        .set_attempt_stop_frontier(Some(frontier))
+        .unwrap_or_else(|error| panic!("logical replay frontier should install: {error}"));
+    let quanta = lifecycle.inner.loop_impl().quanta();
+    let event_log_offset = lifecycle.inner.loop_impl().event_log_offset();
+
+    let outcome = lifecycle
+        .drive_quantum(QuantumRequest {
+            configuration: configuration.clone(),
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("logical replay boundary should resolve: {error}"));
+
+    assert_eq!(outcome.configuration, configuration);
+    assert_eq!(outcome.frontier, frontier);
+    assert!(outcome.decisions.is_empty());
+    assert!(outcome.event_log_entries.is_empty());
+    assert!(outcome.event_log_segment_bytes.is_empty());
+    assert!(outcome.event_log_segment_text.is_empty());
+    assert_eq!(outcome.event_log_segment_hash, None);
+    assert_eq!(outcome.event_log_offset, event_log_offset);
+    assert_eq!(lifecycle.inner.loop_impl().quanta(), quanta);
+    assert!(lifecycle.logical_replay_boundary.is_none());
+    assert!(lifecycle.config.logical_replay_boundary.is_none());
+}
+
+#[test]
+fn checkpoint_readiness_disarms_a_reached_logical_replay_boundary() {
+    let source = nonterminal_signal_replay_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    let configuration = lifecycle.inner.loop_impl().configuration().clone();
+    let frontier = lifecycle.inner.loop_impl().frontier();
+    lifecycle.logical_replay_boundary = Some(ProductionVmLogicalReplayBoundary {
+        configuration,
+        frontier,
+    });
+    lifecycle.config.logical_replay_boundary = lifecycle.logical_replay_boundary.clone();
+    lifecycle
+        .inner
+        .loop_impl_mut()
+        .set_attempt_stop_frontier(Some(frontier))
+        .unwrap_or_else(|error| panic!("logical replay frontier should install: {error}"));
+    let quanta = lifecycle.inner.loop_impl().quanta();
+    let event_log_offset = lifecycle.inner.loop_impl().event_log_offset();
+
+    lifecycle
+        .exact_checkpoint_ready()
+        .unwrap_or_else(|error| panic!("reached replay boundary should settle: {error}"));
+
+    assert!(lifecycle.logical_replay_boundary.is_none());
+    assert!(lifecycle.config.logical_replay_boundary.is_none());
+    assert_eq!(lifecycle.inner.loop_impl().quanta(), quanta);
+    assert_eq!(
+        lifecycle.inner.loop_impl().event_log_offset(),
+        event_log_offset
+    );
+}
+
+#[test]
+fn logical_replay_boundary_allows_a_target_schedule_prefix_at_the_same_frontier() {
+    let source = nonterminal_signal_replay_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    let current = lifecycle.inner.loop_impl().configuration().clone();
+    let target = Configuration {
+        def: current.def.clone(),
+        schedule: Schedule::empty().appended(Decision::DeliveryOrder(
+            crucible::DeliveryOrderDecision {
+                at: lifecycle.inner.loop_impl().frontier(),
+                order: Vec::new(),
+            },
+        )),
+    };
+    lifecycle.logical_replay_boundary = Some(ProductionVmLogicalReplayBoundary {
+        configuration: target,
+        frontier: lifecycle.inner.loop_impl().frontier(),
+    });
+    lifecycle.config.logical_replay_boundary = lifecycle.logical_replay_boundary.clone();
+
+    assert_eq!(lifecycle.exact_checkpoint_ready(), Ok(false));
+    assert!(lifecycle.logical_replay_boundary.is_some());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn logical_replay_boundary_disarms_on_the_reaching_quantum_and_allows_continuation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source_node = crucible_qemu::scripted_hot_fork_source_with_script_for_test(
+        crucible_qemu::QemuTestHotForkOutcome::Forked,
+        Vec::new(),
+        None,
+        VecDeque::new(),
+        VecDeque::from([
+            crucible_qemu::QemuTestQuantumBoundary::Reached,
+            crucible_qemu::QemuTestQuantumBoundary::Reached,
+        ]),
+    )?;
+    let (_node, _generation, source_world) = prepared_hot_fork_source_world_for_test(source_node)?;
+    let mut lifecycle = source_world.recover()?;
+    lifecycle.initial_lifecycle_observations_pending = false;
+    let configuration = lifecycle.inner.loop_impl().configuration().clone();
+    let target_frontier = VirtualTime { ticks: 128 };
+    lifecycle.logical_replay_boundary = Some(ProductionVmLogicalReplayBoundary {
+        configuration: configuration.clone(),
+        frontier: target_frontier,
+    });
+    lifecycle.config.logical_replay_boundary = lifecycle.logical_replay_boundary.clone();
+    lifecycle
+        .inner
+        .loop_impl_mut()
+        .set_attempt_stop_frontier(Some(target_frontier))?;
+    let quanta = lifecycle.inner.loop_impl().quanta();
+
+    let reached = lifecycle.drive_quantum(QuantumRequest {
+        configuration,
+        control: Vec::new(),
+    })?;
+
+    assert_eq!(reached.frontier, target_frontier);
+    assert_eq!(lifecycle.inner.loop_impl().quanta(), quanta + 1);
+    assert!(lifecycle.logical_replay_boundary.is_none());
+    assert!(lifecycle.config.logical_replay_boundary.is_none());
+
+    let continued = lifecycle.drive_quantum(QuantumRequest {
+        configuration: reached.configuration,
+        control: Vec::new(),
+    })?;
+
+    assert!(continued.frontier > target_frontier);
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn empty_branch_override_retains_its_scheduler_event_and_quantum() {
+    let source = nonterminal_signal_replay_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    lifecycle.initial_lifecycle_observations_pending = false;
+    let configuration = lifecycle.inner.loop_impl().configuration().clone();
+    let frontier = lifecycle.inner.loop_impl().frontier();
+    lifecycle.branch = Some(ProductionVmBranchConfig {
+        base: configuration.clone(),
+        frontier,
+        decisions: Vec::new(),
+        seed: None,
+    });
+    lifecycle
+        .inner
+        .loop_impl_mut()
+        .set_branch_frontier_cap(frontier)
+        .unwrap_or_else(|error| panic!("branch frontier should install: {error}"));
+    let quanta = lifecycle.inner.loop_impl().quanta();
+
+    let outcome = lifecycle
+        .drive_quantum(QuantumRequest {
+            configuration,
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("empty branch override should apply: {error}"));
+
+    assert!(!outcome.event_log_entries.is_empty());
+    assert_eq!(lifecycle.inner.loop_impl().quanta(), quanta + 1);
+    assert!(lifecycle.branch.is_none());
 }
 
 pub(in crate::vm_lifecycle) fn nonterminal_signal_replay_scenario() -> ScenarioDefForm {
