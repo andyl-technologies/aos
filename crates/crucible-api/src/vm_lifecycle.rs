@@ -58,6 +58,11 @@ mod assets;
 use assets::*;
 mod checkpoint_store;
 use checkpoint_store::load_exact_checkpoint_set;
+#[cfg(feature = "test-support")]
+pub use checkpoint_store::{
+    AuthenticatedProductionCheckpointCodecFixture,
+    build_authenticated_production_checkpoint_codec_fixture,
+};
 pub use checkpoint_store::{
     PreparedProductionReplayOraclePromotion, ProductionExactCheckpointClosure,
     ProductionExactCheckpointObject, ProductionExactCheckpointReplayArtifact,

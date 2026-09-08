@@ -24,6 +24,8 @@ use crucible_qemu::{QemuReplayOracleValidation, QemuVmSnapshot};
 
 use super::*;
 
+mod resume;
+
 struct ReturningCheckpoint(ExactCheckpointId);
 
 impl CampaignArchiveCheckpointResolver for ReturningCheckpoint {
