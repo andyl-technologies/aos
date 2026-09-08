@@ -1199,13 +1199,14 @@ in rec {
         };
         dependencies = [phase3.gates.adversarialDeterminism];
       };
-      e2eDeterminism = greenBeforeAdvance {
+      e2eDeterminism = redBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.e2eDeterminism";
         # lint needle: e2eDeterminism = import ./phase4-e2e-determinism.nix
         gate = import ./phase4-e2e-determinism.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase4.gates.e2eDeterminism";
-          taskIds = ["T-DET-26" "T-ASRT-16"];
+          taskIds = ["T-ASRT-16"];
+          openTaskIds = ["T-DET-26"];
           dependencies = [
             replayOracle.rawGate
             phase1.simDouble
@@ -1225,6 +1226,11 @@ in rec {
           phase4.guestHostChannelGateWiring
           phase4.guestHostAppRandomDoorbell
         ];
+        phase = "phase4";
+        reason = "scheduler and assertion components do not execute the native acceptance scenario";
+        taskIds = ["T-DET-26"];
+        gateName = "gate:e2e-determinism";
+        owner = "crucible-harness";
       };
     };
   };
@@ -2858,17 +2864,22 @@ in rec {
         };
         dependencies = [phase6.gates.replayOracle phase6.basicBlockCoverage phase7.qemuHostParallel phase7.fingerprintDigestOffload phase7.deviceHostWorkOverlap phase7.translationPrefetchNeutrality phase7.segmentParallelReplay];
       };
-      e2eDeterminism = greenBeforeAdvance {
+      e2eDeterminism = redBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
         # lint needle: e2eDeterminism = import ./phase7-e2e-determinism.nix
         gate = import ./phase7-e2e-determinism.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
-          taskIds = ["T-HARN-23"];
-          openTaskIds = [];
+          taskIds = [];
+          openTaskIds = ["T-HARN-23"];
           dependencies = [phase1.gates.licenseBoundary.rawGate perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
         };
         dependencies = [phase1.gates.licenseBoundary perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
+        phase = "phase7";
+        reason = "native artifact replay on a different machine profile is not implemented";
+        taskIds = ["T-HARN-23"];
+        gateName = "gate:e2e-determinism";
+        owner = "crucible-harness";
       };
       fleetEquivalence = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.fleetEquivalence";

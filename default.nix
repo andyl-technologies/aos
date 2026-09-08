@@ -422,37 +422,37 @@
   crucibleFleetRunner = import ./tests/crucible/_fleet-runner.nix {inherit pkgs lib;};
 
   crucibleFleetChecks = {
-    # gate:e2e-determinism as a real AOS VM/fleet check ([PKG-29], [PKG-30]).
-    # It builds the entire Crucible closure hermetically and EXECUTES the built
-    # `crucible` CLI end to end over the built-in adversarial multi-node,
+    # Native repeated-run evidence for gate:e2e-determinism ([PKG-29], [PKG-30]).
+    # It builds the entire Crucible closure hermetically and executes the built
+    # `crucible` CLI over the built-in multi-node,
     # fault-injected example corpus (happy-path, partition-recovery,
-    # crash-restart, and the fault-campaign family) under the hostile
-    # host-condition matrix (`--adversarial`), bisecting the first divergence
-    # (`--bisect`) and asserting bit-identical reductions — the representative
-    # multi-VM, fault-injected + reproduce scenario of §26.8. The phase7 e2e
-    # gate (in-process determinism proof of the same scenario) is consumed as a
-    # precondition so this fleet check advances only behind a green harness.
+    # crash-restart, and the fault-campaign family). `--adversarial` perturbs
+    # observer polling and scheduling around each run; it does not emulate a
+    # different physical machine. The check compares live event and execution
+    # fingerprint streams. Artifact replay on a different machine profile is
+    # still required before the canonical gate can turn green.
     #
     # Each independent reduction launches the closure-owned patched QEMU and
     # production plugin under TCG before the session-level comparison.
     crucible-e2e-determinism = let
-      e2eGate = crucibleChecks.phase7.gates.e2eDeterminism.rawGate;
+      e2eComponent = crucibleChecks.phase7.gates.e2eDeterminism.rawGate;
     in
       crucibleFleetRunner.mkCrucibleFleetCheck {
         name = "crucible-e2e-determinism";
-        gateResults = [e2eGate];
+        gateResults = [e2eComponent];
         runPhaseScript = ''
-          # The phase7 e2e gate must be green before the fleet scenario runs.
-          grep -q '^PASS$' "${e2eGate}/result"
-          grep -q '^gate=gate:e2e-determinism$' "${e2eGate}/result"
-          grep -q '^fleet_check_surface=checks.fleet.crucible-e2e-determinism$' "${e2eGate}/result"
+          # The modeled artifact component must be green before the native
+          # repeated-run slice executes.
+          grep -q '^PASS$' "${e2eComponent}/result"
+          grep -q '^component=gate:e2e-determinism/mock-artifact-validation$' "${e2eComponent}/result"
+          grep -q '^canonical_gate_status=unmet$' "${e2eComponent}/result"
 
           crucible_bin="$CRUCIBLE/bin/crucible"
 
           # Run the representative multi-VM, fault-injected scenario end to end
-          # over each built-in adversarial example, under the hostile
-          # host-condition matrix, bisecting the first divergence. The JSONL
-          # stream emits one `independent_reduction` event per (run x hostile
+          # over each built-in example, under observer scheduling
+          # perturbations, bisecting the first divergence. The JSONL stream
+          # emits one `independent_reduction` event per (run x observer
           # profile) and a `final_outcome` with `status=passed`; a non-passing
           # reduction exits the CLI non-zero and fails the check.
           for scenario in \
@@ -476,13 +476,22 @@
             # The scenario passed end to end under the adversarial matrix.
             grep -q '"kind":"final_outcome".*subcommand=verify status=passed' "$verify_out"
 
-            # It actually ran under the hostile host-condition matrix (more than
-            # one adversarial profile) and every independent reduction is
-            # bit-identical — the same canonical_log across all profiles. A
-            # single distinct canonical_log among the reductions proves the
-            # scenario reproduced bit-identically across adversarial hosts.
+            # Each reduction must contain execution fingerprints observed from
+            # the live VM lifecycle, and both event and fingerprint streams
+            # must be bit-identical across the observer perturbations.
             reductions="$(grep -c '"kind":"independent_reduction"' "$verify_out")"
-            test "$reductions" -ge 2
+            test "$reductions" -ge 4
+            distinct_profiles="$(
+              grep '"kind":"independent_reduction"' "$verify_out" \
+                | grep -o 'profile=[^ ]*' \
+                | sort -u \
+                | wc -l
+            )"
+            test "$distinct_profiles" -ge 2
+            test "$reductions" -eq "$((distinct_profiles * 2))"
+            positive_sample_reductions="$(grep '"kind":"independent_reduction"' "$verify_out" \
+              | grep -c 'samples=[1-9][0-9]*')"
+            test "$positive_sample_reductions" -eq "$reductions"
             distinct_logs="$(
               grep '"kind":"independent_reduction"' "$verify_out" \
                 | grep -o 'canonical_log=[^ ]*' \
@@ -490,21 +499,36 @@
                 | wc -l
             )"
             test "$distinct_logs" -eq 1
+            distinct_fingerprints="$(
+              grep '"kind":"independent_reduction"' "$verify_out" \
+                | grep -o 'fingerprint=[^ ]*' \
+                | sort -u \
+                | wc -l
+            )"
+            test "$distinct_fingerprints" -eq 1
           done
         '';
         resultLines = [
-          "gate=gate:e2e-determinism"
-          "source_check=checks.crucible.phase7.gates.e2eDeterminism"
-          "e2e_gate_result=${e2eGate}/result"
+          "component=gate:e2e-determinism/native-repeated-run"
+          "canonical_gate=gate:e2e-determinism"
+          "canonical_gate_status=unmet"
+          "source_component=checks.crucible.phase7.gates.e2eDeterminism.rawGate"
+          "source_component_result=${e2eComponent}/result"
           "fleet_surface=true"
-          "scenario=adversarial-multi-node-fault-injected-corpus"
+          "scenario=multi-node-fault-injected-corpus"
           "scenario_corpus=happy-path.scn,partition-recovery.scn,crash-restart.scn,fault-campaign.fam"
-          "adversarial_matrix=hostile-host-condition-profiles"
-          "reproduce=verify-reduction-bisection"
-          "cli_backend=qemu-tcg-live-probe-plus-deterministic-session"
+          "observer_perturbations=poll-yield-order-timeout-profiles"
+          "observer_profile_count=at-least-two"
+          "repetitions_per_observer_profile=2"
+          "cli_backend=qemu-tcg-production-vm-lifecycle"
           "live_qemu_per_reduction=true"
+          "live_event_streams=bit-identical"
+          "live_execution_fingerprint_streams=bit-identical-nonempty"
+          "cross_machine_reproduction=false"
+          "artifact_replay=false"
+          "missing_evidence=artifact-replay-on-different-machine-profile"
           "lib_testing_runner=tests/crucible/_fleet-runner.nix"
-          "tcg_only_vm_runner=crucible-cli-verify-adversarial-bisect"
+          "tcg_only_vm_runner=crucible-cli-verify-observer-perturbation-bisect"
         ];
       };
     # The real-process performance discharge for RFC-0010 §25 ([PERF-3],
@@ -752,7 +776,7 @@
     crucible-distributed-continuous-exploration = let
       fleetStore = pkgs.crucible-fleet-store;
       explorer = pkgs.crucible;
-      e2eGate = crucibleChecks.phase7.gates.e2eDeterminism.rawGate;
+      e2eNativeSlice = crucibleFleetChecks."crucible-e2e-determinism";
       fleetStoreGate = crucibleChecks.phase7.crucibleFleetStore;
       sharedDagStoreGate = crucibleChecks.phase7.crucibleSharedDagStore;
       frontierLeaseGate = crucibleChecks.phase7.crucibleFrontierLeases;
@@ -775,7 +799,7 @@
           pkgs.grep
           fleetStore
           explorer
-          e2eGate
+          e2eNativeSlice
           fleetStoreGate
           sharedDagStoreGate
           frontierLeaseGate
@@ -795,9 +819,10 @@
             script = ''
               set -eu
 
-              result="${e2eGate}/result"
+              result="${e2eNativeSlice}/result"
               grep -q '^PASS$' "$result"
-              grep -q '^gate=gate:e2e-determinism$' "$result"
+              grep -q '^component=gate:e2e-determinism/native-repeated-run$' "$result"
+              grep -q '^canonical_gate_status=unmet$' "$result"
 
               fleet_store_result="${fleetStoreGate}/result"
               grep -q '^PASS$' "$fleet_store_result"
@@ -973,7 +998,7 @@
               gate=gate:fleet-equivalence
               source_check=checks.crucible.phase7.crucibleSharedDagStore
               package_check=checks.crucible.phase7.crucibleFleetStore
-              e2e_gate_result=${e2eGate}/result
+              e2e_native_slice_result=${e2eNativeSlice}/result
               fleet_store_gate_result=${fleetStoreGate}/result
               shared_dag_store_gate_result=${sharedDagStoreGate}/result
               frontier_lease_gate_result=${frontierLeaseGate}/result

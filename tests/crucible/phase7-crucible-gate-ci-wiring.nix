@@ -407,12 +407,16 @@
         needle = "crucible-e2e-determinism = let";
       }
       {
-        label = "fleet wrapper consumes Crucible e2e gate";
-        needle = "e2eGate = crucibleChecks.phase7.gates.e2eDeterminism.rawGate;";
+        label = "fleet wrapper consumes modeled e2e component";
+        needle = "e2eComponent = crucibleChecks.phase7.gates.e2eDeterminism.rawGate;";
       }
       {
-        label = "fleet wrapper verifies e2e fleet metadata";
-        needle = "grep -q '^fleet_check_surface=checks.fleet.crucible-e2e-determinism$'";
+        label = "fleet result identifies exact modeled e2e component";
+        needle = "source_component=checks.crucible.phase7.gates.e2eDeterminism.rawGate";
+      }
+      {
+        label = "fleet wrapper requires positive live fingerprint samples";
+        needle = ''grep -c 'samples=[1-9][0-9]*')'';
       }
       {
         label = "fleet checks exposed with Crucible e2e surface";
@@ -429,6 +433,10 @@
       {
         label = "distributed fleet wrapper consumes explorer package";
         needle = "explorer = pkgs.crucible;";
+      }
+      {
+        label = "distributed fleet wrapper consumes native e2e slice";
+        needle = ''e2eNativeSlice = crucibleFleetChecks."crucible-e2e-determinism";'';
       }
       {
         label = "distributed fleet wrapper consumes source gate";
@@ -563,6 +571,10 @@
         needle = "gate = import ./phase7-e2e-determinism.nix";
       }
       {
+        label = "phase7 e2e canonical wrapper remains red";
+        needle = "e2eDeterminism = redBeforeAdvance";
+      }
+      {
         label = "phase7 fleet equivalence gate import";
         needle = "gate = import ./phase7-crucible-fleet-equivalence.nix";
       }
@@ -573,16 +585,16 @@
     ]
     ++ failuresFor "tests/crucible/phase7-e2e-determinism.nix" phase7E2e [
       {
-        label = "phase7 acceptance gate records production fleet evidence";
-        needle = "real_host_reproduction=checks.fleet.crucible-e2e-determinism";
+        label = "phase7 component records native fleet slice";
+        needle = "native_reduction_slice=checks.fleet.crucible-e2e-determinism";
       }
       {
-        label = "phase7 acceptance gate records fleet check class";
-        needle = "ci_check_class=fleet-check-surface";
+        label = "phase7 component does not claim native execution";
+        needle = "native_qemu_execution=false";
       }
       {
-        label = "phase7 acceptance gate records fleet check surface";
-        needle = "fleet_check_surface=checks.fleet.crucible-e2e-determinism";
+        label = "phase7 component leaves canonical gate unmet";
+        needle = "canonical_gate_status=unmet";
       }
       {
         label = "phase7 acceptance gate records CI wiring guard";
@@ -700,7 +712,8 @@ in
             eval_class_gates=${builtins.concatStringsSep "," (map (gate: gate.gate) evalClassGates)}
             package_class_gates=${builtins.concatStringsSep "," (map (gate: gate.gate) packageClassGates)}
             e2e_gate=gate:e2e-determinism
-            e2e_gate_class=fleet-check-surface
+            e2e_gate_status=red-placeholder
+            e2e_native_slice_class=fleet-check-surface
             ordering_source=checked-gate-targets-and-explicit-default.nix-dependencies
             ordering_edges=${builtins.concatStringsSep "," (map (edge: edge.edge) expectedOrderingEdges)}
             ci_ordering=green-before-advance
