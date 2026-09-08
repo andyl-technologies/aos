@@ -141,6 +141,13 @@
     probes.fixture = packageProbe;
     trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
   };
+  partialPackageExecutor = testing.mkQualificationPackageScenario {
+    name = "qualification-package-scenario-partial-fixture";
+    identity = "fixture-executor";
+    packageNames = ["fixture" "missing"];
+    probes.fixture = packageProbe;
+    trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
+  };
   rejectsPackageExecutor = packageNames: probes:
     !(builtins.tryEval (builtins.deepSeq (testing.mkQualificationPackageScenario {
         name = "qualification-package-scenario-invalid";
@@ -223,8 +230,21 @@ in
   assert packageExecutor.passthru.qualification.platform == "x86_64-linux";
   assert packageExecutor.passthru.qualification.packageNames == ["fixture"];
   assert packageExecutor.passthru.qualification.probes == ["fixture"];
+  assert packageExecutor.passthru.qualification.missingProbes == [];
+  assert packageExecutor.passthru.qualification.probeCoverage
+  == {
+    complete = true;
+    implemented = 1;
+    total = 1;
+  };
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+/probes.json$" packageExecutor.passthru.qualification.probeRegistry != null;
-  assert rejectsPackageExecutor ["fixture" "missing"] {fixture = packageProbe;};
+  assert partialPackageExecutor.passthru.qualification.missingProbes == ["missing"];
+  assert partialPackageExecutor.passthru.qualification.probeCoverage
+  == {
+    complete = false;
+    implemented = 1;
+    total = 2;
+  };
   assert rejectsPackageExecutor ["fixture"] {
     extra = packageProbe;
     fixture = packageProbe;
@@ -242,6 +262,7 @@ in
     "rollout-observation"
     "staging-delivery"
   ];
+  assert builtins.match ".*/aos-qualification-x86_64-linux-package-function" releaseExecutor.passthru.qualification.scenarios.package-function != null;
   assert builtins.match ".*/aos-qualification-x86_64-linux-container-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-container-x86_64-linux-functional != null;
   assert builtins.match ".*/aos-qualification-x86_64-linux-image-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-disk-x86_64-linux-functional != null;
   assert builtins.length contract.claims == 8;

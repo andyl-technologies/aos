@@ -11,6 +11,12 @@
   stagingHubUrl ? "https://aos.staging.andyl.org",
 }: let
   sortedPackageNames = builtins.sort builtins.lessThan packageNames;
+  probeNames = builtins.attrNames probes;
+  missingProbeNames =
+    builtins.filter (
+      packageName: !(builtins.hasAttr packageName probes)
+    )
+    sortedPackageNames;
   probeRegistry = pkgs.writeTextFile {
     name = "${name}-probes";
     destination = "/probes.json";
@@ -87,7 +93,10 @@
 in
   assert identity != "";
   assert packageNames != [];
-  assert sortedPackageNames == builtins.attrNames probes;
+  assert builtins.length sortedPackageNames == builtins.length (lib.unique sortedPackageNames);
+  # Partial registries let reviewed probes land incrementally. A request for
+  # any missing package still fails before the scenario can write a report.
+  assert builtins.all (packageName: builtins.elem packageName sortedPackageNames) probeNames;
   assert trustKeys != [];
   assert builtins.all (key: builtins.match "[A-Za-z0-9_-]+:Ed25519:[A-Za-z0-9+/]+=*" key != null) trustKeys;
   assert builtins.match "https://[^/]+/?" stagingHubUrl != null;
@@ -99,7 +108,13 @@ in
           qualification = {
             inherit identity packageNames stagingHubUrl trustKeys;
             platform = pkgs.stdenv.hostPlatform.system;
-            probes = builtins.attrNames probes;
+            probes = probeNames;
+            missingProbes = missingProbeNames;
+            probeCoverage = {
+              complete = missingProbeNames == [];
+              implemented = builtins.length probeNames;
+              total = builtins.length sortedPackageNames;
+            };
             probeRegistry = "${probeRegistry}/probes.json";
           };
         };

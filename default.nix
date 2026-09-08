@@ -291,6 +291,9 @@
 
   # Testing harness (headless mode for package integration tests)
   testing = import ./lib/testing {inherit pkgs lib;};
+  qualificationPackageProbes = import ./qualification/package-probes {
+    inherit testing;
+  };
   releaseQualification = import ./qualification {
     inherit lib;
     packageNames = pkgs.allPackageNames;
@@ -310,6 +313,13 @@
     name = "aos-qualification-production-recovery";
     identity = qualificationExecutorIdentity;
     reportPath = "/run/aos-release/qualification-reports/production-recovery.json";
+  };
+  qualificationPackageScenario = testing.mkQualificationPackageScenario {
+    name = "aos-qualification-${hostPlatform.system}-package-function";
+    identity = qualificationExecutorIdentity;
+    packageNames = pkgs.allPackageNames;
+    probes = qualificationPackageProbes;
+    trustKeys = discoverSystems."aos-testing".config.aos.release.trustKeys;
   };
   containerLifecycleScenario =
     if hostPlatform.isLinux
@@ -352,11 +362,17 @@
       name = scenarioId;
       value = "${qualificationReportScenario}/bin/aos-qualification-${hostPlatform.system}-report";
     })
-    qualificationScenarioIds);
-  qualificationAutomatedScenarios = lib.optionalAttrs hostPlatform.isLinux {
-    "claim-container-${hostPlatform.system}-functional" = "${containerLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-container-lifecycle";
-    "claim-disk-${hostPlatform.system}-functional" = "${imageLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-image-lifecycle";
-  };
+    (builtins.filter (scenarioId: scenarioId != "package-function") qualificationScenarioIds));
+  qualificationAutomatedScenarios =
+    {
+      # Package cases must execute the staged-byte lifecycle and reviewed
+      # probe. Missing catalog entries fail inside this native scenario.
+      package-function = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";
+    }
+    // lib.optionalAttrs hostPlatform.isLinux {
+      "claim-container-${hostPlatform.system}-functional" = "${containerLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-container-lifecycle";
+      "claim-disk-${hostPlatform.system}-functional" = "${imageLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-image-lifecycle";
+    };
   releaseQualificationExecutor = testing.mkQualificationExecutor {
     name = "aos-qualification-${hostPlatform.system}";
     platform = hostPlatform.system;
@@ -1194,6 +1210,12 @@
     };
 in {
   inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions releaseQualificationExecutor;
+  packageQualificationCoverage =
+    qualificationPackageScenario.passthru.qualification.probeCoverage
+    // {
+      implementedPackages = qualificationPackageScenario.passthru.qualification.probes;
+      missingPackages = qualificationPackageScenario.passthru.qualification.missingProbes;
+    };
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
   # this value with strict JSON evaluation before resolving any derivation.
