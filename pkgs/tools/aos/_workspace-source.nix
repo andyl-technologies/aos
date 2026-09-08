@@ -39,6 +39,9 @@ in
         || lib.hasPrefix "${repoRootString}/tests/vm" pathString
         || pathString == "${repoRootString}/tests/native"
         || pathString == "${repoRootString}/tests/native/hub-settings.py"
+        || pathString == "${repoRootString}/tests/sandbox"
+        || pathString == "${repoRootString}/tests/sandbox/network-kernel-plan-v1.cases"
+        || pathString == "${repoRootString}/tests/sandbox/network-kernel-plan-v1.hex"
         || pathString == "${repoRootString}/default.nix"
         || pathString == "${repoRootString}/flake.nix"
         || pathString == "${repoRootString}/justfile"
