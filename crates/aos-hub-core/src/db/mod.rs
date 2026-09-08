@@ -19505,17 +19505,36 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub async fn instance_settings(&self) -> Result<InstanceSettings> {
-        let get = |k: &'static str| self.instance_config_get(k);
+        // One snapshot avoids mixed settings and one remote SQL call per field.
+        let rows = self
+            .backend
+            .query(
+                "SELECT config_key, value FROM instance_config
+                 WHERE config_key IN (
+                     'site_title', 'tagline', 'announcement', 'tos_url', 'privacy_url', 'support_url',
+                     'signup_policy', 'signup_domains', 'password_login', 'caches_public',
+                     'session_lifetime_secs', 'default_crawl_policy', 'max_upload_bytes'
+                 )",
+                &[],
+            )
+            .await?;
+        let mut values = std::collections::HashMap::<String, String>::new();
+        for row in rows {
+            values.insert(row.get(0)?, row.get(1)?);
+        }
+        let get = |key: &str| values.get(key).cloned();
+
         Ok(InstanceSettings {
-            site_title: get("site_title").await?,
-            tagline: get("tagline").await?,
-            announcement: get("announcement").await?,
-            tos_url: get("tos_url").await?,
-            privacy_url: get("privacy_url").await?,
-            support_url: get("support_url").await?,
-            signup_policy: self.signup_policy().await?,
+            site_title: get("site_title"),
+            tagline: get("tagline"),
+            announcement: get("announcement"),
+            tos_url: get("tos_url"),
+            privacy_url: get("privacy_url"),
+            support_url: get("support_url"),
+            signup_policy: SignupPolicy::parse(
+                get("signup_policy").as_deref().unwrap_or("invite_only"),
+            ),
             signup_domains: get("signup_domains")
-                .await?
                 .map(|v| {
                     v.split(|c: char| c == ',' || c.is_whitespace())
                         .filter(|s| !s.is_empty())
@@ -19524,20 +19543,15 @@ impl Database {
                 })
                 .unwrap_or_default(),
             password_login: get("password_login")
-                .await?
                 .map(|v| v != "off" && v != "false" && v != "0")
                 .unwrap_or(true),
             caches_public: get("caches_public")
-                .await?
                 .map(|v| v == "on" || v == "true" || v == "1")
                 .unwrap_or(false),
-            session_lifetime_secs: get("session_lifetime_secs")
-                .await?
-                .and_then(|v| v.parse().ok()),
+            session_lifetime_secs: get("session_lifetime_secs").and_then(|v| v.parse().ok()),
             default_crawl_policy: get("default_crawl_policy")
-                .await?
                 .unwrap_or_else(|| "allow_all".to_string()),
-            max_upload_bytes: get("max_upload_bytes").await?.and_then(|v| v.parse().ok()),
+            max_upload_bytes: get("max_upload_bytes").and_then(|v| v.parse().ok()),
         })
     }
 

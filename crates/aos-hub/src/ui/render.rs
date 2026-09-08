@@ -103,7 +103,7 @@ mod tests {
             },
         );
         // No brand configured in tests -> the neutral default title.
-        assert!(html.contains("demo — Registry Hub"));
+        assert!(html.contains("demo — AOS Hub"));
         assert!(html.contains("surface abababababab"));
         assert!(html.contains("<p>body</p>"));
         assert!(html.contains("registries</a>"));

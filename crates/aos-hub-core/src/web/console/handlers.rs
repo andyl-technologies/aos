@@ -318,6 +318,7 @@ pub(crate) async fn management_app(deps: ConsoleDeps, headers: HeaderMap) -> Res
     };
     let csrf = html_attribute(&session.csrf());
     let brand = html_attribute(&crate::web::console_render::effective_brand());
+    let title = if brand.is_empty() { "AOS Hub" } else { &brand };
     let chrome = crate::web::console_render::site_chrome_snapshot();
     let tagline = html_attribute(&chrome.tagline);
     let announcement = html_attribute(&chrome.announcement);
@@ -336,6 +337,7 @@ pub(crate) async fn management_app(deps: ConsoleDeps, headers: HeaderMap) -> Res
         "<!doctype html>\n<html lang=\"en\">\n<head>\n\
          <meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+         <title>{title}</title>\n\
          <meta name=\"aos-session-csrf\" content=\"{csrf}\">\n\
          <meta name=\"aos-site-brand\" content=\"{brand}\">\n\
          <meta name=\"aos-site-tagline\" content=\"{tagline}\">\n\
@@ -345,7 +347,6 @@ pub(crate) async fn management_app(deps: ConsoleDeps, headers: HeaderMap) -> Res
          <meta name=\"aos-site-support-url\" content=\"{support_url}\">\n\
          <meta name=\"aos-app-version\" content=\"{app_version}\">\n\
          <meta name=\"aos-container-gc-enabled\" content=\"{container_gc_enabled}\">\n\
-         <title>AOS Hub</title>\n\
          <script src=\"/_assets/theme.js?v={asset_version}\"></script>\n\
          <link rel=\"stylesheet\" href=\"/_assets/style.css?v={asset_version}\">\n\
          <link rel=\"stylesheet\" href=\"/_assets/{css}\">\n\
@@ -1737,11 +1738,7 @@ pub(crate) async fn passkeys_begin(
         Err(err) => return internal(err),
     };
     let brand = crate::web::console_render::effective_brand();
-    let rp_name = if brand.is_empty() {
-        "Registry Hub"
-    } else {
-        &brand
-    };
+    let rp_name = if brand.is_empty() { "AOS Hub" } else { &brand };
     match crate::auth::webauthn::begin_registration(
         &deps.db,
         session.auth.user_id,
