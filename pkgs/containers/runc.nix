@@ -2,8 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  buildPackages,
   gnumake,
-  go,
   pkg-config,
   libseccomp,
   libselinux,
@@ -23,7 +23,7 @@ in
 
     buildDeps = [
       gnumake
-      go
+      buildPackages.go
       pkg-config
     ];
     runtimeDeps = [
@@ -55,6 +55,10 @@ in
           export GOCACHE=$TMPDIR/go-cache
           export CGO_ENABLED=1
           export GOPROXY=off
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            export GOOS="$AOS_GOOS"
+            export GOARCH="$AOS_GOARCH"
+          fi
           export BUILDTAGS="seccomp selinux"
           export CGO_CFLAGS="-I${libseccomp}/include -I${libselinux}/include"
           export CGO_LDFLAGS="-L${libseccomp}/lib -L${libselinux}/lib"
