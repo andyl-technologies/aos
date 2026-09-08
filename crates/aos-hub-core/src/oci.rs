@@ -56,6 +56,26 @@ pub fn oci_route_projection_key(authority: &str) -> String {
     )
 }
 
+/// Repairs a missing or stale execution-affinity hint after authoritative routing.
+///
+/// # Errors
+///
+/// Returns an error when reading or repairing the KV projection fails.
+pub(crate) async fn refresh_oci_route_projection(
+    kv: &dyn crate::kv::KvStore,
+    authority: &str,
+    registry_stable_id: &str,
+) -> Result<()> {
+    let key = oci_route_projection_key(authority);
+    // The database still authorizes every request. This hint needs a write only
+    // when its registry incarnation changes, not for every blob or manifest.
+    if kv.get(&key).await?.as_deref() == Some(registry_stable_id.as_bytes()) {
+        return Ok(());
+    }
+
+    kv.put_str(&key, registry_stable_id, None).await
+}
+
 /// Returns the fixed-width execution affinity for one registry-owned OCI
 /// repository.
 #[must_use]
@@ -1439,6 +1459,61 @@ const fn registry_supports_oci_writes(org_id: Option<i64>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct ProjectionKv {
+        inner: crate::kv::InMemoryKv,
+        writes: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::kv::KvStore for ProjectionKv {
+        async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+            self.inner.get(key).await
+        }
+
+        async fn put(&self, key: &str, value: &[u8], ttl_secs: Option<i64>) -> Result<()> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.inner.put(key, value, ttl_secs).await
+        }
+
+        async fn delete(&self, key: &str) -> Result<()> {
+            self.inner.delete(key).await
+        }
+    }
+
+    #[tokio::test]
+    async fn oci_projection_writes_only_for_missing_or_changed_incarnations() {
+        use crate::kv::KvStore;
+        use std::sync::atomic::Ordering;
+
+        let kv = ProjectionKv::default();
+        let authority = "registry.example";
+        let key = oci_route_projection_key(authority);
+
+        for _ in 0..100 {
+            refresh_oci_route_projection(&kv, authority, "registry:first")
+                .await
+                .unwrap();
+        }
+        assert_eq!(kv.writes.load(Ordering::Relaxed), 1);
+
+        refresh_oci_route_projection(&kv, authority, "registry:replacement")
+            .await
+            .unwrap();
+        assert_eq!(kv.writes.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            kv.get_str(&key).await.unwrap().as_deref(),
+            Some("registry:replacement")
+        );
+
+        kv.delete(&key).await.unwrap();
+        refresh_oci_route_projection(&kv, authority, "registry:replacement")
+            .await
+            .unwrap();
+        assert_eq!(kv.writes.load(Ordering::Relaxed), 3);
+    }
 
     #[test]
     fn parses_nested_repository_distribution_paths_exactly() {

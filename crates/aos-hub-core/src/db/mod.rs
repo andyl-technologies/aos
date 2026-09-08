@@ -21109,9 +21109,13 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub async fn validate_session(&self, secret: &str) -> Result<Option<SessionAuth>> {
+        self.validate_session_at(secret, unix_now()).await
+    }
+
+    /// Validates live session state at one clock sample, preserving second-level idle expiry.
+    async fn validate_session_at(&self, secret: &str, now: i64) -> Result<Option<SessionAuth>> {
         use crate::auth::session::{ABSOLUTE_LIFETIME_SECS, IDLE_TIMEOUT_SECS};
         let hash = crate::auth::token::sha256_hex(secret);
-        let now = unix_now();
         let row = self
             .backend
             .query_opt(
@@ -21150,9 +21154,13 @@ impl Database {
                 .await?;
             return Ok(None);
         }
+        // Repeated reads within one clock second must not rewrite identical
+        // bookkeeping. The SQL predicate also covers concurrent validations;
+        // liveness and expiry above remain authoritative on every request.
         self.backend
             .execute(
-                "UPDATE sessions SET last_seen_at = ?2 WHERE id_hash = ?1",
+                "UPDATE sessions SET last_seen_at = ?2
+                 WHERE id_hash = ?1 AND last_seen_at != ?2",
                 &vals![hash, now],
             )
             .await?;
@@ -29984,6 +29992,73 @@ source_nar_hash = ""
         db.revoke_all_user_sessions(user).await.unwrap();
         assert!(db.validate_session(&s1).await.unwrap().is_none());
         assert!(db.validate_session(&s2).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn repeated_session_validation_preserves_liveness_without_identical_writes() {
+        let db = Database::open_in_memory().await.unwrap();
+        let user = db
+            .create_user("session-reader@acme.com", None)
+            .await
+            .unwrap();
+        let secret = db.create_session(user, 3600, 0).await.unwrap();
+        let now = unix_now() + 1;
+
+        assert!(db
+            .validate_session_at(&secret, now)
+            .await
+            .unwrap()
+            .is_some());
+        let changes_before: i64 = db
+            .backend
+            .query_opt("SELECT total_changes()", &[])
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+
+        for _ in 0..100 {
+            assert!(db
+                .validate_session_at(&secret, now)
+                .await
+                .unwrap()
+                .is_some());
+        }
+        let changes_after: i64 = db
+            .backend
+            .query_opt("SELECT total_changes()", &[])
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(changes_after, changes_before);
+
+        assert!(db
+            .validate_session_at(&secret, now + 1)
+            .await
+            .unwrap()
+            .is_some());
+        let advanced: i64 = db
+            .backend
+            .query_opt(
+                "SELECT last_seen_at FROM sessions WHERE id_hash = ?1",
+                &vals![crate::auth::token::sha256_hex(&secret)],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(advanced, now + 1);
+
+        db.revoke_session(&secret).await.unwrap();
+        assert!(db
+            .validate_session_at(&secret, now + 1)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
