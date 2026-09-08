@@ -151,7 +151,7 @@ pub struct QualificationRequirement {
     pub scope: QualificationScope,
     /// Required observation method.
     pub method: QualificationMethod,
-    /// Includes the requirement only for main-registry release classes.
+    /// Includes the requirement only for the main registry, including edge releases.
     pub production_only: bool,
     /// Named acceptance conditions; each requires an affirmative observation.
     pub checks: Vec<String>,
@@ -434,36 +434,63 @@ impl QualificationContract {
         Sha256Digest::of_canonical(&self.schema_version, self)
     }
 
-    /// Returns the obligations selected by the release class.
+    /// Returns maturity obligations with registry-specific pipeline assurance.
     ///
     /// # Errors
-    /// Returns an error if that class has no threshold record.
-    pub fn thresholds_for(&self, class: ReleaseClass) -> Result<&QualificationThresholds> {
+    /// Returns an error for an unknown registry or missing class thresholds.
+    pub fn thresholds_for(
+        &self,
+        registry: &str,
+        class: ReleaseClass,
+    ) -> Result<QualificationThresholds> {
         let name = match class {
             ReleaseClass::Edge => "edge",
             ReleaseClass::Candidate => "candidate",
             ReleaseClass::Stable => "stable",
             ReleaseClass::Emergency => "emergency",
         };
-        self.thresholds
+        let policy = crate::registry::registry_policy(registry)?;
+        let mut thresholds = self
+            .thresholds
             .get(name)
-            .ok_or_else(|| anyhow::anyhow!("missing {name} qualification thresholds"))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing {name} qualification thresholds"))?;
+        // Software soak and matrix obligations still follow maturity. Review
+        // authority follows the registry even when its software channel is edge.
+        if self.schema_version == CONTRACT_V2 {
+            thresholds.require_independent_review = policy.requires_production_assurance();
+        }
+        Ok(thresholds)
     }
 
     /// Selects requirements without allowing per-release manual deselection.
-    pub fn selected(&self, class: ReleaseClass) -> impl Iterator<Item = &QualificationRequirement> {
-        self.requirements
+    ///
+    /// # Errors
+    /// Returns an error for an unknown registry identity.
+    pub fn selected(
+        &self,
+        registry: &str,
+        class: ReleaseClass,
+    ) -> Result<impl Iterator<Item = &QualificationRequirement>> {
+        let policy = crate::registry::registry_policy(registry)?;
+        let production = if self.schema_version == CONTRACT_V2 {
+            policy.requires_production_assurance()
+        } else {
+            class != ReleaseClass::Edge
+        };
+        Ok(self
+            .requirements
             .iter()
-            .filter(move |gate| !gate.production_only || class != ReleaseClass::Edge)
+            .filter(move |gate| !gate.production_only || production))
     }
 
     /// Derives the exact gate identities bound into a release plan.
     ///
     /// # Errors
     /// Returns an error if a requirement cannot be canonically encoded.
-    pub fn gates(&self, class: ReleaseClass) -> Result<Vec<GateRequirement>> {
+    pub fn gates(&self, registry: &str, class: ReleaseClass) -> Result<Vec<GateRequirement>> {
         let mut gates = self
-            .selected(class)
+            .selected(registry, class)?
             .filter(|requirement| {
                 self.schema_version != CONTRACT_V2
                     || !matches!(
@@ -476,7 +503,7 @@ impl QualificationContract {
                     policy_id: requirement.id.clone(),
                     policy_digest: Sha256Digest::of_canonical(
                         &self.schema_version,
-                        &(requirement, self.thresholds_for(class)?),
+                        &(requirement, self.thresholds_for(registry, class)?),
                     )?,
                     required_for_stable: true,
                 })
@@ -487,7 +514,7 @@ impl QualificationContract {
                 policy_id: format!("claim-{}", claim.id),
                 policy_digest: Sha256Digest::of_canonical(
                     CONTRACT_V2,
-                    &(self, claim, self.thresholds_for(class)?),
+                    &(self, claim, self.thresholds_for(registry, class)?),
                 )?,
                 required_for_stable: claim.blocks_release,
             });
@@ -528,7 +555,7 @@ impl QualificationContract {
                 )
             }
         }
-        if plan.gates != self.gates(plan.release_class)?
+        if plan.gates != self.gates(&plan.registry, plan.release_class)?
             || plan.public_evidence_policy_digest != self.digest()?
         {
             bail!("release gates or evidence policy differ from the frozen qualification contract");
@@ -559,7 +586,7 @@ impl QualificationContract {
             }
         }
         if self
-            .thresholds_for(plan.release_class)?
+            .thresholds_for(&plan.registry, plan.release_class)?
             .require_complete_matrix
             && plan.packages.iter().any(|package| {
                 package

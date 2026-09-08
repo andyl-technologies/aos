@@ -3,6 +3,7 @@
 //! Effectful filesystem, Nix, signer, Git, and Hub adapters live below this
 //! module. The `aos-release` crate remains the sole semantic contract.
 
+mod artifact_profiles;
 mod assemble;
 mod bootstrap;
 mod build;

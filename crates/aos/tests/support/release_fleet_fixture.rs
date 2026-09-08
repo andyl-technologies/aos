@@ -416,7 +416,7 @@ fn release_plan(
         execution: None,
     }];
     plan.schema_version = aos_release::RELEASE_PLAN_V2.into();
-    plan.gates = contract.gates(plan.release_class)?;
+    plan.gates = contract.gates(&plan.registry, plan.release_class)?;
     plan.public_evidence_policy_digest = contract.digest()?;
     plan.qualification = Some(contract);
     plan.qualification_predecessor = Some(

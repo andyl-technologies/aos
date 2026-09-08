@@ -12,6 +12,7 @@
 //! - [`platform`] defines the closed package and image matrix.
 //! - [`artifact`] defines immutable bundle members and relationships.
 //! - [`plan`] freezes release intent before build effects begin.
+//! - [`artifact_profile`] binds baked client settings to the release registry.
 //! - [`manifest`] binds finalized artifacts to the frozen plan.
 //! - [`evidence`] records public gate and qualification results.
 //! - [`qualification`] defines typed scopes, built capabilities and assurance obligations.
@@ -36,6 +37,7 @@ mod qualification_fixture;
 mod assurance_tests;
 
 pub mod artifact;
+pub mod artifact_profile;
 pub mod build;
 pub mod canonical;
 pub mod digest;

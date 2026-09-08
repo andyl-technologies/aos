@@ -35,6 +35,7 @@ pub(super) async fn run(
     canonical::require_canonical(&plan_bytes, "release plan")?;
     let plan: ReleasePlanV1 = canonical::from_slice(&plan_bytes, "release plan")?;
     plan.validate()?;
+    super::artifact_profiles::require_plan(nix, &plan)?;
     let plan_digest = Sha256Digest::of_bytes(&plan_bytes);
 
     let mut resolver = NarHashResolver::new(nix);

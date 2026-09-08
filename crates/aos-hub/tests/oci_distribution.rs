@@ -895,7 +895,7 @@ async fn distribution_rollout_defaults_deny_discovery_and_action_tokens() {
         "public",
         false,
         "public",
-        aos_hub_core::container_rollout::ContainerRollout::default(),
+        aos_hub_core::container_rollout::ContainerRollout::all_disabled(),
     )
     .await;
     assert_eq!(
@@ -937,7 +937,7 @@ async fn distribution_rollout_defaults_deny_discovery_and_action_tokens() {
         "hub_auth",
         aos_hub_core::container_rollout::ContainerRollout {
             push: true,
-            ..aos_hub_core::container_rollout::ContainerRollout::default()
+            ..aos_hub_core::container_rollout::ContainerRollout::all_disabled()
         },
     )
     .await;

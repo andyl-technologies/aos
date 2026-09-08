@@ -91,7 +91,7 @@ recovery-bundle metadata.
 The same golden system may be published in several disk encodings:
 
 | Format | Typical target |
-| --- | --- | --- |
+| --- | --- |
 | Zstd-compressed raw GPT disk | Bare metal, custom image pipelines, QEMU |
 | QCOW2 | QEMU/KVM, OpenStack, Proxmox |
 | VMDK | VMware and vSphere |

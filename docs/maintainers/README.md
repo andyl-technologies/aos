@@ -19,6 +19,9 @@ Apply the [code style guide](../code-style.md) to new and modified Rust and Nix
 code. It covers Rust APIs and implementation, Dendritic Nix modules, package
 expressions, comments, tests, and embedded shell.
 
+[Crucible gate evidence](crucible-gate-evidence.md) distinguishes component
+tests from live QEMU evidence and explains the fingerprint gate dependencies.
+
 ## Build the source tree
 
 AOS builds hermetically from its bootstrap tools and AOS packages. It does not
@@ -60,6 +63,10 @@ configuration, validation, promotion, and rollback.
 lifecycle split and links the per-registry runbooks. [Back up and recover the
 hosted Hub](aos-hub-backup-recovery.md) covers HubDb PITR, R2, disposable shard
 state, release evidence, restore, and approved testing rebuilds.
+
+[Registry key management](registry-key-management.md) distinguishes testing's
+HSM status from main's intended signing custody, provider integration, rotation,
+and recovery policy.
 
 [Plan and verify canonical releases](canonical-releases.md) documents the
 fail-closed four-platform release plan, source and authorization preconditions,
