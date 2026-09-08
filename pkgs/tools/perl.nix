@@ -248,9 +248,7 @@ in
               's|$(CC) $(LDDLFLAGS) -o $@ $(filter %$o,$^) $(LIBS)|$(CC) $(SHRPLDFLAGS) -o $@ $(filter %$o,$^) $(LIBS)|' \
               Makefile
 
-            # perl-cross's generated module graph races source generation
-            # against XS compilation under parallel make.
-            make -j1 \
+            make -j"$NIX_BUILD_CORES" \
               SHRPLDFLAGS='-dynamiclib -Wl,-compatibility_version,${version} -Wl,-current_version,${version} -Wl,-install_name,@rpath/libperl.dylib'
           ''
           else ''

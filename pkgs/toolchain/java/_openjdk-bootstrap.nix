@@ -34,9 +34,6 @@
   extraBuildDeps ? [],
   extraDarwinFrameworks ? [],
   extraPatches ? [],
-  # Override build parallelism (defaults to $NIX_BUILD_CORES).
-  # Useful when the boot JDK has javac concurrency bugs.
-  buildJobs ? null,
 }: let
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   buildTools =
@@ -73,10 +70,6 @@
     else null;
   tag = "jdk-${version}+${build}";
   repo = "jdk${toString major}${repoSuffix}";
-  jobsExpr =
-    if buildJobs != null
-    then toString buildJobs
-    else "$NIX_BUILD_CORES";
   # JDK 9/10 interpret --with-freetype as a filesystem prefix; the bundled/system
   # selector was introduced in JDK 11. Use the target AOS library on older ports.
   darwinFreetypeFlags =
@@ -1133,7 +1126,7 @@ in
                           --with-extra-cflags="-Wno-error -fcommon -fno-delete-null-pointer-checks ${darwinFrameworkFlags}" \
                           --with-extra-cxxflags="-Wno-error -fno-delete-null-pointer-checks ${darwinLegacyCxxFlag} ${darwinFrameworkFlags}" \
                           --with-extra-ldflags="$darwinLdflags ${darwinFrameworkFlags} ${darwinFrameworkRpathFlags}" \
-                          --with-jobs=${jobsExpr} \
+                          --with-jobs=$NIX_BUILD_CORES \
                           ${extraCfgStr}
                         grep -q '^ENABLE_HEADLESS_ONLY := true$' build/*/spec.gmk
           ''
@@ -1160,24 +1153,20 @@ in
               --with-extra-cflags="-Wno-error -fcommon -fno-lifetime-dse -fno-delete-null-pointer-checks" \
               --with-extra-cxxflags="-Wno-error -fno-lifetime-dse -fno-delete-null-pointer-checks" \
               --with-extra-ldflags="''${NIX_LDFLAGS:-}" \
-              --with-jobs=${jobsExpr} \
+              --with-jobs=$NIX_BUILD_CORES \
               ${extraCfgStr}
           '';
       }
       {
         name = "build";
         script = ''
-          # Disable AVX-512 in glibc to prevent SIGSEGV in memmove during JVM
-          # bootstrap (older JDK hotspot code has alignment issues with AVX-512)
-          export GLIBC_TUNABLES=glibc.cpu.hwcaps=-AVX512F
-
           # Remove -z defs from generated spec.gmk — our xorg-stubs don't
           # export all X11 symbols and some JDK libs use runtime-resolved deps
           find build -name 'spec.gmk' 2>/dev/null | while read f; do
             sed -i 's/-Xlinker -z -Xlinker defs//g; s/-Wl,-z,defs//g' "$f" 2>/dev/null || true
           done
 
-          make images JOBS=${jobsExpr}
+          make images JOBS=$NIX_BUILD_CORES
         '';
       }
       {

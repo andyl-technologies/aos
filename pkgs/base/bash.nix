@@ -69,7 +69,7 @@ in
         else ""
       );
     # Bash's makefiles invoke helper scripts through $(SHELL).
-    makeFlags = "SHELL=${stdenv.shell} -j1";
+    makeFlags = "SHELL=${stdenv.shell}";
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -e "$out/bin/sh" ] && ln -s bash "$out/bin/sh"
       rm -f "$out/bin/bashbug"

@@ -69,8 +69,8 @@ crates/aos-registry-hub/
   bindings is a *complete* hub: `file://` paths are valid registry
   backends exactly as they already are for `apr` and `aos-cache`'s
   `FsBackend`, and every feature — the dumb-HTTP/nix-cache facade,
-  browse UI, indexing and verification, consistency validation,
-  publish leases and the upload facade, the web surface — works
+  browse UI, indexing and verification, publish leases and the upload
+  facade, the web surface — works
   offline against the local filesystem. `aos-registry-hub serve --dev`
   boots zero-config: an ephemeral sqlite database and a bindings
   directory under `--root`, listening on localhost, so
@@ -83,8 +83,8 @@ crates/aos-registry-hub/
 - **Cloudflare target** — `wasm32-unknown-unknown` via `workers-rs`.
   D1 is the sqlite backend (same dialect, different driver); R2 via
   native bindings gives a zero-egress facade, which is why R2 is the
-  flagship deployment; Cron Triggers/Queues drive the indexer,
-  validator, and mirror jobs; KV holds sessions.
+  flagship deployment; Cron Triggers/Queues drive the indexer and mirror
+  jobs; KV holds sessions.
 - **Database abstraction** — sqlx does not compile to
   `wasm32-unknown-unknown`, so `db/` defines a small async `Database`
   trait (execute / query / transaction) with two drivers — sqlx
@@ -119,4 +119,3 @@ crates/aos-registry-hub/
   checkpoint). On Workers, large registries are indexed in
   Queue-batched slices to respect CPU/duration limits. All list APIs
   (`PackageService`, search, audit) are paginated from day one.
-
