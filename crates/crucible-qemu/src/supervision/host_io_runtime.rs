@@ -591,6 +591,14 @@ impl QemuLiveHostIoRuntime {
 }
 
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
+    #[cfg(test)]
+    fn service_ninep_io_for_test(
+        &mut self,
+        snapshot: &crucible_shmem::NodeSlotSnapshot,
+    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        self.service_ninep_io(snapshot)
+    }
+
     fn clone_hot_fork_host_io_continuation(
         &mut self,
         execution_binding: ContentHash,
