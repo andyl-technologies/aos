@@ -4401,6 +4401,145 @@ the AArch64 VM can run. No PostgreSQL feature was disabled or bypassed here.
 The AArch64 guest proof remains unqualified, so `SBX-P0-04` and `SBX-P0-05`
 remain open.
 
+### AArch64 libcap-ng kernel and artifact qualification
+
+The AArch64 `libcap-ng` package now takes Linux syscall headers from the target
+package set and checks at configure time that `__NR_gettid` is the AArch64
+value 178. Native Python drives generation, while native Bash executes the
+target `python3-config` script to report target ABI metadata. The installed
+extension and runtime dependency remain AArch64. The package phases do not run
+target tests on the build kernel or perform a native install-time import; the
+dependent guest executes the target tests instead.
+
+A private payload builds every configured upstream C test and the Python
+binding test without executing them, then a source-built AArch64 Linux 6.18.33
+guest runs those exact artifacts under the source-built QEMU 10.0.0 system
+emulator with TCG. The guest performs raw and libc `capget`, bounding and
+ambient `prctl`, `/proc` capability, and `libcap-ng` process probes before the
+test suite. It runs all nine configured C test programs in the applicable root
+and unprivileged matrix, plus Python import and binding tests. The public
+package depends on that result and rebuilds independently.
+
+The payload and public package both restore GNU deterministic headers on the
+two static archives after the generic strip phase. The public build then
+removes only the payload's private test tree from a comparison copy, normalizes
+the equal-length self store prefix in regular-file contents and symlink
+targets, and recursively compares it with the public install. This comparison
+establishes regular-file contents, directory entries, file types, and symlink
+targets; `diff -r` does not independently establish inode metadata or mode
+equality.
+
+The current candidate's qualified payload is
+`/nix/store/91yaxlypnan5zm8yalcdcy26yljcfl8j-libcap-ng-0.9.5`. Its guest result
+is
+`/nix/store/kvv46d2xgplvdajxiy27il6mdwkp5asx-libcap-ng-aarch64-guest-qualification-0.9.5`,
+which emitted exactly one `LIBCAP_GUEST_RESULT:PASS`. The independently built
+public package completed its recursive comparison at
+`/nix/store/clqvz2j7isz0rxgdwjg7zffaf7a2qzha-libcap-ng-0.9.5`. Both archive
+sets report UID and GID zero with epoch timestamps, all three installed Python
+bytecode files use hash-based invalidation, and the target library contains
+three `gettid` syscall arguments with value 178 and none with the x86_64 value
+186.
+
+This qualifies the AArch64 capability-library boundary used by the fleet
+closure. In an earlier candidate, PostgreSQL built for AArch64 and passed
+target-runner lifecycle, language-extension, and LLVM JIT checks at
+`/nix/store/wa20y37xrjv4adg2hr3jkw3lw99z3wn9-postgresql-18.4`. The aggregate
+Linux cross smoke gate has since passed from the current candidate at
+`/nix/store/j0px4qp5f55x13mw1dwl7hq25xgqr028-linux-cross-smoke-aarch64-0`,
+from derivation
+`/nix/store/khgpg1smg87bl9zzjkvb9fjxrj0a5zm4-linux-cross-smoke-aarch64-0.drv`.
+The earlier PostgreSQL result remains evidence for its package corrections,
+but is not claimed as an exact-current-source realization after the later
+cross-stdenv changes.
+
+A prior AArch64 LLVM qualification snapshot installed its triple-specific Clang
+configuration at `/nix/store/nk6dg20ixrybji174awr6nq1hb1vl1zq-llvm-22.1.0`.
+Plain `clang` and `clang++` invocations load that configuration without an
+explicit `--config`, select the target headers, startup objects, dynamic
+loader, GCC runtimes, and installed target `ld.lld`, and produce runnable
+AArch64 C and C++ programs. The C++ dependency closure resolves
+`libstdc++`, `libm`, `libgcc_s`, `libc`, and the loader entirely to AArch64
+objects.
+
+Subsequent dependency qualification corrected two build-machine/target splits
+uncovered while assembling the complete fleet closure. Cross `libgpg-error`
+preserves its package-local flexible-array hardening exception when compiling
+the native `yat2m` documentation generator; the installed library, utilities,
+and metadata remain target artifacts. The focused AArch64 package build passed
+at `/nix/store/i4jf7wn5qj673l4kgzf4a5wq9m9ana66-libgpg-error-1.61`, including
+nonempty generated manual output.
+
+Cross `libgcrypt` now executes the target `gpgrt-config` script through the
+native configure shell while resolving the target package metadata. Its own
+native `yat2m` generator preserves the same package-local flexible-array
+exception on Linux cross builds. Configure accepted `libgpg-error` 1.61 and
+retained the AArch64 NEON, ARMv8 crypto, SVE, and SVE2 paths. The focused build
+passed at `/nix/store/al56amn4gnfa4zfhn8n65jzpria1f1rd-libgcrypt-1.12.2`;
+`libgcrypt.so.20` and its dependency closure are AArch64, and the generated
+`hmac256` manual is nonempty.
+
+The current candidate's dedicated GCC runtime gate passed at
+`/nix/store/6b5b39vrl6xrzplygskgcfsyg0i7awvm-linux-cross-runtime-aarch64-0`,
+from derivation
+`/nix/store/rv41f7maxy9fb3ca29k6w2v3a9ypwai0-linux-cross-runtime-aarch64-0.drv`.
+It links static C and C++ math probes, links a dynamic C++ probe against the
+packaged five-library target runtime set, and checks the exact AArch64
+interpreter and dependency closure. The stronger dedicated LLVM gate also
+passed at
+`/nix/store/g99k5mz2vfcxl2y9ql8np2nnqvkr3zg4-linux-cross-llvm-aarch64-0`
+from derivation
+`/nix/store/7mfwq5km4vlhfzxr3cabqqnsp6x8sf2a-linux-cross-llvm-aarch64-0.drv`.
+It checks the installed target configuration, executes C and C++ outputs,
+including an `--as-needed` variant, and verifies the exact AArch64 interpreter,
+runtime paths, and `NEEDED` sets through the loader. Its full-system TCG guest
+emitted exactly one `LLVM_GUEST_RESULT:PASS`; the host-side result
+also verifies one installed `ld.lld` invocation and one Clang `-cc1`
+invocation in each compiler trace, with no QEMU user-mode emulator reference.
+
+The current candidate's AArch64 `aos` package passed at
+`/nix/store/7h2d12s3hrsaz8py3lnv7xsjwb46dh9m-aos-0.1.0`, from derivation
+`/nix/store/85avnpxfy93qd2d2aasy6zfm8dxqcp86-aos-0.1.0.drv`. Its linker policy
+uses target OpenSSL, SQLite, and zlib search paths and runtime paths, adding
+`-rpath-link` only for Linux targets. The `aos`, `apm`, and `apr` entry points
+ran through the AArch64 target runner, and their ELF interpreters, `NEEDED`
+sets, runtime paths, and split output closures were checked. This is package
+and command-startup evidence, not an end-to-end fleet result.
+
+Two subsequent commits close additional cross-build tool-role gaps. Commit
+`85c9a716a` pins Kbuild target tools separately from native host compilers,
+linkers, pkg-config, `depmod`, and host libraries. The native and AArch64 Linux
+6.18.33 builds passed at derivations
+`/nix/store/cfy4d7j443k5hq341dwfkywlfm914g6j-linux-6.18.33.drv` and
+`/nix/store/q838hxgc1d9dcyyynjv0hsljh5m05i6w-linux-6.18.33.drv`.
+The AArch64 image, `vmlinux`, and module are target objects with BTF and module
+metadata, while the installed `resolve_btfids`, `extract-cert`, `fixdep`,
+`conf`, and `modpost` helpers are native objects with native-only runtime
+paths.
+
+Commit `023dcfa87` applies the same split to Git's build shell, gettext, and
+optional language tools, seeds only the two target-libc configure answers
+validated by an AArch64 runner probe, and preserves curl-backed HTTP and IMAP
+support without executing target `curl-config`. The focused AArch64
+`git-minimal` build passed at
+`/nix/store/z1h6w8lbkj6xaadbi03c2fmnx4c9l3dx-git-minimal-2.48.1`.
+Its target-runner report identifies AArch64, the target Bash, and libcurl
+8.12.1; repository initialization, object hashing, revision parsing, and the
+HTTP remote-helper capability exchange passed. Native build-time Bash and
+gettext paths are absent from the output and its closure. This is focused
+`git-minimal` Linux qualification, not full Git or Darwin qualification.
+
+The complete AArch64 fleet proof remains unqualified. Earlier focused package
+results, including PostgreSQL, libgpg-error, libgcrypt, Linux, Git, D-Bus, and
+EROFS, record the fixes that advanced prior candidates, but later cross-stdenv
+and package changes mean they are not all exact-current-source realizations.
+No guest boot or end-to-end sandbox result is claimed until the complete fleet
+derivation succeeds from the reviewed candidate.
+
+These focused package and guest results do not qualify the complete AArch64
+system. The fleet VM still requires successful end-to-end runtime evidence, so
+`SBX-P0-04` and `SBX-P0-05` remain open.
+
 ### Production Storage worker and deadline qualification (in progress)
 
 The current Storage increment adds a fixed typed, systemd-contained mutation

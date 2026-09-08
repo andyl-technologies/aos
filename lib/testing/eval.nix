@@ -100,6 +100,46 @@
     then throw "named derivation outputs must preserve the package identity"
     else "propagated dependencies and package identity";
 
+  finalizationProbeArgs = {
+    pname = "derivation-finalization-probe";
+    version = "0";
+    src = null;
+    phases = [
+      {
+        name = "install";
+        script = ''mkdir -p "$out"'';
+      }
+    ];
+  };
+  defaultFinalizationProbe = pkgs.mkDerivation finalizationProbeArgs;
+  explicitEmptyFinalizationProbe = pkgs.mkDerivation (
+    finalizationProbeArgs // {postFinalize = "";}
+  );
+  hookedFinalizationProbe = pkgs.mkDerivation (
+    finalizationProbeArgs
+    // {
+      postFinalize = ''echo AOS_POST_FINALIZE_PROBE > "$out/post-finalize"'';
+    }
+  );
+  hookedFinalizationBuilder = builtins.elemAt hookedFinalizationProbe.args 1;
+  builderAfter = marker: builder: let
+    pieces = lib.splitString marker builder;
+  in
+    if builtins.length pieces != 2
+    then throw "derivation finalization builder must contain exactly one ${marker} marker"
+    else builtins.elemAt pieces 1;
+  builderAfterFixup = builderAfter ">>> Phase: fixup" hookedFinalizationBuilder;
+  builderAfterScrub = builderAfter ">>> Phase: scrub" builderAfterFixup;
+  builderAfterMetadata = builderAfter ">>> Phase: target-platform-metadata" builderAfterScrub;
+  derivationFinalizationContract =
+    if defaultFinalizationProbe.drvPath != explicitEmptyFinalizationProbe.drvPath
+    then throw "an empty postFinalize hook must not change the default derivation"
+    else if !(containsStr ">>> Phase: post-finalize" builderAfterMetadata)
+    then throw "postFinalize must run after fixup, scrub, and target-platform metadata"
+    else if !(containsStr "AOS_POST_FINALIZE_PROBE" builderAfterMetadata)
+    then throw "postFinalize must preserve the caller's script"
+    else "post-finalize ordered after fixup, scrub, and target metadata";
+
   mergeImageManifest = import ../build/merge-image-manifest.nix {inherit lib;};
   activationImageOverride = let
     hostnameUnit = "aos-hostname.service";
@@ -1475,6 +1515,7 @@ in
         echo "systemd gate:   $security_units workload services under threshold $security_threshold; $security_roots_helpers exact authenticated service-roots helper(s); $security_skipped allowlisted unconfined package(s) skipped: ''${security_skipped_names:-none}"
         echo "package policy: baked profile (${packagePolicyModule}), preset requires bundle (${packagePolicyRejectsPresetWithoutBundle}), target mismatch (${packagePolicyRejectsWrongTarget})"
         echo "derivations:    meta.execute uses build execution identity (${executionCompatibilityUsesBuildExecutionSystem})"
+        echo "finalization:   ${derivationFinalizationContract}"
         echo "named outputs:  preserve ${namedOutputsPreservePackageMetadata}"
         echo "bare metal:    encrypted ZFS zvol slots and authoritative ESPs (${bareMetalStorageProfile})"
 

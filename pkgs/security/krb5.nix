@@ -16,6 +16,8 @@
 }: let
   version = "1.22.1";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isAarch64LinuxCross =
+    stdenv.isCross && stdenv.hostPlatform.system == "aarch64-linux";
   bootstrapCmdsRevision = "c71d2d72f48995baaea76148f61002e5299841de";
   bootstrapCmdsSrc = fetchurl {
     urls = [
@@ -396,6 +398,22 @@ in
             export krb5_cv_attr_constructor_destructor=yes,yes
             # Darwin's libc implements POSIX numbered printf conversions.
             # Configure otherwise insists on executing the target probe.
+            export ac_cv_printf_positional=yes
+
+            YACC='bison -y' ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --enable-shared \
+              --with-crypto-impl=openssl \
+              --with-tls-impl=openssl
+          ''
+          else if isAarch64LinuxCross
+          then ''
+            # The matching AOS GCC/glibc target emits and runs ELF init/fini
+            # arrays, and its libc implements POSIX numbered printf fields.
+            # The cross smoke compiles the exact upstream probes for this ABI;
+            # AOS QEMU guest execution is required before qualification.
+            export krb5_cv_attr_constructor_destructor=yes,yes
             export ac_cv_printf_positional=yes
 
             YACC='bison -y' ./configure \

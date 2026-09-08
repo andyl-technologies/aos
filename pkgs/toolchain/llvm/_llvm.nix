@@ -39,10 +39,29 @@
   extraRuntimeDeps ? [],
   extraCmakeFlags ? [],
 }: let
+  isCross = stdenv.isCross;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
   versionMatch = builtins.match "([0-9]+)\\..*" version;
   versionMajor = builtins.elemAt versionMatch 0;
   nativeLlvm = buildPackages."llvm-${versionMajor}";
+  linuxToolchainTriple =
+    if isLinuxCross
+    then stdenv.hostPlatform.config
+    else "x86_64-unknown-linux-gnu";
+  linuxCrossRuntimeToolchainArgs = builtins.concatStringsSep ";" [
+    "-DCMAKE_C_COMPILER=$PWD/native-tools/target-clang"
+    "-DCMAKE_CXX_COMPILER=$PWD/native-tools/target-clang++"
+    "-DCMAKE_ASM_COMPILER=$PWD/native-tools/target-clang"
+    "-DCMAKE_LINKER=${nativeLlvm}/bin/ld.lld"
+    "-DCMAKE_AR=${nativeLlvm}/bin/llvm-ar"
+    "-DCMAKE_RANLIB=${nativeLlvm}/bin/llvm-ranlib"
+    "-DCMAKE_NM=${nativeLlvm}/bin/llvm-nm"
+    "-DCMAKE_OBJCOPY=${nativeLlvm}/bin/llvm-objcopy"
+    "-DCMAKE_OBJDUMP=${nativeLlvm}/bin/llvm-objdump"
+    "-DCMAKE_STRIP=${nativeLlvm}/bin/llvm-strip"
+    "-DCMAKE_READELF=${nativeLlvm}/bin/llvm-readelf"
+  ];
   enabledRuntimes =
     if isDarwinCross
     then []
@@ -102,12 +121,12 @@ in
         name = "configure";
         script =
           (
-            if isDarwinCross
+            if isCross
             then ''
               # LLVM always creates a nested NATIVE tool build when CMake is
-              # cross-compiling.  Give it explicit Linux compiler launchers;
-              # otherwise target hardening, SDK, and search-path variables
-              # leak into the build-machine compiler probes.
+              # cross-compiling. Give it explicit build-machine compiler
+              # launchers; otherwise target hardening and search-path
+              # variables leak into the native compiler probes.
               mkdir -p native-tools
               cat > native-tools/cc <<'AOS_NATIVE_CC'
               #!${buildPackages.bash}/bin/bash
@@ -164,9 +183,31 @@ in
                 REAL_CC=$(cat "$BT/nix-support/orig-cc")
                 REAL_LIBC=$(cat "$BT/nix-support/orig-libc")
                 REAL_LIBC_DEV=$(cat "$BT/nix-support/orig-libc-dev")
-                GCC_DIR=$(echo "$REAL_CC"/lib/gcc/x86_64-unknown-linux-gnu/*)
+                ${
+                  if isLinuxCross
+                  then ''
+                    set -- "$REAL_CC"/lib/gcc/${linuxToolchainTriple}/*
+                    if [ "$#" -ne 1 ] || [ ! -d "$1" ]; then
+                      echo "error: expected exactly one target GCC directory" >&2
+                      exit 1
+                    fi
+                    GCC_DIR=$1
+                    GCC_RUNTIME_DIR="$REAL_CC/${linuxToolchainTriple}/lib64"
+                    for runtimeLibrary in libgcc_s.so.1 libstdc++.so.6; do
+                      if [ ! -e "$GCC_RUNTIME_DIR/$runtimeLibrary" ]; then
+                        echo "error: missing target GCC runtime $runtimeLibrary" >&2
+                        exit 1
+                      fi
+                    done
+                  ''
+                  else ''GCC_DIR=$(echo "$REAL_CC"/lib/gcc/x86_64-unknown-linux-gnu/*)''
+                }
                 mkdir -p build/clang-cfg
-                DL=$(echo "$REAL_LIBC"/lib/ld-linux-x86-64.so.*)
+                ${
+                  if isLinuxCross
+                  then ''DL=$(cat "$BT/nix-support/dynamic-linker")''
+                  else ''DL=$(echo "$REAL_LIBC"/lib/ld-linux-x86-64.so.*)''
+                }
                 {
                   echo "--gcc-install-dir=$GCC_DIR"
                   # Use -idirafter so glibc headers come AFTER GCC C++ headers
@@ -177,11 +218,47 @@ in
                   echo "-B$GCC_DIR"
                   echo "-L$REAL_LIBC/lib"
                   echo "-L$REAL_CC/lib"
-                  echo "-L$REAL_CC/lib64"
+                  echo "-L$REAL_CC/lib64"${
+                  if isLinuxCross
+                  then "\n                    echo \"-L$GCC_RUNTIME_DIR\""
+                  else ""
+                }
                   echo "-Wl,-dynamic-linker=$DL"
                   echo "-Wl,-rpath,$REAL_LIBC/lib"
-                  echo "-Wl,-rpath,$REAL_CC/lib"
-                } > build/clang-cfg/x86_64-unknown-linux-gnu.cfg
+                  echo "-Wl,-rpath,$REAL_CC/lib"${
+                  if isLinuxCross
+                  then "\n                    echo \"-Wl,-rpath,$GCC_RUNTIME_DIR\"\n                    echo \"-fuse-ld=$out/bin/ld.lld\""
+                  else ""
+                }
+                } > build/clang-cfg/${linuxToolchainTriple}.cfg${
+                  if isLinuxCross
+                  then ''
+
+                    # A cross build cannot execute its newly-built target
+                    # clang. Use the matching native clang as a cross driver
+                    # for LLVM's runtime sub-builds; LLVM 22's libc++ requires
+                    # Clang builtins that are unavailable in GCC 14.
+                    TARGET_CLANG_CONFIG="$PWD/build/clang-cfg/${linuxToolchainTriple}.cfg"
+                    cat > native-tools/target-clang <<AOS_TARGET_CLANG
+                    #!${buildPackages.bash}/bin/bash
+                    exec ${nativeLlvm}/bin/clang \
+                      --target=${linuxToolchainTriple} \
+                      --config="$TARGET_CLANG_CONFIG" \
+                      -fuse-ld=${nativeLlvm}/bin/ld.lld \
+                      "\$@"
+                    AOS_TARGET_CLANG
+                    cat > native-tools/target-clang++ <<AOS_TARGET_CLANGXX
+                    #!${buildPackages.bash}/bin/bash
+                    exec ${nativeLlvm}/bin/clang++ \
+                      --target=${linuxToolchainTriple} \
+                      --config="$TARGET_CLANG_CONFIG" \
+                      -fuse-ld=${nativeLlvm}/bin/ld.lld \
+                      "\$@"
+                    AOS_TARGET_CLANGXX
+                    chmod +x native-tools/target-clang native-tools/target-clang++
+                  ''
+                  else ""
+                }
               ''
               else ""
             }
@@ -196,7 +273,7 @@ in
             } \
               -DLLVM_TARGETS_TO_BUILD="${targetsStr}" \
               ${
-              if isDarwinCross
+              if isCross
               then ''
                 -DLLVM_DEFAULT_TARGET_TRIPLE=${stdenv.hostPlatform.config} \
                 -DLLVM_HOST_TRIPLE=${stdenv.hostPlatform.config} \
@@ -229,10 +306,19 @@ in
               -DLLVM_INCLUDE_DOCS=OFF \
               -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON \
               ${
+              if isLinuxCross
+              then ''                -DRUNTIMES_CMAKE_ARGS="${linuxCrossRuntimeToolchainArgs}" \
+              ''
+              else ""
+            }${
               if enabledRuntimes != []
               then ''
                 -DDEFAULT_SYSROOT=/ \
-                -DCLANG_CONFIG_FILE_SYSTEM_DIR=$PWD/build/clang-cfg \
+                -DCLANG_CONFIG_FILE_SYSTEM_DIR=${
+                  if isLinuxCross
+                  then "$out/etc/clang"
+                  else "$PWD/build/clang-cfg"
+                } \
               ''
               else ""
             } \
@@ -261,7 +347,25 @@ in
           ninja -C build install
 
           ${
-            if isDarwinCross
+            if isLinuxCross
+            then ''
+              # Install the target compiler's default configuration at the
+              # path compiled into Clang. It supplies the AOS target headers,
+              # startup objects, linker, dynamic loader, and runtime paths.
+              install -d "$out/etc/clang"
+              install -m 444 \
+                build/clang-cfg/${linuxToolchainTriple}.cfg \
+                "$out/etc/clang/${linuxToolchainTriple}.cfg"
+
+              installedConfig="$out/etc/clang/${linuxToolchainTriple}.cfg"
+              grep -Fx -- "-fuse-ld=$out/bin/ld.lld" "$installedConfig"
+              if grep -F '${nativeLlvm}' "$installedConfig" >/dev/null \
+                || grep -F "$PWD" "$installedConfig" >/dev/null; then
+                echo "installed Clang configuration retained a build-machine path" >&2
+                exit 1
+              fi
+            ''
+            else if isDarwinCross
             then ''
               # compiler-rt, libc++, libc++abi and libunwind were bootstrapped
               # before this target LLVM so no Darwin executable has to run

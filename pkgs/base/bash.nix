@@ -28,10 +28,10 @@ in
       then [ncurses]
       else [];
     postPatch =
-      if stdenv.hostPlatform.isDarwin
+      if stdenv.hostPlatform.isDarwin || stdenv.isCross
       then ''
-        # tparam.c calls write(2) but relies on an implicit declaration, which
-        # modern Clang rejects when cross-compiling Bash for Darwin.
+        # tparam.c calls write(2) but relies on an implicit declaration. Modern
+        # target compilers reject that while cross-compiling Bash.
         sed -i '/#include <config.h>/a#include <unistd.h>' lib/termcap/tparam.c
       ''
       else "";

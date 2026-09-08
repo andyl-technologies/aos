@@ -45,6 +45,70 @@
 }: let
   version = "18.4";
   isDarwin = stdenv.hostPlatform.isDarwin;
+  isLinuxCross =
+    stdenv.hostPlatform.isLinux
+    && stdenv.buildPlatform.system != stdenv.hostPlatform.system;
+
+  configureArguments = lib.concatStringsSep " " (
+    [
+      "--prefix=$out"
+      "--enable-nls"
+      "--with-llvm"
+      "--with-icu"
+      "--with-tcl"
+      "--with-tclconfig=${tcl}/lib"
+      "--with-gssapi"
+      "--with-ldap"
+    ]
+    ++ lib.optionals (!isDarwin) [
+      "--with-liburing"
+      "--with-libnuma"
+    ]
+    ++ [
+      "--with-system-tzdata=${tzdata}/share/zoneinfo"
+      "--with-perl"
+      "--with-python"
+      "--with-pam"
+    ]
+    ++ lib.optionals (!isDarwin) [
+      "--with-selinux"
+      "--with-systemd"
+    ]
+    ++ [
+      "--with-uuid=e2fs"
+      "--with-libcurl"
+      "--with-libxml"
+      "--with-libxslt"
+      "--with-lz4"
+      "--with-zstd"
+      "--with-ssl=openssl"
+    ]
+  );
+
+  linuxCross = import ./_postgresql-cross.nix {
+    inherit
+      bison
+      buildPackages
+      configureArguments
+      coreutils
+      docbook-xml
+      docbook-xsl
+      flex
+      gettext
+      glibc
+      libxml2
+      libxslt
+      linux-headers
+      llvm
+      perl
+      pkg-config
+      python3
+      stdenv
+      tar
+      tcl
+      ;
+  };
+
   control = writeShellScriptBin "postgresql-control" ''
     set -euo pipefail
 
@@ -194,6 +258,14 @@ in
         docbook-xml
         docbook-xsl
       ]
+      else if isLinuxCross
+      then
+        assert linuxCross.versionCheck; [
+          # Executable build drivers are referenced directly from buildPackages
+          # so their native headers and libraries cannot enter target searches.
+          docbook-xml
+          docbook-xsl
+        ]
       else [
         gnumake
         pkg-config
@@ -240,7 +312,12 @@ in
       ]
       else
         [
+          bison
+          flex
+          pkg-config
+          tar
           curl
+          gettext
           icu
           krb5
           libselinux
@@ -363,25 +440,7 @@ in
             export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
             ./configure \
               $configureFlags \
-              --prefix=$out \
-              --enable-nls \
-              --with-llvm \
-              --with-icu \
-              --with-tcl \
-              --with-tclconfig=${tcl}/lib \
-              --with-gssapi \
-              --with-ldap \
-              --with-system-tzdata=${tzdata}/share/zoneinfo \
-              --with-perl \
-              --with-python \
-              --with-pam \
-              --with-uuid=e2fs \
-              --with-libcurl \
-              --with-libxml \
-              --with-libxslt \
-              --with-lz4 \
-              --with-zstd \
-              --with-ssl=openssl
+              ${configureArguments}
 
             # CONFIGURE_ARGS is compiled into pg_config and the server, and
             # the generated header is also installed for extensions. Keep the
@@ -416,6 +475,8 @@ in
             #define VAL_CC "${llvm}/bin/clang"' \
               src/common/config_info.c
           ''
+          else if isLinuxCross
+          then linuxCross.configureScript
           else ''
             export LLVM_CONFIG=${llvm}/bin/llvm-config
             # PostgreSQL invokes Clang directly for LLVM bitcode, so retain
@@ -424,29 +485,8 @@ in
             export TCLSH=${tcl}/bin/tclsh9.0
             export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
             ./configure \
-              --prefix=$out \
-              --enable-nls \
-              --with-llvm \
-              --with-icu \
-              --with-tcl \
-              --with-tclconfig=${tcl}/lib \
-              --with-gssapi \
-              --with-ldap \
-              --with-liburing \
-              --with-libnuma \
-              --with-system-tzdata=${tzdata}/share/zoneinfo \
-              --with-perl \
-              --with-python \
-              --with-pam \
-              --with-selinux \
-              --with-systemd \
-              --with-uuid=e2fs \
-              --with-libcurl \
-              --with-libxml \
-              --with-libxslt \
-              --with-lz4 \
-              --with-zstd \
-              --with-ssl=openssl
+              $configureFlags \
+              ${configureArguments}
 
             for macro in \
               ENABLE_GSS ENABLE_NLS HAVE_LIBNUMA USE_ICU USE_LDAP USE_LIBURING USE_LLVM \
@@ -459,7 +499,7 @@ in
       {
         name = "build";
         script =
-          if isDarwin
+          if isDarwin || isLinuxCross
           then ''
             export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
             ${buildPackages.gnumake}/bin/make -j$NIX_BUILD_CORES world
@@ -524,6 +564,8 @@ in
                 -e "s|^abs_top_srcdir = .*|abs_top_srcdir = $out/lib/pgxs/src|" \
                 {} +
             ''
+            else if isLinuxCross
+            then linuxCross.installScript
             else ''
               export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
               make install-world

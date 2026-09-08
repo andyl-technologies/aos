@@ -79,6 +79,20 @@
   apmRuntimeTools =
     apmPortableRuntimeTools
     ++ lib.optionals (!isDarwinCross) [systemd util-linux];
+  linkedLibraries = [openssl sqlite zlib];
+  linkedLibraryFlags = lib.concatMapStringsSep " " (dependency: let
+    libraryDirectory = "${dependency}/lib";
+  in
+    lib.concatStringsSep " " (
+      [
+        "-L${libraryDirectory}"
+        "-Wl,-rpath,${libraryDirectory}"
+      ]
+      ++ lib.optionals stdenv.hostPlatform.isLinux [
+        "-Wl,-rpath-link,${libraryDirectory}"
+      ]
+    ))
+  linkedLibraries;
   runtimeBinPath = tools:
     lib.concatStringsSep ":" (
       [(lib.makeBinPath tools)]
@@ -190,7 +204,7 @@
       [buildPerl buildPkgConfig openssl sqlite buildProtobuf buildCmake libssh2]
       ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
     runtimeDeps =
-      [openssl sqlite zlib]
+      linkedLibraries
       ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
   };
 in
@@ -228,19 +242,20 @@ in
       ++ lib.optionals (!isDarwinCross) [aos-fuse-transport]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
-      [openssl sqlite zlib]
+      linkedLibraries
       ++ aosRuntimeTools
       ++ aprRuntimeTools
       ++ apmRuntimeTools
       ++ lib.optionals (!isDarwinCross) [aos-fuse-transport]
       ++ lib.optionals (!isDarwinCross) linuxRuntimeDeps;
 
-    # mkDerivation normally constructs one RPATH from every runtimeDep. That
+    # mkDerivation normally constructs linker search paths from every runtimeDep. That
     # is correct for a single-output package, but would make each executable
     # retain the union of all four command closures here. The Rust programs
-    # dynamically link only these shared libraries; command-specific tools are
-    # referenced exclusively by the corresponding installed wrapper.
-    NIX_LDFLAGS = "-Wl,-rpath,${openssl}/lib -Wl,-rpath,${sqlite}/lib -Wl,-rpath,${zlib}/lib";
+    # dynamically link only these shared libraries. Keep their link-time and
+    # runtime search paths explicit; command-specific tools are referenced
+    # exclusively by the corresponding installed wrapper.
+    NIX_LDFLAGS = linkedLibraryFlags;
 
     preBuild = ''
       # Keep the integration-test executable below the bounded verifier-

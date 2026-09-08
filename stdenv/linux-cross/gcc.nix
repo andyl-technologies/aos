@@ -20,15 +20,21 @@ in
     hostPlatform = buildPlatform;
     targetPlatform = hostPlatform;
 
-    buildDeps = [
-      buildPackages.gnumake
-      buildPackages.m4
-      buildPackages.flex
-      buildPackages.bison
-      buildPackages.texinfo
-      buildPackages.perl
-      binutils
-    ];
+    buildDeps =
+      [
+        buildPackages.gnumake
+        buildPackages.m4
+        buildPackages.flex
+        buildPackages.bison
+        buildPackages.texinfo
+        buildPackages.perl
+        binutils
+      ]
+      ++ (
+        if finalStage
+        then [buildPackages.patchelf]
+        else []
+      );
     runtimeDeps = [binutils];
     propagatedDeps = [];
 
@@ -111,7 +117,7 @@ in
             --disable-nls \
             ${
             if finalStage
-            then "--enable-languages=c,c++ --enable-shared --enable-threads=posix"
+            then "--enable-languages=c,c++ --enable-shared --enable-threads=posix --enable-default-pie"
             else "--enable-languages=c --disable-shared --disable-threads --with-newlib --without-headers"
           }
         '';
@@ -145,6 +151,35 @@ in
               make install-target-libstdc++-v3
               make install-target-libatomic
               make install-target-libgomp
+
+              # These target runtimes are built outside the ordinary package
+              # wrapper, so give each shared object a store-only path to its
+              # direct target dependencies. This remains necessary when an
+              # executable's --as-needed link omits those transitive DSOs.
+              runtimeDirectory="$out/${hostPlatform.config}/lib64"
+              runtimeRpath="$runtimeDirectory:${libc}/lib"
+              for runtimeLibrary in \
+                libgcc_s.so.1 \
+                libstdc++.so.6 \
+                libatomic.so.1 \
+                libgomp.so.1; do
+                runtimePath="$runtimeDirectory/$runtimeLibrary"
+                if [ ! -f "$runtimePath" ]; then
+                  echo "error: missing target GCC runtime $runtimePath" >&2
+                  exit 1
+                fi
+
+                ${buildPackages.patchelf}/bin/patchelf \
+                  --set-rpath "$runtimeRpath" "$runtimePath"
+                installedRpath=$(
+                  ${buildPackages.patchelf}/bin/patchelf \
+                    --print-rpath "$runtimePath"
+                )
+                if [ "$installedRpath" != "$runtimeRpath" ]; then
+                  echo "error: target GCC runtime has an unexpected RPATH: $runtimePath" >&2
+                  exit 1
+                fi
+              done
             ''
             else ""
           }

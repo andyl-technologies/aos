@@ -576,6 +576,7 @@
   #   runtimeDeps;     — runtime dependencies (buildInputs equivalent)
   #   propagatedDeps;  — propagated dependencies (propagatedBuildInputs equivalent)
   #   phases;          — ordered list of { name; script; } records
+  #   postFinalize;     — optional script after fixup, scrub, and output metadata
   #   meta;            — package metadata
   #   update;          — primitive maintenance metadata (evaluation only)
   #   storeDir;        — store directory (default: /nix/store)
@@ -615,6 +616,7 @@
     postBuild ? "",
     preInstall ? "",
     postInstall ? "",
+    postFinalize ? "",
     passthru ? {},
     update ? null,
     checks ? null,
@@ -739,7 +741,17 @@
       ++ [
         scrubPhase
         (targetPlatformMetadataPhase outputPlatform.system)
-      ];
+      ]
+      ++ (
+        if postFinalize != ""
+        then [
+          {
+            name = "post-finalize";
+            script = postFinalize;
+          }
+        ]
+        else []
+      );
 
     builder = phasesToScript allPhases shell;
 
@@ -775,6 +787,7 @@
       "postBuild"
       "preInstall"
       "postInstall"
+      "postFinalize"
       "passthru"
       "update"
       "checks"

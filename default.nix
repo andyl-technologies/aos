@@ -1183,6 +1183,12 @@ in {
       linux-cross-smoke = import ./tests/build/linux-cross-smoke.nix {
         pkgs = buildPackages;
       };
+      linux-cross-llvm = import ./tests/build/linux-cross-llvm.nix {
+        pkgs = buildPackages;
+      };
+      linux-cross-runtime = import ./tests/build/linux-cross-runtime.nix {
+        pkgs = buildPackages;
+      };
       package-platform-support = import ./tests/build/package-platform-support.nix {
         pkgs = buildPackages;
       };
@@ -1197,7 +1203,7 @@ in {
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in
       {
-        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-smoke package-platform-support package-root-image sandbox-linux-uapi systemd-verity vm-rootfs-adapter golden-image-budgets;
+        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-llvm linux-cross-runtime linux-cross-smoke package-platform-support package-root-image sandbox-linux-uapi systemd-verity vm-rootfs-adapter golden-image-budgets;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
           pname = "aos-build-checks-all";
@@ -1219,6 +1225,8 @@ in {
                 # Retain the cross-built AArch64 smoke output without treating
                 # it as an executable build tool for this x86_64 aggregate.
                 test -e ${linux-cross-smoke}
+                test -e ${linux-cross-llvm}
+                test -e ${linux-cross-runtime}
                 mkdir -p $out
                 echo "PASS" > $out/result
               '';

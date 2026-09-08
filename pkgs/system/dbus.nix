@@ -8,6 +8,7 @@
   expat,
   libselinux,
   audit,
+  libcap-ng,
   systemd,
   stdenv,
 }: let
@@ -36,6 +37,7 @@ in
         else [
           libselinux
           audit
+          libcap-ng
           # libsystemd for sd_notify + unit file installation. Systemd
           # no longer depends on dbus at the pkg level (sd-bus replaces
           # libdbus), so this direction is cycle-free.

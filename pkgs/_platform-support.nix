@@ -721,12 +721,14 @@ let
     "darwin/_darwin-gcc.nix" = "cross-build-helper";
     "emulation/_darwin-signer.nix" = "linux-only-build-helper";
     "emulation/_darling-sources.nix" = "linux-only-source";
+    "emulation/_qemu-aarch64-linux-user.nix" = "linux-only-build-helper";
     "emulation/qemu-patches/_series.nix" = "linux-only-source";
     "kernel/_source.nix" = "linux-only-source";
     "kubernetes/_k3s-common.nix" = "linux-only-build-helper";
     "kubernetes/_k3s-expose-package.nix" = "linux-only-build-helper";
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
+    "storage/_postgresql-cross.nix" = "cross-build-helper";
     "toolchain/_bazel.nix" = "native-build-helper";
     "toolchain/go/_go-darwin.nix" = "cross-build-helper";
     "toolchain/java/_darwin-mig.nix" = "linux-only-build-helper";

@@ -15,6 +15,7 @@
   automake,
   libtool,
   m4,
+  stdenv,
   bash,
   gcc-libs,
   util-linux,
@@ -31,6 +32,16 @@
   # composefs-generated EROFS image used by `system.build.etcMetadataImage`.
   # Bump when AOS needs those importer features.
   version = "1.8.10";
+  checkMkfsProgram =
+    if stdenv.isCross
+    then ".mkfs.erofs-unwrapped"
+    else "mkfs.erofs";
+  crossCheckRunner =
+    if !stdenv.isCross
+    then null
+    else if (stdenv.targetRunner or null) == null
+    then throw "erofs-utils: no runner for cross target '${stdenv.hostPlatform.system}'"
+    else "${stdenv.targetRunner}/bin/aos-run-${stdenv.hostPlatform.system}";
 in
   mkDerivation {
     pname = "erofs-utils";
@@ -54,10 +65,6 @@ in
       automake
       libtool
       m4
-      lz4
-      xz
-      zlib
-      zstd
     ];
     runtimeDeps = [bash gcc-libs util-linux lz4 xz zlib zstd];
     propagatedDeps = [util-linux lz4 xz zlib zstd];
@@ -104,6 +111,12 @@ in
         # boundaries don't shift the per-cluster compression, and `-T0 -U`
         # pin the remaining nondeterminism. Pulls in libpthread (glibc).
         script = ''
+          # v1.8.10 overwrites pkg-config's liblzma flags with bare -llzma.
+          # Its configure script consumes these variables without declaring
+          # command-line options, so export them to keep cross links target-only.
+          export with_liblzma_incdir=${xz}/include
+          export with_liblzma_libdir=${xz}/lib
+
           ./configure \
             --prefix=$out \
             --disable-fuse \
@@ -141,16 +154,32 @@ in
       {
         name = "check";
         script = ''
+          run_check_target() {
+            ${
+            if stdenv.isCross
+            then ''
+              env -i \
+                ${crossCheckRunner} \
+                ${stdenv.glibc}/lib/${stdenv.hostPlatform.dynamicLinker} \
+                --library-path ${gcc-libs}/lib \
+                "$@"
+            ''
+            else ''
+              env -i "$@"
+            ''
+          }
+          }
+
           mkdir -p "$TMPDIR/erofs-smoke/root"
           dd if=/dev/zero of="$TMPDIR/erofs-smoke/root/worker-payload" \
             bs=1M count=17 status=none
           printf 'multithreaded erofs smoke test\n' > "$TMPDIR/erofs-smoke/root/payload"
-          env -i "$out/bin/mkfs.erofs" --all-root -T0 \
+          run_check_target "$out/bin/${checkMkfsProgram}" --all-root -T0 \
             -U bdfb6fc9-0000-4000-8000-000000000001 \
             --workers=1 -z zstd \
             "$TMPDIR/erofs-smoke/image-one-worker.erofs" \
             "$TMPDIR/erofs-smoke/root"
-          env -i "$out/bin/mkfs.erofs" --all-root -T0 \
+          run_check_target "$out/bin/${checkMkfsProgram}" --all-root -T0 \
             -U bdfb6fc9-0000-4000-8000-000000000001 \
             --workers=2 -z zstd \
             "$TMPDIR/erofs-smoke/image-two-workers.erofs" \
@@ -158,7 +187,7 @@ in
           cmp \
             "$TMPDIR/erofs-smoke/image-one-worker.erofs" \
             "$TMPDIR/erofs-smoke/image-two-workers.erofs"
-          "$out/bin/fsck.erofs" \
+          run_check_target "$out/bin/fsck.erofs" \
             --extract="$TMPDIR/erofs-smoke/extracted" \
             "$TMPDIR/erofs-smoke/image-two-workers.erofs" >/dev/null
           cmp \

@@ -26,8 +26,10 @@ if [ -n "${out:-}" ]; then
   export NIX_LDFLAGS="-Wl,-rpath,$out/lib ${NIX_LDFLAGS:-}"
 fi
 
-# Set up PATH from build dependencies
-if [ -n "${buildInputs:-}" ]; then
+# Runtime dependencies supply headers and libraries to cross builds, but their
+# executables target the output machine. Only native builds may put them on
+# PATH; cross-build tools come exclusively from nativeBuildInputs.
+if [ -z "${AOS_CROSS_COMPILING:-}" ] && [ -n "${buildInputs:-}" ]; then
   for dep in $buildInputs; do
     if [ -d "$dep/bin" ]; then
       export PATH="$dep/bin${PATH:+:$PATH}"
@@ -51,7 +53,9 @@ for dep in ${buildInputs:-} ${propagatedBuildInputs:-}; do
   fi
   if [ -d "$dep/lib" ]; then
     export LIBRARY_PATH="$dep/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
-    export LD_LIBRARY_PATH="$dep/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    if [ -z "${AOS_CROSS_COMPILING:-}" ]; then
+      export LD_LIBRARY_PATH="$dep/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    fi
   fi
   if [ -d "$dep/lib/pkgconfig" ]; then
     export PKG_CONFIG_PATH="$dep/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"

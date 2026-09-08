@@ -197,17 +197,79 @@ in
               -e '/^module_expsym_cmds=/s/$allow_undefined_flag/-Wl,-undefined,dynamic_lookup/' \
               libtool
           ''
-          else ''
-            ./configure \
-              $configureFlags \
-              --prefix=$out \
-              --enable-dynamic \
-              --enable-modules \
-              --enable-slapd \
-              --enable-overlays=mod \
-              --with-cyrus-sasl \
-              --with-tls=openssl
-          '';
+          else
+            (
+              if stdenv.isCross && stdenv.targetRunner != null
+              then ''
+                mkdir -p .aos-build-tools
+
+                # The native Libtool executable remains on PATH, while target
+                # OpenLDAP binaries must link the host libltdl. Explicit flags
+                # keep the native build dependency from winning -lltdl lookup.
+                CPPFLAGS="-I${libtool}/include''${CPPFLAGS:+ $CPPFLAGS}"
+                LDFLAGS="-L${libtool}/lib''${LDFLAGS:+ $LDFLAGS}"
+                export CPPFLAGS LDFLAGS
+
+                # Measure the two runtime properties that Autoconf cannot
+                # determine while crossing. The focused probes preserve
+                # OpenLDAP's upstream result semantics while rejecting setup,
+                # launch, crash, and timeout failures as indeterminate.
+                "$CC" ${../../tests/build/openldap-yielding-select-probe.c} \
+                  -pthread -o .aos-build-tools/yielding-select-probe
+                "$CC" ${../../tests/build/openldap-memcmp-probe.c} \
+                  -fno-builtin-memcmp \
+                  -o .aos-build-tools/memcmp-probe
+
+                set +e
+                timeout 30 ${stdenv.targetRunner}/bin/aos-run-${stdenv.hostPlatform.system} \
+                  .aos-build-tools/yielding-select-probe
+                yielding_select_status=$?
+                set -e
+
+                case "$yielding_select_status" in
+                  0) ol_cv_pthread_select_yields=no ;;
+                  2) ol_cv_pthread_select_yields=yes ;;
+                  *)
+                    echo "target yielding-select probe failed with status $yielding_select_status" >&2
+                    exit 1
+                    ;;
+                esac
+
+                set +e
+                timeout 30 ${stdenv.targetRunner}/bin/aos-run-${stdenv.hostPlatform.system} \
+                  .aos-build-tools/memcmp-probe
+                memcmp_status=$?
+                set -e
+
+                case "$memcmp_status" in
+                  0) ac_cv_func_memcmp_working=yes ;;
+                  1) ac_cv_func_memcmp_working=no ;;
+                  *)
+                    echo "target memcmp probe failed with status $memcmp_status" >&2
+                    exit 1
+                    ;;
+                esac
+
+                export ol_cv_pthread_select_yields ac_cv_func_memcmp_working
+              ''
+              else if stdenv.isCross
+              then ''
+                echo 'cross build cannot run target OpenLDAP probes' >&2
+                exit 1
+              ''
+              else ""
+            )
+            + ''
+              ./configure \
+                $configureFlags \
+                --prefix=$out \
+                --enable-dynamic \
+                --enable-modules \
+                --enable-slapd \
+                --enable-overlays=mod \
+                --with-cyrus-sasl \
+                --with-tls=openssl
+            '';
       }
       {
         name = "build";

@@ -74,6 +74,84 @@
     ];
   };
 
+  targetRunner =
+    if hostPlatform.isAarch64
+    then
+      builtins.derivation {
+        name = "aos-${hostPlatform.system}-runner";
+        system = schedulerSystem;
+        builder = shellPath;
+        args = [
+          "-c"
+          ''
+            set -eu
+            ${buildStdenv.coreutils}/bin/mkdir -p "$out/bin"
+            ${buildStdenv.coreutils}/bin/cat > "$out/bin/aos-run-${hostPlatform.system}" <<'RUNNER_EOF'
+            #!${shellPath}
+            set -eu
+            set -o pipefail
+            export LC_ALL=C
+
+            if [ "$#" -eq 0 ] || [ -z "$1" ]; then
+              echo "usage: aos-run-${hostPlatform.system} TARGET [ARG...]" >&2
+              exit 64
+            fi
+            if [ ! -f "$1" ]; then
+              echo "AOS cross runner target is not a regular file: $1" >&2
+              exit 66
+            fi
+            if [ ! -x "$1" ]; then
+              echo "AOS cross runner target is not executable: $1" >&2
+              exit 67
+            fi
+            if ! ${buildPackages.binutils}/bin/readelf -h -- "$1" 2>/dev/null \
+              | ${buildStdenv.grep}/bin/grep -F \
+                  'Machine:                           AArch64' >/dev/null; then
+              echo "AOS cross runner rejected a non-AArch64 ELF target: $1" >&2
+              exit 65
+            fi
+
+            # QEMU itself retains the native loader environment it needs. Remove
+            # native loader controls only from the emulated target environment so
+            # its absolute AOS interpreter and RPATHs resolve target libraries.
+            # Ambient QEMU controls must not change configure-test semantics or
+            # reintroduce native loader variables after the explicit -U below.
+            unset \
+              QEMU_ARGV0 \
+              QEMU_CPU \
+              QEMU_DFILTER \
+              QEMU_GDB \
+              QEMU_GUEST_BASE \
+              QEMU_JITDUMP \
+              QEMU_LD_PREFIX \
+              QEMU_LOG \
+              QEMU_LOG_FILENAME \
+              QEMU_ONE_INSN_PER_TB \
+              QEMU_PAGESIZE \
+              QEMU_PERFMAP \
+              QEMU_PLUGIN \
+              QEMU_RAND_SEED \
+              QEMU_RESERVED_VA \
+              QEMU_RTSIG_MAP \
+              QEMU_SET_ENV \
+              QEMU_STACK_SIZE \
+              QEMU_STRACE \
+              QEMU_TB_SIZE \
+              QEMU_TRACE \
+              QEMU_UNAME \
+              QEMU_UNSET_ENV \
+              QEMU_VERSION \
+              QEMU_XTENSA_ABI_CALL0
+            exec ${buildPackages.qemu-aarch64-linux-user}/bin/qemu-aarch64 \
+              -U LD_LIBRARY_PATH,LD_PRELOAD,LD_AUDIT,LD_DEBUG,LD_PROFILE,LD_ORIGIN_PATH \
+              -- "$@"
+            RUNNER_EOF
+            ${buildStdenv.coreutils}/bin/chmod 755 "$out/bin/aos-run-${hostPlatform.system}"
+          ''
+        ];
+      }
+    else null;
+
   initialPath =
     [
       ccWrapper
@@ -105,19 +183,19 @@
       map (dependency: let directory = "${dependency}/lib"; in "-L${directory} -Wl,-rpath,${directory} -Wl,-rpath-link,${directory}") closure
     );
 
-  cmakeSystemFlags = builtins.concatStringsSep " " [
-    "-DCMAKE_SYSTEM_NAME=Linux"
-    "-DCMAKE_SYSTEM_PROCESSOR=${hostPlatform.cmakeProcessor}"
-    "-DCMAKE_C_COMPILER=${ccWrapper}/bin/cc"
-    "-DCMAKE_CXX_COMPILER=${ccWrapper}/bin/c++"
-    "-DCMAKE_ASM_COMPILER=${ccWrapper}/bin/cc"
-    "-DCMAKE_AR=${ccWrapper}/bin/ar"
-    "-DCMAKE_RANLIB=${ccWrapper}/bin/ranlib"
-    "-DCMAKE_STRIP=${ccWrapper}/bin/strip"
-    # Compiler processes stay scheduler-native. Only configure-time target
-    # probes cross binfmt through env, matching Autoconf's execution model.
-    "-DCMAKE_CROSSCOMPILING_EMULATOR=${buildStdenv.coreutils}/bin/env"
-  ];
+  cmakeSystemFlags = builtins.concatStringsSep " " (
+    [
+      "-DCMAKE_SYSTEM_NAME=Linux"
+      "-DCMAKE_SYSTEM_PROCESSOR=${hostPlatform.cmakeProcessor}"
+      "-DCMAKE_C_COMPILER=${ccWrapper}/bin/cc"
+      "-DCMAKE_CXX_COMPILER=${ccWrapper}/bin/c++"
+      "-DCMAKE_ASM_COMPILER=${ccWrapper}/bin/cc"
+      "-DCMAKE_AR=${ccWrapper}/bin/ar"
+      "-DCMAKE_RANLIB=${ccWrapper}/bin/ranlib"
+      "-DCMAKE_STRIP=${ccWrapper}/bin/strip"
+    ]
+    ++ lib.optional hostPlatform.isAarch64 "-DCMAKE_CROSSCOMPILING_EMULATOR=${targetRunner}/bin/aos-run-${hostPlatform.system}"
+  );
 
   stdenvDrv = builtins.derivation {
     name = "aos-${hostPlatform.system}-cross-stdenv";
@@ -171,9 +249,7 @@
         strip = '${ccWrapper}/bin/strip'
         pkg-config = 'pkg-config'
         cmake = '${buildPackages.cmake}/bin/cmake'
-        # Build tools remain x86_64. Target probes alone execute through the
-        # configured binfmt handler, matching the CMake and Autoconf paths.
-        exe_wrapper = '${buildStdenv.coreutils}/bin/env'
+        ${lib.optionalString hostPlatform.isAarch64 "exe_wrapper = '${targetRunner}/bin/aos-run-${hostPlatform.system}'"}
 
         [host_machine]
         system = 'linux'
@@ -228,9 +304,12 @@
         BUILD_CC = "${buildCcWrapper}/bin/cc";
         BUILD_CXX = "${buildCcWrapper}/bin/c++";
         PKG_CONFIG_ALLOW_CROSS = "1";
+        # Match the base mkDerivation contract: explicit package linker flags
+        # replace generated dependency RPATHs, while the target compiler
+        # runtime remains available to every cross-linked output.
         NIX_LDFLAGS = builtins.concatStringsSep " " [
           compilerRuntimeLdFlags
-          (runtimeLdFlags args)
+          (lib.optionalString (!(args ? NIX_LDFLAGS)) (runtimeLdFlags args))
           (args.NIX_LDFLAGS or "")
         ];
         ac_cv_build = buildPlatform.config;
@@ -270,6 +349,7 @@ in {
     storeDir
     lib
     ccWrapper
+    targetRunner
     buildPlatform
     hostPlatform
     targetPlatform
