@@ -22,6 +22,9 @@ pub const STYLESHEET: &str = include_str!("static_assets/style.css");
 /// without JS.
 pub const APP_JS: &str = include_str!("static_assets/app.js");
 
+/// The appearance preference bootstrap, loaded before the stylesheet paints.
+pub const THEME_JS: &str = include_str!("static_assets/theme.js");
+
 /// The generated browser-console ES module.
 pub const CONSOLE_JS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/hub-console.js"));
 
@@ -44,6 +47,7 @@ pub fn asset_version() -> &'static str {
         let mut hasher = Sha256::new();
         hasher.update(STYLESHEET.as_bytes());
         hasher.update(APP_JS.as_bytes());
+        hasher.update(THEME_JS.as_bytes());
         hasher.update(CONSOLE_JS);
         hasher.update(CONSOLE_WASM);
         hasher.update(CONSOLE_CSS);
@@ -76,11 +80,11 @@ pub fn console_bootstrap_name() -> String {
     format!("hub-console-bootstrap-{}.js", asset_version())
 }
 
-/// JetBrains Mono Regular (OFL), self-hosted — no font CDNs, ever.
-pub const FONT_REGULAR: &[u8] = include_bytes!("static_assets/JetBrainsMono-Regular.woff2");
+/// Geist Sans variable (OFL), self-hosted for prose and interface text.
+pub const FONT_SANS: &[u8] = include_bytes!("static_assets/Geist-Variable.woff2");
 
-/// JetBrains Mono Bold (OFL), self-hosted.
-pub const FONT_BOLD: &[u8] = include_bytes!("static_assets/JetBrainsMono-Bold.woff2");
+/// Geist Mono variable (OFL), self-hosted for code and machine identifiers.
+pub const FONT_MONO: &[u8] = include_bytes!("static_assets/GeistMono-Variable.woff2");
 
 /// The SIL Open Font License text for the embedded fonts.
 pub const FONT_LICENSE: &str = include_str!("static_assets/OFL.txt");
@@ -105,6 +109,18 @@ pub async fn app_js() -> Response {
             (header::CACHE_CONTROL, "public, max-age=3600"),
         ],
         APP_JS,
+    )
+        .into_response()
+}
+
+/// Serves the appearance preference bootstrap with a one-hour cache.
+pub async fn theme_js() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        THEME_JS,
     )
         .into_response()
 }
@@ -152,14 +168,14 @@ fn immutable_asset(content_type: &'static str, bytes: &'static [u8]) -> Response
         .into_response()
 }
 
-/// Serve the regular-weight font.
-pub async fn font_regular() -> Response {
-    font_response(FONT_REGULAR)
+/// Serves the variable sans-serif font.
+pub async fn font_sans() -> Response {
+    font_response(FONT_SANS)
 }
 
-/// Serve the bold-weight font.
-pub async fn font_bold() -> Response {
-    font_response(FONT_BOLD)
+/// Serves the variable monospace font.
+pub async fn font_mono() -> Response {
+    font_response(FONT_MONO)
 }
 
 /// Serve the font license text.

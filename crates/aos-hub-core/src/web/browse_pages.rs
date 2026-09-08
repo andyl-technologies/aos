@@ -30,8 +30,8 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use crate::db::{
-    CacheProbeRow, ChannelSummary, IndexStatus, IndexedSystemImage, PackageDetail, PackageRow,
-    RegistryRecord, ReleaseRow, RepairJobRow, ValidationRunRow,
+    ChannelSummary, IndexStatus, IndexedSystemImage, PackageDetail, PackageRow, RegistryRecord,
+    ReleaseRow,
 };
 #[cfg(test)]
 use crate::db::{PlatformDetail, VersionDetail};
@@ -295,40 +295,7 @@ fn store_path_link(setup: &RegistrySetup, path: &str) -> String {
     }
 }
 
-/// The status / coverage / checked / probed cells for one cache row.
-fn validation_cells(run: Option<&ValidationRunRow>) -> [String; 4] {
-    let Some(run) = run else {
-        return [
-            "<span class=\"dim\">not yet validated</span>".to_string(),
-            "—".to_string(),
-            "—".to_string(),
-            "—".to_string(),
-        ];
-    };
-    let status = if !run.reachable {
-        "<span class=\"bad\">✗ unreachable</span>".to_string()
-    } else if run.missing == 0 {
-        "<span class=\"ok\">✓ ok</span>".to_string()
-    } else {
-        format!("<span class=\"warn\">⚠ {} missing</span>", run.missing)
-    };
-    let coverage = if run.checked > 0 {
-        format!(
-            "{}%",
-            run.checked.saturating_sub(run.missing) * 100 / run.checked
-        )
-    } else {
-        "—".to_string()
-    };
-    [
-        status,
-        coverage,
-        run.checked.to_string(),
-        ago(run.finished_at),
-    ]
-}
-
-/// The instance home: every registered registry and its index state, with
+/// The instance home: every registered registry's identity, with
 /// an optional `?q=` substring filter over slugs, names, and descriptions.
 ///
 /// `session` renders the masthead identity (signed-in email + logout, or a
@@ -370,22 +337,6 @@ pub fn instance_home(
         .slice(&matches)
         .iter()
         .map(|(reg, status)| {
-            let (state, class, detail) = match status.as_ref().map(|s| s.state.as_str()) {
-                Some("fresh" | "empty") => ("live", "ok", "Index is current".to_string()),
-                Some("failed") => ("outdated", "bad", "Index refresh failed".to_string()),
-                Some("indexing") => (
-                    "outdated",
-                    "warn",
-                    "Index refresh is in progress".to_string(),
-                ),
-                Some("stale") => (
-                    "outdated",
-                    "warn",
-                    "Index is behind the registry surface".to_string(),
-                ),
-                Some(other) => ("outdated", "warn", format!("Index state: {other}")),
-                None => ("outdated", "warn", "Index is not registered".to_string()),
-            };
             vec![
                 format!("<a href=\"/{0}/\">{0}</a>", escape(&reg.slug)),
                 escape(
@@ -394,10 +345,11 @@ pub fn instance_home(
                         .and_then(|s| s.name.as_deref())
                         .unwrap_or("—"),
                 ),
-                format!(
-                    "<span class=\"{class}\" title=\"{}\">{}</span>",
-                    escape(&detail),
-                    escape(state)
+                escape(
+                    status
+                        .as_ref()
+                        .and_then(|s| s.description.as_deref())
+                        .unwrap_or("—"),
                 ),
             ]
         })
@@ -432,7 +384,7 @@ pub fn instance_home(
         body.push_str("<p class=\"dim\">No registries match.</p>");
     } else {
         body.push_str(&live_table(
-            &["slug", "name", "index"],
+            &["slug", "name", "description"],
             &body_rows,
             "registries",
         ));
@@ -959,8 +911,8 @@ pub fn package_index(
         selection_filters.push(("sort", column.token()));
         selection_filters.push(("dir", direction.token()));
     }
-    body.push_str(&context.selector(slug, &format!("/{slug}/-/packages"), &selection_filters));
     let _ = writeln!(body, "<h1>Packages ({total_all})</h1>");
+    body.push_str(&context.selector(slug, &format!("/{slug}/-/packages"), &selection_filters));
 
     // The filter box is a Wireshark-style display-filter expression: every
     // attribute is queryable with operators and boolean connectives. A bare
@@ -1125,19 +1077,18 @@ pub struct ResolvedDependency {
     pub version: Option<String>,
 }
 
-/// The closure neighborhood of a package, resolved against the registry.
+/// The dependency neighborhood of one architecture's exact package version.
 ///
-/// Bundles the forward dependencies of the latest version's primary platform
-/// (the `refs` edges, resolved to package names where possible) and the set of
-/// packages whose closures reference this one. Both are computed by the
-/// handler via [`crate::db::Database::resolve_reference_names`] and
-/// [`crate::db::Database::reverse_dependencies`] so the renderer stays a pure
-/// function of its inputs.
+/// Both directions resolve against the selected release catalog and only
+/// match artifacts of this architecture. The renderer receives resolved data
+/// and performs no database or object-store reads.
 #[derive(Debug, Clone, Default)]
 pub struct PackageClosure {
-    /// The platform the forward dependencies were resolved for.
-    pub platform: Option<String>,
-    /// Forward dependencies of the latest version's primary platform.
+    /// The architecture and operating system of the artifact.
+    pub platform: String,
+    /// The latest package version available for this architecture in the release.
+    pub version: String,
+    /// Forward references of this architecture's artifact.
     pub dependencies: Vec<ResolvedDependency>,
     /// Packages that reference this one, as `(name, version)`, capped by the
     /// handler. [`PackageClosure::reverse_total`] carries the uncapped count.
@@ -1189,25 +1140,22 @@ impl From<crate::db::PackageDocumentationLocator> for PackageDocumentationRefere
     }
 }
 
-/// One package's detail page — the data-rich closure browser.
+/// Renders package metadata, artifacts, documentation, and dependency neighborhoods.
 ///
-/// Renders, in order: a header with name + latest version + the prominent
-/// description; "available platforms" chips; a metadata definition table
-/// (license, maintainer, homepage, platforms, sysroot, latest version,
-/// version count); an `apm` install snippet; the resolved dependency list
-/// (the `refs` closure edges of the latest version's primary platform, linked
-/// to their package pages where resolvable); the "required by" reverse-dep
-/// list; the per-version × platform artifact tables with narinfo + source
-/// derivation links; sysroot images; and a `<details>` raw-metadata dump.
+/// Each architecture has its own forward and reverse dependency lists for
+/// the latest package version available on that architecture in the selected
+/// release. Resolvable dependencies link to package pages; other references
+/// retain their narinfo links. Artifact tables and raw metadata retain every
+/// version published in the release.
 ///
-/// `closure` carries the resolved forward and reverse dependencies the handler
+/// `closures` carries the resolved forward and reverse dependencies the handler
 /// computed; `setup` is the same canonical consumer configuration rendered on
 /// the registry overview.
 pub fn package_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
     detail: &PackageDetail,
-    closure: &PackageClosure,
+    closures: &[PackageClosure],
     setup: &RegistrySetup,
     context: &ReleaseContext,
     documentation: Option<&PackageDocumentationReference>,
@@ -1221,16 +1169,16 @@ pub fn package_page(
     // Header: name, latest version, then the description prominently.
     let latest = detail.versions.first().map(|v| v.version.as_str());
     let mut body = context.nav(slug, "packages");
-    body.push_str(&context.selector(
-        slug,
-        &format!("/{slug}/-/packages/{}", urlencode(&detail.name)),
-        &[],
-    ));
     let _ = write!(body, "<h1 id=\"overview\">{}", escape(&detail.name));
     if let Some(latest) = latest {
         let _ = write!(body, " <span class=\"dim\">{}</span>", escape(latest));
     }
     body.push_str("</h1>\n");
+    body.push_str(&context.selector(
+        slug,
+        &format!("/{slug}/-/packages/{}", urlencode(&detail.name)),
+        &[],
+    ));
     if !detail.description.is_empty() {
         let _ = writeln!(
             body,
@@ -1391,75 +1339,78 @@ pub fn package_page(
     }
     body.push_str("</section>");
 
-    // Dependencies: the closure edges of the latest primary platform, made
-    // legible — resolvable hashes link to their package page, the rest fall
-    // back to a narinfo permalink.
-    let _ = writeln!(
-        body,
-        "<h2 id=\"dependencies\">Dependencies ({})</h2>",
-        closure.dependencies.len(),
+    body.push_str(
+        "<h2 id=\"dependencies\">Dependencies</h2>\n<div class=\"package-dependencies\">",
     );
-    if closure.dependencies.is_empty() {
-        body.push_str("<p class=\"dim\">No runtime dependencies recorded.</p>\n");
-    } else {
-        if let Some(platform) = &closure.platform {
-            let _ = writeln!(
-                body,
-                "<p class=\"dim\">runtime closure of the latest version on {}:</p>",
-                escape(platform),
-            );
-        }
-        body.push_str("<ul class=\"deps\">\n");
-        for dep in &closure.dependencies {
-            match (&dep.name, &dep.version) {
-                (Some(name), version) => {
-                    let _ = write!(
-                        body,
-                        "<li><a href=\"/{}/-/packages/{}?release={}\">{}</a>",
-                        escape(slug),
-                        urlencode(name),
-                        urlencode(snapshot.unwrap_or_default()),
-                        escape(name),
-                    );
-                    if let Some(version) = version {
-                        let _ = write!(body, " <span class=\"dim\">{}</span>", escape(version));
+    if closures.is_empty() {
+        body.push_str("<p class=\"dim\">No architecture artifacts recorded in this release.</p>");
+    }
+    for closure in closures {
+        let _ = write!(
+            body,
+            "<section class=\"package-dependency-platform\"><h3>{}</h3><p class=\"dim\">Version <code>{}</code> in this release.</p><h4>Dependencies ({})</h4>",
+            escape(&closure.platform),
+            escape(&closure.version),
+            closure.dependencies.len(),
+        );
+        if closure.dependencies.is_empty() {
+            body.push_str("<p class=\"dim\">No runtime dependencies recorded.</p>\n");
+        } else {
+            body.push_str("<ul class=\"deps\">\n");
+            for dep in &closure.dependencies {
+                match (&dep.name, &dep.version) {
+                    (Some(name), version) => {
+                        let _ = write!(
+                            body,
+                            "<li><a href=\"/{}/-/packages/{}?release={}\">{}</a>",
+                            escape(slug),
+                            urlencode(name),
+                            urlencode(snapshot.unwrap_or_default()),
+                            escape(name),
+                        );
+                        if let Some(version) = version {
+                            let _ = write!(body, " <span class=\"dim\">{}</span>", escape(version));
+                        }
+                        body.push_str("</li>\n");
                     }
-                    body.push_str("</li>\n");
-                }
-                (None, _) => {
-                    let _ = writeln!(body, "<li>{}</li>", narinfo_link(setup, &dep.hash));
+                    (None, _) => {
+                        let _ = writeln!(body, "<li>{}</li>", narinfo_link(setup, &dep.hash));
+                    }
                 }
             }
+            body.push_str("</ul>\n");
         }
-        body.push_str("</ul>\n");
-    }
 
-    // Reverse dependencies: who requires this package.
-    let _ = writeln!(body, "<h2>Required by ({})</h2>", closure.reverse_total);
-    if closure.reverse.is_empty() {
-        body.push_str("<p class=\"dim\">No packages in this registry require it.</p>\n");
-    } else {
-        body.push_str("<ul class=\"deps\">\n");
-        for (name, version) in &closure.reverse {
-            let _ = writeln!(
-                body,
-                "<li><a href=\"/{}/-/packages/{}?release={}\">{}</a> <span class=\"dim\">{}</span></li>",
-                escape(slug),
-                urlencode(name),
-                urlencode(snapshot.unwrap_or_default()),
-                escape(name),
-                escape(version),
-            );
+        // Reverse dependencies: who requires this package.
+        let _ = writeln!(body, "<h4>Required by ({})</h4>", closure.reverse_total);
+        if closure.reverse.is_empty() {
+            body.push_str("<p class=\"dim\">No packages in this registry require it.</p>\n");
+        } else {
+            body.push_str("<ul class=\"deps\">\n");
+            for (name, version) in &closure.reverse {
+                let _ = writeln!(
+                    body,
+                    "<li><a href=\"/{}/-/packages/{}?release={}\">{}</a> <span class=\"dim\">{}</span></li>",
+                    escape(slug),
+                    urlencode(name),
+                    urlencode(snapshot.unwrap_or_default()),
+                    escape(name),
+                    escape(version),
+                );
+            }
+            body.push_str("</ul>\n");
+            if closure.reverse_total > closure.reverse.len() {
+                let _ = writeln!(
+                    body,
+                    "<p class=\"dim\">… and {} more</p>",
+                    closure.reverse_total - closure.reverse.len(),
+                );
+            }
         }
-        body.push_str("</ul>\n");
-        if closure.reverse_total > closure.reverse.len() {
-            let _ = writeln!(
-                body,
-                "<p class=\"dim\">… and {} more</p>",
-                closure.reverse_total - closure.reverse.len(),
-            );
-        }
+
+        body.push_str("</section>");
     }
+    body.push_str("</div>");
 
     for version in &detail.versions {
         let image_rows: Vec<Vec<String>> = version
@@ -2350,15 +2301,17 @@ fn selected(value: &str, current: Option<&str>) -> &'static str {
     }
 }
 
-fn image_select(
+/// Renders a shared catalog facet with an explicit unfiltered choice.
+pub(crate) fn catalog_select(
     name: &str,
+    label: &str,
     all_label: &str,
     values: &[(String, String)],
     current: Option<&str>,
 ) -> String {
     let mut html = format!(
         "<label>{}<select name=\"{}\"><option value=\"\">{}</option>",
-        escape(name),
+        escape(label),
         escape(name),
         escape(all_label),
     );
@@ -2656,8 +2609,8 @@ pub fn images_page(
     .into_iter()
     .filter_map(|(key, value)| value.map(|value| (key, value)))
     .collect::<Vec<_>>();
-    body.push_str(&context.selector(slug, &format!("/{slug}/-/images"), &selection_filters));
     body.push_str("<h1>Images</h1>\n");
+    body.push_str(&context.selector(slug, &format!("/{slug}/-/images"), &selection_filters));
     let channel_options = channels
         .iter()
         .map(|channel| (channel.name.clone(), channel.name.clone()))
@@ -2679,24 +2632,26 @@ pub fn images_page(
     ];
     let _ = write!(
         body,
-        "<form method=\"get\" data-live class=\"image-filters\"><div class=\"image-filter-fields\">{}{}{}{}{}\
-         <label>search<input type=\"search\" name=\"q\" value=\"{}\" \
-         placeholder=\"package, checksum, or filename\"></label></div>\
-         <div class=\"image-filter-actions\"><button>filter</button>\
-         <a href=\"/{}/-/images?release={}\">Clear filters</a></div></form>",
-        format!("<input type=\"hidden\" name=\"release\" value=\"{}\">", escape(context.query_value().unwrap_or(""))),
-        image_select("channel", "all channels", &channel_options, channel),
-        image_select(
-            "architecture",
-            "all architectures",
-            &architecture_options,
-            architecture
-        ),
-        image_select("format", "all formats", &format_options, format),
-        image_select("target", "all targets", &target_options, target),
+        "<form method=\"get\" data-live class=\"catalog-filters\" role=\"search\" aria-label=\"Search images\">\
+         <input type=\"hidden\" name=\"release\" value=\"{}\">\
+         <div class=\"catalog-search\"><label>Search<input type=\"search\" name=\"q\" value=\"{}\" \
+         placeholder=\"Package, checksum, or filename\"></label><button type=\"submit\">Search</button>\
+         <a href=\"/{}/-/images?release={}\">Clear filters</a></div>\
+         <div class=\"catalog-filter-fields\">{}{}{}{}</div></form>",
+        escape(context.query_value().unwrap_or("")),
         escape(browse.query.unwrap_or("")),
         escape(slug),
         urlencode(context.query_value().unwrap_or("")),
+        catalog_select("channel", "Channel", "All channels", &channel_options, channel),
+        catalog_select(
+            "architecture",
+            "Architecture",
+            "All architectures",
+            &architecture_options,
+            architecture
+        ),
+        catalog_select("format", "Format", "All formats", &format_options, format),
+        catalog_select("target", "Target", "All targets", &target_options, target),
     );
     if total_matches == 0 {
         body.push_str("<p class=\"dim\">No matching signed disk images are published.</p>\n");
@@ -2833,27 +2788,12 @@ pub fn releases_page(
     )
 }
 
-/// Render a committed cache stack as an ASCII tree of `try`/`mirror`/endpoint
-/// nodes, annotating each endpoint with the coverage its latest run reported.
-///
-/// `coverage_by_url` maps a cache URL to a short coverage label (e.g.
-/// `"100%"`, `"50%"`, `"unreachable"`); endpoints absent from the map render
-/// without an annotation. Mirror groups are labeled so a member shortfall
-/// reads as a replication failure rather than a fall-through.
-fn render_cache_stack(stack: &StackNode, coverage_by_url: &BTreeMap<&str, String>) -> String {
-    fn walk(
-        node: &StackNode,
-        prefix: &str,
-        coverage_by_url: &BTreeMap<&str, String>,
-        out: &mut String,
-    ) {
+/// Renders a committed cache stack as an ASCII tree.
+fn render_cache_stack(stack: &StackNode) -> String {
+    fn walk(node: &StackNode, prefix: &str, out: &mut String) {
         match node {
             StackNode::Endpoint(url) => {
-                let note = coverage_by_url
-                    .get(url.as_str())
-                    .map(|c| format!("  [{}]", escape(c)))
-                    .unwrap_or_default();
-                let _ = writeln!(out, "{prefix}{}{note}", escape(url));
+                let _ = writeln!(out, "{prefix}{}", escape(url));
             }
             StackNode::Try(members) | StackNode::Mirror(members) => {
                 let kind = if matches!(node, StackNode::Mirror(_)) {
@@ -2864,24 +2804,18 @@ fn render_cache_stack(stack: &StackNode, coverage_by_url: &BTreeMap<&str, String
                 let _ = writeln!(out, "{prefix}{kind}");
                 let child_prefix = format!("{prefix}  ");
                 for member in members {
-                    walk(member, &child_prefix, coverage_by_url, out);
+                    walk(member, &child_prefix, out);
                 }
             }
         }
     }
     let mut out = String::from("<h2>Cache stack</h2>\n<pre class=\"cache-stack\">");
-    walk(stack, "", coverage_by_url, &mut out);
+    walk(stack, "", &mut out);
     out.push_str("</pre>\n");
     out
 }
 
-/// The health page: the cache × coverage validation matrix plus the
-/// missing-hash drill-down for each cache with gaps.
-///
-/// When the registry committed a `[caches]` stack, the stack is rendered as an
-/// ASCII tree with per-endpoint coverage, and any `mirror` group whose
-/// members are not individually complete is flagged as a replication
-/// shortfall above the matrix.
+/// The health page: index status, committed cache policy, and delivery routes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RouteHealthRow {
     /// Stable route identity.
@@ -2898,44 +2832,47 @@ pub struct RouteHealthRow {
     pub capabilities: Vec<String>,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn health_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
-    runs: &[(ValidationRunRow, Vec<String>, Vec<String>)],
     stack: Option<&StackNode>,
-    cache_probes: &[CacheProbeRow],
-    repair_jobs: &[RepairJobRow],
     routes: &[RouteHealthRow],
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
-    /// Missing hashes shown per cache before collapsing to "and N more".
-    const MISSING_DISPLAY_CAP: usize = 100;
-
     let slug = &registry.slug;
     let mut body = registry_nav(slug, "health");
     body.push_str("<h1>Health</h1>\n");
 
     let (index_state, index_detail) = match status {
         Some(status) => {
-            let class = match status.state.as_str() {
-                "fresh" => "ok",
-                "indexing" | "stale" => "warn",
-                _ => "bad",
+            let (class, label) = match status.state.as_str() {
+                "fresh" => ("ok", "succeeded"),
+                "empty" => ("ok", "empty"),
+                "indexing" | "pending" => ("warn", "in progress"),
+                "stale" => ("warn", "unreachable"),
+                "failed" => ("bad", "failed"),
+                other => ("bad", other),
             };
-            let detail = status.error.clone().unwrap_or_else(|| {
-                let commit = status
-                    .last_indexed_commit
-                    .as_deref()
-                    .map(hash_value)
-                    .unwrap_or_else(|| "no indexed commit".to_string());
-                status.indexed_at.map_or(commit.clone(), |indexed_at| {
-                    format!("{commit}, indexed {}", ago(indexed_at))
-                })
-            });
+            let successful_refresh = if let Some(commit) = &status.last_indexed_commit {
+                let mut detail = format!(
+                    "Last successful refresh indexed commit {}",
+                    hash_value(commit)
+                );
+                if let Some(indexed_at) = status.indexed_at {
+                    let _ = write!(detail, " {}", ago(indexed_at));
+                }
+                format!("{detail}.")
+            } else {
+                "No indexed commit is available.".to_string()
+            };
+            let detail = if let Some(error) = &status.error {
+                format!("Refresh failed: {} {successful_refresh}", escape(error))
+            } else {
+                successful_refresh
+            };
             (
-                format!("<span class=\"{class}\">{}</span>", escape(&status.state)),
+                format!("<span class=\"{class}\">{}</span>", escape(label)),
                 detail,
             )
         }
@@ -2945,22 +2882,13 @@ pub fn health_page(
         ),
     };
     let enabled_routes = routes.iter().filter(|route| route.enabled).count();
-    let validation_state = if runs.is_empty() {
-        "<span class=\"warn\">not run</span>".to_string()
-    } else if runs
-        .iter()
-        .any(|(run, _, _)| !run.reachable || run.missing > 0)
-    {
-        "<span class=\"warn\">findings</span>".to_string()
+    let route_noun = if routes.len() == 1 {
+        "route is"
     } else {
-        "<span class=\"ok\">passing</span>".to_string()
+        "routes are"
     };
     let summary_rows = vec![
-        vec![
-            "Registry index".to_string(),
-            index_state,
-            escape(&index_detail),
-        ],
+        vec!["Registry index".to_string(), index_state, index_detail],
         vec![
             "Cache stack".to_string(),
             if stack.is_some() {
@@ -2969,18 +2897,9 @@ pub fn health_page(
                 "<span class=\"warn\">not configured</span>".to_string()
             },
             if stack.is_some() {
-                "Committed consumer cache policy is available.".to_string()
+                "A client cache policy is committed.".to_string()
             } else {
-                "No consumer cache endpoints are configured.".to_string()
-            },
-        ],
-        vec![
-            "Cache validation".to_string(),
-            validation_state,
-            if runs.is_empty() {
-                "No validation job has recorded a result.".to_string()
-            } else {
-                format!("Latest results for {} cache endpoint(s).", runs.len())
+                "No client cache policy is configured.".to_string()
             },
         ],
         vec![
@@ -2990,184 +2909,17 @@ pub fn health_page(
             } else {
                 "<span class=\"warn\">not configured</span>".to_string()
             },
-            format!("{enabled_routes} enabled of {} total.", routes.len()),
+            format!(
+                "{enabled_routes} of {} delivery {route_noun} enabled.",
+                routes.len()
+            ),
         ],
     ];
     body.push_str("<h2>Summary</h2>\n");
     body.push_str(&table(&["component", "state", "detail"], &summary_rows));
 
-    // Per-cache coverage labels, keyed by URL, drawn from the latest runs.
-    let coverage_by_url: BTreeMap<&str, String> = runs
-        .iter()
-        .map(|(run, _, _)| {
-            let label = if !run.reachable {
-                "unreachable".to_string()
-            } else if run.checked == 0 {
-                "n/a".to_string()
-            } else {
-                let covered = run.checked.saturating_sub(run.missing);
-                format!("{:.0}%", covered as f64 * 100.0 / run.checked as f64)
-            };
-            (run.cache_url.as_str(), label)
-        })
-        .collect();
-
     if let Some(stack) = stack {
-        body.push_str(&render_cache_stack(stack, &coverage_by_url));
-        // Flag mirror groups whose members are not all complete.
-        let missing_by_url: BTreeMap<&str, u64> = runs
-            .iter()
-            .map(|(run, _, _)| (run.cache_url.as_str(), run.missing))
-            .collect();
-        let mut shortfalls = String::new();
-        for (group_index, group) in stack.mirror_groups().iter().enumerate() {
-            for member in group {
-                let missing = missing_by_url.get(member.as_str()).copied().unwrap_or(0);
-                if missing > 0 {
-                    let _ = writeln!(
-                        shortfalls,
-                        "<li>mirror group {group_index}: <code>{}</code> missing {missing}</li>",
-                        escape(member),
-                    );
-                }
-            }
-        }
-        if !shortfalls.is_empty() {
-            body.push_str("<h2>Mirror replication shortfalls</h2>\n<ul class=\"shortfall\">\n");
-            body.push_str(&shortfalls);
-            body.push_str("</ul>\n");
-        }
-    }
-
-    if runs.is_empty() {
-        body.push_str("<h2>Cache validation</h2>\n");
-        if stack.is_some() {
-            body.push_str(
-                "<p class=\"warn\">Not yet validated. No validation job has recorded a result \n\
-                 for the current cache stack.</p>\n",
-            );
-        } else {
-            body.push_str(
-                "<p class=\"dim\">No cache stack is configured, so there is nothing to \n\
-                 validate.</p>\n",
-            );
-        }
-    } else {
-        body.push_str("<h2>Cache validation</h2>\n");
-        let rows: Vec<Vec<String>> = runs
-            .iter()
-            .map(|(run, _, corrupt)| {
-                let [status, coverage, checked, probed] = validation_cells(Some(run));
-                // Missing here is the *absent* count (total problems minus
-                // corruption), so the two columns read independently.
-                let corrupt_count = corrupt.len() as u64;
-                let absent = run.missing.saturating_sub(corrupt_count);
-                let corrupt_cell = if corrupt_count > 0 {
-                    format!("<span class=\"bad\">{corrupt_count}</span>")
-                } else {
-                    "0".to_string()
-                };
-                vec![
-                    format!("<code>{}</code>", escape(&run.cache_url)),
-                    escape(&run.depth),
-                    checked,
-                    absent.to_string(),
-                    corrupt_cell,
-                    coverage,
-                    status,
-                    probed,
-                ]
-            })
-            .collect();
-        body.push_str(&table(
-            &[
-                "cache", "depth", "checked", "missing", "corrupt", "coverage", "status", "finished",
-            ],
-            &rows,
-        ));
-
-        for (run, missing, corrupt) in runs {
-            if !missing.is_empty() {
-                let _ = write!(
-                    body,
-                    "<h2>Missing from {}</h2>\n<pre>",
-                    escape(&run.cache_url),
-                );
-                for hash in missing.iter().take(MISSING_DISPLAY_CAP) {
-                    let _ = writeln!(body, "{}", escape(hash));
-                }
-                if missing.len() > MISSING_DISPLAY_CAP {
-                    let _ = writeln!(body, "… and {} more", missing.len() - MISSING_DISPLAY_CAP);
-                }
-                body.push_str("</pre>\n");
-            }
-            // Deep-validation corruption is flagged distinctly: these hashes
-            // are *present* but their bytes do not match — a copy cannot
-            // repair them, the cache must be re-uploaded from a good source.
-            if !corrupt.is_empty() {
-                let _ = write!(
-                    body,
-                    "<h2 class=\"bad\">Corrupt in {}</h2>\n\
-                     <p class=\"dim\">Content hash mismatch — re-upload required \
-                     (not repairable by copy).</p>\n<pre>",
-                    escape(&run.cache_url),
-                );
-                for hash in corrupt.iter().take(MISSING_DISPLAY_CAP) {
-                    let _ = writeln!(body, "{}", escape(hash));
-                }
-                if corrupt.len() > MISSING_DISPLAY_CAP {
-                    let _ = writeln!(body, "… and {} more", corrupt.len() - MISSING_DISPLAY_CAP);
-                }
-                body.push_str("</pre>\n");
-            }
-        }
-    }
-
-    if !repair_jobs.is_empty() {
-        body.push_str("<h2>Repair history</h2>\n");
-        let rows: Vec<Vec<String>> = repair_jobs
-            .iter()
-            .map(|job| {
-                let class = match job.status.as_str() {
-                    "done" => "ok",
-                    "plan_only" => "warn",
-                    _ => "bad",
-                };
-                vec![
-                    hash_value(&job.store_hash),
-                    format!("<code>{}</code>", escape(&job.cache_url)),
-                    format!("<code>{}</code>", escape(&job.source_cache_url)),
-                    format!("<span class=\"{class}\">{}</span>", escape(&job.status)),
-                    escape(job.error.as_deref().unwrap_or("")),
-                    ago(job.created_at),
-                ]
-            })
-            .collect();
-        body.push_str(&table(
-            &["hash", "target", "source", "status", "error", "when"],
-            &rows,
-        ));
-    }
-
-    if !cache_probes.is_empty() {
-        body.push_str("<h2>Cache freshness</h2>\n");
-        let rows: Vec<Vec<String>> = cache_probes
-            .iter()
-            .map(|probe| {
-                let class = match probe.status.as_str() {
-                    "ok" => "ok",
-                    "stale" => "warn",
-                    _ => "bad",
-                };
-                vec![
-                    format!("<code>{}</code>", escape(&probe.cache_url)),
-                    format!("<span class=\"{class}\">{}</span>", escape(&probe.status)),
-                    format!("{} ms", probe.latency_ms),
-                    ago(probe.checked_at),
-                ]
-            })
-            .collect();
-        body.push_str(&table(&["cache", "status", "latency", "checked"], &rows));
+        body.push_str(&render_cache_stack(stack));
     }
 
     if !routes.is_empty() {
@@ -3413,8 +3165,8 @@ mod tests {
         assert!(default.contains("name=\"architecture\""));
         assert!(default.contains("name=\"format\""));
         assert!(default.contains("name=\"target\""));
-        assert!(default.contains("class=\"image-filter-fields\""));
-        assert!(default.contains("class=\"image-filter-actions\""));
+        assert!(default.contains("class=\"catalog-filter-fields\""));
+        assert!(default.contains("class=\"catalog-search\""));
         assert!(default.contains("class=\"image-summary\""));
         assert!(default.contains("class=\"image-facts\""));
         assert!(default.contains("<th scope=\"row\">file SHA-256</th>"));
@@ -3779,7 +3531,7 @@ mod tests {
             &registry,
             None,
             &detail,
-            &closure,
+            std::slice::from_ref(&closure),
             &setup,
             &release_context("1.0.0"),
             None,
@@ -3798,7 +3550,7 @@ mod tests {
             &registry,
             None,
             &detail,
-            &closure,
+            std::slice::from_ref(&closure),
             &setup,
             &release_context("1.0.0"),
             None,
@@ -3829,7 +3581,8 @@ mod tests {
             }],
         };
         let closure = PackageClosure {
-            platform: Some("x86_64-linux".into()),
+            platform: "x86_64-linux".into(),
+            version: "8.5.0".into(),
             dependencies: vec![
                 ResolvedDependency {
                     hash: "bbbb".into(),
@@ -3852,7 +3605,7 @@ mod tests {
             &registry,
             None,
             &detail,
-            &closure,
+            std::slice::from_ref(&closure),
             &setup,
             &release_context("1.0.0"),
             None,
@@ -3873,6 +3626,13 @@ mod tests {
         // A resolved dependency links to its package page; an unresolved one
         // falls back to its narinfo permalink.
         assert!(html.contains("Dependencies (2)"));
+        assert!(html.contains("<h3>x86_64-linux</h3>"));
+        assert!(html.contains("Version <code>8.5.0</code> in this release."));
+        assert_eq!(
+            html.matches("class=\"package-dependency-platform\"")
+                .count(),
+            1
+        );
         assert!(html.contains("<a href=\"/demo/-/packages/zlib?release=1.0.0\">zlib</a>"));
         assert!(html.contains("href=\"http://hub.example/demo/cccc.narinfo\""));
         // Reverse dependency.
@@ -3918,7 +3678,7 @@ mod tests {
             &registry,
             None,
             &detail,
-            &PackageClosure::default(),
+            &[],
             &setup,
             &release_context("1.0.0"),
             None,
@@ -3955,7 +3715,7 @@ mod tests {
             &registry,
             None,
             &detail,
-            &PackageClosure::default(),
+            &[],
             &setup,
             &release_context("1.0.0"),
             None,
@@ -3995,7 +3755,7 @@ mod tests {
             &registry,
             None,
             &detail,
-            &PackageClosure::default(),
+            &[],
             &setup,
             &release_context("1.0.0"),
             Some(&reference),
@@ -4159,7 +3919,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn instance_home_filters_and_escapes_state() {
+    async fn instance_home_lists_registry_identity_and_filters() {
         let rows = vec![(
             registry(),
             Some(IndexStatus {
@@ -4176,8 +3936,13 @@ mod tests {
             }),
         )];
         let html = instance_home(&rows, None, 1, Instant::now(), &anon());
-        assert!(html.contains("&lt;bad&amp;state&gt;"));
-        assert!(html.contains(">outdated</span>"));
+        assert!(html.contains(">slug</th>"));
+        assert!(html.contains(">name</th>"));
+        assert!(html.contains(">description</th>"));
+        assert!(html.contains(">Demo</td>"));
+        assert!(html.contains(">Fixture registry</td>"));
+        assert!(!html.contains(">index</th>"));
+        assert!(!html.contains(">outdated</span>"));
         assert!(!html.contains("<bad&state>"));
 
         let html = instance_home(&rows, Some("fixture"), 1, Instant::now(), &anon());
@@ -4385,7 +4150,7 @@ mod tests {
     }
 
     #[test]
-    fn health_page_empty_validation_state_still_summarizes_live_health() {
+    fn health_page_summarizes_live_health() {
         let status = IndexStatus {
             state: "fresh".into(),
             error: None,
@@ -4394,7 +4159,7 @@ mod tests {
             description: None,
             readme: None,
             support: None,
-            indexed_at: Some(0),
+            indexed_at: Some(crate::clock::now_unix_secs() - 2 * 86_400),
             generation: 1,
             content_digest: None,
         };
@@ -4411,10 +4176,7 @@ mod tests {
         let html = health_page(
             &registry(),
             Some(&status),
-            &[],
             Some(&stack),
-            &[],
-            &[],
             &routes,
             Instant::now(),
             &anon(),
@@ -4422,74 +4184,16 @@ mod tests {
 
         assert!(html.contains("<h2>Summary</h2>"));
         assert!(html.contains("Registry index"));
-        assert!(html.contains("Cache validation"));
-        assert!(html.contains("No validation job has recorded a result."));
-        assert!(html.contains("1 enabled of 1 total."));
-        assert!(html.contains("Not yet validated"));
-        assert!(!html.contains("No validation runs recorded yet"));
+        assert!(html.contains("<span class=\"ok\">succeeded</span>"));
+        assert!(html.contains("Last successful refresh indexed commit"));
+        assert!(html.contains("<span class=\"hash-control\">"));
+        assert!(html.contains("2d ago"));
+        assert!(!html.contains("&lt;span class=&quot;hash-control&quot;"));
+        assert!(html.contains("1 of 1 delivery route is enabled."));
     }
 
-    #[tokio::test]
-    async fn health_page_caps_missing_drilldown() {
-        let run = ValidationRunRow {
-            id: 1,
-            cache_url: "https://cache.example".into(),
-            depth: "presence".into(),
-            checked: 200,
-            missing: 150,
-            reachable: true,
-            finished_at: 0,
-        };
-        let missing: Vec<String> = (0..150).map(|i| format!("hash{i:03}")).collect();
-        let html = health_page(
-            &registry(),
-            None,
-            &[(run, missing, Vec::new())],
-            None,
-            &[],
-            &[],
-            &[],
-            Instant::now(),
-            &anon(),
-        );
-        assert!(html.contains("Missing from https://cache.example"));
-        assert!(html.contains("hash000"));
-        assert!(html.contains("hash099"));
-        assert!(!html.contains("hash100"), "capped at 100 entries");
-        assert!(html.contains("… and 50 more"));
-        assert!(html.contains("⚠ 150 missing"));
-    }
-
-    #[tokio::test]
-    async fn health_page_renders_stack_tree_and_mirror_shortfall() {
-        let runs = vec![
-            (
-                ValidationRunRow {
-                    id: 1,
-                    cache_url: "https://a".into(),
-                    depth: "presence".into(),
-                    checked: 2,
-                    missing: 0,
-                    reachable: true,
-                    finished_at: 0,
-                },
-                Vec::new(),
-                Vec::new(),
-            ),
-            (
-                ValidationRunRow {
-                    id: 2,
-                    cache_url: "https://b".into(),
-                    depth: "presence".into(),
-                    checked: 2,
-                    missing: 1,
-                    reachable: true,
-                    finished_at: 0,
-                },
-                vec!["xyz".into()],
-                Vec::new(),
-            ),
-        ];
+    #[test]
+    fn health_page_renders_stack_tree() {
         let stack = StackNode::Try(vec![
             StackNode::Mirror(vec![
                 StackNode::Endpoint("https://a".into()),
@@ -4497,29 +4201,10 @@ mod tests {
             ]),
             StackNode::Endpoint("https://c".into()),
         ]);
-        let probes = vec![
-            CacheProbeRow {
-                cache_url: "https://a".into(),
-                status: "ok".into(),
-                observed_nix_cache_info: true,
-                latency_ms: 12,
-                checked_at: 0,
-            },
-            CacheProbeRow {
-                cache_url: "https://c".into(),
-                status: "unreachable".into(),
-                observed_nix_cache_info: false,
-                latency_ms: 0,
-                checked_at: 0,
-            },
-        ];
         let html = health_page(
             &registry(),
             None,
-            &runs,
             Some(&stack),
-            &probes,
-            &[],
             &[],
             Instant::now(),
             &anon(),
@@ -4527,76 +4212,8 @@ mod tests {
         assert!(html.contains("Cache stack"));
         assert!(html.contains("try (fall-through"));
         assert!(html.contains("mirror (every member must be complete)"));
-        // Per-endpoint coverage annotations.
-        assert!(html.contains("https://a  [100%]"));
-        assert!(html.contains("https://b  [50%]"));
-        // The incomplete mirror member is flagged as a shortfall.
-        assert!(html.contains("Mirror replication shortfalls"));
-        assert!(html.contains("mirror group 0: <code>https://b</code> missing 1"));
-        // The cache-freshness table surfaces each probe's status.
-        assert!(html.contains("Cache freshness"));
-        assert!(html.contains("12 ms"));
-        assert!(html.contains("unreachable"));
-    }
-
-    #[tokio::test]
-    async fn health_page_flags_corruption_and_repair_history() {
-        let run = ValidationRunRow {
-            id: 1,
-            cache_url: "https://cache.example".into(),
-            depth: "deep".into(),
-            checked: 10,
-            missing: 2,
-            reachable: true,
-            finished_at: 0,
-        };
-        // One missing, one corrupt — the page must distinguish them.
-        let missing = vec!["miss000".to_string()];
-        let corrupt = vec!["bad000".to_string()];
-        let repair_jobs = vec![
-            RepairJobRow {
-                id: 1,
-                cache_url: "https://cache.example".into(),
-                store_hash: "miss000".into(),
-                source_cache_url: "file:///srv/good".into(),
-                status: "done".into(),
-                error: None,
-                created_at: 0,
-                finished_at: Some(1),
-            },
-            RepairJobRow {
-                id: 2,
-                cache_url: "https://external.example".into(),
-                store_hash: "miss001".into(),
-                source_cache_url: "file:///srv/good".into(),
-                status: "plan_only".into(),
-                error: None,
-                created_at: 0,
-                finished_at: Some(1),
-            },
-        ];
-        let html = health_page(
-            &registry(),
-            None,
-            &[(run, missing, corrupt)],
-            None,
-            &[],
-            &repair_jobs,
-            &[],
-            Instant::now(),
-            &anon(),
-        );
-        // Corruption is flagged distinctly from absence.
-        assert!(html.contains("Corrupt in https://cache.example"));
-        assert!(html.contains("bad000"));
-        assert!(html.contains("re-upload required"));
-        assert!(html.contains("Missing from https://cache.example"));
-        assert!(html.contains("miss000"));
-        // The validation table carries a corrupt column.
-        assert!(html.contains("<th scope=\"col\">corrupt</th>"));
-        // The repair history surfaces both a done and a plan-only job.
-        assert!(html.contains("Repair history"));
-        assert!(html.contains("done"));
-        assert!(html.contains("plan_only"));
+        assert!(html.contains("https://a"));
+        assert!(html.contains("https://b"));
+        assert!(html.contains("https://c"));
     }
 }

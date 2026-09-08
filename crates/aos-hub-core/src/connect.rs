@@ -3841,12 +3841,13 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         r = r
             .route("/_assets/style.css", get(assets::stylesheet))
             .route("/_assets/app.js", get(assets::app_js))
+            .route("/_assets/theme.js", get(assets::theme_js))
             .route("/_assets/{asset}", get(assets::console_asset))
             .route(
-                "/_assets/jetbrains-mono-regular.woff2",
-                get(assets::font_regular),
+                "/_assets/geist-sans-variable.woff2",
+                get(assets::font_sans),
             )
-            .route("/_assets/jetbrains-mono-bold.woff2", get(assets::font_bold))
+            .route("/_assets/geist-mono-variable.woff2", get(assets::font_mono))
             .route("/_assets/OFL.txt", get(assets::font_license));
         // Crawler-control and LLM-summary documents, served from the shared
         // router so both shells expose identical output. The per-registry forms gate on

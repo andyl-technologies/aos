@@ -436,13 +436,15 @@ in
           mkdir -p "$out/assets/_assets"
           cp aos-hub-core/src/web/static_assets/style.css "$out/assets/_assets/style.css"
           cp aos-hub-core/src/web/static_assets/app.js    "$out/assets/_assets/app.js"
-          cp aos-hub-core/src/web/static_assets/JetBrainsMono-Regular.woff2 \
-            "$out/assets/_assets/jetbrains-mono-regular.woff2"
-          cp aos-hub-core/src/web/static_assets/JetBrainsMono-Bold.woff2 \
-            "$out/assets/_assets/jetbrains-mono-bold.woff2"
+          cp aos-hub-core/src/web/static_assets/theme.js  "$out/assets/_assets/theme.js"
+          cp aos-hub-core/src/web/static_assets/Geist-Variable.woff2 \
+            "$out/assets/_assets/geist-sans-variable.woff2"
+          cp aos-hub-core/src/web/static_assets/GeistMono-Variable.woff2 \
+            "$out/assets/_assets/geist-mono-variable.woff2"
           cp aos-hub-core/src/web/static_assets/OFL.txt   "$out/assets/_assets/OFL.txt"
           cat aos-hub-core/src/web/static_assets/style.css \
             aos-hub-core/src/web/static_assets/app.js \
+            aos-hub-core/src/web/static_assets/theme.js \
             ${buildConsoleDist}/hub-console.js \
             ${buildConsoleDist}/hub-console_bg.wasm \
             ${buildConsoleDist}/hub-console.css \

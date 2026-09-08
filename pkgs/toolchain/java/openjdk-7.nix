@@ -2203,20 +2203,13 @@ in
                   chmod +x $TOOLS/gjavah-wrapper
 
                   # Build up to and including boot JDK + stage2 bootstrap setup.
-                  # IcedTea 2.6 drives the same boot javac outputs from several
-                  # recursive make branches. Parallel execution can corrupt
-                  # javac 7's shared class-writing state and abort in
-                  # ClassWriter.writePool or leave an enum class without its
-                  # synthetic values() method. The configured PARALLEL_JOBS is
-                  # propagated independently to recursive OpenJDK builds, so
-                  # both that knob and the outer make jobserver must be serial.
                   # JAVAH_CMD is passed on the make command line to override the
                   # OpenJDK build system's computed value. JAVAH_CMD is NOT defined
                   # in source .gmk files — it's generated at build time from BOOTDIR
                   # and other variables. The computed value uses `java -jar javah.jar`
                   # which crashes with NPE under JamVM. Make command-line variables
                   # override all makefile-level assignments including computed ones.
-                  make -j1 PARALLEL_JOBS=1 \
+                  make -j"$NIX_BUILD_CORES" PARALLEL_JOBS="$NIX_BUILD_CORES" \
                     stamps/bootstrap-directory-symlink-stage2.stamp \
                     ALT_UNIXCOMMAND_PATH=$TOOLS/ \
                     ALT_USRBIN_PATH=$TOOLS/ \
@@ -2265,7 +2258,7 @@ in
                   fi
 
                   # Continue the full build (make skips already-completed targets)
-                  make -j1 \
+                  make -j"$NIX_BUILD_CORES" \
                     ALT_UNIXCOMMAND_PATH=$TOOLS/ \
                     ALT_USRBIN_PATH=$TOOLS/ \
                     ALT_DEVTOOLS_PATH=$TOOLS/ \

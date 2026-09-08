@@ -12,7 +12,6 @@ use aos_hub::db::{Database, SurfaceTarget};
 use aos_hub::fetch::LocalFsFetch;
 use aos_hub::indexer::index_and_record;
 use aos_hub::server::{router, AppState};
-use aos_hub::validation::validate_presence;
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use tower::ServiceExt;
@@ -142,7 +141,10 @@ async fn static_assets_are_served_by_the_shared_router() {
     for (uri, ctype) in [
         ("/_assets/style.css", "text/css"),
         ("/_assets/app.js", "text/javascript"),
-        ("/_assets/jetbrains-mono-regular.woff2", "font/woff2"),
+        ("/_assets/theme.js", "text/javascript"),
+        ("/_assets/geist-sans-variable.woff2", "font/woff2"),
+        ("/_assets/geist-mono-variable.woff2", "font/woff2"),
+        ("/_assets/OFL.txt", "text/plain; charset=utf-8"),
     ] {
         let (status, headers, body) = get(&app, uri).await;
         assert_eq!(status, StatusCode::OK, "{uri} must be served");
@@ -154,7 +156,25 @@ async fn static_assets_are_served_by_the_shared_router() {
             "{uri} content-type"
         );
         assert!(!body.is_empty(), "{uri} non-empty");
+
+        if ctype == "font/woff2" {
+            assert!(body.starts_with("wOF2"), "{uri} must contain a WOFF2 font");
+            assert_eq!(
+                headers.get(header::CACHE_CONTROL).unwrap(),
+                "public, max-age=86400",
+                "stable font URLs must expire after an upgrade"
+            );
+        }
     }
+
+    let (_, _, page) = get(&app, "/demo/-/releases").await;
+    let theme_script = page.find("/_assets/theme.js?v=").unwrap();
+    let stylesheet = page.find("/_assets/style.css?v=").unwrap();
+    assert!(
+        theme_script < stylesheet,
+        "saved appearance applies before paint"
+    );
+    assert!(page.contains("data-theme-toggle"));
 }
 
 #[tokio::test]
@@ -171,7 +191,7 @@ async fn security_headers_on_every_route_class() {
         "/demo/-/packages",                           // /-/ page
         "/demo/HEAD",                                 // machine path
         "/_assets/style.css",                         // stylesheet
-        "/_assets/jetbrains-mono-regular.woff2",      // embedded font
+        "/_assets/geist-sans-variable.woff2",         // embedded font
         "/aos.hub.v1.RegistryService/ListRegistries", // RPC path
         "/demo/does-not-exist",                       // 404s carry the headers too
     ] {
@@ -217,35 +237,6 @@ async fn javascript_homepage_is_not_a_link() {
         "javascript: homepage must not become a link: {body}"
     );
     assert!(body.contains("javascript:alert(1)"), "shown as plain text");
-}
-
-#[tokio::test]
-async fn health_page_shows_unreachable_cache_after_validation() {
-    let dir = tempfile::tempdir().unwrap();
-    let surface = dir.path().join("surface");
-    std::fs::create_dir_all(&surface).unwrap();
-    let fixture = common::standard_registry(&surface);
-    let (app, db) = serve_fixture(&surface, &fixture).await;
-
-    // Validation state belongs on the dedicated health page.
-    let (_, _, health) = get(&app, "/demo/-/health").await;
-    assert!(health.contains("Not yet validated"));
-
-    // The fixture's committed cache (https://cache.example.com) does not
-    // resolve, so presence validation records it unreachable.
-    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
-    validate_presence(&db, &registry).await.unwrap();
-
-    let (status, _, body) = get(&app, "/demo/-/health").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("https://cache.example.com/"), "{body}");
-    assert!(body.contains("unreachable"), "{body}");
-    assert!(body.contains("presence"), "{body}");
-
-    // Overview links to Health without duplicating its cache table.
-    let (_, _, home) = get(&app, "/demo/").await;
-    assert!(!home.contains("unreachable"), "{home}");
-    assert!(home.contains("/demo/-/health"), "{home}");
 }
 
 #[tokio::test]

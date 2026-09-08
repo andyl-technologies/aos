@@ -25,6 +25,8 @@ pub struct ReleaseContainerRow {
     pub package: String,
     /// Immutable multi-platform index or manifest digest.
     pub digest: aos_oci_types::Sha256Digest,
+    /// Distinct runnable OCI architectures beneath this exact signed root.
+    pub architectures: Vec<String>,
 }
 
 impl Database {
@@ -316,8 +318,9 @@ impl Database {
         &self,
         registry_id: i64,
     ) -> Result<Vec<ReleaseContainerRow>> {
-        self.backend.query(
-            "SELECT rel.semver, repository.name, root.container_name, root.index_digest
+        let rows = self.backend.query(
+            "SELECT DISTINCT rel.semver, repository.name, root.container_name, root.index_digest,
+                             projection.architecture
              FROM oci_release_roots root JOIN releases rel
                ON rel.id = root.release_id AND rel.registry_id = root.registry_id
               AND rel.semver = root.release_tag AND rel.commit_oid = root.source_commit
@@ -325,17 +328,42 @@ impl Database {
              JOIN oci_repositories repository
                ON repository.id = root.repository_id AND repository.registry_id = root.registry_id
               AND repository.lifecycle_state = 'active'
-             JOIN oci_blobs blob ON blob.registry_id = root.registry_id AND blob.digest = root.index_digest
-              AND blob.lifecycle_state = 'active'
+             JOIN oci_blobs object_blob ON object_blob.registry_id = root.registry_id AND object_blob.digest = root.index_digest
+              AND object_blob.lifecycle_state = 'active'
+             LEFT JOIN oci_image_config_projections projection
+               ON projection.registry_id = root.registry_id AND projection.repository_id = root.repository_id
+              AND projection.root_digest = root.index_digest
              WHERE root.registry_id = ?1
-             ORDER BY rel.semver, repository.name, root.container_name",
+             ORDER BY rel.semver, repository.name, root.container_name, root.index_digest, projection.architecture",
             &vals![registry_id],
-        ).await?.into_iter().map(|row| Ok(ReleaseContainerRow {
-            release: row.get(0)?,
-            repository: aos_oci_types::RepositoryName::parse(&row.get::<String>(1)?)?,
-            package: row.get(2)?,
-            digest: aos_oci_types::Sha256Digest::parse(&row.get::<String>(3)?)?,
-        })).collect()
+        ).await?;
+
+        // A multi-platform root remains one catalog row. Architecture metadata
+        // is bound to its immutable root and repository, never a mutable tag.
+        let mut grouped = std::collections::BTreeMap::<
+            (String, String, String, String),
+            std::collections::BTreeSet<String>,
+        >::new();
+        for row in rows {
+            let key = (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?);
+            let architectures = grouped.entry(key).or_default();
+            if let Some(architecture) = row.get::<Option<String>>(4)? {
+                architectures.insert(architecture);
+            }
+        }
+
+        grouped
+            .into_iter()
+            .map(|((release, repository, package, digest), architectures)| {
+                Ok(ReleaseContainerRow {
+                    release,
+                    repository: aos_oci_types::RepositoryName::parse(&repository)?,
+                    package,
+                    digest: aos_oci_types::Sha256Digest::parse(&digest)?,
+                    architectures: architectures.into_iter().collect(),
+                })
+            })
+            .collect()
     }
 }
 
