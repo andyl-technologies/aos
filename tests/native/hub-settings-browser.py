@@ -1016,6 +1016,94 @@ class HubSettingsSmoke:
             "resumed workflow keeps unmet provider prerequisites explicit",
         )
 
+    def branding(self):
+        """Reviews, applies, and restores every branding field in the local fixture."""
+        self.navigate("/-/instance/branding")
+        self.wait_for("document.querySelector('.editor-form textarea') !== null", "branding editor")
+        read_fields = """
+            Object.fromEntries(Array.from(document.querySelectorAll('.editor-form label')).map(label => [
+                label.querySelector('span').firstChild.textContent.trim(),
+                label.querySelector('input, textarea').value
+            ]))
+        """
+        original = self.chrome.evaluate(read_fields)
+        trial = {
+            "Site title": "Branding test <Hub>",
+            "Tagline": "Packages & images",
+            "Announcement": "Maintenance <notice>",
+            "Terms URL": "https://example.test/terms",
+            "Privacy URL": "https://example.test/privacy",
+            "Support URL": "https://example.test/support",
+        }
+
+        def review(values):
+            self.navigate("/-/instance/branding")
+            self.wait_for("document.querySelector('.editor-form textarea') !== null", "branding editor")
+            self.chrome.evaluate(f"""
+                (() => {{
+                    const values = {json.dumps(values)};
+                    for (const label of document.querySelectorAll('.editor-form label')) {{
+                        const name = label.querySelector('span').firstChild.textContent.trim();
+                        const input = label.querySelector('input, textarea');
+                        input.value = values[name];
+                        input.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    }}
+                    document.querySelector('.editor-form').requestSubmit();
+                }})()
+            """)
+            self.wait_for("document.querySelector('.review-card') !== null", "branding review")
+            return self.chrome.evaluate("Array.from(document.querySelectorAll('.review-card li')).map(item => item.textContent)")
+
+        def apply(values):
+            self.chrome.evaluate("document.querySelector('.review-actions .button').click()")
+            brand = values["Site title"] or "AOS Hub"
+            self.wait_for(
+                "document.querySelector('.review-card') === null && "
+                "document.querySelector('.editor-form textarea') !== null && "
+                f"document.querySelector('.brand')?.textContent === {json.dumps(brand)}",
+                "saved branding and refreshed shell",
+            )
+            self.check(self.chrome.evaluate(read_fields) == values, "all branding fields persist after apply")
+            self.check(self.chrome.evaluate("document.title") == f"Branding — {brand}", "saved branding controls the tab title")
+
+        try:
+            effects = review(trial)
+            self.check(len(effects) == len(trial), "branding review lists all six changed fields")
+            for name, value in trial.items():
+                self.check(any(item.startswith(name + ": ") and " → " in item and value in item for item in effects), f"branding diff shows the new {name}")
+            self.check(
+                self.chrome.evaluate("document.querySelector('.brand').textContent") == (original["Site title"] or "AOS Hub"),
+                "review leaves the live branding unchanged",
+            )
+            self.screenshot_pair("branding-review")
+            apply(trial)
+            self.check(self.chrome.evaluate("document.querySelector('.tagline').textContent") == trial["Tagline"], "saved tagline is visible")
+            self.check(self.chrome.evaluate("document.querySelector('.announce').textContent") == trial["Announcement"], "saved announcement is rendered as text")
+            for field in ["Terms URL", "Privacy URL", "Support URL"]:
+                self.check(self.chrome.evaluate(f"document.querySelector('footer a[href=\"{trial[field]}\"]') !== null"), f"saved {field} appears in the footer")
+            self.screenshot_pair("branding-applied")
+
+            origin = self.chrome.evaluate("performance.timeOrigin")
+            self.chrome.evaluate("document.querySelector('.settings-nav a[href=\"/-/instance/resource-defaults\"]').click()")
+            self.wait_for("location.pathname === '/-/instance/resource-defaults' && document.title.startsWith('Resource defaults — ')", "branded SPA navigation")
+            self.check(self.chrome.evaluate("document.title") == f"Resource defaults — {trial['Site title']}", "SPA navigation preserves the configured title")
+            self.chrome.evaluate("history.back()")
+            self.wait_for("location.pathname === '/-/instance/branding' && document.title.startsWith('Branding — ')", "branded back navigation")
+            self.check(self.chrome.evaluate("performance.timeOrigin") == origin, "branding titles update without reloading SPA navigation")
+            self.check(self.chrome.evaluate("document.title") == f"Branding — {trial['Site title']}", "back navigation restores the branded page title")
+
+            self.navigate("/")
+            self.check(self.chrome.evaluate("document.title").endswith(" — " + trial["Site title"]), "public browse uses the configured tab title")
+            self.check(self.chrome.evaluate("document.querySelector('.brand').textContent") == trial["Site title"], "public browse uses the saved site title")
+            self.check(self.chrome.evaluate("document.querySelector('.announce').textContent") == trial["Announcement"], "public browse uses the saved announcement")
+        finally:
+            review(original)
+            apply(original)
+
+        effects = review(original)
+        self.check(effects == ["No instance settings changes"], "unchanged branding review omits artificial effects")
+        self.chrome.evaluate("document.querySelector('.review-actions .secondary-button').click()")
+
     def review_identity_and_invalidate(self):
         self.navigate("/-/instance/identity-and-signup")
         self.assert_settings_page("instance identity settings")
@@ -1126,6 +1214,7 @@ class HubSettingsSmoke:
         )
         self.screenshot_pair("instance-overview")
         self.appearance()
+        self.branding()
         self.exercise_inflight_plan_navigation()
         self.review_identity_and_invalidate()
 
