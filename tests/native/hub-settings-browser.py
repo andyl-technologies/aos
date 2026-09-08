@@ -1048,9 +1048,10 @@ class HubSettingsSmoke:
                         input.value = values[name];
                         input.dispatchEvent(new Event('input', {{bubbles: true}}));
                     }}
-                    document.querySelector('.editor-form').requestSubmit();
                 }})()
             """)
+            # Submit in the next browser task, after draft invalidation has run.
+            self.chrome.evaluate("document.querySelector('.editor-form').requestSubmit()")
             self.wait_for("document.querySelector('.review-card') !== null", "branding review")
             return self.chrome.evaluate("Array.from(document.querySelectorAll('.review-card li')).map(item => item.textContent)")
 
@@ -1092,7 +1093,8 @@ class HubSettingsSmoke:
             self.check(self.chrome.evaluate("performance.timeOrigin") == origin, "branding titles update without reloading SPA navigation")
             self.check(self.chrome.evaluate("document.title") == f"Branding — {trial['Site title']}", "back navigation restores the branded page title")
 
-            self.navigate("/")
+            self.chrome.call("Page.navigate", {"url": self.base_url + "/"})
+            self.wait_for("location.pathname === '/' && document.readyState === 'complete' && document.querySelector('.brand') !== null", "public browse page")
             self.check(self.chrome.evaluate("document.title").endswith(" — " + trial["Site title"]), "public browse uses the configured tab title")
             self.check(self.chrome.evaluate("document.querySelector('.brand').textContent") == trial["Site title"], "public browse uses the saved site title")
             self.check(self.chrome.evaluate("document.querySelector('.announce').textContent") == trial["Announcement"], "public browse uses the saved announcement")
