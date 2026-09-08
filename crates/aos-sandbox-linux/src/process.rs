@@ -23,6 +23,19 @@ const MAXIMUM_ARGUMENTS: usize = 64;
 const MAXIMUM_ARGUMENT_BYTES: usize = 64 * 1024;
 const DUPLICATE_FD_MINIMUM: libc::c_int = 64;
 
+/// Permanently disables core dumps for the calling process.
+///
+/// Privileged short-lived workers call this before accepting retained
+/// descriptors or crossing namespace boundaries. The setting is process-wide
+/// and intentionally has no restoration operation.
+///
+/// # Errors
+///
+/// Returns an error if Linux cannot disable or verify process dumpability.
+pub fn disable_core_dumps() -> Result<()> {
+    uapi::disable_process_dumpability()
+}
+
 /// Configures one exact, bounded child invocation.
 #[derive(Clone, Copy, Debug)]
 pub struct FixedProcessRequest<'a> {

@@ -489,7 +489,8 @@ fn syscall_errno(error: &Error) -> Option<i32> {
         Error::InvalidInput { .. }
         | Error::WrongDescriptorType { .. }
         | Error::MalformedKernelResponse { .. }
-        | Error::ObservationLimitExceeded { .. } => None,
+        | Error::ObservationLimitExceeded { .. }
+        | Error::DeadlineExceeded { .. } => None,
     }
 }
 

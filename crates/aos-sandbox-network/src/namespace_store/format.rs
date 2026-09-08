@@ -133,6 +133,10 @@ impl RetainedNetworkNamespace {
     pub fn as_fd(&self) -> BorrowedFd<'_> {
         self.namespace.as_fd()
     }
+
+    pub(crate) const fn namespace(&self) -> &NamespaceFd {
+        &self.namespace
+    }
 }
 
 /// Owns one listener and the complete retained namespace activation tail.
@@ -151,6 +155,18 @@ impl ActivatedNetworkDescriptors {
     #[must_use]
     pub const fn maximum_entries(&self) -> usize {
         self.maximum_entries
+    }
+
+    pub(crate) const fn host_network_identity(&self) -> NamespaceIdentity {
+        self.host_network_identity
+    }
+
+    pub(crate) fn namespace_for_handle(
+        &self,
+        network_handle: [u8; 32],
+    ) -> Option<&RetainedNetworkNamespace> {
+        let name = NetworkNamespaceStoreName::from_network_handle(network_handle).ok()?;
+        self.namespaces.get(&name)
     }
 
     pub(super) fn identities(&self) -> BTreeMap<NetworkNamespaceStoreName, NamespaceIdentity> {

@@ -39,19 +39,38 @@
 #error "AOS_NETWORK_LEASE_GATE_DENY_OBJECT must name the test deny BPF object"
 #endif
 
-#define PIN_ROOT "/sys/fs/bpf/aos/network-lease-gate-proof"
-#define BINDING_PIN PIN_ROOT "/binding"
-#define STATE_PIN PIN_ROOT "/lease_state"
-#define INGRESS_PIN PIN_ROOT "/ingress_link"
-#define EGRESS_PIN PIN_ROOT "/egress_link"
-#define DENY_INGRESS_PIN PIN_ROOT "/deny_ingress_link"
-#define DENY_EGRESS_PIN PIN_ROOT "/deny_egress_link"
-#define ALLOW_INGRESS_PIN PIN_ROOT "/allow_ingress_link"
-#define ALLOW_EGRESS_PIN PIN_ROOT "/allow_egress_link"
-#define OBSERVE_INGRESS_PIN PIN_ROOT "/observe_ingress_link"
-#define OBSERVE_EGRESS_PIN PIN_ROOT "/observe_egress_link"
-#define INGRESS_OBSERVATION_PIN PIN_ROOT "/ingress_observation"
-#define EGRESS_OBSERVATION_PIN PIN_ROOT "/egress_observation"
+#define DEFAULT_PIN_ROOT "/sys/fs/bpf/aos/network-lease-gate-proof"
+#define OBSERVER_PIN_PREFIX "/sys/fs/bpf/aos/sandbox-network/"
+
+static char pin_root[PATH_MAX] = DEFAULT_PIN_ROOT;
+static char binding_pin[PATH_MAX] = DEFAULT_PIN_ROOT "/binding";
+static char state_pin[PATH_MAX] = DEFAULT_PIN_ROOT "/lease_state";
+static char ingress_pin[PATH_MAX] = DEFAULT_PIN_ROOT "/ingress_link";
+static char egress_pin[PATH_MAX] = DEFAULT_PIN_ROOT "/egress_link";
+static char deny_ingress_pin[PATH_MAX] = DEFAULT_PIN_ROOT "/deny_ingress_link";
+static char deny_egress_pin[PATH_MAX] = DEFAULT_PIN_ROOT "/deny_egress_link";
+static char allow_ingress_pin[PATH_MAX] = DEFAULT_PIN_ROOT "/allow_ingress_link";
+static char allow_egress_pin[PATH_MAX] = DEFAULT_PIN_ROOT "/allow_egress_link";
+static char observe_ingress_pin[PATH_MAX] = DEFAULT_PIN_ROOT "/observe_ingress_link";
+static char observe_egress_pin[PATH_MAX] = DEFAULT_PIN_ROOT "/observe_egress_link";
+static char ingress_observation_pin[PATH_MAX] =
+    DEFAULT_PIN_ROOT "/ingress_observation";
+static char egress_observation_pin[PATH_MAX] =
+    DEFAULT_PIN_ROOT "/egress_observation";
+
+#define PIN_ROOT pin_root
+#define BINDING_PIN binding_pin
+#define STATE_PIN state_pin
+#define INGRESS_PIN ingress_pin
+#define EGRESS_PIN egress_pin
+#define DENY_INGRESS_PIN deny_ingress_pin
+#define DENY_EGRESS_PIN deny_egress_pin
+#define ALLOW_INGRESS_PIN allow_ingress_pin
+#define ALLOW_EGRESS_PIN allow_egress_pin
+#define OBSERVE_INGRESS_PIN observe_ingress_pin
+#define OBSERVE_EGRESS_PIN observe_egress_pin
+#define INGRESS_OBSERVATION_PIN ingress_observation_pin
+#define EGRESS_OBSERVATION_PIN egress_observation_pin
 #define INSTALL_READY "/run/aos-network-lease-gate-install.ready"
 #define UPDATE_READY "/run/aos-network-lease-gate-update.ready"
 
@@ -79,6 +98,8 @@ static void usage(FILE *out)
   fprintf(out,
           "usage: network-lease-gate-fixture install-hold HOST_IF PEER_IF "
           "PEER_NETNS EPOCH ALLOCATION HANDLE_HEX ASSIGNMENT_HEX\n"
+          "       network-lease-gate-fixture install-observer-hold HOST_IF PEER_IF "
+          "PEER_NETNS EPOCH ALLOCATION HANDLE_HEX ASSIGNMENT_HEX GATE_HEX\n"
           "       network-lease-gate-fixture install-invalid-hold HOST_IF "
           "PEER_IF PEER_NETNS EPOCH ALLOCATION HANDLE_HEX ASSIGNMENT_HEX "
           "zero-assignment-digest|reserved-binding|old-format DEADLINE_NS LEASE_HEX\n"
@@ -99,7 +120,48 @@ static void usage(FILE *out)
           "       network-lease-gate-fixture clocks\n"
           "       network-lease-gate-fixture receive PORT RESULT READY\n"
           "       network-lease-gate-fixture teardown HOST_IF\n"
+          "       network-lease-gate-fixture force-observer-teardown HANDLE_HEX\n"
           "       network-lease-gate-fixture force-teardown\n");
+}
+
+static int parse_digest(const char *text, const char *field,
+                        struct aos_network_digest_v1 *digest);
+static bool digest_present(const struct aos_network_digest_v1 *digest);
+
+static int set_pin_path(char *destination, size_t capacity, const char *root,
+                        const char *leaf)
+{
+  int length = snprintf(destination, capacity, "%s/%s", root, leaf);
+
+  if (length < 0 || (size_t)length >= capacity) {
+    fprintf(stderr, "network-lease-gate-fixture: BPF pin path is too long\n");
+    return -1;
+  }
+  return 0;
+}
+
+static int select_observer_pin_root(const char *handle)
+{
+  struct aos_network_digest_v1 parsed;
+  int length;
+
+  if (parse_digest(handle, "network handle", &parsed) != 0 ||
+      !digest_present(&parsed))
+    return -1;
+  length = snprintf(PIN_ROOT, sizeof(pin_root), "%s%s", OBSERVER_PIN_PREFIX,
+                    handle);
+  if (length < 0 || (size_t)length >= sizeof(pin_root)) {
+    fprintf(stderr, "network-lease-gate-fixture: BPF pin root is too long\n");
+    return -1;
+  }
+  if (set_pin_path(BINDING_PIN, sizeof(binding_pin), PIN_ROOT, "binding") != 0 ||
+      set_pin_path(STATE_PIN, sizeof(state_pin), PIN_ROOT, "lease_state") != 0 ||
+      set_pin_path(INGRESS_PIN, sizeof(ingress_pin), PIN_ROOT, "ingress_link") !=
+          0 ||
+      set_pin_path(EGRESS_PIN, sizeof(egress_pin), PIN_ROOT, "egress_link") !=
+          0)
+    return -1;
+  return 0;
 }
 
 static int parse_u64(const char *text, const char *field, __u64 *value)
@@ -1411,6 +1473,28 @@ static int force_teardown(void)
   return 0;
 }
 
+static int force_observer_teardown(void)
+{
+  const char *pins[] = {
+      EGRESS_PIN,
+      INGRESS_PIN,
+      STATE_PIN,
+      BINDING_PIN,
+  };
+
+  for (size_t i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
+    if (unlink(pins[i]) != 0 && errno != ENOENT) {
+      perror("network-lease-gate-fixture: force unlink observer pin");
+      return -1;
+    }
+  }
+  if (rmdir(PIN_ROOT) != 0 && errno != ENOENT) {
+    perror("network-lease-gate-fixture: force remove observer pin root");
+    return -1;
+  }
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
   if (argc < 2) {
@@ -1433,6 +1517,29 @@ int main(int argc, char **argv)
         build_binding(argv[2], argv[3], argv[4], epoch, allocation, &handle,
                       &assignment, &binding) != 0)
       return 2;
+    return install_gate(&binding, NULL, 0, true) == 0 ? 0 : 1;
+  }
+
+  if (strcmp(argv[1], "install-observer-hold") == 0) {
+    struct aos_network_lease_binding_v1 binding;
+    struct aos_network_digest_v1 gate_object;
+    struct aos_network_digest_v1 handle;
+    struct aos_network_digest_v1 assignment;
+    __u64 epoch;
+    __u64 allocation;
+
+    if (argc != 10 || select_observer_pin_root(argv[7]) != 0 ||
+        parse_u64(argv[5], "assignment epoch", &epoch) != 0 ||
+        parse_u64(argv[6], "allocation generation", &allocation) != 0 ||
+        parse_digest(argv[7], "network handle", &handle) != 0 ||
+        parse_digest(argv[8], "assignment digest", &assignment) != 0 ||
+        parse_digest(argv[9], "gate object digest", &gate_object) != 0 ||
+        !digest_present(&handle) || !digest_present(&assignment) ||
+        !digest_present(&gate_object) ||
+        build_binding(argv[2], argv[3], argv[4], epoch, allocation, &handle,
+                      &assignment, &binding) != 0)
+      return 2;
+    binding.gate_object_digest = gate_object;
     return install_gate(&binding, NULL, 0, true) == 0 ? 0 : 1;
   }
 
@@ -1546,6 +1653,11 @@ int main(int argc, char **argv)
   }
   if (strcmp(argv[1], "teardown") == 0 && argc == 3)
     return teardown(argv[2]) == 0 ? 0 : 1;
+  if (strcmp(argv[1], "force-observer-teardown") == 0 && argc == 3) {
+    if (select_observer_pin_root(argv[2]) != 0)
+      return 2;
+    return force_observer_teardown() == 0 ? 0 : 1;
+  }
   if (strcmp(argv[1], "force-teardown") == 0 && argc == 2)
     return force_teardown() == 0 ? 0 : 1;
 

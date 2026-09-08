@@ -273,6 +273,50 @@ pub struct NamespaceFd {
 }
 
 impl NamespaceFd {
+    /// Opens and type-checks the calling process's current Network namespace.
+    ///
+    /// The fixed `/proc/self/ns/net` source carries no caller-selected name or
+    /// PID. Callers retain the returned descriptor before any namespace entry
+    /// and use its captured device/inode identity for later revalidation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the fixed procfs namespace entry cannot be opened or
+    /// is not an `nsfs` Network namespace descriptor.
+    pub fn current_network() -> Result<Self> {
+        let descriptor = rustix::fs::open(
+            "/proc/self/ns/net",
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|source| Error::Syscall {
+            operation: "open /proc/self/ns/net",
+            source: std::io::Error::from_raw_os_error(source.raw_os_error()),
+        })?;
+        Self::from_owned(descriptor, NamespaceKind::Network)
+    }
+
+    /// Checks whether this descriptor is the calling process's current namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if this is not a Network namespace or if the fixed
+    /// current-namespace descriptor cannot be opened and inspected.
+    pub fn validate_current_network(&self) -> Result<()> {
+        if self.kind != NamespaceKind::Network {
+            return Err(Error::WrongDescriptorType {
+                expected: "Network namespace",
+            });
+        }
+        if Self::current_network()?.identity != self.identity {
+            return Err(Error::invalid(
+                "current Network namespace",
+                "retained descriptor does not identify the current namespace",
+            ));
+        }
+        Ok(())
+    }
+
     /// Validates and adopts an owned `nsfs` descriptor with its expected kind.
     ///
     /// The constructor verifies both the `nsfs` filesystem type and the exact
@@ -384,6 +428,19 @@ impl SingleThreadedProcess {
         Ok(Self {
             not_send_or_sync: PhantomData,
         })
+    }
+
+    /// Disables core dumps for this short-lived namespace worker process.
+    ///
+    /// This process-global setting intentionally has no restoration operation.
+    /// A worker that crosses namespace boundaries must not serialize retained
+    /// descriptors or privileged observation state into a core file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if Linux cannot disable or verify process dumpability.
+    pub fn disable_core_dumps(&self) -> Result<()> {
+        crate::process::disable_core_dumps()
     }
 }
 

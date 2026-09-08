@@ -15,7 +15,8 @@
 //! - [`process`] executes fixed absolute programs with bounded output and time;
 //! - [`mount`] constructs, attributes, idmaps, and attaches detached mounts;
 //! - [`inventory`] lists mounts and reads stable mount metadata;
-//! - [`immutable_file`] pins descriptors and maps seal-proven immutable files; and
+//! - [`immutable_file`] pins descriptors and maps seal-proven immutable files;
+//! - [`netlink`] resolves descriptor-backed peer Network namespace IDs; and
 //! - [`seqpacket`] exchanges bounded records with kernel-pinned peer identity.
 
 #![cfg(target_os = "linux")]
@@ -25,6 +26,7 @@ pub mod cgroup;
 pub mod immutable_file;
 pub mod inventory;
 pub mod mount;
+pub mod netlink;
 pub mod path;
 pub mod pidfd;
 pub mod process;
@@ -78,6 +80,13 @@ pub enum Error {
         object: &'static str,
         /// Maximum number of admitted entries.
         limit: usize,
+    },
+
+    /// A bounded kernel exchange did not become ready before its deadline.
+    #[error("{operation} exceeded its deadline")]
+    DeadlineExceeded {
+        /// Stable operation label.
+        operation: &'static str,
     },
 }
 

@@ -894,6 +894,7 @@ dependencies = [
  "aos-sandbox-core",
  "aos-sandbox-linux",
  "aos-sandbox-protocol",
+ "base64 0.22.1",
  "buffa",
  "ed25519-dalek",
  "rustix 1.1.4",
@@ -911,9 +912,17 @@ name = "aos-sandbox-network-systemd-custody-fixture"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "aos-proto",
+ "aos-sandbox",
+ "aos-sandbox-broker",
+ "aos-sandbox-core",
  "aos-sandbox-linux",
  "aos-sandbox-network",
+ "aos-sandbox-protocol",
+ "buffa",
+ "ed25519-dalek",
  "rustix 1.1.4",
+ "sha2 0.10.9",
  "tokio",
  "zbus",
 ]

@@ -38,6 +38,271 @@ pub(crate) struct RawSeqpacketMessage {
     pub(crate) ancillary: Vec<RawAncillary>,
 }
 
+/// One bounded rtnetlink datagram and its kernel-address metadata.
+#[derive(Debug)]
+pub(crate) struct RawRtnetlinkResponse {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) flags: i32,
+    pub(crate) sender_pid: u32,
+    pub(crate) sender_groups: u32,
+    pub(crate) port_id: u32,
+}
+
+pub(crate) fn rtnetlink_exchange(
+    request: &[u8],
+    maximum_response_bytes: usize,
+    timeout_nanoseconds: u64,
+) -> Result<RawRtnetlinkResponse> {
+    if request.is_empty() || maximum_response_bytes == 0 || timeout_nanoseconds == 0 {
+        return Err(Error::invalid(
+            "rtnetlink exchange",
+            "request and response ceiling must be nonzero",
+        ));
+    }
+    // SAFETY: arguments are fixed Linux socket-domain constants. A successful
+    // return is immediately adopted as the sole OwnedFd owner.
+    let raw_fd = unsafe {
+        libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_RAW | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+            libc::NETLINK_ROUTE,
+        )
+    };
+    let fd = fd_result(raw_fd.into(), "socket(NETLINK_ROUTE)")?;
+
+    // SAFETY: all-zero is a valid sockaddr_nl base value.
+    let mut local = unsafe { std::mem::zeroed::<libc::sockaddr_nl>() };
+    local.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+    // SAFETY: local names initialized sockaddr_nl storage for the exact length.
+    let bound = unsafe {
+        libc::bind(
+            fd.as_raw_fd(),
+            (&raw const local).cast::<libc::sockaddr>(),
+            size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+        )
+    };
+    unit_result(bound.into(), "bind(NETLINK_ROUTE)")?;
+
+    let mut local_length = size_of::<libc::sockaddr_nl>() as libc::socklen_t;
+    // SAFETY: local and its length name writable initialized storage.
+    let named = unsafe {
+        libc::getsockname(
+            fd.as_raw_fd(),
+            (&raw mut local).cast::<libc::sockaddr>(),
+            &raw mut local_length,
+        )
+    };
+    unit_result(named.into(), "getsockname(NETLINK_ROUTE)")?;
+    if local_length as usize != size_of::<libc::sockaddr_nl>()
+        || local.nl_family != libc::AF_NETLINK as libc::sa_family_t
+        || local.nl_pid == 0
+        || local.nl_groups != 0
+    {
+        return Err(Error::MalformedKernelResponse {
+            object: "NETLINK_ROUTE socket name",
+            message: "bound port identity is invalid".to_owned(),
+        });
+    }
+    let deadline = boottime_nanoseconds()?
+        .checked_add(timeout_nanoseconds)
+        .ok_or_else(|| Error::invalid("rtnetlink exchange", "deadline overflow"))?;
+
+    // SAFETY: all-zero is a valid sockaddr_nl base value; family selects the
+    // kernel and zero PID/groups address only that kernel endpoint.
+    let mut kernel = unsafe { std::mem::zeroed::<libc::sockaddr_nl>() };
+    kernel.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+    let sent = loop {
+        ensure_before_deadline(deadline, "send RTM_GETNSID")?;
+        // SAFETY: request remains readable for the call and kernel has the
+        // exact initialized sockaddr_nl layout.
+        let sent = unsafe {
+            libc::sendto(
+                fd.as_raw_fd(),
+                request.as_ptr().cast(),
+                request.len(),
+                libc::MSG_NOSIGNAL,
+                (&raw const kernel).cast::<libc::sockaddr>(),
+                size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+            )
+        };
+        if sent >= 0 {
+            break sent;
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EAGAIN) => wait_until(fd.as_fd(), libc::POLLOUT, deadline)?,
+            Some(libc::EINTR) => ensure_before_deadline(deadline, "send RTM_GETNSID")?,
+            _ => return Err(Error::syscall("sendto(RTM_GETNSID)")),
+        }
+    };
+    ensure_before_deadline(deadline, "send RTM_GETNSID")?;
+    if sent as usize != request.len() {
+        return Err(Error::MalformedKernelResponse {
+            object: "RTM_GETNSID",
+            message: "request send was incomplete".to_owned(),
+        });
+    }
+
+    let mut bytes = vec![0_u8; maximum_response_bytes];
+    // SAFETY: all-zero is a valid sockaddr_nl base value.
+    let mut sender = unsafe { std::mem::zeroed::<libc::sockaddr_nl>() };
+    let mut iov = libc::iovec {
+        iov_base: bytes.as_mut_ptr().cast(),
+        iov_len: bytes.len(),
+    };
+    let mut message = libc::msghdr {
+        msg_name: (&raw mut sender).cast(),
+        msg_namelen: size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+        msg_iov: &raw mut iov,
+        msg_iovlen: 1,
+        msg_control: std::ptr::null_mut(),
+        msg_controllen: 0,
+        msg_flags: 0,
+    };
+    let received = loop {
+        ensure_before_deadline(deadline, "receive RTM_GETNSID")?;
+        // SAFETY: message points to live writable address and payload storage.
+        let received = unsafe { libc::recvmsg(fd.as_raw_fd(), &raw mut message, 0) };
+        if received >= 0 {
+            break received;
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EAGAIN) => wait_until(fd.as_fd(), libc::POLLIN, deadline)?,
+            Some(libc::EINTR) => ensure_before_deadline(deadline, "receive RTM_GETNSID")?,
+            _ => return Err(Error::syscall("recvmsg(RTM_GETNSID)")),
+        }
+    };
+    ensure_before_deadline(deadline, "receive RTM_GETNSID")?;
+    if message.msg_namelen as usize != size_of::<libc::sockaddr_nl>()
+        || sender.nl_family != libc::AF_NETLINK as libc::sa_family_t
+    {
+        return Err(Error::MalformedKernelResponse {
+            object: "RTM_GETNSID",
+            message: "sender address is malformed".to_owned(),
+        });
+    }
+    let received = usize::try_from(received).map_err(|_| Error::MalformedKernelResponse {
+        object: "RTM_GETNSID",
+        message: "response length is negative".to_owned(),
+    })?;
+    bytes.truncate(received.min(bytes.len()));
+
+    Ok(RawRtnetlinkResponse {
+        bytes,
+        flags: message.msg_flags,
+        sender_pid: sender.nl_pid,
+        sender_groups: sender.nl_groups,
+        port_id: local.nl_pid,
+    })
+}
+
+pub(crate) fn disable_process_dumpability() -> Result<()> {
+    // SAFETY: PR_SET_DUMPABLE consumes scalar arguments only.
+    let changed = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+    unit_result(changed.into(), "prctl(PR_SET_DUMPABLE)")?;
+    // SAFETY: PR_GET_DUMPABLE consumes no optional pointer arguments.
+    let observed = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
+    if observed < 0 {
+        return Err(Error::syscall("prctl(PR_GET_DUMPABLE)"));
+    }
+    if observed != 0 {
+        return Err(Error::MalformedKernelResponse {
+            object: "process dumpability",
+            message: "process remained dumpable".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn wait_until(fd: BorrowedFd<'_>, events: i16, deadline: u64) -> Result<()> {
+    loop {
+        let now = boottime_nanoseconds()?;
+        let remaining = deadline.checked_sub(now).ok_or(Error::DeadlineExceeded {
+            operation: "RTM_GETNSID exchange",
+        })?;
+        if remaining == 0 {
+            return Err(Error::DeadlineExceeded {
+                operation: "RTM_GETNSID exchange",
+            });
+        }
+        let timeout = libc::timespec {
+            tv_sec: (remaining / 1_000_000_000) as libc::time_t,
+            tv_nsec: (remaining % 1_000_000_000) as libc::c_long,
+        };
+        let mut poll_fd = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events,
+            revents: 0,
+        };
+        // SAFETY: poll_fd and timeout are initialized and borrowed only for the
+        // call. A null signal mask preserves the calling process mask.
+        let ready =
+            unsafe { libc::ppoll(&raw mut poll_fd, 1, &raw const timeout, std::ptr::null()) };
+        if ready > 0 {
+            if poll_fd.revents & events != 0 {
+                return Ok(());
+            }
+            return Err(Error::MalformedKernelResponse {
+                object: "RTM_GETNSID poll",
+                message: format!("unexpected readiness flags {:#x}", poll_fd.revents),
+            });
+        }
+        if ready == 0 {
+            return Err(Error::DeadlineExceeded {
+                operation: "RTM_GETNSID exchange",
+            });
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            return Err(Error::syscall("ppoll(RTM_GETNSID)"));
+        }
+    }
+}
+
+fn ensure_before_deadline(deadline: u64, operation: &'static str) -> Result<()> {
+    ensure_timestamp_before_deadline(boottime_nanoseconds()?, deadline, operation)
+}
+
+fn ensure_timestamp_before_deadline(
+    observed: u64,
+    deadline: u64,
+    operation: &'static str,
+) -> Result<()> {
+    if observed < deadline {
+        Ok(())
+    } else {
+        Err(Error::DeadlineExceeded { operation })
+    }
+}
+
+fn boottime_nanoseconds() -> Result<u64> {
+    let mut time = MaybeUninit::<libc::timespec>::uninit();
+    // SAFETY: time names writable output storage for CLOCK_BOOTTIME.
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, time.as_mut_ptr()) };
+    unit_result(result.into(), "clock_gettime(CLOCK_BOOTTIME)")?;
+    // SAFETY: successful clock_gettime initialized the complete value.
+    let time = unsafe { time.assume_init() };
+    let seconds = u64::try_from(time.tv_sec).map_err(|_| Error::MalformedKernelResponse {
+        object: "CLOCK_BOOTTIME",
+        message: "seconds are negative".to_owned(),
+    })?;
+    let nanoseconds = u64::try_from(time.tv_nsec).map_err(|_| Error::MalformedKernelResponse {
+        object: "CLOCK_BOOTTIME",
+        message: "nanoseconds are negative".to_owned(),
+    })?;
+    if nanoseconds >= 1_000_000_000 {
+        return Err(Error::MalformedKernelResponse {
+            object: "CLOCK_BOOTTIME",
+            message: "nanoseconds are out of range".to_owned(),
+        });
+    }
+    seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanoseconds))
+        .ok_or_else(|| Error::MalformedKernelResponse {
+            object: "CLOCK_BOOTTIME",
+            message: "value overflowed u64".to_owned(),
+        })
+}
+
 pub(crate) fn validate_child_reaping_disposition() -> Result<()> {
     let mut action = MaybeUninit::<libc::sigaction>::uninit();
     // SAFETY: a null second argument queries the process-wide disposition and
@@ -1684,5 +1949,42 @@ mod tests {
         assert_eq!(SO_PASSPIDFD, 76);
         assert_eq!(SO_PEERPIDFD, 77);
         assert_eq!(SCM_PIDFD, 0x04);
+    }
+
+    #[test]
+    fn rtnetlink_wait_fails_when_no_response_arrives_by_deadline() {
+        let (receiver, _sender) =
+            rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+        let deadline = boottime_nanoseconds().unwrap() + 1_000_000;
+
+        assert!(matches!(
+            wait_until(receiver.as_fd(), libc::POLLIN, deadline),
+            Err(Error::DeadlineExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn rtnetlink_wait_rejects_ready_data_after_the_deadline() {
+        let (receiver, sender) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+        rustix::io::write(&sender, b"x").unwrap();
+        let deadline = boottime_nanoseconds().unwrap();
+
+        assert!(matches!(
+            wait_until(receiver.as_fd(), libc::POLLIN, deadline),
+            Err(Error::DeadlineExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn completed_rtnetlink_io_is_rejected_at_or_after_deadline() {
+        assert!(ensure_timestamp_before_deadline(99, 100, "test").is_ok());
+        assert!(matches!(
+            ensure_timestamp_before_deadline(100, 100, "test"),
+            Err(Error::DeadlineExceeded { .. })
+        ));
+        assert!(matches!(
+            ensure_timestamp_before_deadline(101, 100, "test"),
+            Err(Error::DeadlineExceeded { .. })
+        ));
     }
 }

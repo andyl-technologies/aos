@@ -22,6 +22,8 @@ use crate::policy::{
 };
 
 const OBSERVATION_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.kernel-observation.v1\0";
+// V3 commits each anti-spoof predicate as one complete same-family address set.
+const OBSERVATION_ENCODING_VERSION: u16 = 3;
 const BPF_ARRAY: u32 = 2;
 const BPF_HASH: u32 = 1;
 const BPF_F_RDONLY_PROG: u32 = 1 << 7;
@@ -306,15 +308,15 @@ fn valid_lease_direction(
     let assignment_matches = direction.format_version == 2
         && direction.assignment_epoch == expected.assignment.epoch().get()
         && direction.assignment_digest == expected.assignment.digest();
-    let lease_shape = if direction.armed {
-        direction.lease_generation != 0
-            && direction.lease_digest.as_bytes() != &[0; 32]
-            && direction.deadline_boottime_nanoseconds != 0
-    } else {
-        direction.lease_generation == 0
-            && direction.lease_digest.as_bytes() == &[0; 32]
-            && direction.deadline_boottime_nanoseconds == 0
-    };
+    let lease_tuple_present = direction.lease_generation != 0
+        && direction.lease_digest.as_bytes() != &[0; 32]
+        && direction.deadline_boottime_nanoseconds != 0;
+    let lease_tuple_absent = direction.lease_generation == 0
+        && direction.lease_digest.as_bytes() == &[0; 32]
+        && direction.deadline_boottime_nanoseconds == 0;
+    // A fail-stop fence clears `armed` but retains the expired lease tuple as
+    // durable evidence. Default-drop state is the disarmed all-zero shape.
+    let lease_shape = lease_tuple_present || (!direction.armed && lease_tuple_absent);
     assignment_matches && lease_shape
 }
 
@@ -512,14 +514,14 @@ pub struct ObservedNftBaseChainV1 {
 }
 
 /// Carries one exact local-address anti-spoof rule.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ObservedNftAntiSpoofRuleV1 {
     /// Packet direction governed by the rule.
     pub direction: NetworkFlowDirectionV1,
     /// Namespace-qualified boundary interface.
     pub interface: ObservedInterfaceV1,
-    /// Local source (egress) or destination (ingress) address in the guard.
-    pub local_address: ObservedIpAddressV1,
+    /// Complete same-family local-address set admitted by the guard.
+    pub local_addresses: Vec<ObservedIpAddressV1>,
     /// Whether the address predicate is inverted.
     pub inverted_match: bool,
     /// Exact zero-based rule position in its base chain.
@@ -726,13 +728,13 @@ impl NetworkKernelObservationV1 {
     pub fn digest(&self) -> ObjectDigest {
         let mut digest = Sha256::new();
         digest.update(OBSERVATION_DIGEST_DOMAIN);
-        digest.update(2_u16.to_be_bytes());
+        digest.update(OBSERVATION_ENCODING_VERSION.to_be_bytes());
         encode_observation(&mut digest, self);
         ObjectDigest::from_bytes(digest.finalize().into())
     }
 }
 
-fn valid_loopback(link: &ObservedLinkV1) -> bool {
+pub(crate) fn valid_loopback(link: &ObservedLinkV1) -> bool {
     link.peer_ifindex == 0
         && link.peer_namespace_id.is_none()
         && link.name == "lo"
@@ -1067,24 +1069,37 @@ fn expected_anti_spoof_rules(
         namespace: ObservedNetworkNamespaceV1::Sandbox,
         ifindex: sandbox.ifindex,
     };
-    let mut rules = Vec::with_capacity(expected.address_pairs.len() * 2);
-    for (pair, position) in expected.address_pairs.iter().zip(0_u32..) {
-        rules.push(ObservedNftAntiSpoofRuleV1 {
-            direction: NetworkFlowDirectionV1::Ingress,
-            interface,
-            local_address: pair.sandbox,
-            inverted_match: true,
-            position,
-            verdict: ObservedNftVerdictV1::Drop,
-        });
-        rules.push(ObservedNftAntiSpoofRuleV1 {
-            direction: NetworkFlowDirectionV1::Egress,
-            interface,
-            local_address: pair.sandbox,
-            inverted_match: true,
-            position,
-            verdict: ObservedNftVerdictV1::Drop,
-        });
+    let mut ipv4 = Vec::new();
+    let mut ipv6 = Vec::new();
+    for pair in &expected.address_pairs {
+        match pair.sandbox {
+            ObservedIpAddressV1::Ipv4(_) => ipv4.push(pair.sandbox),
+            ObservedIpAddressV1::Ipv6(_) => ipv6.push(pair.sandbox),
+        }
+    }
+
+    let mut rules = Vec::with_capacity(4);
+    for local_addresses in [ipv4, ipv6]
+        .into_iter()
+        .filter(|addresses| !addresses.is_empty())
+    {
+        for direction in [
+            NetworkFlowDirectionV1::Ingress,
+            NetworkFlowDirectionV1::Egress,
+        ] {
+            let position = rules
+                .iter()
+                .filter(|rule: &&ObservedNftAntiSpoofRuleV1| rule.direction == direction)
+                .count() as u32;
+            rules.push(ObservedNftAntiSpoofRuleV1 {
+                direction,
+                interface,
+                local_addresses: local_addresses.clone(),
+                inverted_match: true,
+                position,
+                verdict: ObservedNftVerdictV1::Drop,
+            });
+        }
     }
     rules
 }
@@ -1286,7 +1301,10 @@ fn encode_nftables(digest: &mut Sha256, policy: &ObservedNftablesPolicyV1) {
     for rule in &policy.anti_spoof_rules {
         digest.update([direction_code(rule.direction)]);
         encode_interface(digest, rule.interface);
-        encode_address(digest, rule.local_address);
+        encode_length(digest, rule.local_addresses.len());
+        for address in &rule.local_addresses {
+            encode_address(digest, *address);
+        }
         encode_bool(digest, rule.inverted_match);
         encode_u32(digest, rule.position);
         digest.update([verdict_code(rule.verdict)]);
@@ -1647,6 +1665,28 @@ mod tests {
         }
     }
 
+    fn retained_lease_lifecycle(
+        armed: bool,
+        generation: u64,
+        digest: ObjectDigest,
+        deadline: u64,
+    ) -> ObservedLeaseStateV1 {
+        let direction = ObservedLeaseDirectionV1 {
+            format_version: 2,
+            armed,
+            assignment_epoch: 41,
+            assignment_digest: object(0x33),
+            lease_generation: generation,
+            lease_digest: digest,
+            deadline_boottime_nanoseconds: deadline,
+        };
+        ObservedLeaseStateV1 {
+            format_version: 2,
+            ingress: direction.clone(),
+            egress: direction,
+        }
+    }
+
     fn link(ifindex: u32, peer_ifindex: u32, name: &str, mac: [u8; 6]) -> ObservedLinkV1 {
         ObservedLinkV1 {
             ifindex,
@@ -1813,7 +1853,7 @@ mod tests {
                             namespace: ObservedNetworkNamespaceV1::Sandbox,
                             ifindex: SANDBOX_IFINDEX,
                         },
-                        local_address: ObservedIpAddressV1::Ipv4([192, 0, 0, 1]),
+                        local_addresses: vec![ObservedIpAddressV1::Ipv4([192, 0, 0, 1])],
                         inverted_match: true,
                         position: 0,
                         verdict: ObservedNftVerdictV1::Drop,
@@ -1824,7 +1864,7 @@ mod tests {
                             namespace: ObservedNetworkNamespaceV1::Sandbox,
                             ifindex: SANDBOX_IFINDEX,
                         },
-                        local_address: ObservedIpAddressV1::Ipv4([192, 0, 0, 1]),
+                        local_addresses: vec![ObservedIpAddressV1::Ipv4([192, 0, 0, 1])],
                         inverted_match: true,
                         position: 0,
                         verdict: ObservedNftVerdictV1::Drop,
@@ -1909,6 +1949,72 @@ mod tests {
 
         assert_ne!(digest.as_bytes(), &[0; 32]);
         assert_eq!(digest, observed.digest());
+    }
+
+    #[test]
+    fn fenced_lifecycle_retains_the_exact_disarmed_lease_tuple() {
+        let expected = expectation();
+        let fenced = retained_lease_lifecycle(false, 7, object(0x91), 10_000);
+        let mut observed = observation();
+        observed.lifecycle = fenced.clone();
+        observed.lease_gate.as_mut().unwrap().lease_state = fenced.clone();
+
+        expected
+            .validate_stable(BOOT_ID, NAMESPACE, &fenced, &observed, &observed)
+            .unwrap();
+    }
+
+    #[test]
+    fn partial_or_armed_zero_lease_tuples_do_not_alias_default_drop() {
+        let expected = expectation();
+        let malformed = [
+            retained_lease_lifecycle(false, 7, ObjectDigest::from_bytes([0; 32]), 10_000),
+            retained_lease_lifecycle(false, 0, object(0x91), 10_000),
+            retained_lease_lifecycle(false, 7, object(0x91), 0),
+            retained_lease_lifecycle(true, 0, ObjectDigest::from_bytes([0; 32]), 0),
+        ];
+
+        for lifecycle in malformed {
+            let mut observed = observation();
+            observed.lifecycle = lifecycle.clone();
+            observed.lease_gate.as_mut().unwrap().lease_state = lifecycle.clone();
+
+            assert_eq!(
+                expected.validate_stable(BOOT_ID, NAMESPACE, &lifecycle, &observed, &observed,),
+                Err(NetworkKernelObservationError::NamespaceMismatch)
+            );
+        }
+    }
+
+    #[test]
+    fn old_and_future_kernel_lease_tuples_mismatch_the_catalog_projection() {
+        let expected = expectation();
+        let catalog = retained_lease_lifecycle(false, 7, object(0x91), 10_000);
+
+        for generation in [6, 8] {
+            let kernel = retained_lease_lifecycle(false, generation, object(0x91), 10_000);
+            let mut observed = observation();
+            observed.lifecycle = kernel.clone();
+            observed.lease_gate.as_mut().unwrap().lease_state = kernel;
+
+            assert_eq!(
+                expected.validate_stable(BOOT_ID, NAMESPACE, &catalog, &observed, &observed),
+                Err(NetworkKernelObservationError::NamespaceMismatch)
+            );
+        }
+    }
+
+    #[test]
+    fn observation_encoding_v3_has_a_fixed_digest_vector() {
+        // This implementation-derived vector freezes the V3 encoding shape;
+        // it is not an independent normative RFC conformance vector.
+        assert_eq!(
+            observation().digest().as_bytes(),
+            &[
+                229, 1, 209, 92, 105, 161, 124, 125, 167, 112, 133, 205, 224, 120, 194, 150, 45,
+                160, 33, 68, 55, 146, 21, 60, 190, 27, 153, 30, 164, 0, 94, 139,
+            ]
+        );
     }
 
     #[test]
@@ -2092,6 +2198,59 @@ mod tests {
             expected.validate_stable(BOOT_ID, NAMESPACE, &lifecycle(), &observed, &observed),
             Err(NetworkKernelObservationError::NftablesMismatch)
         );
+    }
+
+    #[test]
+    fn substituted_policy_expectation_cannot_reuse_the_observed_namespace() {
+        let substituted_flow = NetworkFlowPolicyV1::new(
+            NetworkFlowDirectionV1::Ingress,
+            NetworkTransportProtocolV1::Tcp,
+            NetworkIpPrefixV1::ipv4([198, 51, 100, 0], 24).unwrap(),
+            Some(NetworkPortRangeV1::new(8_443, 8_443).unwrap()),
+        )
+        .unwrap();
+        let substituted_endpoint = NetworkEndpointPolicyV1::new(
+            NetworkEndpointId::from_bytes([0x44; 16]),
+            vec![substituted_flow],
+        )
+        .unwrap();
+        let mut expected = expectation();
+        expected.policy = NetworkPolicyProgramV1::new(
+            NetworkKind::Published,
+            object(0x55),
+            Some(object(0x66)),
+            vec![substituted_endpoint],
+        )
+        .unwrap();
+        let observed = observation();
+
+        assert_eq!(
+            expected.validate_stable(BOOT_ID, NAMESPACE, &lifecycle(), &observed, &observed),
+            Err(NetworkKernelObservationError::NftablesMismatch)
+        );
+    }
+
+    #[test]
+    fn same_family_local_addresses_share_one_inverted_set_guard_per_direction() {
+        let mut expected = expectation();
+        expected.address_pairs.push(ExpectedAddressPairV1 {
+            host: ObservedIpAddressV1::Ipv4([192, 0, 0, 2]),
+            sandbox: ObservedIpAddressV1::Ipv4([192, 0, 0, 3]),
+            prefix_length: 31,
+        });
+        let observed = observation();
+
+        let rules = expected_anti_spoof_rules(&expected, &observed);
+        let admitted_addresses = vec![
+            ObservedIpAddressV1::Ipv4([192, 0, 0, 1]),
+            ObservedIpAddressV1::Ipv4([192, 0, 0, 3]),
+        ];
+
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].direction, NetworkFlowDirectionV1::Ingress);
+        assert_eq!(rules[0].local_addresses, admitted_addresses);
+        assert_eq!(rules[1].direction, NetworkFlowDirectionV1::Egress);
+        assert_eq!(rules[1].local_addresses, admitted_addresses);
     }
 
     #[test]

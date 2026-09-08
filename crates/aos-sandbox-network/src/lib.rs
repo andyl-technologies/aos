@@ -31,7 +31,9 @@ pub mod kernel_observation;
 pub mod kernel_plan;
 pub mod kernel_reader;
 pub mod namespace_catalog;
+pub mod namespace_observer;
 pub mod namespace_store;
+pub mod nftables_reader;
 pub mod policy;
 pub mod preparation_catalog;
 pub mod rtnetlink_reader;
@@ -79,12 +81,20 @@ pub use namespace_catalog::{
     NetworkNamespaceLifecycleTransitionV1, NetworkNamespaceObservedStateKindV1,
     NetworkNamespaceObservedStateV1, NetworkNamespacePublicationV1,
 };
+pub use namespace_observer::{
+    NetworkKernelObservationReaders, NetworkNamespaceObserverError, NetworkNamespacePeerProofV1,
+    RtnetlinkIsolatedNamespaceInventoryV1, RtnetlinkNamespacePairInventoryV1,
+    StableNetworkKernelObservationV1, StableRtnetlinkNamespaceInventoryV1,
+    observe_stable_network_kernel, observe_stable_rtnetlink_namespace,
+    observe_stable_rtnetlink_pair,
+};
 pub use namespace_store::{
     ActivatedNetworkDescriptors, MAXIMUM_RETAINED_NETWORK_NAMESPACES,
     NetworkNamespaceCustodyRequirementV1, NetworkNamespaceStoreError, NetworkNamespaceStoreName,
     NetworkNamespaceStoreOutcome, RetainedNetworkNamespace, SystemdNetworkNamespaceStore,
     adopt_systemd_activation, validate_activation_replay,
 };
+pub use nftables_reader::{FixedNftablesObservationReader, decode_nftables_observation};
 pub use policy::{
     NetworkEndpointPolicyV1, NetworkFlowDirectionV1, NetworkFlowPolicyV1, NetworkIpPrefixV1,
     NetworkPolicyProgramError, NetworkPolicyProgramV1, NetworkPortRangeV1,

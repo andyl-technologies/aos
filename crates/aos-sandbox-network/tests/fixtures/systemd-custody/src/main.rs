@@ -10,17 +10,25 @@ mod activation;
 mod control;
 mod fake_manager;
 mod manager_probe;
+mod observer_qualification;
 mod state;
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::fs::File;
+use std::net::IpAddr;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, bail, ensure};
+use aos_sandbox_linux::netlink::network_namespace_id;
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceIdentity, NamespaceKind};
 use aos_sandbox_network::{
-    FixedBpfObservationReader, MAXIMUM_RETAINED_NETWORK_NAMESPACES, NetworkNamespaceStoreOutcome,
-    SystemdNetworkNamespaceStore, adopt_systemd_activation, validate_activation_replay,
+    FixedBpfObservationReader, FixedNftablesObservationReader, FixedRtnetlinkObservationReader,
+    MAXIMUM_RETAINED_NETWORK_NAMESPACES, NetworkFlowDirectionV1, NetworkNamespaceStoreOutcome,
+    NetworkPortRangeV1, NetworkTransportProtocolV1, ObservedFlowV1, ObservedInterfaceV1,
+    ObservedIpAddressV1, ObservedNetworkNamespaceV1, ObservedNftAntiSpoofRuleV1,
+    ObservedNftBaseChainV1, ObservedNftVerdictV1, SystemdNetworkNamespaceStore,
+    adopt_systemd_activation, validate_activation_replay,
 };
 
 use self::activation::take_systemd_activation;
@@ -50,10 +58,241 @@ fn run() -> Result<()> {
         Some(mode) if mode == "send" => send(arguments),
         Some(mode) if mode == "fake-manager" => fake_manager(arguments),
         Some(mode) if mode == "artifact-custody" => artifact_custody(arguments),
+        Some(mode) if mode == "nft-observe" => nft_observe(arguments),
+        Some(mode) if mode == "netnsid" => netnsid(arguments),
+        Some(mode) if mode == "observer-plan" => observer_qualification::plan(arguments),
+        Some(mode) if mode == "observer-run" => observer_qualification::run(arguments),
+        Some(mode) if mode == "observer-kernel-run" => {
+            observer_qualification::run_kernel(arguments)
+        }
         _ => bail!(
-            "usage: aos-netd-custody-fixture serve CAPACITY | send COMMAND [FD_PATH ...] | fake-manager ADDRESS MODE READY_PATH | artifact-custody HELPER GATE_OBJECT"
+            "usage: aos-netd-custody-fixture serve CAPACITY | send COMMAND [FD_PATH ...] | fake-manager ADDRESS MODE READY_PATH | artifact-custody HELPER GATE_OBJECT | nft-observe IP NFT LOADER GATE_OBJECT IFINDEX LOCAL_ADDRESS LOCAL_ADDRESS | netnsid PEER_NAMESPACE | observer-plan MODE STATE_ROOT GATE_OBJECT | observer-run MODE STATE_ROOT NAMESPACE IP GATE_OBJECT | observer-kernel-run MODE STATE_ROOT NAMESPACE IP NFT ENFORCEMENT_LOADER BPF_OBSERVER GATE_OBJECT"
         ),
     }
+}
+
+fn nft_observe(mut arguments: impl Iterator<Item = OsString>) -> Result<()> {
+    let ip = arguments.next().context("nft-observe requires IP")?;
+    let nft = arguments.next().context("nft-observe requires NFT")?;
+    let loader = arguments.next().context("nft-observe requires LOADER")?;
+    let gate_object = PathBuf::from(
+        arguments
+            .next()
+            .context("nft-observe requires GATE_OBJECT")?,
+    );
+    let expected_ifindex = unicode_argument(arguments.next(), "nft-observe interface index")?
+        .parse::<u32>()
+        .context("parse nft-observe interface index")?;
+    let mut expected_addresses = [
+        observed_address(arguments.next(), "first nft-observe local address")?,
+        observed_address(arguments.next(), "second nft-observe local address")?,
+    ];
+    if arguments.next().is_some() {
+        bail!("nft-observe accepts exactly seven arguments");
+    }
+    expected_addresses.sort_unstable();
+
+    let rtnetlink = FixedRtnetlinkObservationReader::new(ip.into())
+        .context("construct fixed rtnetlink observer with retained artifact custody")?;
+    let nftables = FixedNftablesObservationReader::new(nft.into(), loader.into())
+        .context("construct fixed nftables observer with retained artifact custody")?;
+    let first_links = rtnetlink
+        .observe_sandbox()
+        .context("read first rtnetlink snapshot")?;
+    let first = nftables
+        .observe(&first_links.links)
+        .context("read first nftables snapshot")?;
+    let second_links = rtnetlink
+        .observe_sandbox()
+        .context("read second rtnetlink snapshot")?;
+    let second = nftables
+        .observe(&second_links.links)
+        .context("read second nftables snapshot")?;
+    ensure!(
+        first_links == second_links && first == second,
+        "rtnetlink or nftables changed between complete snapshots"
+    );
+    ensure!(
+        first.installed_artifact_digest == first.loader_artifact_digest,
+        "nftables loader provenance differs from retained artifact"
+    );
+    ensure!(
+        first.loader_policy_digest == observer_qualification::managed_policy_digest(&gate_object)?,
+        "nftables policy provenance differs from the fixture plan"
+    );
+    ensure!(
+        first.anti_spoof_rules.len() == 4 && first.flows.len() == 6,
+        "nftables normalized rule inventory is incomplete"
+    );
+    let expected_chains = vec![
+        ObservedNftBaseChainV1 {
+            name: "ingress".to_owned(),
+            hook: "input".to_owned(),
+            chain_type: "filter".to_owned(),
+            priority: 0,
+            policy_drop: true,
+        },
+        ObservedNftBaseChainV1 {
+            name: "egress".to_owned(),
+            hook: "output".to_owned(),
+            chain_type: "filter".to_owned(),
+            priority: 0,
+            policy_drop: true,
+        },
+    ];
+    ensure!(
+        first.default_drop && first.base_chains == expected_chains,
+        "nftables base-chain contract differs from the fixture plan"
+    );
+    let interface = ObservedInterfaceV1 {
+        namespace: ObservedNetworkNamespaceV1::Sandbox,
+        ifindex: expected_ifindex,
+    };
+    let expected_anti_spoof = vec![
+        ObservedNftAntiSpoofRuleV1 {
+            direction: NetworkFlowDirectionV1::Ingress,
+            interface,
+            local_addresses: vec![expected_addresses[0]],
+            inverted_match: true,
+            position: 0,
+            verdict: ObservedNftVerdictV1::Drop,
+        },
+        ObservedNftAntiSpoofRuleV1 {
+            direction: NetworkFlowDirectionV1::Egress,
+            interface,
+            local_addresses: vec![expected_addresses[0]],
+            inverted_match: true,
+            position: 0,
+            verdict: ObservedNftVerdictV1::Drop,
+        },
+        ObservedNftAntiSpoofRuleV1 {
+            direction: NetworkFlowDirectionV1::Ingress,
+            interface,
+            local_addresses: vec![expected_addresses[1]],
+            inverted_match: true,
+            position: 1,
+            verdict: ObservedNftVerdictV1::Drop,
+        },
+        ObservedNftAntiSpoofRuleV1 {
+            direction: NetworkFlowDirectionV1::Egress,
+            interface,
+            local_addresses: vec![expected_addresses[1]],
+            inverted_match: true,
+            position: 1,
+            verdict: ObservedNftVerdictV1::Drop,
+        },
+    ];
+    ensure!(
+        first.anti_spoof_rules == expected_anti_spoof,
+        "nftables anti-spoof set differs from the managed namespace plan"
+    );
+    let endpoint_id = aos_sandbox_core::NetworkEndpointId::from_bytes([81; 16]);
+    let expected_flows = vec![
+        ObservedFlowV1 {
+            endpoint_id,
+            direction: NetworkFlowDirectionV1::Ingress,
+            protocol: NetworkTransportProtocolV1::Tcp,
+            remote_prefix: aos_sandbox_network::NetworkIpPrefixV1::ipv6(
+                [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+                128,
+            )?,
+            ports: Some(NetworkPortRangeV1::new(8443, 8443)?),
+            position: 2,
+            verdict: ObservedNftVerdictV1::Accept,
+        },
+        ObservedFlowV1 {
+            endpoint_id,
+            direction: NetworkFlowDirectionV1::Ingress,
+            protocol: NetworkTransportProtocolV1::Udp,
+            remote_prefix: aos_sandbox_network::NetworkIpPrefixV1::ipv4([198, 51, 100, 7], 32)?,
+            ports: Some(NetworkPortRangeV1::new(53, 54)?),
+            position: 3,
+            verdict: ObservedNftVerdictV1::Accept,
+        },
+        ObservedFlowV1 {
+            endpoint_id,
+            direction: NetworkFlowDirectionV1::Ingress,
+            protocol: NetworkTransportProtocolV1::IcmpV6,
+            remote_prefix: aos_sandbox_network::NetworkIpPrefixV1::ipv6(
+                [0x20, 0x01, 0x0d, 0xb8, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                64,
+            )?,
+            ports: None,
+            position: 4,
+            verdict: ObservedNftVerdictV1::Accept,
+        },
+        ObservedFlowV1 {
+            endpoint_id,
+            direction: NetworkFlowDirectionV1::Egress,
+            protocol: NetworkTransportProtocolV1::Tcp,
+            remote_prefix: aos_sandbox_network::NetworkIpPrefixV1::ipv4([10, 80, 0, 0], 16)?,
+            ports: Some(NetworkPortRangeV1::new(443, 443)?),
+            position: 2,
+            verdict: ObservedNftVerdictV1::Accept,
+        },
+        ObservedFlowV1 {
+            endpoint_id,
+            direction: NetworkFlowDirectionV1::Egress,
+            protocol: NetworkTransportProtocolV1::Udp,
+            remote_prefix: aos_sandbox_network::NetworkIpPrefixV1::ipv6(
+                [0x20, 0x01, 0x0d, 0xb8, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                64,
+            )?,
+            ports: Some(NetworkPortRangeV1::new(1000, 1005)?),
+            position: 3,
+            verdict: ObservedNftVerdictV1::Accept,
+        },
+        ObservedFlowV1 {
+            endpoint_id,
+            direction: NetworkFlowDirectionV1::Egress,
+            protocol: NetworkTransportProtocolV1::IcmpV4,
+            remote_prefix: aos_sandbox_network::NetworkIpPrefixV1::ipv4([203, 0, 113, 0], 24)?,
+            ports: None,
+            position: 4,
+            verdict: ObservedNftVerdictV1::Accept,
+        },
+    ];
+    ensure!(
+        first.flows == expected_flows,
+        "nftables endpoint flow differs from the fixture plan"
+    );
+
+    println!("NFT_OBSERVER_OK");
+    Ok(())
+}
+
+fn observed_address(argument: Option<OsString>, name: &'static str) -> Result<ObservedIpAddressV1> {
+    let address = unicode_argument(argument, name)?
+        .parse::<IpAddr>()
+        .with_context(|| format!("parse {name}"))?;
+
+    Ok(match address {
+        IpAddr::V4(address) => ObservedIpAddressV1::Ipv4(address.octets()),
+        IpAddr::V6(address) => ObservedIpAddressV1::Ipv6(address.octets()),
+    })
+}
+
+fn netnsid(mut arguments: impl Iterator<Item = OsString>) -> Result<()> {
+    let peer_path = arguments
+        .next()
+        .context("netnsid requires PEER_NAMESPACE")?;
+    if arguments.next().is_some() {
+        bail!("netnsid accepts exactly one peer namespace path");
+    }
+
+    let peer_file = File::open(&peer_path).context("open fixture peer namespace")?;
+    let peer = NamespaceFd::from_owned(peer_file.into(), NamespaceKind::Network)
+        .context("type fixture peer namespace")?;
+    let current = NamespaceFd::current_network().context("retain current fixture namespace")?;
+    let namespace_id = network_namespace_id(&peer).context("query fixture peer namespace ID")?;
+    let current_identity = current.identity();
+    let peer_identity = peer.identity();
+
+    println!(
+        "NETNSID {namespace_id} CURRENT {} {} PEER {} {}",
+        current_identity.device, current_identity.inode, peer_identity.device, peer_identity.inode
+    );
+    Ok(())
 }
 
 fn artifact_custody(mut arguments: impl Iterator<Item = OsString>) -> Result<()> {

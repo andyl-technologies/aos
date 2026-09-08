@@ -267,6 +267,94 @@ impl NetworkNamespaceCatalogV1 {
         self.generation
     }
 
+    /// Returns one physically revalidated current namespace identity.
+    ///
+    /// This is an authorization-bearing projection of the protected lifecycle
+    /// catalog, not a shape-only identity constructor. The row must be live in
+    /// the current boot and its fixed pin must still resolve to the recorded
+    /// Network namespace device and inode.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceCatalogError`] if the handle is absent or
+    /// retired, the row belongs to another boot, or its protected pin is
+    /// missing, mistyped, or physically different.
+    pub fn current_namespace_identity(
+        &self,
+        network_handle: [u8; 32],
+    ) -> Result<NetworkNamespaceIdentityV1, NetworkNamespaceCatalogError> {
+        let record = self
+            .records
+            .get(&network_handle)
+            .ok_or(NetworkNamespaceCatalogError::LifecycleConflict)?;
+        if record.kernel_boot_id != self.kernel_boot_id
+            || matches!(record.lifecycle, NamespaceLifecycleV1::Retired)
+        {
+            return Err(NetworkNamespaceCatalogError::LifecycleConflict);
+        }
+        let pin = self.pin_root.observe(&network_handle)?;
+        if (pin.device, pin.inode) != (record.namespace_device, record.namespace_inode) {
+            return Err(NetworkNamespaceCatalogError::NamespacePin(
+                "pin device/inode identity disagrees with protected lifecycle state".to_owned(),
+            ));
+        }
+
+        NetworkNamespaceIdentityV1::new(
+            network_handle,
+            record.kernel_boot_id,
+            record.namespace_device,
+            record.namespace_inode,
+        )
+    }
+
+    /// Returns the protected current lifecycle state for one live namespace.
+    ///
+    /// The namespace pin is physically revalidated before lifecycle state is
+    /// projected. Armed and fenced rows return the exact retained lease tuple;
+    /// a retired or stale-boot row is never a current state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceCatalogError`] if the handle is absent,
+    /// retired, belongs to another boot, or its protected pin has changed.
+    pub fn current_namespace_observed_state(
+        &self,
+        network_handle: [u8; 32],
+    ) -> Result<NetworkNamespaceObservedStateV1, NetworkNamespaceCatalogError> {
+        self.current_namespace_identity(network_handle)?;
+        let record = self
+            .records
+            .get(&network_handle)
+            .ok_or(NetworkNamespaceCatalogError::LifecycleConflict)?;
+
+        project_observed_state(record)
+    }
+
+    /// Authorizes an observation plan against one exact current catalog row.
+    ///
+    /// The fixed namespace pin is physically revalidated and the retained
+    /// assignment must exactly match the plan assignment before either the
+    /// identity or lifecycle projection is returned.
+    pub(crate) fn authorize_current_observation(
+        &self,
+        network_handle: [u8; 32],
+        assignment: BrokerAssignment,
+    ) -> Result<
+        (NetworkNamespaceIdentityV1, NetworkNamespaceObservedStateV1),
+        NetworkNamespaceCatalogError,
+    > {
+        let identity = self.current_namespace_identity(network_handle)?;
+        let record = self
+            .records
+            .get(&network_handle)
+            .ok_or(NetworkNamespaceCatalogError::LifecycleConflict)?;
+        if record.assignment != AssignmentWire::from(assignment) {
+            return Err(NetworkNamespaceCatalogError::IdentityConflict);
+        }
+
+        Ok((identity, project_observed_state(record)?))
+    }
+
     /// Publishes an exact committed namespace after reopening its fixed pin.
     ///
     /// Only current-boot default-drop creation results are accepted. A stale
@@ -643,6 +731,25 @@ enum NamespaceLifecycleV1 {
     Armed,
     Fenced,
     Retired,
+}
+
+fn project_observed_state(
+    record: &NamespaceRecordV2,
+) -> Result<NetworkNamespaceObservedStateV1, NetworkNamespaceCatalogError> {
+    match record.lifecycle {
+        NamespaceLifecycleV1::DefaultDrop => Ok(NetworkNamespaceObservedStateV1::default_drop()),
+        NamespaceLifecycleV1::Armed => NetworkNamespaceObservedStateV1::armed(
+            ObjectDigest::from_bytes(record.highest_lease_digest),
+            record.lease_generation,
+            record.fail_stop_boottime_nanoseconds,
+        ),
+        NamespaceLifecycleV1::Fenced => NetworkNamespaceObservedStateV1::fenced(
+            ObjectDigest::from_bytes(record.highest_lease_digest),
+            record.lease_generation,
+            record.fail_stop_boottime_nanoseconds,
+        ),
+        NamespaceLifecycleV1::Retired => Err(NetworkNamespaceCatalogError::LifecycleConflict),
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1327,6 +1434,89 @@ mod tests {
         drop(catalog);
         let recovered = fixture.open([81; 16]).unwrap();
         assert_eq!(inventory(&recovered), snapshot);
+    }
+
+    #[test]
+    fn current_identity_requires_live_current_boot_catalog_and_exact_pin() {
+        let fixture = Fixture::new();
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        assert!(matches!(
+            catalog.current_namespace_identity([1; 32]),
+            Err(NetworkNamespaceCatalogError::LifecycleConflict)
+        ));
+
+        fixture.create_pin(1);
+        catalog
+            .publish(fixture.publication(1, 1, [81; 16]))
+            .unwrap();
+        let identity = catalog.current_namespace_identity([1; 32]).unwrap();
+        assert_eq!(identity.network_handle(), [1; 32]);
+        assert_eq!(identity.kernel_boot_id(), [81; 16]);
+
+        fs::remove_file(fixture.pin_path(1)).unwrap();
+        fixture.create_pin(1);
+        assert!(matches!(
+            catalog.current_namespace_identity([1; 32]),
+            Err(NetworkNamespaceCatalogError::NamespacePin(_))
+        ));
+
+        let stale_fixture = Fixture::new();
+        stale_fixture.create_pin(2);
+        let mut stale = stale_fixture.open([81; 16]).unwrap();
+        stale
+            .publish(stale_fixture.publication(2, 2, [81; 16]))
+            .unwrap();
+        drop(stale);
+        fs::remove_file(stale_fixture.pin_path(2)).unwrap();
+        let stale = stale_fixture.open([82; 16]).unwrap();
+        assert!(matches!(
+            stale.current_namespace_identity([2; 32]),
+            Err(NetworkNamespaceCatalogError::LifecycleConflict)
+        ));
+
+        let retired_fixture = Fixture::new();
+        retired_fixture.create_pin(3);
+        let mut retired = retired_fixture.open([81; 16]).unwrap();
+        retired
+            .publish(retired_fixture.publication(3, 3, [81; 16]))
+            .unwrap();
+        let destruction = lifecycle_observation(
+            &retired,
+            3,
+            93,
+            94,
+            NetworkNamespaceObservedStateV1::absent(),
+        );
+        fs::remove_file(retired_fixture.pin_path(3)).unwrap();
+        retired
+            .apply_lifecycle_transition(
+                NetworkNamespaceLifecycleTransitionV1::destroy(destruction).unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            retired.current_namespace_identity([3; 32]),
+            Err(NetworkNamespaceCatalogError::LifecycleConflict)
+        ));
+    }
+
+    #[test]
+    fn observation_authority_requires_the_exact_retained_assignment() {
+        let fixture = Fixture::new();
+        fixture.create_pin(1);
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        catalog
+            .publish(fixture.publication(1, 7, [81; 16]))
+            .unwrap();
+
+        assert!(
+            catalog
+                .authorize_current_observation([1; 32], assignment(7))
+                .is_ok()
+        );
+        assert!(matches!(
+            catalog.authorize_current_observation([1; 32], assignment(8)),
+            Err(NetworkNamespaceCatalogError::IdentityConflict)
+        ));
     }
 
     #[test]

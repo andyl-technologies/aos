@@ -41,6 +41,9 @@ pub enum NetworkKernelReaderError {
     /// The fixed iproute2 reader emitted unsupported or incomplete state.
     #[error("invalid Network rtnetlink observation: {0}")]
     InvalidRtnetlink(&'static str),
+    /// The fixed nftables reader emitted unsupported or incomplete state.
+    #[error("invalid Network nftables observation: {0}")]
+    InvalidNftables(&'static str),
     /// JSON syntax or the closed schema was invalid.
     #[error("invalid Network BPF observation JSON: {0}")]
     Json(#[from] serde_json::Error),
@@ -189,7 +192,7 @@ impl PinnedArtifact {
         Ok(artifact)
     }
 
-    fn validate_current(&self) -> Result<(), NetworkKernelReaderError> {
+    pub(crate) fn validate_current(&self) -> Result<(), NetworkKernelReaderError> {
         for ancestor in &self.ancestors {
             let current =
                 DirectoryIdentity::from_descriptor(&ancestor.descriptor, ancestor.policy)?;
@@ -224,6 +227,10 @@ impl PinnedArtifact {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) const fn digest(&self) -> ObjectDigest {
+        self.digest
     }
 
     pub(crate) fn run(
