@@ -206,9 +206,11 @@ in
             PASS
             check=${attrPath}
             gate=gate:e2e-determinism
+            evidence_scope=shared-mock-artifact
+            live_qemu_acceptance=not-established-by-this-check
             tasks=${builtins.concatStringsSep "," taskIds}
             open_tasks=${builtins.concatStringsSep "," openTaskIds}
-            status=complete
+            status=component-only
             owner=crucible-cli
             phase=phase7
             scenario=shared-mock-multi-node-fault-injected-artifact
