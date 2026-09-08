@@ -1,8 +1,9 @@
 # `andyl/testing` registry runbook
 
 This runbook owns every routine operation for the experimental hosted registry.
-The registry is public but unsupported, follows only `edge`, and may be rebuilt
-from scratch. Its signing material remains separate from `andyl/main`.
+The registry is public but uses experimental build and release infrastructure
+and may be rebuilt from scratch. It supports `edge`, `candidate`, and `stable`;
+these classify software maturity, not pipeline provenance. The default is `edge`. Its signing material remains separate from `andyl/main`.
 
 `andyl/testing` does not use an HSM. The intended key management for
 `andyl/main` is documented in [Registry key management](registry-key-management.md).
@@ -151,8 +152,8 @@ the `aos` package version remains separate provenance. The plan request must
 use that exact version and contain:
 
 - `registry: "andyl/testing"` (or the active epoch identity);
-- `release_class: "edge"`;
-- only an `edge` intended channel;
+- a release class matching the software version (`edge` for this example);
+- intended channels matching the software class (`edge` for this example);
 - the exact current testing registry base commit and generation;
 - the staging and production deployment identities already verified above;
 - complete package and image decisions and all required signer roles.

@@ -24,13 +24,14 @@ key, upload grants, and environment receipt signers are separate authorities.
 | TUF snapshot | Dedicated restricted online signer; may bind only authorized metadata |
 | TUF timestamp | Separate restricted online signer; may renew only an authorized snapshot |
 | Registry Git commit and tag | Dedicated hardware-backed Ed25519 signer |
-| Stable and candidate channels | A distinct signer for each named channel; cannot authorize release content |
+| Edge, candidate, and stable channels | A distinct signer for each named channel; cannot authorize release content |
 | Nix cache | Dedicated non-exportable Ed25519 key for approved narinfo fingerprints |
 | Release evidence and qualification | Separate hardware-backed authorities bound to exact release and qualification evidence |
 | Secure Boot PK, KEK, db, module and PCR policy | Distinct hardware-backed authorities, with offline custody or operator approval appropriate to each role |
 
-Main accepts candidate, stable, and emergency release classes; edge belongs to
-testing. Do not import testing keys into main's trust policy. A threshold is
+Both registries accept edge, candidate, stable, and emergency release classes.
+Main requires strict pipeline provenance for every class, including edge;
+testing exercises new build and release mechanisms with lighter assurance. Do not import testing keys into main's trust policy. A threshold is
 meaningful only when its custodians and administrative access are independent;
 several keys accessible through one online credential do not provide that
 separation.

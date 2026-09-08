@@ -37,6 +37,13 @@
   testing = evaluate "aos-testing-eval" [testingModule];
   aos = definitionFor {};
   testingAos = testing.config.aos.containers.definitions.aos;
+  testingChannels = builtins.map (channel: let
+    evaluated = evaluate "testing-channel-eval" [testingModule {aos.release.channel = channel;}];
+  in {
+    inherit channel;
+    profile = evaluated.config.aos.release;
+    container = evaluated.config.aos.containers.definitions.aos;
+  }) ["edge" "candidate" "stable"];
   goldenRoots = server.config.environment.systemPackages;
   mismatchedSystem =
     if pkgs.stdenv.hostPlatform.system == "x86_64-linux"
@@ -119,7 +126,7 @@
   ];
   invalidTestingChannel = trySystem [
     testingModule
-    {aos.release.channel = lib.mkForce "stable";}
+    {aos.release.channel = lib.mkForce "unknown";}
   ];
   invalidTestingAlias = trySystem [
     testingModule
@@ -167,6 +174,13 @@ in
   assert lib.hasInfix "\nAOS_REGISTRY=andyl/testing\n" testing.config.environment.etc."os-release".text;
   assert testing.config.system.build.defaultContainer.coordination.definitionAttribute
   == "systems.aos-testing-eval.build.containers.aos";
+  assert builtins.all (entry:
+    entry.profile.registry
+    == "andyl/testing"
+    && entry.profile.channel == entry.channel
+    && entry.container.publication.referenceTag == entry.channel
+    && entry.container.runtime.environment.AOS_REGISTRY == "andyl/testing")
+  testingChannels;
   assert testing.config.aos.release.channel == "edge";
   assert builtins.attrNames testing.config.aos.apm.registries == ["andyl-testing"];
   assert testingAos.publication.repository == "aos-testing";

@@ -103,10 +103,6 @@ in {
         message = "production artifacts use andyl/main; testing artifacts use an epoch-scoped andyl/testing identity";
       }
       {
-        assertion = cfg.tier != "testing" || cfg.channel == "edge";
-        message = "testing artifacts must follow only the edge channel";
-      }
-      {
         assertion = cfg.clientName == expectedClientName;
         message = "release artifact client alias must match its signed registry identity";
       }
