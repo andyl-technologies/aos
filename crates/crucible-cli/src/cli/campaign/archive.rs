@@ -16,7 +16,7 @@ use crucible_campaign::{
     ArchiveObjectEntry, CampaignArchiveInspection, CampaignArchivePlan, CampaignArchivePolicy,
     CampaignName, CampaignSnapshotId,
 };
-use crucible_cas::content_store::{
+use crucible_daemon::campaign_store_composition::{
     ContentId, DurabilityRequirement, ImmutableBlobBackend, ObjectKind, RefName, SensitivityClass,
 };
 use crucible_daemon::{
