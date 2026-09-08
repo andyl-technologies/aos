@@ -612,7 +612,14 @@ impl WorkspacePinAttemptV1 {
     }
 
     pub(crate) fn authority_digest(&self) -> Result<ObjectDigest, StorageStateError> {
+        // The receipt authorizes the immutable effect, not its later journaled
+        // observation. Every receipt is minted for the initial Ambiguous/None
+        // shape, so normalize those two mutable fields for verification after
+        // a durable Satisfied transition. The journal MAC continues to bind
+        // the complete phase and observed pin proof.
         let mut unsealed = self.clone();
+        unsealed.phase = WorkspacePinAttemptPhaseV1::Ambiguous;
+        unsealed.satisfied_pin = None;
         unsealed.authority_receipt.clear();
         let canonical = encode_attempt(&unsealed, [0x5a; 16], &[0xa5; 32])?;
         let mut digest = Sha256::new();
@@ -1129,6 +1136,24 @@ mod tests {
                 *candidate
             );
         }
+    }
+
+    #[test]
+    fn authority_digest_survives_satisfaction_but_binds_immutable_effect() {
+        let ensure = attempt(WorkspacePinActionV1::Ensure);
+        let satisfied = ensure.satisfy(Some(proof("tank/aos/work", 9))).unwrap();
+
+        assert_eq!(
+            ensure.authority_digest().unwrap(),
+            satisfied.authority_digest().unwrap()
+        );
+
+        let mut substituted = satisfied;
+        substituted.dataset_guid += 1;
+        assert_ne!(
+            ensure.authority_digest().unwrap(),
+            substituted.authority_digest().unwrap()
+        );
     }
 
     #[test]
