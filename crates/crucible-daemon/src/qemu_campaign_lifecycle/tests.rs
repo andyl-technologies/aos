@@ -1307,6 +1307,17 @@ impl QemuSelectedOriginResumeRunner for AbsentSelectedSourceResume {
     }
 }
 
+impl crate::QemuOrdinaryResumeRunner for AbsentSelectedSourceResume {
+    fn execute_verified_attempt_start(
+        &mut self,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+        _proof: crate::QemuAttemptStartReplayProof,
+    ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+        panic!("absent selected-source fixture must not resume an ordinary attempt")
+    }
+}
+
 #[test]
 fn router_cold_executes_an_initial_selected_origin_when_its_source_is_absent() {
     let order = Arc::new(Mutex::new(Vec::new()));
@@ -2347,6 +2358,96 @@ fn fresh_runner_rejects_producer_override_before_factory_invocation() {
     let error = runner
         .execute(&input, &fresh_runner_context())
         .expect_err("producer override must fail before fresh lifecycle construction");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::StartDecisionUnsupported {
+                configuration,
+                decision: 0,
+            }
+        ) if configuration == expected
+    ));
+    assert!(order.lock().expect("fresh lifecycle order").is_empty());
+}
+
+#[test]
+fn attempt_start_verifier_seals_the_prefix_before_final_drain() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+            terminal_after_replay: false,
+            checkpoint_ready: true,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let input = non_genesis_fresh_runner_input();
+    let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
+        ObjectKind::ExactManifest,
+        4,
+        b"ordinary-attempt-start-proof",
+    ))
+    .expect("resume checkpoint");
+    let resume_context = fresh_runner_context().with_resume_checkpoint(Some(checkpoint));
+
+    let proof = runner
+        .verify_attempt_start(&input, &resume_context)
+        .expect("cold-replayed attempt-start prefix");
+
+    assert_eq!(
+        proof.attempt_event_count(input.start().configuration(), &[]),
+        Some(0)
+    );
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "replay", "shutdown"]
+    );
+}
+
+#[test]
+fn attempt_start_verifier_rejects_unsupported_event_count_start_before_factory() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+            terminal_after_replay: false,
+            checkpoint_ready: true,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let input = non_genesis_fresh_runner_input_with_decisions_for_stop(
+        vec![Decision::AppRandom(AppRandomDecision {
+            node: NodeId {
+                name: String::from("node-a"),
+            },
+            stream: RngStreamId::from_name("event-count-resume-override"),
+            request_id: 1,
+            width: 8,
+            value: 7,
+        })],
+        StopCondition::EventCount(4),
+    );
+    let expected = input.start().configuration().id();
+    let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
+        ObjectKind::ExactManifest,
+        4,
+        b"unsupported-event-count-start",
+    ))
+    .expect("resume checkpoint");
+    let resume_context = fresh_runner_context().with_resume_checkpoint(Some(checkpoint));
+
+    let error = runner
+        .verify_attempt_start(&input, &resume_context)
+        .expect_err("unsupported EventCount start must fail closed");
 
     assert!(matches!(
         error,

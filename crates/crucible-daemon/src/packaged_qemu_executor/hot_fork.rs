@@ -154,6 +154,27 @@ where
     }
 }
 
+impl<H, F> crate::QemuAttemptStartVerifier for PackagedQemuInitialExecutionRunner<H, F>
+where
+    H: crate::QemuAttemptStartVerifier,
+    F: crate::QemuAttemptStartVerifier,
+{
+    fn verify_attempt_start(
+        &mut self,
+        input: &crate::CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<crate::QemuAttemptStartReplayProof, crate::AttemptWorkerFailure<Self::Error>> {
+        match self {
+            Self::HotFork(runner) => runner
+                .verify_attempt_start(input, context)
+                .map_err(|failure| failure.map(PackagedQemuInitialExecutionRunnerError::HotFork)),
+            Self::Fresh(runner) => runner
+                .verify_attempt_start(input, context)
+                .map_err(|failure| failure.map(PackagedQemuInitialExecutionRunnerError::Fresh)),
+        }
+    }
+}
+
 pub(super) fn authenticate_packaged_hot_fork_launch(
     lifecycle: &ProductionVmLifecycleConfig,
     hot_fork: &PackagedQemuHotForkConfig,

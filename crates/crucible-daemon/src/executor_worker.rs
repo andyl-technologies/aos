@@ -520,11 +520,12 @@ impl AttemptExecutionContext {
         }
     }
 
-    /// Derives a non-capturing context for mandatory selected-origin replay.
+    /// Derives a non-capturing context for mandatory resume-basis replay.
     ///
     /// Cancellation and resource ceilings remain shared with the assignment.
     /// A sticky checkpoint request is deferred until the semantic continuation
-    /// boundary has been independently reconstructed.
+    /// boundary has been independently reconstructed. The same context also
+    /// authenticates an ordinary EventCount attempt's immutable start prefix.
     pub(crate) fn for_origin_replay(&self) -> Self {
         let mut context = self.clone();
         context.start_mode = AttemptStartMode::Execute;

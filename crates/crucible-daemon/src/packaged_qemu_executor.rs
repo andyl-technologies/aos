@@ -1043,7 +1043,7 @@ where
         &ProductionVmLifecycleConfig,
         AttemptResourceLimits,
     ) -> Result<PackagedQemuInitialRunnerBuild<R>, PackagedQemuExecutorError>,
-    R: crate::QemuSelectedOriginVerifier + Send + 'static,
+    R: crate::QemuAttemptStartVerifier + crate::QemuSelectedOriginVerifier + Send + 'static,
     R::Error: std::error::Error + 'static,
 {
     let campaigns = config.campaigns.clone();
