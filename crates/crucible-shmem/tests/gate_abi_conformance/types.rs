@@ -103,6 +103,7 @@ pub(super) struct NodeSlotState {
 pub(super) struct RingHeaderState {
     pub(super) read_idx: u64,
     pub(super) write_idx: u64,
+    pub(super) producer_state: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -4,7 +4,7 @@ use super::decode::FallibleString;
 use crucible::{
     AppRandomDecision, ChoiceTag, Decision, DeliveryOrderDecision, EventKey, OverrideDecision,
     PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, SchedulerNodeId,
-    SchedulingNodeKind, SchedulingPoint,
+    SchedulingNodeKind, SchedulingPoint, SelectionDecision,
 };
 
 /// Wire-compatible decision shape with fallible text and sequence ownership.
@@ -20,6 +20,11 @@ pub(super) enum DecisionWire {
     Preemption(PreemptionDecisionWire),
     /// A served application-requested random value.
     AppRandom(AppRandomDecisionWire),
+    /// A structurally validated campaign selection.
+    Selection(
+        #[serde(deserialize_with = "super::decode::deserialize_selection_decision")]
+        SelectionDecision,
+    ),
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -128,6 +133,7 @@ impl From<&Decision> for DecisionWire {
                 width: decision.width,
                 value: decision.value,
             }),
+            Decision::Selection(decision) => Self::Selection(decision.clone()),
         }
     }
 }
@@ -168,6 +174,7 @@ impl DecisionWire {
                 width: decision.width,
                 value: decision.value,
             }),
+            Self::Selection(decision) => Decision::Selection(decision),
         }
     }
 }

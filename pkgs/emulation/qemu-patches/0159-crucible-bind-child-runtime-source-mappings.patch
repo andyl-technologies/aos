@@ -1,0 +1,163 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index d2bc9658a..503378e45 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1283,8 +1283,8 @@ int qemu_plugin_crucible_register_hot_fork_barrier(
+     qemu_plugin_crucible_hot_fork_barrier_cb_t cb,
+     void *userdata);
+ 
+-#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PLAN_VERSION 2
+-#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_STATUS_VERSION 2
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PLAN_VERSION 3
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_STATUS_VERSION 3
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_INITIALIZE 1
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_QUERY 2
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_RELEASE 3
+@@ -1318,6 +1318,9 @@ struct qemu_plugin_crucible_hot_fork_child_plan {
+     uint64_t shmem_device;
+     uint64_t shmem_inode;
+     uint64_t shmem_length;
++    uint64_t source_mapping_start;
++    uint64_t source_mapping_length;
++    uint64_t source_mapping_offset;
+     int32_t private_ring_fd;
+     int32_t control_fd;
+     int32_t wake_fd;
+@@ -1337,6 +1340,9 @@ struct qemu_plugin_crucible_hot_fork_child_status {
+     uint64_t plugin_barrier_generation;
+     uint64_t control_socket_cookie;
+     uint64_t wake_eventfd_id;
++    uint64_t source_mapping_start;
++    uint64_t source_mapping_length;
++    uint64_t source_mapping_offset;
+     uint64_t worker_mask;
+     uint64_t parked_worker_mask;
+     uint64_t pending_worker_mask;
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 9cdda4a66..f5372215b 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -1644,6 +1644,9 @@ qmp_query_crucible_hot_fork_child_runtime(Error **errp)
+     report->plugin_barrier_generation = status->plugin_barrier_generation;
+     report->control_socket_cookie = status->control_socket_cookie;
+     report->wake_eventfd_id = status->wake_eventfd_id;
++    report->source_mapping_start = status->source_mapping_start;
++    report->source_mapping_length = status->source_mapping_length;
++    report->source_mapping_offset = status->source_mapping_offset;
+     report->worker_mask = status->worker_mask;
+     report->parked_worker_mask = status->parked_worker_mask;
+     report->pending_worker_mask = status->pending_worker_mask;
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index e2e5c6e9b..99bf8bcd4 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -471,7 +471,18 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+           plan->wake_fd < 0 || plan->control_fd == plan->wake_fd ||
+           plan->private_ring_fd == plan->control_fd ||
+           plan->private_ring_fd == plan->wake_fd ||
+-          plan->shmem_inode == 0 || plan->shmem_length == 0))) {
++          plan->shmem_inode == 0 || plan->shmem_length == 0 ||
++          plan->source_mapping_start == 0 ||
++          plan->source_mapping_length != plan->shmem_length ||
++          plan->source_mapping_offset != 0 ||
++          !QEMU_IS_ALIGNED(plan->source_mapping_start,
++                           qemu_real_host_page_size()) ||
++          !QEMU_IS_ALIGNED(plan->source_mapping_length,
++                           qemu_real_host_page_size()) ||
++          plan->source_mapping_start > UINTPTR_MAX ||
++          plan->source_mapping_length > SIZE_MAX ||
++          plan->source_mapping_start >
++              UINTPTR_MAX - plan->source_mapping_length))) {
+         return -EINVAL;
+     }
+ 
+@@ -574,7 +585,10 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+           status.plugin_endpoint_generation != 0 ||
+           status.plugin_barrier_generation != 0 ||
+           status.control_socket_cookie != 0 ||
+-          status.wake_eventfd_id != 0)) ||
++          status.wake_eventfd_id != 0 ||
++          status.source_mapping_start != 0 ||
++          status.source_mapping_length != 0 ||
++          status.source_mapping_offset != 0)) ||
+         (status.phase >=
+          QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_WORKERS_HELD &&
+          (status.parent_process_generation == 0 ||
+@@ -586,7 +600,10 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+           status.plugin_endpoint_generation == 0 ||
+           status.plugin_barrier_generation == 0 ||
+           status.control_socket_cookie == 0 ||
+-          status.wake_eventfd_id == 0)) ||
++          status.wake_eventfd_id == 0 ||
++          status.source_mapping_start == 0 ||
++          status.source_mapping_length == 0 ||
++          status.source_mapping_offset != 0)) ||
+         (status.phase ==
+              QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_WORKERS_HELD &&
+          ((status.flags &
+@@ -619,7 +636,10 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+           status.plugin_barrier_generation !=
+               plan->plugin_barrier_generation ||
+           status.control_socket_cookie != plan->control_socket_cookie ||
+-          status.wake_eventfd_id != plan->wake_eventfd_id)) ||
++          status.wake_eventfd_id != plan->wake_eventfd_id ||
++          status.source_mapping_start != plan->source_mapping_start ||
++          status.source_mapping_length != plan->source_mapping_length ||
++          status.source_mapping_offset != plan->source_mapping_offset)) ||
+         (action != QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_INITIALIZE &&
+          previous_status.phase !=
+              QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_TEMPLATE &&
+@@ -637,7 +657,13 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+               previous_status.plugin_barrier_generation ||
+           status.control_socket_cookie !=
+               previous_status.control_socket_cookie ||
+-          status.wake_eventfd_id != previous_status.wake_eventfd_id)) ||
++          status.wake_eventfd_id != previous_status.wake_eventfd_id ||
++          status.source_mapping_start !=
++              previous_status.source_mapping_start ||
++          status.source_mapping_length !=
++              previous_status.source_mapping_length ||
++          status.source_mapping_offset !=
++              previous_status.source_mapping_offset)) ||
+         (status.phase != QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_TEMPLATE &&
+          status.child_process_generation !=
+              qemu_crucible_fault_lifecycle_process_generation()) ||
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index b0bd71262..89bffb881 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1099,7 +1099,7 @@
+ # does not fork, install resources, release admission, or acknowledge proof
+ # bit 8.
+ #
+-# @schema-version: child-runtime status contract version, currently 2
++# @schema-version: child-runtime status contract version, currently 3
+ #
+ # @generation: process-local registration/status mutation generation
+ #
+@@ -1149,6 +1149,15 @@
+ # @wake-eventfd-id: authenticated replacement eventfd identity, or zero before
+ #     child initialization
+ #
++# @source-mapping-start: authenticated template setup-region VMA start, or zero
++#     before child initialization
++#
++# @source-mapping-length: exact template setup-region VMA length, or zero before
++#     child initialization
++#
++# @source-mapping-offset: exact template setup-region file offset; zero in the
++#     only admitted child mapping profile
++#
+ # @worker-mask: complete sealed process-worker mask
+ #
+ # @parked-worker-mask: worker classes parked at an operation boundary
+@@ -1183,6 +1192,9 @@
+             'plugin-barrier-generation': 'uint64',
+             'control-socket-cookie': 'uint64',
+             'wake-eventfd-id': 'uint64',
++            'source-mapping-start': 'uint64',
++            'source-mapping-length': 'uint64',
++            'source-mapping-offset': 'uint64',
+             'worker-mask': 'uint64',
+             'parked-worker-mask': 'uint64',
+             'pending-worker-mask': 'uint64',

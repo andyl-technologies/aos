@@ -1,0 +1,177 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index f71c0c9e0..d204123b2 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1221,7 +1221,7 @@ QEMU_PLUGIN_API
+ int qemu_plugin_crucible_register_resource_manifest(
+     const struct qemu_plugin_crucible_resource_manifest *manifest);
+ 
+-#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION 1
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION 2
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD 1
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY 2
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE 3
+@@ -1237,6 +1237,9 @@ struct qemu_plugin_crucible_hot_fork_barrier_status {
+     uint32_t flags;
+     uint32_t reserved;
+     uint64_t in_flight;
++    uint64_t ring_count;
++    uint64_t rings_held;
++    uint64_t ring_producers_in_flight;
+ };
+ 
+ typedef int (*qemu_plugin_crucible_hot_fork_barrier_cb_t)(
+@@ -1247,12 +1250,13 @@ typedef int (*qemu_plugin_crucible_hot_fork_barrier_cb_t)(
+ /**
+  * qemu_plugin_crucible_register_hot_fork_barrier() - register callback parking
+  * @plugin_id: nonzero identity of the registering Crucible plugin
+- * @cb: process-lifetime callback barrier operation
++ * @cb: process-lifetime callback and shared-ring barrier operation
+  * @userdata: stable opaque pointer passed to @cb
+  *
+  * The callback exposes a reversible admission hold over every live plugin
+- * callback.  Holding the barrier is nonblocking: the returned status reports
+- * callbacks that were admitted before the hold and have not yet returned.
++ * callback and every shared-memory ring producer.  Holding the barrier is
++ * nonblocking: the returned status reports callbacks and producer
++ * publications that were admitted before their holds and have not returned.
+  *
+  * Returns zero on success or a negative errno-style status on failure.
+  */
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 34ac98fe5..c92778093 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -171,8 +171,15 @@ crucible_hot_fork_plugin_barrier(uint32_t operation, Error **errp)
+     report->teardown_closed = (inventory.status.flags &
+         QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_TEARDOWN) != 0;
+     report->in_flight = inventory.status.in_flight;
++    report->ring_count = inventory.status.ring_count;
++    report->rings_held = inventory.status.rings_held;
++    report->ring_producers_in_flight =
++        inventory.status.ring_producers_in_flight;
+     report->quiescent = report->registered && report->manifest_consistent &&
+-        report->held && !report->teardown_closed && report->in_flight == 0;
++        report->held && !report->teardown_closed && report->in_flight == 0 &&
++        report->ring_count != 0 &&
++        report->rings_held == report->ring_count &&
++        report->ring_producers_in_flight == 0;
+     return report;
+ }
+ 
+@@ -700,7 +707,7 @@ crucible_hot_fork_template_report(
+         acknowledged |= CRUCIBLE_HOT_FORK_PROOF_BLOCK_SNAPSHOT;
+     }
+ 
+-    report->schema_version = 7;
++    report->schema_version = 8;
+     report->generation = crucible_hot_fork_template_generation;
+     report->outcome = outcome;
+     report->transaction_active = crucible_hot_fork_template_active;
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index 86df99998..1e8da5a36 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -273,6 +273,10 @@ int qemu_plugin_crucible_hot_fork_barrier(
+     qemu_plugin_crucible_hot_fork_barrier_cb_t cb;
+     void *userdata;
+     uint32_t previous_flags;
++    uint64_t previous_in_flight;
++    uint64_t previous_ring_count;
++    uint64_t previous_rings_held;
++    uint64_t previous_ring_producers_in_flight;
+     int result;
+ 
+     if (!inventory ||
+@@ -305,6 +309,12 @@ int qemu_plugin_crucible_hot_fork_barrier(
+         status.struct_size != sizeof(status) || status.reserved != 0 ||
+         (status.flags &
+          ~QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_ALL) != 0 ||
++        status.ring_count == 0 || status.rings_held > status.ring_count ||
++        (status.rings_held != 0 &&
++         status.rings_held != status.ring_count) ||
++        (((status.flags &
++           QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD) != 0) !=
++         (status.rings_held == status.ring_count)) ||
+         (action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD &&
+          (status.flags &
+           QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD) == 0) ||
+@@ -323,8 +333,21 @@ int qemu_plugin_crucible_hot_fork_barrier(
+ 
+     qemu_mutex_lock(&qemu_plugin_crucible_resource_lock);
+     previous_flags = qemu_plugin_crucible_barrier_inventory.status.flags;
++    previous_in_flight =
++        qemu_plugin_crucible_barrier_inventory.status.in_flight;
++    previous_ring_count =
++        qemu_plugin_crucible_barrier_inventory.status.ring_count;
++    previous_rings_held =
++        qemu_plugin_crucible_barrier_inventory.status.rings_held;
++    previous_ring_producers_in_flight =
++        qemu_plugin_crucible_barrier_inventory.status.ring_producers_in_flight;
+     qemu_plugin_crucible_barrier_inventory.status = status;
+-    if (previous_flags != status.flags) {
++    if (previous_flags != status.flags ||
++        previous_in_flight != status.in_flight ||
++        previous_ring_count != status.ring_count ||
++        previous_rings_held != status.rings_held ||
++        previous_ring_producers_in_flight !=
++            status.ring_producers_in_flight) {
+         qemu_plugin_crucible_barrier_inventory.generation++;
+     }
+     qemu_plugin_crucible_barrier_inventory.manifest_consistent =
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index faad7d858..4e0d04af4 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -971,12 +971,13 @@
+ ##
+ # @CrucibleHotForkPluginBarrierState:
+ #
+-# Exact plugin-owned callback-admission state.  A quiescent response proves
+-# only that every callback covered by the sealed callback mask is parked.  It
+-# does not freeze host-side ring producers, drain plugin worker threads, or
+-# acknowledge hot-fork readiness proof bit 6.
++# Exact plugin-owned callback and shared-ring producer-admission state.  A
++# quiescent response proves that every callback covered by the sealed callback
++# mask and every producer for the validated shared-memory ring set is parked.
++# It does not drain plugin worker threads, clone ring bytes, or acknowledge
++# hot-fork readiness proof bit 6.
+ #
+-# @schema-version: barrier contract version, currently 1
++# @schema-version: barrier contract version, currently 2
+ #
+ # @generation: process-local barrier registration/hold generation
+ #
+@@ -990,6 +991,13 @@
+ #
+ # @in-flight: callbacks admitted before the hold that have not yet returned
+ #
++# @ring-count: exact number of rings in the validated shared-memory layout
++#
++# @rings-held: number of rings whose producer barrier is held
++#
++# @ring-producers-in-flight: producer publications admitted before the hold
++#                            that have not yet returned
++#
+ # @quiescent: whether the registered, manifest-consistent hold has drained
+ #
+ # Since: 10.0 (Crucible downstream extension)
+@@ -1002,6 +1010,9 @@
+             'held': 'bool',
+             'teardown-closed': 'bool',
+             'in-flight': 'uint64',
++            'ring-count': 'uint64',
++            'rings-held': 'uint64',
++            'ring-producers-in-flight': 'uint64',
+             'quiescent': 'bool' } }
+ 
+ ##
+@@ -1275,7 +1286,7 @@
+ # proof bit 5. Other unresolved proof classes still make a drained transaction
+ # roll back as @blocked.
+ #
+-# @schema-version: transaction contract version, currently 7
++# @schema-version: transaction contract version, currently 8
+ #
+ # @generation: positive process-local transaction generation after the first
+ #     successful prepare, or zero before any transaction

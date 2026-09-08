@@ -240,6 +240,33 @@ participation at all.
   validated at build time (§17a.6). *Gate:* `gate:e2e-determinism`. *Spec:*
   §17a.2.1, §17a.5, §17a.6.
 
+The production lifecycle projects future time-leaf transitions from the event
+graph, its portable firing/latch state, and the scheduler's current armed timers.
+These exact caps are independent of signal-fault cadence and fixed rendezvous.
+They bound both runnable and idle nodes. A time-dependent event is deferred
+without changing its firing, edge, or latch state while the evaluation prefix
+is ahead of the shared frontier; a leading node alone cannot satisfy a global
+time predicate. Consumed one-shot events and latched
+`Once` predicates no longer request wakeups; cancellation and timer replacement
+are reflected on the next settled boundary. Restored lifecycle state recomputes
+the caps before advancing execution rather than trusting a serialized cache.
+
+Time predicates retain equality semantics. Pulse-end evaluation boundaries let
+repeatable predicates observe false between exact pulses and let negation
+activate after a pulse. Such bookkeeping is excluded from quiescence blocking
+when the complete condition is certainly false; possible future activations
+still block quiescence. The scheduler rejects an unrepresentable exact cap or a
+cap behind an already advanced live node, without rounding or rewinding it.
+
+Powered-off and permanently failed scheduler nodes retain their counters but
+do not constrain the live frontier or contribute stale vCPU activity to
+quiescence. If every node is inactive, the next host-side trigger, signal-fault,
+or topology boundary can advance global time through a control-only quantum;
+no backend RUN is issued. Branch and terminal time caps still apply. Resuming
+a node anchors its retained physical counter at the current logical frontier
+and preserves remaining native timer durations. Checkpoints retain both the
+global frontier and the per-node counter mappings.
+
 ### 17a.2.2 `NetworkMatch` — a matching frame is delivered
 
 `NetworkMatch { link, predicate }` becomes true when a frame matching

@@ -1,0 +1,95 @@
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index cd178e1ee..7da88e3b7 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -2303,6 +2303,49 @@ static void test_mapping_table_rejects_wrong_shared_backing(void)
+     close(wrong_fd);
+ }
+ 
++static void test_mapping_table_admits_backing_partial_page(void)
++{
++    QemuCrucibleHotForkDescriptorTableTransaction transaction = {
++        .parent_pid = getpid(),
++        .child_pid = getpid(),
++        .active = false,
++        .descriptors_applied = true,
++        .mappings_verified = false,
++    };
++    uint64_t page_size = qemu_real_host_page_size();
++    /* An exact protocol length one byte past a page boundary. */
++    int backing_fd = create_sealed_mapping_backing(
++        "crucible-hot-fork-partial", page_size + 1);
++    void *mapping = mmap(NULL, 2 * page_size, PROT_READ | PROT_WRITE,
++                         MAP_SHARED, backing_fd, 0);
++    QemuCrucibleHotForkSharedMapping shared_mapping = {
++        .start = (uintptr_t)mapping,
++        .length = 2 * page_size,
++        .offset = 0,
++        .backing_fd = backing_fd,
++    };
++
++    g_assert_true(mapping != MAP_FAILED);
++    /* Reaching past the final partial page is still rejected. */
++    shared_mapping.length = 3 * page_size;
++    g_assert_cmpint(qemu_crucible_hot_fork_verify_mapping_table(
++                        &transaction, &shared_mapping, 1),
++                    ==, -EINVAL);
++    g_assert_false(transaction.mappings_verified);
++
++    /*
++     * The page-rounded extent of that length is admitted by the table
++     * check; whether the process scan then matches depends on the test
++     * process's other shared mappings, which this test does not own.
++     */
++    shared_mapping.length = 2 * page_size;
++    g_assert_cmpint(qemu_crucible_hot_fork_verify_mapping_table(
++                        &transaction, &shared_mapping, 1),
++                    !=, -EINVAL);
++    g_assert_cmpint(munmap(mapping, 2 * page_size), ==, 0);
++    close(backing_fd);
++}
++
+ static void test_inactive_descriptor_transaction_is_unchanged(void)
+ {
+     QemuCrucibleHotForkDescriptorTableTransaction transaction = {
+@@ -2562,6 +2605,8 @@ int main(int argc, char **argv)
+                     test_mapping_table_rejects_unlisted_shared_mapping);
+     g_test_add_func("/crucible/hot-fork-child/wrong-shared-backing",
+                     test_mapping_table_rejects_wrong_shared_backing);
++    g_test_add_func("/crucible/hot-fork-child/mapping-table-partial-page",
++                    test_mapping_table_admits_backing_partial_page);
+     g_test_add_func("/crucible/hot-fork-child/grandchild-rejected",
+                     test_grandchild_cannot_use_parent_identity);
+     g_test_add_func("/crucible/hot-fork-child/exact-replacement",
+diff --git a/util/crucible-hot-fork-child.c b/util/crucible-hot-fork-child.c
+index c31434f4a..07cd01dfd 100644
+--- a/util/crucible-hot-fork-child.c
++++ b/util/crucible-hot-fork-child.c
+@@ -853,6 +853,7 @@ static bool crucible_hot_fork_shared_mapping_table_is_valid(
+     }
+     for (size_t index = 0; index < mapping_count; index++) {
+         struct stat backing;
++        uint64_t backing_pages;
+         uint64_t end;
+         int seals;
+ 
+@@ -865,8 +866,17 @@ static bool crucible_hot_fork_shared_mapping_table_is_valid(
+             mappings[index].offset > UINT64_MAX - mappings[index].length ||
+             fstat(mappings[index].backing_fd, &backing) < 0 ||
+             !S_ISREG(backing.st_mode) || backing.st_size < 0 ||
+-            mappings[index].offset + mappings[index].length >
+-                (uint64_t)backing.st_size) {
++            (uint64_t)backing.st_size > UINT64_MAX - (page_size - 1)) {
++            return false;
++        }
++        /*
++         * Protocol regions carry exact lengths while the VMA that maps them
++         * spans whole pages, so a mapping may end inside the backing's final
++         * partial page; the kernel zero-fills that tail.  It may not extend
++         * past that page.
++         */
++        backing_pages = QEMU_ALIGN_UP((uint64_t)backing.st_size, page_size);
++        if (mappings[index].offset + mappings[index].length > backing_pages) {
+             return false;
+         }
+         seals = fcntl(mappings[index].backing_fd, F_GET_SEALS);

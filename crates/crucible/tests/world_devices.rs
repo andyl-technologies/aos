@@ -122,7 +122,7 @@ fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable() {
     )
     .expect("heterogeneous scenario should build");
     let form_binary = form.to_compact_binary();
-    assert!(form_binary.starts_with(b"crucible.scenario-def-form.v5\0"));
+    assert!(form_binary.starts_with(b"crucible.scenario-def-form.v7\0"));
     assert_eq!(
         ScenarioDefForm::from_compact_binary(&form_binary)
             .expect("heterogeneous scenario binary should parse"),
@@ -131,7 +131,7 @@ fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable() {
 
     let artifact = ReproductionArtifact::from_recorded_parts(form, Schedule::empty());
     let artifact_binary = artifact.to_compact_binary();
-    assert!(artifact_binary.starts_with(b"crucible.reproduction-artifact.v5\0"));
+    assert!(artifact_binary.starts_with(b"crucible.reproduction-artifact.v7\0"));
     assert_eq!(
         ReproductionArtifact::from_compact_binary(&artifact_binary)
             .expect("heterogeneous reproduction artifact should parse"),
@@ -464,7 +464,7 @@ fn production_world_instantiation_rejects_malformed_ninep_artifact_bytes() {
 }
 
 #[test]
-fn v5_outer_envelopes_reject_retired_versions() {
+fn current_outer_envelopes_reject_retired_versions() {
     let world = world_with_io_nodes(vec![block_node()]);
     let form = ScenarioDefForm::from_components(
         &world,
@@ -484,17 +484,23 @@ fn v5_outer_envelopes_reject_retired_versions() {
 
     let scenario_v4_envelope = replace_magic(
         form.to_compact_binary(),
-        b"crucible.scenario-def-form.v5\0",
+        b"crucible.scenario-def-form.v7\0",
         b"crucible.scenario-def-form.v4\0",
     );
     assert!(ScenarioDefForm::from_compact_binary(&scenario_v4_envelope).is_err());
 
     let artifact_v4_envelope = replace_magic(
         artifact.to_compact_binary(),
-        b"crucible.reproduction-artifact.v5\0",
+        b"crucible.reproduction-artifact.v7\0",
         b"crucible.reproduction-artifact.v4\0",
     );
     assert!(ReproductionArtifact::from_compact_binary(&artifact_v4_envelope).is_err());
+    let mislabeled_artifact_v5 = replace_magic(
+        artifact.to_compact_binary(),
+        b"crucible.reproduction-artifact.v7\0",
+        b"crucible.reproduction-artifact.v5\0",
+    );
+    assert!(ReproductionArtifact::from_compact_binary(&mislabeled_artifact_v5).is_err());
 
     let vm_only_world =
         World::from_nodes(vec![ready_node("node-a")]).expect("VM-only world should build");
@@ -517,14 +523,14 @@ fn v5_outer_envelopes_reject_retired_versions() {
 
     let scenario_v1_envelope = replace_magic(
         vm_only_form.to_compact_binary(),
-        b"crucible.scenario-def-form.v5\0",
+        b"crucible.scenario-def-form.v7\0",
         b"crucible.scenario-def-form.v1\0",
     );
     assert!(ScenarioDefForm::from_compact_binary(&scenario_v1_envelope).is_err());
 
     let artifact_v1_envelope = replace_magic(
         vm_only_artifact.to_compact_binary(),
-        b"crucible.reproduction-artifact.v5\0",
+        b"crucible.reproduction-artifact.v7\0",
         b"crucible.reproduction-artifact.v1\0",
     );
     assert!(ReproductionArtifact::from_compact_binary(&artifact_v1_envelope).is_err());

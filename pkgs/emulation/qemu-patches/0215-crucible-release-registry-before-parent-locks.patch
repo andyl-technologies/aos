@@ -1,0 +1,158 @@
+diff --git a/include/system/crucible-hot-fork-coordinator.h b/include/system/crucible-hot-fork-coordinator.h
+index 70760fc78..0f3caba0c 100644
+--- a/include/system/crucible-hot-fork-coordinator.h
++++ b/include/system/crucible-hot-fork-coordinator.h
+@@ -21,7 +21,9 @@ typedef int (*QemuCrucibleHotForkChild)(void *opaque);
+  * both process incarnations.  Preparation runs on the source main-loop thread
+  * and must either complete one fork-ready transaction or fail without leaving
+  * partial authority.  The parent callback receives -1 after fork failure and
+- * the positive child PID after success.  The child callback runs immediately
++ * the positive child PID after success; it runs before the coordinator
++ * retains the child or takes any registered mutex, so it must release the
++ * retained registry transaction first.  The child callback runs immediately
+  * after the coordinator wake descriptor is closed and before main-loop work
+  * resumes.  It must arm parent-death containment and authenticate the direct
+  * child before performing any reconstructive or externally visible work.
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 4241e3cd2..975b731e9 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -4524,6 +4524,15 @@ static int crucible_hot_fork_finish_parent_operation(
+     if (!operation || !operation->prepared) {
+         return -EINVAL;
+     }
++    /*
++     * The retained runtime transaction still holds the registered-mutex
++     * guard; release it before any block-layer work that may lock a
++     * registered mutex on this thread.
++     */
++    result = qemu_crucible_hot_fork_release_parent_runtime_transaction(
++        &operation->runtime);
++    qemu_crucible_hot_fork_release_parent_identity(
++        &operation->parent_identity);
+     /* The plan belongs to exactly one fork; the parent never reuses it. */
+     if (operation->child_files &&
+         !qemu_block_hot_fork_child_files_free(operation->child_files,
+@@ -4533,10 +4542,6 @@ static int crucible_hot_fork_finish_parent_operation(
+     }
+     operation->child_files = NULL;
+     crucible_hot_fork_child_files_plan = NULL;
+-    result = qemu_crucible_hot_fork_release_parent_runtime_transaction(
+-        &operation->runtime);
+-    qemu_crucible_hot_fork_release_parent_identity(
+-        &operation->parent_identity);
+     operation->prepared = false;
+     return result != 0 ? result : files_result;
+ }
+diff --git a/system/crucible-hot-fork-coordinator.c b/system/crucible-hot-fork-coordinator.c
+index 38566eaed..20f445664 100644
+--- a/system/crucible-hot-fork-coordinator.c
++++ b/system/crucible-hot-fork-coordinator.c
+@@ -207,13 +207,20 @@ static void crucible_hot_fork_execute_main_loop_request(void)
+ 
+     if (child_pid < 0) {
+         result = -errno;
+-    } else {
+-        crucible_hot_fork_retain_child(coordinator, child_pid);
+     }
++    /*
++     * The parent callback releases the runtime transaction that still holds
++     * the registered-mutex guard across fork().  Retaining the child takes
++     * the coordinator's own registered lock, so it must wait for that
++     * release; the child is retained whatever the callback reports.
++     */
+     parent_result = operation.parent(child_pid, operation.opaque);
+     if (parent_result != 0) {
+         result = parent_result;
+     }
++    if (child_pid > 0) {
++        crucible_hot_fork_retain_child(coordinator, child_pid);
++    }
+     crucible_hot_fork_complete_parent(result, child_pid);
+ }
+ 
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index 0b50d621d..cd178e1ee 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -1024,6 +1024,28 @@ static void test_registry_transaction_admits_one_vcpu_restart_worker(void)
+     stop_registry_worker_thread(&monitor_worker);
+ }
+ 
++static void test_registered_mutex_use_while_retained_aborts(void)
++{
++    if (g_test_subprocess()) {
++        QemuThreadHotForkRegistryTransaction transaction = { 0 };
++        RegistryWorkerThread monitor_worker;
++        QemuMutex mutex;
++
++        start_registry_worker_thread(&monitor_worker, "IO mon_iothread",
++                                     monitor_registry_worker);
++        qemu_mutex_init(&mutex);
++        g_assert_cmpint(qemu_thread_hot_fork_begin_registry_transaction(
++                            &transaction),
++                        ==, 0);
++        /* The retained guard would otherwise deadlock this lock. */
++        qemu_mutex_lock(&mutex);
++        g_assert_not_reached();
++    }
++    g_test_trap_subprocess(NULL, 0, 0);
++    g_test_trap_assert_failed();
++    g_test_trap_assert_stderr("*registry transaction is retained*");
++}
++
+ static void test_registry_transaction_rejects_deep_restart_mutex(void)
+ {
+     QemuThreadHotForkRegistryTransaction transaction = { 0 };
+@@ -2508,6 +2530,8 @@ int main(int argc, char **argv)
+                     test_registry_transaction_carries_parked_restart_mutexes);
+     g_test_add_func("/crucible/hot-fork-child/registry-vcpu-restart-worker",
+                     test_registry_transaction_admits_one_vcpu_restart_worker);
++    g_test_add_func("/crucible/hot-fork-child/registry-retained-guard-abort",
++                    test_registered_mutex_use_while_retained_aborts);
+     g_test_add_func("/crucible/hot-fork-child/registry-deeply-held-mutex",
+                     test_registry_transaction_rejects_deep_restart_mutex);
+     g_test_add_func("/crucible/hot-fork-child/immediate-child-replacement",
+diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
+index 5ac7bfedd..4fc3e938a 100644
+--- a/util/qemu-thread-posix.c
++++ b/util/qemu-thread-posix.c
+@@ -52,19 +52,36 @@ static void error_exit(int err, const char *msg)
+     abort();
+ }
+ 
++/*
++ * Whether the calling thread holds the registry guard.  A registry
++ * transaction retains the guard across fork(), so any registered mutex
++ * operation on the coordinator thread before the transaction is released
++ * would deadlock silently; fail fast and name the cause instead.
++ */
++static __thread bool crucible_hot_fork_mutex_registry_held;
++
+ static void crucible_hot_fork_mutex_registry_lock(void)
+ {
+-    int err = pthread_mutex_lock(&crucible_hot_fork_mutex_registry_guard);
++    int err;
+ 
++    if (crucible_hot_fork_mutex_registry_held) {
++        fprintf(stderr, "qemu: registered mutex used while the Crucible "
++                "hot-fork registry transaction is retained\n");
++        abort();
++    }
++    err = pthread_mutex_lock(&crucible_hot_fork_mutex_registry_guard);
+     if (err) {
+         error_exit(err, __func__);
+     }
++    crucible_hot_fork_mutex_registry_held = true;
+ }
+ 
+ static void crucible_hot_fork_mutex_registry_unlock(void)
+ {
+-    int err = pthread_mutex_unlock(&crucible_hot_fork_mutex_registry_guard);
++    int err;
+ 
++    crucible_hot_fork_mutex_registry_held = false;
++    err = pthread_mutex_unlock(&crucible_hot_fork_mutex_registry_guard);
+     if (err) {
+         error_exit(err, __func__);
+     }

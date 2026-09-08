@@ -13,6 +13,8 @@ use crate::checkpoint::bounded_cbor::{BoundedCborError, HARD_FAT_CHECKPOINT_BYTE
 const MAGIC: &[u8] = b"crucible.qemu-vm-snapshot.v3\0";
 const MAX_BYTES: u64 = HARD_FAT_CHECKPOINT_BYTES;
 
+/// Maximum canonical byte length of one complete QEMU VM snapshot metadata record.
+pub const MAX_QEMU_VM_SNAPSHOT_CANONICAL_BYTES: u64 = MAX_BYTES;
 impl QemuVmSnapshot {
     /// Encodes the VMState metadata and every paired Apache continuation.
     ///

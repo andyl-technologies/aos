@@ -35,6 +35,8 @@ pub const QEMU_PLUGIN_SCOREBOARD_NEW_SYMBOL: &str = "qemu_plugin_scoreboard_new"
 pub const QEMU_PLUGIN_SCOREBOARD_FREE_SYMBOL: &str = "qemu_plugin_scoreboard_free";
 /// QEMU capability label for updating a per-vCPU scoreboard entry.
 pub const QEMU_PLUGIN_U64_SET_SYMBOL: &str = "qemu_plugin_u64_set";
+/// QEMU capability label for observing the configured vCPU count.
+pub const QEMU_PLUGIN_NUM_VCPUS_SYMBOL: &str = "qemu_plugin_num_vcpus";
 /// QEMU capability label for observing the exact icount at TB entry.
 pub const QEMU_PLUGIN_ICOUNT_AT_TB_ENTRY_SYMBOL: &str = "qemu_plugin_icount_at_tb_entry";
 /// QEMU capability label for observing translation-cache flushes.
@@ -116,6 +118,8 @@ pub type QemuPluginScoreboardNewFn =
 pub type QemuPluginScoreboardFreeFn = extern "C" fn(score: *mut QemuPluginScoreboard);
 /// QEMU function that writes one scoreboard entry for a selected vCPU.
 pub type QemuPluginU64SetFn = extern "C" fn(entry: QemuPluginU64, vcpu_index: c_uint, value: u64);
+/// QEMU function that returns the configured number of vCPUs.
+pub type QemuPluginNumVcpusFn = extern "C" fn() -> c_int;
 
 const QEMU_PLUGIN_CB_NO_REGS: c_int = 0;
 const QEMU_PLUGIN_COND_EQ: c_int = 2;
@@ -216,15 +220,16 @@ pub struct QemuBasicBlockCoverageApis {
     scoreboard_new: QemuPluginScoreboardNewFn,
     scoreboard_free: QemuPluginScoreboardFreeFn,
     u64_set: QemuPluginU64SetFn,
+    num_vcpus: QemuPluginNumVcpusFn,
 }
 
 impl QemuBasicBlockCoverageApis {
     /// Builds a complete QEMU basic-block callback API table.
     #[must_use]
-    // crucible-lint: allow rust-allow -- the constructor mirrors eleven independent QEMU callback ABI exports.
+    // crucible-lint: allow rust-allow -- the constructor mirrors twelve independent QEMU callback ABI exports.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the constructor mirrors eleven independent QEMU callback ABI exports"
+        reason = "the constructor mirrors twelve independent QEMU callback ABI exports"
     )]
     pub const fn new(
         register_tb_trans_cb: QemuRegisterVcpuTbTransCbFn,
@@ -238,6 +243,7 @@ impl QemuBasicBlockCoverageApis {
         scoreboard_new: QemuPluginScoreboardNewFn,
         scoreboard_free: QemuPluginScoreboardFreeFn,
         u64_set: QemuPluginU64SetFn,
+        num_vcpus: QemuPluginNumVcpusFn,
     ) -> Self {
         Self {
             register_tb_trans_cb,
@@ -251,6 +257,7 @@ impl QemuBasicBlockCoverageApis {
             scoreboard_new,
             scoreboard_free,
             u64_set,
+            num_vcpus,
         }
     }
 }
@@ -440,9 +447,82 @@ impl CoverageMap {
         *entry = entry.saturating_add(1);
         Ok(was_new)
     }
+
+    fn reset(&mut self) {
+        self.entries.fill(0);
+    }
 }
 
 static LIVE_COVERAGE_STATE: AtomicPtr<LiveCoverageInner> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Resets the live producer state for one authenticated restore generation.
+///
+/// The logical-time restore callback invokes this operation while QEMU is
+/// stopped and before it release-publishes the matching restore
+/// acknowledgement. A disabled coverage configuration is an idempotent no-op.
+/// Enabled coverage clears both the QEMU per-vCPU conditional scoreboard and
+/// the plugin's process-local novelty map, then discards setup-era ring entries
+/// at the consumer's current cursor. Translated callbacks retain the same
+/// scoreboard allocation and therefore become eligible again without dangling
+/// their generated-code metadata.
+///
+/// # Errors
+///
+/// Returns [`CoverageError`] when `generation` is zero or reused, QEMU reports
+/// no configured vCPU, callback teardown has begun, or the shared coverage ring
+/// is malformed.
+pub(crate) fn reset_live_coverage_for_restore(generation: u32) -> Result<(), CoverageError> {
+    if generation == 0 {
+        return Err(CoverageError::InvalidRestoreGeneration { generation });
+    }
+    let state = LIVE_COVERAGE_STATE.load(Ordering::Acquire);
+    if state.is_null() {
+        return Ok(());
+    }
+    // SAFETY: the registration owner publishes one pinned state for the
+    // process lifetime. The logical restore callback runs under the validated
+    // single-threaded RR model while QEMU is stopped, so no translation or
+    // execution callback can mutate this state concurrently.
+    let state = unsafe { &mut *state };
+    let Some(_in_flight) = state.quiescence.enter() else {
+        return Err(CoverageError::RestoreDuringTeardown);
+    };
+    if state.restore_generation != 0 {
+        return Err(CoverageError::RestoreGenerationReused {
+            applied: state.restore_generation,
+            requested: generation,
+        });
+    }
+
+    let vcpu_count = (state.apis.num_vcpus)();
+    let vcpu_count = u32::try_from(vcpu_count)
+        .map_err(|_error| CoverageError::InvalidLiveVcpuCount { vcpu_count })?;
+    if vcpu_count == 0 {
+        return Err(CoverageError::InvalidLiveVcpuCount { vcpu_count: 0 });
+    }
+    let map_entries = state.callback.map_entries();
+    let (header, entries) = state.sink.ring_parts();
+    // Validate and empty the old generation before changing process-local
+    // novelty state. The authenticated pause excludes both SPSC peers here.
+    header
+        .discard_coverage_at_restore(entries)
+        .map_err(|source| CoverageError::RestoreRing { source })?;
+    state.map.reset();
+    for vcpu_index in 0..vcpu_count {
+        for map_index in 0..map_entries {
+            (state.apis.u64_set)(
+                QemuPluginU64 {
+                    score: state.novelty_scoreboard,
+                    offset: map_index * std::mem::size_of::<u64>(),
+                },
+                vcpu_index,
+                0,
+            );
+        }
+    }
+    state.restore_generation = generation;
+    Ok(())
+}
 
 #[derive(Debug)]
 struct LiveCoverageBlock {
@@ -560,6 +640,7 @@ struct LiveCoverageInner {
     map: CoverageMap,
     novelty_scoreboard: *mut QemuPluginScoreboard,
     sink: LiveCoverageShmemProducer,
+    restore_generation: u32,
     // crucible-lint: allow rust-allow -- boxed entries keep QEMU userdata stable when the outer vector grows.
     #[allow(
         clippy::vec_box,
@@ -619,6 +700,7 @@ impl LiveBasicBlockCoverage {
             map,
             novelty_scoreboard,
             sink,
+            restore_generation: 0,
             translated_blocks: Vec::new(),
             _pin: PhantomPinned,
         });
@@ -1015,6 +1097,36 @@ pub enum CoverageError {
     /// The process-lifetime owner no longer matched the published callback state.
     #[error("live coverage callback ownership was lost before teardown")]
     LiveRegistrationOwnershipLost,
+    /// The logical restore transaction supplied the reserved zero generation.
+    #[error("coverage restore generation {generation} is invalid")]
+    InvalidRestoreGeneration {
+        /// Rejected generation.
+        generation: u32,
+    },
+    /// A second logical restore attempted to reuse one process coverage owner.
+    #[error("coverage restore generation {requested} follows already-applied generation {applied}")]
+    RestoreGenerationReused {
+        /// Previously applied generation.
+        applied: u32,
+        /// Newly requested generation.
+        requested: u32,
+    },
+    /// Coverage reset was requested after callback admission closed.
+    #[error("coverage restore reset was requested during callback teardown")]
+    RestoreDuringTeardown,
+    /// QEMU reported an invalid live vCPU count for scoreboard reset.
+    #[error("QEMU reported invalid live vCPU count {vcpu_count} for coverage restore")]
+    InvalidLiveVcpuCount {
+        /// Rejected count returned by QEMU.
+        vcpu_count: c_int,
+    },
+    /// The shared coverage ring could not be reset at the paused boundary.
+    #[error("coverage restore ring reset failed")]
+    RestoreRing {
+        /// Shared-memory ring failure.
+        #[source]
+        source: SpscRingError,
+    },
     /// The shared-memory queue does not match the fixed coverage map.
     #[error("coverage map has {map_entries} entries but plugin-to-host queue has {queue_capacity}")]
     CoverageQueueCapacityMismatch {

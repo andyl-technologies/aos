@@ -2,28 +2,36 @@
 //!
 //! The setup path consumes the `Setup` descriptors, maps the shared-memory
 //! region for exactly the advertised byte length, validates the region header,
-//! and arms the wake fd for later event-loop registration. The caller then
-//! proves plugin callback ownership, registers the wake fd, and sends
-//! `SetupAck(0)` with the returned completion token.
-//! Descriptor validity comes from the fixed SCM_RIGHTS handoff; mmap lifetime is owned by the returned
-//! [`PluginSetupCompletion`] token.
+//! authenticates the version-negotiated sealed plugin plan, and arms the wake
+//! fd for later event-loop registration. The caller then proves plugin callback
+//! ownership, registers the wake fd, and sends `SetupAck(0)` with the returned
+//! completion token. Descriptor validity comes from the fixed SCM_RIGHTS
+//! handoff; mmap lifetime is owned by the returned [`PluginSetupCompletion`]
+//! token.
 
 #[cfg(unix)]
 use std::io::Write;
 #[cfg(unix)]
-use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 
 use thiserror::Error;
 
 #[cfg(unix)]
 use crucible_protocol::{
     DescriptorHandoverError, ReceivedSetup, SETUP_ACK_STATUS_READY, SETUP_ACK_STATUS_SETUP_FAILED,
-    SetupCompletionError, plugin_send_setup_ack, recv_setup_with_descriptors,
+    SetupCompletionError,
+    app_random_branch_plan::{
+        AppRandomBranchPlan, AppRandomBranchPlanError, MAX_APP_RANDOM_BRANCH_PLAN_BYTES,
+    },
+    plugin_send_setup_ack,
+    plugin_setup_plan::{PLUGIN_SETUP_PLAN_MAX_BYTES, PluginSetupPlan, PluginSetupPlanError},
+    recv_setup_with_descriptors,
+    selectable_catalog_plan::SelectableCatalogPlan,
 };
 #[cfg(unix)]
 use crucible_shmem::{
-    MappedSetupRegion, RegionSetupValidationError, SetupRegionMapError, ValidatedSetupRegion,
-    mmap_setup_region,
+    HotForkChildMappingInstallError, MappedSetupRegion, RegionLayout, RegionSetupValidationError,
+    SetupRegionBackingIdentity, SetupRegionMapError, ValidatedSetupRegion, mmap_setup_region,
 };
 
 #[cfg(unix)]
@@ -162,7 +170,12 @@ impl RegisteredWakeFd {
 pub struct PluginSetupCompletion {
     mapped_region: MappedSetupRegion,
     validated_region: ValidatedSetupRegion,
+    validated_layout: RegionLayout,
+    shared_memory_device: u64,
+    shared_memory_inode: u64,
     wake_fd: ArmedWakeFd,
+    app_random_branch_plan: AppRandomBranchPlan,
+    selectable_catalog_plan: Option<SelectableCatalogPlan>,
     registered_wake_fd: Option<RegisteredWakeFd>,
 }
 
@@ -185,10 +198,45 @@ impl PluginSetupCompletion {
         self.validated_region
     }
 
+    /// Returns the exact setup-time shared-memory layout contract.
+    #[must_use]
+    pub const fn validated_layout(&self) -> RegionLayout {
+        self.validated_layout
+    }
+
+    /// Returns the backing object's stable device number captured before mmap.
+    #[must_use]
+    pub const fn shared_memory_device(&self) -> u64 {
+        self.shared_memory_device
+    }
+
+    /// Returns the backing object's nonzero inode captured before mmap.
+    #[must_use]
+    pub const fn shared_memory_inode(&self) -> u64 {
+        self.shared_memory_inode
+    }
+
     /// Returns the armed wake fd token.
     #[must_use]
     pub const fn wake_fd(&self) -> &ArmedWakeFd {
         &self.wake_fd
+    }
+
+    /// Returns the validated immutable app-random branch replay plan.
+    #[must_use]
+    pub const fn app_random_branch_plan(&self) -> &AppRandomBranchPlan {
+        &self.app_random_branch_plan
+    }
+
+    /// Returns the v3 catalog plan until the live callback owner takes it.
+    #[must_use]
+    pub const fn selectable_catalog_plan(&self) -> Option<&SelectableCatalogPlan> {
+        self.selectable_catalog_plan.as_ref()
+    }
+
+    /// Transfers the validated catalog plan into the pinned live callback owner.
+    pub(crate) fn take_selectable_catalog_plan(&mut self) -> Option<SelectableCatalogPlan> {
+        self.selectable_catalog_plan.take()
     }
 
     /// Returns evidence that the wake fd was registered with QEMU.
@@ -196,6 +244,64 @@ impl PluginSetupCompletion {
     pub const fn registered_wake_fd(&self) -> Option<RegisteredWakeFd> {
         self.registered_wake_fd
     }
+
+    /// Installs and revalidates one exact branch-private child mapping.
+    ///
+    /// The source mapping must already be absent from the fork child. The new
+    /// descriptor must match the authenticated plan identity, must not alias
+    /// the template source object, and must reproduce the setup-time ABI and
+    /// layout contract before any retained callback pointer is used.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginSetupChildMappingError`] when exact mapping placement or
+    /// identity authentication fails, the replacement header is invalid, or
+    /// its validated setup contract differs from the template contract.
+    pub(crate) fn install_hot_fork_child_mapping(
+        &mut self,
+        fd: BorrowedFd<'_>,
+        expected: SetupRegionBackingIdentity,
+    ) -> Result<(), PluginSetupChildMappingError> {
+        self.mapped_region
+            .install_hot_fork_child_mapping(fd, expected)
+            .map_err(|source| PluginSetupChildMappingError::Install { source })?;
+
+        let actual_region = PluginShmemOrdering::validate_setup_header(&self.mapped_region)
+            .map_err(|source| PluginSetupChildMappingError::Validate { source })?;
+        let actual_layout = self
+            .mapped_region
+            .layout()
+            .map_err(|source| PluginSetupChildMappingError::Validate { source })?;
+        if actual_region != self.validated_region || actual_layout != self.validated_layout {
+            return Err(PluginSetupChildMappingError::ContractMismatch);
+        }
+
+        let identity = self.mapped_region.backing_identity();
+        self.shared_memory_device = identity.device();
+        self.shared_memory_inode = identity.inode();
+        Ok(())
+    }
+}
+
+/// Failure to bind retained plugin callback state to a fork-child mapping.
+#[cfg(unix)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub(crate) enum PluginSetupChildMappingError {
+    /// Exact-address mapping or backing-identity authentication failed.
+    #[error("fork-child setup mapping installation failed")]
+    Install {
+        /// Underlying exact mapping failure.
+        source: HotForkChildMappingInstallError,
+    },
+    /// The replacement shared-memory header or geometry is invalid.
+    #[error("fork-child setup mapping validation failed")]
+    Validate {
+        /// Underlying ABI or layout validation failure.
+        source: RegionSetupValidationError,
+    },
+    /// The replacement validates but differs from the template setup contract.
+    #[error("fork-child setup mapping contract differs from the template")]
+    ContractMismatch,
 }
 
 /// Typed evidence that the ready `SetupAck(0)` was sent.
@@ -215,12 +321,12 @@ impl PluginReadySetupAck {
     }
 }
 
-/// Receives the setup frame and its fixed-order shared-memory and wake descriptors.
+/// Receives the setup frame and its three fixed-order descriptors.
 ///
 /// # Errors
 ///
 /// Returns [`PluginSetupError::ReceiveSetup`] when the control socket does not
-/// carry a valid `Setup` frame with exactly two `SCM_RIGHTS` descriptors, or
+/// carry a valid `Setup` frame with exactly three `SCM_RIGHTS` descriptors, or
 /// [`PluginSetupError::SendFailureAck`] when that setup failure cannot be
 /// acknowledged.
 #[cfg(unix)]
@@ -283,6 +389,25 @@ where
     let region_len = setup.region_len;
     let shmem_fd = setup.descriptors.shmem_fd;
     let wake_fd = setup.descriptors.wake_fd;
+    let plugin_setup_plan_fd = setup.descriptors.plugin_setup_plan_fd;
+
+    let (shared_memory_device, shared_memory_inode) = match shared_memory_identity(shmem_fd.as_fd())
+    {
+        Ok(identity) => identity,
+        Err(errno) => {
+            send_setup_failure_ack(writer, PluginSetupFailureStage::MapRegion)?;
+            return Err(PluginSetupError::InspectSharedMemory { errno });
+        }
+    };
+
+    let decoded_plans =
+        match read_plugin_setup_plan(plugin_setup_plan_fd, handshake.proto_version()) {
+            Ok(plans) => plans,
+            Err(source) => {
+                send_setup_failure_ack(writer, PluginSetupFailureStage::ValidatePluginSetupPlan)?;
+                return Err(PluginSetupError::ValidatePluginSetupPlan { source });
+            }
+        };
 
     // The mmap lifetime is carried by `MappedSetupRegion`; no raw pointer to
     // shmem escapes setup without that owner and the validated-region token.
@@ -302,6 +427,13 @@ where
             return Err(PluginSetupError::ValidateRegion { source });
         }
     };
+    let validated_layout = match mapped_region.layout() {
+        Ok(layout) => layout,
+        Err(source) => {
+            send_setup_failure_ack(writer, PluginSetupFailureStage::ValidateRegion)?;
+            return Err(PluginSetupError::ValidateRegion { source });
+        }
+    };
 
     validate_setup_handshake_slot(writer, handshake, header_snapshot.node_count)?;
 
@@ -315,9 +447,168 @@ where
     Ok(PluginSetupCompletion {
         mapped_region,
         validated_region,
+        validated_layout,
+        shared_memory_device,
+        shared_memory_inode,
         wake_fd,
+        app_random_branch_plan: decoded_plans.app_random_branch_plan,
+        selectable_catalog_plan: decoded_plans.selectable_catalog_plan,
         registered_wake_fd: None,
     })
+}
+
+#[cfg(unix)]
+fn shared_memory_identity(fd: BorrowedFd<'_>) -> Result<(u64, u64), i32> {
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    let status = unsafe {
+        // SAFETY: `fd` is live and `metadata` points to writable stat storage.
+        libc::fstat(fd.as_raw_fd(), metadata.as_mut_ptr())
+    };
+    if status != 0 {
+        return Err(last_errno());
+    }
+    let metadata = unsafe {
+        // SAFETY: successful fstat initialized the complete stat value.
+        metadata.assume_init()
+    };
+    let device = metadata.st_dev;
+    let inode = metadata.st_ino;
+    if inode == 0 {
+        return Err(libc::EINVAL);
+    }
+    Ok((device, inode))
+}
+
+#[cfg(unix)]
+struct DecodedPluginSetupPlans {
+    app_random_branch_plan: AppRandomBranchPlan,
+    selectable_catalog_plan: Option<SelectableCatalogPlan>,
+}
+
+#[cfg(target_os = "linux")]
+fn read_plugin_setup_plan(
+    fd: OwnedFd,
+    protocol_version: u32,
+) -> Result<DecodedPluginSetupPlans, PluginSetupPlanDescriptorError> {
+    let required_seals =
+        libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE | libc::F_SEAL_SEAL;
+    let observed_seals = unsafe {
+        // SAFETY: `fd` is a live descriptor received through SCM_RIGHTS and
+        // F_GET_SEALS reads descriptor metadata without pointer arguments.
+        libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS)
+    };
+    if observed_seals < 0 {
+        return Err(PluginSetupPlanDescriptorError::Io {
+            operation: "read plugin setup-plan seals",
+            errno: last_errno(),
+        });
+    }
+    if observed_seals & required_seals != required_seals {
+        return Err(PluginSetupPlanDescriptorError::MissingSeals {
+            observed: observed_seals,
+            required: required_seals,
+        });
+    }
+
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let status = unsafe {
+        // SAFETY: `stat` points to writable storage for one libc::stat and the
+        // received descriptor remains owned for this call.
+        libc::fstat(fd.as_raw_fd(), stat.as_mut_ptr())
+    };
+    if status != 0 {
+        return Err(PluginSetupPlanDescriptorError::Io {
+            operation: "stat plugin setup-plan descriptor",
+            errno: last_errno(),
+        });
+    }
+    let stat = unsafe {
+        // SAFETY: successful fstat initialized the complete libc::stat value.
+        stat.assume_init()
+    };
+    if stat.st_mode & libc::S_IFMT != libc::S_IFREG {
+        return Err(PluginSetupPlanDescriptorError::NotRegular);
+    }
+    let maximum = if protocol_version >= 3 {
+        PLUGIN_SETUP_PLAN_MAX_BYTES
+    } else {
+        MAX_APP_RANDOM_BRANCH_PLAN_BYTES
+    };
+    let length = usize::try_from(stat.st_size).map_err(|_error| {
+        PluginSetupPlanDescriptorError::InvalidLength {
+            bytes: usize::MAX,
+            maximum,
+        }
+    })?;
+    if length == 0 || length > maximum {
+        return Err(PluginSetupPlanDescriptorError::InvalidLength {
+            bytes: length,
+            maximum,
+        });
+    }
+
+    let mut bytes = vec![0_u8; length];
+    let mut read = 0_usize;
+    while read < bytes.len() {
+        let offset = libc::off_t::try_from(read).map_err(|_error| {
+            PluginSetupPlanDescriptorError::InvalidLength {
+                bytes: length,
+                maximum,
+            }
+        })?;
+        let result = unsafe {
+            // SAFETY: the destination suffix is writable for its declared
+            // length and pread does not retain the pointer.
+            libc::pread(
+                fd.as_raw_fd(),
+                bytes[read..].as_mut_ptr().cast::<libc::c_void>(),
+                bytes.len() - read,
+                offset,
+            )
+        };
+        if result < 0 {
+            let errno = last_errno();
+            if errno == libc::EINTR {
+                continue;
+            }
+            return Err(PluginSetupPlanDescriptorError::Io {
+                operation: "read plugin setup-plan descriptor",
+                errno,
+            });
+        }
+        let count = usize::try_from(result).unwrap_or(0);
+        if count == 0 {
+            return Err(PluginSetupPlanDescriptorError::Truncated {
+                expected: length,
+                actual: read,
+            });
+        }
+        read += count;
+    }
+    if protocol_version >= 3 {
+        let plan = PluginSetupPlan::decode(&bytes)
+            .map_err(|source| PluginSetupPlanDescriptorError::DecodeComposite { source })?;
+        let (app_random_branch_plan, selectable_catalog_plan) = plan.into_parts();
+        Ok(DecodedPluginSetupPlans {
+            app_random_branch_plan,
+            selectable_catalog_plan: Some(selectable_catalog_plan),
+        })
+    } else {
+        let app_random_branch_plan = AppRandomBranchPlan::decode(&bytes)
+            .map_err(|source| PluginSetupPlanDescriptorError::DecodeAppRandom { source })?;
+        Ok(DecodedPluginSetupPlans {
+            app_random_branch_plan,
+            selectable_catalog_plan: None,
+        })
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn read_plugin_setup_plan(
+    _fd: OwnedFd,
+    _protocol_version: u32,
+) -> Result<DecodedPluginSetupPlans, PluginSetupPlanDescriptorError> {
+    Err(PluginSetupPlanDescriptorError::UnsupportedPlatform)
 }
 
 #[cfg(unix)]
@@ -537,6 +828,67 @@ fn last_errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn test_plugin_setup_plan_fd() -> OwnedFd {
+    let selectable = SelectableCatalogPlan::new(
+        crucible_protocol::selectable_catalog_plan::SelectablePlanLimits::new(1, 1, 1)
+            .unwrap_or_else(|error| panic!("test selectable limits must validate: {error}")),
+        Vec::new(),
+        crucible_protocol::selectable_catalog_plan::SelectablePlanContinuation::cold(),
+    )
+    .unwrap_or_else(|error| panic!("test selectable plan must validate: {error}"));
+    let bytes = PluginSetupPlan::new(AppRandomBranchPlan::default(), selectable)
+        .encode()
+        .unwrap_or_else(|error| panic!("test plugin setup plan must encode: {error}"));
+    test_sealed_setup_plan_fd(&bytes)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn test_legacy_plugin_setup_plan_fd() -> OwnedFd {
+    test_sealed_setup_plan_fd(&AppRandomBranchPlan::default().encode())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn test_sealed_setup_plan_fd(bytes: &[u8]) -> OwnedFd {
+    use std::os::fd::FromRawFd;
+
+    let name = c"crucible-test-plugin-setup-plan";
+    let raw_fd = unsafe {
+        // SAFETY: the C string is static and memfd_create returns a new fd.
+        libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
+    };
+    assert!(raw_fd >= 0, "test branch-plan memfd should be created");
+    let fd = unsafe {
+        // SAFETY: successful memfd_create returned a uniquely owned fd.
+        OwnedFd::from_raw_fd(raw_fd)
+    };
+    let length = libc::off_t::try_from(bytes.len())
+        .unwrap_or_else(|error| panic!("test plan length should fit off_t: {error}"));
+    let truncate = unsafe {
+        // SAFETY: `fd` is live and `length` is range checked.
+        libc::ftruncate(fd.as_raw_fd(), length)
+    };
+    assert_eq!(truncate, 0, "test branch-plan memfd should size");
+    let written = unsafe {
+        // SAFETY: `bytes` is readable for its complete length and pwrite does
+        // not retain the pointer.
+        libc::pwrite(
+            fd.as_raw_fd(),
+            bytes.as_ptr().cast::<libc::c_void>(),
+            bytes.len(),
+            0,
+        )
+    };
+    assert_eq!(written, bytes.len() as isize, "test plan should write");
+    let seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE | libc::F_SEAL_SEAL;
+    let sealed = unsafe {
+        // SAFETY: `fd` is a live sealable memfd.
+        libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, seals)
+    };
+    assert_eq!(sealed, 0, "test branch-plan memfd should seal");
+    fd
+}
+
 /// An error produced while arming the setup wake fd.
 #[cfg(unix)]
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -636,6 +988,12 @@ pub enum PluginSetupError {
         /// Underlying descriptor-handover error.
         source: DescriptorHandoverError,
     },
+    /// Inspecting the shared-memory backing identity failed.
+    #[error("inspecting setup shared-memory identity failed with errno {errno}")]
+    InspectSharedMemory {
+        /// Raw operating-system errno, or EINVAL for a zero inode.
+        errno: i32,
+    },
     /// Mapping the setup shared-memory descriptor failed.
     #[error("setup shared-memory mmap failed")]
     MapRegion {
@@ -647,6 +1005,12 @@ pub enum PluginSetupError {
     ValidateRegion {
         /// Underlying validation error.
         source: RegionSetupValidationError,
+    },
+    /// Validating the immutable version-negotiated setup-plan descriptor failed.
+    #[error("setup plugin-plan validation failed")]
+    ValidatePluginSetupPlan {
+        /// Underlying descriptor or canonical-plan failure.
+        source: PluginSetupPlanDescriptorError,
     },
     /// The handshake node count disagrees with the mapped shared-memory header.
     #[error(
@@ -695,6 +1059,62 @@ pub enum PluginSetupError {
         /// Underlying frame I/O error.
         source: SetupCompletionError,
     },
+}
+
+/// Invalid immutable descriptor carrying the version-negotiated plugin plan.
+#[cfg(unix)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum PluginSetupPlanDescriptorError {
+    /// Descriptor metadata or content I/O failed.
+    #[error("{operation} failed with errno {errno}")]
+    Io {
+        /// Operation being attempted.
+        operation: &'static str,
+        /// Raw OS errno.
+        errno: i32,
+    },
+    /// The descriptor was not a regular memfd-like file.
+    #[error("plugin setup-plan descriptor is not a regular file")]
+    NotRegular,
+    /// The descriptor did not carry every immutability seal.
+    #[error("plugin setup-plan seals {observed:#x} do not include {required:#x}")]
+    MissingSeals {
+        /// Observed seal mask.
+        observed: i32,
+        /// Required seal mask.
+        required: i32,
+    },
+    /// The descriptor length was empty, unrepresentable, or oversized.
+    #[error("plugin setup-plan descriptor has {bytes} bytes, maximum {maximum}")]
+    InvalidLength {
+        /// Actual or overflow-saturated byte count.
+        bytes: usize,
+        /// Maximum admitted byte count.
+        maximum: usize,
+    },
+    /// The descriptor ended before its statted length.
+    #[error("plugin setup-plan descriptor ended at {actual} bytes, expected {expected}")]
+    Truncated {
+        /// Statted byte length.
+        expected: usize,
+        /// Bytes read before EOF.
+        actual: usize,
+    },
+    /// The v2 descriptor body was not a canonical app-random plan.
+    #[error("v2 app-random branch-plan body is invalid: {source}")]
+    DecodeAppRandom {
+        /// Canonical app-random plan failure.
+        source: AppRandomBranchPlanError,
+    },
+    /// The v3 descriptor body was not a canonical composite plugin plan.
+    #[error("v3 composite plugin setup-plan body is invalid: {source}")]
+    DecodeComposite {
+        /// Canonical composite-plan failure.
+        source: PluginSetupPlanError,
+    },
+    /// Immutable plan descriptors are not implemented on this platform.
+    #[error("plugin setup-plan descriptors require Linux memfd seals")]
+    UnsupportedPlatform,
 }
 
 #[cfg(all(test, unix))]

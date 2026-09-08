@@ -1,5 +1,5 @@
 diff --git a/plugins/crucible-fault-accelerator.c b/plugins/crucible-fault-accelerator.c
-index dc1fe1c75..8b921c6b6 100644
+index dc1fe1c75..b70cbaaa5 100644
 --- a/plugins/crucible-fault-accelerator.c
 +++ b/plugins/crucible-fault-accelerator.c
 @@ -69,7 +69,11 @@ typedef struct CrucibleAcceleratorVmstate {
@@ -51,7 +51,7 @@ index dc1fe1c75..8b921c6b6 100644
      state->result_impulses = g_ptr_array_new_with_free_func(
          accelerator_result_impulse_free);
      for (uint32_t i = 0; i < impulse_count; i++) {
-@@ -1763,10 +1789,26 @@ static void accelerator_vmstate_commit(void *opaque)
+@@ -1763,13 +1789,30 @@ static void accelerator_vmstate_commit(void *opaque)
      memcpy(crucible_accelerator.uncorrectable, state->uncorrectable,
             sizeof(crucible_accelerator.uncorrectable));
      crucible_accelerator.terminal = state->terminal;
@@ -78,3 +78,7 @@ index dc1fe1c75..8b921c6b6 100644
      accelerator_vmstate_free(state);
  }
  
++/* The section commits only after every accelerator rule index is rebuilt. */
+ static const QemuCrucibleFaultVmstateSection accelerator_vmstate_section = {
+     .name = "accelerator",
+     .version = 4,

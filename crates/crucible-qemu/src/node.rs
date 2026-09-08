@@ -7,6 +7,8 @@
 
 use std::any::Any;
 use std::net::SocketAddr;
+#[cfg(target_os = "linux")]
+use std::os::fd::BorrowedFd;
 use std::process::Child;
 use std::time::Duration;
 
@@ -45,13 +47,116 @@ use crate::{
     QemuGdbstubProxyServer, QemuHostIoRuntime, run_bounded_qemu_node_step,
 };
 
+mod channels;
 mod checkpoint_probe;
+pub use channels::{
+    QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuQmpMachineControlChannel,
+    QemuShmemHotPathChannel,
+};
 mod error;
 mod exact_snapshot;
 mod fault_events;
 #[cfg(target_os = "linux")]
+#[path = "node/hot_fork_child_console.rs"]
+mod hot_fork_child_console;
+#[cfg(target_os = "linux")]
+#[path = "node/hot_fork_child_files.rs"]
+mod hot_fork_child_files;
+#[cfg(target_os = "linux")]
+#[path = "node/hot_fork_child_qmp.rs"]
+mod hot_fork_child_qmp;
+#[cfg(target_os = "linux")]
+#[path = "node/hot_fork_diagnostics.rs"]
+mod hot_fork_diagnostics;
+#[cfg(target_os = "linux")]
+#[path = "node/hot_fork_operation.rs"]
+mod hot_fork_operation;
+#[cfg(target_os = "linux")]
+#[path = "node/hot_fork_plugin_endpoints.rs"]
+mod hot_fork_plugin_endpoints;
+#[cfg(target_os = "linux")]
+#[path = "node/hot_fork_preparation.rs"]
+mod hot_fork_preparation;
+#[cfg(target_os = "linux")]
+#[path = "node/hot_fork_process_contract.rs"]
+mod hot_fork_process_contract;
+#[cfg(unix)]
+#[path = "node/hot_fork_ring_image.rs"]
+mod hot_fork_ring_image;
+#[cfg(target_os = "linux")]
+#[path = "node/hot_fork_scheduler_continuation.rs"]
+mod hot_fork_scheduler_continuation;
+#[path = "node/process_control.rs"]
+mod process_control;
+#[cfg(target_os = "linux")]
 mod process_identity;
 pub use error::{QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeError};
+#[cfg(target_os = "linux")]
+use hot_fork_child_console::QemuHotForkChildConsoleStage;
+#[cfg(target_os = "linux")]
+pub use hot_fork_child_console::{
+    QemuHotForkChildConsoleObservation, QemuHotForkChildConsoleStageError,
+    QemuHotForkChildConsoleStageProof, QemuHotForkChildConsoleStageState,
+};
+#[cfg(target_os = "linux")]
+use hot_fork_child_files::QemuHotForkChildFilesStage;
+#[cfg(target_os = "linux")]
+pub use hot_fork_child_files::{QemuHotForkChildFileDestination, QemuHotForkChildFilesStageProof};
+#[cfg(target_os = "linux")]
+use hot_fork_child_qmp::QemuHotForkChildQmpStage;
+#[cfg(target_os = "linux")]
+pub use hot_fork_child_qmp::{
+    QemuHotForkChildQmpHandshakeError, QemuHotForkChildQmpHostEndpoint,
+    QemuHotForkChildQmpStageError, QemuHotForkChildQmpStageProof, QemuHotForkChildQmpStageState,
+};
+#[cfg(target_os = "linux")]
+use hot_fork_diagnostics::QemuHotForkChildDiagnosticStage;
+#[cfg(target_os = "linux")]
+pub use hot_fork_diagnostics::{
+    MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES, QemuHotForkChildDiagnosticCapture,
+    QemuHotForkChildDiagnosticConsumer, QemuHotForkChildDiagnosticDrain,
+    QemuHotForkChildDiagnosticStageError, QemuHotForkChildDiagnosticStageProof,
+    QemuHotForkChildDiagnosticStageState,
+};
+#[cfg(target_os = "linux")]
+pub use hot_fork_operation::{
+    QemuHotForkChildLaunch, QemuHotForkChildProcessBasis, QemuHotForkChildProcessOwner,
+    QemuHotForkCommandError, QemuHotForkHostContinuation, QemuHotForkLaunchError,
+    QemuHotForkPluginHostContinuation,
+};
+#[cfg(target_os = "linux")]
+use hot_fork_plugin_endpoints::QemuHotForkPluginEndpointStage;
+#[cfg(target_os = "linux")]
+pub use hot_fork_plugin_endpoints::{
+    QemuHotForkPluginEndpointStageError, QemuHotForkPluginEndpointStageProof,
+    QemuHotForkPluginEndpointStageState, QemuHotForkPluginHostEndpoint,
+};
+#[cfg(target_os = "linux")]
+pub use hot_fork_preparation::{
+    QemuHotForkChildResourcePreparationError, QemuHotForkPreparedChildResources,
+};
+#[cfg(target_os = "linux")]
+use hot_fork_process_contract::QemuHotForkChildProcessContractStage;
+#[cfg(target_os = "linux")]
+pub use hot_fork_process_contract::QemuHotForkChildProcessContractStageProof;
+#[cfg(unix)]
+pub use hot_fork_ring_image::QemuHotForkPluginRingImage;
+#[cfg(target_os = "linux")]
+use hot_fork_ring_image::QemuHotForkPrivateRingStage;
+#[cfg(target_os = "linux")]
+pub use hot_fork_ring_image::{
+    QemuHotForkPrivateRingMapping, QemuHotForkPrivateRingStageError,
+    QemuHotForkPrivateRingStageProof, QemuHotForkPrivateRingStageState,
+};
+#[cfg(target_os = "linux")]
+use hot_fork_scheduler_continuation::QemuHotForkInstalledNodeAuthority;
+#[cfg(target_os = "linux")]
+pub use hot_fork_scheduler_continuation::{
+    QemuHotForkNodeStateContinuation, QemuHotForkSchedulerNodeAssemblyError,
+    QemuHotForkSchedulerNodeContinuation, QemuHotForkSchedulerNodeInstallError,
+};
+pub use process_control::QemuNodeExternalProcessControl;
+use process_control::QemuNodeProcessControl;
 #[cfg(target_os = "linux")]
 use process_identity::linux_process_identity_components;
 #[cfg(target_os = "linux")]
@@ -280,6 +385,30 @@ impl QemuNodeChild {
         self.reaped = true;
         Ok(())
     }
+
+    /// Force-kills and boundedly reaps one failed attempt helper process.
+    ///
+    /// A timeout deliberately leaves this wrapper unreaped so the caller can
+    /// transfer its unique direct-child wait authority into the attempt owner.
+    pub(crate) fn force_kill_and_reap_failed_helper(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(), QemuShutdownTargetError> {
+        if self.reaped {
+            return Ok(());
+        }
+        let _kill_result = self.child.kill();
+        match wait_child(&mut self.child, timeout)? {
+            QemuChildWait::Exited => {
+                self.reaped = true;
+                Ok(())
+            }
+            QemuChildWait::StillRunning => Err(QemuShutdownTargetError::new(
+                "reap failed QEMU helper",
+                "child remained alive after SIGKILL and the bounded wait",
+            )),
+        }
+    }
 }
 
 /// Bounded deadline for reaping a force-killed child in [`QemuNodeChild::drop`].
@@ -308,426 +437,6 @@ impl Drop for QemuNodeChild {
             self.reaped = true;
         }
     }
-}
-
-/// Plugin IPC control channel for setup and teardown only.
-pub trait QemuPluginIpcControlChannel: Send {
-    /// Sends the plugin IPC `Quit` control message.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the control channel cannot accept
-    /// the teardown request.
-    fn send_quit(&mut self) -> Result<(), QemuNodeChannelError>;
-}
-
-/// Shared-memory hot-path channel for per-quantum data.
-pub trait QemuShmemHotPathChannel: Send {
-    /// Captures both directed network rings and the host injection cursor.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when either quiesced ring cannot be
-    /// snapshotted exactly.
-    fn checkpoint_network_transport(
-        &mut self,
-    ) -> Result<crate::QemuNetworkTransportCheckpoint, QemuNodeChannelError>;
-
-    /// Restores both directed network rings and the host injection cursor.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the checkpoint is malformed or
-    /// cannot be restored atomically into the mapped rings.
-    fn restore_network_transport(
-        &mut self,
-        checkpoint: &crate::QemuNetworkTransportCheckpoint,
-    ) -> Result<(), QemuNodeChannelError>;
-
-    /// Enqueues one guest-agent request through the public shared-memory ABI.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when guest introspection is unavailable
-    /// or the request queue cannot accept the record.
-    fn send_guest_introspection(
-        &mut self,
-        _record: GuestIntrospectionRecord,
-    ) -> Result<(), QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "send guest introspection",
-            "guest introspection is unavailable on this channel",
-        ))
-    }
-
-    /// Dequeues one guest-agent response, if one is currently available.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when guest introspection is unavailable
-    /// or the response queue is malformed.
-    fn receive_guest_introspection(
-        &mut self,
-    ) -> Result<Option<GuestIntrospectionRecord>, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "receive guest introspection",
-            "guest introspection is unavailable on this channel",
-        ))
-    }
-
-    /// Returns whether this channel owns a plugin-to-host coverage queue.
-    ///
-    /// The registration-time value is immutable. Direct node APIs use it to
-    /// reject an advance before guest execution when no unified-log owner was
-    /// supplied.
-    fn coverage_enabled(&self) -> bool {
-        false
-    }
-
-    /// Reads the node's current retired-instruction count.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the shared-memory state cannot be
-    /// observed.
-    fn current_icount(&mut self) -> Result<Icount, QemuNodeChannelError>;
-
-    /// Reads the coherent plugin logical/raw time calibration.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the shared-memory state cannot be
-    /// observed or carries an impossible raw/logical relationship.
-    fn logical_time_calibration(
-        &mut self,
-    ) -> Result<QemuLogicalTimeCalibration, QemuNodeChannelError>;
-
-    /// Starts a split quantum by publishing `horizon` through shared memory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the shared-memory hot path cannot
-    /// publish the scheduler ceiling or wake the plugin.
-    fn start_quantum(
-        &mut self,
-        horizon: ExecutionHorizon,
-    ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError>;
-
-    /// Polls a split quantum without consuming its pending token.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the shared-memory completion report
-    /// cannot be read or is not yet visible.
-    fn poll_quantum(
-        &mut self,
-        pending: &mut QemuNodePendingQuantum,
-    ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError>;
-
-    /// Finishes a split quantum after the bounded host-I/O runtime completes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the shared-memory completion report
-    /// cannot be read.
-    fn finish_quantum(
-        &mut self,
-        mut pending: QemuNodePendingQuantum,
-    ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
-        self.poll_quantum(&mut pending)
-    }
-
-    /// Publishes one scheduler-commanded preemption before its bounded RUN.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the command is invalid or a prior
-    /// command remains unconsumed.
-    fn publish_preemption_command(
-        &mut self,
-        command: SchedulerPreemptionCommand,
-    ) -> Result<(), QemuNodeChannelError>;
-
-    /// Publishes one authenticated fault command at a scheduler boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the fault transport is absent,
-    /// full, corrupt, or rejects the command envelope.
-    fn enqueue_fault_command(
-        &mut self,
-        header: FaultCommandHeaderV1,
-        payload: &[u8],
-    ) -> Result<(), QemuNodeChannelError>;
-
-    /// Removes one completed fault result from the lossless result transport.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the result transport is absent or
-    /// corrupt.
-    fn dequeue_fault_result(&mut self)
-    -> Result<Option<DequeuedFaultResult>, QemuNodeChannelError>;
-
-    /// Removes one authenticated installed-rule occurrence event.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the event transport is absent,
-    /// corrupt, or fails evidence authentication.
-    fn dequeue_fault_event(&mut self) -> Result<Option<DequeuedFaultEvent>, QemuNodeChannelError>;
-
-    /// Reports whether an installed-rule event awaits boundary admission.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the event transport is invalid.
-    fn fault_event_pending(&mut self) -> Result<bool, QemuNodeChannelError>;
-
-    /// Returns the number of published installed-rule events without consuming them.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the event transport is invalid.
-    fn fault_event_count(&mut self) -> Result<usize, QemuNodeChannelError>;
-
-    /// Authenticates and copies installed-rule events without consuming them.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the transport is invalid,
-    /// destination storage is insufficient, or evidence does not authenticate.
-    fn snapshot_fault_events(
-        &mut self,
-        destination: &mut Vec<DequeuedFaultEvent>,
-        canonical_payload_bytes: &mut usize,
-        configured_payload_bytes: usize,
-        configured_inline_payload_bytes: usize,
-    ) -> Result<(), QemuNodeError>;
-    /// Advances the node to `horizon` or until it pauses earlier.
-    ///
-    /// This helper is retained for direct channel tests and already-completed
-    /// quanta. [`QemuNode`] uses the split methods through the bounded async
-    /// driver.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the shared-memory advance request
-    /// cannot complete.
-    fn advance_to_horizon(
-        &mut self,
-        horizon: ExecutionHorizon,
-    ) -> Result<AdvanceOutcome, QemuNodeChannelError> {
-        let pending = self.start_quantum(horizon)?;
-        self.finish_quantum(pending)
-            .map(|completion| completion.outcome)
-    }
-
-    /// Drains coverage observations at the current completed boundary.
-    ///
-    /// Implementations without an enabled coverage transport return an empty
-    /// batch. The caller must append a non-empty batch to the unified event log
-    /// before continuing or tearing down the node.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the shared coverage ring is corrupt
-    /// or contains an observation after the published boundary.
-    fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, QemuNodeChannelError> {
-        Ok(Vec::new())
-    }
-
-    /// Drains causal decisions completed by synchronous guest callbacks.
-    ///
-    /// Implementations without a white-box app-random transport return an empty
-    /// batch. The authoritative scheduler must validate and append every
-    /// returned decision before another quantum begins.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the causal transport is corrupt or
-    /// contains an entry after the completed boundary.
-    // crucible-lint: allow host-nondeterminism-state -- this boundary returns values without admitting them into engine state.
-    fn drain_causal_decisions(&mut self) -> Result<Vec<Decision>, QemuNodeChannelError> {
-        Ok(Vec::new())
-    }
-
-    /// Delivers a deterministic frame through the shared-memory input ring.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the frame cannot be delivered.
-    fn deliver_frame(&mut self, input: BackendInput) -> Result<(), QemuNodeChannelError>;
-
-    /// Delivers a deterministic frame at its scheduler-resolved instruction count.
-    ///
-    /// Channels that do not expose timestamped injection may inherit the legacy
-    /// boundary-relative delivery behavior. Production shared-memory channels
-    /// override this method so the event-log timestamp reaches QEMU unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the frame cannot be delivered at
-    /// `delivery_icount`.
-    fn deliver_frame_at(
-        &mut self,
-        input: BackendInput,
-        delivery_icount: Icount,
-    ) -> Result<(), QemuNodeChannelError> {
-        let _ = delivery_icount;
-        self.deliver_frame(input)
-    }
-
-    /// Reads one emitted frame from the shared-memory output ring.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the output ring cannot be read.
-    fn emit_frame(&mut self) -> Result<Option<QemuNodeEmittedFrame>, QemuNodeChannelError>;
-
-    /// Reads the current idle state from shared memory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the idle state cannot be observed.
-    fn idle_state(&mut self) -> Result<QemuNodeIdleState, QemuNodeChannelError>;
-
-    /// Reads the current execution fingerprint from the shared-memory data path.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the fingerprint cannot be read.
-    fn execution_fingerprint(&mut self) -> Result<ExecutionFingerprint, QemuNodeChannelError>;
-
-    /// Reads the complete plugin-published fingerprint sample.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the sample is absent or invalid.
-    fn fingerprint_sample(&mut self) -> Result<QemuFingerprintSample, QemuNodeChannelError>;
-}
-
-/// Type-erased token returned after a shared-memory quantum is started.
-pub struct QemuNodePendingQuantum {
-    token: Box<dyn Any>,
-    completion_fence: Option<QemuAdvanceCompletionFence>,
-}
-
-impl QemuNodePendingQuantum {
-    /// Wraps a concrete pending-quantum token.
-    #[must_use]
-    pub fn new<T>(token: T) -> Self
-    where
-        T: Any,
-    {
-        Self {
-            token: Box::new(token),
-            completion_fence: None,
-        }
-    }
-
-    /// Wraps a token whose scheduler input requires a fresh plugin publication.
-    #[must_use]
-    pub fn new_with_completion_fence<T>(token: T, fence: QemuAdvanceCompletionFence) -> Self
-    where
-        T: Any,
-    {
-        Self {
-            token: Box::new(token),
-            completion_fence: Some(fence),
-        }
-    }
-
-    /// Returns the optional publication fence carried by this quantum.
-    #[must_use]
-    pub const fn completion_fence(&self) -> Option<QemuAdvanceCompletionFence> {
-        self.completion_fence
-    }
-
-    /// Recovers the concrete token expected by the finishing channel.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the token came from a different
-    /// shared-memory channel implementation.
-    pub fn downcast_mut<T>(
-        &mut self,
-        operation: &'static str,
-    ) -> Result<&mut T, QemuNodeChannelError>
-    where
-        T: Any,
-    {
-        self.token.downcast_mut().ok_or_else(|| {
-            QemuNodeChannelError::new(operation, "pending quantum token type mismatch")
-        })
-    }
-}
-
-/// QMP machine-control channel for snapshot and quit commands.
-pub trait QemuQmpMachineControlChannel: Send {
-    /// Stops guest execution for a checkpoint transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QEMU cannot confirm the paused state.
-    fn stop_for_checkpoint(&mut self) -> Result<(), QemuNodeChannelError>;
-
-    /// Resumes guest execution after a checkpoint transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QEMU does not acknowledge the
-    /// running-state transition. The next bounded step proves execution.
-    fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError>;
-
-    /// Completes an authenticated terminal lifecycle transition without
-    /// expecting QEMU to resume guest execution.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QEMU cannot acknowledge the
-    /// terminal completion command.
-    fn complete_terminal_lifecycle_exit(
-        &mut self,
-        action: crucible::ContentHash,
-        evidence: crucible::ContentHash,
-        process_generation: u64,
-    ) -> Result<(), QemuNodeChannelError>;
-
-    /// Saves VMState under the supplied checkpoint identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP cannot complete the save job.
-    fn save_checkpoint_vmstate(
-        &mut self,
-        checkpoint: &Checkpoint,
-    ) -> Result<(), QemuNodeChannelError>;
-
-    /// Deletes VMState stored under the supplied checkpoint identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP cannot complete the delete job.
-    fn delete_checkpoint_vmstate(
-        &mut self,
-        checkpoint: &Checkpoint,
-    ) -> Result<(), QemuNodeChannelError>;
-
-    /// Requests QEMU termination through QMP `quit`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QMP cannot send the quit command.
-    fn quit(&mut self) -> Result<(), QemuNodeChannelError>;
-
-    /// Sends the fixed fork-time activation token to the dormant guest bootstrap.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the channel has no activation
-    /// device or QMP rejects the bounded command.
-    fn activate_debug_guest(&mut self) -> Result<(), QemuNodeChannelError>;
 }
 
 /// The three logical channel roles owned by one QEMU node.
@@ -774,8 +483,24 @@ struct QemuConsoleObservation {
 
 /// Host-side wrapper exposing one QEMU child as a synchronous scheduler node.
 pub struct QemuNode {
-    child: QemuNodeChild,
+    child: QemuNodeProcessControl,
     channels: QemuNodeChannels,
+    #[cfg(target_os = "linux")]
+    hot_fork_private_ring_stage: Option<QemuHotForkPrivateRingStage>,
+    #[cfg(target_os = "linux")]
+    hot_fork_child_diagnostic_stage: Option<QemuHotForkChildDiagnosticStage>,
+    #[cfg(target_os = "linux")]
+    hot_fork_child_qmp_stage: Option<QemuHotForkChildQmpStage>,
+    #[cfg(target_os = "linux")]
+    hot_fork_child_console_stage: Option<QemuHotForkChildConsoleStage>,
+    #[cfg(target_os = "linux")]
+    hot_fork_child_process_contract_stage: Option<QemuHotForkChildProcessContractStage>,
+    #[cfg(target_os = "linux")]
+    hot_fork_child_files_stage: Option<QemuHotForkChildFilesStage>,
+    #[cfg(target_os = "linux")]
+    hot_fork_plugin_endpoint_stage: Option<QemuHotForkPluginEndpointStage>,
+    #[cfg(target_os = "linux")]
+    _hot_fork_scheduler_authority: Option<QemuHotForkInstalledNodeAuthority>,
     lifecycle_state: QemuNodeLifecycleState,
     shutdown_policy: QemuShutdownPolicy,
     async_policy: QemuAsyncDriverPolicy,
@@ -962,8 +687,24 @@ impl QemuNode {
         initial_fault_command_sequence: u64,
     ) -> Self {
         Self {
-            child,
+            child: QemuNodeProcessControl::Direct(child),
             channels,
+            #[cfg(target_os = "linux")]
+            hot_fork_private_ring_stage: None,
+            #[cfg(target_os = "linux")]
+            hot_fork_child_diagnostic_stage: None,
+            #[cfg(target_os = "linux")]
+            hot_fork_child_qmp_stage: None,
+            #[cfg(target_os = "linux")]
+            hot_fork_child_console_stage: None,
+            #[cfg(target_os = "linux")]
+            hot_fork_child_process_contract_stage: None,
+            #[cfg(target_os = "linux")]
+            hot_fork_child_files_stage: None,
+            #[cfg(target_os = "linux")]
+            hot_fork_plugin_endpoint_stage: None,
+            #[cfg(target_os = "linux")]
+            _hot_fork_scheduler_authority: None,
             lifecycle_state: QemuNodeLifecycleState::Running,
             shutdown_policy,
             async_policy,
@@ -1450,8 +1191,18 @@ impl QemuNode {
 
     /// Returns whether the owned child has been reaped by this wrapper.
     #[must_use]
-    pub const fn child_reaped(&self) -> bool {
+    pub fn child_reaped(&self) -> bool {
         self.child.reaped()
+    }
+
+    /// Consumes this failed node and transfers its direct-child wait authority.
+    ///
+    /// This crate-internal handoff deliberately drops every modeled channel and
+    /// live-backend capability. The returned child must be authenticated and
+    /// transferred to the attempt's cgroup reaper before any resource guard is
+    /// released.
+    pub(crate) fn into_direct_child_for_quarantine(self) -> Option<QemuNodeChild> {
+        self.child.into_direct_child()
     }
 
     /// Returns the operating-system process identifier of this QEMU generation.
@@ -1474,6 +1225,272 @@ impl QemuNode {
                 self.process_id()
             ))
         })
+    }
+
+    /// Captures a stable bounded process inventory at an exact QEMU boundary.
+    ///
+    /// The method brackets two complete Linux thread, descriptor, and mapping
+    /// passes with QEMU's versioned readiness query and exact process identity.
+    /// The resulting value is Phase 6 audit evidence only: missing QEMU proof
+    /// classes remain missing and the report cannot authorize a process fork.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::QemuHotForkAuditError`] when QEMU is not at its exact
+    /// paused/device-flush boundary, readiness changes, process identity or
+    /// procfs validation fails, an inventory bound is exceeded, or two passes
+    /// do not identify one fixed point.
+    #[cfg(target_os = "linux")]
+    pub fn audit_hot_fork_process(
+        &mut self,
+    ) -> Result<crate::QemuHotForkAudit, crate::QemuHotForkAuditError> {
+        let process = self
+            .process_identity()
+            .map_err(crate::QemuHotForkAuditError::ProcessIdentity)?;
+        let before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_readiness()
+            .map_err(crate::QemuHotForkAuditError::Readiness)?;
+        if !before.acknowledges(crate::QmpHotForkProof::ExactPausedBoundary) {
+            return Err(crate::QemuHotForkAuditError::NotExactPausedBoundary);
+        }
+        let threads_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_thread_inventory()
+            .map_err(crate::QemuHotForkAuditError::ThreadInventory)?;
+        let rcu_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_rcu_inventory()
+            .map_err(crate::QemuHotForkAuditError::RcuInventory)?;
+        let aio_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_aio_inventory()
+            .map_err(crate::QemuHotForkAuditError::AioInventory)?;
+        let aio_handlers_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_aio_handler_inventory()
+            .map_err(crate::QemuHotForkAuditError::AioHandlerInventory)?;
+        let block_backends_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_block_backend_inventory()
+            .map_err(crate::QemuHotForkAuditError::BlockBackendInventory)?;
+        let plugin_resources_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_plugin_resource_inventory()
+            .map_err(crate::QemuHotForkAuditError::PluginResourceInventory)?;
+        let bottom_halves_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_bottom_half_inventory()
+            .map_err(crate::QemuHotForkAuditError::BottomHalfInventory)?;
+        let mutexes_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_mutex_inventory()
+            .map_err(crate::QemuHotForkAuditError::MutexInventory)?;
+        let timers_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_timer_inventory()
+            .map_err(crate::QemuHotForkAuditError::TimerInventory)?;
+        let monitors_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_monitor_inventory()
+            .map_err(crate::QemuHotForkAuditError::MonitorInventory)?;
+
+        let inventory =
+            crate::hot_fork_audit::capture_linux_qemu_hot_fork_process_inventory(&process)?;
+        let monitors_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_monitor_inventory()
+            .map_err(crate::QemuHotForkAuditError::MonitorInventory)?;
+        if monitors_before != monitors_after {
+            return Err(crate::QemuHotForkAuditError::MonitorInventoryChanged);
+        }
+        let timers_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_timer_inventory()
+            .map_err(crate::QemuHotForkAuditError::TimerInventory)?;
+        if timers_before != timers_after {
+            return Err(crate::QemuHotForkAuditError::TimerInventoryChanged);
+        }
+        let mutexes_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_mutex_inventory()
+            .map_err(crate::QemuHotForkAuditError::MutexInventory)?;
+        if mutexes_before != mutexes_after {
+            return Err(crate::QemuHotForkAuditError::MutexInventoryChanged);
+        }
+        let bottom_halves_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_bottom_half_inventory()
+            .map_err(crate::QemuHotForkAuditError::BottomHalfInventory)?;
+        if bottom_halves_before != bottom_halves_after {
+            return Err(crate::QemuHotForkAuditError::BottomHalfInventoryChanged);
+        }
+        let plugin_resources_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_plugin_resource_inventory()
+            .map_err(crate::QemuHotForkAuditError::PluginResourceInventory)?;
+        if plugin_resources_before != plugin_resources_after {
+            return Err(crate::QemuHotForkAuditError::PluginResourceInventoryChanged);
+        }
+        let block_backends_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_block_backend_inventory()
+            .map_err(crate::QemuHotForkAuditError::BlockBackendInventory)?;
+        if block_backends_before != block_backends_after {
+            return Err(crate::QemuHotForkAuditError::BlockBackendInventoryChanged);
+        }
+        let aio_handlers_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_aio_handler_inventory()
+            .map_err(crate::QemuHotForkAuditError::AioHandlerInventory)?;
+        if aio_handlers_before != aio_handlers_after {
+            return Err(crate::QemuHotForkAuditError::AioHandlerInventoryChanged);
+        }
+        let aio_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_aio_inventory()
+            .map_err(crate::QemuHotForkAuditError::AioInventory)?;
+        if aio_before != aio_after {
+            return Err(crate::QemuHotForkAuditError::AioInventoryChanged);
+        }
+        let rcu_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_rcu_inventory()
+            .map_err(crate::QemuHotForkAuditError::RcuInventory)?;
+        if rcu_before != rcu_after {
+            return Err(crate::QemuHotForkAuditError::RcuInventoryChanged);
+        }
+        let threads_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_thread_inventory()
+            .map_err(crate::QemuHotForkAuditError::ThreadInventory)?;
+        if threads_before != threads_after {
+            return Err(crate::QemuHotForkAuditError::ThreadInventoryChanged);
+        }
+        let after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_readiness()
+            .map_err(crate::QemuHotForkAuditError::Readiness)?;
+        if before != after {
+            return Err(crate::QemuHotForkAuditError::ReadinessChanged);
+        }
+        crate::QemuHotForkAudit::new(
+            crate::hot_fork_audit::QemuHotForkQmpInventory::new(
+                before,
+                threads_before,
+                rcu_before,
+                aio_before,
+                aio_handlers_before,
+                block_backends_before,
+                plugin_resources_before,
+                bottom_halves_before,
+                mutexes_before,
+                timers_before,
+                monitors_before,
+            ),
+            inventory,
+        )
+    }
+
+    /// Queries QEMU's registered fork-child runtime without mutating it.
+    ///
+    /// The response binds callback registration to the complete plugin
+    /// resource manifest and current process generation. It does not
+    /// initialize a child or acknowledge hot-fork proof bit 8.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O or strict response
+    /// validation fails.
+    pub fn query_hot_fork_child_runtime(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildRuntimeState, QemuNodeChannelError> {
+        self.channels
+            .qmp_machine_control
+            .query_hot_fork_child_runtime()
+    }
+
+    /// Starts or advances QEMU's retained hot-fork template transaction.
+    ///
+    /// This does not fork a process. A blocked result proves that QEMU acquired
+    /// and then rolled back every currently implemented subsystem barrier after
+    /// the complete readiness bitmap remained unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU cannot acquire, observe, or
+    /// roll back the transaction or violates the closed response contract.
+    pub fn prepare_hot_fork_template(
+        &mut self,
+        block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.channels
+            .qmp_machine_control
+            .prepare_hot_fork_template(block_snapshot_bindings)
+    }
+
+    /// Acquires all retained template barriers before child-resource staging.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when bounded acquisition fails or
+    /// QEMU changes the retained transaction generation.
+    pub fn prepare_hot_fork_template_barriers(
+        &mut self,
+        block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.channels
+            .qmp_machine_control
+            .prepare_hot_fork_template_barriers(block_snapshot_bindings)
+    }
+
+    /// Queries QEMU's retained hot-fork template transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O or strict response
+    /// validation fails.
+    pub fn query_hot_fork_template(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.channels.qmp_machine_control.query_hot_fork_template()
+    }
+
+    /// Aborts QEMU's retained hot-fork template transaction.
+    ///
+    /// A draining response leaves restoration pending. The owner must keep the
+    /// source stopped and retry until `rollback_complete()` is true.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU cannot roll back every
+    /// acquired subsystem barrier or violates the closed abort response.
+    pub fn abort_hot_fork_template(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.channels.qmp_machine_control.abort_hot_fork_template()
     }
 
     /// Returns numeric identity components after authenticating a preowned executable path.
@@ -1756,14 +1773,123 @@ impl QemuNode {
         event_log: &mut EventLog,
     ) -> Result<(AdvanceOutcome, SchedulerEventLogAppend), QemuNodeError> {
         let report = self.advance_to_ceiling_report(ceiling)?;
+        let appended = self.drain_observable_events_into(event_log)?;
+        let outcome = self.finish_advance_report(ceiling, report)?;
+        Ok((outcome, appended))
+    }
+
+    /// Drains pending observable events into the run's unified event log.
+    ///
+    /// A campaign driver calls this at its modeled observation boundary before
+    /// constructing canonical coverage evidence. The node remains paused and
+    /// retains process ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the shared-memory drain or unified-log
+    /// append fails.
+    pub fn drain_observable_events_into(
+        &mut self,
+        event_log: &mut EventLog,
+    ) -> Result<SchedulerEventLogAppend, QemuNodeError> {
         let events = self.drain_scheduler_observable_events()?;
-        let appended = event_log
+        event_log
             .append_observable_events(events)
             .map_err(|source| QemuNodeError::CoverageEventLog {
                 message: source.to_string(),
+            })
+    }
+
+    /// Drains selectable requests retained at the current paused boundary.
+    ///
+    /// The result is still untrusted plugin output. A campaign driver must bind
+    /// each request to its scenario declaration and make the semantic choice
+    /// before any reply is delivered or another guest quantum begins.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the shared-memory marker transport is
+    /// malformed or carries a request after the completed boundary.
+    pub fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<
+        Vec<crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest>,
+        QemuNodeError,
+    > {
+        self.channels
+            .shmem_hot_path
+            .drain_pending_selectable_requests()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })
+    }
+
+    /// Enqueues one exact host-authorized selectable reply and resumes QEMU.
+    ///
+    /// The shared-memory publication precedes the QMP running-state transition,
+    /// so the plugin's first resumed-vCPU callback observes and applies the
+    /// exact reply before guest execution continues.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the pending token is stale or malformed,
+    /// the reply does not fit its guest reservation, shared-memory publication
+    /// fails, or QMP cannot acknowledge the running-state transition.
+    pub fn enqueue_selectable_reply(
+        &mut self,
+        pending: &crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+        reply: &crucible_protocol::SelectionReply,
+    ) -> Result<(), QemuNodeError> {
+        self.channels
+            .shmem_hot_path
+            .enqueue_selectable_reply(pending, reply)
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
             })?;
-        let outcome = self.finish_advance_report(ceiling, report)?;
-        Ok((outcome, appended))
+        if let Err(source) = self.channels.qmp_machine_control.resume_after_checkpoint() {
+            return self.handle_qmp_channel_error(source);
+        }
+        Ok(())
+    }
+
+    /// Returns a copy of the exact host-mirrored selectable catalog plan.
+    #[must_use]
+    pub fn selectable_catalog_plan(
+        &self,
+    ) -> Option<crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan> {
+        self.channels
+            .shmem_hot_path
+            .selectable_catalog_plan()
+            .cloned()
+    }
+
+    /// Reports whether no selectable reply awaits plugin consumption.
+    #[must_use]
+    pub fn selectable_reply_is_checkpoint_quiescent(&self) -> bool {
+        self.channels
+            .shmem_hot_path
+            .selectable_reply_is_checkpoint_quiescent()
+    }
+
+    /// Prepares the paused node's observable stream for authoritative execution.
+    ///
+    /// Warm-restore setup and boot-barrier priming execute before VMState load
+    /// establishes the canonical runtime. The ABI-versioned logical-time
+    /// restore acknowledgement resets coverage producer and consumer novelty
+    /// state while QEMU is paused; this final drain discards the remaining
+    /// non-coverage setup observations before the node becomes authoritative.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the shared-memory queue cannot be drained.
+    pub fn prepare_authoritative_observation_stream(&mut self) -> Result<usize, QemuNodeError> {
+        self.channels
+            .shmem_hot_path
+            .drain_observable_events()
+            .map(|events| events.len())
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })
     }
 
     fn advance_to_ceiling_report(
@@ -2204,12 +2330,7 @@ impl QemuNode {
         &mut self,
         event_log: &mut EventLog,
     ) -> Result<(QemuShutdownReport, SchedulerEventLogAppend), QemuNodeError> {
-        let events = self.drain_scheduler_observable_events()?;
-        let appended = event_log
-            .append_observable_events(events)
-            .map_err(|source| QemuNodeError::CoverageEventLog {
-                message: source.to_string(),
-            })?;
+        let appended = self.drain_observable_events_into(event_log)?;
         let report = self.shutdown_child_after_coverage_drain()?;
         Ok((report, appended))
     }
@@ -2564,7 +2685,7 @@ const fn virtual_time_from_advance_outcome(
 }
 
 struct QemuNodeShutdownTarget<'a> {
-    child: &'a mut QemuNodeChild,
+    child: &'a mut QemuNodeProcessControl,
     plugin_control: &'a mut dyn QemuPluginIpcControlChannel,
     qmp_machine_control: &'a mut dyn QemuQmpMachineControlChannel,
 }
@@ -2606,6 +2727,15 @@ impl QemuShutdownTarget for QemuNodeShutdownTarget<'_> {
 fn channel_error_to_shutdown_error(error: QemuNodeChannelError) -> QemuShutdownTargetError {
     QemuShutdownTargetError::new(error.operation, error.message)
 }
+
+#[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+mod test_support;
+#[cfg(all(target_os = "linux", feature = "test-support"))]
+pub use test_support::hot_fork::{
+    QemuTestHotForkOutcome, QemuTestHotForkSourceError, QemuTestQuantumBoundary,
+    scripted_hot_fork_source_for_test, scripted_hot_fork_source_with_observations_for_test,
+    scripted_hot_fork_source_with_script_for_test, scripted_hot_fork_source_with_state_for_test,
+};
 
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

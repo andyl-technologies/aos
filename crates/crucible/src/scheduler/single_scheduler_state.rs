@@ -257,7 +257,7 @@ impl SingleScheduler {
             &run_subdivision_policies,
         )?;
 
-        let frontier = frontier_for(&nodes, scenario.shift)?;
+        let frontier = frontier_for(&nodes, scenario.shift, None)?;
         let trigger_actions = TriggerActionState::default();
 
         let world_scheduling_nodes = scenario
@@ -290,12 +290,15 @@ impl SingleScheduler {
             world_network_decisions: Vec::new(),
             device_horizons: BTreeMap::new(),
             signal_fault_wakeup: None,
+            trigger_wakeup: None,
+            trigger_activation: None,
             #[cfg(test)]
             broken_device_delivery_stamp: false,
             control_inbox: Vec::new(),
             decision_seed,
             decision_rng_cursor: DecisionRngState::empty(),
             branch_network_choices: Vec::new(),
+            app_random_branch_selections: BTreeMap::new(),
             search_frontiers: Vec::new(),
             event_log,
             trigger_actions,
@@ -375,6 +378,73 @@ impl SingleScheduler {
     #[must_use]
     pub const fn signal_fault_wakeup(&self) -> Option<SimInstant> {
         self.signal_fault_wakeup
+    }
+
+    /// Installs the next exact event-graph transition before advancing any node.
+    ///
+    /// This derived deadline is independent of signal-fault cadence. It caps
+    /// running and idle nodes, and is recomputed by the lifecycle owner after
+    /// trigger settlement or restoration of durable trigger state. `None`
+    /// disarms it without changing other exact horizons. `activation` names
+    /// the next possible time-driven activation; a bookkeeping wakeup alone must
+    /// not prevent a `Quiescent` predicate from observing an idle system.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] if the deadline is not
+    /// strictly after the shared frontier or is not representable at the
+    /// configured icount shift. Exact predicates cannot be rounded to a later
+    /// coordinate without changing their meaning. An activation without a
+    /// wakeup, or preceding that wakeup, is also rejected. No live node may
+    /// already have advanced beyond the new global deadline.
+    pub fn set_trigger_wakeup(
+        &mut self,
+        wakeup: Option<VirtualTime>,
+        activation: Option<VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        if activation.is_some_and(|at| wakeup.is_none_or(|wake| at < wake)) {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "trigger activation must have an equal or earlier evaluation wakeup",
+                ),
+            });
+        }
+        for wakeup in [wakeup, activation].into_iter().flatten() {
+            let scale = 1_u64 << self.timeline.shift().bits;
+            if wakeup.ticks <= self.frontier.ticks || wakeup.ticks % scale != 0 {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "trigger deadline {} must be representable at icount shift {} and after frontier {}",
+                        wakeup.ticks,
+                        self.timeline.shift().bits,
+                        self.frontier.ticks
+                    ),
+                });
+            }
+            for node in &self.nodes {
+                if !matches!(
+                    self.effective_node_activity(node),
+                    SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
+                ) && self.node_current_time(node)?.nanos > wakeup.ticks
+                {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "trigger deadline {} is behind live node {}",
+                            wakeup.ticks, node.id.node.name
+                        ),
+                    });
+                }
+            }
+        }
+        self.trigger_wakeup = wakeup.map(|at| SimInstant { nanos: at.ticks });
+        self.trigger_activation = activation.map(|at| SimInstant { nanos: at.ticks });
+        Ok(())
+    }
+
+    /// Returns the derived exact event-graph evaluation boundary.
+    #[must_use]
+    pub const fn trigger_wakeup(&self) -> Option<SimInstant> {
+        self.trigger_wakeup
     }
 
     /// Installs a deterministic exact-completion I/O sub-node (disk/9p) on its target VM node
@@ -930,6 +1000,16 @@ impl SingleScheduler {
     #[must_use]
     pub fn event_log_offset(&self) -> EventLogOffset {
         self.event_log.offset()
+    }
+
+    /// Returns the scheduler-owned unified event log.
+    ///
+    /// The returned capability is read-only. Live backend adapters append
+    /// through [`QuantumLoop`] so dense sequencing and condition-prefix
+    /// validation remain scheduler-owned.
+    #[must_use]
+    pub const fn event_log(&self) -> &EventLog {
+        &self.event_log
     }
 
     /// Returns the scheduler-owned condition-evaluation prefix.
@@ -1569,8 +1649,6 @@ impl SingleScheduler {
         );
 
         for node in &self.nodes {
-            blockers.extend(self.vcpu_quiescence_blockers(node));
-
             match self.effective_node_activity(node) {
                 SchedulerNodeActivity::Runnable => {
                     blockers.push(SchedulerQuiescenceBlocker::RunnableNode {
@@ -1580,13 +1658,26 @@ impl SingleScheduler {
                 SchedulerNodeActivity::Idle => {}
                 SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done => continue,
             }
+            blockers.extend(self.vcpu_quiescence_blockers(node));
 
-            let exact_local_event = self.effective_exact_local_event(node)?;
+            let exact_local_event =
+                self.effective_exact_local_event_with_trigger(node, self.trigger_activation)?;
             if !matches!(exact_local_event, ExactLocalEvent::NoArmedTimer) {
                 blockers.push(SchedulerQuiescenceBlocker::PendingExactLocalEvent {
                     node: node.id.clone(),
                     event: exact_local_event,
                 });
+            }
+        }
+
+        if self.all_nodes_inactive() {
+            for at in [self.trigger_activation, self.signal_fault_wakeup]
+                .into_iter()
+                .flatten()
+            {
+                if at.nanos > self.frontier.ticks {
+                    blockers.push(SchedulerQuiescenceBlocker::PendingGlobalEvaluation { at });
+                }
             }
         }
 

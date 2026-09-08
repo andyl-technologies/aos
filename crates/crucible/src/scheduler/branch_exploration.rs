@@ -2,6 +2,8 @@
 
 use super::*;
 use crate::model::{BindingSearchChoice, FaultCoordinate};
+use crate::{SelectionDecision, SignalFaultCampaignBranch};
+use crucible_protocol::app_random_branch_plan::MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES;
 
 impl SingleScheduler {
     /// Returns the seed that owns every future authoritative decision stream.
@@ -27,7 +29,8 @@ impl SingleScheduler {
     /// Returns [`SchedulerError::BoundaryViolation`] when explorer-selected
     /// branch choices or uncommitted World-network decisions are pending.
     pub fn reseed_future_decisions(&mut self, seed: Seed) -> Result<(), SchedulerError> {
-        if !self.branch_network_choices.is_empty() {
+        if !self.branch_network_choices.is_empty() || !self.app_random_branch_selections.is_empty()
+        {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
                     "cannot re-seed while explicit scheduler branch choices are pending",
@@ -50,7 +53,52 @@ impl SingleScheduler {
     /// Returns the number of installed branch effect choices not yet resolved.
     #[must_use]
     pub fn pending_branch_effect_choice_count(&self) -> usize {
-        self.branch_network_choices.len()
+        self.branch_network_choices
+            .len()
+            .saturating_add(self.app_random_branch_selections.len())
+    }
+
+    /// Installs authenticated app-random selections for exact branch parents.
+    ///
+    /// Each key is the configuration after the live seeded [`Decision::RngDraw`]
+    /// and immediately before the corresponding [`Decision::Selection`]. The
+    /// scheduler consumes a selection only after replay validation succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when a decision is not a
+    /// campaign-branch selection or a parent is duplicated.
+    pub fn install_app_random_branch_selections(
+        &mut self,
+        selections: impl IntoIterator<Item = (ContentHash, SelectionDecision)>,
+    ) -> Result<(), SchedulerError> {
+        let mut installed = BTreeMap::new();
+        for (parent, selection) in selections {
+            if installed.len() >= MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "app-random replay plan exceeds {} selections",
+                        MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES
+                    ),
+                });
+            }
+            if !selection.is_campaign_branch() {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "app-random replay plan contains a non-campaign selection",
+                    ),
+                });
+            }
+            if installed.insert(parent, selection).is_some() {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "app-random replay plan contains a duplicate branch parent",
+                    ),
+                });
+            }
+        }
+        self.app_random_branch_selections = installed;
+        Ok(())
     }
 
     /// Installs explorer-selected World-network outcomes for exact frame emissions.
@@ -202,6 +250,118 @@ impl SingleScheduler {
         self.quanta = self.quanta.saturating_add(1);
         self.yield_to_control_inbox();
         Ok((configuration, append))
+    }
+
+    /// Appends one authenticated promoted signal-fault campaign branch.
+    ///
+    /// Unlike [`Self::append_branch_prefix_overrides`], this path admits the
+    /// typed campaign `Selection` and its optional producer override together.
+    /// The opaque branch can only be constructed from the standardized
+    /// signal-fault producer contract, and must name this scheduler's exact
+    /// configuration and frontier before any decision is recorded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when the branch names a
+    /// different parent or virtual-time boundary, or when event-log recording
+    /// fails.
+    pub fn append_signal_fault_campaign_branch(
+        &mut self,
+        branch: &SignalFaultCampaignBranch,
+    ) -> Result<(Configuration, SchedulerEventLogAppend), SchedulerError> {
+        if self.configuration != *branch.parent() || self.frontier != branch.frontier() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "signal-fault campaign branch does not match the current scheduler boundary",
+                ),
+            });
+        }
+        let configuration = self.step_quantum(branch.decisions());
+        if configuration != *branch.selected() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "signal-fault campaign branch selected configuration is inconsistent",
+                ),
+            });
+        }
+        let at = SimInstant {
+            nanos: self.frontier.ticks,
+        };
+        let append = self.emit_quantum_event_log(&[], branch.decisions(), &[], at, true)?;
+        self.configuration = configuration.clone();
+        self.quanta = self.quanta.saturating_add(1);
+        self.yield_to_control_inbox();
+        Ok((configuration, append))
+    }
+
+    /// Appends one externally resolved selection at the current scheduler boundary.
+    ///
+    /// Guest selectables are resolved outside the scheduler after QEMU publishes a
+    /// typed pending request. This boundary authenticates the parent, the typed
+    /// selection decision, and its claimed child before the scheduler advances.
+    /// It records no quantum boundary because resolving a paused guest request does
+    /// not consume execution progress.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `parent` is not the
+    /// current scheduler configuration or `selected` is not the exact result of
+    /// applying `decision`, when event-log append fails, or when `publish`
+    /// rejects the external transport operation. A publisher error restores the
+    /// exact prior event-log state before it is returned.
+    ///
+    /// # Panics
+    ///
+    /// Propagates a panic from `publish` after restoring the prior event log.
+    pub fn apply_external_selection<F>(
+        &mut self,
+        parent: &Configuration,
+        decision: SelectionDecision,
+        selected: &Configuration,
+        publish: F,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError>
+    where
+        F: FnOnce() -> Result<(), SchedulerError>,
+    {
+        if self.configuration != *parent {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "external selection parent is not the current scheduler configuration",
+                ),
+            });
+        }
+
+        let configuration = step(parent, Decision::Selection(decision.clone()));
+        if configuration != *selected {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "external selection child is inconsistent with its typed decision",
+                ),
+            });
+        }
+
+        let at = SimInstant {
+            nanos: self
+                .frontier
+                .ticks
+                .max(self.event_log.condition_prefix().point().at().ticks),
+        };
+        let previous_event_log = self.event_log.clone();
+        let append =
+            self.emit_quantum_event_log(&[], &[Decision::Selection(decision)], &[], at, false)?;
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(publish)) {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                self.event_log = previous_event_log;
+                return Err(error);
+            }
+            Err(payload) => {
+                self.event_log = previous_event_log;
+                std::panic::resume_unwind(payload);
+            }
+        }
+        self.configuration = configuration;
+        Ok(append)
     }
 
     pub(super) fn emit_quantum_decisions(

@@ -48,7 +48,7 @@ fn normal_lifecycle_connects_handshakes_runs_via_shmem_and_quits() {
 fn lifecycle_events_are_derived_from_decoded_control_messages() {
     assert_eq!(
         ControlLifecycleEvent::from_plugin_msg(&PluginMsg::Hello {
-            proto_version: 1,
+            proto_version: 2,
             abi_version: 1,
         }),
         ControlLifecycleEvent::PluginHello
@@ -63,7 +63,7 @@ fn lifecycle_events_are_derived_from_decoded_control_messages() {
     );
     assert_eq!(
         ControlLifecycleEvent::from_host_msg(&HostMsg::HelloAck {
-            proto_version: 1,
+            proto_version: 2,
             abi_version: 1,
             slot_index: 0,
             node_count: 2,
@@ -88,18 +88,18 @@ fn lifecycle_stream_wires_real_frames_setup_descriptors_and_run_silence()
     let mut host = ControlLifecycleStream::connected_unix_stream(host_socket)?;
 
     plugin_socket.write_all(&control_encode_plugin_msg(&PluginMsg::Hello {
-        proto_version: 1,
+        proto_version: 2,
         abi_version: 1,
     }))?;
     assert_eq!(
         host.host_accept_handshake(HostHandshakeConfig {
-            proto_version: 1,
+            proto_version: 2,
             abi_version: 1,
             slot_index: 0,
             node_count: 1,
         })?,
         NegotiatedHandshake {
-            proto_version: 1,
+            proto_version: 2,
             abi_version: 1,
             slot_index: 0,
             node_count: 1,
@@ -118,6 +118,7 @@ fn lifecycle_stream_wires_real_frames_setup_descriptors_and_run_silence()
         SetupDescriptorFds {
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
+            plugin_setup_plan_fd: shmem.as_raw_fd(),
         },
     )?;
     let ReceivedSetup {
@@ -138,7 +139,7 @@ fn lifecycle_stream_wires_real_frames_setup_descriptors_and_run_silence()
     assert_eq!(host.state(), ControlLifecycleState::RunningViaSharedMemory);
 
     plugin_socket.write_all(&control_encode_plugin_msg(&PluginMsg::Hello {
-        proto_version: 1,
+        proto_version: 2,
         abi_version: 1,
     }))?;
     assert_eq!(
@@ -169,7 +170,7 @@ fn lifecycle_stream_does_not_advance_after_invalid_hello_ack() -> Result<(), Box
     let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)?;
 
     host_socket.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 1,
+        proto_version: 2,
         abi_version: 2,
         slot_index: 0,
         node_count: 1,
@@ -177,7 +178,7 @@ fn lifecycle_stream_does_not_advance_after_invalid_hello_ack() -> Result<(), Box
 
     assert_eq!(
         plugin.plugin_start_handshake(PluginHandshakeConfig {
-            proto_version: 1,
+            proto_version: 2,
             abi_version: 1,
         }),
         Err(ControlLifecycleIoError::Handshake {
@@ -199,6 +200,36 @@ fn lifecycle_stream_does_not_advance_after_invalid_hello_ack() -> Result<(), Box
         })
     );
 
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn restored_child_run_stream_accepts_only_the_terminal_run_frame() -> Result<(), Box<dyn Error>> {
+    let (mut invalid_host, invalid_plugin) = UnixStream::pair()?;
+    let mut invalid_plugin = ControlLifecycleStream::restored_run_via_shared_memory(invalid_plugin);
+    invalid_host.write_all(&control_encode_host_msg(&HostMsg::Setup {
+        region_len: 4096,
+    }))?;
+    assert!(invalid_plugin.plugin_read_run_control_frame().is_err());
+    assert_eq!(
+        invalid_plugin.state(),
+        ControlLifecycleState::RunningViaSharedMemory
+    );
+
+    let (mut host, plugin) = UnixStream::pair()?;
+    let mut plugin = ControlLifecycleStream::restored_run_via_shared_memory(plugin);
+    assert_eq!(
+        plugin.state(),
+        ControlLifecycleState::RunningViaSharedMemory
+    );
+
+    host.write_all(&control_encode_host_msg(&HostMsg::Quit))?;
+    assert_eq!(
+        plugin.plugin_read_run_control_frame()?,
+        ControlLifecycleState::QuitSent
+    );
+    assert_eq!(plugin.state(), ControlLifecycleState::QuitSent);
     Ok(())
 }
 
@@ -441,11 +472,11 @@ fn host_running_lifecycle_stream(
     let mut host = ControlLifecycleStream::connected_unix_stream(stream)?;
 
     peer.write_all(&control_encode_plugin_msg(&PluginMsg::Hello {
-        proto_version: 1,
+        proto_version: 2,
         abi_version: 1,
     }))?;
     host.host_accept_handshake(HostHandshakeConfig {
-        proto_version: 1,
+        proto_version: 2,
         abi_version: 1,
         slot_index: 0,
         node_count: 1,
@@ -459,6 +490,7 @@ fn host_running_lifecycle_stream(
         SetupDescriptorFds {
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
+            plugin_setup_plan_fd: shmem.as_raw_fd(),
         },
     )?;
     let _ = crucible_protocol::recv_setup_with_descriptors(peer.as_raw_fd())?;
@@ -494,13 +526,13 @@ fn plugin_setup_lifecycle_stream(
     let mut plugin = ControlLifecycleStream::connected_unix_stream(stream)?;
 
     peer.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 1,
+        proto_version: 2,
         abi_version: 1,
         slot_index: 0,
         node_count: 1,
     }))?;
     plugin.plugin_start_handshake(PluginHandshakeConfig {
-        proto_version: 1,
+        proto_version: 2,
         abi_version: 1,
     })?;
     let _ = read_control_frame(peer)?;
@@ -513,6 +545,7 @@ fn plugin_setup_lifecycle_stream(
         SetupDescriptorFds {
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
+            plugin_setup_plan_fd: shmem.as_raw_fd(),
         },
     )?;
     let _ = plugin.plugin_recv_setup_with_descriptors()?;

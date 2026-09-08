@@ -4,6 +4,7 @@ use super::*;
 use crucible::model::FaultResourceLimitError;
 
 /// Durable-store outcome relative to the closure manifest rename.
+#[derive(Debug)]
 pub(in crate::vm_lifecycle) enum PersistExactCheckpointError {
     /// The final closure directory is durably absent.
     Unpublished(SchedulerError),
@@ -14,6 +15,72 @@ pub(in crate::vm_lifecycle) enum PersistExactCheckpointError {
         /// Count rollback or directory durability failure.
         source: SchedulerError,
     },
+}
+
+/// Prepared closure publication whose immutable objects are already durable.
+///
+/// A staged value owns the unpublished manifest directory. Dropping it removes
+/// that directory, so the caller may release transient QMP snapshots before it
+/// makes the authenticated closure visible.
+#[must_use = "a prepared exact checkpoint must be published or deliberately abandoned"]
+pub(in crate::vm_lifecycle) enum PreparedExactCheckpointPublication {
+    /// An identical authenticated publication was already present.
+    Existing {
+        identity: ContentHash,
+        closure_parent: PathBuf,
+    },
+    /// The manifest is durable in a private staging directory.
+    Staged {
+        identity: ContentHash,
+        staging: tempfile::TempDir,
+        destination: PathBuf,
+        closure_parent: PathBuf,
+        resource_limits: Box<FaultResourceLimits>,
+    },
+}
+
+impl PreparedExactCheckpointPublication {
+    /// Returns the authenticated closure identity selected during preparation.
+    pub(in crate::vm_lifecycle) fn identity(&self) -> ContentHash {
+        match self {
+            Self::Existing { identity, .. } | Self::Staged { identity, .. } => *identity,
+        }
+    }
+
+    /// Returns whether the closure was already visible before this transaction.
+    pub(in crate::vm_lifecycle) fn was_already_published(&self) -> bool {
+        matches!(self, Self::Existing { .. })
+    }
+
+    /// Makes the prepared manifest visible and synchronizes its parent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistExactCheckpointError::Unpublished`] when publication is
+    /// durably rolled back, or [`PersistExactCheckpointError::Indeterminate`]
+    /// when manifest visibility or parent-directory durability is uncertain.
+    pub(in crate::vm_lifecycle) fn publish(self) -> Result<(), PersistExactCheckpointError> {
+        match self {
+            Self::Existing {
+                identity,
+                closure_parent,
+            } => sync_directory(&closure_parent)
+                .map_err(|source| PersistExactCheckpointError::Indeterminate { identity, source }),
+            Self::Staged {
+                identity,
+                staging,
+                destination,
+                closure_parent,
+                resource_limits,
+            } => publish_checkpoint_closure(
+                staging,
+                &destination,
+                &closure_parent,
+                identity,
+                *resource_limits,
+            ),
+        }
+    }
 }
 
 impl From<SchedulerError> for PersistExactCheckpointError {
@@ -310,6 +377,70 @@ mod tests {
             }) if observed == identity
         ));
         assert_eq!(*calls.borrow(), ["remove", "sync"]);
+    }
+
+    #[test]
+    fn prepared_manifest_is_invisible_until_explicit_publication() {
+        let root = tempfile::tempdir()
+            .unwrap_or_else(|error| panic!("create publication fixture: {error}"));
+        let closure_parent = root.path().join("checkpoint-closures");
+        fs::create_dir(&closure_parent)
+            .unwrap_or_else(|error| panic!("create closure parent: {error}"));
+        let staging = tempfile::Builder::new()
+            .prefix(".closure-")
+            .tempdir_in(&closure_parent)
+            .unwrap_or_else(|error| panic!("create private manifest staging: {error}"));
+        fs::write(staging.path().join(MANIFEST_FILE), b"manifest")
+            .unwrap_or_else(|error| panic!("write staged manifest: {error}"));
+        let staging_path = staging.path().to_path_buf();
+        let identity = ContentHash::from_bytes(b"prepared checkpoint");
+        let destination = closure_parent.join(identity.to_hex());
+        let prepared = PreparedExactCheckpointPublication::Staged {
+            identity,
+            staging,
+            destination: destination.clone(),
+            closure_parent,
+            resource_limits: Box::new(FaultResourceLimits::default()),
+        };
+
+        assert!(staging_path.exists());
+        assert!(!destination.exists());
+        prepared
+            .publish()
+            .unwrap_or_else(|error| panic!("publish prepared manifest: {error:?}"));
+        assert!(!staging_path.exists());
+        assert_eq!(
+            fs::read(destination.join(MANIFEST_FILE))
+                .unwrap_or_else(|error| panic!("read published manifest: {error}")),
+            b"manifest"
+        );
+    }
+
+    #[test]
+    fn abandoning_prepared_manifest_keeps_the_identity_unpublished() {
+        let root = tempfile::tempdir()
+            .unwrap_or_else(|error| panic!("create abandonment fixture: {error}"));
+        let closure_parent = root.path().join("checkpoint-closures");
+        fs::create_dir(&closure_parent)
+            .unwrap_or_else(|error| panic!("create closure parent: {error}"));
+        let staging = tempfile::Builder::new()
+            .prefix(".closure-")
+            .tempdir_in(&closure_parent)
+            .unwrap_or_else(|error| panic!("create private manifest staging: {error}"));
+        let staging_path = staging.path().to_path_buf();
+        let identity = ContentHash::from_bytes(b"abandoned checkpoint");
+        let destination = closure_parent.join(identity.to_hex());
+        let prepared = PreparedExactCheckpointPublication::Staged {
+            identity,
+            staging,
+            destination: destination.clone(),
+            closure_parent,
+            resource_limits: Box::new(FaultResourceLimits::default()),
+        };
+
+        drop(prepared);
+        assert!(!staging_path.exists());
+        assert!(!destination.exists());
     }
 
     #[test]

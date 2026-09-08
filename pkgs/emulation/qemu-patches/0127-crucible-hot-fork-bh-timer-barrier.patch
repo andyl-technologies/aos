@@ -1,0 +1,1063 @@
+diff --git a/include/block/aio.h b/include/block/aio.h
+index 77c7abb41..79520683a 100644
+--- a/include/block/aio.h
++++ b/include/block/aio.h
+@@ -18,6 +18,7 @@
+ #include <liburing.h>
+ #endif
+ #include "qemu/coroutine-core.h"
++#include "qemu/crucible-hot-fork-async.h"
+ #include "qemu/queue.h"
+ #include "qemu/event_notifier.h"
+ #include "qemu/lockcnt.h"
+diff --git a/include/qemu/crucible-hot-fork-async.h b/include/qemu/crucible-hot-fork-async.h
+new file mode 100644
+index 000000000..6f5d79b60
+--- /dev/null
++++ b/include/qemu/crucible-hot-fork-async.h
+@@ -0,0 +1,49 @@
++/*
++ * Crucible hot-fork bottom-half and timer-source barrier.
++ *
++ * Copyright 2026 Andyl, Inc.
++ *
++ * This work is licensed under the terms of the GNU GPL, version 2 or later.
++ * See the COPYING file in the top-level directory.
++ */
++
++#ifndef QEMU_CRUCIBLE_HOT_FORK_ASYNC_H
++#define QEMU_CRUCIBLE_HOT_FORK_ASYNC_H
++
++typedef enum QemuBhTimerHotForkBarrierOperation {
++    QEMU_BH_TIMER_HOT_FORK_BARRIER_HOLD,
++    QEMU_BH_TIMER_HOT_FORK_BARRIER_QUERY,
++    QEMU_BH_TIMER_HOT_FORK_BARRIER_RELEASE,
++} QemuBhTimerHotForkBarrierOperation;
++
++typedef struct QemuBhTimerHotForkBarrierInventory {
++    uint64_t generation;
++    int64_t owner_thread_id;
++    uint64_t admissions_in_flight;
++    uint64_t bottom_half_count;
++    uint64_t pending_bottom_halves;
++    uint64_t scheduled_bottom_halves;
++    uint64_t active_bottom_half_callbacks;
++    uint64_t pending_timers;
++    uint64_t active_timer_callbacks;
++    bool held;
++    bool bottom_halves_complete;
++    bool timers_complete;
++    bool complete;
++    bool quiescent;
++} QemuBhTimerHotForkBarrierInventory;
++
++/*
++ * Gate bottom-half and timer-source mutation while a hot-fork transaction is
++ * retained.  Blocking admission is for producers; try admission is for event
++ * loop dispatch, which parks already-queued work rather than blocking QMP.
++ * Nested work remains inside the outer admission that caused it.
++ */
++void qemu_bh_timer_hot_fork_admission_begin(void);
++bool qemu_bh_timer_hot_fork_admission_try_begin(void);
++void qemu_bh_timer_hot_fork_admission_end(void);
++void qemu_bh_timer_hot_fork_barrier(
++    QemuBhTimerHotForkBarrierOperation operation,
++    QemuBhTimerHotForkBarrierInventory *inventory);
++
++#endif
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 5f00ea9bf..84f40a957 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -198,6 +198,34 @@ crucible_hot_fork_rcu_barrier(QemuRcuHotForkBarrierOperation operation)
+     return report;
+ }
+ 
++static CrucibleHotForkBhTimerBarrierState *
++crucible_hot_fork_bh_timer_barrier(
++    QemuBhTimerHotForkBarrierOperation operation)
++{
++    CrucibleHotForkBhTimerBarrierState *report =
++        g_new0(CrucibleHotForkBhTimerBarrierState, 1);
++    QemuBhTimerHotForkBarrierInventory inventory;
++
++    qemu_bh_timer_hot_fork_barrier(operation, &inventory);
++    report->schema_version = 1;
++    report->generation = inventory.generation;
++    report->owner_thread_id = inventory.owner_thread_id;
++    report->held = inventory.held;
++    report->complete = inventory.complete;
++    report->bottom_halves_complete = inventory.bottom_halves_complete;
++    report->timers_complete = inventory.timers_complete;
++    report->admissions_in_flight = inventory.admissions_in_flight;
++    report->bottom_half_count = inventory.bottom_half_count;
++    report->pending_bottom_halves = inventory.pending_bottom_halves;
++    report->scheduled_bottom_halves = inventory.scheduled_bottom_halves;
++    report->active_bottom_half_callbacks =
++        inventory.active_bottom_half_callbacks;
++    report->pending_timers = inventory.pending_timers;
++    report->active_timer_callbacks = inventory.active_timer_callbacks;
++    report->quiescent = inventory.quiescent;
++    return report;
++}
++
+ static GMutex crucible_hot_fork_template_lock;
+ static uint64_t crucible_hot_fork_template_generation;
+ static bool crucible_hot_fork_template_active;
+@@ -290,11 +318,57 @@ out:
+     return report;
+ }
+ 
++CrucibleHotForkBhTimerBarrierState *
++qmp_crucible_hot_fork_bh_timer_barrier(
++    CrucibleHotForkBhTimerBarrierAction action, Error **errp)
++{
++    CrucibleHotForkBhTimerBarrierState *report = NULL;
++    QemuBhTimerHotForkBarrierOperation operation;
++
++    g_mutex_lock(&crucible_hot_fork_template_lock);
++    switch (action) {
++    case CRUCIBLE_HOT_FORK_BH_TIMER_BARRIER_ACTION_HOLD:
++        if (crucible_hot_fork_template_active) {
++            error_setg(errp, "Crucible hot-fork template transaction owns "
++                       "the bottom-half/timer barrier");
++            goto out;
++        }
++        if (!crucible_hot_fork_exact_paused_boundary()) {
++            error_setg(errp, "Crucible hot-fork bottom-half/timer barrier "
++                       "requires an exact paused/device-flush boundary");
++            goto out;
++        }
++        operation = QEMU_BH_TIMER_HOT_FORK_BARRIER_HOLD;
++        break;
++    case CRUCIBLE_HOT_FORK_BH_TIMER_BARRIER_ACTION_QUERY:
++        operation = QEMU_BH_TIMER_HOT_FORK_BARRIER_QUERY;
++        break;
++    case CRUCIBLE_HOT_FORK_BH_TIMER_BARRIER_ACTION_RELEASE:
++        if (crucible_hot_fork_template_active) {
++            error_setg(errp, "Crucible hot-fork template transaction owns "
++                       "the bottom-half/timer barrier");
++            goto out;
++        }
++        operation = QEMU_BH_TIMER_HOT_FORK_BARRIER_RELEASE;
++        break;
++    default:
++        error_setg(errp, "Unknown Crucible hot-fork bottom-half/timer "
++                   "barrier action");
++        goto out;
++    }
++
++    report = crucible_hot_fork_bh_timer_barrier(operation);
++out:
++    g_mutex_unlock(&crucible_hot_fork_template_lock);
++    return report;
++}
++
+ static CrucibleHotForkTemplateState *
+ crucible_hot_fork_template_report(
+     CrucibleHotForkTemplateOutcome outcome,
+     CrucibleHotForkPluginBarrierState *plugin_barrier,
+-    CrucibleHotForkRcuBarrierState *rcu_barrier)
++    CrucibleHotForkRcuBarrierState *rcu_barrier,
++    CrucibleHotForkBhTimerBarrierState *bh_timer_barrier)
+ {
+     CrucibleHotForkTemplateState *report =
+         g_new0(CrucibleHotForkTemplateState, 1);
+@@ -304,7 +378,7 @@ crucible_hot_fork_template_report(
+         acknowledged |= CRUCIBLE_HOT_FORK_PROOF_RCU;
+     }
+ 
+-    report->schema_version = 2;
++    report->schema_version = 3;
+     report->generation = crucible_hot_fork_template_generation;
+     report->outcome = outcome;
+     report->transaction_active = crucible_hot_fork_template_active;
+@@ -313,11 +387,14 @@ crucible_hot_fork_template_report(
+     report->missing_proofs = CRUCIBLE_HOT_FORK_REQUIRED_PROOFS & ~acknowledged;
+     report->plugin_barrier = plugin_barrier;
+     report->rcu_barrier = rcu_barrier;
++    report->bh_timer_barrier = bh_timer_barrier;
+     report->rollback_complete = !report->transaction_active &&
+-        !plugin_barrier->held && !rcu_barrier->held;
++        !plugin_barrier->held && !rcu_barrier->held &&
++        !bh_timer_barrier->held;
+     report->ready = outcome == CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_PREPARED &&
+         report->transaction_active && plugin_barrier->quiescent &&
+-        rcu_barrier->quiescent && report->missing_proofs == 0;
++        rcu_barrier->quiescent && bh_timer_barrier->quiescent &&
++        report->missing_proofs == 0;
+     return report;
+ }
+ 
+@@ -327,6 +404,7 @@ qmp_crucible_hot_fork_template(
+ {
+     CrucibleHotForkPluginBarrierState *plugin_barrier = NULL;
+     CrucibleHotForkRcuBarrierState *rcu_barrier = NULL;
++    CrucibleHotForkBhTimerBarrierState *bh_timer_barrier = NULL;
+     CrucibleHotForkTemplateState *report = NULL;
+     CrucibleHotForkTemplateOutcome outcome;
+     uint64_t acknowledged;
+@@ -357,14 +435,28 @@ qmp_crucible_hot_fork_template(
+                            "outside the template coordinator");
+                 goto out;
+             }
++            bh_timer_barrier = crucible_hot_fork_bh_timer_barrier(
++                QEMU_BH_TIMER_HOT_FORK_BARRIER_QUERY);
++            if (bh_timer_barrier->held) {
++                error_setg(errp, "Crucible hot-fork bottom-half/timer "
++                           "barrier was held outside the template "
++                           "coordinator");
++                goto out;
++            }
+ 
+             g_clear_pointer(&rcu_barrier, g_free);
+             rcu_barrier = crucible_hot_fork_rcu_barrier(
+                 QEMU_RCU_HOT_FORK_BARRIER_HOLD);
++            g_clear_pointer(&bh_timer_barrier, g_free);
++            bh_timer_barrier = crucible_hot_fork_bh_timer_barrier(
++                QEMU_BH_TIMER_HOT_FORK_BARRIER_HOLD);
+             g_clear_pointer(&plugin_barrier, g_free);
+             plugin_barrier = crucible_hot_fork_plugin_barrier(
+                 QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD, errp);
+             if (!plugin_barrier) {
++                g_clear_pointer(&bh_timer_barrier, g_free);
++                bh_timer_barrier = crucible_hot_fork_bh_timer_barrier(
++                    QEMU_BH_TIMER_HOT_FORK_BARRIER_RELEASE);
+                 g_clear_pointer(&rcu_barrier, g_free);
+                 rcu_barrier = crucible_hot_fork_rcu_barrier(
+                     QEMU_RCU_HOT_FORK_BARRIER_RELEASE);
+@@ -381,6 +473,8 @@ qmp_crucible_hot_fork_template(
+             }
+             rcu_barrier = crucible_hot_fork_rcu_barrier(
+                 QEMU_RCU_HOT_FORK_BARRIER_QUERY);
++            bh_timer_barrier = crucible_hot_fork_bh_timer_barrier(
++                QEMU_BH_TIMER_HOT_FORK_BARRIER_QUERY);
+         }
+         if (!plugin_barrier->held || plugin_barrier->teardown_closed) {
+             error_setg(errp, "Crucible hot-fork template lost its retained "
+@@ -392,7 +486,14 @@ qmp_crucible_hot_fork_template(
+                        "RCU barrier");
+             goto out;
+         }
+-        if (!plugin_barrier->quiescent || !rcu_barrier->quiescent) {
++        if (!bh_timer_barrier->held ||
++            bh_timer_barrier->owner_thread_id <= 0) {
++            error_setg(errp, "Crucible hot-fork template lost its retained "
++                       "bottom-half/timer barrier");
++            goto out;
++        }
++        if (!plugin_barrier->quiescent || !rcu_barrier->quiescent ||
++            !bh_timer_barrier->quiescent) {
+             outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
+             break;
+         }
+@@ -409,6 +510,9 @@ qmp_crucible_hot_fork_template(
+         if (!plugin_barrier) {
+             goto out;
+         }
++        g_clear_pointer(&bh_timer_barrier, g_free);
++        bh_timer_barrier = crucible_hot_fork_bh_timer_barrier(
++            QEMU_BH_TIMER_HOT_FORK_BARRIER_RELEASE);
+         g_clear_pointer(&rcu_barrier, g_free);
+         rcu_barrier = crucible_hot_fork_rcu_barrier(
+             QEMU_RCU_HOT_FORK_BARRIER_RELEASE);
+@@ -423,6 +527,8 @@ qmp_crucible_hot_fork_template(
+         }
+         rcu_barrier = crucible_hot_fork_rcu_barrier(
+             QEMU_RCU_HOT_FORK_BARRIER_QUERY);
++        bh_timer_barrier = crucible_hot_fork_bh_timer_barrier(
++            QEMU_BH_TIMER_HOT_FORK_BARRIER_QUERY);
+         if (crucible_hot_fork_template_active &&
+             (!plugin_barrier->held || plugin_barrier->teardown_closed)) {
+             error_setg(errp, "Crucible hot-fork template lost its retained "
+@@ -435,6 +541,13 @@ qmp_crucible_hot_fork_template(
+                        "RCU barrier");
+             goto out;
+         }
++        if (crucible_hot_fork_template_active &&
++            (!bh_timer_barrier->held ||
++             bh_timer_barrier->owner_thread_id <= 0)) {
++            error_setg(errp, "Crucible hot-fork template lost its retained "
++                       "bottom-half/timer barrier");
++            goto out;
++        }
+         if (!crucible_hot_fork_template_active && plugin_barrier->held) {
+             error_setg(errp, "Crucible hot-fork plugin barrier was held "
+                        "outside the template coordinator");
+@@ -445,9 +558,15 @@ qmp_crucible_hot_fork_template(
+                        "outside the template coordinator");
+             goto out;
+         }
++        if (!crucible_hot_fork_template_active && bh_timer_barrier->held) {
++            error_setg(errp, "Crucible hot-fork bottom-half/timer barrier "
++                       "was held outside the template coordinator");
++            goto out;
++        }
+         if (!crucible_hot_fork_template_active) {
+             outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_IDLE;
+         } else if (plugin_barrier->quiescent && rcu_barrier->quiescent &&
++                   bh_timer_barrier->quiescent &&
+                    (crucible_hot_fork_acknowledged_proofs() |
+                     CRUCIBLE_HOT_FORK_PROOF_RCU) ==
+                    CRUCIBLE_HOT_FORK_REQUIRED_PROOFS) {
+@@ -465,6 +584,8 @@ qmp_crucible_hot_fork_template(
+             }
+             rcu_barrier = crucible_hot_fork_rcu_barrier(
+                 QEMU_RCU_HOT_FORK_BARRIER_QUERY);
++            bh_timer_barrier = crucible_hot_fork_bh_timer_barrier(
++                QEMU_BH_TIMER_HOT_FORK_BARRIER_QUERY);
+             if (plugin_barrier->held) {
+                 error_setg(errp, "Crucible hot-fork plugin barrier was held "
+                            "outside the template coordinator");
+@@ -475,6 +596,12 @@ qmp_crucible_hot_fork_template(
+                            "outside the template coordinator");
+                 goto out;
+             }
++            if (bh_timer_barrier->held) {
++                error_setg(errp, "Crucible hot-fork bottom-half/timer "
++                           "barrier was held outside the template "
++                           "coordinator");
++                goto out;
++            }
+             outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_IDLE;
+             break;
+         }
+@@ -483,6 +610,8 @@ qmp_crucible_hot_fork_template(
+         if (!plugin_barrier) {
+             goto out;
+         }
++        bh_timer_barrier = crucible_hot_fork_bh_timer_barrier(
++            QEMU_BH_TIMER_HOT_FORK_BARRIER_RELEASE);
+         rcu_barrier = crucible_hot_fork_rcu_barrier(
+             QEMU_RCU_HOT_FORK_BARRIER_RELEASE);
+         crucible_hot_fork_template_active = false;
+@@ -494,12 +623,15 @@ qmp_crucible_hot_fork_template(
+     }
+ 
+     report = crucible_hot_fork_template_report(outcome, plugin_barrier,
+-                                                rcu_barrier);
++                                                rcu_barrier,
++                                                bh_timer_barrier);
+     plugin_barrier = NULL;
+     rcu_barrier = NULL;
++    bh_timer_barrier = NULL;
+ out:
+     g_free(plugin_barrier);
+     g_free(rcu_barrier);
++    g_free(bh_timer_barrier);
+     g_mutex_unlock(&crucible_hot_fork_template_lock);
+     return report;
+ }
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index db188d174..9771a246d 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -903,6 +903,98 @@
+   'returns': 'CrucibleHotForkRcuBarrierState',
+   'allow-oob': true }
+ 
++##
++# @CrucibleHotForkBhTimerBarrierAction:
++#
++# Operation over QEMU's reversible bottom-half and timer-source barrier.
++#
++# @hold: park new producers and callback dispatch while already-admitted work
++#     drains
++#
++# @query: observe the barrier without changing it
++#
++# @release: reopen source admission and wake parked producers
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'enum': 'CrucibleHotForkBhTimerBarrierAction',
++  'data': [ 'hold', 'query', 'release' ] }
++
++##
++# @CrucibleHotForkBhTimerBarrierState:
++#
++# Exact retained state of the bottom-half and timer-source barrier. Pending
++# bottom halves and timers are inherited parked work and need not be empty.
++#
++# @schema-version: barrier contract version, currently 1
++#
++# @generation: process-local hold/release generation
++#
++# @owner-thread-id: coordinator thread that acquired the barrier, or zero when
++#     released
++#
++# @held: whether producer admission and callback dispatch are parked
++#
++# @complete: whether both bounded source inventories were complete
++#
++# @bottom-halves-complete: whether the bottom-half inventory was stable and
++#     complete
++#
++# @timers-complete: whether the live-timer inventory was complete
++#
++# @admissions-in-flight: outer source operations admitted before the hold
++#
++# @bottom-half-count: exact allocated bottom-half count
++#
++# @pending-bottom-halves: exact queued bottom-half count
++#
++# @scheduled-bottom-halves: exact queued callback count
++#
++# @active-bottom-half-callbacks: exact executing bottom-half callback count
++#
++# @pending-timers: exact armed timer count
++#
++# @active-timer-callbacks: exact executing timer callback count
++#
++# @quiescent: whether a complete held barrier has no admitted source operation
++#     or executing callback; pending work remains parked
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkBhTimerBarrierState',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'owner-thread-id': 'int64',
++            'held': 'bool',
++            'complete': 'bool',
++            'bottom-halves-complete': 'bool',
++            'timers-complete': 'bool',
++            'admissions-in-flight': 'uint64',
++            'bottom-half-count': 'uint64',
++            'pending-bottom-halves': 'uint64',
++            'scheduled-bottom-halves': 'uint64',
++            'active-bottom-half-callbacks': 'uint64',
++            'pending-timers': 'uint64',
++            'active-timer-callbacks': 'uint64',
++            'quiescent': 'bool' } }
++
++##
++# @crucible-hot-fork-bh-timer-barrier:
++#
++# Holds, observes, or releases the reversible bottom-half and timer-source
++# barrier. The command returns without waiting for already-admitted work.
++#
++# @action: requested barrier operation
++#
++# Returns: @CrucibleHotForkBhTimerBarrierState
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'crucible-hot-fork-bh-timer-barrier',
++  'data': { 'action': 'CrucibleHotForkBhTimerBarrierAction' },
++  'returns': 'CrucibleHotForkBhTimerBarrierState',
++  'allow-oob': true }
++
+ ##
+ # @CrucibleHotForkTemplateAction:
+ #
+@@ -948,12 +1040,15 @@
+ ##
+ # @CrucibleHotForkTemplateState:
+ #
+-# QEMU-owned state for one retained template-preparation transaction. Version 2
++# QEMU-owned state for one retained template-preparation transaction. Version 3
+ # acquires the Crucible plugin callback barrier and QEMU's RCU admission/drain
+-# barrier. A quiescent RCU barrier acknowledges proof bit 4. Other unresolved
+-# proof classes still make a drained transaction roll back as @blocked.
++# and bottom-half/timer-source barriers. A quiescent RCU barrier acknowledges
++# proof bit 4. The source barrier is retained but cannot acknowledge AIO proof
++# bit 3 until AioContext, handler, and coroutine admission are also closed.
++# Other unresolved proof classes still make a drained transaction roll back as
++# @blocked.
+ #
+-# @schema-version: transaction contract version, currently 2
++# @schema-version: transaction contract version, currently 3
+ #
+ # @generation: positive process-local transaction generation after the first
+ #     successful prepare, or zero before any transaction
+@@ -972,6 +1067,9 @@
+ #
+ # @rcu-barrier: RCU barrier state after the operation and any rollback
+ #
++# @bh-timer-barrier: bottom-half/timer barrier state after the operation and
++#     any rollback
++#
+ # @rollback-complete: whether no transaction barrier remains acquired
+ #
+ # @ready: true exactly for a retained @prepared transaction with every proof
+@@ -988,6 +1086,7 @@
+             'missing-proofs': 'uint64',
+             'plugin-barrier': 'CrucibleHotForkPluginBarrierState',
+             'rcu-barrier': 'CrucibleHotForkRcuBarrierState',
++            'bh-timer-barrier': 'CrucibleHotForkBhTimerBarrierState',
+             'rollback-complete': 'bool',
+             'ready': 'bool' } }
+ 
+diff --git a/tests/unit/test-aio.c b/tests/unit/test-aio.c
+index e77d86be8..6e3fd3fac 100644
+--- a/tests/unit/test-aio.c
++++ b/tests/unit/test-aio.c
+@@ -825,6 +825,64 @@ static void test_worker_thread_co_enter(void)
+     g_assert(!aio_poll(ctx, false));
+ }
+ 
++static void test_hot_fork_bh_timer_barrier(void)
++{
++    BHTestData bh_data = { .n = 0, .max = 1 };
++    TimerTestData timer_data = {
++        .clock_type = QEMU_CLOCK_REALTIME,
++        .max = 1,
++        .ns = 1,
++        .ctx = ctx,
++    };
++    QemuBhTimerHotForkBarrierInventory barrier;
++
++    bh_data.bh = aio_bh_new(ctx, bh_test_cb, &bh_data);
++    aio_timer_init(ctx, &timer_data.timer, timer_data.clock_type,
++                   SCALE_NS, timer_test_cb, &timer_data);
++
++    /* An admitted callback may finish and park its final source mutations. */
++    qemu_bh_timer_hot_fork_admission_begin();
++    qemu_bh_timer_hot_fork_barrier(QEMU_BH_TIMER_HOT_FORK_BARRIER_HOLD,
++                                   &barrier);
++    g_assert_true(barrier.held);
++    g_assert_cmpuint(barrier.admissions_in_flight, ==, 1);
++    g_assert_false(barrier.quiescent);
++
++    qemu_bh_schedule(bh_data.bh);
++    timer_mod_ns(&timer_data.timer,
++                 qemu_clock_get_ns(timer_data.clock_type));
++    qemu_bh_timer_hot_fork_admission_end();
++
++    qemu_bh_timer_hot_fork_barrier(QEMU_BH_TIMER_HOT_FORK_BARRIER_QUERY,
++                                   &barrier);
++    g_assert_true(barrier.complete);
++    g_assert_true(barrier.quiescent);
++    g_assert_cmpuint(barrier.admissions_in_flight, ==, 0);
++    g_assert_cmpuint(barrier.pending_bottom_halves, >=, 1);
++    g_assert_cmpuint(barrier.pending_timers, >=, 1);
++
++    /* Dispatch declines admission while both queued sources remain parked. */
++    g_assert_false(qemu_bh_timer_hot_fork_admission_try_begin());
++    aio_poll(ctx, false);
++    g_assert_cmpint(bh_data.n, ==, 0);
++    g_assert_cmpint(timer_data.n, ==, 0);
++
++    qemu_bh_timer_hot_fork_barrier(QEMU_BH_TIMER_HOT_FORK_BARRIER_RELEASE,
++                                   &barrier);
++    g_assert_false(barrier.held);
++    g_assert_false(barrier.quiescent);
++    g_assert_cmpint(barrier.owner_thread_id, ==, 0);
++
++    aio_poll(ctx, false);
++    g_assert_cmpint(bh_data.n, ==, 1);
++    g_assert_cmpint(timer_data.n, ==, 1);
++
++    qemu_bh_delete(bh_data.bh);
++    aio_poll(ctx, false);
++    timer_del(&timer_data.timer);
++    timer_deinit(&timer_data.timer);
++}
++
+ /* End of tests.  */
+ 
+ int main(int argc, char **argv)
+@@ -850,6 +908,8 @@ int main(int argc, char **argv)
+ 
+     g_test_add_func("/aio/coroutine/queue-chaining", test_queue_chaining);
+     g_test_add_func("/aio/coroutine/worker-thread-co-enter", test_worker_thread_co_enter);
++    g_test_add_func("/aio/hot-fork/bh-timer-barrier",
++                    test_hot_fork_bh_timer_barrier);
+ 
+     g_test_add_func("/aio-gsource/flush",                   test_source_flush);
+     g_test_add_func("/aio-gsource/bh/schedule",             test_source_bh_schedule);
+diff --git a/util/async.c b/util/async.c
+index d2d472aec..2127a1805 100644
+--- a/util/async.c
++++ b/util/async.c
+@@ -44,11 +44,64 @@ static QTAILQ_HEAD(, AioContext) crucible_hot_fork_aio_contexts =
+     QTAILQ_HEAD_INITIALIZER(crucible_hot_fork_aio_contexts);
+ static uint64_t crucible_hot_fork_aio_next_id = 1;
+ static uint64_t crucible_hot_fork_aio_generation;
++static QemuMutex crucible_hot_fork_bh_timer_barrier_lock;
++static QemuEvent crucible_hot_fork_bh_timer_barrier_release;
++static int crucible_hot_fork_bh_timer_barrier_held;
++static int64_t crucible_hot_fork_bh_timer_barrier_owner;
++static uint64_t crucible_hot_fork_bh_timer_barrier_generation;
++static uint64_t crucible_hot_fork_bh_timer_admissions;
++static __thread uint32_t crucible_hot_fork_bh_timer_admission_depth;
+ 
+ static void __attribute__((__constructor__))
+ crucible_hot_fork_aio_inventory_init(void)
+ {
+     qemu_mutex_init(&crucible_hot_fork_aio_lock);
++    qemu_mutex_init(&crucible_hot_fork_bh_timer_barrier_lock);
++    qemu_event_init(&crucible_hot_fork_bh_timer_barrier_release, true);
++}
++
++bool qemu_bh_timer_hot_fork_admission_try_begin(void)
++{
++    int held;
++
++    if (crucible_hot_fork_bh_timer_admission_depth != 0) {
++        assert(crucible_hot_fork_bh_timer_admission_depth != UINT32_MAX);
++        crucible_hot_fork_bh_timer_admission_depth++;
++        return true;
++    }
++
++    held = qatomic_read(&crucible_hot_fork_bh_timer_barrier_held);
++    if (held) {
++        return false;
++    }
++
++    qatomic_inc(&crucible_hot_fork_bh_timer_admissions);
++    smp_mb_global();
++    held = qatomic_read(&crucible_hot_fork_bh_timer_barrier_held);
++    if (held) {
++        qatomic_dec(&crucible_hot_fork_bh_timer_admissions);
++        return false;
++    }
++
++    crucible_hot_fork_bh_timer_admission_depth = 1;
++    return true;
++}
++
++void qemu_bh_timer_hot_fork_admission_begin(void)
++{
++    while (!qemu_bh_timer_hot_fork_admission_try_begin()) {
++        qemu_event_wait(&crucible_hot_fork_bh_timer_barrier_release);
++    }
++}
++
++void qemu_bh_timer_hot_fork_admission_end(void)
++{
++    assert(crucible_hot_fork_bh_timer_admission_depth != 0);
++    crucible_hot_fork_bh_timer_admission_depth--;
++    if (crucible_hot_fork_bh_timer_admission_depth == 0) {
++        smp_mb_global();
++        qatomic_dec(&crucible_hot_fork_bh_timer_admissions);
++    }
+ }
+ 
+ static void crucible_hot_fork_aio_assign_id(AioContext *ctx)
+@@ -299,12 +352,97 @@ void qemu_bh_hot_fork_inventory_destroy(QemuBhHotForkInventory *inventory)
+     *inventory = (QemuBhHotForkInventory) { 0 };
+ }
+ 
++void qemu_bh_timer_hot_fork_barrier(
++    QemuBhTimerHotForkBarrierOperation operation,
++    QemuBhTimerHotForkBarrierInventory *inventory)
++{
++    QemuBhHotForkInventory bottom_halves;
++#ifdef CONFIG_POSIX
++    QemuTimerHotForkInventory timers;
++#endif
++    size_t index;
++
++    *inventory = (QemuBhTimerHotForkBarrierInventory) { 0 };
++    qemu_mutex_lock(&crucible_hot_fork_bh_timer_barrier_lock);
++    switch (operation) {
++    case QEMU_BH_TIMER_HOT_FORK_BARRIER_HOLD:
++        if (!qatomic_read(&crucible_hot_fork_bh_timer_barrier_held)) {
++            qemu_event_reset(&crucible_hot_fork_bh_timer_barrier_release);
++            qatomic_set(&crucible_hot_fork_bh_timer_barrier_owner,
++                        qemu_get_thread_id());
++            smp_mb_global();
++            qatomic_set(&crucible_hot_fork_bh_timer_barrier_held, 1);
++            crucible_hot_fork_bh_timer_barrier_generation++;
++            assert(crucible_hot_fork_bh_timer_barrier_generation != 0);
++        }
++        break;
++    case QEMU_BH_TIMER_HOT_FORK_BARRIER_QUERY:
++        break;
++    case QEMU_BH_TIMER_HOT_FORK_BARRIER_RELEASE:
++        if (qatomic_read(&crucible_hot_fork_bh_timer_barrier_held)) {
++            qatomic_set(&crucible_hot_fork_bh_timer_barrier_held, 0);
++            qatomic_set(&crucible_hot_fork_bh_timer_barrier_owner, 0);
++            crucible_hot_fork_bh_timer_barrier_generation++;
++            assert(crucible_hot_fork_bh_timer_barrier_generation != 0);
++            qemu_event_set(&crucible_hot_fork_bh_timer_barrier_release);
++        }
++        break;
++    default:
++        g_assert_not_reached();
++    }
++
++    qemu_bh_hot_fork_inventory(&bottom_halves);
++#ifdef CONFIG_POSIX
++    qemu_timer_hot_fork_inventory(&timers);
++#endif
++    inventory->generation = crucible_hot_fork_bh_timer_barrier_generation;
++    inventory->owner_thread_id =
++        qatomic_read(&crucible_hot_fork_bh_timer_barrier_owner);
++    inventory->admissions_in_flight =
++        qatomic_read(&crucible_hot_fork_bh_timer_admissions);
++    inventory->bottom_half_count = bottom_halves.entry_count;
++    for (index = 0; index < bottom_halves.entry_count; index++) {
++        QemuBhHotForkInventoryEntry *entry = &bottom_halves.entries[index];
++
++        inventory->pending_bottom_halves += entry->pending;
++        inventory->scheduled_bottom_halves += entry->scheduled;
++        inventory->active_bottom_half_callbacks += entry->active_callbacks;
++    }
++#ifdef CONFIG_POSIX
++    for (index = 0; index < timers.entry_count; index++) {
++        QemuTimerHotForkInventoryEntry *entry = &timers.entries[index];
++
++        inventory->pending_timers += entry->pending;
++        inventory->active_timer_callbacks += entry->callback_active;
++    }
++#endif
++    inventory->held =
++        qatomic_read(&crucible_hot_fork_bh_timer_barrier_held) != 0;
++    inventory->bottom_halves_complete =
++        !bottom_halves.overflowed && bottom_halves.stable;
++#ifdef CONFIG_POSIX
++    inventory->timers_complete = !timers.overflowed;
++#endif
++    inventory->complete = inventory->bottom_halves_complete &&
++        inventory->timers_complete;
++    inventory->quiescent = inventory->held && inventory->complete &&
++        inventory->admissions_in_flight == 0 &&
++        inventory->active_bottom_half_callbacks == 0 &&
++        inventory->active_timer_callbacks == 0;
++#ifdef CONFIG_POSIX
++    qemu_timer_hot_fork_inventory_destroy(&timers);
++#endif
++    qemu_bh_hot_fork_inventory_destroy(&bottom_halves);
++    qemu_mutex_unlock(&crucible_hot_fork_bh_timer_barrier_lock);
++}
++
+ /* Called concurrently from any thread */
+ static void aio_bh_enqueue(QEMUBH *bh, unsigned new_flags)
+ {
+     AioContext *ctx = bh->ctx;
+     unsigned old_flags;
+ 
++    qemu_bh_timer_hot_fork_admission_begin();
+     /*
+      * Synchronizes with atomic_fetch_and() in aio_bh_dequeue(), ensuring that
+      * insertion starts after BH_PENDING is set.
+@@ -338,6 +476,7 @@ static void aio_bh_enqueue(QEMUBH *bh, unsigned new_flags)
+          */
+         icount_notify_exit();
+     }
++    qemu_bh_timer_hot_fork_admission_end();
+ }
+ 
+ /* Only called from aio_bh_poll() and aio_ctx_finalize() */
+@@ -367,6 +506,8 @@ void aio_bh_schedule_oneshot_full(AioContext *ctx, QEMUBHFunc *cb,
+                                   void *opaque, const char *name)
+ {
+     QEMUBH *bh;
++
++    qemu_bh_timer_hot_fork_admission_begin();
+     bh = g_new(QEMUBH, 1);
+     *bh = (QEMUBH){
+         .ctx = ctx,
+@@ -376,12 +517,15 @@ void aio_bh_schedule_oneshot_full(AioContext *ctx, QEMUBHFunc *cb,
+     };
+     crucible_hot_fork_bh_register(bh, name);
+     aio_bh_enqueue(bh, BH_SCHEDULED | BH_ONESHOT);
++    qemu_bh_timer_hot_fork_admission_end();
+ }
+ 
+ QEMUBH *aio_bh_new_full(AioContext *ctx, QEMUBHFunc *cb, void *opaque,
+                         const char *name, MemReentrancyGuard *reentrancy_guard)
+ {
+     QEMUBH *bh;
++
++    qemu_bh_timer_hot_fork_admission_begin();
+     bh = g_new(QEMUBH, 1);
+     *bh = (QEMUBH){
+         .ctx = ctx,
+@@ -391,6 +535,7 @@ QEMUBH *aio_bh_new_full(AioContext *ctx, QEMUBHFunc *cb, void *opaque,
+         .reentrancy_guard = reentrancy_guard,
+     };
+     crucible_hot_fork_bh_register(bh, name);
++    qemu_bh_timer_hot_fork_admission_end();
+     return bh;
+ }
+ 
+@@ -398,6 +543,7 @@ void aio_bh_call(QEMUBH *bh)
+ {
+     bool last_engaged_in_io = false;
+ 
++    qemu_bh_timer_hot_fork_admission_begin();
+     /* Make a copy of the guard-pointer as cb may free the bh */
+     MemReentrancyGuard *reentrancy_guard = bh->reentrancy_guard;
+     if (reentrancy_guard) {
+@@ -421,6 +567,7 @@ void aio_bh_call(QEMUBH *bh)
+     if (reentrancy_guard) {
+         reentrancy_guard->engaged_in_io = last_engaged_in_io;
+     }
++    qemu_bh_timer_hot_fork_admission_end();
+ }
+ 
+ /* Multiple occurrences of aio_bh_poll cannot be called concurrently. */
+@@ -430,6 +577,10 @@ int aio_bh_poll(AioContext *ctx)
+     BHListSlice *s;
+     int ret = 0;
+ 
++    if (!qemu_bh_timer_hot_fork_admission_try_begin()) {
++        return 0;
++    }
++
+     /* Synchronizes with QSLIST_INSERT_HEAD_ATOMIC in aio_bh_enqueue().  */
+     QSLIST_MOVE_ATOMIC(&slice.bh_list, &ctx->bh_list);
+ 
+@@ -470,6 +621,7 @@ int aio_bh_poll(AioContext *ctx)
+         }
+     }
+ 
++    qemu_bh_timer_hot_fork_admission_end();
+     return ret;
+ }
+ 
+@@ -489,9 +641,11 @@ void qemu_bh_cancel(QEMUBH *bh)
+ {
+     unsigned old_flags;
+ 
++    qemu_bh_timer_hot_fork_admission_begin();
+     crucible_hot_fork_bh_transition_begin();
+     old_flags = qatomic_fetch_and(&bh->flags, ~BH_SCHEDULED);
+     crucible_hot_fork_bh_transition_end(old_flags & BH_SCHEDULED);
++    qemu_bh_timer_hot_fork_admission_end();
+ }
+ 
+ /* This func is async.The bottom half will do the delete action at the finial
+@@ -623,6 +777,7 @@ aio_ctx_finalize(GSource     *source)
+     QEMUBH *bh;
+     unsigned flags;
+ 
++    qemu_bh_timer_hot_fork_admission_begin();
+     crucible_hot_fork_aio_unregister(ctx);
+     thread_pool_free_aio(ctx->thread_pool);
+ 
+@@ -674,6 +829,7 @@ aio_ctx_finalize(GSource     *source)
+     timerlistgroup_deinit(&ctx->tlg);
+     unregister_aiocontext(ctx);
+     aio_context_destroy(ctx);
++    qemu_bh_timer_hot_fork_admission_end();
+ }
+ 
+ static GSourceFuncs aio_source_funcs = {
+@@ -833,6 +989,7 @@ AioContext *aio_context_new(Error **errp)
+     int ret;
+     AioContext *ctx;
+ 
++    qemu_bh_timer_hot_fork_admission_begin();
+     ctx = (AioContext *) g_source_new(&aio_source_funcs, sizeof(AioContext));
+     QSLIST_INIT(&ctx->bh_list);
+     QSIMPLEQ_INIT(&ctx->bh_slice_list);
+@@ -878,9 +1035,11 @@ AioContext *aio_context_new(Error **errp)
+     register_aiocontext(ctx);
+     crucible_hot_fork_aio_register(ctx);
+ 
++    qemu_bh_timer_hot_fork_admission_end();
+     return ctx;
+ fail:
+     g_source_destroy(&ctx->source);
++    qemu_bh_timer_hot_fork_admission_end();
+     return NULL;
+ }
+ 
+diff --git a/util/qemu-timer.c b/util/qemu-timer.c
+index 7538e0735..5dae4534f 100644
+--- a/util/qemu-timer.c
++++ b/util/qemu-timer.c
+@@ -23,6 +23,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/crucible-hot-fork-async.h"
+ #include "qemu/main-loop.h"
+ #include "qemu/timer.h"
+ #include "qemu/lockable.h"
+@@ -331,6 +332,7 @@ QEMUTimerList *timerlist_new(QEMUClockType type,
+     QEMUTimerList *timer_list;
+     QEMUClock *clock = qemu_clock_ptr(type);
+ 
++    qemu_bh_timer_hot_fork_admission_begin();
+     timer_list = g_new0(QEMUTimerList, 1);
+     qemu_event_init(&timer_list->timers_done_ev, true);
+     timer_list->clock = clock;
+@@ -342,17 +344,20 @@ QEMUTimerList *timerlist_new(QEMUClockType type,
+         crucible_hot_fork_timer_list_allocate_id();
+ #endif
+     QLIST_INSERT_HEAD(&clock->timerlists, timer_list, list);
++    qemu_bh_timer_hot_fork_admission_end();
+     return timer_list;
+ }
+ 
+ void timerlist_free(QEMUTimerList *timer_list)
+ {
++    qemu_bh_timer_hot_fork_admission_begin();
+     assert(!timerlist_has_timers(timer_list));
+     if (timer_list->clock) {
+         QLIST_REMOVE(timer_list, list);
+     }
+     qemu_mutex_destroy(&timer_list->active_timers_lock);
+     g_free(timer_list);
++    qemu_bh_timer_hot_fork_admission_end();
+ }
+ 
+ static void qemu_clock_init(QEMUClockType type, QEMUTimerListNotifyCB *notify_cb)
+@@ -377,9 +382,12 @@ void qemu_clock_notify(QEMUClockType type)
+ {
+     QEMUTimerList *timer_list;
+     QEMUClock *clock = qemu_clock_ptr(type);
++
++    qemu_bh_timer_hot_fork_admission_begin();
+     QLIST_FOREACH(timer_list, &clock->timerlists, list) {
+         timerlist_notify(timer_list);
+     }
++    qemu_bh_timer_hot_fork_admission_end();
+ }
+ 
+ /* Disabling the clock will wait for related timerlists to stop
+@@ -393,7 +401,10 @@ void qemu_clock_enable(QEMUClockType type, bool enabled)
+ {
+     QEMUClock *clock = qemu_clock_ptr(type);
+     QEMUTimerList *tl;
+-    bool old = clock->enabled;
++    bool old;
++
++    qemu_bh_timer_hot_fork_admission_begin();
++    old = clock->enabled;
+     clock->enabled = enabled;
+     if (enabled && !old) {
+         qemu_clock_notify(type);
+@@ -402,6 +413,7 @@ void qemu_clock_enable(QEMUClockType type, bool enabled)
+             qemu_event_wait(&tl->timers_done_ev);
+         }
+     }
++    qemu_bh_timer_hot_fork_admission_end();
+ }
+ 
+ bool timerlist_has_timers(QEMUTimerList *timer_list)
+@@ -523,11 +535,13 @@ int64_t qemu_clock_deadline_ns_all(QEMUClockType type, int attr_mask)
+ 
+ void timerlist_notify(QEMUTimerList *timer_list)
+ {
++    qemu_bh_timer_hot_fork_admission_begin();
+     if (timer_list->notify_cb) {
+         timer_list->notify_cb(timer_list->notify_opaque, timer_list->clock->type);
+     } else {
+         qemu_notify_event();
+     }
++    qemu_bh_timer_hot_fork_admission_end();
+ }
+ 
+ /* Transition function to convert a nanosecond timeout to ms
+@@ -586,6 +600,7 @@ void timer_init_full(QEMUTimer *ts,
+                      int scale, int attributes,
+                      QEMUTimerCB *cb, void *opaque)
+ {
++    qemu_bh_timer_hot_fork_admission_begin();
+     if (!timer_list_group) {
+         timer_list_group = &main_loop_tlg;
+     }
+@@ -598,15 +613,18 @@ void timer_init_full(QEMUTimer *ts,
+ #ifdef CONFIG_POSIX
+     crucible_hot_fork_timer_initialize(ts);
+ #endif
++    qemu_bh_timer_hot_fork_admission_end();
+ }
+ 
+ void timer_deinit(QEMUTimer *ts)
+ {
++    qemu_bh_timer_hot_fork_admission_begin();
+     assert(ts->expire_time == -1);
+ #ifdef CONFIG_POSIX
+     crucible_hot_fork_timer_set_pending(ts, false);
+ #endif
+     ts->timer_list = NULL;
++    qemu_bh_timer_hot_fork_admission_end();
+ }
+ 
+ static void timer_del_locked(QEMUTimerList *timer_list, QEMUTimer *ts)
+@@ -658,6 +676,7 @@ void timer_del(QEMUTimer *ts)
+ {
+     QEMUTimerList *timer_list = ts->timer_list;
+ 
++    qemu_bh_timer_hot_fork_admission_begin();
+     if (timer_list) {
+         qemu_mutex_lock(&timer_list->active_timers_lock);
+         timer_del_locked(timer_list, ts);
+@@ -666,6 +685,7 @@ void timer_del(QEMUTimer *ts)
+ #endif
+         qemu_mutex_unlock(&timer_list->active_timers_lock);
+     }
++    qemu_bh_timer_hot_fork_admission_end();
+ }
+ 
+ /* modify the current timer so that it will be fired when current_time
+@@ -675,6 +695,7 @@ void timer_mod_ns(QEMUTimer *ts, int64_t expire_time)
+     QEMUTimerList *timer_list = ts->timer_list;
+     bool rearm;
+ 
++    qemu_bh_timer_hot_fork_admission_begin();
+     qemu_mutex_lock(&timer_list->active_timers_lock);
+     timer_del_locked(timer_list, ts);
+     rearm = timer_mod_ns_locked(timer_list, ts, expire_time);
+@@ -686,6 +707,7 @@ void timer_mod_ns(QEMUTimer *ts, int64_t expire_time)
+     if (rearm) {
+         timerlist_rearm(timer_list);
+     }
++    qemu_bh_timer_hot_fork_admission_end();
+ }
+ 
+ /* modify the current timer so that it will be fired when current_time
+@@ -696,6 +718,7 @@ void timer_mod_anticipate_ns(QEMUTimer *ts, int64_t expire_time)
+     QEMUTimerList *timer_list = ts->timer_list;
+     bool rearm = false;
+ 
++    qemu_bh_timer_hot_fork_admission_begin();
+     WITH_QEMU_LOCK_GUARD(&timer_list->active_timers_lock) {
+         if (ts->expire_time == -1 || ts->expire_time > expire_time) {
+             if (ts->expire_time != -1) {
+@@ -712,6 +735,7 @@ void timer_mod_anticipate_ns(QEMUTimer *ts, int64_t expire_time)
+     if (rearm) {
+         timerlist_rearm(timer_list);
+     }
++    qemu_bh_timer_hot_fork_admission_end();
+ }
+ 
+ void timer_mod(QEMUTimer *ts, int64_t expire_time)
+@@ -745,7 +769,11 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
+     QemuTimerHotForkCallback hot_fork_callback;
+ #endif
+ 
++    if (!qemu_bh_timer_hot_fork_admission_try_begin()) {
++        return false;
++    }
+     if (!qatomic_read(&timer_list->active_timers)) {
++        qemu_bh_timer_hot_fork_admission_end();
+         return false;
+     }
+ 
+@@ -827,6 +855,7 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
+ 
+ out:
+     qemu_event_set(&timer_list->timers_done_ev);
++    qemu_bh_timer_hot_fork_admission_end();
+     return progress;
+ }
+ 
+@@ -928,8 +957,11 @@ bool qemu_clock_run_all_timers(void)
+ 
+ int64_t qemu_clock_advance_virtual_time(int64_t dest)
+ {
+-    int64_t clock = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    int64_t clock;
+     AioContext *aio_context;
++
++    qemu_bh_timer_hot_fork_admission_begin();
++    clock = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+     aio_context = qemu_get_aio_context();
+     while (clock < dest) {
+         int64_t deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
+@@ -944,5 +976,6 @@ int64_t qemu_clock_advance_virtual_time(int64_t dest)
+     }
+     qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
+ 
++    qemu_bh_timer_hot_fork_admission_end();
+     return clock;
+ }

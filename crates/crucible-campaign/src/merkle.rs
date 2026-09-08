@@ -1,0 +1,2008 @@
+//! Persistent canonical Merkle maps for authoritative campaign roots.
+//!
+//! Maps use a fixed-depth hexadecimal trie over a [`CampaignHash`]. Each
+//! immutable node is stored in a [`crate::ObjectEnvelope`] whose declared child
+//! table exactly covers its child nodes and values. The shape therefore depends
+//! only on the final key/value set, not insertion order. Updating one key
+//! rewrites at most one node per digest nibble and shares all unaffected nodes.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+use crucible_cas::content_store::{BlobHandle, ContentId, ImmutableBlobBackend, ObjectKind};
+use thiserror::Error;
+
+use crate::codec::{self, Canonical, Decoder, Encoder};
+use crate::{CampaignCodecError, CampaignHash, CampaignRecordKind, ChildReference, ObjectEnvelope};
+
+const MERKLE_NODE_SCHEMA_VERSION: u32 = 1;
+const MAX_PAGE_ITEMS: usize = 10_000;
+/// Maximum entries in one proof-bearing public scan page.
+pub const MAX_PROVEN_PAGE_ITEMS: usize = 256;
+const DIGEST_NIBBLES: u8 = 64;
+const MAX_VERIFIED_NODES: usize = 1_000_000;
+const MAX_PAGE_PROOF_NODES: usize = (MAX_PROVEN_PAGE_ITEMS + 2) * DIGEST_NIBBLES as usize + 1;
+const MAX_PAGE_PROOF_BYTES: usize = 60 * 1024 * 1024;
+const MAX_LOOKUP_PROOF_NODES: usize = DIGEST_NIBBLES as usize + 1;
+const MAX_LOOKUP_PROOF_BYTES: usize = MAX_LOOKUP_PROOF_NODES * MAX_MERKLE_NODE_ENVELOPE_BYTES;
+const MAX_MERKLE_NODE_ENVELOPE_BYTES: usize = 64 * 1024;
+
+/// Failure while reading or updating an authenticated campaign collection.
+#[derive(Debug, Error)]
+pub enum CampaignStoreError {
+    /// An immutable store operation failed.
+    #[error(transparent)]
+    Store(#[from] crucible_cas::content_store::StoreError),
+    /// Canonical campaign bytes failed validation.
+    #[error(transparent)]
+    Codec(#[from] CampaignCodecError),
+    /// A Merkle node violated a structural invariant.
+    #[error("campaign Merkle map is invalid: {reason}")]
+    InvalidMerkle {
+        /// Stable structural failure category.
+        reason: &'static str,
+    },
+    /// A requested page size was zero or exceeded the public bound.
+    #[error("campaign Merkle page size is outside the operation's bound")]
+    InvalidPageSize,
+}
+
+/// Immutable identity and exact entry count of one Merkle map root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MerkleMapRoot {
+    content_id: ContentId,
+    entry_count: u64,
+}
+
+impl MerkleMapRoot {
+    /// Returns the immutable root-node content identity.
+    #[must_use]
+    pub const fn content_id(self) -> ContentId {
+        self.content_id
+    }
+
+    /// Returns the exact number of key/value entries.
+    #[must_use]
+    pub const fn entry_count(self) -> u64 {
+        self.entry_count
+    }
+}
+
+/// One stable, bounded page from a snapshot-bound Merkle map scan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MerkleMapPage {
+    entries: Vec<(CampaignHash, ContentId)>,
+    next_after: Option<CampaignHash>,
+}
+
+/// Bounded canonical node bundle proving one exact Merkle scan page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MerkleMapPageProof {
+    nodes: BTreeMap<ContentId, Vec<u8>>,
+}
+
+/// Bounded canonical node bundle proving one exact Merkle lookup result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MerkleMapLookupProof {
+    nodes: BTreeMap<ContentId, Vec<u8>>,
+}
+
+impl MerkleMapLookupProof {
+    /// Returns the number of unique authenticated nodes carried by the proof.
+    #[must_use]
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    fn new(nodes: BTreeMap<ContentId, Vec<u8>>) -> Result<Self, CampaignStoreError> {
+        validate_proof_nodes(
+            &nodes,
+            MAX_LOOKUP_PROOF_NODES,
+            MAX_LOOKUP_PROOF_BYTES,
+            "lookup-proof-node-limit",
+            "lookup-proof-byte-limit",
+        )?;
+        Ok(Self { nodes })
+    }
+
+    fn read_node(
+        &self,
+        content_id: ContentId,
+        expected_depth: u8,
+    ) -> Result<MerkleNode, CampaignStoreError> {
+        let bytes = self
+            .nodes
+            .get(&content_id)
+            .ok_or_else(|| invalid("lookup-proof-missing-node"))?;
+        decode_node_bytes(content_id, expected_depth, bytes)
+    }
+}
+
+impl Canonical for MerkleMapLookupProof {
+    fn encode(&self, encoder: &mut Encoder) {
+        encoder.u64(self.nodes.len() as u64);
+        for (id, bytes) in &self.nodes {
+            Canonical::encode(id, encoder);
+            bytes.encode(encoder);
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        let nodes = decode_proof_nodes(
+            decoder,
+            MAX_LOOKUP_PROOF_NODES,
+            MAX_LOOKUP_PROOF_BYTES,
+            "merkle-lookup-proof-node-count",
+            "merkle-lookup-proof-node-bytes",
+            "merkle-lookup-proof-total-bytes",
+            "merkle lookup proof contains duplicate nodes",
+        )?;
+        let proof = Self { nodes };
+        validate_proof_nodes(
+            &proof.nodes,
+            MAX_LOOKUP_PROOF_NODES,
+            MAX_LOOKUP_PROOF_BYTES,
+            "lookup-proof-node-limit",
+            "lookup-proof-byte-limit",
+        )
+        .map_err(|_| CampaignCodecError::InvalidValue {
+            reason: "merkle lookup proof contains invalid nodes",
+        })?;
+        Ok(proof)
+    }
+}
+
+impl MerkleMapPageProof {
+    /// Returns the number of unique authenticated nodes carried by the proof.
+    #[must_use]
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    fn new(nodes: BTreeMap<ContentId, Vec<u8>>) -> Result<Self, CampaignStoreError> {
+        validate_page_proof_nodes(&nodes)?;
+        Ok(Self { nodes })
+    }
+
+    fn read_node(
+        &self,
+        content_id: ContentId,
+        expected_depth: u8,
+    ) -> Result<MerkleNode, CampaignStoreError> {
+        let bytes = self
+            .nodes
+            .get(&content_id)
+            .ok_or_else(|| invalid("page-proof-missing-node"))?;
+        decode_node_bytes(content_id, expected_depth, bytes)
+    }
+}
+
+impl Canonical for MerkleMapPageProof {
+    fn encode(&self, encoder: &mut Encoder) {
+        encoder.u64(self.nodes.len() as u64);
+        for (id, bytes) in &self.nodes {
+            Canonical::encode(id, encoder);
+            bytes.encode(encoder);
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        let entries = decoder.sequence_bounded(
+            MAX_PAGE_PROOF_NODES,
+            "merkle-page-proof-node-count",
+            |decoder| {
+                let id = ContentId::decode(decoder)?;
+                let bytes = decoder.sequence_bounded(
+                    MAX_MERKLE_NODE_ENVELOPE_BYTES,
+                    "merkle-page-proof-node-bytes",
+                    u8::decode,
+                )?;
+                Ok((id, bytes))
+            },
+        )?;
+        let mut nodes = BTreeMap::new();
+        let mut bytes = 0_usize;
+        for (id, node) in entries {
+            bytes = bytes
+                .checked_add(node.len())
+                .ok_or(CampaignCodecError::LimitExceeded {
+                    limit: "merkle-page-proof-total-bytes",
+                })?;
+            if bytes > MAX_PAGE_PROOF_BYTES {
+                return Err(CampaignCodecError::LimitExceeded {
+                    limit: "merkle-page-proof-total-bytes",
+                });
+            }
+            if nodes.insert(id, node).is_some() {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "merkle page proof contains duplicate nodes",
+                });
+            }
+        }
+        let proof = Self { nodes };
+        validate_page_proof_nodes(&proof.nodes).map_err(|_| CampaignCodecError::InvalidValue {
+            reason: "merkle page proof contains invalid nodes",
+        })?;
+        Ok(proof)
+    }
+}
+
+impl MerkleMapPage {
+    /// Returns entries in ascending key order.
+    #[must_use]
+    pub fn entries(&self) -> &[(CampaignHash, ContentId)] {
+        &self.entries
+    }
+
+    /// Returns the exclusive cursor for the next page, or `None` at EOF.
+    #[must_use]
+    pub const fn next_after(&self) -> Option<CampaignHash> {
+        self.next_after
+    }
+}
+
+/// Persistent insertion-order-independent map backed by immutable blobs.
+pub struct MerkleMap {
+    backend: Arc<dyn ImmutableBlobBackend>,
+}
+
+impl MerkleMap {
+    /// Creates a map repository over one admitted immutable store graph.
+    #[must_use]
+    pub fn new(backend: Arc<dyn ImmutableBlobBackend>) -> Self {
+        Self { backend }
+    }
+
+    /// Publishes or reuses the canonical empty root.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store or canonical-encoding error when the root cannot be
+    /// authenticated and placed.
+    pub fn empty(&self) -> Result<MerkleMapRoot, CampaignStoreError> {
+        let node = MerkleNode::empty();
+        let content_id = self.persist_node(&node)?;
+        Ok(MerkleMapRoot {
+            content_id,
+            entry_count: 0,
+        })
+    }
+
+    /// Derives the canonical empty-root identity without publishing it.
+    pub(crate) fn empty_content_id() -> Result<ContentId, CampaignStoreError> {
+        calculate_node_id(&MerkleNode::empty())
+    }
+
+    /// Authenticates an existing root and returns its exact entry count.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing, corrupt, wrongly typed, or structurally
+    /// invalid root object.
+    pub fn inspect_shallow(&self, root: ContentId) -> Result<MerkleMapRoot, CampaignStoreError> {
+        let node = self.read_node(root, 0)?;
+        Ok(MerkleMapRoot {
+            content_id: root,
+            entry_count: node.entry_count,
+        })
+    }
+
+    /// Authenticates every node and leaf value reachable from a root.
+    ///
+    /// This is the publication/transfer integrity operation. It validates
+    /// ancestor prefixes, advertised subtree counts, repeated-node misuse, and
+    /// the presence and digest of every referenced value object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing/corrupt value or node, malformed trie
+    /// shape, count disagreement, or a closure above one million unique nodes.
+    pub fn verify_closure(&self, root: ContentId) -> Result<MerkleMapRoot, CampaignStoreError> {
+        self.verify_closure_objects(root)
+            .map(|verified| verified.root)
+    }
+
+    /// Authenticates a complete root with memory bounded by trie depth.
+    ///
+    /// Unlike [`Self::verify_closure`], this variant does not retain the set of
+    /// leaf values for an enclosing object-graph walk. It still validates every
+    /// node, ancestor prefix, advertised count, value presence, and the final
+    /// root count, making it suitable for independently rebuildable projection
+    /// caches.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing/corrupt value or node, malformed trie
+    /// shape, count disagreement, or traversal above one million nodes.
+    pub fn verify_closure_streaming(
+        &self,
+        root: ContentId,
+    ) -> Result<MerkleMapRoot, CampaignStoreError> {
+        let root_node = self.read_node(root, 0)?;
+        let expected_entries = root_node.entry_count;
+        // Depth increases on every child and non-root nodes cannot be empty, so
+        // cycles are impossible. Reusing a node at another trie position makes
+        // its eventual nonempty leaf fail the full ancestor-prefix check.
+        let mut stack = vec![(root_node, Vec::<u8>::new())];
+        let mut traversed_nodes = 0_usize;
+        let mut observed_entries = 0_u64;
+
+        while let Some((node, prefix)) = stack.pop() {
+            traversed_nodes = traversed_nodes
+                .checked_add(1)
+                .ok_or(invalid("closure-node-limit"))?;
+            if traversed_nodes > MAX_VERIFIED_NODES {
+                return Err(invalid("closure-node-limit"));
+            }
+            for (slot, entry) in node.entries.iter().rev() {
+                let mut child_prefix = prefix.clone();
+                child_prefix.push(*slot);
+                match entry {
+                    MerkleEntry::Leaf { key, value } => {
+                        if !key_has_prefix(*key, &child_prefix) {
+                            return Err(invalid("leaf-ancestor-prefix-mismatch"));
+                        }
+                        if !self.backend.contains(*value)? {
+                            return Err(crucible_cas::content_store::StoreError::NotFound {
+                                id: *value,
+                            }
+                            .into());
+                        }
+                        observed_entries = observed_entries
+                            .checked_add(1)
+                            .ok_or(invalid("entry-count-overflow"))?;
+                    }
+                    MerkleEntry::Node {
+                        content_id,
+                        entry_count,
+                    } => {
+                        let child = self.read_node(*content_id, node.depth + 1)?;
+                        if child.entry_count != *entry_count {
+                            return Err(invalid("child-entry-count-mismatch"));
+                        }
+                        stack.push((child, child_prefix));
+                    }
+                }
+            }
+        }
+        if observed_entries != expected_entries {
+            return Err(invalid("root-entry-count-mismatch"));
+        }
+        Ok(MerkleMapRoot {
+            content_id: root,
+            entry_count: observed_entries,
+        })
+    }
+
+    pub(crate) fn verify_closure_objects(
+        &self,
+        root: ContentId,
+    ) -> Result<VerifiedMerkleClosure, CampaignStoreError> {
+        self.verify_closure_objects_cached(root, &mut BTreeSet::new())
+    }
+
+    pub(crate) fn verify_closure_objects_cached(
+        &self,
+        root: ContentId,
+        verified_positions: &mut BTreeSet<(ContentId, Vec<u8>)>,
+    ) -> Result<VerifiedMerkleClosure, CampaignStoreError> {
+        let root_node = self.read_node(root, 0)?;
+        let expected_entries = root_node.entry_count;
+        let mut stack = vec![(root, root_node, Vec::<u8>::new())];
+        let mut visited = BTreeSet::new();
+        let mut values = BTreeSet::new();
+        let mut observed_entries = 0_u64;
+
+        while let Some((node_id, node, prefix)) = stack.pop() {
+            if verified_positions.contains(&(node_id, prefix.clone())) {
+                observed_entries = observed_entries
+                    .checked_add(node.entry_count)
+                    .ok_or(invalid("entry-count-overflow"))?;
+                continue;
+            }
+            if !visited.insert(node_id) {
+                return Err(invalid("node-reused-at-multiple-prefixes"));
+            }
+            if visited.len() > MAX_VERIFIED_NODES {
+                return Err(invalid("closure-node-limit"));
+            }
+            verified_positions.insert((node_id, prefix.clone()));
+            for (slot, entry) in node.entries.iter().rev() {
+                let mut child_prefix = prefix.clone();
+                child_prefix.push(*slot);
+                match entry {
+                    MerkleEntry::Leaf { key, value } => {
+                        if !key_has_prefix(*key, &child_prefix) {
+                            return Err(invalid("leaf-ancestor-prefix-mismatch"));
+                        }
+                        if !self.backend.contains(*value)? {
+                            return Err(crucible_cas::content_store::StoreError::NotFound {
+                                id: *value,
+                            }
+                            .into());
+                        }
+                        values.insert(*value);
+                        observed_entries = observed_entries
+                            .checked_add(1)
+                            .ok_or(invalid("entry-count-overflow"))?;
+                    }
+                    MerkleEntry::Node {
+                        content_id,
+                        entry_count,
+                    } => {
+                        let child = self.read_node(*content_id, node.depth + 1)?;
+                        if child.entry_count != *entry_count {
+                            return Err(invalid("child-entry-count-mismatch"));
+                        }
+                        stack.push((*content_id, child, child_prefix));
+                    }
+                }
+            }
+        }
+        if observed_entries != expected_entries {
+            return Err(invalid("root-entry-count-mismatch"));
+        }
+        Ok(VerifiedMerkleClosure {
+            root: MerkleMapRoot {
+                content_id: root,
+                entry_count: observed_entries,
+            },
+            values,
+        })
+    }
+
+    /// Returns the value associated with `key` in the immutable root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an incomplete, corrupt, or structurally invalid
+    /// path. Absence is returned as `Ok(None)`.
+    pub fn get(
+        &self,
+        root: ContentId,
+        key: CampaignHash,
+    ) -> Result<Option<ContentId>, CampaignStoreError> {
+        let node = self.read_node(root, 0)?;
+        Self::get_from_node(node, key, &mut |id, depth| self.read_node(id, depth))
+    }
+
+    /// Returns one exact lookup result and the minimal authenticated path.
+    ///
+    /// The proof authenticates presence with the exact leaf value and absence
+    /// with the first missing slot or distinct leaf on the requested path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an incomplete, corrupt, wrongly typed, oversized,
+    /// or structurally invalid path.
+    pub fn get_with_proof(
+        &self,
+        root: ContentId,
+        key: CampaignHash,
+    ) -> Result<(Option<ContentId>, MerkleMapLookupProof), CampaignStoreError> {
+        let mut proof_nodes = BTreeMap::new();
+        let root_node = self.read_node_recorded(root, 0, &mut proof_nodes)?;
+        let value = Self::get_from_node(root_node, key, &mut |id, depth| {
+            self.read_node_recorded(id, depth, &mut proof_nodes)
+        })?;
+        Ok((value, MerkleMapLookupProof::new(proof_nodes)?))
+    }
+
+    /// Authenticates and exactly replays one proof-bearing lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the proof omits or corrupts a path node, carries
+    /// an unused node, exceeds its fixed depth/byte bound, or violates trie
+    /// structure.
+    pub fn verify_lookup_proof(
+        root: ContentId,
+        key: CampaignHash,
+        proof: &MerkleMapLookupProof,
+    ) -> Result<Option<ContentId>, CampaignStoreError> {
+        let mut used = BTreeSet::from([root]);
+        let root_node = proof.read_node(root, 0)?;
+        let value = Self::get_from_node(root_node, key, &mut |id, depth| {
+            used.insert(id);
+            proof.read_node(id, depth)
+        })?;
+        if used.len() != proof.nodes.len() || !proof.nodes.keys().all(|id| used.contains(id)) {
+            return Err(invalid("lookup-proof-has-unused-nodes"));
+        }
+        Ok(value)
+    }
+
+    /// Inserts or replaces one key and returns the new canonical root.
+    ///
+    /// The input root remains valid. Inserting the same key/value pair is an
+    /// identity operation and returns the original root without publishing new
+    /// nodes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the old root is invalid, counts overflow, or a new
+    /// immutable node cannot be placed.
+    pub fn insert(
+        &self,
+        root: ContentId,
+        key: CampaignHash,
+        value: ContentId,
+    ) -> Result<MerkleMapRoot, CampaignStoreError> {
+        let node = self.read_node(root, 0)?;
+        let update = self.insert_node(root, node, key, value)?;
+        Ok(MerkleMapRoot {
+            content_id: update.content_id,
+            entry_count: update.entry_count,
+        })
+    }
+
+    /// Reads a bounded ascending page after an exclusive key cursor.
+    ///
+    /// The cursor is meaningful only with the same immutable `root`; callers
+    /// bind the root in portable planner state. Changing `limit` changes page
+    /// boundaries but never the concatenated entry order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignStoreError::InvalidPageSize`] for a zero or oversized
+    /// page, or an integrity error while traversing the root.
+    pub fn scan(
+        &self,
+        root: ContentId,
+        after: Option<CampaignHash>,
+        limit: usize,
+    ) -> Result<MerkleMapPage, CampaignStoreError> {
+        if limit == 0 || limit > MAX_PAGE_ITEMS {
+            return Err(CampaignStoreError::InvalidPageSize);
+        }
+        let node = self.read_node(root, 0)?;
+        let target = limit
+            .checked_add(1)
+            .ok_or(CampaignStoreError::InvalidPageSize)?;
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(target)
+            .map_err(|_| CampaignStoreError::InvalidPageSize)?;
+        self.scan_node(node, after, target, &mut entries)?;
+
+        let has_more = entries.len() > limit;
+        if has_more {
+            entries.truncate(limit);
+        }
+        let next_after = has_more.then(|| entries[entries.len() - 1].0);
+        Ok(MerkleMapPage {
+            entries,
+            next_after,
+        })
+    }
+
+    /// Reads one exact page and returns the bounded node proof needed to replay it.
+    ///
+    /// Unlike an ordinary scan, a nonempty cursor must name an exact entry in
+    /// `root`. The proof includes every node needed to authenticate that cursor,
+    /// the returned range, and the one-entry lookahead that distinguishes EOF.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an absent cursor, a zero or oversized page, an
+    /// invalid root, or a proof exceeding its node or byte bound.
+    pub fn scan_with_proof(
+        &self,
+        root: ContentId,
+        after: Option<CampaignHash>,
+        limit: usize,
+    ) -> Result<(MerkleMapPage, MerkleMapPageProof), CampaignStoreError> {
+        if limit == 0 || limit > MAX_PROVEN_PAGE_ITEMS {
+            return Err(CampaignStoreError::InvalidPageSize);
+        }
+        let mut proof_nodes = BTreeMap::new();
+        let root_node = self.read_node_recorded(root, 0, &mut proof_nodes)?;
+        if let Some(after) = after
+            && Self::get_from_node(root_node.clone(), after, &mut |id, depth| {
+                self.read_node_recorded(id, depth, &mut proof_nodes)
+            })?
+            .is_none()
+        {
+            return Err(invalid("page-cursor-not-in-root"));
+        }
+
+        let target = limit
+            .checked_add(1)
+            .ok_or(CampaignStoreError::InvalidPageSize)?;
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(target)
+            .map_err(|_| CampaignStoreError::InvalidPageSize)?;
+        Self::scan_node_with_reader(
+            root_node,
+            Vec::new(),
+            after,
+            target,
+            &mut entries,
+            &mut |id, depth| self.read_node_recorded(id, depth, &mut proof_nodes),
+        )?;
+        let page = finish_scan_page(entries, limit);
+        let proof = MerkleMapPageProof::new(proof_nodes)?;
+        Ok((page, proof))
+    }
+
+    /// Authenticates and exactly replays one proof-bearing scan page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the proof omits or corrupts any node needed to
+    /// prove cursor membership, range completeness, or EOF/lookahead.
+    pub fn verify_scan_proof(
+        root: ContentId,
+        after: Option<CampaignHash>,
+        limit: usize,
+        proof: &MerkleMapPageProof,
+    ) -> Result<MerkleMapPage, CampaignStoreError> {
+        if limit == 0 || limit > MAX_PROVEN_PAGE_ITEMS {
+            return Err(CampaignStoreError::InvalidPageSize);
+        }
+        let mut used = BTreeSet::from([root]);
+        let root_node = proof.read_node(root, 0)?;
+        if let Some(after) = after
+            && Self::get_from_node(root_node.clone(), after, &mut |id, depth| {
+                used.insert(id);
+                proof.read_node(id, depth)
+            })?
+            .is_none()
+        {
+            return Err(invalid("page-cursor-not-in-root"));
+        }
+        let target = limit
+            .checked_add(1)
+            .ok_or(CampaignStoreError::InvalidPageSize)?;
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(target)
+            .map_err(|_| CampaignStoreError::InvalidPageSize)?;
+        Self::scan_node_with_reader(
+            root_node,
+            Vec::new(),
+            after,
+            target,
+            &mut entries,
+            &mut |id, depth| {
+                used.insert(id);
+                proof.read_node(id, depth)
+            },
+        )?;
+        if used.len() != proof.nodes.len() || !proof.nodes.keys().all(|id| used.contains(id)) {
+            return Err(invalid("page-proof-has-unused-nodes"));
+        }
+        Ok(finish_scan_page(entries, limit))
+    }
+
+    pub(crate) fn equals_after_upserts(
+        &self,
+        prior: ContentId,
+        next: ContentId,
+        upserts: &BTreeMap<CampaignHash, ContentId>,
+    ) -> Result<bool, CampaignStoreError> {
+        Ok(self.root_after_upserts(prior, upserts)? == next)
+    }
+
+    pub(crate) fn root_after_upserts(
+        &self,
+        prior: ContentId,
+        upserts: &BTreeMap<CampaignHash, ContentId>,
+    ) -> Result<ContentId, CampaignStoreError> {
+        let mut overlay = BTreeMap::new();
+        let mut current = prior;
+        for (key, value) in upserts {
+            let node = self.read_overlay_node(current, 0, &overlay)?;
+            current = self
+                .insert_overlay_node(current, node, *key, *value, &mut overlay)?
+                .content_id;
+        }
+        Ok(current)
+    }
+
+    fn insert_overlay_node(
+        &self,
+        original_id: ContentId,
+        mut node: MerkleNode,
+        key: CampaignHash,
+        value: ContentId,
+        overlay: &mut BTreeMap<ContentId, MerkleNode>,
+    ) -> Result<NodeUpdate, CampaignStoreError> {
+        let slot = digest_nibble(key, node.depth);
+        let existing = node.entries.get(&slot).cloned();
+        let (entry, changed) = match existing {
+            None => (MerkleEntry::Leaf { key, value }, true),
+            Some(MerkleEntry::Leaf {
+                key: stored_key,
+                value: stored_value,
+            }) if stored_key == key => (MerkleEntry::Leaf { key, value }, stored_value != value),
+            Some(MerkleEntry::Leaf {
+                key: stored_key,
+                value: stored_value,
+            }) => {
+                let next_depth = node
+                    .depth
+                    .checked_add(1)
+                    .ok_or(invalid("distinct-keys-exhausted-digest"))?;
+                let child = self.split_overlay_leaves(
+                    next_depth,
+                    (stored_key, stored_value),
+                    (key, value),
+                    overlay,
+                )?;
+                (
+                    MerkleEntry::Node {
+                        content_id: child.content_id,
+                        entry_count: child.entry_count,
+                    },
+                    true,
+                )
+            }
+            Some(MerkleEntry::Node {
+                content_id,
+                entry_count,
+            }) => {
+                let next_depth = node.depth.checked_add(1).ok_or(invalid("depth-overflow"))?;
+                let child = self.read_overlay_node(content_id, next_depth, overlay)?;
+                if child.entry_count != entry_count {
+                    return Err(invalid("child-entry-count-mismatch"));
+                }
+                let update = self.insert_overlay_node(content_id, child, key, value, overlay)?;
+                (
+                    MerkleEntry::Node {
+                        content_id: update.content_id,
+                        entry_count: update.entry_count,
+                    },
+                    update.changed,
+                )
+            }
+        };
+
+        if !changed {
+            return Ok(NodeUpdate {
+                content_id: original_id,
+                entry_count: node.entry_count,
+                changed: false,
+            });
+        }
+        node.entries.insert(slot, entry);
+        node.recompute_count()?;
+        let content_id = calculate_node_id(&node)?;
+        overlay.insert(content_id, node.clone());
+        Ok(NodeUpdate {
+            content_id,
+            entry_count: node.entry_count,
+            changed: true,
+        })
+    }
+
+    fn split_overlay_leaves(
+        &self,
+        depth: u8,
+        first: (CampaignHash, ContentId),
+        second: (CampaignHash, ContentId),
+        overlay: &mut BTreeMap<ContentId, MerkleNode>,
+    ) -> Result<NodeUpdate, CampaignStoreError> {
+        if depth >= DIGEST_NIBBLES {
+            return Err(invalid("distinct-keys-exhausted-digest"));
+        }
+        let first_slot = digest_nibble(first.0, depth);
+        let second_slot = digest_nibble(second.0, depth);
+        let mut node = MerkleNode {
+            schema_version: MERKLE_NODE_SCHEMA_VERSION,
+            depth,
+            entry_count: 2,
+            entries: BTreeMap::new(),
+        };
+        if first_slot != second_slot {
+            node.entries.insert(
+                first_slot,
+                MerkleEntry::Leaf {
+                    key: first.0,
+                    value: first.1,
+                },
+            );
+            node.entries.insert(
+                second_slot,
+                MerkleEntry::Leaf {
+                    key: second.0,
+                    value: second.1,
+                },
+            );
+        } else {
+            let next_depth = depth
+                .checked_add(1)
+                .ok_or(invalid("distinct-keys-exhausted-digest"))?;
+            let child = self.split_overlay_leaves(next_depth, first, second, overlay)?;
+            node.entries.insert(
+                first_slot,
+                MerkleEntry::Node {
+                    content_id: child.content_id,
+                    entry_count: child.entry_count,
+                },
+            );
+        }
+        let content_id = calculate_node_id(&node)?;
+        overlay.insert(content_id, node);
+        Ok(NodeUpdate {
+            content_id,
+            entry_count: 2,
+            changed: true,
+        })
+    }
+
+    fn read_overlay_node(
+        &self,
+        content_id: ContentId,
+        expected_depth: u8,
+        overlay: &BTreeMap<ContentId, MerkleNode>,
+    ) -> Result<MerkleNode, CampaignStoreError> {
+        if let Some(node) = overlay.get(&content_id) {
+            if node.depth != expected_depth {
+                return Err(invalid("node-depth-mismatch"));
+            }
+            return Ok(node.clone());
+        }
+        self.read_node(content_id, expected_depth)
+    }
+
+    fn insert_node(
+        &self,
+        original_id: ContentId,
+        mut node: MerkleNode,
+        key: CampaignHash,
+        value: ContentId,
+    ) -> Result<NodeUpdate, CampaignStoreError> {
+        let slot = digest_nibble(key, node.depth);
+        let existing = node.entries.get(&slot).cloned();
+        let (entry, changed) = match existing {
+            None => (MerkleEntry::Leaf { key, value }, true),
+            Some(MerkleEntry::Leaf {
+                key: stored_key,
+                value: stored_value,
+            }) if stored_key == key => (MerkleEntry::Leaf { key, value }, stored_value != value),
+            Some(MerkleEntry::Leaf {
+                key: stored_key,
+                value: stored_value,
+            }) => {
+                let next_depth = node
+                    .depth
+                    .checked_add(1)
+                    .ok_or(invalid("distinct-keys-exhausted-digest"))?;
+                let child =
+                    self.split_leaves(next_depth, (stored_key, stored_value), (key, value))?;
+                (
+                    MerkleEntry::Node {
+                        content_id: child.content_id,
+                        entry_count: child.entry_count,
+                    },
+                    true,
+                )
+            }
+            Some(MerkleEntry::Node {
+                content_id,
+                entry_count,
+            }) => {
+                let next_depth = node.depth.checked_add(1).ok_or(invalid("depth-overflow"))?;
+                let child = self.read_node(content_id, next_depth)?;
+                if child.entry_count != entry_count {
+                    return Err(invalid("child-entry-count-mismatch"));
+                }
+                let update = self.insert_node(content_id, child, key, value)?;
+                (
+                    MerkleEntry::Node {
+                        content_id: update.content_id,
+                        entry_count: update.entry_count,
+                    },
+                    update.changed,
+                )
+            }
+        };
+
+        if !changed {
+            return Ok(NodeUpdate {
+                content_id: original_id,
+                entry_count: node.entry_count,
+                changed: false,
+            });
+        }
+        node.entries.insert(slot, entry);
+        node.recompute_count()?;
+        let content_id = self.persist_node(&node)?;
+        Ok(NodeUpdate {
+            content_id,
+            entry_count: node.entry_count,
+            changed: true,
+        })
+    }
+
+    fn split_leaves(
+        &self,
+        depth: u8,
+        first: (CampaignHash, ContentId),
+        second: (CampaignHash, ContentId),
+    ) -> Result<NodeUpdate, CampaignStoreError> {
+        if depth >= DIGEST_NIBBLES {
+            return Err(invalid("distinct-keys-exhausted-digest"));
+        }
+        let first_slot = digest_nibble(first.0, depth);
+        let second_slot = digest_nibble(second.0, depth);
+        let mut node = MerkleNode {
+            schema_version: MERKLE_NODE_SCHEMA_VERSION,
+            depth,
+            entry_count: 2,
+            entries: BTreeMap::new(),
+        };
+        if first_slot != second_slot {
+            node.entries.insert(
+                first_slot,
+                MerkleEntry::Leaf {
+                    key: first.0,
+                    value: first.1,
+                },
+            );
+            node.entries.insert(
+                second_slot,
+                MerkleEntry::Leaf {
+                    key: second.0,
+                    value: second.1,
+                },
+            );
+        } else {
+            let next_depth = depth
+                .checked_add(1)
+                .ok_or(invalid("distinct-keys-exhausted-digest"))?;
+            let child = self.split_leaves(next_depth, first, second)?;
+            node.entries.insert(
+                first_slot,
+                MerkleEntry::Node {
+                    content_id: child.content_id,
+                    entry_count: child.entry_count,
+                },
+            );
+        }
+        let content_id = self.persist_node(&node)?;
+        Ok(NodeUpdate {
+            content_id,
+            entry_count: 2,
+            changed: true,
+        })
+    }
+
+    fn scan_node(
+        &self,
+        node: MerkleNode,
+        after: Option<CampaignHash>,
+        target: usize,
+        output: &mut Vec<(CampaignHash, ContentId)>,
+    ) -> Result<(), CampaignStoreError> {
+        Self::scan_node_with_reader(node, Vec::new(), after, target, output, &mut |id, depth| {
+            self.read_node(id, depth)
+        })
+    }
+
+    fn scan_node_with_reader(
+        node: MerkleNode,
+        prefix: Vec<u8>,
+        after: Option<CampaignHash>,
+        target: usize,
+        output: &mut Vec<(CampaignHash, ContentId)>,
+        read_node: &mut impl FnMut(ContentId, u8) -> Result<MerkleNode, CampaignStoreError>,
+    ) -> Result<(), CampaignStoreError> {
+        let after_slot = after.map(|key| digest_nibble(key, node.depth));
+        for (slot, entry) in node.entries {
+            if output.len() >= target {
+                break;
+            }
+            if after_slot.is_some_and(|after_slot| slot < after_slot) {
+                continue;
+            }
+            let child_after = match after_slot {
+                Some(after_slot) if slot == after_slot => after,
+                _ => None,
+            };
+            let mut child_prefix = prefix.clone();
+            child_prefix.push(slot);
+            match entry {
+                MerkleEntry::Leaf { key, value } => {
+                    if !key_has_prefix(key, &child_prefix) {
+                        return Err(invalid("leaf-ancestor-prefix-mismatch"));
+                    }
+                    if child_after.is_none_or(|after| key > after) {
+                        output.push((key, value));
+                    }
+                }
+                MerkleEntry::Node {
+                    content_id,
+                    entry_count,
+                } => {
+                    let child_depth = node.depth.checked_add(1).ok_or(invalid("depth-overflow"))?;
+                    let child = read_node(content_id, child_depth)?;
+                    if child.entry_count != entry_count {
+                        return Err(invalid("child-entry-count-mismatch"));
+                    }
+                    Self::scan_node_with_reader(
+                        child,
+                        child_prefix,
+                        child_after,
+                        target,
+                        output,
+                        read_node,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn get_from_node(
+        mut node: MerkleNode,
+        key: CampaignHash,
+        read_node: &mut impl FnMut(ContentId, u8) -> Result<MerkleNode, CampaignStoreError>,
+    ) -> Result<Option<ContentId>, CampaignStoreError> {
+        let mut prefix = Vec::new();
+        loop {
+            let slot = digest_nibble(key, node.depth);
+            prefix.push(slot);
+            match node.entries.get(&slot).cloned() {
+                None => return Ok(None),
+                Some(MerkleEntry::Leaf {
+                    key: stored_key,
+                    value,
+                }) => {
+                    if !key_has_prefix(stored_key, &prefix) {
+                        return Err(invalid("leaf-ancestor-prefix-mismatch"));
+                    }
+                    return Ok((stored_key == key).then_some(value));
+                }
+                Some(MerkleEntry::Node {
+                    content_id,
+                    entry_count,
+                }) => {
+                    let next_depth = node.depth.checked_add(1).ok_or(invalid("depth-overflow"))?;
+                    let child = read_node(content_id, next_depth)?;
+                    if child.entry_count != entry_count {
+                        return Err(invalid("child-entry-count-mismatch"));
+                    }
+                    node = child;
+                }
+            }
+        }
+    }
+
+    fn persist_node(&self, node: &MerkleNode) -> Result<ContentId, CampaignStoreError> {
+        node.validate()?;
+        let body = codec::encode(node);
+        let envelope = ObjectEnvelope::for_record(
+            CampaignRecordKind::MerkleNode,
+            node.child_references()?,
+            body,
+        )?;
+        let bytes = envelope.canonical_bytes();
+        let content_id = envelope.content_id();
+        let source = BlobHandle::from_bytes(bytes);
+        let receipt = self.backend.put_if_absent(content_id, &source)?;
+        if receipt.id != content_id {
+            return Err(invalid("store-receipt-id-mismatch"));
+        }
+        Ok(content_id)
+    }
+
+    fn read_node(
+        &self,
+        content_id: ContentId,
+        expected_depth: u8,
+    ) -> Result<MerkleNode, CampaignStoreError> {
+        self.read_node_with_bytes(content_id, expected_depth)
+            .map(|(node, _)| node)
+    }
+
+    fn read_node_recorded(
+        &self,
+        content_id: ContentId,
+        expected_depth: u8,
+        proof_nodes: &mut BTreeMap<ContentId, Vec<u8>>,
+    ) -> Result<MerkleNode, CampaignStoreError> {
+        if let Some(bytes) = proof_nodes.get(&content_id) {
+            return decode_node_bytes(content_id, expected_depth, bytes);
+        }
+        let (node, bytes) = self.read_node_with_bytes(content_id, expected_depth)?;
+        proof_nodes.insert(content_id, bytes);
+        Ok(node)
+    }
+
+    fn read_node_with_bytes(
+        &self,
+        content_id: ContentId,
+        expected_depth: u8,
+    ) -> Result<(MerkleNode, Vec<u8>), CampaignStoreError> {
+        if content_id.kind() != ObjectKind::MerkleNode {
+            return Err(invalid("root-or-child-kind"));
+        }
+        let bytes = self
+            .backend
+            .read(content_id, None)?
+            .read_all(MAX_MERKLE_NODE_ENVELOPE_BYTES as u64)?;
+        let node = decode_node_bytes(content_id, expected_depth, &bytes)?;
+        Ok((node, bytes))
+    }
+}
+
+fn finish_scan_page(mut entries: Vec<(CampaignHash, ContentId)>, limit: usize) -> MerkleMapPage {
+    let has_more = entries.len() > limit;
+    if has_more {
+        entries.truncate(limit);
+    }
+    let next_after = has_more.then(|| entries[entries.len() - 1].0);
+    MerkleMapPage {
+        entries,
+        next_after,
+    }
+}
+
+fn decode_node_bytes(
+    content_id: ContentId,
+    expected_depth: u8,
+    bytes: &[u8],
+) -> Result<MerkleNode, CampaignStoreError> {
+    if content_id.kind() != ObjectKind::MerkleNode {
+        return Err(invalid("root-or-child-kind"));
+    }
+    if bytes.len() > MAX_MERKLE_NODE_ENVELOPE_BYTES {
+        return Err(invalid("merkle-node-envelope-byte-limit"));
+    }
+    let envelope = ObjectEnvelope::from_canonical_bytes_for_owner(bytes)?;
+    if envelope.record_kind() != CampaignRecordKind::MerkleNode
+        || envelope.content_id() != content_id
+    {
+        return Err(invalid("node-envelope-kind-or-identity"));
+    }
+    let node = codec::decode::<MerkleNode>(envelope.body())?;
+    node.validate()?;
+    if node.depth != expected_depth {
+        return Err(invalid("node-depth-mismatch"));
+    }
+    if node.child_references()? != *envelope.children() {
+        return Err(invalid("node-child-table-mismatch"));
+    }
+    Ok(node)
+}
+
+fn validate_page_proof_nodes(
+    nodes: &BTreeMap<ContentId, Vec<u8>>,
+) -> Result<(), CampaignStoreError> {
+    validate_proof_nodes(
+        nodes,
+        MAX_PAGE_PROOF_NODES,
+        MAX_PAGE_PROOF_BYTES,
+        "page-proof-node-limit",
+        "page-proof-byte-limit",
+    )
+}
+
+fn validate_proof_nodes(
+    nodes: &BTreeMap<ContentId, Vec<u8>>,
+    maximum_nodes: usize,
+    maximum_bytes: usize,
+    node_limit_reason: &'static str,
+    byte_limit_reason: &'static str,
+) -> Result<(), CampaignStoreError> {
+    if nodes.len() > maximum_nodes {
+        return Err(invalid(node_limit_reason));
+    }
+    let mut bytes = 0_usize;
+    for (id, node) in nodes {
+        bytes = bytes
+            .checked_add(node.len())
+            .ok_or_else(|| invalid(byte_limit_reason))?;
+        if bytes > maximum_bytes || node.len() > MAX_MERKLE_NODE_ENVELOPE_BYTES {
+            return Err(invalid(byte_limit_reason));
+        }
+        let envelope = ObjectEnvelope::from_canonical_bytes_for_owner(node)?;
+        if envelope.record_kind() != CampaignRecordKind::MerkleNode || envelope.content_id() != *id
+        {
+            return Err(invalid("page-proof-node-identity"));
+        }
+    }
+    Ok(())
+}
+
+// crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
+#[allow(clippy::too_many_arguments)]
+fn decode_proof_nodes(
+    decoder: &mut Decoder<'_>,
+    maximum_nodes: usize,
+    maximum_bytes: usize,
+    count_limit: &'static str,
+    node_bytes_limit: &'static str,
+    total_bytes_limit: &'static str,
+    duplicate_reason: &'static str,
+) -> Result<BTreeMap<ContentId, Vec<u8>>, CampaignCodecError> {
+    let entries = decoder.sequence_bounded(maximum_nodes, count_limit, |decoder| {
+        let id = ContentId::decode(decoder)?;
+        let bytes = decoder.sequence_bounded(
+            MAX_MERKLE_NODE_ENVELOPE_BYTES,
+            node_bytes_limit,
+            u8::decode,
+        )?;
+        Ok((id, bytes))
+    })?;
+    let mut nodes = BTreeMap::new();
+    let mut bytes = 0_usize;
+    for (id, node) in entries {
+        bytes = bytes
+            .checked_add(node.len())
+            .ok_or(CampaignCodecError::LimitExceeded {
+                limit: total_bytes_limit,
+            })?;
+        if bytes > maximum_bytes {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: total_bytes_limit,
+            });
+        }
+        if nodes.insert(id, node).is_some() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: duplicate_reason,
+            });
+        }
+    }
+    Ok(nodes)
+}
+
+fn calculate_node_id(node: &MerkleNode) -> Result<ContentId, CampaignStoreError> {
+    node.validate()?;
+    let envelope = ObjectEnvelope::for_record(
+        CampaignRecordKind::MerkleNode,
+        node.child_references()?,
+        codec::encode(node),
+    )?;
+    Ok(envelope.content_id())
+}
+
+/// Authenticated leaf values discovered while validating one complete map.
+pub(crate) struct VerifiedMerkleClosure {
+    /// Authenticated root identity and entry count.
+    pub(crate) root: MerkleMapRoot,
+    /// Leaf values that the enclosing campaign closure must also validate.
+    pub(crate) values: BTreeSet<ContentId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NodeUpdate {
+    content_id: ContentId,
+    entry_count: u64,
+    changed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MerkleNode {
+    schema_version: u32,
+    depth: u8,
+    entry_count: u64,
+    entries: BTreeMap<u8, MerkleEntry>,
+}
+
+impl MerkleNode {
+    fn empty() -> Self {
+        Self {
+            schema_version: MERKLE_NODE_SCHEMA_VERSION,
+            depth: 0,
+            entry_count: 0,
+            entries: BTreeMap::new(),
+        }
+    }
+
+    fn recompute_count(&mut self) -> Result<(), CampaignStoreError> {
+        self.entry_count = self.entries.values().try_fold(0_u64, |total, entry| {
+            total
+                .checked_add(entry.entry_count())
+                .ok_or(invalid("entry-count-overflow"))
+        })?;
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<(), CampaignStoreError> {
+        if self.schema_version != MERKLE_NODE_SCHEMA_VERSION {
+            return Err(invalid("unsupported-node-schema"));
+        }
+        if self.depth >= DIGEST_NIBBLES {
+            return Err(invalid("node-depth-out-of-range"));
+        }
+        if self.depth != 0 && self.entries.is_empty() {
+            return Err(invalid("empty-nonroot-node"));
+        }
+        let mut count = 0_u64;
+        for (slot, entry) in &self.entries {
+            if *slot >= 16 {
+                return Err(invalid("slot-out-of-range"));
+            }
+            match entry {
+                MerkleEntry::Leaf { key, .. } if digest_nibble(*key, self.depth) != *slot => {
+                    return Err(invalid("leaf-slot-mismatch"));
+                }
+                MerkleEntry::Node {
+                    content_id,
+                    entry_count,
+                } => {
+                    if self.depth == DIGEST_NIBBLES - 1 {
+                        return Err(invalid("node-below-final-depth"));
+                    }
+                    if content_id.kind() != ObjectKind::MerkleNode || *entry_count == 0 {
+                        return Err(invalid("invalid-node-child"));
+                    }
+                }
+                MerkleEntry::Leaf { .. } => {}
+            }
+            count = count
+                .checked_add(entry.entry_count())
+                .ok_or(invalid("entry-count-overflow"))?;
+        }
+        if count != self.entry_count {
+            return Err(invalid("node-entry-count-mismatch"));
+        }
+        Ok(())
+    }
+
+    fn child_references(&self) -> Result<BTreeSet<ChildReference>, CampaignStoreError> {
+        self.entries
+            .iter()
+            .map(|(slot, entry)| {
+                let (suffix, id) = match entry {
+                    MerkleEntry::Leaf { value, .. } => ("value", *value),
+                    MerkleEntry::Node { content_id, .. } => ("node", *content_id),
+                };
+                ChildReference::new(format!("slot.{slot:02x}.{suffix}"), id)
+                    .map_err(CampaignCodecError::from)
+                    .map_err(CampaignStoreError::from)
+            })
+            .collect()
+    }
+}
+
+impl Canonical for MerkleNode {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.depth.encode(encoder);
+        self.entry_count.encode(encoder);
+        self.entries.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Ok(Self {
+            schema_version: u32::decode(decoder)?,
+            depth: u8::decode(decoder)?,
+            entry_count: u64::decode(decoder)?,
+            entries: decoder.map_bounded(16, "merkle-node-slot-count")?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MerkleEntry {
+    Leaf {
+        key: CampaignHash,
+        value: ContentId,
+    },
+    Node {
+        content_id: ContentId,
+        entry_count: u64,
+    },
+}
+
+impl MerkleEntry {
+    const fn entry_count(&self) -> u64 {
+        match self {
+            Self::Leaf { .. } => 1,
+            Self::Node { entry_count, .. } => *entry_count,
+        }
+    }
+}
+
+impl Canonical for MerkleEntry {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Self::Leaf { key, value } => {
+                encoder.u8(0);
+                key.encode(encoder);
+                Canonical::encode(value, encoder);
+            }
+            Self::Node {
+                content_id,
+                entry_count,
+            } => {
+                encoder.u8(1);
+                Canonical::encode(content_id, encoder);
+                entry_count.encode(encoder);
+            }
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::Leaf {
+                key: CampaignHash::decode(decoder)?,
+                value: ContentId::decode(decoder)?,
+            }),
+            1 => Ok(Self::Node {
+                content_id: ContentId::decode(decoder)?,
+                entry_count: u64::decode(decoder)?,
+            }),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "merkle-entry",
+                tag,
+            }),
+        }
+    }
+}
+
+fn digest_nibble(key: CampaignHash, depth: u8) -> u8 {
+    let bytes = key.as_bytes();
+    let byte = bytes[usize::from(depth / 2)];
+    if depth.is_multiple_of(2) {
+        byte >> 4
+    } else {
+        byte & 0x0f
+    }
+}
+
+fn key_has_prefix(key: CampaignHash, prefix: &[u8]) -> bool {
+    prefix
+        .iter()
+        .enumerate()
+        .all(|(depth, slot)| digest_nibble(key, depth as u8) == *slot)
+}
+
+const fn invalid(reason: &'static str) -> CampaignStoreError {
+    CampaignStoreError::InvalidMerkle { reason }
+}
+
+#[cfg(test)]
+mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+    use crucible_cas::content_store::MemoryBlobBackend;
+
+    fn hash(byte: u8) -> CampaignHash {
+        let mut bytes = [0_u8; 32];
+        bytes[0] = byte;
+        CampaignHash::from_bytes(bytes)
+    }
+
+    fn value(name: &str) -> ContentId {
+        ContentId::for_bytes(ObjectKind::CampaignFact, 1, name.as_bytes())
+    }
+
+    fn map() -> (Arc<MemoryBlobBackend>, MerkleMap) {
+        let backend = Arc::new(MemoryBlobBackend::new("campaign-test", 16 * 1024 * 1024));
+        let map = MerkleMap::new(backend.clone());
+        (backend, map)
+    }
+
+    #[test]
+    fn insertion_order_does_not_change_root() {
+        let (_, first_map) = map();
+        let mut first = first_map.empty().expect("empty root");
+        for key in [0x12, 0x1f, 0xa0, 0x11, 0xff] {
+            first = first_map
+                .insert(
+                    first.content_id(),
+                    hash(key),
+                    value(&format!("value-{key}")),
+                )
+                .expect("insert first order");
+        }
+
+        let (_, second_map) = map();
+        let mut second = second_map.empty().expect("empty root");
+        for key in [0xff, 0x11, 0xa0, 0x1f, 0x12] {
+            second = second_map
+                .insert(
+                    second.content_id(),
+                    hash(key),
+                    value(&format!("value-{key}")),
+                )
+                .expect("insert second order");
+        }
+
+        assert_eq!(first, second);
+        assert_eq!(first.entry_count(), 5);
+    }
+
+    #[test]
+    fn read_only_upsert_equivalence_matches_persisted_roots_without_writes() {
+        let (backend, map) = map();
+        let prior = map
+            .insert(
+                map.empty().expect("empty").content_id(),
+                hash(0x12),
+                value("prior"),
+            )
+            .expect("prior root");
+        let upserts = BTreeMap::from([
+            (hash(0x1f), value("second")),
+            (hash(0xa0), value("third")),
+            (hash(0x12), value("replacement")),
+        ]);
+        let mut expected = prior;
+        for (key, value) in &upserts {
+            expected = map
+                .insert(expected.content_id(), *key, *value)
+                .expect("persisted upsert");
+        }
+        let objects_before = backend.object_count().expect("object count");
+
+        assert!(
+            map.equals_after_upserts(prior.content_id(), expected.content_id(), &upserts)
+                .expect("equivalent roots")
+        );
+        assert!(
+            !map.equals_after_upserts(prior.content_id(), prior.content_id(), &upserts)
+                .expect("different roots")
+        );
+        assert_eq!(
+            backend.object_count().expect("object count after overlay"),
+            objects_before
+        );
+    }
+
+    #[test]
+    fn many_deterministic_permutations_produce_one_root_and_valid_closure() {
+        fn shuffled(mut values: Vec<u8>, mut state: u64) -> Vec<u8> {
+            for index in (1..values.len()).rev() {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                values.swap(index, (state as usize) % (index + 1));
+            }
+            values
+        }
+
+        let keys = (0_u8..24).collect::<Vec<_>>();
+        let mut expected = None;
+        for seed in 0..32 {
+            let (backend, map) = map();
+            let mut root = map.empty().expect("empty root");
+            for key in shuffled(keys.clone(), seed) {
+                let body = format!("value-{key}").into_bytes();
+                let value_id = value(std::str::from_utf8(&body).expect("ASCII value"));
+                backend
+                    .put_if_absent(value_id, &BlobHandle::from_bytes(body))
+                    .expect("store value");
+                root = map
+                    .insert(root.content_id(), hash(key), value_id)
+                    .expect("insert permutation");
+            }
+            assert_eq!(
+                map.verify_closure(root.content_id()).expect("closure"),
+                root
+            );
+            assert_eq!(
+                map.verify_closure_streaming(root.content_id())
+                    .expect("streaming closure"),
+                root
+            );
+            match expected {
+                None => expected = Some(root),
+                Some(expected) => assert_eq!(root, expected),
+            }
+        }
+    }
+
+    #[test]
+    fn lookup_replacement_and_identity_insert_are_exact() {
+        let (backend, map) = map();
+        let empty = map.empty().expect("empty root");
+        let first = map
+            .insert(empty.content_id(), hash(0x42), value("old"))
+            .expect("insert");
+        assert_eq!(
+            map.get(first.content_id(), hash(0x42)).expect("lookup"),
+            Some(value("old"))
+        );
+        assert_eq!(
+            map.get(first.content_id(), hash(0x43)).expect("absence"),
+            None
+        );
+
+        let count_before = backend.object_count().expect("object count");
+        let same = map
+            .insert(first.content_id(), hash(0x42), value("old"))
+            .expect("identity insert");
+        assert_eq!(same, first);
+        assert_eq!(backend.object_count().expect("object count"), count_before);
+
+        let replaced = map
+            .insert(first.content_id(), hash(0x42), value("new"))
+            .expect("replace");
+        assert_ne!(replaced.content_id(), first.content_id());
+        assert_eq!(replaced.entry_count(), 1);
+        assert_eq!(
+            map.get(replaced.content_id(), hash(0x42))
+                .expect("replacement lookup"),
+            Some(value("new"))
+        );
+    }
+
+    #[test]
+    fn paged_scans_are_page_size_independent() {
+        let (_, map) = map();
+        let mut root = map.empty().expect("empty root");
+        for key in [0xfe, 0x01, 0x20, 0x1f, 0x00, 0xa0, 0x11] {
+            root = map
+                .insert(root.content_id(), hash(key), value(&format!("value-{key}")))
+                .expect("insert");
+        }
+
+        fn collect(map: &MerkleMap, root: ContentId, page_size: usize) -> Vec<CampaignHash> {
+            let mut cursor = None;
+            let mut keys = Vec::new();
+            loop {
+                let page = map.scan(root, cursor, page_size).expect("scan page");
+                keys.extend(page.entries().iter().map(|(key, _)| *key));
+                let Some(next) = page.next_after() else {
+                    return keys;
+                };
+                cursor = Some(next);
+            }
+        }
+
+        let one = collect(&map, root.content_id(), 1);
+        assert_eq!(one, collect(&map, root.content_id(), 3));
+        assert_eq!(one, collect(&map, root.content_id(), 10));
+        assert!(one.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn proven_pages_authenticate_cursor_range_eof_and_exact_node_set() {
+        let (backend, map) = map();
+        let empty = map.empty().expect("empty root");
+        let mut root = empty;
+        for key in [0x00, 0x10, 0x11, 0x20] {
+            root = map
+                .insert(root.content_id(), hash(key), value(&format!("value-{key}")))
+                .expect("insert");
+        }
+
+        let (first, first_proof) = map
+            .scan_with_proof(root.content_id(), None, 2)
+            .expect("first proven page");
+        assert_eq!(
+            MerkleMap::verify_scan_proof(root.content_id(), None, 2, &first_proof)
+                .expect("verify first page"),
+            first
+        );
+        let cursor = first.next_after().expect("first page cursor");
+        let (last, last_proof) = map
+            .scan_with_proof(root.content_id(), Some(cursor), 2)
+            .expect("last proven page");
+        assert_eq!(last.next_after(), None);
+        assert_eq!(
+            MerkleMap::verify_scan_proof(root.content_id(), Some(cursor), 2, &last_proof)
+                .expect("verify last page"),
+            last
+        );
+
+        let mut missing = first_proof.clone();
+        let child = missing
+            .nodes
+            .keys()
+            .copied()
+            .find(|id| *id != root.content_id())
+            .expect("proof child");
+        missing.nodes.remove(&child);
+        assert!(matches!(
+            MerkleMap::verify_scan_proof(root.content_id(), None, 2, &missing),
+            Err(CampaignStoreError::InvalidMerkle {
+                reason: "page-proof-missing-node"
+            })
+        ));
+
+        let mut extra = first_proof;
+        extra.nodes.insert(
+            empty.content_id(),
+            backend
+                .read(empty.content_id(), None)
+                .expect("read empty root")
+                .read_all(MAX_MERKLE_NODE_ENVELOPE_BYTES as u64)
+                .expect("empty root bytes"),
+        );
+        assert!(matches!(
+            MerkleMap::verify_scan_proof(root.content_id(), None, 2, &extra),
+            Err(CampaignStoreError::InvalidMerkle {
+                reason: "page-proof-has-unused-nodes"
+            })
+        ));
+    }
+
+    #[test]
+    fn lookup_proofs_authenticate_presence_absence_and_exact_node_set() {
+        let (backend, map) = map();
+        let empty = map.empty().expect("empty root");
+        let mut root = empty;
+        for key in [0x00, 0x10, 0x11, 0x20] {
+            root = map
+                .insert(root.content_id(), hash(key), value(&format!("value-{key}")))
+                .expect("insert");
+        }
+
+        let expected = value("value-17");
+        let (present, present_proof) = map
+            .get_with_proof(root.content_id(), hash(0x11))
+            .expect("present lookup proof");
+        assert_eq!(present, Some(expected));
+        assert_eq!(
+            MerkleMap::verify_lookup_proof(root.content_id(), hash(0x11), &present_proof)
+                .expect("verify present lookup"),
+            Some(expected)
+        );
+        assert_eq!(
+            codec::decode::<MerkleMapLookupProof>(&codec::encode(&present_proof))
+                .expect("round trip lookup proof"),
+            present_proof
+        );
+
+        let (absent, absent_proof) = map
+            .get_with_proof(root.content_id(), hash(0x12))
+            .expect("absent lookup proof");
+        assert_eq!(absent, None);
+        assert_eq!(
+            MerkleMap::verify_lookup_proof(root.content_id(), hash(0x12), &absent_proof)
+                .expect("verify absent lookup"),
+            None
+        );
+
+        let mut missing = present_proof.clone();
+        let child = missing
+            .nodes
+            .keys()
+            .copied()
+            .find(|id| *id != root.content_id())
+            .expect("lookup proof child");
+        missing.nodes.remove(&child);
+        assert!(matches!(
+            MerkleMap::verify_lookup_proof(root.content_id(), hash(0x11), &missing),
+            Err(CampaignStoreError::InvalidMerkle {
+                reason: "lookup-proof-missing-node"
+            })
+        ));
+
+        let mut extra = absent_proof;
+        extra.nodes.insert(
+            empty.content_id(),
+            backend
+                .read(empty.content_id(), None)
+                .expect("read empty root")
+                .read_all(MAX_MERKLE_NODE_ENVELOPE_BYTES as u64)
+                .expect("empty root bytes"),
+        );
+        assert!(matches!(
+            MerkleMap::verify_lookup_proof(root.content_id(), hash(0x12), &extra),
+            Err(CampaignStoreError::InvalidMerkle {
+                reason: "lookup-proof-has-unused-nodes"
+            })
+        ));
+    }
+
+    #[test]
+    fn proven_page_rejects_a_locally_valid_leaf_grafted_under_the_wrong_prefix() {
+        let (backend, map) = map();
+        let child = MerkleNode {
+            schema_version: MERKLE_NODE_SCHEMA_VERSION,
+            depth: 1,
+            entry_count: 1,
+            entries: BTreeMap::from([(
+                0,
+                MerkleEntry::Leaf {
+                    key: hash(0x10),
+                    value: value("grafted"),
+                },
+            )]),
+        };
+        let child_id = map.persist_node(&child).expect("persist child");
+        let root = MerkleNode {
+            schema_version: MERKLE_NODE_SCHEMA_VERSION,
+            depth: 0,
+            entry_count: 1,
+            entries: BTreeMap::from([(
+                2,
+                MerkleEntry::Node {
+                    content_id: child_id,
+                    entry_count: 1,
+                },
+            )]),
+        };
+        let root_id = map.persist_node(&root).expect("persist root");
+        let mut nodes = BTreeMap::new();
+        for id in [root_id, child_id] {
+            nodes.insert(
+                id,
+                backend
+                    .read(id, None)
+                    .expect("read proof node")
+                    .read_all(MAX_MERKLE_NODE_ENVELOPE_BYTES as u64)
+                    .expect("proof node bytes"),
+            );
+        }
+        let proof = MerkleMapPageProof::new(nodes).expect("locally valid proof nodes");
+
+        assert!(matches!(
+            MerkleMap::verify_scan_proof(root_id, None, 1, &proof),
+            Err(CampaignStoreError::InvalidMerkle {
+                reason: "leaf-ancestor-prefix-mismatch"
+            })
+        ));
+    }
+
+    #[test]
+    fn invalid_page_sizes_fail_closed() {
+        let (_, map) = map();
+        let root = map.empty().expect("empty root");
+        assert!(matches!(
+            map.scan(root.content_id(), None, 0),
+            Err(CampaignStoreError::InvalidPageSize)
+        ));
+        assert!(matches!(
+            map.scan(root.content_id(), None, MAX_PAGE_ITEMS + 1),
+            Err(CampaignStoreError::InvalidPageSize)
+        ));
+    }
+
+    #[test]
+    fn maximum_depth_collisions_remain_canonical() {
+        let (_, first_map) = map();
+        let first_key = CampaignHash::from_bytes([0_u8; 32]);
+        let mut second_bytes = [0_u8; 32];
+        second_bytes[31] = 1;
+        let second_key = CampaignHash::from_bytes(second_bytes);
+        let empty = first_map.empty().expect("empty root");
+        let first = first_map
+            .insert(empty.content_id(), first_key, value("first"))
+            .expect("first insert");
+        let first = first_map
+            .insert(first.content_id(), second_key, value("second"))
+            .expect("deep collision insert");
+
+        let (_, second_map) = map();
+        let empty = second_map.empty().expect("empty root");
+        let second = second_map
+            .insert(empty.content_id(), second_key, value("second"))
+            .expect("second-first insert");
+        let second = second_map
+            .insert(second.content_id(), first_key, value("first"))
+            .expect("deep collision reverse insert");
+
+        assert_eq!(first, second);
+        assert_eq!(
+            first_map
+                .get(first.content_id(), first_key)
+                .expect("first lookup"),
+            Some(value("first"))
+        );
+        assert_eq!(
+            first_map
+                .get(first.content_id(), second_key)
+                .expect("second lookup"),
+            Some(value("second"))
+        );
+    }
+
+    #[test]
+    fn updates_share_untouched_nodes_and_preserve_old_roots() {
+        let (backend, map) = map();
+        let mut root = map.empty().expect("empty root");
+        for key in [0x10, 0x1f, 0xa0] {
+            root = map
+                .insert(root.content_id(), hash(key), value(&format!("value-{key}")))
+                .expect("insert");
+        }
+        let old_root = root;
+        let count_before = backend.object_count().expect("object count");
+        let changed = map
+            .insert(old_root.content_id(), hash(0x10), value("replacement"))
+            .expect("replace nested leaf");
+        let count_after = backend.object_count().expect("object count");
+
+        assert_eq!(count_after - count_before, 2);
+        assert_eq!(
+            map.get(old_root.content_id(), hash(0x10))
+                .expect("old root lookup"),
+            Some(value("value-16"))
+        );
+        assert_eq!(
+            map.get(changed.content_id(), hash(0x10))
+                .expect("new root lookup"),
+            Some(value("replacement"))
+        );
+        assert_eq!(
+            map.get(changed.content_id(), hash(0xa0))
+                .expect("untouched lookup"),
+            Some(value("value-160"))
+        );
+    }
+
+    #[test]
+    fn incomplete_and_inconsistent_nodes_fail_closed() {
+        let (backend, map) = map();
+        let empty = map.empty().expect("empty root");
+        let missing_value = value("missing-value");
+        let incomplete_leaf = map
+            .insert(empty.content_id(), hash(0x20), missing_value)
+            .expect("insert missing value reference");
+        assert!(matches!(
+            map.verify_closure(incomplete_leaf.content_id()),
+            Err(CampaignStoreError::Store(
+                crucible_cas::content_store::StoreError::NotFound { id }
+            )) if id == missing_value
+        ));
+        assert!(matches!(
+            map.verify_closure_streaming(incomplete_leaf.content_id()),
+            Err(CampaignStoreError::Store(
+                crucible_cas::content_store::StoreError::NotFound { id }
+            )) if id == missing_value
+        ));
+
+        let missing_child = ContentId::for_bytes(ObjectKind::MerkleNode, 1, b"missing");
+        let parent = MerkleNode {
+            schema_version: MERKLE_NODE_SCHEMA_VERSION,
+            depth: 0,
+            entry_count: 1,
+            entries: BTreeMap::from([(
+                0,
+                MerkleEntry::Node {
+                    content_id: missing_child,
+                    entry_count: 1,
+                },
+            )]),
+        };
+        let parent_id = map
+            .persist_node(&parent)
+            .expect("persist incomplete parent");
+        assert!(matches!(
+            map.scan(parent_id, None, 1),
+            Err(CampaignStoreError::Store(
+                crucible_cas::content_store::StoreError::NotFound { id }
+            )) if id == missing_child
+        ));
+        assert!(matches!(
+            map.verify_closure(parent_id),
+            Err(CampaignStoreError::Store(
+                crucible_cas::content_store::StoreError::NotFound { id }
+            )) if id == missing_child
+        ));
+        assert!(matches!(
+            map.verify_closure_streaming(parent_id),
+            Err(CampaignStoreError::Store(
+                crucible_cas::content_store::StoreError::NotFound { id }
+            )) if id == missing_child
+        ));
+
+        let body = codec::encode(&MerkleNode {
+            schema_version: MERKLE_NODE_SCHEMA_VERSION,
+            depth: 0,
+            entry_count: 1,
+            entries: BTreeMap::from([(
+                1,
+                MerkleEntry::Leaf {
+                    key: hash(0x10),
+                    value: value("leaf"),
+                },
+            )]),
+        });
+        let envelope =
+            ObjectEnvelope::for_record(CampaignRecordKind::MerkleNode, BTreeSet::new(), body)
+                .expect("generic envelope permits incomplete child table");
+        let bad_id = envelope.content_id();
+        backend
+            .put_if_absent(bad_id, &BlobHandle::from_bytes(envelope.canonical_bytes()))
+            .expect("store inconsistent envelope");
+        assert!(matches!(
+            map.inspect_shallow(bad_id),
+            Err(CampaignStoreError::InvalidMerkle {
+                reason: "node-child-table-mismatch"
+            })
+        ));
+    }
+}

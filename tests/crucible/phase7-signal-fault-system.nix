@@ -1109,14 +1109,14 @@ in
             "${patchMicrotests}/per-patch/0113-crucible-restore-accelerator-rule-indexes.patch.result"
           grep -Fxq 'live_evidence=live-restored-accelerator-rule-indexes' \
             "${patchMicrotests}/per-patch/0113-crucible-restore-accelerator-rule-indexes.patch.result"
-          grep -Fxq 'patch=0114-crucible-authenticate-fault-result-payloads.patch' \
-            "${patchMicrotests}/per-patch/0114-crucible-authenticate-fault-result-payloads.patch.result"
+          grep -Fxq 'patch=0133-crucible-authenticate-fault-result-payloads.patch' \
+            "${patchMicrotests}/per-patch/0133-crucible-authenticate-fault-result-payloads.patch.result"
           grep -Fxq 'live_evidence=live-authenticated-typed-rejection-payload' \
-            "${patchMicrotests}/per-patch/0114-crucible-authenticate-fault-result-payloads.patch.result"
-          grep -Fxq 'patch=0115-crucible-clock-impulse-read-error-policies.patch' \
-            "${patchMicrotests}/per-patch/0115-crucible-clock-impulse-read-error-policies.patch.result"
+            "${patchMicrotests}/per-patch/0133-crucible-authenticate-fault-result-payloads.patch.result"
+          grep -Fxq 'patch=0134-crucible-clock-impulse-read-error-policies.patch' \
+            "${patchMicrotests}/per-patch/0134-crucible-clock-impulse-read-error-policies.patch.result"
           grep -Fxq 'live_evidence=live-clock-impulse-and-read-error-policies' \
-            "${patchMicrotests}/per-patch/0115-crucible-clock-impulse-read-error-policies.patch.result"
+            "${patchMicrotests}/per-patch/0134-crucible-clock-impulse-read-error-policies.patch.result"
 
           checkpoint_result=${checkpointMaterialization}/result
           grep -Fxq PASS "$checkpoint_result"

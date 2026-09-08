@@ -1,0 +1,474 @@
+diff --git a/block/crucible-hot-fork-source.c b/block/crucible-hot-fork-source.c
+new file mode 100644
+index 000000000..dbcfda5e6
+--- /dev/null
++++ b/block/crucible-hot-fork-source.c
+@@ -0,0 +1,248 @@
++/*
++ * Crucible native read-only block source ownership
++ *
++ * Copyright (c) Andyl, Inc.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "block/block.h"
++#include "block/block_int.h"
++#include "block/graph-lock.h"
++#include "qapi/error.h"
++#include "qemu/main-loop.h"
++#include "system/block-backend.h"
++
++#define HOT_FORK_WRITE_PERMISSIONS \
++    (BLK_PERM_WRITE | BLK_PERM_WRITE_UNCHANGED | BLK_PERM_RESIZE)
++
++/* Bound validation of the supported hot-fork profile, not ordinary QEMU I/O. */
++#define HOT_FORK_SOURCE_MAX_DEPTH 256
++#define HOT_FORK_SOURCE_MAX_VISITS 65536
++
++typedef enum ReadOnlySourcePhase {
++    SOURCE_ORIGINAL,
++    SOURCE_PERMISSIONS_REDUCED,
++    SOURCE_FROZEN,
++} ReadOnlySourcePhase;
++
++struct QemuBlockBackendHotForkReadOnlySource {
++    BlockBackend *backend;
++    BlockDriverState *root;
++    uint64_t permissions;
++    uint64_t shared_permissions;
++    pid_t owner;
++    ReadOnlySourcePhase phase;
++};
++
++static bool GRAPH_RDLOCK source_graph_read_only(BlockDriverState *node,
++                                               unsigned depth,
++                                               size_t *remaining,
++                                               Error **errp)
++{
++    BdrvChild *child;
++
++    if (depth == HOT_FORK_SOURCE_MAX_DEPTH || !*remaining) {
++        error_setg(errp, "Crucible source graph exceeds hot-fork validation bounds");
++        return false;
++    }
++    --*remaining;
++    if (!bdrv_is_read_only(node)) {
++        error_setg(errp, "Crucible source graph retains a writable node");
++        return false;
++    }
++    QLIST_FOREACH(child, &node->children, next) {
++        if (!source_graph_read_only(child->bs, depth + 1, remaining, errp)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static bool source_graph_frozen(
++    const QemuBlockBackendHotForkReadOnlySource *source, Error **errp)
++{
++    size_t remaining = HOT_FORK_SOURCE_MAX_VISITS;
++    GRAPH_RDLOCK_GUARD_MAINLOOP();
++
++    /* Explicit child options can keep a file writable after its root reopens. */
++    return source_graph_read_only(source->root, 0, &remaining, errp);
++}
++
++static bool source_matches(const QemuBlockBackendHotForkReadOnlySource *source,
++                           Error **errp)
++{
++    uint64_t permissions, shared_permissions;
++    uint64_t expected_permissions, expected_shared;
++
++    if (!source || source->owner != getpid() ||
++        blk_bs(source->backend) != source->root) {
++        error_setg(errp, "Crucible read-only source lost its process or root");
++        return false;
++    }
++    blk_get_perm(source->backend, &permissions, &shared_permissions);
++    expected_permissions = source->permissions;
++    expected_shared = source->shared_permissions;
++    if (source->phase != SOURCE_ORIGINAL) {
++        expected_permissions &= ~HOT_FORK_WRITE_PERMISSIONS;
++        expected_shared |= HOT_FORK_WRITE_PERMISSIONS;
++    }
++    if (permissions != expected_permissions ||
++        shared_permissions != expected_shared ||
++        bdrv_is_read_only(source->root) != (source->phase == SOURCE_FROZEN)) {
++        error_setg(errp, "Crucible read-only source access changed externally");
++        return false;
++    }
++    return true;
++}
++
++static bool source_transition_allowed(
++    const QemuBlockBackendHotForkReadOnlySource *source, Error **errp)
++{
++    QemuBlockBackendHotForkBarrierInventory barrier;
++    bool held;
++
++    if (!source_matches(source, errp)) {
++        return false;
++    }
++    if (qemu_get_current_aio_context() != qemu_get_aio_context()) {
++        error_setg(errp, "Crucible source transition requires the main AioContext");
++        return false;
++    }
++    if (!qemu_block_backend_hot_fork_barrier(
++            QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_QUERY, &barrier)) {
++        error_setg(errp, "Cannot inspect Crucible source transition barriers");
++        return false;
++    }
++    held = barrier.held || barrier.graph_held;
++    qemu_block_backend_hot_fork_barrier_inventory_destroy(&barrier);
++    if (held) {
++        error_setg(errp, "Crucible source transition must precede fork barriers");
++        return false;
++    }
++    return true;
++}
++
++QemuBlockBackendHotForkReadOnlySource *
++qemu_block_backend_hot_fork_read_only_source_new(BlockBackend *blk,
++                                               Error **errp)
++{
++    QemuBlockBackendHotForkReadOnlySource *source;
++    BlockDriverState *root;
++    BdrvChild *parent;
++    size_t parents = 0;
++    uint64_t permissions, shared_permissions;
++
++    GLOBAL_STATE_CODE();
++    if (!blk || !(root = blk_bs(blk)) || !bdrv_is_writable(root)) {
++        error_setg(errp, "Crucible read-only source requires a writable root");
++        return NULL;
++    }
++    /* Other graph consumers must not have their access changed by this owner. */
++    QLIST_FOREACH(parent, &root->parents, next_parent) {
++        parents++;
++    }
++    blk_get_perm(blk, &permissions, &shared_permissions);
++    if (parents != 1 || !(permissions & HOT_FORK_WRITE_PERMISSIONS)) {
++        error_setg(errp, "Crucible read-only source requires one writable owner");
++        return NULL;
++    }
++    source = g_new0(QemuBlockBackendHotForkReadOnlySource, 1);
++    *source = (QemuBlockBackendHotForkReadOnlySource) {
++        .backend = blk,
++        .root = root,
++        .permissions = permissions,
++        .shared_permissions = shared_permissions,
++        .owner = getpid(),
++        .phase = SOURCE_ORIGINAL,
++    };
++    blk_ref(blk);
++    bdrv_ref(root);
++    return source;
++}
++
++bool qemu_block_backend_hot_fork_read_only_source_freeze(
++    QemuBlockBackendHotForkReadOnlySource *source, Error **errp)
++{
++    bool frozen = false;
++
++    GLOBAL_STATE_CODE();
++    if (!source_transition_allowed(source, errp)) {
++        return false;
++    }
++    bdrv_drained_begin(source->root);
++    if (source->phase == SOURCE_ORIGINAL) {
++        if (blk_set_perm(source->backend,
++                         source->permissions & ~HOT_FORK_WRITE_PERMISSIONS,
++                         source->shared_permissions | HOT_FORK_WRITE_PERMISSIONS,
++                         errp) < 0) {
++            goto out;
++        }
++        source->phase = SOURCE_PERMISSIONS_REDUCED;
++    }
++    if (source->phase == SOURCE_PERMISSIONS_REDUCED) {
++        /* Native reopen flushes caches before any child can inherit them. */
++        if (bdrv_reopen_set_read_only(source->root, true, errp) < 0) {
++            goto out;
++        }
++        source->phase = SOURCE_FROZEN;
++    }
++    frozen = source_matches(source, errp) && source_graph_frozen(source, errp);
++out:
++    bdrv_drained_end(source->root);
++    return frozen;
++}
++
++bool qemu_block_backend_hot_fork_read_only_source_restore(
++    QemuBlockBackendHotForkReadOnlySource *source, Error **errp)
++{
++    bool restored = false;
++
++    GLOBAL_STATE_CODE();
++    if (!source_transition_allowed(source, errp)) {
++        return false;
++    }
++    bdrv_drained_begin(source->root);
++    if (source->phase == SOURCE_FROZEN) {
++        if (bdrv_reopen_set_read_only(source->root, false, errp) < 0) {
++            goto out;
++        }
++        source->phase = SOURCE_PERMISSIONS_REDUCED;
++    }
++    if (source->phase == SOURCE_PERMISSIONS_REDUCED) {
++        if (blk_set_perm(source->backend, source->permissions,
++                         source->shared_permissions, errp) < 0) {
++            goto out;
++        }
++        source->phase = SOURCE_ORIGINAL;
++    }
++    restored = source_matches(source, errp);
++out:
++    bdrv_drained_end(source->root);
++    return restored;
++}
++
++bool qemu_block_backend_hot_fork_read_only_source_is_frozen(
++    const QemuBlockBackendHotForkReadOnlySource *source)
++{
++    GLOBAL_STATE_CODE();
++    return source && source->phase == SOURCE_FROZEN &&
++           source_matches(source, NULL) && source_graph_frozen(source, NULL);
++}
++
++bool qemu_block_backend_hot_fork_read_only_source_free(
++    QemuBlockBackendHotForkReadOnlySource *source, Error **errp)
++{
++    GLOBAL_STATE_CODE();
++    if (!source_matches(source, errp)) {
++        return false;
++    }
++    if (source->phase != SOURCE_ORIGINAL) {
++        error_setg(errp, "Crucible read-only source must be restored before release");
++        return false;
++    }
++    bdrv_unref(source->root);
++    blk_unref(source->backend);
++    g_free(source);
++    return true;
++}
+diff --git a/block/meson.build b/block/meson.build
+index 2977e76f1..45b57c2a0 100644
+--- a/block/meson.build
++++ b/block/meson.build
+@@ -14,6 +14,7 @@ block_ss.add(files(
+   'copy-on-read.c',
+   'create.c',
+   'crypto.c',
++  'crucible-hot-fork-source.c',
+   'dirty-bitmap.c',
+   'filter-compress.c',
+   'graph-lock.c',
+diff --git a/include/system/block-backend-global-state.h b/include/system/block-backend-global-state.h
+index 89202187a..0aedf6482 100644
+--- a/include/system/block-backend-global-state.h
++++ b/include/system/block-backend-global-state.h
+@@ -131,6 +131,44 @@ bool qemu_block_backend_hot_fork_snapshot_bind(
+ void qemu_block_backend_hot_fork_barrier_inventory_destroy(
+     QemuBlockBackendHotForkBarrierInventory *inventory);
+ 
++typedef struct QemuBlockBackendHotForkReadOnlySource
++    QemuBlockBackendHotForkReadOnlySource;
++
++/*
++ * Retain one exact backend/root pair before preparing an immutable template.
++ * The caller has already stopped guest execution and owns that backend's
++ * complete lifecycle.  This process-local capability may not be serialized.
++ * Preparation does not change permissions or take the template barriers.
++ */
++QemuBlockBackendHotForkReadOnlySource *
++qemu_block_backend_hot_fork_read_only_source_new(BlockBackend *blk,
++                                               Error **errp);
++/*
++ * Flush and reopen the retained root read-only through its native driver.
++ * Success requires every reachable child (including backing and file nodes)
++ * to be read-only. Explicit writable child options fail closed; callers must
++ * restore a partially frozen root before resuming or releasing it.
++ * Calls run under the BQL/main AioContext before template barriers are held.
++ * Failure retains the exact partial transition for freeze or restore; it
++ * neither drops the owner nor permits source execution to resume.
++ */
++bool qemu_block_backend_hot_fork_read_only_source_freeze(
++    QemuBlockBackendHotForkReadOnlySource *source, Error **errp);
++/* Restore original access before source execution or ordinary destruction. */
++bool qemu_block_backend_hot_fork_read_only_source_restore(
++    QemuBlockBackendHotForkReadOnlySource *source, Error **errp);
++/* Report a freeze only while the exact root and all children stay read-only. */
++bool qemu_block_backend_hot_fork_read_only_source_is_frozen(
++    const QemuBlockBackendHotForkReadOnlySource *source);
++/*
++ * Release only a completely restored capability in its creating process.
++ * A rejected release leaves the capability and native references unchanged.
++ * An inherited child must use a separate explicit graph handoff, not restore
++ * or destroy its parent's writable root through this interface.
++ */
++bool qemu_block_backend_hot_fork_read_only_source_free(
++    QemuBlockBackendHotForkReadOnlySource *source, Error **errp);
++
+ /*
+  * Global state (GS) API. These functions run under the BQL.
+  *
+diff --git a/tests/unit/test-block-backend.c b/tests/unit/test-block-backend.c
+index f0fb267d5..d05cfd88e 100644
+--- a/tests/unit/test-block-backend.c
++++ b/tests/unit/test-block-backend.c
+@@ -25,6 +25,7 @@
+ #include "qemu/osdep.h"
+ #include "block/block.h"
+ #include "block/block-global-state.h"
++#include "block/block_int.h"
+ #include "system/block-backend.h"
+ #include "qapi/error.h"
+ #include "qobject/qdict.h"
+@@ -215,7 +216,7 @@ static void test_hot_fork_graph_writer_waits(void)
+     g_assert_cmpuint(barrier.graph_waiting_writers, ==, 0);
+ }
+ 
+-static void test_hot_fork_snapshot_binding(void)
++static void test_hot_fork_snapshot_binding_case(bool writable_file)
+ {
+     char snapshot_path[] = "/tmp/qemu-hot-fork-snapshot-XXXXXX";
+     char overlay_path[] = "/tmp/qemu-hot-fork-overlay-XXXXXX";
+@@ -227,6 +228,11 @@ static void test_hot_fork_snapshot_binding(void)
+     int snapshot_fd;
+     int overlay_fd;
+     size_t index;
++    QemuBlockBackendHotForkReadOnlySource *source;
++    Error *local_err = NULL;
++    uint64_t permissions, shared_permissions;
++    uint64_t original_permissions, original_shared;
++    uint8_t written[512], observed[512];
+ 
+     options = qdict_new();
+     snapshot_fd = mkstemp(snapshot_path);
+@@ -246,6 +252,9 @@ static void test_hot_fork_snapshot_binding(void)
+     qdict_put_str(options, "node-name", "crucible-overlay0");
+     qdict_put_str(options, "file.driver", "file");
+     qdict_put_str(options, "file.filename", overlay_path);
++    if (writable_file) {
++        qdict_put_bool(options, "file.read-only", false);
++    }
+     qdict_put_str(options, "backing.driver", "qcow2");
+     qdict_put_str(options, "backing.node-name", "crucible-snapshot0");
+     qdict_put_bool(options, "backing.read-only", true);
+@@ -293,6 +302,15 @@ static void test_hot_fork_snapshot_binding(void)
+     g_assert_true(barrier.snapshot_roots[0].snapshot_read_only);
+     qemu_block_backend_hot_fork_barrier_inventory_destroy(&barrier);
+ 
++    source = qemu_block_backend_hot_fork_read_only_source_new(blk, &error_abort);
++    g_assert_nonnull(source);
++    g_assert_false(qemu_block_backend_hot_fork_read_only_source_freeze(
++        source, &local_err));
++    g_assert_nonnull(local_err);
++    error_free(local_err);
++    local_err = NULL;
++    g_assert_false(qemu_block_backend_hot_fork_read_only_source_is_frozen(source));
++
+     g_assert_true(qemu_block_backend_hot_fork_barrier(
+         QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE, &barrier));
+     g_assert_false(barrier.snapshot_bound);
+@@ -300,12 +318,90 @@ static void test_hot_fork_snapshot_binding(void)
+     g_assert_cmpuint(barrier.snapshot_root_count, ==, 0);
+     qemu_block_backend_hot_fork_barrier_inventory_destroy(&barrier);
+ 
++    memset(written, 0x37, sizeof(written));
++    g_assert_cmpint(blk_pwrite(blk, 0, sizeof(written), written, 0), ==, 0);
++    blk_get_perm(blk, &original_permissions, &original_shared);
++    if (writable_file) {
++        g_assert_false(qemu_block_backend_hot_fork_read_only_source_freeze(
++            source, &local_err));
++        g_assert_nonnull(local_err);
++        g_assert_nonnull(strstr(error_get_pretty(local_err), "writable node"));
++        error_free(local_err);
++        local_err = NULL;
++        g_assert_true(bdrv_is_read_only(blk_bs(blk)));
++        g_assert_false(bdrv_is_read_only(blk_bs(blk)->file->bs));
++        g_assert_false(qemu_block_backend_hot_fork_read_only_source_is_frozen(
++            source));
++        goto restore;
++    }
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_freeze(
++        source, &error_abort));
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_is_frozen(source));
++    g_assert_true(bdrv_is_read_only(blk_bs(blk)));
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_freeze(
++        source, &error_abort));
++    blk_get_perm(blk, &permissions, &shared_permissions);
++    g_assert_cmpuint(permissions &
++        (BLK_PERM_WRITE | BLK_PERM_WRITE_UNCHANGED | BLK_PERM_RESIZE), ==, 0);
++    g_assert_cmpint(blk_pread(blk, 0, sizeof(observed), observed, 0), ==, 0);
++    g_assert_cmpmem(written, sizeof(written), observed, sizeof(observed));
++
++    g_assert_false(qemu_block_backend_hot_fork_read_only_source_free(
++        source, &local_err));
++    g_assert_nonnull(local_err);
++    error_free(local_err);
++    local_err = NULL;
++#ifdef __linux__
++    {
++        pid_t child = fork();
++        int status;
++
++        g_assert_cmpint(child, >=, 0);
++        if (child == 0) {
++            /* An inherited token must not reopen its parent's disk writable. */
++            bool rejected =
++                !qemu_block_backend_hot_fork_read_only_source_restore(source, NULL) &&
++                !qemu_block_backend_hot_fork_read_only_source_free(source, NULL);
++
++            _exit(rejected ? 0 : 1);
++        }
++        g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++        g_assert_true(WIFEXITED(status));
++        g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++    }
++#endif
++restore:
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_restore(
++        source, &error_abort));
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_restore(
++        source, &error_abort));
++    g_assert_false(qemu_block_backend_hot_fork_read_only_source_is_frozen(source));
++    g_assert_false(bdrv_is_read_only(blk_bs(blk)));
++    g_assert_true(bdrv_is_read_only(bdrv_cow_bs(blk_bs(blk))));
++    blk_get_perm(blk, &permissions, &shared_permissions);
++    g_assert_cmpuint(permissions, ==, original_permissions);
++    g_assert_cmpuint(shared_permissions, ==, original_shared);
++    g_assert_cmpint(blk_pwrite(blk, sizeof(written), sizeof(written), written, 0),
++                    ==, 0);
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_free(
++        source, &error_abort));
++
+     monitor_remove_blk(blk);
+     blk_unref(blk);
+     unlink(overlay_path);
+     unlink(snapshot_path);
+ }
+ 
++static void test_hot_fork_snapshot_binding(void)
++{
++    test_hot_fork_snapshot_binding_case(false);
++}
++
++static void test_hot_fork_source_writable_file(void)
++{
++    test_hot_fork_snapshot_binding_case(true);
++}
++
+ int main(int argc, char **argv)
+ {
+     bdrv_init();
+@@ -322,6 +418,8 @@ int main(int argc, char **argv)
+                     test_hot_fork_graph_writer_waits);
+     g_test_add_func("/block-backend/hot_fork_snapshot_binding",
+                     test_hot_fork_snapshot_binding);
++    g_test_add_func("/block-backend/hot_fork_source_writable_file",
++                    test_hot_fork_source_writable_file);
+ 
+     return g_test_run();
+ }

@@ -702,6 +702,10 @@ the per-point truth of every standing condition is not itself a log entry.
 | `coverage` | Observational | Engine, Guest | `kind` (basic_block / named), `id`/`block`, `node` (22, [GHC-7]/[GHC-22]) |
 | `assertion_proximity` | Observational | Engine | `id`, `quantifier`, `distance` (non-negative u128, 0=satisfied), `node` (18 §18.13, [ASRT-33]; steering-only, excluded from the comparison) |
 | `guest_marker` | Observational | Guest | `marker_kind` (assert/lifecycle/event/coverage/random_request), typed body (16 §16.5) |
+| `guest_measurement_begin` | Observational | Guest | `node`, `retired_icount`, `measurement`, `instance` (16 §16.5, RFC-0020 §08.4) |
+| `guest_metric_sample` | Observational | Guest | `node`, `retired_icount`, `measurement`, `instance`, `metric`, one bounded typed value (16 §16.5, RFC-0020 §08.4) |
+| `guest_measurement_end` | Observational | Guest | `node`, `retired_icount`, `measurement`, `instance` (16 §16.5, RFC-0020 §08.4) |
+| `guest_semantic_marker` | Observational | Guest | `node`, `retired_icount`, `marker`, `instance`, bounded key-ordered typed details (16 §16.5, RFC-0020 §08.4) |
 
 ```rust,illustrative
 /// The open-set payload (§19.2.2). The catalog (§19.7) fixes each variant's
@@ -735,6 +739,10 @@ pub enum EventPayload {
     Coverage { kind: CoverageKind, id: CoverageId, node: NodeId },
     AssertionProximity { id: AssertionId, quantifier: AssertionFlavor, distance: u128, node: Option<NodeId> }, // 18 §18.13, steering-only
     GuestMarker { node: NodeId, marker_kind: MarkerKind, body: Attrs }, // from 16 §16.5
+    GuestMeasurementBegin { node: NodeId, retired_icount: u64, measurement: Str, instance: Str },
+    GuestMetricSample { node: NodeId, retired_icount: u64, measurement: Str, instance: Str, metric: Str, value: TypedValue },
+    GuestMeasurementEnd { node: NodeId, retired_icount: u64, measurement: Str, instance: Str },
+    GuestSemanticMarker { node: NodeId, retired_icount: u64, marker: Str, instance: Str, details: Attrs },
 }
 ```
 
@@ -744,7 +752,8 @@ pub enum EventPayload {
   (armed/fired/cancelled); message delivered/dropped; assertion evaluated and
   state-changed; savepoint and fork structural markers; scheduler tick/quantum;
   and the observational `diagnostic`, `coverage`, `assertion_proximity`, and
-  `guest_marker` kinds — with
+  `guest_marker`, `guest_measurement_begin`, `guest_metric_sample`,
+  `guest_measurement_end`, and `guest_semantic_marker` kinds — with
   each kind's `EventClass` fixed as in the table ([OBS-13], [OBS-14], [OBS-15]).
   The catalog is open and versioned ([OBS-10]). *Gate:* `gate:harness-lint`,
   `gate:content-address`. *Spec:* §19.7.

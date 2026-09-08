@@ -1,0 +1,332 @@
+diff --git a/include/qemu/crucible-hot-fork-child.h b/include/qemu/crucible-hot-fork-child.h
+index 74f6e8c34..538cf7e85 100644
+--- a/include/qemu/crucible-hot-fork-child.h
++++ b/include/qemu/crucible-hot-fork-child.h
+@@ -21,6 +21,12 @@ typedef struct QemuCrucibleHotForkDescriptorReplacement {
+     int target_fd;
+ } QemuCrucibleHotForkDescriptorReplacement;
+ 
++typedef struct QemuCrucibleHotForkDescriptorTableTransaction {
++    pid_t parent_pid;
++    pid_t child_pid;
++    bool active;
++} QemuCrucibleHotForkDescriptorTableTransaction;
++
+ typedef int (*QemuCrucibleHotForkDescriptorVerifier)(void *opaque);
+ 
+ /**
+@@ -94,38 +100,58 @@ int qemu_crucible_hot_fork_replace_endpoint_descriptors(
+     void *opaque);
+ 
+ /**
+- * qemu_crucible_hot_fork_apply_descriptor_table() - close inherited FDs
++ * qemu_crucible_hot_fork_begin_descriptor_table() - close FD admission
+  * @identity: mutable parent identity captured before fork
++ * @transaction: caller-owned descriptor-table transaction storage
++ *
++ * Proves close_range(2) support, authenticates the immediate child, blocks
++ * every blockable signal, consumes the child's parent identity, and opens a
++ * one-shot descriptor-table transaction.  Since fork leaves only the calling
++ * thread alive, the installed signal mask closes every remaining source of
++ * descriptor admission before the caller constructs the final retain table.
++ * The mask remains installed for the future child reinitializer.
++ *
++ * Any error after child authentication is destructive: the caller must
++ * terminate or quarantine the child and must not resume QEMU.
++ *
++ * Returns zero after opening the child transaction, or a negative errno-style
++ * status on failure.
++ */
++int qemu_crucible_hot_fork_begin_descriptor_table(
++    QemuCrucibleHotForkParentIdentity *identity,
++    QemuCrucibleHotForkDescriptorTableTransaction *transaction);
++
++/**
++ * qemu_crucible_hot_fork_apply_descriptor_table() - close inherited FDs
++ * @transaction: active child transaction opened before table construction
+  * @replacements: exact control and wake source-to-target descriptor pairs
+  * @retained_fds: sorted final descriptor table retained by the child
+  * @retained_fd_count: number of entries in @retained_fds
+  * @verify: callback that authenticates the complete installed table
+  * @opaque: caller-owned value passed to @verify
+  *
+- * Authenticates the immediate child, replaces both endpoint slots, and uses
++ * Consumes the active transaction, replaces both endpoint slots, and uses
+  * Linux close_range(2) to close every descriptor not named by the final table.
+  * The table must be strictly increasing, contain both replacement targets,
+- * omit both replacement sources and the parent pidfd, and contain at most
++ * omit both replacement sources, and contain at most
+  * QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS entries.  The verifier runs
+  * only after every close range succeeds and every retained slot is still live.
+- * The operation blocks every blockable signal before changing descriptors and
+- * leaves that mask installed for the future child reinitializer.
+  *
+- * Successful child authentication consumes @identity in the child even if a
+- * later operation fails.  Any nonzero result after that point is destructive:
+- * the caller must terminate or quarantine the child and must not resume QEMU.
+- * The parent process owns an independent copy of every descriptor and remains
+- * unchanged.
++ * Invalid arguments leave the active transaction available for an exact retry.
++ * Once endpoint replacement starts, the transaction is consumed and any
++ * nonzero result is destructive: the caller must terminate or quarantine the
++ * child and must not resume QEMU.  The parent process owns an independent copy
++ * of every descriptor and remains unchanged.
+  *
+- * This primitive is intentionally unwired.  A future coordinator must build
+- * the table while descriptor admission is closed and compose the separate
+- * mapping and child-reinitialization proofs before authorizing resume.
++ * This primitive is intentionally unwired.  A future coordinator must compose
++ * the separate mapping and child-reinitialization proofs before authorizing
++ * resume.
+  *
+  * Returns zero after exact disposition and verification, or a negative
+  * errno-style status on failure.
+  */
+ int qemu_crucible_hot_fork_apply_descriptor_table(
+-    QemuCrucibleHotForkParentIdentity *identity,
++    QemuCrucibleHotForkDescriptorTableTransaction *transaction,
+     const QemuCrucibleHotForkDescriptorReplacement
+         replacements[QEMU_CRUCIBLE_HOT_FORK_ENDPOINT_REPLACEMENT_COUNT],
+     const int *retained_fds,
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index 4fe027c96..f9c631c53 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -85,6 +85,12 @@ static int compare_descriptors(const void *left, const void *right)
+     return (left_fd > right_fd) - (left_fd < right_fd);
+ }
+ 
++static int accept_endpoints(void *opaque)
++{
++    (void)opaque;
++    return 0;
++}
++
+ static void write_child_result(int fd, int result)
+ {
+     ssize_t written;
+@@ -202,6 +208,7 @@ static void test_immediate_child_replaces_parent_endpoints(void)
+ static void test_immediate_child_applies_closed_descriptor_table(void)
+ {
+     QemuCrucibleHotForkParentIdentity identity;
++    QemuCrucibleHotForkDescriptorTableTransaction transaction;
+     QemuCrucibleHotForkDescriptorReplacement replacements[2];
+     ClosedDescriptorTableVerification verification;
+     int old_control[2];
+@@ -235,11 +242,6 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+         .source_fd = new_wake,
+         .target_fd = old_wake,
+     };
+-    retained_fds[0] = old_control[0];
+-    retained_fds[1] = old_wake;
+-    retained_fds[2] = child_result[1];
+-    qsort(retained_fds, G_N_ELEMENTS(retained_fds), sizeof(retained_fds[0]),
+-          compare_descriptors);
+     verification = (ClosedDescriptorTableVerification) {
+         .control_fd = old_control[0],
+         .wake_fd = old_wake,
+@@ -249,13 +251,29 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+     child = fork();
+     g_assert_cmpint(child, >=, 0);
+     if (child == 0) {
++        sigset_t blocked;
+         int result;
+ 
+         close(child_result[0]);
+-        result = qemu_crucible_hot_fork_apply_descriptor_table(
+-            &identity, replacements, retained_fds,
+-            G_N_ELEMENTS(retained_fds), verify_closed_descriptor_table,
+-            &verification);
++        result = qemu_crucible_hot_fork_begin_descriptor_table(
++            &identity, &transaction);
++        if (result == 0) {
++            if (sigprocmask(SIG_SETMASK, NULL, &blocked) < 0 ||
++                sigismember(&blocked, SIGUSR1) != 1) {
++                result = errno != 0 ? -errno : -EIO;
++            }
++        }
++        if (result == 0) {
++            retained_fds[0] = old_control[0];
++            retained_fds[1] = old_wake;
++            retained_fds[2] = child_result[1];
++            qsort(retained_fds, G_N_ELEMENTS(retained_fds),
++                  sizeof(retained_fds[0]), compare_descriptors);
++            result = qemu_crucible_hot_fork_apply_descriptor_table(
++                &transaction, replacements, retained_fds,
++                G_N_ELEMENTS(retained_fds), verify_closed_descriptor_table,
++                &verification);
++        }
+         write_child_result(child_result[1], result);
+         _exit(0);
+     }
+@@ -280,6 +298,44 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+     close(inherited_extra);
+ }
+ 
++static void test_inactive_descriptor_transaction_is_unchanged(void)
++{
++    QemuCrucibleHotForkDescriptorTableTransaction transaction = {
++        .parent_pid = getpid(),
++        .child_pid = getpid(),
++        .active = false,
++    };
++    QemuCrucibleHotForkDescriptorReplacement replacements[2];
++    int descriptors[4];
++    int retained_fds[2];
++
++    for (size_t index = 0; index < G_N_ELEMENTS(descriptors); index++) {
++        descriptors[index] = eventfd(0, EFD_CLOEXEC);
++        g_assert_cmpint(descriptors[index], >=, 0);
++    }
++    replacements[0] = (QemuCrucibleHotForkDescriptorReplacement) {
++        .source_fd = descriptors[0],
++        .target_fd = descriptors[1],
++    };
++    replacements[1] = (QemuCrucibleHotForkDescriptorReplacement) {
++        .source_fd = descriptors[2],
++        .target_fd = descriptors[3],
++    };
++    retained_fds[0] = descriptors[1];
++    retained_fds[1] = descriptors[3];
++    qsort(retained_fds, G_N_ELEMENTS(retained_fds),
++          sizeof(retained_fds[0]), compare_descriptors);
++
++    g_assert_cmpint(qemu_crucible_hot_fork_apply_descriptor_table(
++                        &transaction, replacements, retained_fds,
++                        G_N_ELEMENTS(retained_fds), accept_endpoints, NULL),
++                    ==, -EPERM);
++    for (size_t index = 0; index < G_N_ELEMENTS(descriptors); index++) {
++        g_assert_cmpint(fcntl(descriptors[index], F_GETFD), >=, 0);
++        close(descriptors[index]);
++    }
++}
++
+ static void test_grandchild_cannot_use_parent_identity(void)
+ {
+     QemuCrucibleHotForkParentIdentity identity;
+@@ -426,12 +482,6 @@ static void test_verifier_rejection_rolls_back(void)
+     close(new_wake);
+ }
+ 
+-static int accept_endpoints(void *opaque)
+-{
+-    (void)opaque;
+-    return 0;
+-}
+-
+ static void test_invalid_shape_is_unchanged(void)
+ {
+     int descriptors[4];
+@@ -466,6 +516,8 @@ int main(int argc, char **argv)
+                     test_immediate_child_replaces_parent_endpoints);
+     g_test_add_func("/crucible/hot-fork-child/closed-descriptor-table",
+                     test_immediate_child_applies_closed_descriptor_table);
++    g_test_add_func("/crucible/hot-fork-child/inactive-descriptor-transaction",
++                    test_inactive_descriptor_transaction_is_unchanged);
+     g_test_add_func("/crucible/hot-fork-child/grandchild-rejected",
+                     test_grandchild_cannot_use_parent_identity);
+     g_test_add_func("/crucible/hot-fork-child/exact-replacement",
+diff --git a/util/crucible-hot-fork-child.c b/util/crucible-hot-fork-child.c
+index 4706b9807..48097f4c5 100644
+--- a/util/crucible-hot-fork-child.c
++++ b/util/crucible-hot-fork-child.c
+@@ -246,16 +246,13 @@ static int crucible_hot_fork_accept_descriptor_replacements(void *opaque)
+ }
+ 
+ static bool crucible_hot_fork_retained_table_is_valid(
+-    const QemuCrucibleHotForkParentIdentity *identity,
+     const QemuCrucibleHotForkDescriptorReplacement replacements[2],
+     const int *retained_fds,
+     size_t retained_fd_count)
+ {
+     bool target_present[2] = { false, false };
+ 
+-    if (!identity || identity->parent_pid <= 1 ||
+-        identity->parent_pidfd < 0 || !replacements || !retained_fds ||
+-        retained_fd_count == 0 ||
++    if (!replacements || !retained_fds || retained_fd_count == 0 ||
+         retained_fd_count >
+             QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS ||
+         !crucible_hot_fork_descriptors_are_distinct(replacements)) {
+@@ -267,7 +264,6 @@ static bool crucible_hot_fork_retained_table_is_valid(
+ 
+         if (fd < 0 || fcntl(fd, F_GETFD) < 0 ||
+             (index > 0 && retained_fds[index - 1] >= fd) ||
+-            fd == identity->parent_pidfd ||
+             fd == replacements[0].source_fd ||
+             fd == replacements[1].source_fd) {
+             return false;
+@@ -301,21 +297,20 @@ static int crucible_hot_fork_close_outside_table(const int *retained_fds,
+     return crucible_hot_fork_close_range(first, UINT_MAX);
+ }
+ 
+-int qemu_crucible_hot_fork_apply_descriptor_table(
++int qemu_crucible_hot_fork_begin_descriptor_table(
+     QemuCrucibleHotForkParentIdentity *identity,
+-    const QemuCrucibleHotForkDescriptorReplacement replacements[2],
+-    const int *retained_fds,
+-    size_t retained_fd_count,
+-    QemuCrucibleHotForkDescriptorVerifier verify,
+-    void *opaque)
++    QemuCrucibleHotForkDescriptorTableTransaction *transaction)
+ {
++    pid_t parent_pid;
+     int result;
+ 
+-    if (!verify || !crucible_hot_fork_retained_table_is_valid(
+-                       identity, replacements, retained_fds,
+-                       retained_fd_count)) {
++    if (!identity || !transaction) {
+         return -EINVAL;
+     }
++    transaction->parent_pid = -1;
++    transaction->child_pid = -1;
++    transaction->active = false;
++
+     result = crucible_hot_fork_probe_close_range();
+     if (result != 0) {
+         return result;
+@@ -324,12 +319,43 @@ int qemu_crucible_hot_fork_apply_descriptor_table(
+     if (result != 0) {
+         return result;
+     }
++
++    parent_pid = identity->parent_pid;
+     result = crucible_hot_fork_block_child_signals();
+     qemu_crucible_hot_fork_release_parent_identity(identity);
+     if (result != 0) {
+         return result;
+     }
+ 
++    transaction->parent_pid = parent_pid;
++    transaction->child_pid = getpid();
++    transaction->active = true;
++    return 0;
++}
++
++int qemu_crucible_hot_fork_apply_descriptor_table(
++    QemuCrucibleHotForkDescriptorTableTransaction *transaction,
++    const QemuCrucibleHotForkDescriptorReplacement replacements[2],
++    const int *retained_fds,
++    size_t retained_fd_count,
++    QemuCrucibleHotForkDescriptorVerifier verify,
++    void *opaque)
++{
++    int result;
++
++    if (!transaction) {
++        return -EINVAL;
++    }
++    if (!transaction->active || transaction->parent_pid <= 1 ||
++        transaction->child_pid != getpid()) {
++        return -EPERM;
++    }
++    if (!verify || !crucible_hot_fork_retained_table_is_valid(
++                       replacements, retained_fds, retained_fd_count)) {
++        return -EINVAL;
++    }
++
++    transaction->active = false;
+     result = qemu_crucible_hot_fork_replace_endpoint_descriptors(
+         replacements, crucible_hot_fork_accept_descriptor_replacements, NULL);
+     if (result != 0) {

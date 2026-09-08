@@ -471,10 +471,11 @@ where
         }
         let causal_decisions = self.backend.drain_causal_decisions()?;
         if !causal_decisions.is_empty() {
-            let (recorded, configuration, append) = self
+            let (recorded, discovered_choices, configuration, append) = self
                 .loop_impl
                 .append_backend_causal_decisions(causal_decisions)?;
             outcome.decisions.extend(recorded);
+            outcome.discovered_choices.extend(discovered_choices);
             outcome.configuration = configuration;
             outcome.event_log_entries.extend(append.entries);
             outcome.event_log_segment_bytes = append.segment_bytes;
@@ -595,7 +596,15 @@ where
     fn append_backend_causal_decisions(
         &mut self,
         decisions: Vec<Decision>,
-    ) -> Result<(Vec<Decision>, Configuration, SchedulerEventLogAppend), SchedulerError> {
+    ) -> Result<
+        (
+            Vec<Decision>,
+            Vec<crucible_campaign::ChoiceDiscovery>,
+            Configuration,
+            SchedulerEventLogAppend,
+        ),
+        SchedulerError,
+    > {
         self.loop_impl.append_backend_causal_decisions(decisions)
     }
 
@@ -662,13 +671,14 @@ where
                     message: error.to_string(),
                 })
         });
-        let final_decisions = self.backend.drain_causal_decisions();
-        let final_decision_append = match final_decisions {
-            Ok(decisions) if decisions.is_empty() => Ok(Vec::new()),
-            Ok(decisions) => self
-                .loop_impl
-                .append_backend_causal_decisions(decisions)
-                .map(|(_recorded, _configuration, append)| append.entries),
+        let final_decisions = match self.backend.drain_causal_decisions() {
+            Ok(decisions) if decisions.is_empty() => Ok(()),
+            Ok(decisions) => Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "{} live-backend causal decisions remain without a quantum discovery handoff at shutdown",
+                    decisions.len()
+                ),
+            }),
             Err(error) => Err(SchedulerError::from(error)),
         };
         let final_observations = self.backend.drain_observable_events().and_then(|events| {
@@ -729,7 +739,7 @@ where
         let loop_result = self.loop_impl.shutdown();
         let backend_result = self.backend.shutdown().map_err(SchedulerError::from);
         let mut entries = final_network_append?;
-        entries.extend(final_decision_append?);
+        final_decisions?;
         entries.extend(final_append.map_err(SchedulerError::from)?);
         entries.extend(loop_result?);
         backend_result?;

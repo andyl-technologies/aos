@@ -1053,6 +1053,7 @@ fn replay_to_savepoint_decision_fixtures(
                 crucible::Decision::Override(_) => "override",
                 crucible::Decision::Preemption(_) => "preemption",
                 crucible::Decision::AppRandom(_) => "app-random",
+                crucible::Decision::Selection(_) => "selection",
             };
             ReplayToSavepointDecisionFixture {
                 sequence: index as u64,

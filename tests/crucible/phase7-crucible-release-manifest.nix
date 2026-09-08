@@ -54,7 +54,6 @@
   rpcAbi = "crucible-rpc-abi-v${rpcAbiVersion}+${rpcProtocolBuild}";
   qemuPackageMetadataProbe = import ../../pkgs/emulation/qemu.nix {
     inherit lib;
-    inherit (pkgs) buildPackages stdenv libcap-ng libusb1 libgcrypt gnutls fuse3;
     pname = "qemu-crucible";
     enablePlugins = true;
     applyCruciblePatches = true;
@@ -68,6 +67,14 @@
     meson = null;
     ninja = null;
     python3 = "/aos-python3";
+    stdenv = {
+      isCross = false;
+      hostPlatform = {
+        isDarwin = false;
+        constraints.cpu = "x86_64";
+      };
+    };
+    buildPackages = {};
     setuptools = null;
     distlib = null;
     glib = null;
@@ -75,6 +82,11 @@
     zlib = null;
     libslirp = null;
     dtc = null;
+    libcap-ng = null;
+    libusb1 = null;
+    libgcrypt = null;
+    gnutls = null;
+    fuse3 = null;
   };
   releaseManifest = import ../../pkgs/tools/crucible/_release-manifest.nix {
     inherit lib;

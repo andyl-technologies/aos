@@ -9,7 +9,7 @@
 use crate::scheduler::SchedulerEventLogClass;
 
 /// Current event-kind catalog schema version.
-pub const EVENT_KIND_CATALOG_VERSION: u32 = 5;
+pub const EVENT_KIND_CATALOG_VERSION: u32 = 7;
 
 /// One open-set event kind known by this engine version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

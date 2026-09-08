@@ -381,10 +381,10 @@ index 8b3eced85..565a84c57 100644
  /*
   * Architecture interrupt-controller interception contract.  These objects are
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 12d734b22..80b958974 100644
+index d04ea4cc0..d6eec9a71 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -2044,6 +2044,20 @@ QEMU_PLUGIN_API
+@@ -2062,6 +2062,20 @@ QEMU_PLUGIN_API
  size_t qemu_plugin_crucible_fault_capabilities(
      struct qemu_plugin_crucible_fault_capability *out, size_t capacity);
  

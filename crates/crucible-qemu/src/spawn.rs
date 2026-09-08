@@ -8,13 +8,22 @@
 
 use std::ffi::CString;
 use std::fs::{self, File};
-use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::io::{self, Read, Write as _};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::fs::FileExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
+use crate::supervision::HostSupervisionDeadline;
+
+use rustix::fs::{
+    FileType, Mode, OFlags, fcntl_getfl, fcntl_setfl, fstat, fstatfs, fsync, open, openat,
+};
 use thiserror::Error;
 
 use crate::{
@@ -22,7 +31,1069 @@ use crate::{
     QemuNodeChild,
 };
 
+mod materialization;
+use materialization::{PreparedRootOverlayMaterialization, PreparedVmStateMaterialization};
+pub use materialization::{
+    QemuRootOverlayMaterialization, QemuVmStateBinding, QemuVmStateMaterialization,
+};
+
 const CHILD_SOURCE_FD_MIN: RawFd = QEMU_PLUGIN_WAKE_FD + 1;
+const CGROUP_ATTACH_SELF: &[u8] = b"0\n";
+const MAX_SUPERVISOR_GROUPS: usize = 65_536;
+const VMSTATE_FILE_NAME_C: &[u8] = b"crucible-vmstate.qcow2\0";
+const GUARDED_IMAGE_TOOL_TIMEOUT: Duration = Duration::from_secs(60);
+const GUARDED_IMAGE_TOOL_REAP_TIMEOUT: Duration = Duration::from_secs(5);
+const GUARDED_IMAGE_TOOL_POLL_INTERVAL: Duration = Duration::from_millis(2);
+
+/// Owned pre-exec contract for one attempt-contained child process.
+///
+/// The cgroup descriptors pin the attempt directory and its `cgroup.procs`
+/// file. The cancellation descriptor is a nonblocking eventfd that becomes
+/// readable once cancellation wins. All descriptors must be opened by the
+/// supervising resource guard and remain owned by that guard independently of
+/// this per-spawn duplicate. A production contract also carries validated non-root
+/// child credentials; pre-exec clears supplementary groups, sets
+/// `no_new_privs`, and switches every user/group identity after attaching the
+/// child to the cgroup. The contract seals the exact admitted vCPU,
+/// resident-memory, and aggregate writable-byte ceilings so guarded launch can
+/// reject an incompatible command before touching the run directory or
+/// allocating child descriptors. A private lifecycle token also binds every
+/// prepared run-directory authority to this exact contract rather than merely
+/// to another attempt with equal numeric limits.
+#[derive(Debug)]
+pub struct QemuChildProcessContract {
+    cgroup_directory: Option<OwnedFd>,
+    cgroup_procs: OwnedFd,
+    cancellation_event: OwnedFd,
+    maximum_vcpus: u32,
+    maximum_resident_bytes: u64,
+    maximum_writable_bytes: u64,
+    credentials: Option<QemuChildCredentials>,
+    attempt_binding: Arc<AttemptResourceBinding>,
+}
+
+/// Pinned authority over one pre-provisioned QEMU run directory.
+///
+/// The authority opens the directory without following a final symlink and
+/// retains the exact regular VMState file and optional writable root overlay
+/// named inside it. Guarded spawn uses the directory descriptor for `fchdir`
+/// and reauthenticates every required named artifact immediately before
+/// `exec`. It also retains the exact admitted command resource profile and
+/// contract ceiling. Replacement of the diagnostic path, replacement of a
+/// retained artifact before that boundary, or reuse under a different resource
+/// admission or attempt lifecycle therefore fails closed.
+/// This authority does not make the directory namespace immutable: the
+/// production supervisor must exclude concurrent mutators until QEMU has
+/// opened every relative launch artifact and must enforce the separate
+/// aggregate quota.
+#[derive(Debug)]
+#[must_use = "guarded QEMU launch requires the pinned run-directory authority"]
+pub struct QemuPreparedRunDirectory {
+    path: PathBuf,
+    directory: OwnedFd,
+    directory_identity: PinnedFileIdentity,
+    vmstate: OwnedFd,
+    vmstate_identity: PinnedFileIdentity,
+    root_overlay: Option<OwnedFd>,
+    root_overlay_identity: Option<PinnedFileIdentity>,
+    launch_resources: crate::QemuLaunchResourceRequirements,
+    admitted_ceiling: (u32, u64, u64),
+    child_credentials: Option<QemuChildCredentials>,
+    attempt_binding: Arc<AttemptResourceBinding>,
+    vmstate_materialization: PreparedVmStateMaterialization,
+    root_overlay_materialization: PreparedRootOverlayMaterialization,
+}
+
+/// Reopen-independent read capability for one reaped QEMU VMState artifact.
+///
+/// The capability exposes bounded positional reads only. It carries no run-
+/// directory, mutation, quota, or process authority and remains readable after
+/// the attempt owner unlinks its private run-directory artifacts.
+#[derive(Debug)]
+pub struct QemuCapturedVmState {
+    file: File,
+    logical_length: u64,
+}
+
+impl QemuCapturedVmState {
+    /// Builds an unvalidated captured source for cross-crate conformance tests.
+    ///
+    /// Production code can obtain this capability only from the post-reap
+    /// realization executor.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn from_unvalidated_test_file(file: File, logical_length: u64) -> Self {
+        Self {
+            file,
+            logical_length,
+        }
+    }
+
+    /// Returns the exact stable byte length attested after process reap.
+    #[must_use]
+    pub const fn logical_length(&self) -> u64 {
+        self.logical_length
+    }
+
+    /// Reads bytes at one absolute artifact offset without shared cursor state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the retained inode cannot be read.
+    pub fn read_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
+        self.file.read_at(buffer, offset)
+    }
+}
+
+#[derive(Debug)]
+struct AttemptResourceBinding;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PinnedFileIdentity {
+    device: u128,
+    inode: u128,
+}
+
+impl PinnedFileIdentity {
+    fn from_stat(metadata: &rustix::fs::Stat) -> Self {
+        Self {
+            device: u128::from(metadata.st_dev),
+            inode: u128::from(metadata.st_ino),
+        }
+    }
+
+    fn matches(self, metadata: &rustix::fs::Stat) -> bool {
+        self == Self::from_stat(metadata)
+    }
+}
+
+impl QemuPreparedRunDirectory {
+    /// Admits and opens one pre-provisioned run directory for a launch profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] before path access when the command exceeds
+    /// the contract's admitted resources. Otherwise returns an error when the
+    /// path cannot be opened without following a final symlink, does not name
+    /// a directory, or lacks the required regular non-symlink VMState file.
+    pub fn open_for_launch(
+        command: &QemuLaunchCommand,
+        path: impl AsRef<Path>,
+        contract: &QemuChildProcessContract,
+    ) -> Result<Self, QemuSpawnError> {
+        Self::open_for_requirements(command.resource_requirements(), path.as_ref(), contract)
+    }
+
+    /// Opens a prepared directory from an explicit resource profile for tests.
+    ///
+    /// This constructor exercises the same descriptor pinning and resource
+    /// admission as [`Self::open_for_launch`] without requiring an unrelated
+    /// launch-command fixture.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when the profile exceeds the process contract
+    /// or the directory does not contain the required pinned regular files.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn open_for_test_requirements(
+        requirements: crate::QemuLaunchResourceRequirements,
+        path: impl AsRef<Path>,
+        contract: &QemuChildProcessContract,
+    ) -> Result<Self, QemuSpawnError> {
+        Self::open_for_requirements(requirements, path.as_ref(), contract)
+    }
+
+    pub(crate) fn open_for_requirements(
+        requirements: crate::QemuLaunchResourceRequirements,
+        path: &Path,
+        contract: &QemuChildProcessContract,
+    ) -> Result<Self, QemuSpawnError> {
+        validate_guarded_launch_requirements(requirements, contract)?;
+        let path = path.to_owned();
+        let directory = open(
+            &path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "pin prepared QEMU run directory",
+            source: source.into(),
+        })?;
+        let vmstate = open_prepared_vmstate(&directory, &path)?;
+        Self::from_admitted_descriptors(requirements, &path, directory, vmstate, contract)
+    }
+
+    /// Constructs one prepared authority from already-pinned storage descriptors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when the launch profile exceeds the process
+    /// contract or either descriptor has the wrong file type.
+    pub(crate) fn from_admitted_descriptors(
+        requirements: crate::QemuLaunchResourceRequirements,
+        path: &Path,
+        directory: OwnedFd,
+        vmstate: OwnedFd,
+        contract: &QemuChildProcessContract,
+    ) -> Result<Self, QemuSpawnError> {
+        validate_guarded_launch_requirements(requirements, contract)?;
+
+        let directory_metadata = fstat(&directory).map_err(|source| QemuSpawnError::Io {
+            operation: "inspect prepared QEMU run directory",
+            source: source.into(),
+        })?;
+        if FileType::from_raw_mode(directory_metadata.st_mode) != FileType::Directory {
+            return Err(invalid_input(
+                "validate prepared QEMU run directory",
+                "prepared QEMU run path is not a directory",
+            ));
+        }
+        let vmstate_metadata = fstat(&vmstate).map_err(|source| QemuSpawnError::Io {
+            operation: "inspect prepared exact-VMState container",
+            source: source.into(),
+        })?;
+        if FileType::from_raw_mode(vmstate_metadata.st_mode) != FileType::RegularFile {
+            return Err(invalid_input(
+                "validate prepared exact-VMState container",
+                "exact-VMState container path is not a regular file",
+            ));
+        }
+        let root_overlay = open_optional_root_overlay(&directory)?;
+        let root_overlay_metadata =
+            root_overlay
+                .as_ref()
+                .map(fstat)
+                .transpose()
+                .map_err(|source| QemuSpawnError::Io {
+                    operation: "inspect prepared root overlay",
+                    source: source.into(),
+                })?;
+        if root_overlay_metadata.as_ref().is_some_and(|metadata| {
+            FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
+        }) {
+            return Err(invalid_input(
+                "validate prepared root overlay",
+                "prepared root overlay path is not a regular file",
+            ));
+        }
+        let root_overlay_identity = root_overlay_metadata
+            .as_ref()
+            .map(PinnedFileIdentity::from_stat);
+
+        Ok(Self {
+            path: path.to_owned(),
+            directory_identity: PinnedFileIdentity::from_stat(&directory_metadata),
+            directory,
+            vmstate_identity: PinnedFileIdentity::from_stat(&vmstate_metadata),
+            vmstate,
+            root_overlay_materialization: if root_overlay.is_some() {
+                PreparedRootOverlayMaterialization::Provisioned
+            } else {
+                PreparedRootOverlayMaterialization::Absent
+            },
+            root_overlay,
+            root_overlay_identity,
+            launch_resources: requirements,
+            admitted_ceiling: contract.admitted_resource_ceiling(),
+            child_credentials: contract.credentials,
+            attempt_binding: Arc::clone(&contract.attempt_binding),
+            vmstate_materialization: PreparedVmStateMaterialization::Provisioned,
+        })
+    }
+
+    /// Binds one owner-only listener for this directory's admitted child.
+    pub(crate) fn bind_child_owned_socket(
+        &self,
+        file_name: &str,
+    ) -> Result<crate::unix_socket_path::ExpectedPeerUnixListener, QemuSpawnError> {
+        let directory_metadata = fstat(&self.directory).map_err(|source| QemuSpawnError::Io {
+            operation: "reinspect prepared QEMU run directory for socket binding",
+            source: source.into(),
+        })?;
+        if !self.directory_identity.matches(&directory_metadata) {
+            return Err(QemuSpawnError::PreparedRunDirectoryChanged {
+                path: self.path.clone(),
+            });
+        }
+        let credentials = self.child_credentials.ok_or_else(|| {
+            invalid_input(
+                "bind child-owned QEMU socket",
+                "prepared run directory has no admitted child credentials",
+            )
+        })?;
+        let listener = crate::unix_socket_path::bind_child_owned_at(
+            self.directory.as_fd(),
+            file_name,
+            credentials.user_id,
+            credentials.group_id,
+        )
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "bind child-owned QEMU socket",
+            source,
+        })?;
+        crate::unix_socket_path::ExpectedPeerUnixListener::for_child(
+            listener,
+            credentials.user_id,
+            credentials.group_id,
+        )
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "configure child-owned QEMU socket listener",
+            source,
+        })
+    }
+
+    /// Returns the original run-directory path for diagnostics only.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Lends the provisioned empty VMState container as a hot-fork destination.
+    ///
+    /// The retained source copies its frozen VMState bytes into this file
+    /// during the fork and the child adopts it as its private container. The
+    /// container must still be the empty file this authority pinned at
+    /// provisioning; a materialized or replaced container is not a valid
+    /// destination.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when the container was materialized for a
+    /// fresh launch, its pinned identity changed, or it is no longer empty.
+    pub fn hot_fork_child_file_destination(
+        &self,
+    ) -> Result<std::os::fd::BorrowedFd<'_>, QemuSpawnError> {
+        if self.vmstate_materialization != PreparedVmStateMaterialization::Provisioned {
+            return Err(QemuSpawnError::PreparedVmStateNotReady {
+                path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+            });
+        }
+        let retained = self.revalidate_identity()?;
+        if retained.st_size != 0 {
+            return Err(invalid_input(
+                "lend prepared exact-VMState container",
+                "prepared exact-VMState container is not empty",
+            ));
+        }
+        Ok(std::os::fd::AsFd::as_fd(&self.vmstate))
+    }
+
+    /// Lends the provisioned empty root overlay as a hot-fork destination.
+    ///
+    /// Disk-backed hot-fork children must receive a branch-private copy of the
+    /// source generation's writable overlay. The destination must remain the
+    /// empty regular file pinned when this run directory was provisioned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when this launch has no root overlay, the
+    /// overlay is being materialized, its pinned identity changed, or it is no
+    /// longer empty.
+    pub fn hot_fork_root_overlay_destination(
+        &self,
+    ) -> Result<std::os::fd::BorrowedFd<'_>, QemuSpawnError> {
+        if !self.launch_resources.has_root_overlay()
+            || self.root_overlay_materialization != PreparedRootOverlayMaterialization::Provisioned
+        {
+            return Err(QemuSpawnError::PreparedRootOverlayNotReady {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            });
+        }
+        let retained = self.revalidate_root_overlay_identity()?;
+        if retained.st_size != 0 {
+            return Err(invalid_input(
+                "lend prepared root-overlay container",
+                "prepared root-overlay container is not empty",
+            ));
+        }
+        let overlay = self.root_overlay.as_ref().ok_or_else(|| {
+            QemuSpawnError::PreparedRootOverlayNotReady {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            }
+        })?;
+        Ok(std::os::fd::AsFd::as_fd(overlay))
+    }
+
+    /// Seals the destination pair against one successful QEMU fork result.
+    ///
+    /// The launch token is the unforgeable proof that QEMU consumed the exact
+    /// staged child-file generation. Sealing reauthenticates both named pinned
+    /// artifacts after QEMU wrote them, verifies that the pair remains distinct
+    /// and within the admitted aggregate storage ceiling, then prevents either
+    /// file from being lent to another fork or mistaken for fresh artifacts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] and leaves the pair fail-closed when the run
+    /// directory was not in its provisioned state, a named inode changed, the
+    /// pair aliases one backing file, or its combined size exceeds admission.
+    pub fn seal_hot_fork_child_file_transfer<A>(
+        &mut self,
+        launch: &crate::QemuHotForkChildLaunch<A>,
+    ) -> Result<(), QemuSpawnError> {
+        if self.vmstate_materialization != PreparedVmStateMaterialization::Provisioned
+            || (self.launch_resources.has_root_overlay()
+                && self.root_overlay_materialization
+                    != PreparedRootOverlayMaterialization::Provisioned)
+            || launch.parent_state().request().child_files_generation() == 0
+        {
+            self.invalidate_hot_fork_child_file_transfer();
+            return Err(invalid_input(
+                "seal hot-fork child files",
+                "successful fork does not match a provisioned child-file destination pair",
+            ));
+        }
+        let vmstate = self.revalidate_identity();
+        let overlay = self
+            .launch_resources
+            .has_root_overlay()
+            .then(|| self.revalidate_root_overlay_identity())
+            .transpose();
+        let validation = vmstate.and_then(|vmstate| {
+            overlay.map(|overlay| {
+                let overlay_bytes = overlay
+                    .as_ref()
+                    .and_then(|metadata| u64::try_from(metadata.st_size).ok())
+                    .unwrap_or(0);
+                let vmstate_bytes = u64::try_from(vmstate.st_size).unwrap_or(u64::MAX);
+                (vmstate_bytes, overlay_bytes)
+            })
+        });
+        let (vmstate_bytes, overlay_bytes) = match validation {
+            Ok(bytes) => bytes,
+            Err(source) => {
+                self.invalidate_hot_fork_child_file_transfer();
+                return Err(source);
+            }
+        };
+        let expected_file_count = 1 + usize::from(self.launch_resources.has_root_overlay());
+        let vmstate_root = crate::QmpHotForkChildFileRoot::node_name(
+            crate::DEFAULT_VMSTATE_NODE_NAME,
+        )
+        .map_err(|_source| {
+            invalid_input(
+                "seal hot-fork child files",
+                "the built-in VMState root selector is invalid",
+            )
+        })?;
+        let overlay_root = self
+            .launch_resources
+            .has_root_overlay()
+            .then(|| crate::QmpHotForkChildFileRoot::device(crate::ROOT_DRIVE_ID))
+            .transpose()
+            .map_err(|_source| {
+                invalid_input(
+                    "seal hot-fork child files",
+                    "the built-in root-overlay selector is invalid",
+                )
+            })?;
+        let matches_vmstate = launch.child_files().iter().any(|file| {
+            file.root() == &vmstate_root
+                && u64::try_from(self.vmstate_identity.device) == Ok(file.device())
+                && u64::try_from(self.vmstate_identity.inode) == Ok(file.inode())
+        });
+        let matches_overlay = match (overlay_root.as_ref(), self.root_overlay_identity) {
+            (None, None) => true,
+            (Some(root), Some(identity)) => launch.child_files().iter().any(|file| {
+                file.root() == root
+                    && u64::try_from(identity.device) == Ok(file.device())
+                    && u64::try_from(identity.inode) == Ok(file.inode())
+            }),
+            _ => false,
+        };
+        if launch.child_files().len() != expected_file_count
+            || !matches_vmstate
+            || !matches_overlay
+            || vmstate_bytes == 0
+            || (self.launch_resources.has_root_overlay() && overlay_bytes == 0)
+            || self.root_overlay_identity == Some(self.vmstate_identity)
+            || vmstate_bytes
+                .checked_add(overlay_bytes)
+                .is_none_or(|bytes| bytes > self.admitted_ceiling.2)
+        {
+            self.invalidate_hot_fork_child_file_transfer();
+            return Err(invalid_input(
+                "seal hot-fork child files",
+                "transferred child files alias or exceed their admitted storage ceiling",
+            ));
+        }
+        self.vmstate_materialization = PreparedVmStateMaterialization::HotForkChild;
+        if self.launch_resources.has_root_overlay() {
+            self.root_overlay_materialization = PreparedRootOverlayMaterialization::HotForkChild;
+        }
+        Ok(())
+    }
+
+    /// Invalidates destinations after any fork exchange without a success token.
+    ///
+    /// This operation can only remove launch authority. It is safe after an
+    /// explicit rejection and required after an ambiguous or post-fork error.
+    pub fn invalidate_hot_fork_child_file_transfer(&mut self) {
+        self.vmstate_materialization = PreparedVmStateMaterialization::Updating;
+        if self.launch_resources.has_root_overlay() {
+            self.root_overlay_materialization = PreparedRootOverlayMaterialization::Updating;
+        }
+    }
+
+    fn revalidate(&self) -> Result<(), QemuSpawnError> {
+        if self.vmstate_materialization == PreparedVmStateMaterialization::Updating {
+            return Err(QemuSpawnError::PreparedVmStateNotReady {
+                path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+            });
+        }
+        let retained_vmstate = self.revalidate_identity()?;
+        if self.root_overlay_materialization == PreparedRootOverlayMaterialization::Updating {
+            return Err(QemuSpawnError::PreparedRootOverlayNotReady {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            });
+        }
+        if self.launch_resources.has_root_overlay()
+            && self.root_overlay_materialization == PreparedRootOverlayMaterialization::Absent
+        {
+            return Err(QemuSpawnError::PreparedRootOverlayNotReady {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            });
+        }
+        if let PreparedVmStateMaterialization::Exact { bytes, .. } = self.vmstate_materialization {
+            let actual = u64::try_from(retained_vmstate.st_size).unwrap_or(u64::MAX);
+            if actual != bytes {
+                return Err(QemuSpawnError::PreparedVmStateIncomplete {
+                    expected: bytes,
+                    actual,
+                });
+            }
+        }
+        if let PreparedRootOverlayMaterialization::Exact { bytes, .. } =
+            self.root_overlay_materialization
+        {
+            let retained = self.revalidate_root_overlay_identity()?;
+            let actual = u64::try_from(retained.st_size).unwrap_or(u64::MAX);
+            if actual != bytes {
+                return Err(QemuSpawnError::PreparedRootOverlayIncomplete {
+                    expected: bytes,
+                    actual,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn revalidate_identity(&self) -> Result<rustix::fs::Stat, QemuSpawnError> {
+        let directory_metadata = fstat(&self.directory).map_err(|source| QemuSpawnError::Io {
+            operation: "reinspect prepared QEMU run directory",
+            source: source.into(),
+        })?;
+        if !self.directory_identity.matches(&directory_metadata) {
+            return Err(QemuSpawnError::PreparedRunDirectoryChanged {
+                path: self.path.clone(),
+            });
+        }
+        let retained_vmstate = fstat(&self.vmstate).map_err(|source| QemuSpawnError::Io {
+            operation: "reinspect retained exact-VMState container",
+            source: source.into(),
+        })?;
+        if !self.vmstate_identity.matches(&retained_vmstate) {
+            return Err(QemuSpawnError::PreparedVmStateChanged {
+                path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+            });
+        }
+        let named_vmstate = open_prepared_vmstate(&self.directory, &self.path)?;
+        let named_metadata = fstat(&named_vmstate).map_err(|source| QemuSpawnError::Io {
+            operation: "reinspect named exact-VMState container",
+            source: source.into(),
+        })?;
+        if !self.vmstate_identity.matches(&named_metadata) {
+            return Err(QemuSpawnError::PreparedVmStateChanged {
+                path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+            });
+        }
+        Ok(retained_vmstate)
+    }
+
+    fn revalidate_root_overlay_identity(&self) -> Result<rustix::fs::Stat, QemuSpawnError> {
+        let retained = self.root_overlay.as_ref().ok_or_else(|| {
+            QemuSpawnError::PreparedRootOverlayNotReady {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            }
+        })?;
+        let identity = self.root_overlay_identity.ok_or_else(|| {
+            QemuSpawnError::PreparedRootOverlayNotReady {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            }
+        })?;
+        let retained_metadata = fstat(retained).map_err(|source| QemuSpawnError::Io {
+            operation: "reinspect retained root overlay",
+            source: source.into(),
+        })?;
+        if !identity.matches(&retained_metadata) {
+            return Err(QemuSpawnError::PreparedRootOverlayChanged {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            });
+        }
+        let named = open_prepared_root_overlay(&self.directory, &self.path)?;
+        let named_metadata = fstat(&named).map_err(|source| QemuSpawnError::Io {
+            operation: "reinspect named root overlay",
+            source: source.into(),
+        })?;
+        if !identity.matches(&named_metadata) {
+            return Err(QemuSpawnError::PreparedRootOverlayChanged {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            });
+        }
+        Ok(retained_metadata)
+    }
+
+    /// Seals a positional read capability after the owning QEMU process is reaped.
+    ///
+    /// This method is crate-private so only the realization executor can invoke
+    /// it after its active-node shutdown attestation. It intentionally accepts
+    /// a file whose length changed through a completed QEMU `savevm` operation;
+    /// ordinary launch revalidation continues to require the prior exact length.
+    pub(crate) fn capture_vmstate_after_reap(&self) -> Result<QemuCapturedVmState, QemuSpawnError> {
+        if self.vmstate_materialization == PreparedVmStateMaterialization::Updating {
+            return Err(QemuSpawnError::PreparedVmStateNotReady {
+                path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+            });
+        }
+        let before = self.revalidate_identity()?;
+        let logical_length =
+            u64::try_from(before.st_size).map_err(|_| QemuSpawnError::PreparedVmStateLength {
+                length: u64::MAX,
+                maximum: self.admitted_ceiling.2,
+            })?;
+        if logical_length == 0 || logical_length > self.admitted_ceiling.2 {
+            return Err(QemuSpawnError::PreparedVmStateLength {
+                length: logical_length,
+                maximum: self.admitted_ceiling.2,
+            });
+        }
+        fsync(&self.vmstate).map_err(|source| QemuSpawnError::Io {
+            operation: "synchronize captured exact-VMState artifact",
+            source: source.into(),
+        })?;
+        let file = File::from(
+            self.vmstate
+                .try_clone()
+                .map_err(|source| QemuSpawnError::Io {
+                    operation: "duplicate captured exact-VMState artifact",
+                    source,
+                })?,
+        );
+        let after = fstat(&file).map_err(|source| QemuSpawnError::Io {
+            operation: "reinspect captured exact-VMState artifact",
+            source: source.into(),
+        })?;
+        if !self.vmstate_identity.matches(&after)
+            || u64::try_from(after.st_size).ok() != Some(logical_length)
+        {
+            return Err(QemuSpawnError::PreparedVmStateChanged {
+                path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+            });
+        }
+        Ok(QemuCapturedVmState {
+            file,
+            logical_length,
+        })
+    }
+
+    fn validate_launch_basis(
+        &self,
+        command: &QemuLaunchCommand,
+        contract: &QemuChildProcessContract,
+    ) -> Result<(), QemuSpawnError> {
+        if self.launch_resources != command.resource_requirements()
+            || self.admitted_ceiling != contract.admitted_resource_ceiling()
+            || !Arc::ptr_eq(&self.attempt_binding, &contract.attempt_binding)
+        {
+            return Err(QemuSpawnError::PreparedLaunchAdmissionChanged);
+        }
+        validate_guarded_launch_resources(command, contract)
+    }
+
+    fn validate_helper_basis(
+        &self,
+        contract: &QemuChildProcessContract,
+    ) -> Result<(), QemuSpawnError> {
+        if self.admitted_ceiling != contract.admitted_resource_ceiling()
+            || !Arc::ptr_eq(&self.attempt_binding, &contract.attempt_binding)
+            || self.vmstate_materialization != PreparedVmStateMaterialization::Provisioned
+            || self.root_overlay_materialization != PreparedRootOverlayMaterialization::Absent
+        {
+            return Err(QemuSpawnError::PreparedLaunchAdmissionChanged);
+        }
+        validate_guarded_launch_requirements(self.launch_resources, contract)?;
+        self.revalidate_identity().map(|_| ())
+    }
+}
+
+fn open_prepared_vmstate(directory: &OwnedFd, path: &Path) -> Result<OwnedFd, QemuSpawnError> {
+    openat(
+        directory,
+        crate::DEFAULT_VMSTATE_FILE_NAME,
+        OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(|source| {
+        let source: io::Error = source.into();
+        if source.kind() == io::ErrorKind::NotFound {
+            QemuSpawnError::MissingPreparedVmState {
+                path: path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+            }
+        } else {
+            QemuSpawnError::Io {
+                operation: "open prepared exact-VMState container",
+                source,
+            }
+        }
+    })
+}
+
+fn open_optional_root_overlay(directory: &OwnedFd) -> Result<Option<OwnedFd>, QemuSpawnError> {
+    match openat(
+        directory,
+        crate::DEFAULT_ROOT_OVERLAY_FILE_NAME,
+        OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    ) {
+        Ok(file) => Ok(Some(file)),
+        Err(rustix::io::Errno::NOENT) => Ok(None),
+        Err(source) => Err(QemuSpawnError::Io {
+            operation: "open optional prepared root overlay",
+            source: source.into(),
+        }),
+    }
+}
+
+fn open_prepared_root_overlay(directory: &OwnedFd, path: &Path) -> Result<OwnedFd, QemuSpawnError> {
+    open_optional_root_overlay(directory)?.ok_or_else(|| {
+        QemuSpawnError::PreparedRootOverlayNotReady {
+            path: path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+        }
+    })
+}
+
+fn invalid_input(operation: &'static str, message: &'static str) -> QemuSpawnError {
+    QemuSpawnError::Io {
+        operation,
+        source: io::Error::new(io::ErrorKind::InvalidInput, message),
+    }
+}
+
+/// Distinct unprivileged credentials installed in a guarded QEMU child.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct QemuChildCredentials {
+    user_id: libc::uid_t,
+    group_id: libc::gid_t,
+}
+
+struct SupervisorCredentials {
+    user_ids: [libc::uid_t; 3],
+    group_ids: [libc::gid_t; 3],
+    supplementary_group_ids: Vec<libc::gid_t>,
+}
+
+impl QemuChildCredentials {
+    /// Validates credentials that cannot retain the supervisor's identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError::InvalidChildCredentials`] when either ID is
+    /// root, the user ID equals any real, effective, or saved daemon user, or
+    /// the group ID equals any real, effective, saved, or supplementary daemon
+    /// group. Returns
+    /// [`QemuSpawnError::Io`] when the daemon group set cannot be inspected
+    /// within its explicit bound.
+    pub(crate) fn new(user_id: libc::uid_t, group_id: libc::gid_t) -> Result<Self, QemuSpawnError> {
+        let supervisor = current_supervisor_credentials()?;
+        if user_id == 0
+            || group_id == 0
+            || supervisor.user_ids.contains(&user_id)
+            || supervisor.group_ids.contains(&group_id)
+            || supervisor.supplementary_group_ids.contains(&group_id)
+        {
+            return Err(QemuSpawnError::InvalidChildCredentials { user_id, group_id });
+        }
+        Ok(Self { user_id, group_id })
+    }
+}
+
+fn current_supervisor_credentials() -> Result<SupervisorCredentials, QemuSpawnError> {
+    let mut real_user_id = 0;
+    let mut effective_user_id = 0;
+    let mut saved_user_id = 0;
+    let users_read = unsafe {
+        // SAFETY: all three pointers name writable uid_t values.
+        libc::getresuid(
+            &mut real_user_id,
+            &mut effective_user_id,
+            &mut saved_user_id,
+        )
+    };
+    if users_read != 0 {
+        return Err(last_io_error("inspect supervisor user credentials"));
+    }
+    let mut real_group_id = 0;
+    let mut effective_group_id = 0;
+    let mut saved_group_id = 0;
+    let groups_read = unsafe {
+        // SAFETY: all three pointers name writable gid_t values.
+        libc::getresgid(
+            &mut real_group_id,
+            &mut effective_group_id,
+            &mut saved_group_id,
+        )
+    };
+    if groups_read != 0 {
+        return Err(last_io_error("inspect supervisor group credentials"));
+    }
+    Ok(SupervisorCredentials {
+        user_ids: [real_user_id, effective_user_id, saved_user_id],
+        group_ids: [real_group_id, effective_group_id, saved_group_id],
+        supplementary_group_ids: current_supplementary_groups()?,
+    })
+}
+
+fn current_supplementary_groups() -> Result<Vec<libc::gid_t>, QemuSpawnError> {
+    let count = unsafe {
+        // SAFETY: a zero count permits a null list and returns its required size.
+        libc::getgroups(0, std::ptr::null_mut())
+    };
+    if count < 0 {
+        return Err(last_io_error("inspect supervisor supplementary groups"));
+    }
+    let count = usize::try_from(count).map_err(|source| QemuSpawnError::Io {
+        operation: "bound supervisor supplementary groups",
+        source: io::Error::new(io::ErrorKind::InvalidData, source),
+    })?;
+    if count > MAX_SUPERVISOR_GROUPS {
+        return Err(QemuSpawnError::Io {
+            operation: "bound supervisor supplementary groups",
+            source: io::Error::new(
+                io::ErrorKind::InvalidData,
+                "supervisor supplementary groups exceed the supported bound",
+            ),
+        });
+    }
+    let mut groups = vec![0; count];
+    if count == 0 {
+        return Ok(groups);
+    }
+    let returned = unsafe {
+        // SAFETY: `groups` contains exactly `count` writable gid_t elements.
+        libc::getgroups(count as libc::c_int, groups.as_mut_ptr())
+    };
+    if returned < 0 {
+        return Err(last_io_error("read supervisor supplementary groups"));
+    }
+    if usize::try_from(returned).ok() != Some(count) {
+        return Err(QemuSpawnError::Io {
+            operation: "read supervisor supplementary groups",
+            source: io::Error::new(
+                io::ErrorKind::InvalidData,
+                "supervisor supplementary groups changed while inspected",
+            ),
+        });
+    }
+    Ok(groups)
+}
+
+impl QemuChildProcessContract {
+    /// Duplicates this contract for another generation under the same attempt.
+    ///
+    /// The duplicated descriptors retain the same cgroup, cancellation event,
+    /// credentials, resource ceilings, and private attempt binding. This is for
+    /// a lifecycle launcher whose aggregate guard is shared through an ownership
+    /// registry and therefore cannot lend a reference while that registry is
+    /// unlocked.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError::Io`] when a retained descriptor cannot be
+    /// duplicated.
+    pub fn try_clone_for_attempt_generation(&self) -> Result<Self, QemuSpawnError> {
+        let cgroup_directory = self
+            .cgroup_directory
+            .as_ref()
+            .map(OwnedFd::try_clone)
+            .transpose()
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "duplicate generation cgroup directory",
+                source,
+            })?;
+        let cgroup_procs = self
+            .cgroup_procs
+            .try_clone()
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "duplicate generation cgroup.procs descriptor",
+                source,
+            })?;
+        let cancellation_event =
+            self.cancellation_event
+                .try_clone()
+                .map_err(|source| QemuSpawnError::Io {
+                    operation: "duplicate generation cancellation eventfd",
+                    source,
+                })?;
+
+        Ok(Self {
+            cgroup_directory,
+            cgroup_procs,
+            cancellation_event,
+            maximum_vcpus: self.maximum_vcpus,
+            maximum_resident_bytes: self.maximum_resident_bytes,
+            maximum_writable_bytes: self.maximum_writable_bytes,
+            credentials: self.credentials,
+            attempt_binding: Arc::clone(&self.attempt_binding),
+        })
+    }
+
+    fn admitted_resource_ceiling(&self) -> (u32, u64, u64) {
+        (
+            self.maximum_vcpus,
+            self.maximum_resident_bytes,
+            self.maximum_writable_bytes,
+        )
+    }
+
+    /// Builds one child-side containment and credential contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when either descriptor is invalid.
+    pub(crate) fn new(
+        cgroup_directory: OwnedFd,
+        cgroup_procs: OwnedFd,
+        cancellation_event: OwnedFd,
+        maximum_vcpus: u32,
+        maximum_resident_bytes: u64,
+        maximum_writable_bytes: u64,
+        credentials: QemuChildCredentials,
+    ) -> Result<Self, QemuSpawnError> {
+        validate_cgroup_directory_fd(&cgroup_directory)?;
+        validate_cgroup_procs_fd(&cgroup_procs)?;
+        validate_cancellation_eventfd(cancellation_event.as_raw_fd())?;
+        Ok(Self {
+            cgroup_directory: Some(cgroup_directory),
+            cgroup_procs,
+            cancellation_event,
+            maximum_vcpus,
+            maximum_resident_bytes,
+            maximum_writable_bytes,
+            credentials: Some(credentials),
+            attempt_binding: Arc::new(AttemptResourceBinding),
+        })
+    }
+
+    #[cfg(test)]
+    fn for_test(
+        cgroup_procs: OwnedFd,
+        cancellation_event: OwnedFd,
+        maximum_writable_bytes: u64,
+    ) -> Self {
+        Self::from_unvalidated_test_descriptors(
+            cgroup_procs,
+            cancellation_event,
+            u32::MAX,
+            u64::MAX,
+            maximum_writable_bytes,
+        )
+    }
+
+    /// Builds an unvalidated process contract for cross-crate conformance tests.
+    ///
+    /// This constructor exists only with the `test-support` feature or while
+    /// compiling this crate's unit tests. It must never be used as a production
+    /// containment boundary.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn from_unvalidated_test_descriptors(
+        cgroup_procs: OwnedFd,
+        cancellation_event: OwnedFd,
+        maximum_vcpus: u32,
+        maximum_resident_bytes: u64,
+        maximum_writable_bytes: u64,
+    ) -> Self {
+        Self {
+            cgroup_directory: None,
+            cgroup_procs,
+            cancellation_event,
+            maximum_vcpus,
+            maximum_resident_bytes,
+            maximum_writable_bytes,
+            credentials: None,
+            attempt_binding: Arc::new(AttemptResourceBinding),
+        }
+    }
+
+    /// Builds an unvalidated hot-fork process contract for cross-crate tests.
+    ///
+    /// Unlike [`Self::from_unvalidated_test_descriptors`], this value carries a
+    /// directory descriptor so tests can exercise retained-template descriptor
+    /// transfer. No descriptor provenance or credential policy is validated.
+    /// It must never be used as a production containment boundary.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn from_unvalidated_hot_fork_test_descriptors(
+        cgroup_directory: OwnedFd,
+        cgroup_procs: OwnedFd,
+        cancellation_event: OwnedFd,
+        maximum_vcpus: u32,
+        maximum_resident_bytes: u64,
+        maximum_writable_bytes: u64,
+    ) -> Self {
+        Self {
+            cgroup_directory: Some(cgroup_directory),
+            cgroup_procs,
+            cancellation_event,
+            maximum_vcpus,
+            maximum_resident_bytes,
+            maximum_writable_bytes,
+            credentials: None,
+            attempt_binding: Arc::new(AttemptResourceBinding),
+        }
+    }
+
+    /// Duplicates the cgroup directory, its `cgroup.procs`, and the
+    /// cancellation eventfd for one hot-fork contract stage, in that order.
+    pub(crate) fn duplicate_hot_fork_descriptors(
+        &self,
+    ) -> Result<(OwnedFd, OwnedFd, OwnedFd), QemuSpawnError> {
+        let cgroup_directory = self
+            .cgroup_directory
+            .as_ref()
+            .ok_or_else(|| QemuSpawnError::Io {
+                operation: "duplicate hot-fork cgroup directory",
+                source: io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "test-only process contract has no cgroup directory",
+                ),
+            })?
+            .try_clone()
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "duplicate hot-fork cgroup directory",
+                source,
+            })?;
+        let cgroup_procs = self
+            .cgroup_procs
+            .try_clone()
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "duplicate hot-fork cgroup.procs descriptor",
+                source,
+            })?;
+        let cancellation_event =
+            self.cancellation_event
+                .try_clone()
+                .map_err(|source| QemuSpawnError::Io {
+                    operation: "duplicate hot-fork cancellation eventfd",
+                    source,
+                })?;
+        Ok((cgroup_directory, cgroup_procs, cancellation_event))
+    }
+
+    pub(crate) const fn maximum_writable_bytes(&self) -> u64 {
+        self.maximum_writable_bytes
+    }
+}
 
 /// Host-side descriptors retained after spawning a QEMU child.
 #[derive(Debug)]
@@ -133,6 +1204,26 @@ pub struct QemuSpawnedChild {
     resources: QemuSpawnHostResources,
 }
 
+/// Failed guarded image preparation with optional unreaped helper ownership.
+///
+/// Callers must transfer an unreaped helper into their attempt-wide process
+/// owner before dropping the error. Errors without a child attest that no
+/// helper was spawned or that every spawned helper was synchronously reaped.
+#[derive(Debug, Error)]
+#[error("{source}")]
+pub struct QemuGuardedImagePreparationError {
+    pub(super) source: QemuSpawnError,
+    pub(super) child: Option<QemuNodeChild>,
+}
+
+impl QemuGuardedImagePreparationError {
+    /// Takes the unique wait authority for an unreaped image-tool helper.
+    #[must_use]
+    pub fn take_unreaped_child(&mut self) -> Option<QemuNodeChild> {
+        self.child.take()
+    }
+}
+
 impl QemuSpawnedChild {
     /// Consumes the spawn result into its node child and retained host resources.
     #[must_use]
@@ -171,6 +1262,196 @@ pub enum QemuSpawnError {
         /// Trimmed qemu-img diagnostic output.
         stderr: String,
     },
+    /// A guarded image-tool helper exited unsuccessfully.
+    #[error("guarded qemu-img operation `{operation}` failed with {status}")]
+    GuardedImageTool {
+        /// Stable preparation operation.
+        operation: &'static str,
+        /// Rendered process exit status.
+        status: String,
+    },
+    /// A guarded image-tool helper exceeded its absolute execution deadline.
+    #[error("guarded qemu-img operation `{operation}` exceeded its execution deadline")]
+    GuardedImageToolTimeout {
+        /// Stable preparation operation.
+        operation: &'static str,
+    },
+    /// A guarded QEMU setup probe exceeded its absolute execution deadline.
+    #[error("guarded QEMU setup probe exceeded its execution deadline")]
+    GuardedQemuProbeTimeout,
+    /// A guarded QEMU setup probe exceeded its bounded diagnostic output.
+    #[error("guarded QEMU setup probe exceeded its {maximum_bytes}-byte output limit")]
+    GuardedQemuProbeOutputLimit {
+        /// Maximum bytes retained independently for stdout and stderr.
+        maximum_bytes: usize,
+    },
+    /// A disk-backed fresh launch omitted its immutable root image.
+    #[error("fresh disk-backed QEMU preparation requires one root image")]
+    FreshRootImageMissing,
+    /// A diskless fresh launch was paired with an unexpected root image.
+    #[error("diskless fresh QEMU preparation received an unexpected root image")]
+    FreshRootImageUnexpected,
+    /// Guarded fresh preparation requires a path immune to cwd changes.
+    #[error("guarded qemu-img path must be absolute: {path}")]
+    FreshImageToolPath {
+        /// Rejected adjacent image-tool path.
+        path: PathBuf,
+    },
+    /// The immutable root image has no bytes.
+    #[error("fresh QEMU root image is empty: {path}")]
+    FreshRootImageEmpty {
+        /// Root-image path used only for diagnostics.
+        path: PathBuf,
+    },
+    /// Fresh image-tool output has not been completely sealed.
+    #[error("fresh QEMU generation artifacts are not ready: {path}")]
+    FreshArtifactsNotReady {
+        /// Descriptor-pinned generation path used only for diagnostics.
+        path: PathBuf,
+    },
+    /// The guarded run directory does not contain its pre-provisioned VMState image.
+    #[error("guarded QEMU launch requires pre-provisioned VMState container {path}")]
+    MissingPreparedVmState {
+        /// Required exact-VMState container path.
+        path: PathBuf,
+    },
+    /// The retained run-directory descriptor no longer names its opened inode.
+    #[error("prepared QEMU run-directory identity changed: {path}")]
+    PreparedRunDirectoryChanged {
+        /// Original diagnostic path of the pinned directory.
+        path: PathBuf,
+    },
+    /// The VMState name no longer resolves to the retained regular file.
+    #[error("prepared exact-VMState identity changed: {path}")]
+    PreparedVmStateChanged {
+        /// Original diagnostic path of the VMState container.
+        path: PathBuf,
+    },
+    /// The command, admitted ceiling, or attempt lifecycle differs from preparation.
+    #[error("prepared QEMU run directory is bound to a different launch admission")]
+    PreparedLaunchAdmissionChanged,
+    /// A replacement destination was already populated or partially updated.
+    #[error("replacement QEMU generation destination is not empty: {path}")]
+    ReplacementDestinationNotEmpty {
+        /// Descriptor-pinned destination path used only for diagnostics.
+        path: PathBuf,
+    },
+    /// A replacement source lacks a complete stable writable artifact.
+    #[error("replacement QEMU generation source is not ready: {path}")]
+    ReplacementSourceNotReady {
+        /// Descriptor-pinned source path used only for diagnostics.
+        path: PathBuf,
+    },
+    /// The complete replacement artifact pair exceeds the aggregate quota.
+    #[error(
+        "replacement artifacts use {vmstate_bytes} VMState bytes and {root_overlay_bytes} root-overlay bytes, above maximum {maximum}"
+    )]
+    ReplacementArtifactsTooLarge {
+        /// Logical VMState bytes.
+        vmstate_bytes: u64,
+        /// Logical root-overlay bytes.
+        root_overlay_bytes: u64,
+        /// Admitted aggregate writable-byte ceiling.
+        maximum: u64,
+    },
+    /// A retained replacement artifact changed during descriptor-bound cloning.
+    #[error("replacement QEMU artifact changed during cloning: {path}")]
+    ReplacementArtifactChanged {
+        /// Descriptor-pinned generation path used only for diagnostics.
+        path: PathBuf,
+    },
+    /// The exact VMState image has an invalid declared byte length.
+    #[error("prepared exact-VMState length {length} is outside the admitted maximum {maximum}")]
+    PreparedVmStateLength {
+        /// Declared exact checkpoint bytes.
+        length: u64,
+        /// Admitted aggregate writable-byte ceiling.
+        maximum: u64,
+    },
+    /// The exact VMState image is absent or a replacement remains incomplete.
+    #[error("prepared exact-VMState materialization is not ready: {path}")]
+    PreparedVmStateNotReady {
+        /// Pinned VMState path used only for diagnostics.
+        path: PathBuf,
+    },
+    /// The materialized exact VMState is shorter or longer than declared.
+    #[error("prepared exact-VMState is incomplete: expected {expected} bytes, found {actual}")]
+    PreparedVmStateIncomplete {
+        /// Declared complete checkpoint length.
+        expected: u64,
+        /// Bytes written or found in the pinned file.
+        actual: u64,
+    },
+    /// The committed VMState file belongs to another exact-checkpoint root.
+    #[error("prepared exact-VMState binding mismatch: expected {expected:?}, found {actual:?}")]
+    PreparedVmStateBindingMismatch {
+        /// Root-derived binding requested by the exact restore.
+        expected: QemuVmStateBinding,
+        /// Root-derived binding whose authenticated bytes were committed.
+        actual: QemuVmStateBinding,
+    },
+    /// The root-overlay name no longer resolves to the retained regular file.
+    #[error("prepared root-overlay identity changed: {path}")]
+    PreparedRootOverlayChanged {
+        /// Original diagnostic path of the root overlay.
+        path: PathBuf,
+    },
+    /// The exact root overlay has an invalid declared byte length.
+    #[error(
+        "prepared exact root-overlay length {length} is outside the admitted maximum {maximum}"
+    )]
+    PreparedRootOverlayLength {
+        /// Declared exact checkpoint bytes.
+        length: u64,
+        /// Conservative aggregate writable-byte share.
+        maximum: u64,
+    },
+    /// The exact root-overlay destination already exists.
+    #[error("prepared exact root-overlay destination already exists: {path}")]
+    PreparedRootOverlayAlreadyExists {
+        /// Pinned root-overlay path used only for diagnostics.
+        path: PathBuf,
+    },
+    /// The exact root overlay is absent or remains incomplete.
+    #[error("prepared exact root-overlay materialization is not ready: {path}")]
+    PreparedRootOverlayNotReady {
+        /// Pinned root-overlay path used only for diagnostics.
+        path: PathBuf,
+    },
+    /// The materialized root overlay is shorter or longer than declared.
+    #[error("prepared exact root overlay is incomplete: expected {expected} bytes, found {actual}")]
+    PreparedRootOverlayIncomplete {
+        /// Declared complete checkpoint length.
+        expected: u64,
+        /// Bytes written or found in the pinned file.
+        actual: u64,
+    },
+    /// The committed root overlay belongs to another exact-checkpoint root.
+    #[error(
+        "prepared exact root-overlay binding mismatch: expected {expected:?}, found {actual:?}"
+    )]
+    PreparedRootOverlayBindingMismatch {
+        /// Root-derived binding requested by exact restore.
+        expected: QemuVmStateBinding,
+        /// Root-derived binding whose authenticated bytes were committed.
+        actual: QemuVmStateBinding,
+    },
+    /// The guarded child would retain root or a supervisor credential.
+    #[error(
+        "QEMU child credentials must be non-root and distinct from the supervisor: {user_id}:{group_id}"
+    )]
+    InvalidChildCredentials {
+        /// Requested child user ID.
+        user_id: libc::uid_t,
+        /// Requested child group ID.
+        group_id: libc::gid_t,
+    },
+    /// The validated launch command exceeds the attempt's admitted ceiling.
+    #[error("QEMU launch exceeds admitted attempt resources: {source}")]
+    LaunchResources {
+        /// Exact launch-resource mismatch.
+        source: crate::QemuLaunchResourceError,
+    },
 }
 
 /// Spawns a validated QEMU launch command in `run_directory`.
@@ -199,15 +1480,77 @@ pub fn spawn_qemu_child_with_fds_in_directory(
     let child = spawn_process_with_resources(
         command.executable(),
         command.args(),
-        Some(run_directory),
+        QemuSpawnWorkingDirectory::Path(run_directory),
         child_resources,
         &[],
         "spawn QEMU child",
+        None,
     )?;
     Ok(QemuSpawnedChild {
         child: QemuNodeChild::new(child),
         resources,
     })
+}
+
+/// Spawns QEMU from an already-provisioned run directory under `contract`.
+///
+/// Unlike [`spawn_qemu_child_with_fds_in_directory`], this operation never
+/// invokes `qemu-img` or creates the exact-VMState container. The supervisor
+/// must provision and validate that container under its own bounded service
+/// policy before admitting the attempt. Before revalidating that authority,
+/// this path validates the command's fixed resource baseline against the
+/// ceilings sealed into `contract`. The child writes itself into the attempt
+/// cgroup and checks cancellation in `pre_exec`, before QEMU executes.
+///
+/// # Errors
+///
+/// Returns [`QemuSpawnError`] when the launch exceeds its admitted resources,
+/// the prepared container is absent or not a regular file, descriptor
+/// preparation fails, the pre-exec containment contract rejects the child, or
+/// QEMU cannot be spawned.
+pub fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
+    command: &QemuLaunchCommand,
+    run_directory: &QemuPreparedRunDirectory,
+    region_len: u64,
+    contract: &QemuChildProcessContract,
+) -> Result<QemuSpawnedChild, QemuSpawnError> {
+    run_directory.validate_launch_basis(command, contract)?;
+    run_directory.revalidate()?;
+    let (mut resources, child_resources) = create_spawn_resources(region_len)?;
+    resources.fault_node_hash = command.plugin_fault_node_hash();
+    let child = spawn_process_with_resources(
+        command.executable(),
+        command.args(),
+        QemuSpawnWorkingDirectory::Pinned(run_directory),
+        child_resources,
+        &[],
+        "spawn guarded QEMU child",
+        Some(contract),
+    )?;
+    Ok(QemuSpawnedChild {
+        child: QemuNodeChild::new(child),
+        resources,
+    })
+}
+
+pub(crate) fn validate_guarded_launch_resources(
+    command: &QemuLaunchCommand,
+    contract: &QemuChildProcessContract,
+) -> Result<(), QemuSpawnError> {
+    validate_guarded_launch_requirements(command.resource_requirements(), contract)
+}
+
+pub(crate) fn validate_guarded_launch_requirements(
+    requirements: crate::QemuLaunchResourceRequirements,
+    contract: &QemuChildProcessContract,
+) -> Result<(), QemuSpawnError> {
+    requirements
+        .validate_ceiling(
+            contract.maximum_vcpus,
+            contract.maximum_resident_bytes,
+            contract.maximum_writable_bytes,
+        )
+        .map_err(|source| QemuSpawnError::LaunchResources { source })
 }
 
 /// Prepares the exact-VMState qcow2 required by a launch or stopped probe.
@@ -320,6 +1663,14 @@ struct QemuSpawnChildResources {
     wake_fd: OwnedFd,
 }
 
+#[derive(Clone, Copy)]
+enum QemuSpawnWorkingDirectory<'a> {
+    #[cfg(test)]
+    Inherit,
+    Path(&'a Path),
+    Pinned(&'a QemuPreparedRunDirectory),
+}
+
 fn create_spawn_resources(
     region_len: u64,
 ) -> Result<(QemuSpawnHostResources, QemuSpawnChildResources), QemuSpawnError> {
@@ -372,10 +1723,11 @@ pub(crate) fn create_test_spawn_resource_pair(
 fn spawn_process_with_resources(
     executable: &str,
     args: &[String],
-    run_directory: Option<&Path>,
+    run_directory: QemuSpawnWorkingDirectory<'_>,
     child_resources: QemuSpawnChildResources,
     envs: &[(&str, &str)],
     operation: &'static str,
+    process_contract: Option<&QemuChildProcessContract>,
 ) -> Result<Child, QemuSpawnError> {
     let control_fd = child_resources.control_socket.as_raw_fd();
     let shmem_fd = child_resources.shmem_fd.as_raw_fd();
@@ -383,6 +1735,22 @@ fn spawn_process_with_resources(
     let expected_parent_pid = unsafe {
         // SAFETY: `getpid` has no preconditions.
         libc::getpid()
+    };
+    let process_contract = process_contract.map(|contract| ChildProcessContractRaw {
+        cgroup_procs: contract.cgroup_procs.as_raw_fd(),
+        cancellation_event: contract.cancellation_event.as_raw_fd(),
+        maximum_file_bytes: contract.maximum_writable_bytes,
+        credentials: contract.credentials,
+    });
+    let pinned_run_directory = match run_directory {
+        QemuSpawnWorkingDirectory::Pinned(directory) => Some(PreparedRunDirectoryRaw {
+            directory: directory.directory.as_raw_fd(),
+            vmstate_device: directory.vmstate_identity.device,
+            vmstate_inode: directory.vmstate_identity.inode,
+        }),
+        #[cfg(test)]
+        QemuSpawnWorkingDirectory::Inherit => None,
+        QemuSpawnWorkingDirectory::Path(_) => None,
     };
 
     let mut command = Command::new(executable);
@@ -392,7 +1760,7 @@ fn spawn_process_with_resources(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
-    if let Some(run_directory) = run_directory {
+    if let QemuSpawnWorkingDirectory::Path(run_directory) = run_directory {
         command.current_dir(run_directory);
     }
     for (key, value) in envs {
@@ -400,10 +1768,20 @@ fn spawn_process_with_resources(
     }
 
     // SAFETY: the closure only calls async-signal-safe syscalls between fork
-    // and exec: `prctl`, `getppid`, `dup2`, and `close`. It captures only raw
-    // descriptor numbers, not heap-owning Rust values.
+    // and exec: `write`, `poll`, `setrlimit`, `openat`, `fstat`, `fchdir`, raw
+    // credential syscalls, `prctl`, `getppid`, `dup2`, and `close`. It captures
+    // only integers and raw descriptor numbers, not heap-owning Rust values.
     unsafe {
         command.pre_exec(move || {
+            if let Some(contract) = process_contract {
+                install_attempt_process_contract(contract)?;
+            }
+            if let Some(directory) = pinned_run_directory {
+                install_prepared_run_directory(directory)?;
+            }
+            if let Some(credentials) = process_contract.and_then(|contract| contract.credentials) {
+                install_child_credentials(credentials)?;
+            }
             install_child_process_contract(control_fd, shmem_fd, wake_fd, expected_parent_pid)
         });
     }
@@ -411,6 +1789,648 @@ fn spawn_process_with_resources(
     command
         .spawn()
         .map_err(|source| QemuSpawnError::Io { operation, source })
+}
+
+/// Runs the stopped QEMU setup probe through an admitted attempt contract.
+///
+/// The probe uses the exact descriptor-pinned launch directory and child
+/// credentials of the eventual VM. Its input, lifetime, and two diagnostic
+/// streams are bounded. A helper that cannot be synchronously reaped remains
+/// owned by the returned error for transfer to the attempt resource owner.
+pub(crate) fn run_guarded_qemu_setup_probe(
+    launch: &QemuLaunchCommand,
+    args: &[String],
+    input: &[u8],
+    maximum_output_bytes: usize,
+    timeout: Duration,
+    run_directory: &QemuPreparedRunDirectory,
+    process_contract: &QemuChildProcessContract,
+) -> Result<Output, QemuGuardedImagePreparationError> {
+    if let Err(source) = run_directory
+        .validate_launch_basis(launch, process_contract)
+        .and_then(|()| run_directory.revalidate())
+    {
+        return Err(QemuGuardedImagePreparationError {
+            source,
+            child: None,
+        });
+    }
+
+    let deadline = HostSupervisionDeadline::start(timeout);
+    let mut command = Command::new(launch.executable());
+    command
+        .env_clear()
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    install_guarded_helper_authority(&mut command, run_directory, process_contract);
+
+    let mut child = command
+        .spawn()
+        .map_err(|source| QemuGuardedImagePreparationError {
+            source: QemuSpawnError::Io {
+                operation: "spawn guarded QEMU setup probe",
+                source,
+            },
+            child: None,
+        })?;
+    let child_stdin = match child.stdin.take() {
+        Some(stdin) => stdin,
+        None => {
+            return Err(cleanup_missing_guarded_probe_pipe(
+                child,
+                "open guarded QEMU probe stdin",
+            ));
+        }
+    };
+    let child_stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            return Err(cleanup_missing_guarded_probe_pipe(
+                child,
+                "open guarded QEMU probe stdout",
+            ));
+        }
+    };
+    let child_stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            return Err(cleanup_missing_guarded_probe_pipe(
+                child,
+                "open guarded QEMU probe stderr",
+            ));
+        }
+    };
+
+    if let Err(source) = nonblocking_probe_pipe(&child_stdin)
+        .and_then(|()| nonblocking_probe_pipe(&child_stdout))
+        .and_then(|()| nonblocking_probe_pipe(&child_stderr))
+    {
+        return Err(cleanup_failed_image_tool(QemuNodeChild::new(child), source));
+    }
+
+    let mut stdin = (!input.is_empty()).then_some(child_stdin);
+    let mut stdout = child_stdout;
+    let mut stderr = child_stderr;
+    let mut written = 0;
+    let mut stdout_capture = ProbeCapture::new(maximum_output_bytes);
+    let mut stderr_capture = ProbeCapture::new(maximum_output_bytes);
+    let mut child = QemuNodeChild::new(child);
+    let mut status = None;
+
+    loop {
+        if !deadline.has_time_remaining() {
+            return Err(cleanup_failed_image_tool(
+                child,
+                QemuSpawnError::GuardedQemuProbeTimeout,
+            ));
+        }
+
+        let mut progressed = false;
+        if let Some(pipe) = stdin.as_mut() {
+            match pipe.write(&input[written..]) {
+                Ok(0) => {
+                    return Err(cleanup_failed_image_tool(
+                        child,
+                        QemuSpawnError::Io {
+                            operation: "write guarded QEMU setup probe input",
+                            source: io::ErrorKind::WriteZero.into(),
+                        },
+                    ));
+                }
+                Ok(count) => {
+                    written += count;
+                    progressed = true;
+                    if written == input.len() {
+                        stdin = None;
+                    }
+                }
+                Err(error) if retryable_probe_io(&error) => {}
+                Err(source) => {
+                    return Err(cleanup_failed_image_tool(
+                        child,
+                        QemuSpawnError::Io {
+                            operation: "write guarded QEMU setup probe input",
+                            source,
+                        },
+                    ));
+                }
+            }
+        }
+
+        match stdout_capture.read_once(&mut stdout) {
+            Ok(read_progressed) => progressed |= read_progressed,
+            Err(source) => {
+                return Err(cleanup_failed_image_tool(
+                    child,
+                    QemuSpawnError::Io {
+                        operation: "read guarded QEMU setup probe stdout",
+                        source,
+                    },
+                ));
+            }
+        }
+        match stderr_capture.read_once(&mut stderr) {
+            Ok(read_progressed) => progressed |= read_progressed,
+            Err(source) => {
+                return Err(cleanup_failed_image_tool(
+                    child,
+                    QemuSpawnError::Io {
+                        operation: "read guarded QEMU setup probe stderr",
+                        source,
+                    },
+                ));
+            }
+        }
+        if stdout_capture.exceeded || stderr_capture.exceeded {
+            return Err(cleanup_failed_image_tool(
+                child,
+                QemuSpawnError::GuardedQemuProbeOutputLimit {
+                    maximum_bytes: maximum_output_bytes,
+                },
+            ));
+        }
+
+        if status.is_none() {
+            match child.try_wait_natural_exit() {
+                Ok(observed) => status = observed,
+                Err(error) => {
+                    return Err(cleanup_failed_image_tool(
+                        child,
+                        QemuSpawnError::Io {
+                            operation: "poll guarded QEMU setup probe",
+                            source: io::Error::other(error.to_string()),
+                        },
+                    ));
+                }
+            }
+        }
+        if let Some(status) = status
+            && stdout_capture.eof
+            && stderr_capture.eof
+            && stdin.is_none()
+        {
+            return Ok(Output {
+                status,
+                stdout: stdout_capture.bytes,
+                stderr: stderr_capture.bytes,
+            });
+        }
+
+        if !progressed {
+            thread::sleep(GUARDED_IMAGE_TOOL_POLL_INTERVAL);
+        }
+    }
+}
+
+fn install_guarded_helper_authority(
+    command: &mut Command,
+    run_directory: &QemuPreparedRunDirectory,
+    process_contract: &QemuChildProcessContract,
+) {
+    let expected_parent_pid = unsafe {
+        // SAFETY: `getpid` has no preconditions.
+        libc::getpid()
+    };
+    let contract = ChildProcessContractRaw {
+        cgroup_procs: process_contract.cgroup_procs.as_raw_fd(),
+        cancellation_event: process_contract.cancellation_event.as_raw_fd(),
+        maximum_file_bytes: process_contract.maximum_writable_bytes,
+        credentials: process_contract.credentials,
+    };
+    let directory = PreparedRunDirectoryRaw {
+        directory: run_directory.directory.as_raw_fd(),
+        vmstate_device: run_directory.vmstate_identity.device,
+        vmstate_inode: run_directory.vmstate_identity.inode,
+    };
+    unsafe {
+        // SAFETY: the closure uses only async-signal-safe scalar syscalls and
+        // captures raw descriptor numbers plus copyable credentials.
+        command.pre_exec(move || {
+            install_attempt_process_contract(contract)?;
+            install_prepared_run_directory(directory)?;
+            if let Some(credentials) = contract.credentials {
+                install_child_credentials(credentials)?;
+            }
+            set_parent_death_signal(expected_parent_pid)
+        });
+    }
+}
+
+fn cleanup_missing_guarded_probe_pipe(
+    child: Child,
+    operation: &'static str,
+) -> QemuGuardedImagePreparationError {
+    cleanup_failed_image_tool(
+        QemuNodeChild::new(child),
+        QemuSpawnError::Io {
+            operation,
+            source: io::Error::other("configured pipe was unavailable"),
+        },
+    )
+}
+
+struct ProbeCapture {
+    bytes: Vec<u8>,
+    maximum_bytes: usize,
+    exceeded: bool,
+    eof: bool,
+}
+
+impl ProbeCapture {
+    fn new(maximum_bytes: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(maximum_bytes.min(64 * 1024)),
+            maximum_bytes,
+            exceeded: false,
+            eof: false,
+        }
+    }
+
+    // One read per iteration prevents a flooding stream from starving the
+    // deadline, the monitor request, or the other diagnostic stream.
+    fn read_once(&mut self, reader: &mut impl Read) -> io::Result<bool> {
+        if self.eof {
+            return Ok(false);
+        }
+        let mut buffer = [0_u8; 16 * 1024];
+        match reader.read(&mut buffer) {
+            Ok(0) => {
+                self.eof = true;
+                Ok(true)
+            }
+            Ok(count) => {
+                let retained = count.min(self.maximum_bytes.saturating_sub(self.bytes.len()));
+                self.bytes.extend_from_slice(&buffer[..retained]);
+                self.exceeded |= retained != count;
+                Ok(true)
+            }
+            Err(error) if retryable_probe_io(&error) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+fn nonblocking_probe_pipe(pipe: &impl AsFd) -> Result<(), QemuSpawnError> {
+    fcntl_getfl(pipe)
+        .and_then(|flags| fcntl_setfl(pipe, flags | OFlags::NONBLOCK))
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "configure guarded QEMU probe pipe",
+            source: source.into(),
+        })
+}
+
+fn retryable_probe_io(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+    )
+}
+
+fn run_guarded_image_tool(
+    executable: &Path,
+    args: &[std::ffi::OsString],
+    operation: &'static str,
+    run_directory: &QemuPreparedRunDirectory,
+    process_contract: &QemuChildProcessContract,
+) -> Result<(), QemuGuardedImagePreparationError> {
+    if let Err(source) = run_directory.validate_helper_basis(process_contract) {
+        return Err(QemuGuardedImagePreparationError {
+            source,
+            child: None,
+        });
+    }
+    let mut command = Command::new(executable);
+    command
+        .env_clear()
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    install_guarded_helper_authority(&mut command, run_directory, process_contract);
+    let child = command
+        .spawn()
+        .map_err(|source| QemuGuardedImagePreparationError {
+            source: QemuSpawnError::Io { operation, source },
+            child: None,
+        })?;
+    let mut child = QemuNodeChild::new(child);
+    let deadline = HostSupervisionDeadline::start(GUARDED_IMAGE_TOOL_TIMEOUT);
+    loop {
+        match child.try_wait_natural_exit() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                return Err(QemuGuardedImagePreparationError {
+                    source: QemuSpawnError::GuardedImageTool {
+                        operation,
+                        status: status.to_string(),
+                    },
+                    child: None,
+                });
+            }
+            Ok(None) if deadline.has_time_remaining() => {
+                thread::sleep(GUARDED_IMAGE_TOOL_POLL_INTERVAL)
+            }
+            Ok(None) => {
+                return Err(cleanup_failed_image_tool(
+                    child,
+                    QemuSpawnError::GuardedImageToolTimeout { operation },
+                ));
+            }
+            Err(error) => {
+                return Err(cleanup_failed_image_tool(
+                    child,
+                    QemuSpawnError::Io {
+                        operation,
+                        source: io::Error::other(error.to_string()),
+                    },
+                ));
+            }
+        }
+    }
+}
+
+fn cleanup_failed_image_tool(
+    mut child: QemuNodeChild,
+    source: QemuSpawnError,
+) -> QemuGuardedImagePreparationError {
+    match child.force_kill_and_reap_failed_helper(GUARDED_IMAGE_TOOL_REAP_TIMEOUT) {
+        Ok(()) => QemuGuardedImagePreparationError {
+            source,
+            child: None,
+        },
+        Err(_) => QemuGuardedImagePreparationError {
+            source,
+            child: Some(child),
+        },
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ChildProcessContractRaw {
+    cgroup_procs: RawFd,
+    cancellation_event: RawFd,
+    maximum_file_bytes: u64,
+    credentials: Option<QemuChildCredentials>,
+}
+
+#[derive(Clone, Copy)]
+struct PreparedRunDirectoryRaw {
+    directory: RawFd,
+    vmstate_device: u128,
+    vmstate_inode: u128,
+}
+
+fn install_prepared_run_directory(directory: PreparedRunDirectoryRaw) -> io::Result<()> {
+    let changed = || io::Error::from_raw_os_error(libc::ESTALE);
+    let changed_directory = unsafe {
+        // SAFETY: `directory` is the live retained directory descriptor
+        // captured by the parent. `fchdir` copies no Rust-owned memory.
+        libc::fchdir(directory.directory)
+    };
+    if changed_directory != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let vmstate = unsafe {
+        // SAFETY: the static filename is NUL-terminated and `directory` names
+        // the retained run directory. `openat` returns a new child-owned fd.
+        libc::openat(
+            directory.directory,
+            VMSTATE_FILE_NAME_C.as_ptr().cast(),
+            libc::O_RDWR | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if vmstate < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let inspected = unsafe {
+        // SAFETY: `metadata` points to writable storage for one stat and
+        // `vmstate` is the live descriptor returned above.
+        libc::fstat(vmstate, metadata.as_mut_ptr())
+    };
+    let inspect_error = (inspected != 0).then(io::Error::last_os_error);
+    let close_result = unsafe {
+        // SAFETY: `vmstate` is owned by this child-side function.
+        libc::close(vmstate)
+    };
+    if let Some(error) = inspect_error {
+        return Err(error);
+    }
+    if close_result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let metadata = unsafe {
+        // SAFETY: successful fstat initialized the complete structure.
+        metadata.assume_init()
+    };
+    if metadata.st_mode & libc::S_IFMT != libc::S_IFREG
+        || u128::from(metadata.st_dev) != directory.vmstate_device
+        || u128::from(metadata.st_ino) != directory.vmstate_inode
+    {
+        return Err(changed());
+    }
+    Ok(())
+}
+
+fn install_attempt_process_contract(contract: ChildProcessContractRaw) -> io::Result<()> {
+    let attached = unsafe {
+        // SAFETY: `cgroup_procs` is a live descriptor supplied by the parent,
+        // and the static two-byte buffer remains valid for the syscall.
+        libc::write(
+            contract.cgroup_procs,
+            CGROUP_ATTACH_SELF.as_ptr().cast(),
+            CGROUP_ATTACH_SELF.len(),
+        )
+    };
+    if attached < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if attached != 2 {
+        return Err(io::Error::from_raw_os_error(libc::EIO));
+    }
+
+    let mut cancellation = libc::pollfd {
+        fd: contract.cancellation_event,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let canceled = unsafe {
+        // SAFETY: `cancellation` points to one initialized pollfd. A zero
+        // timeout performs a non-consuming readiness query.
+        libc::poll(&mut cancellation, 1, 0)
+    };
+    if canceled > 0 && cancellation.revents & libc::POLLIN != 0 {
+        return Err(io::Error::from_raw_os_error(libc::ECANCELED));
+    }
+    if canceled < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if cancellation.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+        return Err(io::Error::from_raw_os_error(libc::EBADF));
+    }
+
+    let file_limit = libc::rlimit {
+        rlim_cur: contract.maximum_file_bytes,
+        rlim_max: contract.maximum_file_bytes,
+    };
+    let limited = unsafe {
+        // SAFETY: `file_limit` is initialized and `setrlimit` copies it during
+        // this async-signal-safe syscall.
+        libc::setrlimit(libc::RLIMIT_FSIZE, &file_limit)
+    };
+    if limited != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let no_new_privileges = unsafe {
+        // SAFETY: PR_SET_NO_NEW_PRIVS takes scalar arguments and permanently
+        // prevents this child from regaining privilege across exec.
+        libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
+    };
+    if no_new_privileges != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn install_child_credentials(credentials: QemuChildCredentials) -> io::Result<()> {
+    let groups_cleared = unsafe {
+        // SAFETY: the raw Linux syscall receives a zero count and null array,
+        // so it removes every supplementary group without dereferencing data.
+        libc::syscall(
+            libc::SYS_setgroups,
+            0_usize,
+            std::ptr::null::<libc::gid_t>(),
+        )
+    };
+    if groups_cleared != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let group_changed = unsafe {
+        // SAFETY: the raw Linux syscall takes three scalar group IDs.
+        libc::syscall(
+            libc::SYS_setresgid,
+            credentials.group_id,
+            credentials.group_id,
+            credentials.group_id,
+        )
+    };
+    if group_changed != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let user_changed = unsafe {
+        // SAFETY: the raw Linux syscall takes three scalar user IDs.
+        libc::syscall(
+            libc::SYS_setresuid,
+            credentials.user_id,
+            credentials.user_id,
+            credentials.user_id,
+        )
+    };
+    if user_changed != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn validate_cgroup_procs_fd(fd: &OwnedFd) -> Result<(), QemuSpawnError> {
+    validate_live_fd(fd.as_raw_fd(), "validate child cgroup descriptor")?;
+    let filesystem = fstatfs(fd).map_err(|source| QemuSpawnError::Io {
+        operation: "inspect child cgroup filesystem",
+        source: source.into(),
+    })?;
+    if filesystem.f_type != libc::CGROUP2_SUPER_MAGIC {
+        return Err(QemuSpawnError::Io {
+            operation: "validate child cgroup filesystem",
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cgroup.procs descriptor is not on cgroup v2",
+            ),
+        });
+    }
+    let target = fs::read_link(PathBuf::from("/proc/self/fd").join(fd.as_raw_fd().to_string()))
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "resolve child cgroup descriptor",
+            source,
+        })?;
+    if target.file_name().and_then(|name| name.to_str()) != Some("cgroup.procs") {
+        return Err(QemuSpawnError::Io {
+            operation: "validate child cgroup descriptor target",
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "child cgroup descriptor does not name cgroup.procs",
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_cgroup_directory_fd(fd: &OwnedFd) -> Result<(), QemuSpawnError> {
+    validate_live_fd(fd.as_raw_fd(), "validate child cgroup directory")?;
+    let filesystem = fstatfs(fd).map_err(|source| QemuSpawnError::Io {
+        operation: "inspect child cgroup directory filesystem",
+        source: source.into(),
+    })?;
+    let metadata = fstat(fd).map_err(|source| QemuSpawnError::Io {
+        operation: "inspect child cgroup directory",
+        source: source.into(),
+    })?;
+    if filesystem.f_type != libc::CGROUP2_SUPER_MAGIC
+        || FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
+        || metadata.st_dev == 0
+        || metadata.st_ino == 0
+    {
+        return Err(QemuSpawnError::Io {
+            operation: "validate child cgroup directory",
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "child cgroup directory is not a cgroup-v2 directory",
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_cancellation_eventfd(fd: RawFd) -> Result<(), QemuSpawnError> {
+    let flags = validate_live_fd(fd, "validate child cancellation descriptor")?;
+    if flags & libc::O_NONBLOCK == 0 {
+        return Err(QemuSpawnError::Io {
+            operation: "validate child cancellation descriptor flags",
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "child cancellation eventfd is blocking",
+            ),
+        });
+    }
+    let target =
+        fs::read_link(PathBuf::from("/proc/self/fd").join(fd.to_string())).map_err(|source| {
+            QemuSpawnError::Io {
+                operation: "resolve child cancellation descriptor",
+                source,
+            }
+        })?;
+    if target.to_string_lossy() != "anon_inode:[eventfd]" {
+        return Err(QemuSpawnError::Io {
+            operation: "validate child cancellation descriptor target",
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "child cancellation descriptor is not an eventfd",
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_live_fd(fd: RawFd, operation: &'static str) -> Result<i32, QemuSpawnError> {
+    let flags = unsafe {
+        // SAFETY: `fcntl(F_GETFL)` reads descriptor metadata without pointers.
+        libc::fcntl(fd, libc::F_GETFL)
+    };
+    if flags < 0 {
+        return Err(last_io_error(operation));
+    }
+    Ok(flags)
 }
 
 fn socket_pair() -> Result<(OwnedFd, OwnedFd), QemuSpawnError> {
@@ -432,7 +2452,13 @@ fn socket_pair() -> Result<(OwnedFd, OwnedFd), QemuSpawnError> {
     Ok((host, child))
 }
 
-fn memfd_region(region_len: u64) -> Result<OwnedFd, QemuSpawnError> {
+/// Creates one writable, shrink-sealed setup-region memfd.
+///
+/// # Errors
+///
+/// Returns [`QemuSpawnError`] when the length is not representable or the
+/// memfd cannot be created, sized, or sealed.
+pub(crate) fn memfd_region(region_len: u64) -> Result<OwnedFd, QemuSpawnError> {
     let region_len = libc::off_t::try_from(region_len)
         .map_err(|_| QemuSpawnError::RegionLengthTooLarge { region_len })?;
     let name = CString::new("crucible-qemu-shmem").map_err(|source| QemuSpawnError::Io {

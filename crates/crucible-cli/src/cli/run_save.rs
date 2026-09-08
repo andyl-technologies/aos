@@ -11,9 +11,17 @@ pub(super) const RESUME_WORKFLOW_OBSERVER_TIMEOUT: Duration = Duration::from_sec
 mod qemu_live;
 pub(super) use qemu_live::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RunExecutionOwner {
+    Session,
+    Campaign,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RunWorkflowReport {
     pub(super) status: BackendCommandStatus,
+    pub(super) execution_owner: RunExecutionOwner,
+    pub(super) campaign_replay_closure: Option<Vec<u8>>,
     pub(super) created_state: String,
     pub(super) final_state: String,
     pub(super) outcome: Option<OutcomeKind>,
@@ -905,6 +913,8 @@ where
     Ok(ResumeWorkflowReport {
         run: RunWorkflowReport {
             status: status_from_outcome(observed_outcome)?,
+            execution_owner: RunExecutionOwner::Session,
+            campaign_replay_closure: None,
             created_state: format!("{:?}", resumed.state).to_ascii_lowercase(),
             final_state,
             outcome: observed_outcome,

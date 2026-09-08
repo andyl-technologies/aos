@@ -1398,7 +1398,10 @@ pub(super) fn decision_touched_nodes(decision: &Decision) -> Option<BTreeSet<Nod
     match decision {
         Decision::Preemption(preemption) => Some(BTreeSet::from([preemption.node.clone()])),
         Decision::AppRandom(random) => Some(BTreeSet::from([random.node.clone()])),
-        Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Override(_) => None,
+        Decision::DeliveryOrder(_)
+        | Decision::RngDraw(_)
+        | Decision::Override(_)
+        | Decision::Selection(_) => None,
     }
 }
 
@@ -1492,63 +1495,149 @@ pub(super) fn minimization_candidates(
     seed: Seed,
     artifact: ContentHash,
     schedule: &Schedule,
+    maximum_candidates: usize,
 ) -> Vec<MinimizationCandidate> {
     let decisions = schedule.decisions();
     let mut candidates = Vec::new();
-    for kept_len in 0..decisions.len() {
-        collect_minimization_candidates_for_len(
+    {
+        let mut collector = MinimizationCandidateCollector {
             seed,
             artifact,
             decisions,
-            kept_len,
-            0,
-            &mut Vec::new(),
-            &mut candidates,
-        );
+            candidates: &mut candidates,
+            maximum_candidates,
+            remaining_work: maximum_candidates,
+            admitted_kept_indices: BTreeSet::new(),
+        };
+        collector.collect_campaign_branch_suffix_reductions();
+        for kept_len in 0..decisions.len() {
+            if collector.is_finished() {
+                break;
+            }
+            collector.collect_for_len(kept_len, 0, &mut Vec::new());
+        }
     }
-    candidates.sort_by_key(|candidate| {
-        (
-            candidate.schedule.len(),
-            candidate.order_key,
-            candidate.removed_indices.clone(),
-        )
+    candidates.sort_by(|left, right| {
+        left.schedule
+            .len()
+            .cmp(&right.schedule.len())
+            .then_with(|| left.order_key.cmp(&right.order_key))
+            .then_with(|| left.removed_indices.cmp(&right.removed_indices))
     });
     candidates
 }
 
-pub(super) fn collect_minimization_candidates_for_len(
+pub(super) fn minimization_candidate_limit(artifact: &ReproductionArtifact) -> usize {
+    // A candidate retains one kept schedule and the complementary removed
+    // decisions. Twice the complete artifact bytes plus fixed metadata is a
+    // conservative language-independent upper bound for that representation.
+    let per_candidate = artifact
+        .to_compact_binary()
+        .len()
+        .checked_mul(2)
+        .and_then(|bytes| {
+            artifact
+                .schedule()
+                .len()
+                .checked_mul(std::mem::size_of::<usize>())
+                .and_then(|index_bytes| bytes.checked_add(index_bytes))
+        })
+        .and_then(|bytes| bytes.checked_add(1_024))
+        .unwrap_or(usize::MAX);
+    MAX_MINIMIZATION_CANDIDATE_WORK_BYTES
+        .checked_div(per_candidate.max(1))
+        .unwrap_or(0)
+        .min(MAX_MINIMIZATION_CANDIDATES)
+}
+
+struct MinimizationCandidateCollector<'a> {
     seed: Seed,
     artifact: ContentHash,
-    decisions: &[Decision],
-    kept_len: usize,
-    start: usize,
-    kept_indices: &mut Vec<usize>,
-    candidates: &mut Vec<MinimizationCandidate>,
-) {
-    if kept_indices.len() == kept_len {
-        candidates.push(minimization_candidate_from_kept_indices(
-            seed,
-            artifact,
-            decisions,
-            kept_indices,
-        ));
-        return;
+    decisions: &'a [Decision],
+    candidates: &'a mut Vec<MinimizationCandidate>,
+    maximum_candidates: usize,
+    remaining_work: usize,
+    admitted_kept_indices: BTreeSet<Vec<usize>>,
+}
+
+impl MinimizationCandidateCollector<'_> {
+    fn is_full(&self) -> bool {
+        self.candidates.len() >= self.maximum_candidates
     }
-    let remaining = kept_len - kept_indices.len();
-    let max_start = decisions.len().saturating_sub(remaining);
-    for index in start..=max_start {
-        kept_indices.push(index);
-        collect_minimization_candidates_for_len(
-            seed,
-            artifact,
-            decisions,
-            kept_len,
-            index + 1,
-            kept_indices,
-            candidates,
-        );
-        kept_indices.pop();
+
+    fn is_finished(&self) -> bool {
+        self.is_full() || self.remaining_work == 0
     }
+
+    fn collect_campaign_branch_suffix_reductions(&mut self) {
+        if !self.decisions.iter().any(is_campaign_branch_selection) {
+            return;
+        }
+
+        // Always retain the empty candidate, then reserve the remaining bounded
+        // window for exact branch prefixes that can remove a trailing suffix.
+        self.admit_candidate(Vec::new());
+        for index in 0..self.decisions.len().saturating_sub(1) {
+            if self.is_finished() {
+                break;
+            }
+            if is_campaign_branch_selection(&self.decisions[index]) {
+                self.admit_candidate((0..=index).collect());
+            }
+        }
+    }
+
+    fn admit_candidate(&mut self, kept_indices: Vec<usize>) {
+        if !self.spend_work() || !self.admitted_kept_indices.insert(kept_indices.clone()) {
+            return;
+        }
+        self.candidates
+            .push(minimization_candidate_from_kept_indices(
+                self.seed,
+                self.artifact,
+                self.decisions,
+                &kept_indices,
+            ));
+    }
+
+    fn spend_work(&mut self) -> bool {
+        let Some(remaining) = self.remaining_work.checked_sub(1) else {
+            return false;
+        };
+        self.remaining_work = remaining;
+        true
+    }
+
+    fn collect_for_len(&mut self, kept_len: usize, start: usize, kept_indices: &mut Vec<usize>) {
+        if self.is_finished() {
+            return;
+        }
+        if kept_indices.len() == kept_len {
+            self.admit_candidate(kept_indices.clone());
+            return;
+        }
+        let remaining = kept_len - kept_indices.len();
+        let max_start = self.decisions.len().saturating_sub(remaining);
+        for index in start..=max_start {
+            if self.is_finished() {
+                break;
+            }
+            if is_campaign_branch_selection(&self.decisions[index]) && kept_indices.len() != index {
+                // A campaign branch selection authenticates the complete
+                // schedule prefix at its original index. Reject the branch as
+                // soon as that prefix can no longer be complete.
+                self.spend_work();
+                continue;
+            }
+            kept_indices.push(index);
+            self.collect_for_len(kept_len, index + 1, kept_indices);
+            kept_indices.pop();
+        }
+    }
+}
+
+fn is_campaign_branch_selection(decision: &Decision) -> bool {
+    matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())
 }
 
 pub(super) fn minimization_candidate_from_kept_indices(

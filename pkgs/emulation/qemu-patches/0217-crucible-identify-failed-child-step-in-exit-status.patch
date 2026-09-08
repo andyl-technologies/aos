@@ -1,0 +1,166 @@
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 975b731e9..d7caa7f41 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -4586,6 +4586,24 @@ static int crucible_hot_fork_apply_child_process_contract(
+     return result;
+ }
+ 
++/*
++ * Exit status base of a child that failed reconstruction.  The status is
++ * this base plus the failed step, numbered in the order the steps run in
++ * crucible_hot_fork_finish_child_operation: 1 process contract, 2 descriptor
++ * table, 3 runtime reconstruction, 4 resource plan, 5 diagnostics resources,
++ * 6 QMP resources, 7 console resources, 8 resource plan completion, 9 runtime
++ * resource plan, 10 plugin activation, 11 vCPU restart, 12 block barrier
++ * release, 13 child file installation, 14 empty native release, 15 monitor
++ * input release.  Guarded launch gives the child no stderr; the source
++ * reports the status through crucible-hot-fork-child-process after reap.
++ */
++#define CRUCIBLE_HOT_FORK_CHILD_STEP_EXIT_BASE 64
++
++static void G_NORETURN crucible_hot_fork_child_exit_at(unsigned int step)
++{
++    _exit(CRUCIBLE_HOT_FORK_CHILD_STEP_EXIT_BASE + step);
++}
++
+ static int crucible_hot_fork_finish_child_operation(void *opaque)
+ {
+     CrucibleHotForkOperation *operation = opaque;
+@@ -4593,6 +4611,7 @@ static int crucible_hot_fork_finish_child_operation(void *opaque)
+     QemuCrucibleHotForkDescriptorTableProof proof = { 0 };
+     QemuCrucibleHotForkChildResourcePlan resources = { 0 };
+     QemuBlockBackendHotForkBarrierInventory block = { 0 };
++    unsigned int step = 1;
+     int result;
+ 
+     if (!operation || !operation->prepared) {
+@@ -4600,35 +4619,43 @@ static int crucible_hot_fork_finish_child_operation(void *opaque)
+     }
+     result = crucible_hot_fork_apply_child_process_contract(operation);
+     if (result == 0) {
++        step++;
+         result = qemu_crucible_hot_fork_begin_descriptor_table(
+             &operation->parent_identity, &descriptors);
+     }
+     if (result == 0) {
++        step++;
+         result = qemu_crucible_hot_fork_reconstruct_child_runtime(
+             &operation->runtime, &descriptors);
+     }
+     if (result == 0) {
++        step++;
+         result = qemu_crucible_hot_fork_begin_child_resource_plan(
+             &resources, &operation->plugin_resources);
+     }
+     if (result == 0) {
++        step++;
+         result = qemu_crucible_hot_fork_merge_diagnostics_child_resources(
+             &resources, &operation->diagnostics_resources);
+     }
+     if (result == 0) {
++        step++;
+         result = qemu_crucible_hot_fork_merge_qmp_child_resources(
+             &resources, &operation->qmp_resources);
+     }
+     if (result == 0) {
++        step++;
+         result = qemu_crucible_hot_fork_merge_console_child_resources(
+             &resources, &operation->console_resources);
+     }
+     if (result == 0) {
++        step++;
+         result = qemu_crucible_hot_fork_complete_child_resource_plan(
+             &resources, &descriptors, operation->excluded_fds,
+             operation->excluded_fd_count, &proof);
+     }
+     if (result == 0) {
++        step++;
+         result = qemu_crucible_hot_fork_apply_child_runtime_resource_plan(
+             &resources, &descriptors, &operation->runtime,
+             qemu_crucible_hot_fork_verify_child_descriptor_table, &proof,
+@@ -4637,10 +4664,12 @@ static int crucible_hot_fork_finish_child_operation(void *opaque)
+             &operation->console_reinitializer);
+     }
+     if (result == 0) {
++        step++;
+         result = qemu_crucible_hot_fork_activate_plugin_child(
+             &operation->plugin_reinitializer);
+     }
+     if (result == 0) {
++        step++;
+         /*
+          * The vCPU thread vanished with the parent while parked at the
+          * retained VM-stop boundary.  Restart it once the plugin child is
+@@ -4649,27 +4678,29 @@ static int crucible_hot_fork_finish_child_operation(void *opaque)
+          */
+         result = cpus_hot_fork_restart_vcpu_threads();
+     }
+-    if (result == 0 &&
+-        (!qemu_block_backend_hot_fork_barrier(
+-             QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE, &block) ||
+-         block.held || block.snapshot_bound)) {
+-        result = -EPROTO;
++    if (result == 0) {
++        step++;
++        if (!qemu_block_backend_hot_fork_barrier(
++                QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE, &block) ||
++            block.held || block.snapshot_bound) {
++            result = -EPROTO;
++        }
+     }
+     qemu_block_backend_hot_fork_barrier_inventory_destroy(&block);
+     if (result != 0) {
+-        return result;
++        crucible_hot_fork_child_exit_at(step);
+     }
+     if (crucible_hot_fork_child_files_plan) {
+         /* Adoption consumes both the inherited plan and the source set. */
+         if (!qemu_block_hot_fork_child_files_install(
+                 crucible_hot_fork_child_files_plan, NULL)) {
+-            return -EIO;
++            crucible_hot_fork_child_exit_at(13);
+         }
+         crucible_hot_fork_child_files_plan = NULL;
+         operation->child_files = NULL;
+     } else if (!qemu_block_hot_fork_source_set_release_empty_child(
+                    crucible_hot_fork_template_sources, NULL)) {
+-        return -ENOTSUP;
++        crucible_hot_fork_child_exit_at(14);
+     }
+     crucible_hot_fork_template_sources = NULL;
+     /* Inherited destination duplicates were closed by descriptor disposition. */
+@@ -4699,8 +4730,12 @@ static int crucible_hot_fork_finish_child_operation(void *opaque)
+     crucible_hot_fork_child_active = true;
+     operation->prepared = false;
+ 
+-    return monitor_hot_fork_release_child_protocol_input(
++    result = monitor_hot_fork_release_child_protocol_input(
+         &crucible_hot_fork_qmp_child_basis);
++    if (result != 0) {
++        crucible_hot_fork_child_exit_at(15);
++    }
++    return 0;
+ }
+ 
+ CrucibleHotForkState *qmp_crucible_hot_fork(
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 054e56862..9d4f4b212 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1951,7 +1951,14 @@
+ #
+ # @phase: current parent-owned process phase
+ #
+-# @status: zero while running; exit code for @exited; signal for @signaled
++# @status: zero while running; exit code for @exited; signal for @signaled.
++#     A child that failed its reconstruction exits with 64 plus the index of
++#     the failed step (1 process contract, 2 descriptor table, 3 runtime
++#     reconstruction, 4 resource plan, 5 diagnostics resources, 6 QMP
++#     resources, 7 console resources, 8 resource plan completion, 9 runtime
++#     resource plan, 10 plugin activation, 11 vCPU restart, 12 block barrier
++#     release, 13 child file installation, 14 empty native release, 15 monitor
++#     input release).
+ #
+ # @retained: true for query and false after successful release
+ #

@@ -1,0 +1,382 @@
+diff --git a/include/qemu/crucible-hot-fork-plugin.h b/include/qemu/crucible-hot-fork-plugin.h
+index 78ad15c8b..eab07ca71 100644
+--- a/include/qemu/crucible-hot-fork-plugin.h
++++ b/include/qemu/crucible-hot-fork-plugin.h
+@@ -18,9 +18,20 @@ typedef struct QemuPluginCrucibleHotForkInventory {
+     bool complete;
+ } QemuPluginCrucibleHotForkInventory;
+ 
++typedef struct QemuPluginCrucibleHotForkBarrierInventory {
++    struct qemu_plugin_crucible_hot_fork_barrier_status status;
++    uint64_t generation;
++    uint64_t plugin_id;
++    bool registered;
++    bool manifest_consistent;
++} QemuPluginCrucibleHotForkBarrierInventory;
++
+ void qemu_plugin_crucible_callback_registered(qemu_plugin_id_t plugin_id,
+                                               uint64_t callback_mask);
+ void qemu_plugin_crucible_hot_fork_inventory(
+     QemuPluginCrucibleHotForkInventory *inventory);
++int qemu_plugin_crucible_hot_fork_barrier(
++    uint32_t action,
++    QemuPluginCrucibleHotForkBarrierInventory *inventory);
+ 
+ #endif
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index c8699e8bd..f71c0c9e0 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1221,6 +1221,47 @@ QEMU_PLUGIN_API
+ int qemu_plugin_crucible_register_resource_manifest(
+     const struct qemu_plugin_crucible_resource_manifest *manifest);
+ 
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION 1
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD 1
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY 2
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE 3
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD (1U << 0)
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_TEARDOWN (1U << 1)
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_ALL \
++    (QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD | \
++     QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_TEARDOWN)
++
++struct qemu_plugin_crucible_hot_fork_barrier_status {
++    uint32_t schema_version;
++    uint32_t struct_size;
++    uint32_t flags;
++    uint32_t reserved;
++    uint64_t in_flight;
++};
++
++typedef int (*qemu_plugin_crucible_hot_fork_barrier_cb_t)(
++    uint32_t action,
++    struct qemu_plugin_crucible_hot_fork_barrier_status *status,
++    void *userdata);
++
++/**
++ * qemu_plugin_crucible_register_hot_fork_barrier() - register callback parking
++ * @plugin_id: nonzero identity of the registering Crucible plugin
++ * @cb: process-lifetime callback barrier operation
++ * @userdata: stable opaque pointer passed to @cb
++ *
++ * The callback exposes a reversible admission hold over every live plugin
++ * callback.  Holding the barrier is nonblocking: the returned status reports
++ * callbacks that were admitted before the hold and have not yet returned.
++ *
++ * Returns zero on success or a negative errno-style status on failure.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_register_hot_fork_barrier(
++    qemu_plugin_id_t plugin_id,
++    qemu_plugin_crucible_hot_fork_barrier_cb_t cb,
++    void *userdata);
++
+ /**
+  * qemu_plugin_request_shutdown() - request plugin-owned QEMU teardown
+  * @failure: nonzero selects a fail-loud host-error exit
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index e3e469de6..0836d7cad 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -102,6 +102,14 @@ enum {
+      CRUCIBLE_HOT_FORK_PROOF_MAPPING_DESCRIPTORS | \
+      CRUCIBLE_HOT_FORK_PROOF_CHILD_REINITIALIZATION)
+ 
++static bool crucible_hot_fork_exact_paused_boundary(void)
++{
++    return runstate_check(RUN_STATE_PAUSED) &&
++        qemu_plugin_crucible_vmstop_pending() &&
++        !qemu_plugin_crucible_vmstop_admission_pending() &&
++        qemu_plugin_crucible_vmstop_flush_status() == 0;
++}
++
+ CrucibleHotForkReadiness *qmp_query_crucible_hot_fork_readiness(Error **errp)
+ {
+     CrucibleHotForkReadiness *report = g_new0(CrucibleHotForkReadiness, 1);
+@@ -114,10 +122,7 @@ CrucibleHotForkReadiness *qmp_query_crucible_hot_fork_readiness(Error **errp)
+     if (qemu_plugin_crucible_single_threaded_rr()) {
+         acknowledged |= CRUCIBLE_HOT_FORK_PROOF_SINGLE_THREADED_SIM_RR;
+     }
+-    if (runstate_check(RUN_STATE_PAUSED) &&
+-        qemu_plugin_crucible_vmstop_pending() &&
+-        !qemu_plugin_crucible_vmstop_admission_pending() &&
+-        qemu_plugin_crucible_vmstop_flush_status() == 0) {
++    if (crucible_hot_fork_exact_paused_boundary()) {
+         acknowledged |= CRUCIBLE_HOT_FORK_PROOF_EXACT_PAUSED_BOUNDARY;
+     }
+ 
+@@ -133,6 +138,61 @@ CrucibleHotForkReadiness *qmp_query_crucible_hot_fork_readiness(Error **errp)
+     return report;
+ }
+ 
++CrucibleHotForkPluginBarrierState *
++qmp_crucible_hot_fork_plugin_barrier(
++    CrucibleHotForkPluginBarrierAction action, Error **errp)
++{
++    CrucibleHotForkPluginBarrierState *report =
++        g_new0(CrucibleHotForkPluginBarrierState, 1);
++    QemuPluginCrucibleHotForkBarrierInventory inventory;
++    uint32_t operation;
++    int status;
++
++    switch (action) {
++    case CRUCIBLE_HOT_FORK_PLUGIN_BARRIER_ACTION_HOLD:
++        if (!crucible_hot_fork_exact_paused_boundary()) {
++            error_setg(errp, "Crucible hot-fork plugin barrier requires "
++                       "an exact paused/device-flush boundary");
++            g_free(report);
++            return NULL;
++        }
++        operation = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD;
++        break;
++    case CRUCIBLE_HOT_FORK_PLUGIN_BARRIER_ACTION_QUERY:
++        operation = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY;
++        break;
++    case CRUCIBLE_HOT_FORK_PLUGIN_BARRIER_ACTION_RELEASE:
++        operation = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE;
++        break;
++    default:
++        error_setg(errp, "Unknown Crucible hot-fork plugin barrier action");
++        g_free(report);
++        return NULL;
++    }
++
++    status = qemu_plugin_crucible_hot_fork_barrier(operation, &inventory);
++    if (status != 0) {
++        error_setg_errno(errp, -status,
++                         "Crucible hot-fork plugin barrier operation failed");
++        g_free(report);
++        return NULL;
++    }
++
++    report->schema_version =
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION;
++    report->generation = inventory.generation;
++    report->registered = inventory.registered;
++    report->manifest_consistent = inventory.manifest_consistent;
++    report->held = (inventory.status.flags &
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD) != 0;
++    report->teardown_closed = (inventory.status.flags &
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_TEARDOWN) != 0;
++    report->in_flight = inventory.status.in_flight;
++    report->quiescent = report->registered && report->manifest_consistent &&
++        report->held && !report->teardown_closed && report->in_flight == 0;
++    return report;
++}
++
+ CrucibleHotForkThreadInventory *
+ qmp_query_crucible_hot_fork_thread_inventory(Error **errp)
+ {
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index f96c7ecc8..86df99998 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -119,8 +119,14 @@ static int qemu_plugin_time_advance_status;
+ static int64_t qemu_plugin_time_advance_target;
+ static int qemu_plugin_wake_fd = -1;
+ static QemuMutex qemu_plugin_crucible_resource_lock;
++static QemuMutex qemu_plugin_crucible_barrier_operation_lock;
+ static QemuPluginCrucibleHotForkInventory
+     qemu_plugin_crucible_resource_inventory;
++static QemuPluginCrucibleHotForkBarrierInventory
++    qemu_plugin_crucible_barrier_inventory;
++static qemu_plugin_crucible_hot_fork_barrier_cb_t
++    qemu_plugin_crucible_barrier_cb;
++static void *qemu_plugin_crucible_barrier_userdata;
+ static qemu_plugin_id_t qemu_plugin_crucible_observed_plugin_id;
+ static bool qemu_plugin_crucible_callback_plugin_conflict;
+ 
+@@ -128,6 +134,31 @@ static void __attribute__((__constructor__))
+ qemu_plugin_crucible_resource_inventory_init(void)
+ {
+     qemu_mutex_init(&qemu_plugin_crucible_resource_lock);
++    qemu_mutex_init(&qemu_plugin_crucible_barrier_operation_lock);
++}
++
++int qemu_plugin_crucible_register_hot_fork_barrier(
++    qemu_plugin_id_t plugin_id,
++    qemu_plugin_crucible_hot_fork_barrier_cb_t cb,
++    void *userdata)
++{
++    QEMU_LOCK_GUARD(&qemu_plugin_crucible_resource_lock);
++
++    if (plugin_id == 0 || !cb || !userdata) {
++        return -EINVAL;
++    }
++    if (qemu_plugin_crucible_barrier_inventory.registered) {
++        return qemu_plugin_crucible_barrier_inventory.plugin_id == plugin_id &&
++               qemu_plugin_crucible_barrier_cb == cb &&
++               qemu_plugin_crucible_barrier_userdata == userdata ? 0 :
++               -EALREADY;
++    }
++    qemu_plugin_crucible_barrier_inventory.plugin_id = plugin_id;
++    qemu_plugin_crucible_barrier_inventory.registered = true;
++    qemu_plugin_crucible_barrier_inventory.generation++;
++    qemu_plugin_crucible_barrier_cb = cb;
++    qemu_plugin_crucible_barrier_userdata = userdata;
++    return 0;
+ }
+ 
+ void qemu_plugin_crucible_callback_registered(qemu_plugin_id_t plugin_id,
+@@ -233,6 +264,79 @@ void qemu_plugin_crucible_hot_fork_inventory(
+         !qemu_plugin_crucible_callback_plugin_conflict &&
+         inventory->manifest.callback_mask == inventory->observed_callback_mask;
+ }
++
++int qemu_plugin_crucible_hot_fork_barrier(
++    uint32_t action,
++    QemuPluginCrucibleHotForkBarrierInventory *inventory)
++{
++    struct qemu_plugin_crucible_hot_fork_barrier_status status = { 0 };
++    qemu_plugin_crucible_hot_fork_barrier_cb_t cb;
++    void *userdata;
++    uint32_t previous_flags;
++    int result;
++
++    if (!inventory ||
++        (action != QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD &&
++         action != QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY &&
++         action != QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE)) {
++        return -EINVAL;
++    }
++
++    qemu_mutex_lock(&qemu_plugin_crucible_barrier_operation_lock);
++    qemu_mutex_lock(&qemu_plugin_crucible_resource_lock);
++    if (!qemu_plugin_crucible_barrier_inventory.registered) {
++        *inventory = qemu_plugin_crucible_barrier_inventory;
++        qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
++        qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
++        return action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY ? 0 :
++               -ENODEV;
++    }
++    cb = qemu_plugin_crucible_barrier_cb;
++    userdata = qemu_plugin_crucible_barrier_userdata;
++    qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
++
++    result = cb(action, &status, userdata);
++    if (result != 0) {
++        qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
++        return result;
++    }
++    if (status.schema_version !=
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION ||
++        status.struct_size != sizeof(status) || status.reserved != 0 ||
++        (status.flags &
++         ~QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_ALL) != 0 ||
++        (action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD &&
++         (status.flags &
++          QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD) == 0) ||
++        (action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE &&
++         (status.flags &
++          QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD) != 0)) {
++        qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
++        return -EPROTO;
++    }
++    if (action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD &&
++        (status.flags &
++         QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_TEARDOWN) != 0) {
++        qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
++        return -ESHUTDOWN;
++    }
++
++    qemu_mutex_lock(&qemu_plugin_crucible_resource_lock);
++    previous_flags = qemu_plugin_crucible_barrier_inventory.status.flags;
++    qemu_plugin_crucible_barrier_inventory.status = status;
++    if (previous_flags != status.flags) {
++        qemu_plugin_crucible_barrier_inventory.generation++;
++    }
++    qemu_plugin_crucible_barrier_inventory.manifest_consistent =
++        qemu_plugin_crucible_resource_inventory.registered &&
++        qemu_plugin_crucible_resource_inventory.complete &&
++        qemu_plugin_crucible_resource_inventory.manifest.plugin_id ==
++            qemu_plugin_crucible_barrier_inventory.plugin_id;
++    *inventory = qemu_plugin_crucible_barrier_inventory;
++    qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
++    qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
++    return 0;
++}
+ static NotifierList qemu_plugin_wake_notifiers =
+     NOTIFIER_LIST_INITIALIZER(qemu_plugin_wake_notifiers);
+ qemu_plugin_tcg_exec_cb_t qemu_plugin_tcg_exec_cb;
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index d54dd9517..7c171f8d3 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -754,6 +754,76 @@
+   'returns': 'CrucibleHotForkPluginResourceInventory',
+   'allow-oob': true }
+ 
++##
++# @CrucibleHotForkPluginBarrierAction:
++#
++# Operation over the reversible Crucible plugin callback barrier.
++#
++# @hold: reject new callbacks and report callbacks already in flight
++#
++# @query: observe the current held and in-flight state without changing it
++#
++# @release: reopen callback admission unless teardown closed it permanently
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'enum': 'CrucibleHotForkPluginBarrierAction',
++  'data': [ 'hold', 'query', 'release' ] }
++
++##
++# @CrucibleHotForkPluginBarrierState:
++#
++# Exact plugin-owned callback-admission state.  A quiescent response proves
++# only that every callback covered by the sealed callback mask is parked.  It
++# does not freeze host-side ring producers, drain plugin worker threads, or
++# acknowledge hot-fork readiness proof bit 6.
++#
++# @schema-version: barrier contract version, currently 1
++#
++# @generation: process-local barrier registration/hold generation
++#
++# @registered: whether a process-lifetime plugin barrier callback is installed
++#
++# @manifest-consistent: whether the barrier and sealed manifest name one plugin
++#
++# @held: whether new covered callbacks are currently rejected
++#
++# @teardown-closed: whether permanent teardown closure superseded the hold
++#
++# @in-flight: callbacks admitted before the hold that have not yet returned
++#
++# @quiescent: whether the registered, manifest-consistent hold has drained
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkPluginBarrierState',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'registered': 'bool',
++            'manifest-consistent': 'bool',
++            'held': 'bool',
++            'teardown-closed': 'bool',
++            'in-flight': 'uint64',
++            'quiescent': 'bool' } }
++
++##
++# @crucible-hot-fork-plugin-barrier:
++#
++# Holds, observes, or releases the loaded Crucible plugin's reversible callback
++# barrier. Holding is accepted only at the exact paused/device-flush boundary
++# and returns without waiting for already-admitted callbacks to drain.
++#
++# @action: requested barrier operation
++#
++# Returns: @CrucibleHotForkPluginBarrierState
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'crucible-hot-fork-plugin-barrier',
++  'data': { 'action': 'CrucibleHotForkPluginBarrierAction' },
++  'returns': 'CrucibleHotForkPluginBarrierState',
++  'allow-oob': true }
++
+ ##
+ # @CrucibleHotForkMutex:
+ #

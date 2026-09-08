@@ -6,6 +6,23 @@ use crate::LiveNetworkTxObservation;
 use crucible_shmem::STATUS_RUNNING;
 
 #[test]
+fn drive_poll_budget_retains_one_zero_timeout_attempt() {
+    let mut budget = DrivePollBudget::new(Duration::ZERO);
+
+    assert!(budget.begin_attempt());
+    assert!(!budget.begin_attempt());
+}
+
+#[test]
+fn drive_poll_budget_does_not_count_scheduler_wakeups_as_elapsed_time() {
+    let mut budget = DrivePollBudget::new(Duration::from_secs(1));
+
+    for _ in 0..10_000 {
+        assert!(budget.begin_attempt());
+    }
+}
+
+#[test]
 fn idle_discovery_boundaries_are_polled_before_reissue_or_completion() {
     assert!(discovery_quantum_report_ready(
         STATUS_IDLE,

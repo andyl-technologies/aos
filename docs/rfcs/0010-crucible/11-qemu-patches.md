@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **76 patches**. This count is checked against
+The carried series contains **233 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -212,9 +212,7 @@ PLUGIN TIME CONTROL (API surface)                      class  enforces
   crucible-plugin-wake-fd ....... main-loop wake-fd          F    SHM-26, INV-8
   crucible-plugin-tcg-exec-cb ... TCG-exec callback          F    coverage, INV-7
   crucible-plugin-vmstop ........ exact boundary to native pause D  DET-1, INV-10, QEMU-43
-  crucible-serialize-rr-cursor .. authoritative RR cursor VMState D  DET-1, DET-18, INV-10
-  crucible-fingerprint-state-domains guest-only state domains D  DET-18, DET-19, INV-10
-  crucible-stopped-state-control-progress bounded native-stop wake D  DET-1, INV-10, QEMU-43
+  crucible-stopped-state-control-progress bounded native-stop wake D  DET-1, INV-10, QEMU-43, QFP-STATE-2
   crucible-inactive-retention-clock-guard active-rule-before-clock D  DET-1, QFP-STATE-2, FAULT-ORDER
   crucible-deferred-result-evidence-test typed deferred evidence coverage F  QEMU-44, FAULT-EVIDENCE
   crucible-deterministic-instruction-input-state stable instruction selector identity D  DET-1, QEMU-44, FAULT-EVIDENCE
@@ -259,10 +257,6 @@ SIGNAL-DRIVEN FAULT EXECUTION                          class  enforces
   crucible-hardware-error-inject architecture error/ECC delivery D QFP-HWERR-1, QFP-HWERR-2, FAULT-ORDER
   crucible-vcpu-service-control rational CPU service/stall/offline D QFP-VCPU-1, QFP-VCPU-2, FAULT-ORDER
   crucible-node-lifecycle-faults crash/hang/reset/power lifecycle D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
-  crucible-block-typed-errors closed guest-visible block errors F STOR-RESULT, IO-8, PATCH-26
-  crucible-block-discard .... deterministic discard transport F STOR-DISCARD, DET-16, PATCH-26
-  crucible-block-transport-reset transactional reset/recovery F STOR-RESET, STOR-RESULT, DET-16, PATCH-26
-  crucible-plugin-vmstop ... exact plugin-boundary native pause D DET-1, INV-10, QEMU-43
   crucible-terminal-lifecycle-completion staged terminal exit D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
   crucible-authenticated-terminal-lifecycle authenticated exit D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
   crucible-immutable-process-generation launch-bound process ID D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
@@ -272,13 +266,175 @@ SIGNAL-DRIVEN FAULT EXECUTION                          class  enforces
   crucible-fault-vmstate aggregate fault-state identity D QFP-STATE-1, QFP-STATE-2, QFP-STATE-3
   crucible-lifecycle-precondition atomic lifecycle VM-state precondition D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
   crucible-typed-node-result-schema fixed typed result and occurrence evidence D QFP-RESULT-1, QFP-EVENT-1, FAULT-ORDER
-  crucible-device-wait-vmstop nonblocking exact control/device-completion pause D QFP-STATE-2, DET-1, INV-10
+  crucible-device-wait-vmstop nonblocking exact control/device-completion pause F QFP-STATE-2, DET-1, INV-10
   crucible-accelerator-result-opportunity exact one-shot accelerator result arming F QFP-ACCEL-3, QFP-RESULT-1, QFP-EVENT-1, FAULT-ORDER
   crucible-authenticated-event-request-envelope restored authenticated occurrence requests F QFP-STATE-2, QFP-ACCEL-3, QFP-EVENT-1, FAULT-ORDER
-  crucible-inert-clock-restore inactive clock VMState commits retain native device timers D DET-1, QFP-CLOCK-2, QFP-STATE-2
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse
+
+HOT FORK AND RETAINED TEMPLATES (RFC-0020 05)          class  enforces
+  crucible-hot-fork-readiness .... report QEMU-owned quiescence proofs  F    HFORK-3, HFORK-4
+  crucible-hot-fork-thread-ownership .. classify unresolved subsystem workers  F    HFORK-3, HFORK-4
+  crucible-hot-fork-rcu-inventory .. expose bounded observational RCU state  F    HFORK-3, HFORK-4
+  crucible-hot-fork-aio-inventory .. expose bounded AioContext activity  F    HFORK-3, HFORK-4
+  crucible-hot-fork-mutex-inventory .. expose bounded QEMU lock ownership  F    HFORK-3, HFORK-4
+  crucible-hot-fork-timer-inventory .. expose bounded live-timer state  F    HFORK-3, HFORK-4
+  crucible-hot-fork-bottom-half-inventory .. expose every allocated QEMUBH  F    HFORK-3, HFORK-4
+  crucible-hot-fork-aio-handler-inventory .. expose every POSIX AIO handler  F    HFORK-3, HFORK-4
+  crucible-hot-fork-block-backend-inventory .. expose every block backend  F    HFORK-3, HFORK-5
+  crucible-hot-fork-plugin-resource-inventory .. bind plugin resources to QEMU state  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-plugin-callback-barrier .. retain callback quiescence  F    HFORK-3, HFORK-4
+  crucible-hot-fork-template-coordinator .. own retained preparation  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-rcu-barrier .. retain RCU quiescence  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-bh-timer-barrier .. park bottom halves and timers  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-aio-barrier .. close asynchronous admission  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-block-drain-barrier .. retain native block quiescence  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-block-template-coordinator .. order retained block quiescence  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-block-graph-barrier .. retain graph-writer exclusion  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-block-snapshot-roots .. bind immutable writable roots  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-ring-producer-barrier .. freeze shared rings  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-plugin-worker-manifest .. seal plugin workers  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-plugin-worker-barrier .. park sealed workers  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-ring-consumer-barrier .. drain shared-ring consumers  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-private-ring-stage .. retain authenticated private rings  F    HFORK-3, HFORK-8, HFORK-9
+  crucible-hot-fork-worker-local-state .. account dequeued worker state  F    HFORK-3, HFORK-4, HFORK-5
+  crucible-hot-fork-plugin-endpoint-stage .. retain branch-private plugin endpoints  F    HFORK-3, HFORK-8, HFORK-9
+  crucible-hot-fork-retained-resource-stage .. stage under the retained barrier  F    HFORK-3, HFORK-8, HFORK-9
+  crucible-hot-fork-resource-generation-binding .. bind retained generations  F    HFORK-3, HFORK-8, HFORK-9
+  crucible-hot-fork-worker-disposition-binding .. bind worker dispositions  F    HFORK-3, HFORK-4, HFORK-8, HFORK-9
+  crucible-hot-fork-source-ring-noninheritance .. exclude source rings  F    HFORK-3, HFORK-8, HFORK-9, HFORK-12
+  crucible-hot-fork-child-runtime-registration .. register child reconstruction  F    HFORK-3, HFORK-4, HFORK-8, HFORK-9, HFORK-12
+  crucible-hot-fork-child-process-generation .. bind one child incarnation  F    HFORK-3, HFORK-8, HFORK-9, HFORK-11, HFORK-12
+  crucible-hot-fork-child-runtime-observation .. expose exact child state  F    HFORK-3, HFORK-8, HFORK-9, HFORK-11, HFORK-12
+  crucible-hot-fork-endpoint-replacement-plan .. bind descriptor slots  F    HFORK-3, HFORK-4, HFORK-8, HFORK-9, HFORK-12
+  crucible-hot-fork-child-endpoint-replacement-primitive .. replace two exact slots  F    HFORK-4, HFORK-8, HFORK-9, HFORK-12
+  crucible-hot-fork-immediate-child-identity .. pin the exact fork lineage  F    HFORK-4, HFORK-8, HFORK-9, HFORK-11, HFORK-12
+  crucible-hot-fork-plugin-ring-proof .. bind the frozen plugin resources  F    HFORK-4, HFORK-8, HFORK-9, HFORK-11, HFORK-12
+  crucible-hot-fork-closed-child-descriptor-table .. close inherited FDs  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12
+  crucible-hot-fork-child-descriptor-admission .. close child admission  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12
+  crucible-hot-fork-child-mapping-disposition .. reject unsafe VMAs  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-shared-backing-authentication ..   F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-resource-transaction .. order child disposition  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-source-mapping-binding .. bind the retained source VMA  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-runtime-source-binding .. bind runtime remap geometry  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-registered-child-runtime-composition .. compose the runtime adapter  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-retained-plugin-child-plan .. bind the retained plan  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-plugin-child-resource-tables .. bind exact plugin tables  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-resource-contribution-composition .. compose exact tables  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-sealed-child-resource-plan-application .. consume one exact union  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-descriptor-replacement-composition .. merge branch-private endpoints  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-branch-private-child-diagnostics .. bind private stderr  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-branch-private-child-qmp .. retain a private monitor stream  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-qmp-reinitializer-contract .. bind child monitor reconstruction  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-qmp-reinitializer-composition .. consume the monitor adapter  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-qmp-disposition-report .. expose accepted completion  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-qmp-query-basis .. preserve post-apply identity  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-monitor-inventory .. bound monitor and parser state  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-qmp-profile-binding .. bind admitted monitor generation  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-monitor-ownership-basis .. retain exact monitor owners  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-monitor-chardev-disposition .. bind the inherited endpoint owner  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-monitor-socket-resources .. bind the supported socket backend  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-held-child-monitor-socket .. replace the inherited child stream while held  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-held-child-qmp-protocol .. reset inherited protocol state while held  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-held-child-qmp-dispatcher .. replace the inherited dispatcher while held  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-held-child-monitor-iothread .. replace the inherited monitor worker while held  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-qmp-activation .. greet before releasing replacement input  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-concrete-child-qmp-runtime .. bind monitor reconstruction before fork  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-child-thread-registry .. reconstruct the immediate child registry  F    HFORK-4, HFORK-22
+  crucible-hot-fork-rcu-runtime-transaction .. compose RCU and registry fork ownership  F    HFORK-4, HFORK-22
+  crucible-hot-fork-rcu-thread-disposition .. bind the RCU worker disposition  F    HFORK-4, HFORK-22
+  crucible-hot-fork-monitor-thread-disposition .. bind the monitor IOThread disposition  F    HFORK-4, HFORK-8, HFORK-9, HFORK-22
+  crucible-hot-fork-rcu-worker-ordering .. defer child RCU worker startup  F    HFORK-4, HFORK-22
+  crucible-hot-fork-retained-rcu-barrier .. retain template RCU exclusion  F    HFORK-4, HFORK-22
+  crucible-hot-fork-retained-async-barrier .. retain template async exclusion  F    HFORK-4, HFORK-22
+  crucible-hot-fork-async-runtime-transaction .. release child async exclusion before QMP  F    HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-main-loop-coordinator .. execute fork on the QEMU main loop  F    HFORK-3, HFORK-4, HFORK-22
+  crucible-hot-fork-private-qmp-transaction .. fork retained templates through private QMP  F    HFORK-3, HFORK-4, HFORK-8, HFORK-9, HFORK-10, HFORK-11, HFORK-12, HFORK-21, HFORK-22
+  crucible-hot-fork-parent-reap-status .. retain exact child wait status  F    HFORK-3, HFORK-4, HFORK-11, HFORK-22
+  crucible-hot-fork-child-process-contract .. contain children from birth  F    HFORK-3, HFORK-4, HFORK-11, HFORK-22
+  crucible-hot-fork-child-console .. replace the fork-child console endpoint  F    HFORK-3, HFORK-4, HFORK-8, HFORK-11, HFORK-22
+  crucible-hot-fork-read-only-block-source .. retain native immutable sources  F    HFORK-4, HFORK-8, HFORK-22
+  crucible-hot-fork-native-worker-retirement .. rebuild native child I/O  F    HFORK-4, HFORK-8, HFORK-22
+  crucible-hot-fork-native-source-ownership .. retain VMState and file identities  F    HFORK-4, HFORK-8, HFORK-22
+  crucible-hot-fork-complete-native-source-set .. own the native source closure  F    HFORK-4, HFORK-8, HFORK-22
+  crucible-hot-fork-template-native-sources .. freeze and restore retained sources  F    HFORK-4, HFORK-8, HFORK-22
+  crucible-hot-fork-child-native-files .. adopt child-private native files  F    HFORK-9, HFORK-22
+  crucible-hot-fork-child-files .. bind child-private files to the fork transaction  F    HFORK-9, HFORK-22
+  crucible-out-of-band-descriptor-transfer .. allow out-of-band descriptor transfer  F    HFORK-9, HFORK-22
+  crucible-plugin-child-plan-blockers .. report plugin child plan blockers  F    HFORK-4, HFORK-22
+  crucible-child-plan-mapping-extents .. validate child plan mapping extents  F    HFORK-4, HFORK-22
+  crucible-fork-preparation-blockers .. report fork preparation blockers  F    HFORK-4, HFORK-22
+  crucible-monitor-basis-verified-before-fork .. verify child monitor basis before fork  F    HFORK-4, HFORK-22
+  crucible-carried-fork-mutexes .. carry coordinator-owned and parked mutexes  F    HFORK-4, HFORK-22
+  crucible-rr-vcpu-thread-restart .. restart the round-robin vCPU thread in the child  F    HFORK-4, HFORK-22
+  crucible-cgroup-procs-child-placement .. place the fork child through cgroup.procs  F    HFORK-4, HFORK-22
+  crucible-fork-parent-registry-release-order .. release the registry before the fork parent locks  F    HFORK-4, HFORK-22
+  crucible-child-placement-before-fork-return .. complete child placement before the fork returns  F    HFORK-4, HFORK-22
+  crucible-child-step-exit-status .. identify the failed child step in the exit status  F    HFORK-4, HFORK-22
+  crucible-child-resource-plan-substep-status .. identify the failed resource plan sub-step  F    HFORK-4, HFORK-22
+  crucible-child-iothread-start-bound .. bound the child monitor iothread start  F    HFORK-4, HFORK-22
+  crucible-child-failure-result-report .. report the failing child result on its diagnostics stream  F    HFORK-4, HFORK-22
+  crucible-plugin-child-worker-settle .. wait for the plugin child workers to park  F    HFORK-4, HFORK-22
+  crucible-qmp-child-stage-report .. name the failing child QMP reconstruction stage  F    HFORK-4, HFORK-22
+  crucible-child-monitor-fd-names .. drop inherited monitor descriptor names in the child  F    HFORK-4, HFORK-22
+  crucible-child-monitor-iothread-context .. rebuild the monitor iothread GLib context in the child  F    HFORK-4, HFORK-22
+  crucible-child-dispatcher-idle .. run the rebuilt dispatcher to its idle wait in the child  F    HFORK-4, HFORK-22
+  crucible-console-child-stage-report .. name the failing console child stage  F    HFORK-4, HFORK-22
+  crucible-console-child-default-context .. admit the default main context for the console child  F    HFORK-4, HFORK-22
+  crucible-active-plugin-child-workers .. admit idle parked workers in an active plugin child  F    HFORK-4, HFORK-22
+  crucible-child-file-install-report .. report a failed child-file install on the diagnostics  F    HFORK-4, HFORK-22
+  crucible-unsettled-source-descriptor-report .. name the node and check behind an unsettled source  F    HFORK-4, HFORK-22
+  crucible-child-file-plan-descriptors-retained .. retain the child-file plan descriptors instead of closing  F    HFORK-4, HFORK-22
+  crucible-child-current-monitor-bindings .. drop the inherited current-monitor bindings in the child  F    HFORK-4, HFORK-22
+  crucible-forkable-template-ram .. make guest RAM forkable while a template is retained  F    HFORK-4, HFORK-22
+  crucible-stage-release-under-retained-template .. admit child stage release while a template is retained  F    HFORK-4, HFORK-22
+  crucible-restarted-vcpu-thread-current-cpu .. name the current CPU on the restarted vCPU thread  F    HFORK-4, HFORK-22
+
+EXACT RESTORE, CURSORS, AND FINGERPRINT STATE          class  enforces
+  crucible-serialized-rr-cursor .. restore the exact multi-vCPU continuation  D    DET-29, QEMU-34, QEMU-43, QFP-STATE-2
+  crucible-fingerprint-guest-state-domains .. hash guest-semantic state only  D    DET-29, QEMU-34, QFP-STATE-2
+  crucible-exact-restore-network-announcement .. keep restored traffic exact  D    DET-1, QFP-STATE-2, FAULT-ORDER
+  crucible-genesis-observation-boundary .. sample the exact prelaunch state  D    DET-1, QFP-REG-1, QFP-STATE-2
+  crucible-deterministic-rcu-quiescence .. remove host-timed sim exits  D    DET-1, DET-29, QEMU-43
+  crucible-deterministic-host-kick-boundary .. bound generic host work  D    DET-1, DET-29, QEMU-43
+  crucible-exact-boundary-vcpu-introspection .. observe checkpoint CPU state  D    DET-1, QFP-REG-1, QFP-STATE-2
+  crucible-active-tcg-kick-boundary .. preserve bounded kick liveness  D    DET-1, DET-29, QEMU-43
+  crucible-canonical-rr-genesis-cursor .. expose the unique genesis coordinate  D    DET-1, QFP-REG-1, QFP-STATE-2
+  crucible-canonical-terminal-rr-cursor .. project terminal live observations  D    DET-1, DET-29, QFP-STATE-2
+  crucible-canonical-register-cursor .. commit after-instruction coordinates  D    DET-1, DET-29, QFP-STATE-2
+  crucible-retention-virtual-time-origin .. keep retention in one clock domain  D    DET-1, TIME-23, E14
+  crucible-canonical-snapshot-rr-resume .. preserve source continuation  D    DET-1, QFP-STATE-2, QEMU-43
+  crucible-isolate-checkpoint-control-wake .. preserve frozen device state  D    DET-1, QFP-STATE-2, PATCH-20
+  crucible-preserve-checkpoint-block-durability .. retain volatile state  D    DET-1, QFP-STATE-2, QFP-BLOCK-3
+  crucible-anchor-rr-cursor-genesis .. establish scheduler state before execution  D    DET-1, QFP-STATE-2, QEMU-43
+  crucible-control-boundary-node-faults .. complete halted-node mutations  F    QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
+  crucible-release-halted-rr-turn .. publish idle inside a partial RR turn  D    DET-1, PLUG-24, QEMU-43
+  crucible-restore-accelerator-rule-indexes .. restore persistent policy  F    QFP-ACCEL-SERVICE, FAULT-RESTORE
+  crucible-virtio-net-exact-restore-reset .. reset after announcement suppression  D    QFP-REG-1, QFP-STATE-2
+  crucible-source-mapping-page-extents .. round source mapping extents to pages  F    HFORK-4, HFORK-22
+
+REGISTER AND GUEST OBSERVATION                         class  enforces
+  crucible-register-rejection-atomicity .. prove rejected commands are inert  D    DET-1, QFP-REG-1, QFP-REG-2, FAULT-EVIDENCE
+  crucible-valid-aarch64-abort-fixture .. reach exception delivery  F    QFP-MEMA-1, FAULT-EVIDENCE, PATCH-3
+  crucible-bql-exact-register-capture .. observe snapshot boundaries  D    DET-1, QFP-STATE-2, QEMU-43
+  crucible-selector-control-plane-fixtures .. isolate selector admission  F    FAULT-ORDER, PATCH-3, QFP-INST-3
+
+SCHEDULING, DEVICES, AND CONTROL PATHS                 class  enforces
+  crucible-raw-pte-update-identity .. separate transient PTEs from A/D writes  D    QFP-MEMA-1, QFP-MEMA-2, FAULT-ORDER
+  crucible-physical-page-table-region-fixture .. target descriptor storage  F    QFP-MEMA-1, QFP-MEMA-2, FAULT-EVIDENCE
+  crucible-canonical-memory-retry-identity .. survive TB retranslation  D    DET-1, QFP-MEMA-1, QFP-STATE-2
+  crucible-inactive-nested-tsc-guard .. preserve SVM icount parity  D    DET-1, QFP-CLOCK-2, PATCH-3
+  crucible-aarch64-memory-exception-vectors .. admit architectural aborts  D    QFP-MEMA-1, FAULT-EVIDENCE, PATCH-3
+  crucible-defer-active-slice-host-wakes .. seal the active RR slice  D    DET-1, QFP-KICK-3, QEMU-43
+  crucible-deterministic-network-kick .. preserve exact network continuation  D    DET-1, PLUG-23, PLUG-24, QEMU-43
+  crucible-accelerator-service-schema .. admit typed service capacity  F    QFP-ACCEL-SERVICE, FAULT-ORDER
+  crucible-compile-affected-clock-sources .. isolate rule compilation  F    QFP-CLOCK-SOURCE, FAULT-ORDER
+  crucible-authenticate-fault-result-payloads .. bind results to payloads  F    QFP-RESULT, FAULT-ORDER
+  crucible-clock-impulse-read-error-policies .. retain clock policy  F    QFP-CLOCK-TRANSFORM, QFP-CLOCK-SOURCE, FAULT-ORDER
+  crucible-nonblocking-cancellation-eventfd .. restore nonblocking cancellation eventfd  F    HFORK-4, HFORK-22
+  crucible-runtime-transaction-blockers .. report runtime transaction blockers  F    HFORK-4, HFORK-22
+  crucible-mapping-backing-partial-page .. admit shared mappings into a backing partial page  F    HFORK-4, HFORK-22
 
 DIAGNOSTIC-ONLY (dev, NOT shipped)                     class  enforces
   crucible-tcg-exec-diag ........ per-exec icount trace      dev  divergence debug
@@ -1630,9 +1786,530 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   and accelerators with no retained rules reconstruct empty indexes.
 - **Risk:** F.
 
+### crucible-hot-fork-readiness — report QEMU-owned quiescence proofs
+
+- **Patch:** `0114-crucible-hot-fork-readiness.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4].
+- **Mechanism:** a fixed version-1 QMP query reports the complete nine-bit
+  hot-fork proof contract and the exact subset QEMU can attest at the current
+  boundary. Precise icount, single-threaded sim RR, and an authenticated exact
+  paused/device-flush boundary are derived from live QEMU state. AIO/BH/timer,
+  RCU, block-snapshot, plugin-ring, mapping/descriptor, and child-reinit bits
+  remain clear until their subsystem-owned coordinators land, so the response
+  cannot optimistically advertise hot fork.
+- **Micro-test:** the typed Apache client accepts the exact incomplete bitmap,
+  exposes every missing proof class, and rejects an unknown schema, changed
+  required set, unknown acknowledgement, or contradictory ready flag. A live
+  patched-QEMU gate requires the exact incomplete report under precise
+  single-threaded sim RR, proves that ordinary QMP pause cannot acknowledge the
+  exact-boundary bit, and proves that stock QEMU does not expose the command.
+  QAPI generation and the patched-QEMU build gate compile the matching GPL-side
+  command and response structure.
+- **Inertness:** the command is observational and performs no stop, resume,
+  fork, timer, I/O, or guest-state operation. Outside the exact deterministic
+  profile it returns fewer acknowledgements and remains not ready. Existing QMP
+  commands and non-Crucible execution are unchanged.
+- **Risk:** F.
+
+### crucible-hot-fork-thread-ownership — classify unresolved subsystem workers
+
+- **Patch:** `0115-crucible-hot-fork-thread-ownership.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4].
+- **Mechanism:** the RCU callback worker and every QEMU `IOThread` assign their
+  own version-2 thread-registry disposition at the start of their subsystem
+  entry point. The values remain explicitly unresolved and contribute to the
+  exact unclassified count; they identify the future barrier owner without
+  claiming a safe inherited-thread action, child reinitializer, or readiness
+  acknowledgement. All other non-coordinator threads retain the plain
+  fail-closed `unclassified` value.
+- **Micro-test:** strict Rust decoding accepts all four closed disposition
+  values and rejects version 1, unknown values, inconsistent counts, and
+  malformed ordering. The live patched-QEMU gate requires exactly one RCU owner
+  and one monitor AIO owner in the supported launch profile, stable repeated
+  snapshots, two unresolved workers, and no readiness proof beyond the existing
+  precise-sim/exact-boundary set. Patch regeneration, prefix build, and drop-one
+  attribution bind the QAPI and thread-entry changes to this exact patch.
+- **Inertness:** owner assignment mutates only the diagnostic registry
+  generation before either subsystem publishes its startup-ready condition.
+  It does not stop, park, resume, fork, or reinitialize a thread, change an AIO
+  or RCU operation, or set a hot-fork proof bit. Non-Crucible QMP and guest
+  execution are unchanged.
+- **Risk:** F.
+
+### crucible-hot-fork-rcu-inventory — expose bounded observational RCU state
+
+- **Patch:** `0116-crucible-hot-fork-rcu-inventory.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4].
+- **Mechanism:** a fixed version-1 QMP query snapshots at most 65,536 registered
+  RCU readers under the registry lock, sorts their positive thread IDs, and
+  reports instantaneous read-side activity, submitted-but-incomplete callback
+  count, active `drain_call_rcu()` state, and a register/unregister generation.
+  Callback accounting increments before queue publication and decrements only
+  after callback return, so the callback worker's dequeue and grace-period
+  interval cannot appear empty.
+- **Micro-test:** strict Rust decoding rejects unknown or additional fields,
+  changed schema, inconsistent counts/completeness, nonpositive, duplicate, or
+  unsorted reader IDs. The live patched-QEMU gate requires stable repeated
+  reports under the supported paused profile and binds every RCU reader to the
+  exact thread registry. Stock QEMU must not expose the command.
+- **Inertness:** the query is observational. It does not drain callbacks, wait
+  for readers, hold the registry lock across another operation, coordinate
+  `fork(2)`, or change readiness bit 4. Reader activity may change immediately
+  after the response; only a future coordinator-held barrier may promote the
+  proof.
+- **Risk:** F.
+
+### crucible-hot-fork-aio-inventory — expose bounded AioContext activity
+
+- **Patch:** `0117-crucible-hot-fork-aio-inventory.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4].
+- **Mechanism:** every `AioContext` receives a positive process-local identity
+  and enters a 65,536-entry lifecycle registry. A fixed version-1 QMP query
+  reports exact home-thread assignment, active `aio_poll()` and GLib dispatch
+  calls, enqueued and executing bottom halves, queued coroutines, pending
+  notification state, and checked aggregate counts. Context create, destroy,
+  and home-thread transitions advance a process-local generation.
+- **Micro-test:** strict Rust decoding rejects unknown or additional fields,
+  changed schema, inconsistent counts/completeness, invalid or unsorted context
+  identities, invalid home threads, and mismatched aggregates. The live
+  patched-QEMU gate requires stable repeated reports under the supported paused
+  profile and binds every assigned home thread to the exact QEMU thread
+  registry. Stock QEMU must not expose the command.
+- **Inertness:** the query and counters are observational. They do not drain or
+  park an AIO context, enumerate registered handlers or timers, hold a barrier
+  across another operation, coordinate `fork(2)`, or change readiness bit 3.
+  Activity may change immediately after the response; only a future
+  subsystem-owned barrier may promote the proof.
+- **Risk:** F.
+
+### crucible-hot-fork-mutex-inventory — expose bounded QEMU lock ownership
+
+- **Patch:** `0118-crucible-hot-fork-mutex-inventory.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4].
+- **Mechanism:** every live POSIX `QemuMutex` and `QemuRecMutex` receives a
+  positive process-local identity and enters a 65,536-entry lifecycle registry.
+  Lock, try-lock, recursive-lock, condition-wait, and unlock transitions retain
+  exact owner thread, recursion depth, acquisition waiters, condition waiters,
+  and active unlock state. A fixed version-1 QMP query returns the sorted
+  records, checked aggregates, sticky ownership validity, and a create/destroy
+  generation. All instrumentation-state transitions and snapshots serialize on
+  the registry guard, which is a raw instrumentation-private pthread mutex so
+  inventorying QEMU mutexes does not recursively instrument itself.
+- **Micro-test:** strict Rust decoding rejects unknown or additional fields,
+  changed schema, inconsistent owner/depth pairs, nonrecursive depth above one,
+  invalid or unsorted identities, inconsistent completeness, and mismatched
+  aggregates. The live patched-QEMU gate requires stable repeated reports under
+  the supported paused profile and binds every positive owner to the exact QEMU
+  thread registry. Stock QEMU must not expose the command.
+- **Inertness:** the query and counters are observational. They do not acquire
+  all locks, retain a process-fork barrier, choose a child disposition, run a
+  child reinitializer, coordinate `fork(2)`, or change readiness bit 8. A lock
+  may transition immediately after the response; only the future QEMU-owned
+  coordinator may turn this inventory into a retained fork proof.
+- **Risk:** F.
+
+### crucible-hot-fork-timer-inventory — expose bounded live-timer state
+
+- **Patch:** `0119-crucible-hot-fork-timer-inventory.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4].
+- **Mechanism:** every pending `QEMUTimer` and active timer callback receives a
+  stable process-local timer and timer-list identity. A fixed version-1 QMP
+  query returns at most 65,536 sorted unique records with exact clock, expiry,
+  scale, attributes, pending state, callback state, and checked aggregates.
+  Pending entries expose a registry-owned expiry copy rather than racing the
+  timer-list lock. Active callbacks use stack-owned copied registry metadata,
+  so a callback may legally free its enclosing timer before returning. Inert
+  initialized timers are deliberately absent.
+- **Micro-test:** strict Rust decoding rejects unknown or additional fields,
+  changed schema, inconsistent pending/expiry state, inert records, invalid or
+  unsorted identities, invalid clocks or scales, inconsistent completeness,
+  and mismatched aggregates. The live patched-QEMU gate requires stable exact
+  reports under the supported paused profile. Stock QEMU must not expose the
+  command.
+- **Inertness:** the query and counters are observational. They do not arm,
+  cancel, run, or drain a timer, retain an AIO/BH/timer barrier across another
+  operation, coordinate `fork(2)`, choose a child clock disposition, or change
+  readiness bit 3. Only the future QEMU-owned coordinator may turn this
+  inventory into a retained fork proof.
+- **Risk:** F.
+
+### crucible-hot-fork-bottom-half-inventory — expose every allocated QEMUBH
+
+- **Patch:** `0120-crucible-hot-fork-bottom-half-inventory.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4].
+- **Mechanism:** every allocated `QEMUBH` receives a stable process-local
+  identity and a copied bounded diagnostic name. A fixed version-1 QMP query
+  returns at most 65,536 sorted unique entries spanning inert, pending, active,
+  canceled, one-shot, and deferred-deletion instances. Each entry binds the
+  exact owning AioContext and exposes pending, scheduled, idle, deleted,
+  one-shot, and callback-active state. Lifecycle and semantic state transitions
+  advance a monotonic generation and bracket every lock-free state mutation
+  with an in-flight transition count. A report is stable only when no transition
+  is active at either copy boundary and the generation is unchanged. The
+  command permits negotiated QMP OOB execution so the inventory does not create
+  and observe its own one-shot in-band dispatch bottom half.
+- **Micro-test:** strict Rust decoding rejects unknown or additional fields,
+  changed schema, invalid or unsorted identities, missing AioContext bindings,
+  inconsistent scheduled/idle state, inconsistent completeness, and mismatched
+  aggregates. The live patched-QEMU gate requires two stable exact nonempty
+  reports and cross-checks every context against the exact AIO inventory. Stock
+  QEMU must not expose the command.
+- **Inertness:** the query and counters are observational. They do not schedule,
+  cancel, delete, run, drain, or park a bottom half, retain an AIO/BH/timer
+  barrier across another operation, coordinate `fork(2)`, choose a child
+  disposition, or change readiness bit 3. Only the future QEMU-owned
+  coordinator may turn this inventory into a retained fork proof.
+- **Risk:** F.
+
+### crucible-hot-fork-aio-handler-inventory — expose every POSIX AIO handler
+
+- **Patch:** `0121-crucible-hot-fork-aio-handler-inventory.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4].
+- **Mechanism:** every allocated POSIX `AioHandler` receives a stable positive
+  process-local identity and enters a 65,536-entry lifecycle registry. A fixed
+  version-1 QMP query returns sorted unique entries with the exact owning
+  AioContext and file descriptor, deferred-deletion state, installed read,
+  write, poll, poll-ready, poll-begin, and poll-end callback classes, active
+  callback counts, checked aggregates, and a lifecycle/callback-set generation.
+  Every callback execution is bracketed in the registry. Active callback
+  counts are instantaneous and deliberately do not advance the generation
+  because the query executes inside its QMP descriptor's read callback. The
+  command permits negotiated QMP OOB execution so inventorying does not
+  introduce in-band dispatch work.
+- **Micro-test:** strict Rust decoding rejects unknown or additional fields,
+  changed schema, invalid or unsorted identities, invalid descriptors, absent
+  primary callback classes, inconsistent completeness, and mismatched
+  aggregates. The live patched-QEMU gate requires two identical nonempty
+  reports, binds every handler to the exact AioContext inventory, and binds
+  every non-deleted descriptor to the exact QEMU process. Stock QEMU must not
+  expose the command.
+- **Inertness:** the query and counters are observational. They do not install,
+  remove, run, drain, or park a handler, retain an AIO/BH/timer barrier across
+  another operation, coordinate `fork(2)`, choose a child disposition, or
+  change readiness bit 3. Only the future QEMU-owned coordinator may turn this
+  inventory into a retained fork proof.
+- **Risk:** F.
+
+### crucible-hot-fork-block-backend-inventory — expose every block backend
+
+- **Patch:** `0122-crucible-hot-fork-block-backend-inventory.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-5].
+- **Mechanism:** every allocated `BlockBackend`, including hidden backends,
+  receives a stable positive process-local identity and enters a 65,536-entry
+  lifecycle registry. A fixed version-1 QMP query returns sorted unique entries
+  bound to the exact AioContext identity, monitor visibility/name, graph-root
+  and device attachment, requested and shared `BLK_PERM_*` masks, effective
+  permission suppression, drained-section depth, request-queue policy, and
+  in-flight I/O. Structural state is copied under a dedicated registry lock;
+  quiesce and in-flight values are instantaneous atomics. The command permits
+  negotiated QMP OOB execution and never dereferences the BQL-owned block graph.
+- **Micro-test:** strict Rust decoding rejects unknown or additional fields,
+  changed schema, invalid or unsorted identities, missing AioContext bindings,
+  invalid monitor names, inconsistent write classification/completeness, and
+  mismatched aggregates. The live patched-QEMU gate requires two stable exact
+  reports, binds every backend to the exact AIO inventory, and observes the
+  configured VMState backend. Stock QEMU must not expose the command.
+- **Inertness:** the query is observational. It does not traverse or mutate the
+  block graph, start or drain I/O, retain immutable writable roots, hold a
+  barrier across another operation, coordinate `fork(2)`, choose a child
+  disposition, or change readiness bit 5. Only the future QEMU-owned
+  coordinator may combine the registry with a drained block-graph snapshot and
+  child reconstruction contract.
+- **Risk:** F.
+
+### crucible-hot-fork-plugin-resource-inventory — bind plugin resources to QEMU state
+
+- **Patch:** `0123-crucible-hot-fork-plugin-resource-inventory.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** the Crucible plugin seals one fixed version-1 scalar manifest
+  only after setup, wake-descriptor registration, and all required callback
+  registrations succeed. The manifest binds the exact plugin and process
+  generations, shared-memory device/inode/length and topology, control and wake
+  descriptors, required resource classes, optional feature modes, and callback
+  classes. QEMU independently records callback registration, rejects mixed
+  plugin identities or inconsistent masks, and exposes the sealed and observed
+  values through a strict OOB QMP query. The host brackets the report around
+  one exact-child `/proc` inventory and binds the descriptors and writable
+  shared mappings to the sealed values.
+- **Micro-test:** strict Rust decoding rejects unknown or additional fields,
+  changed schema, unknown masks, inconsistent optional modes, mismatched
+  callback masks, impossible descriptor/topology values, and incomplete
+  reports. Plugin runtime tests require the registered manifest to match the
+  exact receiver-side wake descriptor and mapped file identity. Host audit
+  tests reject missing or mistyped descriptors and missing, private, read-only,
+  or length-mismatched mappings. The live patched-QEMU gate requires two exact
+  stable unregistered reports; stock QEMU must not expose the command.
+- **Inertness:** the report is observational. It does not count executing
+  callbacks, freeze a plugin ring, park or drain callbacks, retain a barrier
+  across another operation,
+  reconstruct child-side resources, coordinate `fork(2)`, or change readiness
+  bit 6. Those proofs remain mandatory before the QEMU-owned hot-fork
+  coordinator can acknowledge plugin readiness.
+- **Risk:** F.
+
+### crucible-hot-fork-plugin-callback-barrier — retain callback quiescence
+
+- **Patch:** `0124-crucible-hot-fork-plugin-callback-barrier.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4].
+- **Mechanism:** after every covered Rust callback shares one admission counter,
+  the plugin registers a process-lifetime barrier operation with QEMU. A fixed
+  version-1 OOB QMP command holds, queries, or releases the reversible barrier.
+  Hold is accepted only at the exact paused/device-flush boundary, atomically
+  rejects later callbacks, and reports already-admitted callbacks without
+  blocking QMP. Release cannot reopen permanent teardown closure. QEMU binds
+  the barrier to the sealed manifest's plugin identity and derives quiescence
+  from exact held, teardown, and in-flight state.
+- **Micro-test:** plugin tests cover admission races, reversible drain/reopen,
+  and teardown precedence. Strict Rust QMP tests reject unknown fields,
+  malformed unregistered state, contradictory quiescence, and wrong-action
+  responses. The live patched-QEMU gate requires a stable exact unregistered
+  query shape and rejects release without a registered plugin; stock QEMU must
+  not expose the command.
+- **Inertness:** registration and query are dormant unless the Crucible plugin
+  is loaded and an authorized OOB caller invokes the command. Holding covers
+  only plugin callbacks already registered in the sealed manifest. It does not
+  freeze host ring writers, drain plugin workers, clone shared-memory state,
+  reconstruct child resources, coordinate `fork(2)`, or change readiness bit
+  6. The future QEMU-owned coordinator must compose and roll back every
+  remaining owner before acknowledging plugin readiness.
+- **Risk:** F.
+
+### crucible-hot-fork-template-coordinator — own retained preparation
+
+- **Patch:** `0125-crucible-hot-fork-template-coordinator.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** a serialized version-4 OOB QMP coordinator owns one retained
+  template-preparation generation. `prepare` begins only at the authenticated
+  exact paused/device-flush boundary, acquires the plugin callback, RCU, and
+  bottom-half/timer source barriers, and reports `draining` while
+  already-admitted work finishes. A later prepare
+  reports `prepared` only when all nine readiness bits are present in that same
+  retained transaction. If the acquired barrier is quiescent but any proof is
+  missing, QEMU releases every acquired barrier and reports exact `blocked`
+  rollback. Query is observational, abort releases retained state, standalone
+  plugin hold/release cannot mutate coordinator-owned state, and a release
+  failure retains ownership for retry.
+- **Micro-test:** strict Rust decoding binds the action-specific outcome,
+  generation, active/rollback state, exact proof and missing bitmaps, and nested
+  plugin, RCU, and asynchronous-source barrier state; it rejects changed
+  schemas, unknown fields,
+  contradictory readiness, forged rollback, and wrong-action outcomes. The
+  live patched-QEMU gate requires stable exact idle state, rejects preparation
+  outside the exact boundary without acquiring state, and requires stock QEMU
+  not to expose the command.
+- **Inertness:** version 4 composes the plugin callback, RCU, and complete
+  asynchronous-source barriers. It does not freeze host ring writers, drain
+  block owners, retain mapping or descriptor dispositions, run child
+  reinitializers, or call `fork(2)`. Plugin-ring bit 6 and every other
+  unresolved bit remain clear, so a drained
+  transaction rolls back as `blocked` and no template can become usable.
+- **Risk:** F.
+
+### crucible-hot-fork-rcu-barrier — retain RCU quiescence
+
+- **Patch:** `0126-crucible-hot-fork-rcu-barrier.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** a process-lifetime reversible RCU barrier gates every new
+  outer read-side entry and callback submission before it can
+  become visible to the RCU subsystem. `hold` publishes a sticky gate and
+  returns immediately; racing admissions either publish into the exact reader
+  or callback counters or park until release. The retained state reports the
+  complete bounded reader registry, active readers, admission transitions,
+  pending callbacks, synchronous drains, owner thread, and hold generation.
+  The template coordinator acquires this barrier with the plugin callback and
+  bottom-half/timer source
+  barrier and acknowledges readiness bit 4 only while the complete held RCU
+  state is quiescent. Abort and blocked preparation release every barrier.
+- **Micro-test:** strict Rust decoding rejects unknown fields, changed schemas,
+  invalid owner/hold generations, reader-count overflow, contradictory drain
+  state, and an RCU proof detached from a retained quiescent transaction. A
+  QEMU unit test, executed by the patched package build, proves a registered
+  reader cannot cross an acquired barrier until release. The live patched-QEMU
+  gate requires exact stable released state, rejection of a hold outside the
+  authenticated boundary, template-version-4 nesting, and absence of the
+  command in stock QEMU. Patch regeneration compiles the QAPI schema and C
+  barrier into the full patched emulator.
+- **Inertness:** the gate is dormant until an authorized OOB caller holds it at
+  the existing exact paused/device-flush boundary. It does not classify or
+  reconstruct the retained RCU worker thread in a child, drain AIO or block
+  owners, freeze plugin rings, close mapping/descriptor dispositions, or call
+  `fork(2)`. Those missing proofs keep template preparation blocked.
+- **Risk:** F.
+
+### crucible-hot-fork-bh-timer-barrier — park bottom halves and timers
+
+- **Patch:** `0127-crucible-hot-fork-bh-timer-barrier.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** a process-lifetime reversible barrier uses race-closed
+  two-phase admission for bottom-half and timer creation, mutation, and
+  callback dispatch. `hold` parks later producers and nonblocking event-loop
+  dispatch while already-admitted work and its nested source mutations drain.
+  Queued bottom halves and armed timers remain retained parked state. The
+  exact version-1 response reports owner/generation, admission count, bounded
+  inventory completeness, queued sources, active callbacks, and derived
+  quiescence. The version-3 template coordinator retains this barrier with
+  the plugin and RCU barriers while OOB QMP stays live. Patch 0128 extends
+  this retained barrier without changing its legacy command name.
+- **Micro-test:** strict Rust decoding rejects unknown fields, changed schemas,
+  invalid owner/hold generations, count overflow, contradictory completeness,
+  and forged quiescence. The QEMU unit test proves nested source mutation may
+  finish under a hold, pending bottom halves and timers do not dispatch while
+  retained, and release runs both. The live patched-QEMU gate requires exact
+  stable released state, rejection of hold outside the authenticated boundary,
+  template-version-4 nesting, and absence of the command in stock QEMU.
+- **Inertness:** this prerequisite does not park `AioHandler` callbacks,
+  coroutine admission, the complete `AioContext`, block owners, or child clock
+  and context reconstruction. It cannot acknowledge AIO proof bit 3 and does
+  not call `fork(2)`.
+- **Risk:** F.
+
+### crucible-hot-fork-aio-barrier — close asynchronous admission
+
+- **Patch:** `0128-crucible-hot-fork-aio-barrier.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** the process-lifetime source barrier additionally gates
+  AioContext polling and GLib dispatch, AioHandler lifecycle and callback
+  entry, and coroutine scheduling through the same race-closed admission
+  state. Already-admitted outer work may complete nested source mutations;
+  later polls, handlers, coroutines, bottom halves, and timers remain parked.
+  The exact version-2 response reports bounded AioContext and AioHandler
+  completeness plus active poll, dispatch, handler-callback, and queued-
+  coroutine counts. The version-4 template coordinator acknowledges proof bit
+  3 exactly while this complete held asynchronous-source barrier is quiescent.
+- **Micro-test:** strict Rust decoding rejects changed schemas, forged aggregate
+  completeness, count overflow, active work hidden behind quiescence, and an
+  AIO proof bit detached from the retained quiescent barrier. The QEMU AIO unit
+  test parks an event notifier and queued coroutine alongside a bottom half and
+  timer, proves none dispatch under the hold, then proves release runs all four.
+  Patch regeneration compiles the QAPI schema and barrier into both supported
+  QEMU system targets.
+- **Inertness:** the legacy `crucible-hot-fork-bh-timer-barrier` command remains
+  dormant until an authorized OOB caller holds it at the exact boundary. This
+  patch does not drain block owners, freeze plugin rings, choose mapping or
+  descriptor disposition, run child reinitializers, or call `fork(2)`. Proof
+  bits 5 through 8 remain clear, so template preparation still rolls back as
+  blocked and cannot yield a usable child.
+- **Risk:** F.
+
+### crucible-hot-fork-block-drain-barrier — retain native block quiescence
+
+- **Patch:** `0129-crucible-hot-fork-block-drain-barrier.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** a process-lifetime version-1 main-loop QMP operation holds,
+  queries, or releases QEMU's native all-block drain section. Hold is accepted
+  only at the exact paused/device-flush boundary, rejects replay-events and a
+  non-main AioContext, immediately quiesces new external block clients, and
+  retains the drain while already-issued I/O completes. The exact bounded
+  response binds the owner/generation to the block-backend registry and derives
+  quiescence from complete inventory, zero aggregate in-flight I/O, and every
+  rooted backend remaining inside the native drain section. The command is
+  deliberately in-band because native drain acquire/release requires the BQL
+  and main AioContext.
+- **Micro-test:** strict Rust decoding rejects changed schemas, unknown fields,
+  impossible owner/generation state, count overflow, inconsistent backend
+  relationships, hidden in-flight I/O, forged quiescence, and wrong-action
+  responses. The QEMU block unit test holds, observes, and releases the retained
+  native drain. The live patched-QEMU gate requires stable exact released state,
+  rejects hold outside the authenticated boundary without retaining state, and
+  requires stock QEMU not to expose the command.
+- **Inertness:** the barrier is dormant until an authorized main-loop caller
+  holds it at the exact boundary. It does not freeze block-graph mutation,
+  create or authenticate an immutable external-snapshot root, rotate writable
+  overlays, retain child root identity, reconstruct a child graph, coordinate
+  `fork(2)`, or acknowledge proof bit 5. The future coordinator must acquire
+  this drain before parking the AIO sources and release AIO before releasing
+  the block drain.
+- **Risk:** F.
+
+### crucible-hot-fork-block-template-coordinator — order retained block quiescence
+
+- **Patch:** `0130-crucible-hot-fork-block-template-coordinator.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** the version-5 OOB template coordinator schedules native
+  all-block drain acquisition and release on the main AioContext. It retains the
+  block drain before admitting RCU, asynchronous-source, and plugin holds;
+  rollback releases plugin, asynchronous-source, and RCU admission before block
+  I/O admission reopens. Pending acquisition and release remain serialized
+  transaction phases, and standalone mutation of any owned barrier is rejected.
+  OOB query uses the mutex-protected block inventory without invoking a
+  main-loop-only operation.
+- **Micro-test:** the block unit test queries retained state from a second QEMU
+  thread and requires the exact generation, inventory, and quiescence observed
+  by the main thread. The strict Rust schema accepts only exact pending, held,
+  release, and rollback shapes, binds the nested block report, and rejects any
+  attempt to derive block-snapshot proof bit 5 from native drain alone. The live
+  gate requires the exact version-5 idle shape and the same standalone block
+  report by value.
+- **Inertness:** no drain is acquired until an authorized template prepare at
+  the exact paused/device-flush boundary. This patch does not create or
+  authenticate an immutable external-snapshot root, rotate overlays, reconstruct
+  child block graphs, or call `fork(2)`. Proof bit 5 remains clear, so the
+  coordinator rolls the otherwise quiescent transaction back as blocked.
+- **Risk:** F.
+
+### crucible-hot-fork-block-graph-barrier — retain graph-writer exclusion
+
+- **Patch:** `0131-crucible-hot-fork-block-graph-barrier.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** the version-2 block barrier closes block-graph writer
+  admission on the main AioContext before it enters QEMU's native all-block
+  drain. It rejects an already-active writer, captures the exact completed
+  graph-mutation generation, and parks later graph writers behind the retained
+  hold. The bounded response exposes exact graph-barrier and mutation
+  generations, owner, active-writer state, and waiting-writer count. The
+  version-6 OOB template coordinator composes this graph barrier with native
+  block drain, RCU, asynchronous-source, and plugin barriers. On rollback it
+  reopens graph admission immediately before native drain cleanup in the same
+  main-loop callback, so a parked outer writer cannot interleave and nested
+  cleanup graph operations cannot deadlock.
+- **Micro-test:** the QEMU block unit test holds the graph barrier, enters a
+  real graph writer, observes that writer parked through a scheduled release
+  callback, and requires the completed-mutation generation to advance only
+  after the writer runs. Strict Rust decoding binds every generation and owner,
+  rejects active-writer and held-generation contradictions, and bounds waiting
+  writers to `u32`. The live gate requires the exact released schema-version-2
+  shape and unchanged state after a rejected hold.
+- **Inertness:** graph admission remains unchanged until an authorized
+  main-loop block hold at the exact paused/device-flush boundary. This patch
+  does not create or authenticate an immutable external-snapshot root, rotate
+  or bind writable overlays, retain child root identity, reconstruct a child
+  graph, call `fork(2)`, or acknowledge proof bit 5. The otherwise quiescent
+  coordinator therefore still rolls back as blocked.
+- **Risk:** F.
+
+### crucible-hot-fork-block-snapshot-roots — bind immutable writable roots
+
+- **Patch:** `0132-crucible-bind-hot-fork-block-snapshot-roots.patch`.
+- **Enforces:** RFC-0020 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** while the version-3 native block drain and graph-writer
+  barriers are retained and quiescent, the version-7 template coordinator
+  binds every writable rooted backend to an exact guest-allocation-empty active
+  overlay whose immediate backing node is read-only. The Apache host supplies
+  an already-authenticated lowercase BLAKE3 content ID; QEMU binds it to exact
+  backend and node names, process-local backend identity, virtual size, backend
+  generation, captured graph-mutation generation, and coordinator owner. The
+  complete sorted binding is retained by value and revalidated on every query.
+  An active transaction acknowledges block-snapshot proof bit 5 exactly while
+  that binding remains complete.
+- **Micro-test:** the native block unit test builds a real qcow2 snapshot plus
+  empty active overlay, names and opens the graph edge under one writable
+  backend, retains the block barrier, binds the exact root, and requires release
+  to clear the binding. Strict Rust construction and decoding enforce the same
+  identifier, hash, count, generation, owner, ordering, empty-overlay, and
+  read-only relationships. The live gate uses a real snapshot/overlay pair and
+  requires proof bit 5 only while the retained transaction reports the exact
+  bound root.
+- **Inertness:** ordinary QEMU block creation and execution are unchanged.
+  Binding is reachable only through an authorized template prepare at the
+  exact paused/device-flush boundary after native drain and graph-writer
+  exclusion become quiescent. The patch neither creates snapshot bytes nor
+  reconstructs child descriptors, block graphs, or branch-private overlays;
+  proof bits 7 and 8 remain clear, the coordinator rolls back as blocked, and
+  no process fork is authorized.
+
 ### crucible-authenticate-fault-result-payloads — bind results to payloads
 
-- **Patch:** `0114-crucible-authenticate-fault-result-payloads.patch`.
+- **Patch:** `0133-crucible-authenticate-fault-result-payloads.patch`.
 - **Enforces:** [QFP-RESULT], [FAULT-ORDER].
 - **Mechanism:** every queued fault result hashes the exact payload retained
   beside it, including prepare-time rejection evidence. The host authenticates
@@ -1648,7 +2325,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 
 ### crucible-clock-impulse-read-error-policies — retain clock policy
 
-- **Patch:** `0115-crucible-clock-impulse-read-error-policies.patch`.
+- **Patch:** `0134-crucible-clock-impulse-read-error-policies.patch`.
 - **Enforces:** [QFP-CLOCK-TRANSFORM], [QFP-CLOCK-SOURCE], [FAULT-ORDER].
 - **Mechanism:** clock VMState version 4 persists effective impulse
   monotonicity and overdue-timer policy, and x86 TSC reads raise deterministic
@@ -1659,6 +2336,2211 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   restore while the VMState gate pins `CRUCCVS4` encode/decode symmetry.
 - **Inertness:** clocks without an active impulse retain the existing default
   policy, and sources outside read-error state follow their prior read path.
+- **Risk:** F.
+
+### crucible-hot-fork-ring-producer-barrier — freeze shared rings
+
+- **Patch:** `0135-crucible-freeze-hot-fork-rings.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** the version-2 plugin barrier reports and validates the exact
+  ABI-v19 shared-ring count, number of held rings, and aggregate producer
+  publications admitted before the hold. Template quiescence requires every
+  ring and callback barrier to be held with both in-flight counts at zero.
+- **Micro-test:** strict Rust/QMP fixtures reject partial ring holds and false
+  quiescence; the shared-memory suite races producer admission with the hold
+  and proves one mapped operation holds and releases every ring.
+- **Inertness:** the barrier is reachable only through the existing authorized
+  hot-fork command. It does not park plugin workers, clone ring content, define
+  child dispositions, or acknowledge proof bit 6.
+- **Risk:** F.
+
+### crucible-hot-fork-plugin-worker-manifest — seal plugin workers
+
+- **Patch:** `0136-crucible-seal-hot-fork-plugin-workers.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** the version-2 resource manifest adds a closed worker mask.
+  The RUN control reader and sole teardown worker are mandatory; the
+  fingerprint digest worker is present exactly when fingerprint resources are
+  enabled. QEMU rejects missing, unknown, or feature-inconsistent workers and
+  exposes the sealed set through the exact OOB resource inventory.
+- **Micro-test:** Rust parser fixtures accept the mandatory worker set and
+  reject missing or feature-inconsistent workers; the live unregistered QMP
+  shape pins all worker fields to zero/false, and patch regeneration proves the
+  C header, validator, and QAPI move together.
+- **Inertness:** the manifest is observational and installed only by the
+  Crucible plugin. It does not park worker operations, clone ring bytes,
+  reconstruct workers in a child, or acknowledge proof bit 6.
+- **Risk:** F.
+
+### crucible-hot-fork-plugin-worker-barrier — park sealed workers
+
+- **Patch:** `0137-crucible-park-hot-fork-plugin-workers.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** the version-3 plugin barrier joins the sealed worker mask to
+  exact parked-worker and admitted-operation state. The RUN-control, teardown,
+  and optional fingerprint workers mark blocking receive boundaries as safe
+  points; a returned receive parks before its operation can mutate state while
+  the hold remains active.
+- **Micro-test:** the worker state-machine fixtures prove idle parking,
+  admitted-operation drain, release wakeup, and optional-worker mask closure;
+  strict QMP fixtures reject unknown, partial, or falsely quiescent worker
+  shapes.
+- **Inertness:** the barrier remains reachable only through the authorized
+  hot-fork command. It does not clone retained queue/ring bytes, reconstruct
+  child workers, or acknowledge proof bit 6.
+- **Risk:** F.
+
+### crucible-hot-fork-ring-consumer-barrier — drain shared-ring consumers
+
+- **Patch:** `0138-crucible-drain-hot-fork-ring-consumers.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** the version-4 plugin barrier adds the aggregate count of ring
+  consumers admitted before the hold. Quiescence requires every
+  ABI-v20-or-newer ring's producer and consumer barriers to be held and both admitted-operation counts
+  to reach zero, making its queued bytes and indices stable for a later clone.
+- **Micro-test:** shared-memory fixtures race consumer admission with the hold,
+  reject dequeue while held, and prove mapped aggregate hold/release covers
+  both endpoints; strict QMP fixtures reject false consumer quiescence.
+- **Inertness:** the barrier remains reachable only through the authorized
+  hot-fork command. It does not clone queued bytes, bind those bytes into a
+  child mapping, reconstruct workers, or acknowledge proof bit 6.
+- **Risk:** F.
+
+### crucible-hot-fork-private-ring-stage — retain authenticated private rings
+
+- **Patch:** `0139-crucible-retain-hot-fork-private-rings.patch`.
+- **Enforces:** [HFORK-3], [HFORK-8], [HFORK-9].
+- **Mechanism:** an OOB QMP command duplicates one bounded standard-QMP
+  `getfd` entry without consuming the monitor-owned copy, then authenticates
+  the duplicate's exact name, device, inode, length, regular-file type, and
+  `F_SEAL_SHRINK`. QEMU retains that descriptor independently until a release
+  supplies the same exact basis; standard `closefd` remains a separate host
+  operation.
+- **Micro-test:** typed Rust fixtures pin the stage/query/release wire shapes,
+  exact-basis response checks, false disposition/readiness bits, and poisoning
+  on contradictory mutation responses. A real Unix-socket fixture proves the
+  two ownership layers are acquired and released in the required order.
+- **Inertness:** descriptor retention is reachable only through the authorized
+  custom command after standard `getfd`. It does not fork, remap a child,
+  release ring barriers, complete the inherited-resource disposition table, or
+  acknowledge readiness bits 6 or 7.
+- **Risk:** F.
+
+### crucible-hot-fork-worker-local-state — account dequeued worker state
+
+- **Patch:** `0140-crucible-account-hot-fork-worker-local-state.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** the version-5 plugin barrier distinguishes an idle parked
+  worker from a parked worker retaining one dequeued item in thread-local
+  state. Pending workers remain parked, their bits are a subset of the parked
+  mask, and subsystem quiescence requires the pending mask to be empty.
+- **Micro-test:** a held worker dequeues one item and remains observably pending
+  until release; strict QMP fixtures reject pending workers outside the parked
+  set and false quiescence while any pending bit remains set.
+- **Inertness:** the accounting path is reachable only while the existing
+  authorized plugin barrier is held. It does not define child disposition,
+  clone local state, reconstruct workers, or acknowledge proof bit 6.
+- **Risk:** F.
+
+### crucible-hot-fork-plugin-endpoint-stage — retain branch-private plugin endpoints
+
+- **Patch:** `0141-crucible-stage-hot-fork-plugin-endpoints.patch`.
+- **Enforces:** [HFORK-3], [HFORK-8], [HFORK-9].
+- **Mechanism:** an OOB QMP command duplicates distinct standard-QMP `getfd`
+  entries for one connected-empty AF_UNIX control socket and one empty eventfd.
+  QEMU authenticates the socket by Linux `SO_COOKIE`, the eventfd by
+  `/proc/self/fdinfo` identity, normalizes and verifies the retained eventfd as
+  nonblocking after standard QMP import, and binds both retained duplicates to
+  the exact current private-ring generation.
+- **Micro-test:** typed Rust fixtures pin the exact stage/query/release schema,
+  generation and identity checks, poisoning on contradictory ownership
+  responses, and two-descriptor acquisition/release ordering. The live QEMU
+  gate transfers real socket/eventfd descriptors, rejects foreign release and
+  private-ring release while endpoints remain staged, then proves both QEMU
+  and monitor ownership layers close in order.
+- **Inertness:** endpoint retention is reachable only through the authorized
+  custom command after two standard `getfd` imports and one private-ring stage.
+  It does not fork, install endpoints in a child, expose the host continuation,
+  recreate plugin workers, complete inherited-descriptor disposition, or
+  acknowledge readiness bits 6 through 8.
+- **Risk:** F.
+
+### crucible-hot-fork-retained-resource-stage — stage under the retained barrier
+
+- **Patch:** `0142-crucible-retain-hot-fork-resource-staging.patch`.
+- **Enforces:** [HFORK-3], [HFORK-8], [HFORK-9].
+- **Mechanism:** the version-10 template coordinator retains a fully drained
+  incomplete transaction as `draining` until explicit abort. Private-ring and
+  plugin-endpoint staging is admitted during that transaction only in the
+  fully held phase, at the exact paused/device-flush boundary, and while the
+  retained plugin barrier is quiescent. A new transaction rejects a nonempty
+  resource stage rather than adopting stale descriptors.
+- **Micro-test:** strict QMP fixtures pin the version-10 retained-draining
+  shape, while the patch gate verifies the held-phase, exact-boundary, and
+  plugin-quiescence predicates and the absence of automatic missing-proof
+  rollback.
+- **Inertness:** retained staging does not fork, install resources in a child,
+  complete inherited-resource disposition, or acknowledge readiness bits 6
+  through 8. The caller must explicitly abort before releasing staged
+  descriptors and resuming the template.
+- **Risk:** F.
+
+### crucible-hot-fork-resource-generation-binding — bind retained generations
+
+- **Patch:** `0143-crucible-bind-hot-fork-resource-generations.patch`.
+- **Enforces:** [HFORK-3], [HFORK-8], [HFORK-9].
+- **Mechanism:** private-ring and plugin-endpoint state version 2 records the
+  exact template generation that admitted each stage. The version-11 template
+  report atomically exposes both mutation generations, the endpoint-to-ring
+  generation edge, and whether all retained resources belong to the current
+  active transaction. Endpoint staging rejects a ring retained by another or
+  already-aborted transaction.
+- **Micro-test:** strict QMP fixtures accept one exact active binding, retain
+  its immutable origin after abort, and reject foreign template or ring
+  generations. Patch regeneration pins the QAPI and C implementation.
+- **Inertness:** generation binding neither installs resources in a child nor
+  completes any inherited-resource disposition. Readiness bits 6 through 8
+  remain clear and no fork operation exists.
+- **Risk:** F.
+
+### crucible-hot-fork-worker-disposition-binding — bind worker dispositions
+
+- **Patch:** `0144-crucible-bind-hot-fork-worker-dispositions.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-8], [HFORK-9].
+- **Mechanism:** version 3 of the plugin-endpoint stage records the exact
+  quiescent plugin-barrier generation and sealed worker mask. It accepts only
+  an empty worker-local state and records equal masks for workers resumed by
+  the parent and workers reinitialized by a future child. Version 12 of the
+  template report keeps the resource transaction bound only while that plan
+  still matches the current retained plugin barrier.
+- **Micro-test:** strict QMP fixtures reject missing, contradictory, stale, or
+  nonempty worker plans; the node transfer path quarantines an acknowledged
+  endpoint pair whose disposition differs from the barrier it observed.
+- **Inertness:** the stage records but does not apply the child reinitializer,
+  transfer execution, or fork. `disposition-complete` remains false, readiness
+  bits 6 through 8 remain clear, and `T-CAM-6.2` remains unchecked.
+- **Risk:** F.
+
+### crucible-hot-fork-source-ring-noninheritance — exclude source rings
+
+- **Patch:** `0145-crucible-exclude-source-rings-from-fork-children.patch`.
+- **Enforces:** [HFORK-3], [HFORK-8], [HFORK-9], [HFORK-12].
+- **Mechanism:** version 6 of the plugin barrier reports a
+  `mapping-dontfork` predicate. After callback, ring, and worker admission is
+  held, the GPL plugin applies `MADV_DONTFORK` to the exact live setup-region
+  mapping. A failed transition rolls the holds back. Release restores
+  `MADV_DOFORK` before reopening the retained parent, and a failed restore
+  retains every admission hold.
+- **Micro-test:** the permissive mapping owner observes Linux's `dc` VMA flag
+  appear and disappear across the reversible transition. Live plugin and
+  strict QMP fixtures require the mapping flag while held and reject a
+  contradictory quiescent report; the readiness gate pins the version-6
+  unregistered shape.
+- **Inertness:** no child mapping is installed and no child worker is rebuilt.
+  The template remains unready, readiness bits 6 through 8 remain clear, and
+  `T-CAM-6.2` remains unchecked.
+- **Risk:** F.
+
+### crucible-hot-fork-child-runtime-registration — register child reconstruction
+
+- **Patch:** `0146-crucible-register-hot-fork-child-runtime.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-12].
+- **Mechanism:** QEMU and the GPL plugin share fixed version-1 child plan and
+  status structures. The plan binds the exact template, private-ring,
+  endpoint-pair, and plugin-barrier generations; the authenticated Linux
+  `SO_COOKIE` and eventfd identities; the private setup-region device, inode,
+  length, and descriptor; the replacement control and wake descriptor
+  numbers; and the exact sealed worker mask. Status echoes the complete staged
+  generation and endpoint identity basis after installation. The plugin
+  independently authenticates both replacement kernel objects before it
+  retains its validated setup layout,
+  installs the private mapping only after inherited callback and worker holds
+  are complete, replaces callback-held teardown routing, forgets only a fully
+  parked inherited worker set, and starts replacement control, teardown, and
+  optional fingerprint workers behind the same holds. QEMU retains the exact
+  process-lifetime callback and validates any future invocation against the
+  sealed resource manifest.
+- **Micro-test:** Rust layout and live-registration tests exercise the inert
+  template query and reject child-runtime registration failure. Worker tests
+  reject an incomplete inherited parked set and prove that a complete set can
+  be reset and reconstructed without reopening admission.
+- **Inertness:** this patch registers and retains the operation but does not
+  invoke it from the fork transaction, replace child endpoints, update process
+  generation, release a child, or set readiness bits 6 through 8. `T-CAM-6.2`
+  remains unchecked.
+- **Risk:** F.
+
+### crucible-hot-fork-child-process-generation — bind one child incarnation
+
+- **Patch:** `0147-crucible-bind-hot-fork-child-process-generation.patch`.
+- **Enforces:** [HFORK-3], [HFORK-8], [HFORK-9], [HFORK-11], [HFORK-12].
+- **Mechanism:** version 2 of the fixed child-runtime plan carries the exact
+  nonzero process generation sealed by the template manifest and the checked
+  immediate successor assigned to the child. QEMU rejects zero, overflow,
+  skipped, or stale parents before invoking reconstruction, advances its
+  lifecycle generation, and requires every later status to retain that exact
+  successor. The plugin independently validates the same pair against its
+  process-local owner, advances its live device generation only during the
+  one-shot held transition, and echoes both generations in status.
+- **Micro-test:** Rust ABI tests freeze the version-2 layout and exercise exact,
+  stale-parent, skipped-child, and overflow pairs. Patch micro-tests require the
+  QEMU-side manifest comparison, lifecycle rebind, and query/release drift
+  checks while the live readiness gate remains false.
+- **Inertness:** the registered operation still has no QEMU fork-transaction
+  caller, so no parent process is rebound and readiness bits 6 through 8 remain
+  clear. `T-CAM-6.2` remains unchecked.
+- **Risk:** F.
+
+### crucible-hot-fork-child-runtime-observation — expose exact child state
+
+- **Patch:** `0148-crucible-expose-hot-fork-child-runtime-state.patch`.
+- **Enforces:** [HFORK-3], [HFORK-8], [HFORK-9], [HFORK-11], [HFORK-12].
+- **Mechanism:** the OOB
+  `query-crucible-hot-fork-child-runtime` command exposes version 2 of QEMU's
+  process-local registered child-runtime inventory. The report binds the
+  callback registration to the complete plugin resource manifest and current
+  process generation, then carries the exact phase, held/reconstructed flags,
+  parent/child generations, staged resource generations, authenticated
+  endpoint identities, and worker disposition state. Repeated identical
+  observations retain one generation; registration or a status mutation
+  advances it with checked overflow.
+- **Micro-test:** typed Rust parser and QMP transport tests require the exact
+  field set, OOB command, manifest/generation relation, phase-specific basis,
+  worker masks, immediate-successor process generation, and permanently false
+  readiness acknowledgement. The live gate proves stock rejection and an exact
+  stable unregistered response from patched QEMU.
+- **Inertness:** the query invokes only the registered operation's observational
+  action. It does not fork, initialize, release, or admit a child and never
+  acknowledges readiness bits 6 through 8. `T-CAM-6.2` remains unchecked.
+- **Risk:** F.
+
+### crucible-hot-fork-endpoint-replacement-plan — bind descriptor slots
+
+- **Patch:** `0149-crucible-bind-hot-fork-endpoint-replacement-slots.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-12].
+- **Mechanism:** version 4 of the retained plugin-endpoint stage records the
+  exact QEMU-owned control and wake source descriptors and binds them to the
+  distinct control and wake slots from the complete sealed plugin resource
+  manifest. It rejects every source/target alias, every private-ring alias,
+  incomplete or drifting manifests, and retry-time plan drift under the exact
+  template, private-ring, barrier, and worker basis.
+- **Micro-test:** typed Rust fixtures require the exact closed field set and
+  pairwise-distinct plan, node proofs retain the observational plan, patch
+  micro-tests pin the manifest comparison, and the live readiness gate proves
+  the version-4 standalone source observation while the template-only targets
+  remain absent.
+- **Inertness:** the stage records but does not apply either descriptor
+  replacement, invoke the registered child reinitializer, or fork. Descriptor
+  numbers grant no authority; readiness bits 6 through 8 and `T-CAM-6.2`
+  remain incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-endpoint-replacement-primitive — replace two exact slots
+
+- **Patch:** `0150-crucible-add-fork-child-endpoint-replacement-primitive.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-12].
+- **Mechanism:** one Linux-only GPL-side helper accepts exactly two
+  pairwise-distinct source/target descriptor pairs. It duplicates both prior
+  targets for rollback, preserves each target's close-on-exec flag, replaces
+  both file descriptions, and invokes a caller-owned verifier over the
+  installed pair. A rejected verification restores both targets and leaves the
+  sources retained. An incomplete rollback reports `-EUCLEAN`, which requires
+  terminal child quarantine rather than use of any ambiguous descriptor.
+- **Micro-test:** the QEMU package runs a focused unit binary that proves exact
+  control-socket and eventfd replacement, source closure only after accepted
+  verification, target-flag preservation, complete rollback after a verifier
+  rejection, and no mutation for an aliased plan. Patch micro-tests pin the
+  helper, rollback, poison result, and package test invocation.
+- **Inertness:** the helper is internal and has no caller. It does not establish
+  an immediate fork-child context, scan or close the complete inherited
+  descriptor table, invoke the plugin reinitializer, or acknowledge readiness.
+  Bits 6 through 8 stay clear and `T-CAM-6.2` remains unchecked.
+- **Risk:** F.
+
+### crucible-hot-fork-immediate-child-identity — pin the exact fork lineage
+
+- **Patch:** `0151-crucible-authenticate-immediate-hot-fork-children.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-11], [HFORK-12].
+- **Mechanism:** a Linux-only GPL-side primitive opens an exact pidfd for the
+  quiescent parent before fork. The inherited identity admits only a process
+  whose direct-parent PID is that pinned, still-live process generation, and
+  arms `PR_SET_PDEATHSIG(SIGKILL)` before it returns success. Parent identity
+  is checked on both sides of the pidfd liveness probe, so parent exit or
+  reparenting fails closed rather than authorizing a PID-shaped substitute.
+- **Micro-test:** the QEMU package runs a real-fork unit path. It proves that
+  the exact immediate child authenticates and applies the two-slot replacement
+  while the parent's original socket and eventfd descriptions remain
+  unchanged. A grandchild inheriting the same value is rejected, and invoking
+  child authentication in the capture owner is rejected.
+- **Inertness:** only the unit test calls `fork(2)`. Production QEMU has no
+  caller, complete inherited-descriptor disposition, child QMP channel,
+  reinitializer composition, or readiness acknowledgement. Bits 6 through 8
+  stay clear and `T-CAM-6.2` remains unchecked.
+- **Risk:** F.
+
+### crucible-hot-fork-plugin-ring-proof — bind the frozen plugin resources
+
+- **Patch:** `0152-crucible-acknowledge-frozen-hot-fork-plugin-rings.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-11], [HFORK-12].
+- **Mechanism:** version 13 of the retained template coordinator composes
+  readiness bit 6 only while the exact branch-private ring, plugin endpoints,
+  quiescent plugin barrier, and complete parent/child worker-disposition plan
+  all remain bound to the same active transaction. The nested resource-stage
+  schema is version 3 and reports the independently checked acknowledgement;
+  the outer bitmap and nested result must agree. Generation, shrink-seal,
+  endpoint-to-ring, barrier, or worker-plan drift clears the proof.
+- **Micro-test:** the typed Rust decoder accepts the exact version-13/version-3
+  proof shape and rejects forged outer or nested acknowledgements. Patch
+  micro-tests pin the QEMU proof bit, exact worker-disposition predicate, and
+  transaction-bound acknowledgement assignment.
+- **Inertness:** the coordinator still lacks the complete inherited-descriptor
+  disposition and child reinitialization required by bits 7 and 8. It remains
+  `draining`, no production `fork(2)` caller exists, and `T-CAM-6.2` remains
+  unchecked.
+- **Risk:** F.
+
+### crucible-hot-fork-closed-child-descriptor-table — close inherited FDs
+
+- **Patch:** `0153-crucible-close-inherited-child-descriptor-tables.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12].
+- **Mechanism:** a Linux-only GPL-side primitive admits only the exact live
+  immediate child, blocks every blockable signal, atomically replaces the two
+  staged plugin endpoint slots, and applies a strictly sorted table of at most
+  4,096 final descriptors. `close_range(2)` closes every gap and the complete
+  suffix, so no inherited descriptor outside the table survives. The callback
+  authenticates the installed endpoint identities and final table only after
+  every close succeeds. Any post-authentication error is destructive and
+  requires child termination or quarantine.
+- **Micro-test:** the real-fork unit path retains only the replacement control
+  socket, wake eventfd, and test result channel. It proves an unrelated
+  inherited descriptor is closed in the child, both replacement endpoints are
+  usable, and the parent's original descriptor table remains unchanged.
+- **Inertness:** the helper has no production caller and therefore does not yet
+  close descriptor admission around table construction. It does not classify
+  mappings, reinitialize process-private state, acknowledge readiness bits 7 or
+  8, or complete `T-CAM-6.2`.
+- **Risk:** F.
+
+### crucible-hot-fork-child-descriptor-admission — close child admission
+
+- **Patch:** `0154-crucible-close-fork-child-descriptor-admission.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12].
+- **Mechanism:** a Linux-only one-shot child transaction first proves
+  `close_range(2)` support, authenticates the exact immediate child, blocks
+  every blockable signal, and consumes the inherited parent pidfd. Since only
+  the calling thread survives `fork(2)`, the caller then constructs the retain
+  table with asynchronous descriptor admission closed. Closed-table application
+  requires that exact active child transaction and consumes it before endpoint
+  replacement begins; invalid pre-effect arguments remain retryable, while any
+  later failure is destructive.
+- **Micro-test:** the real-fork closed-table path constructs its table only
+  after the transaction begins and proves a blockable signal is masked. A
+  separate regression proves an inactive transaction cannot change any
+  descriptor.
+- **Inertness:** the transaction has no production fork caller, does not assign
+  dispositions to mappings, does not run child reinitialization, and does not
+  acknowledge readiness bits 7 or 8. `T-CAM-6.2` remains incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-mapping-disposition — reject unsafe VMAs
+
+- **Patch:** `0155-crucible-verify-fork-child-mapping-dispositions.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** after the exact child descriptor table is applied, a one-shot
+  Linux verifier streams `/proc/self/maps` without heap allocation. Private
+  VMAs retain kernel COW semantics and read-only shared VMAs cannot mutate a
+  sibling; every writable shared VMA must exactly match one sorted,
+  nonoverlapping branch-private allowlist range, and every allowlisted range
+  must appear exactly once. The scan accepts at most 65,536 records, 8 KiB per
+  record, 16 MiB in aggregate, and 4,096 writable shared ranges.
+- **Micro-test:** the real-fork descriptor path installs and accepts one exact
+  anonymous branch-private shared VMA after table closure. A negative
+  regression omits an otherwise valid writable shared VMA and requires
+  fail-closed rejection.
+- **Inertness:** the verifier has no production fork caller, does not run child
+  reinitialization or continuation pairing, and cannot acknowledge readiness
+  bits 7 or 8 by itself. `T-CAM-6.2` remains incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-shared-backing-authentication — bind exact memfds
+
+- **Patch:**
+  `0156-crucible-authenticate-fork-child-shared-mapping-backings.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** every allowed writable shared range additionally names a
+  page-aligned offset and retained backing descriptor. Before scanning, QEMU
+  requires a regular file large enough for the exact range and
+  `F_SEAL_SHRINK`. During the bounded procfs scan it authenticates the VMA's
+  offset, device, and inode against `fstat(2)` on that descriptor rather than
+  trusting a range-only declaration.
+- **Micro-test:** the real-fork path retains a shrink-sealed memfd through
+  descriptor closure and accepts its exact shared mapping. A second regression
+  maps one same-sized sealed memfd while declaring another and requires
+  destructive rejection before any mapping proof is recorded.
+- **Inertness:** the verifier is still internal and unwired; no production fork
+  caller composes its result with child reinitialization or acknowledges
+  readiness bits 7 or 8. `T-CAM-6.2` remains incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-resource-transaction — order child disposition
+
+- **Patch:** `0157-crucible-compose-fork-child-resource-disposition.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** one immediate-child operation preflights the complete retained
+  descriptor and writable-shared mapping tables before mutation, closes
+  descriptor admission, applies exact endpoint replacement and descriptor
+  closure, invokes one child reinitializer that must leave recreated workers
+  held, and only then authenticates the resulting mapping table. Invalid tables
+  preserve the active transaction; every failure after replacement begins is
+  destructive and requires child termination or quarantine.
+- **Micro-test:** the real-fork path uses `MADV_DONTFORK` to omit the source VMA,
+  applies the exact closed descriptor table, reconstructs the replacement VMA,
+  and requires all three transaction phases. A separate unretained-backing
+  preflight proves that no endpoint changes and the reinitializer is not called.
+- **Inertness:** the composition remains internal and unwired. It does not
+  invoke the registered QEMU/plugin reinitializer from a production fork,
+  complete other QEMU subsystem reconstruction, pair the host continuation,
+  release guest admission, or acknowledge readiness bits 7 or 8.
+  `T-CAM-6.2` remains incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-source-mapping-binding — bind the retained source VMA
+
+- **Patch:** `0158-crucible-bind-hot-fork-source-mappings.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** while the exact template transaction is retained, private-ring
+  staging streams `/proc/self/maps` under the existing 65,536-record,
+  8-KiB-record, and 16-MiB aggregate bounds. It requires exactly one writable
+  shared VMA at offset zero whose device, inode, and page-aligned length match
+  the plugin setup-region manifest. Private-ring schema version 3 retains that
+  process-local source range beside the authenticated branch-private backing;
+  standalone staging explicitly carries no source-range authority.
+- **Micro-test:** a shrink-sealed memfd mapped once is bound to its exact
+  address, length, and zero offset. A second alias and a wrong inode are both
+  rejected. The QMP and Rust-client tests reject contradictory bound/unbound
+  source shapes.
+- **Inertness:** the source address is an observed process-local scalar, not a
+  dereferenceable cross-process pointer. No production fork invokes the
+  registered runtime, constructs the complete child mapping allowlist, pairs
+  the host continuation, releases guest admission, or acknowledges readiness
+  bits 7 or 8. `T-CAM-6.2` remains incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-runtime-source-binding — bind runtime remap geometry
+
+- **Patch:** `0159-crucible-bind-child-runtime-source-mappings.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** fixed-layout child-runtime plan and status version 3 carry the
+  authenticated template setup-region start, length, and zero file offset.
+  QEMU rejects unaligned, overflowing, differently sized, or nonzero-offset
+  geometry before invoking the registered callback. The GPL plugin independently
+  compares that plan with its retained process-local mapping owner before the
+  exact-address branch-private install and echoes the immutable basis afterward.
+- **Micro-test:** Rust layout tests pin the version-3 C ABI size and offsets,
+  plugin tests reject wrong address, length, and offset bases, and the typed QMP
+  parser accepts only a complete installed range while rejecting skipped process
+  generations and contradictory source geometry.
+- **Inertness:** the registered runtime remains unwired to the destructive child
+  resource transaction. No production fork caller, complete QEMU subsystem
+  reinitializer, host continuation pairing, guest-admission release, or readiness
+  acknowledgement for bits 7 and 8 exists. `T-CAM-6.2` remains incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-registered-child-runtime-composition — compose the runtime adapter
+
+- **Patch:** `0160-crucible-compose-registered-fork-child-runtime.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** QEMU copies a valid fixed-layout version-3 child-runtime plan
+  into a prepared one-shot adapter. The adapter invokes the process-global
+  registered plugin runtime exactly once and accepts success only when the
+  returned status echoes the exact immutable plan and proves callbacks held,
+  the branch-private mapping installed, every sealed worker parked, and no
+  pending local operation. The registered entry point and adapter share the
+  complete process-independent plan validator; process-local resource identity
+  remains reauthenticated by the registered runtime immediately before its
+  mutation.
+- **Micro-test:** the real-fork child resource transaction composes descriptor
+  closure, the registered-runtime adapter, and exact post-remap mapping
+  verification. A fake registered runtime proves the adapter rejects an
+  initializing status and is nonretryable after its first attempt; the plugin's
+  production callback remains covered by its separate exact-plan and remap
+  tests.
+- **Inertness:** no production fork caller invokes the composed adapter, and
+  complete non-plugin QEMU subsystem reinitialization, host-continuation
+  pairing, guest-admission release, and readiness acknowledgements for bits 7
+  and 8 remain absent. `T-CAM-6.2` remains incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-retained-plugin-child-plan — bind the retained plan
+
+- **Patch:** `0161-crucible-bind-retained-plugin-child-plan.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** before it commits endpoint ownership, the version-14 retained
+  template coordinator derives a fixed-layout version-3 plugin child-runtime
+  plan from the exact active template, branch-private ring, authenticated source
+  VMA, endpoint replacement slots, kernel identities, registered process
+  generation, quiescent plugin barrier, and sealed worker disposition. It copies
+  that plan into QEMU's unconsumed one-shot adapter. Idempotent staging requires
+  the adapter to retain the same plan; exact endpoint release clears the parent
+  copy. The strict nested report carries the adjacent parent and child process
+  generations and a plan-bound bit only while the complete basis still matches.
+- **Micro-test:** QEMU unit coverage exact-compares the copied plan, rejects a
+  changed endpoint generation, and proves reset removes the binding. Strict Rust
+  QMP fixtures accept the complete version-14 report, expose the adjacent
+  generation pair, and reject malformed resource-stage shapes. The live gate
+  pins the expanded idle schema while the exact patch certificate checks the
+  production binding symbols.
+- **Inertness:** plan construction neither forks nor mutates a child descriptor
+  table or mapping. Complete non-plugin QEMU subsystem reinitialization,
+  host-continuation pairing, guest-admission release, and readiness
+  acknowledgements for bits 7 and 8 remain absent. `T-CAM-6.2` remains
+  incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-plugin-child-resource-tables — bind exact plugin tables
+
+- **Patch:** `0162-crucible-bind-plugin-child-resource-tables.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** the version-15 retained template coordinator converts the
+  exact copied registered child-runtime plan and staged branch-private control
+  and wake source descriptors into a nondestructive resource-table adapter.
+  The adapter contains exactly two source-to-target replacements, a strictly
+  sorted three-descriptor retain set for the private ring and endpoint targets,
+  and one writable-shared mapping allowlist entry backed by the retained ring
+  at the plan's exact source geometry. Idempotent staging exact-compares the
+  complete source and plan basis; endpoint release clears both adapters.
+- **Micro-test:** QEMU unit coverage checks every replacement, sorted retained
+  descriptor, mapping field, mismatched source and plan rejection, tamper
+  detection, reset, and source/target alias rejection. Strict Rust QMP fixtures
+  require the version-5 nested field and version-15 outer report. The live gate
+  and exact patch certificate pin those public facts.
+- **Inertness:** the adapter neither enumerates non-plugin QEMU resources nor
+  calls the destructive child transaction. Production fork invocation,
+  complete QEMU subsystem reinitialization, host-continuation pairing,
+  guest-admission release, and readiness acknowledgements for bits 7 and 8
+  remain absent. `T-CAM-6.2` remains incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-resource-contribution-composition — compose exact tables
+
+- **Patch:** `0163-crucible-compose-child-resource-contributions.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** QEMU starts one bounded child-resource plan from the exact
+  plugin contribution and can merge further immutable subsystem contributions
+  into canonical sorted unions. Exact duplicate descriptors and mappings are
+  idempotent; unsorted inputs, replacement-source retention, differently
+  described overlapping mappings, missing retained backing descriptors, and
+  unions beyond either 4,096-entry ceiling fail before the existing plan is
+  changed. Sealing revalidates the complete union and the retained template
+  report requires that sealed plan to contain its exact plugin basis.
+- **Micro-test:** QEMU unit coverage proves canonical descriptor and mapping
+  order, idempotent duplicate merging, atomic rejection of malformed, aliased,
+  overlapping, and unbacked contributions, immutable sealing, tamper detection,
+  reset, and both exact table ceilings. The full package gate executes all 15
+  child-resource unit cases, while the live and exact-patch gates pin the
+  coordinator composition symbols.
+- **Inertness:** the current coordinator contributes only the already-retained
+  plugin fragment. Registration of QMP, block, AIO, and other supported-profile
+  resources, production fork invocation, destructive child disposition,
+  host-continuation pairing, guest-admission release, and readiness
+  acknowledgements for bits 7 and 8 remain absent. `T-CAM-6.2` remains
+  incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-sealed-child-resource-plan-application — consume one exact union
+
+- **Patch:** `0164-crucible-consume-sealed-child-resource-plans.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** QEMU exact-compares an inherited sealed plan with the same
+  unconsumed plugin reinitializer before entering the authenticated
+  immediate-child transaction. Successful preflight consumes the plan before
+  descriptor mutation; the destructive path uses only the plan's canonical
+  replacements, retained descriptors, and writable-shared mappings. Exact
+  descriptor closure, held plugin reconstruction, and mapping authentication
+  mark the plan applied. Preflight rejection retains both linear owners, while
+  every failure after consumption is one-shot and rejects the child.
+- **Micro-test:** the real-fork resource transaction now consumes the sealed
+  adapter, retains one independently contributed result descriptor, closes an
+  unlisted inherited descriptor, reconstructs the private mapping, invokes the
+  registered plugin runtime once, and proves the parent's plan copy remains
+  unconsumed. Negative coverage rejects an open plan, a foreign reinitializer,
+  and a tampered sealed table without consumption; a second child application
+  is rejected.
+- **Inertness:** no production caller invokes `fork(2)` or this destructive
+  adapter, and the retained coordinator still supplies only the plugin and
+  diagnostics contributions. Complete QMP, block, AIO, and other supported-profile resource
+  registration, host-continuation pairing, guest-admission release, and
+  readiness acknowledgements for bits 7 and 8 remain absent. `T-CAM-6.1`
+  through `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-descriptor-replacement-composition — merge branch-private endpoints
+
+- **Patch:** `0165-crucible-compose-child-descriptor-replacements.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** each subsystem may add a strictly target-ordered replacement
+  table to the existing retained-descriptor and writable-shared-mapping
+  contribution. QEMU canonicalizes the plugin's initial pair, merges at most
+  4,096 replacements, and requires all sources and targets to be globally
+  pairwise distinct. Exact duplicates are idempotent; a reused source,
+  differently described target, missing retained target, unsorted table, or
+  over-limit union fails before the accumulated plan changes. The child
+  transaction saves every prior target on its fixed stack, applies the sealed
+  table, and restores all targets if verification rejects the installation.
+- **Micro-test:** composition reaches the exact replacement and retained-table
+  ceilings, rejects source/target cross-aliases and missing targets without
+  mutation, and preserves the prior retained and mapping conflict cases. The
+  real-fork sealed-plan path independently contributes a result-pipe
+  replacement, then reports success only through the installed target while
+  the source is absent from the final child table.
+- **Inertness:** no production subsystem yet supplies QMP, block, AIO, or the
+  remaining non-plugin replacements, and no production caller invokes the fork
+  transaction. Complete supported-profile registration, host-continuation
+  pairing, guest-admission release, and readiness acknowledgements for bits 7
+  and 8 remain absent. `T-CAM-6.1` through `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-branch-private-child-diagnostics — bind private stderr
+
+- **Patch:** `0166-crucible-bind-branch-private-child-diagnostics.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** QEMU duplicates one standard-QMP `getfd` entry only under the
+  exact active template and private-ring generation, authenticates the
+  connected AF_UNIX stream by Linux `SO_COOKIE`, makes it nonblocking, and
+  contributes one source-to-stderr replacement plus retained target to the
+  canonical sealed child resource plan. Plugin endpoint commitment requires
+  and seals this contribution. The immediate-child adapter reauthenticates the
+  resulting stderr stream after applying the descriptor union. Exact cleanup
+  releases plugin endpoints, the QEMU diagnostics duplicate, the monitor name,
+  and the host owners in reverse order.
+- **Micro-test:** the real-fork resource-plan path installs a fresh diagnostics
+  socket at stderr and proves the child authenticates it while the parent keeps
+  its original stderr. Composition tests require the exact diagnostics basis,
+  include it in global descriptor bounds, and reject malformed or missing
+  contributions. Typed host tests cover strict schema, command serialization,
+  kernel identity, template binding, and release ordering.
+- **Inertness:** no production fork caller or bounded diagnostics consumer uses
+  the retained endpoint. QMP, block, AIO, console, filesystem, and the remaining
+  supported-profile resource contributions are still absent, so readiness bits
+  7 and 8 and `T-CAM-6.1` through `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-branch-private-child-qmp — retain a private monitor stream
+
+- **Patch:** `0167-crucible-retain-branch-private-child-qmp.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** the host creates a fresh connected AF_UNIX socket pair for a
+  future child monitor and imports only the child endpoint through standard
+  QMP `getfd`. QEMU authenticates the exact Linux `SO_COOKIE`, requires the
+  stream to be empty and nonblocking, rejects aliasing with diagnostics and
+  plugin control resources, and adds the retained descriptor to the same
+  canonical child resource plan. Plugin endpoint commitment requires private
+  rings, diagnostics, and child QMP from one template generation before it
+  seals that plan. Exact cleanup releases plugin endpoints, the QEMU-retained
+  child-QMP duplicate, the monitor name, diagnostics, and private rings in
+  reverse ownership order.
+- **Micro-test:** the sealed-plan unit paths require the QMP contribution,
+  include it in exact retained-descriptor bounds, and prove that it survives
+  immediate-child descriptor closure without being attached to a monitor.
+  Typed host tests pin the version-1 QMP schema, descriptor transfer, exact
+  template and socket identity, sealed-plan binding, and release ordering.
+- **Inertness:** the host retains both fresh socket endpoints, but neither QEMU
+  nor the host closes the inherited monitor, resets parser state, attaches the
+  private endpoint, or performs the child handshake. Block, AIO, console,
+  filesystem, and remaining supported-profile contributions are also absent.
+  Production fork invocation, host-continuation pairing, guest admission,
+  readiness bits 7 and 8, and `T-CAM-6.1` through `T-CAM-6.3` remain
+  incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-qmp-reinitializer-contract — bind child monitor reconstruction
+
+- **Patch:** `0168-crucible-bind-child-qmp-reinitializer.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** QEMU prepares a one-shot adapter bound to the exact retained
+  child-QMP descriptor, Linux socket identity, template generation, and
+  child-QMP mutation generation. A future runtime result is accepted only when
+  it reports complete inherited-monitor disposal, dispatcher and endpoint
+  reconstruction, parser and capability reset, greeting emission, held input,
+  exactly one replacement monitor, and no queued or partially buffered
+  requests. The adapter becomes terminal before invoking that runtime and
+  rejects contradictory success reports.
+- **Micro-test:** strict unit paths prove exact basis matching, complete-status
+  admission, terminal behavior after both success and failure, and rejection of
+  incomplete or contradictory results. Typed host and live-readiness tests pin
+  child-QMP schema version 2, template version 18, resource-stage version 8,
+  and the prepared-but-unconsumed state.
+- **Inertness:** this patch defines and retains only the fail-closed adapter.
+  It does not implement inherited monitor teardown, rebuild the dispatcher,
+  attach the private endpoint, perform the private-stream handshake, invoke
+  `fork(2)`, or acknowledge readiness bit 7 or 8. Remaining supported-profile
+  resources, host-continuation pairing, guest admission, and `T-CAM-6.1`
+  through `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-qmp-reinitializer-composition — consume the monitor adapter
+
+- **Patch:** `0169-crucible-compose-child-qmp-reinitializer.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** the sealed branch-private QMP contribution now carries its
+  exact template and child-QMP generations in addition to the descriptor and
+  Linux socket identity. The immediate-child transaction requires both the
+  plugin and QMP reinitializers to match that complete sealed basis before it
+  begins descriptor mutation, then invokes them as one linear child subsystem
+  reconstruction step. Either runtime failure leaves the one-shot transaction
+  consumed and fail-closed.
+- **Micro-test:** the real-fork resource-plan path proves that both adapters run
+  exactly once and complete before shared mappings are admitted. Preflight
+  tests substitute a same-endpoint QMP adapter from another mutation generation
+  and prove rejection occurs before the plan or child transaction is consumed.
+- **Inertness:** the QMP runtime remains an injected test contract; this patch
+  does not dispose inherited monitors, construct the replacement dispatcher,
+  attach the private endpoint, perform its generation handshake, invoke a
+  production fork, or acknowledge readiness bit 7 or 8. Remaining
+  supported-profile resources, host-continuation pairing, guest admission, and
+  `T-CAM-6.1` through `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-qmp-disposition-report — expose accepted completion
+
+- **Patch:** `0170-crucible-report-complete-child-qmp-disposition.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** the child-QMP report now derives `disposition-complete` from
+  the exact accepted one-shot runtime status rather than hard-coding false. The
+  public predicate requires the prepared, attempted, and initialized adapter
+  plus the retained descriptor, socket identity, template generation, QMP
+  generation, complete flags, one monitor, and empty queued/parser state.
+- **Micro-test:** exact, contradictory, runtime-failure, and reset cases prove
+  that only the complete accepted status becomes observable. The real-fork
+  composition additionally requires the accepted predicate before the child
+  can report success.
+- **Inertness:** the accepted status still comes from an injected test runtime.
+  This patch does not dispose inherited monitors, construct the replacement
+  dispatcher, attach the private endpoint, perform its generation handshake,
+  invoke a production fork, or acknowledge readiness bit 7 or 8. Remaining
+  supported-profile resources, host-continuation pairing, guest admission, and
+  `T-CAM-6.1` through `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-qmp-query-basis — preserve post-apply identity
+
+- **Patch:** `0171-crucible-preserve-child-qmp-query-basis.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** QEMU separates immutable reinitializer-basis matching from
+  one-shot availability. A successful attempt therefore remains bound to the
+  exact retained descriptor, Linux socket identity, template generation, and
+  child-QMP generation, while `prepared-for` still rejects reuse. The sealed
+  resource plan likewise reports the exact QMP contribution after successful
+  application but not during a partial or failed application. The version-2
+  child-QMP query uses those persistent predicates, so its accepted disposition
+  remains independently authenticatable over the future private monitor.
+- **Micro-test:** unit coverage proves a completed adapter remains basis-bound
+  but not reusable, and the real-fork resource transaction proves the applied
+  plan retains the exact QMP contribution. Reset, foreign, failed, and
+  contradictory cases retain their fail-closed behavior.
+- **Inertness:** the concrete monitor runtime and production fork owner remain
+  absent. The host can validate this query only after a future child attaches
+  and releases its private monitor; this patch does not perform that attachment,
+  release guest admission, or acknowledge readiness bit 7 or 8. Remaining
+  supported-profile resources and `T-CAM-6.1` through `T-CAM-6.3` remain
+  incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-monitor-inventory — bound monitor and parser state
+
+- **Patch:** `0172-crucible-inventory-qmp-monitor-state.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** QEMU owns a version-1 OOB inventory of at most 256 monitors.
+  It reports the monitor lifecycle generation, QMP/HMP and I/O-thread counts,
+  suspended and negotiating monitors, OOB capability state, queued requests,
+  partial-parser bytes, partial parsers, and parser snapshots that raced input.
+  A recursive per-monitor parser lock lets the querying OOB monitor inspect its
+  own reset parser. The global inventory never blocks on another parser while
+  holding the monitor-list lock; a failed try-lock makes the report incomplete.
+- **Micro-test:** the live Phase 6 gate rejects stock QEMU, requires two
+  identical reports, and pins the supported parent profile to one stable
+  OOB-enabled I/O-thread QMP monitor with no HMP monitor, suspension,
+  negotiation, queued request, partial parser, or unstable record. Strict Rust
+  decoding rechecks every count relationship and the 256-monitor bound.
+- **Inertness:** this operation is observational. It neither disposes inherited
+  monitors nor constructs a child dispatcher, attaches the private endpoint,
+  releases guest input, invokes a fork, or acknowledges readiness bit 7 or 8.
+  The concrete child monitor runtime and `T-CAM-6.1` through `T-CAM-6.3` remain
+  incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-qmp-profile-binding — bind admitted monitor generation
+
+- **Patch:** `0173-crucible-bind-supported-child-qmp-profile.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** child-QMP staging rechecks the complete supported monitor
+  profile under the retained-template lock, rejects every partial, unstable, or
+  multi-monitor topology, and binds the positive monitor lifecycle generation
+  into child-QMP contract version 3, resource-stage contract version 9, and
+  template transaction version 19. The sealed resource plan, one-shot child
+  runtime status, and private host handshake must all preserve that exact
+  generation.
+- **Micro-test:** the live Phase 6 report pins the three new schema versions.
+  Structural checks require the supported-profile predicate and the exact
+  generation comparisons at staging, sealed-plan validation, and child status
+  authentication. QEMU's child-resource unit test rejects a mismatched monitor
+  generation.
+- **Inertness:** the change authenticates one already-supported parent profile
+  and its lifecycle generation. It does not reconstruct the child monitor,
+  invoke a fork, release guest input, or acknowledge readiness bit 7 or 8.
+  Destructive monitor reconstruction and `T-CAM-6.1` through `T-CAM-6.3`
+  remain incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-monitor-ownership-basis — retain exact monitor owners
+
+- **Patch:** `0174-crucible-bind-child-monitor-ownership-basis.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** child-QMP staging captures the exact admitted `MonitorQMP`,
+  monitor `IOThread`, dispatcher coroutine, and positive monitor lifecycle
+  generation as one QEMU-private ownership basis. QEMU revalidates the full
+  supported profile and exact retained objects immediately before committing
+  the endpoint, repeats that check for an idempotent restage, and clears the
+  basis on release. Child-QMP contract version 4 exposes only the boolean
+  `monitor-basis-bound`; native pointers never cross QAPI or shared memory.
+  Resource-stage contract version 10 and template transaction version 20 bind
+  the stricter contribution.
+- **Micro-test:** the live Phase 6 report pins all three schema versions and the
+  initially absent ownership basis. Structural checks require the private basis
+  type and its prepare, current-profile comparison, and reset operations.
+- **Inertness:** the retained basis is future child-reconstruction authority,
+  not reconstruction itself. This patch does not dispose the inherited
+  monitor, build a child dispatcher, attach the endpoint, invoke a fork,
+  release guest input, or acknowledge readiness bit 7 or 8. Destructive
+  monitor reconstruction and `T-CAM-6.1` through `T-CAM-6.3` remain
+  incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-monitor-chardev-disposition — bind the inherited endpoint owner
+
+- **Patch:** `0175-crucible-bind-child-monitor-chardev-disposition.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** the private child ownership basis now also retains the exact
+  inherited `Chardev`. Staging requires that it remain the admitted monitor's
+  connected frontend, support GMainContext dispatch, and expose both backend
+  disconnect and add-client operations. Exact restage repeats that comparison.
+  Child-QMP contract version 5 exposes only
+  `monitor-disposition-bound`; resource-stage contract version 11 and template
+  transaction version 21 bind the stricter contribution.
+- **Micro-test:** the live Phase 6 report pins all three schema versions and the
+  initially absent disposition proof. Structural checks require exact frontend
+  ownership, both backend operations, and the private disposition predicate.
+- **Inertness:** this patch proves that the retained inherited endpoint has the
+  operations needed by a future child transition. It does not call those
+  operations, dispose the inherited monitor, create a child dispatcher, attach
+  the private endpoint, invoke a fork, release guest input, or acknowledge
+  readiness bit 7 or 8. Destructive reconstruction and `T-CAM-6.1` through
+  `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-monitor-socket-resources — bind the supported socket backend
+
+- **Patch:** `0176-crucible-bind-child-monitor-socket-resources.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** the private child ownership basis now also retains the exact
+  connected Unix-socket frontend, address, channel, socket, listener, read and
+  HUP sources, `GMainContext`, and a positive monotonic connection generation.
+  Staging rejects non-Unix and non-listening endpoints, TLS, telnet, TN3270,
+  WebSocket, reconnect and connect-task state, queued descriptor transfers,
+  replay mode, and non-GMainContext dispatch. Commit and exact restage repeat
+  the complete comparison under the chardev write lock. A disconnect or
+  reconnect changes the generation and invalidates the retained basis.
+  Child-QMP contract version 6 exposes only
+  `monitor-socket-resources-bound`; resource-stage contract version 12 and
+  template transaction version 22 bind the stricter contribution.
+- **Micro-test:** the live Phase 6 report pins all three schema versions and the
+  initially absent socket-resource proof. The QEMU Unix socket-server unit
+  tests require an exact basis, reject a substituted frontend and generation,
+  invalidate it on disconnect and reconnect, and reject the TCP profile.
+- **Inertness:** this patch retains the exact resources that a future child
+  transition must consume. It does not disconnect the inherited socket, remove
+  sources, destroy the inherited monitor, build a child dispatcher, attach the
+  private endpoint, invoke a fork, release guest input, or acknowledge
+  readiness bit 7 or 8. Destructive reconstruction and `T-CAM-6.1` through
+  `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-held-child-monitor-socket — replace the inherited child stream while held
+
+- **Patch:** `0177-crucible-hold-reconstructed-child-monitor-socket.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** a one-shot child-incarnation transition revalidates the exact
+  retained monitor-socket basis and the fresh nonblocking AF_UNIX stream's
+  Linux `SO_COOKIE` before mutation. It duplicates the fresh stream, destroys
+  the child's copied inherited channel and read/HUP sources, keeps the inherited
+  listener disabled, and installs the replacement without attaching input
+  sources or emitting an open event. The copied basis records inherited
+  disposition, exact replacement identity and generation, and the held-input
+  state. The source process and repeated attempts fail closed.
+- **Micro-test:** the QEMU Unix socket-server test rejects the destructive call
+  in the source process, applies it in a forked child, and proves the inherited
+  channel and sources are gone while the exact replacement remains connected
+  with input held. Patch regeneration and the Phase 6 live result bind the new
+  carried patch.
+- **Inertness:** no shipped command calls this child-only primitive yet. It does
+  not reset the QMP parser or capabilities, emit the greeting, rebuild the
+  dispatcher or monitor I/O thread, invoke the production fork coordinator,
+  release guest input, or acknowledge readiness bit 7 or 8. The remaining
+  monitor transaction and `T-CAM-6.1` through `T-CAM-6.3` stay incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-held-child-qmp-protocol — reset inherited protocol state while held
+
+- **Patch:** `0178-crucible-reset-reconstructed-child-qmp-protocol.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** a child-incarnation-only one-shot monitor transition requires
+  the exact retained monitor, I/O-thread, dispatcher, chardev, socket, and
+  lifecycle basis. Before mutation it also requires an empty monitor named-FD
+  table, global fdset registry, output buffer and output watch, no mux/reset
+  state, an open frontend, and the complete empty request/parser inventory. It
+  consumes the held socket
+  replacement, destroys the inherited JSON parser, constructs a fresh empty
+  parser, and resets the monitor to capability negotiation with only the
+  supported I/O-thread OOB capability offered. Input remains held and no
+  greeting is emitted.
+- **Micro-test:** strict patch certification pins the child-only process check,
+  empty local-state predicates, socket transition, parser replacement,
+  capability reset, and held-input result. Patch regeneration and the Phase 6
+  live result bind the new carried patch.
+- **Inertness:** no shipped command calls this child-only primitive. It does
+  not rebuild the inherited dispatcher or monitor I/O thread, emit the QMP
+  greeting, release input, invoke the production fork coordinator, admit a
+  guest, or acknowledge readiness bit 7 or 8. The remaining monitor transaction
+  and `T-CAM-6.1` through `T-CAM-6.3` stay incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-held-child-qmp-dispatcher — replace the inherited dispatcher while held
+
+- **Patch:** `0179-crucible-rebuild-reconstructed-child-qmp-dispatcher.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** after the exact child socket and QMP protocol reset succeeds,
+  the monitor requires the copied dispatcher to be the unchanged global
+  dispatcher and idle. It asserts dispatcher shutdown, wakes that coroutine
+  exactly once, waits for its normal exit and disposal, then installs one fresh
+  dispatcher on the child main-loop AIO context. The replacement frontend
+  remains held throughout, so neither dispatcher can admit input during the
+  transition.
+- **Micro-test:** strict patch certification pins exact inherited-pointer and
+  idle-state validation, shutdown-before-wake ordering, normal-exit waiting,
+  fresh coroutine construction, and the recorded rebuilt state. The complete
+  QEMU build proves the transition compiles and links in the system emulator;
+  patch regeneration and the Phase 6 live result bind the carried patch.
+- **Inertness:** no shipped command calls this child-only primitive. It does
+  not reconstruct the inherited monitor I/O thread, emit the QMP greeting,
+  release input, invoke the production fork coordinator, admit a guest, or
+  acknowledge readiness bit 7 or 8. The remaining monitor transaction and
+  `T-CAM-6.1` through `T-CAM-6.3` stay incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-held-child-monitor-iothread — replace the inherited monitor worker while held
+
+- **Patch:** `0180-crucible-reconstruct-child-monitor-iothread.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** the child basis additionally retains the exact source monitor
+  IOThread's Linux thread identity and AIO/GLib contexts. After the held socket,
+  protocol, and dispatcher transitions, QEMU rejects source-process use, an
+  identity change, or a source worker still present in the child. It refreshes
+  the initialization semaphore and overwrites the vanished joinable-thread
+  handle by starting one replacement worker over the same admitted quiescent
+  contexts. No socket input source is attached during this transition.
+- **Micro-test:** strict patch certification pins exact context and thread-ID
+  retention, source-process rejection, Linux task-absence validation, semaphore
+  refresh, replacement-thread creation, and the recorded rebuilt state. The
+  complete QEMU build proves the helper compiles and links in the system
+  emulator; patch regeneration and the Phase 6 live result bind the carried
+  patch.
+- **Inertness:** no shipped command calls this child-only primitive. It does
+  not emit the QMP greeting, release input, reconstruct the copied global
+  thread registry, invoke the production fork coordinator, admit a guest, or
+  acknowledge readiness bit 7 or 8. The remaining monitor transaction and
+  `T-CAM-6.1` through `T-CAM-6.3` stay incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-qmp-activation — greet before releasing replacement input
+
+- **Patch:** `0181-crucible-activate-reconstructed-child-qmp.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** after exact held socket, protocol, dispatcher, and monitor
+  IOThread reconstruction, one child-incarnation-only main-thread operation
+  takes BH/timer admission and schedules a synchronous callback on the exact
+  replacement worker. That callback revalidates the monitor generation,
+  singleton monitor, dispatcher, thread identity, fresh negotiation/parser
+  state, empty output, and held replacement socket, then emits
+  `CHR_EVENT_OPENED` while input remains held. The normal QMP event handler
+  therefore emits exactly one greeting before the child reports its complete
+  held resource state. A distinct operation, called only after the complete
+  child resource transaction commits, flushes the greeting and returns
+  `-EAGAIN` without mutation while bytes remain buffered. Once the greeting has
+  drained, it attaches exactly one read source and one HUP source. The retained
+  basis independently records the one-shot greeting and release.
+- **Micro-test:** the socket unit test applies held reconstruction in a real
+  forked child, attaches both replacement sources exactly once, and rejects a
+  second release. Strict patch certification pins both guarded synchronous
+  IOThread entries, exact thread and held-state validation, held greeting,
+  drain-before-release behavior, source attachment, and both recorded one-shot
+  results. The complete QEMU build proves
+  the operation compiles and links in the system emulator; patch regeneration
+  and the Phase 6 live result bind the carried patch.
+- **Inertness:** no shipped command invokes this child-only operation. It does
+  not reconstruct the copied global thread registry, invoke the production fork
+  coordinator, admit guest work, or acknowledge readiness bit 7 or 8. The
+  remaining resource-transaction composition and `T-CAM-6.1` through
+  `T-CAM-6.3` stay incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-concrete-child-qmp-runtime — bind monitor reconstruction before fork
+
+- **Patch:** `0182-crucible-bind-concrete-child-qmp-runtime.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** child-QMP staging now retains the exact concrete monitor
+  callback and exact private monitor basis inside the one-shot reinitializer.
+  The callback validates the endpoint and all three retained generations,
+  composes held socket, parser/capability, dispatcher, monitor IOThread, and
+  greeting reconstruction, and reports completion only while replacement
+  input remains held. The complete child resource transaction invokes that
+  retained callback; its apply API no longer accepts a runtime or opaque basis
+  that could be substituted after descriptor mutation starts. Child-QMP QAPI
+  schema version 7 exposes that stronger prepared contract.
+- **Micro-test:** the child-resource unit tests bind the runtime before fork,
+  reject a missing runtime, a different callback, and a different opaque basis,
+  then prove the exact retained callback executes once inside the authenticated
+  immediate-child transaction. Strict patch certification pins the concrete
+  monitor operation order, held-state checks, fixed callback storage, and
+  schema version. The complete QEMU build proves the composition compiles and
+  links in the system emulator.
+- **Inertness:** no shipped command invokes the destructive child resource
+  transaction. This patch does not reconstruct the copied global thread
+  registry, invoke the production fork coordinator, release input after commit,
+  admit a guest, or acknowledge readiness bit 7 or 8. `T-CAM-6.1` through
+  `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-thread-registry — reconstruct the immediate child registry
+
+- **Patch:** `0183-crucible-reconstruct-child-thread-registry.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** an explicit coordinator-owned transaction serializes the
+  bounded QEMU thread registry and registered `QemuMutex` registry across one
+  process fork. It rejects a foreign coordinator, registry overflow, an
+  in-flight `qemu_thread_create()` start, or any registered mutex that is
+  uninitialized, ownership-invalid, locked, recursive, waiting on acquisition
+  or a condition, or crossing an unlock transition. Exact process, thread,
+  coordinator-record, and generation checks protect the parent release and
+  child reconstruction paths. The parent unlocks without changing either
+  registry. The immediate child detaches the sole surviving coordinator node,
+  makes all copied non-surviving thread records unreachable, resets its bounded
+  registry state, binds the coordinator to the child thread identity, and
+  advances the process-local generation before releasing both locks.
+- **Micro-test:** a real-fork unit test starts an additional parked QEMU thread,
+  begins the registry transaction, proves the child contains exactly its
+  coordinator, and proves the parent's generation and complete thread inventory
+  are unchanged after release. A negative test holds a registered `QemuMutex`
+  and requires pre-fork rejection, then proves the transaction succeeds only
+  after unlock. Strict patch certification pins the held-transaction APIs,
+  in-flight-start barrier, mutex quiescence predicate, child singleton rebuild,
+  and both test registrations.
+- **Inertness:** no shipped command begins this transaction or invokes
+  `fork(2)`. It covers QEMU-created threads and registered QEMU mutexes only; it
+  does not inventory raw `pthread`/GLib locks, complete every subsystem
+  disposition, pair a host continuation, release guest admission, or
+  acknowledge readiness bit 7 or 8. The next tracked patch composes the RCU
+  fork protocol around this transaction. `T-CAM-6.1` through
+  `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-rcu-runtime-transaction — compose RCU and registry fork ownership
+
+- **Patch:** `0184-crucible-compose-rcu-fork-transaction.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** one linear runtime transaction first closes RCU reader,
+  callback, and reader-registry admission and requires the complete bounded RCU
+  inventory to be quiescent. It binds the exact inactive coordinator reader,
+  process, thread, reader generation, and barrier generation before acquiring
+  the thread and registered-`QemuMutex` transaction. Failure to acquire that
+  inner transaction rolls the RCU barrier back. The parent releases the inner
+  registry first and then restores the unchanged RCU generation. The immediate
+  child reconstructs the thread registry first, then makes every vanished RCU
+  reader unreachable, binds the surviving coordinator reader to the child
+  thread, resets the provably empty callback queue and drain state, releases
+  admission, and starts exactly one fresh detached callback worker before
+  returning. Generic RCU `pthread_atfork` handling is disabled only for the
+  lifetime of this explicit transaction and its prior nesting state is
+  preserved.
+- **Micro-test:** the real-fork child-runtime test holds both transactions,
+  proves the parent's RCU reader generation and count are unchanged, and
+  requires the child to contain exactly its coordinator plus the newly
+  registered `call_rcu` worker. A negative test begins under an active RCU read
+  section, requires rejection with the barrier fully released, then proves the
+  same transaction can be acquired and released normally. The complete QEMU
+  derivation runs all 20 child-resource tests.
+- **Inertness:** no shipped command invokes this transaction or `fork(2)`.
+  Raw and library-owned locks, remaining subsystem child dispositions, the
+  production fork coordinator, host-continuation pairing, guest admission, and
+  readiness bits 7 and 8 remain open. `T-CAM-6.1` through `T-CAM-6.3` remain
+  incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-rcu-thread-disposition — bind the RCU worker disposition
+
+- **Patch:** `0185-crucible-bind-rcu-worker-fork-disposition.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** thread-inventory schema 3 classifies the subsystem-owned
+  `call_rcu` worker as `rcu-restart`. The registered-thread transaction now
+  requires exactly one coordinator and one such worker, rejecting generic and
+  AIO workers before fork. The child runtime discards the inherited RCU worker
+  with the vanished registry and registers exactly one fresh worker after RCU
+  reconstruction.
+- **Micro-test:** the real-fork test runs against the exact two-thread profile;
+  a new negative test adds generic and AIO workers in turn, requires `-EBUSY`,
+  and proves the registry and RCU barriers are released after each rejection.
+  Strict patch certification pins the schema, disposition, exact thread count,
+  and unsupported-worker regression.
+- **Inertness:** no shipped command invokes this transaction or `fork(2)`.
+  Raw or unregistered locks, AIO and other subsystem dispositions, production
+  fork invocation, guest admission, and readiness bits 7 and 8 remain open.
+- **Risk:** F.
+
+### crucible-hot-fork-monitor-thread-disposition — bind the monitor IOThread disposition
+
+- **Patch:** `0186-crucible-bind-monitor-iothread-fork-disposition.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-22].
+- **Mechanism:** the monitor subsystem binds its exact internal QMP IOThread
+  from generic AIO ownership to `monitor-restart` after initialization. The
+  source registry transaction admits exactly one coordinator, one RCU worker,
+  and that monitor worker. Immediate-child registry reconstruction discards the
+  inherited monitor record; the already-bound child-QMP reinitializer starts
+  one replacement IOThread with the same disposition while replacement input
+  remains held. Every user-created or other IOThread retains the
+  `unclassified-aio` blocker disposition.
+- **Micro-test:** the real-fork runtime regression adds an RCU-registered
+  monitor worker to the exact source profile, proves that its inherited record
+  is absent from the immediate child, and proves the parent thread and RCU
+  inventories remain unchanged. Generic and unrelated AIO workers remain
+  negative controls. Strict patch certification pins the one-shot monitor
+  binding, schema-4 disposition, exact three-thread admission, and child
+  replacement classification. The live readiness gate requires exactly one
+  `IO mon_iothread` carrying `monitor-restart`.
+- **Inertness:** no shipped command invokes the runtime transaction or
+  `fork(2)`. Raw or unregistered locks, other AIO and remaining subsystem
+  dispositions, production fork invocation, guest admission, and readiness
+  bits 7 and 8 remain open.
+- **Risk:** F.
+
+### crucible-hot-fork-rcu-worker-ordering — defer child RCU worker startup
+
+- **Patch:** `0187-crucible-defer-rcu-worker-until-fd-disposition.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** child RCU reconstruction and child callback-worker startup are
+  now separate phases. The composed runtime reconstructs the child registry and
+  empty RCU queue while the exact descriptor-table transaction remains active,
+  applies every inherited descriptor disposition, and only then starts one
+  fresh callback worker. A child callback can therefore perform no work through
+  an inherited descriptor that has not yet been retained, replaced, or closed.
+- **Micro-test:** the real-fork runtime test proves the child has only its
+  coordinator during descriptor disposition and gains exactly one fresh RCU
+  worker afterward. Ordering and rollback failures remain fail closed. The
+  complete QEMU derivation runs the child-resource suite.
+- **Inertness:** no shipped command invokes the runtime transaction or
+  `fork(2)`. Parent-death containment, direct-child ownership, production fork
+  invocation, guest admission, and readiness bits 7 and 8 remain open.
+- **Risk:** F.
+
+### crucible-hot-fork-retained-rcu-barrier — retain template RCU exclusion
+
+- **Patch:** `0188-crucible-borrow-retained-rcu-barrier-across-fork.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** a retained RCU transaction binds the exact barrier generation,
+  process incarnation, and monitor-thread owner. Parent completion deliberately
+  preserves the barrier for reuse by the immutable template. The copied
+  immediate child alone may release that exact generation after descriptor
+  disposition and before its replacement callback worker starts.
+- **Micro-test:** the real-fork test places barrier ownership on a distinct
+  monitor thread, rejects foreign owners and generations, proves parent
+  retention, and proves the child releases only its copied barrier. The
+  complete QEMU derivation runs the child-resource suite.
+- **Inertness:** no production command begins the retained transaction or
+  invokes `fork(2)`. Parent-death containment, direct-child ownership, guest
+  admission, and readiness bits 7 and 8 remain open.
+- **Risk:** F.
+
+### crucible-hot-fork-retained-async-barrier — retain template async exclusion
+
+- **Patch:** `0189-crucible-retain-async-fork-barrier-through-child-release.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the BH/timer/AIO/coroutine/GLib admission barrier now has an
+  exact retained transaction binding its generation and monitor-thread owner.
+  Parent completion leaves the reusable template barrier held. Only the copied
+  immediate child may release the exact retained generation.
+- **Micro-test:** a real-fork AIO regression proves the source barrier remains
+  held after parent completion, the child rejects wrong generations, and the
+  child releases only its copied generation. The complete QEMU derivation runs
+  the focused AIO barrier test.
+- **Inertness:** this patch supplies the exact transaction but does not yet
+  compose it with the child runtime or expose a production fork command.
+  Parent-death containment, guest admission, and readiness bits 7 and 8 remain
+  open.
+- **Risk:** F.
+
+### crucible-hot-fork-async-runtime-transaction — release child async exclusion before QMP
+
+- **Patch:** `0190-crucible-release-child-async-barrier-before-qmp-start.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** the retained runtime transaction binds both the exact RCU and
+  asynchronous-source barrier generations. The immediate child reconstructs
+  thread/RCU state with descriptor admission closed, commits descriptor
+  disposition, starts the replacement RCU worker, reconstructs plugin state,
+  and then releases its copied asynchronous barrier before child-QMP activation
+  can start the replacement monitor IOThread. The parent retains both barriers
+  for the immutable template.
+- **Micro-test:** the integrated real-fork test assigns both retained barriers
+  to the monitor owner, rejects mismatched generations, proves the parent keeps
+  both barriers, and proves the child releases asynchronous admission only at
+  the final pre-QMP phase. The complete QEMU derivation runs the child and AIO
+  suites.
+- **Inertness:** no public command invokes the runtime transaction. The patch
+  does not establish parent-death containment, return direct-child authority,
+  admit guest execution, or acknowledge readiness bit 7 or 8.
+- **Risk:** F.
+
+### crucible-hot-fork-main-loop-coordinator — execute fork on the QEMU main loop
+
+- **Patch:** `0191-crucible-coordinate-fork-on-main-loop.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-22].
+- **Mechanism:** a raw Linux event notifier is registered directly with the
+  system main-loop poll set, outside BH and AIO admission. One non-main-loop
+  owner can submit an immutable prepare/parent/child operation and wait for its
+  parent disposition. The source main-loop thread alone prepares and calls
+  `fork(2)`. The immediate child closes and disables the copied coordinator
+  notifier before its callback, while the parent returns the positive child PID
+  even if parent disposition fails so direct-child authority is not lost.
+- **Micro-test:** a real-fork unit test submits from a worker, services the raw
+  notifier on the main loop, proves prepare/parent run on that main thread,
+  proves the child callback runs as the single surviving thread, and reaps the
+  exact returned PID. Strict patch certification pins the raw-notifier bridge,
+  unit-test registration, and ownership-return contract.
+- **Inertness:** QEMU initializes the internal bridge, but no QAPI/QMP command
+  supplies an operation. The next production slice must compose parent-death
+  containment, exact runtime preparation, direct-child quarantine, and a
+  versioned command before guest admission or readiness bits 7 and 8.
+- **Risk:** F.
+
+### crucible-hot-fork-private-qmp-transaction — fork retained templates through private QMP
+
+- **Patch:** `0192-crucible-fork-retained-templates-through-private-qmp.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10],
+  [HFORK-11], [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** a generation-bound QMP command submits the retained template
+  operation to the source main-loop coordinator. The immediate child proves
+  inherited descriptor disposition, reconstructs registered runtime and
+  private plugin/QMP endpoints, releases the copied block barrier, and remains
+  paused behind its authenticated private-QMP readiness report.
+- **Micro-test:** the live readiness flight proves the command is absent from
+  stock QEMU and rejects a fork without an admitted template. The child-resource
+  unit suite exercises the complete descriptor and runtime transaction, and
+  exact drop-one attribution binds those effects to this patch.
+- **Inertness:** the command fails closed until every exact retained-template
+  prerequisite is staged. Daemon direct-child quarantine, hard containment,
+  modeled guest admission, and the full production flight remain open.
+- **Risk:** F.
+
+### crucible-hot-fork-parent-reap-status — retain exact child wait status
+
+- **Patch:** `0193-crucible-retain-hot-fork-child-status.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-11], [HFORK-22].
+- **Mechanism:** the source QEMU reserves one of 4096 unique child-process
+  generations before fork, performs at most one nonblocking `waitpid(2)` per
+  query or release, retains exact exit or signal status after reap, and requires
+  explicit release before a generation can be reused.
+- **Micro-test:** the live readiness flight proves the command is absent from
+  stock QEMU and rejects an unknown generation. The coordinator unit suite
+  covers retained running, exited, signaled, release, and reuse behavior, with
+  exact drop-one attribution to this patch.
+- **Inertness:** records exist only for children created through the retained
+  fork command. Daemon reconciliation and the full production flight remain
+  open.
+- **Risk:** F.
+
+### crucible-hot-fork-child-process-contract — contain children from birth
+
+- **Patch:** `0194-crucible-contain-hot-fork-children-from-birth.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-11], [HFORK-22].
+- **Mechanism:** a generation-bound QMP transaction retains an authenticated
+  cgroup-v2 directory, sticky nonblocking cancellation eventfd, and file-size
+  ceiling. The coordinator used `clone3(CLONE_INTO_CGROUP)` until
+  `crucible-cgroup-procs-child-placement` replaced it with first-instruction
+  self-placement through the supervisor-opened `cgroup.procs` descriptor; the
+  immediate child then checks cancellation and installs `RLIMIT_FSIZE` before
+  reconstructing runtime state.
+- **Micro-test:** the live readiness flight proves the command is absent from
+  stock QEMU and checks the exact empty initial state. Coordinator tests cover
+  the birth-time process contract, and exact drop-one attribution binds the
+  surface and implementation to this patch.
+- **Inertness:** no child contract exists until the host stages an exact basis;
+  an unstaged retained fork fails closed. Terminal source/target reconciliation
+  and modeled guest admission remain open.
+- **Risk:** F.
+
+### crucible-hot-fork-child-console — replace the fork-child console endpoint
+
+- **Patch:** `0195-crucible-replace-fork-child-console-endpoint.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-8], [HFORK-11], [HFORK-22].
+- **Mechanism:** one generation-bound nonblocking Unix stream replaces the
+  inherited `crucible-console` connection in the child while the source console
+  remains unchanged. Input stays held until reconstruction and exact endpoint
+  disposition complete.
+- **Micro-test:** the live readiness flight proves the command is absent from
+  stock QEMU and checks the exact empty initial state. Child-resource tests
+  exercise one-shot console reconstruction and alias rejection, with exact
+  drop-one attribution to this patch.
+- **Inertness:** the endpoint cannot be staged without the exact active template,
+  private QMP basis, connected console frontend, and authenticated socket.
+  Modeled guest admission and the full production flight remain open.
+- **Risk:** F.
+
+### crucible-virtio-net-exact-restore-reset — reset after announcement suppression
+
+- **Patch:** `0196-crucible-reset-virtio-net-after-exact-restore.patch`.
+- **Enforces:** [QFP-REG-1], [QFP-STATE-2].
+- **Mechanism:** exact restore removes the migration announcement timer to
+  preserve the modeled network. Virtio-net reset checks whether that timer
+  remains allocated before canceling it; it still clears announcement state.
+- **Regression:** the production shared-cause reactivation flight exercises
+  Boot of an exact-restored powered-off VM with a virtio-net device.
+- **Inertness:** allocated announcement timers retain upstream reset behavior;
+  this guard neither creates a timer nor schedules migration traffic.
+- **Risk:** D.
+
+### crucible-hot-fork-read-only-block-source — retain native immutable sources
+
+- **Patch:** `0197-crucible-retain-read-only-block-sources.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-22].
+- **Mechanism:** a process-local owner retains the exact backend/root pair and
+  original permissions. Before fork barriers, native drain and reopen freeze
+  the root; bounded validation requires every reachable backing and file node
+  to be read-only. Partial failure retains restoration authority. Only the
+  creating process can restore original access or release the token.
+- **Micro-test:** native QCOW2 fixtures write data, freeze, read it unchanged,
+  reject inherited-token restoration in a fork child, restore exact permissions,
+  and write again. An explicitly writable file descendant rejects the freeze
+  but still permits restoration. The package retains the actual TAP transcript;
+  `checks.crucible.phase6.qemuReadOnlyBlockSource` checks both named cases.
+- **Inertness:** no existing QMP or template operation calls this primitive.
+  Coordinator integration, private child overlays, and child-I/O reconstruction
+  remain open; no hot-fork readiness bit is acknowledged by this patch.
+- **Risk:** F.
+
+### crucible-hot-fork-native-worker-retirement — rebuild native child I/O
+
+- **Patch:** `0198-crucible-retire-native-workers-before-hot-fork.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-22].
+- **Mechanism:** after snapshot allocation queries, the main-loop coordinator
+  retires drained default-context native block workers before retaining AIO
+  barriers. It rejects outstanding work, foreign-context pools, and held
+  barriers without changing pool ownership. Acknowledgement and physical fork
+  recheck pool absence; the fork also rejects any writable native block node,
+  including unowned VMState nodes absent from backend enumeration.
+- **Micro-test:** an actual fork with an inherited single-worker pool cannot
+  complete a native read. After parent-side retirement, another child reads the
+  frozen source and durably writes a private QCOW2 overlay; the parent verifies
+  the overlay through a fresh graph and checks that its source is unchanged.
+  Named rejection fixtures cover pending work, foreign pools, held barriers,
+  and unowned writable nodes. The package retains their TAP evidence;
+  `checks.crucible.phase6.qemuNativeWorkerRetirement` checks all four cases.
+- **Inertness:** ordinary I/O keeps upstream lazy pool creation and sizing.
+  Retirement does not authorize writable-source inheritance. Complete source-set
+  preparation and production child-private graph installation remain open;
+  this native fork fixture is not the whole-world production flight.
+- **Risk:** F.
+
+### crucible-hot-fork-native-source-ownership — retain VMState and file identities
+
+- **Patch:** `0199-crucible-retain-native-vmstate-source-ownership.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-22].
+- **Mechanism:** native source ownership covers named parentless VMState roots
+  as well as exact backend/root pairs. It retains graph edges and native
+  regular-file identities; a file pin rejects reopen onto a replacement inode
+  before discarding the original descriptor. Frozen validation checks actual
+  read-only descriptor access. Block-node teardown destroys the dirty-bitmap
+  mutex before freeing its intrusive hot-fork registry storage.
+- **Micro-test:** native VMState bytes survive freeze and restore with exact
+  read-only file identity. Unexpected root consumers and inherited parent
+  tokens are rejected. Pathname replacement fails without replacing the source
+  descriptor. Another fixture creates and destroys 1,024 block nodes, checking
+  that both mutex entries appear and the exact inventory baseline returns each
+  time. The control omitting dirty-bitmap mutex destruction fails on its first
+  cycle. `checks.crucible.phase6.qemuNativeSourceOwnership` retains and validates
+  the three named package TAP cases.
+- **Inertness:** ordinary file reopen is unchanged without a native source pin;
+  mutex teardown balances existing initialization. These internal process-local
+  interfaces do not cross the socket/shared-memory boundary. Complete source-set
+  coordinator integration and child-private graph installation remain open;
+  the patch does not authorize whole-world child execution.
+- **Risk:** F.
+
+### crucible-hot-fork-complete-native-source-set — own the native source closure
+
+- **Patch:** `0200-crucible-retain-complete-native-source-sets.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-22].
+- **Mechanism:** an explicit process-local root set must cover every allocated
+  native node, backend, and graph consumer. Duplicate roots, mismatched owners,
+  unknown drivers, inactive nodes, and extra resources fail closed. Preparation
+  retains references and native file pins without changing access. Freeze
+  validates closure before transitions and retains partial failures for
+  restoration. Already-read-only roots stay read-only on restore. Original
+  writable-root counts remain separate from live backend permissions.
+- **Micro-test:** a native fixture combines a writable VMState root, writable
+  disk backend, and read-only backend. It preserves VMState and disk bytes,
+  rejects omitted/duplicate roots, extra nodes/backends, and foreign file
+  consumers, and checks query/restore behavior while block barriers are held.
+  Another fixture fails midway through freeze and restores every original
+  access state. Inherited parent capabilities are rejected. The negative
+  control omitting the non-backend consumer check fails at that exact query.
+  `checks.crucible.phase6.qemuNativeSourceSet` checks both named package cases.
+- **Inertness:** the source set is an internal native capability, not a wire
+  object. Ordinary QEMU block operation does not construct it. Production
+  coordinator integration needs explicit source provenance in its versioned
+  proof; child-private VMState/disk installation also remains open. No readiness
+  bit or whole-world execution claim is added by this primitive.
+- **Risk:** F.
+
+### crucible-hot-fork-template-native-sources — freeze and restore retained sources
+
+- **Patch:** `0201-crucible-freeze-retained-template-native-sources.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-22].
+- **Mechanism:** after validating the original immutable-root boundary, the
+  coordinator retains the complete native source set, releases block barriers,
+  freezes the sources, reacquires the barriers, and rebinds exact roots using
+  original backend write permissions. Block schema 4 carries source-proof
+  schema 1; template schema 25 requires that proof for bit 5. Current write
+  counts remain truthful. Abort releases barriers before native restoration and
+  retains failed restoration for explicit retry. Physical fork revalidates the
+  native set and rejects nonempty graphs until child-private handoff exists.
+- **Micro-test:** native tests reject unfrozen, absent, incomplete, and
+  mismatched bindings, validate original permission provenance after freeze,
+  and clear proof on release. An empty inherited capability can discard only
+  its child-local containers; nonempty inherited owners remain rejected.
+  `checks.crucible.phase6.qemuSourceSetLifecycle` runs two live VMState
+  prepare/abort transactions, then resumes and saves new VMState after each
+  restoration. The live flight exposed and now covers legal asynchronous abort
+  replies that the host previously rejected as malformed.
+- **Inertness:** ordinary snapshot binding keeps its current-permission
+  semantics. Native capabilities remain QEMU-private; only versioned scalar
+  provenance crosses QMP. No child-private graph or whole-world execution
+  acceptance is claimed by this increment.
+- **Risk:** F.
+
+### crucible-hot-fork-child-native-files — adopt child-private native files
+
+- **Patch:** `0202-crucible-adopt-child-private-native-files.patch`.
+- **Enforces:** [HFORK-9], [HFORK-22].
+- **Mechanism:** while a complete source set is frozen, the parent prepares one
+  bounded child file plan from caller-owned descriptors: every originally
+  writable native leaf (VMState container or active overlay) receives an exact
+  private copy in an empty, unlinked-count-one, writable destination, cloned
+  with `FICLONE` when the filesystem supports it and otherwise sparse-copied,
+  then verified against the frozen source length and modification time; every
+  read-only leaf receives an independent read-only descriptor for the same
+  inode. Destinations must not alias any source or each other, at most 4,096
+  files and the caller's aggregate byte budget are accepted, and a source set
+  retains at most one plan, which blocks restoration until released. Only the
+  immediate fork child installs the plan, after native worker retirement, with
+  block barriers released, and with all sources still read-only. Installation
+  reopens each prepared descriptor through an independent open file
+  description so the child's byte-range locks never share the parent's staged
+  description, verifies device/inode/size/mtime identity, rebinds the raw
+  driver to the private file, and then restores the original access mode and
+  frees the inherited source capability. A child-adopted raw node reopens
+  through its descriptor rather than the parent's launch pathname.
+- **Micro-test:** `/block-backend/hot_fork_child_native_files` rejects plans
+  before freeze, with a zero byte budget, with a missing writable leaf, with a
+  duplicated destination, and with a foreign node; refuses installation and
+  source restoration in the parent while a plan is retained; forks a child that
+  installs the plan, observes identical VMState and disk bytes, reopens the
+  VMState root read-only and writable again through the private inode, and
+  writes changed bytes; then proves the parent's sources still hold the
+  original bytes while the private files hold the child's writes.
+- **Inertness:** no coordinator path prepares or installs a plan yet, so the
+  physical fork still rejects nonempty native graphs. The primitives are
+  QEMU-private; nothing crosses QMP or the shared-memory protocol.
+- **Risk:** F.
+
+### crucible-hot-fork-child-files — bind child-private files to the fork transaction
+
+- **Patch:** `0203-crucible-bind-child-private-files-to-fork.patch`.
+- **Enforces:** [HFORK-9], [HFORK-22].
+- **Mechanism:** `crucible-hot-fork-child-files` is an out-of-band,
+  action-driven command like the process contract. Stage duplicates every
+  destination from standard `getfd`, requires an empty, link-count-one,
+  writable regular file with the expected device/inode, requires each entry to
+  select a distinct retained root by backend name or parentless node name, and
+  binds the plan to the current template generation. Query reports the exact
+  plan; release requires the exact generation and is rejected during a fork
+  operation. `crucible-hot-fork` gains `child-files-generation` (state schema
+  3). Inside the main-loop fork transaction, after every generation and
+  quiescence precondition holds, a nonempty frozen native graph requires the
+  bound plan: each root resolves to its unique originally writable native
+  leaf, the frozen bytes are copied into the staged destinations, and the
+  pinned source and prepared descriptors are excluded from child descriptor
+  disposition. The immediate child installs the plan after block release and
+  before QMP activation; the parent frees its copy and marks the plan
+  consumed. A staged plan with no native roots, and native roots without a
+  plan, fail before process creation.
+- **Micro-test:** the readiness gate proves stock QEMU rejects the command,
+  the patched initial state is exactly absent, staging fails without a
+  retained template, release fails without a plan, and the zero-generation
+  fork still fails closed. The block-backend case covers the leaf lookup and
+  descriptor listing that the coordinator consumes.
+- **Inertness:** the command is rejected outside a retained template; an
+  absent plan leaves the existing empty-graph fork path unchanged except for
+  the additional required generation argument.
+- **Risk:** F.
+
+### crucible-out-of-band-descriptor-transfer — allow out-of-band descriptor transfer
+
+- **Patch:** `0204-crucible-allow-out-of-band-descriptor-transfer.patch`.
+- **Enforces:** [HFORK-9], [HFORK-22].
+- **Mechanism:** standard `getfd` and `closefd` gain `allow-oob`. A retained
+  hot-fork template parks main-loop dispatch behind the asynchronous-source
+  barrier, so every branch-private descriptor transfer (private ring,
+  diagnostics, child QMP, child console, plugin endpoints, process contract,
+  child-private files) must execute on the monitor thread like the Crucible
+  stage commands that consume the transferred names. Both handlers touch only
+  the chardev `SCM_RIGHTS` stash and the monitor-locked descriptor list, so
+  their semantics are unchanged; the Rust client now issues both through
+  `exec-oob`.
+- **Micro-test:** the readiness gate proves stock QEMU rejects out-of-band
+  `getfd`, while patched QEMU dispatches out-of-band `getfd` and `closefd`
+  and reports the missing descriptor or unknown name. The first live guarded
+  fork flight timed out on main-loop `getfd` under retained barriers before
+  this change.
+- **Inertness:** commands executed with `execute` keep their ordinary
+  main-loop dispatch; only the additional out-of-band form is admitted.
+- **Risk:** F.
+
+### crucible-source-mapping-page-extents — round source mapping extents to pages
+
+- **Patch:** `0205-crucible-round-source-mapping-extents.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** setup-region lengths are exact protocol byte counts aligned
+  to ring headers, while the kernel maps whole pages. The source-mapping
+  lookup now accepts the exact length, binds the single writable shared VMA
+  that spans its page-rounded extent, and reports that extent. The
+  retained-template coordinator compares the private-ring source length
+  against the page-rounded manifest length when sealing plugin endpoints and
+  when building the child plan; the plugin and the typed host client compare
+  the same rounded extent, so no protocol value changes.
+- **Micro-test:** `test-crucible-hot-fork-child` binds a page-plus-one-byte
+  region to its two-page VMA, rejects a shorter declared length as ambiguous,
+  and rejects a zero length. The first live guarded fork flight was rejected
+  at private-ring staging with `EINVAL` before this change.
+- **Inertness:** page-multiple regions bind exactly as before.
+- **Risk:** F.
+
+### crucible-plugin-child-plan-blockers — report plugin child plan blockers
+
+- **Patch:** `0206-crucible-report-plugin-child-plan-blockers.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the plugin child plan is built only when every retained
+  basis holds. A named blocker function now checks the same preconditions in
+  order (template phase, barrier quiescence, inventory completeness, process
+  generation, endpoint identities, private-ring staging and template binding,
+  descriptor identity, length, aliasing, source mapping extent, endpoint
+  distinctness, worker mask, and parked workers) and the plugin endpoint
+  stage reports the first blocker in its QMP error. Plan construction and
+  every readiness proof are unchanged.
+- **Micro-test:** the readiness gate keeps proving the endpoint stage rejects
+  binding without a retained template. The live guarded fork flight needed
+  the blocker text because the descriptor-bearing client poisons its stream
+  after any staging failure and cannot query the retained state afterwards.
+- **Inertness:** diagnostics only; no accepted or rejected basis changes.
+- **Risk:** F.
+
+### crucible-child-plan-mapping-extents — validate child plan mapping extents
+
+- **Patch:** `0207-crucible-validate-child-plan-mapping-extents.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the plugin child plan carries the exact setup-region length
+  and the page-rounded source mapping extent. Plan validation now requires
+  the extent to be the page-rounded length (at least the length, less than
+  one page beyond it) instead of exact equality, while still requiring a
+  page-aligned start and extent, zero offset, and a bounded address range.
+- **Micro-test:** the readiness gate keeps proving the endpoint stage rejects
+  binding without a retained template. The live guarded fork flight was
+  blocked at plan construction with every named precondition satisfied
+  before this change.
+- **Inertness:** page-multiple regions validate exactly as before.
+- **Risk:** F.
+
+### crucible-nonblocking-cancellation-eventfd — restore nonblocking cancellation eventfd
+
+- **Patch:** `0208-crucible-restore-nonblocking-cancellation-eventfd.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** `io/channel-socket.c` clears `O_NONBLOCK` on every
+  descriptor received over `SCM_RIGHTS`, and that status flag belongs to the
+  open file description the host still shares for its sticky-cancellation
+  polling. Staging the child process contract now restores nonblocking mode
+  on the retained duplicate before authenticating it, so both processes keep
+  the nonblocking contract the host validated at construction.
+- **Micro-test:** the readiness gate keeps proving the initial contract state
+  is exactly absent. The live guarded fork flight was rejected at contract
+  staging with a blocking eventfd before this change; every earlier stage of
+  the same flight passed.
+- **Inertness:** only the contract stage touches the flag, and only on a
+  descriptor the host already created nonblocking.
+- **Risk:** F.
+
+### crucible-fork-preparation-blockers — report fork preparation blockers
+
+- **Patch:** `0209-crucible-report-fork-preparation-blockers.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the main-loop fork preparation admits a request only when
+  every retained basis holds. A named blocker function now checks the same
+  conditions in order and the operation records the first blocker; later
+  preparation steps (native worker and source retirement, the child-private
+  file plan) record their own. `crucible-hot-fork` reports the blocker with
+  the errno-style status. Admission and preparation semantics are unchanged.
+- **Micro-test:** the readiness gate keeps proving the zero-generation fork
+  fails closed. The live guarded fork flight reached this command and was
+  rejected with only `ESTALE` before this change.
+- **Inertness:** diagnostics only; no accepted or rejected basis changes.
+- **Risk:** F.
+
+### crucible-monitor-basis-verified-before-fork — verify child monitor basis before fork
+
+- **Patch:** `0210-crucible-verify-monitor-basis-before-fork.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** an out-of-band QMP command runs on the monitor thread under
+  that monitor's recursive parser lock, and the monitor thread then blocks
+  inside `crucible-hot-fork` until the main-loop transaction completes. The
+  main-loop preparation therefore cannot take the parser lock and previously
+  counted the dispatching monitor as unstable. The command now verifies the
+  staged child monitor basis before submitting the operation and records the
+  verdict; preparation and its blocker report consume the recorded verdict.
+  Nothing else can change monitor state while the monitor thread is blocked.
+- **Micro-test:** the readiness gate keeps proving the zero-generation fork
+  fails closed before submission. The live guarded fork flight was rejected
+  at preparation with "child monitor basis changed" before this change.
+- **Inertness:** the same basis predicate runs, one thread earlier.
+- **Risk:** F.
+
+### crucible-runtime-transaction-blockers — report runtime transaction blockers
+
+- **Patch:** `0211-crucible-report-runtime-transaction-blockers.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the retained runtime transaction composes the thread
+  registry, RCU, and asynchronous-source transactions. Each now records a
+  static description of the basis that blocked it (the registry reports its
+  forkability counts or the first registered mutex that is not quiescent
+  with its owner thread, recursion depth, and waiters; RCU reports a missing
+  retained barrier or an unregistered coordinator reader; the asynchronous
+  source reports its barrier state), the composition records the failing
+  step, and `crucible-hot-fork` reports the composed text with the
+  errno-style status. Admission and transaction semantics are unchanged.
+- **Micro-test:** the readiness gate keeps proving the zero-generation fork
+  fails closed before submission. The live guarded fork flight reached the
+  runtime transaction and was rejected with only `EBUSY` before this change.
+- **Inertness:** diagnostics only; no accepted or rejected basis changes.
+- **Risk:** F.
+
+### crucible-carried-fork-mutexes — carry coordinator-owned and parked mutexes
+
+- **Patch:** `0212-crucible-carry-parked-mutexes-across-fork.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the dispatching QMP IOThread waits inside
+  `crucible-hot-fork` holding its recursive parser lock and parked on the
+  coordinator's completion condition, and the main-loop coordinator forks
+  while it owns the BQL. The registry transaction previously required every
+  registered mutex to be unlocked and waiter-free, so a live fork was
+  impossible. Each mutex now records its sole condition waiter; the
+  transaction classifies every mutex as quiescent, coordinator-owned, parked
+  on one discard-and-restart thread, or blocked, and records the carried set.
+  The child re-verifies each carried mutex against the parent's
+  classification, rebinds coordinator-owned mutexes to its thread ID,
+  reinitializes the pthread mutex a vanished thread held, forgets vanished
+  waiters, and then requires the whole registry to be quiescent or
+  child-owned.
+- **Micro-test:** `/crucible/hot-fork-child/registry-coordinator-owned-mutex`
+  forks with a coordinator-held mutex and cycles it in the child;
+  `registry-parked-restart-mutexes` forks with a monitor-restart worker
+  holding a recursive lock and waiting on a condition and locks both in the
+  child; `registry-deeply-held-mutex` rejects a depth-two hold with the named
+  blocker. The live guarded fork flight was rejected at this transaction
+  before this change.
+- **Inertness:** mutexes held or awaited by any other thread still block the
+  fork; coordinator-owned and parked mutexes were previously rejected and are
+  now carried.
+- **Risk:** F.
+
+### crucible-rr-vcpu-thread-restart — restart the round-robin vCPU thread in the child
+
+- **Patch:** `0213-crucible-restart-rr-vcpu-thread-in-child.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the round-robin vCPU thread was a plain `unclassified`
+  fork blocker, so the live flight stopped at the registry transaction with
+  four threads where three were admitted. The thread now assigns itself
+  `vcpu-restart`, and the registry admits exactly one such thread alongside
+  the coordinator, RCU, and monitor workers. Before every VM-stop park the
+  thread publishes a copy of its deterministic guest random stream. In the
+  immediate child, after the plugin child is active and before the block
+  barrier releases, the coordinator calls the accelerator's restart hook: it
+  reinitializes the shared halt condition (the copied one still counts the
+  vanished waiter), clears creation state, and creates a replacement thread
+  that re-registers with RCU and the registry, adopts the process's sole TCG
+  context instead of claiming a new one, adopts the published random stream,
+  announces itself under the BQL, and enters the steady-state loop, which
+  parks on the inherited VM stop before any guest work can run.
+- **Micro-test:** `/crucible/hot-fork-child/registry-vcpu-restart-worker`
+  admits one `vcpu-restart` worker and rejects a second with the named
+  blocker; the readiness gate requires exactly one `ALL CPUs/TCG` thread with
+  the new disposition. The live guarded fork flight is the acceptance
+  evidence for the restart itself.
+- **Inertness:** the parent thread's behaviour is unchanged apart from the
+  disposition and the random-stream copy at VM-stop parks; multi-threaded TCG
+  and other accelerators expose no restart hook and remain fork blockers.
+- **Risk:** F.
+
+### crucible-cgroup-procs-child-placement — place the fork child through cgroup.procs
+
+- **Patch:** `0214-crucible-place-child-through-cgroup-procs.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the kernel checks `CLONE_INTO_CGROUP` with the calling
+  process's credentials: it must be able to write `cgroup.procs` in both the
+  destination and the common ancestor of source and destination. A source
+  QEMU running under attempt credentials cannot satisfy that across a
+  supervisor-owned delegated root, so the first live guarded fork was
+  rejected with `EPERM`. A `cgroup.procs` write is instead authorized with the
+  credentials of the process that opened the descriptor. The process contract
+  therefore also imports the supervisor's writable `cgroup.procs` descriptor,
+  authenticates it as the control file of the exact retained directory (same
+  device, the inode of `cgroup.procs` beneath the directory, write access, and
+  cgroup-v2 filesystem), and reports it in schema 2. The coordinator forks and
+  the child's first instruction writes `0` into that descriptor, migrating
+  itself before any other work; a failed write ends the child.
+- **Micro-test:** the readiness gate checks the exact empty schema-2 initial
+  state; the crucible-qemu suite covers the three-descriptor stage, release,
+  and strict state parsing; the live guarded fork flight is the acceptance
+  evidence for placement.
+- **Inertness:** without a staged contract the coordinator forks exactly as
+  the focused coordinator tests exercise it; no cgroup write happens.
+- **Risk:** F.
+
+### crucible-fork-parent-registry-release-order — release the registry before the fork parent locks
+
+- **Patch:** `0215-crucible-release-registry-before-parent-locks.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the registry transaction retains the registered-mutex
+  guard from before `fork()` until the parent releases it. The coordinator
+  retained the child, which locks the coordinator's own registered `QemuMutex`,
+  before invoking the parent callback that performs that release, so the
+  first fork that ever succeeded left the parent deadlocked on its own guard
+  and the `crucible-hot-fork` command timed out. The parent callback now runs
+  first and releases the runtime transaction before it frees the child-file
+  plan; the coordinator retains the child afterwards. The guard also keeps a
+  thread-local held flag and aborts with a named message on re-entrant use.
+- **Micro-test:** `/crucible/hot-fork-child/registry-retained-guard-abort`
+  locks a registered mutex inside a retained registry transaction in a
+  subprocess and asserts the named abort. The live guarded fork flight is the
+  acceptance evidence for the parent completing.
+- **Inertness:** the parent callback's inputs and the retained child slot are
+  unchanged; only their order and the guard's failure mode change.
+- **Risk:** F.
+
+### crucible-child-placement-before-fork-return — complete child placement before the fork returns
+
+- **Patch:** `0216-crucible-complete-child-placement-before-return.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the child's first instruction migrates it into the target
+  cgroup, but the parent previously completed the fork as soon as `fork()`
+  returned, so a supervisor could authenticate the child's cgroup membership
+  before the child had run at all. The coordinator now creates one
+  close-on-exec pipe before `fork()`; the child writes one byte after its
+  placement write and closes both ends before returning into its own path,
+  and the parent polls the read end for at most ten seconds before it runs
+  the parent callback and retains the child. A missing report becomes the
+  fork's parent status (`-ECHILD` on early exit, `-ETIMEDOUT` otherwise) with
+  the child still retained for reaping.
+- **Micro-test:** the coordinator unit test exercises the handshake with no
+  cgroup descriptor; the live guarded fork flight is the acceptance evidence
+  for placement ordering.
+- **Inertness:** the child's work and the parent callback are unchanged; the
+  parent only waits for the report before proceeding.
+- **Risk:** F.
+
+### crucible-child-step-exit-status — identify the failed child step in the exit status
+
+- **Patch:** `0217-crucible-identify-failed-child-step-in-exit-status.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the child's reconstruction runs fifteen ordered steps and
+  previously ended with a bare `EXIT_FAILURE` on any error. Under guarded
+  launch the child's stderr is closed, so the first live child that failed
+  left only a zombie with no cause. Each step now increments a counter and a
+  failure terminates the child with 64 plus that counter, documented on the
+  child-process status field; the source reaps the child and reports the
+  status through `crucible-hot-fork-child-process`.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact empty and unknown-generation behaviour; the live guarded fork flight
+  reports the reaped child's status when retention fails.
+- **Inertness:** successful reconstruction is unchanged; only the exit
+  status of a failed child changes.
+- **Risk:** F.
+
+### crucible-child-resource-plan-substep-status — identify the failed resource plan sub-step
+
+- **Patch:** `0218-crucible-identify-failed-resource-plan-substep.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the runtime resource plan application is one composite
+  step of the child's reconstruction: descriptor replacement, child runtime
+  start, plugin, QMP, and console reinitialization, runtime finish, mapping
+  verification, and diagnostics-target authentication. The first live child
+  died there with only the composite step's status. Each sub-step now records
+  itself before it runs, and a failure inside the composite step exits with
+  96 plus that record, documented on the child-process status field.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact empty and unknown-generation behaviour; the live guarded fork flight
+  reports the reaped child's status when retention fails.
+- **Inertness:** successful reconstruction is unchanged; only the exit
+  status of a child that fails inside the composite step changes.
+- **Risk:** F.
+
+### crucible-mapping-backing-partial-page — admit shared mappings into a backing partial page
+
+- **Patch:** `0219-crucible-admit-mapping-into-backing-partial-page.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** protocol regions carry exact lengths while the VMA that
+  maps them spans whole pages (`crucible-source-mapping-extents`), and the
+  private ring memfd keeps the exact ring-aligned size. The child's shared
+  mapping table check still required `offset + length` to fit the backing's
+  exact byte size, so the first child to reach the resource plan application
+  exited at its preconditions. The check now bounds the mapping by the
+  backing's page-rounded size; the kernel zero-fills that tail.
+- **Micro-test:** `/crucible/hot-fork-child/mapping-table-partial-page` maps
+  two pages of a backing one byte longer than a page: three pages are
+  rejected, two are admitted by the table check.
+- **Inertness:** mappings that fit the exact size are accepted as before.
+- **Risk:** F.
+
+### crucible-child-iothread-start-bound — bound the child monitor iothread start
+
+- **Patch:** `0220-crucible-bound-child-iothread-start.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the child rebuilds its monitor iothread and waited without
+  bound on the start semaphore; the live flight found the coordinator parked
+  there with no replacement thread among the child's tasks. The wait is now
+  bounded, a timeout records detail 70 unless the replacement recorded
+  progress, and the replacement notes each start step in the child detail
+  so the child's exit status (96 plus the detail) names where it stopped.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight reports the reaped child's
+  status.
+- **Inertness:** a replacement that starts promptly behaves as before; the
+  parent's own iothread creation records nothing.
+- **Risk:** F.
+
+### crucible-child-failure-result-report — report the failing child result on its diagnostics stream
+
+- **Patch:** `0221-crucible-report-child-failure-result.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the child's exit status names the failing step or detail
+  but not the result that failed it. The exit helper now takes that result
+  and writes "crucible hot-fork child failed: step S detail D result R" to
+  stderr, which the child resource plan has already replaced with the
+  branch-private diagnostics stream, before it exits.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight quotes the retained
+  diagnostics stream in its failure report.
+- **Inertness:** a child that completes its reconstruction writes nothing;
+  the parent never reaches the exit helper.
+- **Risk:** F.
+
+### crucible-plugin-child-worker-settle — wait for the plugin child workers to park
+
+- **Patch:** `0222-crucible-wait-for-plugin-child-workers.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the plugin's child initialization spawns its replacement
+  workers and returns; each worker parks behind the retained hold from its
+  own thread. The reinitializer demanded the complete held status from the
+  initialization result and failed with EPROTO whenever a worker had not
+  parked yet. It now separates the status identity from its readiness,
+  queries the runtime while only readiness is outstanding, and bounds that
+  wait; the plugin API's status validation ties the readiness flag to the
+  parked mask instead of the held phase, and names a rejected action on the
+  child's diagnostics stream.
+- **Micro-test:** the child unit test's fake runtime withholds readiness for
+  a configurable number of reports and proves the reinitializer queries
+  through them, and that any other mismatch still fails at once.
+- **Inertness:** a runtime that reports readiness immediately never queries;
+  the parent never reaches the reinitializer.
+- **Risk:** F.
+
+### crucible-qmp-child-stage-report — name the failing child QMP reconstruction stage
+
+- **Patch:** `0223-crucible-name-failing-qmp-child-stage.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the child's QMP reinitializer, the monitor's protocol
+  reconstruction (including which retained-basis precondition went stale),
+  the socket chardev's replacement attachment, and the iothread restart each
+  write one line naming the failing stage and its result to stderr before
+  returning it; the exit status names only the resource plan sub-step.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight quotes the diagnostics
+  stream in its failure report.
+- **Inertness:** a reconstruction that succeeds writes nothing; the parent
+  never reaches these stages.
+- **Risk:** F.
+
+### crucible-child-monitor-fd-names — drop inherited monitor descriptor names in the child
+
+- **Patch:** `0224-crucible-drop-inherited-monitor-fd-names.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the source registers the process contract and child-file
+  descriptors with `getfd`, and those names survive the fork in the
+  monitor's per-monitor list while the child's descriptor table transaction
+  closes or replaces their numbers. The child's protocol reconstruction
+  required that list to be empty and found it stale. The child now drops
+  the inherited names, leaving the table to the transaction, before the
+  local-state precondition is evaluated, and reports each local-state
+  predicate when the precondition still fails.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight exercises the drop.
+- **Inertness:** the parent never reaches the child reconstruction; a child
+  whose source registered no names drops nothing.
+- **Risk:** F.
+
+### crucible-child-monitor-iothread-context — rebuild the monitor iothread GLib context in the child
+
+- **Patch:** `0225-crucible-rebuild-child-monitor-iothread-context.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the inherited GMainContext's owner is the vanished parent
+  thread, so the replacement's thread-default push failed and its main loop
+  waited forever for a release that cannot come. The child now creates a
+  fresh context and loop, clears the AioContext GSource's context link (part
+  of GLib's public embedded layout) and attaches it to the fresh context so
+  its poll descriptors follow, abandons the dead copy rather than
+  unreferencing it, and re-homes the held monitor socket and the basis to
+  the fresh context while no source is attached.
+- **Micro-test:** the chardev unit test's forked child re-homes the held
+  socket to a fresh context and proves that release attaches to it and that
+  a stale inherited context is rejected; the live guarded fork flight
+  exercises the iothread rebuild.
+- **Inertness:** the parent never reaches the child reconstruction; the
+  chardev's ordinary connection paths are untouched.
+- **Risk:** F.
+
+### crucible-child-dispatcher-idle — run the rebuilt dispatcher to its idle wait in the child
+
+- **Patch:** `0226-crucible-idle-rebuilt-dispatcher-in-child.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the rebuilt dispatcher coroutine is scheduled on the
+  iohandler context with the busy flag set and clears it only when it runs
+  to its idle wait. The child's main thread is still inside its
+  reconstruction, so nothing ran it before the greeting transition checked
+  for an idle dispatcher and found it busy. The rebuild now polls the
+  iohandler context until the busy flag clears and re-verifies the
+  dispatcher under the monitor lock before reporting the replacement.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight exercises the greeting.
+- **Inertness:** the parent never rebuilds its dispatcher; ordinary
+  dispatcher creation at startup is untouched.
+- **Risk:** F.
+
+### crucible-console-child-stage-report — name the failing console child stage
+
+- **Patch:** `0227-crucible-name-failing-console-child-stage.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the console child runtime names a stale stage
+  precondition and a failed reconstruction or release, and the socket
+  chardev reports the state a stale inherited or held basis was compared
+  against, each as one stderr line before the result is returned; the exit
+  status names only the resource plan sub-step.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight quotes the diagnostics
+  stream in its failure report.
+- **Inertness:** a reconstruction that succeeds writes nothing; the parent
+  never reaches these stages.
+- **Risk:** F.
+
+### crucible-console-child-default-context — admit the default main context for the console child
+
+- **Patch:** `0228-crucible-admit-default-console-context.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the console basis is prepared with the chardev's context,
+  which is NULL for a chardev on the default main context, and the child
+  runtime rejected a NULL context as stale. The requirement is dropped: the
+  socket reconstruction and release compare the basis context with the
+  chardev's exactly, and the default context's owner is the child's own
+  main thread.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight exercises the console
+  reconstruction.
+- **Inertness:** a console chardev bound to a private context is checked as
+  before; the parent never reaches the child runtime.
+- **Risk:** F.
+
+### crucible-active-plugin-child-workers — admit idle parked workers in an active plugin child
+
+- **Patch:** `0229-crucible-admit-idle-active-plugin-workers.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the status matcher demanded an empty parked mask for an
+  active child, but an idle released worker legitimately parks at its
+  receive safe point, so activation failed on every child. The worker
+  constraints now apply to the held state only; the active state requires
+  the phase, flags, and identity, and the activation reports a failed
+  release or mismatched status.
+- **Micro-test:** the child unit test's fake runtime reports every released
+  worker idle and proves activation succeeds once and is one-shot.
+- **Inertness:** a runtime that reports no parked workers after release
+  activates as before; the parent never reaches activation.
+- **Risk:** F.
+
+### crucible-child-file-install-report — report a failed child-file install on the diagnostics stream
+
+- **Patch:** `0230-crucible-report-child-file-install-failure.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the child passed no error object to the block layer's
+  child-file installation and empty-child release, so their detailed
+  diagnostics were discarded. The child now collects the error and writes
+  its pretty form as one stderr line before it exits.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight quotes the diagnostics
+  stream in its failure report.
+- **Inertness:** a successful installation writes nothing; the parent never
+  reaches these steps.
+- **Risk:** F.
+
+### crucible-unsettled-source-descriptor-report — name the node and check behind an unsettled source descriptor
+
+- **Patch:** `0231-crucible-name-unsettled-source-descriptor.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the file driver's source query evaluates its
+  settled-descriptor conditions one by one and reports the node name and
+  each condition's outcome in the error it sets; the check itself is
+  unchanged.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight quotes the diagnostics
+  stream in its failure report.
+- **Inertness:** a settled descriptor produces no error; only the error
+  text changed.
+- **Risk:** F.
+
+### crucible-child-file-plan-descriptors-retained — retain the child-file plan descriptors instead of closing them
+
+- **Patch:** `0232-crucible-retain-child-file-plan-descriptors.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the operation added every plan descriptor to its excluded
+  set, which the child's descriptor transaction closes, so adoption found
+  the pinned source descriptor already closed. The plan descriptors are now
+  left to the retained table, which keeps every live descriptor not
+  excluded or replaced, and a plan descriptor already excluded blocks the
+  fork with a named blocker.
+- **Micro-test:** the block-backend unit test keeps proving child adoption
+  against live descriptors; the live guarded fork flight exercises the
+  retained table.
+- **Inertness:** the inherited monitor and console sockets are excluded as
+  before; nothing else changes in the parent.
+- **Risk:** F.
+
+### crucible-child-current-monitor-bindings — drop the inherited current-monitor bindings in the child
+
+- **Patch:** `0233-crucible-drop-inherited-current-monitor.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the current-monitor table maps a coroutine, or a thread's
+  leader coroutine, to the monitor it is dispatching for. The source's
+  monitor thread was inside the out-of-band fork command, so its leader is
+  bound; the replacement thread receives the vanished thread's stack and
+  thread-local storage and therefore the same leader address. No coroutine
+  in the child is inside a command, so the reconstruction removes every
+  binding under the monitor lock.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live guarded fork flight dispatches out-of-band and
+  in-band commands to the child.
+- **Inertness:** the parent never reaches the child reconstruction; the
+  table is rebuilt by ordinary dispatch afterwards.
+- **Risk:** F.
+
+### crucible-forkable-template-ram — make guest RAM forkable while a template is retained
+
+- **Patch:** `0234-crucible-forkable-template-ram.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** QEMU marks guest RAM `MADV_DONTFORK` at RAM block
+  creation so helper forks never duplicate it, which left a hot-fork
+  child with no guest RAM at all. A new physmem helper advises every RAM
+  block with host memory, refusing under KVM; the template applies it as
+  it transitions to holding its barriers and reverts it when it completes.
+- **Micro-test:** the readiness gate keeps proving template retention on a
+  machine-less QEMU, where the helper visits no block; the live guarded
+  fork flight saves VMState through the child's inherited RAM.
+- **Inertness:** without a retained template RAM stays `MADV_DONTFORK`; a
+  KVM-accelerated QEMU cannot retain a template at all.
+- **Risk:** F.
+
+### crucible-stage-release-under-retained-template — admit child stage release while a template is retained
+
+- **Patch:** `0235-crucible-release-stages-under-retained-template.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** every child stage release refused any retained template,
+  which admitted exactly one child per template. One helper now refuses a
+  release only during a fork operation or a transitional template phase;
+  a template retained at its barrier phase lets a consumed or unconsumed
+  stage go, and the template's readiness proofs recompute from the stages
+  that remain, returning it to the exact state the next child's staging
+  requires.
+- **Micro-test:** the readiness gate keeps proving the stage ordering
+  rejections; the live guarded fork flight forks three children in sequence
+  from one template.
+- **Inertness:** a source with no retained template releases as before; the
+  ordering between stages is unchanged.
+- **Risk:** F.
+
+### crucible-restarted-vcpu-thread-current-cpu — name the current CPU on the restarted vCPU thread
+
+- **Patch:** `0236-crucible-restarted-vcpu-thread-current-cpu.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the original vCPU thread sets its thread-local current
+  CPU while processing initial-wait work; the replacement started straight
+  in the steady-state loop, whose icount deadline handling runs before a
+  CPU is selected and asserts that it runs on a vCPU thread. The
+  replacement now names the CPU it restarted for before entering the loop.
+- **Micro-test:** the readiness gate keeps proving the child-process query's
+  exact behaviour; the live child execution flight resumes the child guest
+  and advances it through an observable suffix.
+- **Inertness:** the original thread function is unchanged; the parent
+  never restarts a vCPU thread.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

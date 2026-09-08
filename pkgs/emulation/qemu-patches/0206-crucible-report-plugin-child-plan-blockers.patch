@@ -1,0 +1,155 @@
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 592bdd28d..eadefb691 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -1472,53 +1472,96 @@ static bool crucible_hot_fork_plugin_worker_disposition_matches(
+             child_reinitialize_worker_mask == plugin_barrier->worker_mask;
+ }
+ 
+-static bool crucible_hot_fork_build_plugin_child_plan(
++/*
++ * Names the first precondition that blocks binding a plugin child plan, or
++ * returns NULL when every basis holds.  Callers report the exact blocker so a
++ * live rejection identifies the stage that drifted.
++ */
++static const char *crucible_hot_fork_plugin_child_plan_blocker(
+     const QemuPluginCrucibleHotForkInventory *resources,
+     const CrucibleHotForkPluginBarrierState *plugin_barrier,
+     uint64_t endpoint_generation, uint64_t control_socket_cookie,
+-    uint64_t wake_eventfd_id,
+-    struct qemu_plugin_crucible_hot_fork_child_plan *plan)
++    uint64_t wake_eventfd_id)
+ {
+-    if (!resources || !plugin_barrier || !plan ||
+-        !crucible_hot_fork_template_active ||
++    const CrucibleHotForkPrivateRingStage *ring =
++        &crucible_hot_fork_private_ring_stage;
++
++    if (!resources || !plugin_barrier) {
++        return "plugin inventory or barrier report is absent";
++    }
++    if (!crucible_hot_fork_template_active ||
+         crucible_hot_fork_template_phase !=
+-            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BARRIERS_HELD ||
+-        !plugin_barrier->quiescent || !resources->complete ||
+-        resources->manifest.process_generation == 0 ||
+-        resources->manifest.process_generation == UINT64_MAX ||
+-        endpoint_generation == 0 || control_socket_cookie == 0 ||
+-        wake_eventfd_id == 0 ||
+-        !crucible_hot_fork_private_ring_stage.staged ||
+-        !crucible_hot_fork_private_ring_stage.shrink_sealed ||
+-        !crucible_hot_fork_private_ring_stage.source_mapping_bound ||
+-        crucible_hot_fork_private_ring_stage.template_generation !=
+-            crucible_hot_fork_template_generation ||
+-        crucible_hot_fork_private_ring_stage.generation == 0 ||
+-        crucible_hot_fork_private_ring_stage.fd < 0 ||
+-        crucible_hot_fork_private_ring_stage.inode == 0 ||
+-        crucible_hot_fork_private_ring_stage.length !=
+-            resources->manifest.shmem_length ||
+-        (crucible_hot_fork_private_ring_stage.device ==
+-             resources->manifest.shmem_device &&
+-         crucible_hot_fork_private_ring_stage.inode ==
+-             resources->manifest.shmem_inode) ||
+-        crucible_hot_fork_private_ring_stage.source_start == 0 ||
+-        crucible_hot_fork_private_ring_stage.source_length !=
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BARRIERS_HELD) {
++        return "retained template is not in the held-barrier phase";
++    }
++    if (!plugin_barrier->quiescent) {
++        return "plugin barrier is not quiescent";
++    }
++    if (!resources->complete) {
++        return "plugin resource inventory is incomplete";
++    }
++    if (resources->manifest.process_generation == 0 ||
++        resources->manifest.process_generation == UINT64_MAX) {
++        return "plugin process generation is unusable";
++    }
++    if (endpoint_generation == 0 || control_socket_cookie == 0 ||
++        wake_eventfd_id == 0) {
++        return "replacement endpoint identities are zero";
++    }
++    if (!ring->staged || !ring->shrink_sealed) {
++        return "no shrink-sealed private ring is staged";
++    }
++    if (!ring->source_mapping_bound ||
++        ring->template_generation != crucible_hot_fork_template_generation) {
++        return "private ring is not bound to this retained template";
++    }
++    if (ring->generation == 0 || ring->fd < 0 || ring->inode == 0) {
++        return "private ring stage lacks its descriptor identity";
++    }
++    if (ring->length != resources->manifest.shmem_length) {
++        return "private ring length differs from the plugin setup region";
++    }
++    if (ring->device == resources->manifest.shmem_device &&
++        ring->inode == resources->manifest.shmem_inode) {
++        return "private ring aliases the source setup region";
++    }
++    if (ring->source_start == 0 ||
++        ring->source_length !=
+             crucible_hot_fork_mapping_extent(
+                 resources->manifest.shmem_length) ||
+-        crucible_hot_fork_private_ring_stage.source_offset != 0 ||
+-        resources->manifest.control_fd < 0 ||
++        ring->source_offset != 0) {
++        return "private ring source mapping does not span the setup region";
++    }
++    if (resources->manifest.control_fd < 0 ||
+         resources->manifest.wake_fd < 0 ||
+         resources->manifest.control_fd == resources->manifest.wake_fd ||
+-        resources->manifest.control_fd ==
+-            crucible_hot_fork_private_ring_stage.fd ||
+-        resources->manifest.wake_fd ==
+-            crucible_hot_fork_private_ring_stage.fd ||
+-        plugin_barrier->generation == 0 || plugin_barrier->worker_mask == 0 ||
+-        plugin_barrier->worker_mask != resources->manifest.worker_mask ||
+-        plugin_barrier->parked_worker_mask != plugin_barrier->worker_mask ||
++        resources->manifest.control_fd == ring->fd ||
++        resources->manifest.wake_fd == ring->fd) {
++        return "plugin endpoint descriptors are not distinct";
++    }
++    if (plugin_barrier->generation == 0 || plugin_barrier->worker_mask == 0 ||
++        plugin_barrier->worker_mask != resources->manifest.worker_mask) {
++        return "plugin worker mask does not match the sealed manifest";
++    }
++    if (plugin_barrier->parked_worker_mask != plugin_barrier->worker_mask ||
+         plugin_barrier->pending_worker_mask != 0 ||
+         plugin_barrier->worker_operations_in_flight != 0) {
++        return "plugin workers are not completely parked";
++    }
++    return NULL;
++}
++
++static bool crucible_hot_fork_build_plugin_child_plan(
++    const QemuPluginCrucibleHotForkInventory *resources,
++    const CrucibleHotForkPluginBarrierState *plugin_barrier,
++    uint64_t endpoint_generation, uint64_t control_socket_cookie,
++    uint64_t wake_eventfd_id,
++    struct qemu_plugin_crucible_hot_fork_child_plan *plan)
++{
++    if (!plan ||
++        crucible_hot_fork_plugin_child_plan_blocker(
++            resources, plugin_barrier, endpoint_generation,
++            control_socket_cookie, wake_eventfd_id)) {
+         return false;
+     }
+ 
+@@ -2626,8 +2669,16 @@ qmp_crucible_hot_fork_plugin_endpoints(
+                     &resources, plugin_barrier, next_endpoint_generation,
+                     expected_control_socket_cookie, expected_wake_eventfd_id,
+                     &child_plan)) {
++                const char *blocker =
++                    crucible_hot_fork_plugin_child_plan_blocker(
++                        &resources, plugin_barrier,
++                        next_endpoint_generation,
++                        expected_control_socket_cookie,
++                        expected_wake_eventfd_id);
++
+                 error_setg(errp, "Could not bind the Crucible hot-fork plugin "
+-                           "child plan to the retained template");
++                           "child plan to the retained template: %s",
++                           blocker ? blocker : "plan storage is absent");
+                 goto out;
+             }
+             result =

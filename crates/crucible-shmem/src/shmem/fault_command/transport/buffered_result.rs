@@ -20,9 +20,9 @@ pub enum BufferedFaultResultPoll {
 ///
 /// # Errors
 ///
-/// Returns [`FaultTransportError`] for invalid capacity, corrupt indices,
-/// inconsistent reservation framing, an undersized caller buffer, or
-/// arithmetic overflow.
+/// Returns [`FaultTransportError`] when consumer admission is held, or for
+/// invalid capacity, corrupt indices, inconsistent reservation framing, an
+/// undersized caller buffer, or arithmetic overflow.
 pub fn dequeue_fault_result_with_buffer(
     ring: &RingHeader,
     slots: &[FaultResultSlotV1],
@@ -31,6 +31,9 @@ pub fn dequeue_fault_result_with_buffer(
     arena_region_offset: u64,
     mut payload_buffer: Vec<u8>,
 ) -> Result<BufferedFaultResultPoll, FaultTransportError> {
+    let _consumer = ring
+        .enter_consumer()
+        .ok_or(FaultTransportError::ConsumerBarrierHeld)?;
     let Some((head, slot_index)) = consumer_ring_slot(ring, slots.len())? else {
         return Ok(BufferedFaultResultPoll::Pending(payload_buffer));
     };

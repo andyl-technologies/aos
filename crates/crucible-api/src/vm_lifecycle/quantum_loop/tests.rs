@@ -1,6 +1,227 @@
-//! Debug-listener policy tests for the production quantum loop.
+//! Exact-checkpoint, attempt-boundary, and debug-policy quantum-loop tests.
 
 use super::*;
+use crucible::SchedulerOperationalFailureClass;
+
+#[test]
+fn lifecycle_checkpoint_retains_failed_node_counter_origins_without_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = crucible::crash_restart_scenario()?.scenario;
+    let mut lifecycle =
+        crate::vm_lifecycle::runtime::tests::production_loop_without_backends(&source);
+    let mut expected = BTreeMap::new();
+    for (index, vm) in source.world().vm_nodes().iter().enumerate() {
+        let retired = 100 + u64::try_from(index)?;
+        lifecycle
+            .inner
+            .loop_impl_mut()
+            .rebase_restarted_backend_counter(&vm.id, crucible::NodeCounter { ticks: retired })?;
+        lifecycle
+            .inner
+            .loop_impl_mut()
+            .set_vm_node_activity(&vm.id, SchedulerNodeActivity::Done)?;
+        lifecycle
+            .node_service_states
+            .insert(vm.id.clone(), ProductionNodeServiceState::PermanentlyFailed);
+        assert_eq!(
+            lifecycle
+                .inner
+                .loop_impl()
+                .scheduler_time_for_node(&vm.id)?
+                .ticks,
+            0
+        );
+        expected.insert(vm.id.clone(), Icount { retired });
+    }
+
+    let checkpoint = lifecycle.terminal_lifecycle_checkpoint()?;
+    assert_eq!(checkpoint.node_icounts, expected);
+    Ok(())
+}
+
+#[test]
+fn checkpoint_counter_rejects_unknown_service_state_and_missing_live_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = crucible::crash_restart_scenario()?.scenario;
+    let mut lifecycle =
+        crate::vm_lifecycle::runtime::tests::production_loop_without_backends(&source);
+    let node = &source
+        .world()
+        .vm_nodes()
+        .first()
+        .ok_or("test world has no VM")?
+        .id;
+    assert!(matches!(
+        lifecycle.checkpoint_node_icount(node),
+        Err(SchedulerError::BoundaryViolation { .. })
+    ));
+    for state in [
+        ProductionNodeServiceState::Running,
+        ProductionNodeServiceState::PoweredOff,
+    ] {
+        lifecycle.node_service_states.insert(node.clone(), state);
+        assert!(matches!(
+            lifecycle.checkpoint_node_icount(node),
+            Err(SchedulerError::Backend(_))
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn stopped_checkpoint_artifact_keeps_the_pinned_source_without_copying() {
+    let directory = tempfile::tempdir()
+        .unwrap_or_else(|error| panic!("create checkpoint artifact directory: {error}"));
+    let source = directory.path().join("active-overlay.qcow2");
+    let bytes = b"stopped exact checkpoint bytes";
+    fs::write(&source, bytes).unwrap_or_else(|error| panic!("write stopped artifact: {error}"));
+
+    let artifact = checkpoint_artifact_from_stopped_file(&source, "test")
+        .unwrap_or_else(|error| panic!("authenticate stopped artifact: {error}"));
+
+    assert_eq!(artifact.identity, ContentHash::from_bytes(bytes));
+    assert_eq!(artifact.length, bytes.len() as u64);
+    assert!(artifact.chunks.is_empty());
+    assert!(matches!(
+        artifact.source,
+        ProductionCheckpointArtifactSource::File(ref path) if path == &source
+    ));
+    let entries = fs::read_dir(directory.path())
+        .unwrap_or_else(|error| panic!("read artifact directory: {error}"));
+    assert_eq!(entries.count(), 1);
+}
+
+#[test]
+fn stopped_checkpoint_hash_observes_cancellation_between_bounded_chunks() {
+    let directory = tempfile::tempdir()
+        .unwrap_or_else(|error| panic!("create checkpoint artifact directory: {error}"));
+    let source = directory.path().join("active-vmstate");
+    fs::write(
+        &source,
+        vec![0x39; CHECKPOINT_BOUNDARY_CHUNK_BYTES.saturating_mul(3)],
+    )
+    .unwrap_or_else(|error| panic!("write stopped artifact: {error}"));
+
+    let mut checks = 0_u8;
+    let error =
+        match checkpoint_artifact_from_stopped_file_with_boundary(&source, "VMState", &mut || {
+            checks = checks.saturating_add(1);
+            if checks == 3 {
+                return Err(SchedulerError::OperationalBoundary {
+                    class: SchedulerOperationalFailureClass::Canceled,
+                    message: String::from("checkpoint hash canceled"),
+                });
+            }
+            Ok(())
+        }) {
+            Ok(_) => panic!("cancellation must stop a multi-chunk checkpoint hash"),
+            Err(error) => error,
+        };
+
+    assert!(matches!(
+        error,
+        SchedulerError::OperationalBoundary {
+            class: SchedulerOperationalFailureClass::Canceled,
+            ..
+        }
+    ));
+    assert_eq!(checks, 3);
+}
+
+#[test]
+fn exact_capture_reports_publication_and_release_failures_together() {
+    let publication = Err(ExactCheckpointTransactionError::Unpublished(
+        SchedulerError::BoundaryViolation {
+            message: String::from("publication failed"),
+        },
+    ));
+    let cleanup = Err(SchedulerError::BoundaryViolation {
+        message: String::from("resume failed"),
+    });
+
+    let error = match combine_exact_checkpoint_transaction(publication, cleanup, Vec::new()) {
+        Ok(_) => panic!("both failures must reject capture"),
+        Err(ExactCheckpointTransactionError::Indeterminate {
+            identity: None,
+            captures,
+            source,
+        }) if captures.is_empty() => source,
+        Err(_) => panic!("cleanup failure must make unpublished capture indeterminate"),
+    };
+
+    assert!(error.to_string().contains("publication failed"));
+    assert!(error.to_string().contains("resume failed"));
+}
+
+#[test]
+fn exact_capture_retains_durable_identity_when_release_fails() {
+    let identity = ContentHash::from_bytes(b"durable exact checkpoint");
+    let cleanup = Err(SchedulerError::BoundaryViolation {
+        message: String::from("resume failed"),
+    });
+
+    assert!(matches!(
+        combine_exact_checkpoint_transaction(Ok(identity), cleanup, Vec::new()),
+        Err(ExactCheckpointTransactionError::Indeterminate {
+            identity: Some(observed),
+            ..
+        }) if observed == identity
+    ));
+}
+
+#[test]
+fn attempt_quantum_reports_modeled_and_post_boundary_failures_together() {
+    let operation: Result<(), SchedulerError> = Err(SchedulerError::BoundaryViolation {
+        message: String::from("modeled quantum failed"),
+    });
+    let boundary = Err(LifecycleApiError::AttemptOperational {
+        class: SchedulerOperationalFailureClass::Canceled,
+        message: String::from("attempt cancellation failed closed"),
+    });
+
+    let error = match combine_attempt_quantum_boundary(operation, boundary) {
+        Ok(()) => panic!("both failures must reject the quantum"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("modeled quantum failed"));
+    assert!(
+        error
+            .to_string()
+            .contains("attempt cancellation failed closed")
+    );
+    assert!(matches!(
+        error,
+        SchedulerError::OperationalBoundary {
+            class: SchedulerOperationalFailureClass::Canceled,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn attempt_quantum_admission_preserves_retryable_class() {
+    let error = attempt_boundary_scheduler_error(
+        "admit production attempt scheduler quantum",
+        LifecycleApiError::AttemptOperational {
+            class: SchedulerOperationalFailureClass::Retryable,
+            message: String::from("resource controller temporarily unavailable"),
+        },
+    );
+
+    assert!(matches!(
+        error,
+        SchedulerError::OperationalBoundary {
+            class: SchedulerOperationalFailureClass::Retryable,
+            ..
+        }
+    ));
+    assert!(
+        error
+            .to_string()
+            .contains("resource controller temporarily unavailable")
+    );
+}
 
 fn debug_config(allow_requested_loopback_listen: bool) -> ProductionVmDebugConfig {
     ProductionVmDebugConfig {

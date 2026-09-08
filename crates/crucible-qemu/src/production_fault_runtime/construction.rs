@@ -405,6 +405,18 @@ impl ProductionFaultRuntime {
         Ok(())
     }
 
+    /// Reports whether one exact finite search override was consumed.
+    #[must_use]
+    pub fn search_override_consumed(
+        &self,
+        choice: SearchChoiceId,
+        expected: &SearchOverride,
+    ) -> bool {
+        self.runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.search_override_consumed(choice, expected))
+    }
+
     /// Returns every committed production effect as an unconsumed replay trace.
     ///
     /// # Errors

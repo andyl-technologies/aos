@@ -35,16 +35,16 @@ use crucible_shmem::{
     REGION_HEADER_REGION_SIZE_OFFSET, REGION_HEADER_RESERVED_OFFSET,
     REGION_HEADER_RING_COUNT_OFFSET, REGION_HEADER_RING_DATA_OFF_OFFSET,
     REGION_HEADER_RING_HDR_OFF_OFFSET, REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET, REGION_HEADER_SIZE,
-    REGION_MAGIC, RESERVED_SLOTS, RING_HEADER_ALIGN, RING_HEADER_PAD_READ_OFFSET,
-    RING_HEADER_PAD_WRITE_OFFSET, RING_HEADER_READ_IDX_OFFSET, RING_HEADER_SIZE,
-    RING_HEADER_WRITE_IDX_OFFSET, RegionAllocation, RegionConfig, RegionHeader,
-    RegionHeaderSnapshot, RegionLayout, RegionLayoutError, ReservedExecutorSlot, SLOT_9P_IO,
-    SLOT_BLK_IO, SLOT_NET_ROUTER, WHITEBOX_MARKER_ENTRY_ALIGN,
-    WHITEBOX_MARKER_ENTRY_CURRENT_ICOUNT_OFFSET, WHITEBOX_MARKER_ENTRY_KIND_OFFSET,
-    WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET, WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET,
-    WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET, WHITEBOX_MARKER_ENTRY_SIZE,
-    WHITEBOX_MARKER_ENTRY_VCPU_INDEX_OFFSET, WHITEBOX_MARKER_QUEUE_CAPACITY,
-    validate_layout_target,
+    REGION_MAGIC, RESERVED_SLOTS, RING_HEADER_ALIGN, RING_HEADER_CONSUMER_STATE_OFFSET,
+    RING_HEADER_PAD_READ_OFFSET, RING_HEADER_PAD_WRITE_OFFSET, RING_HEADER_PRODUCER_STATE_OFFSET,
+    RING_HEADER_READ_IDX_OFFSET, RING_HEADER_SIZE, RING_HEADER_WRITE_IDX_OFFSET, RegionAllocation,
+    RegionConfig, RegionHeader, RegionHeaderSnapshot, RegionLayout, RegionLayoutError,
+    ReservedExecutorSlot, SELECTABLE_REPLY_QUEUE_CAPACITY, SLOT_9P_IO, SLOT_BLK_IO,
+    SLOT_NET_ROUTER, WHITEBOX_MARKER_ENTRY_ALIGN, WHITEBOX_MARKER_ENTRY_CURRENT_ICOUNT_OFFSET,
+    WHITEBOX_MARKER_ENTRY_KIND_OFFSET, WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET,
+    WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET, WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET,
+    WHITEBOX_MARKER_ENTRY_SIZE, WHITEBOX_MARKER_ENTRY_VCPU_INDEX_OFFSET,
+    WHITEBOX_MARKER_QUEUE_CAPACITY, validate_layout_target,
 };
 
 #[cfg(all(
@@ -114,9 +114,11 @@ fn region_header_layout_matches_wire_contract() {
     assert_eq!(FRAME_ENTRY_SIZE, 32 + 4608);
     assert_eq!(FRAME_ENTRY_ALIGN, 8);
     assert_eq!(RING_HEADER_READ_IDX_OFFSET, 0);
-    assert_eq!(RING_HEADER_PAD_READ_OFFSET, 8);
+    assert_eq!(RING_HEADER_CONSUMER_STATE_OFFSET, 8);
+    assert_eq!(RING_HEADER_PAD_READ_OFFSET, 16);
     assert_eq!(RING_HEADER_WRITE_IDX_OFFSET, 64);
-    assert_eq!(RING_HEADER_PAD_WRITE_OFFSET, 72);
+    assert_eq!(RING_HEADER_PRODUCER_STATE_OFFSET, 72);
+    assert_eq!(RING_HEADER_PAD_WRITE_OFFSET, 80);
     assert_eq!(RING_HEADER_SIZE, 128);
     assert_eq!(RING_HEADER_ALIGN, 128);
     assert_eq!(COVERAGE_QUEUE_CAPACITY, 65_536);
@@ -328,9 +330,24 @@ fn region_layout_computes_offsets_and_directed_rings() {
             + u64::from(layout.accelerator_ring_count) * RING_HEADER_SIZE as u64
     );
     assert_eq!(
-        layout.region_size,
+        layout.selectable_reply_ring_hdr_off,
         layout.accelerator_ring_data_off
             + layout.accelerator_entry_count() * layout.accelerator_entry_stride
+    );
+    assert_eq!(layout.selectable_reply_ring_count, layout.vm_node_count);
+    assert_eq!(
+        layout.selectable_reply_queue_capacity,
+        SELECTABLE_REPLY_QUEUE_CAPACITY
+    );
+    assert_eq!(
+        layout.selectable_reply_ring_data_off,
+        layout.selectable_reply_ring_hdr_off
+            + u64::from(layout.selectable_reply_ring_count) * RING_HEADER_SIZE as u64
+    );
+    assert_eq!(
+        layout.region_size,
+        layout.selectable_reply_ring_data_off
+            + layout.selectable_reply_entry_count() * layout.selectable_reply_entry_stride
     );
     assert_eq!(
         layout.frame_entry_count(),
@@ -522,6 +539,14 @@ fn region_allocation_initializes_slots_rings_and_storage() {
         layout.frame_entry_count() as usize
     );
     assert_eq!(allocation.rings().len(), layout.ring_count as usize);
+    assert_eq!(
+        allocation.selectable_reply_ring_headers().len(),
+        layout.selectable_reply_ring_count as usize
+    );
+    assert_eq!(
+        allocation.selectable_reply_entries().len(),
+        layout.selectable_reply_entry_count() as usize
+    );
 
     assert_slot(&allocation, 0, KIND_VM, STATUS_IDLE);
     assert_slot(&allocation, 1, KIND_VM, STATUS_IDLE);

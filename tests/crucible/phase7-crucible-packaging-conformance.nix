@@ -125,8 +125,11 @@
 
   tokensFor = enforces:
     builtins.filter (token: token != "") (map lib.trim (lib.splitString "," enforces));
+  # Requirement ids: a family prefix and one or more dash-joined parts, the
+  # last of which may be a number (`DET-1`, `QFP-STATE-2`, `FAULT-ORDER`),
+  # or the short `E<n>` form.
   isRequirementToken = token:
-    builtins.match "([A-Z]+-[0-9]+|E[0-9]+)" token != null;
+    builtins.match "([A-Z]+(-[A-Z0-9]+)+|E[0-9]+)" token != null;
   isDocumentedCapabilityToken = token:
     builtins.elem token ["coverage" "PERF" "PLUG"];
   tokenIsStated = token:

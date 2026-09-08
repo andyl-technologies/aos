@@ -1,0 +1,426 @@
+diff --git a/chardev/char-socket.c b/chardev/char-socket.c
+index 7a25b2aea..ce30b0e97 100644
+--- a/chardev/char-socket.c
++++ b/chardev/char-socket.c
+@@ -24,6 +24,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "chardev/char.h"
++#include "chardev/char-fe.h"
+ #include "io/channel-socket.h"
+ #include "io/channel-websock.h"
+ #include "qemu/error-report.h"
+@@ -130,7 +131,6 @@ bool qemu_chr_socket_hot_fork_child_basis_matches(
+     const QemuChrSocketHotForkChildBasis *basis, Chardev *chardev,
+     CharBackend *frontend, GMainContext *context)
+ {
+-    SocketChardev *s;
+     bool matches;
+ 
+     if (!basis || !basis->prepared || !chardev || !frontend ||
+@@ -138,7 +138,6 @@ bool qemu_chr_socket_hot_fork_child_basis_matches(
+         return false;
+     }
+ 
+-    s = SOCKET_CHARDEV(chardev);
+     qemu_mutex_lock(&chardev->chr_write_lock);
+     matches = tcp_chr_hot_fork_child_basis_matches_locked(
+         basis, chardev, frontend, context);
+@@ -740,6 +739,87 @@ static void update_ioc_handlers(SocketChardev *s)
+     g_source_attach(s->hup_source, chr->gcontext);
+ }
+ 
++static bool tcp_chr_hot_fork_child_is_held_locked(
++    const QemuChrSocketHotForkChildBasis *basis, GMainContext *context)
++{
++    Chardev *chr = basis->chardev;
++    SocketChardev *s = SOCKET_CHARDEV(chr);
++
++    return basis->prepared && basis->source_pid > 0 &&
++        basis->source_pid != getpid() && basis->attempted &&
++        basis->inherited_disposed && basis->replacement_attached &&
++        basis->input_held && basis->frontend &&
++        basis->frontend->chr == chr && chr->be == basis->frontend &&
++        basis->context == context && chr->gcontext == context &&
++        qemu_chr_has_feature(chr, QEMU_CHAR_FEATURE_GCONTEXT) &&
++        !qemu_chr_replay(chr) && s->state == TCP_CHARDEV_STATE_CONNECTED &&
++        s->addr == basis->address && s->addr &&
++        s->addr->type == SOCKET_ADDRESS_TYPE_UNIX && s->is_listen &&
++        s->listener == basis->listener && s->ioc == basis->replacement_ioc &&
++        s->sioc == basis->replacement_sioc && s->ioc && s->sioc &&
++        s->ioc == QIO_CHANNEL(s->sioc) &&
++        s->crucible_hot_fork_connection_generation ==
++            basis->replacement_connection_generation &&
++        basis->replacement_connection_generation != 0 &&
++        basis->replacement_socket_cookie != 0 && !chr->gsource &&
++        !s->hup_source && !s->tls_creds && !s->tls_authz && !s->is_telnet &&
++        !s->is_tn3270 && !s->is_websock && !s->telnet_source &&
++        !s->telnet_init && !s->reconnect_timer &&
++        s->reconnect_time_ms == 0 && !s->connect_task &&
++        !s->read_msgfds && s->read_msgfds_num == 0 &&
++        !s->write_msgfds && s->write_msgfds_num == 0 && s->registered_yank;
++}
++
++bool qemu_chr_socket_hot_fork_child_input_is_held(
++    QemuChrSocketHotForkChildBasis *basis, GMainContext *context)
++{
++    Chardev *chr;
++    bool held;
++
++    if (!basis || !basis->prepared || !basis->chardev ||
++        !object_dynamic_cast(OBJECT(basis->chardev), TYPE_CHARDEV_SOCKET)) {
++        return false;
++    }
++
++    chr = basis->chardev;
++    qemu_mutex_lock(&chr->chr_write_lock);
++    held = tcp_chr_hot_fork_child_is_held_locked(basis, context);
++    qemu_mutex_unlock(&chr->chr_write_lock);
++    return held;
++}
++
++int qemu_chr_socket_hot_fork_release_child_input(
++    QemuChrSocketHotForkChildBasis *basis, GMainContext *context)
++{
++    Chardev *chr;
++    SocketChardev *s;
++    int result = 0;
++
++    if (!basis || !basis->prepared || !basis->chardev ||
++        !object_dynamic_cast(OBJECT(basis->chardev), TYPE_CHARDEV_SOCKET)) {
++        return -EINVAL;
++    }
++    if (basis->source_pid == getpid() || !basis->input_held) {
++        return -EPERM;
++    }
++
++    chr = basis->chardev;
++    s = SOCKET_CHARDEV(chr);
++    qemu_mutex_lock(&chr->chr_write_lock);
++    if (!tcp_chr_hot_fork_child_is_held_locked(basis, context)) {
++        result = -ESTALE;
++        goto out;
++    }
++
++    update_ioc_handlers(s);
++    assert(chr->gsource);
++    assert(s->hup_source);
++    basis->input_held = false;
++out:
++    qemu_mutex_unlock(&chr->chr_write_lock);
++    return result;
++}
++
+ static void tcp_chr_connect(void *opaque)
+ {
+     Chardev *chr = CHARDEV(opaque);
+diff --git a/include/chardev/char-socket.h b/include/chardev/char-socket.h
+index 2b0c09b04..bf2664fc2 100644
+--- a/include/chardev/char-socket.h
++++ b/include/chardev/char-socket.h
+@@ -166,6 +166,34 @@ int qemu_chr_socket_hot_fork_reconstruct_child_held(
+     QemuChrSocketHotForkChildBasis *basis, int replacement_fd,
+     uint64_t expected_socket_cookie);
+ 
++/**
++ * qemu_chr_socket_hot_fork_child_input_is_held() - validate held child input
++ * @basis: exact held child socket basis after successful reconstruction
++ * @context: exact replacement monitor I/O-thread GMainContext
++ *
++ * Returns: true exactly while the reconstructed child socket remains connected
++ * with no read or HUP source attached.
++ */
++bool qemu_chr_socket_hot_fork_child_input_is_held(
++    QemuChrSocketHotForkChildBasis *basis, GMainContext *context);
++
++/**
++ * qemu_chr_socket_hot_fork_release_child_input() - attach child input sources
++ * @basis: exact held child socket basis after successful reconstruction
++ * @context: exact replacement monitor I/O-thread GMainContext
++ *
++ * Revalidates the complete child-only held socket state and attaches exactly
++ * one read source and one HUP source to @context.  The caller must run on the
++ * owner of @context after the replacement frontend's greeting has been sent.
++ *
++ * The transition is one-shot.  Rejection occurs before source attachment.
++ *
++ * Returns: zero after exact source attachment, -EPERM in the source process or
++ * after release, or -ESTALE if the reconstructed socket basis changed.
++ */
++int qemu_chr_socket_hot_fork_release_child_input(
++    QemuChrSocketHotForkChildBasis *basis, GMainContext *context);
++
+ DECLARE_INSTANCE_CHECKER(SocketChardev, SOCKET_CHARDEV,
+                          TYPE_CHARDEV_SOCKET)
+ 
+diff --git a/monitor/monitor-internal.h b/monitor/monitor-internal.h
+index 3a052b9df..d5fe4518f 100644
+--- a/monitor/monitor-internal.h
++++ b/monitor/monitor-internal.h
+@@ -192,6 +192,8 @@ typedef struct MonitorHotForkChildBasis {
+     bool parser_reset;
+     bool capabilities_reset;
+     bool input_held;
++    bool greeting_emitted;
++    bool input_released;
+ } MonitorHotForkChildBasis;
+ 
+ /**
+@@ -253,6 +255,45 @@ bool monitor_hot_fork_child_basis_matches_current(
+ int monitor_hot_fork_reconstruct_child_protocol_held(
+     MonitorHotForkChildBasis *basis, int replacement_fd,
+     uint64_t expected_socket_cookie);
++
++/**
++ * monitor_hot_fork_greet_child_protocol_held() - greet held child QMP
++ * @basis: exact successfully reconstructed held child monitor basis
++ *
++ * Runs one synchronous callback on the replacement monitor I/O thread.  That
++ * callback revalidates the exact monitor, dispatcher, thread, parser,
++ * capability, output, and socket state, then emits exactly one QMP greeting
++ * while replacement input remains held.  This is the state reported by the
++ * child-runtime callback before the complete resource transaction commits.
++ *
++ * The transition is child-only and one-shot.  The caller must be the main-loop
++ * thread and no hot-fork BH/timer barrier may already be held.
++ *
++ * Returns zero after greeting emission, -EBUSY if event-loop work is barred,
++ * -EPERM in the source process or after an earlier greeting, or a negative
++ * errno value when the retained state changed.
++ */
++int monitor_hot_fork_greet_child_protocol_held(
++    MonitorHotForkChildBasis *basis);
++
++/**
++ * monitor_hot_fork_release_child_protocol_input() - release greeted child QMP
++ * @basis: exact greeted child monitor basis after resource-plan commitment
++ *
++ * Runs on the exact replacement monitor I/O thread, requires the greeting
++ * bytes to have been accepted by the replacement socket, and attaches one read
++ * source and one HUP source.  Input can dispatch only after this callback
++ * returns, strictly after greeting emission.
++ *
++ * The successful transition is child-only and one-shot.  An -EAGAIN result
++ * leaves input held and may be retried after the output watch makes progress.
++ *
++ * Returns zero after input release, -EAGAIN while greeting bytes remain
++ * buffered, -EBUSY if event-loop work is barred, -EPERM in the source process
++ * or after release, or a negative errno value when the retained state changed.
++ */
++int monitor_hot_fork_release_child_protocol_input(
++    MonitorHotForkChildBasis *basis);
+ void monitor_hot_fork_reset_child_basis(MonitorHotForkChildBasis *basis);
+ void monitor_fdsets_cleanup(void);
+ void monitor_hot_fork_register_fdsets_empty(bool (*check)(void));
+diff --git a/monitor/monitor.c b/monitor/monitor.c
+index 2cbe19aa4..3b4508caa 100644
+--- a/monitor/monitor.c
++++ b/monitor/monitor.c
+@@ -24,12 +24,14 @@
+ 
+ #include "qemu/osdep.h"
+ #include "monitor-internal.h"
++#include "block/aio-wait.h"
+ #include "qapi/error.h"
+ #include "qapi/opts-visitor.h"
+ #include "qapi/qapi-emit-events.h"
+ #include "qapi/qapi-visit-control.h"
+ #include "qobject/qdict.h"
+ #include "qemu/error-report.h"
++#include "qemu/crucible-hot-fork-async.h"
+ #include "qemu/option.h"
+ #include "system/qtest.h"
+ #include "trace.h"
+@@ -967,6 +969,170 @@ out:
+     return result;
+ }
+ 
++typedef enum MonitorHotForkProtocolOperation {
++    MONITOR_HOT_FORK_PROTOCOL_GREET_HELD,
++    MONITOR_HOT_FORK_PROTOCOL_RELEASE_INPUT,
++} MonitorHotForkProtocolOperation;
++
++typedef struct MonitorHotForkProtocolTransition {
++    MonitorHotForkChildBasis *basis;
++    MonitorHotForkProtocolOperation operation;
++    int result;
++} MonitorHotForkProtocolTransition;
++
++static bool monitor_hot_fork_child_protocol_is_held(MonitorQMP *qmp_mon)
++{
++    bool held = true;
++    QMPCapability capability;
++
++    qemu_rec_mutex_lock(&qmp_mon->qmp_parser_lock);
++    qemu_mutex_lock(&qmp_mon->qmp_queue_lock);
++    held = qmp_mon->commands == &qmp_cap_negotiation_commands &&
++        g_queue_is_empty(qmp_mon->qmp_requests) &&
++        qmp_mon->parser.token_size == 0 &&
++        g_queue_is_empty(&qmp_mon->parser.tokens) &&
++        qmp_mon->parser.brace_count == 0 &&
++        qmp_mon->parser.bracket_count == 0 &&
++        (!qmp_mon->parser.lexer.token ||
++         qmp_mon->parser.lexer.token->len == 0) &&
++        qmp_mon->parser.lexer.state == qmp_mon->parser.lexer.start_state;
++    for (capability = 0; held && capability < QMP_CAPABILITY__MAX;
++         capability++) {
++        held = !qmp_mon->capab[capability] &&
++            qmp_mon->capab_offered[capability] ==
++                (capability == QMP_CAPABILITY_OOB);
++    }
++    held = held && qmp_mon->common.use_io_thread;
++    qemu_mutex_unlock(&qmp_mon->qmp_queue_lock);
++    qemu_rec_mutex_unlock(&qmp_mon->qmp_parser_lock);
++    return held;
++}
++
++static bool monitor_hot_fork_child_output_is_flushed(MonitorQMP *qmp_mon)
++{
++    Monitor *mon = &qmp_mon->common;
++    bool flushed;
++
++    qemu_mutex_lock(&mon->mon_lock);
++    flushed = mon->outbuf && mon->outbuf->len == 0;
++    qemu_mutex_unlock(&mon->mon_lock);
++    return flushed;
++}
++
++static void monitor_hot_fork_child_protocol_transition_bh(void *opaque)
++{
++    MonitorHotForkProtocolTransition *transition = opaque;
++    MonitorHotForkChildBasis *basis = transition->basis;
++    Monitor *listed;
++
++    transition->result = -ESTALE;
++    if (qemu_get_thread_id() != basis->iothread_thread_id ||
++        basis->iothread != mon_iothread ||
++        basis->iothread_context !=
++            iothread_get_g_main_context(basis->iothread) ||
++        basis->dispatcher != qmp_dispatcher_co ||
++        qmp_dispatcher_co_shutdown ||
++        !monitor_qmp_hot_fork_dispatcher_is_idle(basis->dispatcher)) {
++        return;
++    }
++
++    qemu_mutex_lock(&monitor_lock);
++    listed = QTAILQ_FIRST(&mon_list);
++    if (monitor_hot_fork_generation_overflowed ||
++        monitor_hot_fork_generation != basis->generation || !listed ||
++        QTAILQ_NEXT(listed, entry) || !monitor_is_qmp(listed) ||
++        basis->monitor != container_of(listed, MonitorQMP, common) ||
++        basis->chardev != monitor_hot_fork_child_chardev(basis->monitor) ||
++        !basis->attempted || !basis->inherited_protocol_disposed ||
++        !basis->dispatcher_rebuilt || !basis->iothread_rebuilt ||
++        !basis->parser_reset || !basis->capabilities_reset ||
++        !basis->input_held || basis->input_released ||
++        !monitor_hot_fork_child_protocol_is_held(basis->monitor) ||
++        !qemu_chr_socket_hot_fork_child_input_is_held(
++            &basis->socket, basis->iothread_context)) {
++        goto out;
++    }
++
++    switch (transition->operation) {
++    case MONITOR_HOT_FORK_PROTOCOL_GREET_HELD:
++        if (basis->greeting_emitted ||
++            !monitor_hot_fork_child_local_state_clean(basis->monitor)) {
++            goto out;
++        }
++        qemu_chr_be_event(basis->chardev, CHR_EVENT_OPENED);
++        basis->greeting_emitted = true;
++        transition->result = 0;
++        break;
++    case MONITOR_HOT_FORK_PROTOCOL_RELEASE_INPUT:
++        if (!basis->greeting_emitted) {
++            transition->result = -EPROTO;
++            goto out;
++        }
++        monitor_flush(&basis->monitor->common);
++        if (!monitor_hot_fork_child_output_is_flushed(basis->monitor)) {
++            transition->result = -EAGAIN;
++            goto out;
++        }
++        transition->result = qemu_chr_socket_hot_fork_release_child_input(
++            &basis->socket, basis->iothread_context);
++        if (transition->result != 0) {
++            goto out;
++        }
++        basis->input_held = false;
++        basis->input_released = true;
++        break;
++    default:
++        transition->result = -EINVAL;
++        goto out;
++    }
++out:
++    qemu_mutex_unlock(&monitor_lock);
++}
++
++static int monitor_hot_fork_run_child_protocol_transition(
++    MonitorHotForkChildBasis *basis, MonitorHotForkProtocolOperation operation)
++{
++    MonitorHotForkProtocolTransition transition = {
++        .basis = basis,
++        .operation = operation,
++        .result = -ESTALE,
++    };
++
++    if (!basis || !basis->prepared || !basis->monitor ||
++        !basis->iothread || !basis->dispatcher || !basis->chardev ||
++        !basis->iothread_context || basis->socket.source_pid <= 0) {
++        return -EINVAL;
++    }
++    if (basis->socket.source_pid == getpid() || basis->input_released) {
++        return -EPERM;
++    }
++    if (!qemu_bh_timer_hot_fork_admission_try_begin()) {
++        return -EBUSY;
++    }
++    aio_wait_bh_oneshot(iothread_get_aio_context(basis->iothread),
++                        monitor_hot_fork_child_protocol_transition_bh,
++                        &transition);
++    qemu_bh_timer_hot_fork_admission_end();
++    return transition.result;
++}
++
++int monitor_hot_fork_greet_child_protocol_held(
++    MonitorHotForkChildBasis *basis)
++{
++    if (basis && basis->greeting_emitted) {
++        return -EPERM;
++    }
++    return monitor_hot_fork_run_child_protocol_transition(
++        basis, MONITOR_HOT_FORK_PROTOCOL_GREET_HELD);
++}
++
++int monitor_hot_fork_release_child_protocol_input(
++    MonitorHotForkChildBasis *basis)
++{
++    return monitor_hot_fork_run_child_protocol_transition(
++        basis, MONITOR_HOT_FORK_PROTOCOL_RELEASE_INPUT);
++}
++
+ void monitor_hot_fork_reset_child_basis(MonitorHotForkChildBasis *basis)
+ {
+     if (basis) {
+diff --git a/tests/unit/test-char.c b/tests/unit/test-char.c
+index d5f5b48bc..00b7285ac 100644
+--- a/tests/unit/test-char.c
++++ b/tests/unit/test-char.c
+@@ -1329,6 +1329,17 @@ static void char_socket_server_test(gconstpointer opaque)
+                     chr->gsource == NULL &&
+                     socket_chardev->hup_source == NULL &&
+                     socket_chardev->state == TCP_CHARDEV_STATE_CONNECTED;
++                exact = exact &&
++                    qemu_chr_socket_hot_fork_child_input_is_held(
++                        &child_basis, chr->gcontext) &&
++                    qemu_chr_socket_hot_fork_release_child_input(
++                        &child_basis, chr->gcontext) == 0 &&
++                    !child_basis.input_held && chr->gsource != NULL &&
++                    socket_chardev->hup_source != NULL &&
++                    !qemu_chr_socket_hot_fork_child_input_is_held(
++                        &child_basis, chr->gcontext) &&
++                    qemu_chr_socket_hot_fork_release_child_input(
++                        &child_basis, chr->gcontext) == -EPERM;
+                 _exit(exact ? EXIT_SUCCESS : EXIT_FAILURE);
+             }
+             g_assert_cmpint(waitpid(child, &status, 0), ==, child);

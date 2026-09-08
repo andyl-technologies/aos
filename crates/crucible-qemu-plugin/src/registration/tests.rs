@@ -585,6 +585,7 @@ fn registration_test_coverage_capabilities() -> CoverageCapabilities {
         registration_test_scoreboard_new,
         registration_test_scoreboard_free,
         registration_test_u64_set,
+        registration_test_num_vcpus,
     ))
 }
 
@@ -618,6 +619,10 @@ extern "C" fn registration_test_u64_set(
     _vcpu_index: std::os::raw::c_uint,
     _value: u64,
 ) {
+}
+
+extern "C" fn registration_test_num_vcpus() -> std::os::raw::c_int {
+    1
 }
 
 extern "C" fn registration_test_tb_vaddr(_tb: *const crate::QemuPluginTb) -> u64 {

@@ -1,0 +1,120 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index afb83eb50..27faf9782 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1228,7 +1228,7 @@ QEMU_PLUGIN_API
+ int qemu_plugin_crucible_register_resource_manifest(
+     const struct qemu_plugin_crucible_resource_manifest *manifest);
+ 
+-#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION 3
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION 4
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD 1
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY 2
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE 3
+@@ -1247,6 +1247,7 @@ struct qemu_plugin_crucible_hot_fork_barrier_status {
+     uint64_t ring_count;
+     uint64_t rings_held;
+     uint64_t ring_producers_in_flight;
++    uint64_t ring_consumers_in_flight;
+     uint64_t worker_mask;
+     uint64_t parked_worker_mask;
+     uint64_t worker_operations_in_flight;
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index cf94b6832..eebf077da 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -175,6 +175,8 @@ crucible_hot_fork_plugin_barrier(uint32_t operation, Error **errp)
+     report->rings_held = inventory.status.rings_held;
+     report->ring_producers_in_flight =
+         inventory.status.ring_producers_in_flight;
++    report->ring_consumers_in_flight =
++        inventory.status.ring_consumers_in_flight;
+     report->worker_mask = inventory.status.worker_mask;
+     report->parked_worker_mask = inventory.status.parked_worker_mask;
+     report->worker_operations_in_flight =
+@@ -184,6 +186,7 @@ crucible_hot_fork_plugin_barrier(uint32_t operation, Error **errp)
+         report->ring_count != 0 &&
+         report->rings_held == report->ring_count &&
+         report->ring_producers_in_flight == 0 &&
++        report->ring_consumers_in_flight == 0 &&
+         report->parked_worker_mask == report->worker_mask &&
+         report->worker_operations_in_flight == 0;
+     return report;
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index a5bb7e699..edfa71344 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -284,6 +284,7 @@ int qemu_plugin_crucible_hot_fork_barrier(
+     uint64_t previous_ring_count;
+     uint64_t previous_rings_held;
+     uint64_t previous_ring_producers_in_flight;
++    uint64_t previous_ring_consumers_in_flight;
+     uint64_t previous_worker_mask;
+     uint64_t previous_parked_worker_mask;
+     uint64_t previous_worker_operations_in_flight;
+@@ -357,6 +358,8 @@ int qemu_plugin_crucible_hot_fork_barrier(
+         qemu_plugin_crucible_barrier_inventory.status.rings_held;
+     previous_ring_producers_in_flight =
+         qemu_plugin_crucible_barrier_inventory.status.ring_producers_in_flight;
++    previous_ring_consumers_in_flight =
++        qemu_plugin_crucible_barrier_inventory.status.ring_consumers_in_flight;
+     previous_worker_mask =
+         qemu_plugin_crucible_barrier_inventory.status.worker_mask;
+     previous_parked_worker_mask =
+@@ -371,6 +374,8 @@ int qemu_plugin_crucible_hot_fork_barrier(
+         previous_rings_held != status.rings_held ||
+         previous_ring_producers_in_flight !=
+             status.ring_producers_in_flight ||
++        previous_ring_consumers_in_flight !=
++            status.ring_consumers_in_flight ||
+         previous_worker_mask != status.worker_mask ||
+         previous_parked_worker_mask != status.parked_worker_mask ||
+         previous_worker_operations_in_flight !=
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index f9c5f750e..4d1bdffb8 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -983,13 +983,14 @@
+ ##
+ # @CrucibleHotForkPluginBarrierState:
+ #
+-# Exact plugin-owned callback, shared-ring producer, and process-worker state. A
++# Exact plugin-owned callback, shared-ring I/O, and process-worker state. A
+ # quiescent response proves that every callback covered by the sealed callback
+-# mask, every producer for the validated shared-memory ring set, and every
+-# sealed worker class is parked. It does not clone queued ring/worker bytes,
+-# reconstruct child workers, or acknowledge hot-fork readiness proof bit 6.
++# mask, every producer and consumer for the validated shared-memory ring set,
++# and every sealed worker class is parked. It does not clone queued ring/worker
++# bytes, reconstruct child workers, or acknowledge hot-fork readiness proof
++# bit 6.
+ #
+-# @schema-version: barrier contract version, currently 3
++# @schema-version: barrier contract version, currently 4
+ #
+ # @generation: process-local barrier registration/hold generation
+ #
+@@ -1005,11 +1006,14 @@
+ #
+ # @ring-count: exact number of rings in the validated shared-memory layout
+ #
+-# @rings-held: number of rings whose producer barrier is held
++# @rings-held: number of rings whose producer and consumer barriers are held
+ #
+ # @ring-producers-in-flight: producer publications admitted before the hold
+ #                            that have not yet returned
+ #
++# @ring-consumers-in-flight: consumer operations admitted before the hold that
++#                            have not yet returned
++#
+ # @worker-mask: exact sealed process-lifetime worker-class mask
+ #
+ # @parked-worker-mask: worker classes parked at an operation boundary
+@@ -1032,6 +1036,7 @@
+             'ring-count': 'uint64',
+             'rings-held': 'uint64',
+             'ring-producers-in-flight': 'uint64',
++            'ring-consumers-in-flight': 'uint64',
+             'worker-mask': 'uint64',
+             'parked-worker-mask': 'uint64',
+             'worker-operations-in-flight': 'uint64',

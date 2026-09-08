@@ -7,13 +7,14 @@
 use std::error::Error;
 
 use crucible::{
-    AssertionDef, AssertionId, AssertionQuantifierKind, AssertionRunVerdict, BlackBoxHostOracle,
-    ChoiceTag, Configuration, ContentHash, Decision, EngineError, FindingDiscoveryPath,
-    FindingReproductionArtifact, Icount, MarkerId, MinimizationConfig, NodeId, NodeTemplate,
-    ObservableEvent, OfflineAssertionChecker, OverrideDecision, Plan, Predicate, Properties,
-    Property, ReadyPoint, RecordedAssertionLog, RngDecision, RngStreamId, ScenarioDefForm,
-    Schedule, SchedulerEvaluationBoundaryKind, SchedulerEventLogPayload, SchedulingPoint, Seed,
-    VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    AppRandomSelectable, AssertionDef, AssertionId, AssertionQuantifierKind, AssertionRunVerdict,
+    BlackBoxHostOracle, ChoiceTag, Configuration, ContentHash, Decision, EngineError,
+    FindingDiscoveryPath, FindingReproductionArtifact, Icount, MAX_MINIMIZATION_CANDIDATES,
+    MarkerId, MinimizationConfig, NodeId, NodeTemplate, ObservableEvent, OfflineAssertionChecker,
+    OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint, RecordedAssertionLog,
+    RngDecision, RngStreamId, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind,
+    SchedulerEventLogPayload, SchedulingPoint, Seed, SelectionDecision, VirtualTime,
+    WhiteBoxPolicy, World, WorldNode,
 };
 
 #[test]
@@ -122,6 +123,107 @@ fn gate_minimization_validates_public_artifact_before_oracle() -> Result<(), Box
         error,
         EngineError::ReproductionArtifactReplayMismatch { .. }
     ));
+
+    Ok(())
+}
+
+#[test]
+fn gate_minimization_caps_exponential_candidate_enumeration() -> Result<(), Box<dyn Error>> {
+    let scenario = scenario_form()?;
+    let schedule = Schedule::from_decisions(
+        (0..16).map(|index| override_decision(&format!("bounded-noise-{index:02}"), "enabled")),
+    );
+    let target = finding_fingerprint("bounded-minimization");
+    let original = finding_artifact(&scenario, schedule, target)?;
+    let original_id = original.artifact.id();
+    let mut calls = 0usize;
+
+    let run = original.minimize(
+        MinimizationConfig::new(Seed::from_u64(0x5154)),
+        |candidate| {
+            calls += 1;
+            Ok((candidate.artifact.id() == original_id).then_some(target))
+        },
+    )?;
+
+    assert_eq!(run.attempts.len(), MAX_MINIMIZATION_CANDIDATES);
+    assert_eq!(calls, MAX_MINIMIZATION_CANDIDATES + 1);
+    assert!(!run.shrank());
+    assert_eq!(run.minimized, run.original);
+    Ok(())
+}
+
+#[test]
+fn gate_minimization_preserves_campaign_branch_prefixes_and_reduces_suffixes()
+-> Result<(), Box<dyn Error>> {
+    let scenario = scenario_form()?;
+    let scenario_def = scenario.scenario_def();
+    let prefix = (0..12)
+        .map(|index| override_decision(&format!("branch-prefix-{index:02}"), "retained"))
+        .collect::<Vec<_>>();
+    let parent = Configuration {
+        def: scenario_def.clone(),
+        schedule: Schedule::from_decisions(prefix.clone()),
+    };
+    let selectable = AppRandomSelectable::new(
+        &scenario_def,
+        node("minimize-node"),
+        RngStreamId::from_name("minimization/campaign-branch"),
+        1,
+        8,
+    )?;
+    let branch = Decision::Selection(SelectionDecision::new(
+        &selectable.branch_selection(&parent, 7)?,
+    ));
+    let suffix = override_decision("branch-suffix", "removable");
+    let mut original_decisions = prefix.clone();
+    original_decisions.extend([branch.clone(), suffix]);
+    let original_schedule = Schedule::from_decisions(original_decisions);
+    let target = finding_fingerprint("campaign-branch-prefix");
+    let original = finding_artifact(&scenario, original_schedule.clone(), target)?;
+    let mut expected_decisions = prefix.clone();
+    expected_decisions.push(branch.clone());
+    let expected_minimized = Schedule::from_decisions(expected_decisions);
+    let mut replayed_schedules = Vec::new();
+
+    let run = original.minimize(
+        MinimizationConfig::new(Seed::from_u64(0x5155)),
+        |candidate| {
+            let schedule = candidate.artifact.schedule();
+            if let Some(index) = schedule
+                .decisions()
+                .iter()
+                .position(|decision| decision == &branch)
+                && (index != prefix.len() || schedule.decisions()[..index] != prefix)
+            {
+                return Err(EngineError::ScenarioSerialization {
+                    reason: "campaign branch selection lost its authenticated prefix".to_owned(),
+                });
+            }
+            replayed_schedules.push(schedule.clone());
+
+            Ok(
+                ((schedule == &original_schedule) || (schedule == &expected_minimized))
+                    .then_some(target),
+            )
+        },
+    )?;
+
+    assert_eq!(run.minimized.artifact.schedule(), &expected_minimized);
+    assert!(run.shrank());
+    assert!(run.attempts.len() <= MAX_MINIMIZATION_CANDIDATES);
+    assert!(
+        replayed_schedules
+            .iter()
+            .any(|schedule| { schedule == &expected_minimized })
+    );
+    assert!(replayed_schedules.iter().all(|schedule| {
+        schedule
+            .decisions()
+            .iter()
+            .position(|decision| decision == &branch)
+            .is_none_or(|index| index == prefix.len() && schedule.decisions()[..index] == prefix)
+    }));
 
     Ok(())
 }

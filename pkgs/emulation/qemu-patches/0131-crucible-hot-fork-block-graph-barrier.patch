@@ -1,0 +1,578 @@
+diff --git a/block/block-backend.c b/block/block-backend.c
+index 2be51a3ef..abff474fe 100644
+--- a/block/block-backend.c
++++ b/block/block-backend.c
+@@ -283,6 +283,7 @@ bool qemu_block_backend_hot_fork_barrier(
+     QemuBlockBackendHotForkBarrierInventory *inventory)
+ {
+     QemuBlockBackendHotForkInventory backends;
++    BdrvGraphHotForkBarrierState graph;
+     uint64_t previous_backend_id = 0;
+     bool valid_entries = true;
+     size_t index;
+@@ -297,6 +298,10 @@ bool qemu_block_backend_hot_fork_barrier(
+                 qemu_get_current_aio_context() != qemu_get_aio_context()) {
+                 return false;
+             }
++            if (!bdrv_graph_hot_fork_barrier(
++                    BDRV_GRAPH_HOT_FORK_BARRIER_HOLD, &graph)) {
++                return false;
++            }
+             bdrv_drain_all_begin_nopoll();
+             QEMU_LOCK_GUARD(&crucible_hot_fork_block_backend_lock);
+ 
+@@ -311,6 +316,10 @@ bool qemu_block_backend_hot_fork_barrier(
+     case QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE:
+         GLOBAL_STATE_CODE();
+         if (crucible_hot_fork_block_barrier_held) {
++            if (!bdrv_graph_hot_fork_barrier(
++                    BDRV_GRAPH_HOT_FORK_BARRIER_RELEASE, &graph)) {
++                return false;
++            }
+             bdrv_drain_all_end();
+             QEMU_LOCK_GUARD(&crucible_hot_fork_block_backend_lock);
+ 
+@@ -325,9 +334,22 @@ bool qemu_block_backend_hot_fork_barrier(
+     }
+ 
+     QEMU_LOCK_GUARD(&crucible_hot_fork_block_backend_lock);
++    if (!bdrv_graph_hot_fork_barrier(
++            BDRV_GRAPH_HOT_FORK_BARRIER_QUERY, &graph)) {
++        return false;
++    }
+     qemu_block_backend_hot_fork_inventory_locked(&backends);
+     inventory->generation = crucible_hot_fork_block_barrier_generation;
+     inventory->owner_thread_id = crucible_hot_fork_block_barrier_owner;
++    inventory->graph_barrier_generation = graph.generation;
++    inventory->graph_mutation_generation = graph.mutation_generation;
++    inventory->held_graph_mutation_generation =
++        graph.held_mutation_generation;
++    inventory->graph_owner_thread_id = graph.owner_thread_id;
++    inventory->graph_waiting_writers = graph.waiting_writers;
++    inventory->graph_held = graph.held;
++    inventory->graph_writer_active = graph.writer_active;
++    inventory->graph_stable = graph.stable;
+     inventory->held = crucible_hot_fork_block_barrier_held;
+     inventory->backend_count = backends.entry_count;
+     for (index = 0; index < backends.entry_count; index++) {
+@@ -347,7 +369,11 @@ bool qemu_block_backend_hot_fork_barrier(
+             entry->root_present && entry->quiesce_depth != 0;
+         inventory->in_flight += entry->in_flight;
+     }
+-    inventory->complete = !backends.overflowed && valid_entries;
++    inventory->complete = !backends.overflowed && valid_entries &&
++        inventory->held == inventory->graph_held &&
++        (!inventory->held ||
++         (inventory->owner_thread_id == inventory->graph_owner_thread_id &&
++          inventory->graph_stable));
+     inventory->quiescent = inventory->held && inventory->complete &&
+         inventory->in_flight == 0 &&
+         inventory->quiesced_rooted_backends == inventory->rooted_backends;
+diff --git a/block/graph-lock.c b/block/graph-lock.c
+index c81162b14..c6375530a 100644
+--- a/block/graph-lock.c
++++ b/block/graph-lock.c
+@@ -30,6 +30,19 @@ BdrvGraphLock graph_lock;
+ /* Protects the list of aiocontext and orphaned_reader_count */
+ static QemuMutex aio_context_list_lock;
+ 
++/* Protects retained hot-fork graph-barrier identity and generations. */
++static QemuMutex hot_fork_graph_lock;
++
++/* Written and read with atomic operations at graph-writer admission. */
++static bool hot_fork_graph_barrier_held;
++static uint32_t hot_fork_graph_waiting_writers;
++
++/* Protected by hot_fork_graph_lock. */
++static uint64_t hot_fork_graph_barrier_generation;
++static uint64_t hot_fork_graph_mutation_generation;
++static uint64_t hot_fork_graph_held_mutation_generation;
++static int64_t hot_fork_graph_barrier_owner;
++
+ /* Written and read with atomic operations. */
+ static int has_writer;
+ 
+@@ -69,9 +82,77 @@ static QTAILQ_HEAD(, BdrvGraphRWlock) aio_context_list =
+ static void __attribute__((__constructor__)) bdrv_init_graph_lock(void)
+ {
+     qemu_mutex_init(&aio_context_list_lock);
++    qemu_mutex_init(&hot_fork_graph_lock);
+     qemu_co_queue_init(&reader_queue);
+ }
+ 
++bool bdrv_graph_hot_fork_barrier(
++    BdrvGraphHotForkBarrierOperation operation,
++    BdrvGraphHotForkBarrierState *state)
++{
++    bool wake_waiters = false;
++
++    *state = (BdrvGraphHotForkBarrierState) { 0 };
++
++    if (operation != BDRV_GRAPH_HOT_FORK_BARRIER_QUERY) {
++        GLOBAL_STATE_CODE();
++        if (qemu_get_current_aio_context() != qemu_get_aio_context() ||
++            qemu_in_coroutine()) {
++            return false;
++        }
++    }
++
++    qemu_mutex_lock(&hot_fork_graph_lock);
++    switch (operation) {
++    case BDRV_GRAPH_HOT_FORK_BARRIER_HOLD:
++        if (!hot_fork_graph_barrier_held) {
++            if (qatomic_read(&has_writer) ||
++                qatomic_read(&hot_fork_graph_waiting_writers) != 0) {
++                qemu_mutex_unlock(&hot_fork_graph_lock);
++                return false;
++            }
++            hot_fork_graph_barrier_owner = qemu_get_thread_id();
++            hot_fork_graph_held_mutation_generation =
++                hot_fork_graph_mutation_generation;
++            qatomic_set(&hot_fork_graph_barrier_held, true);
++            hot_fork_graph_barrier_generation++;
++            assert(hot_fork_graph_barrier_generation != 0);
++        }
++        break;
++    case BDRV_GRAPH_HOT_FORK_BARRIER_QUERY:
++        break;
++    case BDRV_GRAPH_HOT_FORK_BARRIER_RELEASE:
++        if (hot_fork_graph_barrier_held) {
++            qatomic_set(&hot_fork_graph_barrier_held, false);
++            hot_fork_graph_barrier_owner = 0;
++            hot_fork_graph_held_mutation_generation = 0;
++            hot_fork_graph_barrier_generation++;
++            assert(hot_fork_graph_barrier_generation != 0);
++            wake_waiters = true;
++        }
++        break;
++    default:
++        g_assert_not_reached();
++    }
++
++    state->generation = hot_fork_graph_barrier_generation;
++    state->mutation_generation = hot_fork_graph_mutation_generation;
++    state->held_mutation_generation =
++        hot_fork_graph_held_mutation_generation;
++    state->owner_thread_id = hot_fork_graph_barrier_owner;
++    state->waiting_writers =
++        qatomic_read(&hot_fork_graph_waiting_writers);
++    state->held = qatomic_read(&hot_fork_graph_barrier_held);
++    state->writer_active = qatomic_read(&has_writer);
++    state->stable = state->held && !state->writer_active &&
++        state->mutation_generation == state->held_mutation_generation;
++    qemu_mutex_unlock(&hot_fork_graph_lock);
++    if (wake_waiters) {
++        aio_wait_kick();
++    }
++    return true;
++}
++
+ void register_aiocontext(AioContext *ctx)
+ {
+     ctx->bdrv_graph = g_new0(BdrvGraphRWlock, 1);
+@@ -112,6 +193,13 @@ void no_coroutine_fn bdrv_graph_wrlock(void)
+     assert(!qatomic_read(&has_writer));
+     assert(!qemu_in_coroutine());
+ 
++    qatomic_inc(&hot_fork_graph_waiting_writers);
++    assert(qatomic_read(&hot_fork_graph_waiting_writers) != 0);
++    if (qatomic_read(&hot_fork_graph_barrier_held)) {
++        AIO_WAIT_WHILE_UNLOCKED(
++            NULL, qatomic_read(&hot_fork_graph_barrier_held));
++    }
++
+     /* Make sure that constantly arriving new I/O doesn't cause starvation */
+     bdrv_drain_all_begin_nopoll();
+ 
+@@ -139,6 +227,7 @@ void no_coroutine_fn bdrv_graph_wrlock(void)
+         smp_mb();
+     } while (reader_count() >= 1);
+ 
++    qatomic_dec(&hot_fork_graph_waiting_writers);
+     bdrv_drain_all_end();
+ }
+ 
+@@ -147,6 +236,11 @@ void no_coroutine_fn bdrv_graph_wrunlock(void)
+     GLOBAL_STATE_CODE();
+     assert(qatomic_read(&has_writer));
+ 
++    WITH_QEMU_LOCK_GUARD(&hot_fork_graph_lock) {
++        hot_fork_graph_mutation_generation++;
++        assert(hot_fork_graph_mutation_generation != 0);
++    }
++
+     WITH_QEMU_LOCK_GUARD(&aio_context_list_lock) {
+         /*
+          * No need for memory barriers, this works in pair with
+diff --git a/include/block/graph-lock.h b/include/block/graph-lock.h
+index 2c26c7210..946e22e83 100644
+--- a/include/block/graph-lock.h
++++ b/include/block/graph-lock.h
+@@ -59,6 +59,23 @@ typedef struct TSA_CAPABILITY("mutex") BdrvGraphLock {
+ 
+ extern BdrvGraphLock graph_lock;
+ 
++typedef enum BdrvGraphHotForkBarrierOperation {
++    BDRV_GRAPH_HOT_FORK_BARRIER_HOLD,
++    BDRV_GRAPH_HOT_FORK_BARRIER_QUERY,
++    BDRV_GRAPH_HOT_FORK_BARRIER_RELEASE,
++} BdrvGraphHotForkBarrierOperation;
++
++typedef struct BdrvGraphHotForkBarrierState {
++    uint64_t generation;
++    uint64_t mutation_generation;
++    uint64_t held_mutation_generation;
++    int64_t owner_thread_id;
++    uint32_t waiting_writers;
++    bool held;
++    bool writer_active;
++    bool stable;
++} BdrvGraphHotForkBarrierState;
++
+ /*
+  * clang doesn't check consistency in locking annotations between forward
+  * declarations and the function definition. Having the annotation on the
+@@ -120,6 +137,16 @@ bdrv_graph_wrlock(void);
+ void no_coroutine_fn TSA_RELEASE(graph_lock) TSA_NO_TSA
+ bdrv_graph_wrunlock(void);
+ 
++/*
++ * Retain, inspect, or release the block-graph writer admission barrier used by
++ * the hot-fork coordinator.  Hold and release run in the main loop under BQL;
++ * query is safe from an out-of-band QMP thread.  A writer admitted after hold
++ * waits in the main AioContext until release instead of entering the graph.
++ */
++bool bdrv_graph_hot_fork_barrier(
++    BdrvGraphHotForkBarrierOperation operation,
++    BdrvGraphHotForkBarrierState *state);
++
+ /*
+  * bdrv_graph_co_rdlock:
+  * Read the bs graph. This usually means traversing all nodes in
+@@ -280,4 +307,3 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(GraphLockableMainloop,
+             graph_lockable_auto_lock_mainloop(GMLML_OBJ_())
+ 
+ #endif /* GRAPH_LOCK_H */
+-
+diff --git a/include/system/block-backend-global-state.h b/include/system/block-backend-global-state.h
+index b36e2144f..ae1d6918a 100644
+--- a/include/system/block-backend-global-state.h
++++ b/include/system/block-backend-global-state.h
+@@ -51,12 +51,20 @@ typedef enum QemuBlockBackendHotForkBarrierOperation {
+ typedef struct QemuBlockBackendHotForkBarrierInventory {
+     uint64_t generation;
+     int64_t owner_thread_id;
++    uint64_t graph_barrier_generation;
++    uint64_t graph_mutation_generation;
++    uint64_t held_graph_mutation_generation;
++    int64_t graph_owner_thread_id;
+     uint64_t backend_count;
+     uint64_t rooted_backends;
+     uint64_t writable_backends;
+     uint64_t quiesced_rooted_backends;
+     uint64_t in_flight;
++    uint32_t graph_waiting_writers;
+     bool held;
++    bool graph_held;
++    bool graph_writer_active;
++    bool graph_stable;
+     bool complete;
+     bool quiescent;
+ } QemuBlockBackendHotForkBarrierInventory;
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 4b6907755..5667592f0 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -249,10 +249,21 @@ crucible_hot_fork_block_barrier(
+     }
+ 
+     report = g_new0(CrucibleHotForkBlockBarrierState, 1);
+-    report->schema_version = 1;
++    report->schema_version = 2;
+     report->generation = inventory.generation;
+     report->owner_thread_id = inventory.owner_thread_id;
++    report->graph_barrier_generation =
++        inventory.graph_barrier_generation;
++    report->graph_mutation_generation =
++        inventory.graph_mutation_generation;
++    report->held_graph_mutation_generation =
++        inventory.held_graph_mutation_generation;
++    report->graph_owner_thread_id = inventory.graph_owner_thread_id;
+     report->held = inventory.held;
++    report->graph_held = inventory.graph_held;
++    report->graph_writer_active = inventory.graph_writer_active;
++    report->graph_waiting_writers = inventory.graph_waiting_writers;
++    report->graph_stable = inventory.graph_stable;
+     report->complete = inventory.complete;
+     report->backend_count = inventory.backend_count;
+     report->rooted_backends = inventory.rooted_backends;
+@@ -517,7 +528,7 @@ crucible_hot_fork_template_report(
+         acknowledged |= CRUCIBLE_HOT_FORK_PROOF_AIO_BH_TIMERS;
+     }
+ 
+-    report->schema_version = 5;
++    report->schema_version = 6;
+     report->generation = crucible_hot_fork_template_generation;
+     report->outcome = outcome;
+     report->transaction_active = crucible_hot_fork_template_active;
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index a4d38e5bd..9dad4daab 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -680,19 +680,41 @@
+ ##
+ # @CrucibleHotForkBlockBarrierState:
+ #
+-# Exact retained state of QEMU's native all-block drain section. This barrier
+-# does not create or authenticate an immutable external snapshot.
++# Exact retained state of QEMU's block-graph writer admission barrier and
++# native all-block drain section. This barrier does not create or authenticate
++# an immutable external snapshot.
+ #
+-# @schema-version: barrier contract version, currently 1
++# @schema-version: barrier contract version, currently 2
+ #
+ # @generation: process-local hold/release generation
+ #
+ # @owner-thread-id: coordinator thread that acquired the barrier, or zero when
+ #     the barrier is released
+ #
++# @graph-barrier-generation: process-local graph-barrier state generation
++#
++# @graph-mutation-generation: process-local completed graph-write generation
++#
++# @held-graph-mutation-generation: graph-write generation captured by hold,
++#     or zero when released
++#
++# @graph-owner-thread-id: coordinator thread retaining graph-writer exclusion,
++#     or zero when released
++#
+ # @held: whether the all-block drain section remains retained
+ #
+-# @complete: whether the bounded BlockBackend inventory was complete
++# @graph-held: whether block-graph writer admission remains closed
++#
++# @graph-writer-active: whether a graph writer is inside its critical section
++#
++# @graph-waiting-writers: writers admitted but not yet inside their critical
++#     section, including writers parked behind the retained barrier
++#
++# @graph-stable: whether writer admission remains closed, no writer is active,
++#     and the completed graph-write generation still equals the held generation
++#
++# @complete: whether the bounded BlockBackend inventory was complete and the
++#     native drain and graph barriers have consistent ownership
+ #
+ # @backend-count: exact allocated BlockBackend count
+ #
+@@ -704,7 +726,8 @@
+ #
+ # @in-flight: checked aggregate BlockBackend I/O count
+ #
+-# @quiescent: whether every rooted backend is quiesced and no I/O is in flight
++# @quiescent: whether the graph is stable, every rooted backend is quiesced,
++#     and no I/O is in flight
+ #
+ # Since: 10.0 (Crucible downstream extension)
+ ##
+@@ -712,7 +735,15 @@
+   'data': { 'schema-version': 'uint32',
+             'generation': 'uint64',
+             'owner-thread-id': 'int64',
++            'graph-barrier-generation': 'uint64',
++            'graph-mutation-generation': 'uint64',
++            'held-graph-mutation-generation': 'uint64',
++            'graph-owner-thread-id': 'int64',
+             'held': 'bool',
++            'graph-held': 'bool',
++            'graph-writer-active': 'bool',
++            'graph-waiting-writers': 'uint32',
++            'graph-stable': 'bool',
+             'complete': 'bool',
+             'backend-count': 'uint64',
+             'rooted-backends': 'uint64',
+@@ -724,8 +755,9 @@
+ ##
+ # @crucible-hot-fork-block-barrier:
+ #
+-# Holds, observes, or releases QEMU's reversible all-block drain section. Hold
+-# and release execute on the main AioContext under the BQL.
++# Holds, observes, or releases QEMU's reversible graph-writer admission barrier
++# and all-block drain section. Hold and release execute on the main AioContext
++# under the BQL.
+ #
+ # @action: requested barrier operation
+ #
+@@ -1142,18 +1174,18 @@
+ ##
+ # @CrucibleHotForkTemplateState:
+ #
+-# QEMU-owned state for one retained template-preparation transaction. Version 5
+-# first acquires QEMU's native all-block drain on the main AioContext, then
+-# acquires the Crucible plugin callback barrier and QEMU's RCU admission/drain
+-# and asynchronous-source barriers. Rollback releases the asynchronous barrier
+-# before it schedules block release on the main AioContext. A quiescent RCU
+-# barrier acknowledges proof bit 4. A quiescent asynchronous barrier
+-# acknowledges AIO proof bit 3. The block barrier remains a prerequisite and
+-# does not acknowledge proof bit 5 without an immutable external-snapshot root.
+-# Other unresolved proof classes still make a drained transaction roll back as
+-# @blocked.
++# QEMU-owned state for one retained template-preparation transaction. Version 6
++# first closes block-graph writer admission and acquires QEMU's native all-block
++# drain on the main AioContext, then acquires the Crucible plugin callback
++# barrier and QEMU's RCU admission/drain and asynchronous-source barriers.
++# Rollback releases the asynchronous barrier before it reopens graph and block
++# I/O admission on the main AioContext. A quiescent RCU barrier acknowledges
++# proof bit 4. A quiescent asynchronous barrier acknowledges AIO proof bit 3.
++# The block barrier remains a prerequisite and does not acknowledge proof bit 5
++# without an immutable external-snapshot root. Other unresolved proof classes
++# still make a drained transaction roll back as @blocked.
+ #
+-# @schema-version: transaction contract version, currently 5
++# @schema-version: transaction contract version, currently 6
+ #
+ # @generation: positive process-local transaction generation after the first
+ #     successful prepare, or zero before any transaction
+@@ -1173,7 +1205,7 @@
+ # @rcu-barrier: RCU barrier state after the operation and any rollback
+ #
+ # @bh-timer-barrier: asynchronous-source barrier state after the operation and
+-#     any rollback; the legacy field name is retained by schema version 5
++#     any rollback; the legacy field name is retained by schema version 6
+ #
+ # @block-barrier: native all-block drain state after the operation and any
+ #     asynchronous main-loop transition
+diff --git a/tests/unit/test-block-backend.c b/tests/unit/test-block-backend.c
+index f54a918a4..12e80df49 100644
+--- a/tests/unit/test-block-backend.c
++++ b/tests/unit/test-block-backend.c
+@@ -78,6 +78,12 @@ typedef struct HotForkBlockBarrierQuery {
+     QemuBlockBackendHotForkBarrierInventory inventory;
+ } HotForkBlockBarrierQuery;
+ 
++typedef struct HotForkGraphWriterRelease {
++    bool observed_waiter;
++    bool released;
++    bool reacquire_rejected;
++} HotForkGraphWriterRelease;
++
+ static void *test_hot_fork_block_barrier_query(void *opaque)
+ {
+     HotForkBlockBarrierQuery *query = opaque;
+@@ -87,6 +93,29 @@ static void *test_hot_fork_block_barrier_query(void *opaque)
+     return NULL;
+ }
+ 
++static void test_hot_fork_graph_writer_release(void *opaque)
++{
++    HotForkGraphWriterRelease *release = opaque;
++    QemuBlockBackendHotForkBarrierInventory barrier;
++
++    g_assert_true(qemu_block_backend_hot_fork_barrier(
++        QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_QUERY, &barrier));
++    release->observed_waiter = barrier.graph_held &&
++        barrier.graph_stable && barrier.graph_waiting_writers == 1;
++    release->released = qemu_block_backend_hot_fork_barrier(
++        QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE, &barrier);
++    g_assert_false(barrier.held);
++    g_assert_false(barrier.graph_held);
++    if (qemu_block_backend_hot_fork_barrier(
++            QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_HOLD, &barrier)) {
++        release->reacquire_rejected = false;
++        g_assert_true(qemu_block_backend_hot_fork_barrier(
++            QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE, &barrier));
++    } else {
++        release->reacquire_rejected = true;
++    }
++}
++
+ static void test_hot_fork_block_barrier(void)
+ {
+     QDict *options = qdict_new();
+@@ -94,6 +123,7 @@ static void test_hot_fork_block_barrier(void)
+     QemuBlockBackendHotForkBarrierInventory barrier;
+     HotForkBlockBarrierQuery query = { 0 };
+     QemuThread thread;
++    uint64_t graph_mutation_generation;
+ 
+     qdict_put_str(options, "driver", "null-co");
+     qdict_put_int(options, "size", 4096);
+@@ -106,6 +136,15 @@ static void test_hot_fork_block_barrier(void)
+     g_assert_true(barrier.quiescent);
+     g_assert_cmpuint(barrier.generation, >, 0);
+     g_assert_cmpint(barrier.owner_thread_id, >, 0);
++    g_assert_true(barrier.graph_held);
++    g_assert_true(barrier.graph_stable);
++    g_assert_false(barrier.graph_writer_active);
++    g_assert_cmpuint(barrier.graph_barrier_generation, >, 0);
++    g_assert_cmpuint(barrier.graph_mutation_generation,
++                     ==, barrier.held_graph_mutation_generation);
++    g_assert_cmpint(barrier.graph_owner_thread_id,
++                    ==, barrier.owner_thread_id);
++    g_assert_cmpuint(barrier.graph_waiting_writers, ==, 0);
+     g_assert_cmpuint(barrier.backend_count, >=, 1);
+     g_assert_cmpuint(barrier.rooted_backends, >=, 1);
+     g_assert_cmpuint(barrier.writable_backends, >=, 1);
+@@ -122,6 +161,10 @@ static void test_hot_fork_block_barrier(void)
+     g_assert_true(query.inventory.held);
+     g_assert_true(query.inventory.complete);
+     g_assert_true(query.inventory.quiescent);
++    g_assert_true(query.inventory.graph_held);
++    g_assert_true(query.inventory.graph_stable);
++    g_assert_cmpuint(query.inventory.graph_mutation_generation,
++                     ==, barrier.graph_mutation_generation);
+     g_assert_cmpuint(query.inventory.backend_count,
+                      ==, barrier.backend_count);
+     g_assert_cmpuint(query.inventory.rooted_backends,
+@@ -130,10 +173,42 @@ static void test_hot_fork_block_barrier(void)
+     g_assert_true(qemu_block_backend_hot_fork_barrier(
+         QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE, &barrier));
+     g_assert_false(barrier.held);
++    g_assert_false(barrier.graph_held);
++    g_assert_false(barrier.graph_stable);
+     g_assert_false(barrier.quiescent);
+     g_assert_cmpint(barrier.owner_thread_id, ==, 0);
+ 
++    graph_mutation_generation = barrier.graph_mutation_generation;
+     blk_unref(blk);
++    bdrv_graph_wrlock();
++    bdrv_graph_wrunlock();
++    g_assert_true(qemu_block_backend_hot_fork_barrier(
++        QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_QUERY, &barrier));
++    g_assert_cmpuint(barrier.graph_mutation_generation,
++                     >, graph_mutation_generation);
++}
++
++static void test_hot_fork_graph_writer_waits(void)
++{
++    QemuBlockBackendHotForkBarrierInventory barrier;
++    HotForkGraphWriterRelease release = { 0 };
++
++    g_assert_true(qemu_block_backend_hot_fork_barrier(
++        QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_HOLD, &barrier));
++    aio_bh_schedule_oneshot(qemu_get_aio_context(),
++                            test_hot_fork_graph_writer_release, &release);
++
++    bdrv_graph_wrlock();
++    bdrv_graph_wrunlock();
++
++    g_assert_true(release.observed_waiter);
++    g_assert_true(release.released);
++    g_assert_true(release.reacquire_rejected);
++    g_assert_true(qemu_block_backend_hot_fork_barrier(
++        QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_QUERY, &barrier));
++    g_assert_false(barrier.held);
++    g_assert_false(barrier.graph_held);
++    g_assert_cmpuint(barrier.graph_waiting_writers, ==, 0);
+ }
+ 
+ int main(int argc, char **argv)
+@@ -148,6 +223,8 @@ int main(int argc, char **argv)
+                     test_drain_all_aio_error);
+     g_test_add_func("/block-backend/hot_fork_barrier",
+                     test_hot_fork_block_barrier);
++    g_test_add_func("/block-backend/hot_fork_graph_writer_waits",
++                    test_hot_fork_graph_writer_waits);
+ 
+     return g_test_run();
+ }

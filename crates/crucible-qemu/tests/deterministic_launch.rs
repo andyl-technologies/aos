@@ -12,8 +12,8 @@ use crucible_qemu::{
     IcountShiftSetting, InputPolicy, LaunchProfileCandidate, LaunchProfileError, MachineResetMode,
     NodeIcountShift, QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder,
     QemuLaunchCommandError, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
-    QemuPreSpawnLaunchValidationError, QemuVmLaunchConfig, validate_pre_spawn_qemu_launch_args,
-    validate_x86_whitebox_hmp_mtree,
+    QemuLaunchResourceError, QemuPreSpawnLaunchValidationError, QemuVmLaunchConfig,
+    validate_pre_spawn_qemu_launch_args, validate_x86_whitebox_hmp_mtree,
 };
 
 #[path = "deterministic_launch/fingerprint_options.rs"]
@@ -94,6 +94,50 @@ fn default_launch_command() -> QemuLaunchCommand {
             &default_fault_node(),
         )
         .unwrap_or_else(|error| panic!("default QEMU launch command failed: {error}"))
+}
+
+#[test]
+fn launch_command_exposes_and_validates_its_static_resource_baseline() {
+    let profile = deterministic(
+        LaunchProfileCandidate::default()
+            .with_memory_mib(768)
+            .with_smp_vcpus(4),
+    );
+    let command = profile
+        .qemu_launch_command(
+            default_vm_config(),
+            default_qemu_binary(),
+            default_plugin_config(),
+            &default_fault_node(),
+        )
+        .unwrap_or_else(|error| panic!("resource-profile launch should build: {error}"));
+    let requirements = command.resource_requirements();
+    let mebibyte = 1024_u64 * 1024;
+
+    assert_eq!(requirements.virtual_cpus(), 4);
+    assert_eq!(requirements.guest_memory_bytes(), 768 * mebibyte);
+    assert_eq!(requirements.minimum_writable_bytes(), 1280 * mebibyte);
+    assert!(requirements.has_root_overlay());
+    assert!(
+        requirements
+            .validate_ceiling(4, 768 * mebibyte, 1280 * mebibyte)
+            .is_ok()
+    );
+    assert!(matches!(
+        requirements.validate_ceiling(3, u64::MAX, u64::MAX),
+        Err(QemuLaunchResourceError::VirtualCpus {
+            required: 4,
+            admitted: 3
+        })
+    ));
+    assert!(matches!(
+        requirements.validate_ceiling(4, 767 * mebibyte, u64::MAX),
+        Err(QemuLaunchResourceError::ResidentBytes { .. })
+    ));
+    assert!(matches!(
+        requirements.validate_ceiling(4, u64::MAX, 1279 * mebibyte),
+        Err(QemuLaunchResourceError::WritableBytes { .. })
+    ));
 }
 
 fn deterministic(candidate: LaunchProfileCandidate) -> DeterministicLaunchProfile {
@@ -1160,7 +1204,7 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
 
     let material = command.command_line_hash_material();
     for expected in [
-        "crucible.qemu-launch-command.v1",
+        "crucible.qemu-launch-command.v2",
         "command_line_in_hash=executable-and-argv",
         "executable=/nix/store/11111111111111111111111111111111-aos-qemu/bin/qemu-system-x86_64",
         "argv[0]=-nodefaults",
@@ -1229,6 +1273,54 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
     ] {
         assert!(vm_material.contains(expected), "missing {expected}");
     }
+}
+
+#[test]
+fn selectable_catalog_enters_the_v3_launch_identity_without_changing_empty_v2()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_protocol::selectable_catalog_plan::{
+        SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
+        SelectablePlanLimits, SelectablePlanPresence,
+    };
+
+    assert!(
+        default_launch_command()
+            .command_line_hash_material()
+            .starts_with("crucible.qemu-launch-command.v2\n")
+    );
+
+    let declaration = SelectablePlanDeclaration::new(
+        "network.policy",
+        vec![1, 2],
+        vec![1],
+        vec!["recovery".to_owned()],
+        SelectablePlanPresence::Required,
+    )?;
+    let selectable = SelectableCatalogPlan::new(
+        SelectablePlanLimits::new(1, 3, 3)?,
+        vec![declaration],
+        SelectablePlanContinuation::cold(),
+    )?;
+    let plugin = default_plugin_config()
+        .with_whitebox(QemuLaunchPluginSwitch::On)
+        .with_whitebox_setup(validated_whitebox_setup())
+        .with_selectable_catalog_plan(selectable.clone());
+    let command = default_profile().qemu_launch_command(
+        default_vm_config(),
+        default_qemu_binary(),
+        plugin,
+        &default_fault_node(),
+    )?;
+    let material = command.command_line_hash_material();
+
+    assert!(material.starts_with("crucible.qemu-launch-command.v3\n"));
+    assert!(material.contains("plugin_setup_plan_v1="));
+    assert!(!material.contains("app_random_branch_plan_v1="));
+    assert_eq!(
+        command.plugin_setup_plan().selectable_catalog_plan(),
+        &selectable
+    );
+    Ok(())
 }
 
 #[test]

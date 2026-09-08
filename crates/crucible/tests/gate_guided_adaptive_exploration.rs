@@ -17,18 +17,19 @@ use guidance_search_support::*;
 
 use crucible::{
     AdaptiveCampaignConfig, AdaptiveStrategyArm, AdaptiveStrategyConfig, AdaptiveStrategyCredit,
-    AdaptiveStrategyReward, AppRandomBranchConfig, AppRandomDecision, AppRandomSampleBudget,
-    AssertionProximityGuidanceSignal, Checkpoint, CheckpointKind, Configuration, ContentHash,
-    CoverageGuidanceSignal, Decision, EngineError, FrontierReductionPolicy, GuidanceScore,
-    GuidanceSearchConfig, GuidanceSearchState, GuidanceSignal, GuidanceSignalComposition,
-    GuidanceSignalInput, GuidanceSignalKind, GuidanceSignalWeight, Icount, IrqVector,
-    MAX_APP_RANDOM_SAMPLES_PER_DRAW, MaterializationPolicy, MaterializationTrigger, NodeId,
-    NodeTemplate, NoveltyRarityGuidanceSignal, PartialOrderReductionPolicy, Plan,
-    PreemptionBranchConfig, PreemptionKind, Properties, ReadyPoint, RngStreamId, ScenarioDef,
-    ScenarioDefForm, SearchBudget, SearchFailureOracle, SearchStrategy, Seed, TemporalGraph,
-    VcpuId, WhiteBoxPolicy, World, WorldNode, app_random_branch_decisions,
-    app_random_draw_sites_from_schedule, bake, lint_guidance_determinism_source,
-    preemption_branch_decisions, reduce, run_adaptive_strategy_selection, step, try_step,
+    AdaptiveStrategyReward, AppRandomBranchConfig, AppRandomBranchError, AppRandomSampleBudget,
+    AppRandomSelectable, AppRandomSelectableError, AssertionProximityGuidanceSignal, Checkpoint,
+    CheckpointKind, Configuration, ContentHash, CoverageGuidanceSignal, Decision, EngineError,
+    FrontierReductionPolicy, GuidanceScore, GuidanceSearchConfig, GuidanceSearchState,
+    GuidanceSignal, GuidanceSignalComposition, GuidanceSignalInput, GuidanceSignalKind,
+    GuidanceSignalWeight, Icount, IrqVector, MAX_APP_RANDOM_SAMPLES_PER_DRAW,
+    MaterializationPolicy, MaterializationTrigger, NodeId, NodeTemplate,
+    NoveltyRarityGuidanceSignal, PartialOrderReductionPolicy, Plan, PreemptionBranchConfig,
+    PreemptionKind, Properties, ReadyPoint, RngDecision, RngStreamId, ScenarioDef, ScenarioDefForm,
+    SearchBudget, SearchFailureOracle, SearchStrategy, Seed, SelectionDecision, TemporalGraph,
+    VcpuId, WhiteBoxPolicy, World, WorldNode, app_random_branch_decisions, bake,
+    lint_guidance_determinism_source, preemption_branch_decisions, reduce,
+    run_adaptive_strategy_selection, step, try_step,
 };
 
 #[test]
@@ -437,7 +438,7 @@ fn gate_preemption_branching_reduces_commuting_single_vcpu_preemptions()
 }
 
 #[test]
-fn gate_app_random_branching_is_optional_and_bounded() -> Result<(), Box<dyn Error>> {
+fn gate_app_random_branching_is_lazy_typed_and_bounded() -> Result<(), Box<dyn Error>> {
     let world = single_node_world("app-random-branching")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());
@@ -446,61 +447,156 @@ fn gate_app_random_branching_is_optional_and_bounded() -> Result<(), Box<dyn Err
         samples_per_draw: AppRandomSampleBudget::new(3).ok_or("valid sample budget")?,
         seed: Seed::from_u64(0xa11),
     };
+    let stream = RngStreamId::from_name("app-random/node:7:guest-a/stream:4:test");
+    let selectable = AppRandomSelectable::new(&scenario, node("guest-a"), stream.clone(), 7, 8)?;
+    let observed_selection = selectable.sampled_selection(42)?;
+    let observed = SelectionDecision::new(&observed_selection);
+    let discovery = selectable.into_discovery()?;
+    let parent = step(
+        &root,
+        Decision::RngDraw(RngDecision {
+            stream: stream.clone(),
+            value: 42,
+        }),
+    );
+    let observed_frontier = step(&parent, Decision::Selection(observed.clone()));
+    graph.record_step(
+        &root,
+        Decision::RngDraw(RngDecision {
+            stream: stream.clone(),
+            value: 42,
+        }),
+    )?;
+    graph.record_step(&parent, Decision::Selection(observed.clone()))?;
+
+    let zero_config = AppRandomBranchConfig {
+        samples_per_draw: AppRandomSampleBudget::new(0).ok_or("valid zero sample budget")?,
+        seed: base_config.seed,
+    };
     let before_count = graph.checkpoint_node_count();
-    let unchanged = graph.branch_app_random(&root, &base_config)?;
-    assert!(unchanged.observed_sites.is_empty());
+    let unchanged = graph.branch_app_random(&parent, &observed, &discovery, &zero_config)?;
     assert!(unchanged.decisions.is_empty());
     assert!(unchanged.report.explored.is_empty());
     assert_eq!(before_count, graph.checkpoint_node_count());
 
-    let observed = Decision::AppRandom(AppRandomDecision {
-        node: node("guest-a"),
-        stream: RngStreamId::for_node("guest-a/app-random"),
-        request_id: 7,
-        width: 8,
-        value: 42,
-    });
-    let observed_frontier = step(&root, observed.clone());
-    graph.record_step(&root, observed)?;
-    let observed_sites = app_random_draw_sites_from_schedule(&observed_frontier.schedule);
-    let decisions = app_random_branch_decisions(&observed_frontier.schedule, &base_config);
-    let branched = graph.branch_app_random(&observed_frontier, &base_config)?;
+    let decisions = app_random_branch_decisions(&parent, &observed, &discovery, &base_config)?;
+    let branched = graph.branch_app_random(&parent, &observed, &discovery, &base_config)?;
 
-    assert_eq!(branched.observed_sites, observed_sites);
-    assert_eq!(branched.observed_sites.len(), 1);
+    assert!(matches!(
+        app_random_branch_decisions(&root, &observed, &discovery, &base_config),
+        Err(AppRandomBranchError::MissingParentDraw)
+    ));
+    let mismatched_parent = step(
+        &root,
+        Decision::RngDraw(RngDecision {
+            stream: stream.clone(),
+            value: 41,
+        }),
+    );
+    assert!(matches!(
+        app_random_branch_decisions(&mismatched_parent, &observed, &discovery, &base_config),
+        Err(AppRandomBranchError::ParentDrawMismatch)
+    ));
+    let branch_selectable =
+        AppRandomSelectable::new(&scenario, node("guest-a"), stream.clone(), 7, 8)?;
+    let observed_branch = SelectionDecision::new(&branch_selectable.branch_selection(&parent, 11)?);
+    assert!(matches!(
+        app_random_branch_decisions(&parent, &observed_branch, &discovery, &base_config),
+        Err(AppRandomBranchError::Selectable(
+            AppRandomSelectableError::NotModelSample
+        ))
+    ));
+    let foreign_discovery = AppRandomSelectable::new(
+        &scenario,
+        node("guest-a"),
+        RngStreamId::from_name("app-random/node:7:guest-a/stream:7:foreign"),
+        7,
+        8,
+    )?
+    .into_discovery()?;
+    assert!(matches!(
+        app_random_branch_decisions(&parent, &observed, &foreign_discovery, &base_config),
+        Err(AppRandomBranchError::Selectable(_))
+    ));
+
+    assert_eq!(branched.observed_site.node, node("guest-a"));
+    assert_eq!(branched.observed_site.stream, stream);
+    assert_eq!(branched.observed_site.request_id, 7);
+    assert_eq!(branched.observed_site.width, 8);
     assert_eq!(branched.decisions, decisions);
     assert_eq!(branched.report.explored.len(), 3);
+    let mut branch_values = Vec::new();
     for decision in &branched.decisions {
-        assert!(matches!(
-            decision,
-            Decision::AppRandom(AppRandomDecision {
-                request_id: 7,
-                width: 8,
-                value,
-                ..
-            }) if *value != 42
-        ));
+        let Decision::Selection(decision) = decision else {
+            panic!("app-random alternatives must be typed campaign selections");
+        };
+        assert!(decision.is_campaign_branch());
+        let selection = decision.selection()?;
+        let crucible_campaign::ChoiceValue::Integer(crucible_campaign::IntegerValue::Unsigned(
+            value,
+        )) = selection.value()
+        else {
+            panic!("app-random branch value must remain unsigned");
+        };
+        branch_values.push(*value);
+        assert_ne!(
+            selection.value(),
+            observed_selection.value(),
+            "branch must replace the observed model sample"
+        );
+        selection.validate_branch_replay(
+            discovery.opportunity(),
+            discovery.domain(),
+            discovery
+                .opportunity()
+                .branch_point_id(crucible_campaign::ConfigurationId::from_hash(
+                    crucible_campaign::CampaignHash::from_bytes(parent.id().bytes),
+                )),
+        )?;
     }
+    assert_eq!(branch_values, vec![59, 131, 209]);
     for child in &branched.report.explored {
-        assert!(matches!(child.decision, Decision::AppRandom(_)));
-        assert_eq!(child.configuration.schedule.decisions().len(), 1);
+        assert!(matches!(child.decision, Decision::Selection(_)));
+        assert_eq!(child.configuration.schedule.decisions().len(), 2);
         assert!(reduce(&child.configuration.def, &child.configuration.schedule).is_ok());
     }
+    assert_eq!(observed_frontier.schedule.decisions().len(), 2);
     assert!(AppRandomSampleBudget::new(MAX_APP_RANDOM_SAMPLES_PER_DRAW + 1).is_none());
 
-    let capped = Configuration::genesis(
-        ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(
-            "crucible.test.app-random-cap",
-            &scenario.id().to_hex(),
-            Seed::from_u64(1),
-            0,
-        ),
+    let capped_scenario = ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(
+        "crucible.test.app-random-cap",
+        &scenario.id().to_hex(),
+        Seed::from_u64(1),
+        0,
     );
-    let capped_decision = app_random_branch_decisions(&observed_frontier.schedule, &base_config)
-        .into_iter()
-        .next()
-        .ok_or("expected app-random decision")?;
-    assert!(try_step(&capped, capped_decision).is_err());
+    let capped = Configuration::genesis(capped_scenario.clone());
+    let capped_stream = RngStreamId::from_name("app-random/node:7:guest-a/stream:3:cap");
+    let capped_selectable = AppRandomSelectable::new(
+        &capped_scenario,
+        node("guest-a"),
+        capped_stream.clone(),
+        1,
+        8,
+    )?;
+    let capped_observed = SelectionDecision::new(&capped_selectable.sampled_selection(9)?);
+    let capped_discovery = capped_selectable.into_discovery()?;
+    let capped_parent = step(
+        &capped,
+        Decision::RngDraw(RngDecision {
+            stream: capped_stream,
+            value: 9,
+        }),
+    );
+    let capped_decision = app_random_branch_decisions(
+        &capped_parent,
+        &capped_observed,
+        &capped_discovery,
+        &base_config,
+    )?
+    .into_iter()
+    .next()
+    .ok_or("expected typed app-random decision")?;
+    assert!(try_step(&capped_parent, capped_decision).is_err());
 
     Ok(())
 }

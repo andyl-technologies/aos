@@ -188,6 +188,11 @@ pub(super) fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
         GOLDEN_RING_HEADER_BASE + RING_HEADER_WRITE_IDX_OFFSET,
         state.ring.write_idx,
     );
+    write_u64(
+        &mut bytes,
+        GOLDEN_RING_HEADER_BASE + RING_HEADER_PRODUCER_STATE_OFFSET,
+        state.ring.producer_state,
+    );
 
     write_u64(
         &mut bytes,

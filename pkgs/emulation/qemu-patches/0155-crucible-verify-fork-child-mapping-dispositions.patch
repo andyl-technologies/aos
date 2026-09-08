@@ -1,0 +1,431 @@
+diff --git a/include/qemu/crucible-hot-fork-child.h b/include/qemu/crucible-hot-fork-child.h
+index 538cf7e85..3e955b54e 100644
+--- a/include/qemu/crucible-hot-fork-child.h
++++ b/include/qemu/crucible-hot-fork-child.h
+@@ -10,6 +10,10 @@
+ 
+ #define QEMU_CRUCIBLE_HOT_FORK_ENDPOINT_REPLACEMENT_COUNT 2
+ #define QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS 4096
++#define QEMU_CRUCIBLE_HOT_FORK_MAX_SHARED_MAPPINGS 4096
++#define QEMU_CRUCIBLE_HOT_FORK_MAX_MAPPING_RECORDS 65536
++#define QEMU_CRUCIBLE_HOT_FORK_MAX_MAPPING_RECORD_BYTES 8192
++#define QEMU_CRUCIBLE_HOT_FORK_MAX_MAPPING_BYTES (16 * 1024 * 1024)
+ 
+ typedef struct QemuCrucibleHotForkParentIdentity {
+     pid_t parent_pid;
+@@ -25,8 +29,15 @@ typedef struct QemuCrucibleHotForkDescriptorTableTransaction {
+     pid_t parent_pid;
+     pid_t child_pid;
+     bool active;
++    bool descriptors_applied;
++    bool mappings_verified;
+ } QemuCrucibleHotForkDescriptorTableTransaction;
+ 
++typedef struct QemuCrucibleHotForkSharedMapping {
++    uint64_t start;
++    uint64_t length;
++} QemuCrucibleHotForkSharedMapping;
++
+ typedef int (*QemuCrucibleHotForkDescriptorVerifier)(void *opaque);
+ 
+ /**
+@@ -159,4 +170,40 @@ int qemu_crucible_hot_fork_apply_descriptor_table(
+     QemuCrucibleHotForkDescriptorVerifier verify,
+     void *opaque);
+ 
++/**
++ * qemu_crucible_hot_fork_verify_mapping_table() - classify child mappings
++ * @transaction: exact child transaction after descriptor-table application
++ * @shared_mappings: sorted writable shared VMAs allowed in the child
++ * @shared_mapping_count: number of entries in @shared_mappings
++ *
++ * Streams the child's Linux /proc/self/maps file without heap allocation and
++ * rejects every writable shared VMA that is not an exact allowlist entry.  It
++ * also rejects every allowlist entry not present as one exact writable shared
++ * VMA.  Private mappings are admitted as copy-on-write and read-only shared
++ * mappings cannot mutate a sibling.  The allowlist must be strictly ordered,
++ * nonoverlapping, nonempty per entry, and contain at most
++ * QEMU_CRUCIBLE_HOT_FORK_MAX_SHARED_MAPPINGS entries.
++ *
++ * The scan accepts at most QEMU_CRUCIBLE_HOT_FORK_MAX_MAPPING_RECORDS records,
++ * QEMU_CRUCIBLE_HOT_FORK_MAX_MAPPING_RECORD_BYTES bytes per record, and
++ * QEMU_CRUCIBLE_HOT_FORK_MAX_MAPPING_BYTES bytes in aggregate.  It opens and
++ * closes its procfs descriptor synchronously while signals remain blocked and
++ * retains no path or kernel record bytes.
++ *
++ * Argument validation leaves the descriptor-applied transaction available for
++ * an exact retry.  Once scanning begins, the transaction is consumed.  Any
++ * failure then rejects the child; success records the complete mapping proof
++ * for future composition with child reinitialization.
++ *
++ * This primitive is intentionally unwired and does not acknowledge readiness
++ * bit 7 by itself.
++ *
++ * Returns zero after exact mapping classification, or a negative errno-style
++ * status on failure.
++ */
++int qemu_crucible_hot_fork_verify_mapping_table(
++    QemuCrucibleHotForkDescriptorTableTransaction *transaction,
++    const QemuCrucibleHotForkSharedMapping *shared_mappings,
++    size_t shared_mapping_count);
++
+ #endif
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index f9c631c53..8871277db 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -251,7 +251,10 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+     child = fork();
+     g_assert_cmpint(child, >=, 0);
+     if (child == 0) {
++        QemuCrucibleHotForkSharedMapping shared_mapping;
+         sigset_t blocked;
++        uintptr_t page_size;
++        void *mapping = MAP_FAILED;
+         int result;
+ 
+         close(child_result[0]);
+@@ -274,6 +277,27 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+                 G_N_ELEMENTS(retained_fds), verify_closed_descriptor_table,
+                 &verification);
+         }
++        if (result == 0) {
++            page_size = qemu_real_host_page_size();
++        }
++        if (result == 0) {
++            mapping = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
++                           MAP_SHARED | MAP_ANONYMOUS, -1, 0);
++            if (mapping == MAP_FAILED) {
++                result = -errno;
++            }
++        }
++        if (result == 0) {
++            shared_mapping = (QemuCrucibleHotForkSharedMapping) {
++                .start = (uintptr_t)mapping,
++                .length = page_size,
++            };
++            result = qemu_crucible_hot_fork_verify_mapping_table(
++                &transaction, &shared_mapping, 1);
++        }
++        if (mapping != MAP_FAILED) {
++            munmap(mapping, page_size);
++        }
+         write_child_result(child_result[1], result);
+         _exit(0);
+     }
+@@ -298,6 +322,30 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+     close(inherited_extra);
+ }
+ 
++static void test_mapping_table_rejects_unlisted_shared_mapping(void)
++{
++    QemuCrucibleHotForkDescriptorTableTransaction transaction = {
++        .parent_pid = getpid(),
++        .child_pid = getpid(),
++        .active = false,
++        .descriptors_applied = true,
++        .mappings_verified = false,
++    };
++    uintptr_t page_size = qemu_real_host_page_size();
++    void *mapping;
++
++    mapping = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
++                   MAP_SHARED | MAP_ANONYMOUS, -1, 0);
++    g_assert_true(mapping != MAP_FAILED);
++
++    g_assert_cmpint(qemu_crucible_hot_fork_verify_mapping_table(
++                        &transaction, NULL, 0),
++                    ==, -EPERM);
++    g_assert_false(transaction.descriptors_applied);
++    g_assert_false(transaction.mappings_verified);
++    g_assert_cmpint(munmap(mapping, page_size), ==, 0);
++}
++
+ static void test_inactive_descriptor_transaction_is_unchanged(void)
+ {
+     QemuCrucibleHotForkDescriptorTableTransaction transaction = {
+@@ -518,6 +566,8 @@ int main(int argc, char **argv)
+                     test_immediate_child_applies_closed_descriptor_table);
+     g_test_add_func("/crucible/hot-fork-child/inactive-descriptor-transaction",
+                     test_inactive_descriptor_transaction_is_unchanged);
++    g_test_add_func("/crucible/hot-fork-child/unlisted-shared-mapping",
++                    test_mapping_table_rejects_unlisted_shared_mapping);
+     g_test_add_func("/crucible/hot-fork-child/grandchild-rejected",
+                     test_grandchild_cannot_use_parent_identity);
+     g_test_add_func("/crucible/hot-fork-child/exact-replacement",
+diff --git a/util/crucible-hot-fork-child.c b/util/crucible-hot-fork-child.c
+index 48097f4c5..fb10a6e5b 100644
+--- a/util/crucible-hot-fork-child.c
++++ b/util/crucible-hot-fork-child.c
+@@ -310,6 +310,8 @@ int qemu_crucible_hot_fork_begin_descriptor_table(
+     transaction->parent_pid = -1;
+     transaction->child_pid = -1;
+     transaction->active = false;
++    transaction->descriptors_applied = false;
++    transaction->mappings_verified = false;
+ 
+     result = crucible_hot_fork_probe_close_range();
+     if (result != 0) {
+@@ -330,6 +332,8 @@ int qemu_crucible_hot_fork_begin_descriptor_table(
+     transaction->parent_pid = parent_pid;
+     transaction->child_pid = getpid();
+     transaction->active = true;
++    transaction->descriptors_applied = false;
++    transaction->mappings_verified = false;
+     return 0;
+ }
+ 
+@@ -356,6 +360,8 @@ int qemu_crucible_hot_fork_apply_descriptor_table(
+     }
+ 
+     transaction->active = false;
++    transaction->descriptors_applied = false;
++    transaction->mappings_verified = false;
+     result = qemu_crucible_hot_fork_replace_endpoint_descriptors(
+         replacements, crucible_hot_fork_accept_descriptor_replacements, NULL);
+     if (result != 0) {
+@@ -376,5 +382,244 @@ int qemu_crucible_hot_fork_apply_descriptor_table(
+     if (result > 0 || result == -EUCLEAN) {
+         return -EPROTO;
+     }
++    if (result == 0) {
++        transaction->descriptors_applied = true;
++    }
++    return result;
++}
++
++static bool crucible_hot_fork_parse_hex(const char *bytes, size_t length,
++                                        uint64_t *value)
++{
++    uint64_t parsed = 0;
++
++    if (length == 0) {
++        return false;
++    }
++    for (size_t index = 0; index < length; index++) {
++        unsigned int digit;
++
++        if (bytes[index] >= '0' && bytes[index] <= '9') {
++            digit = bytes[index] - '0';
++        } else if (bytes[index] >= 'a' && bytes[index] <= 'f') {
++            digit = bytes[index] - 'a' + 10;
++        } else if (bytes[index] >= 'A' && bytes[index] <= 'F') {
++            digit = bytes[index] - 'A' + 10;
++        } else {
++            return false;
++        }
++        if (parsed > (UINT64_MAX - digit) / 16) {
++            return false;
++        }
++        parsed = parsed * 16 + digit;
++    }
++    *value = parsed;
++    return true;
++}
++
++static int crucible_hot_fork_parse_mapping_record(
++    const char *record,
++    size_t length,
++    uint64_t *start,
++    uint64_t *mapping_length,
++    bool *writable_shared)
++{
++    const char *range_end = memchr(record, ' ', length);
++    const char *separator;
++    const char *permissions;
++    const char *permissions_end;
++    uint64_t end;
++
++    if (!range_end || range_end == record) {
++        return -EPROTO;
++    }
++    separator = memchr(record, '-', range_end - record);
++    if (!separator || separator == record || separator + 1 == range_end ||
++        !crucible_hot_fork_parse_hex(record, separator - record, start) ||
++        !crucible_hot_fork_parse_hex(separator + 1,
++                                     range_end - separator - 1, &end) ||
++        *start >= end) {
++        return -EPROTO;
++    }
++
++    permissions = range_end;
++    while (permissions < record + length && *permissions == ' ') {
++        permissions++;
++    }
++    permissions_end = memchr(permissions, ' ', record + length - permissions);
++    if (!permissions_end || permissions_end - permissions != 4 ||
++        (permissions[0] != 'r' && permissions[0] != '-') ||
++        (permissions[1] != 'w' && permissions[1] != '-') ||
++        (permissions[2] != 'x' && permissions[2] != '-') ||
++        (permissions[3] != 'p' && permissions[3] != 's')) {
++        return -EPROTO;
++    }
++
++    *mapping_length = end - *start;
++    *writable_shared = permissions[1] == 'w' && permissions[3] == 's';
++    return 0;
++}
++
++static bool crucible_hot_fork_shared_mapping_table_is_valid(
++    const QemuCrucibleHotForkSharedMapping *mappings,
++    size_t mapping_count)
++{
++    uint64_t prior_end = 0;
++
++    if ((mapping_count != 0 && !mappings) ||
++        mapping_count > QEMU_CRUCIBLE_HOT_FORK_MAX_SHARED_MAPPINGS) {
++        return false;
++    }
++    for (size_t index = 0; index < mapping_count; index++) {
++        uint64_t end;
++
++        if (mappings[index].length == 0 ||
++            mappings[index].start > UINT64_MAX - mappings[index].length) {
++            return false;
++        }
++        end = mappings[index].start + mappings[index].length;
++        if (index > 0 && mappings[index].start < prior_end) {
++            return false;
++        }
++        prior_end = end;
++    }
++    return true;
++}
++
++static int crucible_hot_fork_match_mapping_record(
++    const char *record,
++    size_t length,
++    const QemuCrucibleHotForkSharedMapping *mappings,
++    size_t mapping_count,
++    size_t *mapping_index)
++{
++    uint64_t start;
++    uint64_t mapping_length;
++    bool writable_shared;
++    int result = crucible_hot_fork_parse_mapping_record(
++        record, length, &start, &mapping_length, &writable_shared);
++
++    if (result != 0 || !writable_shared) {
++        return result;
++    }
++    if (*mapping_index >= mapping_count ||
++        mappings[*mapping_index].start != start ||
++        mappings[*mapping_index].length != mapping_length) {
++        return -EPERM;
++    }
++    (*mapping_index)++;
++    return 0;
++}
++
++static int crucible_hot_fork_scan_mapping_table(
++    const QemuCrucibleHotForkSharedMapping *mappings,
++    size_t mapping_count)
++{
++    char input[4096];
++    char record[QEMU_CRUCIBLE_HOT_FORK_MAX_MAPPING_RECORD_BYTES];
++    size_t mapping_index = 0;
++    size_t record_count = 0;
++    size_t record_length = 0;
++    size_t total_bytes = 0;
++    int maps_fd;
++    int result = 0;
++
++    maps_fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
++    if (maps_fd < 0) {
++        return -errno;
++    }
++    for (;;) {
++        ssize_t length = read(maps_fd, input, sizeof(input));
++
++        if (length < 0) {
++            if (errno == EINTR) {
++                continue;
++            }
++            result = -errno;
++            break;
++        }
++        if (length == 0) {
++            if (record_length != 0) {
++                record_count++;
++                if (record_count >
++                    QEMU_CRUCIBLE_HOT_FORK_MAX_MAPPING_RECORDS) {
++                    result = -E2BIG;
++                } else {
++                    result = crucible_hot_fork_match_mapping_record(
++                        record, record_length, mappings, mapping_count,
++                        &mapping_index);
++                }
++            }
++            break;
++        }
++        if ((size_t)length >
++            QEMU_CRUCIBLE_HOT_FORK_MAX_MAPPING_BYTES - total_bytes) {
++            result = -E2BIG;
++            break;
++        }
++        total_bytes += length;
++
++        for (ssize_t index = 0; index < length; index++) {
++            if (input[index] == '\n') {
++                record_count++;
++                if (record_count >
++                    QEMU_CRUCIBLE_HOT_FORK_MAX_MAPPING_RECORDS) {
++                    result = -E2BIG;
++                    break;
++                }
++                result = crucible_hot_fork_match_mapping_record(
++                    record, record_length, mappings, mapping_count,
++                    &mapping_index);
++                record_length = 0;
++                if (result != 0) {
++                    break;
++                }
++            } else {
++                if (record_length == sizeof(record)) {
++                    result = -E2BIG;
++                    break;
++                }
++                record[record_length++] = input[index];
++            }
++        }
++        if (result != 0) {
++            break;
++        }
++    }
++    if (close(maps_fd) < 0 && result == 0) {
++        result = -errno;
++    }
++    if (result == 0 && (record_count == 0 || mapping_index != mapping_count)) {
++        result = -EPERM;
++    }
++    return result;
++}
++
++int qemu_crucible_hot_fork_verify_mapping_table(
++    QemuCrucibleHotForkDescriptorTableTransaction *transaction,
++    const QemuCrucibleHotForkSharedMapping *shared_mappings,
++    size_t shared_mapping_count)
++{
++    int result;
++
++    if (!transaction) {
++        return -EINVAL;
++    }
++    if (transaction->active || !transaction->descriptors_applied ||
++        transaction->mappings_verified || transaction->parent_pid <= 1 ||
++        transaction->child_pid != getpid()) {
++        return -EPERM;
++    }
++    if (!crucible_hot_fork_shared_mapping_table_is_valid(
++            shared_mappings, shared_mapping_count)) {
++        return -EINVAL;
++    }
++
++    transaction->descriptors_applied = false;
++    result = crucible_hot_fork_scan_mapping_table(shared_mappings,
++                                                  shared_mapping_count);
++    if (result == 0) {
++        transaction->mappings_verified = true;
++    }
+     return result;
+ }

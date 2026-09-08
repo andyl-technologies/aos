@@ -101,7 +101,7 @@
       }
       {
         label = "production launch requires an exact manifest";
-        needle = "required_target.exact_manifest().is_none()";
+        needle = "required_target.exact_register_manifest().is_none()";
       }
       {
         label = "launch verifies World node identity";
@@ -253,7 +253,7 @@
       }
       {
         label = "command-line hash version";
-        needle = "\"crucible.qemu-launch-command.v1\".to_owned()";
+        needle = "\"crucible.qemu-launch-command.v3\".to_owned()";
       }
       {
         label = "argv hash material";
@@ -279,7 +279,7 @@
       }
       {
         label = "exact World register manifest binding";
-        needle = "target.exact_manifest = Some(manifest.clone());";
+        needle = "target.exact_register_manifest = Some(manifests.register.clone());";
       }
       {
         label = "World node identity binding";
@@ -321,11 +321,11 @@
       }
       {
         label = "default plugin argv assertion";
-        needle = "simfd=3,slot=0,fault_node_hash={fault_hash},shmemfd=4,wakefd=5,whitebox=off,coverage=off";
+        needle = "simfd=3,slot=0,fault_node_hash={fault_hash},process_generation=1";
       }
       {
         label = "fixed fd plugin argv assertion";
-        needle = "simfd=3,slot=2,fault_node_hash={fault_hash},shmemfd=4,wakefd=5,whitebox=on,coverage=on";
+        needle = "simfd=3,slot=2,fault_node_hash={fault_hash},process_generation=1";
       }
       {
         label = "kernel argv assertion";

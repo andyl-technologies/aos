@@ -97,6 +97,21 @@ fn cli_production_build_rejects_the_mock_failure_gate_flag() -> Result<(), Box<d
     Ok(())
 }
 
+#[test]
+fn cli_run_help_describes_guarded_campaign_deployment() -> Result<(), Box<dyn Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["run", "--help"])
+        .output()?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("--campaign-deployment <PATH>"));
+    assert!(stdout.contains("Guarded local campaign-executor deployment capability"));
+
+    Ok(())
+}
+
 #[cfg(not(feature = "test-double"))]
 #[test]
 fn cli_production_selftest_help_excludes_test_double_options() -> Result<(), Box<dyn Error>> {

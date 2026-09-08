@@ -20,13 +20,16 @@ use crucible_shmem::{
 use thiserror::Error;
 
 use crate::{
-    QemuAsyncDriverPolicy, QemuCrashDetector, QemuHostIoRuntime, QemuHostPluginSetup,
-    QemuHostPluginSetupError, QemuLaunchCommand, QemuLaunchPluginSwitch,
+    QemuAsyncDriverPolicy, QemuChildProcessContract, QemuCrashDetector, QemuHostIoRuntime,
+    QemuHostPluginSetup, QemuHostPluginSetupError, QemuLaunchCommand, QemuLaunchPluginSwitch,
     QemuLoadvmCommandAuthorization, QemuLoadvmCommandPurpose, QemuMappedQuantumShmemHotPath,
     QemuMappedQuantumShmemHotPathError, QemuNode, QemuNodeChannelError, QemuNodeChannels,
-    QemuNodeChild, QemuQmpMachineControlChannel, QemuQmpVmStateControlChannel,
-    QemuQuantumShmemConfig, QemuShmemHotPathChannel, QemuShutdownPolicy, QemuSpawnError, QmpError,
-    QmpTimeoutStream, complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
+    QemuNodeChild, QemuPreparedRunDirectory, QemuQmpMachineControlChannel,
+    QemuQmpVmStateControlChannel, QemuQuantumShmemConfig, QemuShmemHotPathChannel,
+    QemuShutdownPolicy, QemuSpawnError, QemuVmStateBinding, QmpError, QmpTimeoutStream,
+    complete_qemu_host_plugin_setup_with_plugin_setup_plan,
+    spawn_prepared_qemu_child_with_fds_in_directory_guarded,
+    spawn_qemu_child_with_fds_in_directory,
 };
 
 mod restore_cleanup;
@@ -61,6 +64,359 @@ where
         self.vmstate.resume_after_checkpoint()
     }
 
+    fn query_hot_fork_readiness(
+        &mut self,
+    ) -> Result<crate::QmpHotForkReadiness, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_readiness()
+    }
+
+    fn query_hot_fork_thread_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkThreadInventory, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_thread_inventory()
+    }
+
+    fn query_hot_fork_rcu_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkRcuInventory, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_rcu_inventory()
+    }
+
+    fn query_hot_fork_aio_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkAioInventory, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_aio_inventory()
+    }
+
+    fn query_hot_fork_aio_handler_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkAioHandlerInventory, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_aio_handler_inventory()
+    }
+
+    fn query_hot_fork_block_backend_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkBlockBackendInventory, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_block_backend_inventory()
+    }
+
+    fn query_hot_fork_plugin_resource_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkPluginResourceInventory, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_plugin_resource_inventory()
+    }
+
+    fn query_hot_fork_child_runtime(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildRuntimeState, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_child_runtime()
+    }
+
+    fn query_hot_fork_plugin_barrier(
+        &mut self,
+    ) -> Result<crate::QmpHotForkPluginBarrierState, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_plugin_barrier()
+    }
+
+    fn prepare_hot_fork_template(
+        &mut self,
+        block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.vmstate
+            .prepare_hot_fork_template(block_snapshot_bindings)
+    }
+
+    fn query_hot_fork_template(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_template()
+    }
+
+    fn prepare_hot_fork_template_barriers(
+        &mut self,
+        block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.vmstate
+            .prepare_hot_fork_template_barriers(block_snapshot_bindings)
+    }
+
+    fn abort_hot_fork_template(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.vmstate.abort_hot_fork_template()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn hot_fork(
+        &mut self,
+        request: crate::QmpHotForkRequest,
+    ) -> Result<crate::QmpHotForkState, crate::QemuHotForkCommandError> {
+        self.vmstate.hot_fork(request)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn query_hot_fork_child_process(
+        &mut self,
+        generation: u64,
+    ) -> Result<crate::QmpHotForkChildProcessState, crate::QemuNodeChannelError> {
+        self.vmstate
+            .query_hot_fork_child_process(generation)
+            .map_err(crate::QemuNodeChannelError::from)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn release_hot_fork_child_process(
+        &mut self,
+        generation: u64,
+    ) -> Result<crate::QmpHotForkChildProcessState, crate::QemuNodeChannelError> {
+        self.vmstate
+            .release_hot_fork_child_process(generation)
+            .map_err(crate::QemuNodeChannelError::from)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_child_process_contract(
+        &mut self,
+        names: &crate::QmpHotForkChildProcessContractNames,
+        cgroup: std::os::fd::BorrowedFd<'_>,
+        cgroup_procs: std::os::fd::BorrowedFd<'_>,
+        cancellation: std::os::fd::BorrowedFd<'_>,
+        identity: crate::QmpHotForkChildProcessContractIdentity,
+        template_generation: u64,
+    ) -> Result<crate::QmpHotForkChildProcessContractState, crate::QemuNodeChannelError> {
+        self.vmstate.install_hot_fork_child_process_contract(
+            names,
+            cgroup,
+            cgroup_procs,
+            cancellation,
+            identity,
+            template_generation,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn release_hot_fork_child_process_contract(
+        &mut self,
+        names: &crate::QmpHotForkChildProcessContractNames,
+        identity: crate::QmpHotForkChildProcessContractIdentity,
+    ) -> Result<crate::QmpHotForkChildProcessContractState, crate::QemuNodeChannelError> {
+        self.vmstate
+            .release_hot_fork_child_process_contract(names, identity)
+    }
+
+    fn query_hot_fork_child_process_contract(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildProcessContractState, crate::QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_child_process_contract()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_child_files(
+        &mut self,
+        files: &[crate::QmpHotForkChildFile],
+        descriptors: &[std::os::fd::BorrowedFd<'_>],
+        maximum_bytes: u64,
+        template_generation: u64,
+    ) -> Result<crate::QmpHotForkChildFilesState, crate::QemuNodeChannelError> {
+        self.vmstate.install_hot_fork_child_files(
+            files,
+            descriptors,
+            maximum_bytes,
+            template_generation,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn release_hot_fork_child_files(
+        &mut self,
+        generation: u64,
+    ) -> Result<crate::QmpHotForkChildFilesState, crate::QemuNodeChannelError> {
+        self.vmstate.release_hot_fork_child_files(generation)
+    }
+
+    fn query_hot_fork_child_files(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildFilesState, crate::QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_child_files()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_private_ring_descriptor(
+        &mut self,
+        name: &crate::QmpDescriptorName,
+        descriptor: std::os::fd::BorrowedFd<'_>,
+        identity: crucible_shmem::SetupRegionBackingIdentity,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate
+            .install_hot_fork_private_ring_descriptor(name, descriptor, identity)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn close_hot_fork_private_ring_descriptor(
+        &mut self,
+        name: &crate::QmpDescriptorName,
+        identity: crucible_shmem::SetupRegionBackingIdentity,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate
+            .close_hot_fork_private_ring_descriptor(name, identity)
+    }
+
+    fn query_hot_fork_private_rings(
+        &mut self,
+    ) -> Result<crate::QmpHotForkPrivateRingState, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_private_rings()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_plugin_endpoints(
+        &mut self,
+        control_name: &crate::QmpDescriptorName,
+        control: std::os::fd::BorrowedFd<'_>,
+        wake_name: &crate::QmpDescriptorName,
+        wake: std::os::fd::BorrowedFd<'_>,
+        identity: crate::QmpHotForkPluginEndpointIdentity,
+        private_ring_generation: u64,
+    ) -> Result<crate::QmpHotForkPluginEndpointState, QemuNodeChannelError> {
+        self.vmstate.install_hot_fork_plugin_endpoints(
+            control_name,
+            control,
+            wake_name,
+            wake,
+            identity,
+            private_ring_generation,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn close_hot_fork_plugin_endpoints(
+        &mut self,
+        control_name: &crate::QmpDescriptorName,
+        wake_name: &crate::QmpDescriptorName,
+        identity: crate::QmpHotForkPluginEndpointIdentity,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate
+            .close_hot_fork_plugin_endpoints(control_name, wake_name, identity)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_child_diagnostics(
+        &mut self,
+        name: &crate::QmpDescriptorName,
+        descriptor: std::os::fd::BorrowedFd<'_>,
+        socket_cookie: u64,
+        template_generation: u64,
+    ) -> Result<crate::QmpHotForkChildDiagnosticState, QemuNodeChannelError> {
+        self.vmstate.install_hot_fork_child_diagnostics(
+            name,
+            descriptor,
+            socket_cookie,
+            template_generation,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn close_hot_fork_child_diagnostics(
+        &mut self,
+        name: &crate::QmpDescriptorName,
+        socket_cookie: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate
+            .close_hot_fork_child_diagnostics(name, socket_cookie)
+    }
+
+    fn query_hot_fork_child_diagnostics(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildDiagnosticState, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_child_diagnostics()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_child_qmp(
+        &mut self,
+        name: &crate::QmpDescriptorName,
+        descriptor: std::os::fd::BorrowedFd<'_>,
+        socket_cookie: u64,
+        template_generation: u64,
+    ) -> Result<crate::QmpHotForkChildQmpState, QemuNodeChannelError> {
+        self.vmstate.install_hot_fork_child_qmp(
+            name,
+            descriptor,
+            socket_cookie,
+            template_generation,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn close_hot_fork_child_qmp(
+        &mut self,
+        name: &crate::QmpDescriptorName,
+        socket_cookie: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate.close_hot_fork_child_qmp(name, socket_cookie)
+    }
+
+    fn query_hot_fork_child_qmp(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildQmpState, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_child_qmp()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_child_console(
+        &mut self,
+        name: &crate::QmpDescriptorName,
+        descriptor: std::os::fd::BorrowedFd<'_>,
+        socket_cookie: u64,
+        template_generation: u64,
+    ) -> Result<crate::QmpHotForkChildConsoleState, QemuNodeChannelError> {
+        self.vmstate.install_hot_fork_child_console(
+            name,
+            descriptor,
+            socket_cookie,
+            template_generation,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn close_hot_fork_child_console(
+        &mut self,
+        name: &crate::QmpDescriptorName,
+        socket_cookie: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate
+            .close_hot_fork_child_console(name, socket_cookie)
+    }
+
+    fn query_hot_fork_child_console(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildConsoleState, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_child_console()
+    }
+
+    fn query_hot_fork_bottom_half_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkBottomHalfInventory, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_bottom_half_inventory()
+    }
+
+    fn query_hot_fork_mutex_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkMutexInventory, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_mutex_inventory()
+    }
+
+    fn query_hot_fork_timer_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTimerInventory, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_timer_inventory()
+    }
+
+    fn query_hot_fork_monitor_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkMonitorInventory, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_monitor_inventory()
+    }
+
     fn complete_terminal_lifecycle_exit(
         &mut self,
         action: crucible::ContentHash,
@@ -91,6 +447,10 @@ where
 
     fn quit(&mut self) -> Result<(), QemuNodeChannelError> {
         self.vmstate.quit().map(|_complete| ())
+    }
+
+    fn retire_process_scoped_endpoints_after_reap(&mut self) {
+        self.vmstate.retire_process_scoped_endpoints_after_reap();
     }
 
     fn activate_debug_guest(&mut self) -> Result<(), QemuNodeChannelError> {
@@ -202,6 +562,8 @@ pub enum QemuNodeFactoryError {
         primary: Box<QemuNodeFactoryError>,
         /// Independent force-kill/reap failure.
         cleanup: crate::QemuShutdownTargetError,
+        /// Nonduplicable direct-child handle retained after failed reap.
+        unreaped_child: Option<Box<QemuNodeChild>>,
     },
     /// Scheduler-facing Apache node continuation could not be restored.
     #[error("QEMU node continuation restore failed: {message}")]
@@ -279,6 +641,16 @@ pub enum QemuWarmRestoreLaunchError {
         /// Underlying node factory error.
         source: QemuNodeFactoryError,
     },
+    /// A post-spawn launch step failed and the direct child could not be reaped.
+    #[error("QEMU warm restore failed ({primary}); mandatory child reap also failed ({cleanup})")]
+    FailedCleanup {
+        /// Primary warm-restore launch failure.
+        primary: Box<QemuWarmRestoreLaunchError>,
+        /// Independent force-kill/reap failure.
+        cleanup: crate::QemuShutdownTargetError,
+        /// Nonduplicable direct-child handle retained after failed reap.
+        unreaped_child: Option<Box<QemuNodeChild>>,
+    },
 }
 
 impl QemuWarmRestoreLaunchError {
@@ -286,6 +658,27 @@ impl QemuWarmRestoreLaunchError {
         Self::Prime {
             context: context.to_owned(),
             source,
+        }
+    }
+
+    /// Extracts a direct child whose mandatory synchronous reap failed.
+    pub(crate) fn take_unreaped_child(&mut self) -> Option<QemuNodeChild> {
+        match self {
+            Self::Factory { source } => source.take_unreaped_child(),
+            Self::FailedCleanup { unreaped_child, .. } => unreaped_child.take().map(|child| *child),
+            _ => None,
+        }
+    }
+}
+
+impl QemuNodeFactoryError {
+    /// Extracts a direct child whose mandatory synchronous reap failed.
+    pub(crate) fn take_unreaped_child(&mut self) -> Option<QemuNodeChild> {
+        match self {
+            Self::FailedRestoreCleanup { unreaped_child, .. } => {
+                unreaped_child.take().map(|child| *child)
+            }
+            _ => None,
         }
     }
 }
@@ -570,25 +963,165 @@ where
     )
     .map_err(|source| QemuWarmRestoreLaunchError::Spawn { source })?;
     let (child, resources) = spawned.into_parts();
-    let setup = complete_qemu_host_plugin_setup(
+    let setup = match complete_qemu_host_plugin_setup_with_plugin_setup_plan(
         resources.into_setup_resources(),
         region_config,
         slot_index,
         command.fault_capability_requirement(),
-    )
-    .map_err(|source| QemuWarmRestoreLaunchError::HostSetup { source })?;
+        command.plugin_setup_plan(),
+    ) {
+        Ok(setup) => setup,
+        Err(source) => {
+            return Err(reap_failed_warm_restore_child(
+                child,
+                QemuWarmRestoreLaunchError::HostSetup { source },
+            ));
+        }
+    };
 
     // Release the boot barrier before connecting QMP; service block I/O during
     // priming so a block-capable guest's early probe cannot wedge the barrier.
-    prime_off_boot_barrier(
+    if let Err(error) = prime_off_boot_barrier(
         &setup,
         runtime.shmem_config.clone(),
         WARM_RESTORE_PRIME_TIMEOUT,
         service_prime_poll,
-    )?;
+    ) {
+        return Err(reap_failed_warm_restore_child(child, error));
+    }
 
-    let qmp = connect_qmp_with_wake_pulsing(&setup, &qmp.socket_path(run_directory))
-        .map_err(|source| QemuWarmRestoreLaunchError::QmpConnect { source })?;
+    let qmp = match connect_qmp_with_wake_pulsing(&setup, &qmp.socket_path(run_directory)) {
+        Ok(qmp) => qmp,
+        Err(source) => {
+            return Err(reap_failed_warm_restore_child(
+                child,
+                QemuWarmRestoreLaunchError::QmpConnect { source },
+            ));
+        }
+    };
+    build_qemu_node_from_restored_checkpoint(child, setup, qmp, restore, runtime)
+        .map_err(|source| QemuWarmRestoreLaunchError::Factory { source })
+}
+
+/// Exact-root-bound inputs retained across one prepared warm restore.
+pub(crate) struct QemuPreparedWarmRestoreLaunch<'a> {
+    command: &'a QemuLaunchCommand,
+    run_directory: &'a QemuPreparedRunDirectory,
+    vmstate_binding: QemuVmStateBinding,
+    process_contract: &'a QemuChildProcessContract,
+    region_config: RegionConfig,
+    slot_index: u32,
+}
+
+impl<'a> QemuPreparedWarmRestoreLaunch<'a> {
+    /// Binds one prepared run directory to its process and shared-memory basis.
+    pub(crate) const fn new(
+        command: &'a QemuLaunchCommand,
+        run_directory: &'a QemuPreparedRunDirectory,
+        vmstate_binding: QemuVmStateBinding,
+        process_contract: &'a QemuChildProcessContract,
+        region_config: RegionConfig,
+        slot_index: u32,
+    ) -> Self {
+        Self {
+            command,
+            run_directory,
+            vmstate_binding,
+            process_contract,
+            region_config,
+            slot_index,
+        }
+    }
+}
+
+/// Spawns and restores QEMU from one guarded prepared run directory.
+///
+/// Exact-root launch rejects a missing or different VMState binding before
+/// shared-memory allocation or child spawn. A trusted baked-genesis or cached-
+/// ancestor launcher instead supplies a separately authenticated thin-artifact
+/// binding. Both paths use the child process contract to install cgroup
+/// membership, sticky cancellation, file-size defense, and unprivileged
+/// credentials in `pre_exec`.
+/// The prepared directory remains descriptor-pinned throughout launch and QMP
+/// socket resolution uses only its diagnostic path after guarded spawn has
+/// reauthenticated the retained directory, VMState inode, and any required
+/// root-overlay inode.
+///
+/// # Errors
+///
+/// Returns [`QemuWarmRestoreLaunchError`] when a required checkpoint-root
+/// binding is absent or changed, the guarded spawn contract rejects launch,
+/// plugin setup or priming fails, QMP cannot connect, or restored-node assembly
+/// fails.
+pub(crate) fn spawn_setup_and_restore_prepared_qemu_node_guarded<A, R>(
+    launch: QemuPreparedWarmRestoreLaunch<'_>,
+    restore: QemuNodeRestorePlan<'_>,
+    mut runtime: QemuNodeFactoryRuntime<A, R>,
+    service_prime_poll: impl FnMut(u64),
+) -> Result<QemuNode, QemuWarmRestoreLaunchError>
+where
+    A: SchedulerSendAuthorizer + 'static,
+    R: QemuHostIoRuntime + 'static,
+{
+    launch
+        .run_directory
+        .require_exact_launch_artifacts(launch.command, launch.vmstate_binding)
+        .map_err(|source| QemuWarmRestoreLaunchError::Spawn { source })?;
+    runtime.shmem_config.coverage = match launch.command.plugin_coverage() {
+        QemuLaunchPluginSwitch::Off => BasicBlockCoverageConfig::off(),
+        QemuLaunchPluginSwitch::On => BasicBlockCoverageConfig::on(),
+    };
+    let qmp = launch
+        .command
+        .qmp_channel()
+        .ok_or(QemuWarmRestoreLaunchError::MissingQmpChannel)?;
+    let allocation = RegionAllocation::new(launch.region_config)
+        .map_err(|source| QemuWarmRestoreLaunchError::RegionLayout { source })?;
+    let spawned = spawn_prepared_qemu_child_with_fds_in_directory_guarded(
+        launch.command,
+        launch.run_directory,
+        allocation.layout().region_size,
+        launch.process_contract,
+    )
+    .map_err(|source| QemuWarmRestoreLaunchError::Spawn { source })?;
+    let (child, resources) = spawned.into_parts();
+    let setup = match complete_qemu_host_plugin_setup_with_plugin_setup_plan(
+        resources.into_setup_resources(),
+        launch.region_config,
+        launch.slot_index,
+        launch.command.fault_capability_requirement(),
+        launch.command.plugin_setup_plan(),
+    ) {
+        Ok(setup) => setup,
+        Err(source) => {
+            return Err(reap_failed_warm_restore_child(
+                child,
+                QemuWarmRestoreLaunchError::HostSetup { source },
+            ));
+        }
+    };
+
+    if let Err(error) = prime_off_boot_barrier(
+        &setup,
+        runtime.shmem_config.clone(),
+        WARM_RESTORE_PRIME_TIMEOUT,
+        service_prime_poll,
+    ) {
+        return Err(reap_failed_warm_restore_child(child, error));
+    }
+
+    let qmp = match connect_qmp_with_wake_pulsing(
+        &setup,
+        &qmp.socket_path(launch.run_directory.path()),
+    ) {
+        Ok(qmp) => qmp,
+        Err(source) => {
+            return Err(reap_failed_warm_restore_child(
+                child,
+                QemuWarmRestoreLaunchError::QmpConnect { source },
+            ));
+        }
+    };
     build_qemu_node_from_restored_checkpoint(child, setup, qmp, restore, runtime)
         .map_err(|source| QemuWarmRestoreLaunchError::Factory { source })
 }
@@ -653,7 +1186,7 @@ where
 }
 
 fn build_qemu_node_from_restored_checkpoint_inner<S, A, R>(
-    mut child: QemuNodeChild,
+    child: QemuNodeChild,
     setup: QemuHostPluginSetup,
     mut qmp: QemuQmpVmStateControlChannel<S>,
     restore: QemuNodeRestorePlan<'_>,
@@ -681,12 +1214,12 @@ where
         node_continuation,
     } = restore;
     if let Err(error) = validate_runtime_restore_authorization(authorization, admission) {
-        return Err(reap_failed_restore_child(&mut child, error));
+        return Err(reap_failed_restore_child(child, error));
     }
     if let Some(continuation) = node_continuation {
         if continuation.execution_binding() != checkpoint.id {
             return Err(reap_failed_restore_child(
-                &mut child,
+                child,
                 QemuNodeFactoryError::NodeContinuationRestore {
                     message: String::from(
                         "node continuation belongs to another VMState checkpoint",
@@ -696,7 +1229,7 @@ where
         }
         if continuation.next_fault_command_sequence() < 2 {
             return Err(reap_failed_restore_child(
-                &mut child,
+                child,
                 QemuNodeFactoryError::NodeContinuationRestore {
                     message: String::from(
                         "restored fault-command sequence precedes setup capability admission",
@@ -707,7 +1240,7 @@ where
         let calibration = continuation.logical_time_calibration();
         if calibration.logical_icount != continuation.last_observed_time().ticks {
             return Err(reap_failed_restore_child(
-                &mut child,
+                child,
                 QemuNodeFactoryError::NodeContinuationRestore {
                     message: String::from(
                         "logical-time calibration does not match the scheduler continuation boundary",
@@ -717,7 +1250,7 @@ where
         }
         if let Err(source) = calibration.offset() {
             return Err(reap_failed_restore_child(
-                &mut child,
+                child,
                 QemuNodeFactoryError::NodeContinuationRestore {
                     message: source.to_string(),
                 },
@@ -726,13 +1259,13 @@ where
     }
     let mut prepared_setup = match prepare_qemu_node_setup(setup, shmem_config, send_authorizer) {
         Ok(prepared_setup) => prepared_setup,
-        Err(error) => return Err(reap_failed_restore_child(&mut child, error)),
+        Err(error) => return Err(reap_failed_restore_child(child, error)),
     };
     let no_block_checkpoint = crate::QemuHostIoCheckpoint::without_devices(checkpoint.id);
     let host_io_checkpoint = host_io_checkpoint.unwrap_or(&no_block_checkpoint);
     if let Err(source) = host_io_runtime.quiesce_for_checkpoint(async_policy.qmp_command_timeout) {
         return Err(reap_failed_restore_child(
-            &mut child,
+            child,
             QemuNodeFactoryError::CheckpointPause { source },
         ));
     }
@@ -746,7 +1279,7 @@ where
         host_io_runtime.validate_host_io_checkpoint(checkpoint.id, host_io_checkpoint)
     {
         return Err(reap_failed_restore_child(
-            &mut child,
+            child,
             QemuNodeFactoryError::HostIoCheckpointValidation { source },
         ));
     }
@@ -758,11 +1291,11 @@ where
                 release: Box::new(release),
             },
         };
-        return Err(reap_failed_restore_child(&mut child, primary));
+        return Err(reap_failed_restore_child(child, primary));
     }
     if let Err(release) = host_io_runtime.clear_checkpoint_pause_while_stopped() {
         return Err(reap_failed_restore_child(
-            &mut child,
+            child,
             QemuNodeFactoryError::CheckpointPauseRelease { source: release },
         ));
     }
@@ -798,7 +1331,7 @@ where
         // A post-load error may not return until the fresh child is killed and
         // synchronously reaped; destructor cleanup has a bounded fallback and
         // is deliberately insufficient for this realization transaction.
-        return Err(reap_failed_restore_child(&mut child, error));
+        return Err(reap_failed_restore_child(child, error));
     }
 
     let restored_calibration = node_continuation.map_or(
@@ -818,11 +1351,11 @@ where
         });
     let restore_generation = match restore_generation {
         Ok(generation) => generation,
-        Err(error) => return Err(reap_failed_restore_child(&mut child, error)),
+        Err(error) => return Err(reap_failed_restore_child(child, error)),
     };
     if let Err(source) = prepared_setup.plugin_control.signal_plugin_wake() {
         return Err(reap_failed_restore_child(
-            &mut child,
+            child,
             QemuNodeFactoryError::LogicalTimeRestoreBoundary {
                 stage: "signal stopped control wake",
                 message: source.to_string(),
@@ -841,7 +1374,7 @@ where
             });
         let boundary_acknowledged = match boundary_acknowledged {
             Ok(acknowledged) => acknowledged,
-            Err(error) => return Err(reap_failed_restore_child(&mut child, error)),
+            Err(error) => return Err(reap_failed_restore_child(child, error)),
         };
         if boundary_acknowledged {
             acknowledged = true;
@@ -850,7 +1383,7 @@ where
         if attempt + 1 < polls {
             if let Err(source) = prepared_setup.plugin_control.signal_plugin_wake() {
                 return Err(reap_failed_restore_child(
-                    &mut child,
+                    child,
                     QemuNodeFactoryError::LogicalTimeRestoreBoundary {
                         stage: "wake plugin",
                         message: source.to_string(),
@@ -862,7 +1395,7 @@ where
     }
     if !acknowledged {
         return Err(reap_failed_restore_child(
-            &mut child,
+            child,
             QemuNodeFactoryError::LogicalTimeRestoreBoundary {
                 stage: "await acknowledgement",
                 message: format!(
@@ -874,9 +1407,21 @@ where
     }
     if let Err(source) = qmp.confirm_restore_boundary_pause() {
         return Err(reap_failed_restore_child(
-            &mut child,
+            child,
             QemuNodeFactoryError::LogicalTimeRestoreBoundary {
                 stage: "confirm native stop",
+                message: source.to_string(),
+            },
+        ));
+    }
+    if let Err(source) = prepared_setup
+        .shmem_hot_path
+        .commit_coverage_restore_generation(restore_generation)
+    {
+        return Err(reap_failed_restore_child(
+            child,
+            QemuNodeFactoryError::LogicalTimeRestoreBoundary {
+                stage: "commit coverage generation reset",
                 message: source.to_string(),
             },
         ));
@@ -900,13 +1445,13 @@ where
         let primary = QemuNodeFactoryError::NodeContinuationRestore {
             message: source.to_string(),
         };
-        return Err(reap_failed_restored_node(&mut node, primary));
+        return Err(reap_failed_restored_node(node, primary));
     }
     if resume_guest && let Err(source) = node.resume_after_restore() {
         let primary = QemuNodeFactoryError::CheckpointResume {
             source: QemuNodeChannelError::new("resume restored QEMU", source.to_string()),
         };
-        return Err(reap_failed_restored_node(&mut node, primary));
+        return Err(reap_failed_restored_node(node, primary));
     }
     Ok(node)
 }
@@ -925,11 +1470,17 @@ where
     let ready_markers = setup.ready_markers().clone();
     let exact_fault_manifests = setup.exact_fault_manifests();
     let next_fault_command_sequence = setup.next_fault_command_sequence();
+    let selectable_catalog_plan = setup.selectable_catalog_plan().clone();
 
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| QemuNodeFactoryError::SetupRegionMap { source })?;
-    let shmem_hot_path = QemuMappedQuantumShmemHotPath::new(shmem_config, region, send_authorizer)
-        .map_err(|source| QemuNodeFactoryError::MappedHotPath { source })?;
+    let shmem_hot_path = QemuMappedQuantumShmemHotPath::new_with_selectable_catalog_plan(
+        shmem_config,
+        region,
+        send_authorizer,
+        selectable_catalog_plan,
+    )
+    .map_err(|source| QemuNodeFactoryError::MappedHotPath { source })?;
 
     Ok(PreparedQemuNodeSetup {
         plugin_control: setup,

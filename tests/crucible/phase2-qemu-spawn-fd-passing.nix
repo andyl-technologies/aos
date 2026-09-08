@@ -22,6 +22,7 @@
   spawnLib = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-qemu/src/spawn.rs;
+    siblingTests = true;
   };
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;

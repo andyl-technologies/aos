@@ -1,0 +1,133 @@
+diff --git a/chardev/char-socket.c b/chardev/char-socket.c
+index ae024581f..d37d6bf4a 100644
+--- a/chardev/char-socket.c
++++ b/chardev/char-socket.c
+@@ -739,6 +739,45 @@ static void update_ioc_handlers(SocketChardev *s)
+     g_source_attach(s->hup_source, chr->gcontext);
+ }
+ 
++/* Names the failing operation on the child's diagnostics stream (stderr). */
++static void tcp_chr_hot_fork_report_child_stage(const char *stage, int result)
++{
++    fprintf(stderr, "crucible hot-fork socket child %s failed: result %d\n",
++            stage, result);
++}
++
++/*
++ * Reports the socket state a stale basis was compared against, with the
++ * chardev write lock held, so the child's diagnostics stream names what
++ * moved.
++ */
++static void tcp_chr_hot_fork_report_child_basis(
++    const QemuChrSocketHotForkChildBasis *basis, const char *stage)
++{
++    Chardev *chr = basis->chardev;
++    SocketChardev *s = SOCKET_CHARDEV(chr);
++
++    fprintf(stderr,
++            "crucible hot-fork socket child %s is stale: source-pid-is-self "
++            "%d attempted %d disposed %d attached %d input-held %d "
++            "frontend %d context %d state %d listen %d ioc %d sioc %d "
++            "ioc-matches %d sioc-matches %d read-source %d hup-source %d "
++            "generation %d replacement-ioc %d replacement-sioc %d "
++            "yank %d\n",
++            stage, basis->source_pid == getpid(), basis->attempted,
++            basis->inherited_disposed, basis->replacement_attached,
++            basis->input_held,
++            basis->frontend && chr->be == basis->frontend,
++            basis->context == chr->gcontext, s->state, s->is_listen,
++            s->ioc != NULL, s->sioc != NULL, s->ioc == basis->ioc,
++            s->sioc == basis->sioc, chr->gsource != NULL,
++            s->hup_source != NULL,
++            basis->connection_generation ==
++                s->crucible_hot_fork_connection_generation,
++            s->ioc == basis->replacement_ioc,
++            s->sioc == basis->replacement_sioc, s->registered_yank);
++}
++
+ static bool tcp_chr_hot_fork_child_is_held_locked(
+     const QemuChrSocketHotForkChildBasis *basis, GMainContext *context)
+ {
+@@ -807,6 +846,7 @@ int qemu_chr_socket_hot_fork_release_child_input(
+     s = SOCKET_CHARDEV(chr);
+     qemu_mutex_lock(&chr->chr_write_lock);
+     if (!tcp_chr_hot_fork_child_is_held_locked(basis, context)) {
++        tcp_chr_hot_fork_report_child_basis(basis, "held basis at release");
+         result = -ESTALE;
+         goto out;
+     }
+@@ -1170,13 +1210,6 @@ static int tcp_chr_hot_fork_validate_replacement_fd(
+ #endif
+ }
+ 
+-/* Names the failing operation on the child's diagnostics stream (stderr). */
+-static void tcp_chr_hot_fork_report_child_stage(const char *stage, int result)
+-{
+-    fprintf(stderr, "crucible hot-fork socket child %s failed: result %d\n",
+-            stage, result);
+-}
+-
+ int qemu_chr_socket_hot_fork_reconstruct_child_held(
+     QemuChrSocketHotForkChildBasis *basis, int replacement_fd,
+     uint64_t expected_socket_cookie)
+@@ -1236,10 +1269,13 @@ int qemu_chr_socket_hot_fork_reconstruct_child_held(
+     if (basis->source_pid == getpid() || basis->attempted ||
+         !tcp_chr_hot_fork_child_basis_objects_match_locked(
+             basis, chardev, basis->frontend, basis->context)) {
++        tcp_chr_hot_fork_report_child_basis(basis, "inherited basis");
+         result = -ESTALE;
+         goto out;
+     }
+     if (replacement_fd == s->sioc->fd) {
++        tcp_chr_hot_fork_report_child_stage("replacement is the inherited "
++                                            "socket", -EINVAL);
+         result = -EINVAL;
+         goto out;
+     }
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index c3d8492cf..8258d929b 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -678,18 +678,42 @@ static int crucible_hot_fork_reinitialize_child_console(
+         console_generation != crucible_hot_fork_console_stage.generation ||
+         !basis->prepared || !basis->chardev || !basis->frontend ||
+         !basis->context) {
++        /* Written to the child's diagnostics stream, like the QMP stages. */
++        fprintf(stderr,
++                "crucible hot-fork console child basis is stale: staged %d "
++                "fd %d/%d cookie-match %d template-generation-match %d "
++                "generation-match %d prepared %d chardev %d frontend %d "
++                "context %d\n",
++                crucible_hot_fork_console_stage.staged, retained_fd,
++                crucible_hot_fork_console_stage.fd,
++                socket_cookie == crucible_hot_fork_console_stage.socket_cookie,
++                template_generation ==
++                    crucible_hot_fork_console_stage.template_generation,
++                console_generation ==
++                    crucible_hot_fork_console_stage.generation,
++                basis ? basis->prepared : 0,
++                basis ? basis->chardev != NULL : 0,
++                basis ? basis->frontend != NULL : 0,
++                basis ? basis->context != NULL : 0);
+         return -ESTALE;
+     }
+ 
+     result = qemu_chr_socket_hot_fork_reconstruct_child_held(
+         basis, retained_fd, socket_cookie);
+     if (result != 0) {
++        fprintf(stderr, "crucible hot-fork console child reconstruct "
++                "failed: result %d\n", result);
+         return result;
+     }
+     result = qemu_chr_socket_hot_fork_release_child_input(
+         basis, basis->context);
+     if (result != 0 || !basis->attempted || !basis->inherited_disposed ||
+         !basis->replacement_attached || basis->input_held) {
++        fprintf(stderr, "crucible hot-fork console child release failed: "
++                "result %d attempted %d disposed %d attached %d "
++                "input-held %d\n", result, basis->attempted,
++                basis->inherited_disposed, basis->replacement_attached,
++                basis->input_held);
+         return result != 0 ? result : -EPROTO;
+     }
+ 

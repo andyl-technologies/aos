@@ -15,6 +15,9 @@ pub(super) const BUILT_IN_CORPUS_SELFTEST_GATES: &[&str] = &[
 // crucible-lint: allow rust-allow -- the test harness builds the binary root without invoking its imported entrypoint.
 #[cfg_attr(test, allow(dead_code))]
 pub(super) fn main() {
+    if run_internal_canonical_planner_worker() {
+        return;
+    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {
@@ -32,6 +35,31 @@ pub(super) fn main() {
     }
 }
 
+fn run_internal_canonical_planner_worker() -> bool {
+    let mut arguments = std::env::args_os().skip(1);
+    if arguments.next().as_deref()
+        != Some(std::ffi::OsStr::new(
+            crucible_daemon::CANONICAL_PLANNER_WORKER_ARGUMENT,
+        ))
+    {
+        return false;
+    }
+    if arguments.next().is_some() {
+        eprintln!("crucible: canonical planner worker received an unexpected argument");
+        std::process::exit(2);
+    }
+
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    if let Err(error) =
+        crucible_daemon::serve_canonical_planner_process_once(stdin.lock(), stdout.lock())
+    {
+        eprintln!("crucible: canonical planner worker failed: {error}");
+        std::process::exit(3);
+    }
+    true
+}
+
 pub(super) fn cli_parse_error_exit_code(error: &clap::Error) -> i32 {
     match error.kind() {
         clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => 0,
@@ -42,6 +70,12 @@ pub(super) fn cli_parse_error_exit_code(error: &clap::Error) -> i32 {
 pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let thin_plan = plan_cli_invocation(cli);
     execute_cli_dispatch_plan(&thin_plan, &mut NullOperationRecorder)?;
+    if let Commands::Campaign(args) = &cli.command {
+        return run_campaign_invocation(cli, args);
+    }
+    if let Commands::Store(args) = &cli.command {
+        return run_store_invocation(cli, args);
+    }
     let mut seed_entropy = OsSeedEntropySource;
     let ergonomics_plan =
         plan_determinism_ergonomics(cli, &ProcessSeedEnvironment, &mut seed_entropy)?;
@@ -52,6 +86,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let run_plan = match &cli.command {
         Commands::Run(args) => {
             let mut plan = plan_run_invocation(args, &run_store_root)?;
+            plan.campaign_deployment = cli.campaign_deployment.clone();
             if let Some(seed) = run_identity_seed {
                 pin_run_invocation_seed(&mut plan, seed)?;
             }
@@ -66,6 +101,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let save_plan = match &cli.command {
         Commands::Save(args) => {
             let mut plan = plan_save_invocation(args, &run_store_root, &cli.artifact_dir)?;
+            plan.run_plan.campaign_deployment = cli.campaign_deployment.clone();
             if let Some(seed) = run_identity_seed {
                 pin_run_invocation_seed(&mut plan.run_plan, seed)?;
             }
@@ -439,7 +475,9 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         | Commands::Search(_)
         | Commands::Fuzz(_)
         | Commands::Debug(_)
-        | Commands::Serve(_) => Ok(()),
+        | Commands::Serve(_)
+        | Commands::Campaign(_)
+        | Commands::Store(_) => Ok(()),
         Commands::Completions(args) => {
             write_completions(args.shell, &mut io::stdout());
             Ok(())

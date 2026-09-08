@@ -1,8 +1,8 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 1d52484d1..65df26295 100644
+index e42af457b..f58c6c7ac 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -2163,7 +2163,10 @@ struct qemu_plugin_rr_cursor {
+@@ -2181,7 +2181,10 @@ struct qemu_plugin_rr_cursor {
   * RR owner or from an exact deterministic plugin boundary, where QEMU reads
   * the authoritative committed cursor even if no vCPU is current. At exact
   * raw-zero genesis before the first selection, it reports the canonical next
@@ -15,10 +15,10 @@ index 1d52484d1..65df26295 100644
   * active, or if the cursor is not inside that quantum. The read is
   * side-effect-free with respect to guest state.
 diff --git a/plugins/api.c b/plugins/api.c
-index efce95bb0..186d36655 100644
+index 31bd76b30..087fb9858 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -694,6 +694,7 @@ int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
+@@ -706,6 +706,7 @@ int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
  int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
  {
      CPUState *cpu = current_cpu;
@@ -26,7 +26,7 @@ index efce95bb0..186d36655 100644
      bool exact_boundary = qemu_plugin_crucible_exact_boundary_active();
      uint64_t current_vcpu = icount_crucible_rr_current_vcpu();
      uint64_t cursor_position = exact_boundary ?
-@@ -703,6 +704,21 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
+@@ -715,6 +716,21 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
      int num_vcpus = qemu_plugin_num_vcpus();
      bool genesis_cursor = exact_boundary && current_vcpu == UINT64_MAX &&
          icount_get_raw_observed() == 0 && cursor_position == 0;

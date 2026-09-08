@@ -1,0 +1,177 @@
+diff --git a/include/qemu/thread.h b/include/qemu/thread.h
+index 22ecfe881..20af47398 100644
+--- a/include/qemu/thread.h
++++ b/include/qemu/thread.h
+@@ -205,6 +205,8 @@ void qemu_thread_naming(bool enable);
+ typedef enum QemuThreadHotForkDisposition {
+     QEMU_THREAD_HOT_FORK_COORDINATOR,
+     QEMU_THREAD_HOT_FORK_UNCLASSIFIED,
++    QEMU_THREAD_HOT_FORK_UNCLASSIFIED_RCU,
++    QEMU_THREAD_HOT_FORK_UNCLASSIFIED_AIO,
+ } QemuThreadHotForkDisposition;
+ 
+ typedef struct QemuThreadHotForkInventoryEntry {
+@@ -230,6 +232,14 @@ typedef struct QemuThreadHotForkInventory {
+ void qemu_thread_hot_fork_inventory(QemuThreadHotForkInventory *inventory);
+ void qemu_thread_hot_fork_inventory_destroy(
+     QemuThreadHotForkInventory *inventory);
++
++/*
++ * Assign the calling qemu_thread_create() thread to one known subsystem.
++ * These owner-specific unclassified values remain fork blockers until that
++ * subsystem supplies a quiescence barrier and child reinitializer.
++ */
++void qemu_thread_hot_fork_set_current_disposition(
++    QemuThreadHotForkDisposition disposition);
+ #endif
+ 
+ struct Notifier;
+diff --git a/iothread.c b/iothread.c
+index 589bcd355..4b48d2b2b 100644
+--- a/iothread.c
++++ b/iothread.c
+@@ -40,6 +40,10 @@ static void *iothread_run(void *opaque)
+ {
+     IOThread *iothread = opaque;
+ 
++#ifdef CONFIG_POSIX
++    qemu_thread_hot_fork_set_current_disposition(
++        QEMU_THREAD_HOT_FORK_UNCLASSIFIED_AIO);
++#endif
+     rcu_register_thread();
+     /*
+      * g_main_context_push_thread_default() must be called before anything
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 53c5f1d18..302311e05 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -136,7 +136,7 @@ qmp_query_crucible_hot_fork_thread_inventory(Error **errp)
+         g_new0(CrucibleHotForkThreadInventory, 1);
+ 
+     (void)errp;
+-    report->schema_version = 1;
++    report->schema_version = 2;
+ #ifdef CONFIG_POSIX
+     QemuThreadHotForkInventory inventory;
+     CrucibleHotForkThreadList **tail = &report->threads;
+@@ -166,6 +166,16 @@ qmp_query_crucible_hot_fork_thread_inventory(Error **errp)
+                 CRUCIBLE_HOT_FORK_THREAD_DISPOSITION_UNCLASSIFIED;
+             unclassified_count++;
+             break;
++        case QEMU_THREAD_HOT_FORK_UNCLASSIFIED_RCU:
++            thread->disposition =
++                CRUCIBLE_HOT_FORK_THREAD_DISPOSITION_UNCLASSIFIED_RCU;
++            unclassified_count++;
++            break;
++        case QEMU_THREAD_HOT_FORK_UNCLASSIFIED_AIO:
++            thread->disposition =
++                CRUCIBLE_HOT_FORK_THREAD_DISPOSITION_UNCLASSIFIED_AIO;
++            unclassified_count++;
++            break;
+         default:
+             g_assert_not_reached();
+         }
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index b76e3d577..788145ae6 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -187,10 +187,17 @@
+ # @unclassified: active QEMU-created thread without a child disposition;
+ #     this is never fork-ready
+ #
++# @unclassified-rcu: the RCU callback worker, still without an accepted
++#     subsystem barrier or child reinitializer
++#
++# @unclassified-aio: an AIO-context worker, still without an accepted
++#     subsystem barrier or child reinitializer
++#
+ # Since: 10.0 (Crucible downstream extension)
+ ##
+ { 'enum': 'CrucibleHotForkThreadDisposition',
+-  'data': [ 'coordinator', 'unclassified' ] }
++  'data': [ 'coordinator', 'unclassified', 'unclassified-rcu',
++            'unclassified-aio' ] }
+ 
+ ##
+ # @CrucibleHotForkThread:
+@@ -223,7 +230,7 @@
+ # sorted by @thread-id.  This report is audit evidence and does not by itself
+ # acknowledge child reinitialization or authorize a fork.
+ #
+-# @schema-version: inventory contract version, currently 1
++# @schema-version: inventory contract version, currently 2
+ #
+ # @generation: monotonic process-local register/unregister/disposition counter
+ #
+diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
+index 2af870d3e..fcd85b60e 100644
+--- a/util/qemu-thread-posix.c
++++ b/util/qemu-thread-posix.c
+@@ -515,6 +515,7 @@ static size_t qemu_hot_fork_thread_count;
+ static size_t qemu_hot_fork_thread_overflow;
+ static uint64_t qemu_hot_fork_thread_generation;
+ static int64_t qemu_hot_fork_coordinator_thread_id;
++static __thread QemuHotForkThreadRecord *qemu_hot_fork_current_thread;
+ 
+ static QemuHotForkThreadRecord *qemu_hot_fork_thread_register(
+     const char *name, int mode, QemuThreadHotForkDisposition disposition)
+@@ -551,6 +552,28 @@ static QemuHotForkThreadRecord *qemu_hot_fork_thread_register(
+     return record;
+ }
+ 
++void qemu_thread_hot_fork_set_current_disposition(
++    QemuThreadHotForkDisposition disposition)
++{
++    QemuHotForkThreadRecord *record = qemu_hot_fork_current_thread;
++    int err;
++
++    assert(record);
++    assert(disposition != QEMU_THREAD_HOT_FORK_COORDINATOR);
++    err = pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++    if (err) {
++        error_exit(err, __func__);
++    }
++    if (record->disposition != disposition) {
++        record->disposition = disposition;
++        qemu_hot_fork_thread_generation++;
++    }
++    err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    if (err) {
++        error_exit(err, __func__);
++    }
++}
++
+ static void qemu_hot_fork_thread_unregister(void *opaque)
+ {
+     QemuHotForkThreadRecord *record = opaque;
+@@ -572,6 +595,7 @@ static void qemu_hot_fork_thread_unregister(void *opaque)
+     if (err) {
+         error_exit(err, __func__);
+     }
++    qemu_hot_fork_current_thread = NULL;
+     g_free(record);
+ }
+ 
+@@ -703,6 +727,7 @@ static void *qemu_thread_start(void *args)
+     QEMU_TSAN_ANNOTATE_THREAD_NAME(qemu_thread_args->name);
+     hot_fork_record = qemu_hot_fork_thread_register(
+         qemu_thread_args->name, mode, QEMU_THREAD_HOT_FORK_UNCLASSIFIED);
++    qemu_hot_fork_current_thread = hot_fork_record;
+     g_free(qemu_thread_args->name);
+     g_free(qemu_thread_args);
+ 
+diff --git a/util/rcu.c b/util/rcu.c
+index fa32c942e..938a7da4e 100644
+--- a/util/rcu.c
++++ b/util/rcu.c
+@@ -256,6 +256,10 @@ static void *call_rcu_thread(void *opaque)
+ {
+     struct rcu_head *node;
+ 
++#ifdef CONFIG_POSIX
++    qemu_thread_hot_fork_set_current_disposition(
++        QEMU_THREAD_HOT_FORK_UNCLASSIFIED_RCU);
++#endif
+     rcu_register_thread();
+ 
+     for (;;) {

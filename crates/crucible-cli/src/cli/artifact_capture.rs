@@ -23,6 +23,8 @@ pub(crate) struct LiveQemuArtifactEvidence {
     pub(crate) fingerprint_stream: Vec<u8>,
     /// Exact resolved-effect work items, including pass outcomes.
     pub(crate) resolved_effect_trace: Option<Vec<u8>>,
+    /// Authenticated choice records required by a campaign-owned replay.
+    pub(crate) campaign_replay_closure: Option<Vec<u8>>,
     /// Typed samples encoded into both the component and top-level artifact.
     pub(crate) fingerprint_samples: Vec<VerifyFingerprintSample>,
 }
@@ -60,6 +62,24 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
             "live-QEMU reproduction artifacts do not yet support interactive control recipes",
         ));
     }
+    let campaign_replay_closure = match (
+        recipe.producer,
+        report.execution_owner,
+        report.campaign_replay_closure.as_ref(),
+    ) {
+        ("campaign-run", RunExecutionOwner::Campaign, Some(closure)) => Some(closure.clone()),
+        ("campaign-run", _, _) => {
+            return Err(artifact_error(
+                "campaign-run artifact capture requires campaign-owned execution and its authenticated replay closure",
+            ));
+        }
+        (_, RunExecutionOwner::Session, None) => None,
+        (_, _, _) => {
+            return Err(artifact_error(
+                "session-owned artifact producers cannot carry a campaign replay closure",
+            ));
+        }
+    };
     let terminal = report.terminal_configuration.as_ref().ok_or_else(|| {
         artifact_error("live-QEMU artifact capture requires a terminal configuration")
     })?;
@@ -134,6 +154,7 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
         fingerprint_stream,
         fingerprint_samples,
         resolved_effect_trace: report.resolved_effect_trace.clone(),
+        campaign_replay_closure,
     })
 }
 
@@ -202,6 +223,14 @@ pub(crate) fn live_qemu_artifact_payloads(
             name: String::from("resolved-effect-trace.cbor"),
             media_type: String::from(LIVE_QEMU_RESOLVED_EFFECT_TRACE_MEDIA_TYPE),
             bytes: trace.clone(),
+        });
+    }
+    if let Some(closure) = &evidence.campaign_replay_closure {
+        payloads.push(ReproductionArtifactComponentPayload {
+            kind: String::from("campaign_replay_closure"),
+            name: String::from("campaign-replay-closure.bin"),
+            media_type: String::from(CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE),
+            bytes: closure.clone(),
         });
     }
     payloads
@@ -432,6 +461,7 @@ pub(crate) fn verify_reproduction_artifact_bytes_with_components(
 pub(crate) fn run_failure_reproduction_artifact_bytes(
     seed: u64,
     backend: Option<&ResolvedLocalBackend>,
+    producer: &str,
     run_plan: &RunInvocationPlan,
     report: &RunWorkflowReport,
     canonical_log: &[CanonicalLogEntry],
@@ -464,7 +494,7 @@ pub(crate) fn run_failure_reproduction_artifact_bytes(
     if matches!(backend, Some(ResolvedLocalBackend::Qemu { .. })) {
         let live_evidence = live_qemu_artifact_evidence_from_run(
             LiveQemuArtifactRecipe {
-                producer: "run",
+                producer,
                 terminal_condition: run_plan.terminal_condition,
                 max_virtual_time_ticks: run_plan.max_virtual_time_ticks,
                 max_quanta: run_plan.max_quanta,

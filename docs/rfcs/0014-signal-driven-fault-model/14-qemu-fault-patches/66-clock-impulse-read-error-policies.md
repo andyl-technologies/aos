@@ -1,6 +1,6 @@
 # Patch 0115: clock impulse and read-error policies
 
-Patch `0115-crucible-clock-impulse-read-error-policies.patch` completes the
+Patch `0134-crucible-clock-impulse-read-error-policies.patch` completes the
 closed guest-clock policy surface for impulse transforms and x86 TSC source
 failure.
 

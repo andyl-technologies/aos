@@ -115,6 +115,7 @@ in
           test -f "$source_root/build/aos/stdenv/phases.nix"
           test -f "$source_root/build/aos/pkgs/default.nix"
           test -f "$source_root/build/aos/pkgs/emulation/qemu.nix"
+          test -z "$(find "$source_root/build/aos" -type f -regex '.*/core[.][0-9]+' -print -quit)"
           test -f "$source_root/build/aos/crates/crucible-shmem/include/crucible_shmem_abi.h"
           export NIX_STATE_DIR="$TMPDIR/nix-state"
           mkdir -p "$NIX_STATE_DIR/profiles"
@@ -131,6 +132,14 @@ in
                 meson = null;
                 ninja = null;
                 python3 = "/aos-python3";
+                stdenv = {
+                  isCross = false;
+                  hostPlatform = {
+                    isDarwin = false;
+                    constraints.cpu = "x86_64";
+                  };
+                };
+                buildPackages = {};
                 setuptools = null;
                 distlib = null;
                 glib = null;
@@ -143,8 +152,6 @@ in
                 libgcrypt = null;
                 gnutls = null;
                 fuse3 = null;
-                stdenv = {isCross = false;};
-                buildPackages = null;
                 pname = "qemu-crucible";
                 enablePlugins = true;
                 applyCruciblePatches = true;

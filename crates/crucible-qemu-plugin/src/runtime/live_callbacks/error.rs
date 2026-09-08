@@ -55,6 +55,12 @@ pub enum LiveVcpuTimeCallbackError {
         /// Newly requested shared-memory restore generation.
         requested_generation: u32,
     },
+    /// The coverage producer could not reset at the authenticated restore boundary.
+    #[error("live coverage restore reset failed: {source}")]
+    CoverageRestore {
+        /// Underlying coverage reset failure.
+        source: crate::CoverageError,
+    },
     /// The live white-box adapter failed preflight, registration, or dispatch.
     #[error("live white-box callback failed: {message}")]
     WhiteboxCallback {

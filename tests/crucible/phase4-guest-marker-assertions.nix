@@ -8,9 +8,18 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  propertiesModel = builtins.readFile ../../crates/crucible/src/model/plan_properties.rs;
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
-  guestMarkerAssertionsTest = builtins.readFile ../../crates/crucible/tests/guest_marker_assertions.rs;
+  propertiesModel = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/model/plan_properties.rs;
+  };
+  crateRoot = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
+  guestMarkerAssertionsTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/guest_marker_assertions.rs;
+  };
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 

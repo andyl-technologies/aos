@@ -1,0 +1,216 @@
+diff --git a/include/qemu/crucible-hot-fork-child.h b/include/qemu/crucible-hot-fork-child.h
+index 91ffe4a23..91abbdf4a 100644
+--- a/include/qemu/crucible-hot-fork-child.h
++++ b/include/qemu/crucible-hot-fork-child.h
+@@ -374,4 +374,18 @@ int qemu_crucible_hot_fork_apply_child_resources(
+     const QemuCrucibleHotForkSharedMapping *shared_mappings,
+     size_t shared_mapping_count);
+ 
++/*
++ * Sub-step of the child resource plan application that is running or that
++ * failed, for the child's exit status: 1 plan preconditions, 2 descriptor
++ * table, 3 child runtime start, 4 plugin reinitialization, 5 child runtime
++ * finish, 6 QMP reinitialization, 7 console reinitialization, 8 mapping
++ * table verification, 9 runtime disposition, 10 diagnostics target.  The
++ * preconditions of the application record 11 arguments, 12 plan and
++ * descriptor transaction state, 13 runtime transaction state, 14 plan
++ * validity, 15 plugin reinitializer, 16 QMP reinitializer, 17 console
++ * reinitializer.  Zero means the application has not started.
++ */
++void qemu_crucible_hot_fork_note_child_detail(unsigned int detail);
++unsigned int qemu_crucible_hot_fork_child_detail(void);
++
+ #endif
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index d7caa7f41..387bba11b 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -4596,11 +4596,19 @@ static int crucible_hot_fork_apply_child_process_contract(
+  * release, 13 child file installation, 14 empty native release, 15 monitor
+  * input release.  Guarded launch gives the child no stderr; the source
+  * reports the status through crucible-hot-fork-child-process after reap.
++ * A failure inside step 9 instead exits with the detail base plus the
++ * sub-step recorded by the child resource plan application.
+  */
+ #define CRUCIBLE_HOT_FORK_CHILD_STEP_EXIT_BASE 64
++#define CRUCIBLE_HOT_FORK_CHILD_DETAIL_EXIT_BASE 96
+ 
+ static void G_NORETURN crucible_hot_fork_child_exit_at(unsigned int step)
+ {
++    unsigned int detail = qemu_crucible_hot_fork_child_detail();
++
++    if (step == 9 && detail != 0) {
++        _exit(CRUCIBLE_HOT_FORK_CHILD_DETAIL_EXIT_BASE + detail);
++    }
+     _exit(CRUCIBLE_HOT_FORK_CHILD_STEP_EXIT_BASE + step);
+ }
+ 
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 9d4f4b212..d586ab6f0 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1958,7 +1958,14 @@
+ #     resources, 7 console resources, 8 resource plan completion, 9 runtime
+ #     resource plan, 10 plugin activation, 11 vCPU restart, 12 block barrier
+ #     release, 13 child file installation, 14 empty native release, 15 monitor
+-#     input release).
++#     input release).  A failure inside step 9 exits with 96 plus its sub-step
++#     (1 plan preconditions, 2 descriptor table, 3 child runtime start,
++#     4 plugin reinitialization, 5 child runtime finish, 6 QMP
++#     reinitialization, 7 console reinitialization, 8 mapping table
++#     verification, 9 runtime disposition, 10 diagnostics target; its
++#     preconditions report 11 arguments, 12 plan and descriptor transaction
++#     state, 13 runtime transaction state, 14 plan validity, 15 plugin
++#     reinitializer, 16 QMP reinitializer, 17 console reinitializer).
+ #
+ # @retained: true for query and false after successful release
+ #
+diff --git a/system/crucible-hot-fork-plugin-child.c b/system/crucible-hot-fork-plugin-child.c
+index ae2a492c8..a4fab2323 100644
+--- a/system/crucible-hot-fork-plugin-child.c
++++ b/system/crucible-hot-fork-plugin-child.c
+@@ -1896,6 +1896,7 @@ static int crucible_hot_fork_reinitialize_child_subsystems(void *opaque)
+     QemuCrucibleHotForkChildSubsystemReinitializers *reinitializers = opaque;
+     int result;
+ 
++    qemu_crucible_hot_fork_note_child_detail(3);
+     if (reinitializers->runtime) {
+         result = qemu_crucible_hot_fork_start_child_runtime(
+             reinitializers->runtime, reinitializers->descriptors);
+@@ -1903,11 +1904,13 @@ static int crucible_hot_fork_reinitialize_child_subsystems(void *opaque)
+             return result;
+         }
+     }
++    qemu_crucible_hot_fork_note_child_detail(4);
+     result = qemu_crucible_hot_fork_reinitialize_plugin_child(
+         reinitializers->plugin);
+     if (result != 0) {
+         return result;
+     }
++    qemu_crucible_hot_fork_note_child_detail(5);
+     if (reinitializers->runtime) {
+         result = qemu_crucible_hot_fork_finish_child_runtime(
+             reinitializers->runtime, reinitializers->descriptors);
+@@ -1915,11 +1918,13 @@ static int crucible_hot_fork_reinitialize_child_subsystems(void *opaque)
+             return result;
+         }
+     }
++    qemu_crucible_hot_fork_note_child_detail(6);
+     result = qemu_crucible_hot_fork_reinitialize_qmp_child(
+         reinitializers->qmp);
+     if (result != 0) {
+         return result;
+     }
++    qemu_crucible_hot_fork_note_child_detail(7);
+     return qemu_crucible_hot_fork_reinitialize_console_child(
+         reinitializers->console);
+ }
+@@ -1943,16 +1948,19 @@ static int crucible_hot_fork_apply_child_resource_plan(
+     };
+     int result;
+ 
++    qemu_crucible_hot_fork_note_child_detail(11);
+     if (!resources || !transaction || !verify_descriptors ||
+         !plugin_reinitializer || !qmp_reinitializer ||
+         !console_reinitializer) {
+         return -EINVAL;
+     }
++    qemu_crucible_hot_fork_note_child_detail(12);
+     if (!resources->sealed || resources->building || resources->attempted ||
+         resources->applied || !transaction->active ||
+         transaction->parent_pid <= 1 || transaction->child_pid != getpid()) {
+         return -EPERM;
+     }
++    qemu_crucible_hot_fork_note_child_detail(13);
+     if (runtime &&
+         (!runtime->active || !runtime->child_prepared ||
+          runtime->child_workers_started || runtime->child_reconstructed ||
+@@ -1960,15 +1968,25 @@ static int crucible_hot_fork_apply_child_resource_plan(
+          runtime->rcu.parent_process_id != transaction->parent_pid)) {
+         return -EPERM;
+     }
++    qemu_crucible_hot_fork_note_child_detail(14);
+     if (!crucible_hot_fork_child_resource_plan_valid(
+-            resources, &resources->plugin) ||
+-        !qemu_crucible_hot_fork_plugin_child_reinitializer_prepared_for(
+-            plugin_reinitializer, &resources->plugin.plan) ||
+-        !qemu_crucible_hot_fork_qmp_child_reinitializer_prepared_for(
++            resources, &resources->plugin)) {
++        return -EINVAL;
++    }
++    qemu_crucible_hot_fork_note_child_detail(15);
++    if (!qemu_crucible_hot_fork_plugin_child_reinitializer_prepared_for(
++            plugin_reinitializer, &resources->plugin.plan)) {
++        return -EINVAL;
++    }
++    qemu_crucible_hot_fork_note_child_detail(16);
++    if (!qemu_crucible_hot_fork_qmp_child_reinitializer_prepared_for(
+             qmp_reinitializer, &resources->qmp,
+             qmp_reinitializer->runtime,
+-            qmp_reinitializer->runtime_opaque) ||
+-        !qemu_crucible_hot_fork_console_child_reinitializer_prepared_for(
++            qmp_reinitializer->runtime_opaque)) {
++        return -EINVAL;
++    }
++    qemu_crucible_hot_fork_note_child_detail(17);
++    if (!qemu_crucible_hot_fork_console_child_reinitializer_prepared_for(
+             console_reinitializer, &resources->console,
+             console_reinitializer->runtime,
+             console_reinitializer->runtime_opaque)) {
+@@ -1982,12 +2000,16 @@ static int crucible_hot_fork_apply_child_resource_plan(
+         verify_descriptors, descriptor_opaque,
+         crucible_hot_fork_reinitialize_child_subsystems, &reinitializers,
+         resources->shared_mappings, resources->shared_mapping_count);
++    if (result == 0) {
++        qemu_crucible_hot_fork_note_child_detail(9);
++    }
+     if (result == 0 && runtime &&
+         (runtime->active || !runtime->child_reconstructed ||
+          runtime->async.active)) {
+         result = -EPROTO;
+     }
+     if (result == 0) {
++        qemu_crucible_hot_fork_note_child_detail(10);
+         result = crucible_hot_fork_authenticate_diagnostics_target(
+             &resources->diagnostics);
+     }
+diff --git a/util/crucible-hot-fork-child.c b/util/crucible-hot-fork-child.c
+index 2a8d27888..c31434f4a 100644
+--- a/util/crucible-hot-fork-child.c
++++ b/util/crucible-hot-fork-child.c
+@@ -15,6 +15,19 @@
+ /* Composed description of the step and basis that last blocked a runtime. */
+ static char qemu_crucible_hot_fork_runtime_blocker[320];
+ 
++/* Sub-step of the child resource plan application; see the header. */
++static unsigned int qemu_crucible_hot_fork_child_detail_value;
++
++void qemu_crucible_hot_fork_note_child_detail(unsigned int detail)
++{
++    qemu_crucible_hot_fork_child_detail_value = detail;
++}
++
++unsigned int qemu_crucible_hot_fork_child_detail(void)
++{
++    return qemu_crucible_hot_fork_child_detail_value;
++}
++
+ const char *qemu_crucible_hot_fork_runtime_transaction_blocker(void)
+ {
+     return qemu_crucible_hot_fork_runtime_blocker[0] ?
+@@ -1230,6 +1243,7 @@ int qemu_crucible_hot_fork_apply_child_resources(
+         return -EINVAL;
+     }
+ 
++    qemu_crucible_hot_fork_note_child_detail(2);
+     result = qemu_crucible_hot_fork_apply_descriptor_table(
+         transaction, replacements, replacement_count,
+         retained_fds, retained_fd_count,
+@@ -1248,6 +1262,7 @@ int qemu_crucible_hot_fork_apply_child_resources(
+     }
+     transaction->child_reinitialized = true;
+ 
++    qemu_crucible_hot_fork_note_child_detail(8);
+     return qemu_crucible_hot_fork_verify_mapping_table(
+         transaction, shared_mappings, shared_mapping_count);
+ }

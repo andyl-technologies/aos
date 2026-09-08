@@ -122,6 +122,14 @@ impl RegionAllocation {
         let accelerator_entries = (0..accelerator_entry_count)
             .map(|_| AcceleratorEntry::default())
             .collect::<Vec<_>>();
+        let selectable_reply_ring_headers = (0..layout.selectable_reply_ring_count)
+            .map(|_| RingHeader::new())
+            .collect::<Vec<_>>();
+        let selectable_reply_entry_count = usize::try_from(layout.selectable_reply_entry_count())
+            .map_err(|_| RegionLayoutError::GeometryOverflow)?;
+        let selectable_reply_entries = (0..selectable_reply_entry_count)
+            .map(|_| WhiteboxMarkerEntry::default())
+            .collect::<Vec<_>>();
 
         Ok(Self {
             header,
@@ -148,6 +156,8 @@ impl RegionAllocation {
             guest_introspection_entries,
             accelerator_ring_headers,
             accelerator_entries,
+            selectable_reply_ring_headers,
+            selectable_reply_entries,
             rings,
             layout,
         })
@@ -199,6 +209,18 @@ impl RegionAllocation {
     #[must_use]
     pub fn whitebox_marker_entries(&self) -> &[WhiteboxMarkerEntry] {
         &self.whitebox_marker_entries
+    }
+
+    /// Returns the host-to-plugin selectable-reply ring headers.
+    #[must_use]
+    pub fn selectable_reply_ring_headers(&self) -> &[RingHeader] {
+        &self.selectable_reply_ring_headers
+    }
+
+    /// Returns the host-to-plugin selectable-reply entry storage.
+    #[must_use]
+    pub fn selectable_reply_entries(&self) -> &[WhiteboxMarkerEntry] {
+        &self.selectable_reply_entries
     }
 
     /// Returns the host-to-plugin fault command ring headers.

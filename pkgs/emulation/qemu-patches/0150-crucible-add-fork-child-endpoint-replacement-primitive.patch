@@ -1,0 +1,433 @@
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 0ab11430d..4f148e271 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -3839,14 +3839,17 @@ S: Maintained
+ F: docs/devel/tcg-plugins.rst
+ F: plugins/
+ F: include/qemu/crucible-fault.h
++F: include/qemu/crucible-hot-fork-child.h
+ F: include/qemu/crucible-hot-fork-plugin.h
+ F: plugins/crucible-fault-instruction.c
+ F: plugins/crucible-fault-memory.c
++F: tests/unit/test-crucible-hot-fork-child.c
+ F: tests/tcg/plugins/crucible-instruction.c
+ F: tests/tcg/plugins/
+ F: tests/functional/test_aarch64_tcg_plugins.py
+ F: contrib/plugins/
+ F: scripts/qemu-plugin-symbols.py
++F: util/crucible-hot-fork-child.c
+ 
+ AArch64 TCG target
+ M: Richard Henderson <richard.henderson@linaro.org>
+diff --git a/include/qemu/crucible-hot-fork-child.h b/include/qemu/crucible-hot-fork-child.h
+new file mode 100644
+index 000000000..e08d5749b
+--- /dev/null
++++ b/include/qemu/crucible-hot-fork-child.h
+@@ -0,0 +1,48 @@
++/*
++ * Crucible hot-fork child resource disposition helpers
++ *
++ * Copyright (c) Andyl, Inc.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef QEMU_CRUCIBLE_HOT_FORK_CHILD_H
++#define QEMU_CRUCIBLE_HOT_FORK_CHILD_H
++
++#define QEMU_CRUCIBLE_HOT_FORK_ENDPOINT_REPLACEMENT_COUNT 2
++
++typedef struct QemuCrucibleHotForkDescriptorReplacement {
++    int source_fd;
++    int target_fd;
++} QemuCrucibleHotForkDescriptorReplacement;
++
++typedef int (*QemuCrucibleHotForkDescriptorVerifier)(void *opaque);
++
++/**
++ * qemu_crucible_hot_fork_replace_endpoint_descriptors() - replace endpoints
++ * @replacements: exact control and wake source-to-target descriptor pairs
++ * @verify: callback that authenticates both installed target descriptions
++ * @opaque: caller-owned value passed to @verify
++ *
++ * Replaces exactly two pairwise-distinct destination descriptor slots while
++ * retaining rollback copies of both prior descriptions.  Destination
++ * close-on-exec flags are preserved.  The replacement commits only after
++ * @verify accepts both installed descriptions; successful commit closes the
++ * source descriptors, while a rejected verification restores both targets and
++ * leaves both sources open.
++ *
++ * This primitive is intended only for the quiescent immediate child of an
++ * authenticated Crucible fork transaction.  The caller must terminate that
++ * child after any error.  In particular, -EUCLEAN means that rollback could
++ * not be proved and no descriptor may be used.
++ *
++ * Returns zero after exact replacement and verification, a negative errno-style
++ * status when validation, replacement, or verification fails with complete
++ * rollback, or -EUCLEAN when rollback itself is incomplete.
++ */
++int qemu_crucible_hot_fork_replace_endpoint_descriptors(
++    const QemuCrucibleHotForkDescriptorReplacement
++        replacements[QEMU_CRUCIBLE_HOT_FORK_ENDPOINT_REPLACEMENT_COUNT],
++    QemuCrucibleHotForkDescriptorVerifier verify,
++    void *opaque);
++
++#endif
+diff --git a/tests/unit/meson.build b/tests/unit/meson.build
+index d5248ae51..de6d508bb 100644
+--- a/tests/unit/meson.build
++++ b/tests/unit/meson.build
+@@ -141,6 +141,9 @@ if have_system
+     'test-vmstate': [migration, io],
+     'test-yank': ['socket-helpers.c', qom, io, chardev]
+   }
++  if host_os == 'linux'
++    tests += {'test-crucible-hot-fork-child': []}
++  endif
+   if config_host_data.get('CONFIG_INOTIFY1')
+     tests += {'test-util-filemonitor': []}
+   endif
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+new file mode 100644
+index 000000000..ba2fcab5f
+--- /dev/null
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -0,0 +1,188 @@
++/*
++ * Crucible hot-fork child resource disposition tests
++ *
++ * Copyright (c) Andyl, Inc.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++
++#include <sys/eventfd.h>
++#include <sys/socket.h>
++
++#include "qemu/crucible-hot-fork-child.h"
++
++typedef struct EndpointVerification {
++    int control_fd;
++    int wake_fd;
++    int expected_control_peer;
++    int result;
++} EndpointVerification;
++
++static int verify_endpoint_pair(void *opaque)
++{
++    EndpointVerification *verification = opaque;
++    char byte = 'c';
++    uint64_t wake = 1;
++
++    g_assert_cmpint(send(verification->control_fd, &byte, 1, 0), ==, 1);
++    g_assert_cmpint(recv(verification->expected_control_peer, &byte, 1, 0),
++                    ==, 1);
++    g_assert_cmpint(write(verification->wake_fd, &wake, sizeof(wake)), ==,
++                    sizeof(wake));
++    return verification->result;
++}
++
++static void test_exact_replacement(void)
++{
++    int old_control[2];
++    int new_control[2];
++    int old_wake;
++    int new_wake;
++    QemuCrucibleHotForkDescriptorReplacement replacements[2];
++    EndpointVerification verification;
++    uint64_t wake = 0;
++    char byte = 'n';
++
++    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, old_control), ==, 0);
++    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, new_control), ==, 0);
++    old_wake = eventfd(0, EFD_CLOEXEC);
++    new_wake = eventfd(0, EFD_CLOEXEC);
++    g_assert_cmpint(old_wake, >=, 0);
++    g_assert_cmpint(new_wake, >=, 0);
++    g_assert_cmpint(fcntl(old_control[0], F_SETFD, FD_CLOEXEC), ==, 0);
++
++    replacements[0] = (QemuCrucibleHotForkDescriptorReplacement) {
++        .source_fd = new_control[0],
++        .target_fd = old_control[0],
++    };
++    replacements[1] = (QemuCrucibleHotForkDescriptorReplacement) {
++        .source_fd = new_wake,
++        .target_fd = old_wake,
++    };
++    verification = (EndpointVerification) {
++        .control_fd = old_control[0],
++        .wake_fd = old_wake,
++        .expected_control_peer = new_control[1],
++    };
++
++    g_assert_cmpint(qemu_crucible_hot_fork_replace_endpoint_descriptors(
++                        replacements, verify_endpoint_pair, &verification),
++                    ==, 0);
++    g_assert_cmpint(fcntl(new_control[0], F_GETFD), ==, -1);
++    g_assert_cmpint(errno, ==, EBADF);
++    g_assert_cmpint(fcntl(new_wake, F_GETFD), ==, -1);
++    g_assert_cmpint(errno, ==, EBADF);
++    g_assert_cmpint(fcntl(old_control[0], F_GETFD) & FD_CLOEXEC, ==,
++                    FD_CLOEXEC);
++    g_assert_cmpint(fcntl(old_wake, F_GETFD) & FD_CLOEXEC, ==, FD_CLOEXEC);
++
++    g_assert_cmpint(send(new_control[1], &byte, 1, 0), ==, 1);
++    g_assert_cmpint(recv(old_control[0], &byte, 1, 0), ==, 1);
++    g_assert_cmpint(read(old_wake, &wake, sizeof(wake)), ==, sizeof(wake));
++    g_assert_cmpuint(wake, ==, 1);
++
++    close(old_control[0]);
++    close(old_control[1]);
++    close(new_control[1]);
++    close(old_wake);
++}
++
++static void test_verifier_rejection_rolls_back(void)
++{
++    int old_control[2];
++    int new_control[2];
++    int old_wake;
++    int new_wake;
++    QemuCrucibleHotForkDescriptorReplacement replacements[2];
++    EndpointVerification verification;
++    uint64_t wake = 1;
++    char byte = 'o';
++
++    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, old_control), ==, 0);
++    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, new_control), ==, 0);
++    old_wake = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
++    new_wake = eventfd(0, EFD_CLOEXEC);
++    g_assert_cmpint(old_wake, >=, 0);
++    g_assert_cmpint(new_wake, >=, 0);
++
++    replacements[0] = (QemuCrucibleHotForkDescriptorReplacement) {
++        .source_fd = new_control[0],
++        .target_fd = old_control[0],
++    };
++    replacements[1] = (QemuCrucibleHotForkDescriptorReplacement) {
++        .source_fd = new_wake,
++        .target_fd = old_wake,
++    };
++    verification = (EndpointVerification) {
++        .control_fd = old_control[0],
++        .wake_fd = old_wake,
++        .expected_control_peer = new_control[1],
++        .result = -EUCLEAN,
++    };
++
++    g_assert_cmpint(qemu_crucible_hot_fork_replace_endpoint_descriptors(
++                        replacements, verify_endpoint_pair, &verification),
++                    ==, -EPROTO);
++    g_assert_cmpint(fcntl(new_control[0], F_GETFD), >=, 0);
++    g_assert_cmpint(fcntl(new_wake, F_GETFD), >=, 0);
++
++    g_assert_cmpint(send(old_control[1], &byte, 1, 0), ==, 1);
++    g_assert_cmpint(recv(old_control[0], &byte, 1, 0), ==, 1);
++    g_assert_cmpint(write(old_wake, &wake, sizeof(wake)), ==, 8);
++    wake = 0;
++    g_assert_cmpint(read(old_wake, &wake, sizeof(wake)), ==, 8);
++    g_assert_cmpuint(wake, ==, 1);
++
++    close(old_control[0]);
++    close(old_control[1]);
++    close(new_control[0]);
++    close(new_control[1]);
++    close(old_wake);
++    close(new_wake);
++}
++
++static int accept_endpoints(void *opaque)
++{
++    (void)opaque;
++    return 0;
++}
++
++static void test_invalid_shape_is_unchanged(void)
++{
++    int descriptors[4];
++    QemuCrucibleHotForkDescriptorReplacement replacements[2];
++
++    for (size_t index = 0; index < G_N_ELEMENTS(descriptors); index++) {
++        descriptors[index] = eventfd(0, EFD_CLOEXEC);
++        g_assert_cmpint(descriptors[index], >=, 0);
++    }
++    replacements[0] = (QemuCrucibleHotForkDescriptorReplacement) {
++        .source_fd = descriptors[0],
++        .target_fd = descriptors[1],
++    };
++    replacements[1] = (QemuCrucibleHotForkDescriptorReplacement) {
++        .source_fd = descriptors[2],
++        .target_fd = descriptors[1],
++    };
++
++    g_assert_cmpint(qemu_crucible_hot_fork_replace_endpoint_descriptors(
++                        replacements, accept_endpoints, NULL),
++                    ==, -EINVAL);
++    for (size_t index = 0; index < G_N_ELEMENTS(descriptors); index++) {
++        g_assert_cmpint(fcntl(descriptors[index], F_GETFD), >=, 0);
++        close(descriptors[index]);
++    }
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/crucible/hot-fork-child/exact-replacement",
++                    test_exact_replacement);
++    g_test_add_func("/crucible/hot-fork-child/verifier-rollback",
++                    test_verifier_rejection_rolls_back);
++    g_test_add_func("/crucible/hot-fork-child/invalid-shape",
++                    test_invalid_shape_is_unchanged);
++    return g_test_run();
++}
+diff --git a/util/crucible-hot-fork-child.c b/util/crucible-hot-fork-child.c
+new file mode 100644
+index 000000000..826d4278c
+--- /dev/null
++++ b/util/crucible-hot-fork-child.c
+@@ -0,0 +1,131 @@
++/*
++ * Crucible hot-fork child resource disposition helpers
++ *
++ * Copyright (c) Andyl, Inc.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++
++#include "qemu/crucible-hot-fork-child.h"
++
++typedef struct QemuCrucibleHotForkSavedDescriptor {
++    int fd;
++    int target_fd;
++    int target_flags;
++} QemuCrucibleHotForkSavedDescriptor;
++
++static int crucible_hot_fork_dup3_flags(int descriptor_flags)
++{
++    return (descriptor_flags & FD_CLOEXEC) != 0 ? O_CLOEXEC : 0;
++}
++
++static bool crucible_hot_fork_descriptors_are_distinct(
++    const QemuCrucibleHotForkDescriptorReplacement replacements[2])
++{
++    int descriptors[4] = {
++        replacements[0].source_fd,
++        replacements[0].target_fd,
++        replacements[1].source_fd,
++        replacements[1].target_fd,
++    };
++
++    for (size_t index = 0; index < G_N_ELEMENTS(descriptors); index++) {
++        if (descriptors[index] < 0 ||
++            fcntl(descriptors[index], F_GETFD) < 0) {
++            return false;
++        }
++        for (size_t other = index + 1;
++             other < G_N_ELEMENTS(descriptors); other++) {
++            if (descriptors[index] == descriptors[other]) {
++                return false;
++            }
++        }
++    }
++    return true;
++}
++
++static bool crucible_hot_fork_restore_descriptors(
++    QemuCrucibleHotForkSavedDescriptor saved[2])
++{
++    bool complete = true;
++
++    for (size_t index = 0; index < 2; index++) {
++        if (saved[index].fd < 0) {
++            continue;
++        }
++        if (dup3(saved[index].fd, saved[index].target_fd,
++                 crucible_hot_fork_dup3_flags(saved[index].target_flags)) <
++            0) {
++            complete = false;
++        }
++    }
++    return complete;
++}
++
++int qemu_crucible_hot_fork_replace_endpoint_descriptors(
++    const QemuCrucibleHotForkDescriptorReplacement replacements[2],
++    QemuCrucibleHotForkDescriptorVerifier verify,
++    void *opaque)
++{
++    QemuCrucibleHotForkSavedDescriptor saved[2] = {
++        { .fd = -1 },
++        { .fd = -1 },
++    };
++    int result = 0;
++
++    if (!replacements || !verify ||
++        !crucible_hot_fork_descriptors_are_distinct(replacements)) {
++        return -EINVAL;
++    }
++
++    for (size_t index = 0; index < 2; index++) {
++        saved[index].target_fd = replacements[index].target_fd;
++        saved[index].target_flags =
++            fcntl(replacements[index].target_fd, F_GETFD);
++        if (saved[index].target_flags < 0) {
++            result = -errno;
++            goto out;
++        }
++        saved[index].fd = fcntl(replacements[index].target_fd,
++                                F_DUPFD_CLOEXEC, 3);
++        if (saved[index].fd < 0) {
++            result = -errno;
++            goto out;
++        }
++    }
++
++    for (size_t index = 0; index < 2; index++) {
++        if (dup3(replacements[index].source_fd,
++                 replacements[index].target_fd,
++                 crucible_hot_fork_dup3_flags(saved[index].target_flags)) <
++            0) {
++            result = -errno;
++            goto rollback;
++        }
++    }
++
++    result = verify(opaque);
++    if (result != 0) {
++        if (result > 0 || result == -EUCLEAN) {
++            result = -EPROTO;
++        }
++        goto rollback;
++    }
++
++    close(replacements[0].source_fd);
++    close(replacements[1].source_fd);
++    goto out;
++
++rollback:
++    if (!crucible_hot_fork_restore_descriptors(saved)) {
++        result = -EUCLEAN;
++    }
++out:
++    for (size_t index = 0; index < 2; index++) {
++        if (saved[index].fd >= 0) {
++            close(saved[index].fd);
++        }
++    }
++    return result;
++}
+diff --git a/util/meson.build b/util/meson.build
+index 780b5977a..37fe86a51 100644
+--- a/util/meson.build
++++ b/util/meson.build
+@@ -73,6 +73,7 @@ if have_system
+   util_ss.add(files('crc-ccitt.c'))
+   util_ss.add(when: gio, if_true: files('dbus.c'))
+   if host_os == 'linux'
++    util_ss.add(files('crucible-hot-fork-child.c'))
+     util_ss.add(files('userfaultfd.c'))
+   endif
+ endif

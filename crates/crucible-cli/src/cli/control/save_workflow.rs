@@ -210,6 +210,8 @@ where
     Ok(SaveWorkflowReport {
         run: RunWorkflowReport {
             status: BackendCommandStatus::Passed,
+            execution_owner: RunExecutionOwner::Session,
+            campaign_replay_closure: None,
             created_state: format!("{:?}", created.state).to_ascii_lowercase(),
             final_state,
             outcome: Some(OutcomeKind::Passed),

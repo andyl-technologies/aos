@@ -1,0 +1,590 @@
+diff --git a/include/qemu/timer.h b/include/qemu/timer.h
+index abd2204f3..0f2bfa9de 100644
+--- a/include/qemu/timer.h
++++ b/include/qemu/timer.h
+@@ -89,6 +89,13 @@ struct QEMUTimer {
+     QEMUTimer *next;
+     int attributes;
+     int scale;
++
++    /* Crucible hot-fork pending-timer inventory state. */
++    uint64_t crucible_hot_fork_id;
++    bool crucible_hot_fork_pending;
++    int64_t crucible_hot_fork_expire_time_ns;
++    QEMUTimer *crucible_hot_fork_next;
++    QEMUTimer **crucible_hot_fork_prev;
+ };
+ 
+ extern QEMUTimerListGroup main_loop_tlg;
+@@ -690,6 +697,38 @@ void timer_mod(QEMUTimer *ts, int64_t expire_timer);
+  */
+ void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time);
+ 
++#ifdef CONFIG_POSIX
++#define QEMU_TIMER_HOT_FORK_INVENTORY_MAX 65536
++
++typedef struct QemuTimerHotForkInventoryEntry {
++    uint64_t timer_id;
++    uint64_t timer_list_id;
++    QEMUClockType clock_type;
++    int64_t expire_time_ns;
++    uint32_t scale;
++    uint32_t attributes;
++    bool pending;
++    bool callback_active;
++} QemuTimerHotForkInventoryEntry;
++
++typedef struct QemuTimerHotForkInventory {
++    uint64_t generation;
++    size_t entry_count;
++    bool overflowed;
++    QemuTimerHotForkInventoryEntry *entries;
++} QemuTimerHotForkInventory;
++
++/*
++ * Capture every pending timer and executing timer callback.  Timers that are
++ * initialized but neither scheduled nor executing are inert and intentionally
++ * absent.  This is an observation, not a retained timer barrier or fork
++ * authorization.
++ */
++void qemu_timer_hot_fork_inventory(QemuTimerHotForkInventory *inventory);
++void qemu_timer_hot_fork_inventory_destroy(
++    QemuTimerHotForkInventory *inventory);
++#endif
++
+ /**
+  * timer_pending:
+  * @ts: the timer
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 74f5b0fae..e1699ddef 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -22,6 +22,7 @@
+ #include "block/aio.h"
+ #include "qemu/rcu.h"
+ #include "qemu/thread.h"
++#include "qemu/timer.h"
+ #include "system/system.h"
+ #include "system/cpu-timers.h"
+ #include "system/kvm.h"
+@@ -376,6 +377,78 @@ qmp_query_crucible_hot_fork_mutex_inventory(Error **errp)
+ #endif
+ }
+ 
++static CrucibleHotForkTimerClock
++crucible_hot_fork_timer_clock(QEMUClockType type)
++{
++    switch (type) {
++    case QEMU_CLOCK_REALTIME:
++        return CRUCIBLE_HOT_FORK_TIMER_CLOCK_REALTIME;
++    case QEMU_CLOCK_VIRTUAL:
++        return CRUCIBLE_HOT_FORK_TIMER_CLOCK_VIRTUAL;
++    case QEMU_CLOCK_HOST:
++        return CRUCIBLE_HOT_FORK_TIMER_CLOCK_HOST;
++    case QEMU_CLOCK_VIRTUAL_RT:
++        return CRUCIBLE_HOT_FORK_TIMER_CLOCK_VIRTUAL_REALTIME;
++    default:
++        abort();
++    }
++}
++
++CrucibleHotForkTimerInventory *
++qmp_query_crucible_hot_fork_timer_inventory(Error **errp)
++{
++#ifdef CONFIG_POSIX
++    CrucibleHotForkTimerInventory *report =
++        g_new0(CrucibleHotForkTimerInventory, 1);
++    QemuTimerHotForkInventory inventory;
++    CrucibleHotForkTimerList **tail = &report->timers;
++    uint64_t previous_timer_id = 0;
++    bool valid_entries = true;
++    size_t index;
++
++    (void)errp;
++    report->schema_version = 1;
++    qemu_timer_hot_fork_inventory(&inventory);
++    report->generation = inventory.generation;
++    for (index = 0; index < inventory.entry_count; index++) {
++        QemuTimerHotForkInventoryEntry *source = &inventory.entries[index];
++        CrucibleHotForkTimer *timer = g_new0(CrucibleHotForkTimer, 1);
++        CrucibleHotForkTimerList *node =
++            g_new0(CrucibleHotForkTimerList, 1);
++
++        timer->timer_id = source->timer_id;
++        timer->timer_list_id = source->timer_list_id;
++        timer->clock = crucible_hot_fork_timer_clock(source->clock_type);
++        timer->expire_time_ns = source->expire_time_ns;
++        timer->scale = source->scale;
++        timer->attributes = source->attributes;
++        timer->pending = source->pending;
++        timer->callback_active = source->callback_active;
++        if (source->timer_id == 0 || source->timer_list_id == 0 ||
++            (index != 0 && source->timer_id <= previous_timer_id) ||
++            source->scale == 0 ||
++            (!source->pending && !source->callback_active) ||
++            (source->pending != (source->expire_time_ns >= 0))) {
++            valid_entries = false;
++        }
++        previous_timer_id = source->timer_id;
++        report->pending_timers += source->pending;
++        report->active_callbacks += source->callback_active;
++        node->value = timer;
++        *tail = node;
++        tail = &node->next;
++    }
++    report->timer_count = inventory.entry_count;
++    report->overflowed = inventory.overflowed;
++    report->complete = !inventory.overflowed && valid_entries;
++    qemu_timer_hot_fork_inventory_destroy(&inventory);
++    return report;
++#else
++    error_setg(errp, "Crucible hot-fork timer inventory requires POSIX");
++    return NULL;
++#endif
++}
++
+ void qmp_cont(Error **errp)
+ {
+     BlockBackend *blk;
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 9dd7338ed..1f73e0a64 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -534,6 +534,107 @@
+ { 'command': 'query-crucible-hot-fork-mutex-inventory',
+   'returns': 'CrucibleHotForkMutexInventory' }
+ 
++##
++# @CrucibleHotForkTimerClock:
++#
++# QEMU clock driving one scheduled timer.
++#
++# @realtime: monotonic host real time
++#
++# @virtual: guest virtual time
++#
++# @host: host wall time
++#
++# @virtual-realtime: real time used for virtual-clock icount warp
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'enum': 'CrucibleHotForkTimerClock',
++  'data': [ 'realtime', 'virtual', 'host', 'virtual-realtime' ] }
++
++##
++# @CrucibleHotForkTimer:
++#
++# One pending QEMU timer, executing timer callback, or both when a callback has
++# rearmed itself.  An initialized but inert timer is not a live timer resource
++# and is intentionally absent.
++#
++# @timer-id: positive process-local timer identifier
++#
++# @timer-list-id: positive process-local timer-list identifier
++#
++# @clock: QEMU clock driving the timer
++#
++# @expire-time-ns: absolute nanosecond expiry, or -1 when not pending
++#
++# @scale: positive timer unit scale in nanoseconds
++#
++# @attributes: exact unsigned QEMU timer-attribute bitmap
++#
++# @pending: whether the timer is scheduled
++#
++# @callback-active: whether its callback is executing
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkTimer',
++  'data': { 'timer-id': 'uint64',
++            'timer-list-id': 'uint64',
++            'clock': 'CrucibleHotForkTimerClock',
++            'expire-time-ns': 'int64',
++            'scale': 'uint32',
++            'attributes': 'uint32',
++            'pending': 'bool',
++            'callback-active': 'bool' } }
++
++##
++# @CrucibleHotForkTimerInventory:
++#
++# Bounded observational snapshot of every pending timer and executing timer
++# callback.  This report does not drain, park, or retain a timer barrier.
++#
++# @schema-version: inventory contract version, currently 1
++#
++# @generation: monotonic process-local scheduled/callback state generation
++#
++# @complete: true exactly when the registry did not overflow and every entry
++#     is structurally valid
++#
++# @overflowed: whether live timer state exceeded the retained bound
++#
++# @timer-count: number of unique retained timers
++#
++# @pending-timers: retained timers whose @pending field is true
++#
++# @active-callbacks: retained timers whose @callback-active field is true
++#
++# @timers: unique timers sorted by @timer-id and bounded to 65536
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkTimerInventory',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'complete': 'bool',
++            'overflowed': 'bool',
++            'timer-count': 'uint32',
++            'pending-timers': 'uint32',
++            'active-callbacks': 'uint32',
++            'timers': [ 'CrucibleHotForkTimer' ] } }
++
++##
++# @query-crucible-hot-fork-timer-inventory:
++#
++# Query every pending timer and executing timer callback.  This command is
++# observational and cannot acknowledge the AIO/BH/timer readiness proof.
++#
++# Returns: @CrucibleHotForkTimerInventory
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'query-crucible-hot-fork-timer-inventory',
++  'returns': 'CrucibleHotForkTimerInventory' }
++
+ ##
+ # @SHUTDOWN:
+ #
+diff --git a/util/qemu-timer.c b/util/qemu-timer.c
+index 788466fe2..7538e0735 100644
+--- a/util/qemu-timer.c
++++ b/util/qemu-timer.c
+@@ -73,8 +73,239 @@ struct QEMUTimerList {
+ 
+     /* lightweight method to mark the end of timerlist's running */
+     QemuEvent timers_done_ev;
++
++    uint64_t crucible_hot_fork_id;
+ };
+ 
++#ifdef CONFIG_POSIX
++typedef struct QemuTimerHotForkCallback {
++    QemuTimerHotForkInventoryEntry entry;
++    struct QemuTimerHotForkCallback *next;
++    struct QemuTimerHotForkCallback **prev;
++} QemuTimerHotForkCallback;
++
++static pthread_mutex_t crucible_hot_fork_timer_guard =
++    PTHREAD_MUTEX_INITIALIZER;
++static QEMUTimer *crucible_hot_fork_pending_timers;
++static QEMUTimer **crucible_hot_fork_pending_timers_tail =
++    &crucible_hot_fork_pending_timers;
++static QemuTimerHotForkCallback *crucible_hot_fork_timer_callbacks;
++static QemuTimerHotForkCallback **crucible_hot_fork_timer_callbacks_tail =
++    &crucible_hot_fork_timer_callbacks;
++static uint64_t crucible_hot_fork_timer_next_id = 1;
++static uint64_t crucible_hot_fork_timer_list_next_id = 1;
++static uint64_t crucible_hot_fork_timer_generation;
++
++static void crucible_hot_fork_timer_lock(void)
++{
++    int err = pthread_mutex_lock(&crucible_hot_fork_timer_guard);
++
++    assert(err == 0);
++}
++
++static void crucible_hot_fork_timer_unlock(void)
++{
++    int err = pthread_mutex_unlock(&crucible_hot_fork_timer_guard);
++
++    assert(err == 0);
++}
++
++static uint64_t crucible_hot_fork_timer_list_allocate_id(void)
++{
++    uint64_t id;
++
++    crucible_hot_fork_timer_lock();
++    id = crucible_hot_fork_timer_list_next_id++;
++    assert(id != 0);
++    crucible_hot_fork_timer_unlock();
++    return id;
++}
++
++static void crucible_hot_fork_timer_initialize(QEMUTimer *timer)
++{
++    crucible_hot_fork_timer_lock();
++    timer->crucible_hot_fork_id = crucible_hot_fork_timer_next_id++;
++    assert(timer->crucible_hot_fork_id != 0);
++    timer->crucible_hot_fork_pending = false;
++    timer->crucible_hot_fork_expire_time_ns = -1;
++    timer->crucible_hot_fork_next = NULL;
++    timer->crucible_hot_fork_prev = NULL;
++    crucible_hot_fork_timer_unlock();
++}
++
++static void crucible_hot_fork_timer_set_pending(QEMUTimer *timer, bool pending)
++{
++    crucible_hot_fork_timer_lock();
++    if (pending) {
++        if (!timer->crucible_hot_fork_pending) {
++            timer->crucible_hot_fork_next = NULL;
++            timer->crucible_hot_fork_prev =
++                crucible_hot_fork_pending_timers_tail;
++            *crucible_hot_fork_pending_timers_tail = timer;
++            crucible_hot_fork_pending_timers_tail =
++                &timer->crucible_hot_fork_next;
++        }
++        timer->crucible_hot_fork_pending = true;
++        timer->crucible_hot_fork_expire_time_ns = timer->expire_time;
++        crucible_hot_fork_timer_generation++;
++    } else if (timer->crucible_hot_fork_pending) {
++        *timer->crucible_hot_fork_prev = timer->crucible_hot_fork_next;
++        if (timer->crucible_hot_fork_next) {
++            timer->crucible_hot_fork_next->crucible_hot_fork_prev =
++                timer->crucible_hot_fork_prev;
++        } else {
++            crucible_hot_fork_pending_timers_tail =
++                timer->crucible_hot_fork_prev;
++        }
++        timer->crucible_hot_fork_pending = false;
++        timer->crucible_hot_fork_expire_time_ns = -1;
++        timer->crucible_hot_fork_next = NULL;
++        timer->crucible_hot_fork_prev = NULL;
++        crucible_hot_fork_timer_generation++;
++    }
++    crucible_hot_fork_timer_unlock();
++}
++
++static void crucible_hot_fork_timer_callback_begin(
++    QEMUTimer *timer, QemuTimerHotForkCallback *callback)
++{
++    crucible_hot_fork_timer_lock();
++    assert(timer->crucible_hot_fork_pending);
++    *timer->crucible_hot_fork_prev = timer->crucible_hot_fork_next;
++    if (timer->crucible_hot_fork_next) {
++        timer->crucible_hot_fork_next->crucible_hot_fork_prev =
++            timer->crucible_hot_fork_prev;
++    } else {
++        crucible_hot_fork_pending_timers_tail =
++            timer->crucible_hot_fork_prev;
++    }
++    timer->crucible_hot_fork_pending = false;
++    timer->crucible_hot_fork_expire_time_ns = -1;
++    timer->crucible_hot_fork_next = NULL;
++    timer->crucible_hot_fork_prev = NULL;
++
++    callback->entry = (QemuTimerHotForkInventoryEntry) {
++        .timer_id = timer->crucible_hot_fork_id,
++        .timer_list_id = timer->timer_list->crucible_hot_fork_id,
++        .clock_type = timer->timer_list->clock->type,
++        .expire_time_ns = -1,
++        .scale = timer->scale,
++        .attributes = timer->attributes,
++        .callback_active = true,
++    };
++    callback->next = NULL;
++    callback->prev = crucible_hot_fork_timer_callbacks_tail;
++    *crucible_hot_fork_timer_callbacks_tail = callback;
++    crucible_hot_fork_timer_callbacks_tail = &callback->next;
++    crucible_hot_fork_timer_generation++;
++    crucible_hot_fork_timer_unlock();
++}
++
++static void crucible_hot_fork_timer_callback_end(
++    QemuTimerHotForkCallback *callback)
++{
++    crucible_hot_fork_timer_lock();
++    *callback->prev = callback->next;
++    if (callback->next) {
++        callback->next->prev = callback->prev;
++    } else {
++        crucible_hot_fork_timer_callbacks_tail = callback->prev;
++    }
++    crucible_hot_fork_timer_generation++;
++    crucible_hot_fork_timer_unlock();
++}
++
++static int crucible_hot_fork_timer_entry_compare(const void *left,
++                                                  const void *right)
++{
++    const QemuTimerHotForkInventoryEntry *left_entry = left;
++    const QemuTimerHotForkInventoryEntry *right_entry = right;
++
++    return left_entry->timer_id < right_entry->timer_id ? -1 :
++           left_entry->timer_id > right_entry->timer_id ? 1 : 0;
++}
++
++void qemu_timer_hot_fork_inventory(QemuTimerHotForkInventory *inventory)
++{
++    const size_t raw_limit = QEMU_TIMER_HOT_FORK_INVENTORY_MAX * 2;
++    QemuTimerHotForkInventoryEntry *entries;
++    QemuTimerHotForkCallback *callback;
++    QEMUTimer *timer;
++    size_t raw_count = 0;
++    size_t index;
++    size_t unique_count = 0;
++
++    *inventory = (QemuTimerHotForkInventory) { 0 };
++    entries = g_new0(QemuTimerHotForkInventoryEntry, raw_limit);
++    crucible_hot_fork_timer_lock();
++    inventory->generation = crucible_hot_fork_timer_generation;
++    for (timer = crucible_hot_fork_pending_timers; timer;
++         timer = timer->crucible_hot_fork_next) {
++        QemuTimerHotForkInventoryEntry *entry;
++
++        if (raw_count == raw_limit) {
++            inventory->overflowed = true;
++            break;
++        }
++        entry = &entries[raw_count++];
++        *entry = (QemuTimerHotForkInventoryEntry) {
++            .timer_id = timer->crucible_hot_fork_id,
++            .timer_list_id = timer->timer_list->crucible_hot_fork_id,
++            .clock_type = timer->timer_list->clock->type,
++            .expire_time_ns = timer->crucible_hot_fork_expire_time_ns,
++            .scale = timer->scale,
++            .attributes = timer->attributes,
++            .pending = true,
++        };
++    }
++    for (callback = crucible_hot_fork_timer_callbacks; callback;
++         callback = callback->next) {
++        if (raw_count == raw_limit) {
++            inventory->overflowed = true;
++            break;
++        }
++        entries[raw_count++] = callback->entry;
++    }
++    crucible_hot_fork_timer_unlock();
++
++    qsort(entries, raw_count, sizeof(*entries),
++          crucible_hot_fork_timer_entry_compare);
++    for (index = 0; index < raw_count; index++) {
++        QemuTimerHotForkInventoryEntry *entry = &entries[index];
++        QemuTimerHotForkInventoryEntry *retained;
++
++        if (unique_count != 0 &&
++            entries[unique_count - 1].timer_id == entry->timer_id) {
++            retained = &entries[unique_count - 1];
++            assert(retained->timer_list_id == entry->timer_list_id);
++            assert(retained->clock_type == entry->clock_type);
++            assert(retained->scale == entry->scale);
++            assert(retained->attributes == entry->attributes);
++            retained->pending |= entry->pending;
++            retained->callback_active |= entry->callback_active;
++            if (entry->pending) {
++                retained->expire_time_ns = entry->expire_time_ns;
++            }
++            continue;
++        }
++        if (unique_count == QEMU_TIMER_HOT_FORK_INVENTORY_MAX) {
++            inventory->overflowed = true;
++            break;
++        }
++        entries[unique_count++] = *entry;
++    }
++    inventory->entries = entries;
++    inventory->entry_count = unique_count;
++}
++
++void qemu_timer_hot_fork_inventory_destroy(
++    QemuTimerHotForkInventory *inventory)
++{
++    g_free(inventory->entries);
++    *inventory = (QemuTimerHotForkInventory) { 0 };
++}
++#endif
++
+ /**
+  * qemu_clock_ptr:
+  * @type: type of clock
+@@ -106,6 +337,10 @@ QEMUTimerList *timerlist_new(QEMUClockType type,
+     timer_list->notify_cb = cb;
+     timer_list->notify_opaque = opaque;
+     qemu_mutex_init(&timer_list->active_timers_lock);
++#ifdef CONFIG_POSIX
++    timer_list->crucible_hot_fork_id =
++        crucible_hot_fork_timer_list_allocate_id();
++#endif
+     QLIST_INSERT_HEAD(&clock->timerlists, timer_list, list);
+     return timer_list;
+ }
+@@ -360,11 +595,17 @@ void timer_init_full(QEMUTimer *ts,
+     ts->scale = scale;
+     ts->attributes = attributes;
+     ts->expire_time = -1;
++#ifdef CONFIG_POSIX
++    crucible_hot_fork_timer_initialize(ts);
++#endif
+ }
+ 
+ void timer_deinit(QEMUTimer *ts)
+ {
+     assert(ts->expire_time == -1);
++#ifdef CONFIG_POSIX
++    crucible_hot_fork_timer_set_pending(ts, false);
++#endif
+     ts->timer_list = NULL;
+ }
+ 
+@@ -420,6 +661,9 @@ void timer_del(QEMUTimer *ts)
+     if (timer_list) {
+         qemu_mutex_lock(&timer_list->active_timers_lock);
+         timer_del_locked(timer_list, ts);
++#ifdef CONFIG_POSIX
++        crucible_hot_fork_timer_set_pending(ts, false);
++#endif
+         qemu_mutex_unlock(&timer_list->active_timers_lock);
+     }
+ }
+@@ -434,6 +678,9 @@ void timer_mod_ns(QEMUTimer *ts, int64_t expire_time)
+     qemu_mutex_lock(&timer_list->active_timers_lock);
+     timer_del_locked(timer_list, ts);
+     rearm = timer_mod_ns_locked(timer_list, ts, expire_time);
++#ifdef CONFIG_POSIX
++    crucible_hot_fork_timer_set_pending(ts, true);
++#endif
+     qemu_mutex_unlock(&timer_list->active_timers_lock);
+ 
+     if (rearm) {
+@@ -455,6 +702,9 @@ void timer_mod_anticipate_ns(QEMUTimer *ts, int64_t expire_time)
+                 timer_del_locked(timer_list, ts);
+             }
+             rearm = timer_mod_ns_locked(timer_list, ts, expire_time);
++#ifdef CONFIG_POSIX
++            crucible_hot_fork_timer_set_pending(ts, true);
++#endif
+         } else {
+             rearm = false;
+         }
+@@ -491,6 +741,9 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
+     bool progress = false;
+     QEMUTimerCB *cb;
+     void *opaque;
++#ifdef CONFIG_POSIX
++    QemuTimerHotForkCallback hot_fork_callback;
++#endif
+ 
+     if (!qatomic_read(&timer_list->active_timers)) {
+         return false;
+@@ -556,10 +809,16 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
+         ts->expire_time = -1;
+         cb = ts->cb;
+         opaque = ts->opaque;
++#ifdef CONFIG_POSIX
++        crucible_hot_fork_timer_callback_begin(ts, &hot_fork_callback);
++#endif
+ 
+         /* run the callback (the timer list can be modified) */
+         qemu_mutex_unlock(&timer_list->active_timers_lock);
+         cb(opaque);
++#ifdef CONFIG_POSIX
++        crucible_hot_fork_timer_callback_end(&hot_fork_callback);
++#endif
+         qemu_mutex_lock(&timer_list->active_timers_lock);
+ 
+         progress = true;

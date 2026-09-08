@@ -188,14 +188,17 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
 
     let direct_manifest: Value = r#"
         [package]
-        name = "crucible-daemon"
+        name = "crucible-debug-gateway"
 
         [dependencies]
         engine = { package = "crucible", path = "../crucible" }
     "#
     .parse()?;
-    let direct_findings =
-        boundary_manifest_findings("crucible-daemon", &direct_manifest, &toml::map::Map::new());
+    let direct_findings = boundary_manifest_findings(
+        "crucible-debug-gateway",
+        &direct_manifest,
+        &toml::map::Map::new(),
+    );
     if !finding_contains(&direct_findings, "may not route host nondeterminism") {
         failures.push(
             "harness-lint confinement regression failed to reject direct engine dependency"
@@ -203,9 +206,26 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
         );
     }
 
-    let workspace_manifest: Value = r#"
+    let daemon_manifest: Value = r#"
         [package]
         name = "crucible-daemon"
+
+        [dependencies]
+        engine = { package = "crucible", path = "../crucible" }
+    "#
+    .parse()?;
+    let daemon_findings =
+        boundary_manifest_findings("crucible-daemon", &daemon_manifest, &toml::map::Map::new());
+    if finding_contains(&daemon_findings, "may not route host nondeterminism") {
+        failures.push(
+            "harness-lint confinement regression rejected the RFC-0020 daemon engine driver"
+                .to_string(),
+        );
+    }
+
+    let workspace_manifest: Value = r#"
+        [package]
+        name = "crucible-debug-gateway"
 
         [dependencies]
         engine = { workspace = true }
@@ -220,7 +240,7 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
         )])),
     );
     let workspace_findings = boundary_manifest_findings(
-        "crucible-daemon",
+        "crucible-debug-gateway",
         &workspace_manifest,
         &workspace_dependencies,
     );

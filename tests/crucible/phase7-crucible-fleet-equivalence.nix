@@ -12,7 +12,10 @@
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   crucibleManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
   modelRust = import ./_crucible-model-source.nix {inherit lib;};
-  libRust = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libRust = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   gateTest = builtins.readFile ../../crates/crucible/tests/gate_fleet_equivalence.rs;
   gateCatalog = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
   gateCatalogTest = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;

@@ -226,7 +226,7 @@
       }
       {
         label = "decision recorder export";
-        needle = "pub use decision::{DecisionRecordError, DecisionRecorder};";
+        needle = "DecisionRecordError, DecisionRecorder,";
       }
     ]
     ++ failuresFor "crates/crucible/Cargo.toml" manifest [

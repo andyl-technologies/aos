@@ -33,7 +33,11 @@
 //! [`CampaignFreshLineageRoots`], [`CampaignManifest`],
 //! [`CampaignProvenance`], [`CampaignContinuitySeedDecision`], and the
 //! invalidation types [`DependencySnapshot`], [`InvalidationQuery`], and
-//! [`InvalidationDecision`].
+//! [`InvalidationDecision`]. [`content_store`] owns RFC-0020's streaming,
+//! domain-separated immutable-blob and mutable-ref contracts plus its closed
+//! composition-graph validator. [`content_envelope`] owns the generic canonical
+//! child-bearing object format used by storage, transfer, and closure walkers
+//! without depending on campaign semantics.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -1381,3 +1385,6 @@ use campaign_codec::*;
 pub use campaign_model::*;
 pub use campaign_store::*;
 pub use invalidation::*;
+
+pub mod content_envelope;
+pub mod content_store;

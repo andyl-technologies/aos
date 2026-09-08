@@ -13,6 +13,7 @@ The series currently creates these QEMU source files:
 | `accel/tcg/tcg-accel-ops-sim.c` | GPL-2.0-or-later | QEMU default |
 | `include/system/crucible-plugin-wake.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `block/crucible-shmem.c` | GPL-2.0-or-later | Explicit file notice |
+| `block/crucible-hot-fork-source.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `accel/tcg/tcg-accel-ops-sim-shmem.c` | GPL-2.0-or-later | QEMU default |
 | `accel/tcg/tcg-accel-ops-sim-shmem.h` | GPL-2.0-or-later | QEMU default |
 | `include/system/crucible-sim-ipi.h` | GPL-2.0-or-later | QEMU default |
@@ -21,6 +22,10 @@ The series currently creates these QEMU source files:
 | `accel/tcg/crucible-translation-prefetch.c` | GPL-2.0-or-later | QEMU default |
 | `include/qemu/crucible-fault.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-process.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-hot-fork-child.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-hot-fork-plugin.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/system/crucible-hot-fork-plugin-child.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-hot-fork-async.h` | GPL-2.0-or-later | Explicit file notice |
 | `plugins/crucible-fault.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-fault-memory.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-fault-node.c` | GPL-2.0-or-later | Explicit SPDX identifier |
@@ -40,6 +45,12 @@ The series currently creates these QEMU source files:
 | `tests/tcg/plugins/crucible-memory.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/tcg/plugins/crucible-memory-access.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/tcg/plugins/crucible-memory-dma.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-hot-fork-child.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `util/crucible-hot-fork-child.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-hot-fork-plugin-child.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/system/crucible-hot-fork-coordinator.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-hot-fork-coordinator.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-hot-fork-coordinator.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/hw/virtio/virtio-crucible-accelerator.h` | GPL-2.0-or-later | Explicit file notice |
 | `hw/virtio/virtio-crucible-accelerator.c` | GPL-2.0-or-later | Explicit file notice |
 | `hw/virtio/virtio-crucible-accelerator-pci.c` | GPL-2.0-or-later | Explicit file notice |

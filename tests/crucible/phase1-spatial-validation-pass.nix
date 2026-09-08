@@ -8,8 +8,10 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  worldValidationTests =
-    builtins.readFile ../../crates/crucible/src/tests/world_validation.rs;
+  worldValidationTests = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/tests/world_validation.rs;
+  };
   qemuLaunch =
     builtins.readFile ../../crates/crucible-qemu/src/launch.rs
     + builtins.readFile ../../crates/crucible-qemu/src/launch/canonical.rs;

@@ -40,7 +40,7 @@ pub use crucible_shmem_network::{
 };
 use entropy::{GUEST_ENTROPY_FW_CFG_NAME, GUEST_ENTROPY_RNG_ID, GUEST_ENTROPY_SEED_FILE_NAME};
 pub use entropy::{GuestEntropySeed, GuestEntropySeedFile};
-pub use error::QemuLaunchCommandError;
+pub use error::{QemuLaunchCommandError, QemuLaunchResourceError};
 use helpers::{
     content_hash_hex, validate_fd, validate_launch_text, validate_node_icount_shifts,
     validate_overlay_file_name, validate_store_path,
@@ -58,6 +58,8 @@ pub use validation::{
     validate_pre_spawn_qemu_launch_args,
 };
 use validation::{canonical_cpu_model, validate_accelerator, validate_fixed_text};
+#[cfg(target_os = "linux")]
+pub(crate) use whitebox_setup::probe_x86_whitebox_setup_guarded;
 pub use whitebox_setup::{
     QemuWhiteboxSetupError, QemuWhiteboxSetupValidation, probe_x86_whitebox_setup,
     validate_aarch64_whitebox_setup, validate_x86_whitebox_hmp_mtree,
@@ -121,8 +123,14 @@ pub const QEMU_PLUGIN_WAKE_FD: i32 = FIXED_PLUGIN_WAKE_FD;
 pub const DEFAULT_ROOT_OVERLAY_FILE_NAME: &str = "crucible-root-overlay.qcow2";
 /// Default per-run qcow2 container for exact VMState snapshots.
 pub const DEFAULT_VMSTATE_FILE_NAME: &str = "crucible-vmstate.qcow2";
-const VMSTATE_DRIVE_ID: &str = "vmstate";
-const ROOT_DRIVE_ID: &str = "crucible-root0";
+/// Node name of the parentless qcow2 VMState container in every launch.
+///
+/// Hot-fork child-private file plans select the container's writable leaf by
+/// this name, so it is part of the QEMU-facing launch contract.
+pub const DEFAULT_VMSTATE_NODE_NAME: &str = "vmstate";
+const VMSTATE_DRIVE_ID: &str = DEFAULT_VMSTATE_NODE_NAME;
+/// Stable QEMU block-backend identifier for the writable root overlay.
+pub const ROOT_DRIVE_ID: &str = "crucible-root0";
 const ROOT_DEVICE_ID: &str = "crucible-root-device0";
 const MAX_ICOUNT_SHIFT: u8 = 62;
 const MAX_RR_SWITCH_QUANTUM: u64 = i32::MAX as u64;
@@ -430,6 +438,97 @@ pub struct QemuLaunchCommand {
     plugin_coverage: QemuLaunchPluginSwitch,
     plugin_fault_node_hash: [u8; 32],
     fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
+    resource_requirements: QemuLaunchResourceRequirements,
+    plugin_setup_plan: crucible_protocol::plugin_setup_plan::PluginSetupPlan,
+    plugin_setup_plan_digest: [u8; 32],
+}
+
+/// Static host-resource baseline derived from one validated launch command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuLaunchResourceRequirements {
+    virtual_cpus: u32,
+    guest_memory_bytes: u64,
+    minimum_writable_bytes: u64,
+    root_overlay: bool,
+}
+
+impl QemuLaunchResourceRequirements {
+    /// Builds the fixed host-resource baseline for one VM shape.
+    ///
+    /// The writable minimum reserves the guest memory plus the fixed VMState
+    /// container headroom every launch profile carries.
+    #[must_use]
+    pub const fn from_vm_shape(memory_mib: u32, smp_vcpus: u16, root_overlay: bool) -> Self {
+        let mebibyte = 1024_u64 * 1024;
+        Self {
+            virtual_cpus: smp_vcpus as u32,
+            guest_memory_bytes: memory_mib as u64 * mebibyte,
+            minimum_writable_bytes: (memory_mib as u64 + 512) * mebibyte,
+            root_overlay,
+        }
+    }
+
+    /// Returns the exact fixed virtual-CPU count.
+    #[must_use]
+    pub const fn virtual_cpus(self) -> u32 {
+        self.virtual_cpus
+    }
+
+    /// Returns the fixed guest-RAM baseline in bytes.
+    #[must_use]
+    pub const fn guest_memory_bytes(self) -> u64 {
+        self.guest_memory_bytes
+    }
+
+    /// Returns the minimum writable bytes needed by the VMState container.
+    #[must_use]
+    pub const fn minimum_writable_bytes(self) -> u64 {
+        self.minimum_writable_bytes
+    }
+
+    /// Returns whether the launch also uses a writable root overlay.
+    #[must_use]
+    pub const fn has_root_overlay(self) -> bool {
+        self.root_overlay
+    }
+
+    /// Validates this fixed baseline against admitted executor ceilings.
+    ///
+    /// The resident value is only the guest-RAM baseline; the concrete host
+    /// guard must still reserve QEMU/plugin overhead within the admitted
+    /// ceiling. Likewise, a root overlay consumes the remaining aggregate
+    /// writable quota after the VMState minimum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLaunchResourceError`] when vCPU, resident-memory, or
+    /// writable-byte admission is below the command's fixed baseline.
+    pub const fn validate_ceiling(
+        self,
+        maximum_vcpus: u32,
+        maximum_resident_bytes: u64,
+        maximum_writable_bytes: u64,
+    ) -> Result<(), QemuLaunchResourceError> {
+        if self.virtual_cpus > maximum_vcpus {
+            return Err(QemuLaunchResourceError::VirtualCpus {
+                required: self.virtual_cpus,
+                admitted: maximum_vcpus,
+            });
+        }
+        if self.guest_memory_bytes > maximum_resident_bytes {
+            return Err(QemuLaunchResourceError::ResidentBytes {
+                required: self.guest_memory_bytes,
+                admitted: maximum_resident_bytes,
+            });
+        }
+        if self.minimum_writable_bytes > maximum_writable_bytes {
+            return Err(QemuLaunchResourceError::WritableBytes {
+                required: self.minimum_writable_bytes,
+                admitted: maximum_writable_bytes,
+            });
+        }
+        Ok(())
+    }
 }
 
 impl QemuLaunchCommand {
@@ -437,6 +536,12 @@ impl QemuLaunchCommand {
     #[must_use]
     pub fn executable(&self) -> &str {
         &self.executable
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_executable(mut self, executable: impl Into<String>) -> Self {
+        self.executable = executable.into();
+        self
     }
 
     /// Returns the argv tail passed after the executable.
@@ -487,6 +592,28 @@ impl QemuLaunchCommand {
         &self.fault_capability_requirement
     }
 
+    /// Returns the static resource baseline authenticated by this command.
+    #[must_use]
+    pub const fn resource_requirements(&self) -> QemuLaunchResourceRequirements {
+        self.resource_requirements
+    }
+
+    /// Returns the immutable node-local app-random campaign branch plan.
+    #[must_use]
+    pub const fn app_random_branch_plan(
+        &self,
+    ) -> &crucible_protocol::app_random_branch_plan::AppRandomBranchPlan {
+        self.plugin_setup_plan.app_random_branch_plan()
+    }
+
+    /// Returns the complete version-negotiated plugin setup plan.
+    #[must_use]
+    pub const fn plugin_setup_plan(
+        &self,
+    ) -> &crucible_protocol::plugin_setup_plan::PluginSetupPlan {
+        &self.plugin_setup_plan
+    }
+
     /// Appends one content-addressed observation-only QEMU plugin.
     ///
     /// This is used by loaded-QEMU gates that need an independent fingerprint
@@ -518,8 +645,14 @@ impl QemuLaunchCommand {
     /// Returns canonical material for hashing the complete QEMU command line.
     #[must_use]
     pub fn command_line_hash_material(&self) -> String {
-        let mut lines = Vec::with_capacity(self.args.len() + 3);
-        lines.push("crucible.qemu-launch-command.v1".to_owned());
+        let selectable_is_empty = self.plugin_setup_plan.selectable_catalog_plan()
+            == &crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::default();
+        let mut lines = Vec::with_capacity(self.args.len() + 6);
+        lines.push(if selectable_is_empty {
+            "crucible.qemu-launch-command.v2".to_owned()
+        } else {
+            "crucible.qemu-launch-command.v3".to_owned()
+        });
         lines.push("command_line_in_hash=executable-and-argv".to_owned());
         lines.push(format!("executable={}", self.executable));
         lines.push(format!(
@@ -530,6 +663,20 @@ impl QemuLaunchCommand {
             "ready_marker_manifest_v1={}",
             lower_hex(self.fault_capability_requirement.ready_marker_digest())
         ));
+        if selectable_is_empty {
+            lines.push(format!(
+                "app_random_branch_plan_v1={}",
+                lower_hex(
+                    *blake3::hash(&self.plugin_setup_plan.app_random_branch_plan().encode())
+                        .as_bytes(),
+                )
+            ));
+        } else {
+            lines.push(format!(
+                "plugin_setup_plan_v1={}",
+                lower_hex(self.plugin_setup_plan_digest)
+            ));
+        }
         for (index, argument) in self.args.iter().enumerate() {
             lines.push(format!("argv[{index}]={argument}"));
         }
@@ -752,6 +899,11 @@ impl QemuLaunchCommandBuilder {
         }
 
         let vmstate_size_mib = u64::from(self.profile.memory_mib) + 512;
+        let resource_requirements = QemuLaunchResourceRequirements::from_vm_shape(
+            self.profile.memory_mib,
+            self.profile.smp_vcpus,
+            self.vm.root_image().is_some(),
+        );
         let mut vm_hash_material = self.vm.launch_hash_material();
         if self.debug_guest_activation_endpoint {
             vm_hash_material.push_str("\ndebug_guest_activation_endpoint=fixed-inert-v1");
@@ -812,6 +964,11 @@ impl QemuLaunchCommandBuilder {
         validate_pre_spawn_qemu_launch_args(&args)
             .map_err(|source| QemuLaunchCommandError::PreSpawnValidation { source })?;
 
+        let plugin_setup_plan = self.plugin.plugin_setup_plan();
+        let plugin_setup_plan_bytes = plugin_setup_plan
+            .encode()
+            .map_err(|_source| QemuLaunchCommandError::InvalidPluginSetupPlan)?;
+        let plugin_setup_plan_digest = *blake3::hash(&plugin_setup_plan_bytes).as_bytes();
         Ok(QemuLaunchCommand {
             executable: self.executable,
             args,
@@ -822,6 +979,9 @@ impl QemuLaunchCommandBuilder {
             plugin_coverage: self.plugin.coverage(),
             plugin_fault_node_hash: self.plugin.fault_node_hash(),
             fault_capability_requirement,
+            resource_requirements,
+            plugin_setup_plan,
+            plugin_setup_plan_digest,
         })
     }
 }

@@ -1,0 +1,132 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index d204123b2..a5e7d9021 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1152,7 +1152,7 @@ QEMU_PLUGIN_API
+ int qemu_plugin_register_wake_fd(int fd);
+ 
+ /* Versioned Crucible plugin resource manifest. */
+-#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_VERSION 1
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_VERSION 2
+ 
+ #define QEMU_PLUGIN_CRUCIBLE_RESOURCE_CONTROL_SOCKET (UINT64_C(1) << 0)
+ #define QEMU_PLUGIN_CRUCIBLE_RESOURCE_SHMEM_MAPPING (UINT64_C(1) << 1)
+@@ -1191,6 +1191,12 @@ int qemu_plugin_register_wake_fd(int fd);
+     (((UINT64_C(1) << 12) - 1) & \
+      ~QEMU_PLUGIN_CRUCIBLE_CALLBACK_TCG_EXEC)
+ 
++#define QEMU_PLUGIN_CRUCIBLE_WORKER_RUN_CONTROL (UINT64_C(1) << 0)
++#define QEMU_PLUGIN_CRUCIBLE_WORKER_TEARDOWN (UINT64_C(1) << 1)
++#define QEMU_PLUGIN_CRUCIBLE_WORKER_FINGERPRINT (UINT64_C(1) << 2)
++#define QEMU_PLUGIN_CRUCIBLE_WORKER_ALL ((UINT64_C(1) << 3) - 1)
++#define QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED ((UINT64_C(1) << 2) - 1)
++
+ struct qemu_plugin_crucible_resource_manifest {
+     uint32_t schema_version;
+     uint32_t struct_size;
+@@ -1198,6 +1204,7 @@ struct qemu_plugin_crucible_resource_manifest {
+     uint64_t plugin_id;
+     uint64_t resource_mask;
+     uint64_t callback_mask;
++    uint64_t worker_mask;
+     uint64_t shmem_device;
+     uint64_t shmem_inode;
+     uint64_t shmem_length;
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index c92778093..30d7ef3d6 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -1428,6 +1428,7 @@ qmp_query_crucible_hot_fork_plugin_resource_inventory(Error **errp)
+     report->plugin_id = manifest->plugin_id;
+     report->resource_mask = manifest->resource_mask;
+     report->callback_mask = manifest->callback_mask;
++    report->worker_mask = manifest->worker_mask;
+     report->observed_callback_mask = inventory.observed_callback_mask;
+     report->callback_mask_consistent =
+         manifest->callback_mask == inventory.observed_callback_mask;
+@@ -1444,6 +1445,12 @@ qmp_query_crucible_hot_fork_plugin_resource_inventory(Error **errp)
+         QEMU_PLUGIN_CRUCIBLE_RESOURCE_WHITEBOX) != 0;
+     report->fingerprint = (manifest->resource_mask &
+         QEMU_PLUGIN_CRUCIBLE_RESOURCE_FINGERPRINT) != 0;
++    report->run_control_worker = (manifest->worker_mask &
++        QEMU_PLUGIN_CRUCIBLE_WORKER_RUN_CONTROL) != 0;
++    report->teardown_worker = (manifest->worker_mask &
++        QEMU_PLUGIN_CRUCIBLE_WORKER_TEARDOWN) != 0;
++    report->fingerprint_worker = (manifest->worker_mask &
++        QEMU_PLUGIN_CRUCIBLE_WORKER_FINGERPRINT) != 0;
+     report->state_dump = (manifest->resource_mask &
+         QEMU_PLUGIN_CRUCIBLE_RESOURCE_STATE_DUMP) != 0;
+     report->app_random = (manifest->resource_mask &
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index 1e8da5a36..2927fe6cd 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -210,7 +210,14 @@ int qemu_plugin_crucible_register_resource_manifest(
+         (manifest->resource_mask & QEMU_PLUGIN_CRUCIBLE_RESOURCE_REQUIRED) !=
+             QEMU_PLUGIN_CRUCIBLE_RESOURCE_REQUIRED ||
+         (manifest->callback_mask & QEMU_PLUGIN_CRUCIBLE_CALLBACK_REQUIRED) !=
+-            QEMU_PLUGIN_CRUCIBLE_CALLBACK_REQUIRED) {
++            QEMU_PLUGIN_CRUCIBLE_CALLBACK_REQUIRED ||
++        (manifest->worker_mask & ~QEMU_PLUGIN_CRUCIBLE_WORKER_ALL) != 0 ||
++        (manifest->worker_mask & QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED) !=
++            QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED ||
++        (((manifest->worker_mask &
++           QEMU_PLUGIN_CRUCIBLE_WORKER_FINGERPRINT) != 0) !=
++         ((manifest->resource_mask &
++           QEMU_PLUGIN_CRUCIBLE_RESOURCE_FINGERPRINT) != 0))) {
+         return -EINVAL;
+     }
+     if (qemu_plugin_crucible_resource_inventory.registered) {
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 4e0d04af4..e8af2ee65 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -867,7 +867,7 @@
+ # This report is observational: it does not park callbacks, freeze rings,
+ # acknowledge readiness proof bit 6, or authorize a fork.
+ #
+-# @schema-version: inventory contract version, currently 1
++# @schema-version: inventory contract version, currently 2
+ #
+ # @generation: process-local registration-state generation
+ #
+@@ -887,6 +887,8 @@
+ #
+ # @callback-mask-consistent: whether the two callback masks are equal
+ #
++# @worker-mask: closed process-lifetime plugin worker-class mask
++#
+ # @shmem-device: st_dev of the mapped shared-memory backing object
+ #
+ # @shmem-inode: nonzero st_ino of the mapped shared-memory backing object
+@@ -907,6 +909,12 @@
+ #
+ # @fingerprint: whether the manifest owns fingerprint resources
+ #
++# @run-control-worker: whether the mandatory RUN control reader is sealed
++#
++# @teardown-worker: whether the mandatory teardown worker is sealed
++#
++# @fingerprint-worker: whether the optional fingerprint digest worker is sealed
++#
+ # @state-dump: whether the manifest owns raw-state-dump resources
+ #
+ # @app-random: whether the manifest owns app-random resources
+@@ -922,6 +930,7 @@
+             'plugin-id': 'uint64',
+             'resource-mask': 'uint64',
+             'callback-mask': 'uint64',
++            'worker-mask': 'uint64',
+             'observed-callback-mask': 'uint64',
+             'callback-mask-consistent': 'bool',
+             'shmem-device': 'uint64',
+@@ -934,6 +943,9 @@
+             'coverage': 'bool',
+             'whitebox': 'bool',
+             'fingerprint': 'bool',
++            'run-control-worker': 'bool',
++            'teardown-worker': 'bool',
++            'fingerprint-worker': 'bool',
+             'state-dump': 'bool',
+             'app-random': 'bool' } }
+ 

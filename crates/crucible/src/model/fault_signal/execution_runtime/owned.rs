@@ -383,6 +383,25 @@ impl OwnedFaultExecutionRuntime {
         !self.checkpoint.binding_runtime.search_overrides.is_empty()
     }
 
+    /// Reports whether one exact finite search override was consumed.
+    #[must_use]
+    pub fn search_override_consumed(
+        &self,
+        choice: SearchChoiceId,
+        expected: &SearchOverride,
+    ) -> bool {
+        self.checkpoint
+            .binding_runtime
+            .search_overrides
+            .get(&choice)
+            == Some(expected)
+            && self
+                .checkpoint
+                .binding_runtime
+                .consumed_search_overrides
+                .contains(&choice)
+    }
+
     /// Returns all committed effects as an unconsumed replay trace.
     ///
     /// # Errors

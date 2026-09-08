@@ -1,0 +1,145 @@
+diff --git a/include/system/crucible-hot-fork-plugin-child.h b/include/system/crucible-hot-fork-plugin-child.h
+index e08e335d8..0d8ed90c8 100644
+--- a/include/system/crucible-hot-fork-plugin-child.h
++++ b/include/system/crucible-hot-fork-plugin-child.h
+@@ -288,6 +288,22 @@ bool qemu_crucible_hot_fork_qmp_child_reinitializer_prepared_for(
+     const QemuCrucibleHotForkQmpChildReinitializer *reinitializer,
+     const QemuCrucibleHotForkQmpChildResourcePlan *resources);
+ 
++/**
++ * qemu_crucible_hot_fork_qmp_child_reinitializer_bound_for() - match basis
++ * @reinitializer: caller-owned child-monitor adapter
++ * @resources: exact retained QMP resource contribution
++ *
++ * Revalidates the immutable endpoint and generation basis without requiring
++ * that the one-shot adapter remain unconsumed.  A successfully initialized
++ * child therefore keeps an authenticated basis for its private QMP query,
++ * while reset or foreign adapters fail closed.
++ *
++ * Returns true exactly when @reinitializer was prepared for @resources.
++ */
++bool qemu_crucible_hot_fork_qmp_child_reinitializer_bound_for(
++    const QemuCrucibleHotForkQmpChildReinitializer *reinitializer,
++    const QemuCrucibleHotForkQmpChildResourcePlan *resources);
++
+ /**
+  * qemu_crucible_hot_fork_qmp_child_reinitializer_complete() - report result
+  * @reinitializer: exact inherited child-QMP runtime adapter
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 695a2c303..0e934f9a4 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -1508,7 +1508,7 @@ static bool crucible_hot_fork_qmp_resource_plan_bound(void)
+             crucible_hot_fork_qmp_stage.socket_cookie,
+             crucible_hot_fork_qmp_stage.template_generation,
+             crucible_hot_fork_qmp_stage.generation) &&
+-        qemu_crucible_hot_fork_qmp_child_reinitializer_prepared_for(
++        qemu_crucible_hot_fork_qmp_child_reinitializer_bound_for(
+             &crucible_hot_fork_qmp_child_reinitializer,
+             &crucible_hot_fork_qmp_child_resources) &&
+         qemu_crucible_hot_fork_child_resource_plan_contains_qmp(
+@@ -1535,7 +1535,7 @@ static CrucibleHotForkQmpState *crucible_hot_fork_qmp_report(void)
+     report->resource_plan_bound = crucible_hot_fork_qmp_resource_plan_bound();
+     report->nonblocking_unix_stream = report->staged;
+     report->reinitializer_prepared = report->staged &&
+-        qemu_crucible_hot_fork_qmp_child_reinitializer_prepared_for(
++        qemu_crucible_hot_fork_qmp_child_reinitializer_bound_for(
+             &crucible_hot_fork_qmp_child_reinitializer,
+             &crucible_hot_fork_qmp_child_resources);
+     report->reinitialized =
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 80a48e179..1c4aa3e09 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -2081,8 +2081,9 @@
+ # Exact QEMU-owned state for one branch-private nonblocking QMP stream. Version
+ # 2 authenticates the connected AF_UNIX stream by Linux SO_COOKIE, retains its
+ # descriptor in the sealed child resource plan, and prepares a generation-bound
+-# one-shot child reinitializer contract. The concrete inherited-monitor runtime
+-# and child-transaction composition remain open.
++# one-shot child reinitializer contract.  After successful child application,
++# the immutable retained basis remains queryable without making the consumed
++# adapter reusable.  The concrete inherited-monitor runtime remains open.
+ #
+ # @schema-version: retained QMP endpoint contract version, currently 2
+ #
+@@ -2101,13 +2102,15 @@
+ #     otherwise -1
+ #
+ # @resource-plan-bound: whether that exact descriptor is retained by the
+-#     sealed complete child resource plan
++#     sealed complete child resource plan before application or by its exact
++#     successfully applied child copy
+ #
+ # @nonblocking-unix-stream: whether the retained endpoint is one connected,
+ #     empty, nonblocking AF_UNIX stream socket
+ #
+-# @reinitializer-prepared: whether the one-shot adapter is bound to the exact
+-#     endpoint, template generation, and QMP generation
++# @reinitializer-prepared: whether the one-shot adapter was prepared for the
++#     exact endpoint, template generation, and QMP generation; remains true
++#     after a successful attempt and does not mean the adapter is reusable
+ #
+ # @reinitialized: whether a future concrete child runtime has completed and
+ #     exactly reported inherited-monitor disposition, dispatcher and endpoint
+diff --git a/system/crucible-hot-fork-plugin-child.c b/system/crucible-hot-fork-plugin-child.c
+index dac8eb9b4..d9bfb5457 100644
+--- a/system/crucible-hot-fork-plugin-child.c
++++ b/system/crucible-hot-fork-plugin-child.c
+@@ -322,11 +322,19 @@ int qemu_crucible_hot_fork_prepare_qmp_child_reinitializer(
+ bool qemu_crucible_hot_fork_qmp_child_reinitializer_prepared_for(
+     const QemuCrucibleHotForkQmpChildReinitializer *reinitializer,
+     const QemuCrucibleHotForkQmpChildResourcePlan *resources)
++{
++    return qemu_crucible_hot_fork_qmp_child_reinitializer_bound_for(
++               reinitializer, resources) &&
++        !reinitializer->attempted && !reinitializer->initialized;
++}
++
++bool qemu_crucible_hot_fork_qmp_child_reinitializer_bound_for(
++    const QemuCrucibleHotForkQmpChildReinitializer *reinitializer,
++    const QemuCrucibleHotForkQmpChildResourcePlan *resources)
+ {
+     QemuCrucibleHotForkQmpChildReinitializer expected = { 0 };
+ 
+     return reinitializer && reinitializer->prepared &&
+-        !reinitializer->attempted && !reinitializer->initialized &&
+         qemu_crucible_hot_fork_prepare_qmp_child_reinitializer(
+             &expected, resources) == 0 &&
+         reinitializer->retained_fd == expected.retained_fd &&
+@@ -1201,7 +1209,9 @@ bool qemu_crucible_hot_fork_child_resource_plan_contains_qmp(
+     const QemuCrucibleHotForkQmpChildResourcePlan *qmp)
+ {
+     return resources && qmp && resources->sealed &&
+-        !resources->building && !resources->attempted && !resources->applied &&
++        !resources->building &&
++        ((!resources->attempted && !resources->applied) ||
++         (resources->attempted && resources->applied)) &&
+         crucible_hot_fork_child_resource_plan_valid(
+             resources, &resources->plugin) &&
+         crucible_hot_fork_plan_contains_qmp(resources, qmp);
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index 783b0a980..a1a8da81d 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -247,6 +247,9 @@ static void test_qmp_child_reinitializer_is_exact_and_one_shot(void)
+     g_assert_true(
+         qemu_crucible_hot_fork_qmp_child_reinitializer_complete(
+             &reinitializer));
++    g_assert_true(
++        qemu_crucible_hot_fork_qmp_child_reinitializer_bound_for(
++            &reinitializer, &resources));
+     g_assert_false(
+         qemu_crucible_hot_fork_qmp_child_reinitializer_prepared_for(
+             &reinitializer, &resources));
+@@ -621,6 +624,10 @@ static void test_immediate_child_applies_sealed_resource_plan(void)
+              !qmp_reinitializer.initialized ||
+              !qemu_crucible_hot_fork_qmp_child_reinitializer_complete(
+                  &qmp_reinitializer) ||
++             !qemu_crucible_hot_fork_qmp_child_reinitializer_bound_for(
++                 &qmp_reinitializer, &resource_plan->qmp) ||
++             !qemu_crucible_hot_fork_child_resource_plan_contains_qmp(
++                 resource_plan, &resource_plan->qmp) ||
+              qmp_runtime.calls != 1)) {
+             result = -EIO;
+         }

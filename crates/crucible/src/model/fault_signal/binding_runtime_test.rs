@@ -947,11 +947,12 @@ fn sampled_inactive_event_checkpoint_restores_before_event() {
         .evaluate_boundary(coordinate(1), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("inactive event sample failed: {error}"));
     assert!(before_event.actions.is_empty());
+    assert_eq!(before_event.next_wakeup_nanos, Some(7));
     let checkpoint = runtime
         .checkpoint()
         .unwrap_or_else(|error| panic!("inactive event checkpoint failed: {error}"));
 
-    let restored = FaultBindingRuntime::restore(
+    let mut restored = FaultBindingRuntime::restore(
         &program,
         vec![binding],
         &NoArtifacts,
@@ -962,6 +963,17 @@ fn sampled_inactive_event_checkpoint_restores_before_event() {
     .unwrap_or_else(|error| panic!("inactive event checkpoint should restore: {error}"));
     assert_eq!(restored.states(), runtime.states());
     assert_eq!(restored.active(), runtime.active());
+    let repeated = restored
+        .evaluate_boundary(coordinate(1), 0, &mut AcceptActions::default())
+        .unwrap_or_else(|error| panic!("restored wakeup evaluation failed: {error}"));
+    assert!(repeated.actions.is_empty());
+    assert_eq!(repeated.next_wakeup_nanos, Some(7));
+
+    let fired = restored
+        .evaluate_boundary(coordinate(7), 0, &mut AcceptActions::default())
+        .unwrap_or_else(|error| panic!("restored event evaluation failed: {error}"));
+    assert_eq!(fired.actions.len(), 1);
+    assert_eq!(fired.next_wakeup_nanos, None);
 }
 
 #[test]

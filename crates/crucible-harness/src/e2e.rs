@@ -528,6 +528,14 @@ impl From<AdversarialComparisonError> for E2eGateError {
 /// test-only harness.
 pub const CANONICAL_SHMEM_ABI_VERSION: u32 = include!("../../crucible-shmem/src/abi_version.in");
 
+/// Guest/host control-protocol version used by canonical harness identities.
+///
+/// The included expression is compile-time checked against the authoritative
+/// `crucible-protocol` declaration without adding a runtime dependency from
+/// this dependency-free test harness.
+pub const CANONICAL_GUEST_HOST_PROTOCOL_VERSION: u32 =
+    include!("../../crucible-protocol/src/control_protocol_version.in");
+
 /// Returns the canonical mock backend build identity.
 #[must_use]
 pub fn canonical_mock_build_identity() -> E2eBuildIdentity {
@@ -540,7 +548,7 @@ pub fn canonical_mock_build_identity() -> E2eBuildIdentity {
             "crucible-hash:68444481cdcf0b86f376d0dafe6cfd40c39ba1fcecbab2a371a96d864fd3378c",
         ),
         shmem_abi_version: CANONICAL_SHMEM_ABI_VERSION.to_string(),
-        guest_host_protocol_version: String::from("1"),
+        guest_host_protocol_version: CANONICAL_GUEST_HOST_PROTOCOL_VERSION.to_string(),
         rpc_abi_version: String::from("5.1.0"),
         rpc_abi_build: String::from("crucible-rpc-abi-v5"),
         plugin_abi: String::from("simdouble-mock-plugin-abi"),

@@ -100,9 +100,9 @@ pub(in super::super) fn event_log_assertion_proximity_minimum_material(
 }
 
 pub(in super::super) fn event_log_coverage_observation_material(
-    entry: &EventLogCoverageProjectionEntry,
+    observation: &EventLogCoverageObservation,
 ) -> String {
-    match &entry.observation {
+    match observation {
         EventLogCoverageObservation::BasicBlock {
             node,
             guest_pc,

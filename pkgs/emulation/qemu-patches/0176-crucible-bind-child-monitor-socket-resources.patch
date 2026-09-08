@@ -1,0 +1,458 @@
+diff --git a/chardev/char-socket.c b/chardev/char-socket.c
+index 2f842f9f8..725e699f0 100644
+--- a/chardev/char-socket.c
++++ b/chardev/char-socket.c
+@@ -41,6 +41,88 @@
+ static gboolean socket_reconnect_timeout(gpointer opaque);
+ static void tcp_chr_telnet_init(Chardev *chr);
+ 
++static bool tcp_chr_hot_fork_child_profile(
++    SocketChardev *s, CharBackend *frontend, GMainContext *context)
++{
++    Chardev *chr = CHARDEV(s);
++
++    return frontend && chr->be == frontend && chr->gcontext == context &&
++        qemu_chr_has_feature(chr, QEMU_CHAR_FEATURE_GCONTEXT) &&
++        !qemu_chr_replay(chr) && s->state == TCP_CHARDEV_STATE_CONNECTED &&
++        s->addr && s->addr->type == SOCKET_ADDRESS_TYPE_UNIX &&
++        s->is_listen && s->listener && s->ioc && s->sioc &&
++        s->ioc == QIO_CHANNEL(s->sioc) && chr->gsource && s->hup_source &&
++        s->crucible_hot_fork_connection_generation != 0 &&
++        !s->tls_creds && !s->tls_authz && !s->is_telnet && !s->is_tn3270 &&
++        !s->is_websock && !s->telnet_source && !s->telnet_init &&
++        !s->reconnect_timer && s->reconnect_time_ms == 0 &&
++        !s->connect_task && !s->read_msgfds && s->read_msgfds_num == 0 &&
++        !s->write_msgfds && s->write_msgfds_num == 0 && s->registered_yank;
++}
++
++int qemu_chr_socket_hot_fork_prepare_child_basis(
++    QemuChrSocketHotForkChildBasis *basis, Chardev *chardev,
++    CharBackend *frontend, GMainContext *context)
++{
++    SocketChardev *s;
++    int result = 0;
++
++    if (!basis || !chardev || !frontend ||
++        !object_dynamic_cast(OBJECT(chardev), TYPE_CHARDEV_SOCKET)) {
++        return -EINVAL;
++    }
++
++    s = SOCKET_CHARDEV(chardev);
++    qemu_mutex_lock(&chardev->chr_write_lock);
++    if (!tcp_chr_hot_fork_child_profile(s, frontend, context)) {
++        result = -ENOTSUP;
++        goto out;
++    }
++    *basis = (QemuChrSocketHotForkChildBasis) {
++        .chardev = chardev,
++        .frontend = frontend,
++        .address = s->addr,
++        .ioc = s->ioc,
++        .sioc = s->sioc,
++        .listener = s->listener,
++        .read_source = chardev->gsource,
++        .hup_source = s->hup_source,
++        .context = context,
++        .connection_generation =
++            s->crucible_hot_fork_connection_generation,
++        .prepared = true,
++    };
++out:
++    qemu_mutex_unlock(&chardev->chr_write_lock);
++    return result;
++}
++
++bool qemu_chr_socket_hot_fork_child_basis_matches(
++    const QemuChrSocketHotForkChildBasis *basis, Chardev *chardev,
++    CharBackend *frontend, GMainContext *context)
++{
++    SocketChardev *s;
++    bool matches;
++
++    if (!basis || !basis->prepared || !chardev || !frontend ||
++        !object_dynamic_cast(OBJECT(chardev), TYPE_CHARDEV_SOCKET)) {
++        return false;
++    }
++
++    s = SOCKET_CHARDEV(chardev);
++    qemu_mutex_lock(&chardev->chr_write_lock);
++    matches = tcp_chr_hot_fork_child_profile(s, frontend, context) &&
++        basis->chardev == chardev && basis->frontend == frontend &&
++        basis->address == s->addr && basis->ioc == s->ioc &&
++        basis->sioc == s->sioc && basis->listener == s->listener &&
++        basis->read_source == chardev->gsource &&
++        basis->hup_source == s->hup_source && basis->context == context &&
++        basis->connection_generation ==
++            s->crucible_hot_fork_connection_generation;
++    qemu_mutex_unlock(&chardev->chr_write_lock);
++    return matches;
++}
++
+ static void tcp_chr_change_state(SocketChardev *s, TCPChardevState state)
+ {
+     switch (state) {
+@@ -644,6 +726,11 @@ static void tcp_chr_connect(void *opaque)
+     chr->filename = qemu_chr_compute_filename(s);
+ 
+     tcp_chr_change_state(s, TCP_CHARDEV_STATE_CONNECTED);
++    if (s->crucible_hot_fork_connection_generation == UINT64_MAX) {
++        s->crucible_hot_fork_connection_generation = 0;
++    } else {
++        s->crucible_hot_fork_connection_generation++;
++    }
+     update_ioc_handlers(s);
+     qemu_chr_be_event(chr, CHR_EVENT_OPENED);
+ }
+diff --git a/include/chardev/char-socket.h b/include/chardev/char-socket.h
+index d6d13ad37..ca79366c0 100644
+--- a/include/chardev/char-socket.h
++++ b/include/chardev/char-socket.h
+@@ -78,9 +78,58 @@ struct SocketChardev {
+     bool connect_err_reported;
+ 
+     QIOTask *connect_task;
++
++    uint64_t crucible_hot_fork_connection_generation;
+ };
+ typedef struct SocketChardev SocketChardev;
+ 
++typedef struct QemuChrSocketHotForkChildBasis {
++    Chardev *chardev;
++    CharBackend *frontend;
++    SocketAddress *address;
++    QIOChannel *ioc;
++    QIOChannelSocket *sioc;
++    QIONetListener *listener;
++    GSource *read_source;
++    GSource *hup_source;
++    GMainContext *context;
++    uint64_t connection_generation;
++    bool prepared;
++} QemuChrSocketHotForkChildBasis;
++
++/**
++ * qemu_chr_socket_hot_fork_prepare_child_basis() - bind socket resources
++ * @basis: caller-owned future-child socket resource basis
++ * @chardev: exact connected chardev owned by @frontend
++ * @frontend: exact admitted monitor frontend
++ * @context: exact GMainContext used by the chardev sources
++ *
++ * Binds one connected listening AF_UNIX socket backend without TLS, telnet,
++ * WebSocket, reconnect, connect-task, or queued descriptor-transfer state.
++ * The immutable basis retains the exact inherited channel, listener, read/HUP
++ * sources, frontend, and context for a later child-only disposition.  This
++ * operation is nondestructive.
++ *
++ * Returns: zero on success, or a negative errno value on rejection.
++ */
++int qemu_chr_socket_hot_fork_prepare_child_basis(
++    QemuChrSocketHotForkChildBasis *basis, Chardev *chardev,
++    CharBackend *frontend, GMainContext *context);
++
++/**
++ * qemu_chr_socket_hot_fork_child_basis_matches() - revalidate socket basis
++ * @basis: previously prepared future-child socket resource basis
++ * @chardev: exact expected connected chardev
++ * @frontend: exact expected monitor frontend
++ * @context: exact expected GMainContext
++ *
++ * Returns: true exactly while every bound socket resource and restriction
++ * remains unchanged.
++ */
++bool qemu_chr_socket_hot_fork_child_basis_matches(
++    const QemuChrSocketHotForkChildBasis *basis, Chardev *chardev,
++    CharBackend *frontend, GMainContext *context);
++
+ DECLARE_INSTANCE_CHECKER(SocketChardev, SOCKET_CHARDEV,
+                          TYPE_CHARDEV_SOCKET)
+ 
+diff --git a/monitor/monitor-internal.h b/monitor/monitor-internal.h
+index 9ce3d434b..c4b8c156d 100644
+--- a/monitor/monitor-internal.h
++++ b/monitor/monitor-internal.h
+@@ -26,6 +26,7 @@
+ #define MONITOR_INTERNAL_H
+ 
+ #include "chardev/char-fe.h"
++#include "chardev/char-socket.h"
+ #include "monitor/monitor.h"
+ #include "qapi/qapi-types-control.h"
+ #include "qapi/qmp-registry.h"
+@@ -180,6 +181,7 @@ typedef struct MonitorHotForkChildBasis {
+     IOThread *iothread;
+     Coroutine *dispatcher;
+     Chardev *chardev;
++    QemuChrSocketHotForkChildBasis socket;
+     bool prepared;
+ } MonitorHotForkChildBasis;
+ 
+@@ -215,6 +217,8 @@ bool monitor_hot_fork_child_basis_prepared_for(
+     const MonitorHotForkChildBasis *basis, uint64_t expected_generation);
+ bool monitor_hot_fork_child_disposition_prepared_for(
+     const MonitorHotForkChildBasis *basis, uint64_t expected_generation);
++bool monitor_hot_fork_child_socket_resources_prepared_for(
++    const MonitorHotForkChildBasis *basis, uint64_t expected_generation);
+ bool monitor_hot_fork_child_basis_matches_current(
+     const MonitorHotForkChildBasis *basis, uint64_t expected_generation);
+ void monitor_hot_fork_reset_child_basis(MonitorHotForkChildBasis *basis);
+diff --git a/monitor/monitor.c b/monitor/monitor.c
+index 4e50e48df..ad71550f5 100644
+--- a/monitor/monitor.c
++++ b/monitor/monitor.c
+@@ -745,7 +745,9 @@ int monitor_hot_fork_prepare_child_basis(
+     MonitorHotForkChildBasis *basis, uint64_t expected_generation)
+ {
+     MonitorHotForkInventory inventory;
++    QemuChrSocketHotForkChildBasis socket = { 0 };
+     Chardev *chardev;
++    GMainContext *context;
+     Monitor *mon;
+     int result = 0;
+ 
+@@ -775,6 +777,13 @@ int monitor_hot_fork_prepare_child_basis(
+         result = -ENOTSUP;
+         goto out;
+     }
++    context = iothread_get_g_main_context(mon_iothread);
++    result = qemu_chr_socket_hot_fork_prepare_child_basis(
++        &socket, chardev, &container_of(mon, MonitorQMP, common)->common.chr,
++        context);
++    if (result != 0) {
++        goto out;
++    }
+ 
+     *basis = (MonitorHotForkChildBasis) {
+         .generation = expected_generation,
+@@ -782,6 +791,7 @@ int monitor_hot_fork_prepare_child_basis(
+         .iothread = mon_iothread,
+         .dispatcher = qmp_dispatcher_co,
+         .chardev = chardev,
++        .socket = socket,
+         .prepared = true,
+     };
+ out:
+@@ -804,6 +814,16 @@ bool monitor_hot_fork_child_disposition_prepared_for(
+                basis, expected_generation) && basis->chardev;
+ }
+ 
++bool monitor_hot_fork_child_socket_resources_prepared_for(
++    const MonitorHotForkChildBasis *basis, uint64_t expected_generation)
++{
++    return monitor_hot_fork_child_disposition_prepared_for(
++               basis, expected_generation) &&
++        qemu_chr_socket_hot_fork_child_basis_matches(
++            &basis->socket, basis->chardev, &basis->monitor->common.chr,
++            iothread_get_g_main_context(basis->iothread));
++}
++
+ bool monitor_hot_fork_child_basis_matches_current(
+     const MonitorHotForkChildBasis *basis, uint64_t expected_generation)
+ {
+@@ -826,6 +846,8 @@ bool monitor_hot_fork_child_basis_matches_current(
+         basis->iothread == mon_iothread &&
+         basis->dispatcher == qmp_dispatcher_co &&
+         basis->chardev == monitor_hot_fork_child_chardev(basis->monitor) &&
++        monitor_hot_fork_child_socket_resources_prepared_for(
++            basis, expected_generation) &&
+         !qmp_dispatcher_co_shutdown;
+     qemu_mutex_unlock(&monitor_lock);
+     return matches;
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 24cd94355..be09677da 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -1504,7 +1504,7 @@ out:
+ static bool crucible_hot_fork_qmp_resource_plan_bound(void)
+ {
+     return crucible_hot_fork_qmp_stage.staged &&
+-        monitor_hot_fork_child_disposition_prepared_for(
++        monitor_hot_fork_child_socket_resources_prepared_for(
+             &crucible_hot_fork_qmp_child_basis,
+             crucible_hot_fork_qmp_stage.monitor_generation) &&
+         qemu_crucible_hot_fork_qmp_child_resources_prepared_for(
+@@ -1527,7 +1527,7 @@ static CrucibleHotForkQmpState *crucible_hot_fork_qmp_report(void)
+     CrucibleHotForkQmpState *report =
+         g_new0(CrucibleHotForkQmpState, 1);
+ 
+-    report->schema_version = 5;
++    report->schema_version = 6;
+     report->generation = crucible_hot_fork_qmp_stage.generation;
+     report->template_generation =
+         crucible_hot_fork_qmp_stage.template_generation;
+@@ -1550,8 +1550,13 @@ static CrucibleHotForkQmpState *crucible_hot_fork_qmp_report(void)
+         monitor_hot_fork_child_disposition_prepared_for(
+             &crucible_hot_fork_qmp_child_basis,
+             crucible_hot_fork_qmp_stage.monitor_generation);
++    report->monitor_socket_resources_bound = report->staged &&
++        monitor_hot_fork_child_socket_resources_prepared_for(
++            &crucible_hot_fork_qmp_child_basis,
++            crucible_hot_fork_qmp_stage.monitor_generation);
+     report->reinitializer_prepared = report->staged &&
+         report->monitor_basis_bound && report->monitor_disposition_bound &&
++        report->monitor_socket_resources_bound &&
+         qemu_crucible_hot_fork_qmp_child_reinitializer_bound_for(
+             &crucible_hot_fork_qmp_child_reinitializer,
+             &crucible_hot_fork_qmp_child_resources);
+@@ -2624,7 +2629,7 @@ crucible_hot_fork_template_resource_stage_report(
+                crucible_hot_fork_template_generation);
+     }
+ 
+-    report->schema_version = 11;
++    report->schema_version = 12;
+     report->template_generation = resources_staged ?
+         crucible_hot_fork_private_ring_stage.template_generation : 0;
+     report->private_ring_staged =
+@@ -2749,7 +2754,7 @@ crucible_hot_fork_template_report(
+     uint64_t acknowledged = crucible_hot_fork_template_acknowledged_proofs(
+         plugin_barrier, rcu_barrier, bh_timer_barrier, block_barrier);
+ 
+-    report->schema_version = 21;
++    report->schema_version = 22;
+     report->generation = crucible_hot_fork_template_generation;
+     report->outcome = outcome;
+     report->transaction_active = crucible_hot_fork_template_active;
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index d4788f966..f404b379f 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1474,9 +1474,12 @@
+ # Version 11 also binds the exact inherited chardev and requires its backend to
+ # support disconnect and add-client disposition.  It does not close the
+ # inherited monitor, attach the new endpoint, or complete a child descriptor
+-# disposition.
++# disposition. Version 12 additionally retains the exact supported connected
++# AF_UNIX socket backend, frontend, channel, listener, read/HUP sources,
++# connection generation, and GMainContext. TLS, telnet, WebSocket, reconnect,
++# connect-task, and queued descriptor-transfer state are rejected.
+ #
+-# @schema-version: resource-stage binding contract version, currently 11
++# @schema-version: resource-stage binding contract version, currently 12
+ #
+ # @template-generation: exact template generation that originally admitted the
+ #     retained resources, or zero when none are staged or they were staged
+@@ -1610,12 +1613,14 @@
+ # plan. Version 20 retains the exact supported monitor object, monitor I/O
+ # thread, and dispatcher as a QEMU-private ownership basis for future child
+ # disposition. Version 21 also binds the inherited chardev and verifies that
+-# its backend supports the required disconnect/add-client transition. Complete
+-# QEMU child disposition remains open, so this does not acknowledge proof bit
+-# 7 or 8.
++# its backend supports the required disconnect/add-client transition. Version
++# 22 retains the exact supported connected Unix-socket resources and rejects
++# auxiliary transports or pending descriptor-transfer state. Complete QEMU
++# child disposition remains open, so this does not acknowledge proof bit 7 or
++# 8.
+ # The caller must explicitly abort to roll the retained barriers back.
+ #
+-# @schema-version: transaction contract version, currently 21
++# @schema-version: transaction contract version, currently 22
+ #
+ # @generation: positive process-local transaction generation after the first
+ #     successful prepare, or zero before any transaction
+@@ -2090,17 +2095,19 @@
+ # @CrucibleHotForkQmpState:
+ #
+ # Exact QEMU-owned state for one branch-private nonblocking QMP stream. Version
+-# 5 authenticates the connected AF_UNIX stream by Linux SO_COOKIE, retains its
++# 6 authenticates the connected AF_UNIX stream by Linux SO_COOKIE, retains its
+ # descriptor in the sealed child resource plan, and binds the complete supported
+ # parent-monitor profile, lifecycle generation, exact monitor object, monitor
+ # I/O thread, dispatcher, and exact inherited chardev into one QEMU-private
+-# child basis and the one-shot child reinitializer.  The chardev backend must
+-# support disconnect and add-client disposition.  After successful child
+-# application, the immutable retained basis remains queryable without making
+-# the consumed adapter reusable.  The concrete inherited-monitor runtime
+-# remains open.
++# child basis and the one-shot child reinitializer. The chardev backend must
++# support disconnect and add-client disposition. Its exact connected Unix
++# socket channel, listener, read/HUP sources, frontend, connection generation,
++# and GMainContext are also retained; auxiliary transports and pending
++# descriptor transfer are rejected. After successful child application, the
++# immutable retained basis remains queryable without making the consumed
++# adapter reusable. The concrete inherited-monitor runtime remains open.
+ #
+-# @schema-version: retained QMP endpoint contract version, currently 5
++# @schema-version: retained QMP endpoint contract version, currently 6
+ #
+ # @generation: process-local positive mutation generation, or zero initially
+ #
+@@ -2133,6 +2140,11 @@
+ # @monitor-disposition-bound: whether that private basis also retains the exact
+ #     inherited chardev with disconnect and add-client backend operations
+ #
++# @monitor-socket-resources-bound: whether the basis retains the exact supported
++#     connected Unix-socket channel, listener, frontend, event sources,
++#     connection generation, and GMainContext without auxiliary transport or
++#     queued descriptor-transfer state
++#
+ # @reinitializer-prepared: whether the one-shot adapter was prepared for the
+ #     exact endpoint, template generation, and QMP generation; remains true
+ #     after a successful attempt and does not mean the adapter is reusable
+@@ -2162,6 +2174,7 @@
+             'nonblocking-unix-stream': 'bool',
+             'monitor-basis-bound': 'bool',
+             'monitor-disposition-bound': 'bool',
++            'monitor-socket-resources-bound': 'bool',
+             'reinitializer-prepared': 'bool',
+             'reinitialized': 'bool',
+             'disposition-complete': 'bool',
+diff --git a/tests/unit/test-char.c b/tests/unit/test-char.c
+index 60a843b79..fb2b35d28 100644
+--- a/tests/unit/test-char.c
++++ b/tests/unit/test-char.c
+@@ -7,6 +7,7 @@
+ #include "qemu/option.h"
+ #include "qemu/sockets.h"
+ #include "chardev/char-fe.h"
++#include "chardev/char-socket.h"
+ #include "system/system.h"
+ #include "qapi/error.h"
+ #include "qapi/qapi-commands-char.h"
+@@ -1192,6 +1193,9 @@ static void char_socket_server_test(gconstpointer opaque)
+     SocketAddress *addr;
+     Visitor *v;
+     QemuThread thread;
++    QemuChrSocketHotForkChildBasis hot_fork_basis = { 0 };
++    QemuChrSocketHotForkChildBasis changed_basis;
++    CharBackend foreign_frontend = { 0 };
+     int ret;
+     bool reconnected = false;
+     char *optstr;
+@@ -1260,6 +1264,28 @@ static void char_socket_server_test(gconstpointer opaque)
+     g_assert(data.event == CHR_EVENT_OPENED);
+     data.event = -1;
+ 
++    if (config->addr->type == SOCKET_ADDRESS_TYPE_UNIX) {
++        if (reconnected) {
++            g_assert_false(qemu_chr_socket_hot_fork_child_basis_matches(
++                &hot_fork_basis, chr, &be, chr->gcontext));
++        }
++        g_assert_cmpint(qemu_chr_socket_hot_fork_prepare_child_basis(
++                            &hot_fork_basis, chr, &be, chr->gcontext),
++                        ==, 0);
++        g_assert_true(qemu_chr_socket_hot_fork_child_basis_matches(
++            &hot_fork_basis, chr, &be, chr->gcontext));
++        g_assert_false(qemu_chr_socket_hot_fork_child_basis_matches(
++            &hot_fork_basis, chr, &foreign_frontend, chr->gcontext));
++        changed_basis = hot_fork_basis;
++        changed_basis.connection_generation++;
++        g_assert_false(qemu_chr_socket_hot_fork_child_basis_matches(
++            &changed_basis, chr, &be, chr->gcontext));
++    } else {
++        g_assert_cmpint(qemu_chr_socket_hot_fork_prepare_child_basis(
++                            &hot_fork_basis, chr, &be, chr->gcontext),
++                        ==, -ENOTSUP);
++    }
++
+     /* Send a greeting to the client */
+     ret = qemu_chr_fe_write_all(&be, (const uint8_t *)SOCKET_PING,
+                                 sizeof(SOCKET_PING));
+@@ -1281,6 +1307,8 @@ static void char_socket_server_test(gconstpointer opaque)
+     g_assert(!object_property_get_bool(OBJECT(chr), "connected", &error_abort));
+     g_assert(data.event == CHR_EVENT_CLOSED);
+     g_assert(data.got_pong);
++    g_assert_false(qemu_chr_socket_hot_fork_child_basis_matches(
++        &hot_fork_basis, chr, &be, chr->gcontext));
+ 
+     qemu_thread_join(&thread);
+ 

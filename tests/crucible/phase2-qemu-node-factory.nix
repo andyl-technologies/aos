@@ -12,7 +12,10 @@
     entry = ../../crates/crucible-qemu/src/lib.rs;
   };
   nodeFactory = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu/src/node_factory.rs)
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/src/node_factory.rs;
+    })
     (builtins.readFile ../../crates/crucible-qemu/src/node_factory/restore_plan.rs)
   ];
   nodeFactoryTests = import ./_rust-module-source.nix {

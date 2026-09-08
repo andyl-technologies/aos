@@ -3,7 +3,7 @@
   lib,
 }: let
   boundedSchedulerPreemptionCheck = import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;};
-  linuxSource = import ../../pkgs/kernel/_source.nix {fetchurl = pkgs.fetchurl;};
+  linuxSource = import ../../pkgs/kernel/_source.nix {inherit (pkgs) fetchurl mkManualUpstream;};
 
   kernel = pkgs.mkDerivation {
     pname = "crucible-aarch64-s1-s6-linux";

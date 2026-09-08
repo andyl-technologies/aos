@@ -9,7 +9,10 @@
 
   shmemContract = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible-shmem/src/lib.rs)
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs)
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+    })
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/layout.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/runtime.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs)
@@ -60,7 +63,7 @@
     failuresFor "crates/crucible-shmem source modules" shmemContract [
       {
         label = "ABI version unchanged for multi-vCPU nodes";
-        needle = "pub const ABI_VERSION: u32 = 17;";
+        needle = "pub const ABI_VERSION: u32 = 21;";
       }
       {
         label = "region config uses VM node count";

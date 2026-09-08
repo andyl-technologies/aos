@@ -2,6 +2,7 @@
 
 use super::*;
 
+#[cfg(any(test, feature = "test-double"))]
 const REQUESTED_PROPERTY_VIOLATION_REASON: &str = "requested property was violated";
 
 #[cfg(any(test, feature = "test-double"))]
@@ -668,6 +669,8 @@ pub(super) async fn run_resumed_savepoint_actor_with_driver_async(
             } else {
                 BackendCommandStatus::Passed
             },
+            execution_owner: RunExecutionOwner::Session,
+            campaign_replay_closure: None,
             created_state: String::from("paused"),
             final_state,
             outcome: Some(if property_violation_reached {
@@ -892,6 +895,8 @@ pub(super) async fn run_forked_savepoint_actor_with_driver_async(
             } else {
                 BackendCommandStatus::Passed
             },
+            execution_owner: RunExecutionOwner::Session,
+            campaign_replay_closure: None,
             created_state: String::from("paused"),
             final_state,
             outcome: Some(if property_violation_reached {
@@ -1363,6 +1368,7 @@ pub(super) async fn wait_resumed_actor_boundary(
     )))
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn resume_actor_boundary_yield_budget(start_ticks: u64, target_ticks: u64) -> u64 {
     RUN_INTERACTIVE_ACK_QUANTA_BOUND.saturating_add(target_ticks.saturating_sub(start_ticks))
 }
@@ -1755,6 +1761,7 @@ pub(super) fn fork_artifact_decision_kind(decision: &crucible::Decision) -> &'st
         crucible::Decision::Override(_) => "override",
         crucible::Decision::Preemption(_) => "preemption",
         crucible::Decision::AppRandom(_) => "app_random",
+        crucible::Decision::Selection(_) => "campaign_selection",
     }
 }
 

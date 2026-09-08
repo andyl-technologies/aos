@@ -333,9 +333,11 @@ pub struct StepObservation {
     /// Scheduler-safe frontier established before returning control.
     ///
     /// This normally equals the backend's physical instruction count. A
-    /// backend that parks earlier with a proven exact wake strictly beyond the
-    /// requested ceiling may report the requested ceiling here while retaining
-    /// the physical park point in [`AdvanceOutcome::Paused`].
+    /// backend that parks earlier because it has a proven exact wake strictly
+    /// beyond the requested ceiling, or because an unresolved external request
+    /// prevents all guest progress until a host reply arrives, may report the
+    /// requested ceiling here while retaining the physical park point in
+    /// [`AdvanceOutcome::Paused`].
     pub reached: VirtualTime,
     /// Low-level backend advancement result.
     pub outcome: AdvanceOutcome,

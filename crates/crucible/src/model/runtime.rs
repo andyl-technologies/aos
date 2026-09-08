@@ -211,7 +211,8 @@ pub fn step(config: &Configuration, decision: Decision) -> Configuration {
 /// # Errors
 ///
 /// Returns [`EngineError::AppRandomDrawCapExceeded`] when `schedule` contains
-/// more [`Decision::AppRandom`] entries than `def` admits.
+/// more legacy [`Decision::AppRandom`] entries or standardized typed
+/// app-random selections than `def` admits.
 pub fn reduce(def: &ScenarioDef, schedule: &Schedule) -> Result<State, EngineError> {
     validate_app_random_draw_cap(def, schedule)?;
     Ok(State {
@@ -249,10 +250,13 @@ pub(super) fn validate_debug_gdb_endpoint(
 }
 
 pub(super) fn count_app_random_decisions(schedule: &Schedule) -> u64 {
-    schedule
-        .decisions()
+    let decisions = schedule.decisions();
+    decisions
         .iter()
-        .filter(|decision| matches!(decision, Decision::AppRandom(_)))
+        .enumerate()
+        .filter(|(index, _decision)| {
+            crate::decision::is_app_random_schedule_decision(decisions, *index)
+        })
         .count() as u64
 }
 
@@ -1806,7 +1810,7 @@ pub(super) fn is_genuine_search_frontier_decision(decision: &Decision) -> bool {
     match decision {
         Decision::DeliveryOrder(_) => false,
         Decision::RngDraw(_) | Decision::Override(_) => true,
-        Decision::Preemption(_) | Decision::AppRandom(_) => false,
+        Decision::Preemption(_) | Decision::AppRandom(_) | Decision::Selection(_) => false,
     }
 }
 

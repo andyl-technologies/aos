@@ -190,6 +190,48 @@ impl ObservableEvent {
         }
     }
 
+    /// Builds one typed white-box guest-measurement observation.
+    #[must_use]
+    pub fn guest_measurement(
+        retired_icount: Icount,
+        node: NodeId,
+        event: GuestMeasurementEvent,
+    ) -> Self {
+        Self {
+            at: VirtualTime {
+                ticks: retired_icount.retired,
+            },
+            payload: ObservableEventPayload::GuestMeasurement {
+                retired_icount,
+                node,
+                event,
+            },
+        }
+    }
+
+    /// Builds one typed white-box guest semantic-marker observation.
+    #[must_use]
+    pub fn guest_semantic_marker(
+        retired_icount: Icount,
+        node: NodeId,
+        marker: impl Into<String>,
+        instance: impl Into<String>,
+        details: Vec<GuestSemanticMarkerDetail>,
+    ) -> Self {
+        Self {
+            at: VirtualTime {
+                ticks: retired_icount.retired,
+            },
+            payload: ObservableEventPayload::GuestSemanticMarker {
+                retired_icount,
+                node,
+                marker: marker.into(),
+                instance: instance.into(),
+                details,
+            },
+        }
+    }
+
     /// Builds an optional white-box assertion-marker observation.
     #[must_use]
     pub fn guest_assertion_marker(
@@ -225,6 +267,8 @@ impl ObservableEvent {
             | ObservableEventPayload::IoCompletion { node, .. }
             | ObservableEventPayload::NodeState { node, .. }
             | ObservableEventPayload::GuestMarker { node, .. }
+            | ObservableEventPayload::GuestMeasurement { node, .. }
+            | ObservableEventPayload::GuestSemanticMarker { node, .. }
             | ObservableEventPayload::GuestAssertionMarker { node, .. } => Some(node),
             ObservableEventPayload::AssertionProximity { node, .. } => node.as_ref(),
             ObservableEventPayload::NetworkDelivered { .. }
@@ -264,6 +308,75 @@ impl ObservableEvent {
     pub fn black_box_observation_contract(&self) -> Option<BlackBoxObservationContract> {
         self.payload.black_box_observation_contract()
     }
+}
+
+/// One canonical reduced rational retained from a guest metric message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct GuestMeasurementRational {
+    /// Whether the nonzero numerator is negative.
+    pub negative: bool,
+    /// Unsigned numerator magnitude.
+    pub numerator: u128,
+    /// Positive denominator.
+    pub denominator: u128,
+}
+
+/// One bounded typed value retained from the white-box guest protocol.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum GuestMeasurementValue {
+    /// Signed 64-bit integer.
+    Signed(i64),
+    /// Unsigned 64-bit integer.
+    Unsigned(u64),
+    /// Canonical reduced rational.
+    Rational(GuestMeasurementRational),
+    /// Boolean value.
+    Boolean(bool),
+    /// Canonical enumerated identifier.
+    Enumerated(String),
+    /// Bounded signed integer vector.
+    SignedVector(Vec<i64>),
+    /// Bounded unsigned integer vector.
+    UnsignedVector(Vec<u64>),
+}
+
+/// One white-box measurement protocol event.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum GuestMeasurementEvent {
+    /// A semantic measurement instance began.
+    Begin {
+        /// Scenario-declared measurement identity.
+        measurement: String,
+        /// Guest-supplied semantic instance key.
+        instance: String,
+    },
+    /// One typed metric sample was observed.
+    Sample {
+        /// Scenario-declared measurement identity.
+        measurement: String,
+        /// Guest-supplied semantic instance key.
+        instance: String,
+        /// Scenario-declared metric identity.
+        metric: String,
+        /// Exact typed sample value.
+        value: GuestMeasurementValue,
+    },
+    /// A semantic measurement instance ended.
+    End {
+        /// Scenario-declared measurement identity.
+        measurement: String,
+        /// Guest-supplied semantic instance key.
+        instance: String,
+    },
+}
+
+/// One canonical typed detail retained by a semantic marker.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct GuestSemanticMarkerDetail {
+    /// Canonical detail key.
+    pub key: String,
+    /// Exact typed detail value.
+    pub value: GuestMeasurementValue,
 }
 
 /// Typed observable event payloads used by condition leaves.
@@ -370,6 +483,28 @@ pub enum ObservableEventPayload {
         /// Stable marker identity carried by the doorbell payload.
         marker: MarkerId,
     },
+    /// A typed guest measurement-protocol message was observed.
+    GuestMeasurement {
+        /// Exact guest instruction count where the doorbell retired.
+        retired_icount: Icount,
+        /// Node that emitted the message.
+        node: NodeId,
+        /// Exact bounded measurement message.
+        event: GuestMeasurementEvent,
+    },
+    /// A typed semantic marker with an exact instance key was observed.
+    GuestSemanticMarker {
+        /// Exact guest instruction count where the doorbell retired.
+        retired_icount: Icount,
+        /// Node that emitted the marker.
+        node: NodeId,
+        /// Scenario-declared marker identity.
+        marker: String,
+        /// Guest-supplied semantic instance key.
+        instance: String,
+        /// Strictly ordered bounded typed details.
+        details: Vec<GuestSemanticMarkerDetail>,
+    },
     /// An optional white-box assertion marker was observed.
     GuestAssertionMarker {
         /// Exact guest instruction count where the doorbell retired.
@@ -419,6 +554,8 @@ impl ObservableEventPayload {
                 ..
             }
             | Self::GuestMarker { .. }
+            | Self::GuestMeasurement { .. }
+            | Self::GuestSemanticMarker { .. }
             | Self::GuestAssertionMarker { .. } => None,
         }
     }
@@ -521,7 +658,9 @@ impl GuestAssertionMarker {
 /// so the existing host assertion finalizer consumes the shared marker fields.
 /// Coverage payloads become named coverage-marker observations. Diagnostic
 /// event and lifecycle payloads become observational guest-marker identities, so
-/// they do not masquerade as black-box node lifecycle observations. The in-band
+/// they do not masquerade as black-box node lifecycle observations. Measurement
+/// and semantic-marker payloads retain their bounded typed fields in dedicated
+/// observational variants for scenario-aware campaign validation. The in-band
 /// random-request kind returns [`None`] because it is handled by the app-random
 /// decision path instead of the observational marker path.
 #[must_use]
@@ -559,7 +698,87 @@ pub fn observable_event_from_whitebox_marker_payload(
                 MarkerId::from_name(coverage.point.clone()),
             ))
         }
+        crucible_protocol::WhiteboxMarkerPayload::MeasurementBegin(boundary) => {
+            Some(ObservableEvent::guest_measurement(
+                retired_icount,
+                node,
+                GuestMeasurementEvent::Begin {
+                    measurement: boundary.measurement.clone(),
+                    instance: boundary.instance.clone(),
+                },
+            ))
+        }
+        crucible_protocol::WhiteboxMarkerPayload::MetricSample(sample) => {
+            Some(ObservableEvent::guest_measurement(
+                retired_icount,
+                node,
+                GuestMeasurementEvent::Sample {
+                    measurement: sample.measurement.clone(),
+                    instance: sample.instance.clone(),
+                    metric: sample.metric.clone(),
+                    value: guest_measurement_value_from_whitebox(&sample.value),
+                },
+            ))
+        }
+        crucible_protocol::WhiteboxMarkerPayload::MeasurementEnd(boundary) => {
+            Some(ObservableEvent::guest_measurement(
+                retired_icount,
+                node,
+                GuestMeasurementEvent::End {
+                    measurement: boundary.measurement.clone(),
+                    instance: boundary.instance.clone(),
+                },
+            ))
+        }
+        crucible_protocol::WhiteboxMarkerPayload::SemanticMarker(marker) => {
+            Some(ObservableEvent::guest_semantic_marker(
+                retired_icount,
+                node,
+                marker.marker.clone(),
+                marker.instance.clone(),
+                marker
+                    .details
+                    .iter()
+                    .map(|detail| GuestSemanticMarkerDetail {
+                        key: detail.key.clone(),
+                        value: guest_measurement_value_from_whitebox(&detail.value),
+                    })
+                    .collect(),
+            ))
+        }
         crucible_protocol::WhiteboxMarkerPayload::RandomRequest(_) => None,
+    }
+}
+
+fn guest_measurement_value_from_whitebox(
+    value: &crucible_protocol::WhiteboxMeasurementValue,
+) -> GuestMeasurementValue {
+    match value {
+        crucible_protocol::WhiteboxMeasurementValue::Signed(value) => {
+            GuestMeasurementValue::Signed(*value)
+        }
+        crucible_protocol::WhiteboxMeasurementValue::Unsigned(value) => {
+            GuestMeasurementValue::Unsigned(*value)
+        }
+        crucible_protocol::WhiteboxMeasurementValue::Rational(value) => {
+            GuestMeasurementValue::Rational(GuestMeasurementRational {
+                negative: value.negative,
+                numerator: value.numerator,
+                denominator: value.denominator,
+            })
+        }
+        crucible_protocol::WhiteboxMeasurementValue::Boolean(value) => {
+            GuestMeasurementValue::Boolean(*value)
+        }
+        crucible_protocol::WhiteboxMeasurementValue::Enumerated(value) => {
+            GuestMeasurementValue::Enumerated(value.clone())
+        }
+        crucible_protocol::WhiteboxMeasurementValue::SignedVector(value) => {
+            GuestMeasurementValue::SignedVector(value.clone())
+        }
+        crucible_protocol::WhiteboxMeasurementValue::UnsignedVector(value) => {
+            GuestMeasurementValue::UnsignedVector(value.clone())
+        }
     }
 }
 

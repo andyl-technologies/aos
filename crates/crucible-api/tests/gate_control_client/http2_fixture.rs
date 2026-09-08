@@ -815,7 +815,8 @@ pub(super) fn lifecycle_error_response(error: LifecycleApiError) -> axum::respon
         | LifecycleApiError::StateDidNotAdvance { .. }
         | LifecycleApiError::ActorJoin { .. }
         | LifecycleApiError::ActorFailed { .. }
-        | LifecycleApiError::LoopFactory { .. } => typed_rpc_status_response(
+        | LifecycleApiError::LoopFactory { .. }
+        | LifecycleApiError::AttemptOperational { .. } => typed_rpc_status_response(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             crucible_api::RpcStatusCode::Internal,
             "internal",
@@ -2109,6 +2110,7 @@ impl QuantumLoop for ServerQuantumLoop {
             advanced_node: None,
             resolved_events: Vec::new(),
             decisions: Vec::new(),
+            discovered_choices: Vec::new(),
             event_log_entries: Vec::new(),
             event_log_segment_bytes: Vec::new(),
             event_log_segment_text: String::new(),
@@ -2147,6 +2149,7 @@ impl QuantumLoop for ReferenceSimDoubleLoop {
             advanced_node: None,
             resolved_events: Vec::new(),
             decisions: Vec::new(),
+            discovered_choices: Vec::new(),
             event_log_entries: self.reference_event_log_entries(),
             event_log_segment_bytes: vec![b's'],
             event_log_segment_text: String::from("simdouble-reference"),
@@ -2223,6 +2226,7 @@ impl QuantumLoop for RejectingGdbLoop {
             advanced_node: None,
             resolved_events: Vec::new(),
             decisions: Vec::new(),
+            discovered_choices: Vec::new(),
             event_log_entries: Vec::new(),
             event_log_segment_bytes: Vec::new(),
             event_log_segment_text: String::new(),
@@ -2257,6 +2261,7 @@ impl QuantumLoop for InternalGdbLoop {
             advanced_node: None,
             resolved_events: Vec::new(),
             decisions: Vec::new(),
+            discovered_choices: Vec::new(),
             event_log_entries: Vec::new(),
             event_log_segment_bytes: Vec::new(),
             event_log_segment_text: String::new(),
@@ -2291,6 +2296,7 @@ impl QuantumLoop for RejectingOnceShutdownLoop {
             advanced_node: None,
             resolved_events: Vec::new(),
             decisions: Vec::new(),
+            discovered_choices: Vec::new(),
             event_log_entries: Vec::new(),
             event_log_segment_bytes: Vec::new(),
             event_log_segment_text: String::new(),

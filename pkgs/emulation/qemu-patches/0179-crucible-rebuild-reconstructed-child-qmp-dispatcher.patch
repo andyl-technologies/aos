@@ -1,0 +1,150 @@
+diff --git a/monitor/monitor-internal.h b/monitor/monitor-internal.h
+index 01cb72e42..b4b1f4568 100644
+--- a/monitor/monitor-internal.h
++++ b/monitor/monitor-internal.h
+@@ -185,6 +185,7 @@ typedef struct MonitorHotForkChildBasis {
+     bool prepared;
+     bool attempted;
+     bool inherited_protocol_disposed;
++    bool dispatcher_rebuilt;
+     bool parser_reset;
+     bool capabilities_reset;
+     bool input_held;
+@@ -269,6 +270,32 @@ void qmp_dispatcher_co_wake(void);
+  */
+ int monitor_qmp_hot_fork_reset_protocol_held(MonitorQMP *mon);
+ 
++/**
++ * monitor_qmp_hot_fork_dispatcher_is_idle() - check copied dispatcher state
++ * @expected: exact dispatcher retained in the monitor child basis
++ *
++ * The caller must hold @monitor_lock. Returns true only when @expected is the
++ * unchanged global dispatcher, is not shutting down, and is idle rather than
++ * scheduled or processing a request.
++ */
++bool monitor_qmp_hot_fork_dispatcher_is_idle(Coroutine *expected);
++
++/**
++ * monitor_qmp_hot_fork_rebuild_dispatcher_held() - replace child dispatcher
++ * @inherited: exact idle dispatcher copied from the source process
++ * @replacement: receives the fresh child dispatcher on success
++ *
++ * Retires the inherited idle dispatcher through its normal coroutine exit
++ * path, then installs one fresh dispatcher while monitor input remains held.
++ * The request queues must remain empty throughout the transition.
++ *
++ * Returns zero after replacement, -EINVAL for invalid arguments, -ESTALE when
++ * the supplied dispatcher is no longer the idle global dispatcher, or
++ * -EPROTO when retirement does not leave an empty dispatcher slot.
++ */
++int monitor_qmp_hot_fork_rebuild_dispatcher_held(
++    Coroutine *inherited, Coroutine **replacement);
++
+ int get_monitor_def(Monitor *mon, int64_t *pval, const char *name);
+ void handle_hmp_command(MonitorHMP *mon, const char *cmdline);
+ int hmp_compare_cmd(const char *name, const char *list);
+diff --git a/monitor/monitor.c b/monitor/monitor.c
+index 981f8e398..4586b0e2d 100644
+--- a/monitor/monitor.c
++++ b/monitor/monitor.c
+@@ -887,6 +887,7 @@ int monitor_hot_fork_reconstruct_child_protocol_held(
+     uint64_t expected_socket_cookie)
+ {
+     MonitorHotForkInventory inventory;
++    Coroutine *replacement_dispatcher = NULL;
+     MonitorQMP *qmp_mon;
+     Monitor *mon;
+     int result;
+@@ -911,6 +912,7 @@ int monitor_hot_fork_reconstruct_child_protocol_held(
+         qmp_mon != container_of(mon, MonitorQMP, common) ||
+         basis->iothread != mon_iothread ||
+         basis->dispatcher != qmp_dispatcher_co ||
++        !monitor_qmp_hot_fork_dispatcher_is_idle(basis->dispatcher) ||
+         basis->chardev != monitor_hot_fork_child_chardev(qmp_mon) ||
+         qmp_dispatcher_co_shutdown ||
+         !monitor_hot_fork_child_local_state_clean(qmp_mon) ||
+@@ -937,6 +939,14 @@ int monitor_hot_fork_reconstruct_child_protocol_held(
+     }
+ out:
+     qemu_mutex_unlock(&monitor_lock);
++    if (result == 0) {
++        result = monitor_qmp_hot_fork_rebuild_dispatcher_held(
++            basis->dispatcher, &replacement_dispatcher);
++        if (result == 0) {
++            basis->dispatcher = replacement_dispatcher;
++            basis->dispatcher_rebuilt = true;
++        }
++    }
+     return result;
+ }
+ 
+diff --git a/monitor/qmp.c b/monitor/qmp.c
+index 9a5720d56..4042807d9 100644
+--- a/monitor/qmp.c
++++ b/monitor/qmp.c
+@@ -28,6 +28,7 @@
+ #include "monitor-internal.h"
+ #include "qapi/error.h"
+ #include "qapi/qapi-commands-control.h"
++#include "qemu/main-loop.h"
+ #include "qobject/qdict.h"
+ #include "qobject/qjson.h"
+ #include "qobject/qlist.h"
+@@ -445,6 +446,57 @@ int monitor_qmp_hot_fork_reset_protocol_held(MonitorQMP *mon)
+     return 0;
+ }
+ 
++bool monitor_qmp_hot_fork_dispatcher_is_idle(Coroutine *expected)
++{
++    return expected && qmp_dispatcher_co == expected &&
++        !qmp_dispatcher_co_shutdown &&
++        !qatomic_read(&qmp_dispatcher_co_busy);
++}
++
++int monitor_qmp_hot_fork_rebuild_dispatcher_held(
++    Coroutine *inherited, Coroutine **replacement)
++{
++    Coroutine *fresh;
++
++    if (!inherited || !replacement) {
++        return -EINVAL;
++    }
++    *replacement = NULL;
++
++    qemu_mutex_lock(&monitor_lock);
++    if (!monitor_qmp_hot_fork_dispatcher_is_idle(inherited)) {
++        qemu_mutex_unlock(&monitor_lock);
++        return -ESTALE;
++    }
++    qmp_dispatcher_co_shutdown = true;
++    qemu_mutex_unlock(&monitor_lock);
++
++    /*
++     * The copied dispatcher is idle and therefore not scheduled.  Wake it
++     * exactly once so that it observes shutdown and returns through QEMU's
++     * normal coroutine disposal path instead of leaking an inherited stack.
++     */
++    qmp_dispatcher_co_wake();
++    AIO_WAIT_WHILE_UNLOCKED(NULL,
++                   (aio_poll(iohandler_get_aio_context(), false),
++                    qatomic_read(&qmp_dispatcher_co)));
++
++    qemu_mutex_lock(&monitor_lock);
++    if (qmp_dispatcher_co || qatomic_read(&qmp_dispatcher_co_busy)) {
++        qemu_mutex_unlock(&monitor_lock);
++        return -EPROTO;
++    }
++
++    qmp_dispatcher_co_shutdown = false;
++    qatomic_set(&qmp_dispatcher_co_busy, true);
++    fresh = qemu_coroutine_create(monitor_qmp_dispatcher_co, NULL);
++    qmp_dispatcher_co = fresh;
++    aio_co_schedule(iohandler_get_aio_context(), fresh);
++    *replacement = fresh;
++    qemu_mutex_unlock(&monitor_lock);
++    return 0;
++}
++
+ static void monitor_qmp_read(void *opaque, const uint8_t *buf, int size)
+ {
+     MonitorQMP *mon = opaque;

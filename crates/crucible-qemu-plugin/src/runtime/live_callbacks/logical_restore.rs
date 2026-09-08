@@ -36,6 +36,13 @@ impl LiveVcpuTimeCallbackState {
                     message: source.to_string(),
                 }
             })?;
+            super::super::live_whitebox::restore_selectable_continuation().map_err(|source| {
+                LiveVcpuTimeCallbackError::WhiteboxCallback {
+                    message: source.to_string(),
+                }
+            })?;
+            crate::coverage::reset_live_coverage_for_restore(request.generation)
+                .map_err(|source| LiveVcpuTimeCallbackError::CoverageRestore { source })?;
             self.logical_restore_continuation_generation
                 .store(request.generation, Ordering::Release);
         }

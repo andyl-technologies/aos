@@ -1,0 +1,1045 @@
+# 03 — Candidate generation, guidance, and adaptive exploration
+
+Exhaustive search is usually impossible. This file specifies how a campaign
+selects a small, useful, replayable subset of a vast mixed discrete and integral
+space while preserving a clear account of what was and was not explored.
+
+## 03.1 Two nested decisions
+
+Campaign planning has two levels:
+
+1. **Frontier selection:** which open branch point and candidate-source
+   continuation should receive the next unit of work?
+2. **Candidate generation:** which previously unadmitted value should that
+   branch point try?
+
+The existing breadth-first, depth-first, priority, coverage, novelty, assertion
+proximity, and deterministic-bandit mechanisms are frontier policies. The new
+candidate-generator abstraction handles typed domains.
+
+```rust,illustrative
+pub trait CandidateGenerator {
+    fn poll(
+        &self,
+        opportunity: &ChoiceOpportunity,
+        view: &ExpansionStateView,
+        seed: Seed,
+    ) -> CandidatePoll;
+}
+
+pub enum CandidatePoll {
+    Yield(ChoiceValue),
+    WaitForFeedback { completed_visits: u64 },
+    Exhausted,
+}
+```
+
+This is an illustrative interface, not permission to store trait objects. The
+durable representation is a closed, versioned `CandidateGeneratorSpec` plus
+canonical facts from which its cursor and statistics are derived.
+
+The initial canonical specification is a closed tagged union covering `all`,
+weighted categorical, stratified/boundary/log/permuted/progressive integer,
+corpus mutation, and an ordered positive-integer-weight mixture of other
+specifications. It records an implementation-protocol version, bounds every
+map/list before allocation, and exposes mixture children in the generic object
+envelope. Arbitrary class names, native closures, serialized functors, and
+unversioned parameter maps are not admitted. Recursive mixture references are
+authenticated as ordinary content children and must form a complete reachable
+closure before policy or campaign-ref publication.
+
+- **[GUIDE-1]** Candidate generation MUST be a pure function of the named
+  planner engine/artifact and state, choice opportunity, branch point, branch
+  request, policy, campaign seed, explicit planning budget, and canonical
+  bounded `CampaignPlanningView`. Direct and RPC planner adapters receive the
+  same logical view.
+- **[GUIDE-2]** Generator implementation version and parameters MUST be included
+  in `CampaignPolicyId` and every resulting proposal's provenance.
+
+### Candidate sources and explicit branches
+
+Every `BranchRequest` supplies one of four source forms:
+
+```rust,illustrative
+pub enum CandidateSource {
+    Finite {
+        values: CanonicalSet<ChoiceValue>,
+        prior_weights: Option<CanonicalMap<ChoiceValue, u64>>,
+    },
+    ModeledFinite {
+        model: ProbabilityModelId,
+        prior_weights: CanonicalMap<ChoiceValue, u64>,
+    },
+    ModeledGenerated {
+        model: ProbabilityModelId,
+        generator: CandidateGeneratorSpecId,
+    },
+    Generated { generator: CandidateGeneratorSpecId },
+}
+```
+
+A finite source is an explicit bounded set, not a statement about the
+cardinality of the underlying domain. An operator can therefore branch a huge
+integer opportunity at three deliberately chosen values. `--all` is shorthand
+for a finite source only when validation proves that the complete domain fits
+the policy's explicit exhaustive-cardinality ceiling.
+
+A generated source is a suspended deterministic computation: sampling,
+mutation, exhaustive iteration, or progressive widening. Finite and generated
+sources share validation, proposal, attempt, observation, credit, and replay
+machinery. Issuing a finite request is additive; it does not close or replace a
+policy generator already attached to the same branch point. Replacing the
+exploration policy requires an explicit policy activation, or deriving a new
+campaign when the operator wants an independent future history.
+
+A finite source may attach a positive raw `u64` weight to every value. Missing
+weights mean the uniform raw weight one. A modeled finite source instead
+retains the exact positive masses resolved by the execution-model adapter and
+the `ProbabilityModelId` from which they came. Repository acceptance requires
+that ID to equal the exact opportunity's `model_prior`; the retained map is the
+portable restart/import and PUCT basis. A modeled generated source retains the
+same exact model identity plus the deterministic generator produced by that
+model's concrete adapter. The current closed adapter is uniform app randomness,
+so each prospective or completed value has raw weight one. Unmodeled generated
+sources also use raw weight one. Weights guide proposal ranking only.
+The request's source form is authoritative: an explicitly weighted finite
+source remains an auditable operator/planner override even when the opportunity
+names a model, and the model is used only when the request selects
+`ModeledFinite` or `ModeledGenerated`.
+They do not change canonical value order, legality, request budgets,
+deduplication, or attempt identity. Branch-request schema v2 adds the explicit
+weighted finite encoding, v3 adds the modeled finite encoding, and v4 adds the
+model-ID plus generator-ID encoding; schema-v1 uniform/generated, schema-v2
+explicit, and schema-v3 modeled-finite requests retain their exact identity.
+Generator draws are keyed by `BranchRequestId`, so a newly authored v2
+generated request intentionally owns a distinct stream from an otherwise equal
+v1 request; replay of the retained v1 body continues to use its original ID and
+stream.
+
+## 03.2 Built-in generators
+
+The closed specification vocabulary provides:
+
+| Generator | Domain | Behavior |
+| --- | --- | --- |
+| `all` | Small Boolean/discrete | Admits every alternative in stable ID order. |
+| `weighted_categorical` | Discrete | Keyed sampling without replacement using exact integer weights. |
+| `stratified_integer` | Integer | Admits values from deterministic strata across the full range. |
+| `boundary_integer` | Integer | Prioritizes min, max, default, landmarks, adjacent values, and powers of two. |
+| `log_integer` | Positive integer | Samples integral base powers with exact upward step rounding. |
+| `permuted_integer` | Finite integer | Walks a keyed permutation without materializing the domain. |
+| `permuted_integer` v17 | Modeled power-of-two integer | Resolves a uniform model into a request-budget-bounded keyed permutation through cardinality `2^64`. |
+| `progressive_integer` | Integer | Starts with landmarks/strata and refines intervals from feedback. |
+| `mutate_near_corpus` | Integer | Deterministically mutates completed selections whose children remain in the retained corpus. |
+
+The current repository-owned executable checkpoint implements generator
+implementation-version 2 `all` for Boolean and discrete domains. It derives
+`false`, then `true`, or the discrete alternatives in stable `AlternativeId`
+order without storing a cursor.
+
+Generator implementation-version 3 defines static `boundary_integer` order.
+It emits the inclusive minimum, inclusive maximum, opportunity default, and
+declared landmarks in canonical numeric order. It then visits those deduplicated
+anchors in that order and emits each legal one-step lower and upper neighbor.
+Finally it emits legal powers of two by ascending exponent; unsigned domains use
+positive powers, while signed domains try the positive value before the negative
+value at each exponent and include `i64::MIN` as the negative `2^63`. Every
+candidate is filtered through the exact stepped domain and first occurrence
+wins. This implementation accepts at most 64 declared landmarks and derives at
+most 512 candidates, keeping proposal and restart owner validation bounded. It
+needs no stored cursor or feedback.
+
+Generator implementation-version 4 defines static `stratified_integer` order.
+Let `C` be the exact stepped-domain cardinality and `E = min(strata, C)`. For
+`E > 1`, zero-based candidate ordinal `j` uses legal-value offset
+`floor(j * (C - 1) / (E - 1))` and value `minimum + offset * step`; this
+includes both endpoints. For `E = 1`, the offset is `floor((C - 1) / 2)`, the
+lower of the two middle legal values when the cardinality is even. If the
+requested strata exceed the cardinality, every legal value is emitted. The
+implementation admits at most 4,096 strata and reconstructs each ordinal with
+checked 128-bit arithmetic in constant space.
+
+Generator implementation-version 5 defines static `log_integer` order over a
+strictly positive stepped domain. It emits the inclusive minimum, then integral
+powers `base^e` for ascending `e` beginning at zero. Each power is rounded
+upward to the least legal domain value `minimum + ceil((base^e - minimum) /
+step) * step`; powers at or below the minimum select the minimum, and rounded
+values above the maximum are omitted. It then emits the inclusive maximum.
+First occurrence wins throughout. Base two over the full unsigned 64-bit range
+is the largest sequence: 64 powers plus a distinct maximum, or 65 candidates.
+The owner uses checked 128-bit arithmetic and constant bounded space.
+
+Generator implementation-version 6 defines `permuted_integer` for stepped
+domains with cardinality `C <= 2^64 - 1`. Its key is
+`H("crucible.campaign.generator.permuted-integer.v6",
+BranchRequestId.digest)`, so policy activation cannot reinterpret an existing
+request. Split the 32-byte key into four big-endian `u64` words. Let `N` be the
+least power of two at least `C`, `M = N - 1`, and begin with zero-based ordinal
+offset `x`. For rounds zero through three, compute `y = x XOR (word & M)` on
+even rounds and `y = (word - x) mod N` on odd rounds. Replace `x` with `y` only
+when `y < C`; otherwise leave it unchanged. Each restricted round is an
+involution of `[0, C)`, so their composition is a bijection. The candidate is
+`minimum + x * step`. This walks every legal value exactly once with four
+bounded rounds and no domain materialization. Cardinality `2^64` fails closed
+because its last value has no one-based `u64` proposal ordinal.
+
+Generator implementation-version 17 resolves a uniform integer probability
+model into a bounded `ModeledGenerated` source. The exact generator algorithm
+is `permuted_integer`; any other algorithm/version pairing fails closed. The
+stepped-domain cardinality `C` MUST be a positive power of two no greater than
+`2^64`. For request proposal budget `B`, the source count is `min(C, B)` and
+the source is exhausted at that count only when `C <= B`; otherwise it is
+closed by its explicit budget. This distinction permits a full unsigned
+64-bit app-random domain to emit a bounded request of candidates without
+claiming that all `2^64` values were named by one-based `u64` ordinals.
+
+The version-17 key is
+`H("crucible.campaign.generator.modeled-uniform-integer.v17",
+BranchRequestId.digest)`. Split it into four big-endian `u64` words. Because
+`C` is a power of two, let `M = C - 1`, represented as `u64::MAX` when
+`C = 2^64`. Starting from zero-based ordinal `x`, each even round replaces
+`x` with `x XOR (word & M)` and each odd round replaces it with
+`(word - x) mod C`. The four-round composition is a permutation of the exact
+domain offsets, and the candidate is `minimum + x * step`. Owner validation
+requires the retained model ID to equal the opportunity's `model_prior`,
+authenticates the exact generator envelope/closure, and replays the same count,
+value, and closed-versus-exhausted result on local acceptance, restart, and
+import.
+
+Generator implementation-version 7 defines `weighted_categorical` over at
+most 256 alternatives named by a discrete domain. The weight map is nonempty,
+contains only positive `u64` weights, and every key must name an alternative in
+that exact domain. At zero-based draw `j`, let `W` be the checked `u128` sum of
+the remaining weights. Derive a big-endian `u128` sample from the first 16 bytes
+of
+`H("crucible.campaign.generator.weighted-categorical.v7",
+BranchRequestId.digest || be64(j) || be64(nonce))`. Let `T = (-W) mod W` in
+unsigned 128-bit arithmetic. Starting with nonce zero, reject samples below `T`
+and increment the nonce; the first accepted sample selects position
+`sample mod W` in the cumulative positive-weight intervals of the remaining
+alternatives in canonical `AlternativeId` order. Remove the selected
+alternative and repeat. At most 256 rejection attempts are admitted per draw;
+exhausting that bound fails closed. This is exact integer-weight sampling
+without replacement, contains no floating-point arithmetic, and reconstructs
+the same complete order from the immutable request after restart.
+
+Generator implementation-version 8 defines `ordered_mixture` over one through
+256 ordered positive-weight child specifications. Every child must itself have
+an executable finite owner for the request's exact domain; a suspended child
+suspends the complete mixture. Resolve each child's complete candidate order,
+then maintain its zero-based consumed count `e_i` and weight `w_i`. At each
+step choose the nonexhausted component with the least exact virtual finish time
+`(e_i + 1) / w_i`, comparing fractions by checked `u128` cross multiplication
+and breaking ties by original component ordinal. Advance that component even
+when its value has already been emitted, and emit a value only on its first
+occurrence in canonical `ChoiceValue` equality. Recursive materialization and
+each scheduler advance consume one of 8,192 work units; nesting is limited to
+64 mixtures and output to 512 distinct values. Exceeding any bound fails closed.
+This preserves exact integer weights without expanding them into repeated
+entries, makes duplicate suppression independent of map insertion order, and
+reconstructs the same mixture after restart.
+
+Generator implementation-version 9 defines feedback-gated
+`progressive_integer` over a stepped integer domain. Let `C` be the exact
+domain cardinality, `S = min(initial_strata, C)`, and
+`L = min(C, request.maximum_proposals)`. The first `min(S, L)` candidates use
+the version-4 stratified offsets for exactly `S` strata, including both domain
+endpoints when `S > 1` and the lower midpoint when `S = 1`. After all `S`
+initial candidates, form every maximal interval of still-unselected legal
+offsets, including exterior intervals. Select the interval with greatest
+cardinality, breaking equal-cardinality ties by lower offset, emit its lower
+midpoint `lower + floor((length - 1) / 2)`, split around that offset, and
+repeat. This completely determines the candidate order without reward or
+arrival-order input.
+
+Initial candidates are immediately available. One-based refinement `r`
+becomes available only when the branch point has at least
+`r * feedback_interval` distinct authenticated descendant-observation credits.
+After an admitted refinement, the continuation reports
+`WaitingForFeedback(completed, required)` until the next threshold is met.
+Version 9 admits at most 4,096 initial strata and at most 4,096 proposals, and
+the maximum feedback threshold must fit `u64`. Reaching `L` is `Exhausted`
+only when `C <= request.maximum_proposals`; otherwise it is budget-limited
+`Closed`. The interval heap and every threshold are owner-recomputed during
+local acceptance, import, and restart.
+
+Generator implementation-version 10 defines view-dependent
+`mutate_near_corpus` over a stepped integer domain. For the request's exact
+branch point, the owner scans at most 4,096 authenticated completed-observation
+credits. A credit contributes an anchor only when its branch attempt names the
+request's exact opportunity and domain and its observation child remains in the
+exact snapshot corpus. Anchors deduplicate in canonical integer order. For each
+anchor in that order, the owner tries the legal one-step lower value and then
+the legal one-step upper value, followed by distance two in the same lower-then-
+upper order, through the declared `maximum_distance`. Out-of-domain values and
+every repeated value are omitted; the anchor itself is not emitted.
+
+Version 10 does not assign a permanent positional meaning to the mutable corpus.
+Its portable continuation is the exact set of values already proposed by the
+immutable request. At proposal ordinal `n`, the owner recomputes the candidates
+from the exact current snapshot and chooses the first candidate not among
+ordinals `1..n-1`. Corpus growth may therefore introduce a newly preferred
+candidate without reinterpreting an earlier proposal. When no unproposed
+candidate exists, the continuation waits for the next completed branch-point
+credit rather than claiming domain exhaustion. It closes only at the request's
+proposal budget.
+
+The owner admits at most 4,096 legal-step distance, 4,096 proposals, and 65,536
+anchor-distance work units per recomputation. It charges at most 128 MiB of
+canonical credit, observation, and attempt bodies, in addition to the shared
+selection resolver's existing 4,096-ID and 128-MiB unique-record budget. Every
+limit and the exact proposal-set continuation are recomputed during local
+acceptance, import, and restart.
+
+Generator implementation-version 11 gives `progressive_integer` an exact
+feedback-sensitive interval order while retaining version 9's stratified
+prefix, visit thresholds, midpoint rule, exhaustion semantics, and 4,096-value
+bounds. After the initial prefix, reconstruct the exact set of values already
+proposed by this request and every maximal interval of unselected legal offsets.
+For each interval, take the nearest selected offset immediately below and above
+it. A missing exterior endpoint has score zero. Each present endpoint maps to
+the semantic `BranchEdgeId` derived from this request's branch point, domain
+semantic ID, and value. Score that edge with the active policy's owner-derived
+fixed-point PUCT projection at the proposal's exact planning view. A completed
+edge uses its authenticated statistics; an admitted but unobserved endpoint is
+scored as the sole prospective weight-one generated edge, using the same exact
+normalization as planner guidance.
+
+The interval score is the unsigned absolute difference between the two signed
+endpoint `total_micros` scores. Select the greatest score, then the greatest
+interval cardinality, then the lowest interval offset; emit its lower midpoint.
+This folds exact completed visits, objective reward, verified finding reward,
+globally unique coverage novelty, exploration uncertainty, and fairness into
+interval choice without trusting arrival-order telemetry. Previously issued
+values remain the portable continuation, so later observations or a policy
+change can select a different *next* interval but cannot reinterpret an earlier
+proposal. Candidate construction fails closed when the active policy does not
+provide the required tree-search PUCT owner for a feedback refinement.
+Planner-page construction batches
+all needed branch-point projections under the existing aggregate credit,
+record, identity, and byte ceilings before deriving offers.
+
+Generator implementation-version 12 adds the exact producer-landmark interval
+term while retaining version 11's prefix, visit thresholds, endpoint PUCT
+scores, exhaustion semantics, and bounds. For every remaining interval, count
+the exact domain landmarks whose legal offsets lie inside it. Select the
+greatest tuple `(landmark_count, endpoint_score_delta, interval_cardinality)`,
+then the lowest interval offset. When the winning interval contains landmarks,
+emit the contained landmark with least absolute distance from that interval's
+lower midpoint, breaking equal distance by lower landmark offset. Otherwise
+emit the lower midpoint exactly as version 11 does. A landmark already proposed
+is no longer inside a remaining interval and therefore cannot receive another
+allocation. The exact `ChoiceDomainId` authenticates the landmark set even
+though presentation-only landmark edits deliberately preserve the domain's
+semantic ID and branch-edge identity. The existing 4,096-landmark domain bound
+keeps the interval fold and selected-interval search bounded.
+
+Generator implementation-version 13 adds a direct objective-measurement
+discontinuity term before version 12's interval terms. For one completed
+semantic edge `e`, let `R_e` be its owner-verified policy-weighted objective
+reward sum after the canonical once-per-edge signed saturation and `N_e` its
+positive completed-visit count. A completed edge without a verified objective
+evaluation has `R_e = 0`; an exterior endpoint or unobserved edge uses the exact
+basis `(R_e, N_e) = (0, 1)`. The endpoint mean discontinuity is
+
+```text
+D(a, b) = abs(R_a * N_b - R_b * N_a) / (N_a * N_b)
+```
+
+Compare `D` as an exact nonnegative rational, then compare landmark count,
+endpoint PUCT-score difference, interval cardinality, and lower offset exactly
+as version 12. The winning interval still emits its nearest lower-midpoint
+landmark when one remains and its ordinary lower midpoint otherwise. Objective
+reward sums, visit counts, observations, evaluations, property verdicts, and
+active-policy contracts come from the same bounded owner projection already
+used by PUCT; uninterpreted or unauthenticated measurement payloads never enter
+the term. The existing 65,536-credit, 65,536-evaluation, 128-MiB evidence, and
+4,096-proposal bounds also bound every numerator, denominator, and comparison.
+
+Generator implementation-version 14 adds a direct coverage-novelty
+discontinuity term before version 13's interval terms. For one completed
+semantic edge `e`, let `C_e` be the exact count of globally unique canonical
+coverage identities assigned to that edge and retain `N_e` as its positive
+completed-visit count. An edge without unique coverage and an exterior or
+unobserved endpoint use `C_e = 0`, with the latter retaining the exact
+denominator basis `N_e = 1`. Compare
+
+```text
+C(a, b) = abs(C_a * N_b - C_b * N_a) / (N_a * N_b)
+```
+
+as an exact nonnegative rational, then compare version 13's objective
+discontinuity, landmark count, endpoint PUCT-score difference, interval
+cardinality, and lower offset. The winning interval retains version 12's exact
+landmark-or-midpoint value rule. Coverage identities, visit counts, and edge
+ownership come from the same bounded, snapshot-authenticated projection used by
+PUCT; executor arrival order and duplicate coverage identities cannot affect
+the term. Existing credit, observation, coverage-identity, evidence-byte, and
+proposal bounds therefore also bound this comparison.
+
+Generator implementation-version 15 adds a direct finding-reward
+discontinuity term before version 14's interval terms. For one completed
+semantic edge `e`, let `F_e` be the saturating sum of owner-verified finding
+occurrence counts multiplied by the active policy's closed positive finding
+weights, and retain `N_e` as its positive completed-visit count. An edge without
+a weighted finding and an exterior or unobserved endpoint use `F_e = 0`, with
+the latter retaining `N_e = 1`. Compare
+
+```text
+F(a, b) = abs(F_a * N_b - F_b * N_a) / (N_a * N_b)
+```
+
+as an exact nonnegative rational, then compare version 14's coverage,
+objective, landmark, PUCT, cardinality, and lower-offset terms. The winning
+interval retains the same landmark-or-midpoint value rule. Finding signatures,
+occurrences, observation paths, weights, and visit counts come from the bounded
+snapshot owner; duplicate or unauthenticated occurrences cannot affect this
+term. Existing finding-root, occurrence, body-byte, credit, and proposal bounds
+also bound every comparison.
+
+Generator implementation-version 16 adds inverse-frequency coverage rarity
+before version 15's interval terms. Let `Q = 65,536`, the canonical observation
+ceiling, and let `f(i)` be coverage identity `i`'s positive occurrence count
+across the exact snapshot. Every occurrence of `i` in a credited observation
+contributes `floor(Q / f(i))` to that observation's semantic edge. Let `A_e` be
+the checked sum for edge `e`; an exterior or unobserved endpoint uses
+`(A_e, N_e) = (0, 1)`. Compare
+
+```text
+A(a, b) = abs(A_a * N_b - A_b * N_a) / (N_a * N_b)
+```
+
+as an exact nonnegative rational, then compare version 15's finding, unique
+coverage, objective, landmark, PUCT, cardinality, and lower-offset terms. The
+winning interval retains the same landmark-or-midpoint rule. Because
+`1 <= f(i) <= Q`, every contribution is positive and bounded; globally unique
+identities receive the largest mass while repeated identities retain decreasing
+but nonzero guidance. The owner derives both unique novelty and rarity from one
+bounded canonical observation scan, so arrival order, duplicate causes, and
+unauthenticated coverage cannot affect either term.
+
+Other algorithms remain valid suspended specifications but fail closed at
+proposal issuance and expansion projection until their versioned cursor and
+feedback owners are implemented. Earlier and unknown implementation versions
+remain suspended rather than being reinterpreted as versions 2 through 16; this
+preserves owner validation of histories created before executable enumeration
+landed.
+
+Generators compose as a fixed ordered mixture with integer weights. Duplicate
+values deduplicate by `(BranchPointId, ChoiceDomainId, ChoiceValue)`; the
+generator advances until it yields a new value or proves exhaustion. Distinct
+request/proposal facts that produce the duplicate remain visible as provenance.
+
+- **[GUIDE-3]** Every finite generator MUST eventually exhaust its domain if
+  polled without a budget limit. Sampling generators over huge domains MUST
+  report admitted cardinality and may report `Open` rather than `Exhausted`.
+- **[GUIDE-4]** Boundaries, defaults, producer landmarks, and values immediately
+  adjacent by one legal step SHOULD receive an initial fairness allocation
+  before purely adaptive exploitation.
+
+## 03.3 Progressive widening
+
+For a branch point with `N` completed descendant visits and `M` admitted
+distinct children, a widening policy permits another child when:
+
+```text
+M < ceil(k * N^alpha)
+```
+
+`k` and `alpha` are exact nonnegative rationals with a specified integer
+rounding algorithm. The implementation does not evaluate a floating-point power.
+The first version supports a closed set of rational exponents with exact integer
+root/power implementations, including `1/2` and `1`. A policy may additionally
+declare minimum initial children, maximum children, minimum completed visits per
+child, and domain-exhaustion behavior.
+
+For reduced `k = a / b`, completed visits `N`, admitted children `M`, initial
+allocation `I`, hard ceiling `H`, and per-child visit floor `V`, the first
+version derives the power-law allowance `R` as follows:
+
+```text
+alpha = 0:   R = ceil(a / b)
+alpha = 1:   R = ceil(a * N / b)
+alpha = 1/2: R = least nonnegative r such that (r * b)^2 >= a^2 * N
+L = min(H, max(I, R))
+```
+
+The square-root comparison uses exact unsigned 256-bit limb products and a
+bounded binary search over `[0, H]`; it does not approximate the irrational
+root. Products for the linear case use unsigned 128-bit arithmetic. Values
+above `H` saturate to `H` before they can affect admission.
+
+One more child is eligible exactly when `M < L` and either `M < I` or
+`N >= M * V`. The initial allocation therefore cannot deadlock waiting for
+feedback from children that do not yet exist. The visit threshold is computed
+in unsigned 128-bit arithmetic; a threshold above `u64::MAX` is valid but
+unreachable by the canonical visit counter. `M > H` is an integrity error.
+These rules are implemented and conformance-tested as a pure owner primitive;
+using them to issue generated candidates still requires the complete
+branch-point projection and a new planner/generator implementation version.
+
+For integer domains, the generator maintains a derived interval partition:
+
+```text
+[minimum ................................ maximum]
+     | landmarks and initial strata |
+
+observations reveal a transition in [a, b]
+                         |
+                         +-> split [a, b], sample midpoint/adjacent values
+```
+
+Intervals receive deterministic scores from:
+
+- reward improvement or regression;
+- coverage or semantic novelty at their endpoints;
+- property-verdict disagreement;
+- measurement discontinuity;
+- uncertainty from low visit count;
+- producer landmarks contained in the interval.
+
+The partition is derived from proposals and observations and can be rebuilt.
+Splits use exact integer midpoint and rounding rules. Empty or duplicate splits
+are discarded. Version 9 is the bounded feedback-gated interval owner described
+in §03.2: its visit count gates refinement, while its largest-gap choice does
+not consume guidance scores. Version 11 consumes the exact owner-derived PUCT
+endpoint score described there. Dedicated objective-measurement discontinuity
+and producer-landmark interval terms require replay-distinct implementation
+versions. Version 12 consumes the exact landmark term, version 13 additionally
+consumes the direct owner-verified objective discontinuity, and version 14
+precedes it with the exact globally unique coverage-novelty discontinuity.
+Version 15 precedes those terms with the exact active-policy-weighted finding
+reward discontinuity. No adaptive term may be inferred from unauthenticated
+telemetry or opaque measurement payloads.
+
+- **[GUIDE-5]** Progressive widening MUST feed descendant observations back to
+  the expansion state at every branch point on the recorded branch-edge path.
+  It MUST NOT mutate ancestor configurations.
+- **[GUIDE-6]** Widening eligibility and interval selection MUST be explainable
+  from stored visit counts, rewards, proposal values, policy parameters, and
+  observation IDs.
+- **[GUIDE-7]** A widening branch point MAY remain dormant indefinitely without
+  a live QEMU process. Polling its expansion state again realizes its parent
+  from the cheapest correct cache tier.
+- **[GUIDE-25]** Progressive-integer implementation-version 9 MUST reproduce the
+  exact stratified-prefix and largest-gap/lower-midpoint order in §03.2, unlock
+  refinement `r` only at the exact authenticated `r * feedback_interval`
+  completed-visit threshold, and enforce its 4,096-strata, 4,096-proposal, and
+  checked-`u64` threshold bounds during local acceptance, import, and restart.
+  Earlier and unknown progressive versions MUST remain suspended.
+- **[GUIDE-26]** Corpus-mutation implementation-version 10 MUST derive anchors
+  only from exact completed branch selections whose children remain in the
+  snapshot corpus, reproduce the canonical anchor and lower-then-upper distance
+  order in §03.2, and use the exact previously proposed value set as its
+  portable continuation. It MUST enforce the 4,096-credit, 4,096-distance,
+  4,096-proposal, 65,536-work-unit, and two 128-MiB input-resolution bounds
+  during local acceptance, import, and restart. Earlier and unknown corpus-
+  mutation versions MUST remain suspended.
+- **[GUIDE-27]** Feedback-progressive implementation-version 11 MUST retain
+  version 9's exact prefix, visit gates, midpoint, exhaustion, and owner bounds;
+  reconstruct the portable proposed-value set; rank every remaining interval by
+  absolute exact endpoint PUCT-score difference, then interval cardinality and
+  lower offset; and derive completed or prospective endpoint scores only from
+  the exact active policy and planning view. Version 9 histories MUST retain
+  their largest-gap order, and earlier or unknown progressive versions MUST
+  remain suspended.
+- **[GUIDE-28]** Landmark-progressive implementation-version 12 MUST retain
+  version 11's exact owner basis and rank intervals by landmark count, endpoint
+  score difference, cardinality, and lower offset in that order. A selected
+  landmark interval MUST emit the landmark nearest its lower midpoint with a
+  lower-offset tie-break. Local issue, import, and restart MUST authenticate the
+  exact domain body and reproduce the same choice without mutating version 9 or
+  version 11 histories.
+- **[GUIDE-29]** Measurement-progressive implementation-version 13 MUST rank
+  intervals first by the exact endpoint mean objective-reward discontinuity,
+  then by version 12's landmark, PUCT, cardinality, and lower-offset terms. Its
+  reward sums, visit denominators, and evaluation basis MUST be owner-verified
+  under the active policy and bounded projection. Local issue, import, and
+  restart MUST reproduce the exact rational comparison, while versions 11 and
+  12 MUST ignore it.
+- **[GUIDE-30]** Coverage-progressive implementation-version 14 MUST rank
+  intervals first by the exact endpoint mean globally unique coverage-identity
+  discontinuity, then by version 13's objective, landmark, PUCT, cardinality,
+  and lower-offset terms. Coverage counts, visit denominators, and edge
+  ownership MUST come from the bounded canonical observation projection. Local
+  issue, import, and restart MUST reproduce the comparison, while versions 11
+  through 13 MUST ignore the new leading term.
+- **[GUIDE-31]** Finding-progressive implementation-version 15 MUST rank
+  intervals first by exact endpoint mean active-policy-weighted finding-reward
+  discontinuity, then by version 14's coverage, objective, landmark, PUCT,
+  cardinality, and lower-offset terms. Finding occurrences, policy weights,
+  visit denominators, and edge ownership MUST come from the bounded canonical
+  finding and observation projections. Local issue, import, and restart MUST
+  reproduce the comparison, while versions 11 through 14 MUST ignore the new
+  leading term.
+- **[GUIDE-32]** Rarity-progressive implementation-version 16 MUST rank
+  intervals first by exact endpoint mean inverse-frequency coverage rarity,
+  then by version 15's finding, unique-coverage, objective, landmark, PUCT,
+  cardinality, and lower-offset terms. Frequencies, rarity mass, visit
+  denominators, and edge ownership MUST come from the bounded canonical
+  observation projection. Local issue, import, and restart MUST reproduce the
+  comparison, while versions 11 through 15 MUST ignore the new leading term.
+
+## 03.4 Tree policy: deterministic MCTS/PUCT
+
+The default adaptive tree policy is a deterministic fixed-point PUCT variant.
+For an edge `e` from parent `s`:
+
+```text
+score(s, e) =
+    mean_reward(e)
+  + exploration_weight * prior(e) * sqrt(visits(s)) / (1 + visits(e))
+  + novelty_bonus(e)
+  + fairness_bonus(e)
+```
+
+All terms use saturating checked integer or fixed-point arithmetic. Square roots
+use a specified integer algorithm. Scores are accumulated in a fixed field
+order. Ties break by `SelectionId`, then `ConfigurationId`.
+
+The exact arithmetic profile uses `S = 1_000_000`. A prior is an integer in
+`[0, S]`; reward sums, means, and score terms are expressed in millionths. For
+parent visits `N`, edge visits `n`, exploration weight `c`, and prior `p`, the
+first fixed-point scorer computes:
+
+```text
+sqrt_N = floor(sqrt(N * S * S))
+weighted_prior = floor(c * p / S)
+exploration = floor(floor(weighted_prior * sqrt_N / S) / (1 + n))
+mean_reward = trunc_toward_zero(reward_sum / n), or 0 when n = 0
+```
+
+An unvisited edge MUST have a zero reward sum. An edge prior above `S` or edge
+visits above parent visits is invalid. The configured novelty bonus is added
+once when the owner-derived novelty predicate is true, and the configured
+fairness bonus is added once when the edge owns the current fairness
+reservation. Each nonnegative bonus saturates at `i64::MAX`; the ordered sum
+`mean_reward`, exploration, novelty, fairness saturates to the signed `i64`
+range. The integer square root is the unique greatest integer whose square does
+not exceed its input. These staged divisions and saturation points are part of
+the language-neutral contract.
+
+The implemented prior may come from an explicit weighted finite source, a
+finite distribution resolved from the opportunity's exact model, or the
+uniform raw weight one. Using any prior for PUCT does not make the resulting
+visit frequency a statistical estimate; it is still guidance.
+
+Rewards propagate from a completed observation along its recorded branch-edge
+path. Confirmed correctness failures dominate ordinary optimization rewards in
+bug-finding mode. Optimization mode may instead reject failures and optimize the
+remaining metric vector.
+
+- **[GUIDE-8]** PUCT statistics MUST be keyed by stable branch-point and branch-
+  edge identity. Results from different `ChoiceClassId`s MUST NOT be pooled
+  unless the policy explicitly declares a shared class.
+- **[GUIDE-9]** Duplicate attempts and duplicate observations MUST receive
+  credit exactly once.
+
+The repository now rebuilds the completed-visit portion of those statistics
+from the exact snapshot's idempotent branch-point credit index. Every credited
+observation must name one and only one matching scoped path segment; the result
+partitions parent visits by `BranchEdgeId`, so convergence and duplicate causes
+cannot add credit. One projection admits at most 65,536 credits and 128 MiB of
+canonical credit, observation, attempt, and path bodies. It is identical after
+restart and fails closed for legacy unscoped paths.
+
+The repository also derives a policy-bound PUCT projection from that partition.
+Each completed edge receives the raw source weight of the proposal belonging
+to the lowest global `AdmissionOrdinal` among canonical credited observations
+for that edge. Later convergent attempts or additional causes cannot rewrite
+that basis. Uniform finite, generated, and modeled uniform generated sources
+contribute raw weight one.
+Explicit and modeled finite sources contribute their retained positive raw
+weight; for the modeled form the request's model ID must equal the opportunity
+model. The owner fails closed if the execution-basis proposal, request, value,
+model basis, or positive source weight cannot be authenticated.
+
+For positive weights `w(e)`, let `W = sum(w(e))` in checked `u128`. The owner
+first assigns `floor(S * w(e) / W)` micros to every edge, then distributes the
+remaining micros one at a time in ascending `BranchEdgeId` order. The deficit
+is strictly less than the number of edges, so the normalized prior mass sums to
+exactly `S`. This reduces bit-for-bit to the original uniform rule when every
+weight is one. Exactly one least-visited edge owns the fairness reservation,
+with `BranchEdgeId` breaking visit-count ties. The 128-MiB visit-projection work
+bound also charges each unique authenticated attempt-admission, proposal, and
+branch-request body used to establish prior provenance.
+
+Coverage novelty is owner-recomputed from the exact snapshot. The owner takes
+the union of coverage identities named by canonical observations credited to
+the requested branch point, then counts each target identity across every
+canonical observation in that snapshot. An identity is a novelty event only
+when its global occurrence count is exactly one. Each such event is credited
+once to the semantic edge of its credited observation; an edge's Boolean PUCT
+novelty predicate is true when its event count is nonzero. Shared identities,
+duplicate causes, and conflicting observations therefore add no novelty. The
+fold scans at most 1,000,000 observation-root entries and 65,536 canonical
+observations, visits at most 1,000,000 coverage identities, retains at most
+65,536 branch-relevant identities, and charges at most 128 MiB of unique
+canonical observation and coverage bodies. It is read-only and identical after
+restart/import.
+
+The same scan retains inverse-frequency rarity without a second repository
+pass. With `Q = 65,536`, every occurrence of identity `i` contributes
+`floor(Q / f(i))` to its credited semantic edge, where `f(i)` is that
+identity's positive global canonical-observation frequency. The checked
+per-edge sum is zero only for an edge without coverage, gives globally unique
+identities maximum mass, and gives repeated identities decreasing nonzero
+mass. It inherits the novelty fold's exact snapshot, identity, observation,
+byte, and restart bounds.
+
+Owner-verified findings contribute a policy-weighted positive reward. The
+closed signal names are `finding.property-violation`, `finding.divergence`, and
+`finding.timeout`. For each configured signal, the owner scans the exact
+snapshot's current finding clusters and credits each authenticated occurrence
+whose canonical observation is credited to the requested branch point. One
+cluster occurrence contributes its signal weight once to that observation's
+semantic edge and therefore backpropagates through every branch point on the
+recorded path. Unconfigured classes contribute nothing. Per-edge event counts
+are retained in the projection for explanation; the weighted sum saturates at
+signed `i64::MAX` before entering PUCT. One fold scans at most 65,536 finding-
+root entries, 1,000,000 aggregate occurrence entries, and 128 MiB of canonical
+finding bodies. Complete snapshot authentication precedes the shallow bounded
+fold, so large reproduction bodies are not reparsed per projection.
+
+Owner-published objective evaluations contribute signed scalar reward. For each
+canonical observation credited to the projection batch, the owner looks up the
+exact `(active_policy, observation)` evaluation key from RFC 01. Absence is
+neutral; a present value must decode as that exact policy/observation basis.
+The arbitrary-precision fixed reward is multiplied by `1_000_000`, divided with
+truncation toward zero, and saturated to signed 64-bit range. Those converted
+values are summed exactly per semantic edge and clamped once to signed 64-bit
+range. One nested observation therefore contributes once to every branch point
+on its authenticated cumulative path without being decoded again per edge.
+The request batch admits at most 65,536 unique evaluations and 128 MiB of
+globally deduplicated canonical evaluation, observation, and property-verdict
+bodies. Objective, visit, novelty, and finding projection share the same
+aggregate credited-observation ceiling.
+
+The active tree-search policy adds the signed objective sum to the saturating
+positive finding reward and produces the exact decomposed fixed-point score for
+every completed edge. Empty branch points retain no synthetic completed edge.
+For one offered unseen edge, the owner instead evaluates exactly one
+prospective addition: zero visits, reward, novelty, objective reward, and
+finding events; canonical normalization over the completed-edge weights plus
+the offered value's authenticated source weight; and the fairness reservation
+because every completed edge has a positive visit count. If the offered edge
+is already completed, its established completed-edge basis wins. The
+hypothetical contains no other offers, so its score is independent of planner
+page shape.
+
+The first executable closed-planner checkpoint established the pure paged
+frontier loop before adaptive scoring. Engine
+`crucible-canonical-frontier` implementation version 1 receives the
+coordinator's exact authenticated continuation state and next legal candidate
+for every served source, considers only `Ready` sources, and chooses the least
+canonical `PlanningScanPosition`. It carries that offer across pages and issues
+only at EOF. This ordering is deterministic fairness bootstrap behavior, not a
+claim that PUCT is complete.
+
+Implementation version 2 additionally advertises
+`canonical-frontier-puct-v1`. The coordinator supplies an exact
+`PlannerCandidateGuidanceV2` beside every Ready offer, recomputed from the
+authenticated view and active policy. A whole served page is one bounded
+projection batch: at most 65,536 aggregate credited observations and 128 MiB of
+credit/path bodies, one bounded observation-root novelty scan, one bounded
+finding-root scan, and at most 128 MiB of unique decoded choice-domain bodies.
+Shared branch points, observations, objective evaluations, findings, coverage
+bodies, and domains are not reparsed per offer. Objective work additionally
+admits at most 65,536 unique evaluations and 128 MiB of their deduplicated
+evaluation/observation/property basis bodies.
+Prospective normalization is shared by `(BranchPointId, raw_weight)` and
+charges at most 1,000,000 completed-edge visits per served page, preventing
+many distinct explicit weights from multiplying a large completed-edge set.
+The retained request remains subject to its 32 MiB stored-body and 65,529-child
+profile.
+
+Version 2 derives the exact score from the by-value policy and guidance, carries
+the best candidate across pages, and issues only at EOF. Higher fixed-point
+total wins. Equal totals choose the lower `BranchEdgeId`, then the lower
+`PlanningScanPosition`; this is the closed frontier engine's complete tie rule.
+The engine receives no repository or Merkle authority. Local acceptance,
+restart, and imported-snapshot validation recompute every guidance record and
+rerun the complete pure transition. Version 1 remains replay-compatible and
+keeps its original least-position ordering. Guidance schema v1 remains
+identity-preserving for retained history; all newly projected guidance is
+schema v2. Engine version 2 consumes the owner-normalized explicit,
+modeled-finite, modeled-uniform-generated, or uniform prospective/completed
+priors, exact owner-published objective reward, global coverage novelty,
+configured closed finding rewards,
+and fairness. Additional opaque non-finite scenario-model distributions remain
+open until a concrete adapter and versioned portable generator contract are
+defined for each model family.
+
+## 03.5 Guidance signals and objectives
+
+Built-in observation signals include:
+
+- basic-block and semantic coverage gain;
+- inverse-frequency novelty/rarity;
+- assertion-proximity progress;
+- property failure or recovery;
+- metric improvement relative to a declared baseline;
+- new choice-opportunity discovery;
+- failure-signature novelty;
+- state or event-log novelty under a declared projection.
+
+Signals are readers of canonical observation data. A campaign policy combines
+them with fixed-point weights or uses them as a Pareto vector.
+
+Measurements remain separate from properties:
+
+- properties are correctness constraints and hard filters or findings;
+- measurements provide exact observations;
+- objectives map measurements to minimize/maximize directions;
+- guidance decides how objectives and novelty affect future work.
+
+- **[GUIDE-10]** Adaptive normalization MUST NOT depend on executor completion
+  arrival order. Strict mode folds observations in deterministic attempt order;
+  streaming mode records the exact observation basis used by each planner step.
+- **[GUIDE-11]** Host CPU time, wall-clock duration, executor queue delay, and
+  checkpoint-restore latency MUST NOT be scenario-performance objectives. They
+  may appear only in operational telemetry.
+
+## 03.6 Beam and Pareto survival
+
+At named measurement barriers, a campaign may select survivors for deeper fault
+paths:
+
+1. reject branches with disqualifying property failures, crashes, or missing
+   required measurements;
+2. compute the canonical objective vector and exact weighted reward;
+3. compute the declared Pareto-top-`K`, lexicographic, or weighted-top-`K`
+   primary order;
+4. reserve breadth-first capacity first and novelty capacity second, then fill
+   remaining capacity from the primary order;
+5. retain or materialize survivor checkpoints according to policy.
+
+The breadth-first reserve orders admissible candidates by
+`(breadth_ordinal, ConfigurationId)`. The novelty reserve orders them by
+descending `(novelty_score, ConfigurationId)`, with configuration identity as
+the ascending tie-break. A candidate already selected by an earlier reserve
+does not consume a later reserve slot. Filtered candidates never consume a
+reserve. Reserves deliberately consider every admissible candidate, including
+a Pareto-dominated candidate, because exploration capacity is independent of
+the primary exploitation order.
+
+Lexicographic comparison follows objective-name order. Each component applies
+its minimize or maximize direction before the next component is considered.
+Weighted comparison uses the exact sum of signed objective values multiplied by
+their millionth-denominated policy weights; minimize terms are negated. Pareto
+dominance requires one component to be strictly better and none worse. The
+nondominated Pareto set is ordered by exact weighted reward when it exceeds the
+remaining capacity. Every remaining tie breaks by `ConfigurationId`; input,
+map, and executor-arrival order are irrelevant.
+
+One decision admits at most 16,384 distinct configurations. Pareto evaluation
+preflights `candidate_count * (candidate_count - 1) * max(objective_count, 1)`
+and rejects more than 4,000,000 pair-by-component visits before comparison.
+Lexicographic ranking conservatively charges
+`candidate_count^2 * max(objective_count, 1)` against the same 4,000,000-visit
+ceiling. Weighted ordering conservatively charges
+`candidate_count^2 * maximum_reward_operand_bytes` and rejects more than
+512 MiB of operand-byte visits. Exact weighted arithmetic permits at most
+8 KiB in either reduced reward magnitude and at most 64 MiB of accumulated
+arithmetic work. Evaluation and explanation records are each at most 4 MiB; the
+survivor-selection record is at most 32 MiB. One decision admits at most 128 MiB
+of aggregate canonical evaluation and explanation bodies, charged while
+records are loaded or built.
+
+A survivor decision is a content-addressed fact naming the exact policy,
+selection rule, every considered objective evaluation, selected configuration
+set, and one explanation per considered configuration. Explanations distinguish
+objective selection, breadth-first selection, novelty selection, property or
+measurement filtering, Pareto domination with a canonical dominator, and rank
+pruning.
+
+- **[GUIDE-12]** A “best-performing” campaign SHOULD reserve explicit
+  exploration capacity when bug discovery is also a goal. Pure top-`K`
+  optimization may systematically discard slow or pathological branches where
+  bugs concentrate.
+- **[GUIDE-13]** A campaign report MUST distinguish property filtering, Pareto
+  domination, budget pruning, retention eviction, and true domain exhaustion.
+
+## 03.7 Hierarchical fault exploration
+
+Branching on every packet loss, I/O completion, or memory access is usually
+intractable. Campaigns explore event-heavy models hierarchically:
+
+1. choose coarse parameters such as rate, duration, target, spatial window, or
+   signal transition;
+2. sample individual outcomes from the selected keyed model process;
+3. retain branches with interesting measurements, coverage, or failures;
+4. locally expose and mutate exact event outcomes near the interesting suffix;
+5. minimize the resulting schedule while preserving the finding signature.
+
+This uses RFC-0014's selected outcome, transition, parameter, trace-window, and
+mapping mutation seams without turning every signal sample into a branch.
+
+- **[GUIDE-14]** Per-event branching MUST be opt-in and bounded. The default for
+  high-rate opportunities is to select model parameters and sample keyed
+  outcomes, then promote a bounded interesting window for exact branching.
+
+The implemented promotion-normalization boundary accepts at most 4,096 exact
+signal-fault candidates from one `SearchRuntimeFrontier`. The candidates MUST
+be the dense ordered sequence for one search-choice ID, candidate-set digest,
+parent configuration, and virtual-time coordinate. It represents candidate
+indexes as an unsigned integer campaign domain and adds one final sentinel for
+the unmodified model result. The standardized environment adapter is
+`crucible.signal-fault-search.v1`; the opportunity coordinate retains the exact
+parent and candidate-set digest, while its instance retains the frontier time.
+
+Repository-authenticated records reconstruct either a typed campaign
+`Selection` followed by the exact `signal-fault/.../candidate/N` override, or a
+selection-only unmodified branch. This pure conversion does not itself admit a
+historical frontier. A live promotion owner MUST still prove that execution is
+paused at the frontier's exact parent before publishing the opportunity or
+using the reconstructed prefix for QEMU injection. Retrospective search
+frontiers MUST NOT be mislabeled as discoveries at a later observation child.
+
+The production lifecycle implements that live boundary by snapshotting the
+retained frontier count before each scheduler quantum. Only a frontier first
+recorded during that call whose parent and virtual time still equal the current
+scheduler boundary is eligible. The lifecycle returns it through a zero-node-
+progress quantum result before further guest execution; decisions already
+settled at that same pre-quantum boundary remain in the result. At most 4,096
+such frontiers and 128 MiB of unique canonical declaration, domain, and
+opportunity material are admitted in one result. The modeled driver publishes
+them only when they cause the exact `NextChoice` stop; continuing toward another
+stop discards them, and retained scheduler history is never emitted by a later
+quantum. A replay plan already naming the current frontier suppresses duplicate
+discovery and proceeds through the separately authenticated typed injection.
+Live promotion is an attempt-scoped opt-in: the fresh campaign runner enables it
+only for `NextChoice`, and only after the admitted start configuration has been
+materialized exactly. Frontiers encountered while replaying that start remain
+replay-only evidence. Terminal, marker, time, and event-count attempts execute
+through finite authored search frontiers without adding campaign-promotion
+pauses; those frontiers remain available only as scheduler replay evidence.
+
+One admitted configuration may contain at most 4,096 promoted signal-fault
+events. The executor resolves all of their selection closures in one bounded
+batch, requires each reconstructed prefix at the exact target-schedule
+position, requires nondecreasing virtual-time frontiers, and rejects every raw
+`signal-fault/...` override not covered by that typed plan. Production replay
+installs all finite producer overrides before launch, caps the scheduler at the
+next promoted frontier, and records only the plan's opaque typed branch when
+the scheduler has reached both its exact parent and time. Parent/time equality
+alone is insufficient: a candidate branch additionally requires the exact
+finite override to have been consumed by the signal runtime, while the
+unmodified sentinel requires a matching runtime search frontier with the same
+choice ID, candidate-set digest, and candidate count. Arbitrary raw override
+admission remains a separate, narrower legacy API and cannot be used to inject
+campaign selections.
+
+Pending promoted branches are not exact-checkpoint-ready. The campaign runner
+finishes deterministic start materialization before it can honor a checkpoint
+request; after all branches are consumed, ordinary exact capture is available.
+If the daemon restarts during start materialization, the durable attempt is
+requeued and the complete plan is reconstructed from the immutable selection,
+opportunity, declaration, domain, and configuration records before replaying
+from genesis. No process-local plan is a restart trust root.
+
+## 03.8 Probabilistic exploration and statistical validity
+
+Three modes are explicit:
+
+### Bug-hunting mode
+
+The proposal distribution may oversample boundaries, rare faults, and known
+dangerous interactions. Reports make no frequency claim.
+
+### Optimization mode
+
+Adaptive search seeks good metric vectors. Probability is a proposal mechanism,
+not an estimate of how often a configuration occurs naturally.
+
+### Statistical mode
+
+Samples are drawn from modeled distribution `P`, or the campaign records both
+`P(path)` and proposal distribution `Q(path)` as exact rational/log-weight
+material sufficient for declared importance weighting. Adaptive resampling uses
+predeclared sequential Monte Carlo rules and reports effective sample size and
+weight concentration. Paths with `Q = 0` where `P > 0` invalidate the estimate.
+
+An operator or debugger proposal used as an attempt's `ExecutionBasis` is an
+intervention, not a draw from the campaign's proposal distribution. Its
+observation remains useful for finding bugs, comparing outcomes, and—when
+policy explicitly opts in—updating adaptive guidance. It is excluded from
+frequency and importance-weighted estimators unless the statistical policy
+modeled that intervention in advance and records the correct `P/Q` evidence. An
+operator proposal later attached as an `AdditionalCause` does not retroactively
+taint or legitimize the original execution basis. A manually requested
+pathological value must never silently change a population claim.
+
+- **[GUIDE-15]** Statistical mode MUST reject any proposal policy that cannot
+  provide the declared support and weight accounting. It MUST NOT silently fall
+  back to guidance-biased frequency.
+- **[GUIDE-16]** Model and proposal distributions use integer masses, reduced
+  rationals, or canonical fixed-point log weights with explicit rounding. They
+  MUST NOT use platform-native floating-point ordering.
+
+## 03.9 Strict and streaming planning
+
+Strict mode commits observations in deterministic attempt order before issuing
+dependent proposals. It may buffer out-of-order results and can suffer
+head-of-line blocking, but the campaign proposal sequence is reproducible from
+the initial snapshot, policy, seed, and budget grants.
+
+Streaming mode incorporates any completed canonical observation immediately.
+Every proposal records its observation basis, so its reason remains
+reproducible, but a rerun with different completion order may discover branches
+in a different order and may spend a finite budget differently. Every individual
+branch and finding remains bit-replayable.
+
+- **[GUIDE-17]** The selected campaign mode MUST be visible in status, exports,
+  and reports. Strict and streaming claims MUST never be conflated.
+- **[GUIDE-18]** Switching mode is a policy revision recorded before subsequent
+  proposals. It does not rewrite earlier planner steps.
+
+## 03.10 Search reduction and minimization
+
+Content-address deduplication, conservative partial-order reduction, and proven
+symmetry reduction remain valid before guidance. Guidance orders or samples the
+remaining graph; it does not weaken reduction soundness.
+
+On finding, minimization may remove selections, reduce integer values toward
+landmarks/boundaries, simplify discrete choice paths, narrow fault windows, and
+shorten stop horizons while preserving the stable failure signature and replay
+oracle.
+
+The implemented deterministic schedule minimizer admits a shortest-first
+lexicographic window, then orders that bounded window with seeded
+content-address tie-breaks. One run considers at most 4,096 candidates and
+admits at most 128 MiB of conservative candidate-copy work, including the kept
+schedule, complementary removed decisions, and removed-index vector. The
+effective candidate count is the lesser of those two compiled bounds. Campaign
+reproduction schema v2 retains the seed plus both compiled bounds as the exact
+policy, every attempted candidate's artifact/schedule/replayed-state identities
+and observed fingerprint, and the final replayed state. Candidate generation
+stops at the policy bound; it does not allocate the complete combinatorial
+candidate space.
+
+- **[GUIDE-19]** Reduction MUST explore when equivalence or independence is
+  uncertain. Guidance score similarity is not proof of semantic equivalence.
+- **[GUIDE-20]** A minimized artifact MUST retain the original finding,
+  minimization policy, candidate history, and proof that the final artifact
+  reproduces the same signature.
+
+## 03.11 Branch-source rules
+
+- **[GUIDE-21]** A finite candidate request MUST be additive to existing
+  expansion state, canonically ordered, lazily consumed, and bounded by both
+  request cardinality and campaign budget. Duplicate values MUST reuse the same
+  semantic branch edge, and attempts MUST deduplicate when all of their semantic
+  inputs match.
+- **[GUIDE-22]** `branch --all` MUST fail before request publication when the
+  validated finite domain exceeds the configured exhaustive-cardinality ceiling
+  or cannot provide a finite cardinality proof. The first executable porcelain
+  derives implementation-version 2 `all` and an exact-cardinality proposal
+  budget for Boolean and discrete domains, and binds both to the active
+  exhaustive policy selected at the request's authenticated snapshot.
+- **[GUIDE-23]** An operator or debugger `ExecutionBasis` MUST be excluded from
+  statistical estimators unless the pinned statistical policy admitted its
+  selection mechanism and records valid support and weighting evidence. An
+  `AdditionalCause` MUST NOT reclassify the attempt.
+- **[GUIDE-24]** A policy MAY learn from intervention observations only through
+  an explicit policy rule visible in proposal explanations and campaign claims.

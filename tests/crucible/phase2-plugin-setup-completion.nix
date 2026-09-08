@@ -45,7 +45,7 @@
       }
       {
         label = "descriptor setup wording";
-        needle = "receive exactly two descriptors via";
+        needle = "exactly three descriptors via";
       }
       {
         label = "ready ack wording";
@@ -55,7 +55,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
       {
         label = "Setup descriptor order";
-        needle = "fixed order: shmem fd";
+        needle = "`[shmem_fd, wake_fd, plugin_setup_plan_fd]` in fixed order";
       }
       {
         label = "SetupAck ready contract";
@@ -65,7 +65,7 @@
     ++ failuresFor "crates/crucible-protocol/src/lib.rs" protocol [
       {
         label = "setup descriptor count";
-        needle = "pub const SETUP_DESCRIPTOR_COUNT: usize = 2;";
+        needle = "pub const SETUP_DESCRIPTOR_COUNT: usize = 3;";
       }
       {
         label = "received setup token";

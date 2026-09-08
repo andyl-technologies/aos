@@ -7,12 +7,19 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  blockIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs;
+  blockIo = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/block_io.rs;
+    siblingTests = true;
+  };
   ioWireFuzz = builtins.readFile ../../crates/crucible-qemu-plugin/src/io_wire_fuzz.rs;
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   shmem =
     import ./_crucible-shmem-source.nix {inherit lib;}
-    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
+    + import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+    }
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs;
   ioDoc = builtins.readFile ../../docs/rfcs/0010-crucible/15-io-subnodes.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -46,15 +53,15 @@
     ++ failuresFor "crates/crucible-qemu-plugin/src/block_io.rs" blockIo [
       {
         label = "wire version";
-        needle = "const BLOCK_WIRE_VERSION: u8 = 3";
+        needle = "const BLOCK_WIRE_VERSION: u8 = 4";
       }
       {
         label = "request header length";
-        needle = "const BLOCK_REQUEST_HEADER_LEN: usize = 20";
+        needle = "const BLOCK_REQUEST_HEADER_LEN: usize = 28";
       }
       {
         label = "response header length";
-        needle = "const BLOCK_RESPONSE_HEADER_LEN: usize = 12";
+        needle = "const BLOCK_RESPONSE_HEADER_LEN: usize = 20";
       }
       {
         label = "operation wire values";
@@ -66,7 +73,7 @@
       }
       {
         label = "request decode";
-        needle = "pub fn decode(payload: &[u8]) -> Result<(u32, Self), BlockWireError>";
+        needle = "pub fn decode(payload: &[u8]) -> Result<(BlockRequestIdentity, Self), BlockWireError>";
       }
       {
         label = "response decode";

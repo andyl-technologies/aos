@@ -5,20 +5,45 @@
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use crucible_protocol::app_random_branch_plan::{
+    APP_RANDOM_BRANCH_PLAN_MAGIC, APP_RANDOM_BRANCH_PLAN_VERSION, AppRandomBranchPlan,
+};
+use crucible_protocol::plugin_setup_plan::{
+    PLUGIN_SETUP_PLAN_HEADER_BYTES, PLUGIN_SETUP_PLAN_MAGIC, PLUGIN_SETUP_PLAN_VERSION,
+    PluginSetupPlan,
+};
+use crucible_protocol::selectable_catalog_plan::{
+    SELECTABLE_CATALOG_PLAN_HEADER_BYTES, SELECTABLE_CATALOG_PLAN_MAGIC,
+    SELECTABLE_CATALOG_PLAN_VERSION, SelectableCatalogPlan, SelectablePlanContinuation,
+    SelectablePlanLimits,
+};
+use crucible_protocol::selectable_transport::{
+    SELECTABLE_PENDING_TRANSPORT_HEADER_BYTES, SELECTABLE_PENDING_TRANSPORT_MAGIC,
+    SELECTABLE_PENDING_TRANSPORT_REGENERATION_RULE, SELECTABLE_PENDING_TRANSPORT_VERSION,
+    SelectablePendingTransportRecord,
+};
 use crucible_protocol::{
     CODEC_FUZZ_REGRESSION_CORPUS, CONTROL_PROTOCOL_VERSION, ControlCodecFuzzCase,
     ControlCodecFuzzOutcome, ControlDirection, ControlGoldenVector, ControlGoldenVectorMessage,
     ControlTag, GOLDEN_CONTROL_VECTORS, GOLDEN_VECTOR_PROTOCOL_VERSION,
     GOLDEN_VECTOR_REGENERATION_RULE, GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS,
-    GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS, HostMsg, PluginMsg,
-    WHITEBOX_DOORBELL_ASSERTION_FLAVOR_COUNT, WHITEBOX_DOORBELL_FRAME_MAGIC,
-    WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE, WHITEBOX_DOORBELL_LIFECYCLE_EVENT_COUNT,
-    WHITEBOX_DOORBELL_MARKER_KIND_COUNT, WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+    GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS, HostMsg, PluginMsg, SELECTABLE_DIGEST_BYTES,
+    SELECTABLE_GOLDEN_VECTOR_REGENERATION_RULE, SELECTABLE_MESSAGE_KIND_REGISTER,
+    SELECTABLE_MESSAGE_KIND_REPLY, SELECTABLE_MESSAGE_KIND_REQUEST, SELECTABLE_PROTOCOL_VERSION,
+    SelectableRegister, SelectionReply, SelectionRequest, WHITEBOX_DOORBELL_ASSERTION_FLAVOR_COUNT,
+    WHITEBOX_DOORBELL_FRAME_MAGIC, WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE,
+    WHITEBOX_DOORBELL_KIND_METRIC_SAMPLE, WHITEBOX_DOORBELL_KIND_SEMANTIC_MARKER,
+    WHITEBOX_DOORBELL_LIFECYCLE_EVENT_COUNT, WHITEBOX_DOORBELL_MARKER_KIND_COUNT,
+    WHITEBOX_DOORBELL_PROTOCOL_VERSION, WHITEBOX_MARKER_BODY_MAX_BYTES,
+    WHITEBOX_MEASUREMENT_VALUE_KIND_COUNT, WHITEBOX_MEASUREMENT_VECTOR_MAX_ELEMENTS,
     WhiteboxAssertionMarkerFlavor, WhiteboxDoorbellFrame, WhiteboxDoorbellFrameDecodeError,
-    WhiteboxDoorbellMarkerKind, WhiteboxLifecycleMarkerEvent, WhiteboxMarkerPayloadDecodeError,
-    control_decode_host_msg, control_decode_plugin_msg, control_encode_host_msg,
-    control_encode_plugin_msg, decode_whitebox_marker_payload, encode_whitebox_doorbell_frame,
-    encode_whitebox_marker_frame, run_control_codec_fuzz_target,
+    WhiteboxDoorbellMarkerKind, WhiteboxLifecycleMarkerEvent, WhiteboxMarkerPayload,
+    WhiteboxMarkerPayloadDecodeError, WhiteboxMarkerPayloadEncodeError, WhiteboxMeasurementValue,
+    WhiteboxMeasurementValueKind, WhiteboxMetricSampleBody, WhiteboxSemanticMarkerBody,
+    WhiteboxSemanticMarkerDetail, control_decode_host_msg, control_decode_plugin_msg,
+    control_encode_host_msg, control_encode_plugin_msg, decode_selectable_message_kind,
+    decode_whitebox_marker_payload, encode_whitebox_doorbell_frame, encode_whitebox_marker_frame,
+    encode_whitebox_marker_payload_body, run_control_codec_fuzz_target,
 };
 
 #[test]
@@ -31,9 +56,236 @@ fn protocol_abi_conformance_runs_named_checks() {
     assert_doorbell_marker_payload_golden_vectors();
     assert_doorbell_marker_kind_vocabulary();
     assert_doorbell_marker_subvocabularies();
+    assert_selectable_v1_golden_vectors();
+    assert_selectable_catalog_plan_v2_golden_vector();
+    assert_selectable_pending_transport_v1_golden_vector();
+    assert_plugin_setup_plan_v2_golden_vector();
     assert_doorbell_decoder_fuzz_corpus();
     assert_structure_aware_fuzz_corpus();
     assert_protocol_codec_fuzz_corpus();
+}
+
+#[test]
+fn guest_selectable_pending_transport_v1_golden_vector_matches_live_codec() {
+    assert_selectable_pending_transport_v1_golden_vector();
+}
+
+fn assert_selectable_pending_transport_v1_golden_vector() {
+    assert!(
+        SELECTABLE_PENDING_TRANSPORT_REGENERATION_RULE
+            .contains("SELECTABLE_PENDING_TRANSPORT_VERSION")
+    );
+    let request = SelectionRequest::new(9, "net", "epoch/1", Some(vec![0xaa]), 104)
+        .unwrap_or_else(|error| panic!("selection request vector must build: {error}"));
+    let request_bytes = request
+        .encode()
+        .unwrap_or_else(|error| panic!("selection request vector must encode: {error}"));
+    let record = SelectablePendingTransportRecord::new(request, 0x1122_3344_5566_7788)
+        .unwrap_or_else(|error| panic!("pending request vector must build: {error}"));
+    let bytes = record
+        .encode()
+        .unwrap_or_else(|error| panic!("pending request vector must encode: {error}"));
+
+    assert_eq!(
+        &bytes[..SELECTABLE_PENDING_TRANSPORT_HEADER_BYTES],
+        &[
+            b'C', b'R', b'U', b'C', b'S', b'P', b'Q', b'1', 1, 0, 32, 0, 136, 0, 0, 0, 0x88, 0x77,
+            0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 104, 0, 0, 0, 0, 0, 0, 0,
+        ]
+    );
+    assert_eq!(
+        &bytes[..8],
+        &SELECTABLE_PENDING_TRANSPORT_MAGIC,
+        "literal header must retain the exported magic"
+    );
+    assert_eq!(
+        u16::from_le_bytes([bytes[8], bytes[9]]),
+        SELECTABLE_PENDING_TRANSPORT_VERSION
+    );
+    assert_eq!(
+        &bytes[SELECTABLE_PENDING_TRANSPORT_HEADER_BYTES..],
+        request_bytes
+    );
+    assert_eq!(SelectablePendingTransportRecord::decode(&bytes), Ok(record));
+}
+
+#[test]
+fn plugin_setup_plan_v2_golden_vector_matches_live_codec() {
+    assert_plugin_setup_plan_v2_golden_vector();
+}
+
+fn assert_plugin_setup_plan_v2_golden_vector() {
+    let selectable = SelectableCatalogPlan::new(
+        SelectablePlanLimits::new(1, 1, 1)
+            .unwrap_or_else(|error| panic!("catalog plan limits must validate: {error}")),
+        Vec::new(),
+        SelectablePlanContinuation::cold(),
+    )
+    .unwrap_or_else(|error| panic!("empty catalog plan must validate: {error}"));
+    let plan = PluginSetupPlan::new(AppRandomBranchPlan::default(), selectable);
+    let bytes = plan
+        .encode()
+        .unwrap_or_else(|error| panic!("plugin setup plan must encode: {error}"));
+
+    let total_len = PLUGIN_SETUP_PLAN_HEADER_BYTES + 16 + SELECTABLE_CATALOG_PLAN_HEADER_BYTES;
+    let mut expected = vec![0_u8; total_len];
+    expected[..8].copy_from_slice(&PLUGIN_SETUP_PLAN_MAGIC);
+    expected[8..12].copy_from_slice(&PLUGIN_SETUP_PLAN_VERSION.to_be_bytes());
+    expected[12..16].copy_from_slice(&(PLUGIN_SETUP_PLAN_HEADER_BYTES as u32).to_be_bytes());
+    expected[16..20].copy_from_slice(&(total_len as u32).to_be_bytes());
+    expected[20..24].copy_from_slice(&(16_u32).to_be_bytes());
+    expected[24..28].copy_from_slice(&(SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
+    expected[28..36].copy_from_slice(&APP_RANDOM_BRANCH_PLAN_MAGIC);
+    expected[36..40].copy_from_slice(&APP_RANDOM_BRANCH_PLAN_VERSION.to_be_bytes());
+    expected[44..52].copy_from_slice(&SELECTABLE_CATALOG_PLAN_MAGIC);
+    expected[52..56].copy_from_slice(&SELECTABLE_CATALOG_PLAN_VERSION.to_be_bytes());
+    expected[56..60].copy_from_slice(&(SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
+    expected[60..64].copy_from_slice(&(SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
+    expected[68..72].copy_from_slice(&(1_u32).to_be_bytes());
+    expected[84..92].copy_from_slice(&(1_u64).to_be_bytes());
+    expected[92..100].copy_from_slice(&(1_u64).to_be_bytes());
+    assert_eq!(bytes, expected);
+    assert_eq!(PluginSetupPlan::decode(&bytes), Ok(plan));
+}
+
+#[test]
+fn guest_selectable_catalog_plan_v2_golden_vector_matches_live_codec() {
+    assert_selectable_catalog_plan_v2_golden_vector();
+}
+
+fn assert_selectable_catalog_plan_v2_golden_vector() {
+    let plan = SelectableCatalogPlan::new(
+        SelectablePlanLimits::new(1, 1, 1)
+            .unwrap_or_else(|error| panic!("catalog plan limits must validate: {error}")),
+        Vec::new(),
+        SelectablePlanContinuation::cold(),
+    )
+    .unwrap_or_else(|error| panic!("empty catalog plan must validate: {error}"));
+    let bytes = plan
+        .encode()
+        .unwrap_or_else(|error| panic!("empty catalog plan must encode: {error}"));
+    let mut expected = vec![0_u8; SELECTABLE_CATALOG_PLAN_HEADER_BYTES];
+    expected[..8].copy_from_slice(&SELECTABLE_CATALOG_PLAN_MAGIC);
+    expected[8..12].copy_from_slice(&SELECTABLE_CATALOG_PLAN_VERSION.to_be_bytes());
+    expected[12..16].copy_from_slice(&(SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
+    expected[16..20].copy_from_slice(&(SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
+    expected[24..28].copy_from_slice(&(1_u32).to_be_bytes());
+    expected[40..48].copy_from_slice(&(1_u64).to_be_bytes());
+    expected[48..56].copy_from_slice(&(1_u64).to_be_bytes());
+    assert_eq!(bytes, expected);
+    assert_eq!(SelectableCatalogPlan::decode(&bytes), Ok(plan));
+}
+
+#[test]
+fn guest_selectable_v1_golden_vectors_match_live_codec_bytes() {
+    assert_selectable_v1_golden_vectors();
+}
+
+fn assert_selectable_v1_golden_vectors() {
+    assert!(SELECTABLE_GOLDEN_VECTOR_REGENERATION_RULE.contains("SELECTABLE_PROTOCOL_VERSION"));
+    let registration = SelectableRegister::new(
+        0x0102_0304_0506_0708,
+        "net",
+        vec![0xaa, 0xbb],
+        vec![1],
+        vec![String::from("a"), String::from("z")],
+    )
+    .unwrap_or_else(|error| panic!("selectable registration vector must build: {error}"));
+    let registration_bytes = registration
+        .encode()
+        .unwrap_or_else(|error| panic!("selectable registration vector must encode: {error}"));
+    assert_eq!(
+        registration_bytes,
+        [
+            1, 0, 1, 0, 56, 0, 0, 0, 68, 0, 0, 0, 8, 7, 6, 5, 4, 3, 2, 1, 56, 0, 0, 0, 3, 0, 0, 0,
+            59, 0, 0, 0, 2, 0, 0, 0, 61, 0, 0, 0, 1, 0, 0, 0, 62, 0, 0, 0, 6, 0, 0, 0, 2, 0, 0, 0,
+            b'n', b'e', b't', 0xaa, 0xbb, 1, 1, 0, b'a', 1, 0, b'z',
+        ]
+    );
+    assert_eq!(
+        decode_selectable_message_kind(&registration_bytes)
+            .map(|kind| (SELECTABLE_PROTOCOL_VERSION, kind.wire_value())),
+        Ok((
+            SELECTABLE_PROTOCOL_VERSION,
+            SELECTABLE_MESSAGE_KIND_REGISTER
+        ))
+    );
+
+    let request = SelectionRequest::new(9, "net", "epoch/1", Some(vec![0xaa]), 104)
+        .unwrap_or_else(|error| panic!("selection request vector must build: {error}"));
+    let request_bytes = request
+        .encode()
+        .unwrap_or_else(|error| panic!("selection request vector must encode: {error}"));
+    assert_eq!(
+        &request_bytes[..59],
+        &[
+            1, 0, 2, 0, 48, 0, 1, 0, 104, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 48, 0, 0, 0, 3, 0, 0, 0,
+            51, 0, 0, 0, 7, 0, 0, 0, 58, 0, 0, 0, 1, 0, 0, 0, 59, 0, 0, 0, b'n', b'e', b't', b'e',
+            b'p', b'o', b'c', b'h', b'/', b'1', 0xaa,
+        ]
+    );
+    assert!(request_bytes[59..].iter().all(|byte| *byte == 0));
+    assert_eq!(
+        decode_selectable_message_kind(&request_bytes).map(|kind| kind.wire_value()),
+        Ok(SELECTABLE_MESSAGE_KIND_REQUEST)
+    );
+
+    let reply = SelectionReply::selected(
+        9,
+        [1; SELECTABLE_DIGEST_BYTES],
+        [2; SELECTABLE_DIGEST_BYTES],
+        vec![3, 4],
+    )
+    .unwrap_or_else(|error| panic!("selection reply vector must build: {error}"));
+    let reply_bytes = reply
+        .encode()
+        .unwrap_or_else(|error| panic!("selection reply vector must encode: {error}"));
+    assert_eq!(
+        &reply_bytes[..24],
+        &[
+            1, 0, 3, 0, 96, 0, 0, 0, 98, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ]
+    );
+    assert_eq!(&reply_bytes[24..56], &[1; SELECTABLE_DIGEST_BYTES]);
+    assert_eq!(&reply_bytes[56..88], &[2; SELECTABLE_DIGEST_BYTES]);
+    assert_eq!(&reply_bytes[88..], &[96, 0, 0, 0, 2, 0, 0, 0, 3, 4]);
+    assert_eq!(
+        decode_selectable_message_kind(&reply_bytes).map(|kind| kind.wire_value()),
+        Ok(SELECTABLE_MESSAGE_KIND_REPLY)
+    );
+}
+
+#[test]
+fn guest_selectable_v1_schemas_are_registered_exactly() {
+    let registry = include_str!("../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
+    for schema in [
+        "crucible.guest-selectable.register",
+        "crucible.guest-selectable.request",
+        "crucible.guest-selectable.reply",
+    ] {
+        let expected = format!(
+            "{schema}\t1\tcrucible-protocol::selectable\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance"
+        );
+        assert!(
+            registry.lines().any(|line| line == expected),
+            "missing exact selectable schema row {schema}"
+        );
+    }
+    let catalog_plan = "crucible.guest-selectable.catalog-plan\t2\tcrucible-protocol::selectable_catalog_plan\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";
+    assert!(
+        registry.lines().any(|line| line == catalog_plan),
+        "missing exact selectable catalog-plan schema row"
+    );
+    let pending_request = "crucible.guest-selectable.pending-request\t1\tcrucible-protocol::selectable_transport\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";
+    assert!(
+        registry.lines().any(|line| line == pending_request),
+        "missing exact selectable pending-request schema row"
+    );
+    let setup_plan = "crucible.qemu-plugin.setup-plan\t2\tcrucible-protocol::plugin_setup_plan\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";
+    assert!(
+        registry.lines().any(|line| line == setup_plan),
+        "missing exact plugin setup-plan schema row"
+    );
 }
 
 #[test]
@@ -89,11 +341,11 @@ fn protocol_golden_vectors_freeze_literal_frame_bytes() {
 }
 
 fn assert_version_bump_regenerates_vectors() {
-    assert_vector_bytes("hello", &[0, 0, 0, 9, 0xF0, 0, 0, 0, 1, 0, 0, 0, 1]);
+    assert_vector_bytes("hello", &[0, 0, 0, 9, 0xF0, 0, 0, 0, 3, 0, 0, 0, 1]);
     assert_vector_bytes(
         "hello-ack",
         &[
-            0, 0, 0, 17, 0xF1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 32,
+            0, 0, 0, 17, 0xF1, 0, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 32,
         ],
     );
     assert_vector_bytes(
@@ -132,12 +384,12 @@ fn assert_doorbell_frame_golden_vectors() {
     }
     assert_doorbell_vector_bytes(
         "marker-kind-1-empty",
-        &[0x43, 0x52, 0x42, 0x4c, 2, 0, 1, 0, 0, 0, 0, 0],
+        &[0x43, 0x52, 0x42, 0x4c, 3, 0, 1, 0, 0, 0, 0, 0],
     );
     assert_doorbell_vector_bytes(
         "random-request-kind-5",
         &[
-            0x43, 0x52, 0x42, 0x4c, 2, 0, 5, 0, 10, 0, 0, 0, 0x04, 0x03, 0x02, 0x01, 4, 3, 0, 0x72,
+            0x43, 0x52, 0x42, 0x4c, 3, 0, 5, 0, 10, 0, 0, 0, 0x04, 0x03, 0x02, 0x01, 4, 3, 0, 0x72,
             0x6e, 0x67,
         ],
     );
@@ -157,6 +409,10 @@ fn assert_doorbell_marker_payload_golden_vectors() {
             "event-note",
             "coverage-hot-path",
             "random-request",
+            "measurement-begin",
+            "metric-sample",
+            "measurement-end",
+            "semantic-marker",
         ],
     );
     for vector in GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS {
@@ -191,6 +447,18 @@ fn protocol_doorbell_marker_kind_vocabulary_is_closed_and_versioned() {
     assert_doorbell_marker_kind_vocabulary();
 }
 
+#[test]
+fn protocol_v3_rejects_the_pre_measurement_v2_doorbell_frame() {
+    let frame = doorbell_frame_with_custom_header(WHITEBOX_DOORBELL_FRAME_MAGIC, 2, 1, 0, &[]);
+    assert_eq!(
+        WhiteboxDoorbellFrame::decode_bounded(&frame, WHITEBOX_MARKER_BODY_MAX_BYTES),
+        Err(WhiteboxDoorbellFrameDecodeError::UnsupportedVersion {
+            expected: WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+            actual: 2,
+        })
+    );
+}
+
 fn assert_doorbell_marker_kind_vocabulary() {
     assert_eq!(
         WhiteboxDoorbellMarkerKind::ALL.map(|kind| (kind.wire_value(), kind.semantic_label())),
@@ -200,6 +468,10 @@ fn assert_doorbell_marker_kind_vocabulary() {
             (3, "guest_event_marker"),
             (4, "guest_coverage_marker"),
             (5, "app_random_request"),
+            (6, "guest_measurement_begin"),
+            (7, "guest_metric_sample"),
+            (8, "guest_measurement_end"),
+            (9, "guest_semantic_marker"),
         ],
     );
     assert_eq!(
@@ -212,9 +484,25 @@ fn assert_doorbell_marker_kind_vocabulary() {
             Some(kind),
         );
     }
-    assert_eq!(WhiteboxDoorbellMarkerKind::from_wire_value(6), None);
+    assert_eq!(WhiteboxDoorbellMarkerKind::from_wire_value(10), None);
     assert!(WhiteboxDoorbellMarkerKind::Assertion.is_observational());
     assert!(!WhiteboxDoorbellMarkerKind::RandomRequest.is_observational());
+
+    assert_eq!(
+        WhiteboxMeasurementValueKind::ALL.map(WhiteboxMeasurementValueKind::wire_value),
+        [0, 1, 2, 3, 4, 5, 6],
+    );
+    assert_eq!(
+        WhiteboxMeasurementValueKind::ALL.len(),
+        WHITEBOX_MEASUREMENT_VALUE_KIND_COUNT,
+    );
+    for kind in WhiteboxMeasurementValueKind::ALL {
+        assert_eq!(
+            WhiteboxMeasurementValueKind::from_wire_value(kind.wire_value()),
+            Some(kind),
+        );
+    }
+    assert_eq!(WhiteboxMeasurementValueKind::from_wire_value(7), None);
 }
 
 #[test]
@@ -261,6 +549,97 @@ fn assert_doorbell_marker_subvocabularies() {
         );
     }
     assert_eq!(WhiteboxLifecycleMarkerEvent::from_wire_value(3), None);
+}
+
+#[test]
+fn measurement_marker_codec_rejects_noncanonical_and_oversized_values() {
+    let invalid_identifier =
+        WhiteboxDoorbellFrame::new(WHITEBOX_DOORBELL_KIND_METRIC_SAMPLE, &[0, 0])
+            .unwrap_or_else(|error| panic!("invalid identifier frame should build: {error}"));
+    assert!(matches!(
+        decode_whitebox_marker_payload(&invalid_identifier),
+        Err(WhiteboxMarkerPayloadDecodeError::InvalidMeasurementIdentifier { .. })
+    ));
+
+    let unknown_value = WhiteboxDoorbellFrame::new(
+        WHITEBOX_DOORBELL_KIND_METRIC_SAMPLE,
+        &[1, 0, b'm', 1, 0, b'i', 1, 0, b'x', 7],
+    )
+    .unwrap_or_else(|error| panic!("unknown value frame should build: {error}"));
+    assert_eq!(
+        decode_whitebox_marker_payload(&unknown_value),
+        Err(WhiteboxMarkerPayloadDecodeError::InvalidMeasurementValueKind { tag: 7 })
+    );
+
+    let oversized_vector = WhiteboxMarkerPayload::MetricSample(WhiteboxMetricSampleBody {
+        measurement: String::from("m"),
+        instance: String::from("i"),
+        metric: String::from("x"),
+        value: WhiteboxMeasurementValue::UnsignedVector(vec![
+            0;
+            WHITEBOX_MEASUREMENT_VECTOR_MAX_ELEMENTS
+                + 1
+        ]),
+    });
+    assert!(matches!(
+        encode_whitebox_marker_payload_body(&oversized_vector),
+        Err(WhiteboxMarkerPayloadEncodeError::MeasurementVectorTooLong { .. })
+    ));
+
+    let duplicate_details = WhiteboxDoorbellFrame::new(
+        WHITEBOX_DOORBELL_KIND_SEMANTIC_MARKER,
+        &[
+            1, 0, b'm', 1, 0, b'i', 2, 0, 1, 0, b'a', 3, 1, 1, 0, b'a', 3, 0,
+        ],
+    )
+    .unwrap_or_else(|error| panic!("duplicate detail frame should build: {error}"));
+    assert!(matches!(
+        decode_whitebox_marker_payload(&duplicate_details),
+        Err(WhiteboxMarkerPayloadDecodeError::NonCanonicalDetailOrder { .. })
+    ));
+
+    let oversized_body = WhiteboxMarkerPayload::SemanticMarker(WhiteboxSemanticMarkerBody {
+        marker: String::from("m"),
+        instance: String::from("i"),
+        details: vec![
+            WhiteboxSemanticMarkerDetail {
+                key: String::from("a"),
+                value: WhiteboxMeasurementValue::UnsignedVector(vec![
+                    0;
+                    WHITEBOX_MEASUREMENT_VECTOR_MAX_ELEMENTS
+                ]),
+            },
+            WhiteboxSemanticMarkerDetail {
+                key: String::from("b"),
+                value: WhiteboxMeasurementValue::UnsignedVector(vec![
+                    0;
+                    WHITEBOX_MEASUREMENT_VECTOR_MAX_ELEMENTS
+                ]),
+            },
+        ],
+    });
+    assert!(matches!(
+        encode_whitebox_marker_payload_body(&oversized_body),
+        Err(WhiteboxMarkerPayloadEncodeError::FramePayloadTooLarge {
+            max_len: WHITEBOX_MARKER_BODY_MAX_BYTES,
+            ..
+        })
+    ));
+
+    let oversized_decode = WhiteboxDoorbellFrame::new(
+        WHITEBOX_DOORBELL_KIND_SEMANTIC_MARKER,
+        &vec![0; WHITEBOX_MARKER_BODY_MAX_BYTES + 1],
+    )
+    .unwrap_or_else(|error| {
+        panic!("oversized marker body should reach the marker decoder: {error}")
+    });
+    assert!(matches!(
+        decode_whitebox_marker_payload(&oversized_decode),
+        Err(WhiteboxMarkerPayloadDecodeError::BodyTooLarge {
+            max_len: WHITEBOX_MARKER_BODY_MAX_BYTES,
+            ..
+        })
+    ));
 }
 
 #[test]

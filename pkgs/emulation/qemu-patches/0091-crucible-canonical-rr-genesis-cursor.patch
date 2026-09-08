@@ -1,8 +1,8 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 2c9a0825d..1d52484d1 100644
+index 54933de79..e42af457b 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -2161,7 +2161,9 @@ struct qemu_plugin_rr_cursor {
+@@ -2179,7 +2179,9 @@ struct qemu_plugin_rr_cursor {
   *
   * Returns 0 on success. The read is admitted either from the active serialized
   * RR owner or from an exact deterministic plugin boundary, where QEMU reads
@@ -14,10 +14,10 @@ index 2c9a0825d..1d52484d1 100644
   * active, or if the cursor is not inside that quantum. The read is
   * side-effect-free with respect to guest state.
 diff --git a/plugins/api.c b/plugins/api.c
-index 70e40aed3..efce95bb0 100644
+index 49d0827a0..31bd76b30 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -701,16 +701,27 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
+@@ -713,16 +713,27 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
          icount_crucible_rr_cursor_position_observed(cpu);
      uint64_t rr_switch_quantum = icount_crucible_rr_switch_quantum();
      int num_vcpus = qemu_plugin_num_vcpus();

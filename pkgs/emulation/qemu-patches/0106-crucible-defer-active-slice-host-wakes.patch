@@ -197,10 +197,10 @@ index 4103f247a..49290729d 100644
                      if (!crucible_sim_shmem_dispatch_registered() &&
                          !crucible_sim_observer_registered() &&
 diff --git a/plugins/api.c b/plugins/api.c
-index 5542e476f..29c7905a6 100644
+index 4a62a463c..3cbd0a3ce 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -1202,6 +1202,14 @@ int qemu_plugin_crucible_request_terminal_pause(
+@@ -1214,6 +1214,14 @@ int qemu_plugin_crucible_request_terminal_pause(
      }
      aio_bh_schedule_oneshot(qemu_get_aio_context(),
                              crucible_terminal_pause_bh, request);

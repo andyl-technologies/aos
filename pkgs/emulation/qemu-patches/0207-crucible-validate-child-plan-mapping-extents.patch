@@ -1,0 +1,19 @@
+diff --git a/system/crucible-hot-fork-plugin-child.c b/system/crucible-hot-fork-plugin-child.c
+index a2812419f..ae2a492c8 100644
+--- a/system/crucible-hot-fork-plugin-child.c
++++ b/system/crucible-hot-fork-plugin-child.c
+@@ -43,7 +43,13 @@ bool qemu_crucible_hot_fork_plugin_child_plan_valid(
+         plan->private_ring_fd != plan->wake_fd &&
+         plan->shmem_inode != 0 && plan->shmem_length != 0 &&
+         plan->source_mapping_start != 0 &&
+-        plan->source_mapping_length == plan->shmem_length &&
++        /*
++         * The setup region length is exact; the VMA that carries it spans
++         * whole pages, so the mapping extent is its page-rounded length.
++         */
++        plan->source_mapping_length >= plan->shmem_length &&
++        plan->source_mapping_length - plan->shmem_length <
++            qemu_real_host_page_size() &&
+         plan->source_mapping_offset == 0 &&
+         QEMU_IS_ALIGNED(plan->source_mapping_start,
+                         qemu_real_host_page_size()) &&

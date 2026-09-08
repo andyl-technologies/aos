@@ -215,6 +215,16 @@ pub(super) fn observable_event_violation_site(
             node,
             ..
         }
+        | ObservableEventPayload::GuestMeasurement {
+            retired_icount,
+            node,
+            ..
+        }
+        | ObservableEventPayload::GuestSemanticMarker {
+            retired_icount,
+            node,
+            ..
+        }
         | ObservableEventPayload::CoverageMarker {
             retired_icount,
             node,
@@ -628,7 +638,12 @@ pub(super) fn guest_marker_event_matches_policies(
             marker == expected_marker
                 && white_box_policies.get(node) == Some(&WhiteBoxPolicy::Enabled)
         }
+        ObservableEventPayload::GuestSemanticMarker { node, marker, .. } => {
+            marker == &expected_marker.name
+                && white_box_policies.get(node) == Some(&WhiteBoxPolicy::Enabled)
+        }
         ObservableEventPayload::GuestAssertionMarker { .. }
+        | ObservableEventPayload::GuestMeasurement { .. }
         | ObservableEventPayload::NetworkDelivered { .. }
         | ObservableEventPayload::ConsoleOutput { .. }
         | ObservableEventPayload::CoverageBlock { .. }
@@ -1098,6 +1113,13 @@ pub(super) fn external_decision_material(decision: &Decision) -> String {
             lines.push(format!("decision.width={}", random.width));
             lines.push(format!("decision.value={}", random.value));
         }
+        D::Selection(selection) => {
+            lines.push(String::from("decision=campaign-selection"));
+            lines.push(format!(
+                "decision.canonical_selection={}",
+                external_hex_bytes(selection.canonical_bytes())
+            ));
+        }
     }
     lines.join("\n")
 }
@@ -1256,6 +1278,86 @@ pub(super) fn external_observable_event_payload_material(
             lines.push(external_node_id_material("observable.node", node));
             lines.push(external_marker_id_material("observable.marker", marker));
         }
+        ObservableEventPayload::GuestMeasurement {
+            retired_icount,
+            node,
+            event,
+        } => {
+            lines.push(format!(
+                "observable.retired_icount={}",
+                retired_icount.retired
+            ));
+            lines.push(external_node_id_material("observable.node", node));
+            match event {
+                GuestMeasurementEvent::Begin {
+                    measurement,
+                    instance,
+                } => {
+                    lines.push(String::from("observable=guest-measurement-begin"));
+                    lines.push(external_string_material(
+                        "observable.measurement",
+                        measurement,
+                    ));
+                    lines.push(external_string_material("observable.instance", instance));
+                }
+                GuestMeasurementEvent::Sample {
+                    measurement,
+                    instance,
+                    metric,
+                    value,
+                } => {
+                    lines.push(String::from("observable=guest-metric-sample"));
+                    lines.push(external_string_material(
+                        "observable.measurement",
+                        measurement,
+                    ));
+                    lines.push(external_string_material("observable.instance", instance));
+                    lines.push(external_string_material("observable.metric", metric));
+                    lines.extend(external_guest_measurement_value_material(
+                        "observable.value",
+                        value,
+                    ));
+                }
+                GuestMeasurementEvent::End {
+                    measurement,
+                    instance,
+                } => {
+                    lines.push(String::from("observable=guest-measurement-end"));
+                    lines.push(external_string_material(
+                        "observable.measurement",
+                        measurement,
+                    ));
+                    lines.push(external_string_material("observable.instance", instance));
+                }
+            }
+        }
+        ObservableEventPayload::GuestSemanticMarker {
+            retired_icount,
+            node,
+            marker,
+            instance,
+            details,
+        } => {
+            lines.push(String::from("observable=guest-semantic-marker"));
+            lines.push(format!(
+                "observable.retired_icount={}",
+                retired_icount.retired
+            ));
+            lines.push(external_node_id_material("observable.node", node));
+            lines.push(external_string_material("observable.marker", marker));
+            lines.push(external_string_material("observable.instance", instance));
+            lines.push(format!("observable.details={}", details.len()));
+            for (index, detail) in details.iter().enumerate() {
+                lines.push(external_string_material(
+                    &format!("observable.detail.{index}.key"),
+                    &detail.key,
+                ));
+                lines.extend(external_guest_measurement_value_material(
+                    &format!("observable.detail.{index}.value"),
+                    &detail.value,
+                ));
+            }
+        }
         ObservableEventPayload::GuestAssertionMarker {
             retired_icount,
             node,
@@ -1302,6 +1404,58 @@ pub(super) fn external_observable_event_payload_material(
         }
     }
     lines.join("\n")
+}
+
+fn external_guest_measurement_value_material(
+    prefix: &str,
+    value: &GuestMeasurementValue,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    match value {
+        GuestMeasurementValue::Signed(value) => {
+            lines.push(format!("{prefix}.kind=signed"));
+            lines.push(format!("{prefix}.value={value}"));
+        }
+        GuestMeasurementValue::Unsigned(value) => {
+            lines.push(format!("{prefix}.kind=unsigned"));
+            lines.push(format!("{prefix}.value={value}"));
+        }
+        GuestMeasurementValue::Rational(value) => {
+            lines.push(format!("{prefix}.kind=rational"));
+            lines.push(format!("{prefix}.negative={}", value.negative));
+            lines.push(format!("{prefix}.numerator={}", value.numerator));
+            lines.push(format!("{prefix}.denominator={}", value.denominator));
+        }
+        GuestMeasurementValue::Boolean(value) => {
+            lines.push(format!("{prefix}.kind=boolean"));
+            lines.push(format!("{prefix}.value={value}"));
+        }
+        GuestMeasurementValue::Enumerated(value) => {
+            lines.push(format!("{prefix}.kind=enumerated"));
+            lines.push(external_string_material(&format!("{prefix}.value"), value));
+        }
+        GuestMeasurementValue::SignedVector(values) => {
+            lines.push(format!("{prefix}.kind=signed-vector"));
+            lines.push(format!("{prefix}.elements={}", values.len()));
+            lines.extend(
+                values
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| format!("{prefix}.element.{index}={value}")),
+            );
+        }
+        GuestMeasurementValue::UnsignedVector(values) => {
+            lines.push(format!("{prefix}.kind=unsigned-vector"));
+            lines.push(format!("{prefix}.elements={}", values.len()));
+            lines.extend(
+                values
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| format!("{prefix}.element.{index}={value}")),
+            );
+        }
+    }
+    lines
 }
 
 pub(super) fn external_event_firing_material(firing: &EventFiring) -> String {

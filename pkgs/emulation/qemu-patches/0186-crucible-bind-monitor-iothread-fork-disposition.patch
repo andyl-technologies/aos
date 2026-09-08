@@ -1,0 +1,397 @@
+diff --git a/include/qemu/thread.h b/include/qemu/thread.h
+index a4256d784..b2e726e75 100644
+--- a/include/qemu/thread.h
++++ b/include/qemu/thread.h
+@@ -207,6 +207,7 @@ typedef enum QemuThreadHotForkDisposition {
+     QEMU_THREAD_HOT_FORK_COORDINATOR,
+     QEMU_THREAD_HOT_FORK_UNCLASSIFIED,
+     QEMU_THREAD_HOT_FORK_RCU_RESTART,
++    QEMU_THREAD_HOT_FORK_MONITOR_RESTART,
+     QEMU_THREAD_HOT_FORK_UNCLASSIFIED_AIO,
+ } QemuThreadHotForkDisposition;
+ 
+@@ -252,6 +253,13 @@ void qemu_thread_hot_fork_inventory(QemuThreadHotForkInventory *inventory);
+ void qemu_thread_hot_fork_inventory_destroy(
+     QemuThreadHotForkInventory *inventory);
+ 
++/*
++ * Bind one already-started AIO worker to the monitor-only child restart
++ * disposition.  The transition is one-shot and rejects any thread that is
++ * absent or no longer carries the generic AIO disposition.
++ */
++int qemu_thread_hot_fork_bind_monitor_restart(int64_t thread_id);
++
+ /*
+  * Freeze the registered QEMU thread and mutex state across one fork.
+  *
+diff --git a/include/system/iothread.h b/include/system/iothread.h
+index 945c22934..af4ad1697 100644
+--- a/include/system/iothread.h
++++ b/include/system/iothread.h
+@@ -33,6 +33,7 @@ struct IOThread {
+     bool stopping;              /* has iothread_stop() been called? */
+     bool running;               /* should iothread_run() continue? */
+     int thread_id;
++    bool crucible_hot_fork_monitor;
+ 
+     /* AioContext poll parameters */
+     int64_t poll_max_ns;
+@@ -67,6 +68,9 @@ int iothread_hot_fork_reconstruct_child(
+     IOThread *iothread, int64_t inherited_thread_id,
+     int64_t source_process_id, int64_t *replacement_thread_id);
+ 
++/* Bind the internal QMP IOThread to its exact discard/restart disposition. */
++int iothread_hot_fork_bind_monitor(IOThread *iothread);
++
+ /*
+  * Returns true if executing within IOThread context,
+  * false otherwise.
+diff --git a/iothread.c b/iothread.c
+index 227946510..75057e61f 100644
+--- a/iothread.c
++++ b/iothread.c
+@@ -45,6 +45,8 @@ static void *iothread_run(void *opaque)
+ 
+ #ifdef CONFIG_POSIX
+     qemu_thread_hot_fork_set_current_disposition(
++        iothread->crucible_hot_fork_monitor ?
++        QEMU_THREAD_HOT_FORK_MONITOR_RESTART :
+         QEMU_THREAD_HOT_FORK_UNCLASSIFIED_AIO);
+ #endif
+     rcu_register_thread();
+@@ -402,6 +404,27 @@ void iothread_destroy(IOThread *iothread)
+     object_unparent(OBJECT(iothread));
+ }
+ 
++int iothread_hot_fork_bind_monitor(IOThread *iothread)
++{
++#ifdef CONFIG_POSIX
++    int result;
++
++    if (!iothread || iothread->crucible_hot_fork_monitor ||
++        iothread->thread_id <= 0 || !iothread->ctx ||
++        !iothread->worker_context || !iothread->main_loop ||
++        iothread->stopping || !iothread->running) {
++        return -EINVAL;
++    }
++    result = qemu_thread_hot_fork_bind_monitor_restart(iothread->thread_id);
++    if (result == 0) {
++        iothread->crucible_hot_fork_monitor = true;
++    }
++    return result;
++#else
++    return -ENOTSUP;
++#endif
++}
++
+ int iothread_hot_fork_reconstruct_child(
+     IOThread *iothread, int64_t inherited_thread_id,
+     int64_t source_process_id, int64_t *replacement_thread_id)
+diff --git a/monitor/monitor.c b/monitor/monitor.c
+index 3b4508caa..d9724a8fa 100644
+--- a/monitor/monitor.c
++++ b/monitor/monitor.c
+@@ -1143,6 +1143,10 @@ void monitor_hot_fork_reset_child_basis(MonitorHotForkChildBasis *basis)
+ static void monitor_iothread_init(void)
+ {
+     mon_iothread = iothread_create("mon_iothread", &error_abort);
++    if (iothread_hot_fork_bind_monitor(mon_iothread) < 0) {
++        error_report("failed to bind the monitor IOThread fork disposition");
++        exit(EXIT_FAILURE);
++    }
+ }
+ 
+ void monitor_data_init(Monitor *mon, bool is_qmp, bool skip_flush,
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index c37d139c6..960ac823d 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -3172,7 +3172,7 @@ qmp_query_crucible_hot_fork_thread_inventory(Error **errp)
+         g_new0(CrucibleHotForkThreadInventory, 1);
+ 
+     (void)errp;
+-    report->schema_version = 3;
++    report->schema_version = 4;
+ #ifdef CONFIG_POSIX
+     QemuThreadHotForkInventory inventory;
+     CrucibleHotForkThreadList **tail = &report->threads;
+@@ -3206,6 +3206,10 @@ qmp_query_crucible_hot_fork_thread_inventory(Error **errp)
+             thread->disposition =
+                 CRUCIBLE_HOT_FORK_THREAD_DISPOSITION_RCU_RESTART;
+             break;
++        case QEMU_THREAD_HOT_FORK_MONITOR_RESTART:
++            thread->disposition =
++                CRUCIBLE_HOT_FORK_THREAD_DISPOSITION_MONITOR_RESTART;
++            break;
+         case QEMU_THREAD_HOT_FORK_UNCLASSIFIED_AIO:
+             thread->disposition =
+                 CRUCIBLE_HOT_FORK_THREAD_DISPOSITION_UNCLASSIFIED_AIO;
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index e59a42f6c..45cd6ee39 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -191,13 +191,17 @@
+ #     callback state quiescent, discards the inherited worker, and starts one
+ #     fresh child worker
+ #
++# @monitor-restart: the exact internal QMP IOThread; the monitor child
++#     reinitializer discards its inherited worker and starts one replacement
++#     while input remains held
++#
+ # @unclassified-aio: an AIO-context worker, still without an accepted
+ #     subsystem barrier or child reinitializer
+ #
+ # Since: 10.0 (Crucible downstream extension)
+ ##
+ { 'enum': 'CrucibleHotForkThreadDisposition',
+-  'data': [ 'coordinator', 'unclassified', 'rcu-restart',
++  'data': [ 'coordinator', 'unclassified', 'rcu-restart', 'monitor-restart',
+             'unclassified-aio' ] }
+ 
+ ##
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index 9700d4714..916d795a3 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -405,6 +405,13 @@ typedef struct RegistryWorker {
+     int release_fd;
+ } RegistryWorker;
+ 
++typedef struct RegistryWorkerThread {
++    RegistryWorker worker;
++    QemuThread thread;
++    int ready[2];
++    int release[2];
++} RegistryWorkerThread;
++
+ static void *registry_worker(void *opaque)
+ {
+     RegistryWorker *worker = opaque;
+@@ -421,6 +428,43 @@ static void *aio_registry_worker(void *opaque)
+     return registry_worker(opaque);
+ }
+ 
++static void *monitor_registry_worker(void *opaque)
++{
++    void *result;
++
++    qemu_thread_hot_fork_set_current_disposition(
++        QEMU_THREAD_HOT_FORK_MONITOR_RESTART);
++    rcu_register_thread();
++    result = registry_worker(opaque);
++    rcu_unregister_thread();
++    return result;
++}
++
++static void start_registry_worker_thread(
++    RegistryWorkerThread *worker, const char *name,
++    void *(*start_routine)(void *))
++{
++    g_assert_cmpint(pipe2(worker->ready, O_CLOEXEC), ==, 0);
++    g_assert_cmpint(pipe2(worker->release, O_CLOEXEC), ==, 0);
++    worker->worker = (RegistryWorker) {
++        .ready_fd = worker->ready[1],
++        .release_fd = worker->release[0],
++    };
++    qemu_thread_create(&worker->thread, name, start_routine, &worker->worker,
++                       QEMU_THREAD_JOINABLE);
++    g_assert_cmpint(read_child_result(worker->ready[0]), ==, 0);
++}
++
++static void stop_registry_worker_thread(RegistryWorkerThread *worker)
++{
++    write_child_result(worker->release[1], 0);
++    qemu_thread_join(&worker->thread);
++    close(worker->release[0]);
++    close(worker->release[1]);
++    close(worker->ready[0]);
++    close(worker->ready[1]);
++}
++
+ static void test_child_registry_rebuild_preserves_parent(void)
+ {
+     QemuCrucibleHotForkRuntimeTransaction transaction = { 0 };
+@@ -428,14 +472,17 @@ static void test_child_registry_rebuild_preserves_parent(void)
+     QemuThreadHotForkInventory after;
+     QemuRcuHotForkInventory rcu_before;
+     QemuRcuHotForkInventory rcu_after;
++    RegistryWorkerThread monitor_worker;
+     int child_result[2];
+     int result;
+     pid_t child;
+ 
+     g_assert_cmpint(pipe2(child_result, O_CLOEXEC), ==, 0);
++    start_registry_worker_thread(&monitor_worker, "IO mon_iothread",
++                                 monitor_registry_worker);
+ 
+     qemu_thread_hot_fork_inventory(&before);
+-    g_assert_cmpuint(before.entry_count, ==, 2);
++    g_assert_cmpuint(before.entry_count, ==, 3);
+     g_assert_cmpuint(before.overflow_count, ==, 0);
+     qemu_rcu_hot_fork_inventory(&rcu_before);
+     g_assert_false(rcu_before.overflowed);
+@@ -521,6 +568,7 @@ static void test_child_registry_rebuild_preserves_parent(void)
+     qemu_rcu_hot_fork_inventory_destroy(&rcu_after);
+     qemu_rcu_hot_fork_inventory_destroy(&rcu_before);
+     close(child_result[0]);
++    stop_registry_worker_thread(&monitor_worker);
+ }
+ 
+ static void assert_runtime_transaction_rejects_worker(
+@@ -528,20 +576,12 @@ static void assert_runtime_transaction_rejects_worker(
+ {
+     QemuCrucibleHotForkRuntimeTransaction transaction = { 0 };
+     QemuRcuHotForkBarrierInventory barrier;
+-    RegistryWorker worker;
+-    QemuThread thread;
+-    int ready[2];
+-    int release[2];
++    RegistryWorkerThread monitor_worker;
++    RegistryWorkerThread unsupported_worker;
+ 
+-    g_assert_cmpint(pipe2(ready, O_CLOEXEC), ==, 0);
+-    g_assert_cmpint(pipe2(release, O_CLOEXEC), ==, 0);
+-    worker = (RegistryWorker) {
+-        .ready_fd = ready[1],
+-        .release_fd = release[0],
+-    };
+-    qemu_thread_create(&thread, name, start_routine, &worker,
+-                       QEMU_THREAD_JOINABLE);
+-    g_assert_cmpint(read_child_result(ready[0]), ==, 0);
++    start_registry_worker_thread(&monitor_worker, "IO mon_iothread",
++                                 monitor_registry_worker);
++    start_registry_worker_thread(&unsupported_worker, name, start_routine);
+ 
+     g_assert_cmpint(qemu_crucible_hot_fork_begin_runtime_transaction(
+                         &transaction),
+@@ -552,12 +592,8 @@ static void assert_runtime_transaction_rejects_worker(
+     qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_QUERY, &barrier);
+     g_assert_false(barrier.held);
+ 
+-    write_child_result(release[1], 0);
+-    qemu_thread_join(&thread);
+-    close(release[0]);
+-    close(release[1]);
+-    close(ready[0]);
+-    close(ready[1]);
++    stop_registry_worker_thread(&unsupported_worker);
++    stop_registry_worker_thread(&monitor_worker);
+ }
+ 
+ static void test_runtime_transaction_rejects_unsupported_threads(void)
+@@ -572,6 +608,10 @@ static void test_runtime_transaction_rejects_active_rcu_reader(void)
+ {
+     QemuCrucibleHotForkRuntimeTransaction transaction = { 0 };
+     QemuRcuHotForkBarrierInventory barrier;
++    RegistryWorkerThread monitor_worker;
++
++    start_registry_worker_thread(&monitor_worker, "IO mon_iothread",
++                                 monitor_registry_worker);
+ 
+     rcu_read_lock();
+     g_assert_cmpint(qemu_crucible_hot_fork_begin_runtime_transaction(
+@@ -591,13 +631,17 @@ static void test_runtime_transaction_rejects_active_rcu_reader(void)
+     g_assert_cmpint(qemu_crucible_hot_fork_release_parent_runtime_transaction(
+                         &transaction),
+                     ==, 0);
++    stop_registry_worker_thread(&monitor_worker);
+ }
+ 
+ static void test_registry_transaction_rejects_locked_mutex(void)
+ {
+     QemuThreadHotForkRegistryTransaction transaction = { 0 };
++    RegistryWorkerThread monitor_worker;
+     QemuMutex mutex;
+ 
++    start_registry_worker_thread(&monitor_worker, "IO mon_iothread",
++                                 monitor_registry_worker);
+     qemu_mutex_init(&mutex);
+     qemu_mutex_lock(&mutex);
+     g_assert_cmpint(qemu_thread_hot_fork_begin_registry_transaction(
+@@ -614,6 +658,7 @@ static void test_registry_transaction_rejects_locked_mutex(void)
+                         &transaction),
+                     ==, 0);
+     qemu_mutex_destroy(&mutex);
++    stop_registry_worker_thread(&monitor_worker);
+ }
+ 
+ static void test_immediate_child_replaces_parent_endpoints(void)
+diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
+index 8ad3b6864..55648a5bf 100644
+--- a/util/qemu-thread-posix.c
++++ b/util/qemu-thread-posix.c
+@@ -847,6 +847,47 @@ void qemu_thread_hot_fork_set_current_disposition(
+     }
+ }
+ 
++int qemu_thread_hot_fork_bind_monitor_restart(int64_t thread_id)
++{
++    QemuHotForkThreadRecord *match = NULL;
++    GList *node;
++    int err;
++
++    if (thread_id <= 0) {
++        return -EINVAL;
++    }
++    err = pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++    if (err) {
++        error_exit(err, __func__);
++    }
++    for (node = qemu_hot_fork_threads; node; node = node->next) {
++        QemuHotForkThreadRecord *record = node->data;
++
++        if (record->thread_id == thread_id) {
++            if (match) {
++                match = NULL;
++                break;
++            }
++            match = record;
++        }
++    }
++    if (!match || !match->tracked ||
++        match->disposition != QEMU_THREAD_HOT_FORK_UNCLASSIFIED_AIO) {
++        err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++        if (err) {
++            error_exit(err, __func__);
++        }
++        return -ESTALE;
++    }
++    match->disposition = QEMU_THREAD_HOT_FORK_MONITOR_RESTART;
++    qemu_hot_fork_thread_generation++;
++    err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    if (err) {
++        error_exit(err, __func__);
++    }
++    return 0;
++}
++
+ static void qemu_hot_fork_thread_unregister(void *opaque)
+ {
+     QemuHotForkThreadRecord *record = opaque;
+@@ -977,6 +1018,7 @@ int qemu_thread_hot_fork_begin_registry_transaction(
+     GList *node;
+     size_t coordinator_count = 0;
+     size_t rcu_restart_count = 0;
++    size_t monitor_restart_count = 0;
+     int64_t thread_id = qemu_get_thread_id();
+     int err;
+ 
+@@ -1002,13 +1044,17 @@ int qemu_thread_hot_fork_begin_registry_transaction(
+         } else if (record->disposition ==
+                    QEMU_THREAD_HOT_FORK_RCU_RESTART) {
+             rcu_restart_count++;
++        } else if (record->disposition ==
++                   QEMU_THREAD_HOT_FORK_MONITOR_RESTART) {
++            monitor_restart_count++;
+         }
+     }
+     if (qemu_hot_fork_thread_overflow != 0 ||
+         qemu_hot_fork_thread_starts_in_flight != 0 ||
+-        qemu_hot_fork_thread_count != 2 ||
++        qemu_hot_fork_thread_count != 3 ||
+         coordinator_count != 1 ||
+         rcu_restart_count != 1 ||
++        monitor_restart_count != 1 ||
+         qemu_hot_fork_coordinator_thread_id != thread_id ||
+         qemu_hot_fork_current_thread != coordinator ||
+         coordinator->thread_id != thread_id || !coordinator->tracked ||

@@ -29,7 +29,8 @@ pub(crate) fn write_replay_report_human(
     if let Some(live) = &report.live_qemu {
         writeln!(
             output,
-            "crucible: replay live-qemu validation=passed producer={} reproduced_status={} reproduced_outcome={} terminal_configuration={} event_stream={} fingerprint_stream={} controls={}",
+            "crucible: replay live-qemu validation=passed owner={} producer={} reproduced_status={} reproduced_outcome={} terminal_configuration={} event_stream={} fingerprint_stream={} controls={}",
+            live.execution_owner,
             live.producer,
             live.terminal_status,
             live.terminal_outcome,

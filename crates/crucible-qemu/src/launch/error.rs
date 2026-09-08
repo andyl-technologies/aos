@@ -4,6 +4,35 @@ use thiserror::Error;
 
 use super::QemuPreSpawnLaunchValidationError;
 
+/// Reports an admitted executor ceiling below a QEMU launch requirement.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum QemuLaunchResourceError {
+    /// The command's fixed vCPU topology exceeds the admitted ceiling.
+    #[error("QEMU launch requires {required} vCPUs but executor admitted {admitted}")]
+    VirtualCpus {
+        /// Fixed `-smp` vCPU count.
+        required: u32,
+        /// Admitted executor vCPU ceiling.
+        admitted: u32,
+    },
+    /// The command's guest RAM alone exceeds the admitted resident ceiling.
+    #[error("QEMU launch requires {required} guest-memory bytes but executor admitted {admitted}")]
+    ResidentBytes {
+        /// Fixed guest RAM baseline.
+        required: u64,
+        /// Admitted resident-memory ceiling.
+        admitted: u64,
+    },
+    /// The exact-VMState container cannot fit below the admitted disk ceiling.
+    #[error("QEMU launch requires {required} writable bytes but executor admitted {admitted}")]
+    WritableBytes {
+        /// Minimum writable VMState/container bytes.
+        required: u64,
+        /// Admitted aggregate writable-byte ceiling.
+        admitted: u64,
+    },
+}
+
 /// Reports an invalid QEMU launch command.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuLaunchCommandError {
@@ -23,6 +52,12 @@ pub enum QemuLaunchCommandError {
     /// App-random was configured without enabling the white-box callback.
     #[error("app-random QEMU launch requires white-box mode")]
     AppRandomWhileWhiteboxDisabled,
+    /// A selectable catalog was configured without enabling white-box callbacks.
+    #[error("guest-selectable QEMU launch requires white-box mode")]
+    SelectableCatalogWhileWhiteboxDisabled,
+    /// The composite setup plan could not be encoded within its fixed profile.
+    #[error("QEMU plugin setup plan cannot be represented canonically")]
+    InvalidPluginSetupPlan,
     /// Only part of the app-random branch configuration was supplied.
     #[error("app-random branch seed and prefix draw count must be configured together")]
     InvalidAppRandomBranchConfiguration,

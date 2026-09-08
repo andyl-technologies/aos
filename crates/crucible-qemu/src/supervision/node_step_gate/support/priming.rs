@@ -41,7 +41,7 @@ fn retain_priming_coverage(events: &mut Vec<ObservableEvent>) {
 pub(in crate::supervision::node_step_gate) fn prime_guest_off_boot_barrier(
     setup: &crate::QemuHostPluginSetup,
     timeout: Duration,
-    identity: LiveNodeIdentity<'_>,
+    identity: QemuLiveNodeIdentity<'_>,
     coverage: QemuLaunchPluginSwitch,
     block: Option<&mut QemuLiveBlockIoServicer>,
     ninep: Option<&mut QemuLive9pIoServicer>,
@@ -117,7 +117,7 @@ pub(in crate::supervision::node_step_gate) struct BootNetworkBackpressureContinu
 pub(in crate::supervision::node_step_gate) fn continue_boot_network_backpressure_capture(
     setup: &crate::QemuHostPluginSetup,
     timeout: Duration,
-    identity: LiveNodeIdentity<'_>,
+    identity: QemuLiveNodeIdentity<'_>,
     coverage: QemuLaunchPluginSwitch,
     continuation: BootNetworkBackpressureContinuation<'_>,
 ) -> Result<PrimeGuestOutcome, QemuLiveNodeStepGateError> {

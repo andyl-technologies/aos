@@ -302,7 +302,7 @@ index 0b17824e8..67a72a014 100644
      }
  };
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 65df26295..8b42081c3 100644
+index f58c6c7ac..e17585095 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1349,6 +1349,7 @@ int qemu_plugin_net_inject(const uint8_t *data, size_t len);

@@ -193,7 +193,7 @@ impl PluginRegistrationSequence {
         Ok(handshake)
     }
 
-    /// Receives and records the host `Setup` frame and its two descriptors.
+    /// Receives and records the host `Setup` frame and its three descriptors.
     ///
     /// The sequence must already have acquired QEMU time control. The method
     /// checks the registration step before reading the control socket, so an
@@ -203,7 +203,7 @@ impl PluginRegistrationSequence {
     ///
     /// Returns [`PluginRegistrationSequenceError`] when setup receive is out of
     /// order, the socket closes, the frame is malformed, or the frame carries
-    /// anything other than exactly two `SCM_RIGHTS` descriptors.
+    /// anything other than exactly three `SCM_RIGHTS` descriptors.
     #[cfg(unix)]
     pub fn receive_setup_with_descriptors<S>(
         &mut self,
@@ -705,8 +705,10 @@ impl PluginRegistrationSequence {
 const fn setup_error_registration_step(source: &PluginSetupError) -> PluginRegistrationStep {
     match source {
         PluginSetupError::ReceiveSetup { .. } => PluginRegistrationStep::ReceiveSetup,
-        PluginSetupError::MapRegion { .. }
+        PluginSetupError::InspectSharedMemory { .. }
+        | PluginSetupError::MapRegion { .. }
         | PluginSetupError::ValidateRegion { .. }
+        | PluginSetupError::ValidatePluginSetupPlan { .. }
         | PluginSetupError::NodeCountMismatch { .. }
         | PluginSetupError::SlotOutsideRegionNodeCount { .. } => {
             PluginRegistrationStep::MapSharedMemory
@@ -721,6 +723,7 @@ const fn setup_error_registration_step(source: &PluginSetupError) -> PluginRegis
             PluginSetupFailureStage::ReceiveSetup => PluginRegistrationStep::ReceiveSetup,
             PluginSetupFailureStage::MapRegion
             | PluginSetupFailureStage::ValidateRegion
+            | PluginSetupFailureStage::ValidatePluginSetupPlan
             | PluginSetupFailureStage::CrossCheckSlot => PluginRegistrationStep::MapSharedMemory,
             PluginSetupFailureStage::ArmWakeFd | PluginSetupFailureStage::RegisterWakeFd => {
                 PluginRegistrationStep::ArmWakeFd

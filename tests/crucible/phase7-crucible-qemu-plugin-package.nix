@@ -85,7 +85,7 @@
       }
       {
         label = "plugin API version source";
-        needle = "done < crates/crucible-qemu-plugin/src/abi.rs";
+        needle = "done < crucible-qemu-plugin/src/abi.rs";
       }
       {
         label = "installed QEMU plugin path";
@@ -155,7 +155,7 @@
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePackageNix [
       {
         label = "suite carries the separate controller and matched QEMU/plugin runtime deps";
-        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures];";
+        needle = "runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux];";
       }
       {
         label = "suite wrapper configures QEMU at runtime";

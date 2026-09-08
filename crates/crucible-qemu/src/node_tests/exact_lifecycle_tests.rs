@@ -109,6 +109,32 @@ fn qemu_node_captures_one_identity_bound_vmstate_and_host_io_pair() -> Result<()
 }
 
 #[test]
+fn publication_exact_capture_resumes_only_after_explicit_release() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+    let mut checkpoint = checkpoint("paused-exact");
+    checkpoint.virtual_time = node.synchronize_observed_time()?;
+    let node_identity = node_id("vm-a");
+    checkpoint.node_icounts.insert(
+        node_identity.clone(),
+        Icount {
+            retired: checkpoint.virtual_time.ticks,
+        },
+    );
+
+    let snapshot = node.capture_exact_snapshot_for_publication(&node_identity, checkpoint)?;
+    assert_eq!(
+        snapshot.host_io().execution_binding(),
+        snapshot.checkpoint().id
+    );
+    assert!(!recorded(&log).contains(&ChannelCall::QmpContinue));
+
+    node.resume_after_exact_snapshot()?;
+    assert_eq!(recorded(&log).last(), Some(&ChannelCall::QmpContinue));
+    Ok(())
+}
+
+#[test]
 fn terminal_lifecycle_capture_uses_the_existing_qemu_stop_fence() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
     let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
@@ -287,6 +313,28 @@ fn qemu_node_rejects_a_coverage_quantum_without_an_event_log() -> Result<(), Box
     let (shutdown, append) = node.shutdown_child_with_event_log(&mut event_log)?;
     assert!(shutdown.reaped);
     assert!(append.entries.is_empty());
+    Ok(())
+}
+
+#[test]
+fn qemu_node_discards_pre_authoritative_observations_after_coverage_generation_reset()
+-> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let setup_event =
+        ObservableEvent::coverage_block(Icount { retired: 3 }, node_id("vm-a"), 0x4010, 4);
+    let mut node = scripted_node_with_coverage(
+        Arc::clone(&log),
+        ScriptedNodeOptions::default(),
+        std::iter::empty(),
+        std::iter::empty::<Vec<ObservableEvent>>(),
+        [setup_event],
+    )?;
+
+    assert_eq!(node.prepare_authoritative_observation_stream()?, 1);
+
+    let mut event_log = EventLog::new();
+    let (shutdown, _) = node.shutdown_child_with_event_log(&mut event_log)?;
+    assert!(shutdown.reaped);
     Ok(())
 }
 

@@ -1,0 +1,140 @@
+diff --git a/include/system/crucible-hot-fork-plugin-child.h b/include/system/crucible-hot-fork-plugin-child.h
+index a29c562e9..e08e335d8 100644
+--- a/include/system/crucible-hot-fork-plugin-child.h
++++ b/include/system/crucible-hot-fork-plugin-child.h
+@@ -288,6 +288,17 @@ bool qemu_crucible_hot_fork_qmp_child_reinitializer_prepared_for(
+     const QemuCrucibleHotForkQmpChildReinitializer *reinitializer,
+     const QemuCrucibleHotForkQmpChildResourcePlan *resources);
+ 
++/**
++ * qemu_crucible_hot_fork_qmp_child_reinitializer_complete() - report result
++ * @reinitializer: exact inherited child-QMP runtime adapter
++ *
++ * Returns true exactly after the one-shot runtime completed and its complete
++ * status matched the retained descriptor, socket, and transaction generations.
++ * A failed or contradictory attempt remains permanently incomplete.
++ */
++bool qemu_crucible_hot_fork_qmp_child_reinitializer_complete(
++    const QemuCrucibleHotForkQmpChildReinitializer *reinitializer);
++
+ /**
+  * qemu_crucible_hot_fork_reinitialize_qmp_child() - invoke monitor runtime
+  * @reinitializer: exact prepared one-shot child-monitor adapter
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 7b60e1a60..695a2c303 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -1540,7 +1540,9 @@ static CrucibleHotForkQmpState *crucible_hot_fork_qmp_report(void)
+             &crucible_hot_fork_qmp_child_resources);
+     report->reinitialized =
+         crucible_hot_fork_qmp_child_reinitializer.initialized;
+-    report->disposition_complete = false;
++    report->disposition_complete =
++        qemu_crucible_hot_fork_qmp_child_reinitializer_complete(
++            &crucible_hot_fork_qmp_child_reinitializer);
+     report->readiness_proof_acknowledged = false;
+     return report;
+ }
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index eb200f1e0..80a48e179 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -2084,7 +2084,7 @@
+ # one-shot child reinitializer contract. The concrete inherited-monitor runtime
+ # and child-transaction composition remain open.
+ #
+-# @schema-version: retained QMP endpoint contract version, currently 1
++# @schema-version: retained QMP endpoint contract version, currently 2
+ #
+ # @generation: process-local positive mutation generation, or zero initially
+ #
+@@ -2113,8 +2113,8 @@
+ #     exactly reported inherited-monitor disposition, dispatcher and endpoint
+ #     reconstruction, parser/capability reset, greeting, and held input
+ #
+-# @disposition-complete: always false until the complete child disposition
+-#     transaction lands
++# @disposition-complete: whether the composed child transaction accepted the
++#     exact complete one-shot runtime status for this retained basis
+ #
+ # @readiness-proof-acknowledged: always false; this primitive acknowledges no
+ #     hot-fork readiness proof
+diff --git a/system/crucible-hot-fork-plugin-child.c b/system/crucible-hot-fork-plugin-child.c
+index b2aca6702..dac8eb9b4 100644
+--- a/system/crucible-hot-fork-plugin-child.c
++++ b/system/crucible-hot-fork-plugin-child.c
+@@ -353,6 +353,14 @@ static bool crucible_hot_fork_qmp_child_status_matches(
+         status->parser_buffered_bytes == 0;
+ }
+ 
++bool qemu_crucible_hot_fork_qmp_child_reinitializer_complete(
++    const QemuCrucibleHotForkQmpChildReinitializer *reinitializer)
++{
++    return reinitializer && reinitializer->prepared &&
++        reinitializer->attempted && reinitializer->initialized &&
++        crucible_hot_fork_qmp_child_status_matches(reinitializer);
++}
++
+ int qemu_crucible_hot_fork_reinitialize_qmp_child(
+     QemuCrucibleHotForkQmpChildReinitializer *reinitializer,
+     QemuCrucibleHotForkQmpChildRuntime runtime, void *opaque)
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index 9934d2c42..783b0a980 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -231,6 +231,9 @@ static void test_qmp_child_reinitializer_is_exact_and_one_shot(void)
+     g_assert_true(
+         qemu_crucible_hot_fork_qmp_child_reinitializer_prepared_for(
+             &reinitializer, &resources));
++    g_assert_false(
++        qemu_crucible_hot_fork_qmp_child_reinitializer_complete(
++            &reinitializer));
+     resources.qmp_generation++;
+     g_assert_false(qemu_crucible_hot_fork_qmp_child_reinitializer_prepared_for(
+         &reinitializer, &resources));
+@@ -241,6 +244,9 @@ static void test_qmp_child_reinitializer_is_exact_and_one_shot(void)
+     g_assert_cmpuint(runtime.calls, ==, 1);
+     g_assert_true(reinitializer.attempted);
+     g_assert_true(reinitializer.initialized);
++    g_assert_true(
++        qemu_crucible_hot_fork_qmp_child_reinitializer_complete(
++            &reinitializer));
+     g_assert_false(
+         qemu_crucible_hot_fork_qmp_child_reinitializer_prepared_for(
+             &reinitializer, &resources));
+@@ -258,6 +264,9 @@ static void test_qmp_child_reinitializer_is_exact_and_one_shot(void)
+                     ==, -EPROTO);
+     g_assert_true(contradictory.attempted);
+     g_assert_false(contradictory.initialized);
++    g_assert_false(
++        qemu_crucible_hot_fork_qmp_child_reinitializer_complete(
++            &contradictory));
+ 
+     g_assert_cmpint(qemu_crucible_hot_fork_prepare_qmp_child_reinitializer(
+                         &failed, &resources),
+@@ -267,9 +276,13 @@ static void test_qmp_child_reinitializer_is_exact_and_one_shot(void)
+                     ==, -EIO);
+     g_assert_true(failed.attempted);
+     g_assert_false(failed.initialized);
++    g_assert_false(
++        qemu_crucible_hot_fork_qmp_child_reinitializer_complete(&failed));
+     qemu_crucible_hot_fork_reset_qmp_child_reinitializer(&failed);
+     g_assert_false(failed.prepared);
+     g_assert_false(failed.attempted);
++    g_assert_false(
++        qemu_crucible_hot_fork_qmp_child_reinitializer_complete(&failed));
+ }
+ 
+ static int accept_endpoints(void *opaque)
+@@ -605,7 +618,10 @@ static void test_immediate_child_applies_sealed_resource_plan(void)
+              !plugin_reinitializer.initialized ||
+              fake_plugin_child_runtime.calls != 1 ||
+              !qmp_reinitializer.attempted ||
+-             !qmp_reinitializer.initialized || qmp_runtime.calls != 1)) {
++             !qmp_reinitializer.initialized ||
++             !qemu_crucible_hot_fork_qmp_child_reinitializer_complete(
++                 &qmp_reinitializer) ||
++             qmp_runtime.calls != 1)) {
+             result = -EIO;
+         }
+         if (result == 0 &&

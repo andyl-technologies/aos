@@ -60,6 +60,7 @@ const _: () = assert!(WHITEBOX_MARKER_ENTRY_VCPU_INDEX_OFFSET == 8);
 const _: () = assert!(WHITEBOX_MARKER_ENTRY_KIND_OFFSET == 12);
 const _: () = assert!(WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET == 14);
 const _: () = assert!(WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET == 16);
+const _: () = assert!(MAX_FRAME_DATA == crucible_protocol::WHITEBOX_MARKER_BODY_MAX_BYTES);
 const _: () = assert!(WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET == 16 + MAX_FRAME_DATA);
 const _: () = assert!(WHITEBOX_MARKER_ENTRY_SIZE == 4_672);
 const _: () = assert!(WHITEBOX_MARKER_ENTRY_ALIGN == 64);

@@ -16,6 +16,13 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 filter = 'test(crucible_features_resolve_for_declared_powersets)'
 slow-timeout = { period = "60s", terminate-after = 10 }
 
+# The campaign repository scale tests drive ten thousand budget and request
+# transitions through the real indexed repository, then replay them cold.
+# Each takes several minutes in release, which is the point of the evidence.
+[[profile.default.overrides]]
+filter = "package(crucible-campaign) & test(/ten_thousand_/)"
+slow-timeout = { period = "60s", terminate-after = 10 }
+
 # This end-to-end registry test deliberately cancels an in-flight upload and
 # waits for the server-side transaction to release before issuing DELETE. Keep
 # it isolated so unrelated I/O-heavy tests cannot consume its bounded retry

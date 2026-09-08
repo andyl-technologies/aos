@@ -225,7 +225,7 @@
       }
       {
         label = "shared protocol version constant";
-        needle = "pub const WHITEBOX_DOORBELL_PROTOCOL_VERSION: u16 = 2;";
+        needle = "pub const WHITEBOX_DOORBELL_PROTOCOL_VERSION: u16 = 3;";
       }
     ]
     ++ failuresFor "crates/crucible-protocol/src/doorbell_marker.rs" protocolDoorbellMarker [

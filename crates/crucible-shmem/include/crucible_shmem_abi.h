@@ -16,11 +16,12 @@
 #define CRUCIBLE_SHMEM_STATIC_ASSERT(COND, MSG) _Static_assert((COND), MSG)
 
 #define CRUCIBLE_SHMEM_REGION_MAGIC UINT64_C(0x314d485343555243)
-#define CRUCIBLE_SHMEM_ABI_VERSION 17u
+#define CRUCIBLE_SHMEM_ABI_VERSION 21u
 #define CRUCIBLE_SHMEM_MAX_FRAME_DATA 4608u
 #define CRUCIBLE_SHMEM_DEFAULT_QUEUE_CAPACITY 64u
 #define CRUCIBLE_SHMEM_COVERAGE_QUEUE_CAPACITY 65536u
 #define CRUCIBLE_SHMEM_WHITEBOX_MARKER_QUEUE_CAPACITY 1024u
+#define CRUCIBLE_SHMEM_SELECTABLE_REPLY_QUEUE_CAPACITY 1u
 #define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_QUEUE_CAPACITY 64u
 #define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RINGS_PER_VM 2u
 #define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_REQUEST_RING_OFFSET 0u
@@ -103,11 +104,13 @@
 #define CRUCIBLE_SHMEM_RING_HEADER_SIZE 128u
 #define CRUCIBLE_SHMEM_RING_HEADER_ALIGN 128u
 #define CRUCIBLE_SHMEM_RING_HEADER_READ_IDX_OFFSET 0u
-#define CRUCIBLE_SHMEM_RING_HEADER_PAD_READ_OFFSET 8u
+#define CRUCIBLE_SHMEM_RING_HEADER_CONSUMER_STATE_OFFSET 8u
+#define CRUCIBLE_SHMEM_RING_HEADER_PAD_READ_OFFSET 16u
 #define CRUCIBLE_SHMEM_RING_HEADER_WRITE_IDX_OFFSET 64u
-#define CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_OFFSET 72u
-#define CRUCIBLE_SHMEM_RING_HEADER_PAD_READ_LEN 56u
-#define CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_LEN 56u
+#define CRUCIBLE_SHMEM_RING_HEADER_PRODUCER_STATE_OFFSET 72u
+#define CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_OFFSET 80u
+#define CRUCIBLE_SHMEM_RING_HEADER_PAD_READ_LEN 48u
+#define CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_LEN 48u
 
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE 4640u
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_ALIGN 8u
@@ -257,16 +260,20 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, logical_time_res
 
 typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_ring_header {
     _Atomic uint64_t read_idx;
+    _Atomic uint64_t consumer_state;
     uint8_t pad_read[CRUCIBLE_SHMEM_RING_HEADER_PAD_READ_LEN];
     _Atomic uint64_t write_idx;
+    _Atomic uint64_t producer_state;
     uint8_t pad_write[CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_LEN];
 } crucible_shmem_ring_header;
 
 CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_ring_header) == CRUCIBLE_SHMEM_RING_HEADER_SIZE, "crucible_shmem_ring_header size");
 CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_ring_header) == CRUCIBLE_SHMEM_RING_HEADER_ALIGN, "crucible_shmem_ring_header alignment");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_ring_header, read_idx) == CRUCIBLE_SHMEM_RING_HEADER_READ_IDX_OFFSET, "crucible_shmem_ring_header.read_idx offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_ring_header, consumer_state) == CRUCIBLE_SHMEM_RING_HEADER_CONSUMER_STATE_OFFSET, "crucible_shmem_ring_header.consumer_state offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_ring_header, pad_read) == CRUCIBLE_SHMEM_RING_HEADER_PAD_READ_OFFSET, "crucible_shmem_ring_header.pad_read offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_ring_header, write_idx) == CRUCIBLE_SHMEM_RING_HEADER_WRITE_IDX_OFFSET, "crucible_shmem_ring_header.write_idx offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_ring_header, producer_state) == CRUCIBLE_SHMEM_RING_HEADER_PRODUCER_STATE_OFFSET, "crucible_shmem_ring_header.producer_state offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_ring_header, pad_write) == CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_OFFSET, "crucible_shmem_ring_header.pad_write offset");
 
 typedef struct crucible_shmem_frame_entry {
@@ -1167,6 +1174,11 @@ typedef struct crucible_shmem_guest_introspection_layout {
     uint64_t accelerator_ring_hdr_off;
     uint64_t accelerator_ring_data_off;
     uint64_t accelerator_entry_stride;
+    uint32_t selectable_reply_ring_count;
+    uint32_t selectable_reply_queue_capacity;
+    uint64_t selectable_reply_ring_hdr_off;
+    uint64_t selectable_reply_ring_data_off;
+    uint64_t selectable_reply_entry_stride;
     uint64_t region_size;
 } crucible_shmem_guest_introspection_layout;
 
@@ -1255,6 +1267,9 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
     uint64_t guest_data_end;
     uint64_t accelerator_hdr_off;
     uint64_t accelerator_data_off;
+    uint64_t accelerator_data_end;
+    uint64_t selectable_reply_hdr_off;
+    uint64_t selectable_reply_data_off;
     uint64_t computed_region_size;
     uint32_t guest_ring_count;
     uint32_t accelerator_ring_count;
@@ -1340,7 +1355,13 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
         || crucible_shmem_u64_checked_add(accelerator_hdr_off, byte_len, &accelerator_data_off) != 0
         || crucible_shmem_u64_checked_mul(accelerator_ring_count, CRUCIBLE_SHMEM_ACCELERATOR_QUEUE_CAPACITY, &count) != 0
         || crucible_shmem_u64_checked_mul(count, CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_SIZE, &byte_len) != 0
-        || crucible_shmem_u64_checked_add(accelerator_data_off, byte_len, &computed_region_size) != 0
+        || crucible_shmem_u64_checked_add(accelerator_data_off, byte_len, &accelerator_data_end) != 0
+        || crucible_shmem_u64_checked_align_up(accelerator_data_end, CRUCIBLE_SHMEM_RING_HEADER_ALIGN, &selectable_reply_hdr_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_RING_HEADER_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(selectable_reply_hdr_off, byte_len, &selectable_reply_data_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_SELECTABLE_REPLY_QUEUE_CAPACITY, &count) != 0
+        || crucible_shmem_u64_checked_mul(count, CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(selectable_reply_data_off, byte_len, &computed_region_size) != 0
         || computed_region_size != advertised_region_size) {
         return -1;
     }
@@ -1355,6 +1376,11 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
     out->accelerator_ring_hdr_off = accelerator_hdr_off;
     out->accelerator_ring_data_off = accelerator_data_off;
     out->accelerator_entry_stride = CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_SIZE;
+    out->selectable_reply_ring_count = vm_node_count;
+    out->selectable_reply_queue_capacity = CRUCIBLE_SHMEM_SELECTABLE_REPLY_QUEUE_CAPACITY;
+    out->selectable_reply_ring_hdr_off = selectable_reply_hdr_off;
+    out->selectable_reply_ring_data_off = selectable_reply_data_off;
+    out->selectable_reply_entry_stride = CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_SIZE;
     out->region_size = computed_region_size;
     return 0;
 }

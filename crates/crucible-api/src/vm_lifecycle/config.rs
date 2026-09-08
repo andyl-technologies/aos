@@ -3,6 +3,35 @@
 use super::*;
 
 impl ProductionVmLifecycleConfig {
+    /// Returns the selected QEMU executable.
+    #[must_use]
+    pub fn executable(&self) -> &std::path::Path {
+        &self.executable
+    }
+
+    /// Returns the selected QEMU plugin.
+    #[must_use]
+    pub fn plugin(&self) -> &std::path::Path {
+        &self.plugin
+    }
+
+    /// Returns the durable lifecycle recovery root.
+    #[must_use]
+    pub fn run_state_root(&self) -> &std::path::Path {
+        &self.run_state_root
+    }
+
+    /// Returns this configuration with a distinct durable recovery root.
+    ///
+    /// Fixed worker pools use stable per-worker children so concurrent runs of
+    /// one scenario do not share the scenario-wide recovery lock. The caller
+    /// must preserve each worker-to-root assignment across daemon restart.
+    #[must_use]
+    pub fn with_run_state_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.run_state_root = root.into();
+        self
+    }
+
     /// Builds a local-QEMU lifecycle configuration with bounded defaults.
     ///
     /// `run_state_root` must be a durable writable directory. Each scenario
@@ -64,7 +93,10 @@ impl ProductionVmLifecycleConfig {
             debug_gateway_executable: None,
             debug: None,
             branch: None,
+            signal_fault_replay: None,
             branch_network_choices: Vec::new(),
+            app_random_branch_selections: BTreeMap::new(),
+            app_random_branch_plans: BTreeMap::new(),
             signal_artifacts: None,
             fault_replay: None,
             world_artifacts: None,
@@ -253,10 +285,42 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
+    /// Returns this configuration with exact promoted signal-fault replay.
+    ///
+    /// The plan must already have been reconstructed from repository-
+    /// authenticated campaign records. Production construction checks that its
+    /// target is the admitted start configuration, installs every finite
+    /// producer override before launch, and injects each typed branch at its
+    /// exact parent and virtual-time boundary.
+    #[must_use]
+    pub fn with_signal_fault_campaign_replay(
+        mut self,
+        replay: SignalFaultCampaignReplayPlan,
+    ) -> Self {
+        self.signal_fault_replay = Some(replay);
+        self
+    }
+
     /// Returns this configuration with exact live World-network branch choices.
     #[must_use]
     pub fn with_branch_network_choices(mut self, choices: Vec<crucible::OverrideDecision>) -> Self {
         self.branch_network_choices = choices;
+        self
+    }
+
+    /// Returns this configuration with exact app-random branch replay inputs.
+    ///
+    /// `selections` binds authenticated schedule selections to their exact
+    /// post-draw parents. `plans` contains the corresponding node-local producer
+    /// substitutions sent to each plugin during setup.
+    #[must_use]
+    pub fn with_app_random_branch_replay(
+        mut self,
+        selections: BTreeMap<ContentHash, crucible::SelectionDecision>,
+        plans: BTreeMap<NodeId, crucible_protocol::app_random_branch_plan::AppRandomBranchPlan>,
+    ) -> Self {
+        self.app_random_branch_selections = selections;
+        self.app_random_branch_plans = plans;
         self
     }
 
@@ -300,5 +364,23 @@ impl ProductionVmLifecycleConfig {
         self.quantum_budget
             .saturating_add(node_count)
             .saturating_add(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recovery_root_replacement_is_clone_local() {
+        let base =
+            ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "shared-state");
+        let worker = base.clone().with_run_state_root("worker-state/worker-001");
+
+        assert_eq!(base.run_state_root(), Path::new("shared-state"));
+        assert_eq!(
+            worker.run_state_root(),
+            Path::new("worker-state/worker-001")
+        );
     }
 }

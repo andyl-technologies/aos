@@ -181,6 +181,11 @@ pub(super) fn live_golden_bytes() -> Vec<u8> {
         GOLDEN_RING_HEADER_BASE + RING_HEADER_WRITE_IDX_OFFSET,
         9,
     );
+    write_u64(
+        &mut bytes,
+        GOLDEN_RING_HEADER_BASE + RING_HEADER_PRODUCER_STATE_OFFSET,
+        (1_u64 << 63) | 3,
+    );
 
     write_u64(
         &mut bytes,

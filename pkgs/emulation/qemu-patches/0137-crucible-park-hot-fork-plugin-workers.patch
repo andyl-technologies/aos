@@ -1,0 +1,170 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index a5e7d9021..afb83eb50 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1228,7 +1228,7 @@ QEMU_PLUGIN_API
+ int qemu_plugin_crucible_register_resource_manifest(
+     const struct qemu_plugin_crucible_resource_manifest *manifest);
+ 
+-#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION 2
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION 3
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD 1
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY 2
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE 3
+@@ -1247,6 +1247,9 @@ struct qemu_plugin_crucible_hot_fork_barrier_status {
+     uint64_t ring_count;
+     uint64_t rings_held;
+     uint64_t ring_producers_in_flight;
++    uint64_t worker_mask;
++    uint64_t parked_worker_mask;
++    uint64_t worker_operations_in_flight;
+ };
+ 
+ typedef int (*qemu_plugin_crucible_hot_fork_barrier_cb_t)(
+@@ -1261,9 +1264,10 @@ typedef int (*qemu_plugin_crucible_hot_fork_barrier_cb_t)(
+  * @userdata: stable opaque pointer passed to @cb
+  *
+  * The callback exposes a reversible admission hold over every live plugin
+- * callback and every shared-memory ring producer.  Holding the barrier is
+- * nonblocking: the returned status reports callbacks and producer
+- * publications that were admitted before their holds and have not returned.
++ * callback, every shared-memory ring producer, and every sealed worker class.
++ * Holding the barrier is nonblocking: the returned status reports callbacks,
++ * producer publications, and worker operations that were admitted before
++ * their holds and have not returned.
+  *
+  * Returns zero on success or a negative errno-style status on failure.
+  */
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 30d7ef3d6..cf94b6832 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -175,11 +175,17 @@ crucible_hot_fork_plugin_barrier(uint32_t operation, Error **errp)
+     report->rings_held = inventory.status.rings_held;
+     report->ring_producers_in_flight =
+         inventory.status.ring_producers_in_flight;
++    report->worker_mask = inventory.status.worker_mask;
++    report->parked_worker_mask = inventory.status.parked_worker_mask;
++    report->worker_operations_in_flight =
++        inventory.status.worker_operations_in_flight;
+     report->quiescent = report->registered && report->manifest_consistent &&
+         report->held && !report->teardown_closed && report->in_flight == 0 &&
+         report->ring_count != 0 &&
+         report->rings_held == report->ring_count &&
+-        report->ring_producers_in_flight == 0;
++        report->ring_producers_in_flight == 0 &&
++        report->parked_worker_mask == report->worker_mask &&
++        report->worker_operations_in_flight == 0;
+     return report;
+ }
+ 
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index 2927fe6cd..a5bb7e699 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -284,6 +284,9 @@ int qemu_plugin_crucible_hot_fork_barrier(
+     uint64_t previous_ring_count;
+     uint64_t previous_rings_held;
+     uint64_t previous_ring_producers_in_flight;
++    uint64_t previous_worker_mask;
++    uint64_t previous_parked_worker_mask;
++    uint64_t previous_worker_operations_in_flight;
+     int result;
+ 
+     if (!inventory ||
+@@ -319,6 +322,12 @@ int qemu_plugin_crucible_hot_fork_barrier(
+         status.ring_count == 0 || status.rings_held > status.ring_count ||
+         (status.rings_held != 0 &&
+          status.rings_held != status.ring_count) ||
++        (status.worker_mask & ~QEMU_PLUGIN_CRUCIBLE_WORKER_ALL) != 0 ||
++        (status.worker_mask & QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED) !=
++            QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED ||
++        (status.parked_worker_mask & ~status.worker_mask) != 0 ||
++        ctpop64(status.parked_worker_mask) +
++            status.worker_operations_in_flight > ctpop64(status.worker_mask) ||
+         (((status.flags &
+            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD) != 0) !=
+          (status.rings_held == status.ring_count)) ||
+@@ -348,20 +357,33 @@ int qemu_plugin_crucible_hot_fork_barrier(
+         qemu_plugin_crucible_barrier_inventory.status.rings_held;
+     previous_ring_producers_in_flight =
+         qemu_plugin_crucible_barrier_inventory.status.ring_producers_in_flight;
++    previous_worker_mask =
++        qemu_plugin_crucible_barrier_inventory.status.worker_mask;
++    previous_parked_worker_mask =
++        qemu_plugin_crucible_barrier_inventory.status.parked_worker_mask;
++    previous_worker_operations_in_flight =
++        qemu_plugin_crucible_barrier_inventory.status
++            .worker_operations_in_flight;
+     qemu_plugin_crucible_barrier_inventory.status = status;
+     if (previous_flags != status.flags ||
+         previous_in_flight != status.in_flight ||
+         previous_ring_count != status.ring_count ||
+         previous_rings_held != status.rings_held ||
+         previous_ring_producers_in_flight !=
+-            status.ring_producers_in_flight) {
++            status.ring_producers_in_flight ||
++        previous_worker_mask != status.worker_mask ||
++        previous_parked_worker_mask != status.parked_worker_mask ||
++        previous_worker_operations_in_flight !=
++            status.worker_operations_in_flight) {
+         qemu_plugin_crucible_barrier_inventory.generation++;
+     }
+     qemu_plugin_crucible_barrier_inventory.manifest_consistent =
+         qemu_plugin_crucible_resource_inventory.registered &&
+         qemu_plugin_crucible_resource_inventory.complete &&
+         qemu_plugin_crucible_resource_inventory.manifest.plugin_id ==
+-            qemu_plugin_crucible_barrier_inventory.plugin_id;
++            qemu_plugin_crucible_barrier_inventory.plugin_id &&
++        qemu_plugin_crucible_resource_inventory.manifest.worker_mask ==
++            status.worker_mask;
+     *inventory = qemu_plugin_crucible_barrier_inventory;
+     qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
+     qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index e8af2ee65..f9c5f750e 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -983,13 +983,13 @@
+ ##
+ # @CrucibleHotForkPluginBarrierState:
+ #
+-# Exact plugin-owned callback and shared-ring producer-admission state.  A
++# Exact plugin-owned callback, shared-ring producer, and process-worker state. A
+ # quiescent response proves that every callback covered by the sealed callback
+-# mask and every producer for the validated shared-memory ring set is parked.
+-# It does not drain plugin worker threads, clone ring bytes, or acknowledge
+-# hot-fork readiness proof bit 6.
++# mask, every producer for the validated shared-memory ring set, and every
++# sealed worker class is parked. It does not clone queued ring/worker bytes,
++# reconstruct child workers, or acknowledge hot-fork readiness proof bit 6.
+ #
+-# @schema-version: barrier contract version, currently 2
++# @schema-version: barrier contract version, currently 3
+ #
+ # @generation: process-local barrier registration/hold generation
+ #
+@@ -1010,6 +1010,13 @@
+ # @ring-producers-in-flight: producer publications admitted before the hold
+ #                            that have not yet returned
+ #
++# @worker-mask: exact sealed process-lifetime worker-class mask
++#
++# @parked-worker-mask: worker classes parked at an operation boundary
++#
++# @worker-operations-in-flight: worker operations admitted before the hold
++#                               that have not yet returned
++#
+ # @quiescent: whether the registered, manifest-consistent hold has drained
+ #
+ # Since: 10.0 (Crucible downstream extension)
+@@ -1025,6 +1032,9 @@
+             'ring-count': 'uint64',
+             'rings-held': 'uint64',
+             'ring-producers-in-flight': 'uint64',
++            'worker-mask': 'uint64',
++            'parked-worker-mask': 'uint64',
++            'worker-operations-in-flight': 'uint64',
+             'quiescent': 'bool' } }
+ 
+ ##

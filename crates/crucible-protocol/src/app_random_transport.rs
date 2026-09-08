@@ -35,6 +35,55 @@ pub fn app_random_stream_name(node_name: &str, stream_tag: &str) -> String {
     )
 }
 
+/// Returns whether a canonical app-random stream name belongs to `node_name`.
+///
+/// The length-framed node component prevents a prefix collision with another
+/// node name or an embedded `/stream:` substring.
+#[must_use]
+pub fn app_random_stream_name_belongs_to_node(stream_name: &str, node_name: &str) -> bool {
+    app_random_stream_name_components(stream_name)
+        .is_some_and(|(recorded_node, _stream_tag)| recorded_node == node_name)
+}
+
+/// Returns whether `stream_name` is one canonical app-random stream name.
+///
+/// This parser is used when a typed campaign branch replaces a model-sampled
+/// selection: the preceding named RNG draw remains the schedule-level proof
+/// that the branch consumes one application-random request.
+#[must_use]
+pub fn app_random_stream_name_is_canonical(stream_name: &str) -> bool {
+    app_random_stream_name_components(stream_name).is_some()
+}
+
+/// Parses one canonical app-random stream name into its node and guest tag.
+///
+/// Returns `None` when the length-framed syntax is noncanonical or malformed.
+#[must_use]
+pub fn app_random_stream_name_components(stream_name: &str) -> Option<(&str, &str)> {
+    let framed_node = stream_name.strip_prefix("app-random/node:")?;
+    let (declared_node_len, node_and_stream) = framed_node.split_once(':')?;
+    let node_len = parse_canonical_length(declared_node_len)?;
+    let node = node_and_stream.get(..node_len)?;
+    let framed_stream = node_and_stream
+        .get(node_len..)
+        .and_then(|tail| tail.strip_prefix("/stream:"))?;
+    let (declared_tag_len, tag) = framed_stream.split_once(':')?;
+    (parse_canonical_length(declared_tag_len) == Some(tag.len())).then_some((node, tag))
+}
+
+fn parse_canonical_length(value: &str) -> Option<usize> {
+    if value.is_empty() || (value.len() > 1 && value.starts_with('0')) {
+        return None;
+    }
+    value.bytes().try_fold(0_usize, |length, byte| {
+        let digit = byte.checked_sub(b'0')?;
+        if digit > 9 {
+            return None;
+        }
+        length.checked_mul(10)?.checked_add(usize::from(digit))
+    })
+}
+
 /// One completed deterministic app-random request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppRandomDecisionTransportRecord {
@@ -226,5 +275,31 @@ mod tests {
                 value: 0x100,
             })
         );
+    }
+
+    #[test]
+    fn stream_name_membership_uses_the_complete_length_framed_node() {
+        let stream = app_random_stream_name("node-a", "tag/with/slashes");
+        assert!(app_random_stream_name_is_canonical(&stream));
+        assert!(app_random_stream_name_belongs_to_node(&stream, "node-a"));
+        assert!(!app_random_stream_name_belongs_to_node(&stream, "node"));
+        assert!(!app_random_stream_name_belongs_to_node(
+            &stream,
+            "node-a/stream"
+        ));
+        assert!(!app_random_stream_name_belongs_to_node(
+            "app-random/node:6:node-a/stream:3:toolong",
+            "node-a"
+        ));
+        assert!(!app_random_stream_name_is_canonical(
+            "app-random/node:6:node-a/stream:3:toolong"
+        ));
+        assert!(!app_random_stream_name_belongs_to_node(
+            "app-random/node:6:node-a/stream:03:tag",
+            "node-a"
+        ));
+        assert!(!app_random_stream_name_is_canonical(
+            "app-random/node:6:node-a/stream:03:tag"
+        ));
     }
 }

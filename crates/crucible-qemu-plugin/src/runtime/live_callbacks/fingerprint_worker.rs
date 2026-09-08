@@ -3,6 +3,7 @@
 use std::thread::{self, JoinHandle};
 
 use super::*;
+use crate::runtime::worker_quiescence::{LiveWorkerQuiescence, WORKER_FINGERPRINT};
 
 /// One detached fingerprint capture queued for ordered digest publication.
 enum LiveFingerprintDigestWork {
@@ -26,6 +27,7 @@ pub(super) struct LiveFingerprintDigestWorker {
 impl LiveFingerprintDigestWorker {
     pub(super) fn spawn(
         slot: StableFingerprintSlotHandle,
+        quiescence: Arc<LiveWorkerQuiescence>,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
         let (sender, receiver) = mpsc::sync_channel::<LiveFingerprintDigestWork>(1);
         let failed = Arc::new(Mutex::new(None));
@@ -33,7 +35,13 @@ impl LiveFingerprintDigestWorker {
         let join = thread::Builder::new()
             .name("crucible-fingerprint-digest".to_owned())
             .spawn(move || {
-                while let Ok(work) = receiver.recv() {
+                loop {
+                    let idle = quiescence.idle(WORKER_FINGERPRINT);
+                    let Ok(work) = receiver.recv() else {
+                        break;
+                    };
+                    let pending = idle.received();
+                    let _operation = pending.enter();
                     let (captured, completion) = match work {
                         LiveFingerprintDigestWork::Publish(captured) => (captured, None),
                         LiveFingerprintDigestWork::PublishAndAcknowledge {

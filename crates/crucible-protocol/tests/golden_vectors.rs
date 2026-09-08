@@ -50,11 +50,11 @@ fn golden_vectors_match_canonical_codec_bytes() {
 
 #[test]
 fn golden_vectors_freeze_literal_wire_bytes() {
-    assert_vector_bytes("hello", &[0, 0, 0, 9, 0xF0, 0, 0, 0, 1, 0, 0, 0, 1]);
+    assert_vector_bytes("hello", &[0, 0, 0, 9, 0xF0, 0, 0, 0, 3, 0, 0, 0, 1]);
     assert_vector_bytes(
         "hello-ack",
         &[
-            0, 0, 0, 17, 0xF1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 32,
+            0, 0, 0, 17, 0xF1, 0, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 32,
         ],
     );
     assert_vector_bytes(
@@ -89,12 +89,12 @@ fn doorbell_frame_golden_vectors_match_canonical_codec_bytes() {
     }
     assert_doorbell_vector_bytes(
         "marker-kind-1-empty",
-        &[0x43, 0x52, 0x42, 0x4c, 2, 0, 1, 0, 0, 0, 0, 0],
+        &[0x43, 0x52, 0x42, 0x4c, 3, 0, 1, 0, 0, 0, 0, 0],
     );
     assert_doorbell_vector_bytes(
         "random-request-kind-5",
         &[
-            0x43, 0x52, 0x42, 0x4c, 2, 0, 5, 0, 10, 0, 0, 0, 0x04, 0x03, 0x02, 0x01, 4, 3, 0, 0x72,
+            0x43, 0x52, 0x42, 0x4c, 3, 0, 5, 0, 10, 0, 0, 0, 0x04, 0x03, 0x02, 0x01, 4, 3, 0, 0x72,
             0x6e, 0x67,
         ],
     );
@@ -110,6 +110,10 @@ fn marker_payload_golden_vectors_match_canonical_codec_bytes() {
             "event-note",
             "coverage-hot-path",
             "random-request",
+            "measurement-begin",
+            "metric-sample",
+            "measurement-end",
+            "semantic-marker",
         ],
     );
     for vector in GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS {
