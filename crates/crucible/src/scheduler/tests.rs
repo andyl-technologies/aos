@@ -3,7 +3,8 @@
 use super::*;
 use crate::model::{BindingSearchChoice, SearchChoiceId, SearchOverride};
 use crate::{
-    BackendEffect, BackendNetworkFaultContinuation, MockSimulationBackend, RngDecision, ScenarioDef,
+    BackendEffect, BackendNetworkFaultContinuation, IoEventKind, MockSimulationBackend,
+    RngDecision, ScenarioDef,
 };
 
 #[path = "tests/network_checkpoint.rs"]
@@ -1983,6 +1984,126 @@ fn device_completion_flows_through_live_drive_quantum_at_exact_icount() {
             .is_quiescent(),
         "the run must quiesce once the completion has been delivered"
     );
+}
+
+#[test]
+fn backend_loop_publishes_resolved_device_completion_as_observation() {
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "test-device-observation",
+        shift(0),
+        4_096,
+        SimInstant { nanos: 4_096 },
+        vec![test_scenario_node(
+            "a",
+            0,
+            SchedulerNodeActivity::Runnable,
+            NetworkLookahead::Infinite,
+            ExactLocalEvent::NoArmedTimer,
+        )],
+        Vec::new(),
+    );
+    let scheduler = SingleScheduler::new(scenario)
+        .unwrap_or_else(|error| panic!("scheduler should build: {error}"))
+        .with_device_sub_node(disk_with_reads("a", "disk-a", &[(0, 8)]));
+    let mut configuration = scheduler.configuration().clone();
+    let mut adapter = BackendQuantumLoop::new(scheduler, MockSimulationBackend::new());
+
+    let mut observed = None;
+    for _ in 0..16 {
+        let outcome = adapter
+            .drive_quantum(QuantumRequest {
+                configuration: configuration.clone(),
+                control: Vec::new(),
+            })
+            .unwrap_or_else(|error| panic!("backend quantum should succeed: {error}"));
+        configuration = outcome.configuration.clone();
+        let matching = outcome
+            .event_log_entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.payload(),
+                    SchedulerEventLogPayload::Observable(
+                        ObservableEventPayload::IoCompletion {
+                            node,
+                            kind: IoEventKind::Any,
+                            ..
+                        }
+                    ) if node.name == "a"
+                )
+            })
+            .collect::<Vec<_>>();
+        if let Some(entry) = matching.first() {
+            assert_eq!(
+                matching.len(),
+                1,
+                "one resolved completion must produce exactly one observation"
+            );
+            observed = Some(entry.at());
+            break;
+        }
+    }
+
+    assert_eq!(
+        observed,
+        Some(VirtualTime { ticks: 1_008 }),
+        "the resolved World I/O event must enter the trigger observation stream at its exact time"
+    );
+
+    let next = adapter
+        .drive_quantum(QuantumRequest {
+            configuration,
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("the next backend quantum should succeed: {error}"));
+    assert!(
+        next.event_log_entries.iter().all(|entry| !matches!(
+            entry.payload(),
+            SchedulerEventLogPayload::Observable(ObservableEventPayload::IoCompletion {
+                node,
+                kind: IoEventKind::Any,
+                ..
+            }) if node.name == "a"
+        )),
+        "a delivered World I/O completion must not be observed twice"
+    );
+}
+
+#[test]
+fn resolved_device_observation_rejects_a_mismatched_owner() {
+    let scheduler = test_scheduler(
+        vec![
+            test_scenario_node(
+                "a",
+                0,
+                SchedulerNodeActivity::Runnable,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::NoArmedTimer,
+            ),
+            test_scenario_node(
+                "b",
+                0,
+                SchedulerNodeActivity::Runnable,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::NoArmedTimer,
+            ),
+        ],
+        Vec::new(),
+    )
+    .with_device_sub_node(disk_with_reads("a", "disk-a", &[]));
+    let event = io_completion_event(
+        1_008,
+        &scheduler_node("b", SchedulingNodeKind::Vm),
+        &scheduler_node("disk-a", SchedulingNodeKind::Disk),
+        0,
+        b"completion",
+    );
+
+    let error = scheduler
+        .resolved_event_observation(&event)
+        .expect_err("a completion may only target its sub-node's owning VM");
+
+    assert!(error.to_string().contains("instead of owner `a`"));
 }
 
 #[test]

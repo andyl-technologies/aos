@@ -126,6 +126,25 @@ pub trait QuantumLoop {
         Ok(at)
     }
 
+    /// Projects a scheduler-resolved event into host-observed trigger input.
+    ///
+    /// Pure and legacy loops do not expose resolved events as observations.
+    /// Production schedulers override this hook for scheduler-owned events,
+    /// such as deterministic World I/O completions, that cannot originate in
+    /// the live backend's observation queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the resolved event refers to invalid or
+    /// inconsistent scheduler-owned state.
+    fn resolved_event_observation(
+        &self,
+        event: &ScheduledEvent,
+    ) -> Result<Option<ObservableEvent>, SchedulerError> {
+        let _ = event;
+        Ok(None)
+    }
+
     /// Samples a deterministic execution fingerprint for `node`.
     ///
     /// Backends that do not own concrete VM state use the default unsupported
