@@ -207,7 +207,7 @@ fn webhook_mutations_are_plan_apply_and_plaintext_secret_free() -> Result<()> {
     let webhooks = schema
         .split("CREATE TABLE webhooks(")
         .nth(1)
-        .and_then(|tail| tail.split("CREATE INDEX webhooks_org_idx").next())
+        .and_then(|tail| tail.split("\n);").next())
         .context("webhooks schema")?;
     assert!(webhooks.contains("secret_version_ref"));
     assert!(webhooks.contains("credential_fingerprint"));
@@ -215,7 +215,7 @@ fn webhook_mutations_are_plan_apply_and_plaintext_secret_free() -> Result<()> {
     let deliveries = schema
         .split("CREATE TABLE webhook_deliveries(")
         .nth(1)
-        .and_then(|tail| tail.split("CREATE INDEX webhook_deliveries_due_idx").next())
+        .and_then(|tail| tail.split("\n);").next())
         .context("webhook deliveries schema")?;
     for required in [
         "delivery_id KEYTEXT64 NOT NULL UNIQUE",
@@ -232,10 +232,7 @@ fn webhook_mutations_are_plan_apply_and_plaintext_secret_free() -> Result<()> {
     let outbox = schema
         .split("CREATE TABLE topology_event_outbox(")
         .nth(1)
-        .and_then(|tail| {
-            tail.split("CREATE INDEX topology_event_outbox_pending_idx")
-                .next()
-        })
+        .and_then(|tail| tail.split("\n);").next())
         .context("topology event outbox schema")?;
     assert!(
         outbox.contains("'webhook'"),

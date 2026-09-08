@@ -4,6 +4,15 @@ This runbook owns every routine operation for the experimental hosted registry.
 The registry is public but unsupported, follows only `edge`, and may be rebuilt
 from scratch. Its signing material remains separate from `andyl/main`.
 
+`andyl/testing` does not use an HSM. The intended key management for
+`andyl/main` is documented in [Registry key management](registry-key-management.md).
+
+The [public key inventory](registry-testing-public-keys.json) records separate
+testing and production Hub receipt authorities. A prepared key is not an
+activated release authority: signed trust metadata and the applicable release
+gates still establish where it is accepted. Custody and recovery records are
+maintained separately from the public inventory.
+
 Use the shared [qualification contract](qualification.md) and
 [release checklist](release-checklist.md). This runbook owns registry-specific
 identity and lifecycle operations, not a separate testing qualification process.
@@ -15,7 +24,9 @@ identity and lifecycle operations, not a separate testing qualification process.
 2. Complete the contributor-authorization check in
    [`contributor-licensing.md`](contributor-licensing.md).
 3. Deploy and validate that exact Hub build in staging and production using
-   [`aos-hub-deployment.md`](aos-hub-deployment.md).
+   [`aos-hub-deployment.md`](aos-hub-deployment.md). An empty testing-only Hub
+   reset may use that runbook's direct-production setup procedure; it does not
+   substitute for the staging evidence required by release publication.
 4. Take and verify the backup set in
    [`aos-hub-backup-recovery.md`](aos-hub-backup-recovery.md), unless this is an
    explicitly approved empty rebuild.
@@ -48,14 +59,16 @@ recovery inventory; follow the generic
 The epoch-one image is pinned to this prepared public anchor:
 
 ```text
-andyl-testing:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAIPWdD0Q8y3CRgPouHV03ay7bY2MyQKsKYIyejGL9DVZA
+andyl-testing:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAID1J77zx10Z/VmgFa5qab2phnJEJ2JEp8mS2HnBAnzbH
 ```
 
-Before release, move its already-generated `testing-v1` private key from the
-preparation machine's restricted APM key store into the operator secret store,
+Before release, retrieve the `testing-v1` private key from operator custody,
 prove that its derived public key is exactly the line above, and test recovery
-from an encrypted independent backup. Do not regenerate a different key under
-the epoch-one identity after publishing images.
+from an encrypted independent backup. The previous prepared anchor was replaced
+before production use; the image definition and this runbook carry the same new
+epoch-one anchor. Do not regenerate a different key under the epoch-one identity
+after publishing images. A later abandoned root follows the destructive epoch
+reset procedure below.
 
 Verify the restored private key with the AOS-built OpenSSH tool before loading
 it into APR:

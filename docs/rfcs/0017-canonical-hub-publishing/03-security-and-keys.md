@@ -1,5 +1,10 @@
 # Security and key architecture
 
+The hardware-backed custody and independent-threshold requirements below are
+the intended `andyl/main` production model. `andyl/testing` does not use an HSM.
+See [Registry key management](../../maintainers/registry-key-management.md) for
+the current scope and provider-integration requirements.
+
 ## Threat model
 
 The pipeline assumes any one of these may fail or be compromised independently:

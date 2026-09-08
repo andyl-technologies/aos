@@ -286,7 +286,7 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
         "HUB_DATABASE_INSTANCE = {}\n",
         toml_string(&cfg.database_instance)
     ));
-    // The v2 execution classes are stateless with respect to relational data:
+    // The execution classes are stateless with respect to relational data:
     // they run the shared service by issuing short transactions to HubDb. An
     // operator may temporarily change this to `read` or `off` for a staged
     // rollback without migrating or reconciling any database rows.
@@ -415,13 +415,9 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
          class_name = \"HubCacheShard\"\n\
          \n\
          [[migrations]]\n\
-         tag = \"v1\"\n\
-         new_classes = [\"CoordinatorObject\"]\n\
+         tag = \"production-base-v1\"\n\
+         new_classes = [\"CoordinatorObject\", \"HubControlShard\", \"HubTenantShard\", \"HubRegistryShard\", \"HubCacheShard\"]\n\
          new_sqlite_classes = [\"HubDb\"]\n\
-         \n\
-         [[migrations]]\n\
-         tag = \"v2\"\n\
-         new_classes = [\"HubControlShard\", \"HubTenantShard\", \"HubRegistryShard\", \"HubCacheShard\"]\n\
          \n\
          [[ratelimits]]\n\
          name = \"RL_BURST5\"\n\
@@ -1919,16 +1915,26 @@ mod tests {
             ]
         );
         let migrations = parsed["migrations"].as_array().expect("migrations");
-        assert_eq!(migrations.len(), 2);
-        assert_eq!(migrations[1]["tag"].as_str(), Some("v2"));
+        assert_eq!(migrations.len(), 1);
         assert_eq!(
-            migrations[1]["new_classes"]
+            migrations[0]["new_sqlite_classes"]
                 .as_array()
-                .expect("v2 execution classes")
+                .expect("production SQLite class")
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .collect::<Vec<_>>(),
+            ["HubDb"]
+        );
+        assert_eq!(migrations[0]["tag"].as_str(), Some("production-base-v1"));
+        assert_eq!(
+            migrations[0]["new_classes"]
+                .as_array()
+                .expect("production execution classes")
                 .iter()
                 .filter_map(toml::Value::as_str)
                 .collect::<Vec<_>>(),
             [
+                "CoordinatorObject",
                 "HubControlShard",
                 "HubTenantShard",
                 "HubRegistryShard",
