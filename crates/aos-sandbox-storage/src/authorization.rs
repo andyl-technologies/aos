@@ -20,6 +20,7 @@ use aos_sandbox_core::{
     ProtocolVersion, RawPairedClockSample, SandboxId,
 };
 use aos_sandbox_protocol::semantics::storage::CanonicalStorageSemanticsV1;
+use aos_sandbox_protocol::semantics::storage_prepare::CanonicalStoragePreparationSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use buffa::Message as _;
 
@@ -27,6 +28,8 @@ use crate::StorageStateKey;
 use crate::workspace_pin::{WorkspacePinActionV1, WorkspacePinAttemptV1};
 
 const PIN_RECEIPT_DOMAIN: [u8; 16] = *b"AOSSTGPINRECV001";
+const PREPARATION_RECORD_DOMAIN: [u8; 16] = *b"AOSSTGPREPV10001";
+const PREPARATION_RECEIPT_DOMAIN: [u8; 16] = *b"AOSSTGPRCPV10001";
 const PIN_RECEIPT_MAGIC: &[u8; 8] = b"AOSPAR01";
 const PIN_RECEIPT_VERSION: u16 = 1;
 
@@ -163,6 +166,38 @@ impl StorageAuthorityV1 {
         )
     }
 
+    pub(crate) fn admit_preparation(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        semantics: &CanonicalStoragePreparationSemanticsV1,
+        request_body: &[u8],
+        protocol_version: ProtocolVersion,
+        current_clock: &RawPairedClockSample,
+        prior_fence: Option<&[u8]>,
+    ) -> Result<VerifiedBrokerAdmission, StorageAdmissionError> {
+        let assignment = assignment_from_preparation(semantics)?;
+        self.0.admit(
+            artifacts,
+            AdmissionRequest {
+                audience: BrokerAudience::Storage,
+                protocol: ProtocolId::StorageBroker,
+                protocol_version,
+                assignment,
+                request_id: *semantics.header().request_id(),
+                request_body,
+                descriptor_count: 0,
+                verb: semantics.broker_verb(),
+                target: semantics.grant_target(),
+                argument_commitment: semantics.argument_commitment(),
+                request_deadline_boottime_nanoseconds: semantics
+                    .header()
+                    .deadline_boottime_nanoseconds(),
+            },
+            current_clock,
+            prior_fence,
+        )
+    }
+
     pub(crate) fn seal(
         &self,
         sandbox_id: &[u8; 16],
@@ -201,6 +236,66 @@ impl StorageAuthorityV1 {
         bytes: &[u8],
     ) -> Result<BrokerEffectIntentV2, StorageAdmissionError> {
         self.0.open_effect(request_id, bytes)
+    }
+
+    pub(crate) fn seal_catalog_preparation_record(
+        &self,
+        operation_id: &[u8; 16],
+        payload: &[u8],
+    ) -> Result<Vec<u8>, StorageAdmissionError> {
+        let domain = BrokerLocalRecordDomain::new(PREPARATION_RECORD_DOMAIN)
+            .map_err(|_| StorageAdmissionError::FenceRejected)?;
+        self.0.seal_local_record(
+            RecordNamespace::StorageCatalogPreparation,
+            operation_id,
+            domain,
+            payload,
+        )
+    }
+
+    pub(crate) fn open_catalog_preparation_record<'a>(
+        &self,
+        operation_id: &[u8; 16],
+        bytes: &'a [u8],
+    ) -> Result<&'a [u8], StorageAdmissionError> {
+        let domain = BrokerLocalRecordDomain::new(PREPARATION_RECORD_DOMAIN)
+            .map_err(|_| StorageAdmissionError::FenceRejected)?;
+        self.0.open_local_record(
+            RecordNamespace::StorageCatalogPreparation,
+            operation_id,
+            domain,
+            bytes,
+        )
+    }
+
+    pub(crate) fn seal_catalog_preparation_receipt(
+        &self,
+        operation_id: &[u8; 16],
+        payload: &[u8],
+    ) -> Result<Vec<u8>, StorageAdmissionError> {
+        let domain = BrokerLocalRecordDomain::new(PREPARATION_RECEIPT_DOMAIN)
+            .map_err(|_| StorageAdmissionError::FenceRejected)?;
+        self.0.seal_local_record(
+            RecordNamespace::StorageCatalogPreparation,
+            operation_id,
+            domain,
+            payload,
+        )
+    }
+
+    pub(crate) fn open_catalog_preparation_receipt<'a>(
+        &self,
+        operation_id: &[u8; 16],
+        bytes: &'a [u8],
+    ) -> Result<&'a [u8], StorageAdmissionError> {
+        let domain = BrokerLocalRecordDomain::new(PREPARATION_RECEIPT_DOMAIN)
+            .map_err(|_| StorageAdmissionError::FenceRejected)?;
+        self.0.open_local_record(
+            RecordNamespace::StorageCatalogPreparation,
+            operation_id,
+            domain,
+            bytes,
+        )
     }
 
     pub(crate) fn check_before_effect<F>(
@@ -346,6 +441,20 @@ pub(crate) fn decode_assignment(
         AssignmentEpoch::new(fence.assignment_epoch),
         DesiredGeneration::new(fence.desired_generation),
         ObjectDigest::from_bytes(assignment_digest),
+    )
+    .map_err(|_| StorageAdmissionError::RequestMismatch)
+}
+
+fn assignment_from_preparation(
+    semantics: &CanonicalStoragePreparationSemanticsV1,
+) -> Result<BrokerAssignment, StorageAdmissionError> {
+    let fence = semantics.fence();
+    BrokerAssignment::new(
+        SandboxId::from_bytes(*fence.sandbox_id()),
+        IncarnationId::from_bytes(*fence.incarnation_id()),
+        AssignmentEpoch::new(fence.assignment_epoch()),
+        DesiredGeneration::new(fence.desired_generation()),
+        ObjectDigest::from_bytes(*fence.assignment_digest()),
     )
     .map_err(|_| StorageAdmissionError::RequestMismatch)
 }

@@ -24,6 +24,7 @@ pub mod authorization;
 pub mod broker;
 pub mod catalog;
 mod catalog_decode;
+pub mod catalog_preparation;
 mod catalog_transition;
 #[allow(
     dead_code,
@@ -52,6 +53,10 @@ pub use catalog::{
     ManagedDatasetRoot, PlannedDataset, PlannedSnapshot, PostconditionPolicyV1,
     ProjectAncestorPolicyV1, ReservationPolicy, ResolvedCatalogCommitmentV1, ResolvedDataset,
     ResolvedSnapshot, StorageDomainsV1, WorkspaceSpacePolicyV1,
+};
+pub use catalog_preparation::{
+    ProtectedStorageCatalogResolverV1, StorageCatalogPreparationError,
+    StorageCatalogPreparationOutcomeV1,
 };
 pub use process::{
     SystemdZfsExecutor, WorkerProcessOutput, ZfsWorkerError, process_timeout, run_inherited_worker,

@@ -8,22 +8,26 @@
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox::journal::RecordNamespace;
-use aos_sandbox_broker::{BrokerAuthorizationFenceV1, BrokerEffectIntentV2};
+use aos_sandbox_broker::{BrokerAuthorizationFenceV1, BrokerEffectIntentV2, BrokerEffectStatusV2};
 use aos_sandbox_core::model::SandboxSpec;
 use aos_sandbox_core::{
-    BrokerAssignment, CanonicalAssignmentManifestV1, NodeId, ObjectDigest, ProtocolVersion,
-    RawPairedClockSample,
+    BrokerAssignment, BrokerGrantTarget, BrokerVerb, CanonicalAssignmentManifestV1, NodeId,
+    ObjectDigest, ProtocolVersion, RawPairedClockSample,
 };
+use aos_sandbox_protocol::semantics::storage_prepare::CanonicalStoragePreparationSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 use sha2::{Digest as _, Sha256};
 
 use crate::authorization::{StorageAuthorityV1, decode_assignment};
+use crate::catalog_preparation::{
+    RetainedStorageCatalogPreparationV1, StoragePreparationAuthorityRecordsV1,
+};
 use crate::helper::{
     PreobservedZfsMutation, StorageMutationHelper, ZfsHelperError, ZfsHelperOutcome,
     ZfsProcessBackend,
 };
-use crate::state::StorageWorkspaceProjection;
+use crate::state::{CatalogPreparationConsumption, StorageWorkspaceProjection};
 use crate::workspace_catalog::{
     StorageWorkspaceCatalogActionV1, StorageWorkspacePublicationV1, StorageWorkspaceRetirementV1,
 };
@@ -33,7 +37,8 @@ use crate::workspace_pin::{
 };
 use crate::{
     BeginStorageTransaction, CommittedStorageResultV1, DurableStoragePhase,
-    ResolvedCatalogCommitmentV1, StorageTransactionStore, StorageWorkspaceCatalogError,
+    ProtectedStorageCatalogResolverV1, ResolvedCatalogCommitmentV1, StorageCatalogPreparationError,
+    StorageCatalogPreparationOutcomeV1, StorageTransactionStore, StorageWorkspaceCatalogError,
     decode_resolved,
 };
 
@@ -46,6 +51,9 @@ pub enum StorageBrokerError {
     /// Protected signed plan, lease, or fence validation failed.
     #[error("storage authority was rejected")]
     Authority,
+    /// Signed catalog preparation resolution or replay failed closed.
+    #[error("storage catalog preparation failed: {0}")]
+    Preparation(#[from] StorageCatalogPreparationError),
     /// Durable admission state was corrupt, conflicting, or unavailable.
     #[error("storage durable admission failed: {0}")]
     State(#[from] crate::StorageStateError),
@@ -77,6 +85,12 @@ pub enum StorageAdmissionOutcome {
 pub struct StorageAdmissionCoordinator {
     authority: StorageAuthorityV1,
     transactions: StorageTransactionStore,
+}
+
+struct AuthenticatedCatalogPreparation {
+    record: RetainedStorageCatalogPreparationV1,
+    preparation_fence: BrokerAuthorizationFenceV1,
+    sealed_record: Vec<u8>,
 }
 
 /// Proves that one exact persisted effect passed the final authority check.
@@ -179,6 +193,155 @@ impl StorageAdmissionCoordinator {
             authority,
             transactions,
         }
+    }
+
+    /// Resolves and durably retains one independently authorized catalog preparation.
+    ///
+    /// The returned receipt is authenticated replay evidence only. It cannot
+    /// authorize Apply, and successful preparation performs no physical or
+    /// catalog-head mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageBrokerError`] for hostile request bytes, stale trusted
+    /// inventory or catalog head, rejected signed authority, unsafe protected
+    /// resolution, operation equivocation, corrupt replay links, or failure to
+    /// retain the preparation and its authority records atomically.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_catalog<R: ProtectedStorageCatalogResolverV1>(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        current_inventory: crate::CatalogBindingV1,
+        resolver: &R,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+    ) -> Result<StorageCatalogPreparationOutcomeV1, StorageBrokerError> {
+        self.transactions.ensure_authority_readable()?;
+        let semantics = CanonicalStoragePreparationSemanticsV1::decode(
+            request_body,
+            peer,
+            policy,
+            current_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| StorageBrokerError::Request)?;
+        let operation_id = semantics.operation_id();
+        let sandbox_id = *semantics.fence().sandbox_id();
+        let request_id = *semantics.header().request_id();
+        let retained = self
+            .transactions
+            .catalog_preparation_record(&operation_id)?
+            .map(<[u8]>::to_vec);
+        let prior_fence = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
+            .map(<[u8]>::to_vec);
+        let admission = self
+            .authority
+            .admit_preparation(
+                artifacts,
+                &semantics,
+                request_body,
+                protocol_version,
+                current_clock,
+                prior_fence.as_deref(),
+            )
+            .map_err(|_| StorageBrokerError::Authority)?;
+
+        if let Some(sealed_record) = retained {
+            let retained = self.authenticate_catalog_preparation(operation_id, sealed_record)?;
+            retained.record.replay_matches(
+                &semantics,
+                admission.effect.plan_digest(),
+                admission.effect.lease_digest(),
+                current_clock.host_boot_id(),
+                current_clock.boottime_nanoseconds(),
+            )?;
+            if retained.preparation_fence != admission.fence
+                || admission.effect.transport_request_digest()
+                    != ObjectDigest::from_bytes(Sha256::digest(request_body).into())
+            {
+                return Err(StorageCatalogPreparationError::Equivocation.into());
+            }
+            if retained.record.consumption().is_some() {
+                self.authenticate_consumed_preparation(&retained)?;
+            }
+            return retained.record.outcome().map_err(Into::into);
+        }
+
+        if semantics.inventory_binding() != current_inventory {
+            return Err(StorageCatalogPreparationError::InventoryMismatch.into());
+        }
+        let current_head = self.transactions.catalog_head_binding()?;
+        if semantics.expected_catalog_head() != current_head {
+            return Err(StorageCatalogPreparationError::StaleCatalogHead.into());
+        }
+        let catalog = resolver.resolve(&semantics, current_head)?;
+        let sealed = self
+            .authority
+            .seal(&sandbox_id, &request_id, &operation_id, &admission)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let prepared = RetainedStorageCatalogPreparationV1::prepare(
+            &semantics,
+            catalog,
+            request_id,
+            current_clock.host_boot_id(),
+            admission.effect.effect_deadline_boottime_nanoseconds(),
+            admission.effect.plan_digest(),
+            admission.effect.lease_digest(),
+            StoragePreparationAuthorityRecordsV1 {
+                sealed_fence: &sealed.current_fence,
+                sealed_effect: &sealed.effect,
+                sealed_operation_fence: &sealed.operation_fence,
+            },
+        )?;
+        let receipt = self
+            .authority
+            .seal_catalog_preparation_receipt(&operation_id, &prepared.receipt_payload)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let record = prepared.record.with_receipt(receipt)?;
+        let sealed_record = self
+            .authority
+            .seal_catalog_preparation_record(&operation_id, &record.encode_payload()?)
+            .map_err(|_| StorageBrokerError::Authority)?;
+
+        // The store rechecks the head while committing all four records. No
+        // resolver output becomes durable if that compare-and-swap fails.
+        self.transactions.retain_catalog_preparation(
+            operation_id,
+            sandbox_id,
+            request_id,
+            current_head,
+            sealed.current_fence,
+            sealed.effect,
+            sealed.operation_fence,
+            sealed_record,
+        )?;
+        record.outcome().map_err(Into::into)
+    }
+
+    /// Authenticates every retained preparation and its durable cross-links.
+    ///
+    /// This startup check accepts both unconsumed preparations and preparations
+    /// atomically consumed by an admitted Apply in any durable mutation phase.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageBrokerError`] when any record is malformed, relocated,
+    /// tampered, missing an authority link, or inconsistent with its admitted
+    /// Apply operation.
+    pub fn authenticate_catalog_preparations(&self) -> Result<(), StorageBrokerError> {
+        for (operation_id, sealed_record) in self.transactions.catalog_preparation_records()? {
+            let retained = self.authenticate_catalog_preparation(operation_id, sealed_record)?;
+            if retained.record.consumption().is_some() {
+                self.authenticate_consumed_preparation(&retained)?;
+            } else if self.transactions.phase(operation_id)?.is_some() {
+                return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn recovery_entries(
@@ -480,10 +643,38 @@ impl StorageAdmissionCoordinator {
             decode_assignment(request_body).map_err(|_| StorageBrokerError::Request)?;
         let sandbox_id = *assignment.sandbox().as_bytes();
         let request_id = *semantics.header().request_id();
-        let existing = self
+        let operation_id = *semantics.operation_id();
+        let sealed_preparation = self
             .transactions
-            .phase(*semantics.operation_id())?
-            .is_some();
+            .catalog_preparation_record(&operation_id)?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?
+            .to_vec();
+        let preparation =
+            self.authenticate_catalog_preparation(operation_id, sealed_preparation)?;
+        let existing = self.transactions.phase(operation_id)?.is_some();
+        if preparation.record.catalog() != catalog
+            || preparation.record.sandbox_id() != sandbox_id
+            || preparation.preparation_fence.assignment() != assignment
+        {
+            return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+        }
+        match (existing, preparation.record.consumption()) {
+            (false, None) => {
+                if preparation.record.host_boot_id() != current_clock.host_boot_id() {
+                    return Err(StorageCatalogPreparationError::HostBootMismatch.into());
+                }
+                if current_clock.boottime_nanoseconds()
+                    >= preparation.record.expires_boottime_nanoseconds()
+                {
+                    return Err(StorageCatalogPreparationError::Expired.into());
+                }
+                if self.transactions.catalog_head_binding()? != preparation.record.expected_head() {
+                    return Err(StorageCatalogPreparationError::StaleCatalogHead.into());
+                }
+            }
+            (true, Some(_)) => self.authenticate_consumed_preparation(&preparation)?,
+            _ => return Err(crate::StorageStateError::AuthorityLinkMismatch.into()),
+        }
         let prior_fence = self
             .transactions
             .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
@@ -492,6 +683,11 @@ impl StorageAdmissionCoordinator {
             .transactions
             .authority_record(RecordNamespace::Effect, &request_id)?
             .map(<[u8]>::to_vec);
+        if !existing
+            && (request_id == preparation.record.request_id() || prior_admission_intent.is_some())
+        {
+            return Err(crate::StorageStateError::Equivocation.into());
+        }
         if existing && (prior_fence.is_none() || prior_admission_intent.is_none()) {
             return Err(StorageBrokerError::State(
                 crate::StorageStateError::MissingAuthorityLink,
@@ -556,25 +752,64 @@ impl StorageAdmissionCoordinator {
         }
         let sealed = self
             .authority
-            .seal(
-                &sandbox_id,
-                &request_id,
-                semantics.operation_id(),
-                &admission,
-            )
+            .seal(&sandbox_id, &request_id, &operation_id, &admission)
             .map_err(|_| StorageBrokerError::Authority)?;
         let request_digest = ObjectDigest::from_bytes(Sha256::digest(request_body).into());
-        let outcome = self.transactions.begin_authorized_with_publication(
-            *semantics.operation_id(),
-            request_digest,
-            catalog,
-            sandbox_id,
-            request_id,
-            sealed.current_fence,
-            sealed.effect,
-            sealed.operation_fence,
-            publication_intent,
-        )?;
+        let outcome = if existing {
+            let consumption = preparation
+                .record
+                .consumption()
+                .ok_or(crate::StorageStateError::AuthorityLinkMismatch)?;
+            if consumption.apply_request_id() != request_id
+                || consumption.apply_transport_digest() != request_digest
+                || consumption.apply_semantic_digest() != semantics.argument_commitment().digest()
+                || consumption.apply_plan_digest() != admission.effect.plan_digest()
+                || consumption.apply_lease_digest() != admission.effect.lease_digest()
+            {
+                return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+            }
+            self.transactions.begin_authorized_with_publication(
+                operation_id,
+                request_digest,
+                catalog,
+                sandbox_id,
+                request_id,
+                sealed.current_fence,
+                sealed.effect,
+                sealed.operation_fence,
+                publication_intent,
+            )?
+        } else {
+            let consumed = preparation.record.consume(
+                request_id,
+                request_digest,
+                semantics.argument_commitment().digest(),
+                admission.effect.plan_digest(),
+                admission.effect.lease_digest(),
+            )?;
+            let sealed_consumed = self
+                .authority
+                .seal_catalog_preparation_record(&operation_id, &consumed.encode_payload()?)
+                .map_err(|_| StorageBrokerError::Authority)?;
+            let transition = CatalogPreparationConsumption::new(
+                preparation.record.expected_head(),
+                preparation.sealed_record,
+                sealed_consumed,
+            )?;
+            self.transactions
+                .begin_authorized_with_consumed_preparation(
+                    operation_id,
+                    request_digest,
+                    catalog,
+                    sandbox_id,
+                    request_id,
+                    sealed.current_fence,
+                    sealed.effect,
+                    sealed.operation_fence,
+                    publication_intent,
+                    transition,
+                )?
+        };
         Ok(match outcome {
             BeginStorageTransaction::Prepared { mutation_digest } => {
                 StorageAdmissionOutcome::Prepared { mutation_digest }
@@ -644,6 +879,127 @@ impl StorageAdmissionCoordinator {
         entry: crate::StorageRecoveryEntry,
     ) -> Result<(), ZfsHelperError> {
         self.persisted_effect_context(entry).map(|_| ())
+    }
+
+    fn authenticate_catalog_preparation(
+        &self,
+        operation_id: [u8; 16],
+        sealed_record: Vec<u8>,
+    ) -> Result<AuthenticatedCatalogPreparation, StorageBrokerError> {
+        let payload = self
+            .authority
+            .open_catalog_preparation_record(&operation_id, &sealed_record)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let record = RetainedStorageCatalogPreparationV1::decode_payload(payload)?;
+        if record.operation_id() != operation_id {
+            return Err(StorageCatalogPreparationError::CorruptRecord.into());
+        }
+
+        let receipt_payload = self
+            .authority
+            .open_catalog_preparation_receipt(&operation_id, record.receipt())
+            .map_err(|_| StorageBrokerError::Authority)?;
+        if receipt_payload != record.expected_receipt_payload() {
+            return Err(StorageCatalogPreparationError::CorruptRecord.into());
+        }
+
+        // These historical copies remain inside the preparation record after
+        // Apply atomically replaces their journal locations with Apply links.
+        let current_fence = self
+            .authority
+            .open_fence(&record.sandbox_id(), record.sealed_fence())
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let operation_fence = self
+            .authority
+            .open_operation_fence(&operation_id, record.sealed_operation_fence())
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let effect = self
+            .authority
+            .open_admission_intent(&record.request_id(), record.sealed_effect())
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let live_fence_bytes = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &record.sandbox_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let live_fence = self
+            .authority
+            .open_fence(&record.sandbox_id(), live_fence_bytes)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let live_effect = self
+            .transactions
+            .authority_record(RecordNamespace::Effect, &record.request_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        self.authority
+            .check_current_fence(&operation_fence)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        self.authority
+            .check_current_fence(&live_fence)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        if current_fence != operation_fence
+            || !fence_is_same_or_successor(&operation_fence, &live_fence)
+            || live_effect != record.sealed_effect()
+            || operation_fence.assignment().sandbox().as_bytes() != &record.sandbox_id()
+            || operation_fence.assignment().digest() != record.assignment_digest()
+            || operation_fence.plan_digest() != record.plan_digest()
+            || operation_fence.local_lease_record().lease_digest() != record.lease_digest()
+            || effect.status() != BrokerEffectStatusV2::Pending
+            || effect.request_id() != &record.request_id()
+            || effect.request_digest() != record.preparation_digest()
+            || effect.verb() != BrokerVerb::StoragePrepareCatalog
+            || effect.target() != BrokerGrantTarget::Assignment
+            || effect.plan_digest() != record.plan_digest()
+            || effect.lease_digest() != record.lease_digest()
+            || effect.plan_expires_seconds() != operation_fence.plan_expires_seconds()
+            || effect.local_lease_record() != operation_fence.local_lease_record()
+            || effect.host_boot_id() != &record.host_boot_id()
+            || record.expires_boottime_nanoseconds() > effect.effect_deadline_boottime_nanoseconds()
+        {
+            return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+        }
+        if record.consumption().is_none() {
+            let live_operation_fence = self
+                .transactions
+                .authority_record(RecordNamespace::AuthorityPublication, &operation_id)?
+                .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+            if live_operation_fence != record.sealed_operation_fence() {
+                return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+            }
+        }
+
+        Ok(AuthenticatedCatalogPreparation {
+            record,
+            preparation_fence: operation_fence,
+            sealed_record,
+        })
+    }
+
+    fn authenticate_consumed_preparation(
+        &self,
+        preparation: &AuthenticatedCatalogPreparation,
+    ) -> Result<(), StorageBrokerError> {
+        let consumption = preparation
+            .record
+            .consumption()
+            .ok_or(crate::StorageStateError::AuthorityLinkMismatch)?;
+        let entry = self
+            .transactions
+            .current_recovery_entry(preparation.record.operation_id())?;
+        let catalog = self.transactions.recover_catalog(entry)?;
+        let (apply_fence, effect) = self
+            .persisted_effect_context(entry)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        if entry.sandbox_id() != preparation.record.sandbox_id()
+            || entry.request_id() != consumption.apply_request_id()
+            || entry.request_digest() != consumption.apply_transport_digest()
+            || catalog != *preparation.record.catalog()
+            || apply_fence.assignment() != preparation.preparation_fence.assignment()
+            || effect.request_digest() != consumption.apply_semantic_digest()
+            || effect.plan_digest() != consumption.apply_plan_digest()
+            || effect.lease_digest() != consumption.apply_lease_digest()
+        {
+            return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+        }
+        Ok(())
     }
 
     fn persisted_effect_context(
@@ -832,6 +1188,31 @@ impl StorageAdmissionCoordinator {
     }
 }
 
+fn fence_is_same_or_successor(
+    historical: &BrokerAuthorizationFenceV1,
+    current: &BrokerAuthorizationFenceV1,
+) -> bool {
+    let historical_assignment = historical.assignment();
+    let current_assignment = current.assignment();
+    if historical.node() != current.node()
+        || current_assignment.epoch() < historical_assignment.epoch()
+    {
+        return false;
+    }
+    if current_assignment.epoch() > historical_assignment.epoch() {
+        return true;
+    }
+    if current.ownership_authority() != historical.ownership_authority()
+        || current_assignment.incarnation() != historical_assignment.incarnation()
+        || current_assignment.desired_generation() < historical_assignment.desired_generation()
+    {
+        return false;
+    }
+    current_assignment.desired_generation() > historical_assignment.desired_generation()
+        || (current_assignment.digest() == historical_assignment.digest()
+            && current.plan_digest() == historical.plan_digest())
+}
+
 /// Returns the closed method set safe for the incomplete storage service.
 ///
 /// Apply is intentionally absent until catalog publication, key provisioning,
@@ -857,7 +1238,7 @@ mod tests {
 
     use aos_proto::aos::sandbox::local::v1::{
         ApplyStorageRequest, Audience, BrokerAuthorizationArtifactsV1, BrokerRequestEnvelope,
-        StorageAction,
+        PrepareStorageCatalogRequest, StorageAction,
     };
     use aos_sandbox_core::format::{
         encode_broker_authorization_plan, encode_ownership_lease, encode_signature,
@@ -960,7 +1341,23 @@ mod tests {
                 DecodeLimits::default(),
             )
             .unwrap();
-            StorageAuthorityV1::new(plan, lease, NODE, [46; 16], [47; 32]).unwrap()
+            StorageAuthorityV1::new(plan, lease, NODE, [51; 16], [52; 32]).unwrap()
+        }
+
+        fn protected_authority_binding(&self) -> ObjectDigest {
+            let mut hash = Sha256::new();
+            hash.update(b"aos.sandbox.broker.protected-configuration.v1\0");
+            hash.update([3]);
+            hash.update((self.plan_policy.len() as u64).to_be_bytes());
+            hash.update(&self.plan_policy);
+            hash.update(self.plan_key.verifying_key().as_bytes());
+            hash.update(self.revocation.as_bytes());
+            hash.update((self.lease_policy.len() as u64).to_be_bytes());
+            hash.update(&self.lease_policy);
+            hash.update(self.lease_key.verifying_key().as_bytes());
+            hash.update(NODE.as_bytes());
+            hash.update([51; 16]);
+            ObjectDigest::from_bytes(hash.finalize().into())
         }
 
         fn artifacts(
@@ -974,6 +1371,28 @@ mod tests {
             self.artifacts_authorizing(request, catalog, &[request], expires, audience, protocol)
         }
 
+        fn artifacts_at_head(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            expected_head: crate::CatalogBindingV1,
+            expires: i64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.artifacts_authorizing_between_at_head(
+                request,
+                catalog,
+                &[request],
+                Some(expected_head),
+                true,
+                true,
+                100,
+                expires,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+            )
+        }
+
         fn artifacts_authorizing(
             &self,
             request: &[u8],
@@ -983,22 +1402,120 @@ mod tests {
             audience: BrokerAudience,
             protocol: ProtocolId,
         ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.artifacts_authorizing_between(
+                request, catalog, authorized, 100, expires, 300, audience, protocol,
+            )
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn artifacts_authorizing_between(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            authorized: &[&[u8]],
+            valid_after: i64,
+            expires: i64,
+            lease_expires: i64,
+            audience: BrokerAudience,
+            protocol: ProtocolId,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.artifacts_authorizing_between_at_head(
+                request,
+                catalog,
+                authorized,
+                None,
+                true,
+                true,
+                valid_after,
+                expires,
+                lease_expires,
+                audience,
+                protocol,
+            )
+        }
+
+        fn artifacts_with_grants(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            include_apply: bool,
+            include_prepare: bool,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.artifacts_authorizing_between_at_head(
+                request,
+                catalog,
+                &[request],
+                None,
+                include_apply,
+                include_prepare,
+                100,
+                300,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+            )
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn artifacts_authorizing_between_at_head(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            authorized: &[&[u8]],
+            expected_head: Option<crate::CatalogBindingV1>,
+            include_apply: bool,
+            include_prepare: bool,
+            valid_after: i64,
+            expires: i64,
+            lease_expires: i64,
+            audience: BrokerAudience,
+            protocol: ProtocolId,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
             let semantics = decode_resolved(request, catalog, peer(), peer_policy(), 100).unwrap();
             let assignment = decode_assignment(request).unwrap();
             let mut grants = if audience == BrokerAudience::Storage {
                 authorized
                     .iter()
-                    .map(|bytes| {
+                    .flat_map(|bytes| {
                         let candidate =
                             decode_resolved(bytes, catalog, peer(), peer_policy(), 100).unwrap();
-                        BrokerGrant::new(
-                            candidate.broker_verb(),
-                            candidate.grant_target(),
-                            candidate.argument_commitment(),
-                            bytes.len() as u32,
-                            0,
+                        let (preparation_bytes, _, _) = match expected_head {
+                            Some(head) => preparation_request_at_head(bytes, catalog, head),
+                            None => preparation_request(bytes, catalog),
+                        };
+                        let preparation = CanonicalStoragePreparationSemanticsV1::decode(
+                            &preparation_bytes,
+                            peer(),
+                            peer_policy(),
+                            100,
                         )
-                        .unwrap()
+                        .unwrap();
+                        let mut grants = Vec::with_capacity(2);
+                        if include_apply {
+                            grants.push(
+                                BrokerGrant::new(
+                                    candidate.broker_verb(),
+                                    candidate.grant_target(),
+                                    candidate.argument_commitment(),
+                                    bytes.len() as u32,
+                                    0,
+                                )
+                                .unwrap(),
+                            );
+                        }
+                        if include_prepare {
+                            grants.push(
+                                BrokerGrant::new(
+                                    preparation.broker_verb(),
+                                    preparation.grant_target(),
+                                    preparation.argument_commitment(),
+                                    preparation_bytes.len() as u32,
+                                    0,
+                                )
+                                .unwrap(),
+                            );
+                        }
+                        grants
                     })
                     .collect()
             } else {
@@ -1014,17 +1531,18 @@ mod tests {
                 ]
             };
             grants.sort_by_key(|grant| (grant.verb(), grant.target(), grant.argument_commitment()));
+            grants.dedup();
             let plan = BrokerAuthorizationPlan::new(
                 audience,
                 protocol,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 3),
                 assignment,
                 NODE,
                 self.lease_signer.clone(),
                 grants,
                 ObjectDigest::from_bytes([48; 32]),
                 self.revocation,
-                100,
+                valid_after,
                 expires,
                 Vec::new(),
             )
@@ -1040,8 +1558,8 @@ mod tests {
                 .unwrap(),
                 NODE,
                 1,
-                100,
-                300,
+                valid_after,
+                lease_expires,
                 10,
                 [49; 16],
             )
@@ -1091,11 +1609,19 @@ mod tests {
         }
     }
     fn clock() -> RawPairedClockSample {
+        clock_at([50; 16], 150, 100)
+    }
+
+    fn clock_at(
+        host_boot_id: [u8; 16],
+        wall_seconds: i64,
+        boottime_nanoseconds: u64,
+    ) -> RawPairedClockSample {
         RawPairedClockSample::new_untrusted(
             RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
-            [50; 16],
-            150,
-            100,
+            host_boot_id,
+            wall_seconds,
+            boottime_nanoseconds,
         )
         .unwrap()
     }
@@ -1132,11 +1658,122 @@ mod tests {
         request_with_generation(operation, handle, 5)
     }
 
+    fn with_request_id(request: &[u8], request_id: [u8; 16]) -> Vec<u8> {
+        let mut decoded = ApplyStorageRequest::decode_from_slice(request).unwrap();
+        decoded.header.get_or_insert_default().request_id = request_id.to_vec();
+        decoded.encode_to_vec()
+    }
+
+    fn with_deadline(request: &[u8], deadline_boottime_nanoseconds: u64) -> Vec<u8> {
+        let mut decoded = ApplyStorageRequest::decode_from_slice(request).unwrap();
+        decoded
+            .header
+            .get_or_insert_default()
+            .deadline_boottime_nanoseconds = deadline_boottime_nanoseconds;
+        decoded.encode_to_vec()
+    }
+
+    fn preparation_request(
+        apply_bytes: &[u8],
+        catalog: &ResolvedCatalogCommitmentV1,
+    ) -> (Vec<u8>, crate::CatalogBindingV1, crate::CatalogBindingV1) {
+        let expected_head =
+            crate::catalog_transition::StorageCatalogTransitionProvider::bootstrap_binding(
+                catalog.generation() - 1,
+                std::slice::from_ref(catalog),
+            )
+            .unwrap();
+        preparation_request_at_head(apply_bytes, catalog, expected_head)
+    }
+
+    fn preparation_request_at_head(
+        apply_bytes: &[u8],
+        catalog: &ResolvedCatalogCommitmentV1,
+        expected_head: crate::CatalogBindingV1,
+    ) -> (Vec<u8>, crate::CatalogBindingV1, crate::CatalogBindingV1) {
+        let apply = ApplyStorageRequest::decode_from_slice(apply_bytes).unwrap();
+        let inventory = catalog.binding();
+        let mut request = PrepareStorageCatalogRequest {
+            header: apply.header.clone(),
+            ..Default::default()
+        };
+        let header = request.header.get_or_insert_default();
+        header.protocol_minor = 3;
+        let operation_marker = apply.operation_id.first().copied().unwrap();
+        header.request_id = vec![operation_marker.wrapping_add(128); 16];
+        request.fence = apply.fence.clone();
+        request.action = apply.action;
+        request.operation_id = apply.operation_id;
+        request.storage_handle = apply.storage_handle;
+        request.source_version_handle = apply.source_version_handle;
+        request.requested_quota_bytes = apply.quota_bytes;
+        request.requested_reservation_bytes = match catalog.plan() {
+            CatalogPlanV1::CreateWorkspace { space, .. }
+            | CatalogPlanV1::Clone { space, .. }
+            | CatalogPlanV1::SetQuota { space, .. } => match space.reservation() {
+                ReservationPolicy::None => 0,
+                ReservationPolicy::Exact(bytes) => bytes,
+            },
+            _ => 0,
+        };
+        request.requested_hold_id = match catalog.plan() {
+            CatalogPlanV1::HoldSnapshot { hold_id, .. }
+            | CatalogPlanV1::ReleaseHold { hold_id, .. } => hold_id.as_bytes().to_vec(),
+            CatalogPlanV1::Clone { origin_hold, .. } => origin_hold.hold_id().as_bytes().to_vec(),
+            _ => Vec::new(),
+        };
+        request.inventory_generation = inventory.generation();
+        request.inventory_digest = inventory.digest().as_bytes().to_vec();
+        request.expected_catalog_generation = expected_head.generation();
+        request.expected_catalog_digest = expected_head.digest().as_bytes().to_vec();
+        request.preparation_expires_boottime_nanoseconds =
+            header.deadline_boottime_nanoseconds.checked_sub(1).unwrap();
+        (request.encode_to_vec(), inventory, expected_head)
+    }
+
+    struct StaticCatalogResolver<'a> {
+        catalog: &'a ResolvedCatalogCommitmentV1,
+    }
+
+    impl ProtectedStorageCatalogResolverV1 for StaticCatalogResolver<'_> {
+        fn resolve(
+            &self,
+            _semantics: &CanonicalStoragePreparationSemanticsV1,
+            _current_head: crate::CatalogBindingV1,
+        ) -> Result<ResolvedCatalogCommitmentV1, StorageCatalogPreparationError> {
+            Ok(self.catalog.clone())
+        }
+    }
+
+    fn prepare_for_apply(
+        coordinator: &mut StorageAdmissionCoordinator,
+        request: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        catalog: &ResolvedCatalogCommitmentV1,
+        current_clock: &RawPairedClockSample,
+    ) -> StorageCatalogPreparationOutcomeV1 {
+        let expected_head = coordinator.transactions.catalog_head_binding().unwrap();
+        let (preparation, inventory, _) =
+            preparation_request_at_head(request, catalog, expected_head);
+        coordinator
+            .prepare_catalog(
+                &preparation,
+                artifacts,
+                inventory,
+                &StaticCatalogResolver { catalog },
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                current_clock,
+            )
+            .unwrap()
+    }
+
     fn request_with_generation(operation: u8, handle: u8, desired_generation: u64) -> Vec<u8> {
         let mut value = ApplyStorageRequest::default();
         let header = value.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 1;
+        header.protocol_minor = 3;
         header.request_id = vec![operation; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = 200;
@@ -1162,7 +1799,7 @@ mod tests {
         let mut value = ApplyStorageRequest::default();
         let header = value.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 1;
+        header.protocol_minor = 3;
         header.request_id = vec![operation; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = 200;
@@ -1183,7 +1820,7 @@ mod tests {
         let mut value = ApplyStorageRequest::default();
         let header = value.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 1;
+        header.protocol_minor = 3;
         header.request_id = vec![operation; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = 200;
@@ -1429,6 +2066,33 @@ mod tests {
         coordinator
     }
 
+    fn runtime_coordinator(
+        directory: &TempDir,
+        fixture: &Fixture,
+        catalog: &ResolvedCatalogCommitmentV1,
+    ) -> Result<StorageAdmissionCoordinator, crate::StorageStateError> {
+        let range = aos_sandbox_protocol::MINIMUM_HOST_IDENTITY_RANGE;
+        let identity_pool = crate::StorageIdentityPoolV1::new(range, range * 4).unwrap();
+        let configuration_binding = crate::runtime::runtime_configuration_binding(
+            fixture.protected_authority_binding(),
+            identity_pool,
+        );
+        let store = StorageTransactionStore::open_runtime_for_test(
+            directory.path(),
+            StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+            catalog.generation() - 1,
+            configuration_binding,
+            catalog.generation() - 1,
+            std::slice::from_ref(catalog),
+        )?;
+        store.validate_runtime_restart(
+            configuration_binding,
+            catalog.generation() - 1,
+            std::slice::from_ref(catalog),
+        )?;
+        Ok(StorageAdmissionCoordinator::new(fixture.authority(), store))
+    }
+
     struct CountingBackend {
         executions: Rc<Cell<usize>>,
     }
@@ -1474,13 +2138,20 @@ mod tests {
             ProtocolId::StorageBroker,
         );
         let mut broker = initialized_coordinator(&directory, &fixture, &original_catalog);
+        prepare_for_apply(
+            &mut broker,
+            &original_request,
+            &artifacts,
+            &original_catalog,
+            &clock(),
+        );
         assert!(matches!(
             broker
                 .admit_apply_intent(
                     &original_request,
                     &artifacts,
                     &original_catalog,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 3),
                     peer(),
                     peer_policy(),
                     &clock()
@@ -1494,7 +2165,7 @@ mod tests {
                     &original_request,
                     &artifacts,
                     &original_catalog,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 3),
                     peer(),
                     peer_policy(),
                     &clock()
@@ -1504,6 +2175,626 @@ mod tests {
                 phase: DurableStoragePhase::Prepared,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn signed_preparation_and_apply_replay_exactly_across_reopen() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        let prepared = prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        drop(broker);
+
+        let mut broker = coordinator(&directory, &fixture);
+        crate::runtime::authenticate_startup_authority(&broker).unwrap();
+        let replayed = prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        assert_eq!(replayed, prepared);
+        assert!(matches!(
+            broker
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 3),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap(),
+            StorageAdmissionOutcome::Prepared { .. }
+        ));
+        drop(broker);
+
+        let mut broker = coordinator(&directory, &fixture);
+        crate::runtime::authenticate_startup_authority(&broker).unwrap();
+        assert!(matches!(
+            broker
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 3),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap(),
+            StorageAdmissionOutcome::ObservationRequired {
+                phase: DurableStoragePhase::Prepared,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn preparation_and_apply_require_independent_signed_grants() {
+        let apply_only_directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let apply_only = fixture.artifacts_with_grants(&request, &catalog, true, false);
+        let mut apply_only_broker =
+            initialized_coordinator(&apply_only_directory, &fixture, &catalog);
+        let before = apply_only_broker.transactions.journal_sequence_for_test();
+        let (preparation, inventory, _) = preparation_request(&request, &catalog);
+
+        assert!(matches!(
+            apply_only_broker.prepare_catalog(
+                &preparation,
+                &apply_only,
+                inventory,
+                &StaticCatalogResolver { catalog: &catalog },
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(StorageBrokerError::Authority)
+        ));
+        assert_eq!(
+            apply_only_broker.transactions.journal_sequence_for_test(),
+            before
+        );
+        assert!(
+            apply_only_broker
+                .transactions
+                .catalog_preparation_record(&[7; 16])
+                .unwrap()
+                .is_none()
+        );
+
+        let prepare_only_directory = TempDir::new().unwrap();
+        let prepare_only = fixture.artifacts_with_grants(&request, &catalog, false, true);
+        let mut prepare_only_broker =
+            initialized_coordinator(&prepare_only_directory, &fixture, &catalog);
+        prepare_for_apply(
+            &mut prepare_only_broker,
+            &request,
+            &prepare_only,
+            &catalog,
+            &clock(),
+        );
+        let before = prepare_only_broker.transactions.journal_sequence_for_test();
+
+        assert!(matches!(
+            prepare_only_broker.admit_apply_intent(
+                &request,
+                &prepare_only,
+                &catalog,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(StorageBrokerError::Authority)
+        ));
+        assert_eq!(
+            prepare_only_broker.transactions.journal_sequence_for_test(),
+            before
+        );
+        assert_eq!(
+            prepare_only_broker.transactions.phase([7; 16]).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn stale_catalog_head_rejects_preparation_without_journal_mutation() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let current_catalog = catalog(8, 9);
+        let stale_catalog = catalog(8, 10);
+        let request = request(7, 8);
+        let artifacts = fixture.artifacts(
+            &request,
+            &stale_catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &current_catalog);
+        let before = broker.transactions.journal_sequence_for_test();
+        let (preparation, inventory, _) = preparation_request(&request, &stale_catalog);
+
+        assert!(matches!(
+            broker.prepare_catalog(
+                &preparation,
+                &artifacts,
+                inventory,
+                &StaticCatalogResolver {
+                    catalog: &stale_catalog,
+                },
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(StorageBrokerError::Preparation(
+                StorageCatalogPreparationError::StaleCatalogHead
+            ))
+        ));
+        assert_eq!(broker.transactions.journal_sequence_for_test(), before);
+        assert!(
+            broker
+                .transactions
+                .catalog_preparation_record(&[7; 16])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn apply_rechecks_preparation_expiry_boot_and_revocation_without_mutation() {
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+
+        let expired_directory = TempDir::new().unwrap();
+        let mut expired = initialized_coordinator(&expired_directory, &fixture, &catalog);
+        prepare_for_apply(&mut expired, &request, &artifacts, &catalog, &clock());
+        let before = expired.transactions.journal_sequence_for_test();
+        assert!(matches!(
+            expired.admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &clock_at([50; 16], 150, 199),
+            ),
+            Err(StorageBrokerError::Preparation(
+                StorageCatalogPreparationError::Expired
+            ))
+        ));
+        assert_eq!(expired.transactions.journal_sequence_for_test(), before);
+        assert_eq!(expired.transactions.phase([7; 16]).unwrap(), None);
+
+        let rebooted_directory = TempDir::new().unwrap();
+        let mut rebooted = initialized_coordinator(&rebooted_directory, &fixture, &catalog);
+        prepare_for_apply(&mut rebooted, &request, &artifacts, &catalog, &clock());
+        let before = rebooted.transactions.journal_sequence_for_test();
+        assert!(matches!(
+            rebooted.admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &clock_at([60; 16], 150, 100),
+            ),
+            Err(StorageBrokerError::Preparation(
+                StorageCatalogPreparationError::HostBootMismatch
+            ))
+        ));
+        assert_eq!(rebooted.transactions.journal_sequence_for_test(), before);
+        assert_eq!(rebooted.transactions.phase([7; 16]).unwrap(), None);
+
+        let revoked_directory = TempDir::new().unwrap();
+        let mut revoked = initialized_coordinator(&revoked_directory, &fixture, &catalog);
+        prepare_for_apply(&mut revoked, &request, &artifacts, &catalog, &clock());
+        let mut revoked_fixture = Fixture::new();
+        revoked_fixture.revocation = RevocationScopeId::from_bytes([46; 16]);
+        let revoked_artifacts = revoked_fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let before = revoked.transactions.journal_sequence_for_test();
+        assert!(matches!(
+            revoked.admit_apply_intent(
+                &request,
+                &revoked_artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(StorageBrokerError::Authority)
+        ));
+        assert_eq!(revoked.transactions.journal_sequence_for_test(), before);
+        assert_eq!(revoked.transactions.phase([7; 16]).unwrap(), None);
+
+        let authority_change_directory = TempDir::new().unwrap();
+        let mut before_change =
+            runtime_coordinator(&authority_change_directory, &fixture, &catalog).unwrap();
+        prepare_for_apply(&mut before_change, &request, &artifacts, &catalog, &clock());
+        let before = before_change.transactions.journal_sequence_for_test();
+        drop(before_change);
+
+        assert!(
+            runtime_coordinator(&authority_change_directory, &revoked_fixture, &catalog).is_err()
+        );
+        let mut after_change = coordinator(&authority_change_directory, &revoked_fixture);
+        assert_eq!(
+            after_change.transactions.journal_sequence_for_test(),
+            before
+        );
+        assert!(matches!(
+            after_change.admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(StorageBrokerError::Authority)
+        ));
+        assert_eq!(
+            after_change.transactions.journal_sequence_for_test(),
+            before
+        );
+        assert_eq!(after_change.transactions.phase([7; 16]).unwrap(), None);
+    }
+
+    #[test]
+    fn retained_preparation_rejects_same_operation_equivocation() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let conflicting = with_deadline(&request, 201);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts_authorizing(
+            &request,
+            &catalog,
+            &[&request, &conflicting],
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        let before = broker.transactions.journal_sequence_for_test();
+        let retained = broker
+            .transactions
+            .catalog_preparation_record(&[7; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let (conflicting_preparation, inventory, _) = preparation_request(&conflicting, &catalog);
+
+        assert!(matches!(
+            broker.prepare_catalog(
+                &conflicting_preparation,
+                &artifacts,
+                inventory,
+                &StaticCatalogResolver { catalog: &catalog },
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(StorageBrokerError::Preparation(
+                StorageCatalogPreparationError::Equivocation
+            ))
+        ));
+        assert_eq!(broker.transactions.journal_sequence_for_test(), before);
+        assert_eq!(
+            broker
+                .transactions
+                .catalog_preparation_record(&[7; 16])
+                .unwrap(),
+            Some(retained.as_slice())
+        );
+    }
+
+    #[test]
+    fn occupied_apply_request_ids_never_consume_preparation() {
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let occupied_directory = TempDir::new().unwrap();
+        let mut occupied = initialized_coordinator(&occupied_directory, &fixture, &catalog);
+        prepare_for_apply(&mut occupied, &request, &artifacts, &catalog, &clock());
+        let preparation_effect = occupied
+            .transactions
+            .authority_record(RecordNamespace::Effect, &[135; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        occupied.transactions.put_authority_record_for_test(
+            RecordNamespace::Effect,
+            &[7; 16],
+            preparation_effect,
+        );
+        let before = occupied.transactions.journal_sequence_for_test();
+        assert!(matches!(
+            occupied.admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(StorageBrokerError::State(
+                crate::StorageStateError::Equivocation
+            ))
+        ));
+        assert_eq!(occupied.transactions.journal_sequence_for_test(), before);
+        assert_eq!(occupied.transactions.phase([7; 16]).unwrap(), None);
+
+        let same_id_directory = TempDir::new().unwrap();
+        let same_id_request = with_request_id(&request, [135; 16]);
+        let same_id_artifacts = fixture.artifacts(
+            &same_id_request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut same_id = initialized_coordinator(&same_id_directory, &fixture, &catalog);
+        prepare_for_apply(
+            &mut same_id,
+            &same_id_request,
+            &same_id_artifacts,
+            &catalog,
+            &clock(),
+        );
+        let before = same_id.transactions.journal_sequence_for_test();
+        assert!(matches!(
+            same_id.admit_apply_intent(
+                &same_id_request,
+                &same_id_artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(StorageBrokerError::State(
+                crate::StorageStateError::Equivocation
+            ))
+        ));
+        assert_eq!(same_id.transactions.journal_sequence_for_test(), before);
+        assert_eq!(same_id.transactions.phase([7; 16]).unwrap(), None);
+    }
+
+    #[test]
+    fn crash_after_atomic_apply_consumption_reopens_observation_only() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        broker
+            .transactions
+            .fail_after_next_journal_commit_for_test();
+
+        assert!(
+            broker
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 3),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .is_err()
+        );
+        drop(broker);
+
+        let mut recovered = coordinator(&directory, &fixture);
+        crate::runtime::authenticate_startup_authority(&recovered).unwrap();
+        assert_eq!(
+            recovered.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Prepared)
+        );
+        assert!(matches!(
+            recovered
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 3),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap(),
+            StorageAdmissionOutcome::ObservationRequired {
+                phase: DurableStoragePhase::Prepared,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn startup_rejects_each_missing_or_substituted_preparation_authority_link() {
+        for case in 0..4 {
+            let directory = TempDir::new().unwrap();
+            let fixture = Fixture::new();
+            let request = request(7, 8);
+            let catalog = catalog(8, 9);
+            let artifacts = fixture.artifacts(
+                &request,
+                &catalog,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+            );
+            let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+            prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+            let effect = broker
+                .transactions
+                .authority_record(RecordNamespace::Effect, &[135; 16])
+                .unwrap()
+                .unwrap()
+                .to_vec();
+            let operation_fence = broker
+                .transactions
+                .authority_record(RecordNamespace::AuthorityPublication, &[7; 16])
+                .unwrap()
+                .unwrap()
+                .to_vec();
+
+            match case {
+                0 => broker
+                    .transactions
+                    .remove_authority_record_for_test(RecordNamespace::Effect, &[135; 16]),
+                1 => broker.transactions.put_authority_record_for_test(
+                    RecordNamespace::Effect,
+                    &[135; 16],
+                    operation_fence,
+                ),
+                2 => broker.transactions.remove_authority_record_for_test(
+                    RecordNamespace::AuthorityPublication,
+                    &[7; 16],
+                ),
+                3 => broker.transactions.put_authority_record_for_test(
+                    RecordNamespace::AuthorityPublication,
+                    &[7; 16],
+                    effect,
+                ),
+                _ => unreachable!(),
+            }
+            drop(broker);
+
+            let recovered = coordinator(&directory, &fixture);
+            assert!(matches!(
+                crate::runtime::authenticate_startup_authority(&recovered),
+                Err(crate::StorageRuntimeError::Recovery)
+            ));
+        }
+    }
+
+    #[test]
+    fn startup_rejects_prepared_apply_inconsistency_and_missing_historical_effect() {
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+
+        let inconsistent_directory = TempDir::new().unwrap();
+        let mut inconsistent = initialized_coordinator(&inconsistent_directory, &fixture, &catalog);
+        prepare_for_apply(&mut inconsistent, &request, &artifacts, &catalog, &clock());
+        let prepared_record = inconsistent
+            .transactions
+            .catalog_preparation_record(&[7; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        inconsistent
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+        inconsistent.transactions.put_authority_record_for_test(
+            RecordNamespace::StorageCatalogPreparation,
+            &[7; 16],
+            prepared_record,
+        );
+        drop(inconsistent);
+
+        let recovered = coordinator(&inconsistent_directory, &fixture);
+        assert!(matches!(
+            crate::runtime::authenticate_startup_authority(&recovered),
+            Err(crate::StorageRuntimeError::Recovery)
+        ));
+
+        let missing_history_directory = TempDir::new().unwrap();
+        let mut missing_history =
+            initialized_coordinator(&missing_history_directory, &fixture, &catalog);
+        prepare_for_apply(
+            &mut missing_history,
+            &request,
+            &artifacts,
+            &catalog,
+            &clock(),
+        );
+        missing_history
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+        missing_history
+            .transactions
+            .remove_authority_record_for_test(RecordNamespace::Effect, &[135; 16]);
+        drop(missing_history);
+
+        let recovered = coordinator(&missing_history_directory, &fixture);
+        assert!(matches!(
+            crate::runtime::authenticate_startup_authority(&recovered),
+            Err(crate::StorageRuntimeError::Recovery)
         ));
     }
 
@@ -1522,12 +2813,13 @@ mod tests {
             ProtocolId::StorageBroker,
         );
         let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
         broker
             .admit_apply_intent(
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 3),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -1616,12 +2908,19 @@ mod tests {
             ProtocolId::StorageBroker,
         );
         let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(
+            &mut broker,
+            &original_request,
+            &original_artifacts,
+            &catalog,
+            &clock(),
+        );
         broker
             .admit_apply_intent(
                 &original_request,
                 &original_artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 3),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -1659,7 +2958,7 @@ mod tests {
                 &superseding_artifacts,
                 &superseding_semantics,
                 &superseding_request,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 3),
                 &clock(),
                 Some(&prior_fence),
             )
@@ -1701,12 +3000,19 @@ mod tests {
             ProtocolId::StorageBroker,
         );
         let mut broker = initialized_coordinator(&directory, &fixture, &create_catalog);
+        prepare_for_apply(
+            &mut broker,
+            &create_request,
+            &create_artifacts,
+            &create_catalog,
+            &clock(),
+        );
         let StorageAdmissionOutcome::Prepared { mutation_digest } = broker
             .admit_workspace_apply_intent(
                 &create_request,
                 &create_artifacts,
                 &create_catalog,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 3),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -1758,19 +3064,15 @@ mod tests {
         let destroy_manifest = assignment_manifest_at(&spec, 6);
         let request = destroy_request(8, workspace_handle, destroy_manifest.digest());
         let catalog = destroy_catalog(workspace_handle, 11);
-        let artifacts = fixture.artifacts(
-            &request,
-            &catalog,
-            300,
-            BrokerAudience::Storage,
-            ProtocolId::StorageBroker,
-        );
+        let expected_head = broker.transactions.catalog_head_binding().unwrap();
+        let artifacts = fixture.artifacts_at_head(&request, &catalog, expected_head, 300);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
         let StorageAdmissionOutcome::Prepared { mutation_digest } = broker
             .admit_apply_intent(
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 3),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -1869,12 +3171,13 @@ mod tests {
             ProtocolId::StorageBroker,
         );
         let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
         assert!(matches!(
             broker.admit_apply_intent(
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 3),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -1888,7 +3191,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 3),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -1950,7 +3253,7 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 3),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -1980,12 +3283,13 @@ mod tests {
             ProtocolId::StorageBroker,
         );
         let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
         let StorageAdmissionOutcome::Prepared { mutation_digest } = broker
             .admit_workspace_apply_intent(
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 3),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -2054,12 +3358,19 @@ mod tests {
 
         let expired_directory = TempDir::new().unwrap();
         let mut expired_broker = initialized_coordinator(&expired_directory, &fixture, &catalog);
+        prepare_for_apply(
+            &mut expired_broker,
+            &request,
+            &artifacts,
+            &catalog,
+            &clock(),
+        );
         let StorageAdmissionOutcome::Prepared { mutation_digest } = expired_broker
             .admit_workspace_apply_intent(
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 3),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -2100,7 +3411,7 @@ mod tests {
                 if samples == 1 {
                     Ok(clock())
                 } else {
-                    Ok(expired_sample.clone())
+                    Ok(expired_sample)
                 }
             },),
             Err(ZfsHelperError::Authority)
@@ -2131,12 +3442,19 @@ mod tests {
             ProtocolId::StorageBroker,
         );
         let mut broker = initialized_coordinator(&directory, &fixture, &original_catalog);
+        prepare_for_apply(
+            &mut broker,
+            &original_request,
+            &artifacts,
+            &original_catalog,
+            &clock(),
+        );
         broker
             .admit_apply_intent(
                 &original_request,
                 &artifacts,
                 &original_catalog,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 3),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -2148,7 +3466,7 @@ mod tests {
                     &request(9, 8),
                     &artifacts,
                     &original_catalog,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 3),
                     peer(),
                     peer_policy(),
                     &clock()
@@ -2161,7 +3479,7 @@ mod tests {
                     &original_request,
                     &artifacts,
                     &catalog(9, 10),
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 3),
                     peer(),
                     peer_policy(),
                     &clock()
@@ -2182,7 +3500,7 @@ mod tests {
                     &original_request,
                     &expired,
                     &original_catalog,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 3),
                     peer(),
                     peer_policy(),
                     &clock()
@@ -2202,7 +3520,7 @@ mod tests {
                     &original_request,
                     &wrong,
                     &original_catalog,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 3),
                     peer(),
                     peer_policy(),
                     &clock()
@@ -2225,12 +3543,13 @@ mod tests {
             ProtocolId::StorageBroker,
         );
         let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
         broker
             .admit_apply_intent(
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 3),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -2246,14 +3565,12 @@ mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 3),
                 peer(),
                 peer_policy(),
                 &clock()
             ),
-            Err(StorageBrokerError::State(
-                crate::StorageStateError::MissingAuthorityLink
-            ))
+            Err(StorageBrokerError::Authority)
         ));
     }
 
@@ -2273,12 +3590,13 @@ mod tests {
             ProtocolId::StorageBroker,
         );
         let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &original, &artifacts, &catalog, &clock());
         broker
             .admit_apply_intent(
                 &original,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 3),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -2293,7 +3611,7 @@ mod tests {
                 &artifacts,
                 &semantics,
                 &substituted,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 3),
                 &clock(),
                 broker
                     .transactions

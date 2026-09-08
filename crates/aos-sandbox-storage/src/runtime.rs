@@ -175,10 +175,7 @@ impl StorageBrokerRuntime {
             helper: StorageMutationHelper::new(contract, backend),
             readiness: StorageRuntimeReadiness::IntegrationIncomplete,
         };
-        runtime
-            .coordinator
-            .authenticate_workspace_pin_attempts()
-            .map_err(|_| StorageRuntimeError::Recovery)?;
+        authenticate_startup_authority(&runtime.coordinator)?;
         runtime.readiness = if legacy_recovery {
             StorageRuntimeReadiness::LegacyRecoveryOnly {
                 operations: runtime
@@ -373,7 +370,18 @@ impl StorageBrokerRuntime {
     }
 }
 
-fn runtime_configuration_binding(
+pub(crate) fn authenticate_startup_authority(
+    coordinator: &StorageAdmissionCoordinator,
+) -> Result<(), StorageRuntimeError> {
+    coordinator
+        .authenticate_catalog_preparations()
+        .map_err(|_| StorageRuntimeError::Recovery)?;
+    coordinator
+        .authenticate_workspace_pin_attempts()
+        .map_err(|_| StorageRuntimeError::Recovery)
+}
+
+pub(crate) fn runtime_configuration_binding(
     authority_binding: ObjectDigest,
     identity_pool: StorageIdentityPoolV1,
 ) -> ObjectDigest {

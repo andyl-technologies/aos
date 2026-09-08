@@ -48,6 +48,7 @@ const PUBLICATION_INTENT_DOMAIN: &[u8] = b"aos.sandbox.storage.publication-inten
 const PUBLICATION_INTENT_MAGIC: &[u8; 8] = b"AOSSPI01";
 const PUBLICATION_INTENT_VERSION: u16 = 1;
 const MAXIMUM_RECORD_BYTES: usize = 64 * 1024;
+const MAXIMUM_PREPARATION_RECORD_BYTES: usize = 128 * 1024;
 const FIXED_PREFIX_BYTES: usize = 8 + 2 + 1 + 16 + 16 + 16 + 32 + 32 + 8 + 32 + 32 + 4;
 const LEGACY_RESULT_BYTES: usize = 8 + 32 + 32;
 const RESULT_BYTES: usize = LEGACY_RESULT_BYTES + 1 + 32 + 32 + 8;
@@ -56,9 +57,9 @@ const RESULT_HAS_STORAGE_HANDLE: u8 = 1;
 const RESULT_HAS_VERSION_HANDLE: u8 = 1 << 1;
 const RESULT_HAS_OBJECT_GUID: u8 = 1 << 2;
 const MAXIMUM_OPERATIONS: usize = 256;
-const MATERIALIZED_RECORDS_PER_OPERATION: usize = 7;
+const MATERIALIZED_RECORDS_PER_OPERATION: usize = 8;
 const GLOBAL_MATERIALIZED_RECORDS: usize = 2;
-const MAXIMUM_JOURNAL_RECORD_BYTES: usize = MAXIMUM_RECORD_BYTES + 128;
+const MAXIMUM_JOURNAL_RECORD_BYTES: usize = MAXIMUM_PREPARATION_RECORD_BYTES + 128;
 
 /// Reports durable storage state validation or transition failure.
 #[derive(Debug, thiserror::Error)]
@@ -367,6 +368,36 @@ enum PreparedRecord {
     New(Box<DurableRecord>),
 }
 
+/// Carries the exact preparation replacement committed with first Apply admission.
+pub(crate) struct CatalogPreparationConsumption {
+    expected_head: CatalogBindingV1,
+    prepared_record: Vec<u8>,
+    consumed_record: Vec<u8>,
+}
+
+impl CatalogPreparationConsumption {
+    pub(crate) fn new(
+        expected_head: CatalogBindingV1,
+        prepared_record: Vec<u8>,
+        consumed_record: Vec<u8>,
+    ) -> Result<Self, StorageStateError> {
+        if prepared_record.is_empty()
+            || consumed_record.is_empty()
+            || prepared_record == consumed_record
+            || prepared_record.len() > MAXIMUM_PREPARATION_RECORD_BYTES
+            || consumed_record.len() > MAXIMUM_PREPARATION_RECORD_BYTES
+        {
+            return Err(StorageStateError::InvalidValue);
+        }
+
+        Ok(Self {
+            expected_head,
+            prepared_record,
+            consumed_record,
+        })
+    }
+}
+
 /// Owns the exclusive catalog transaction lock and authenticated journal state.
 pub struct StorageTransactionStore {
     journal: Journal,
@@ -380,6 +411,8 @@ pub struct StorageTransactionStore {
     #[cfg(test)]
     fail_after_next_journal_commit: bool,
 }
+
+type CatalogPreparationRecord = ([u8; 16], Vec<u8>);
 
 impl StorageTransactionStore {
     /// Opens a root-owned protected directory and exclusively locks its journal.
@@ -458,7 +491,7 @@ impl StorageTransactionStore {
     }
 
     #[cfg(test)]
-    fn open_runtime_for_test(
+    pub(crate) fn open_runtime_for_test(
         directory: &Path,
         key: StorageStateKey,
         minimum_generation: u64,
@@ -1462,6 +1495,105 @@ impl StorageTransactionStore {
         Ok(self.journal.get(namespace, key))
     }
 
+    pub(crate) fn catalog_head_binding(&self) -> Result<CatalogBindingV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        self.catalog_transitions
+            .head_binding()
+            .ok_or(StorageStateError::InvalidTransition)
+    }
+
+    pub(crate) fn catalog_preparation_record(
+        &self,
+        operation_id: &[u8; 16],
+    ) -> Result<Option<&[u8]>, StorageStateError> {
+        self.authority_record(RecordNamespace::StorageCatalogPreparation, operation_id)
+    }
+
+    pub(crate) fn catalog_preparation_records(
+        &self,
+    ) -> Result<Vec<CatalogPreparationRecord>, StorageStateError> {
+        self.ensure_authority_readable()?;
+        self.journal
+            .records(RecordNamespace::StorageCatalogPreparation)
+            .map(|(key, value)| {
+                let operation_id = key
+                    .try_into()
+                    .map_err(|_| StorageStateError::CorruptRecord)?;
+                Ok((operation_id, value.to_vec()))
+            })
+            .collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn retain_catalog_preparation(
+        &mut self,
+        operation_id: [u8; 16],
+        sandbox_id: [u8; 16],
+        request_id: [u8; 16],
+        expected_head: CatalogBindingV1,
+        sealed_fence: Vec<u8>,
+        sealed_effect: Vec<u8>,
+        sealed_operation_fence: Vec<u8>,
+        sealed_preparation: Vec<u8>,
+    ) -> Result<(), StorageStateError> {
+        self.ensure_authority_readable()?;
+        if operation_id == [0; 16]
+            || sandbox_id == [0; 16]
+            || request_id == [0; 16]
+            || sealed_fence.is_empty()
+            || sealed_effect.is_empty()
+            || sealed_operation_fence.is_empty()
+            || sealed_preparation.is_empty()
+            || sealed_fence.len() > MAXIMUM_RECORD_BYTES
+            || sealed_effect.len() > MAXIMUM_RECORD_BYTES
+            || sealed_operation_fence.len() > MAXIMUM_RECORD_BYTES
+            || sealed_preparation.len() > MAXIMUM_PREPARATION_RECORD_BYTES
+        {
+            return Err(StorageStateError::InvalidValue);
+        }
+        if self.catalog_transitions.head_binding() != Some(expected_head) {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        if self.records.contains_key(&operation_id)
+            || self
+                .journal
+                .get(RecordNamespace::StorageCatalogPreparation, &operation_id)
+                .is_some()
+            || self
+                .journal
+                .get(RecordNamespace::AuthorityPublication, &operation_id)
+                .is_some()
+            || self
+                .journal
+                .get(RecordNamespace::Effect, &request_id)
+                .is_some()
+        {
+            return Err(StorageStateError::Equivocation);
+        }
+        let transaction = JournalTransaction::new(
+            catalog_preparation_transaction_id(operation_id),
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    sandbox_id.to_vec(),
+                    sealed_fence,
+                ),
+                JournalRecord::put(RecordNamespace::Effect, request_id.to_vec(), sealed_effect),
+                JournalRecord::put(
+                    RecordNamespace::AuthorityPublication,
+                    operation_id.to_vec(),
+                    sealed_operation_fence,
+                ),
+                JournalRecord::put(
+                    RecordNamespace::StorageCatalogPreparation,
+                    operation_id.to_vec(),
+                    sealed_preparation,
+                ),
+            ],
+        )?;
+        self.commit_journal(&transaction)
+    }
+
     #[cfg(test)]
     #[allow(clippy::unwrap_used)]
     pub(crate) fn remove_authority_record_for_test(
@@ -1494,12 +1626,12 @@ impl StorageTransactionStore {
     }
 
     #[cfg(test)]
-    fn fail_after_next_journal_commit_for_test(&mut self) {
+    pub(crate) fn fail_after_next_journal_commit_for_test(&mut self) {
         self.fail_after_next_journal_commit = true;
     }
 
     #[cfg(test)]
-    fn journal_sequence_for_test(&self) -> u64 {
+    pub(crate) fn journal_sequence_for_test(&self) -> u64 {
         self.journal.snapshot_sequence()
     }
 
@@ -1556,6 +1688,62 @@ impl StorageTransactionStore {
         sealed_operation_fence: Vec<u8>,
         publication_intent: Option<StorageWorkspacePublicationIntentV1>,
     ) -> Result<BeginStorageTransaction, StorageStateError> {
+        self.begin_authorized(
+            operation_id,
+            request_digest,
+            catalog,
+            sandbox_id,
+            request_id,
+            sealed_fence,
+            sealed_effect,
+            sealed_operation_fence,
+            publication_intent,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin_authorized_with_consumed_preparation(
+        &mut self,
+        operation_id: [u8; 16],
+        request_digest: ObjectDigest,
+        catalog: &ResolvedCatalogCommitmentV1,
+        sandbox_id: [u8; 16],
+        request_id: [u8; 16],
+        sealed_fence: Vec<u8>,
+        sealed_effect: Vec<u8>,
+        sealed_operation_fence: Vec<u8>,
+        publication_intent: Option<StorageWorkspacePublicationIntentV1>,
+        preparation: CatalogPreparationConsumption,
+    ) -> Result<BeginStorageTransaction, StorageStateError> {
+        self.begin_authorized(
+            operation_id,
+            request_digest,
+            catalog,
+            sandbox_id,
+            request_id,
+            sealed_fence,
+            sealed_effect,
+            sealed_operation_fence,
+            publication_intent,
+            Some(preparation),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn begin_authorized(
+        &mut self,
+        operation_id: [u8; 16],
+        request_digest: ObjectDigest,
+        catalog: &ResolvedCatalogCommitmentV1,
+        sandbox_id: [u8; 16],
+        request_id: [u8; 16],
+        sealed_fence: Vec<u8>,
+        sealed_effect: Vec<u8>,
+        sealed_operation_fence: Vec<u8>,
+        publication_intent: Option<StorageWorkspacePublicationIntentV1>,
+        preparation: Option<CatalogPreparationConsumption>,
+    ) -> Result<BeginStorageTransaction, StorageStateError> {
         if sealed_fence.is_empty()
             || sealed_effect.is_empty()
             || sealed_operation_fence.is_empty()
@@ -1576,8 +1764,32 @@ impl StorageTransactionStore {
         if let Some(intent) = publication_intent.as_ref() {
             self.validate_publication_intent_range(intent)?;
         }
+        if let Some(preparation) = preparation.as_ref() {
+            if self.catalog_transitions.head_binding() != Some(preparation.expected_head) {
+                return Err(StorageStateError::InvalidTransition);
+            }
+            if self
+                .journal
+                .get(RecordNamespace::Effect, &request_id)
+                .is_some()
+            {
+                return Err(StorageStateError::Equivocation);
+            }
+            if self
+                .journal
+                .get(RecordNamespace::StorageCatalogPreparation, &operation_id)
+                != Some(preparation.prepared_record.as_slice())
+            {
+                return Err(StorageStateError::AuthorityLinkMismatch);
+            }
+        }
         let record = match self.prepare_record(operation_id, request_digest, catalog)? {
             PreparedRecord::Existing(outcome) => {
+                if preparation.is_some() {
+                    // A first-Apply transition must create the operation and
+                    // replace Prepared in the same journal transaction.
+                    return Err(StorageStateError::AuthorityLinkMismatch);
+                }
                 let current = self
                     .records
                     .get(&operation_id)
@@ -1614,6 +1826,13 @@ impl StorageTransactionStore {
         ];
         if let Some(intent) = publication_intent.as_ref() {
             linked_records.push(publication_intent_record(&self.key, intent)?);
+        }
+        if let Some(preparation) = preparation {
+            linked_records.push(JournalRecord::put(
+                RecordNamespace::StorageCatalogPreparation,
+                operation_id.to_vec(),
+                preparation.consumed_record,
+            ));
         }
         self.publish_with(record, linked_records)?;
         self.catalog_transitions.install_reservation(reservation);
@@ -2428,8 +2647,8 @@ const fn journal_limits() -> JournalLimits {
         maximum_journal_bytes: 512 * 1024 * 1024,
         maximum_record_bytes: MAXIMUM_JOURNAL_RECORD_BYTES,
         maximum_key_bytes: 128,
-        maximum_records_per_transaction: 6,
-        maximum_transaction_bytes: MAXIMUM_JOURNAL_RECORD_BYTES * 6,
+        maximum_records_per_transaction: 7,
+        maximum_transaction_bytes: MAXIMUM_JOURNAL_RECORD_BYTES * 7,
         maximum_transactions: 65_536,
         maximum_materialized_bytes: MAXIMUM_JOURNAL_RECORD_BYTES
             * (MAXIMUM_OPERATIONS * MATERIALIZED_RECORDS_PER_OPERATION
@@ -2559,6 +2778,19 @@ fn transaction_id(operation_id: [u8; 16], phase: DurableStoragePhase) -> [u8; 16
     hash.update(RECORD_DOMAIN);
     hash.update(operation_id);
     hash.update([phase_code(phase)]);
+    let digest: [u8; 32] = hash.finalize().into();
+    let mut id = [0; 16];
+    id.copy_from_slice(&digest[..16]);
+    if id == [0; 16] {
+        id[15] = 1;
+    }
+    id
+}
+
+fn catalog_preparation_transaction_id(operation_id: [u8; 16]) -> [u8; 16] {
+    let mut hash = Sha256::new();
+    hash.update(b"aos.sandbox.storage.catalog-preparation-transaction.v1\0");
+    hash.update(operation_id);
     let digest: [u8; 32] = hash.finalize().into();
     let mut id = [0; 16];
     id.copy_from_slice(&digest[..16]);
