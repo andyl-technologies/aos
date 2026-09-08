@@ -55,6 +55,129 @@ const RESOURCE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.workspace-resource.v
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.storage.workspace-transaction.v1\0";
 const MAXIMUM_RECORD_BYTES: usize = 16 * 1024;
 
+/// Retains the portable facts needed to publish a committed workspace.
+///
+/// This value is validated against the exact assignment manifest and sandbox
+/// specification before mutation admission, then authenticated beside that
+/// operation so crash recovery never asks a controller to restate it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StorageWorkspacePublicationIntentV1 {
+    operation_id: [u8; 16],
+    request_catalog: CatalogBindingV1,
+    assignment_digest: ObjectDigest,
+    root_image: ObjectDescriptor,
+    identity_range_start: u32,
+    identity_range_size: u32,
+}
+
+impl StorageWorkspacePublicationIntentV1 {
+    pub(crate) fn from_portable(
+        operation_id: [u8; 16],
+        request_catalog: &ResolvedCatalogCommitmentV1,
+        assignment: BrokerAssignment,
+        node: NodeId,
+        manifest: &CanonicalAssignmentManifestV1,
+        sandbox_spec: &SandboxSpec,
+        identity_range_start: u32,
+    ) -> Result<Self, StorageWorkspaceCatalogError> {
+        if operation_id == [0; 16]
+            || !matches!(
+                request_catalog.plan(),
+                CatalogPlanV1::CreateWorkspace { .. } | CatalogPlanV1::Clone { .. }
+            )
+            || manifest
+                .broker_assignment()
+                .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate)?
+                != assignment
+            || manifest.manifest().node() != node
+        {
+            return Err(StorageWorkspaceCatalogError::InvalidCandidate);
+        }
+
+        let encoded_specification = encode_sandbox_spec(sandbox_spec);
+        let specification_media_type =
+            MediaType::new(PortableMediaType::SandboxSpec.as_str().to_owned())
+                .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate)?;
+        let specification_descriptor =
+            descriptor_for_bytes(specification_media_type, &encoded_specification);
+        let manifest = manifest.manifest();
+        if &specification_descriptor != manifest.sandbox_spec()
+            || sandbox_spec.root_view() != manifest.root_view()
+            || sandbox_spec.environment() != manifest.environment()
+        {
+            return Err(StorageWorkspaceCatalogError::InvalidCandidate);
+        }
+        validate_root_image(manifest.root_view())?;
+        let IdentityProfile::PrivateUserns { id_range_size, .. } = sandbox_spec.identity_profile()
+        else {
+            return Err(StorageWorkspaceCatalogError::InvalidCandidate);
+        };
+        if id_range_size.get() < MINIMUM_HOST_IDENTITY_RANGE {
+            return Err(StorageWorkspaceCatalogError::InvalidCandidate);
+        }
+        validate_identity_range(identity_range_start, id_range_size.get())?;
+
+        Ok(Self {
+            operation_id,
+            request_catalog: request_catalog.binding(),
+            assignment_digest: assignment.digest(),
+            root_image: manifest.root_view().clone(),
+            identity_range_start,
+            identity_range_size: id_range_size.get(),
+        })
+    }
+
+    pub(crate) fn from_authenticated_parts(
+        operation_id: [u8; 16],
+        request_catalog: CatalogBindingV1,
+        assignment_digest: ObjectDigest,
+        root_image: ObjectDescriptor,
+        identity_range_start: u32,
+        identity_range_size: u32,
+    ) -> Result<Self, StorageWorkspaceCatalogError> {
+        if operation_id == [0; 16]
+            || assignment_digest.as_bytes() == &[0; 32]
+            || identity_range_size < MINIMUM_HOST_IDENTITY_RANGE
+        {
+            return Err(StorageWorkspaceCatalogError::InvalidCandidate);
+        }
+        validate_root_image(&root_image)?;
+        validate_identity_range(identity_range_start, identity_range_size)?;
+        Ok(Self {
+            operation_id,
+            request_catalog,
+            assignment_digest,
+            root_image,
+            identity_range_start,
+            identity_range_size,
+        })
+    }
+
+    pub(crate) const fn operation_id(&self) -> [u8; 16] {
+        self.operation_id
+    }
+
+    pub(crate) const fn request_catalog(&self) -> CatalogBindingV1 {
+        self.request_catalog
+    }
+
+    pub(crate) const fn assignment_digest(&self) -> ObjectDigest {
+        self.assignment_digest
+    }
+
+    pub(crate) const fn root_image(&self) -> &ObjectDescriptor {
+        &self.root_image
+    }
+
+    pub(crate) const fn identity_range_size(&self) -> u32 {
+        self.identity_range_size
+    }
+
+    pub(crate) const fn identity_range_start(&self) -> u32 {
+        self.identity_range_start
+    }
+}
+
 /// Reports protected workspace-catalog validation or publication failure.
 #[derive(Debug, thiserror::Error)]
 pub enum StorageWorkspaceCatalogError {
@@ -139,17 +262,16 @@ pub struct StorageWorkspacePublicationV1 {
     dataset_guid: u64,
     assignment: BrokerAssignment,
     root_image: ObjectDescriptor,
+    identity_range_start: u32,
     identity_range_size: u32,
 }
 
 impl StorageWorkspacePublicationV1 {
-    pub(crate) fn from_committed(
+    pub(crate) fn from_intent(
         result: CommittedStorageResultV1,
         request_catalog: &ResolvedCatalogCommitmentV1,
         assignment: BrokerAssignment,
-        node: NodeId,
-        manifest: &CanonicalAssignmentManifestV1,
-        sandbox_spec: &SandboxSpec,
+        intent: &StorageWorkspacePublicationIntentV1,
     ) -> Result<Self, StorageWorkspaceCatalogError> {
         let workspace_handle = result
             .storage_handle()
@@ -164,35 +286,10 @@ impl StorageWorkspacePublicationV1 {
                 CatalogPlanV1::CreateWorkspace { .. } | CatalogPlanV1::Clone { .. }
             )
             || result.catalog().generation() <= request_catalog.generation()
-            || manifest
-                .broker_assignment()
-                .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate)?
-                != assignment
-            || manifest.manifest().node() != node
+            || intent.operation_id != result.operation_id()
+            || intent.request_catalog != request_catalog.binding()
+            || intent.assignment_digest != assignment.digest()
         {
-            return Err(StorageWorkspaceCatalogError::InvalidCandidate);
-        }
-
-        let encoded_specification = encode_sandbox_spec(sandbox_spec);
-        let specification_media_type =
-            MediaType::new(PortableMediaType::SandboxSpec.as_str().to_owned())
-                .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate)?;
-        let specification_descriptor =
-            descriptor_for_bytes(specification_media_type, &encoded_specification);
-        let manifest = manifest.manifest();
-        if &specification_descriptor != manifest.sandbox_spec()
-            || sandbox_spec.root_view() != manifest.root_view()
-            || sandbox_spec.environment() != manifest.environment()
-        {
-            return Err(StorageWorkspaceCatalogError::InvalidCandidate);
-        }
-        validate_root_image(manifest.root_view())?;
-        let IdentityProfile::PrivateUserns { id_range_size, .. } = sandbox_spec.identity_profile()
-        else {
-            return Err(StorageWorkspaceCatalogError::InvalidCandidate);
-        };
-        let identity_range_size = id_range_size.get();
-        if identity_range_size < MINIMUM_HOST_IDENTITY_RANGE {
             return Err(StorageWorkspaceCatalogError::InvalidCandidate);
         }
 
@@ -204,8 +301,9 @@ impl StorageWorkspacePublicationV1 {
             workspace_handle,
             dataset_guid,
             assignment,
-            root_image: manifest.root_view().clone(),
-            identity_range_size,
+            root_image: intent.root_image.clone(),
+            identity_range_start: intent.identity_range_start,
+            identity_range_size: intent.identity_range_size,
         })
     }
 }
@@ -258,6 +356,15 @@ pub enum StorageWorkspaceCatalogOutcomeV1 {
     Retired,
     /// The exact requested state was already durable.
     Replay,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum StorageWorkspaceCatalogActionV1 {
+    Publish(StorageWorkspacePublicationV1),
+    Retire {
+        creation: StorageWorkspacePublicationV1,
+        retirement: StorageWorkspaceRetirementV1,
+    },
 }
 
 /// Owns the durable workspace table and its fixed root-pin resolution root.
@@ -401,12 +508,53 @@ impl StorageWorkspaceCatalogV1 {
         self.generation
     }
 
+    pub(crate) fn validate_transaction_identity_ranges(
+        &self,
+        transaction_ranges: &[(u32, u32)],
+    ) -> Result<(), StorageWorkspaceCatalogError> {
+        self.combined_reserved_ranges(transaction_ranges)
+            .map(|_| ())
+    }
+
+    pub(crate) fn reserve_identity_range(
+        &self,
+        transaction_ranges: &[(u32, u32)],
+        requested_size: u32,
+    ) -> Result<u32, StorageWorkspaceCatalogError> {
+        if requested_size < MINIMUM_HOST_IDENTITY_RANGE {
+            return Err(StorageWorkspaceCatalogError::InvalidCandidate);
+        }
+        let ranges = self.combined_reserved_ranges(transaction_ranges)?;
+        let pool_end = self.identity_pool.end()?;
+        let mut candidate = self.identity_pool.range_start;
+        for (start, end) in ranges {
+            let candidate_end = candidate
+                .checked_add(requested_size)
+                .ok_or(StorageWorkspaceCatalogError::IdentityExhausted)?;
+            if candidate_end <= start && candidate_end <= pool_end {
+                return Ok(candidate);
+            }
+            if candidate < end {
+                candidate = end;
+            }
+        }
+        if candidate
+            .checked_add(requested_size)
+            .is_some_and(|end| end <= pool_end)
+        {
+            Ok(candidate)
+        } else {
+            Err(StorageWorkspaceCatalogError::IdentityExhausted)
+        }
+    }
+
     /// Publishes or refreshes a committed workspace after verifying its fixed pin.
     ///
-    /// The catalog allocates the first unused contiguous range from its trusted
-    /// pool. Retained ranges, including retired tombstones, are never reused.
-    /// An exact active row from an earlier boot keeps its range and advances to
-    /// the newly observed current-boot pin.
+    /// The caller supplies the exact range reserved in the authenticated
+    /// transaction intent. The catalog verifies that range against its trusted
+    /// pool and every retained record, including retired tombstones. An exact
+    /// active row from an earlier boot keeps its range and advances to the newly
+    /// observed current-boot pin.
     ///
     /// # Errors
     ///
@@ -457,7 +605,10 @@ impl StorageWorkspaceCatalogV1 {
         if self.current_boot_pin_is_claimed(pin) {
             return Err(StorageWorkspaceCatalogError::IdentityConflict);
         }
-        let (uid_range_start, uid_range_size) = self.allocate(publication.identity_range_size)?;
+        self.validate_reserved_range(
+            publication.identity_range_start,
+            publication.identity_range_size,
+        )?;
         let catalog_generation = next_generation(self.generation)?;
         let mut record = WorkspaceRecordV1 {
             catalog_generation,
@@ -472,8 +623,8 @@ impl StorageWorkspaceCatalogV1 {
             root_device: pin.device,
             root_inode: pin.inode,
             dataset_guid: publication.dataset_guid,
-            uid_range_start,
-            uid_range_size,
+            uid_range_start: publication.identity_range_start,
+            uid_range_size: publication.identity_range_size,
             lifecycle: WorkspaceLifecycleV1::Active,
             resource_digest: [0; 32],
         };
@@ -540,6 +691,102 @@ impl StorageWorkspaceCatalogV1 {
         Ok(StorageWorkspaceCatalogOutcomeV1::Retired)
     }
 
+    pub(crate) fn converge(
+        &mut self,
+        actions: Vec<StorageWorkspaceCatalogActionV1>,
+    ) -> Result<Vec<StorageWorkspaceCatalogOutcomeV1>, StorageWorkspaceCatalogError> {
+        let expected_handles = actions
+            .iter()
+            .map(StorageWorkspaceCatalogActionV1::workspace_handle)
+            .collect::<BTreeSet<_>>();
+        if expected_handles.len() != actions.len()
+            || self
+                .records
+                .keys()
+                .any(|handle| !expected_handles.contains(handle))
+        {
+            return Err(StorageWorkspaceCatalogError::IdentityConflict);
+        }
+
+        let outcomes = actions
+            .iter()
+            .cloned()
+            .map(|action| self.apply_action(action))
+            .collect::<Result<Vec<_>, _>>()?;
+        if self.records.len() != expected_handles.len() {
+            return Err(StorageWorkspaceCatalogError::IdentityConflict);
+        }
+        for action in actions {
+            if self.apply_action(action)? != StorageWorkspaceCatalogOutcomeV1::Replay {
+                return Err(StorageWorkspaceCatalogError::IdentityConflict);
+            }
+        }
+        Ok(outcomes)
+    }
+
+    fn apply_action(
+        &mut self,
+        action: StorageWorkspaceCatalogActionV1,
+    ) -> Result<StorageWorkspaceCatalogOutcomeV1, StorageWorkspaceCatalogError> {
+        match action {
+            StorageWorkspaceCatalogActionV1::Publish(publication) => self.publish(publication),
+            StorageWorkspaceCatalogActionV1::Retire {
+                creation,
+                retirement,
+            } => self.retire_projection(creation, retirement),
+        }
+    }
+
+    fn retire_projection(
+        &mut self,
+        creation: StorageWorkspacePublicationV1,
+        retirement: StorageWorkspaceRetirementV1,
+    ) -> Result<StorageWorkspaceCatalogOutcomeV1, StorageWorkspaceCatalogError> {
+        if creation.workspace_handle != retirement.workspace_handle
+            || creation.dataset_guid != retirement.dataset_guid
+            || retirement.request_catalog.generation() < creation.result_catalog.generation()
+        {
+            return Err(StorageWorkspaceCatalogError::IdentityConflict);
+        }
+        if let Some(existing) = self.records.get(&creation.workspace_handle) {
+            if !existing.matches_creation(&creation) {
+                return Err(StorageWorkspaceCatalogError::IdentityConflict);
+            }
+            return self.retire(retirement);
+        }
+
+        self.pin_root.require_absent(&creation.workspace_handle)?;
+        self.validate_reserved_range(creation.identity_range_start, creation.identity_range_size)?;
+        let catalog_generation = next_generation(self.generation)?;
+        let mut record = WorkspaceRecordV1 {
+            catalog_generation,
+            workspace_handle: creation.workspace_handle,
+            creation_operation_id: creation.operation_id,
+            request_catalog: CatalogBindingWire::from(creation.request_catalog),
+            result_catalog: CatalogBindingWire::from(creation.result_catalog),
+            result_digest: *creation.result_digest.as_bytes(),
+            assignment: AssignmentWire::from(creation.assignment),
+            root_image: ObjectDescriptorWire::from_runtime(&creation.root_image)?,
+            kernel_boot_id: self.kernel_boot_id,
+            root_device: 0,
+            root_inode: 0,
+            dataset_guid: creation.dataset_guid,
+            uid_range_start: creation.identity_range_start,
+            uid_range_size: creation.identity_range_size,
+            lifecycle: WorkspaceLifecycleV1::Retired {
+                operation_id: retirement.operation_id,
+                request_catalog: CatalogBindingWire::from(retirement.request_catalog),
+                result_catalog: CatalogBindingWire::from(retirement.result_catalog),
+                result_digest: *retirement.result_digest.as_bytes(),
+            },
+            resource_digest: [0; 32],
+        };
+        record.refresh_digest()?;
+        record.validate()?;
+        self.commit(record, retirement.operation_id)?;
+        Ok(StorageWorkspaceCatalogOutcomeV1::Retired)
+    }
+
     /// Encodes one complete, current-boot, physically revalidated inventory.
     ///
     /// # Errors
@@ -572,40 +819,49 @@ impl StorageWorkspaceCatalogV1 {
         Ok(bytes)
     }
 
-    fn allocate(&self, requested_size: u32) -> Result<(u32, u32), StorageWorkspaceCatalogError> {
-        if requested_size < MINIMUM_HOST_IDENTITY_RANGE {
-            return Err(StorageWorkspaceCatalogError::InvalidCandidate);
+    fn validate_reserved_range(
+        &self,
+        range_start: u32,
+        range_size: u32,
+    ) -> Result<(), StorageWorkspaceCatalogError> {
+        let range_end = validate_identity_range(range_start, range_size)?;
+        let pool_end = self.identity_pool.end()?;
+        if range_start < self.identity_pool.range_start
+            || range_end > pool_end
+            || self.records.values().any(|record| {
+                record.uid_range_end().is_ok_and(|existing_end| {
+                    range_start < existing_end && record.uid_range_start < range_end
+                })
+            })
+        {
+            return Err(StorageWorkspaceCatalogError::IdentityConflict);
         }
+        Ok(())
+    }
+
+    fn combined_reserved_ranges(
+        &self,
+        transaction_ranges: &[(u32, u32)],
+    ) -> Result<Vec<(u32, u32)>, StorageWorkspaceCatalogError> {
         let pool_end = self.identity_pool.end()?;
         let mut ranges = self
             .records
             .values()
-            .map(|record| -> Result<_, StorageWorkspaceCatalogError> {
-                Ok((record.uid_range_start, record.uid_range_end()?))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|record| Ok((record.uid_range_start, record.uid_range_end()?)))
+            .collect::<Result<Vec<_>, StorageWorkspaceCatalogError>>()?;
+        for &(start, size) in transaction_ranges {
+            let end = validate_identity_range(start, size)?;
+            if start < self.identity_pool.range_start || end > pool_end {
+                return Err(StorageWorkspaceCatalogError::IdentityConflict);
+            }
+            ranges.push((start, end));
+        }
         ranges.sort_unstable();
-
-        let mut candidate = self.identity_pool.range_start;
-        for (start, end) in ranges {
-            let candidate_end = candidate
-                .checked_add(requested_size)
-                .ok_or(StorageWorkspaceCatalogError::IdentityExhausted)?;
-            if candidate_end <= start && candidate_end <= pool_end {
-                return Ok((candidate, requested_size));
-            }
-            if candidate < end {
-                candidate = end;
-            }
+        ranges.dedup();
+        if ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+            return Err(StorageWorkspaceCatalogError::IdentityConflict);
         }
-        if candidate
-            .checked_add(requested_size)
-            .is_some_and(|end| end <= pool_end)
-        {
-            Ok((candidate, requested_size))
-        } else {
-            Err(StorageWorkspaceCatalogError::IdentityExhausted)
-        }
+        Ok(ranges)
     }
 
     fn current_boot_pin_is_claimed(&self, pin: PinIdentity) -> bool {
@@ -643,6 +899,15 @@ impl StorageWorkspaceCatalogV1 {
         self.generation = record.catalog_generation;
         self.records.insert(record.workspace_handle, record);
         Ok(())
+    }
+}
+
+impl StorageWorkspaceCatalogActionV1 {
+    const fn workspace_handle(&self) -> [u8; 32] {
+        match self {
+            Self::Publish(publication) => publication.workspace_handle,
+            Self::Retire { retirement, .. } => retirement.workspace_handle,
+        }
     }
 }
 
@@ -916,13 +1181,18 @@ struct WorkspaceRecordV1 {
 
 impl WorkspaceRecordV1 {
     fn validate(&self) -> Result<(), StorageWorkspaceCatalogError> {
+        let pin_identity_is_valid = match self.lifecycle {
+            WorkspaceLifecycleV1::Active => self.root_device != 0 && self.root_inode != 0,
+            WorkspaceLifecycleV1::Retired { .. } => {
+                (self.root_device == 0) == (self.root_inode == 0)
+            }
+        };
         if self.catalog_generation == 0
             || self.workspace_handle == [0; 32]
             || self.creation_operation_id == [0; 16]
             || self.result_digest == [0; 32]
             || self.kernel_boot_id == [0; 16]
-            || self.root_device == 0
-            || self.root_inode == 0
+            || !pin_identity_is_valid
             || self.dataset_guid == 0
             || self.uid_range_start == 0
             || self.uid_range_size < MINIMUM_HOST_IDENTITY_RANGE
@@ -1007,8 +1277,11 @@ impl WorkspaceRecordV1 {
     }
 
     fn matches_durable_publication(&self, publication: &StorageWorkspacePublicationV1) -> bool {
-        self.is_active()
-            && self.creation_operation_id == publication.operation_id
+        self.is_active() && self.matches_creation(publication)
+    }
+
+    fn matches_creation(&self, publication: &StorageWorkspacePublicationV1) -> bool {
+        self.creation_operation_id == publication.operation_id
             && self.request_catalog == CatalogBindingWire::from(publication.request_catalog)
             && self.result_catalog == CatalogBindingWire::from(publication.result_catalog)
             && self.result_digest == *publication.result_digest.as_bytes()
@@ -1018,6 +1291,7 @@ impl WorkspaceRecordV1 {
                 .to_runtime()
                 .is_ok_and(|root| root == publication.root_image)
             && self.dataset_guid == publication.dataset_guid
+            && self.uid_range_start == publication.identity_range_start
             && self.uid_range_size == publication.identity_range_size
     }
 
@@ -1171,6 +1445,18 @@ fn validate_root_image(value: &ObjectDescriptor) -> Result<(), StorageWorkspaceC
     validate_descriptor_role(DescriptorRole::SandboxRootView, value)
         .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate)?;
     Ok(())
+}
+
+fn validate_identity_range(
+    range_start: u32,
+    range_size: u32,
+) -> Result<u32, StorageWorkspaceCatalogError> {
+    if range_start == 0 || range_size < MINIMUM_HOST_IDENTITY_RANGE {
+        return Err(StorageWorkspaceCatalogError::InvalidCandidate);
+    }
+    range_start
+        .checked_add(range_size)
+        .ok_or(StorageWorkspaceCatalogError::InvalidCandidate)
 }
 
 fn record_key(handle: &[u8; 32]) -> Vec<u8> {
@@ -1353,6 +1639,7 @@ mod tests {
             dataset_guid: u64::from(handle) + 100,
             assignment: assignment(handle),
             root_image: root_image(handle.wrapping_add(30)),
+            identity_range_start: u32::from(handle) * RANGE_SIZE,
             identity_range_size: RANGE_SIZE,
         }
     }
@@ -1413,7 +1700,103 @@ mod tests {
     }
 
     #[test]
-    fn allocates_first_fit_without_reusing_retired_ranges() {
+    fn convergence_replays_after_restart_and_rejects_orphan_catalog_rows() {
+        let fixture = Fixture::new(2);
+        fixture.create_pin(1);
+        let action = StorageWorkspaceCatalogActionV1::Publish(publication(1));
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        assert_eq!(
+            catalog.converge(vec![action.clone()]).unwrap(),
+            vec![StorageWorkspaceCatalogOutcomeV1::Published]
+        );
+        drop(catalog);
+
+        let mut recovered = fixture.open([81; 16]).unwrap();
+        assert_eq!(
+            recovered.converge(vec![action]).unwrap(),
+            vec![StorageWorkspaceCatalogOutcomeV1::Replay]
+        );
+        assert!(matches!(
+            recovered.converge(Vec::new()),
+            Err(StorageWorkspaceCatalogError::IdentityConflict)
+        ));
+    }
+
+    #[test]
+    fn retired_projection_recovers_a_missing_journal_with_the_reserved_range() {
+        let fixture = Fixture::new(2);
+        let action = StorageWorkspaceCatalogActionV1::Retire {
+            creation: publication(1),
+            retirement: retirement(1),
+        };
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        assert_eq!(
+            catalog.converge(vec![action.clone()]).unwrap(),
+            vec![StorageWorkspaceCatalogOutcomeV1::Retired]
+        );
+        assert_eq!(catalog.records[&[1; 32]].uid_range_start, RANGE_SIZE);
+        assert!(inventory(&catalog).workspaces().is_empty());
+        drop(catalog);
+
+        let mut recovered = fixture.open([81; 16]).unwrap();
+        assert_eq!(
+            recovered.converge(vec![action.clone()]).unwrap(),
+            vec![StorageWorkspaceCatalogOutcomeV1::Replay]
+        );
+        fixture.create_pin(1);
+        assert!(matches!(
+            recovered.converge(vec![action]),
+            Err(StorageWorkspaceCatalogError::RootPin(_))
+        ));
+    }
+
+    #[test]
+    fn lost_journal_recovery_preserves_ranges_independent_of_action_order() {
+        let fixture = Fixture::new(3);
+        fixture.create_pin(2);
+        let first = publication(1);
+        let second = publication(2);
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        let retirement = StorageWorkspaceCatalogActionV1::Retire {
+            creation: first,
+            retirement: retirement(1),
+        };
+        let active = StorageWorkspaceCatalogActionV1::Publish(second);
+        assert_eq!(
+            catalog
+                .converge(vec![active.clone(), retirement.clone()])
+                .unwrap(),
+            vec![
+                StorageWorkspaceCatalogOutcomeV1::Published,
+                StorageWorkspaceCatalogOutcomeV1::Retired,
+            ]
+        );
+        assert_eq!(catalog.records[&[2; 32]].uid_range_start, RANGE_SIZE * 2);
+        assert_eq!(catalog.records[&[1; 32]].uid_range_start, RANGE_SIZE);
+        assert_eq!(
+            catalog.reserve_identity_range(&[], RANGE_SIZE).unwrap(),
+            RANGE_SIZE * 3
+        );
+        assert!(matches!(
+            catalog.reserve_identity_range(&[(RANGE_SIZE * 3, RANGE_SIZE)], RANGE_SIZE),
+            Err(StorageWorkspaceCatalogError::IdentityExhausted)
+        ));
+        drop(catalog);
+
+        let mut recovered = fixture.open([81; 16]).unwrap();
+        assert_eq!(
+            recovered.converge(vec![retirement, active]).unwrap(),
+            vec![
+                StorageWorkspaceCatalogOutcomeV1::Replay,
+                StorageWorkspaceCatalogOutcomeV1::Replay,
+            ]
+        );
+        assert_eq!(recovered.records[&[2; 32]].uid_range_start, RANGE_SIZE * 2);
+        assert_eq!(recovered.records[&[1; 32]].uid_range_start, RANGE_SIZE);
+    }
+
+    #[test]
+    fn exact_reservations_do_not_reuse_retired_ranges() {
         let fixture = Fixture::new(4);
         fixture.create_pin(1);
         fixture.create_pin(2);
@@ -1551,7 +1934,7 @@ mod tests {
         catalog.publish(publication(2)).unwrap();
         assert!(matches!(
             catalog.publish(publication(3)),
-            Err(StorageWorkspaceCatalogError::IdentityExhausted)
+            Err(StorageWorkspaceCatalogError::IdentityConflict)
         ));
         assert!(matches!(
             catalog.retire(retirement(1)),

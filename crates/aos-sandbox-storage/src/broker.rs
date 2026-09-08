@@ -23,7 +23,10 @@ use crate::helper::{
     PreobservedZfsMutation, StorageMutationHelper, ZfsHelperError, ZfsHelperOutcome,
     ZfsProcessBackend,
 };
-use crate::workspace_catalog::{StorageWorkspacePublicationV1, StorageWorkspaceRetirementV1};
+use crate::state::StorageWorkspaceProjection;
+use crate::workspace_catalog::{
+    StorageWorkspaceCatalogActionV1, StorageWorkspacePublicationV1, StorageWorkspaceRetirementV1,
+};
 use crate::{
     BeginStorageTransaction, CommittedStorageResultV1, DurableStoragePhase,
     ResolvedCatalogCommitmentV1, StorageTransactionStore, StorageWorkspaceCatalogError,
@@ -135,6 +138,8 @@ impl StorageAdmissionCoordinator {
     /// This method deliberately does not make StorageApply service-ready. A
     /// future privileged observer/helper must reconcile the typed transaction
     /// under this same lock before any service may advertise Apply.
+    /// `CreateWorkspace` and `Clone` are rejected because they require the
+    /// composed runtime's workspace-publication admission path.
     ///
     /// # Errors
     ///
@@ -150,6 +155,68 @@ impl StorageAdmissionCoordinator {
         peer: PeerCredentials,
         policy: PeerPolicy,
         current_clock: &RawPairedClockSample,
+    ) -> Result<StorageAdmissionOutcome, StorageBrokerError> {
+        self.admit_apply_intent_inner(
+            request_body,
+            artifacts,
+            catalog,
+            protocol_version,
+            peer,
+            policy,
+            current_clock,
+            None,
+        )
+    }
+
+    /// Verifies and durably records a workspace-creating Apply admission.
+    ///
+    /// The canonical assignment manifest and sandbox specification are checked
+    /// against the admitted assignment. Only their exact assignment digest,
+    /// root descriptor, and private-userns range are retained as an
+    /// authenticated, operation-bound intent in the same initial transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageBrokerError`] for every failure documented by
+    /// [`Self::admit_apply_intent`], or when the portable publication inputs do
+    /// not exactly match the admitted workspace creation or clone.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_workspace_apply_intent(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        catalog: &ResolvedCatalogCommitmentV1,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+        identity_range_start: u32,
+        manifest: &CanonicalAssignmentManifestV1,
+        sandbox_spec: &SandboxSpec,
+    ) -> Result<StorageAdmissionOutcome, StorageBrokerError> {
+        self.admit_apply_intent_inner(
+            request_body,
+            artifacts,
+            catalog,
+            protocol_version,
+            peer,
+            policy,
+            current_clock,
+            Some((identity_range_start, manifest, sandbox_spec)),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit_apply_intent_inner(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        catalog: &ResolvedCatalogCommitmentV1,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+        publication_inputs: Option<(u32, &CanonicalAssignmentManifestV1, &SandboxSpec)>,
     ) -> Result<StorageAdmissionOutcome, StorageBrokerError> {
         self.transactions.ensure_authority_readable()?;
         let semantics = decode_resolved(
@@ -192,6 +259,19 @@ impl StorageAdmissionCoordinator {
                 prior_fence.as_deref(),
             )
             .map_err(|_| StorageBrokerError::Authority)?;
+        let publication_intent = publication_inputs
+            .map(|(identity_range_start, manifest, sandbox_spec)| {
+                crate::workspace_catalog::StorageWorkspacePublicationIntentV1::from_portable(
+                    *semantics.operation_id(),
+                    catalog,
+                    assignment,
+                    admission.fence.node(),
+                    manifest,
+                    sandbox_spec,
+                    identity_range_start,
+                )
+            })
+            .transpose()?;
         if existing {
             let persisted_fence = self
                 .authority
@@ -235,7 +315,7 @@ impl StorageAdmissionCoordinator {
             )
             .map_err(|_| StorageBrokerError::Authority)?;
         let request_digest = ObjectDigest::from_bytes(Sha256::digest(request_body).into());
-        let outcome = self.transactions.begin_authorized(
+        let outcome = self.transactions.begin_authorized_with_publication(
             *semantics.operation_id(),
             request_digest,
             catalog,
@@ -244,6 +324,7 @@ impl StorageAdmissionCoordinator {
             sealed.current_fence,
             sealed.effect,
             sealed.operation_fence,
+            publication_intent,
         )?;
         Ok(match outcome {
             BeginStorageTransaction::Prepared { mutation_digest } => {
@@ -379,32 +460,23 @@ impl StorageAdmissionCoordinator {
 
     /// Reconstructs one launchable workspace publication from committed state.
     ///
-    /// The supplied manifest and specification are portable controller objects,
-    /// but neither is trusted by itself. Their assignment, descriptor, root,
-    /// and environment must reproduce the authenticated fence retained with
-    /// this exact operation.
-    ///
     /// # Errors
     ///
     /// Returns [`StorageBrokerError`] when the result is not the exact current
     /// committed record, its catalog cannot be recovered, its authority fence
-    /// is missing or invalid, or the portable objects do not match that fence.
+    /// is missing or invalid, or its authenticated publication intent does not
+    /// match that fence.
     pub fn workspace_publication(
         &self,
         result: CommittedStorageResultV1,
-        manifest: &CanonicalAssignmentManifestV1,
-        sandbox_spec: &SandboxSpec,
     ) -> Result<StorageWorkspacePublicationV1, StorageBrokerError> {
-        let (catalog, assignment, node) = self.committed_context(result)?;
-        StorageWorkspacePublicationV1::from_committed(
-            result,
-            &catalog,
-            assignment,
-            node,
-            manifest,
-            sandbox_spec,
-        )
-        .map_err(Into::into)
+        let (catalog, assignment, _) = self.committed_context(result)?;
+        let intent = self
+            .transactions
+            .workspace_publication_intent(result.operation_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        StorageWorkspacePublicationV1::from_intent(result, &catalog, assignment, intent)
+            .map_err(Into::into)
     }
 
     /// Reconstructs one workspace retirement from an exact committed destroy.
@@ -421,6 +493,42 @@ impl StorageAdmissionCoordinator {
     ) -> Result<StorageWorkspaceRetirementV1, StorageBrokerError> {
         let (catalog, _, _) = self.committed_context(result)?;
         StorageWorkspaceRetirementV1::from_committed(result, &catalog).map_err(Into::into)
+    }
+
+    pub(crate) fn workspace_projection(
+        &self,
+    ) -> Result<Vec<StorageWorkspaceCatalogActionV1>, StorageBrokerError> {
+        self.transactions
+            .workspace_projection()?
+            .into_iter()
+            .map(|projection| match projection {
+                StorageWorkspaceProjection::Active(result) => self
+                    .workspace_publication(result)
+                    .map(StorageWorkspaceCatalogActionV1::Publish),
+                StorageWorkspaceProjection::Retired {
+                    creation,
+                    retirement,
+                } => Ok(StorageWorkspaceCatalogActionV1::Retire {
+                    creation: self.workspace_publication(creation)?,
+                    retirement: self.workspace_retirement(retirement)?,
+                }),
+            })
+            .collect()
+    }
+
+    pub(crate) fn workspace_identity_ranges(&self) -> Result<Vec<(u32, u32)>, StorageBrokerError> {
+        self.transactions
+            .workspace_identity_ranges()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn workspace_identity_range(
+        &self,
+        operation_id: [u8; 16],
+    ) -> Result<Option<(u32, u32)>, StorageBrokerError> {
+        self.transactions
+            .workspace_identity_range(operation_id)
+            .map_err(Into::into)
     }
 
     fn committed_context(
@@ -1346,8 +1454,8 @@ mod tests {
             ProtocolId::StorageBroker,
         );
         let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
-        let StorageAdmissionOutcome::Prepared { mutation_digest } = broker
-            .admit_apply_intent(
+        assert!(matches!(
+            broker.admit_apply_intent(
                 &request,
                 &artifacts,
                 &catalog,
@@ -1355,6 +1463,23 @@ mod tests {
                 peer(),
                 peer_policy(),
                 &clock(),
+            ),
+            Err(StorageBrokerError::State(
+                crate::StorageStateError::MissingAuthorityLink
+            ))
+        ));
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = broker
+            .admit_workspace_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 1),
+                peer(),
+                peer_policy(),
+                &clock(),
+                65_536,
+                &manifest,
+                &spec,
             )
             .unwrap()
         else {
@@ -1376,20 +1501,23 @@ mod tests {
             )
             .unwrap();
 
-        assert!(
-            broker
-                .workspace_publication(result, &manifest, &spec)
-                .is_ok()
-        );
+        assert!(broker.workspace_publication(result).is_ok());
         drop(broker);
-        let broker = coordinator(&directory, &fixture);
-        assert!(
-            broker
-                .workspace_publication(result, &manifest, &spec)
-                .is_ok()
-        );
+        let mut broker = coordinator(&directory, &fixture);
+        assert!(broker.workspace_publication(result).is_ok());
         assert!(matches!(
-            broker.workspace_publication(result, &manifest, &sandbox_spec(74)),
+            broker.admit_workspace_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 1),
+                peer(),
+                peer_policy(),
+                &clock(),
+                65_536,
+                &manifest,
+                &sandbox_spec(74),
+            ),
             Err(StorageBrokerError::WorkspaceCatalog(
                 StorageWorkspaceCatalogError::InvalidCandidate
             ))

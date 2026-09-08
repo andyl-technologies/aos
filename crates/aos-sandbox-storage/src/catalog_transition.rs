@@ -229,6 +229,18 @@ pub(crate) struct PhysicalCatalogState {
     binding: CatalogBindingV1,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum PhysicalWorkspaceProjection {
+    Active {
+        operation_id: [u8; 16],
+        object_guid: u64,
+    },
+    Retired {
+        operation_id: [u8; 16],
+        object_guid: u64,
+    },
+}
+
 impl PhysicalCatalogState {
     fn bootstrap(
         generation: u64,
@@ -306,6 +318,32 @@ impl PhysicalCatalogState {
 
     pub(crate) const fn binding(&self) -> CatalogBindingV1 {
         self.binding
+    }
+
+    fn workspace_projection(&self) -> Vec<PhysicalWorkspaceProjection> {
+        let mut projection = self
+            .wire
+            .datasets
+            .iter()
+            .filter_map(|dataset| {
+                dataset
+                    .created_by
+                    .map(|operation_id| PhysicalWorkspaceProjection::Active {
+                        operation_id,
+                        object_guid: dataset.guid,
+                    })
+            })
+            .chain(self.wire.tombstones.iter().filter_map(|tombstone| {
+                (tombstone.kind == ObjectKindWire::Dataset).then_some(
+                    PhysicalWorkspaceProjection::Retired {
+                        operation_id: tombstone.retired_by,
+                        object_guid: tombstone.guid,
+                    },
+                )
+            }))
+            .collect::<Vec<_>>();
+        projection.sort_unstable();
+        projection
     }
 }
 
@@ -536,6 +574,15 @@ impl StorageCatalogTransitionProvider {
 
     pub(crate) fn head_binding(&self) -> Option<CatalogBindingV1> {
         self.head.as_ref().map(PhysicalCatalogState::binding)
+    }
+
+    pub(crate) fn workspace_projection(
+        &self,
+    ) -> Result<Vec<PhysicalWorkspaceProjection>, StorageStateError> {
+        self.head
+            .as_ref()
+            .map(PhysicalCatalogState::workspace_projection)
+            .ok_or(StorageStateError::InvalidTransition)
     }
 
     pub(crate) const fn genesis_binding(&self) -> Option<CatalogBindingV1> {

@@ -4507,6 +4507,52 @@ warnings denied; warning-denied rustdoc, Rust formatting, and diff whitespace
 checks also pass. The ignored systemd test and the long-running worker builds
 provide no guest qualification, so `SBX-STOR-01` and `SBX-P0-07` remain open.
 
+### Recoverable Storage workspace publication intent (in progress)
+
+Workspace-creating Storage admissions now atomically retain an authenticated
+publication intent beside the Prepared operation. The new record binds the
+exact operation and request catalog to the admitted assignment digest,
+portable root-image descriptor, and a concrete subordinate-identity range.
+The composed runtime, rather than the request caller, chooses that range under
+the fixed transaction-then-workspace journal lock order. Allocation considers
+both catalog rows and every retained transaction intent; exact replay reuses
+the original range, while admitted Prepared operations that are later rejected
+or interrupted keep their reservation so it cannot be silently reassigned.
+The protected runtime configuration also binds the identity-pool envelope, and
+overlap or out-of-pool substitutions fail before a new journal transaction is
+written. This changes the persisted runtime-configuration binding: an existing
+journal initialized with the earlier authority-only binding fails closed.
+There is no automatic migration or blanket state-deletion procedure.
+
+Startup derives the current workspace projection from the authenticated
+physical catalog and exact committed transaction results. Bootstrap datasets
+are excluded. Committed create and clone results produce active publication
+actions; a later exact committed dataset destruction replaces the creation
+with a retirement action. Cross-journal convergence requires one action per
+retained workspace, rejects orphan or duplicate catalog rows, and is
+idempotent after restart. A missing or rolled-back workspace journal can
+therefore reconstruct the authenticated original range even when active and
+retired actions arrive in a different order. Active reconstruction still
+requires the matching fixed root pin, while retirement requires that pin to be
+absent and retains a terminal row without inventing a pin identity. The
+version-one physical catalog wire format is unchanged.
+
+The current Storage library suite passes 82 tests with one real-systemd test
+ignored. Coverage includes publication-intent authentication and canonical
+decoding, atomic cross-link recovery, exact replay and overlap rejection,
+physical create-to-retire projection, missing-journal retirement recovery,
+reordered active/retired convergence, retained-range allocation, and
+exhaustion. Crate-local all-target Clippy without default features or
+dependency linting passes with warnings denied; warning-denied library rustdoc,
+Rust formatting, and diff whitespace checks also pass.
+
+This increment does not make Storage Apply runnable. The runtime deliberately
+remains `IntegrationIncomplete`: no production component yet materializes and
+removes the fixed root pin around committed create and destroy effects, and no
+long-running broker service, controller Apply path, or passing integrated
+worker VM qualifies the composition. Storage Apply remains unadvertised, and
+`SBX-STOR-01` and `SBX-P0-07` remain open.
+
 ### Canonical Network kernel plan (in progress)
 
 The Network broker can now compile one exact assignment, namespace allocation,

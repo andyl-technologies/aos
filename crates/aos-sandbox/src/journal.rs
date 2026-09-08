@@ -142,6 +142,8 @@ pub enum RecordNamespace {
     StorageCatalogHead = 30,
     /// Protected Storage runtime-authority configuration binding.
     StorageRuntimeConfiguration = 31,
+    /// Authenticated Storage workspace publication inputs bound to operations.
+    StorageWorkspacePublicationIntent = 32,
 }
 
 impl RecordNamespace {
@@ -178,6 +180,7 @@ impl RecordNamespace {
             29 => Ok(Self::StorageCatalogTransition),
             30 => Ok(Self::StorageCatalogHead),
             31 => Ok(Self::StorageRuntimeConfiguration),
+            32 => Ok(Self::StorageWorkspacePublicationIntent),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -2027,13 +2030,14 @@ mod tests {
             RecordNamespace::StorageCatalogTransition,
             RecordNamespace::StorageCatalogHead,
             RecordNamespace::StorageRuntimeConfiguration,
+            RecordNamespace::StorageWorkspacePublicationIntent,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 32, 255] {
+        for code in [0, 33, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }

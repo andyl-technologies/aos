@@ -16,15 +16,23 @@ use std::io::Read as _;
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 
-use aos_sandbox_core::{ObjectDigest, RawPairedClockSample};
+use aos_sandbox_core::model::{IdentityProfile, SandboxSpec};
+use aos_sandbox_core::{
+    CanonicalAssignmentManifestV1, ObjectDigest, ProtocolVersion, RawPairedClockSample,
+};
+use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
+use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
+use sha2::{Digest as _, Sha256};
 
 use crate::authorization::StorageProtectedConfigurationV1;
 use crate::helper::{StorageMutationHelper, SystemdZfsProcessBackend, ZfsHelperOutcome};
 use crate::{
     CommittedStorageResultV1, DurableStoragePhase, ResolvedCatalogCommitmentV1,
-    StorageAdmissionCoordinator, StorageAdmissionError, StorageStateError, StorageTransactionStore,
-    SystemdZfsExecutor, ZfsHelperContract, ZfsTransactionError, ZfsWorkerError,
+    StorageAdmissionCoordinator, StorageAdmissionError, StorageAdmissionOutcome,
+    StorageBrokerError, StorageIdentityPoolV1, StorageStateError, StorageTransactionStore,
+    StorageWorkspaceCatalogError, StorageWorkspaceCatalogV1, SystemdZfsExecutor, ZfsHelperContract,
+    ZfsTransactionError, ZfsWorkerError, decode_resolved,
 };
 
 const BOOTSTRAP_FILE: &str = "storage-genesis.catalog";
@@ -34,6 +42,7 @@ const BOOTSTRAP_VERSION: u16 = 1;
 const BOOTSTRAP_HEADER_BYTES: usize = 24;
 const MAXIMUM_BOOTSTRAP_BYTES: usize = 4 * 1024 * 1024;
 const MAXIMUM_BOOTSTRAP_CATALOGS: usize = 256;
+const RUNTIME_BINDING_DOMAIN: &[u8] = b"aos.sandbox.storage.runtime-composition.v1\0";
 
 /// Reports protected Storage runtime construction or recovery failure.
 #[derive(Debug, thiserror::Error)]
@@ -56,6 +65,12 @@ pub enum StorageRuntimeError {
     /// Observation-only recovery or authorized execution failed closed.
     #[error("Storage observation or execution failed closed")]
     Recovery,
+    /// Protected workspace publication state or root-pin identity failed closed.
+    #[error("Storage workspace publication failed closed: {0}")]
+    WorkspaceCatalog(#[from] StorageWorkspaceCatalogError),
+    /// Signed Apply admission or its durable authority links failed closed.
+    #[error("Storage admission failed closed: {0}")]
+    Admission(#[from] StorageBrokerError),
 }
 
 /// Describes whether the composed runtime may accept a new live effect.
@@ -97,6 +112,7 @@ pub enum StorageRuntimeMutationOutcome {
 /// Owns the sole Storage coordinator and fixed worker helper.
 pub struct StorageBrokerRuntime {
     coordinator: StorageAdmissionCoordinator,
+    workspaces: StorageWorkspaceCatalogV1,
     helper: StorageMutationHelper<SystemdZfsProcessBackend>,
     readiness: StorageRuntimeReadiness,
 }
@@ -119,12 +135,14 @@ impl StorageBrokerRuntime {
         authority_directory: &Path,
         bootstrap_directory: &Path,
         state_directory: &Path,
+        identity_pool: StorageIdentityPoolV1,
         zfs_executable: PathBuf,
         executor: SystemdZfsExecutor,
     ) -> Result<Self, StorageRuntimeError> {
         let protected_configuration =
             StorageProtectedConfigurationV1::from_protected_directory(authority_directory)?;
-        let configuration_binding = protected_configuration.public_binding();
+        let configuration_binding =
+            runtime_configuration_binding(protected_configuration.public_binding(), identity_pool);
         let (authority, state_key, _) = protected_configuration.into_parts();
         let bootstrap = ProtectedStorageBootstrap::open_root_owned(bootstrap_directory)?;
         let transactions = StorageTransactionStore::open_root_owned_runtime(
@@ -135,6 +153,10 @@ impl StorageBrokerRuntime {
             bootstrap.genesis_generation,
             &bootstrap.catalogs,
         )?;
+        // Keep both exclusive journals for the runtime lifetime. Acquiring the
+        // transaction journal first is the only permitted cross-journal order.
+        let workspaces =
+            StorageWorkspaceCatalogV1::open_root_owned(state_directory, identity_pool)?;
 
         let legacy_recovery = transactions.requires_legacy_recovery()?;
         if !legacy_recovery {
@@ -149,6 +171,7 @@ impl StorageBrokerRuntime {
         let backend = SystemdZfsProcessBackend::new(executor);
         let mut runtime = Self {
             coordinator: StorageAdmissionCoordinator::new(authority, transactions),
+            workspaces,
             helper: StorageMutationHelper::new(contract, backend),
             readiness: StorageRuntimeReadiness::IntegrationIncomplete,
         };
@@ -179,6 +202,82 @@ impl StorageBrokerRuntime {
     #[must_use]
     pub const fn is_apply_ready(&self) -> bool {
         matches!(self.readiness, StorageRuntimeReadiness::Ready)
+    }
+
+    /// Admits one workspace-creating effect with an exact retained identity range.
+    ///
+    /// The runtime holds both journals in transaction-then-workspace order,
+    /// chooses first-fit against every retained transaction intent and catalog
+    /// tombstone, then commits that exact range with the signed operation.
+    /// Rejected or interrupted intents remain reserved and are never silently
+    /// reused. This path remains unavailable until the complete Apply runtime
+    /// reports [`StorageRuntimeReadiness::Ready`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageRuntimeError`] when Apply is not ready, the sandbox is
+    /// not a private-userns workspace, the range pool is exhausted or
+    /// inconsistent, signed authority fails, or the durable admission fails.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_workspace_apply_intent(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        catalog: &ResolvedCatalogCommitmentV1,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+        manifest: &CanonicalAssignmentManifestV1,
+        sandbox_spec: &SandboxSpec,
+    ) -> Result<StorageAdmissionOutcome, StorageRuntimeError> {
+        if !self.is_apply_ready() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let IdentityProfile::PrivateUserns { id_range_size, .. } = sandbox_spec.identity_profile()
+        else {
+            return Err(StorageRuntimeError::Recovery);
+        };
+        let semantics = decode_resolved(
+            request_body,
+            catalog,
+            peer,
+            policy,
+            current_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| StorageRuntimeError::Admission(StorageBrokerError::Request))?;
+        let range_start = match self
+            .coordinator
+            .workspace_identity_range(*semantics.operation_id())?
+        {
+            Some((range_start, range_size)) if range_size == id_range_size.get() => range_start,
+            Some(_) => {
+                return Err(StorageRuntimeError::Admission(
+                    StorageBrokerError::WorkspaceCatalog(
+                        StorageWorkspaceCatalogError::IdentityConflict,
+                    ),
+                ));
+            }
+            None => {
+                let retained_ranges = self.coordinator.workspace_identity_ranges()?;
+                self.workspaces
+                    .reserve_identity_range(&retained_ranges, id_range_size.get())?
+            }
+        };
+        self.coordinator
+            .admit_workspace_apply_intent(
+                request_body,
+                artifacts,
+                catalog,
+                protocol_version,
+                peer,
+                policy,
+                current_clock,
+                range_start,
+                manifest,
+                sandbox_spec,
+            )
+            .map_err(Into::into)
     }
 
     /// Executes one already-admitted Prepared effect under fresh authority.
@@ -241,6 +340,17 @@ impl StorageBrokerRuntime {
                 ZfsHelperOutcome::ObservationRequired { .. } => pending += 1,
             }
         }
+        let identity_ranges = self
+            .coordinator
+            .workspace_identity_ranges()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        self.workspaces
+            .validate_transaction_identity_ranges(&identity_ranges)?;
+        let projection = self
+            .coordinator
+            .workspace_projection()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        self.workspaces.converge(projection)?;
         Ok(if pending == 0 {
             StorageRuntimeReadiness::IntegrationIncomplete
         } else {
@@ -257,6 +367,18 @@ impl StorageBrokerRuntime {
         };
         self.readiness = StorageRuntimeReadiness::RecoveryPending { operations };
     }
+}
+
+fn runtime_configuration_binding(
+    authority_binding: ObjectDigest,
+    identity_pool: StorageIdentityPoolV1,
+) -> ObjectDigest {
+    let mut digest = Sha256::new();
+    digest.update(RUNTIME_BINDING_DOMAIN);
+    digest.update(authority_binding.as_bytes());
+    digest.update(identity_pool.range_start().to_be_bytes());
+    digest.update(identity_pool.range_size().to_be_bytes());
+    ObjectDigest::from_bytes(digest.finalize().into())
 }
 
 impl From<ZfsHelperOutcome> for StorageRuntimeMutationOutcome {
@@ -493,6 +615,34 @@ mod tests {
         trailing.push(0);
         assert!(decode_bootstrap(&trailing).is_err());
         assert!(decode_bootstrap(&encode_bootstrap(6, &[])).is_err());
+    }
+
+    #[test]
+    fn runtime_configuration_binding_covers_authority_and_identity_pool() {
+        let range = aos_sandbox_protocol::MINIMUM_HOST_IDENTITY_RANGE;
+        let authority = ObjectDigest::from_bytes([21; 32]);
+        let pool = StorageIdentityPoolV1::new(range, range * 4).unwrap();
+        let binding = runtime_configuration_binding(authority, pool);
+
+        assert_eq!(binding, runtime_configuration_binding(authority, pool));
+        assert_ne!(
+            binding,
+            runtime_configuration_binding(ObjectDigest::from_bytes([22; 32]), pool)
+        );
+        assert_ne!(
+            binding,
+            runtime_configuration_binding(
+                authority,
+                StorageIdentityPoolV1::new(range * 2, range * 4).unwrap(),
+            )
+        );
+        assert_ne!(
+            binding,
+            runtime_configuration_binding(
+                authority,
+                StorageIdentityPoolV1::new(range, range * 5).unwrap(),
+            )
+        );
     }
 
     #[test]
