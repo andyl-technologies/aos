@@ -12,7 +12,6 @@
   libunistring,
   libxcrypt,
   readline,
-  util-linux,
 }: let
   version = "3.0.11";
 in
@@ -25,7 +24,7 @@ in
       hash = "sha256-gYx50jZlen+pb7NkE3zHtBs73uDWXGF0ygN2lVlXlGA=";
     };
 
-    buildDeps = [gnumake pkg-config gawk util-linux];
+    buildDeps = [gnumake pkg-config gawk];
     runtimeDeps = [gc gmp libffi libtool libunistring libxcrypt readline];
     propagatedDeps = [gc gmp libffi libtool libunistring libxcrypt readline];
 
@@ -66,11 +65,7 @@ in
       {
         name = "check";
         script = ''
-          # Guile sizes its garbage-collector worker pool from the visible CPU
-          # set.  On very large builders, the thread suite can consequently
-          # allocate a descriptor above select(2)'s FD_SETSIZE.  Limit CPU
-          # visibility for the test process while retaining the full suite.
-          ${util-linux}/bin/taskset -c 0-15 make -j1 check
+          make -j"$NIX_BUILD_CORES" check
         '';
       }
       {

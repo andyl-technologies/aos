@@ -102,7 +102,7 @@ in
       {
         name = "check";
         script = ''
-          if ! make -j1 check; then
+          if ! make -j"$NIX_BUILD_CORES" check; then
             find . -name test-suite.log -exec cat {} \;
             exit 1
           fi
