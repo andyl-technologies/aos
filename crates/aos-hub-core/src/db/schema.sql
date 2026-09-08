@@ -218,23 +218,6 @@ CREATE TABLE channel_floors(
   floor TEXT NOT NULL,
   PRIMARY KEY(registry_id, channel)
 );
-CREATE TABLE validation_runs(
-  id INTEGER PRIMARY KEY,
-  registry_id INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
-  cache_url TEXT NOT NULL,
-  depth TEXT NOT NULL,
-  checked INTEGER NOT NULL,
-  missing INTEGER NOT NULL,
-  reachable INTEGER NOT NULL,
-  started_at INTEGER NOT NULL,
-  finished_at INTEGER NOT NULL
-);
-CREATE TABLE validation_findings(
-  run_id INTEGER NOT NULL REFERENCES validation_runs(id) ON DELETE CASCADE,
-  store_hash TEXT NOT NULL,
-  status TEXT NOT NULL,
-  PRIMARY KEY(run_id, store_hash)
-);
 CREATE TABLE users(
   id INTEGER PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
@@ -520,15 +503,6 @@ ON webhook_deliveries(
   next_attempt_at,
   claim_expires_at
 );
-CREATE TABLE cache_probes(
-  registry_id INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
-  cache_url TEXT NOT NULL,
-  status TEXT NOT NULL, -- ok | stale | unreachable
-  observed_nix_cache_info INTEGER NOT NULL,-- 1 when nix-cache-info was served
-  latency_ms INTEGER NOT NULL,
-  checked_at INTEGER NOT NULL,
-  PRIMARY KEY(registry_id, cache_url)
-);
 CREATE TABLE org_quotas(
   org_id INTEGER PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
   max_bytes INTEGER, -- NULL = unlimited
@@ -544,17 +518,6 @@ CREATE TABLE org_usage(
 );
 CREATE TABLE instance_config(config_key TEXT PRIMARY KEY,
 value TEXT NOT NULL);
-CREATE TABLE repair_jobs(
-  id INTEGER PRIMARY KEY,
-  registry_id INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
-  cache_url TEXT NOT NULL,
-  store_hash TEXT NOT NULL,
-  source_cache_url TEXT NOT NULL,
-  status TEXT NOT NULL,
-  error TEXT,
-  created_at INTEGER NOT NULL,
-  finished_at INTEGER
-);
 CREATE TABLE mirror_sources(
   registry_id INTEGER PRIMARY KEY REFERENCES registries(id) ON DELETE CASCADE,
   upstream_url TEXT NOT NULL,
@@ -1937,7 +1900,7 @@ CREATE TABLE topology_operations(
     'gateway.read', 'gateway.manage', 'gateway.grant',
     'route.read', 'route.manage', 'topology.reconcile', 'cache.retention.manage',
     'cache.gc.plan', 'cache.gc.execute', 'cache.lease.self',
-    'validation.repair', 'audit.read', 'iam.admin')),
+    'audit.read', 'iam.admin')),
   CHECK(primary_target_kind IN('registry', 'binary_cache', 'placement', 'domain',
     'network_policy', 'endpoint', 'gateway', 'route',
     'placement_policy', 'retention_subscription', 'population_target',
@@ -1987,7 +1950,7 @@ CREATE TABLE operation_secondary_targets(
     'gateway.read', 'gateway.manage', 'gateway.grant',
     'route.read', 'route.manage', 'topology.reconcile', 'cache.retention.manage',
     'cache.gc.plan', 'cache.gc.execute', 'cache.lease.self',
-    'validation.repair', 'audit.read', 'iam.admin'))
+    'audit.read', 'iam.admin'))
 );
 CREATE INDEX operation_secondary_targets_resource_idx
 ON operation_secondary_targets(target_kind, stable_id, operation_id);

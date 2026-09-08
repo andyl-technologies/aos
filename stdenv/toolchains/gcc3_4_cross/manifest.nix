@@ -111,7 +111,7 @@ in {
       export PATH="$TMPDIR/fakebin:$PATH"
     '';
     buildScript = ''
-      make -j1
+      make -j"$NIX_BUILD_CORES"
     '';
     postInstall = ''
       test -x "$out/bin/bash" || { echo "FATAL: bash not installed"; exit 1; }

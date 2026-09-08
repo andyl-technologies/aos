@@ -164,6 +164,11 @@ impl ReleaseContext {
         &self.releases
     }
 
+    /// Returns channel assignments used by release catalog filters.
+    pub(crate) fn channels(&self) -> &[ChannelSummary] {
+        &self.channels
+    }
+
     /// Returns the selected publication metadata.
     #[must_use]
     pub fn release(&self) -> Option<&ReleaseRow> {
@@ -198,10 +203,10 @@ impl ReleaseContext {
 
     /// Builds the shared selector with page-specific filters preserved.
     ///
-    /// The selector stays small at any release count: channel targets, the
-    /// newest releases, and the current selection are offered directly, a
-    /// typed jump resolves any version, commit, or channel name, and the
-    /// Releases directory lists everything else. An explicit action lets
+    /// A single search field offers channels and recent releases and resolves
+    /// any version, commit, or channel name. The linked pill identifies only
+    /// the viewed release. Native suggestions keep the form usable without
+    /// JavaScript; the enhanced picker searches the full index. Its action lets
     /// detail pages resolve the package in the newly selected release.
     /// Pagination and digests belong to the old selection and must not be
     /// included in `filters`.
@@ -219,116 +224,64 @@ impl ReleaseContext {
         let channel_targets = self.channel_targets();
 
         let mut body = String::from("<div class=\"release-selector\" data-release-picker>");
-        if !channel_targets.is_empty() {
-            body.push_str("<div class=\"release-rail\" role=\"group\" aria-label=\"Channels\">");
-            for (name, version) in &channel_targets {
-                let mut href = format!("{}?release={}", escape(action), urlencode(version));
-                for (key, value) in filters {
-                    let _ = write!(href, "&amp;{}={}", urlencode(key), urlencode(value));
-                }
-                let _ = write!(
-                    body,
-                    "<a class=\"release-pill\" href=\"{href}\"{}>{} <strong>{}</strong></a>",
-                    if Some(*version) == self.selected() {
-                        " aria-current=\"true\""
-                    } else {
-                        ""
-                    },
-                    escape(name),
-                    escape(version)
-                );
-            }
-            body.push_str("</div>");
+        // Only the viewed release belongs in the context rail. Other channel
+        // frontiers are destinations in the picker, not additional selections.
+        if let Some(version) = self.selected() {
+            let channel = channel_targets
+                .iter()
+                .find(|(_, target)| *target == version)
+                .map(|(name, _)| format!("{} ", escape(name)))
+                .unwrap_or_default();
+            let _ = write!(
+                body,
+                "<div class=\"release-rail\"><a class=\"release-pill\" href=\"{}\" aria-current=\"true\">{channel}<strong>{}</strong></a></div>",
+                escape(&release_href(slug, version)),
+                escape(version)
+            );
+        } else if self.all_releases {
+            body.push_str("<span class=\"release-pill\" aria-current=\"true\">All releases</span>");
         }
 
         let _ = write!(
             body,
-            "<form method=\"get\" action=\"{}\" class=\"release-choice\">{hidden}<label>Release <select name=\"release\">",
+            "<form method=\"get\" action=\"{}\" class=\"release-jump\" role=\"search\" aria-label=\"Switch release\">{hidden}<label><span class=\"visually-hidden\">Version, channel, or commit</span><input type=\"search\" name=\"release\" data-release-jump list=\"release-options\" placeholder=\"Find version, channel, or commit\" required autocomplete=\"off\" autocapitalize=\"off\" spellcheck=\"false\"></label><button type=\"submit\">Switch</button><div id=\"release-suggestions\" class=\"filter-suggest release-suggest\" hidden></div><datalist id=\"release-options\">",
             escape(action)
         );
         if self.allow_all {
+            body.push_str("<option value=\"all\">All releases</option>");
+        }
+        for (name, version) in &channel_targets {
             let _ = write!(
                 body,
-                "<option value=\"all\"{}>All releases</option>",
-                if self.all_releases { " selected" } else { "" }
+                "<option value=\"{}\">{} → {}</option>",
+                escape(name),
+                escape(name),
+                escape(version)
             );
         }
-        if self.selected.is_none() && !self.all_releases {
-            body.push_str("<option value=\"\" selected disabled>Choose a release</option>");
-        }
-        let option = |body: &mut String, release: &ReleaseRow, prefix: &str| {
-            let _ = write!(
-                body,
-                "<option value=\"{}\"{}>{prefix}{}{}</option>",
-                escape(&release.semver),
-                if Some(release.semver.as_str()) == self.selected() {
-                    " selected"
-                } else {
-                    ""
-                },
-                escape(&release.semver),
-                if is_prerelease(&release.semver) {
-                    " · prerelease"
-                } else {
-                    ""
-                }
-            );
-        };
         let mut offered = std::collections::BTreeSet::new();
-        if !channel_targets.is_empty() {
-            body.push_str("<optgroup label=\"Channels\">");
-            for (name, version) in &channel_targets {
-                if let Some(release) = self.releases.iter().find(|r| r.semver == *version) {
-                    option(&mut body, release, &format!("{} → ", escape(name)));
-                    offered.insert(release.semver.as_str());
-                }
-            }
-            body.push_str("</optgroup>");
-        }
-        let recent = self
+        for release in self
             .releases
             .iter()
-            .filter(|release| !offered.contains(release.semver.as_str()))
             .take(RECENT_RELEASES)
-            .collect::<Vec<_>>();
-        if !recent.is_empty() {
-            body.push_str("<optgroup label=\"Recent\">");
-            for release in recent {
-                option(&mut body, release, "");
-                offered.insert(release.semver.as_str());
-            }
-            body.push_str("</optgroup>");
-        }
-        if let Some(release) = self
-            .release()
-            .filter(|release| !offered.contains(release.semver.as_str()))
+            .chain(self.release())
         {
-            body.push_str("<optgroup label=\"Selected\">");
-            option(&mut body, release, "");
-            body.push_str("</optgroup>");
+            if offered.insert(&release.semver) {
+                let _ = write!(
+                    body,
+                    "<option value=\"{}\">{}</option>",
+                    escape(&release.semver),
+                    escape(&release.semver)
+                );
+            }
         }
-        body.push_str("</select></label><button type=\"submit\">Show release</button></form>");
+        body.push_str("</datalist></form>");
 
-        // A second form keeps the typed value out of the select's field name;
-        // the server resolves versions, commits, and channel names alike.
         let _ = write!(
             body,
-            "<form method=\"get\" action=\"{}\" class=\"release-jump\" role=\"search\">{hidden}<label><span class=\"visually-hidden\">Jump to release</span><input type=\"search\" name=\"release\" data-release-jump placeholder=\"Jump to version, commit, or channel\" autocomplete=\"off\" autocapitalize=\"off\" spellcheck=\"false\"></label><button type=\"submit\">Go</button><div class=\"filter-suggest release-suggest\" hidden></div></form>",
-            escape(action)
+            "<a class=\"release-link\" href=\"/{}/-/releases\">Browse releases →</a>",
+            escape(slug)
         );
-        let _ = write!(
-            body,
-            "<a class=\"release-directory-link\" href=\"/{}/-/releases\">All {} releases →</a>",
-            escape(slug),
-            self.releases.len()
-        );
-        if let Some(release) = self.release() {
-            let _ = write!(
-                body,
-                "<a href=\"{}\">View release →</a>",
-                escape(&release_href(slug, &release.semver))
-            );
-        }
         body.push_str(&self.index_json());
         body.push_str("</div>");
         if self.releases.is_empty() {
@@ -360,7 +313,7 @@ impl ReleaseContext {
                 })
             })
             .collect::<Vec<_>>();
-        let json = serde_json::json!({"channels": channels, "releases": releases})
+        let json = serde_json::json!({"channels": channels, "releases": releases, "allow_all": self.allow_all})
             .to_string()
             .replace('<', "\\u003c");
         format!("<script type=\"application/json\" data-release-index>{json}</script>")
@@ -386,14 +339,6 @@ pub(crate) fn release_href(slug: &str, version: &str) -> String {
     format!("/{slug}/-/releases/{}", urlencode(version))
 }
 
-pub(crate) fn verification(release: &ReleaseRow) -> &'static str {
-    if release.signer.is_some() {
-        "<span class=\"ok release-verification\">Verified</span>"
-    } else {
-        "<span class=\"warn release-verification\">Unverified</span>"
-    }
-}
-
 /// Renders missing content without substituting a different release.
 pub(crate) fn unavailable_page(
     registry: &RegistryRecord,
@@ -406,12 +351,9 @@ pub(crate) fn unavailable_page(
 ) -> String {
     let slug = &registry.slug;
     let mut body = context.nav(slug, section);
+    body.push_str("<h1>Content unavailable</h1>");
     body.push_str(&context.selector(slug, &format!("/{slug}/-/{section}"), &[]));
-    let _ = write!(
-        body,
-        "<h1>Content unavailable</h1><p>{}</p>",
-        escape(message)
-    );
+    let _ = write!(body, "<p>{}</p>", escape(message));
     page_with_session(
         "Content unavailable",
         &registry_crumbs(slug, &[]),
@@ -508,22 +450,42 @@ pub(crate) fn package_detail(package: &PackageToml) -> PackageDetail {
     }
 }
 
-/// Resolves both dependency directions inside the selected release catalog.
-pub(crate) fn package_closure(
+/// Resolves the latest available version of each architecture in this release.
+pub(crate) fn package_closures(
     catalog: &[PackageToml],
     detail: &PackageDetail,
+    reverse_limit: usize,
+) -> Vec<super::browse_pages::PackageClosure> {
+    let mut platforms = std::collections::BTreeMap::new();
+
+    // Versions are newest first. An architecture may only exist in an older
+    // version, so choose its newest artifact independently of other platforms.
+    for version in &detail.versions {
+        for platform in &version.platforms {
+            platforms
+                .entry(&platform.platform)
+                .or_insert((version, platform));
+        }
+    }
+
+    platforms
+        .into_values()
+        .map(|(version, platform)| {
+            platform_closure(catalog, &version.version, platform, reverse_limit)
+        })
+        .collect()
+}
+
+/// Keeps both dependency directions within one exact architecture artifact.
+fn platform_closure(
+    catalog: &[PackageToml],
+    version: &str,
+    platform: &PlatformDetail,
     reverse_limit: usize,
 ) -> super::browse_pages::PackageClosure {
     use super::browse_pages::{PackageClosure, ResolvedDependency};
     use std::collections::{BTreeMap, BTreeSet};
 
-    let Some(primary) = detail
-        .versions
-        .first()
-        .and_then(|version| version.platforms.first())
-    else {
-        return PackageClosure::default();
-    };
     let hash = |path: &str| {
         path.rsplit('/')
             .next()
@@ -532,23 +494,23 @@ pub(crate) fn package_closure(
     };
     let mut owners = BTreeMap::new();
     let mut reverse = BTreeSet::new();
-    let primary_hash = hash(&primary.store_path);
+    let artifact_hash = hash(&platform.store_path);
     for package in catalog {
         for version in &package.versions {
-            if let Some(platform) = version.platforms.get(&primary.platform) {
-                if let Some(hash) = hash(&platform.store_path) {
+            if let Some(candidate) = version.platforms.get(&platform.platform) {
+                if let Some(hash) = hash(&candidate.store_path) {
                     owners.insert(hash, (&package.package.name, &version.version));
                 }
-                if primary_hash
+                if artifact_hash
                     .as_ref()
-                    .is_some_and(|hash| platform.references.hashes().contains(hash))
+                    .is_some_and(|hash| candidate.references.hashes().contains(hash))
                 {
                     reverse.insert((package.package.name.clone(), version.version.clone()));
                 }
             }
         }
     }
-    let dependencies = primary
+    let dependencies = platform
         .refs
         .iter()
         .map(|hash| {
@@ -561,7 +523,8 @@ pub(crate) fn package_closure(
         })
         .collect();
     PackageClosure {
-        platform: Some(primary.platform.clone()),
+        platform: platform.platform.clone(),
+        version: version.to_string(),
         dependencies,
         reverse_total: reverse.len(),
         reverse: reverse.into_iter().take(reverse_limit).collect(),
@@ -571,6 +534,91 @@ pub(crate) fn package_closure(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Builds a release-catalog artifact without involving the live package index.
+    fn closure_package(
+        name: &str,
+        version: &str,
+        platform: &str,
+        hash: &str,
+        refs: &[&str],
+    ) -> PackageToml {
+        serde_json::from_value(serde_json::json!({
+            "package": {"name": name, "description": "", "license": "MIT", "maintainer": ""},
+            "versions": [{"version": version, "platforms": {(platform): {
+                "store_path": format!("/aos/store/{hash}-{name}"),
+                "closure_size": 1,
+                "source_drv": "",
+                "source_nar_hash": "",
+                "references": refs
+            }}}]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn dependency_neighborhoods_use_each_architectures_latest_artifact() {
+        let mut package = closure_package("app", "2.0.0", "x86_64-linux", "rootx", &["shared"]);
+        package.versions.extend(
+            closure_package(
+                "app",
+                "1.0.0",
+                "aarch64-linux",
+                "rootarm",
+                &["shared", "outside"],
+            )
+            .versions,
+        );
+        package.versions.extend(
+            closure_package("app", "1.0.0", "x86_64-linux", "oldroot", &["stale"]).versions,
+        );
+        package
+            .versions
+            .extend(closure_package("app", "1.0.0", "riscv64-linux", "rootriscv", &[]).versions);
+        let catalog = vec![
+            package.clone(),
+            closure_package("lib-x86", "3.0.0", "x86_64-linux", "shared", &[]),
+            closure_package("lib-arm", "4.0.0", "aarch64-linux", "shared", &[]),
+            closure_package("tool-x86", "1.0.0", "x86_64-linux", "toolx", &["rootx"]),
+            closure_package("other-x86", "1.0.0", "x86_64-linux", "otherx", &["rootx"]),
+            closure_package(
+                "tool-arm",
+                "1.0.0",
+                "aarch64-linux",
+                "toolarm",
+                &["rootarm"],
+            ),
+            closure_package(
+                "wrong-architecture",
+                "1.0.0",
+                "aarch64-linux",
+                "wrong",
+                &["rootx"],
+            ),
+        ];
+
+        let closures = package_closures(&catalog, &package_detail(&package), 1);
+
+        assert_eq!(closures.len(), 3);
+        let arm = &closures[0];
+        assert_eq!((&*arm.platform, &*arm.version), ("aarch64-linux", "1.0.0"));
+        assert_eq!(arm.dependencies.len(), 2);
+        assert_eq!(arm.dependencies[0].name.as_deref(), Some("lib-arm"));
+        assert!(arm.dependencies[1].name.is_none());
+        assert_eq!(arm.reverse, vec![("tool-arm".into(), "1.0.0".into())]);
+
+        let riscv = &closures[1];
+        assert_eq!(riscv.platform, "riscv64-linux");
+        assert!(riscv.dependencies.is_empty());
+        assert!(riscv.reverse.is_empty());
+
+        let x86 = &closures[2];
+        assert_eq!((&*x86.platform, &*x86.version), ("x86_64-linux", "2.0.0"));
+        assert_eq!(x86.dependencies.len(), 1);
+        assert_eq!(x86.dependencies[0].name.as_deref(), Some("lib-x86"));
+        assert_eq!(x86.reverse_total, 2);
+        assert_eq!(x86.reverse.len(), 1);
+    }
+
     fn release(version: &str, commit: &str, verified: bool) -> ReleaseRow {
         ReleaseRow {
             semver: version.into(),
@@ -703,29 +751,28 @@ mod tests {
         .unwrap();
         let html = context.selector("org/main", "/org/main/-/docs", &[("root", "abc")]);
         assert_eq!(html.matches("<option ").count(), 12, "{html}");
-        assert!(html.contains(
-            "<optgroup label=\"Channels\"><option value=\"1.100.0\">stable → 1.100.0</option>"
-        ));
-        assert!(
-            html.contains("<optgroup label=\"Recent\"><option value=\"1.119.0\">1.119.0</option>")
-        );
-        assert!(html.contains(
-            "<optgroup label=\"Selected\"><option value=\"0.1.0\" selected>0.1.0</option>"
-        ));
-        assert!(html.contains(
-            "class=\"release-pill\" href=\"/org/main/-/docs?release=1.100.0&amp;root=abc\""
-        ));
+        assert!(html.contains("<option value=\"stable\">stable → 1.100.0</option>"));
+        assert!(html.contains("<option value=\"1.119.0\">1.119.0</option>"));
+        assert!(html.contains("<option value=\"0.1.0\">0.1.0</option>"));
+        assert_eq!(html.matches("class=\"release-pill\"").count(), 1);
+        assert_eq!(html.matches("<form ").count(), 1);
+        assert_eq!(html.matches("type=\"submit\"").count(), 1);
+        assert!(!html.contains("<select"));
         assert!(html.contains("name=\"release\" data-release-jump"));
-        assert!(html.contains("All 121 releases →"));
+        assert!(html.contains("Browse releases →"));
+        assert!(!html.contains("View release →"));
+        assert!(html.contains(
+            "href=\"/org/main/-/releases/0.1.0\" aria-current=\"true\"><strong>0.1.0</strong>"
+        ));
         assert!(html.contains("\"channels\":[{\"name\":\"stable\",\"release\":\"1.100.0\"}]"));
         assert!(html.contains("<input type=\"hidden\" name=\"root\" value=\"abc\">"));
-        assert_eq!(html.matches("name=\"root\" value=\"abc\"").count(), 2);
+        assert_eq!(html.matches("name=\"root\" value=\"abc\"").count(), 1);
 
         let current = ReleaseContext::select_among(releases, channels, None, Some("stable"), false)
             .unwrap()
             .selector("org/main", "/org/main/-/docs", &[]);
         assert!(current.contains("aria-current=\"true\">stable <strong>1.100.0</strong>"));
-        assert!(!current.contains("<optgroup label=\"Selected\">"));
+        assert_eq!(current.matches("class=\"release-pill\"").count(), 1);
     }
 
     #[test]
