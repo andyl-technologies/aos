@@ -180,7 +180,86 @@ struct RestoredFrontierLifecycle {
     observed_first: Option<Configuration>,
 }
 
+struct TerminalCrossingLifecycle {
+    configuration: Configuration,
+    attempt_stop_frontier: Option<VirtualTime>,
+    completed_quanta: u64,
+    terminal: bool,
+}
+
+impl QemuModeledAttemptLifecycle for TerminalCrossingLifecycle {
+    fn set_attempt_stop_frontier(
+        &mut self,
+        frontier: Option<VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        self.attempt_stop_frontier = frontier;
+        Ok(())
+    }
+
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        if request.configuration != self.configuration {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("terminal-crossing fixture received another configuration"),
+            });
+        }
+
+        let frontier = self
+            .attempt_stop_frontier
+            .unwrap_or(VirtualTime { ticks: 4_000_000 });
+        self.completed_quanta += 1;
+        self.terminal = frontier.ticks >= 4_000_000;
+        Ok(outcome(
+            self.configuration.clone(),
+            Vec::new(),
+            EventLogOffset::default(),
+            frontier.ticks,
+        ))
+    }
+
+    fn completed_quanta(&self) -> u64 {
+        self.completed_quanta
+    }
+
+    fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
+        self.terminal.then_some(QuantumTerminalVerdict::Passed)
+    }
+
+    fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
+        Ok(true)
+    }
+
+    fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<Vec<crucible_qemu::QemuNodeSelectablePendingRequest>, SchedulerError> {
+        Ok(Vec::new())
+    }
+
+    fn apply_selectable_reply(
+        &mut self,
+        _parent: &Configuration,
+        _decision: crucible::SelectionDecision,
+        _selected: &Configuration,
+        _pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
+        _reply: &crucible_protocol::SelectionReply,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("terminal-crossing fixture has no selectable transport"),
+        })
+    }
+
+    fn pending_network_output_count(&self) -> usize {
+        0
+    }
+}
+
 impl QemuModeledAttemptLifecycle for RestoredFrontierLifecycle {
+    fn set_attempt_stop_frontier(
+        &mut self,
+        _frontier: Option<VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         self.observed_first = Some(request.configuration.clone());
         if request.configuration != self.expected_first {
@@ -246,6 +325,13 @@ struct PendingSelectableLifecycle {
 
 impl QemuFreshAttemptLifecycleOwner for FakeLifecycle {
     fn enable_signal_fault_campaign_promotion(&mut self) {}
+
+    fn set_attempt_stop_frontier(
+        &mut self,
+        _frontier: Option<crucible::VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        Ok(())
+    }
 
     fn drive_quantum(
         &mut self,
@@ -318,6 +404,13 @@ impl QemuFreshAttemptLifecycleOwner for FakeLifecycle {
 
 impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
     fn enable_signal_fault_campaign_promotion(&mut self) {}
+
+    fn set_attempt_stop_frontier(
+        &mut self,
+        _frontier: Option<crucible::VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        Ok(())
+    }
 
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         if !self.active_pending.is_empty() {
@@ -1294,49 +1387,50 @@ fn named_boundary_requires_the_exact_guest_marker() {
 }
 
 #[test]
-fn virtual_time_boundary_stops_after_the_first_quantum_crossing_the_deadline() {
+fn virtual_time_boundary_caps_a_quantum_before_a_later_terminal() {
     let deadline = 2_000_000;
-    let completed_frontier = deadline + 17;
-    let input = input(StopCondition::VirtualTimeNanoseconds(deadline));
-    let configuration = starting_configuration(&input);
-    let mut owner = FakeLifecycle {
-        outcomes: VecDeque::from([
-            Ok(outcome(
-                configuration.clone(),
-                Vec::new(),
-                EventLogOffset::default(),
-                deadline - 1,
-            )),
-            Ok(outcome(
-                configuration,
-                Vec::new(),
-                EventLogOffset::default(),
-                completed_frontier,
-            )),
-        ]),
-        terminal: None,
-        initial_quanta: 0,
-        drives: 0,
+    let attempt = input(StopCondition::VirtualTimeNanoseconds(deadline));
+    let configuration = starting_configuration(&attempt);
+    let mut lifecycle = TerminalCrossingLifecycle {
+        configuration,
+        attempt_stop_frontier: None,
+        completed_quanta: 0,
+        terminal: false,
     };
-    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
 
     let pending = expect_observation(
-        QemuFreshModeledDriver::new()
-            .drive(
-                &mut lifecycle,
-                &input,
-                &context(),
-                QemuFreshStartMaterialization::genesis(),
-            )
-            .expect("virtual-time boundary"),
+        drive_modeled_attempt(
+            &mut lifecycle,
+            &attempt,
+            &context(),
+            QemuFreshStartMaterialization::genesis(),
+        )
+        .expect("virtual-time boundary"),
     );
 
-    assert_eq!(owner.drives, 2);
+    assert_eq!(
+        lifecycle.attempt_stop_frontier,
+        Some(VirtualTime { ticks: deadline })
+    );
+    assert_eq!(lifecycle.completed_quanta, 1);
+    assert!(!lifecycle.terminal);
     assert!(matches!(
         pending.stop,
         ModeledStop::Reached(StopCondition::VirtualTimeNanoseconds(value)) if value == deadline
     ));
-    assert_eq!(pending.terminal_at.ticks, completed_frontier);
+    assert_eq!(pending.terminal_at.ticks, deadline);
+
+    let continuation = input(StopCondition::ExecutionQuanta(1));
+    expect_observation(
+        drive_modeled_attempt(
+            &mut lifecycle,
+            &continuation,
+            &context(),
+            QemuFreshStartMaterialization::at_quanta(1),
+        )
+        .expect("non-time continuation"),
+    );
+    assert_eq!(lifecycle.attempt_stop_frontier, None);
 }
 
 #[test]

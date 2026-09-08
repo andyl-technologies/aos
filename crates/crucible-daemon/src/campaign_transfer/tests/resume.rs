@@ -584,6 +584,13 @@ struct NonDrivingResumeLifecycle {
 impl QemuFreshAttemptLifecycleOwner for NonDrivingResumeLifecycle {
     fn enable_signal_fault_campaign_promotion(&mut self) {}
 
+    fn set_attempt_stop_frontier(
+        &mut self,
+        _frontier: Option<crucible::VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
     fn drive_quantum(
         &mut self,
         _request: QuantumRequest,

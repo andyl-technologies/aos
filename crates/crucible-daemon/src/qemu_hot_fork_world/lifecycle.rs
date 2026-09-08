@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use crucible::{
     Configuration, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
     SchedulerError, SchedulerEventLogEntry, SchedulerOperationalFailureClass, SelectionDecision,
+    VirtualTime,
 };
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmHotForkNodeServiceState,
@@ -235,6 +236,13 @@ where
 {
     fn enable_signal_fault_campaign_promotion(&mut self) {
         self.lifecycle.enable_signal_fault_campaign_promotion();
+    }
+
+    fn set_attempt_stop_frontier(
+        &mut self,
+        frontier: Option<VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        self.lifecycle.set_attempt_stop_frontier(frontier)
     }
 
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {

@@ -767,6 +767,13 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         panic!("controlled lifecycle does not drive a guest")
     }
 
+    fn set_attempt_stop_frontier(
+        &mut self,
+        _frontier: Option<crucible::VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
     fn drive_quantum(
         &mut self,
         _request: QuantumRequest,
