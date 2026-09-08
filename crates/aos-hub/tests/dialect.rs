@@ -952,59 +952,6 @@ async fn exercise(db: &Database) {
     let (pending, delivered, failed) = db.delivery_status_counts().await.unwrap();
     assert_eq!((pending, delivered, failed), (3, 0, 0));
 
-    // -- validation findings + repair jobs (v14) ------------------------------
-    // Record a deep run with one missing and one corrupt finding, then assert
-    // they round-trip distinctly on every dialect.
-    let run_id = db
-        .record_validation_run_with_findings(
-            reg,
-            "file:///srv/cache",
-            "deep",
-            5,
-            &[
-                aos_hub::db::ValidationFinding {
-                    store_hash: "absent01".into(),
-                    status: aos_hub::db::FindingStatus::Missing,
-                },
-                aos_hub::db::ValidationFinding {
-                    store_hash: "tampered1".into(),
-                    status: aos_hub::db::FindingStatus::Corrupt,
-                },
-            ],
-            true,
-            0,
-            1,
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        db.validation_missing(run_id).await.unwrap(),
-        vec!["absent01"]
-    );
-    assert_eq!(
-        db.validation_corrupt(run_id).await.unwrap(),
-        vec!["tampered1"]
-    );
-
-    // Record a repair job and read it back.
-    db.record_repair_job(
-        reg,
-        "file:///srv/cache",
-        "absent01",
-        "file:///srv/good",
-        "done",
-        None,
-        0,
-        Some(1),
-    )
-    .await
-    .unwrap();
-    let jobs = db.list_repair_jobs(reg, 10).await.unwrap();
-    assert_eq!(jobs.len(), 1);
-    assert_eq!(jobs[0].status, "done");
-    assert_eq!(jobs[0].store_hash, "absent01");
-    assert_eq!(jobs[0].source_cache_url, "file:///srv/good");
-
     // -- mirror sources -------------------------------------------------------
     // A mirror source round-trips and `is_mirror` flips; the last-sync record
     // updates without clobbering the frontier on a later failure.

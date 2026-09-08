@@ -503,7 +503,7 @@ in
                         # Use the native OpenJDK 8 as build JDK and configure the final target tree directly.''
             else "# Stage 1: Extract and configure (creates openjdk-boot/ tree)"
           }
-          make -j1 stamps/icedtea-${
+          make -j"$NIX_BUILD_CORES" stamps/icedtea-${
             if isDarwinCross
             then "configure"
             else "boot-configure"
@@ -1096,11 +1096,11 @@ in
           ${
             if isDarwinCross
             then ""
-            else "make -j1 stamps/icedtea-boot.stamp"
+            else "make -j\"$NIX_BUILD_CORES\" stamps/icedtea-boot.stamp"
           }
 
           # Stage 3: Configure final build (generates new spec.gmk)
-          make -j1 stamps/icedtea-configure.stamp || make -j1 stamps/icedtea-stage2-configure.stamp || true${lib.optionalString isDarwinCross ''
+          make -j"$NIX_BUILD_CORES" stamps/icedtea-configure.stamp || make -j"$NIX_BUILD_CORES" stamps/icedtea-stage2-configure.stamp || true${lib.optionalString isDarwinCross ''
 
             # IcedTea's crypto-policy check normally executes the newly built
             # JDK. A Darwin Mach-O cannot run on the Linux builder, so preserve
@@ -1208,7 +1208,7 @@ in
           remove_z_defs
 
           # Stage 4: Build final JDK
-          make -j1
+          make -j"$NIX_BUILD_CORES"
         '';
       }
       {

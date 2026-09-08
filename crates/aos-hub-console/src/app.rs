@@ -105,6 +105,29 @@ pub fn App() -> impl IntoView {
     }
 }
 
+/// Dismisses account navigation without losing the keyboard's place.
+fn dismiss_masthead_menu(event: ev::KeyboardEvent) {
+    if event.key() != "Escape" {
+        return;
+    }
+    let Some(target) = event
+        .target()
+        .and_then(|target| target.dyn_into::<leptos::web_sys::Element>().ok())
+    else {
+        return;
+    };
+    let Ok(Some(menu)) = target.closest("details.masthead-menu") else {
+        return;
+    };
+    let _ = menu.remove_attribute("open");
+    let Ok(Some(summary)) = menu.query_selector("summary") else {
+        return;
+    };
+    if let Ok(summary) = summary.dyn_into::<leptos::web_sys::HtmlElement>() {
+        let _ = summary.focus();
+    }
+}
+
 #[component]
 fn ManagementShell(
     route: ConsoleRoute,
@@ -118,7 +141,9 @@ fn ManagementShell(
     let navigation_route = route.clone();
     let context_route = route.clone();
     let workflow_route = route.clone();
-    let brand = shell_meta("aos-site-brand").unwrap_or_else(|| "AOS Hub".to_string());
+    let brand = shell_meta("aos-site-brand")
+        .filter(|brand| !brand.is_empty())
+        .unwrap_or_else(|| "AOS Hub".to_string());
     let tagline = shell_meta("aos-site-tagline").unwrap_or_default();
     let announcement = shell_meta("aos-site-announcement").unwrap_or_default();
     let app_version = shell_meta("aos-app-version").unwrap_or_else(|| "aos-hub".to_string());
@@ -165,6 +190,9 @@ fn ManagementShell(
             return;
         }
         event.prevent_default();
+        if let Ok(Some(menu)) = anchor.closest("details.masthead-menu") {
+            let _ = menu.remove_attribute("open");
+        }
         navigate.run(path);
     };
 
@@ -172,23 +200,32 @@ fn ManagementShell(
         <div class="app-shell" on:click=on_console_link>
             <a class="skip-link" href="#main-content">"Skip to content"</a>
             <header class="masthead">
-                <a class="brand" href="/">{brand}</a>
-                {(!tagline.is_empty()).then(|| view! { <span class="tagline">{tagline}</span> })}
-                <span class="crumbs">
-                    <a href=route.base_path.clone()>{context.clone()}</a>
-                    " / "
-                    {page_label}
-                </span>
-                <span class="session">
-                    {AUTHENTICATED_PRIMARY_NAVIGATION.iter().enumerate().map(|(index, item)| view! {
-                        {(index > 0).then_some(" · ")}
-                        <a href=item.href>{item.label}</a>
-                    }).collect_view()}
-                    " · "
-                    <span class="who"><Suspense fallback=move || "signed-in user">{move || Suspend::new(async move { session.await.as_ref().ok().and_then(|client| client.session().principal.map(|principal| principal.email)).unwrap_or_else(|| "signed-in user".to_string()) })}</Suspense></span>
-                    " · "
-                    <a href="/logout">"log out"</a>
-                </span>
+                <div class="masthead-bar">
+                    <div class="masthead-identity">
+                        <a class="brand" href="/">{brand}</a>
+                        {(!tagline.is_empty()).then(|| view! { <span class="tagline">{tagline}</span> })}
+                    </div>
+                    <nav class="crumbs" aria-label="Breadcrumb">
+                        <ol>
+                            <li><a href=route.base_path.clone()>{context.clone()}</a></li>
+                            <li><span aria-current="page">{page_label}</span></li>
+                        </ol>
+                    </nav>
+                    <details class="masthead-menu" on:keydown=dismiss_masthead_menu>
+                        <summary aria-label="Menu">
+                            <span class="hamburger" aria-hidden="true">
+                                <span></span><span></span><span></span>
+                            </span>
+                        </summary>
+                        <nav class="session" aria-label="Account navigation">
+                            {AUTHENTICATED_PRIMARY_NAVIGATION.iter().map(|item| view! {
+                                <a href=item.href><svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d=aos_hub_console_contract::navigation_icon_path(item.href)/></svg>{item.label}</a>
+                            }).collect_view()}
+                            <span class="who"><Suspense fallback=move || "signed-in user">{move || Suspend::new(async move { session.await.as_ref().ok().and_then(|client| client.session().principal.map(|principal| principal.email)).unwrap_or_else(|| "signed-in user".to_string()) })}</Suspense></span>
+                            <a href="/logout"><svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d=aos_hub_console_contract::navigation_icon_path("/logout")/></svg>"log out"</a>
+                        </nav>
+                    </details>
+                </div>
             </header>
             {(!announcement.is_empty()).then(|| view! { <div class="announce">{announcement}</div> })}
             <div class="settings">
@@ -235,6 +272,17 @@ fn ManagementShell(
                         }).collect_view()}
                     </span>
                 })}
+                <button
+                    class="theme-toggle"
+                    type="button"
+                    data-theme-toggle=""
+                    title="Switch theme: system, light, dark"
+                >
+                    "Theme: "
+                    <span data-theme-label="system">"System"</span>
+                    <span data-theme-label="light">"Light"</span>
+                    <span data-theme-label="dark">"Dark"</span>
+                </button>
             </footer>
         </div>
     }

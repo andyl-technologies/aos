@@ -429,7 +429,7 @@ Two corrections shrink the apparent problem materially:
 | --- | --- | --- | --- |
 | Batchable now | `transfer_org_ownership` 5894, `apply_changeset` 7338 | none | — |
 | Claim/consume | `approve_device` 6085, `consume_magic_link` 6256, `take_oidc_flow` 6589, `take_webauthn_challenge` 6677 | use the existing `… RETURNING` SQLite path; collapse read+write into one statement | low (likely already done on the SQLite branch) |
-| Insert-id chains | `apply_snapshot` 2242, `update_channels` 2429, `record_validation_run_with_findings` 2559 | **client-side UUIDs** instead of autoincrement + last-insert id (as `rotate_token` already does) → the whole tree becomes a fixed batch | low–medium, mechanical |
+| Insert-id chains | `apply_snapshot` 2242, `update_channels` 2429 | **client-side UUIDs** instead of autoincrement + last-insert id (as `rotate_token` already does) → the whole tree becomes a fixed batch | low–medium, mechanical |
 | Guarded single-stmt | `reserve_org_usage` 4944, `revoke_membership_owner_safe` 4133, `set_membership_role_owner_safe` 4193, `add_org_domain` 6407 | re-express the invariant as one conditional `UPDATE … WHERE …` / `RETURNING` checking rows-affected | medium, per-site SQL design |
 | Read-before-batch | `rotate_token` 5655 | read the old token *before* the batch (outside the tx), then batch the writes | low |
 | Genuinely gnarly | `delete_user` 5938 | nested loop reading owner-scopes to block last-owner deletion — needs real restructuring | high (1 site) |

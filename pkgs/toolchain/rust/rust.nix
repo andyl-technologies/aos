@@ -151,10 +151,7 @@ in
 
             [rust]
             channel = "stable"
-            # Later bootstrap compilers corrupt allocator state even at 32
-            # codegen units on this large host. Keep the final compiler within
-            # the same 16-way proven boundary as its immediate bootstrap tiers.
-            codegen-units = 16
+            codegen-units = 0
             rpath = true
             omit-git-hash = true
             download-rustc = false
@@ -192,10 +189,6 @@ in
         {
           name = "build";
           script = ''
-            # x.py creates nested compiler work beyond its nominal job count;
-            # cap Rust alone while other packages may consume all 128 cores.
-            rustJobs=$NIX_BUILD_CORES
-            test "$rustJobs" -le 16 || rustJobs=16
             export PATH="$PWD/.fake-bin:$PATH"
             export OPENSSL_DIR=${openssl}
             export OPENSSL_LIB_DIR=${openssl}/lib
@@ -207,7 +200,7 @@ in
             # with the corresponding target-specific compiler environment too.
             export CFLAGS_wasm32_unknown_unknown="-ffile-prefix-map=$PWD=/rustc/${version}"
             export CXXFLAGS_wasm32_unknown_unknown="-ffile-prefix-map=$PWD=/rustc/${version}"
-            python3 x.py build -j $rustJobs
+            python3 x.py build -j "$NIX_BUILD_CORES"
           '';
         }
         {
@@ -215,8 +208,6 @@ in
           script = ''
                     # Extended-tool installation performs real compilation;
                     # keep it under the same scheduler bound as `x.py build`.
-                    rustJobs=$NIX_BUILD_CORES
-                    test "$rustJobs" -le 16 || rustJobs=16
                     export PATH="$PWD/.fake-bin:$PATH"
                     export OPENSSL_DIR=${openssl}
                     export OPENSSL_LIB_DIR=${openssl}/lib
@@ -231,7 +222,7 @@ in
                     # `x.py install src`: that treats "src" as a path filter,
                     # matches a docs step, and panics on the absent doc dir
                     # (docs = false).
-                    python3 x.py install -j $rustJobs
+                    python3 x.py install -j "$NIX_BUILD_CORES"
 
                     # Supply `rust-lld` for wasm32-unknown-unknown. rustc links the
                     # bare wasm target with the self-contained `rust-lld` found at

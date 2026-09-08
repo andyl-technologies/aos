@@ -5,6 +5,7 @@
   gnumake,
   pkg-config,
   gawk,
+  patch,
   gc,
   gmp,
   libffi,
@@ -12,7 +13,6 @@
   libunistring,
   libxcrypt,
   readline,
-  util-linux,
 }: let
   version = "3.0.11";
 in
@@ -25,7 +25,7 @@ in
       hash = "sha256-gYx50jZlen+pb7NkE3zHtBs73uDWXGF0ygN2lVlXlGA=";
     };
 
-    buildDeps = [gnumake pkg-config gawk util-linux];
+    buildDeps = [gnumake pkg-config gawk patch];
     runtimeDeps = [gc gmp libffi libtool libunistring libxcrypt readline];
     propagatedDeps = [gc gmp libffi libtool libunistring libxcrypt readline];
 
@@ -43,6 +43,8 @@ in
       {
         name = "patch";
         script = ''
+          patch -p1 < ${./guile-patches/high-wakeup-fd.patch}
+
           # The Nix build filesystem may allocate the nominally sparse extent,
           # in which case SEEK_DATA correctly returns the current offset.
           sed -i '/"SEEK_DATA while in hole"/{n;s/4096/10/;}' \
@@ -66,11 +68,16 @@ in
       {
         name = "check";
         script = ''
-          # Guile sizes its garbage-collector worker pool from the visible CPU
-          # set.  On very large builders, the thread suite can consequently
-          # allocate a descriptor above select(2)'s FD_SETSIZE.  Limit CPU
-          # visibility for the test process while retaining the full suite.
-          ${util-linux}/bin/taskset -c 0-15 make -j1 check
+          # Thread wakeup pipes need two descriptors each. Let the suite use
+          # the available descriptor budget without restricting its CPU set.
+          ulimit -S -n "$(ulimit -H -n)"
+
+          $CONFIG_SHELL ./libtool --mode=link "$CC" -I. \
+            ${./guile-tests/high-wakeup-fd.c} libguile/libguile-3.0.la \
+            -o high-wakeup-fd
+          $CONFIG_SHELL ./meta/uninstalled-env ./high-wakeup-fd
+
+          make -j"$NIX_BUILD_CORES" check
         '';
       }
       {
