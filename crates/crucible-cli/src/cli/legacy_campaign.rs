@@ -6,15 +6,20 @@
 
 use super::*;
 
+use std::sync::Arc;
+
 use super::packaged_executor::{
     load_guarded_campaign_run_deployment, resolve_guarded_campaign_deployment_path,
 };
 use crucible_campaign::{AttemptResourceLimits, CampaignState, StopCondition, StopOutcome};
+use crucible_cas::content_store::{DirectoryBlobBackend, ImmutableBlobBackend};
 // crucible-lint: allow host-nondeterminism-state -- rendering projects accepted scheduler evidence into the existing CLI wire-frame contract without influencing execution.
 use crucible_api as campaign_output_api;
+use crucible_daemon::ExactCheckpointStore;
 use crucible_daemon::qemu_campaign_lifecycle::{
     GuardedCampaignReplayClosure, GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest,
-    GuardedDefaultCampaignWatchFrame, run_guarded_default_campaign,
+    GuardedDefaultCampaignSavepoint, GuardedDefaultCampaignWatchFrame,
+    run_guarded_default_campaign,
 };
 
 pub(super) fn run_local_qemu_campaign_replay(
@@ -73,6 +78,166 @@ pub(super) fn guarded_campaign_run_eligible(plan: &RunInvocationPlan) -> bool {
         && plan.accepted_interactive_commands.is_empty()
         && plan.observer_profile == VERIFY_BASELINE_PROFILE
         && !plan.collect_execution_fingerprints
+}
+
+/// Returns whether the shared campaign owner can capture this save exactly.
+pub(super) fn guarded_campaign_save_eligible(plan: &SaveInvocationPlan) -> bool {
+    plan.at == SaveAtArg::VirtualTime
+        && plan.selector.is_none()
+        && guarded_campaign_run_eligible(&plan.run_plan)
+}
+
+/// Runs one local-QEMU virtual-time save through campaign savepoint capture.
+pub(super) fn run_local_qemu_campaign_save_workflow(
+    backend: &ResolvedLocalBackend,
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    save_plan: &SaveInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    if !guarded_campaign_save_eligible(save_plan) {
+        return Err(backend_error(
+            "the requested save boundary or control mode does not have an exact campaign-backed QEMU adapter",
+        ));
+    }
+
+    let run_plan = &save_plan.run_plan;
+    let deployment_path =
+        resolve_guarded_campaign_deployment_path(run_plan.campaign_deployment.as_deref())?;
+    let deployment = load_guarded_campaign_run_deployment(&deployment_path)?;
+    let resources = guarded_run_resources(deployment.resources, run_plan.max_quanta)?;
+    let qemu_build_id = match backend {
+        ResolvedLocalBackend::Qemu { qemu_build_id, .. } => qemu_build_id.clone(),
+        #[cfg(any(test, feature = "test-double"))]
+        ResolvedLocalBackend::Double => {
+            return Err(backend_error(
+                "campaign QEMU save requires a resolved production backend",
+            ));
+        }
+    };
+    let deadline = run_plan
+        .max_virtual_time_ticks
+        .ok_or_else(|| usage_error("save --at virtual-time requires --max-virtual-time <dur>"))?;
+    let stop = StopCondition::VirtualTimeNanoseconds(deadline);
+    // The physical closure authenticates this one replay. The exported v3
+    // handle and logical DAG closure remain the durable legacy savepoint.
+    let checkpoint_directory = tempfile::Builder::new()
+        .prefix("crucible-campaign-save-")
+        .tempdir()
+        .map_err(|error| campaign_run_error("create transient exact checkpoint store", error))?;
+    let checkpoint_root = checkpoint_directory.path().to_path_buf();
+    let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
+        "legacy-campaign-savepoints",
+        &checkpoint_root,
+    ));
+    let checkpoints = Arc::new(
+        ExactCheckpointStore::new(checkpoint_backend, resources.maximum_disk_bytes())
+            .map_err(|error| campaign_run_error("open exact checkpoint store", error))?,
+    );
+    let lifecycle = production_qemu_lifecycle_config(backend)?;
+    let scenario = run_plan.scenario.scenario_form().clone();
+    let seed = run_plan
+        .request_seed
+        .unwrap_or_else(|| scenario.scenario_def().seed());
+    let request = GuardedDefaultCampaignRunRequest::new(
+        scenario,
+        seed,
+        env!("CARGO_PKG_VERSION"),
+        qemu_build_id,
+        lifecycle,
+        deployment.host,
+        resources,
+    )
+    .with_discovery_stop(stop.clone())
+    .with_reached_stop_savepoint_capture(Arc::clone(&checkpoints));
+    let campaign = run_guarded_default_campaign(request).map_err(|error| {
+        campaign_run_error("capture savepoint through shared campaign owner", error)
+    })?;
+    let report = campaign_save_workflow_report(save_plan, &campaign, &stop)?;
+
+    drop(checkpoints);
+    checkpoint_directory.close().map_err(|error| {
+        campaign_run_error(
+            &format!(
+                "remove transient exact checkpoint store {}",
+                checkpoint_root.display()
+            ),
+            error,
+        )
+    })?;
+
+    let mut outcome =
+        finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)?;
+    append_qemu_control_plane_execution_proof(&mut outcome, backend, "save-live-checkpoint");
+    Ok(outcome)
+}
+
+fn campaign_save_workflow_report(
+    save_plan: &SaveInvocationPlan,
+    campaign: &GuardedDefaultCampaignRun,
+    stop: &StopCondition,
+) -> Result<SaveWorkflowReport, CliError> {
+    let savepoint = campaign.savepoint().ok_or_else(|| {
+        campaign_run_error_message("campaign completed without an exact savepoint")
+    })?;
+    validate_campaign_savepoint(campaign, savepoint, stop)?;
+
+    let configuration = campaign.terminal_configuration();
+    let evidence = savepoint.evidence();
+    let frontier = evidence.frontier();
+    let checkpoint = recorded_checkpoint_for_configuration(configuration, frontier)
+        .map_err(|error| campaign_run_error("build legacy logical checkpoint", error))?;
+    let oracle = validate_savepoint_checkpoint(save_plan, configuration, &checkpoint, frontier)?;
+    let mut run = campaign_run_report(
+        &save_plan.run_plan,
+        campaign,
+        OutcomeKind::Passed,
+        BackendCommandStatus::Passed,
+    )?;
+    run.final_state = String::from("virtual-time");
+    run.outcome = Some(OutcomeKind::Passed);
+    run.terminal_savepoint = Some(oracle.fat_checkpoint);
+    run.final_frontier_ticks = frontier.ticks;
+    run.final_quanta = evidence.quanta();
+    run.budget_timed_out = false;
+
+    Ok(SaveWorkflowReport {
+        run,
+        oracle,
+        boundary_evidence: SaveBoundaryEvidence {
+            at: save_plan.at,
+            selector: None,
+            frontier_ticks: frontier.ticks,
+            quanta: evidence.quanta(),
+            breakpoint_firing: None,
+        },
+    })
+}
+
+fn validate_campaign_savepoint(
+    campaign: &GuardedDefaultCampaignRun,
+    savepoint: &GuardedDefaultCampaignSavepoint,
+    stop: &StopCondition,
+) -> Result<(), CliError> {
+    let observation = campaign.terminal().observation();
+    if observation.stop() != &StopOutcome::Reached(stop.clone())
+        || savepoint.attempt() != observation.attempt()
+        || savepoint.configuration() != observation.child()
+        || savepoint.stop() != stop
+        || savepoint.evidence() != campaign.evidence()
+    {
+        return Err(campaign_run_error_message(
+            "campaign savepoint proof differs from its terminal observation",
+        ));
+    }
+    Ok(())
+}
+
+fn campaign_run_error_message(message: impl Into<String>) -> CliError {
+    backend_error(format!(
+        "campaign-backed QEMU execution failed: {}",
+        message.into()
+    ))
 }
 
 /// Runs one local-QEMU command through shared campaign ownership.
@@ -453,9 +618,14 @@ fn campaign_run_error(context: &str, error: impl fmt::Display) -> CliError {
 mod tests {
     use super::*;
 
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
     use clap::Parser;
+    use crucible_api::ProductionVmLifecycleConfig;
+    use crucible_daemon::LinuxQemuAttemptHostConfig;
+    use crucible_daemon::qemu_campaign_lifecycle::run_guarded_default_campaign_test_fixture;
+    use tempfile::TempDir;
 
     fn default_run_plan() -> RunInvocationPlan {
         let cli = Cli::parse_from(["crucible", "run", "builtin:happy-path"]);
@@ -599,6 +769,186 @@ mod tests {
         let mut plan = default;
         plan.collect_execution_fingerprints = true;
         assert!(!guarded_campaign_run_eligible(&plan));
+    }
+
+    #[test]
+    fn campaign_save_route_accepts_only_standard_virtual_time_saves() {
+        let cli = Cli::parse_from([
+            "crucible",
+            "save",
+            "builtin:happy-path",
+            "--at",
+            "virtual-time",
+            "--max-virtual-time",
+            "2ms",
+        ]);
+        let Commands::Save(args) = &cli.command else {
+            panic!("expected save command");
+        };
+        let mut plan = plan_save_invocation(args, Path::new("."), Path::new("./artifacts"))
+            .expect("virtual-time save plan");
+
+        assert!(plan.run_plan.campaign_deployment.is_none());
+        assert!(guarded_campaign_save_eligible(&plan));
+
+        plan.run_plan.campaign_deployment = Some(PathBuf::from("guarded.toml"));
+        assert!(guarded_campaign_save_eligible(&plan));
+
+        let mut unsupported = plan.clone();
+        unsupported.at = SaveAtArg::Quiescence;
+        unsupported.run_plan.terminal_condition = RunTerminalCondition::Quiescence;
+        unsupported.run_plan.max_virtual_time = None;
+        unsupported.run_plan.max_virtual_time_ticks = None;
+        assert!(!guarded_campaign_save_eligible(&unsupported));
+
+        let mut unsupported = plan.clone();
+        unsupported.selector = Some(SaveAtSelector::Marker {
+            name: String::from("checkpoint"),
+        });
+        assert!(!guarded_campaign_save_eligible(&unsupported));
+
+        let mut unsupported = plan;
+        unsupported.run_plan.execution_mode = RunExecutionMode::Interactive;
+        assert!(!guarded_campaign_save_eligible(&unsupported));
+    }
+
+    #[test]
+    fn campaign_virtual_time_save_exports_closure_for_unchanged_resume_and_fork_readers() {
+        let temporary = TempDir::new().expect("temporary save workspace");
+        let artifact_directory = temporary.path().join("artifacts");
+        let output = temporary.path().join("campaign.crucible-savepoint");
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--backend"),
+            String::from("double"),
+            String::from("--store"),
+            temporary.path().display().to_string(),
+            String::from("--artifact-dir"),
+            artifact_directory.display().to_string(),
+            String::from("save"),
+            String::from("builtin:happy-path"),
+            String::from("--at"),
+            String::from("virtual-time"),
+            String::from("--max-virtual-time"),
+            String::from("2ms"),
+            String::from("--out"),
+            output.display().to_string(),
+        ]);
+        let Commands::Save(args) = &cli.command else {
+            panic!("expected save command");
+        };
+        let save_plan = plan_save_invocation(args, temporary.path(), &artifact_directory)
+            .expect("virtual-time save plan");
+        let stop = StopCondition::VirtualTimeNanoseconds(2_000_000);
+        let resources = AttemptResourceLimits::new(1, 256 * 1024 * 1024, 1024 * 1024, 16)
+            .expect("campaign fixture resources");
+        let exact_root = temporary.path().join("transient-exact");
+        let exact_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
+            "legacy-campaign-save-reader-test",
+            exact_root.clone(),
+        ));
+        let checkpoints = Arc::new(
+            ExactCheckpointStore::new(exact_backend, resources.maximum_disk_bytes())
+                .expect("exact checkpoint store"),
+        );
+        let scenario = save_plan.run_plan.scenario.scenario_form().clone();
+        let seed = save_plan
+            .run_plan
+            .request_seed
+            .unwrap_or_else(|| scenario.scenario_def().seed());
+        let host = LinuxQemuAttemptHostConfig::new(
+            "/sys/fs/cgroup/crucible-campaign-save-reader-test",
+            "/tmp/crucible-campaign-save-reader-test",
+            "campaign-save-reader-test",
+            1,
+            1,
+            65_529,
+            65_529,
+            16,
+            1_024,
+            Duration::from_secs(1),
+        )
+        .expect("fixture host configuration");
+        let request = GuardedDefaultCampaignRunRequest::new(
+            scenario,
+            seed,
+            "campaign-save-reader-test-engine",
+            "campaign-save-reader-test-qemu",
+            ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state"),
+            host,
+            resources,
+        )
+        .with_discovery_stop(stop.clone())
+        .with_reached_stop_savepoint_capture(checkpoints);
+        let campaign = run_guarded_default_campaign_test_fixture(request)
+            .expect("campaign fixture should capture an authenticated savepoint");
+        std::fs::remove_dir_all(&exact_root)
+            .expect("remove transient physical checkpoint before durable readers run");
+        let report = campaign_save_workflow_report(&save_plan, &campaign, &stop)
+            .expect("project campaign capture into legacy save contract");
+        let thin_plan = plan_cli_invocation(&cli);
+        let backend_plan = plan_backend_selection(&cli)
+            .expect("backend plan")
+            .expect("save requires a backend");
+        let mut outcome =
+            finish_save_workflow_outcome(&thin_plan, &backend_plan, None, &save_plan, report)
+                .expect("finish projected save workflow");
+        export_savepoint_handle(&save_plan, &mut outcome)
+            .expect("export v3 handle and DAG closure");
+
+        let checkpoint = outcome
+            .terminal_savepoint
+            .expect("projected save exposes its logical checkpoint");
+        let handle_evidence = resume_evidence_from_cli(&output, temporary.path());
+        let handle_fork_evidence = fork_evidence_from_cli(
+            &output.display().to_string(),
+            temporary.path(),
+            &artifact_directory,
+        );
+        let checkpoint_reference = format_content_hash_ref(checkpoint);
+        let store_evidence =
+            resume_evidence_from_cli(Path::new(&checkpoint_reference), temporary.path());
+        let store_fork_evidence =
+            fork_evidence_from_cli(&checkpoint_reference, temporary.path(), &artifact_directory);
+
+        assert_eq!(handle_evidence, handle_fork_evidence);
+        assert_eq!(handle_evidence, store_evidence);
+        assert_eq!(handle_evidence, store_fork_evidence);
+        assert_eq!(handle_evidence.checkpoint.id, checkpoint);
+    }
+
+    fn resume_evidence_from_cli(savepoint: &Path, store: &Path) -> ResumeHandleEvidence {
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--store"),
+            store.display().to_string(),
+            String::from("resume"),
+            savepoint.display().to_string(),
+        ]);
+        let Commands::Resume(args) = &cli.command else {
+            panic!("expected resume command");
+        };
+        let plan = plan_resume_invocation(args, store).expect("resume plan");
+        resume_handle_evidence(&plan).expect("unchanged resume reader accepts campaign save")
+    }
+
+    fn fork_evidence_from_cli(
+        savepoint: &str,
+        store: &Path,
+        artifact_directory: &Path,
+    ) -> ResumeHandleEvidence {
+        let cli = Cli::parse_from([
+            String::from("crucible"),
+            String::from("--store"),
+            store.display().to_string(),
+            String::from("fork"),
+            String::from(savepoint),
+        ]);
+        let Commands::Fork(args) = &cli.command else {
+            panic!("expected fork command");
+        };
+        let plan = plan_fork_invocation(args, None, artifact_directory, store).expect("fork plan");
+        fork_handle_evidence(&plan).expect("unchanged fork reader accepts campaign save")
     }
 
     #[test]

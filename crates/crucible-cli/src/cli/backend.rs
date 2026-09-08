@@ -1208,6 +1208,15 @@ impl BackendCommandRunner for NullBackendCommandRunner {
                     ergonomics_plan,
                     save_plan,
                 ),
+                ResolvedLocalBackend::Qemu { .. } if guarded_campaign_save_eligible(save_plan) => {
+                    run_local_qemu_campaign_save_workflow(
+                        backend,
+                        thin_plan,
+                        backend_plan,
+                        ergonomics_plan,
+                        save_plan,
+                    )
+                }
                 ResolvedLocalBackend::Qemu { .. } => run_local_qemu_save_workflow(
                     thin_plan,
                     backend_plan,
