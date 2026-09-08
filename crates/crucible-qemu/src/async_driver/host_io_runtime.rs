@@ -4,6 +4,23 @@ use super::*;
 
 /// Host-I/O runtime used by the bounded async driver.
 pub trait QemuHostIoRuntime: Send {
+    /// Services the live 9p ring directly for coordinator-isolation tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when the runtime is not the live
+    /// shared-memory implementation or its 9p coordinator rejects service.
+    #[cfg(test)]
+    fn service_ninep_io_for_test(
+        &mut self,
+        _snapshot: &crucible_shmem::NodeSlotSnapshot,
+    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "service 9p io for test",
+            "host-I/O runtime does not expose a live 9p servicer",
+        ))
+    }
+
     /// Clones the complete host-I/O continuation onto one branch-private ring.
     ///
     /// The source runtime must remain unchanged. Implementations must clone
