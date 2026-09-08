@@ -10,7 +10,7 @@ kernel-tests = []
 
 [dependencies]
 libc.workspace = true
-rustix = { workspace = true, features = ["event", "fs", "pipe", "process", "time"] }
+rustix = { workspace = true, features = ["event", "fs", "mount", "net", "pipe", "process", "time"] }
 thiserror.workspace = true
 
 [dev-dependencies]

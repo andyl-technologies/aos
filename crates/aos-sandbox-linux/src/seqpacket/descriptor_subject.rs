@@ -13,12 +13,18 @@
 //! authenticate and retain the first accepted response subject, then require
 //! later response subjects to match that same live service execution.
 
+use std::io::IoSlice;
+use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::{Component, Path};
 
 use super::{
     KernelAuthorizedRecordSubject, SeqpacketError, map_kernel_error, validate_record_subject,
 };
+use crate::Error;
 use crate::uapi::{self, RawAncillary};
+use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
 
 // Resource inventories use the broker protocol's full response ceiling. Keep
 // this carrier-local value explicit because the Linux boundary does not depend
@@ -33,6 +39,36 @@ pub struct DescriptorSubjectSocket {
 }
 
 impl DescriptorSubjectSocket {
+    /// Connects to one normalized absolute filesystem socket.
+    ///
+    /// Connection-peer authentication remains an explicit higher-level step;
+    /// this carrier continues to authorize each received record independently.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a relative or non-normalized path, connection failure, or
+    /// descriptor-subject socket adoption failure.
+    pub fn connect(path: &Path) -> Result<Self, SeqpacketError> {
+        let bytes = path.as_os_str().as_bytes();
+        let normalized = path.is_absolute()
+            && bytes.len() > 1
+            && !bytes.contains(&0)
+            && bytes[1..]
+                .split(|byte| *byte == b'/')
+                .all(|component| !component.is_empty() && !matches!(component, b"." | b".."))
+            && path
+                .components()
+                .all(|part| matches!(part, Component::RootDir | Component::Normal(_)));
+        if !normalized {
+            return Err(SeqpacketError::Kernel(Error::invalid(
+                "descriptor-subject connection path",
+                "must be a normalized absolute path",
+            )));
+        }
+
+        Self::from_owned(uapi::connect_seqpacket(path)?)
+    }
+
     /// Adopts a connected Unix sequenced-packet socket and enables subject reporting.
     ///
     /// Call this before sending the first request that can trigger a reply.
@@ -91,6 +127,64 @@ impl DescriptorSubjectSocket {
         }
     }
 
+    /// Sends one bounded packet with one or two descriptors in exact order.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty or oversized packet, an empty or above-two descriptor
+    /// table, a closed channel, transport failure, or short send. Backpressure
+    /// and interruption preserve the channel; fatal errors close it.
+    pub fn send_with_descriptors(
+        &mut self,
+        payload: &[u8],
+        descriptors: &[BorrowedFd<'_>],
+    ) -> Result<(), SeqpacketError> {
+        if payload.is_empty()
+            || payload.len() > MAXIMUM_PACKET_BYTES
+            || descriptors.is_empty()
+            || descriptors.len() > MAXIMUM_TRANSFERRED_DESCRIPTORS
+        {
+            return Err(SeqpacketError::InvalidMaximum);
+        }
+        let mut control_space = [MaybeUninit::uninit();
+            rustix::cmsg_space!(ScmRights(MAXIMUM_TRANSFERRED_DESCRIPTORS))];
+        let mut control = SendAncillaryBuffer::new(&mut control_space);
+        if !control.push(SendAncillaryMessage::ScmRights(descriptors)) {
+            self.fd.take();
+            return Err(SeqpacketError::Ancillary(
+                "SCM_RIGHTS descriptor table exceeded its fixed buffer",
+            ));
+        }
+        let result = sendmsg(
+            self.as_fd()?,
+            &[IoSlice::new(payload)],
+            &mut control,
+            SendFlags::DONTWAIT | SendFlags::NOSIGNAL,
+        )
+        .map_err(|source| {
+            map_kernel_error(Error::Syscall {
+                operation: "sendmsg(SCM_RIGHTS)",
+                source: source.into(),
+            })
+        });
+        match result {
+            Ok(written) if written == payload.len() => Ok(()),
+            Ok(written) => {
+                self.fd.take();
+                Err(SeqpacketError::PartialSend {
+                    expected: payload.len(),
+                    actual: written,
+                })
+            }
+            Err(error) => {
+                if error.is_fatal() {
+                    self.fd.take();
+                }
+                Err(error)
+            }
+        }
+    }
+
     /// Receives one bounded packet with an exact descriptor count and kernel subject.
     ///
     /// Preflight peeking validates subject/control data and packet size before
@@ -99,7 +193,7 @@ impl DescriptorSubjectSocket {
     ///
     /// # Errors
     ///
-    /// Rejects a zero or above-two-MiB packet ceiling, a descriptor count above
+    /// Rejects a zero or above-16-MiB packet ceiling, a descriptor count above
     /// two, malformed/missing/extra ancillary data, truncation, size drift, EOF,
     /// or kernel errors. Fatal receives close the socket and all adopted FDs;
     /// backpressure and interruption preserve it for readiness-driven retries.

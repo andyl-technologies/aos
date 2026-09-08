@@ -63,6 +63,56 @@ pub fn detach_relative(path: &Path, _worker: &SingleThreadedProcess) -> Result<(
     uapi::umount_detach(&path)
 }
 
+/// Ordinarily unmounts one canonical child of a retained directory.
+///
+/// The calling single-threaded helper changes its working directory to
+/// `root`, then names exactly one child without `chroot(2)`. The caller must
+/// independently authenticate and verify the retained root and child mount,
+/// and must drop every descriptor into the child mount before this call.
+/// Unlike [`detach_relative`], this operation preserves the kernel's normal
+/// busy-reference check and never falls back to lazy detachment.
+///
+/// # Errors
+///
+/// Returns an error for an empty, multi-component, parent, NUL-containing, or
+/// overlong child name, failure to anchor the working directory, or refusal
+/// by ordinary `umount2(2)`, including `EBUSY` from retained mount references.
+pub fn unmount_child(
+    root: &crate::path::BeneathRoot,
+    child: &Path,
+    _worker: &SingleThreadedProcess,
+) -> Result<()> {
+    let child = unmount_child_name(child)?;
+    uapi::fchdir(root.as_fd())?;
+    rustix::mount::unmount(child.as_c_str(), rustix::mount::UnmountFlags::NOFOLLOW).map_err(
+        |source| Error::Syscall {
+            operation: "ordinary umount2",
+            source: std::io::Error::from_raw_os_error(source.raw_os_error()),
+        },
+    )
+}
+
+fn unmount_child_name(child: &Path) -> Result<CString> {
+    let bytes = child.as_os_str().as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > 255
+        || bytes.contains(&b'/')
+        || bytes.contains(&0)
+        || child.is_absolute()
+        || child.components().count() != 1
+        || !child
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(Error::invalid(
+            "unmount child",
+            "must be one canonical relative path component",
+        ));
+    }
+
+    CString::new(bytes).map_err(|_| Error::invalid("unmount child", "contains NUL"))
+}
+
 impl MountAttributes {
     /// Returns a read-only, nosuid, nodev attribute set suitable for data.
     #[must_use]
@@ -406,6 +456,18 @@ mod tests {
     use std::os::fd::OwnedFd;
 
     use super::*;
+
+    #[test]
+    fn ordinary_unmount_rejects_noncanonical_children_before_effects() {
+        for invalid in ["", ".", "..", "/slot", "slot/", "slot//", "a/b"] {
+            assert!(
+                unmount_child_name(Path::new(invalid)).is_err(),
+                "{invalid:?}"
+            );
+        }
+        assert!(unmount_child_name(Path::new("slot\0tail")).is_err());
+        assert!(unmount_child_name(Path::new("slot")).is_ok());
+    }
 
     #[test]
     fn filesystem_tokens_are_bounded() {

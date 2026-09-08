@@ -43,6 +43,92 @@ fn exact_descriptor_replies_retain_subject_and_cloexec_ownership() {
 }
 
 #[test]
+fn production_sender_transfers_only_bounded_exact_tables() {
+    let (receiver, sender) = uapi::seqpacket_pair().expect("socket pair");
+    let mut receiver = DescriptorSubjectSocket::from_owned(receiver).expect("configured receiver");
+    let mut sender = DescriptorSubjectSocket::from_owned(sender).expect("configured sender");
+    let first = tempfile::tempfile().expect("first transferred file");
+    let second = tempfile::tempfile().expect("second transferred file");
+
+    sender
+        .send_with_descriptors(b"one", &[first.as_fd()])
+        .expect("one descriptor");
+    assert_eq!(
+        receiver
+            .receive(64, 1)
+            .expect("one descriptor record")
+            .descriptors()
+            .len(),
+        1
+    );
+
+    sender
+        .send_with_descriptors(b"two", &[first.as_fd(), second.as_fd()])
+        .expect("two descriptors");
+    let expected_identities = [first.metadata(), second.metadata()].map(|metadata| {
+        let metadata = metadata.expect("sender descriptor metadata");
+        (metadata.dev(), metadata.ino())
+    });
+    let record = receiver.receive(64, 2).expect("two descriptor record");
+    let received_identities: Vec<_> = record
+        .descriptors()
+        .iter()
+        .map(|descriptor| {
+            let metadata = std::fs::File::from(descriptor.try_clone().expect("clone received fd"))
+                .metadata()
+                .expect("received descriptor metadata");
+            (metadata.dev(), metadata.ino())
+        })
+        .collect();
+    assert_eq!(received_identities, expected_identities);
+
+    assert!(matches!(
+        sender.send_with_descriptors(b"none", &[]),
+        Err(SeqpacketError::InvalidMaximum)
+    ));
+    assert!(matches!(
+        sender.send_with_descriptors(b"three", &[first.as_fd(), second.as_fd(), first.as_fd()]),
+        Err(SeqpacketError::InvalidMaximum)
+    ));
+    assert!(matches!(
+        sender.send_with_descriptors(b"", &[first.as_fd()]),
+        Err(SeqpacketError::InvalidMaximum)
+    ));
+
+    sender
+        .send(b"still-open")
+        .expect("invalid bounds are inert");
+    assert_eq!(
+        receiver
+            .receive(64, 0)
+            .expect("record after invalid bounds")
+            .payload(),
+        b"still-open"
+    );
+}
+
+#[test]
+fn descriptor_sender_connect_rejects_noncanonical_paths_before_connecting() {
+    for path in [
+        "relative.sock",
+        "/run/../socket",
+        "/run/./socket",
+        "/run/socket/.",
+        "/run//socket",
+        "/run/socket/",
+        "/run/socket\0tail",
+    ] {
+        assert!(matches!(
+            DescriptorSubjectSocket::connect(Path::new(path)),
+            Err(SeqpacketError::Kernel(crate::Error::InvalidInput {
+                field: "descriptor-subject connection path",
+                ..
+            }))
+        ));
+    }
+}
+
+#[test]
 fn wrong_descriptor_count_and_oversize_close_the_receiver() {
     for (sent, expected) in [(0, 2), (1, 0), (1, 2), (3, 2)] {
         let (mut receiver, sender) = pair();
