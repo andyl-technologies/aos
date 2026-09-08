@@ -8,21 +8,27 @@
 use std::path::Path;
 
 use aos_proto::aos::sandbox::local::v1::ApplyStorageRequest;
+use aos_sandbox::RecordNamespace;
 use aos_sandbox_broker::{
     AdmissionRequest, BrokerAdmissionError, BrokerAuthority, BrokerAuthorityConfigError,
-    BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV2,
-    ProtectedBrokerAuthorityConfiguration, VerifiedBrokerAdmission,
+    BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV2, BrokerEffectStatusV2,
+    BrokerLocalRecordDomain, ProtectedBrokerAuthorityConfiguration, VerifiedBrokerAdmission,
 };
 use aos_sandbox_core::{
-    AssignmentEpoch, BrokerAssignment, BrokerAudience, BrokerPlanTrustAnchor, DesiredGeneration,
-    IncarnationId, NodeId, ObjectDigest, OwnershipLeaseTrustAnchor, ProtocolId, ProtocolVersion,
-    RawPairedClockSample, SandboxId,
+    AssignmentEpoch, BrokerAssignment, BrokerAudience, BrokerPlanTrustAnchor, BrokerVerb,
+    DesiredGeneration, IncarnationId, NodeId, ObjectDigest, OwnershipLeaseTrustAnchor, ProtocolId,
+    ProtocolVersion, RawPairedClockSample, SandboxId,
 };
 use aos_sandbox_protocol::semantics::storage::CanonicalStorageSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use buffa::Message as _;
 
 use crate::StorageStateKey;
+use crate::workspace_pin::{WorkspacePinActionV1, WorkspacePinAttemptV1};
+
+const PIN_RECEIPT_DOMAIN: [u8; 16] = *b"AOSSTGPINRECV001";
+const PIN_RECEIPT_MAGIC: &[u8; 8] = b"AOSPAR01";
+const PIN_RECEIPT_VERSION: u16 = 1;
 
 /// Storage-audience alias for protected authority configuration failures.
 pub type StorageAuthorityConfigError = BrokerAuthorityConfigError;
@@ -214,6 +220,100 @@ impl StorageAuthorityV1 {
     ) -> Result<(), StorageAdmissionError> {
         self.0.check_current_fence(fence)
     }
+
+    pub(crate) fn seal_pin_attempt_receipt(
+        &self,
+        attempt: &WorkspacePinAttemptV1,
+        effect: &BrokerEffectIntentV2,
+        operation_fence: &BrokerAuthorizationFenceV1,
+        parent_operation_id: [u8; 16],
+        parent_request_id: [u8; 16],
+    ) -> Result<Vec<u8>, StorageAdmissionError> {
+        let action_is_authorized = matches!(
+            (attempt.action(), effect.verb()),
+            (
+                WorkspacePinActionV1::Ensure,
+                BrokerVerb::StorageCreateWorkspace | BrokerVerb::StorageClone
+            ) | (
+                WorkspacePinActionV1::RemoveAndDestroy,
+                BrokerVerb::StorageDestroy
+            )
+        );
+        if !action_is_authorized
+            || effect.status() != BrokerEffectStatusV2::Pending
+            || effect.plan_digest() != operation_fence.plan_digest()
+            || effect.lease_digest() != operation_fence.local_lease_record().lease_digest()
+            || attempt.effect_operation_id() != parent_operation_id
+            || effect.request_id() != &parent_request_id
+            || attempt.effect_assignment_digest() != operation_fence.assignment().digest()
+            || attempt.host_boot_id() != *effect.host_boot_id()
+            || attempt.clock_provenance() != *effect.clock_provenance()
+            || attempt.effect_deadline_boottime_nanoseconds()
+                != effect.effect_deadline_boottime_nanoseconds()
+        {
+            return Err(StorageAdmissionError::FenceRejected);
+        }
+        let payload = pin_attempt_receipt_payload(attempt, effect, parent_operation_id)?;
+        let domain = BrokerLocalRecordDomain::new(PIN_RECEIPT_DOMAIN)
+            .map_err(|_| StorageAdmissionError::FenceRejected)?;
+        self.0.seal_local_record(
+            RecordNamespace::StorageWorkspacePinAttempt,
+            &attempt.attempt_id(),
+            domain,
+            &payload,
+        )
+    }
+
+    pub(crate) fn verify_pin_attempt_receipt(
+        &self,
+        attempt: &WorkspacePinAttemptV1,
+        effect: &BrokerEffectIntentV2,
+        parent_operation_id: [u8; 16],
+    ) -> Result<(), StorageAdmissionError> {
+        let domain = BrokerLocalRecordDomain::new(PIN_RECEIPT_DOMAIN)
+            .map_err(|_| StorageAdmissionError::FenceRejected)?;
+        let payload = self.0.open_local_record(
+            RecordNamespace::StorageWorkspacePinAttempt,
+            &attempt.attempt_id(),
+            domain,
+            attempt.authority_receipt(),
+        )?;
+        if attempt.effect_operation_id() != parent_operation_id
+            || payload != pin_attempt_receipt_payload(attempt, effect, parent_operation_id)?
+        {
+            return Err(StorageAdmissionError::FenceRejected);
+        }
+        Ok(())
+    }
+}
+
+fn pin_attempt_receipt_payload(
+    attempt: &WorkspacePinAttemptV1,
+    effect: &BrokerEffectIntentV2,
+    parent_operation_id: [u8; 16],
+) -> Result<Vec<u8>, StorageAdmissionError> {
+    let attempt_digest = attempt
+        .authority_digest()
+        .map_err(|_| StorageAdmissionError::FenceRejected)?;
+    let mut payload = Vec::with_capacity(250);
+    payload.extend_from_slice(PIN_RECEIPT_MAGIC);
+    payload.extend_from_slice(&PIN_RECEIPT_VERSION.to_be_bytes());
+    payload.extend_from_slice(&attempt.attempt_id());
+    payload.extend_from_slice(attempt_digest.as_bytes());
+    payload.push(match attempt.action() {
+        WorkspacePinActionV1::Ensure => 1,
+        WorkspacePinActionV1::RemoveAndDestroy => 2,
+    });
+    payload.extend_from_slice(&parent_operation_id);
+    payload.extend_from_slice(effect.request_id());
+    payload.extend_from_slice(effect.transport_request_digest().as_bytes());
+    payload.extend_from_slice(effect.request_digest().as_bytes());
+    payload.extend_from_slice(effect.plan_digest().as_bytes());
+    payload.extend_from_slice(effect.lease_digest().as_bytes());
+    payload.extend_from_slice(&effect.effect_deadline_boottime_nanoseconds().to_be_bytes());
+    payload.extend_from_slice(attempt.operation_fence_digest().as_bytes());
+    payload.extend_from_slice(attempt.effect_assignment_digest().as_bytes());
+    Ok(payload)
 }
 
 pub(crate) fn decode_assignment(

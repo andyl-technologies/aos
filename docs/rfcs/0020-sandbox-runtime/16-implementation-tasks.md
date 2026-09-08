@@ -4553,6 +4553,51 @@ long-running broker service, controller Apply path, or passing integrated
 worker VM qualifies the composition. Storage Apply remains unadvertised, and
 `SBX-STOR-01` and `SBX-P0-07` remain open.
 
+### Authenticated Storage root-pin attempts (in progress)
+
+Storage now records root-pin work as a separate authenticated effect instead
+of treating a committed ZFS mutation as publication authority. Each bounded
+attempt binds its action, ordinal, parent operation and committed creation
+result, current operation fence and assignment, retained identity range, exact
+dataset name and GUID, host boot and mount-namespace identity, protected clock
+provenance, and exclusive `CLOCK_BOOTTIME` deadline. A broker-local subordinate
+receipt additionally binds that attempt to the exact still-pending controller
+effect. Startup verifies every retained receipt before deriving authoritative
+workspace projection.
+
+An Ensure or RemoveAndDestroy attempt is durably Ambiguous before its one-shot
+dispatch can be returned. Recovery never redispatches the attempt: exact
+dataset and pin observations can satisfy publication or retirement, while a
+missing required pin is classified as needing a separately authorized repair.
+RemoveAndDestroy atomically records both the Storage operation's Ambiguous
+transition and the pin attempt. Before either change, one ordered capacity
+preflight covers that initial transaction, worst-case physical completion, and
+the final satisfied-pin record. Exhaustion therefore leaves the destruction
+Prepared with no new attempt.
+
+Workspace projection is now proof-gated. An active creation is launchable only
+when its latest attempt is a satisfied Ensure. A retirement is emitted only
+after the matching RemoveAndDestroy is satisfied, and its historical creation
+identity is reconstructed without misclassifying that retired workspace as an
+active publication. Attempt selection uses the greatest authenticated ordinal,
+not record-key order.
+
+An independent full Storage library run on this increment executed 92 tests:
+91 passed, none failed, and the real-systemd worker test remained intentionally
+ignored. Coverage includes real subordinate-receipt round trip, receipt tamper
+and parent relocation rejection, exact-deadline failure after the durable
+Ambiguous transition, cold-Ambiguous restart without redispatch, combined
+destroy-capacity failure, reversed attempt-ID ordering, and an authenticated
+Ensure-to-Remove retirement lifecycle. Rust formatting and the diff whitespace
+check pass for the current source.
+
+This is durable authority and recovery foundation only. No descriptor-backed
+kernel observer or privileged root-pin worker yet performs or proves the mount
+effect, RemoveAndDestroy is not wired to one host-mount-namespace worker, and a
+fresh repair admission is not implemented. The runtime remains
+`IntegrationIncomplete`, Storage Apply remains unadvertised, and
+`SBX-STOR-01` and `SBX-P0-07` remain open.
+
 ### Canonical Network kernel plan (in progress)
 
 The Network broker can now compile one exact assignment, namespace allocation,

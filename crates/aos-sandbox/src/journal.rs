@@ -144,6 +144,8 @@ pub enum RecordNamespace {
     StorageRuntimeConfiguration = 31,
     /// Authenticated Storage workspace publication inputs bound to operations.
     StorageWorkspacePublicationIntent = 32,
+    /// Authenticated, exactly-once Storage root-pin effect attempts.
+    StorageWorkspacePinAttempt = 33,
 }
 
 impl RecordNamespace {
@@ -181,6 +183,7 @@ impl RecordNamespace {
             30 => Ok(Self::StorageCatalogHead),
             31 => Ok(Self::StorageRuntimeConfiguration),
             32 => Ok(Self::StorageWorkspacePublicationIntent),
+            33 => Ok(Self::StorageWorkspacePinAttempt),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }

@@ -36,6 +36,7 @@ pub mod request;
 pub mod runtime;
 pub mod state;
 pub mod workspace_catalog;
+mod workspace_pin;
 pub mod zfs;
 
 pub use authorization::{

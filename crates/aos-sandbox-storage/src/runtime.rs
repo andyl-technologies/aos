@@ -175,6 +175,10 @@ impl StorageBrokerRuntime {
             helper: StorageMutationHelper::new(contract, backend),
             readiness: StorageRuntimeReadiness::IntegrationIncomplete,
         };
+        runtime
+            .coordinator
+            .authenticate_workspace_pin_attempts()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
         runtime.readiness = if legacy_recovery {
             StorageRuntimeReadiness::LegacyRecoveryOnly {
                 operations: runtime

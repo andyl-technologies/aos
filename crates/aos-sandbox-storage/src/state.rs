@@ -15,10 +15,17 @@ use aos_sandbox_core::{MediaType, ObjectDescriptor, ObjectDigest};
 use hmac::{Hmac, Mac as _};
 use sha2::{Digest as _, Sha256};
 
+use crate::broker::FreshWorkspacePinAuthority;
 use crate::catalog_transition::{
     CatalogReservation, PhysicalWorkspaceProjection, StorageCatalogTransitionProvider,
 };
 use crate::workspace_catalog::StorageWorkspacePublicationIntentV1;
+use crate::workspace_pin::{
+    BeginWorkspacePinAttemptV1, MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE, WorkspaceDatasetObservationV1,
+    WorkspacePinActionV1, WorkspacePinAttemptPhaseV1, WorkspacePinAttemptV1,
+    WorkspacePinHostScopeV1, WorkspacePinObservationV1, WorkspacePinRecoveryDispositionV1,
+    WorkspaceRootPinProofV1, attempt_record, derive_attempt_id, load_attempts,
+};
 use crate::{CatalogBindingV1, CatalogPlanV1, PostconditionPolicyV1, ResolvedCatalogCommitmentV1};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -368,6 +375,7 @@ pub struct StorageTransactionStore {
     catalog_transitions: StorageCatalogTransitionProvider,
     runtime_configuration: Option<ObjectDigest>,
     publication_intents: BTreeMap<[u8; 16], StorageWorkspacePublicationIntentV1>,
+    pin_attempts: BTreeMap<[u8; 16], WorkspacePinAttemptV1>,
     commit_failed: bool,
     #[cfg(test)]
     fail_after_next_journal_commit: bool,
@@ -496,6 +504,7 @@ impl StorageTransactionStore {
         }
         let runtime_configuration = load_runtime_configuration(&journal, &key)?;
         let publication_intents = load_publication_intents(&journal, &key)?;
+        let pin_attempts = load_attempts(&journal, key.key_id, &key.secret)?;
         let catalog_transitions =
             StorageCatalogTransitionProvider::load(&journal, key.key_id, &key.secret)?;
         let latest_generation = latest_generation(&records).max(
@@ -543,17 +552,39 @@ impl StorageTransactionStore {
         }
         catalog_transitions.validate_operation_set(records.keys().copied())?;
         validate_publication_intent_set(&records, &publication_intents)?;
-        Ok(Self {
+        let store = Self {
             journal,
             key,
             records,
             catalog_transitions,
             runtime_configuration,
             publication_intents,
+            pin_attempts,
             commit_failed: false,
             #[cfg(test)]
             fail_after_next_journal_commit: false,
-        })
+        };
+        let mut attempts_per_workspace = BTreeMap::<[u8; 32], [bool; 4]>::new();
+        for attempt in store.pin_attempts.values() {
+            store.validate_pin_attempt_context(attempt)?;
+            let ordinals = attempts_per_workspace
+                .entry(attempt.workspace_handle())
+                .or_default();
+            let ordinal = usize::from(attempt.attempt_ordinal() - 1);
+            if ordinals[ordinal] {
+                return Err(StorageStateError::CorruptRecord);
+            }
+            ordinals[ordinal] = true;
+        }
+        if attempts_per_workspace.values().any(|ordinals| {
+            ordinals
+                .iter()
+                .position(|present| !present)
+                .is_some_and(|first_gap| ordinals[first_gap + 1..].contains(&true))
+        }) {
+            return Err(StorageStateError::CorruptRecord);
+        }
+        Ok(store)
     }
 
     fn open_or_initialize_runtime(
@@ -601,6 +632,7 @@ impl StorageTransactionStore {
             && self.catalog_transitions.head_binding().is_none()
             && self.runtime_configuration.is_none()
             && self.publication_intents.is_empty()
+            && self.pin_attempts.is_empty()
             && self.journal.is_materialized_empty()
             && self.journal.snapshot_sequence() == 1
     }
@@ -859,6 +891,349 @@ impl StorageTransactionStore {
             .map(|intent| (intent.identity_range_start(), intent.identity_range_size())))
     }
 
+    pub(crate) fn workspace_pin_attempts(
+        &self,
+    ) -> Result<Vec<WorkspacePinAttemptV1>, StorageStateError> {
+        self.ensure_authority_readable()?;
+        Ok(self.pin_attempts.values().cloned().collect())
+    }
+
+    pub(crate) fn require_satisfied_workspace_pin_effect(
+        &self,
+        effect_operation_id: [u8; 16],
+        workspace_handle: [u8; 32],
+        action: WorkspacePinActionV1,
+    ) -> Result<(), StorageStateError> {
+        self.ensure_authority_readable()?;
+        let latest = self
+            .pin_attempts
+            .values()
+            .filter(|attempt| attempt.workspace_handle() == workspace_handle)
+            .max_by_key(|attempt| attempt.attempt_ordinal())
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if latest.effect_operation_id() != effect_operation_id
+            || latest.action() != action
+            || latest.phase() != WorkspacePinAttemptPhaseV1::Satisfied
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn plan_workspace_pin_ensure(
+        &self,
+        result: CommittedStorageResultV1,
+        effect_assignment_digest: ObjectDigest,
+        host_scope: WorkspacePinHostScopeV1,
+        clock_provenance: [u8; 16],
+        effect_deadline_boottime_nanoseconds: u64,
+    ) -> Result<WorkspacePinAttemptV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        let record = self
+            .records
+            .get(&result.operation_id())
+            .filter(|record| {
+                record.phase == DurableStoragePhase::Committed && record.result == Some(result)
+            })
+            .ok_or(StorageStateError::InvalidTransition)?;
+        let catalog = ResolvedCatalogCommitmentV1::from_canonical_bytes(&record.catalog_bytes)
+            .map_err(|_| StorageStateError::CorruptRecord)?;
+        let dataset_name = match catalog.plan() {
+            CatalogPlanV1::CreateWorkspace { destination, .. }
+            | CatalogPlanV1::Clone { destination, .. } => destination.name(),
+            _ => return Err(StorageStateError::InvalidTransition),
+        };
+        let intent = self
+            .publication_intents
+            .get(&record.operation_id)
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if effect_assignment_digest != intent.assignment_digest() {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        let operation_fence_digest = self.operation_fence_digest(record.operation_id)?;
+        let workspace_handle = result
+            .storage_handle()
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let dataset_guid = result
+            .object_guid()
+            .filter(|guid| *guid != 0)
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let attempt_id = derive_attempt_id(
+            &self.key.secret,
+            record.operation_id,
+            workspace_handle,
+            WorkspacePinActionV1::Ensure,
+            1,
+        )?;
+        WorkspacePinAttemptV1::new_ambiguous(
+            attempt_id,
+            1,
+            WorkspacePinActionV1::Ensure,
+            record.operation_id,
+            record.operation_id,
+            operation_fence_digest,
+            effect_assignment_digest,
+            intent.assignment_digest(),
+            result.catalog(),
+            result.result_digest(),
+            workspace_handle,
+            host_scope.kernel_boot_id(),
+            host_scope.mount_namespace_device(),
+            host_scope.mount_namespace_inode(),
+            clock_provenance,
+            effect_deadline_boottime_nanoseconds,
+            dataset_name.to_owned(),
+            dataset_guid,
+            intent.identity_range_start(),
+            intent.identity_range_size(),
+            None,
+        )
+    }
+
+    pub(crate) fn begin_workspace_pin_attempt(
+        &mut self,
+        attempt: WorkspacePinAttemptV1,
+        authority: FreshWorkspacePinAuthority,
+    ) -> Result<BeginWorkspacePinAttemptV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        if attempt.action() != WorkspacePinActionV1::Ensure
+            || attempt.phase() != WorkspacePinAttemptPhaseV1::Ambiguous
+            || attempt.attempt_id() != authority.attempt_id()
+            || attempt.authority_digest()? != authority.attempt_digest()
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        self.validate_pin_attempt_context(&attempt)?;
+        if let Some(existing) = self.pin_attempts.get(&attempt.attempt_id()) {
+            if !existing.same_authorized_effect(&attempt) {
+                return Err(StorageStateError::Equivocation);
+            }
+            return Ok(match existing.phase() {
+                WorkspacePinAttemptPhaseV1::Ambiguous => {
+                    BeginWorkspacePinAttemptV1::ObserveOnly(existing.clone())
+                }
+                WorkspacePinAttemptPhaseV1::Satisfied => {
+                    BeginWorkspacePinAttemptV1::Satisfied(existing.clone())
+                }
+            });
+        }
+        if self
+            .pin_attempts
+            .values()
+            .filter(|existing| existing.workspace_handle() == attempt.workspace_handle())
+            .count()
+            >= usize::from(MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE)
+            || self.pin_attempts.values().any(|existing| {
+                existing.workspace_handle() == attempt.workspace_handle()
+                    && existing.attempt_ordinal() == attempt.attempt_ordinal()
+            })
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
+
+        let attempt = attempt.with_authority_receipt(authority.into_sealed_receipt())?;
+
+        self.preflight_pin_attempt(&attempt)?;
+        let transaction = JournalTransaction::new(
+            pin_attempt_transaction_id(&attempt),
+            vec![attempt_record(&attempt, self.key.key_id, &self.key.secret)?],
+        )?;
+        self.commit_journal(&transaction)?;
+        self.pin_attempts
+            .insert(attempt.attempt_id(), attempt.clone());
+        Ok(BeginWorkspacePinAttemptV1::Dispatch(attempt))
+    }
+
+    pub(crate) fn plan_workspace_pin_remove_and_destroy(
+        &self,
+        operation_id: [u8; 16],
+        effect_assignment_digest: ObjectDigest,
+        host_scope: WorkspacePinHostScopeV1,
+        clock_provenance: [u8; 16],
+        effect_deadline_boottime_nanoseconds: u64,
+        expected_pin: WorkspaceRootPinProofV1,
+    ) -> Result<WorkspacePinAttemptV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        let destruction = self
+            .records
+            .get(&operation_id)
+            .filter(|record| record.phase == DurableStoragePhase::Prepared)
+            .ok_or(StorageStateError::InvalidTransition)?;
+        let catalog = ResolvedCatalogCommitmentV1::from_canonical_bytes(&destruction.catalog_bytes)
+            .map_err(|_| StorageStateError::CorruptRecord)?;
+        let CatalogPlanV1::DestroyDataset { dataset } = catalog.plan() else {
+            return Err(StorageStateError::InvalidTransition);
+        };
+        let creation = self
+            .managed_workspace_creation(dataset.guid())?
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if creation.storage_handle() != Some(dataset.storage_handle()) {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        let intent = self
+            .publication_intents
+            .get(&creation.operation_id())
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let satisfied_ensure = self
+            .pin_attempts
+            .values()
+            .filter(|attempt| {
+                attempt.workspace_handle() == dataset.storage_handle()
+                    && attempt.action() == WorkspacePinActionV1::Ensure
+                    && attempt.phase() == WorkspacePinAttemptPhaseV1::Satisfied
+            })
+            .max_by_key(|attempt| attempt.attempt_ordinal())
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if satisfied_ensure.satisfied_pin() != Some(&expected_pin) {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        let attempt_ordinal = self
+            .pin_attempts
+            .values()
+            .filter(|attempt| attempt.workspace_handle() == dataset.storage_handle())
+            .map(WorkspacePinAttemptV1::attempt_ordinal)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .filter(|ordinal| *ordinal <= MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE)
+            .ok_or(StorageStateError::InvalidTransition)?;
+        let operation_fence_digest = self.operation_fence_digest(operation_id)?;
+        let attempt_id = derive_attempt_id(
+            &self.key.secret,
+            operation_id,
+            dataset.storage_handle(),
+            WorkspacePinActionV1::RemoveAndDestroy,
+            attempt_ordinal,
+        )?;
+        WorkspacePinAttemptV1::new_ambiguous(
+            attempt_id,
+            attempt_ordinal,
+            WorkspacePinActionV1::RemoveAndDestroy,
+            operation_id,
+            creation.operation_id(),
+            operation_fence_digest,
+            effect_assignment_digest,
+            intent.assignment_digest(),
+            creation.catalog(),
+            creation.result_digest(),
+            dataset.storage_handle(),
+            host_scope.kernel_boot_id(),
+            host_scope.mount_namespace_device(),
+            host_scope.mount_namespace_inode(),
+            clock_provenance,
+            effect_deadline_boottime_nanoseconds,
+            dataset.name().to_owned(),
+            dataset.guid(),
+            intent.identity_range_start(),
+            intent.identity_range_size(),
+            Some(expected_pin),
+        )
+    }
+
+    pub(crate) fn begin_workspace_pin_remove_and_destroy(
+        &mut self,
+        attempt: WorkspacePinAttemptV1,
+        mutation_digest: ObjectDigest,
+        authority: FreshWorkspacePinAuthority,
+    ) -> Result<BeginWorkspacePinAttemptV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        if attempt.action() != WorkspacePinActionV1::RemoveAndDestroy
+            || attempt.phase() != WorkspacePinAttemptPhaseV1::Ambiguous
+            || attempt.attempt_id() != authority.attempt_id()
+            || attempt.authority_digest()? != authority.attempt_digest()
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        self.validate_pin_attempt_context(&attempt)?;
+        let current = self
+            .exact_current(attempt.effect_operation_id(), mutation_digest)?
+            .clone();
+        if let Some(existing) = self.pin_attempts.get(&attempt.attempt_id()) {
+            if !existing.same_authorized_effect(&attempt) {
+                return Err(StorageStateError::Equivocation);
+            }
+            return Ok(match existing.phase() {
+                WorkspacePinAttemptPhaseV1::Ambiguous => {
+                    BeginWorkspacePinAttemptV1::ObserveOnly(existing.clone())
+                }
+                WorkspacePinAttemptPhaseV1::Satisfied => {
+                    BeginWorkspacePinAttemptV1::Satisfied(existing.clone())
+                }
+            });
+        }
+        if current.phase != DurableStoragePhase::Prepared
+            || self.pin_attempts.values().any(|existing| {
+                existing.workspace_handle() == attempt.workspace_handle()
+                    && existing.attempt_ordinal() == attempt.attempt_ordinal()
+            })
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
+
+        let attempt = attempt.with_authority_receipt(authority.into_sealed_receipt())?;
+
+        let mut ambiguous = current;
+        ambiguous.phase = DurableStoragePhase::Ambiguous;
+        let transaction = JournalTransaction::new(
+            pin_attempt_transaction_id(&attempt),
+            vec![
+                attempt_record(&attempt, self.key.key_id, &self.key.secret)?,
+                JournalRecord::put(
+                    RecordNamespace::Operation,
+                    ambiguous.operation_id.to_vec(),
+                    encode_record(&ambiguous, &self.key)?,
+                ),
+            ],
+        )?;
+        let completion = self.effect_completion_capacity_transaction(&ambiguous)?;
+        let pin_satisfied = self.pin_satisfied_capacity_transaction(&attempt)?;
+        self.journal
+            .preflight_transactions(&[transaction.clone(), completion, pin_satisfied])?;
+        self.commit_journal(&transaction)?;
+        self.records.insert(ambiguous.operation_id, ambiguous);
+        self.pin_attempts
+            .insert(attempt.attempt_id(), attempt.clone());
+        Ok(BeginWorkspacePinAttemptV1::Dispatch(attempt))
+    }
+
+    pub(crate) fn complete_workspace_pin_attempt(
+        &mut self,
+        attempt_id: [u8; 16],
+        dataset: &WorkspaceDatasetObservationV1,
+        pin: &WorkspacePinObservationV1,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        let current = self
+            .pin_attempts
+            .get(&attempt_id)
+            .ok_or(StorageStateError::InvalidTransition)?;
+        let disposition = current.classify(dataset, pin);
+        let observed_pin = match (disposition, pin) {
+            (
+                WorkspacePinRecoveryDispositionV1::CompletePublication,
+                WorkspacePinObservationV1::Present(proof),
+            ) => Some(proof.clone()),
+            (WorkspacePinRecoveryDispositionV1::CompleteRetirement, _) => None,
+            _ => return Ok(disposition),
+        };
+        if current.phase() == WorkspacePinAttemptPhaseV1::Satisfied {
+            return Ok(disposition);
+        }
+        let satisfied = current.satisfy(observed_pin)?;
+        self.validate_pin_attempt_context(&satisfied)?;
+        let transaction = JournalTransaction::new(
+            pin_attempt_transaction_id(&satisfied),
+            vec![attempt_record(
+                &satisfied,
+                self.key.key_id,
+                &self.key.secret,
+            )?],
+        )?;
+        self.commit_journal(&transaction)?;
+        self.pin_attempts.insert(attempt_id, satisfied);
+        Ok(disposition)
+    }
+
     pub(crate) fn workspace_projection(
         &self,
     ) -> Result<Vec<StorageWorkspaceProjection>, StorageStateError> {
@@ -876,6 +1251,19 @@ impl StorageTransactionStore {
                     }
                     if !self.publication_intents.contains_key(&operation_id) {
                         return Err(StorageStateError::MissingAuthorityLink);
+                    }
+                    let workspace_handle = result
+                        .storage_handle()
+                        .ok_or(StorageStateError::MissingAuthorityLink)?;
+                    if self
+                        .require_satisfied_workspace_pin_effect(
+                            operation_id,
+                            workspace_handle,
+                            WorkspacePinActionV1::Ensure,
+                        )
+                        .is_err()
+                    {
+                        continue;
                     }
                     workspace_projection.push(StorageWorkspaceProjection::Active(result));
                 }
@@ -903,6 +1291,16 @@ impl StorageTransactionStore {
                         || creation.storage_handle() != retirement.storage_handle()
                     {
                         return Err(StorageStateError::AuthorityLinkMismatch);
+                    }
+                    if self
+                        .require_satisfied_workspace_pin_effect(
+                            operation_id,
+                            dataset.storage_handle(),
+                            WorkspacePinActionV1::RemoveAndDestroy,
+                        )
+                        .is_err()
+                    {
+                        continue;
                     }
                     workspace_projection.push(StorageWorkspaceProjection::Retired {
                         creation,
@@ -1465,6 +1863,17 @@ impl StorageTransactionStore {
             )],
         )?;
 
+        let completion_transaction = self.effect_completion_capacity_transaction(prepared)?;
+
+        self.journal
+            .preflight_transactions(&[ambiguous_transaction, completion_transaction])?;
+        Ok(())
+    }
+
+    fn effect_completion_capacity_transaction(
+        &self,
+        prepared: &DurableRecord,
+    ) -> Result<JournalTransaction, StorageStateError> {
         let result_catalog = CatalogBindingV1::from_publisher(
             prepared
                 .catalog
@@ -1492,14 +1901,11 @@ impl StorageTransactionStore {
             prepared.operation_id.to_vec(),
             encode_record(&committed, &self.key)?,
         ));
-        let completion_transaction = JournalTransaction::new(
+        JournalTransaction::new(
             transaction_id(prepared.operation_id, DurableStoragePhase::Committed),
             completion_records,
-        )?;
-
-        self.journal
-            .preflight_transactions(&[ambiguous_transaction, completion_transaction])?;
-        Ok(())
+        )
+        .map_err(Into::into)
     }
 
     fn exact_current(
@@ -1563,6 +1969,121 @@ impl StorageTransactionStore {
             return Err(error.into());
         }
         Ok(())
+    }
+
+    fn operation_fence_digest(
+        &self,
+        operation_id: [u8; 16],
+    ) -> Result<ObjectDigest, StorageStateError> {
+        let bytes = self
+            .journal
+            .get(RecordNamespace::AuthorityPublication, &operation_id)
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        Ok(ObjectDigest::from_bytes(Sha256::digest(bytes).into()))
+    }
+
+    fn validate_pin_attempt_context(
+        &self,
+        attempt: &WorkspacePinAttemptV1,
+    ) -> Result<(), StorageStateError> {
+        let creation = self
+            .records
+            .get(&attempt.creation_operation_id())
+            .filter(|record| record.phase == DurableStoragePhase::Committed)
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let result = creation
+            .result
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let intent = self
+            .publication_intents
+            .get(&creation.operation_id)
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let creation_catalog =
+            ResolvedCatalogCommitmentV1::from_canonical_bytes(&creation.catalog_bytes)
+                .map_err(|_| StorageStateError::CorruptRecord)?;
+        let creation_dataset_name = match creation_catalog.plan() {
+            CatalogPlanV1::CreateWorkspace { destination, .. }
+            | CatalogPlanV1::Clone { destination, .. } => destination.name(),
+            _ => return Err(StorageStateError::AuthorityLinkMismatch),
+        };
+        if result.catalog() != attempt.creation_result_catalog()
+            || result.result_digest() != attempt.creation_result_digest()
+            || result.storage_handle() != Some(attempt.workspace_handle())
+            || result.object_guid() != Some(attempt.dataset_guid())
+            || creation_dataset_name != attempt.dataset_name()
+            || intent.assignment_digest() != attempt.workspace_assignment_digest()
+            || intent.identity_range_start() != attempt.identity_range_start()
+            || intent.identity_range_size() != attempt.identity_range_size()
+            || self.operation_fence_digest(attempt.effect_operation_id())?
+                != attempt.operation_fence_digest()
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        match attempt.action() {
+            WorkspacePinActionV1::Ensure
+                if attempt.effect_operation_id() == attempt.creation_operation_id()
+                    && attempt.effect_assignment_digest()
+                        == attempt.workspace_assignment_digest() =>
+            {
+                Ok(())
+            }
+            WorkspacePinActionV1::Ensure => Err(StorageStateError::AuthorityLinkMismatch),
+            WorkspacePinActionV1::RemoveAndDestroy => {
+                let destruction = self
+                    .records
+                    .get(&attempt.effect_operation_id())
+                    .ok_or(StorageStateError::MissingAuthorityLink)?;
+                let catalog =
+                    ResolvedCatalogCommitmentV1::from_canonical_bytes(&destruction.catalog_bytes)
+                        .map_err(|_| StorageStateError::CorruptRecord)?;
+                let CatalogPlanV1::DestroyDataset { dataset } = catalog.plan() else {
+                    return Err(StorageStateError::AuthorityLinkMismatch);
+                };
+                if !matches!(
+                    destruction.phase,
+                    DurableStoragePhase::Prepared
+                        | DurableStoragePhase::Ambiguous
+                        | DurableStoragePhase::Committed
+                ) || dataset.name() != attempt.dataset_name()
+                    || dataset.guid() != attempt.dataset_guid()
+                    || dataset.storage_handle() != attempt.workspace_handle()
+                    || attempt.expected_pin().is_none()
+                {
+                    return Err(StorageStateError::AuthorityLinkMismatch);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn preflight_pin_attempt(
+        &self,
+        attempt: &WorkspacePinAttemptV1,
+    ) -> Result<(), StorageStateError> {
+        let ambiguous = JournalTransaction::new(
+            pin_attempt_transaction_id(attempt),
+            vec![attempt_record(attempt, self.key.key_id, &self.key.secret)?],
+        )?;
+        let satisfied = self.pin_satisfied_capacity_transaction(attempt)?;
+        self.journal
+            .preflight_transactions(&[ambiguous, satisfied])?;
+        Ok(())
+    }
+
+    fn pin_satisfied_capacity_transaction(
+        &self,
+        attempt: &WorkspacePinAttemptV1,
+    ) -> Result<JournalTransaction, StorageStateError> {
+        let completion = attempt.capacity_completion()?;
+        JournalTransaction::new(
+            pin_attempt_transaction_id(&completion),
+            vec![attempt_record(
+                &completion,
+                self.key.key_id,
+                &self.key.secret,
+            )?],
+        )
+        .map_err(Into::into)
     }
 
     pub(crate) fn ensure_authority_readable(&self) -> Result<(), StorageStateError> {
@@ -1912,8 +2433,10 @@ const fn journal_limits() -> JournalLimits {
         maximum_transactions: 65_536,
         maximum_materialized_bytes: MAXIMUM_JOURNAL_RECORD_BYTES
             * (MAXIMUM_OPERATIONS * MATERIALIZED_RECORDS_PER_OPERATION
+                + MAXIMUM_OPERATIONS * MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE as usize
                 + GLOBAL_MATERIALIZED_RECORDS),
         maximum_materialized_records: MAXIMUM_OPERATIONS * MATERIALIZED_RECORDS_PER_OPERATION
+            + MAXIMUM_OPERATIONS * MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE as usize
             + GLOBAL_MATERIALIZED_RECORDS,
     }
 }
@@ -2036,6 +2559,23 @@ fn transaction_id(operation_id: [u8; 16], phase: DurableStoragePhase) -> [u8; 16
     hash.update(RECORD_DOMAIN);
     hash.update(operation_id);
     hash.update([phase_code(phase)]);
+    let digest: [u8; 32] = hash.finalize().into();
+    let mut id = [0; 16];
+    id.copy_from_slice(&digest[..16]);
+    if id == [0; 16] {
+        id[15] = 1;
+    }
+    id
+}
+
+fn pin_attempt_transaction_id(attempt: &WorkspacePinAttemptV1) -> [u8; 16] {
+    let mut hash = Sha256::new();
+    hash.update(b"aos.sandbox.storage.workspace-pin-transaction.v1\0");
+    hash.update(attempt.attempt_id());
+    hash.update([match attempt.phase() {
+        WorkspacePinAttemptPhaseV1::Ambiguous => 1,
+        WorkspacePinAttemptPhaseV1::Satisfied => 2,
+    }]);
     let digest: [u8; 32] = hash.finalize().into();
     let mut id = [0; 16];
     id.copy_from_slice(&digest[..16]);
@@ -2312,6 +2852,11 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::broker::FreshWorkspacePinAuthority;
+    use crate::workspace_pin::{
+        WorkspaceDatasetObservationV1, WorkspacePinHostScopeV1, WorkspacePinObservationV1,
+        WorkspacePinRecoveryDispositionV1, WorkspaceRootPinProofV1,
+    };
     use crate::{
         ActiveHoldEvidence, CatalogPlanV1, HoldId, ManagedDatasetRoot, PlannedDataset,
         PlannedSnapshot, ProjectAncestorPolicyV1, ReservationPolicy, ResolvedDataset,
@@ -2465,6 +3010,136 @@ mod tests {
                 std::slice::from_ref(catalog),
             )
             .unwrap();
+    }
+
+    fn workspace_pin_proof(
+        workspace_handle: [u8; 32],
+        dataset_name: &str,
+        dataset_guid: u64,
+    ) -> WorkspaceRootPinProofV1 {
+        use std::fmt::Write as _;
+
+        let mut mount_point = "/run/aos/sandbox-pins/workspaces/".to_owned();
+        for byte in workspace_handle {
+            write!(mount_point, "{byte:02x}").unwrap();
+        }
+
+        WorkspaceRootPinProofV1::new(
+            [4; 16],
+            5,
+            6,
+            7,
+            "/".to_owned(),
+            mount_point,
+            "zfs".to_owned(),
+            dataset_name.to_owned(),
+            dataset_guid,
+            8,
+            9,
+        )
+        .unwrap()
+    }
+
+    fn prepare_workspace_remove_attempt(
+        store: &mut StorageTransactionStore,
+    ) -> (WorkspacePinAttemptV1, ObjectDigest) {
+        let create = catalog(7, "tank/aos/project/work");
+        initialize(store, &create);
+        let create_operation = [101; 16];
+        let intent = publication_intent(create_operation, &create, 102);
+        let assignment_digest = intent.assignment_digest();
+        let BeginStorageTransaction::Prepared { mutation_digest } = store
+            .begin_authorized_with_publication(
+                create_operation,
+                digest(103),
+                &create,
+                [104; 16],
+                [105; 16],
+                vec![1; 8],
+                vec![2; 8],
+                vec![3; 8],
+                Some(intent),
+            )
+            .unwrap()
+        else {
+            panic!("workspace creation fixture was not prepared")
+        };
+        store
+            .mark_mutation_ambiguous(create_operation, mutation_digest)
+            .unwrap();
+        let creation = store
+            .commit_observed(
+                create_operation,
+                mutation_digest,
+                &create,
+                &create.plan().postcondition(),
+                Some(101),
+                digest(106),
+            )
+            .unwrap();
+        let host_scope = WorkspacePinHostScopeV1::new([4; 16], 5, 6).unwrap();
+        let ensure = store
+            .plan_workspace_pin_ensure(creation, assignment_digest, host_scope, [10; 16], 1_000)
+            .unwrap();
+        store
+            .begin_workspace_pin_attempt(
+                ensure.clone(),
+                FreshWorkspacePinAuthority::new_for_test(
+                    ensure.attempt_id(),
+                    ensure.authority_digest().unwrap(),
+                ),
+            )
+            .unwrap();
+        let proof = workspace_pin_proof(
+            creation.storage_handle().unwrap(),
+            "tank/aos/project/work",
+            101,
+        );
+        store
+            .complete_workspace_pin_attempt(
+                ensure.attempt_id(),
+                &WorkspaceDatasetObservationV1::Exact {
+                    name: "tank/aos/project/work".to_owned(),
+                    guid: 101,
+                },
+                &WorkspacePinObservationV1::Present(proof.clone()),
+            )
+            .unwrap();
+
+        let destroy = destroy_dataset_catalog(
+            9,
+            "tank/aos/project/work",
+            101,
+            creation.storage_handle().unwrap(),
+        );
+        let destroy_operation = [107; 16];
+        let BeginStorageTransaction::Prepared { mutation_digest } = store
+            .begin_authorized_with_publication(
+                destroy_operation,
+                digest(108),
+                &destroy,
+                [104; 16],
+                [109; 16],
+                vec![4; 8],
+                vec![5; 8],
+                vec![6; 8],
+                None,
+            )
+            .unwrap()
+        else {
+            panic!("workspace destruction fixture was not prepared")
+        };
+        let remove = store
+            .plan_workspace_pin_remove_and_destroy(
+                destroy_operation,
+                digest(110),
+                host_scope,
+                [10; 16],
+                1_000,
+                proof,
+            )
+            .unwrap();
+        (remove, mutation_digest)
     }
 
     #[test]
@@ -3081,6 +3756,40 @@ mod tests {
                 digest(66),
             )
             .unwrap();
+        assert!(store.workspace_projection().unwrap().is_empty());
+
+        let host_scope = WorkspacePinHostScopeV1::new([4; 16], 5, 6).unwrap();
+        let ensure = store
+            .plan_workspace_pin_ensure(
+                creation,
+                publication_intent(create_operation, &create, 65).assignment_digest(),
+                host_scope,
+                [10; 16],
+                1_000,
+            )
+            .unwrap();
+        let ensure_authority = FreshWorkspacePinAuthority::new_for_test(
+            ensure.attempt_id(),
+            ensure.authority_digest().unwrap(),
+        );
+        store
+            .begin_workspace_pin_attempt(ensure.clone(), ensure_authority)
+            .unwrap();
+        let proof = workspace_pin_proof(
+            creation.storage_handle().unwrap(),
+            "tank/aos/project/work",
+            101,
+        );
+        store
+            .complete_workspace_pin_attempt(
+                ensure.attempt_id(),
+                &WorkspaceDatasetObservationV1::Exact {
+                    name: "tank/aos/project/work".to_owned(),
+                    guid: 101,
+                },
+                &WorkspacePinObservationV1::Present(proof.clone()),
+            )
+            .unwrap();
         assert_eq!(
             store.workspace_projection().unwrap(),
             vec![StorageWorkspaceProjection::Active(creation)]
@@ -3094,15 +3803,48 @@ mod tests {
         );
         let destroy_operation = [67; 16];
         let BeginStorageTransaction::Prepared { mutation_digest } = store
-            .begin(destroy_operation, digest(68), &destroy)
+            .begin_authorized_with_publication(
+                destroy_operation,
+                digest(68),
+                &destroy,
+                [70; 16],
+                [71; 16],
+                vec![4; 8],
+                vec![5; 8],
+                vec![6; 8],
+                None,
+            )
             .unwrap()
         else {
             panic!("managed workspace destruction was not prepared")
         };
-        store
-            .mark_mutation_ambiguous(destroy_operation, mutation_digest)
+        let remove = store
+            .plan_workspace_pin_remove_and_destroy(
+                destroy_operation,
+                digest(72),
+                host_scope,
+                [10; 16],
+                1_000,
+                proof,
+            )
             .unwrap();
-        let retirement = store
+        assert_eq!(remove.attempt_ordinal(), 2);
+        let remove_authority = FreshWorkspacePinAuthority::new_for_test(
+            remove.attempt_id(),
+            remove.authority_digest().unwrap(),
+        );
+        assert!(matches!(
+            store
+                .begin_workspace_pin_remove_and_destroy(
+                    remove.clone(),
+                    mutation_digest,
+                    remove_authority,
+                )
+                .unwrap(),
+            BeginWorkspacePinAttemptV1::Dispatch(_)
+        ));
+        assert!(store.workspace_projection().unwrap().is_empty());
+        store
             .commit_observed(
                 destroy_operation,
                 mutation_digest,
@@ -3112,6 +3854,22 @@ mod tests {
                 digest(69),
             )
             .unwrap();
+        assert!(store.workspace_projection().unwrap().is_empty());
+        assert_eq!(
+            store
+                .complete_workspace_pin_attempt(
+                    remove.attempt_id(),
+                    &WorkspaceDatasetObservationV1::Absent,
+                    &WorkspacePinObservationV1::Absent,
+                )
+                .unwrap(),
+            WorkspacePinRecoveryDispositionV1::CompleteRetirement
+        );
+        let retirement = store
+            .records
+            .get(&destroy_operation)
+            .and_then(|record| record.result)
+            .unwrap();
         assert_eq!(
             store.workspace_projection().unwrap(),
             vec![StorageWorkspaceProjection::Retired {
@@ -3119,6 +3877,306 @@ mod tests {
                 retirement,
             }]
         );
+    }
+
+    #[test]
+    fn pin_ensure_attempt_is_durable_before_dispatch_and_recovery_is_observation_only() {
+        let directory = TempDir::new().unwrap();
+        let create = catalog(7, "tank/aos/project/work");
+        let mut store =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        initialize(&mut store, &create);
+        let operation_id = [91; 16];
+        let intent = publication_intent(operation_id, &create, 92);
+        let assignment_digest = intent.assignment_digest();
+        let BeginStorageTransaction::Prepared { mutation_digest } = store
+            .begin_authorized_with_publication(
+                operation_id,
+                digest(93),
+                &create,
+                [94; 16],
+                [95; 16],
+                vec![1; 8],
+                vec![2; 8],
+                vec![3; 8],
+                Some(intent),
+            )
+            .unwrap()
+        else {
+            panic!("managed workspace creation was not prepared")
+        };
+        store
+            .mark_mutation_ambiguous(operation_id, mutation_digest)
+            .unwrap();
+        let creation = store
+            .commit_observed(
+                operation_id,
+                mutation_digest,
+                &create,
+                &create.plan().postcondition(),
+                Some(101),
+                digest(96),
+            )
+            .unwrap();
+        let host_scope = WorkspacePinHostScopeV1::new([4; 16], 5, 6).unwrap();
+        let attempt = store
+            .plan_workspace_pin_ensure(creation, assignment_digest, host_scope, [10; 16], 1_000)
+            .unwrap();
+        let authority = FreshWorkspacePinAuthority::new_for_test(
+            attempt.attempt_id(),
+            attempt.authority_digest().unwrap(),
+        );
+        let before = store.journal_sequence_for_test();
+        assert!(matches!(
+            store
+                .begin_workspace_pin_attempt(attempt.clone(), authority)
+                .unwrap(),
+            BeginWorkspacePinAttemptV1::Dispatch(_)
+        ));
+        assert!(store.journal_sequence_for_test() > before);
+
+        drop(store);
+        let mut store =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        let recovered_attempts = store.workspace_pin_attempts().unwrap();
+        assert_eq!(recovered_attempts.len(), 1);
+        assert_eq!(
+            recovered_attempts[0].phase(),
+            WorkspacePinAttemptPhaseV1::Ambiguous
+        );
+
+        let replay_authority = FreshWorkspacePinAuthority::new_for_test(
+            attempt.attempt_id(),
+            attempt.authority_digest().unwrap(),
+        );
+        let after_ambiguous = store.journal_sequence_for_test();
+        assert!(matches!(
+            store
+                .begin_workspace_pin_attempt(attempt.clone(), replay_authority)
+                .unwrap(),
+            BeginWorkspacePinAttemptV1::ObserveOnly(_)
+        ));
+        assert_eq!(store.journal_sequence_for_test(), after_ambiguous);
+
+        let dataset = WorkspaceDatasetObservationV1::Exact {
+            name: "tank/aos/project/work".to_owned(),
+            guid: 101,
+        };
+        assert_eq!(
+            store
+                .complete_workspace_pin_attempt(
+                    attempt.attempt_id(),
+                    &dataset,
+                    &WorkspacePinObservationV1::Absent,
+                )
+                .unwrap(),
+            WorkspacePinRecoveryDispositionV1::AwaitFreshRepair
+        );
+        assert_eq!(store.journal_sequence_for_test(), after_ambiguous);
+
+        let proof = workspace_pin_proof(
+            creation.storage_handle().unwrap(),
+            "tank/aos/project/work",
+            101,
+        );
+        assert_eq!(
+            store
+                .complete_workspace_pin_attempt(
+                    attempt.attempt_id(),
+                    &dataset,
+                    &WorkspacePinObservationV1::Present(proof.clone()),
+                )
+                .unwrap(),
+            WorkspacePinRecoveryDispositionV1::CompletePublication
+        );
+        drop(store);
+        let mut reopened =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        assert_eq!(
+            reopened
+                .complete_workspace_pin_attempt(
+                    attempt.attempt_id(),
+                    &dataset,
+                    &WorkspacePinObservationV1::Present(proof),
+                )
+                .unwrap(),
+            WorkspacePinRecoveryDispositionV1::CompletePublication
+        );
+    }
+
+    #[test]
+    fn combined_destroy_preflight_rejects_capacity_before_any_ambiguous_state() {
+        let reference = TempDir::new().unwrap();
+        let admitted_bytes = {
+            let mut store =
+                StorageTransactionStore::open_for_test(reference.path(), key(1), 0).unwrap();
+            let (attempt, mutation_digest) = prepare_workspace_remove_attempt(&mut store);
+            let authority = FreshWorkspacePinAuthority::new_for_test(
+                attempt.attempt_id(),
+                attempt.authority_digest().unwrap(),
+            );
+            assert!(matches!(
+                store
+                    .begin_workspace_pin_remove_and_destroy(attempt, mutation_digest, authority,)
+                    .unwrap(),
+                BeginWorkspacePinAttemptV1::Dispatch(_)
+            ));
+            fs::metadata(reference.path().join("storage-state.journal"))
+                .unwrap()
+                .len()
+        };
+
+        let directory = TempDir::new().unwrap();
+        let limits = JournalLimits {
+            maximum_journal_bytes: admitted_bytes,
+            ..journal_limits()
+        };
+        let mut store =
+            StorageTransactionStore::open_for_test_with_limits(directory.path(), key(1), 0, limits)
+                .unwrap();
+        let (attempt, mutation_digest) = prepare_workspace_remove_attempt(&mut store);
+        let authorized_attempt = attempt.with_authority_receipt(vec![0xa5]).unwrap();
+        let mut ambiguous = store
+            .exact_current(attempt.effect_operation_id(), mutation_digest)
+            .unwrap()
+            .clone();
+        ambiguous.phase = DurableStoragePhase::Ambiguous;
+        let initial_transaction = JournalTransaction::new(
+            pin_attempt_transaction_id(&authorized_attempt),
+            vec![
+                attempt_record(&authorized_attempt, store.key.key_id, &store.key.secret).unwrap(),
+                JournalRecord::put(
+                    RecordNamespace::Operation,
+                    ambiguous.operation_id.to_vec(),
+                    encode_record(&ambiguous, &store.key).unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+        assert!(
+            store
+                .journal
+                .preflight_transactions(std::slice::from_ref(&initial_transaction))
+                .is_ok()
+        );
+
+        let before_sequence = store.journal_sequence_for_test();
+        let prior_attempts = store.workspace_pin_attempts().unwrap();
+        let authority = FreshWorkspacePinAuthority::new_for_test(
+            attempt.attempt_id(),
+            attempt.authority_digest().unwrap(),
+        );
+        assert!(matches!(
+            store.begin_workspace_pin_remove_and_destroy(
+                attempt.clone(),
+                mutation_digest,
+                authority,
+            ),
+            Err(StorageStateError::Journal(JournalError::JournalTooLarge))
+        ));
+        assert_eq!(store.journal_sequence_for_test(), before_sequence);
+        assert_eq!(store.workspace_pin_attempts().unwrap(), prior_attempts);
+        assert_eq!(
+            store.phase(attempt.effect_operation_id()).unwrap(),
+            Some(DurableStoragePhase::Prepared)
+        );
+    }
+
+    #[test]
+    fn remove_uses_latest_satisfied_pin_ordinal_not_attempt_id_order() {
+        let directory = TempDir::new().unwrap();
+        let mut store =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        let (_initial_remove, _) = prepare_workspace_remove_attempt(&mut store);
+        let first = store
+            .workspace_pin_attempts()
+            .unwrap()
+            .into_iter()
+            .find(|attempt| attempt.action() == WorkspacePinActionV1::Ensure)
+            .unwrap();
+        let second_attempt_id = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        assert!(second_attempt_id < first.attempt_id());
+
+        let mut mount_point = "/run/aos/sandbox-pins/workspaces/".to_owned();
+        for byte in first.workspace_handle() {
+            use std::fmt::Write as _;
+            write!(mount_point, "{byte:02x}").unwrap();
+        }
+        let latest_proof = WorkspaceRootPinProofV1::new(
+            first.host_boot_id(),
+            first.host_mount_namespace_device(),
+            first.host_mount_namespace_inode(),
+            17,
+            "/".to_owned(),
+            mount_point,
+            "zfs".to_owned(),
+            first.dataset_name().to_owned(),
+            first.dataset_guid(),
+            18,
+            19,
+        )
+        .unwrap();
+        let latest = WorkspacePinAttemptV1::new_ambiguous(
+            second_attempt_id,
+            2,
+            WorkspacePinActionV1::Ensure,
+            first.effect_operation_id(),
+            first.creation_operation_id(),
+            first.operation_fence_digest(),
+            first.effect_assignment_digest(),
+            first.workspace_assignment_digest(),
+            first.creation_result_catalog(),
+            first.creation_result_digest(),
+            first.workspace_handle(),
+            first.host_boot_id(),
+            first.host_mount_namespace_device(),
+            first.host_mount_namespace_inode(),
+            first.clock_provenance(),
+            first.effect_deadline_boottime_nanoseconds(),
+            first.dataset_name().to_owned(),
+            first.dataset_guid(),
+            first.identity_range_start(),
+            first.identity_range_size(),
+            None,
+        )
+        .unwrap()
+        .with_authority_receipt(vec![0xa6])
+        .unwrap()
+        .satisfy(Some(latest_proof.clone()))
+        .unwrap();
+        store.validate_pin_attempt_context(&latest).unwrap();
+        let transaction = JournalTransaction::new(
+            pin_attempt_transaction_id(&latest),
+            vec![attempt_record(&latest, store.key.key_id, &store.key.secret).unwrap()],
+        )
+        .unwrap();
+        store.commit_journal(&transaction).unwrap();
+        store.pin_attempts.insert(latest.attempt_id(), latest);
+
+        let destroy_operation = [107; 16];
+        let planned = store
+            .plan_workspace_pin_remove_and_destroy(
+                destroy_operation,
+                digest(110),
+                WorkspacePinHostScopeV1::new([4; 16], 5, 6).unwrap(),
+                [10; 16],
+                1_000,
+                latest_proof.clone(),
+            )
+            .unwrap();
+        assert_eq!(planned.attempt_ordinal(), 3);
+        assert_eq!(planned.expected_pin(), Some(&latest_proof));
+        assert!(matches!(
+            store.plan_workspace_pin_remove_and_destroy(
+                destroy_operation,
+                digest(110),
+                WorkspacePinHostScopeV1::new([4; 16], 5, 6).unwrap(),
+                [10; 16],
+                1_000,
+                first.satisfied_pin().unwrap().clone(),
+            ),
+            Err(StorageStateError::AuthorityLinkMismatch)
+        ));
     }
 
     #[test]
