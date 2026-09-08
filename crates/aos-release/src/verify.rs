@@ -721,7 +721,7 @@ pub(crate) mod tests {
                 release_id: "preceding-snapshot".into(),
                 manifest_digest: digest("predecessor"),
             });
-        plan.gates = policy.gates(plan.release_class)?;
+        plan.gates = policy.gates(&plan.registry, plan.release_class)?;
         plan.public_evidence_policy_digest = policy.digest()?;
         plan.qualification = Some(policy);
         for platform in Platform::LINUX {
@@ -1080,6 +1080,30 @@ pub(crate) mod tests {
         assert!(admission.validate(&plan, "2026-08-31T23:59:59Z").is_err());
         admission.plan_digest = digest("another plan");
         assert!(admission.validate(&plan, "2026-09-01T00:00:00Z").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn assurance_admission_cannot_follow_a_lighter_software_channel() -> anyhow::Result<()> {
+        use crate::qualification_admission::verify_reviews;
+
+        let (mut plan, _) = qualification_fixture()?;
+        for class in [
+            ReleaseClass::Edge,
+            ReleaseClass::Candidate,
+            ReleaseClass::Stable,
+        ] {
+            plan.release_class = class;
+            plan.registry = "andyl/main".into();
+            assert!(verify_reviews(&plan, b"observations", &[], &[]).is_err());
+
+            let contract = plan.qualification.as_ref().unwrap();
+            plan.gates = contract.gates("andyl/testing", class)?;
+            assert!(contract.validate_plan(&plan).is_err());
+
+            plan.registry = "andyl/testing".into();
+            assert!(verify_reviews(&plan, b"observations", &[], &[]).is_ok());
+        }
         Ok(())
     }
 
