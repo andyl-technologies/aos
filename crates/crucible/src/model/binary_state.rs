@@ -129,12 +129,21 @@ impl<'a> ScenarioBinaryReader<'a> {
     ) -> Result<usize, EngineError> {
         let count = self.read_count()?;
         if count > MAX_SCENARIO_BINARY_COLLECTION_ITEMS {
-            Err(scenario_serialization_error(format!(
+            return Err(scenario_serialization_error(format!(
                 "{label} count exceeds serialized collection limit"
-            )))
-        } else {
-            Ok(count)
+            )));
         }
+
+        // Every collection element has at least one encoded byte. Bound the
+        // eager Vec reservation by the bytes that remain before allocating.
+        let remaining_bytes = self.bytes.len().saturating_sub(self.offset);
+        if count > remaining_bytes {
+            return Err(scenario_serialization_error(format!(
+                "{label} count exceeds remaining binary input"
+            )));
+        }
+
+        Ok(count)
     }
 
     pub(super) fn read_string(&mut self) -> Result<String, EngineError> {

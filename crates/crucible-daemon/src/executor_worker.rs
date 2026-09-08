@@ -17,17 +17,25 @@ use crucible_campaign::{
 use crucible_cas::content_store::ObjectKind;
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
+const MAX_SELECTED_ORIGIN_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_CONFIGURATION_ARTIFACT_LOAD_BYTES: u64 = 32 * 1024 * 1024 + 1024;
+const SELECTED_ORIGIN_STRUCTURAL_BYTES: u64 = 4096;
 
 use crate::exact_checkpoint_store::AttemptCheckpointResultState;
 use crate::executor_supervisor::ExecutionCheckpointHandoff;
 use crate::{
     AssignmentLedger, AttemptAdmissionValidator, AttemptCheckpointPublication,
-    AttemptCheckpointResult, CancellationOutcome, CapturedAttemptCheckpoint,
-    CheckpointCompletionOutcome, CheckpointHandoffFailure, CheckpointPublicationOutcome,
-    CompletionOutcome, DirectoryPreparedResultJournal, ExactCheckpointStore,
-    ExactCheckpointStoreError, ExecutionCancellation, ExecutionCheckpointRequest,
-    LocalExecutorError, LocalExecutorSupervisor, ObservationPublicationOutcome,
-    PreparedAttemptCheckpoint, PreparedCrucibleFindingCandidate,
+    AttemptCheckpointResult, AttemptExecutionOrigin, CancellationOutcome,
+    CapturedAttemptCheckpoint, CheckpointCompletionOutcome, CheckpointHandoffFailure,
+    CheckpointPublicationOutcome, CompletionOutcome, DirectoryPreparedResultJournal,
+    ExactCheckpointStore, ExactCheckpointStoreError, ExecutionCancellation,
+    ExecutionCheckpointRequest, LocalExecutorError, LocalExecutorSupervisor,
+    ObservationPublicationOutcome, PreparedAttemptCheckpoint, PreparedCrucibleFindingCandidate,
     PreparedResultJournalCreateDisposition, PreparedResultJournalError,
     PreparedSemanticAttemptResult, PreparedSemanticResultCodecError, QueuedAttempt,
     TerminalFailureOutcome,
@@ -48,6 +56,84 @@ pub enum ResolvedAttemptStart {
         /// Selection, opportunity, and effective domain authenticated together.
         selection: Box<ResolvedSelection>,
     },
+    /// Replays an authenticated attempt ancestry to one selected boundary.
+    AfterAttempt {
+        /// Oldest discovery or branch start from which replay begins.
+        base: Box<ResolvedAttemptStart>,
+        /// Origin attempts and their claimed reached boundaries, oldest first.
+        origins: Box<ResolvedAttemptOrigins>,
+    },
+}
+
+impl ResolvedAttemptStart {
+    /// Returns the exact artifact at the semantic execution boundary.
+    #[must_use]
+    pub fn configuration(&self) -> &ConfigurationArtifact {
+        match self {
+            Self::Discover { configuration } => configuration,
+            Self::Branch { parent, .. } => parent,
+            Self::AfterAttempt { origins, .. } => origins.last().reached(),
+        }
+    }
+}
+
+/// Nonempty oldest-first selected continuation ancestry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedAttemptOrigins {
+    first: ResolvedAttemptOrigin,
+    rest: Vec<ResolvedAttemptOrigin>,
+}
+
+impl ResolvedAttemptOrigins {
+    /// Binds one required origin and any later descendants.
+    #[must_use]
+    pub fn new(first: ResolvedAttemptOrigin, rest: Vec<ResolvedAttemptOrigin>) -> Self {
+        Self { first, rest }
+    }
+
+    /// Returns the final origin that establishes the semantic start boundary.
+    #[must_use]
+    pub fn last(&self) -> &ResolvedAttemptOrigin {
+        self.rest.last().unwrap_or(&self.first)
+    }
+
+    /// Iterates through origins from the authenticated base toward the boundary.
+    pub fn iter(&self) -> impl Iterator<Item = &ResolvedAttemptOrigin> {
+        std::iter::once(&self.first).chain(self.rest.iter())
+    }
+
+    /// Returns the number of retained origin attempts.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        1 + self.rest.len()
+    }
+
+    /// Returns false because a selected continuation always has an origin.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        false
+    }
+}
+
+/// One origin attempt paired with the boundary it claims to have reached.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedAttemptOrigin {
+    attempt: Attempt,
+    reached: ConfigurationArtifact,
+}
+
+impl ResolvedAttemptOrigin {
+    /// Returns the immutable origin attempt whose stop must be replayed.
+    #[must_use]
+    pub const fn attempt(&self) -> &Attempt {
+        &self.attempt
+    }
+
+    /// Returns the exact claimed configuration at the origin stop.
+    #[must_use]
+    pub const fn reached(&self) -> &ConfigurationArtifact {
+        &self.reached
+    }
 }
 
 /// Immutable repository-resolved input for one local guest execution.
@@ -139,25 +225,136 @@ pub fn resolve_attempt_execution_input(
     store: &CampaignExecutorStore,
     key: crate::AttemptExecutionKey,
 ) -> Result<AttemptExecutionInput, CampaignRepositoryError> {
+    resolve_attempt_execution_input_with_origin_limit(
+        store,
+        key,
+        MAX_SELECTED_ORIGIN_ARTIFACT_BYTES,
+    )
+}
+
+/// Resolves one attempt while charging retained origin artifacts to its memory ceiling.
+///
+/// # Errors
+///
+/// Returns the same errors as [`resolve_attempt_execution_input`] and rejects
+/// continuation ancestry whose aggregate payload exceeds the admitted resident
+/// byte limit.
+pub fn resolve_attempt_execution_input_with_resources(
+    store: &CampaignExecutorStore,
+    key: crate::AttemptExecutionKey,
+    resources: AttemptResourceLimits,
+) -> Result<AttemptExecutionInput, CampaignRepositoryError> {
+    resolve_attempt_execution_input_with_origin_limit(
+        store,
+        key,
+        resources.maximum_resident_bytes(),
+    )
+}
+
+fn resolve_attempt_execution_input_with_origin_limit(
+    store: &CampaignExecutorStore,
+    key: crate::AttemptExecutionKey,
+    maximum_resident_bytes: u64,
+) -> Result<AttemptExecutionInput, CampaignRepositoryError> {
     let lineage = store.load_lineage(key.lineage())?;
     let scenario = store.load_scenario_artifact(lineage.scenario_content())?;
-    let attempt = store.load_attempt(key.attempt())?;
+    let mut attempt_chain = store.load_attempt_origin_chain(key.attempt())?;
+    let attempt = attempt_chain
+        .first()
+        .cloned()
+        .ok_or(CampaignRepositoryError::Integrity {
+            reason: "attempt-origin-chain-is-empty",
+        })?;
     let path = store.load_branch_path(attempt.path())?;
+    let mut origin_bytes = 0_u64;
     let start = match attempt.start() {
-        AttemptStart::Discover { configuration } => ResolvedAttemptStart::Discover {
-            configuration: store.load_configuration_artifact(configuration)?,
-        },
+        AttemptStart::Discover { configuration } => {
+            let configuration = store.load_configuration_artifact(configuration)?;
+            ResolvedAttemptStart::Discover { configuration }
+        }
         AttemptStart::Branch {
             parent, selection, ..
-        } => ResolvedAttemptStart::Branch {
-            parent: store.load_configuration_artifact(parent)?,
-            selection: Box::new(store.resolve_selection(selection)?),
-        },
+        } => {
+            let parent = store.load_configuration_artifact(parent)?;
+            ResolvedAttemptStart::Branch {
+                parent,
+                selection: Box::new(store.resolve_selection(selection)?),
+            }
+        }
+        AttemptStart::AfterAttempt { .. } => {
+            let maximum_origin_bytes = maximum_resident_bytes
+                .min(MAX_SELECTED_ORIGIN_ARTIFACT_BYTES)
+                .checked_sub(MAX_CONFIGURATION_ARTIFACT_LOAD_BYTES)
+                .ok_or(CampaignRepositoryError::InvalidRequest {
+                    reason: "selected-origin-resident-limit-cannot-load-one-artifact",
+                })?;
+            let base_attempt = attempt_chain
+                .pop()
+                .ok_or(CampaignRepositoryError::Integrity {
+                    reason: "attempt-origin-chain-is-empty",
+                })?;
+            let base = match base_attempt.start() {
+                AttemptStart::Discover { configuration } => {
+                    let configuration = store.load_configuration_artifact(configuration)?;
+                    account_origin_artifact(
+                        &configuration,
+                        &mut origin_bytes,
+                        maximum_origin_bytes,
+                    )?;
+                    ResolvedAttemptStart::Discover { configuration }
+                }
+                AttemptStart::Branch {
+                    parent, selection, ..
+                } => {
+                    let parent = store.load_configuration_artifact(parent)?;
+                    account_origin_artifact(&parent, &mut origin_bytes, maximum_origin_bytes)?;
+                    ResolvedAttemptStart::Branch {
+                        parent,
+                        selection: Box::new(store.resolve_selection(selection)?),
+                    }
+                }
+                AttemptStart::AfterAttempt { .. } => {
+                    return Err(CampaignRepositoryError::Integrity {
+                        reason: "attempt-origin-chain-has-no-base",
+                    });
+                }
+            };
+            let mut origins = Vec::with_capacity(attempt_chain.len());
+            let mut origin_attempt = base_attempt;
+            for descendant in attempt_chain.into_iter().rev() {
+                let AttemptStart::AfterAttempt { origin, reached } = descendant.start() else {
+                    return Err(CampaignRepositoryError::Integrity {
+                        reason: "attempt-origin-chain-has-interior-base",
+                    });
+                };
+                if origin_attempt.id()? != origin {
+                    return Err(CampaignRepositoryError::Integrity {
+                        reason: "attempt-origin-chain-link-mismatch",
+                    });
+                }
+                let reached = store.load_configuration_artifact(reached)?;
+                account_origin_artifact(&reached, &mut origin_bytes, maximum_origin_bytes)?;
+                origins.push(ResolvedAttemptOrigin {
+                    attempt: origin_attempt,
+                    reached,
+                });
+                origin_attempt = descendant;
+            }
+            let mut origins = origins.into_iter();
+            let first = origins.next().ok_or(CampaignRepositoryError::Integrity {
+                reason: "attempt-origin-chain-has-no-boundary",
+            })?;
+            ResolvedAttemptStart::AfterAttempt {
+                base: Box::new(base),
+                origins: Box::new(ResolvedAttemptOrigins::new(first, origins.collect())),
+            }
+        }
     };
 
     let starting_configuration = match &start {
         ResolvedAttemptStart::Discover { configuration } => configuration,
         ResolvedAttemptStart::Branch { parent, .. } => parent,
+        ResolvedAttemptStart::AfterAttempt { origins, .. } => origins.last().reached(),
     };
     if starting_configuration.scenario() != lineage.scenario()
         || starting_configuration.scenario_artifact() != lineage.scenario_content()
@@ -173,6 +370,29 @@ pub fn resolve_attempt_execution_input(
             reason: "attempt-opportunity-lineage-mismatch",
         });
     }
+    if let ResolvedAttemptStart::AfterAttempt { base, origins } = &start {
+        let base_selection = match base.as_ref() {
+            ResolvedAttemptStart::Branch { selection, .. } => Some(selection),
+            ResolvedAttemptStart::Discover { .. } => None,
+            ResolvedAttemptStart::AfterAttempt { .. } => {
+                return Err(CampaignRepositoryError::Integrity {
+                    reason: "attempt-origin-chain-has-nested-base",
+                });
+            }
+        };
+        if base_selection
+            .is_some_and(|selection| selection.opportunity().scenario() != lineage.scenario())
+            || origins.iter().any(|origin| {
+                origin.reached().scenario() != lineage.scenario()
+                    || origin.reached().scenario_artifact() != lineage.scenario_content()
+                    || origin.attempt().path() != attempt.path()
+            })
+        {
+            return Err(CampaignRepositoryError::Integrity {
+                reason: "attempt-origin-chain-lineage-mismatch",
+            });
+        }
+    }
 
     Ok(AttemptExecutionInput {
         lineage,
@@ -181,6 +401,37 @@ pub fn resolve_attempt_execution_input(
         path,
         start,
     })
+}
+
+fn account_origin_artifact(
+    artifact: &ConfigurationArtifact,
+    total: &mut u64,
+    limit: u64,
+) -> Result<(), CampaignRepositoryError> {
+    let payload_bytes = u64::try_from(artifact.payload().len()).map_err(|_| {
+        CampaignRepositoryError::Integrity {
+            reason: "attempt-origin-artifact-byte-count-overflow",
+        }
+    })?;
+    // Decoded schedules and replay-plan prefixes are charged by the typed
+    // Crucible adapter. This phase retains only canonical envelopes and keeps
+    // headroom for one subsequent bounded artifact load.
+    let bytes = payload_bytes
+        .checked_add(SELECTED_ORIGIN_STRUCTURAL_BYTES)
+        .ok_or(CampaignRepositoryError::Integrity {
+            reason: "attempt-origin-artifact-byte-count-overflow",
+        })?;
+    *total = total
+        .checked_add(bytes)
+        .ok_or(CampaignRepositoryError::Integrity {
+            reason: "attempt-origin-artifact-byte-count-overflow",
+        })?;
+    if *total > limit {
+        return Err(CampaignRepositoryError::InvalidRequest {
+            reason: "attempt-origin-artifacts-exceed-resource-limit",
+        });
+    }
+    Ok(())
 }
 
 /// Operational limits, control state, and restore root for one guest execution.
@@ -207,12 +458,48 @@ pub struct AttemptExecutionContext {
     resume_checkpoint: Option<ExactCheckpointId>,
     checkpoint_scenario: Option<ContentHash>,
     checkpoint_handoff: Option<ExecutionCheckpointHandoff>,
+    execution_quanta: ExecutionQuantumBudget,
+    origin: AttemptExecutionOrigin,
 }
+
+/// Clone-shared physical-work budget for one execution incarnation.
+#[derive(Clone, Debug)]
+struct ExecutionQuantumBudget {
+    consumed: Arc<AtomicU64>,
+}
+
+impl ExecutionQuantumBudget {
+    fn new() -> Self {
+        Self {
+            consumed: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn consumed(&self) -> u64 {
+        self.consumed.load(Ordering::Acquire)
+    }
+
+    fn try_charge(&self, maximum: u64) -> Result<(), ExecutionQuantumBudgetError> {
+        self.consumed
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |consumed| {
+                (consumed < maximum)
+                    .then(|| consumed.checked_add(1))
+                    .flatten()
+            })
+            .map(|_| ())
+            .map_err(|_| ExecutionQuantumBudgetError)
+    }
+}
+
+/// The execution has no physical replay or driving quantum remaining.
+#[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
+#[error("execution exhausted its admitted physical quantum budget")]
+pub struct ExecutionQuantumBudgetError;
 
 impl AttemptExecutionContext {
     /// Creates an operational context without coordinator assignment identity.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         resources: AttemptResourceLimits,
         retention: ExecutionRetentionIntent,
         cancellation: ExecutionCancellation,
@@ -228,7 +515,70 @@ impl AttemptExecutionContext {
             resume_checkpoint: None,
             checkpoint_scenario: None,
             checkpoint_handoff: None,
+            execution_quanta: ExecutionQuantumBudget::new(),
+            origin: AttemptExecutionOrigin::Initial,
         }
+    }
+
+    /// Derives a non-capturing context for mandatory selected-origin replay.
+    ///
+    /// Cancellation and resource ceilings remain shared with the assignment.
+    /// A sticky checkpoint request is deferred until the semantic continuation
+    /// boundary has been independently reconstructed.
+    pub(crate) fn for_origin_replay(&self) -> Self {
+        let mut context = self.clone();
+        context.start_mode = AttemptStartMode::Execute;
+        context.checkpoint_request = ExecutionCheckpointRequest::default();
+        context.resume_checkpoint = None;
+        context.checkpoint_handoff = None;
+        context
+    }
+
+    /// Derives a cold execution context when the preferred selected source is absent.
+    ///
+    /// Only the physical restore input is cleared. The immutable selected-source
+    /// certificate remains available for provenance and retention, while the
+    /// cancellation signal, sticky checkpoint request, handoff, and physical
+    /// quantum budget remain shared with the accepted execution.
+    pub(crate) fn for_absent_selected_source(&self) -> Self {
+        let mut context = self.clone();
+        context.resume_checkpoint = None;
+        context
+    }
+
+    /// Charges one physical scheduler quantum to this execution incarnation.
+    pub(crate) fn charge_execution_quantum(&self) -> Result<(), ExecutionQuantumBudgetError> {
+        self.execution_quanta
+            .try_charge(self.resources.maximum_execution_quanta())
+    }
+
+    /// Returns physical work consumed across every lifecycle in this execution.
+    #[must_use]
+    pub(crate) fn consumed_execution_quanta(&self) -> u64 {
+        self.execution_quanta.consumed()
+    }
+
+    /// Returns the resource limits available to a newly launched process owner.
+    ///
+    /// The semantic ceiling remains available through [`Self::resources`]. A
+    /// second lifecycle used after independent replay receives only the
+    /// unspent quantum allowance.
+    pub(crate) fn process_resources(
+        &self,
+    ) -> Result<AttemptResourceLimits, ExecutionQuantumBudgetError> {
+        let remaining_quanta = self
+            .resources
+            .maximum_execution_quanta()
+            .checked_sub(self.consumed_execution_quanta())
+            .filter(|remaining| *remaining != 0)
+            .ok_or(ExecutionQuantumBudgetError)?;
+        AttemptResourceLimits::new(
+            self.resources.maximum_vcpus(),
+            self.resources.maximum_resident_bytes(),
+            self.resources.maximum_disk_bytes(),
+            remaining_quanta,
+        )
+        .map_err(|_| ExecutionQuantumBudgetError)
     }
 
     /// Attaches the exact process-local reservation owned by this execution.
@@ -262,12 +612,27 @@ impl AttemptExecutionContext {
 
     /// Attaches the exact durable root from which this execution must resume.
     #[must_use]
+    #[cfg(test)]
     pub(crate) const fn with_resume_checkpoint(
         mut self,
         checkpoint: Option<ExactCheckpointId>,
     ) -> Self {
         self.resume_checkpoint = checkpoint;
         self
+    }
+
+    /// Attaches the durable initial-source or later-resume certificate.
+    #[must_use]
+    pub(crate) const fn with_execution_origin(mut self, origin: AttemptExecutionOrigin) -> Self {
+        self.resume_checkpoint = origin.checkpoint();
+        self.origin = origin;
+        self
+    }
+
+    /// Returns the durable execution origin for routing and source validation.
+    #[must_use]
+    pub const fn execution_origin(&self) -> AttemptExecutionOrigin {
+        self.origin
     }
 
     pub(crate) fn with_checkpoint_handoff(
@@ -352,6 +717,8 @@ impl AttemptExecutionContext {
             && self.resources == other.resources
             && self.retention == other.retention
             && self.resume_checkpoint == other.resume_checkpoint
+            && self.consumed_execution_quanta() == other.consumed_execution_quanta()
+            && self.origin == other.origin
             && self.checkpoint_scenario == other.checkpoint_scenario
             && self.cancellation.same_incarnation(&other.cancellation)
             && self
@@ -587,6 +954,12 @@ pub enum RepositoryAttemptWorkerError<E> {
     /// Immutable campaign input or output publication failed validation.
     #[error(transparent)]
     Repository(#[from] CampaignRepositoryError),
+    /// Immutable replay preparation exceeds the admitted execution resources.
+    #[error("attempt execution resource refusal: {resource}")]
+    ResourceRefusal {
+        /// Stable resource category that refused preparation.
+        resource: &'static str,
+    },
     /// The execution-model adapter failed before publishing a completion.
     #[error("attempt execution model failed")]
     Model(#[source] E),
@@ -680,7 +1053,7 @@ where
             crate::AttemptExecutionKey::for_request(queued.request()),
             queued.execution(),
         ))
-        .with_resume_checkpoint(queued.origin().checkpoint())
+        .with_execution_origin(queued.origin())
         .with_checkpoint_handoff(expected_scenario, queued.checkpoint_handoff().cloned());
         let product = self
             .model
@@ -771,9 +1144,10 @@ where
         &self,
         request: &SubmitAttemptRequest,
     ) -> Result<AttemptExecutionInput, CampaignRepositoryError> {
-        resolve_attempt_execution_input(
+        resolve_attempt_execution_input_with_resources(
             &self.store,
             crate::AttemptExecutionKey::for_request(request),
+            request.resources(),
         )
     }
 }
@@ -801,16 +1175,22 @@ fn capture_start_validation_reason(
             Ok(None)
         }
         AttemptStartMode::SavepointCapture { configuration, .. } => {
-            let resolved = match start {
-                ResolvedAttemptStart::Discover { configuration } => configuration,
-                ResolvedAttemptStart::Branch { parent, .. } => parent,
-            };
+            let resolved = start.configuration();
             if resolved.id()? != configuration {
                 return Ok(Some(
                     "savepoint capture configuration differs from resolved attempt start",
                 ));
             }
             Ok(None)
+        }
+        AttemptStartMode::SelectedSavepoint { .. } => {
+            if matches!(start, ResolvedAttemptStart::AfterAttempt { .. }) {
+                Ok(None)
+            } else {
+                Ok(Some(
+                    "selected-savepoint start requires a continuation attempt",
+                ))
+            }
         }
     }
 }
@@ -849,6 +1229,17 @@ where
 fn repository_worker_failure<E>(
     error: CampaignRepositoryError,
 ) -> AttemptWorkerFailure<RepositoryAttemptWorkerError<E>> {
+    if matches!(
+        error,
+        CampaignRepositoryError::InvalidRequest {
+            reason: "selected-origin-resident-limit-cannot-load-one-artifact"
+                | "attempt-origin-artifacts-exceed-resource-limit"
+        }
+    ) {
+        return AttemptWorkerFailure::Terminal(RepositoryAttemptWorkerError::ResourceRefusal {
+            resource: "selected-origin-resident-bytes",
+        });
+    }
     let error = RepositoryAttemptWorkerError::Repository(error);
     match &error {
         RepositoryAttemptWorkerError::Repository(repository)
@@ -858,6 +1249,7 @@ fn repository_worker_failure<E>(
         }
         RepositoryAttemptWorkerError::Repository(_)
         | RepositoryAttemptWorkerError::Model(_)
+        | RepositoryAttemptWorkerError::ResourceRefusal { .. }
         | RepositoryAttemptWorkerError::IncompatibleResult { .. } => {
             AttemptWorkerFailure::Terminal(error)
         }

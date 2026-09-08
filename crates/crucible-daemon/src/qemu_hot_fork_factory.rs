@@ -63,6 +63,7 @@ impl QemuHotForkTemplateKey {
         let configuration = match input.start() {
             CrucibleResolvedAttemptStart::Discover { configuration } => configuration.id(),
             CrucibleResolvedAttemptStart::Branch { parent, .. } => parent.id(),
+            CrucibleResolvedAttemptStart::AfterAttempt { .. } => input.start().configuration().id(),
         };
         Self::new(runtime_basis.key().lineage(), configuration)
     }
@@ -487,6 +488,14 @@ where
         context: &AttemptExecutionContext,
         runtime_basis: AttemptExecutionRuntimeBasis,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
+        if matches!(
+            input.start(),
+            CrucibleResolvedAttemptStart::AfterAttempt { .. }
+        ) {
+            return Err(AttemptWorkerFailure::Terminal(
+                Self::Error::SelectedOriginUnsupported,
+            ));
+        }
         let lineage = input
             .lineage()
             .id()
@@ -608,6 +617,9 @@ pub enum FixedQemuHotForkTemplateFactoryError<E> {
     /// The resolved input lineage differed from the supervisor reservation.
     #[error("hot-fork input lineage differs from the supervisor reservation")]
     InputLineageMismatch,
+    /// Selected continuations require independent cold replay before realization.
+    #[error("fixed hot-fork worker cannot authenticate a selected continuation origin")]
+    SelectedOriginUnsupported,
     /// The worker's one source is active or was quarantined.
     #[error("fixed hot-fork worker has no reusable retained template")]
     TemplateUnavailable,

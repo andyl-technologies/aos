@@ -1700,6 +1700,18 @@ impl ExplainCampaignAttemptResponse {
                 }
                 Ok(())
             }
+            AttemptStart::AfterAttempt { .. } => {
+                if admission_proposal.is_some()
+                    || self.selection.is_some()
+                    || self.proposal.is_some()
+                    || self.proposal_proof.is_some()
+                {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "campaign continuation explanation carries branch provenance",
+                    });
+                }
+                Ok(())
+            }
             AttemptStart::Branch {
                 edge,
                 selection: selection_id,

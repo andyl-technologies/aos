@@ -1436,7 +1436,7 @@ impl CampaignRepository {
         let attempt = self.read_attempt(observation.attempt().content_id())?;
         let additional_selection = match attempt.start() {
             AttemptStart::Branch { selection, .. } => Some(selection),
-            AttemptStart::Discover { .. } => None,
+            AttemptStart::Discover { .. } | AttemptStart::AfterAttempt { .. } => None,
         };
         let proposed = self.proposed_values_before(
             view.exploration,

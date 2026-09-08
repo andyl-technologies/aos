@@ -111,6 +111,9 @@ impl QemuHotForkSourceWorldKey {
         let configuration = match input.start() {
             crate::CrucibleResolvedAttemptStart::Discover { configuration } => configuration.id(),
             crate::CrucibleResolvedAttemptStart::Branch { parent, .. } => parent.id(),
+            crate::CrucibleResolvedAttemptStart::AfterAttempt { .. } => {
+                input.start().configuration().id()
+            }
         };
         Ok(Self::new(
             lineage,
@@ -471,6 +474,12 @@ where
         context: &AttemptExecutionContext,
     ) -> Result<QemuHotForkWorldLifecycleStart<Self::Lifecycle>, AttemptWorkerFailure<Self::Error>>
     {
+        if matches!(
+            input.start(),
+            crate::CrucibleResolvedAttemptStart::AfterAttempt { .. }
+        ) {
+            return Ok(QemuHotForkWorldLifecycleStart::Declined);
+        }
         let runtime_basis = context
             .runtime_basis()
             .ok_or_else(|| AttemptWorkerFailure::Terminal(Self::Error::MissingRuntimeBasis))?;
@@ -934,6 +943,12 @@ where
                 QemuHotForkWorldExecutionRunnerError::PriorReconciliationPending,
             ));
         }
+        if matches!(
+            input.start(),
+            crate::CrucibleResolvedAttemptStart::AfterAttempt { .. }
+        ) {
+            return Ok(QemuHotForkWorldExecutionAttempt::Declined);
+        }
         let mut lifecycle = match self
             .factory
             .try_start(input, context)
@@ -963,6 +978,10 @@ where
                     crate::CrucibleResolvedAttemptStart::Branch {
                         parent, selected, ..
                     } => (parent, selected),
+                    crate::CrucibleResolvedAttemptStart::AfterAttempt { .. } => {
+                        let boundary = input.start().configuration();
+                        (boundary, boundary)
+                    }
                 };
                 let materialization =
                     crate::qemu_campaign_lifecycle::materialize_start_from::<F::Error, D::Error>(

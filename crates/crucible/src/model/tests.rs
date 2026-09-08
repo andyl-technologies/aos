@@ -3,6 +3,27 @@
 use super::*;
 
 #[test]
+fn compact_schedule_rejects_collection_reservations_larger_than_remaining_input() {
+    let mut outer = Schedule::empty().to_compact_binary();
+    let outer_count = outer.len() - std::mem::size_of::<u64>();
+    outer[outer_count..].copy_from_slice(&1_000_000_u64.to_le_bytes());
+    let error = Schedule::from_compact_binary(&outer)
+        .expect_err("a schedule count cannot reserve beyond its encoded input");
+    assert!(error.to_string().contains("remaining binary input"));
+
+    let schedule = Schedule::from_decisions([Decision::DeliveryOrder(DeliveryOrderDecision {
+        at: VirtualTime { ticks: 0 },
+        order: Vec::new(),
+    })]);
+    let mut nested = schedule.to_compact_binary();
+    let delivery_count = nested.len() - std::mem::size_of::<u64>();
+    nested[delivery_count..].copy_from_slice(&1_000_000_u64.to_le_bytes());
+    let error = Schedule::from_compact_binary(&nested)
+        .expect_err("a delivery-order count cannot reserve beyond its encoded input");
+    assert!(error.to_string().contains("remaining binary input"));
+}
+
+#[test]
 fn failure_findings_ledger_orders_signed_findings_and_rejects_conflicts() -> Result<(), EngineError>
 {
     let artifact_a = ContentHash::from_bytes(b"signed-finding-artifact-a");

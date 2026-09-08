@@ -18,6 +18,68 @@ use crate::{
 };
 
 #[test]
+fn execution_quantum_budget_is_shared_and_refuses_the_exact_exhausted_boundary() {
+    let resources = AttemptResourceLimits::new(1, 1024, 2048, 2).expect("resources");
+    let context = AttemptExecutionContext::new(
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        ExecutionCancellation::default(),
+        ExecutionCheckpointRequest::default(),
+    );
+    let replay_context = context.for_origin_replay();
+
+    replay_context
+        .charge_execution_quantum()
+        .expect("first replay quantum");
+    assert_eq!(context.consumed_execution_quanta(), 1);
+    assert_eq!(
+        context
+            .process_resources()
+            .expect("one remaining process quantum")
+            .maximum_execution_quanta(),
+        1
+    );
+
+    context
+        .charge_execution_quantum()
+        .expect("last admitted quantum");
+    assert_eq!(context.consumed_execution_quanta(), 2);
+    assert_eq!(
+        context.charge_execution_quantum(),
+        Err(ExecutionQuantumBudgetError)
+    );
+    assert_eq!(
+        context.process_resources(),
+        Err(ExecutionQuantumBudgetError)
+    );
+}
+
+#[test]
+fn execution_quantum_budget_refuses_saturated_accounting_without_wrapping() {
+    let resources = AttemptResourceLimits::new(1, 1024, 2048, u64::MAX).expect("resources");
+    let context = AttemptExecutionContext::new(
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        ExecutionCancellation::default(),
+        ExecutionCheckpointRequest::default(),
+    );
+    context
+        .execution_quanta
+        .consumed
+        .store(u64::MAX, Ordering::Release);
+
+    assert_eq!(
+        context.charge_execution_quantum(),
+        Err(ExecutionQuantumBudgetError)
+    );
+    assert_eq!(context.consumed_execution_quanta(), u64::MAX);
+    assert_eq!(
+        context.process_resources(),
+        Err(ExecutionQuantumBudgetError)
+    );
+}
+
+#[test]
 fn capture_start_validation_requires_the_exact_discovery_artifact() {
     let resolved = configuration_artifact(0x21);
     let resolved_id = resolved.id().expect("resolved configuration artifact ID");

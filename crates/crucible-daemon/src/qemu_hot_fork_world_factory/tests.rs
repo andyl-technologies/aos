@@ -574,6 +574,7 @@ impl InheritedBoundaryObservations {
 
 struct InheritedBoundaryLifecycle {
     runtime_basis: AttemptExecutionRuntimeBasis,
+    configuration: Configuration,
     start_events: Vec<SchedulerEventLogEntry>,
     completed_quanta: u64,
     frontier: crucible::VirtualTime,
@@ -665,6 +666,7 @@ impl QemuHotForkWorldLifecycleOwner for InheritedBoundaryLifecycle {
             .map(SchedulerEventLogEntry::canonical_material_len)
             .sum();
         Ok(crate::QemuFreshStartMaterialization::from_resume_parts(
+            self.configuration.clone(),
             self.start_events.clone(),
             event_log_bytes,
             self.completed_quanta,
@@ -697,13 +699,14 @@ impl QemuHotForkWorldLifecycleFactory for InheritedBoundaryLifecycleFactory {
 
     fn try_start(
         &mut self,
-        _input: &CrucibleAttemptExecution,
+        input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
     ) -> Result<QemuHotForkWorldLifecycleStart<Self::Lifecycle>, AttemptWorkerFailure<Self::Error>>
     {
         Ok(QemuHotForkWorldLifecycleStart::Started(
             InheritedBoundaryLifecycle {
                 runtime_basis: context.runtime_basis().expect("inherited runtime basis"),
+                configuration: input.start().configuration().clone(),
                 start_events: self.start_events.clone(),
                 completed_quanta: self.completed_quanta,
                 frontier: self.frontier,
@@ -1204,6 +1207,9 @@ fn run_branch_through_hot_world_runner(input: CrucibleAttemptExecution, expect_g
         ),
         crate::CrucibleResolvedAttemptStart::Discover { .. } => {
             panic!("branch runner fixture must contain a branch start")
+        }
+        crate::CrucibleResolvedAttemptStart::AfterAttempt { .. } => {
+            panic!("branch runner fixture must not contain a continuation start")
         }
     };
 

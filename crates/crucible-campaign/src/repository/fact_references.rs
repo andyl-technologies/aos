@@ -60,6 +60,24 @@ impl CampaignRepository {
                     crate::CampaignRecordKind::Fact,
                 )?;
             }
+            CampaignFact::SavepointContinuationSelected(selection) => {
+                self.require_record_kind(
+                    selection.expected_snapshot.content_id(),
+                    crate::CampaignRecordKind::Snapshot,
+                )?;
+                self.require_record_kind(
+                    selection.request.content_id(),
+                    crate::CampaignRecordKind::Fact,
+                )?;
+                self.require_record_kind(
+                    selection.ready.content_id(),
+                    crate::CampaignRecordKind::Fact,
+                )?;
+                self.require_record_kind(
+                    selection.continuation.content_id(),
+                    crate::CampaignRecordKind::Attempt,
+                )?;
+            }
             _ => return Err(integrity("campaign-fact-is-not-a-command-fact")),
         }
         Ok(())

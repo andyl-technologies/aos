@@ -132,6 +132,28 @@ where
     }
 }
 
+impl<H, F> crate::QemuSelectedOriginVerifier for PackagedQemuInitialExecutionRunner<H, F>
+where
+    H: crate::QemuSelectedOriginVerifier,
+    F: crate::QemuSelectedOriginVerifier,
+{
+    fn verify_selected_origin(
+        &mut self,
+        input: &crate::CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
+    ) -> Result<crate::QemuSavepointReplayProof, crate::AttemptWorkerFailure<Self::Error>> {
+        match self {
+            Self::HotFork(runner) => runner
+                .verify_selected_origin(input, context, target)
+                .map_err(|failure| failure.map(PackagedQemuInitialExecutionRunnerError::HotFork)),
+            Self::Fresh(runner) => runner
+                .verify_selected_origin(input, context, target)
+                .map_err(|failure| failure.map(PackagedQemuInitialExecutionRunnerError::Fresh)),
+        }
+    }
+}
+
 pub(super) fn authenticate_packaged_hot_fork_launch(
     lifecycle: &ProductionVmLifecycleConfig,
     hot_fork: &PackagedQemuHotForkConfig,

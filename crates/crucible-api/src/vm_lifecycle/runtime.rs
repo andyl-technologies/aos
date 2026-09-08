@@ -194,6 +194,7 @@ impl ProductionVmLifecycleLoop {
     pub fn resume_state(&self) -> Result<ProductionVmLifecycleResumeState, SchedulerError> {
         let scheduler = self.inner.loop_impl();
         Ok(ProductionVmLifecycleResumeState::new(
+            scheduler.configuration().clone(),
             scheduler.event_log().retained_entries().to_vec(),
             scheduler.event_log().retained_base_events(),
             scheduler.quanta(),

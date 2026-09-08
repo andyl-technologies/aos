@@ -51,6 +51,15 @@ impl AttemptAdmissionValidator for RepositoryAttemptAdmission {
             .map_err(|error| error.executor_rejection())
     }
 
+    fn selected_savepoint_source_attempt(
+        &self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<Option<AttemptId>, ExecutorRejection> {
+        self.repository
+            .executor_selected_savepoint_source_attempt(request)
+            .map_err(|error| error.executor_rejection())
+    }
+
     fn validate_completion(
         &self,
         request: &SubmitAttemptRequest,

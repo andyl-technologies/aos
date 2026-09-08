@@ -42,10 +42,10 @@ use crate::{
     PropertyVerdictSet, PropertyVerdictSetId, Proposal, ProposalId, PurePlannerEngine,
     RankingExplanation, RankingExplanationId, ReproductionArtifact, ReproductionArtifactId,
     RetainedPlannerRequestId, SavepointCaptureOutcome, SavepointCaptureRequest,
-    SavepointCaptureResolution, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
-    SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition, StopOutcome,
-    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse, SurvivorSelection,
-    SurvivorSelectionBundle, SurvivorSelectionId,
+    SavepointCaptureResolution, SavepointContinuationSelection, ScenarioArtifact,
+    ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId,
+    StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
+    SubmitAttemptResponse, SurvivorSelection, SurvivorSelectionBundle, SurvivorSelectionId,
 };
 use crate::{BranchAcceptanceCount, BranchAcceptanceSummary};
 
@@ -765,6 +765,22 @@ impl CampaignExecutorStore {
         self.repository.load_attempt(id)
     }
 
+    /// Loads one attempt and its complete authenticated continuation ancestry.
+    ///
+    /// Entries are returned newest first and share one bounded validation
+    /// cache, preserving linear work for long selected-savepoint histories.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any attempt or referenced object is unavailable,
+    /// malformed, or semantically inconsistent.
+    pub fn load_attempt_origin_chain(
+        &self,
+        id: AttemptId,
+    ) -> Result<Vec<Attempt>, CampaignRepositoryError> {
+        self.repository.load_attempt_origin_chain(id)
+    }
+
     /// Loads and authenticates one semantic branch path.
     ///
     /// # Errors
@@ -805,7 +821,7 @@ impl CampaignExecutorStore {
     /// Resolves a bounded batch of selections with shared authenticated dependencies.
     ///
     /// Repeated opportunities, declarations, and domains are decoded once. The
-    /// aggregate unique canonical record bodies are bounded independently of
+    /// aggregate unique canonical record envelopes are bounded independently of
     /// the number and ordering of selections.
     ///
     /// # Errors
@@ -817,6 +833,27 @@ impl CampaignExecutorStore {
         ids: &[SelectionId],
     ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
         self.repository.resolve_selections(ids)
+    }
+
+    /// Resolves a bounded batch within a caller-supplied canonical byte limit.
+    ///
+    /// The limit covers every unique selection, opportunity, declaration, and
+    /// domain body decoded by the batch. It lets an executor reserve for the
+    /// decoded representation before repository resolution allocates it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError::SelectionResolutionBudgetExceeded`]
+    /// when the unique canonical closure exceeds `maximum_canonical_bytes`, or
+    /// the ordinary resolution error for missing, corrupt, or inconsistent
+    /// records.
+    pub fn resolve_selections_with_canonical_byte_limit(
+        &self,
+        ids: &[SelectionId],
+        maximum_canonical_bytes: usize,
+    ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
+        self.repository
+            .resolve_selections_with_canonical_byte_limit(ids, maximum_canonical_bytes)
     }
 
     /// Publishes a validated immutable observation candidate without advancing a campaign.
@@ -1109,6 +1146,12 @@ pub enum CampaignRepositoryError {
     /// Canonical campaign bytes failed validation.
     #[error(transparent)]
     Codec(#[from] CampaignCodecError),
+    /// A caller-scoped selection resolution exceeded its canonical byte budget.
+    #[error("selection resolution exceeds its {maximum_canonical_bytes}-byte canonical budget")]
+    SelectionResolutionBudgetExceeded {
+        /// Maximum aggregate unique canonical record bytes admitted by the caller.
+        maximum_canonical_bytes: usize,
+    },
     /// A Merkle collection operation failed.
     #[error(transparent)]
     Merkle(#[from] crate::CampaignStoreError),
@@ -1174,6 +1217,7 @@ impl CampaignRepositoryError {
             Self::NotFound | Self::Poisoned => ExecutorRejection::UnavailableInput,
             Self::Budget(_)
             | Self::Codec(_)
+            | Self::SelectionResolutionBudgetExceeded { .. }
             | Self::Merkle(_)
             | Self::AlreadyExists
             | Self::Stale { .. }
@@ -1313,6 +1357,7 @@ pub use retention::{CampaignPinRetentionRecord, CampaignPinRetentionSummary};
 pub use savepoint::{
     MAX_SAVEPOINT_CAPTURE_SCAN_PAGE_ITEMS, PendingSavepointCapture, PendingSavepointCapturePage,
     SavepointCaptureCursor, SavepointCaptureResolutionResult, SavepointCaptureResult,
+    SavepointContinuationResult, SavepointContinuationSource,
 };
 pub use supervisor::{
     CampaignSupervisor, CampaignSupervisorConfigError, CampaignSupervisorError,
@@ -1330,6 +1375,15 @@ struct ChoiceValidationCache {
     insertion_order: VecDeque<(ContentId, ContentId)>,
     objective_contracts: BTreeMap<CampaignPolicyId, CampaignHash>,
     objective_insertion_order: VecDeque<CampaignPolicyId>,
+    validated_attempts: BTreeMap<ContentId, ValidatedAttempt>,
+}
+
+#[derive(Clone)]
+struct ValidatedAttempt {
+    attempt: Attempt,
+    path: BranchPathId,
+    lineage: (ScenarioDefId, ScenarioArtifactId),
+    origin_depth: usize,
 }
 
 impl ChoiceValidationCache {
@@ -1482,6 +1536,13 @@ pub(crate) fn savepoint_capture_resolution_key(request: CampaignFactId) -> Campa
     map_key_content(
         "accounting.savepoint-capture.resolution",
         request.content_id(),
+    )
+}
+
+pub(crate) fn savepoint_continuation_source_key(continuation: AttemptId) -> CampaignHash {
+    map_key_content(
+        "accounting.savepoint-continuation.source",
+        continuation.content_id(),
     )
 }
 
