@@ -728,6 +728,9 @@ let
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
     "toolchain/_bazel.nix" = "native-build-helper";
+    "toolchain/_linux-hosted-binutils.nix" = "cross-build-helper";
+    "toolchain/_linux-hosted-cc.nix" = "cross-build-helper";
+    "toolchain/_linux-hosted-gcc.nix" = "cross-build-helper";
     "toolchain/go/_go-darwin.nix" = "cross-build-helper";
     "toolchain/go/_go-linux-cross.nix" = "cross-build-helper";
     "toolchain/java/_darwin-mig.nix" = "linux-only-build-helper";

@@ -6,8 +6,8 @@
   binutils,
   gcc,
 }:
-builtins.derivation {
-  name = "gcc-runtime-14.3.0-${hostPlatform.system}";
+(builtins.derivation {
+  name = "gcc-runtime-${gcc.version}-${hostPlatform.system}";
   system = buildPlatform.system;
   builder = buildStdenv.shell;
   disallowedReferences = [gcc];
@@ -39,4 +39,8 @@ builtins.derivation {
       done
     ''
   ];
+})
+// {
+  inherit (gcc) version;
+  passthru.evidenceSources = gcc.passthru.evidenceSources;
 }

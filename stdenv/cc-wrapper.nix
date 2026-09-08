@@ -20,22 +20,25 @@
   coreutils,
   hostPlatform,
   executionPlatform ? hostPlatform,
+  buildPlatform ? executionPlatform,
+  builderShell ? shell,
+  builderCoreutils ? coreutils,
   storeDir ? "/nix/store",
   defaultHardening ? "",
   staticDefault ? false,
   staticNoPie ? false,
 }: let
-  system = executionPlatform.system;
+  system = buildPlatform.system;
   targetTriple = hostPlatform.config;
   dynamicLinker = "${libc}/lib/${hostPlatform.dynamicLinker}";
   libcDev = libc.dev or libc;
   libcStatic = libc.static or libc;
 
-  mkdir = "${coreutils}/bin/mkdir";
-  cat = "${coreutils}/bin/cat";
-  chmod = "${coreutils}/bin/chmod";
-  ln = "${coreutils}/bin/ln";
-  echo = "${coreutils}/bin/echo";
+  mkdir = "${builderCoreutils}/bin/mkdir";
+  cat = "${builderCoreutils}/bin/cat";
+  chmod = "${builderCoreutils}/bin/chmod";
+  ln = "${builderCoreutils}/bin/ln";
+  echo = "${builderCoreutils}/bin/echo";
 
   compilerRuntimeLdFlags =
     if staticDefault
@@ -242,7 +245,7 @@
   wrapperDrv = builtins.derivation {
     name = "aos-cc-wrapper";
     inherit system;
-    builder = shell;
+    builder = builderShell;
     args = [
       "-c"
       ''

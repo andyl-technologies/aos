@@ -3,6 +3,7 @@
   mkDerivation,
   linuxSource,
   stdenv,
+  buildPackages,
   gnumake,
   perl,
   bash,
@@ -14,8 +15,6 @@
   rsync,
   elfutils,
   bc,
-  binutils,
-  gcc-libs,
   dwarves,
   patchelf,
   python3,
@@ -41,6 +40,25 @@
   kernelArch =
     archMap.${stdenv.system}
     or (throw "linux: unsupported system '${stdenv.system}'");
+  hostIncludePath = "${buildPackages.elfutils}/include:${buildPackages.openssl}/include:${buildPackages.zlib}/include";
+  hostLibraryPath = "${buildPackages.elfutils}/lib:${buildPackages.openssl}/lib:${buildPackages.zlib}/lib";
+  hostPkgConfigPath = "${buildPackages.elfutils}/lib/pkgconfig:${buildPackages.openssl}/lib/pkgconfig:${buildPackages.zlib}/lib/pkgconfig";
+  kernelMakeFlags = ''
+    ARCH=${kernelArch.karch} \
+    CC="$CC" \
+    LD="$LD" \
+    AR="$AR" \
+    NM="$NM" \
+    OBJCOPY="$OBJCOPY" \
+    OBJDUMP="$OBJDUMP" \
+    READELF="${stdenv.binutils}/bin/readelf" \
+    STRIP="$STRIP" \
+    HOSTCC="env C_INCLUDE_PATH=${hostIncludePath} LIBRARY_PATH=${hostLibraryPath} ${buildPackages.cc}/bin/cc" \
+    HOSTCXX="env C_INCLUDE_PATH=${hostIncludePath} LIBRARY_PATH=${hostLibraryPath} ${buildPackages.cc}/bin/c++" \
+    HOSTLD="${buildPackages.binutils}/bin/ld" \
+    HOSTAR="${buildPackages.binutils}/bin/ar" \
+    HOSTPKG_CONFIG="env PKG_CONFIG_PATH=${hostPkgConfigPath} ${buildPackages.pkg-config}/bin/pkg-config" \
+  '';
 in
   mkDerivation {
     pname = "linux";
@@ -66,7 +84,6 @@ in
       rsync
       elfutils
       bc
-      binutils
       dwarves
       patchelf
       python3
@@ -91,7 +108,7 @@ in
           cd linux-${linuxSource.version}
           for f in $(find . -type f -name '*.py'); do
             case "$(head -n 1 "$f")" in
-              '#!'*python*) sed -i "1s|.*|#!${python3}/bin/python3|" "$f" ;;
+              '#!'*python*) sed -i "1s|.*|#!${buildPackages.python3}/bin/python3|" "$f" ;;
             esac
           done
         '';
@@ -100,7 +117,7 @@ in
         name = "configure";
         script = ''
           # Start with a default config for the target architecture
-          make defconfig ARCH=${kernelArch.karch}
+          make ${kernelMakeFlags} defconfig
 
           # Merge our config fragments on top
           for frag in $configDir/*.config; do
@@ -133,7 +150,7 @@ in
           }
 
           # Finalize — fill in defaults for any new symbols
-          make olddefconfig ARCH=${kernelArch.karch}
+          make ${kernelMakeFlags} olddefconfig
 
           ${
             if enforceRequiredConfig
@@ -159,11 +176,12 @@ in
         name = "build";
         script = ''
           # sorttable (host tool) uses pthreads; glibc's pthread_exit needs
-          # libgcc_s.so.1 for stack unwinding at runtime.
-          export LD_LIBRARY_PATH="${gcc-libs}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          make -j$NIX_BUILD_CORES ARCH=${kernelArch.karch} ${kernelArch.target}
+          # libgcc_s.so.1 for stack unwinding at runtime. Other generated host
+          # tools load libelf, OpenSSL, and zlib while producing the image.
+          export LD_LIBRARY_PATH="${buildPackages.gcc-libs}/lib:${hostLibraryPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          make -j$NIX_BUILD_CORES ${kernelMakeFlags} ${kernelArch.target}
           if gawk '/^CONFIG_MODULES=y$/ { found = 1 } END { exit found ? 0 : 1 }' .config; then
-            make -j$NIX_BUILD_CORES ARCH=${kernelArch.karch} modules
+            make -j$NIX_BUILD_CORES ${kernelMakeFlags} modules
           fi
         '';
       }
@@ -202,12 +220,33 @@ in
           cp -a . "$kernel_build/"
           rm -f "$kernel_build/${kernelArch.imgPath}"
 
+          # Generated command metadata, object debugging records, and vmlinux
+          # diagnostics can name the scheduler's cross compiler. Replace only
+          # its fixed-size store hash so binary offsets and every permitted
+          # runtime path stay intact.
+          cross_compiler=${stdenv.cc.cc}
+          cross_compiler_hash=''${cross_compiler#/nix/store/}
+          cross_compiler_hash=''${cross_compiler_hash%%-*}
+          scrubbed_hash=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+          reference_files="$TMPDIR/cross-compiler-reference-files"
+          reference_scan_status=0
+          find "$kernel_build" "$vmlinux" -type f \
+            -exec grep -a -l -F "$cross_compiler" {} + \
+            > "$reference_files" || reference_scan_status=$?
+          if [ "$reference_scan_status" -gt 1 ]; then
+            echo "failed to scan the kernel build tree for cross-compiler references" >&2
+            exit "$reference_scan_status"
+          fi
+          while read -r generated_file; do
+            sed -i "s|$cross_compiler_hash|$scrubbed_hash|g" "$generated_file"
+          done < "$reference_files"
+
           # Kbuild's host helpers are part of the external-module interface.
           # Give helpers that use libelf an immutable runtime search path so
           # downstream module builds do not depend on ambient host libraries.
           find "$kernel_build/tools" "$kernel_build/scripts" -type f -perm -0100 | while read -r helper; do
             if patchelf --print-needed "$helper" 2>/dev/null | grep -qx libelf.so.1; then
-              patchelf --set-rpath ${elfutils}/lib "$helper"
+              patchelf --set-rpath ${buildPackages.elfutils}/lib "$helper"
             fi
           done
 
@@ -215,10 +254,9 @@ in
           # modules. Strip their DWARF; BTF stays in the kernel image.
           if gawk '/^CONFIG_MODULES=y$/ { found = 1 } END { exit found ? 0 : 1 }' .config; then
             make modules_install \
-              INSTALL_MOD_PATH=$out \
+              ${kernelMakeFlags}INSTALL_MOD_PATH=$out \
               INSTALL_MOD_STRIP=1 \
-              DEPMOD=${kmod}/sbin/depmod \
-              ARCH=${kernelArch.karch}
+              DEPMOD=${buildPackages.kmod}/sbin/depmod
           fi
 
           # External-module builders consume the explicit `dev` output. Keep
