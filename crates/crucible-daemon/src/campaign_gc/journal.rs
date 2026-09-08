@@ -22,8 +22,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crucible_campaign::CampaignHash;
-use rustix::fs::{FlockOperation, flock};
 use thiserror::Error;
+
+use crate::owned_advisory_lock::OwnedAdvisoryLock;
 
 use super::{
     CampaignGcCandidateManifest, CampaignGcManifestError, CampaignGcPlan, CampaignGcPlanError,
@@ -92,7 +93,7 @@ pub enum CampaignGcJournalTransition {
 /// Exclusive durable owner of one exact campaign GC plan and apply lifecycle.
 pub struct DirectoryCampaignGcJournal {
     root: PathBuf,
-    _lock: File,
+    _lock: OwnedAdvisoryLock,
     plan: CampaignGcPlan,
     roots: CampaignGcRootManifest,
     candidates: CampaignGcCandidateManifest,
@@ -223,6 +224,11 @@ impl DirectoryCampaignGcJournal {
     #[must_use]
     pub const fn phase(&self) -> CampaignGcJournalPhase {
         self.phase
+    }
+
+    #[cfg(test)]
+    pub(super) fn duplicate_lock_for_test(&self) -> io::Result<File> {
+        self._lock.file().try_clone()
     }
 
     /// Durably records that candidate deletion may begin.
@@ -376,7 +382,32 @@ fn validate_record_binding(
     Ok(())
 }
 
-fn acquire_lock(root: &Path) -> Result<File, CampaignGcJournalError> {
+fn acquire_lock(root: &Path) -> Result<OwnedAdvisoryLock, CampaignGcJournalError> {
+    let (file, path) = open_lock_file(root)?;
+    OwnedAdvisoryLock::exclusive(file).map_err(|source| {
+        io_error(
+            "lock-journal",
+            &path,
+            io::Error::from_raw_os_error(source.raw_os_error()),
+        )
+    })
+}
+
+#[cfg(test)]
+pub(super) fn try_acquire_lock_for_test(
+    root: &Path,
+) -> Result<OwnedAdvisoryLock, CampaignGcJournalError> {
+    let (file, path) = open_lock_file(root)?;
+    OwnedAdvisoryLock::try_exclusive(file).map_err(|source| {
+        io_error(
+            "lock-journal",
+            &path,
+            io::Error::from_raw_os_error(source.raw_os_error()),
+        )
+    })
+}
+
+fn open_lock_file(root: &Path) -> Result<(File, PathBuf), CampaignGcJournalError> {
     let path = root.join(JOURNAL_LOCK_FILE);
     let file = OpenOptions::new()
         .read(true)
@@ -385,14 +416,7 @@ fn acquire_lock(root: &Path) -> Result<File, CampaignGcJournalError> {
         .truncate(false)
         .open(&path)
         .map_err(|source| io_error("open-journal-lock", &path, source))?;
-    flock(&file, FlockOperation::LockExclusive).map_err(|source| {
-        io_error(
-            "lock-journal",
-            &path,
-            io::Error::from_raw_os_error(source.raw_os_error()),
-        )
-    })?;
-    Ok(file)
+    Ok((file, path))
 }
 
 fn validate_directory(root: &Path) -> Result<(), CampaignGcJournalError> {
