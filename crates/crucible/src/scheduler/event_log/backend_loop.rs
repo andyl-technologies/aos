@@ -387,6 +387,13 @@ where
                 backend_time,
             )?;
         }
+        let resolved_observations = outcome
+            .resolved_events
+            .iter()
+            .map(|event| self.loop_impl.resolved_event_observation(event))
+            .collect::<Result<Vec<_>, SchedulerError>>()?;
+        self.pending_observations
+            .extend(resolved_observations.into_iter().flatten());
         self.pending_network_outputs
             .extend(self.backend.drain_network_outputs()?);
         let mut timed_network_outputs = std::mem::take(&mut self.pending_network_outputs)

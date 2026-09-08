@@ -141,6 +141,13 @@ impl QuantumLoop for SingleScheduler {
         })
     }
 
+    fn resolved_event_observation(
+        &self,
+        event: &ScheduledEvent,
+    ) -> Result<Option<ObservableEvent>, SchedulerError> {
+        self.resolved_io_observation(event)
+    }
+
     fn apply_control_at_boundary(
         &mut self,
         control: Vec<ControlOperation>,
