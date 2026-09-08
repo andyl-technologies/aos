@@ -7,6 +7,8 @@ use super::*;
 
 #[path = "campaign/acceptance.rs"]
 mod acceptance;
+#[path = "campaign/archive.rs"]
+mod archive;
 #[path = "campaign/authoring.rs"]
 mod authoring;
 #[path = "campaign/configuration.rs"]
@@ -33,6 +35,7 @@ mod snapshot;
 mod validation;
 
 use acceptance::CampaignBranchAcceptanceSummaryReport;
+use archive::run_campaign_archive;
 use configuration::{compile_campaign_configuration, render_campaign_configuration_compilation};
 use explain::{
     query_campaign_attempt_explanation, query_campaign_explanation,
@@ -441,6 +444,10 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         );
         return Ok(());
     }
+    if let CampaignCommand::Archive(archive) = &args.command {
+        println!("{}", run_campaign_archive(archive, cli.output_format())?);
+        return Ok(());
+    }
 
     let socket = args
         .socket
@@ -509,7 +516,8 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         | CampaignCommand::Configuration(_)
         | CampaignCommand::Schedule(_)
         | CampaignCommand::Policy(_)
-        | CampaignCommand::Lineage(_) => {
+        | CampaignCommand::Lineage(_)
+        | CampaignCommand::Archive(_) => {
             return Err(backend_error(
                 "offline campaign authoring reached the connected dispatch path",
             ));
@@ -614,6 +622,7 @@ fn prepare_campaign_command(
         CampaignCommand::Schedule(_) => Ok(None),
         CampaignCommand::Policy(_) => Ok(None),
         CampaignCommand::Lineage(_) => Ok(None),
+        CampaignCommand::Archive(_) => Ok(None),
         CampaignCommand::Create(create) => {
             let campaign = campaign_name(&create.name)?;
             let lineage = CampaignLineage::from_canonical_bytes(&read_campaign_record(
@@ -2360,6 +2369,7 @@ fn campaign_mutation_spec(
         | CampaignCommand::Schedule(_)
         | CampaignCommand::Policy(_)
         | CampaignCommand::Lineage(_)
+        | CampaignCommand::Archive(_)
         | CampaignCommand::Create(_)
         | CampaignCommand::List(_)
         | CampaignCommand::Attach(_)

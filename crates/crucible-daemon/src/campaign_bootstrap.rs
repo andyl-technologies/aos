@@ -657,6 +657,46 @@ impl PreparedCampaignLocalService {
             .plan_campaign_archive(snapshot, policy, retained_roots, checkpoint_resolver)
     }
 
+    /// Builds an archive plan using this owner's exact-pin materialization catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CampaignArchiveTransferError`] when the source campaign
+    /// name, exact-pin catalog, checkpoint closure, or selected archive closure
+    /// cannot be authenticated.
+    pub fn plan_campaign_archive_with_exact_pins(
+        &self,
+        campaign: CampaignName,
+        snapshot: crucible_campaign::CampaignSnapshotId,
+        policy: crucible_campaign::CampaignArchivePolicy,
+        retained_roots: impl IntoIterator<Item = crucible_cas::content_store::ContentId>,
+        checkpoints: &crate::ExactCheckpointStore,
+        exact_pins: &mut dyn crate::ExactPinRetentionAdmin,
+    ) -> Result<crucible_campaign::CampaignArchivePlan, crate::CampaignArchiveTransferError> {
+        let mut resolver = crate::ExactPinCampaignArchiveCheckpointResolver::new(
+            self.repository.as_ref(),
+            checkpoints,
+            campaign,
+            exact_pins,
+        )?;
+        self.repository
+            .plan_campaign_archive(snapshot, policy, retained_roots, Some(&mut resolver))
+            .map_err(Into::into)
+    }
+
+    /// Authenticates one named archive and its complete direct inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError`] when the archive ref is absent or
+    /// its manifest, inventory pages, or selected objects fail authentication.
+    pub fn inspect_campaign_archive_ref(
+        &self,
+        archive_name: &str,
+    ) -> Result<crucible_campaign::CampaignArchiveInspection, CampaignRepositoryError> {
+        self.repository.inspect_campaign_archive_ref(archive_name)
+    }
+
     /// Borrows this deployment's GC-registered archive-transfer endpoint.
     ///
     /// Every transfer begun through this capability writes the same durable

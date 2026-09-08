@@ -301,10 +301,10 @@ enum Commands {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignArgs {
-    /// Connected daemon socket; omitted only for offline authoring and validation.
+    /// Connected daemon socket; omitted for offline authoring, validation, and archival.
     #[arg(long, value_name = "path")]
     socket: Option<PathBuf>,
-    /// Authenticated principal; omitted only for offline authoring and validation.
+    /// Authenticated principal; omitted for offline authoring, validation, and archival.
     #[arg(long, value_name = "principal")]
     principal: Option<String>,
     #[command(subcommand)]
@@ -329,6 +329,8 @@ enum CampaignCommand {
     Policy(CampaignPolicyArgs),
     /// Compile strict human-authored campaign lineage manifests.
     Lineage(CampaignLineageArgs),
+    /// Plan, transfer, or inspect one authenticated offline campaign archive.
+    Archive(CampaignArchiveArgs),
     /// Create a named campaign from canonical imported lineage and policy records.
     Create(CampaignCreateArgs),
     /// List authenticated current campaign heads.
@@ -387,6 +389,94 @@ enum CampaignCommand {
     Pin(CampaignPinArgs),
     /// Remove one semantic configuration pin.
     Unpin(CampaignUnpinArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignArchiveArgs {
+    #[command(subcommand)]
+    command: CampaignArchiveCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignArchiveCommand {
+    /// Transfer one exact snapshot between stopped deployment owners.
+    Transfer(CampaignArchiveTransferArgs),
+    /// Authenticate one named archive in a stopped deployment.
+    Inspect(CampaignArchiveInspectArgs),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum CampaignArchiveMode {
+    Metadata,
+    Findings,
+    Debug,
+    Executable,
+    Mirror,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignArchiveTransferArgs {
+    /// Exact durable source campaign state directory.
+    #[arg(long, value_name = "path")]
+    source_state: PathBuf,
+    /// Strict source peer-policy file.
+    #[arg(long, value_name = "path")]
+    source_policy: PathBuf,
+    /// Strict source composed-store deployment file.
+    #[arg(long, value_name = "path")]
+    source_store: PathBuf,
+    /// Source campaign whose exact-pin selections authorize executable export.
+    #[arg(long, value_name = "name")]
+    source_campaign: String,
+    /// Exact authenticated source snapshot.
+    #[arg(long, value_name = "snapshot-id")]
+    snapshot: String,
+    /// Closed archive selection policy.
+    #[arg(long, value_enum)]
+    mode: CampaignArchiveMode,
+    /// Additional canonical retained root; valid only for mirror archives.
+    #[arg(long = "retain", value_name = "content-id")]
+    retained_roots: Vec<String>,
+    /// Exact durable destination campaign state directory.
+    #[arg(long, value_name = "path")]
+    destination_state: PathBuf,
+    /// Strict destination peer-policy file.
+    #[arg(long, value_name = "path")]
+    destination_policy: PathBuf,
+    /// Strict destination composed-store deployment file.
+    #[arg(long, value_name = "path")]
+    destination_store: PathBuf,
+    /// Destination archive ref name.
+    #[arg(long, value_name = "name")]
+    archive: String,
+    /// Optional ordinary destination campaign name for an executable archive.
+    #[arg(long, value_name = "name")]
+    campaign: Option<String>,
+    /// Minimum independently named durable destination placements.
+    #[arg(long, default_value_t = 1, value_name = "n")]
+    minimum_durable_placements: u16,
+    /// Permit acknowledged deferred downstream destination writes.
+    #[arg(long)]
+    allow_deferred_write: bool,
+    /// Maximum authenticated bytes admitted for one exact checkpoint closure.
+    #[arg(long, default_value_t = 1_073_741_824, value_name = "bytes")]
+    maximum_checkpoint_bytes: u64,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignArchiveInspectArgs {
+    /// Exact durable campaign state directory.
+    #[arg(long, value_name = "path")]
+    state: PathBuf,
+    /// Strict peer-policy file.
+    #[arg(long, value_name = "path")]
+    policy: PathBuf,
+    /// Strict composed-store deployment file.
+    #[arg(long, value_name = "path")]
+    store: PathBuf,
+    /// Destination archive ref name.
+    #[arg(long, value_name = "name")]
+    archive: String,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
