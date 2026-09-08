@@ -43,6 +43,7 @@ zeroize = { workspace = true }
 
 [dev-dependencies]
 crucible-core = { package = "crucible", path = "../crucible" }
+crucible-daemon = { path = "../crucible-daemon", features = ["test-support"] }
 crucible-harness = { path = "../crucible-harness" }
 crucible-protocol = { path = "../crucible-protocol" }
 libc = { workspace = true }

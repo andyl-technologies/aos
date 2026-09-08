@@ -17,19 +17,20 @@ use crucible::{ScenarioDefForm, Schedule, Seed};
 // crucible-lint: allow host-nondeterminism-state -- the caller supplies a validated production lifecycle capability; host observations cannot alter modeled choices.
 use crucible_api::ProductionVmLifecycleConfig;
 use crucible_campaign::{
-    ApplyCampaignCommandRequest, AttemptResourceLimits, AuthorizedPlannerService,
+    ApplyCampaignCommandRequest, AttemptResourceLimits, AttemptStart, AuthorizedPlannerService,
     AuthorizedPlannerServiceError, BranchBudget, BranchRequest, BranchRequestCause, BudgetGrant,
     CampaignAuthorizationError, CampaignClient, CampaignClientError, CampaignCodecError,
     CampaignCommandId, CampaignControlAction, CampaignExecutorDriver,
     CampaignExecutorDriverConfigError, CampaignExecutorStepOutcome, CampaignExecutorStore,
-    CampaignHash, CampaignLineage, CampaignMode, CampaignName, CampaignPlannerDriver,
-    CampaignPlannerDriverConfigError, CampaignPrincipal, CampaignPrincipalAuthorizer,
-    CampaignRepository, CampaignRepositoryError, CampaignSeed, CampaignServiceOperation,
-    CampaignSnapshotId, CampaignState, CampaignSupervisor, CampaignSupervisorConfigError,
-    CampaignSupervisorError, CampaignSupervisorStepOutcome, CandidateSource, CreateCampaignRequest,
-    DaemonEpoch, DebuggerAuthorityKey, DiscoveryRequest, ExecutionRetentionIntent,
-    ExecutorCompatibilityProfile, ExplorerPolicy, FairnessPolicy, Observation, ObservationId,
-    PlannerAuthorityKey, PlannerClient, PlanningBudget, RepositoryCampaignService, RetentionPolicy,
+    CampaignFactId, CampaignHash, CampaignLineage, CampaignMode, CampaignName,
+    CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignPrincipal,
+    CampaignPrincipalAuthorizer, CampaignRepository, CampaignRepositoryError, CampaignSeed,
+    CampaignServiceOperation, CampaignSnapshotId, CampaignState, CampaignSupervisor,
+    CampaignSupervisorConfigError, CampaignSupervisorError, CampaignSupervisorStepOutcome,
+    CandidateSource, CreateCampaignRequest, DaemonEpoch, DebuggerAuthorityKey, DiscoveryRequest,
+    ExactCheckpointId, ExecutionRetentionIntent, ExecutorCompatibilityProfile, ExplorerPolicy,
+    FairnessPolicy, Observation, ObservationId, PlannerAuthorityKey, PlannerClient, PlanningBudget,
+    RepositoryCampaignService, RetentionPolicy, SavepointCaptureOutcome, SavepointCaptureRequest,
     StopCondition, StopOutcome, SubmitCampaignBranchRequest, SubmitCampaignDiscoveryRequest,
 };
 use crucible_cas::content_store::{
@@ -47,6 +48,7 @@ use super::{
 use crate::{
     ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError, CrucibleCampaignArtifactStore,
     CrucibleExecutionModel, CrucibleExecutionModelError, CrucibleExecutionRunner,
+    ExactCheckpointStore, ExactCheckpointStoreError, ExecutorCapacityError,
     LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostResourceFactory, QemuFreshModeledDriver,
     QemuFreshModeledDriverError, RepositoryAttemptAdmission,
     decode_crucible_configuration_artifact_with_selections,
@@ -63,6 +65,9 @@ pub use replay_closure::{GuardedCampaignReplayClosure, GuardedCampaignReplayClos
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 const DEFAULT_RUN_MAX_CHOICES: u64 = 65_536;
 const DEFAULT_RUN_REPOSITORY_BYTES: u64 = 512 * 1024 * 1024;
@@ -124,6 +129,7 @@ pub struct GuardedDefaultCampaignRunRequest {
     initial_replay_closure: Option<GuardedCampaignReplayClosure>,
     discovery_stop: StopCondition,
     collect_watch_frames: bool,
+    capture_reached_stop: Option<Arc<ExactCheckpointStore>>,
 }
 
 impl GuardedDefaultCampaignRunRequest {
@@ -150,6 +156,7 @@ impl GuardedDefaultCampaignRunRequest {
             initial_replay_closure: None,
             discovery_stop: StopCondition::NextChoice,
             collect_watch_frames: false,
+            capture_reached_stop: None,
         }
     }
 
@@ -184,6 +191,22 @@ impl GuardedDefaultCampaignRunRequest {
     #[must_use]
     pub const fn with_watch_frames(mut self) -> Self {
         self.collect_watch_frames = true;
+        self
+    }
+
+    /// Captures the initial discovery attempt after it reaches its declared stop.
+    ///
+    /// The exact store receives a physical checkpoint closure before the
+    /// campaign is completed. A terminal outcome reached before the requested
+    /// stop fails closed without reporting a savepoint. The caller owns the
+    /// store's lifetime and retention policy; the returned checkpoint ID does
+    /// not retain this ephemeral campaign repository or its physical closure.
+    #[must_use]
+    pub fn with_reached_stop_savepoint_capture(
+        mut self,
+        checkpoints: Arc<ExactCheckpointStore>,
+    ) -> Self {
+        self.capture_reached_stop = Some(checkpoints);
         self
     }
 }
@@ -278,6 +301,56 @@ pub struct GuardedDefaultCampaignRun {
     watch_frames: Vec<GuardedDefaultCampaignWatchFrame>,
     evidence: QemuAttemptExecutionEvidenceSnapshot,
     replay_closure: GuardedCampaignReplayClosure,
+    savepoint: Option<GuardedDefaultCampaignSavepoint>,
+}
+
+/// Authenticated physical savepoint captured for the terminal observation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuardedDefaultCampaignSavepoint {
+    request: CampaignFactId,
+    attempt: crucible_campaign::AttemptId,
+    checkpoint: ExactCheckpointId,
+    configuration: crucible_campaign::ConfigurationId,
+    stop: StopCondition,
+    evidence: QemuAttemptExecutionEvidenceSnapshot,
+}
+
+impl GuardedDefaultCampaignSavepoint {
+    /// Returns the immutable campaign fact that owns the capture scope.
+    #[must_use]
+    pub const fn request(&self) -> CampaignFactId {
+        self.request
+    }
+
+    /// Returns the semantic attempt replayed for exact capture.
+    #[must_use]
+    pub const fn attempt(&self) -> crucible_campaign::AttemptId {
+        self.attempt
+    }
+
+    /// Returns the authenticated physical checkpoint root.
+    #[must_use]
+    pub const fn checkpoint(&self) -> ExactCheckpointId {
+        self.checkpoint
+    }
+
+    /// Returns the modeled configuration materialized by the checkpoint.
+    #[must_use]
+    pub const fn configuration(&self) -> crucible_campaign::ConfigurationId {
+        self.configuration
+    }
+
+    /// Returns the exact stop condition replayed for capture.
+    #[must_use]
+    pub const fn stop(&self) -> &StopCondition {
+        &self.stop
+    }
+
+    /// Returns the scheduler evidence recorded by the exact-capture replay.
+    #[must_use]
+    pub const fn evidence(&self) -> &QemuAttemptExecutionEvidenceSnapshot {
+        &self.evidence
+    }
 }
 
 impl GuardedDefaultCampaignRun {
@@ -341,6 +414,12 @@ impl GuardedDefaultCampaignRun {
     pub const fn replay_closure(&self) -> &GuardedCampaignReplayClosure {
         &self.replay_closure
     }
+
+    /// Returns the authenticated physical savepoint when capture was requested.
+    #[must_use]
+    pub const fn savepoint(&self) -> Option<&GuardedDefaultCampaignSavepoint> {
+        self.savepoint.as_ref()
+    }
 }
 
 /// Failure while owning one guarded default campaign run.
@@ -376,6 +455,9 @@ where
     /// Static executor-driver configuration was invalid.
     #[error("guarded default campaign executor configuration failed: {0}")]
     ExecutorConfiguration(#[source] CampaignExecutorDriverConfigError),
+    /// Local exact-capture capacity was invalid.
+    #[error("guarded default campaign capture capacity failed: {0}")]
+    ExecutorCapacity(#[source] ExecutorCapacityError),
     /// Static supervisor composition was invalid.
     #[error("guarded default campaign supervisor configuration failed: {0}")]
     SupervisorConfiguration(#[source] CampaignSupervisorConfigError),
@@ -388,6 +470,9 @@ where
     /// A selected replay schedule did not have an exact authenticated choice closure.
     #[error("guarded default campaign replay closure failed: {0}")]
     ReplayClosure(#[source] GuardedCampaignReplayClosureError),
+    /// A published physical checkpoint closure failed authentication.
+    #[error("guarded default campaign exact checkpoint failed: {0}")]
+    ExactCheckpoint(#[source] ExactCheckpointStoreError),
     /// A fixed default-run invariant was violated.
     #[error("guarded default campaign invariant failed: {0}")]
     Invariant(#[source] GuardedDefaultCampaignInvariantError),
@@ -411,6 +496,24 @@ pub enum GuardedDefaultCampaignInvariantError {
     /// A bounded control-command ordinal overflowed.
     #[error("the campaign control-command ordinal overflowed")]
     CommandOrdinalOverflow,
+    /// A requested savepoint stop was not reached exactly.
+    #[error("the savepoint attempt ended before reaching its requested stop")]
+    SavepointStopNotReached,
+    /// A savepoint capture was requested more than once for one run.
+    #[error("the default run attempted to request more than one savepoint capture")]
+    DuplicateSavepointCapture,
+    /// The executor resolved a different or unsuccessful capture.
+    #[error("the executor resolved an incompatible savepoint capture")]
+    SavepointCaptureMismatch,
+    /// The completed campaign lost its authenticated capture facts.
+    #[error("the completed campaign did not retain its savepoint capture proof")]
+    MissingSavepointCapture,
+    /// The physical checkpoint names a different scenario or configuration.
+    #[error("the physical checkpoint differs from the captured semantic boundary")]
+    SavepointCheckpointMismatch,
+    /// The capture replay produced different scheduler evidence at the same boundary.
+    #[error("the savepoint replay evidence differs from the accepted semantic attempt")]
+    SavepointEvidenceMismatch,
 }
 
 /// Executes one guarded scenario-default path through shared campaign ownership.
@@ -440,7 +543,7 @@ pub fn run_guarded_default_campaign(
     run_guarded_default_campaign_with_validated_runner(request, runner, execution_evidence)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_guarded_default_campaign_with_runner<R>(
     request: GuardedDefaultCampaignRunRequest,
     runner: R,
@@ -589,6 +692,12 @@ where
         daemon_epoch,
         request.resources,
     );
+    let executor_service = match &request.capture_reached_stop {
+        Some(checkpoints) => executor_service
+            .with_checkpoint_capture(Arc::clone(checkpoints))
+            .map_err(GuardedDefaultCampaignRunError::ExecutorCapacity)?,
+        None => executor_service,
+    };
     let planner_basis = repository
         .publish_canonical_frontier_planner_basis()
         .map_err(GuardedDefaultCampaignRunError::Repository)?;
@@ -656,19 +765,19 @@ where
             principal: &principal,
             campaign: &campaign,
             policy: policy.id().map_err(GuardedDefaultCampaignRunError::Codec)?,
+            discovery_stop: &request.discovery_stop,
         },
         vec![created_state, running_state],
         watch_frames,
         request.collect_watch_frames,
+        request.capture_reached_stop.is_some(),
         &mut supervisor,
     )?;
     materialize_result(
         &repository,
         campaign,
         execution,
-        execution_evidence
-            .snapshot()
-            .map_err(GuardedDefaultCampaignRunError::Evidence)?,
+        request.capture_reached_stop.as_deref(),
     )
 }
 
@@ -825,11 +934,28 @@ struct DefaultRunExecution {
     final_snapshot: CampaignSnapshotId,
     state_updates: Vec<CampaignState>,
     watch_frames: Vec<GuardedDefaultCampaignWatchFrame>,
+    savepoint: Option<DefaultRunSavepointCapture>,
 }
 
 struct DefaultRunAcceptedObservation {
     id: ObservationId,
     virtual_time_ticks: u64,
+    evidence: QemuAttemptExecutionEvidenceSnapshot,
+}
+
+struct DefaultRunPendingSavepointCapture {
+    request: CampaignFactId,
+    description: SavepointCaptureRequest,
+    reached: crucible_campaign::ConfigurationId,
+    expected_evidence: QemuAttemptExecutionEvidenceSnapshot,
+}
+
+struct DefaultRunSavepointCapture {
+    request: CampaignFactId,
+    description: SavepointCaptureRequest,
+    checkpoint: ExactCheckpointId,
+    reached: crucible_campaign::ConfigurationId,
+    evidence: QemuAttemptExecutionEvidenceSnapshot,
 }
 
 struct DefaultRunContext<'a, S> {
@@ -839,6 +965,7 @@ struct DefaultRunContext<'a, S> {
     principal: &'a CampaignPrincipal,
     campaign: &'a CampaignName,
     policy: crucible_campaign::CampaignPolicyId,
+    discovery_stop: &'a StopCondition,
 }
 
 fn drive_default_campaign<R, S>(
@@ -846,6 +973,7 @@ fn drive_default_campaign<R, S>(
     mut state_updates: Vec<CampaignState>,
     mut watch_frames: Vec<GuardedDefaultCampaignWatchFrame>,
     collect_watch_frames: bool,
+    capture_reached_stop: bool,
     supervisor: &mut CampaignSupervisor<DefaultPlannerService, DefaultExecutorService<R>>,
 ) -> Result<DefaultRunExecution, GuardedDefaultCampaignRunError<R::Error>>
 where
@@ -856,17 +984,84 @@ where
 {
     let mut observations = Vec::new();
     let mut branch_request_count = 0usize;
+    let mut pending_capture: Option<DefaultRunPendingSavepointCapture> = None;
     for supervisor_iteration in 0..DEFAULT_RUN_MAX_SUPERVISOR_STEPS {
         // crucible-lint: allow host-nondeterminism-state -- the shared supervisor advances only authenticated campaign planner and executor operations.
         let supervisor_result = supervisor.step();
         let outcome = supervisor_result
             .map_err(|error| GuardedDefaultCampaignSupervisorError(Box::new(error)))
             .map_err(GuardedDefaultCampaignRunError::Supervisor)?;
-        let CampaignSupervisorStepOutcome::Executor {
-            outcome: CampaignExecutorStepOutcome::Incorporated(result),
+        let CampaignSupervisorStepOutcome::Executor { outcome, .. } = outcome else {
+            continue;
+        };
+
+        if let CampaignExecutorStepOutcome::CaptureResolved {
+            result,
+            attempt,
+            checkpoint,
             ..
         } = outcome
-        else {
+        {
+            let pending = pending_capture
+                .take()
+                .ok_or(GuardedDefaultCampaignInvariantError::SavepointCaptureMismatch)?;
+            let evidence = context
+                .execution_evidence
+                .snapshot()
+                .map_err(GuardedDefaultCampaignRunError::Evidence)?;
+            if result.request != pending.request
+                || result.outcome != SavepointCaptureOutcome::Ready
+                || attempt != pending.description.attempt
+                || evidence != pending.expected_evidence
+            {
+                return Err(GuardedDefaultCampaignInvariantError::SavepointEvidenceMismatch.into());
+            }
+            let checkpoint =
+                checkpoint.ok_or(GuardedDefaultCampaignInvariantError::SavepointCaptureMismatch)?;
+            let savepoint = DefaultRunSavepointCapture {
+                request: pending.request,
+                description: pending.description,
+                checkpoint,
+                reached: pending.reached,
+                evidence: evidence.clone(),
+            };
+            let final_snapshot = complete_default_campaign(
+                &context,
+                result.new_snapshot,
+                supervisor_iteration,
+                &mut state_updates,
+            )?;
+            if collect_watch_frames {
+                watch_frames.push(campaign_watch_frame(
+                    context.repository,
+                    context.campaign,
+                    final_snapshot,
+                    &evidence,
+                    None,
+                )?);
+            }
+            return Ok(DefaultRunExecution {
+                observations,
+                branch_request_count,
+                final_snapshot,
+                state_updates,
+                watch_frames,
+                savepoint: Some(savepoint),
+            });
+        }
+
+        if pending_capture.is_some()
+            && matches!(
+                outcome,
+                CampaignExecutorStepOutcome::CaptureAlreadyResolved { .. }
+                    | CampaignExecutorStepOutcome::CaptureBlocked { .. }
+                    | CampaignExecutorStepOutcome::CaptureUnexpectedCompletion { .. }
+            )
+        {
+            return Err(GuardedDefaultCampaignInvariantError::SavepointCaptureMismatch.into());
+        }
+
+        let CampaignExecutorStepOutcome::Incorporated(result) = outcome else {
             continue;
         };
         let snapshot = result.new_snapshot;
@@ -883,6 +1078,7 @@ where
         observations.push(DefaultRunAcceptedObservation {
             id: observation_id,
             virtual_time_ticks,
+            evidence: execution_boundary.clone(),
         });
         if collect_watch_frames {
             watch_frames.push(campaign_watch_frame(
@@ -935,26 +1131,64 @@ where
             continue;
         }
 
-        let command_ordinal = 2_u64
-            .checked_add(
-                u64::try_from(supervisor_iteration)
-                    .map_err(|_| GuardedDefaultCampaignInvariantError::CommandOrdinalOverflow)?,
-            )
-            .ok_or(GuardedDefaultCampaignInvariantError::CommandOrdinalOverflow)?;
-        let final_snapshot = apply_campaign_control(
-            context.client,
-            context.principal,
-            context.campaign,
-            snapshot,
-            command_ordinal,
-            CampaignControlAction::Complete,
-        )?;
-        state_updates.push(
-            context
+        if capture_reached_stop {
+            if observation.stop() != &StopOutcome::Reached(context.discovery_stop.clone()) {
+                return Err(GuardedDefaultCampaignInvariantError::SavepointStopNotReached.into());
+            }
+            if pending_capture.is_some() {
+                return Err(GuardedDefaultCampaignInvariantError::DuplicateSavepointCapture.into());
+            }
+
+            let attempt = context
                 .repository
-                .state(context.campaign.as_str())
-                .map_err(GuardedDefaultCampaignRunError::Repository)?,
-        );
+                .load_attempt(observation.attempt())
+                .map_err(GuardedDefaultCampaignRunError::Repository)?;
+            if attempt.stop() != context.discovery_stop {
+                return Err(GuardedDefaultCampaignInvariantError::SavepointCaptureMismatch.into());
+            }
+            let starting_configuration = match attempt.start() {
+                AttemptStart::Discover { configuration } => configuration,
+                AttemptStart::Branch { parent, .. } => parent,
+                AttemptStart::AfterAttempt { reached, .. } => reached,
+            };
+            let starting_artifact = context
+                .repository
+                .load_configuration_artifact(starting_configuration)
+                .map_err(GuardedDefaultCampaignRunError::Repository)?;
+            let observation_content = observation_id.content_id().encode();
+            let command = CampaignCommandId::from_hash(CampaignHash::derive(
+                "crucible.daemon.legacy-run-savepoint-capture.v1",
+                observation_content.as_bytes(),
+            ));
+            let description = SavepointCaptureRequest::new(
+                command,
+                snapshot,
+                observation.attempt(),
+                starting_configuration,
+                starting_artifact.configuration(),
+                context.discovery_stop.clone(),
+                "legacy virtual-time save",
+            )
+            .map_err(GuardedDefaultCampaignRunError::Codec)?;
+            let requested = context
+                .repository
+                .request_savepoint_capture(context.campaign.as_str(), &description)
+                .map_err(GuardedDefaultCampaignRunError::Repository)?;
+            pending_capture = Some(DefaultRunPendingSavepointCapture {
+                request: requested.request,
+                description,
+                reached: observation.child(),
+                expected_evidence: execution_boundary,
+            });
+            continue;
+        }
+
+        let final_snapshot = complete_default_campaign(
+            &context,
+            snapshot,
+            supervisor_iteration,
+            &mut state_updates,
+        )?;
         if collect_watch_frames {
             watch_frames.push(campaign_watch_frame(
                 context.repository,
@@ -970,9 +1204,44 @@ where
             final_snapshot,
             state_updates,
             watch_frames,
+            savepoint: None,
         });
     }
     Err(GuardedDefaultCampaignInvariantError::SupervisorStepLimit.into())
+}
+
+fn complete_default_campaign<S, E>(
+    context: &DefaultRunContext<'_, S>,
+    snapshot: CampaignSnapshotId,
+    supervisor_iteration: usize,
+    state_updates: &mut Vec<CampaignState>,
+) -> Result<CampaignSnapshotId, GuardedDefaultCampaignRunError<E>>
+where
+    S: crucible_campaign::CampaignService,
+    S::Error: crucible_campaign::CampaignServiceFailureSource,
+    E: Error + 'static,
+{
+    let command_ordinal = 2_u64
+        .checked_add(
+            u64::try_from(supervisor_iteration)
+                .map_err(|_| GuardedDefaultCampaignInvariantError::CommandOrdinalOverflow)?,
+        )
+        .ok_or(GuardedDefaultCampaignInvariantError::CommandOrdinalOverflow)?;
+    let final_snapshot = apply_campaign_control(
+        context.client,
+        context.principal,
+        context.campaign,
+        snapshot,
+        command_ordinal,
+        CampaignControlAction::Complete,
+    )?;
+    state_updates.push(
+        context
+            .repository
+            .state(context.campaign.as_str())
+            .map_err(GuardedDefaultCampaignRunError::Repository)?,
+    );
+    Ok(final_snapshot)
 }
 
 fn campaign_watch_frame<E>(
@@ -1002,7 +1271,7 @@ fn materialize_result<E>(
     repository: &Arc<CampaignRepository>,
     campaign: CampaignName,
     execution: DefaultRunExecution,
-    evidence: QemuAttemptExecutionEvidenceSnapshot,
+    checkpoints: Option<&ExactCheckpointStore>,
 ) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError<E>>
 where
     E: Error + 'static,
@@ -1024,6 +1293,11 @@ where
         .try_reserve(execution.observations.len())
         .map_err(GuardedDefaultCampaignRunError::Allocation)?;
     let observation_count = execution.observations.len();
+    let terminal_execution_evidence = execution
+        .observations
+        .last()
+        .map(|accepted| accepted.evidence.clone())
+        .ok_or(GuardedDefaultCampaignInvariantError::MissingTerminalObservation)?;
     let mut terminal_configuration = None;
     for (index, accepted) in execution.observations.into_iter().enumerate() {
         let observation = repository
@@ -1055,6 +1329,64 @@ where
         .ok_or(GuardedDefaultCampaignInvariantError::MissingTerminalObservation)?;
     let terminal_configuration = terminal_configuration
         .ok_or(GuardedDefaultCampaignInvariantError::MissingTerminalObservation)?;
+    let (savepoint, evidence) = match execution.savepoint {
+        Some(capture) => {
+            let checkpoints =
+                checkpoints.ok_or(GuardedDefaultCampaignInvariantError::MissingSavepointCapture)?;
+            let request = repository
+                .savepoint_capture_request_at(execution.final_snapshot, capture.request)
+                .map_err(GuardedDefaultCampaignRunError::Repository)?
+                .ok_or(GuardedDefaultCampaignInvariantError::MissingSavepointCapture)?;
+            let resolution = repository
+                .savepoint_capture_resolution_at(execution.final_snapshot, capture.request)
+                .map_err(GuardedDefaultCampaignRunError::Repository)?
+                .ok_or(GuardedDefaultCampaignInvariantError::MissingSavepointCapture)?;
+            let attempt = repository
+                .load_attempt(capture.description.attempt)
+                .map_err(GuardedDefaultCampaignRunError::Repository)?;
+            if request != capture.description
+                || resolution.request != capture.request
+                || resolution.outcome != SavepointCaptureOutcome::Ready
+                || attempt.stop() != &capture.description.stop
+                || capture.description.attempt != terminal.observation.attempt()
+                || capture.reached != terminal.observation.child()
+                || capture.evidence != terminal_execution_evidence
+            {
+                return Err(GuardedDefaultCampaignInvariantError::SavepointCaptureMismatch.into());
+            }
+
+            let checkpoint = checkpoints
+                .load_attempt_checkpoint(capture.checkpoint)
+                .map_err(GuardedDefaultCampaignRunError::ExactCheckpoint)?;
+            if checkpoint.root() != capture.checkpoint
+                || checkpoint.scenario().bytes != lineage.scenario().as_hash().as_bytes()
+                || checkpoint.configuration().bytes
+                    != terminal.observation.child().as_hash().as_bytes()
+                || !capture_evidence_reaches_stop(&capture.evidence, &capture.description.stop)
+            {
+                return Err(
+                    GuardedDefaultCampaignInvariantError::SavepointCheckpointMismatch.into(),
+                );
+            }
+
+            let evidence = capture.evidence.clone();
+            let savepoint = GuardedDefaultCampaignSavepoint {
+                request: capture.request,
+                attempt: capture.description.attempt,
+                checkpoint: capture.checkpoint,
+                configuration: capture.reached,
+                stop: capture.description.stop,
+                evidence: capture.evidence,
+            };
+            (Some(savepoint), evidence)
+        }
+        None => {
+            if checkpoints.is_some() {
+                return Err(GuardedDefaultCampaignInvariantError::MissingSavepointCapture.into());
+            }
+            (None, terminal_execution_evidence)
+        }
+    };
     let replay_closure =
         GuardedCampaignReplayClosure::collect(&store, &scenario, &terminal_configuration.schedule)
             .map_err(GuardedDefaultCampaignRunError::ReplayClosure)?;
@@ -1069,7 +1401,29 @@ where
         watch_frames: execution.watch_frames,
         evidence,
         replay_closure,
+        savepoint,
     })
+}
+
+fn capture_evidence_reaches_stop(
+    evidence: &QemuAttemptExecutionEvidenceSnapshot,
+    stop: &StopCondition,
+) -> bool {
+    match stop {
+        StopCondition::VirtualTimeNanoseconds(deadline) => evidence.frontier().ticks >= *deadline,
+        StopCondition::ExecutionQuanta(bound) => evidence.quanta() >= *bound,
+        StopCondition::VirtualTimeOrExecutionQuanta {
+            virtual_time_nanoseconds,
+            execution_quanta,
+        } => {
+            evidence.frontier().ticks >= *virtual_time_nanoseconds
+                || evidence.quanta() >= *execution_quanta
+        }
+        StopCondition::NextChoice
+        | StopCondition::NamedBoundary(_)
+        | StopCondition::EventCount(_)
+        | StopCondition::Terminal => true,
+    }
 }
 
 impl<E> From<GuardedDefaultCampaignInvariantError> for GuardedDefaultCampaignRunError<E>

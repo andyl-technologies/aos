@@ -13,11 +13,11 @@ use std::sync::{
 use std::time::Duration;
 
 use crucible::{
-    Configuration, ContentHash, EventLog, ExecutionFingerprint, FingerprintSample, Icount,
-    MarkerId, NodeId, NodeTemplate, ObservableEvent, Plan, Properties, QuantumOutcome,
-    QuantumRequest, QuantumTerminalVerdict, ReadyPoint, ScenarioDef, ScenarioDefForm,
-    ScenarioSelectableLimits, ScenarioSelectables, SchedulerError, SchedulerEventLogEntry, Seed,
-    VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    Checkpoint, CheckpointKind, Configuration, ContentHash, EventLog, ExecutionFingerprint,
+    FingerprintSample, Icount, MarkerId, NodeId, NodeTemplate, ObservableEvent, Plan, Properties,
+    QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ReadyPoint, ScenarioDef,
+    ScenarioDefForm, ScenarioSelectableLimits, ScenarioSelectables, SchedulerError,
+    SchedulerEventLogEntry, Seed, VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
 use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig};
 use crucible_campaign::{
@@ -25,11 +25,12 @@ use crucible_campaign::{
     ChoiceSource, ChoiceValue, SelectableDeclaration, StopOutcome,
 };
 use crucible_cas::content_store::{
-    BlobHandle, DirectoryRefBackend, ImmutableBlobBackend, MutableRefBackend, ObjectKind,
-    StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
+    BlobHandle, DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend, MutableRefBackend,
+    ObjectKind, StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
 };
 use crucible_protocol::SelectionRequest;
 use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
+use crucible_qemu::{QemuReplayOracleValidation, QemuVmSnapshot};
 
 use super::*;
 use crate::{
@@ -54,6 +55,7 @@ struct TerminalLifecycle {
     mode: TerminalLifecycleMode,
     frontier: VirtualTime,
     completed_quanta: u64,
+    configuration: Option<Configuration>,
 }
 
 #[derive(Clone, Copy)]
@@ -82,6 +84,7 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
                 self.node.clone(),
                 MarkerId::from_name("guarded-default-run-quantum"),
             )])?;
+        self.configuration = Some(request.configuration.clone());
         Ok(QuantumOutcome {
             configuration: request.configuration,
             frontier: self.frontier,
@@ -108,7 +111,7 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
     }
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
-        Ok(false)
+        Ok(true)
     }
 
     fn drain_pending_selectable_requests(
@@ -132,9 +135,31 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
         &mut self,
         _context: &AttemptExecutionContext,
     ) -> Result<CapturedAttemptCheckpoint, SchedulerError> {
-        Err(SchedulerError::NotImplemented {
-            operation: "guarded default-run checkpoint fixture",
-        })
+        let configuration =
+            self.configuration
+                .as_ref()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from("checkpoint requested before a completed quantum"),
+                })?;
+        let checkpoint = Checkpoint::from_recorded_configuration(
+            configuration,
+            None,
+            self.frontier,
+            BTreeMap::new(),
+            CheckpointKind::Fat,
+            BTreeMap::new(),
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: error.to_string(),
+        })?;
+        let snapshot = QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: error.to_string(),
+            })?;
+        Ok(
+            crate::CapturedExactCheckpoint::new(snapshot, BlobHandle::from_bytes(vec![0x5a; 512]))
+                .into(),
+        )
     }
 
     fn fault_evidence_snapshot(&self) -> Result<ProductionFaultEvidenceSnapshot, SchedulerError> {
@@ -360,6 +385,43 @@ impl QemuFreshAttemptLifecycleFactory for TerminalLifecycleFactory {
             mode: self.mode,
             frontier: VirtualTime::default(),
             completed_quanta: 0,
+            configuration: None,
+        })
+    }
+}
+
+struct ReplayLifecycleFactory {
+    node: NodeId,
+    starts: Arc<AtomicUsize>,
+    replay_quantum_nanoseconds: u64,
+}
+
+impl QemuFreshAttemptLifecycleFactory for ReplayLifecycleFactory {
+    type Lifecycle = TerminalLifecycle;
+    type Error = io::Error;
+
+    fn start_fresh_lifecycle(
+        &mut self,
+        _scenario: &ScenarioDef,
+        _source: &ScenarioDefForm,
+        _start: &Configuration,
+        _signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
+        _context: &AttemptExecutionContext,
+    ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
+        let start = self.starts.fetch_add(1, Ordering::Relaxed);
+        Ok(TerminalLifecycle {
+            node: self.node.clone(),
+            event_log: EventLog::new(),
+            mode: TerminalLifecycleMode::VirtualTime {
+                quantum_nanoseconds: if start == 0 {
+                    1_100_000
+                } else {
+                    self.replay_quantum_nanoseconds
+                },
+            },
+            frontier: VirtualTime::default(),
+            completed_quanta: 0,
+            configuration: None,
         })
     }
 }
@@ -554,6 +616,120 @@ fn explicit_virtual_time_discovery_retains_the_first_frontier_crossing_the_deadl
         completed.terminal().observation().stop(),
         &StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(deadline))
     );
+}
+
+#[test]
+fn virtual_time_savepoint_capture_replays_and_authenticates_the_same_boundary() {
+    let deadline = 2_000_000;
+    let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
+    let checkpoints = exact_checkpoint_store(&checkpoint_directory);
+    let (request, node) = request();
+    let request = request
+        .with_discovery_stop(StopCondition::VirtualTimeNanoseconds(deadline))
+        .with_reached_stop_savepoint_capture(Arc::clone(&checkpoints));
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (factory, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(ReplayLifecycleFactory {
+            node,
+            starts: Arc::clone(&starts),
+            replay_quantum_nanoseconds: 1_100_000,
+        });
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+
+    let completed = run_guarded_default_campaign_with_runner(request, runner, evidence)
+        .expect("stable replay should capture the requested savepoint");
+    let savepoint = completed.savepoint().expect("authenticated savepoint");
+    let loaded = checkpoints
+        .load_attempt_checkpoint(savepoint.checkpoint())
+        .expect("published exact checkpoint closure");
+
+    assert_eq!(starts.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        savepoint.attempt(),
+        completed.terminal().observation().attempt()
+    );
+    assert_eq!(
+        savepoint.configuration(),
+        completed.terminal().observation().child()
+    );
+    assert_eq!(
+        savepoint.stop(),
+        &StopCondition::VirtualTimeNanoseconds(deadline)
+    );
+    assert_eq!(savepoint.evidence(), completed.evidence());
+    assert_eq!(savepoint.evidence().frontier().ticks, 2_200_000);
+    assert_eq!(loaded.root(), savepoint.checkpoint());
+    assert_eq!(
+        loaded.configuration().bytes,
+        completed
+            .terminal()
+            .observation()
+            .child()
+            .as_hash()
+            .as_bytes()
+    );
+}
+
+#[test]
+fn savepoint_capture_rejects_a_terminal_outcome_before_the_requested_deadline() {
+    let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
+    let checkpoints = exact_checkpoint_store(&checkpoint_directory);
+    let (request, node) = request();
+    let request = request
+        .with_discovery_stop(StopCondition::VirtualTimeNanoseconds(2_000_000))
+        .with_reached_stop_savepoint_capture(checkpoints);
+    let (factory, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(TerminalLifecycleFactory {
+            node,
+            fail_start: false,
+            mode: TerminalLifecycleMode::Terminal,
+        });
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+
+    let error = run_guarded_default_campaign_with_runner(request, runner, evidence)
+        .expect_err("early terminal outcome must not become a successful savepoint");
+
+    assert!(matches!(
+        error,
+        GuardedDefaultCampaignRunError::Invariant(
+            GuardedDefaultCampaignInvariantError::SavepointStopNotReached
+        )
+    ));
+    assert_eq!(
+        std::fs::read_dir(checkpoint_directory.path())
+            .expect("inspect checkpoint directory")
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn savepoint_capture_rejects_mismatched_replay_evidence() {
+    let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
+    let checkpoints = exact_checkpoint_store(&checkpoint_directory);
+    let (request, node) = request();
+    let request = request
+        .with_discovery_stop(StopCondition::VirtualTimeNanoseconds(2_000_000))
+        .with_reached_stop_savepoint_capture(checkpoints);
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (factory, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(ReplayLifecycleFactory {
+            node,
+            starts: Arc::clone(&starts),
+            replay_quantum_nanoseconds: 1_200_000,
+        });
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+
+    let error = run_guarded_default_campaign_with_runner(request, runner, evidence)
+        .expect_err("a different capture replay must fail closed");
+
+    assert_eq!(starts.load(Ordering::Relaxed), 2);
+    assert!(matches!(
+        error,
+        GuardedDefaultCampaignRunError::Invariant(
+            GuardedDefaultCampaignInvariantError::SavepointEvidenceMismatch
+        )
+    ));
 }
 
 #[test]
@@ -969,6 +1145,16 @@ fn request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
             resources,
         ),
         node,
+    )
+}
+
+fn exact_checkpoint_store(directory: &tempfile::TempDir) -> Arc<ExactCheckpointStore> {
+    let backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
+        "legacy-run-savepoint-tests",
+        directory.path(),
+    ));
+    Arc::new(
+        ExactCheckpointStore::new(backend, 1024 * 1024).expect("durable exact checkpoint store"),
     )
 }
 
