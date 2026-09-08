@@ -80,7 +80,7 @@ let
     '';
   };
 
-  fixupPhase = {
+  fixupPhaseFor = stripCommand: {
     name = "fixup";
     script = ''
       object_format="''${AOS_OBJECT_FORMAT:-elf}"
@@ -93,16 +93,16 @@ let
       # gcc-stage2 into its runtime closure via Nix's reference scanner.
       if [ -z "''${dontStrip:-}" ]; then
         echo "stripping..."
-        find "$out" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) -exec strip --strip-unneeded {} \; 2>/dev/null || true
-        find "$out" -type f -name '*.a' -exec strip -S {} \; 2>/dev/null || true
+        find "$out" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) -exec ${stripCommand} --strip-unneeded {} \; 2>/dev/null || true
+        find "$out" -type f -name '*.a' -exec ${stripCommand} -S {} \; 2>/dev/null || true
         if [ -d "$out/bin" ]; then
-          find "$out/bin" -type f -exec strip -s {} \; 2>/dev/null || true
+          find "$out/bin" -type f -exec ${stripCommand} -s {} \; 2>/dev/null || true
         fi
         if [ -d "$out/sbin" ]; then
-          find "$out/sbin" -type f -exec strip -s {} \; 2>/dev/null || true
+          find "$out/sbin" -type f -exec ${stripCommand} -s {} \; 2>/dev/null || true
         fi
         if [ -d "$out/libexec" ]; then
-          find "$out/libexec" -type f -exec strip -s {} \; 2>/dev/null || true
+          find "$out/libexec" -type f -exec ${stripCommand} -s {} \; 2>/dev/null || true
         fi
       fi
 
@@ -206,9 +206,16 @@ let
     '';
   };
 
+  fixupPhase = fixupPhaseFor "strip";
+
+  # Language builders bypass mkDerivation's default phase selection. Their
+  # Linux cross outputs must still use the selected target strip.
+  crossElfFixupPhase = fixupPhaseFor "\"$STRIP\"";
+
   # Preserve the native phase bytes while avoiding grep -q's intentional
   # early pipe close for large Mach-O archives in Darwin cross builds.
   darwinCrossFixupPhase = let
+    crossFixupPhase = fixupPhaseFor "\"$STRIP\"";
     script =
       builtins.replaceStrings
       [
@@ -217,12 +224,12 @@ let
       [
         "    case \"$header\" in\n      *\"$expected_cpu\"*) ;;\n      *)\n        echo \"Mach-O architecture mismatch in $f: expected $expected_cpu\" >&2\n        echo \"$header\" >&2\n        exit 1\n        ;;\n    esac"
       ]
-      fixupPhase.script;
+      crossFixupPhase.script;
   in
-    assert script != fixupPhase.script;
-      fixupPhase // {inherit script;};
+    assert script != crossFixupPhase.script;
+      crossFixupPhase // {inherit script;};
 in rec {
-  inherit fixupPhase darwinCrossFixupPhase;
+  inherit fixupPhase crossElfFixupPhase darwinCrossFixupPhase;
 
   # GNU Autoconf (configure / make / make install)
   autoconfPhases = {

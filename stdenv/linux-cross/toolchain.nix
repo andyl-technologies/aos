@@ -54,6 +54,10 @@
     libc = glibc;
     stage = "final";
   };
+
+  gccRuntime = import ./gcc-runtime.nix {
+    inherit buildStdenv buildPlatform hostPlatform binutils gcc;
+  };
 in {
-  inherit gcc binutils glibc linuxHeaders;
+  inherit gcc gccRuntime binutils glibc linuxHeaders;
 }

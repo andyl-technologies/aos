@@ -375,10 +375,17 @@
         configModuleDependencies = preparedConfigModule.dependencyOutputs;
       }
       else {};
-    darwinCrossPhases = builtins.map (
+    crossFixupPhase =
+      if stdenv.hostPlatform.objectFormat == "macho"
+      then phases.darwinCrossFixupPhase
+      else phases.crossElfFixupPhase;
+    crossPhases = builtins.map (
       phase:
-        if builtins.isAttrs phase && (phase.name or null) == "fixup"
-        then phases.darwinCrossFixupPhase
+        if
+          builtins.isAttrs phase
+          && (phase.name or null) == "fixup"
+          && (phase.script or null) == phases.fixupPhase.script
+        then crossFixupPhase
         else phase
     ) (args.phases or []);
     lowerArgs =
@@ -400,9 +407,11 @@
         args
         ? phases
         && stdenv.buildPlatform.system != stdenv.hostPlatform.system
-        && stdenv.hostPlatform.objectFormat == "macho"
       ) {
-        phases = darwinCrossPhases;
+        # Phase-generating language builders embed the shared fixup record.
+        # Replace only that exact implementation so package-authored phases
+        # that happen to use the same name retain their behavior.
+        phases = crossPhases;
       }
       // exposeAttrs;
     drv = rawMkDerivation lowerArgs;
@@ -1022,7 +1031,7 @@
   packageArgumentScope =
     self
     // {inherit firmwarePackages;}
-    // lib.optionalAttrs stdenv.hostPlatform.isDarwin (
+    // lib.optionalAttrs stdenv.isCross (
       builtins.listToAttrs (
         builtins.map (name: {
           inherit name;
@@ -1592,61 +1601,61 @@
           version = "2.39.0";
           passthru.evidenceSources = stdenv.glibc.passthru.evidenceSources;
         };
-      # Native package sets retain the final stdenv tools. Darwin package roots
-      # must be actual target builds; Linux build tools remain available only
-      # through buildPackages and build-dependency splicing.
+      # Native package sets retain the final stdenv tools. Cross package roots
+      # must be actual target builds; scheduler-native tools remain available
+      # only through buildPackages and build-dependency splicing.
       bash = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.bash
         else stdenv.bash
       );
       coreutils = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.coreutils
         else stdenv.coreutils
       );
       gnumake = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.gnumake
         else stdenv.gnumake
       );
       sed = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.sed
         else stdenv.sed
       );
       grep = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.grep
         else stdenv.grep
       );
       findutils = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.findutils
         else stdenv.findutils
       );
       gawk = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.gawk
         else stdenv.gawk
       );
       diffutils = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.diffutils
         else stdenv.diffutils
       );
       tar = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.tar
         else stdenv.tar
       );
       gzip = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.gzip
         else stdenv.gzip
       );
       patch = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.patch
         else stdenv.patch
       );
