@@ -598,37 +598,42 @@ impl CampaignService for GraphPageService {
                 ),
             )
             .expect("attempt admission explanation proof");
-        let proposal_id = self
-            .attempt_proposal
-            .id()
-            .expect("attempt explanation proposal ID");
-        let (_, proposal_proof) = self
-            .map
-            .get_with_proof(
-                roots.exploration,
-                content_index_key("exploration.proposal", proposal_id.content_id()),
-            )
-            .expect("attempt proposal explanation proof");
-        let (_, observation_proof) = self
+        let branch_provenance = matches!(self.attempt.start(), AttemptStart::Branch { .. });
+        let proposal_proof = branch_provenance.then(|| {
+            let proposal_id = self
+                .attempt_proposal
+                .id()
+                .expect("attempt explanation proposal ID");
+            let (_, proof) = self
+                .map
+                .get_with_proof(
+                    roots.exploration,
+                    content_index_key("exploration.proposal", proposal_id.content_id()),
+                )
+                .expect("attempt proposal explanation proof");
+            proof
+        });
+        let (observation_id, observation_proof) = self
             .map
             .get_with_proof(
                 roots.observations,
                 content_index_key("observations.attempt", request.attempt().content_id()),
             )
             .expect("attempt observation explanation proof");
+        let observation = observation_id.map(|_| self.finding_observation.clone());
         Ok(ExplainCampaignAttemptResponse::new(
             request,
             self.snapshot.clone(),
             self.attempt.clone(),
             self.attempt_admission,
             self.attempt_path.clone(),
-            Some(self.attempt_selection.clone()),
-            Some(self.attempt_proposal.clone()),
+            branch_provenance.then(|| self.attempt_selection.clone()),
+            branch_provenance.then(|| self.attempt_proposal.clone()),
             None,
-            Some(self.finding_observation.clone()),
+            observation,
             attempt_proof,
             admission_proof,
-            Some(proposal_proof),
+            proposal_proof,
             None,
             observation_proof,
         )
@@ -1358,9 +1363,56 @@ fn campaign_attempt_explain_authenticates_proposal_and_completion() {
     );
     assert_eq!(decoded["attempt"]["id"], attempt.to_string());
     assert_eq!(decoded["attempt"]["start"], "branch");
+    assert!(decoded["attempt"].get("origin").is_none());
+    assert!(decoded["attempt"].get("reached").is_none());
     assert_eq!(decoded["proposal"]["id"], proposal.to_string());
     assert_eq!(decoded["selection"]["value"], "true");
     assert_eq!(decoded["observation"]["id"], observation.to_string());
+}
+
+#[test]
+fn campaign_attempt_explain_renders_continuation_origin_and_boundary() {
+    let (service, _, _) = graph_page_service();
+    let (service, snapshot, origin, reached) = continuation_attempt_service(service);
+    let attempt = service.attempt.id().expect("continuation attempt ID");
+    let command = CampaignCommand::ExplainAttempt(CampaignAttemptExplainArgs {
+        name: "example".to_owned(),
+        snapshot: snapshot.to_string(),
+        attempt: attempt.to_string(),
+    });
+    let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
+    let server = thread::spawn(move || {
+        serve_loopback_campaign_once(&mut server_stream, &service)
+            .expect("serve continuation attempt explanation request");
+    });
+    let client =
+        CampaignClient::new(LoopbackCampaignService::new(client_stream).expect("loopback client"));
+
+    let report = query_campaign_attempt_explanation(
+        &client,
+        CampaignPrincipal::new("operator").expect("campaign principal"),
+        &command,
+    )
+    .expect("checked continuation attempt explanation");
+    server.join().expect("campaign server thread");
+
+    let rendered = render_campaign_attempt_explanation(&report, OutputFormat::Json)
+        .expect("continuation attempt explanation JSON");
+    let decoded: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+    assert_eq!(
+        decoded["schema"],
+        "crucible.cli.campaign-attempt-explanation.v2"
+    );
+    assert_eq!(decoded["attempt"]["start"], "after-attempt");
+    assert_eq!(decoded["attempt"]["origin"], origin.to_string());
+    assert_eq!(decoded["attempt"]["reached"], reached.to_string());
+    assert!(decoded["attempt"].get("parent").is_none());
+    assert!(decoded["attempt"].get("selection").is_none());
+
+    let markdown = render_campaign_attempt_explanation(&report, OutputFormat::Markdown)
+        .expect("continuation attempt explanation markdown");
+    assert!(markdown.contains(&format!("| attempt.origin | {origin} |")));
+    assert!(markdown.contains(&format!("| attempt.reached | {reached} |")));
 }
 
 #[test]
@@ -3655,6 +3707,95 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
         snapshot_id,
         historical_id,
     )
+}
+
+fn continuation_attempt_service(
+    mut service: GraphPageService,
+) -> (
+    GraphPageService,
+    CampaignSnapshotId,
+    AttemptId,
+    ConfigurationArtifactId,
+) {
+    let origin = service
+        .attempt
+        .id()
+        .expect("continuation origin attempt ID");
+    let reached = service.finding_observation.child_content();
+    let attempt = Attempt::new(
+        AttemptStart::AfterAttempt { origin, reached },
+        service
+            .attempt_path
+            .id()
+            .expect("continuation attempt path ID"),
+        StopCondition::NextChoice,
+    )
+    .expect("continuation attempt");
+    let attempt_id = attempt.id().expect("continuation attempt ID");
+    let admission = AttemptAdmission::new(
+        attempt_id,
+        AttemptAdmissionRole::ExecutionBasis {
+            proposal: None,
+            cause: service.branch_request.cause(),
+            admission_ordinal: AdmissionOrdinal::new(2),
+        },
+    );
+
+    let mut roots = service.snapshot.roots();
+    let accounting = service
+        .map
+        .insert(
+            roots.accounting,
+            content_index_key("accounting.attempt", attempt_id.content_id()),
+            attempt_id.content_id(),
+        )
+        .expect("continuation attempt accounting insertion");
+    let accounting = service
+        .map
+        .insert(
+            accounting.content_id(),
+            content_index_key(
+                "accounting.attempt-execution-basis",
+                attempt_id.content_id(),
+            ),
+            admission
+                .id()
+                .expect("continuation admission ID")
+                .content_id(),
+        )
+        .expect("continuation admission accounting insertion");
+    roots.accounting = accounting.content_id();
+
+    let parent = service
+        .snapshot
+        .id()
+        .expect("continuation parent snapshot ID");
+    let transition = CampaignFactId::parse(&format!(
+        "crucible.campaign.fact@{}",
+        ContentId::for_bytes(
+            ObjectKind::CampaignFact,
+            2,
+            b"cli-continuation-attempt-transition",
+        )
+        .encode()
+    ))
+    .expect("continuation transition fact ID");
+    let snapshot = CampaignSnapshot::successor(
+        parent,
+        service.snapshot.lineage(),
+        service.snapshot.active_policy(),
+        roots,
+        transition,
+    )
+    .expect("continuation attempt snapshot");
+    let snapshot_id = snapshot.id().expect("continuation snapshot ID");
+
+    service.snapshot = snapshot.clone();
+    service.snapshots.insert(snapshot_id, snapshot);
+    service.attempt = attempt;
+    service.attempt_admission = admission;
+
+    (service, snapshot_id, origin, reached)
 }
 
 fn add_ambiguous_selector_choice(
