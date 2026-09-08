@@ -19,6 +19,9 @@ Apply the [code style guide](../code-style.md) to new and modified Rust and Nix
 code. It covers Rust APIs and implementation, Dendritic Nix modules, package
 expressions, comments, tests, and embedded shell.
 
+[Crucible gate evidence](crucible-gate-evidence.md) distinguishes component
+tests from live QEMU evidence and explains the fingerprint gate dependencies.
+
 ## Build the source tree
 
 AOS builds hermetically from its bootstrap tools and AOS packages. It does not
