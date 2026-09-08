@@ -6,37 +6,37 @@ promise.
 
 | Area | Status | Operator guidance |
 | --- | --- | --- |
-| Hermetic package and system builds | Implemented | Build through the repository's AOS package set; do not use nixpkgs or host tools |
-| Bootable images | `x86_64-linux` workflow implemented | Use an x86 Linux host or remote builder |
-| UEFI boot | Required | Select UEFI firmware; legacy BIOS is not a supported image path |
-| Raw, QCOW2, VMDK, dynamic VHD output | Implemented | Provider import requirements remain platform-specific |
-| Build-time system modules | Implemented | Keep boot-critical substrate and image trust policy in the release image |
-| Runtime `host.nix` storage provisioning | Implemented, first boot only | Treat the committed plan as immutable; later differences are drift |
-| Other runtime `host.nix` settings | Early-preview configuration generations implemented | Preview, activate, and verify the transaction-bound activation record on the exact image |
-| Platform-trusted metadata | Implemented for documented transports | Use signed mode when the metadata channel is not trusted |
-| Native AWS, GCP, Azure, DigitalOcean, OpenStack metadata | Implemented | User-data and normalized facts feed the same pure evaluation transaction |
-| Other native cloud metadata APIs | Unsupported | Use an offline metadata or config drive; AOS does not guess provider protocols |
-| Signed metadata on GCP, Azure, DigitalOcean, native OpenStack | No detached-signature channel | Use an offline drive or config-drive transport |
-| DHCP and single-address static networking | Implemented | Verify the target interface name before deployment |
-| MTU, VLAN, and bond high-level options | Incomplete rendering | Supply and test complete networkd units if required |
-| APM machine-wide packages | Add/remove reconciliation implemented; upgrade and rollback incomplete | Use `apm install --system --from`; do not confuse sysroot upgrade/rollback with runtime-package operations |
-| [Exposed APM service confinement](package-sandbox.md) | Implemented, early preview | Applies to services activated through `expose`; inspect signed permissions because broad grants can weaken or remove the boundary, and treat registry trust separately |
-| Stock unprivileged user package profile | Not provisioned | Do not assume user-scope package mutation is available on a stock host |
-| Configuration generation rollback | Implemented | Same-ABI rollback is direct; cross-ABI rollback re-evaluates retained inputs |
-| Durable image, kernel, and UKI upgrade | Early-preview A/B path implemented with boot counting and redundant ESP synchronization | Qualify inactive-slot staging, reboot, replica failover, and image/config generation binding on the target firmware |
-| Image rollback | Early-preview path implemented | Select the image axis explicitly and qualify configuration rebind after boot |
-| Opaque runtime credential references | Implemented for system credentials, desired credentials, and TPM2 credstore | Keep bytes outside Nix; external Vault/cloud-secret backends are separate |
-| System-package/configuration generation pruning | Implemented | `apm clean --system --generations --keep N`, then `apm gc` |
-| A/B image-generation pruning | Not implemented | Preserve rollback capacity; size `/var` and reimage rather than deleting image generations manually |
-| [Secure Boot, lockdown, measured boot, dm-verity](secure-boot.md) | Fleet-test fixtures implemented | Checked-in variants use public test keys; no complete production key-custody workflow is shipped |
-| Package supply-chain and runtime attestation | Fleet-test implementation for exposed system packages | Signed registry graphs authenticate every closure member; PCR 15 measures explicitly activated exposed roots and manifests, while only signed dm-verity `RootImage=` workloads have block-level runtime integrity |
-| SELinux module | Present, not enabled by presets | No production policy package is wired into `standard` or `hardened` |
-| Audit, firewall, kernel hardening | Implemented in server baseline | Verify active rules and service state on the deployed host |
-| Encrypted ZFS bare-metal storage | Early-preview installer and boot path implemented | Supply deployment trust keys; qualify TPM unlock, recovery, pool import, zvol slots, disk failure, and replacement on target hardware |
-| NVIDIA GPU support | Open kernel modules and matching GSP firmware implemented | Proprietary compute and graphics userspace is outside the source-only image; qualify module binding and supply version-matched userspace separately |
-| In-band IPMI | Kernel interfaces and `ipmitool` module implemented | Enable the server-management profile and qualify the BMC interface, watchdog policy, and credentials on target hardware |
-| Hardware watchdog and SMART monitoring | Opt-in | Qualify devices and alert delivery on real hardware |
-| Remote log shipping | No complete module | Journald can forward to syslog, but the receiver must be separately provided |
+| Hermetic package and system builds | Implemented | Build packages and systems through the AOS package set. Avoid dependencies on nixpkgs or tools installed on the build host. |
+| Bootable images | `x86_64-linux` workflow implemented | Build on an x86 Linux host, or configure an x86 Linux remote builder. |
+| UEFI boot | Required | Configure the target to boot with UEFI firmware. AOS images do not support legacy BIOS boot. |
+| Raw, QCOW2, VMDK, dynamic VHD output | Implemented | Choose the format accepted by the target platform and validate that platform's import settings before rollout. |
+| Build-time system modules | Implemented | Include boot-critical components and image trust policy in the release image; do not defer them to runtime configuration. |
+| Runtime `host.nix` storage provisioning | Implemented, first boot only | Finalize and review the storage plan before first boot. After it is committed, treat any difference in later configuration as drift to resolve manually. |
+| Other runtime `host.nix` settings | Early-preview configuration generations implemented | Preview the change, activate it on the intended image, and confirm that the activation record identifies the expected transaction. |
+| Platform-trusted metadata | Implemented for documented transports | Use unsigned metadata only on a channel the platform authenticates. Require signed metadata on any other channel. |
+| Native AWS, GCP, Azure, DigitalOcean, OpenStack metadata | Implemented | Validate both user-data and discovered platform facts before activation because AOS evaluates them together. |
+| Other native cloud metadata APIs | Unsupported | Provide configuration through an offline metadata or config drive instead of relying on an unrecognized provider API. |
+| Signed metadata on GCP, Azure, DigitalOcean, native OpenStack | No detached-signature channel | Use an offline drive or config drive when the deployment requires signed metadata. |
+| DHCP and single-address static networking | Implemented | Confirm the target interface name and test connectivity with the deployed network configuration before rollout. |
+| MTU, VLAN, and bond high-level options | Incomplete rendering | Provide complete systemd-networkd units for these features and test them on the target network. |
+| APM machine-wide packages | Add/remove reconciliation implemented; upgrade and rollback incomplete | Install the desired set with `apm install --system --from`. Plan upgrades and rollbacks separately; sysroot operations do not manage runtime packages. |
+| [Exposed APM service confinement](package-sandbox.md) | Implemented, early preview | Review the signed permissions of every service activated through `expose`; broad grants can weaken or eliminate confinement. Assess registry trust separately. |
+| Stock unprivileged user package profile | Not provisioned | Provision a user package profile separately if users need to install or remove packages without administrator access. |
+| Configuration generation rollback | Implemented | Roll back directly when the old and current generations share an ABI. For a cross-ABI rollback, retain the original inputs so AOS can re-evaluate them. |
+| Durable image, kernel, and UKI upgrade | Early-preview A/B path implemented with boot counting and redundant ESP synchronization | Before production use, test inactive-slot staging, reboot recovery, ESP replica failover, and image-to-configuration binding with the target firmware. |
+| Image rollback | Early-preview path implemented | Explicitly select an image rollback, then verify after boot that the intended configuration generation is bound to that image. |
+| Opaque runtime credential references | Implemented for system credentials, desired credentials, and TPM2 credstore | Keep credential contents out of Nix configuration. Integrate Vault or cloud secret managers separately if required. |
+| System-package/configuration generation pruning | Implemented | Retain the required rollback generations with `apm clean --system --generations --keep N`, then reclaim unreferenced storage with `apm gc`. |
+| A/B image-generation pruning | Not implemented | Size `/var` to retain the required rollback images. Reimage the host when cleanup is necessary; do not delete image generations by hand. |
+| [Secure Boot, lockdown, measured boot, dm-verity](secure-boot.md) | Fleet-test fixtures implemented | Replace the public test keys in the checked-in variants and establish a production key custody process before deployment. |
+| Package supply-chain and runtime attestation | Fleet-test implementation for exposed system packages | Use signed registry graphs to authenticate package closures and PCR 15 to attest activated exposed roots and manifests. Require signed dm-verity `RootImage=` workloads where block-level runtime integrity is needed. |
+| SELinux module | Present, not enabled by presets | Supply and validate a production SELinux policy package; the `standard` and `hardened` presets do not enable one. |
+| Audit, firewall, kernel hardening | Implemented in server baseline | After deployment, confirm that the expected audit rules, firewall rules, kernel settings, and services are active. |
+| Encrypted ZFS bare-metal storage | Early-preview installer and boot path implemented | Supply deployment trust keys and test TPM unlock, recovery, pool import, zvol slot handling, disk failure, and disk replacement on the target hardware. |
+| NVIDIA GPU support | Open kernel modules and matching GSP firmware implemented | Provide version-matched compute or graphics userspace separately, then verify that the open kernel module binds to each target GPU. |
+| In-band IPMI | Kernel interfaces and `ipmitool` module implemented | Enable the server-management profile, secure the BMC credentials, and test the interface and watchdog policy on the target hardware. |
+| Hardware watchdog and SMART monitoring | Opt-in | Enable both features explicitly, then test device compatibility and end-to-end alert delivery on the target hardware. |
+| Remote log shipping | No complete module | Configure journald's syslog forwarding and operate a compatible remote receiver separately. |
 
 ## Use the matrix in release reviews
 
