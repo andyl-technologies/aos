@@ -128,7 +128,7 @@ pub fn verify_reviews(
         return Ok(());
     };
     if !contract
-        .thresholds_for(plan.release_class)?
+        .thresholds_for(&plan.registry, plan.release_class)?
         .require_independent_review
         && reviews.is_empty()
     {

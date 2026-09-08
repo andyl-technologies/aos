@@ -22,8 +22,8 @@ use crate::db::{
 use crate::dialect::Dialect;
 
 #[test]
-fn v25_schema_contains_transactional_gc_evidence_and_fences() {
-    let migration = include_str!("../oci_gc.sql");
+fn baseline_contains_transactional_gc_evidence_and_fences() {
+    let migration = MIGRATIONS[0];
     for table in [
         "oci_provider_inventory_generations",
         "oci_provider_inventory_entries",
@@ -39,7 +39,7 @@ fn v25_schema_contains_transactional_gc_evidence_and_fences() {
     ] {
         assert!(
             migration.contains(&format!("CREATE TABLE {table}")),
-            "v25 omits {table}"
+            "baseline omits {table}"
         );
     }
     assert!(migration.contains("UNIQUE(placement_id, active_slot)"));
@@ -47,8 +47,8 @@ fn v25_schema_contains_transactional_gc_evidence_and_fences() {
 }
 
 #[test]
-fn v26_schema_contains_review_remediation_authorities() {
-    let migration = include_str!("../oci_gc_remediation.sql");
+fn baseline_contains_review_remediation_authorities() {
+    let migration = MIGRATIONS[0];
     for identity in [
         "unreferenced_since",
         "oci_registry_purge_fences",
@@ -57,31 +57,7 @@ fn v26_schema_contains_review_remediation_authorities() {
         "oci_untracked_repair_plans",
         "oci_untracked_repair_evidence",
     ] {
-        assert!(migration.contains(identity), "v26 omits {identity}");
-    }
-}
-
-#[test]
-fn v26_schema_statements_translate_for_postgres_and_mysql() {
-    let migration = include_str!("../oci_gc_remediation.sql");
-    for dialect in [Dialect::Postgres, Dialect::Mysql] {
-        for sql in crate::backend::split_statements(migration) {
-            dialect
-                .translate(&sql)
-                .unwrap_or_else(|error| panic!("{dialect:?} rejected v26 SQL: {error:#}"));
-        }
-    }
-}
-
-#[test]
-fn v25_schema_statements_translate_for_postgres_and_mysql() {
-    let migration = include_str!("../oci_gc.sql");
-    for statement in crate::backend::split_statements(migration) {
-        for dialect in [Dialect::Postgres, Dialect::Mysql] {
-            dialect
-                .translate(&statement)
-                .unwrap_or_else(|error| panic!("{dialect:?} rejected v25 SQL: {error:#}"));
-        }
+        assert!(migration.contains(identity), "baseline omits {identity}");
     }
 }
 
@@ -1944,7 +1920,7 @@ async fn gc_lock_fences_every_upload_phase_and_publication_add_commit() {
 }
 
 #[tokio::test]
-async fn fresh_v24_migration_and_expired_plan_recovery_execute_on_sqlite() {
+async fn baseline_and_expired_plan_recovery_execute_on_sqlite() {
     let database = Database::open_in_memory().await.unwrap();
     seed_registry(&database).await;
     seed_run(&database, "expired", "planned", 2).await;
@@ -2082,43 +2058,6 @@ async fn snapshot_lease_acquisition_cannot_race_an_applying_candidate() {
         )
         .await
         .unwrap();
-}
-
-#[tokio::test]
-async fn v25_concurrent_start_from_v24_applies_once_and_reopens() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("v24-to-v25.db");
-    let connection = rusqlite::Connection::open(&path).unwrap();
-    let gc_index = MIGRATIONS
-        .iter()
-        .position(|migration| *migration == include_str!("../oci_gc.sql"))
-        .expect("GC migration is registered");
-    for migration in &MIGRATIONS[..gc_index] {
-        connection.execute_batch(migration).unwrap();
-    }
-    connection
-        .execute_batch(
-            &format!(
-                "CREATE TABLE schema_version(version INTEGER NOT NULL);
-                 INSERT INTO schema_version(version) VALUES({gc_index});"
-            ),
-        )
-        .unwrap();
-    drop(connection);
-
-    let (left, right) = tokio::join!(Database::open(&path), Database::open(&path));
-    drop(left.unwrap());
-    drop(right.unwrap());
-    let reopened = Database::open(&path).await.unwrap();
-    let version: i64 = reopened
-        .backend
-        .query_opt("SELECT version FROM schema_version", &[])
-        .await
-        .unwrap()
-        .unwrap()
-        .get(0)
-        .unwrap();
-    assert_eq!(version, MIGRATIONS.len() as i64);
 }
 
 #[tokio::test]

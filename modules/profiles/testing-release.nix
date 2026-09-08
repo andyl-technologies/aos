@@ -9,7 +9,7 @@ in {
   options.aos.profiles.testingRelease.enable = lib.mkOption {
     type = lib.types.bool;
     default = false;
-    description = "Build a public experimental image tied only to andyl/testing edge.";
+    description = "Build a public experimental image tied only to andyl/testing.";
   };
 
   config = lib.mkIf cfg.enable {
@@ -21,14 +21,14 @@ in {
       registry = "andyl/testing";
       rootEpoch = 1;
       clientName = "andyl-testing";
-      url = "https://aos.andyl.org/andyl/testing/";
-      channel = "edge";
+      url = "https://cdn.aos.andyl.org/andyl/testing/";
+      channel = lib.mkDefault "edge";
       warning = ''
         ANDYL OS TESTING
 
         This is an experimental AOS testing image. It is not supported for
         production workloads or important data. This system follows the
-        andyl/testing edge channel. Updates may contain breaking changes,
+        ${config.aos.release.registry} ${config.aos.release.channel} channel. Updates may contain breaking changes,
         require reinstallation, or replace the testing trust root. Keep
         important data and recovery material backed up elsewhere.
 

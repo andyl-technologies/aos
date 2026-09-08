@@ -274,7 +274,7 @@ fn optional_assessments_preserve_missing_and_failed_results_without_awarding_exe
     optional.minimum_assurance = AssuranceLevel::A1;
     optional.blocks_release = false;
     contract.claims.push(optional);
-    plan.gates = contract.gates(plan.release_class)?;
+    plan.gates = contract.gates(&plan.registry, plan.release_class)?;
     plan.public_evidence_policy_digest = contract.digest()?;
     plan.validate()?;
     let records = observations(&plan, &manifest, QualificationPhase::Staging)?;

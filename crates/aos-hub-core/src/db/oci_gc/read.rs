@@ -394,16 +394,16 @@ impl Database {
                          AND inventory.placement_observation_version = observation.observation_version
                          AND inventory.binding_resource_version = binding.resource_version
                          AND inventory.binding_write_revision = write_state.current_write_revision
-                         AND (NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
-                                WHERE purge.registry_id = placement.registry_id
-                                  AND purge.state = 'collecting')
-                           OR EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
-                                WHERE purge.registry_id = placement.registry_id
-                                  AND purge.state = 'collecting'
+                         AND (NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge_fence
+                                WHERE purge_fence.registry_id = placement.registry_id
+                                  AND purge_fence.state = 'collecting')
+                           OR EXISTS (SELECT 1 FROM oci_registry_purge_fences purge_fence
+                                WHERE purge_fence.registry_id = placement.registry_id
+                                  AND purge_fence.state = 'collecting'
                                   AND inventory.purge_fence_resource_version =
-                                    purge.resource_version
-                                  AND inventory.started_at >= purge.created_at
-                                  AND inventory.observed_at >= purge.created_at
+                                    purge_fence.resource_version
+                                  AND inventory.started_at >= purge_fence.created_at
+                                  AND inventory.observed_at >= purge_fence.created_at
                                   AND inventory.object_count = 0
                                   AND NOT EXISTS (SELECT 1
                                     FROM oci_provider_inventory_generations failed

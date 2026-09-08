@@ -118,11 +118,24 @@ pub(crate) async fn dispatch_converted_request(
         && !path.starts_with("/aos.hub.v1.");
     let console_route =
         aos_hub_core::web::console::manifest::route_methods_for_path(path).is_some();
+    let browser_page = browser_read
+        && (path == "/"
+            || console_route
+            || path
+                .split_once("/-/")
+                .is_some_and(|(_, rest)| !rest.starts_with("api/")));
     if browser_read || console_route {
         match console_deps.db.instance_settings().await {
             Ok(settings) => aos_hub_core::web::console_render::apply_instance_settings(&settings),
             Err(error) => {
                 tracing::warn!(error = %error, "loading site presentation");
+                if browser_page {
+                    return ConvertedDispatch::Response(
+                        aos_hub_core::web::status_pages::unavailable(
+                            "We could not load the settings for this page. Please try again later.",
+                        ),
+                    );
+                }
                 return ConvertedDispatch::Response(
                     axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),
                 );
@@ -235,12 +248,13 @@ mod tests {
         db.grant_membership("user", user_id, &org.stable_id, "owner")
             .await
             .unwrap();
-        let state =
-            Arc::new(aos_hub::server::AppState::new(db, "http://worker.test".to_string()).await);
+        let mut state = aos_hub::server::AppState::new(db, "http://worker.test".to_string()).await;
         assert_eq!(
             state.container_rollout,
-            aos_hub_core::container_rollout::ContainerRollout::default()
+            aos_hub_core::container_rollout::ContainerRollout::all_enabled()
         );
+        state.container_rollout = aos_hub_core::container_rollout::ContainerRollout::all_disabled();
+        let state = Arc::new(state);
         let scope = state
             .db
             .registry_authorization_scope(registry_id)
@@ -479,6 +493,58 @@ mod tests {
             )
             .body(Body::empty())
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn unreadable_settings_render_browser_pages_without_masking_api_failures() {
+        use aos_hub_core::backend::{Backend as _, SqlxBackend};
+
+        let backend = SqlxBackend::connect_sqlite(":memory:").await.unwrap();
+        let SqlxBackend::Sqlite(pool) = &backend else {
+            panic!("expected SQLite test backend");
+        };
+        let writer = SqlxBackend::Sqlite(pool.clone());
+        let db = Arc::new(
+            aos_hub_core::db::Database::with_backend(Box::new(backend))
+                .await
+                .unwrap(),
+        );
+        let state = Arc::new(
+            aos_hub::server::AppState::new(Arc::clone(&db), "http://worker.test".to_string()).await,
+        );
+        let svc = worker_rpc_service(&state);
+        let deps = aos_hub::server::console_deps_for_worker_test(&state);
+        let router = console_router(deps.clone());
+        writer
+            .execute("DROP TABLE instance_config", &[])
+            .await
+            .unwrap();
+
+        for path in ["/", "/demo/-/containers", "/login"] {
+            let response = worker_console_request(
+                router.clone(),
+                &svc,
+                deps.clone(),
+                converted_request(Method::GET, path),
+            )
+            .await;
+
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(response.headers()["cache-control"], "private, no-store");
+            let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            assert!(String::from_utf8_lossy(&body).contains("We could not load the settings"));
+        }
+
+        let response = worker_console_request(
+            router,
+            &svc,
+            deps,
+            converted_request(Method::GET, "/demo/-/api/registry"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]

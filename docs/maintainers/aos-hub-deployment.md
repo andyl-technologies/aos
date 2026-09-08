@@ -9,6 +9,11 @@ Manual deployment keeps the hermetic AOS build on a trusted build host with the
 appropriate Nix store and builders. It also prevents an ephemeral CI runner from
 attempting to bootstrap the AOS package graph before every Worker update.
 
+The normal update path qualifies one installer in staging before production.
+For an explicitly authorized empty testing-only reset, use
+[Direct production setup for testing](#direct-production-setup-for-testing).
+That setup does not open `andyl/main` or bypass release-publication verification.
+
 ## Keep the environments isolated
 
 Staging and production share code but not mutable provider resources or secret
@@ -17,7 +22,7 @@ values:
 | Concern | Staging | Production |
 | --- | --- | --- |
 | Public origin | `https://aos.staging.andyl.org` | `https://aos.andyl.org` |
-| Direct R2 CDN | `https://cdn.aos.staging.andyl.org` | Not configured |
+| Direct R2 CDN | `https://cdn.aos.staging.andyl.org` | `https://cdn.aos.andyl.org` |
 | Worker | `aos-hub-staging` | `aos-hub` |
 | R2 bucket | `aos-hub-staging-surfaces` | `aos-hub-v2-surfaces` |
 | KV namespace title | `aos-hub-staging-sessions` | `aos-hub-v2-sessions` |
@@ -106,6 +111,12 @@ already stored on the Worker. Supplying either is an intentional rotation: a
 JWT change invalidates tokens, while an unplanned seal change can make stored
 credentials and signing material unreadable.
 
+Wrangler's OAuth login is the operator deployment credential. It is not a
+replacement for `HUB_CLOUDFLARE_API_TOKEN`, which the running Worker uses for
+provider observations. Never upload the Wrangler OAuth token as a Worker
+runtime secret. An existing runtime secret may be preserved on a redeploy;
+record that choice and retain its independently managed recovery reference.
+
 `HUB_ROUTE_RESERVATION_KEYRING` contains JSON content. Write it to a
 permission-restricted temporary file for the installer:
 
@@ -143,7 +154,125 @@ configuration, logs, or the repository.
 
 Remove both temporary files after the deployment session.
 
+Before verifying a public endpoint generation, supply its dedicated Ed25519
+proof signer with `--domain-probe-signer-manifest-file`. The private JSON array
+binds each `endpointId`, `endpointGeneration`, and `signerSecretRef` to a
+base64url-unpadded `signingSeed`. Pin the corresponding public key in that
+endpoint generation's `worker_secret` probe configuration. This authority is
+separate from registry and receipt signing. Omitting the file preserves an
+existing manifest; a new installation otherwise starts with an empty manifest
+and cannot prove an endpoint generation until its signer is configured.
+
+## Direct production setup for testing
+
+This procedure is limited to the explicitly authorized first production
+checkpoint: a full teardown and fresh installation serving only `andyl/testing`.
+No production history has been adopted before this checkpoint.
+Use the ordinary staging promotion procedure for main and normal qualified
+updates. Registry release import continues to require its signed evidence;
+deploying the Hub directly does not manufacture a staging receipt.
+
+1. Inventory the live production Worker, complete custom-domain set, database
+   instance and schema, R2 bucket, KV namespace, Queue, secret names, and route
+   attachments. Verify the Cloudflare account with packaged `worker whoami`.
+   Record which resources belong exclusively to production; staging and other
+   applications are outside the reset.
+2. Record the approved discard decision and preserve a non-secret resource
+   inventory. Select unused logical database and data-resource names. The
+   `hub-v2` names below are the intended initial production resources. Retain
+   them in all subsequent deployment commands.
+3. Build the exact reviewed commit's installer with the AOS flake, run the
+   applicable local checks, and retain its store path and source commit. Set a
+   unique production deployment ID binding that commit and reset generation.
+4. Prepare fresh seal, JWT, route-reservation, endpoint-generation proof, and
+   distinct publication/channel receipt keys. Validate the complete secret
+   documents before provider mutation. For an empty Hub with no admitted publishers, both receipt trust
+   maps may be empty. Add real, independently reviewed publication and
+   qualification authorities before enabling release import; never trust a
+   self-issued receipt in place of staging evidence.
+5. Stop production writers and deferred work. Delete the inventoried production
+   Worker and its exclusively owned Durable Object state, remove its obsolete
+   KV namespace and queues, and empty/delete its old R2 bucket. Verify resource
+   deletion before reusing the Worker name. Retain DNS-zone ownership and
+   recreate only the reviewed application domain bindings. Do not force-delete
+   a resource used by staging or another application.
+6. Install the Worker with the complete explicit production resource names,
+   domains, deployment ID, and fresh secret set. Use `worker install` after
+   teardown, so the consolidated class baseline runs on a genuinely new Worker.
+   The production command below supplies the resource flags; use `install` in
+   place of `deploy` and supply the fresh JWT and seal values for this setup.
+7. Bootstrap an individual owner using the private deployment configuration,
+   configure invite-only signup, and create the `andyl` organization and public
+   `testing` registry through the reviewed Hub plan/apply surface. Do not create
+   `andyl/main` during this production setup. Use the
+   exact public anchor in `systems/aos-testing.nix`. Use separate individual
+   accounts for administrators and a separate group address for operational
+   notifications.
+8. Verify the public deployment ID, owner sign-in, authorization denials,
+   explicit topology, sealed-credential use, and public registry routes before
+   reopening access. Confirm that a routine redeploy preserves the secret set.
+   Record an empty registry as empty; signing keys and a topology row are not
+   a published registry base or a verified release.
+9. Reconcile the final provider inventory against the approved teardown and
+   installation. Track any provider-retained state or recovery history
+   separately and report incomplete removal explicitly. Selecting a new
+   database name alone does not erase old data or complete this procedure.
+
+Retain the new deployment configuration, recovery material, and verification
+results independently of the Hub. The cryptographic lifecycle for testing and
+the intended main policy are in [Registry key management](registry-key-management.md).
+
+Resetting an established testing trust root requires a new registry epoch and
+new client anchors. Replacing the unused prepared epoch-one anchor during the
+initial setup does not authorize replacing a root after production use.
+
+This is the first stable Hub production checkpoint, regardless of the testing
+registry's support tier. After it, upgrades preserve data and use explicit,
+ordered migrations. Do not edit or re-squash the baseline, reuse provider
+migration tags, replace the database instance, or delete/reinstall the Worker
+as an upgrade shortcut. A destructive disaster-recovery operation is distinct
+from a routine deployment and requires its own reviewed recovery procedure.
+
+The initial contract is:
+
+| Ledger | Initial value | Subsequent changes |
+| --- | --- | --- |
+| SQL lineage | `aos-hub/production-baseline/1` | Preserve the lineage for compatible forward migrations. |
+| SQL version | `1`, `crates/aos-hub-core/src/db/schema.sql` | Append a new entry to `MIGRATIONS`; preserve all applied scripts. |
+| Durable Object classes | `production-base-v1` | Append a unique Wrangler migration tag; preserve prior tags. |
+
+The baseline contains the final tables, constraints, indexes, and seed data from
+all pre-production migrations. The previous topology identities are rejected;
+there is no online adoption of development databases. A frozen-digest test guards
+the baseline against edits. Native and Worker startup reject negative or future
+versions and unsupported identities rather than serving an uncertain schema.
+
+Every subsequent schema PR must describe compatibility with the running Worker,
+its predecessor, and queued work; include fresh-install and upgrade tests with
+representative retained data; and test interrupted migration and reopen behavior.
+SQLite migration DDL and its marker commit together. MySQL implicitly commits DDL,
+so each new migration must also be safe to replay after every possible interruption.
+A deployment rollback must remain compatible with the applied schema; otherwise
+roll forward with a repair migration or use the reviewed backup recovery procedure.
+
+### Initial production delivery state
+
+The September 8, 2026 production setup creates only `andyl/testing`. It does not
+publish packages, system images, OCI containers, or releases. The direct R2
+attachment at `cdn.aos.andyl.org` targets `aos-hub-v2-surfaces`; activating its
+registry delivery route remains a separate step requiring controller observations
+and verified publication evidence. A prepared attachment is not a usable registry.
+
+The baked release profile uses the CDN URL. Browser setup instructions remain
+unavailable while the requested delivery switch is pending. Complete the delivery
+workflow and validate its advertised Git and cache URLs before enrolling clients.
+
 ## Deploy staging
+
+The production checkpoint does not reset staging. A staging Worker or database
+with development-era migration history cannot accept this consolidated
+baseline. Adopting it in staging requires a separate approved fresh installation;
+the routine commands below apply after that adoption.
 
 Before changing a stateful environment, capture the complete recovery set in
 [`aos-hub-backup-recovery.md`](aos-hub-backup-recovery.md). An explicitly
@@ -169,11 +298,12 @@ Confirm that the shell contains the staging runtime values, then deploy:
 Use `worker install` instead of `worker deploy` only when the staging Worker has
 never existed. `worker deploy` deliberately requires an existing Worker so an
 OAuth, account, or provider failure cannot be mistaken for initial provisioning.
-Provider settings verified on September 5, 2026 use `hub` for staging, with
-schema identity `aos-hub/topology-hard-cutover/2`. Preserve that live instance
-on routine updates. Inspect provider settings before deployment: a database
-instance name alone does not establish its schema version, and changing the
-name selects different state. Production uses `hub-v2` as documented below.
+Provider settings verified on September 5, 2026 used `hub` for staging, with
+development identity `aos-hub/topology-hard-cutover/2`. That identity is rejected
+by the production baseline. Record the staging database instance and provider
+migration lineage selected by its separate adoption, then preserve them on
+routine updates. A database name alone does not establish its schema version.
+Production uses `hub-v2` as documented below.
 
 Staging enables OCI pulls so the public Containers browse pages render. Push,
 administration, verified publication, and garbage collection remain disabled
@@ -266,6 +396,11 @@ would remove it from the generated Worker configuration.
   --external-url https://aos.andyl.org \
   --deployment-id "$production_deployment_id" \
   --database-instance hub-v2 \
+  --oci-pull-enabled \
+  --oci-push-enabled \
+  --oci-verified-publication-enabled \
+  --oci-administration-enabled \
+  --oci-gc-enabled \
   --rate-limit-namespace-base 1000 \
   --email-from noreply+aos@send.andyl.org \
   --route-reservation-keys-file "$keyring" \
@@ -276,37 +411,43 @@ Repeat `--domain DOMAIN` for every additional domain owned by the production
 Worker. Probe `https://aos.andyl.org/.well-known/aos-deployment` exactly as for
 staging, then repeat the relevant hosted acceptance tests.
 
+OCI capabilities are enabled by default; the production command records that
+intended configuration explicitly. Use `--oci-<capability>-enabled=false` for a
+deliberate opt-out and retain it on subsequent deployments. The public Containers page must render an
+empty catalog for a new enabled registry, or an explanatory page when the
+capability is disabled. Verify it alongside Packages, Images, and Releases;
+a deployment-identity response alone does not establish browser readiness.
+
 ### First correct production setup
 
 The historical production `hub` object predates the topology hard cutover and
-is not a compatible database for the current Worker. Because the present
-production data is explicitly disposable, initialize `hub-v2` as a new empty
-logical database and new production data resources. Preserve the existing
-`aos-hub` Worker name and deploy it with `worker deploy`; deleting/reinstalling
-the Worker would discard provider migration history for its Durable Object
-classes.
+is not a compatible database for the current Worker. Its provider migration
+tag `v2` also belongs to the historical `TenantDb` class, rather than the
+current execution-shard classes. For the authorized initial full reset, use
+the teardown and fresh-install procedure above; neither the old database nor
+its class-migration history is carried forward.
 
-For this one approved reset, load newly generated production values for every
+For this first production checkpoint, load newly generated values for every
 required secret and use the explicit `aos-hub-v2-surfaces`,
 `aos-hub-v2-sessions`, and `aos-hub-v2-jobs` flags shown above. The names are
 part of every later production deployment; omitting them would silently select
 the legacy `aos-hub-*` defaults. Include `--database-instance hub-v2` and do not
-reuse staging values. `worker deploy` provisions the fresh named resources but
-requires the existing Worker, retaining its Durable Object migration history.
-After deployment, bootstrap the production owner once:
+reuse staging values. After deleting the old Worker and its data, run
+`worker install` with those resource flags and the complete production domains.
+After installation, bootstrap the production owner once:
 
 ```sh
 printf '%s\n' "$PRODUCTION_ROOT_PASSWORD" | \
   HUB_SEAL_KEY="$HUB_SEAL_KEY" \
   "$installer/bin/aos-hub" worker bootstrap-root \
     --url https://aos.andyl.org \
-    --email ops@example.com \
+    --email operator@example.com \
     --password-stdin
 ```
 
 Recreate explicit topology/IAM resources through the Hub control surface, then
-bootstrap only `andyl/testing`. Keep `andyl/main` empty until its launch gates
-are closed. Record the reset approval, old and new resource identities, new
+bootstrap only `andyl/testing`. Leave `andyl/main` unconfigured until its launch
+gates are closed. Record the reset approval, old and new resource identities, new
 secret versions, and the validation evidence. Subsequent deployments must keep
 `hub-v2` and omit JWT/seal values unless performing a reviewed rotation.
 

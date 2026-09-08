@@ -216,6 +216,15 @@ fn oci_inventory_follow_up(
 }
 
 #[cfg(any(test, target_arch = "wasm32"))]
+fn parse_oci_capability(value: Option<&str>) -> Option<bool> {
+    match value {
+        None | Some("true") => Some(true),
+        Some("false") => Some(false),
+        Some(_) => None,
+    }
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
 fn scheduled_maintenance_jobs(
     rollout: aos_hub_core::container_rollout::ContainerRollout,
 ) -> Vec<aos_hub_core::jobs::Job> {
@@ -260,8 +269,8 @@ impl RequestShardingMode {
 #[cfg(test)]
 mod index_build_identity_tests {
     use super::{
-        oci_inventory_follow_up, registry_index_build_id, scheduled_maintenance_jobs,
-        RequestShardingMode,
+        oci_inventory_follow_up, parse_oci_capability, registry_index_build_id,
+        scheduled_maintenance_jobs, RequestShardingMode,
     };
 
     #[test]
@@ -330,10 +339,19 @@ mod index_build_identity_tests {
     }
 
     #[test]
+    fn worker_oci_defaults_enable_capabilities_but_reject_invalid_values() {
+        assert_eq!(parse_oci_capability(None), Some(true));
+        assert_eq!(parse_oci_capability(Some("true")), Some(true));
+        assert_eq!(parse_oci_capability(Some("false")), Some(false));
+        assert_eq!(parse_oci_capability(Some("invalid")), None);
+        assert_eq!(parse_oci_capability(Some("")), None);
+    }
+
+    #[test]
     fn worker_maintenance_never_schedules_provider_gc_while_rollout_is_disabled() {
         use aos_hub_core::jobs::Job;
 
-        let disabled = aos_hub_core::container_rollout::ContainerRollout::default();
+        let disabled = aos_hub_core::container_rollout::ContainerRollout::all_disabled();
         let disabled_jobs = scheduled_maintenance_jobs(disabled);
         assert!(!disabled_jobs.iter().any(|job| matches!(
             job,
@@ -512,18 +530,10 @@ mod entry {
     }
 
     fn rollout_flag(env: &Env, name: &str) -> Result<bool> {
-        match env
-            .var(name)
-            .map(|value| value.to_string())
-            .unwrap_or_else(|_| "false".to_string())
-            .as_str()
-        {
-            "true" => Ok(true),
-            "false" => Ok(false),
-            value => Err(worker::Error::RustError(format!(
-                "{name} must be true or false; got {value:?}"
-            ))),
-        }
+        let value = env.var(name).ok().map(|value| value.to_string());
+        super::parse_oci_capability(value.as_deref()).ok_or_else(|| {
+            worker::Error::RustError(format!("{name} must be true or false; got {value:?}"))
+        })
     }
 
     fn request_shard_binding(kind: crate::requestshard::RequestShardKind) -> &'static str {

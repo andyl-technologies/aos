@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn gc_provider_jobs_are_disabled_with_the_gc_rollout() {
-        let disabled = crate::container_rollout::ContainerRollout::default();
+        let disabled = crate::container_rollout::ContainerRollout::all_disabled();
         assert!(!Job::RunOciGc.enabled_for(disabled));
         assert!(!Job::ProbeOciConditionalDeletes.enabled_for(disabled));
         assert!(!Job::InventoryOciProviders.enabled_for(disabled));

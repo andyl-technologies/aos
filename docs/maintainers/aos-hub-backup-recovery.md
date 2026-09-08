@@ -148,12 +148,18 @@ mixture of restored database state and unreconciled objects.
 
 ## Rebuild testing from scratch
 
-For the disposable testing registry, a clean rebuild is preferred when history
-or root trust is intentionally abandoned:
+The first stable production checkpoint permits a one-time discard of unused
+development state, including the production Worker and its class migration
+history. Follow the explicit first-install procedure in
+[`aos-hub-deployment.md`](aos-hub-deployment.md). It is production-only and does
+not authorize deleting or changing staging.
+
+After that checkpoint, a deliberate abandonment of testing registry history or
+root trust requires a separately reviewed recovery plan:
 
 1. preserve public evidence and revoke all old tokens;
-2. deploy the current Worker to staging and production with fresh logical data
-   resources, while preserving the existing Worker name and its Durable Object
+2. select the affected environment explicitly and deploy the current Worker
+   with fresh logical data resources, preserving its name and Durable Object
    class migration history;
 3. select a new empty database instance such as `hub-v3`, fresh R2/KV/Queue
    resources, and new environment secrets;
@@ -163,9 +169,11 @@ or root trust is intentionally abandoned:
 6. bootstrap and replay only verified releases into the new registry;
 7. validate from a new testing image before routing consumers to it.
 
-Deleting or reinstalling the Worker itself is not the reset mechanism. Its
-class migration history is provider state. Change the logical database instance
-and data resources, then deploy the existing Worker name.
+After the initial checkpoint, deleting or reinstalling the Worker is not an
+upgrade or routine recovery mechanism. Its class migration history is provider
+state. Preserve that history and use forward migrations for schema changes.
+An approved data reset changes the logical database instance and data resources,
+then deploys the existing Worker name.
 
 ## Routine restore exercise
 

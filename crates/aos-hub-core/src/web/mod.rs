@@ -54,6 +54,7 @@ pub mod release_browse;
 pub mod release_pages;
 pub mod render;
 pub mod session;
+pub mod status_pages;
 pub mod toml_highlight;
 
 pub use render::PageChrome;
