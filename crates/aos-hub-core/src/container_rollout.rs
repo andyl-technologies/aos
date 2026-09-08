@@ -1,4 +1,4 @@
-//! Independent fail-closed rollout gates for OCI container capabilities.
+//! Default-enabled, independently configurable OCI container capabilities.
 //!
 //! Runtime shells construct one [`ContainerRollout`] from their native flags or
 //! Worker variables and attach it to the shared service. The service remains
@@ -6,7 +6,7 @@
 //! Distribution request can bypass a disabled capability.
 
 /// Independently deployable OCI container capabilities.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ContainerRollout {
     /// Allows Distribution discovery, token grants, and repository reads.
     pub pull: bool,
@@ -20,11 +20,16 @@ pub struct ContainerRollout {
     pub garbage_collection: bool,
 }
 
+impl Default for ContainerRollout {
+    fn default() -> Self {
+        Self::all_enabled()
+    }
+}
+
 impl ContainerRollout {
     /// Returns a configuration with every container capability enabled.
     ///
-    /// This constructor keeps test and development fixtures explicit while
-    /// [`Default`] remains fail-closed for production wiring.
+    /// This is also the default for native and Worker deployments.
     #[must_use]
     pub const fn all_enabled() -> Self {
         Self {
@@ -33,6 +38,18 @@ impl ContainerRollout {
             verified_publication: true,
             administration: true,
             garbage_collection: true,
+        }
+    }
+
+    /// Returns a configuration with every container capability explicitly disabled.
+    #[must_use]
+    pub const fn all_disabled() -> Self {
+        Self {
+            pull: false,
+            push: false,
+            verified_publication: false,
+            administration: false,
+            garbage_collection: false,
         }
     }
 
@@ -58,15 +75,17 @@ mod tests {
     use super::ContainerRollout;
 
     #[test]
-    fn defaults_fail_closed_and_actions_remain_independent() {
-        let disabled = ContainerRollout::default();
+    fn defaults_enable_containers_and_explicit_opt_outs_remain_independent() {
+        assert_eq!(ContainerRollout::default(), ContainerRollout::all_enabled());
+
+        let disabled = ContainerRollout::all_disabled();
         assert!(!disabled.distribution_enabled());
         assert!(!disabled.distribution_action_enabled("pull"));
         assert!(!disabled.distribution_action_enabled("push"));
 
         let pull_only = ContainerRollout {
             pull: true,
-            ..ContainerRollout::default()
+            ..ContainerRollout::all_disabled()
         };
         assert!(pull_only.distribution_enabled());
         assert!(pull_only.distribution_action_enabled("pull"));
