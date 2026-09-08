@@ -1796,8 +1796,14 @@ fn external_journal_reopens_exact_plan_and_durable_phase() {
         journal.begin_apply().expect("repeat begin apply"),
         CampaignGcJournalTransition::Existing
     );
+    let retained_lock_description = journal
+        .duplicate_lock_for_test()
+        .expect("duplicate GC journal lock descriptor");
     drop(journal);
 
+    let lock_probe = super::journal::try_acquire_lock_for_test(&root)
+        .expect("logical owner drop releases retained GC lock description");
+    drop(lock_probe);
     let mut reopened = DirectoryCampaignGcJournal::open(&root).expect("reopen applying journal");
     assert_eq!(reopened.phase(), CampaignGcJournalPhase::Applying);
     assert_eq!(
@@ -1819,6 +1825,7 @@ fn external_journal_reopens_exact_plan_and_durable_phase() {
         DirectoryCampaignGcJournal::create(&root, &different),
         Err(CampaignGcJournalError::PlanMismatch)
     ));
+    drop(retained_lock_description);
 }
 
 #[test]
