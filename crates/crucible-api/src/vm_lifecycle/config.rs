@@ -92,6 +92,7 @@ impl ProductionVmLifecycleConfig {
             coverage: ProductionPluginSwitch::Off,
             debug_gateway_executable: None,
             debug: None,
+            logical_replay_boundary: None,
             branch: None,
             signal_fault_replay: None,
             branch_network_choices: Vec::new(),
@@ -142,6 +143,24 @@ impl ProductionVmLifecycleConfig {
             .as_ref()
             .map(BoundedSchedulerPreemptionFlights::claim_next)
             .transpose()
+    }
+
+    /// Returns this configuration with an exact logical replay stop boundary.
+    ///
+    /// Thin replay starts fresh QEMU processes and stops them at the saved
+    /// logical configuration and virtual time without changing scheduler
+    /// history at that boundary.
+    #[must_use]
+    pub fn with_logical_replay_boundary(
+        mut self,
+        configuration: Configuration,
+        frontier: VirtualTime,
+    ) -> Self {
+        self.logical_replay_boundary = Some(ProductionVmLogicalReplayBoundary {
+            configuration,
+            frontier,
+        });
+        self
     }
 
     /// Returns this configuration with the materialized initrd passed to QEMU.

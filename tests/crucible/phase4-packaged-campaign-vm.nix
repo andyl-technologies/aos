@@ -153,6 +153,17 @@ in
         /tmp/legacy-default-run-flight.log
       if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
         ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
+        campaign_virtual_time_save_feeds_native_resume_and_fork \
+        --nocapture > /tmp/legacy-native-save-flight.log 2>&1; then
+        cat /tmp/legacy-native-save-flight.log
+        exit 1
+      fi
+      cat /tmp/legacy-native-save-flight.log
+      ${pkgs.grep}/bin/grep -Fxq \
+        'legacy_campaign_native_save_resume_fork=true' \
+        /tmp/legacy-native-save-flight.log
+      if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
+        ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
         guarded_campaign_failure_artifact_replays_live_evidence \
         --nocapture > /tmp/legacy-failure-replay-flight.log 2>&1; then
         cat /tmp/legacy-failure-replay-flight.log
