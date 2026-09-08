@@ -6,6 +6,7 @@
   gnumake,
   cmake,
   bison,
+  git,
   pkg-config,
   perl,
   python3,
@@ -38,13 +39,13 @@
   sed,
   writeShellScriptBin,
 }: let
-  version = "11.4.12";
+  version = "12.3.3";
   isDarwin = stdenv.hostPlatform.isDarwin;
   source = fetchurl {
     urls = [
       "https://archive.mariadb.org/mariadb-${version}/source/mariadb-${version}.tar.gz"
     ];
-    hash = "sha256-WreIPbUZv86/3SqsCbxVRKEs4yjznt1G0L8BaQYV72w=";
+    hash = "sha256-6Z1zn9SlX5oR3qe9IoeiYmc+KHVQrzBxyEad0r7AwWM=";
   };
   messagePackVersion = "2.1.1";
   messagePack = mkDerivation {
@@ -83,6 +84,7 @@
           cmake -S . -B build \
             $cmakeFlags \
             -DCMAKE_INSTALL_PREFIX=$out \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DMSGPACK_ENABLE_CXX=OFF \
             -DMSGPACK_BUILD_EXAMPLES=OFF \
             -DMSGPACK_BUILD_TESTS=OFF
@@ -269,6 +271,7 @@
           buildPackages.gnumake
           buildPackages.cmake
           buildPackages.bison
+          buildPackages.git
           buildPackages.pkg-config
           buildPackages.perl
           buildPackages.python3
@@ -390,6 +393,7 @@ in
         buildPackages.gnumake
         buildPackages.cmake
         buildPackages.bison
+        buildPackages.git
         buildPackages.pkg-config
         buildPackages.perl
         buildPackages.python3
@@ -399,6 +403,7 @@ in
         gnumake
         cmake
         bison
+        git
         pkg-config
         perl
         python3

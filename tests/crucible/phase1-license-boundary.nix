@@ -133,6 +133,8 @@ in
                 python3 = "/aos-python3";
                 setuptools = null;
                 distlib = null;
+                pip = null;
+                wheel = null;
                 glib = null;
                 pixman = null;
                 zlib = null;
@@ -192,7 +194,7 @@ in
             patch --batch -d "$reconstructed" -p1 < "$patch_file"
           done
           grep -q 'qemu_plugin_crucible_rr_switch_quantum' \
-            "$reconstructed/include/qemu/qemu-plugin.h"
+            "$reconstructed/include/plugins/qemu-plugin.h"
           grep -Fq 'SPDX-License-Identifier: GPL-2.0-or-later' \
             "$reconstructed/include/system/crucible-plugin-wake.h"
           grep -Fq 'GNU GPL, version 2 or later' \

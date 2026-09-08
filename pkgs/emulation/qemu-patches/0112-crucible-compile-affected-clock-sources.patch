@@ -1,5 +1,5 @@
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index d0176df22..d5695fedf 100644
+index 3fa08f1bc..7a1158822 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -440,6 +440,7 @@ int qemu_crucible_fault_clock_validate(const QemuCrucibleFaultRule *rule);
@@ -68,7 +68,7 @@ index e05638d1f..ea55d8fd0 100644
          crucible_clock_wander_timer_rearm(source);
      }
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index aa6f166f4..95e8f6345 100644
+index 82733acf4..2b854aaf7 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -3796,6 +3796,7 @@ static void node_commit(

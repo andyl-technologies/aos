@@ -23,7 +23,7 @@
   # at sys-utils/mount.c:562,720,989 and
   # libmount/src/hook_mount.c:547-548). Required by the apm-side
   # stage-2 /etc swap (spec v12 §7.1 Phase B).
-  version = "2.42.1";
+  version = "2.42.3";
 in
   mkDerivation {
     pname = "util-linux";
@@ -33,7 +33,7 @@ in
       urls = [
         "https://cdn.kernel.org/pub/linux/utils/util-linux/v2.42/util-linux-${version}.tar.xz"
       ];
-      hash = "sha256-gukVjrEqmwtWnYThaH/tndGP6JzNjvWsNCchinwNf38=";
+      hash = "sha256-Zqx8DnJSeOsrA54xBPLJERk0HZQbQbrHooXGlflAvVc=";
     };
 
     buildDeps = [
@@ -76,6 +76,11 @@ in
               sed -i "1s|#!/usr/bin/bash|#!$CONFIG_SHELL|" "$f"
             fi
           done
+
+          # The 2.42.3 tarball omitted the common fallback definitions from
+          # this new caller. Upstream now includes fileutils.h here as well.
+          test "$(grep -c '^#include "all-io.h"' libmount/src/hook_idmap.c)" -eq 1
+          sed -i '/^#include "all-io.h"/a #include "fileutils.h"' libmount/src/hook_idmap.c
         '';
       }
       {

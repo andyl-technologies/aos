@@ -7,7 +7,7 @@
   perl,
   stdenv,
 }: let
-  version = "3.4.1";
+  version = "4.0.2";
   isDarwin = stdenv.hostPlatform.isDarwin;
   splitDarwinTools = stdenv.isCross && isDarwin;
   configureTarget =
@@ -33,7 +33,7 @@ in
       urls = [
         "https://www.openssl.org/source/openssl-${version}.tar.gz"
       ];
-      hash = "sha256-ACotazC1i/S+pGxDvdljZar42qbEKHgqpP7uBtoZffM=";
+      hash = "sha256-c2tGdTD5FnN7cDExDMsh2CGMYinmHo4WDNHTRYzVQ6g=";
     };
 
     buildDeps = [

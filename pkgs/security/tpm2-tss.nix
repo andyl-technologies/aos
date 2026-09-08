@@ -5,7 +5,7 @@
   pkg-config,
   openssl,
 }: let
-  version = "4.1.3";
+  version = "4.2.0";
 in
   mkDerivation {
     pname = "tpm2-tss";
@@ -15,7 +15,7 @@ in
       urls = [
         "https://github.com/tpm2-software/tpm2-tss/releases/download/${version}/tpm2-tss-${version}.tar.gz"
       ];
-      hash = "sha256-N/FYAgCreDBdH8hy2JJBqu4Mk8voW8VZvzMnN6YNO+g=";
+      hash = "sha256-tT8MXIxM4X8FcBpBDKloj3Jco4DJvEZA6s0OrbH+oSQ=";
     };
 
     buildDeps = [gnumake pkg-config];

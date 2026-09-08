@@ -1,8 +1,8 @@
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index db2f5f2d4..fea949d6e 100644
+index 640d54b8d..c5f31c7cf 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
-@@ -164,6 +164,10 @@ typedef int (*CrucibleCPURegisterWriteFn)(
+@@ -163,6 +163,10 @@ typedef int (*CrucibleCPURegisterWriteFn)(
   * @gdb_adjust_breakpoint: Callback for adjusting the address of a
   *       breakpoint.  Used by AVR to handle a gdb mis-feature with
   *       its Harvard architecture split code and data.
@@ -10,22 +10,22 @@ index db2f5f2d4..fea949d6e 100644
 + *       CPU_INTERRUPT_TGT_* bits that are host-control notifications rather
 + *       than guest-observable architectural state. Crucible masks these bits
 + *       only while serializing its black-box fingerprint.
-  * @gdb_num_core_regs: Number of core registers accessible to GDB or 0 to infer
-  *                     from @gdb_core_xml_file.
   * @gdb_core_xml_file: File name for core registers GDB XML description.
-@@ -205,6 +209,7 @@ struct CPUClass {
+  * @gdb_num_core_regs: Number of core registers accessible to GDB if no
+  *                     @gdb_core_xml_file available (otherwise inferred).
+@@ -212,6 +216,7 @@ struct CPUClass {
      CrucibleCPURegisterReadFn crucible_register_read;
      CrucibleCPURegisterValidateWriteFn crucible_register_validate_write;
      CrucibleCPURegisterWriteFn crucible_register_write;
 +    uint32_t crucible_fingerprint_transient_interrupt_mask;
  
      const char *gdb_core_xml_file;
-     const gchar * (*gdb_arch_name)(CPUState *cpu);
+     const char * (*gdb_arch_name)(CPUState *cpu);
 diff --git a/plugins/api.c b/plugins/api.c
-index 746476382..1e048e2cb 100644
+index 2afa17034..967dfb1c8 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -50,6 +50,7 @@
+@@ -52,6 +52,7 @@
  #include "tcg/tcg.h"
  #include "exec/address-spaces.h"
  #include "exec/cpu-common.h"
@@ -33,7 +33,7 @@ index 746476382..1e048e2cb 100644
  #include "exec/gdbstub.h"
  #include "exec/memory.h"
  #include "exec/ramblock.h"
-@@ -823,7 +824,9 @@ int qemu_plugin_crucible_device_state_hash(uint64_t *hash_out,
+@@ -1002,7 +1003,9 @@ int qemu_plugin_crucible_device_state_hash(uint64_t *hash_out,
  
      buffer = qio_channel_buffer_new(4096);
      file = qemu_file_new_output(QIO_CHANNEL(buffer));
@@ -44,7 +44,7 @@ index 746476382..1e048e2cb 100644
      if (status == 0) {
          status = qemu_fflush(file);
      }
-@@ -962,6 +965,41 @@ int qemu_plugin_crucible_guest_ram_sha256(uint8_t digest_out[32],
+@@ -1141,6 +1144,41 @@ int qemu_plugin_crucible_guest_ram_sha256(uint8_t digest_out[32],
      return 0;
  }
  
@@ -86,7 +86,7 @@ index 746476382..1e048e2cb 100644
  int qemu_plugin_crucible_device_state_sha256(uint8_t digest_out[32],
                                               uint64_t *bytes_out)
  {
-@@ -979,7 +1017,7 @@ int qemu_plugin_crucible_device_state_sha256(uint8_t digest_out[32],
+@@ -1158,7 +1196,7 @@ int qemu_plugin_crucible_device_state_sha256(uint8_t digest_out[32],
      *bytes_out = 0;
      buffer = qio_channel_buffer_new(4096);
      file = qemu_file_new_output(QIO_CHANNEL(buffer));
@@ -95,7 +95,7 @@ index 746476382..1e048e2cb 100644
      if (status == 0) {
          status = qemu_fflush(file);
      }
-@@ -1465,7 +1503,7 @@ int qemu_plugin_crucible_fingerprint_capture(
+@@ -1644,7 +1682,7 @@ int qemu_plugin_crucible_fingerprint_capture(
  
      buffer = qio_channel_buffer_new(4096);
      file = qemu_file_new_output(QIO_CHANNEL(buffer));
@@ -105,10 +105,10 @@ index 746476382..1e048e2cb 100644
          status = qemu_fflush(file);
      }
 diff --git a/target/i386/cpu.c b/target/i386/cpu.c
-index 2f2002722..0d83f87af 100644
+index c5a73c792..3d604c85d 100644
 --- a/target/i386/cpu.c
 +++ b/target/i386/cpu.c
-@@ -9007,6 +9007,7 @@ static void x86_cpu_common_class_init(ObjectClass *oc, void *data)
+@@ -10998,6 +10998,7 @@ static void x86_cpu_common_class_init(ObjectClass *oc, const void *data)
      cc->crucible_register_write = x86_crucible_register_write;
  #endif
  #endif

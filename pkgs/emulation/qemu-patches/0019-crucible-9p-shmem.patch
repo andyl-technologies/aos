@@ -1,17 +1,17 @@
 diff --git a/hw/9pfs/virtio-9p-device.c b/hw/9pfs/virtio-9p-device.c
-index cd7cd42e4..6ab1622ce 100644
+index 099445116..7ae1ff425 100644
 --- a/hw/9pfs/virtio-9p-device.c
 +++ b/hw/9pfs/virtio-9p-device.c
 @@ -27,6 +27,8 @@
  #include "qemu/iov.h"
  #include "qemu/module.h"
- #include "qemu/qemu-plugin.h"
+ #include "plugins/qemu-plugin.h"
 +#include "system/crucible-plugin-wake.h"
 +#include "system/runstate.h"
  #include "system/qtest.h"
  
  static qemu_plugin_9p_burst_cb_t crucible_9p_burst_start_cb;
-@@ -69,6 +71,223 @@ static void virtio_9p_push_and_notify(V9fsPDU *pdu)
+@@ -69,6 +71,223 @@ static void coroutine_fn virtio_9p_push_and_notify(V9fsPDU *pdu)
      virtio_notify(VIRTIO_DEVICE(v), v->vq);
  }
  
@@ -296,7 +296,7 @@ index cd7cd42e4..6ab1622ce 100644
      v9fs_reset(&v->state);
  }
  
-@@ -241,9 +491,18 @@ static void virtio_9p_device_realize(DeviceState *dev, Error **errp)
+@@ -260,9 +510,18 @@ static void virtio_9p_device_realize(DeviceState *dev, Error **errp)
          return;
      }
  
@@ -315,7 +315,7 @@ index cd7cd42e4..6ab1622ce 100644
  }
  
  static void virtio_9p_device_unrealize(DeviceState *dev)
-@@ -252,6 +511,17 @@ static void virtio_9p_device_unrealize(DeviceState *dev)
+@@ -271,6 +530,17 @@ static void virtio_9p_device_unrealize(DeviceState *dev)
      V9fsVirtioState *v = VIRTIO_9P(dev);
      V9fsState *s = &v->state;
  
@@ -330,9 +330,9 @@ index cd7cd42e4..6ab1622ce 100644
 +    } else {
 +        virtio_9p_abandon_crucible_pending(v, NULL, true, false);
 +    }
+     v9fs_reset(s); /* cancel all in-flight PDUs to prevent UAF */
      virtio_delete_queue(v->vq);
      virtio_cleanup(vdev);
-     v9fs_device_unrealize_common(s);
 diff --git a/hw/9pfs/virtio-9p.h b/hw/9pfs/virtio-9p.h
 index 20fa118f3..d15fa1e55 100644
 --- a/hw/9pfs/virtio-9p.h

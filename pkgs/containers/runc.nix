@@ -8,7 +8,7 @@
   libseccomp,
   libselinux,
 }: let
-  version = "1.4.0";
+  version = "1.5.1";
 in
   mkDerivation {
     pname = "runc";
@@ -18,7 +18,7 @@ in
       urls = [
         "https://github.com/opencontainers/runc/archive/v${version}/runc-${version}.tar.gz"
       ];
-      hash = "sha256-lNVm2LAX1s3/xoRWCk8Gm7h/hlNJdsQddocRyF4ZSIQ=";
+      hash = "sha256-MihvGImaZE7HwViWiKlgC6VMxlJk8j8fWHe6IUynbnU=";
     };
 
     buildDeps = [

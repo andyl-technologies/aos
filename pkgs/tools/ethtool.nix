@@ -6,7 +6,7 @@
   pkg-config,
   libmnl,
 }: let
-  version = "6.15";
+  version = "7.1";
 in
   mkDerivation {
     pname = "ethtool";
@@ -16,7 +16,7 @@ in
       urls = [
         "https://mirrors.kernel.org/pub/software/network/ethtool/ethtool-${version}.tar.xz"
       ];
-      hash = "sha256-lHfDZRFNkQEgquxTNqHRYZbIM9hIb3xtpnvt71eICt4=";
+      hash = "sha256-TXjCbtwCVbyS9LmVtf1mEI11/5Zu1GlPYCWm03C8JJY=";
     };
 
     buildDeps = [

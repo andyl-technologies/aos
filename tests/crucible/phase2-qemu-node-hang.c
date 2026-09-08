@@ -511,9 +511,8 @@ static void completion(void *opaque)
     qemu_plugin_request_shutdown(0);
 }
 
-static void at_exit(qemu_plugin_id_t id, void *opaque)
+static void at_exit(void *opaque)
 {
-    (void)id;
     (void)opaque;
     if (!finished) {
         fail("QEMU exited before hang recovery completed");
@@ -556,9 +555,9 @@ static void time_advanced(int status, int64_t time, void *opaque)
     submit_initial_command();
 }
 
-static void vcpu_initialized(qemu_plugin_id_t id, unsigned int vcpu_index)
+static void vcpu_initialized(unsigned int vcpu_index, void *userdata)
 {
-    (void)id;
+    (void)userdata;
     if (!runnable_scope || vcpu_index != 0 ||
         initial_time_advance_started) {
         return;
@@ -651,7 +650,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
             qemu_plugin_register_time_advance_cb(time_advanced, NULL) != 0) {
             fail("runnable hang could not own virtual-time bias");
         }
-        qemu_plugin_register_vcpu_init_cb(id, vcpu_initialized);
+        qemu_plugin_register_vcpu_init_cb(id, vcpu_initialized, NULL);
     } else {
         submit_initial_command();
     }

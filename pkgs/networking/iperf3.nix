@@ -6,7 +6,7 @@
   openssl,
   lksctp-tools,
 }: let
-  version = "3.20";
+  version = "3.21";
 in
   mkDerivation {
     pname = "iperf3";
@@ -14,7 +14,7 @@ in
 
     src = fetchurl {
       urls = ["https://downloads.es.net/pub/iperf/iperf-${version}.tar.gz"];
-      hash = "sha256-OsxXLR7MpOCyA1nHvwEy3cgNmC7+7iDIb2cmqaYJQ4g=";
+      hash = "sha256-ZW5EBevWIBId587KPq9DqI956huFfQQaagsTFIAazdg=";
     };
 
     buildDeps = [gnumake];

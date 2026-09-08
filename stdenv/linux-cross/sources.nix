@@ -6,8 +6,8 @@
   };
 
   gcc = builtins.fetchTarball {
-    url = "https://mirrors.kernel.org/gnu/gcc/gcc-14.3.0/gcc-14.3.0.tar.xz";
-    sha256 = "18slj57b3zizzmc1bn4b6x8rygijfjjmwfzipdvyyzrbspaa5x21";
+    url = "https://mirrors.kernel.org/gnu/gcc/gcc-16.2.0/gcc-16.2.0.tar.xz";
+    sha256 = "18mx8x4as86ngqxk9r91fppm8kkkdydn9jgvhih06245z7cjrplj";
   };
 
   gmp = builtins.fetchTarball {

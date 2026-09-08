@@ -50,7 +50,7 @@ struct QemuPluginSystemInfo {
 /// Minimal QEMU `qemu_info_t` layout consumed by the install scaffold.
 ///
 /// This mirrors the prefix and single `system` union member installed by AOS
-/// QEMU 10.0.0. The scaffold copies only scalar ABI-version and vCPU-count
+/// QEMU 11.1.1. The scaffold copies only scalar ABI-version and vCPU-count
 /// fields while QEMU guarantees the pointer is live during `qemu_plugin_install`.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -74,8 +74,8 @@ pub(crate) enum QemuPluginTargetArchitecture {
 pub const QEMU_PLUGIN_INSTALL_OK: c_int = 0;
 /// QEMU install return value meaning plugin registration failed.
 pub const QEMU_PLUGIN_INSTALL_ERROR: c_int = -1;
-/// QEMU plugin API version exported by AOS QEMU 10.0.0.
-pub const QEMU_PLUGIN_API_VERSION: c_int = 5;
+/// QEMU plugin API version exported by AOS QEMU 11.1.1.
+pub const QEMU_PLUGIN_API_VERSION: c_int = 7;
 /// The exported symbol QEMU resolves when loading this `cdylib`.
 pub const QEMU_PLUGIN_INSTALL_SYMBOL: &str = "qemu_plugin_install";
 /// The exported symbol QEMU checks before calling the install hook.
@@ -429,9 +429,9 @@ pub type QemuRegisterAcceleratorCbFn = extern "C" fn(
     *mut c_void,
 );
 /// Standard QEMU vCPU lifecycle callback body.
-pub type QemuVcpuSimpleCbFn = extern "C" fn(QemuPluginId, c_uint);
+pub type QemuVcpuSimpleCbFn = extern "C" fn(c_uint, *mut c_void);
 /// Standard QEMU vCPU-init callback registration function.
-pub type QemuRegisterVcpuInitCbFn = extern "C" fn(QemuPluginId, QemuVcpuSimpleCbFn);
+pub type QemuRegisterVcpuInitCbFn = extern "C" fn(QemuPluginId, QemuVcpuSimpleCbFn, *mut c_void);
 /// Crucible all-vCPUs-idle or resume callback body.
 pub type QemuVcpuIdleResumeCbFn = extern "C" fn(c_uint, u64, *mut c_void);
 /// QEMU registration function for Crucible all-idle and resume callbacks.
@@ -1656,7 +1656,7 @@ pub const fn resolve_qemu_register_tcg_exec_cb_symbol() -> Option<QemuRegisterTc
 fn resolve_process_symbol(symbol_name: &'static [u8]) -> *mut c_void {
     // SAFETY: every caller supplies a static NUL-terminated symbol name. The
     // returned address is checked for null and converted only to the exact ABI
-    // type declared by QEMU 10's public plugin header.
+    // type declared by QEMU 11's public plugin header.
     unsafe { libc::dlsym(libc::RTLD_DEFAULT, symbol_name.as_ptr().cast()) }
 }
 
@@ -1713,7 +1713,7 @@ pub(crate) fn resolve_qemu_basic_block_coverage_apis()
     let scoreboard_free = require(scoreboard_free, crate::QEMU_PLUGIN_SCOREBOARD_FREE_SYMBOL)?;
     let u64_set = require(u64_set, crate::QEMU_PLUGIN_U64_SET_SYMBOL)?;
 
-    // SAFETY: all non-null addresses were resolved by their exact QEMU 10
+    // SAFETY: all non-null addresses were resolved by their exact QEMU 11
     // public-plugin symbol names and are converted to matching `extern "C"`
     // function-pointer types.
     Ok(unsafe {
@@ -1901,7 +1901,7 @@ pub const fn resolve_qemu_register_9p_cb_symbol() -> Option<QemuRegisterNinePCbF
 #[must_use]
 pub fn resolve_qemu_register_vcpu_init_cb_symbol() -> Option<QemuRegisterVcpuInitCbFn> {
     // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
-    // either null or a process symbol address. QEMU 10.0.0 declares this name
+    // either null or a process symbol address. QEMU 11.1.1 declares this name
     // with the exact `QemuRegisterVcpuInitCbFn` ABI.
     let symbol = unsafe {
         libc::dlsym(
@@ -2304,7 +2304,7 @@ pub static qemu_plugin_version: c_int = QEMU_PLUGIN_API_VERSION;
 ///
 /// # Safety
 ///
-/// `info` must point to a live QEMU 10.0.0 `qemu_info_t` for the duration of
+/// `info` must point to a live QEMU 11.1.1 `qemu_info_t` for the duration of
 /// this call. When `argc` is positive, `argv` must point to at least `argc`
 /// live pointers to NUL-terminated C strings for the same duration.
 #[unsafe(no_mangle)]

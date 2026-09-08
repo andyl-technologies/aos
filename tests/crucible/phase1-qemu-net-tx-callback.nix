@@ -178,9 +178,9 @@ in
           script = ''
             set -eu
 
-            mkdir -p include/qemu include/net net qemu hw
+            mkdir -p include/plugins include/qemu include/net net qemu hw
 
-            cat > include/qemu/qemu-plugin.h <<'PLUGIN_HEADER_FIXTURE'
+            cat > include/plugins/qemu-plugin.h <<'PLUGIN_HEADER_FIXTURE'
             #ifndef QEMU_QEMU_PLUGIN_H
             #define QEMU_QEMU_PLUGIN_H
 
@@ -523,7 +523,7 @@ in
             NET_FIXTURE
 
             patch --batch --fuzz=0 -p1 < "${patchDir}/${patchName}"
-            grep -q 'qemu_plugin_register_net_tx_cb' include/qemu/qemu-plugin.h
+            grep -q 'qemu_plugin_register_net_tx_cb' include/plugins/qemu-plugin.h
             grep -q 'crucible_net_tx_submit' net/net.c
 
             cp "$microtestSourcePath" phase1-qemu-net-tx-callback.c
@@ -555,7 +555,7 @@ in
             grep -q '^skewed_producer_observed_icount_identical=true$' "$rx_result"
             cp "$rx_result" "$out/qemu-net-rx-canonical.result"
             cp stock-net-tx-negative.err "$out/stock-negative-control.err"
-            cp include/qemu/qemu-plugin.h "$out/qemu-plugin.h.patched"
+            cp include/plugins/qemu-plugin.h "$out/qemu-plugin.h.patched"
             cp net/net.c "$out/net.c.patched"
 
             cat > "$out/result" <<RESULT

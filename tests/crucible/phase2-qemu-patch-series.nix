@@ -804,6 +804,13 @@
       enforces = "QFP-CLOCK-TRANSFORM,QFP-CLOCK-SOURCE,FAULT-ORDER";
       capability = "impulse clock transforms retain their effective monotonicity and overdue-timer policies in versioned clock VMState, while an x86 TSC read-error transition raises a deterministic guest #GP and internal projections retain the last source value";
     }
+    {
+      file = "0116-crucible-qemu-11-api-port.patch";
+      catalogName = "crucible-qemu-11-api-port";
+      class = "D";
+      enforces = "DET-1,QEMU-43";
+      capability = "Crucible accelerator, fault, migration, timer, and plugin integrations use QEMU 11's public headers and current callback, atomic, TCG, and VMState APIs";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
@@ -861,11 +868,11 @@
     ++ lib.optionals (!(hasInfix "hash = series.qemuSourceHash;" qemuNix)) [
       "pkgs/emulation/qemu.nix: QEMU source hash must be read from qemu-patches/_series.nix"
     ]
-    ++ lib.optionals (series.qemuVersion != "10.0.0") [
-      "pkgs/emulation/qemu-patches/_series.nix: QEMU pin must be 10.0.0 for this carried series"
+    ++ lib.optionals (series.qemuVersion != "11.1.1") [
+      "pkgs/emulation/qemu-patches/_series.nix: QEMU pin must be 11.1.1 for this carried series"
     ]
-    ++ lib.optionals (series.qemuSourceHash != "sha256-IsB1YB/c+MeyZxqDnr3O8dTylz62c1JU/S4b0PMLOJY=") [
-      "pkgs/emulation/qemu-patches/_series.nix: QEMU 10.0.0 source hash is not the recorded pin"
+    ++ lib.optionals (series.qemuSourceHash != "sha256-B5/7/4pxEbvIkCIQfLq/O7/WFNX8nXzGdZkRlqyhJII=") [
+      "pkgs/emulation/qemu-patches/_series.nix: QEMU 11.1.1 source hash is not the recorded pin"
     ]
     ++ lib.optionals (!(hasInfix "pinned minimum QEMU version of 10.0 or" qemuPatchSpec)) [
       "docs/rfcs/0010-crucible/11-qemu-patches.md: PATCH-40 QEMU >=10.0 requirement missing"
@@ -879,10 +886,10 @@
     ++ lib.optionals (!(hasInfix "The pinned QEMU version MUST be" packagingSpec && hasInfix "10.0" packagingSpec)) [
       "docs/rfcs/0010-crucible/26-packaging-aos-integration.md: PKG-9 QEMU >=10.0 requirement missing"
     ]
-    ++ lib.optionals (!(hasInfix "qemu_version=10.0.0" decisionRegister)) [
+    ++ lib.optionals (!(hasInfix "qemu_version=11.1.1" decisionRegister)) [
       "docs/rfcs/0010-crucible/31-decision-register.md: current QEMU version pin is not recorded"
     ]
-    ++ lib.optionals (!(hasInfix "qemu_source_hash=sha256-IsB1YB/c+MeyZxqDnr3O8dTylz62c1JU/S4b0PMLOJY=" decisionRegister)) [
+    ++ lib.optionals (!(hasInfix "qemu_source_hash=sha256-B5/7/4pxEbvIkCIQfLq/O7/WFNX8nXzGdZkRlqyhJII=" decisionRegister)) [
       "docs/rfcs/0010-crucible/31-decision-register.md: current QEMU source hash pin is not recorded"
     ]
     ++ lib.optionals (!(hasInfix "missing_capability=distinct-errors" pluginFailLoudCheck)) [

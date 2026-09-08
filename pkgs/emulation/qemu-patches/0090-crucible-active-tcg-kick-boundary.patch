@@ -1,8 +1,8 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index fccb3f282..4103f247a 100644
+index e0a6d4e22..43620ccf9 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -48,31 +48,31 @@
+@@ -49,31 +49,31 @@
  
  static bool rr_crucible_sim_mode(void);
  static CPUState *rr_current_cpu;
@@ -48,7 +48,7 @@ index fccb3f282..4103f247a 100644
           *
           * Stop, unplug, and halted transitions are different.  Their state is
           * already committed before qemu_cpu_kick(), and a stopped or sleeping
-@@ -85,7 +85,7 @@ void rr_kick_vcpu_thread(CPUState *unused)
+@@ -86,7 +86,7 @@ void rr_kick_vcpu_thread(CPUState *unused)
          CPU_FOREACH(cpu) {
              if (qemu_plugin_crucible_terminal_pause_pending() ||
                  cpu->stop || cpu->unplug || cpu->halted ||
@@ -57,7 +57,7 @@ index fccb3f282..4103f247a 100644
                  qatomic_read(&cpu->interrupt_request)) {
                  stateful_exit = true;
                  break;
-@@ -95,11 +95,21 @@ void rr_kick_vcpu_thread(CPUState *unused)
+@@ -96,11 +96,21 @@ void rr_kick_vcpu_thread(CPUState *unused)
              /*
               * RR vCPUs share one host thread.  The committed transition may
               * target a non-current vCPU, so exit every CPUState exactly as
@@ -80,8 +80,8 @@ index fccb3f282..4103f247a 100644
          }
          return;
      }
-@@ -837,6 +847,7 @@ static void *rr_cpu_thread_fn(void *arg)
-             qemu_wait_io_event_common(cpu);
+@@ -838,6 +848,7 @@ static void *rr_cpu_thread_fn(void *arg)
+             qemu_process_cpu_events_common(cpu);
          }
      }
 +    qatomic_set_mb(&rr_initial_wait_complete, true);

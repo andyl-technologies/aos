@@ -4,7 +4,7 @@
   fetchurl,
   python3,
 }: let
-  version = "75.8.2";
+  version = "84.0.0";
 in
   mkDerivation {
     pname = "setuptools";
@@ -14,7 +14,7 @@ in
       urls = [
         "https://files.pythonhosted.org/packages/source/s/setuptools/setuptools-${version}.tar.gz"
       ];
-      hash = "sha256-SIBHOpaeXyPyor42RrLf2Er5AocW05jkYZL4S8NpANI=";
+      hash = "sha256-9GlcISV/DZtTfsJpLJQdAu4UO3zBJ2lBNJpUZXOy73M=";
     };
 
     buildDeps = [
@@ -36,15 +36,13 @@ in
       {
         name = "install";
         script = ''
-          # Direct copy install — setuptools is pure Python, so we copy
-          # the package directories to site-packages. Using setup.py install
-          # fails because the byte-compilation subprocess can't find distutils
-          # (Python 3.12 removed it, and the shim only works in-process).
+          # Setuptools is pure Python. Copy its source package and complete
+          # entry-point metadata directly so it can bootstrap PEP 517 builds
+          # without first requiring another Python build backend.
           SITE=$out/lib/python3.14/site-packages
           mkdir -p $SITE
 
           cp -r setuptools $SITE/
-          cp -r pkg_resources $SITE/
           cp -r _distutils_hack $SITE/
 
           # Install the distutils hack .pth file so that importing setuptools
@@ -52,13 +50,23 @@ in
           printf 'import _distutils_hack; _distutils_hack.do_override()\n' \
             > $SITE/distutils-precedence.pth
 
-          # Write metadata so other packages can find setuptools
-          mkdir -p $SITE/setuptools-${version}.dist-info
-          printf 'Metadata-Version: 2.1\nName: setuptools\nVersion: ${version}\n' \
-            > $SITE/setuptools-${version}.dist-info/METADATA
-          printf 'setuptools\npkg_resources\n_distutils_hack\n' \
-            > $SITE/setuptools-${version}.dist-info/top_level.txt
-          touch $SITE/setuptools-${version}.dist-info/INSTALLER
+          metadata=$SITE/setuptools-${version}.dist-info
+          cp -r setuptools.egg-info "$metadata"
+          mv "$metadata/PKG-INFO" "$metadata/METADATA"
+          touch "$metadata/INSTALLER"
+        '';
+      }
+      {
+        name = "check";
+        script = ''
+          PYTHONPATH=$out/lib/python3.14/site-packages python3 - <<'PY'
+          import importlib.metadata
+          import setuptools
+
+          assert setuptools.__version__ == "${version}"
+          commands = importlib.metadata.entry_points(group="distutils.commands")
+          assert any(command.name == "editable_wheel" for command in commands)
+          PY
         '';
       }
     ];

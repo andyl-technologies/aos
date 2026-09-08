@@ -338,7 +338,9 @@ pub(super) fn parse_hex_value(value: toml::Value) -> Result<Vec<u8>, FaultSignal
     }
     value
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let high = hex_digit(pair[0])?;
             let low = hex_digit(pair[1])?;

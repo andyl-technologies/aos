@@ -28,6 +28,7 @@ in
       ];
       hash = "sha256-ojI+VL5tF/UM6zJTym7QYxcaW8tweb+llACM0q63/eo=";
     };
+    patches = [./sbsigntools-openssl-4.patch];
 
     buildDeps = [
       buildPackages.gnumake

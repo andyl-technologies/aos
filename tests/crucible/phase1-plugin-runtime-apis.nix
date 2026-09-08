@@ -395,7 +395,7 @@ in
           script = ''
             set -eu
 
-            mkdir -p accel/tcg hw/core include/qemu include/system migration net plugins qapi qemu
+            mkdir -p accel/tcg hw/core include/plugins include/qemu include/system migration net plugins qapi qemu
             : > hw/boards.h
             cat > hw/core/cpu.h <<'CPU_CORE_FIXTURE'
             #ifndef HW_CORE_CPU_H
@@ -654,7 +654,7 @@ in
             }
             ICOUNT_COMMON_FIXTURE
 
-            cat > include/qemu/qemu-plugin.h <<'PLUGIN_HEADER_FIXTURE'
+            cat > include/plugins/qemu-plugin.h <<'PLUGIN_HEADER_FIXTURE'
             #ifndef QEMU_QEMU_PLUGIN_H
             #define QEMU_QEMU_PLUGIN_H
 
@@ -994,7 +994,7 @@ in
                 # dispatch, internal-header, and runstate hunk.
                 gawk '
                   /^diff --git / {
-                    public_header = ($3 == "a/include/qemu/qemu-plugin.h")
+                    public_header = ($3 == "a/include/plugins/qemu-plugin.h")
                     internal_header = ($3 == "a/include/qemu/plugin.h")
                     api_system = ($3 == "a/plugins/api-system.c")
                     selected_file = public_header || internal_header || api_system
@@ -1045,14 +1045,14 @@ in
               fi
             done
 
-            grep -q 'qemu_plugin_icount_raw' include/qemu/qemu-plugin.h
-            grep -q 'qemu_plugin_icount_at_tb_entry' include/qemu/qemu-plugin.h
-            grep -q 'qemu_plugin_force_vcpu_exit' include/qemu/qemu-plugin.h
-            grep -q 'qemu_plugin_crucible_single_threaded_rr' include/qemu/qemu-plugin.h
-            grep -q 'qemu_plugin_register_wake_fd' include/qemu/qemu-plugin.h
-            grep -q 'qemu_plugin_request_shutdown' include/qemu/qemu-plugin.h
-            grep -q 'qemu_plugin_request_vmstop' include/qemu/qemu-plugin.h
-            grep -q 'qemu_plugin_register_tcg_exec_cb' include/qemu/qemu-plugin.h
+            grep -q 'qemu_plugin_icount_raw' include/plugins/qemu-plugin.h
+            grep -q 'qemu_plugin_icount_at_tb_entry' include/plugins/qemu-plugin.h
+            grep -q 'qemu_plugin_force_vcpu_exit' include/plugins/qemu-plugin.h
+            grep -q 'qemu_plugin_crucible_single_threaded_rr' include/plugins/qemu-plugin.h
+            grep -q 'qemu_plugin_register_wake_fd' include/plugins/qemu-plugin.h
+            grep -q 'qemu_plugin_request_shutdown' include/plugins/qemu-plugin.h
+            grep -q 'qemu_plugin_request_vmstop' include/plugins/qemu-plugin.h
+            grep -q 'qemu_plugin_register_tcg_exec_cb' include/plugins/qemu-plugin.h
             grep -q 'qemu_plugin_maybe_fire_tcg_exec_cb(cpu);' accel/tcg/tcg-accel-ops-rr.c
             grep -q 'qemu_plugin_crucible_vmstop_pending()' "${patchDir}/0063-crucible-plugin-vmstop.patch"
             grep -q 'qemu_plugin_crucible_vmstop_admission_pending()' "${patchDir}/0063-crucible-plugin-vmstop.patch"
@@ -1134,7 +1134,7 @@ in
 
             cp stock-plugin-runtime-negative.err "$out/stock-negative-control.err"
             cp plugins/api-system.c "$out/api-system.c.patched"
-            cp include/qemu/qemu-plugin.h "$out/qemu-plugin.h.patched"
+            cp include/plugins/qemu-plugin.h "$out/qemu-plugin.h.patched"
             cp include/qemu/plugin.h "$out/plugin.h.patched"
             cp accel/tcg/tcg-accel-ops-rr.c "$out/tcg-accel-ops-rr.c.patched"
 

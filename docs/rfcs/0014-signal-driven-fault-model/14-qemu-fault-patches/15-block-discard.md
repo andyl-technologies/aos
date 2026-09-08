@@ -27,7 +27,7 @@ payload-free discard through the registered block callback, waits through the
 existing deterministic coroutine polling path, and returns the typed completion
 to QEMU. The driver registers this function as `.bdrv_co_pdiscard`.
 
-`include/qemu/qemu-plugin.h` adds only the typed operation constant. Callback
+`include/plugins/qemu-plugin.h` adds only the typed operation constant. Callback
 function signatures do not change: for discard, `offset` is the first byte,
 `data` is null, and `len` is the requested byte count. A non-null payload,
 unrepresentable count, range error, unknown operation, or nonempty successful

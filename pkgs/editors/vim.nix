@@ -11,7 +11,7 @@
   perl,
   python3,
 }: let
-  version = "9.2.0541";
+  version = "9.2.1036";
 in
   mkDerivation {
     pname = "vim";
@@ -19,7 +19,7 @@ in
 
     src = fetchurl {
       urls = ["https://github.com/vim/vim/archive/refs/tags/v${version}.tar.gz"];
-      hash = "sha256-CWO/QmhmfmT98VCQhxJMr0vR/j5cZvTiPpUrVx5dbQo=";
+      hash = "sha256-m9IiOjBWZ9GxniHTcEMsiqIlCpLmrxT+kxPsyYU1PQQ=";
     };
 
     buildDeps = [gnumake gettext pkg-config];

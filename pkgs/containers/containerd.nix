@@ -9,7 +9,7 @@
   bash,
   lib,
 }: let
-  version = "2.2.1";
+  version = "2.3.5";
   payload = mkDerivation {
     pname = "containerd-payload";
     inherit version;
@@ -17,7 +17,7 @@
       urls = [
         "https://github.com/containerd/containerd/archive/v${version}/containerd-${version}.tar.gz"
       ];
-      hash = "sha256-r1cHomiRSGMyFCzAreTwxUP3B9OVSDj1zs7nO4M8+bQ=";
+      hash = "sha256-qZpNypgGEGT/TLNdJ9HsI0VxfpEIyCIyn87JHccr/5Y=";
     };
     buildDeps = [gnumake go];
     runtimeDeps = [runc];

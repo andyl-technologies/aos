@@ -5,7 +5,7 @@
   bash,
   python3,
 }: let
-  version = "1.10.1";
+  version = "1.12.0";
 in
   mkDerivation {
     pname = "meson";
@@ -15,7 +15,7 @@ in
       urls = [
         "https://github.com/mesonbuild/meson/releases/download/${version}/meson-${version}.tar.gz"
       ];
-      hash = "sha256-xCKW8S2zFqRRW5N1pd8zDy51HM3U9ghDDUHX1iEOQxc=";
+      hash = "sha256-iK/gwg5SAwIYkkrDfQyBxZtLXzrjdSyMbXRwx9NliGw=";
     };
 
     buildDeps = [python3];

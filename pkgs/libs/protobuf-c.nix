@@ -36,6 +36,12 @@ in
         '';
       }
       {
+        name = "patch";
+        script = ''
+          patch -p1 < ${./protobuf-c-protobuf-35.patch}
+        '';
+      }
+      {
         name = "configure";
         script = ''
           ./configure \

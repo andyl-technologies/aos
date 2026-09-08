@@ -4,15 +4,15 @@
   fetchGoModules,
   fetchurl,
 }: let
-  version = "0.22.0";
+  version = "0.23.0";
   src = fetchurl {
     urls = ["https://github.com/golang/tools/archive/refs/tags/gopls/v${version}.tar.gz"];
-    hash = "sha256-JJ3AxLnz6FP2p/tvNSjbL0h5PnxUMj87Mqo49kMvCIo=";
+    hash = "sha256-G6QYdbkY23PGpAmtj1Urhfct/upD/7VBt5gyL/a0FSs=";
   };
   goModules = fetchGoModules {
     inherit src;
     sourceRoot = "tools-gopls-v${version}/gopls";
-    hash = "sha256-XhcQW1G05gmD9UWmHEJ8bLNnsJ8cARw3Wm6F2z9H3L0=";
+    hash = "sha256-jQtTmUSar1QgMxgrnfslfTFX37ypK36p27mzJdDHWHM=";
   };
 in
   mkGoPackage {

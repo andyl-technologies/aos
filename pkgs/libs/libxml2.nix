@@ -3,11 +3,12 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  pkg-config,
   zlib,
   bash,
   stdenv,
 }: let
-  version = "2.12.9";
+  version = "2.15.4";
 in
   mkDerivation {
     pname = "libxml2";
@@ -17,10 +18,10 @@ in
       urls = [
         "https://download.gnome.org/sources/libxml2/${builtins.concatStringsSep "." (builtins.genList (i: builtins.elemAt (builtins.splitVersion version) i) 2)}/libxml2-${version}.tar.xz"
       ];
-      hash = "sha256-WZEttTarVqOZZInqApl2jHvP/lcWnwI15/liqR9INZA=";
+      hash = "sha256-mAh/0YHZBwck8/vGXHN32wMDjrkr2II3Ta/0SUATiCE=";
     };
 
-    buildDeps = [gnumake];
+    buildDeps = [gnumake pkg-config];
     runtimeDeps =
       [zlib]
       ++ (

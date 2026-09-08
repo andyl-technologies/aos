@@ -443,8 +443,8 @@ in
               "run_model=run-twice-and-diff" \
               "scenario=stock-linux-diskless-initramfs-workload" \
               "host_adversary=bounded-scheduler-preemption" \
-              "samples=36" \
-              "horizon_icount=3600000000" \
+              "samples=40" \
+              "horizon_icount=4000000000" \
               "mismatch_policy=first-mismatch-is-failure"
 
             cat > "$out/result" <<'RESULT'

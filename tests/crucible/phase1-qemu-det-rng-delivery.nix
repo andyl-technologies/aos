@@ -327,7 +327,7 @@
     }
     {
       label = "icount gate include";
-      needle = "system/cpu-timers.h";
+      needle = "exec/icount.h";
     }
     {
       label = "no record/replay rationale";
@@ -604,7 +604,7 @@ in
               grep -F -q 'memcpy(sim_rng_seed, &seed, sizeof(seed));' util/guest-random.c
               grep -F -q 'if (icount_enabled() && strcmp(current_accel_name(), "sim") == 0 &&' backends/rng.c
               grep -F -q '#include "qemu/accel.h"' backends/rng.c
-              grep -F -q '#include "system/cpu-timers.h"' backends/rng.c
+              grep -F -q '#include "exec/icount.h"' backends/rng.c
             )
 
             extract_request_function "$source_dir/backends/rng.c" \

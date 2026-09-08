@@ -9,9 +9,11 @@
   version,
   upstreamId,
   repository,
+  provider ? "github-tags",
   tagPrefix ? "",
   repology ? null,
-  major,
+  major ? null,
+  minor ? null,
   versionScheme ? "semver",
   minimumAgeDays ? 3,
   source,
@@ -53,23 +55,39 @@
         };
         discovery = {
           primary = {
-            provider = "github-tags";
+            inherit provider;
             inherit repository tagPrefix;
           };
           inherit advisors;
         };
-        releasePolicy = {
-          strategy = "latest-in-series";
-          inherit versionScheme;
-          series.major = major;
-          allowPrerelease = false;
-          inherit minimumAgeDays;
-        };
+        releasePolicy =
+          {
+            strategy = "latest-in-series";
+            inherit versionScheme;
+            allowPrerelease = false;
+            inherit minimumAgeDays;
+          }
+          // (
+            if major == null
+            then
+              if minor == null
+              then {}
+              else throw "mkGithubUpstream: minor series requires a major series"
+            else {
+              series =
+                {inherit major;}
+                // (
+                  if minor == null
+                  then {}
+                  else {inherit minor;}
+                );
+            }
+          );
         sources.source = {
           fetcher = "fetchurl";
           urlTemplates =
             source.urlTemplates
-          or [
+            or [
               {
                 scheme = "https";
                 inherit (source) authority path;
@@ -79,7 +97,7 @@
           hashMode = source.hashMode or "flat";
           allowedRedirectHosts =
             source.allowedRedirectHosts
-          or (
+            or (
               if (builtins.head (source.urlTemplates or [{inherit (source) authority;}])).authority == "github.com"
               then [
                 "codeload.github.com"

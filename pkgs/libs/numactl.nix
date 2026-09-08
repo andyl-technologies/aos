@@ -12,6 +12,7 @@
     version = "2.0.19";
     upstreamId = "v2.0.19";
     repository = "numactl/numactl";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 2;
     source = {

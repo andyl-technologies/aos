@@ -1,8 +1,8 @@
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 819a46860..94bae0426 100644
+index 6d19f7f09..2a0c95c8a 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
-@@ -197,6 +197,7 @@ bool qemu_plugin_crucible_vmstop_admission_pending(void);
+@@ -205,6 +205,7 @@ bool qemu_plugin_crucible_vmstop_admission_pending(void);
  void qemu_plugin_crucible_vmstop_request_stopped(int flush_status);
  int qemu_plugin_crucible_vmstop_flush_status(void);
  void qemu_plugin_crucible_vmstop_request_complete(void);
@@ -10,7 +10,7 @@ index 819a46860..94bae0426 100644
  
  extern qemu_plugin_crucible_ipi_delivery_cb_t
      qemu_plugin_crucible_ipi_delivery_cb;
-@@ -378,6 +379,11 @@ static inline int qemu_plugin_crucible_vmstop_flush_status(void)
+@@ -419,6 +420,11 @@ static inline int qemu_plugin_crucible_vmstop_flush_status(void)
  static inline void qemu_plugin_crucible_vmstop_request_complete(void)
  { }
  
@@ -23,7 +23,7 @@ index 819a46860..94bae0426 100644
      uint64_t event_id, uint64_t delivery_icount, unsigned int src_vcpu,
      unsigned int dst_vcpu, unsigned int delivery_mode, unsigned int vector)
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 094f118ac..2502ceec6 100644
+index 1ea512316..ba215e9b6 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
 @@ -79,6 +79,7 @@ void qmp_cont(Error **errp)
@@ -46,7 +46,7 @@ index 094f118ac..2502ceec6 100644
      /* if there is a dump in background, we should wait until the dump
       * finished */
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
-index 310a425f7..58cd2d292 100644
+index e6922218d..7267b5e82 100644
 --- a/plugins/crucible-fault-lifecycle.c
 +++ b/plugins/crucible-fault-lifecycle.c
 @@ -28,7 +28,12 @@
@@ -112,7 +112,7 @@ index 310a425f7..58cd2d292 100644
  static bool crucible_lifecycle_field(
      const QemuCrucibleFaultRule *rule, uint16_t tag, uint16_t type,
      const uint8_t **data, uint32_t *length)
-@@ -507,7 +547,8 @@ static int crucible_lifecycle_execute(
+@@ -511,7 +551,8 @@ static int crucible_lifecycle_execute(
      int64_t virtual_after;
      bool reset_transition;
  
@@ -122,7 +122,7 @@ index 310a425f7..58cd2d292 100644
                                        &device_bytes)) {
          return -EINVAL;
      }
-@@ -543,7 +584,7 @@ static int crucible_lifecycle_execute(
+@@ -547,7 +588,7 @@ static int crucible_lifecycle_execute(
      crucible_lifecycle_evidence_begin(
          bytes, rule, transition, downtime, volatile_policy, device_policy,
          observed_icount, virtual_before, ram_bytes, device_bytes);
@@ -131,7 +131,7 @@ index 310a425f7..58cd2d292 100644
      stl_le_p(bytes + 192, plan->boot_policy);
      stl_le_p(bytes + 196, 1);
      stl_le_p(bytes + 200, plan->maximum_attempts);
-@@ -597,56 +638,71 @@ static int crucible_lifecycle_execute(
+@@ -601,56 +642,71 @@ static int crucible_lifecycle_execute(
              terminal_material, sizeof(terminal_material), after_hash);
          memcpy(bytes + 256, current_hash, sizeof(current_hash));
      }
@@ -230,7 +230,7 @@ index 310a425f7..58cd2d292 100644
      crucible_lifecycle_pending_clear(pending);
  }
  
-@@ -655,8 +711,11 @@ static bool crucible_lifecycle_pending_complete(
+@@ -659,8 +715,11 @@ static bool crucible_lifecycle_pending_complete(
  {
      uint8_t after_hash[32], opportunity_hash[32];
      uint64_t ram_bytes, device_bytes;
@@ -243,7 +243,7 @@ index 310a425f7..58cd2d292 100644
          crucible_lifecycle_pending_fail_closed(pending);
          return false;
      }
-@@ -664,6 +723,7 @@ static bool crucible_lifecycle_pending_complete(
+@@ -668,6 +727,7 @@ static bool crucible_lifecycle_pending_complete(
      stq_le_p(pending->evidence + 120, device_bytes);
      memcpy(pending->evidence + 128, pending->before_hash, 32);
      memcpy(pending->evidence + 160, after_hash, 32);
@@ -251,7 +251,7 @@ index 310a425f7..58cd2d292 100644
      crucible_lifecycle_sha256(pending->evidence,
                                sizeof(pending->evidence), opportunity_hash);
      qemu_crucible_fault_event_reservation_consume(pending->reservation);
-@@ -1353,6 +1413,12 @@ static void crucible_lifecycle_watchdog_boundary(
+@@ -1357,6 +1417,12 @@ static void crucible_lifecycle_watchdog_boundary(
                      material, sizeof(material), terminal_hash);
                  memcpy(pending->evidence + 256,
                         current_hash, sizeof(current_hash));
@@ -264,7 +264,7 @@ index 310a425f7..58cd2d292 100644
                  stl_le_p(pending->evidence + 196, pending->attempt);
                  stl_le_p(pending->evidence + 204, transition);
                  stq_le_p(pending->evidence + 112, ram_bytes);
-@@ -1381,25 +1447,12 @@ static void crucible_lifecycle_watchdog_boundary(
+@@ -1385,25 +1451,12 @@ static void crucible_lifecycle_watchdog_boundary(
                              terminal_hash);
                      }
                  }
