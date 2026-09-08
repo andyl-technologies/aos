@@ -1157,7 +1157,10 @@ process-local intent or re-reading a moving head.
   campaign-integrity error.
 - **[CMOD-29]** Policy activation on one campaign ref MUST preserve
   `CampaignMode`. A mode change MUST derive another campaign so existing
-  observation ordering cannot be reinterpreted.
+  observation ordering cannot be reinterpreted. A `Streaming`-to-`Strict`
+  derivation MUST reconstruct the authenticated contiguous completion prefix,
+  preserve completed ordinals beyond any hole, and resume strict publication
+  at the first incomplete ordinal.
 - **[CMOD-30]** A choice opportunity MUST become authoritative campaign
   knowledge only through the exact discovery owner or a canonical observation
   owner. Branch-request acceptance MUST require its canonical graph membership

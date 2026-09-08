@@ -665,10 +665,7 @@ impl CampaignRepository {
                 ),
                 observation_content,
             ),
-            (
-                map_key_hash("accounting.observation-ordinal", ordinal_hash(ordinal)),
-                observation_content,
-            ),
+            (observation_ordinal_key(ordinal), observation_content),
         ]);
         let policy = self.read_policy(parent.snapshot.active_policy().content_id())?;
         if policy.mode() == CampaignMode::Strict {
@@ -828,48 +825,167 @@ impl CampaignRepository {
         if policy.mode() != CampaignMode::Strict {
             return Ok(());
         }
-        let expected = match self.merkle.get(
-            parent.snapshot.roots().accounting,
-            observation_sequence_key(),
-        )? {
-            None => 1,
-            Some(previous) => {
-                let envelope = self.read_envelope(previous)?;
-                let previous_ordinal = match envelope.record_kind() {
-                    crate::CampaignRecordKind::Observation => {
-                        let previous = self.decode_observation(previous)?;
-                        self.observation_execution_basis(
-                            parent.snapshot.roots().accounting,
-                            &previous,
-                        )?
-                        .1
-                    }
-                    crate::CampaignRecordKind::Fact => {
-                        let CampaignFact::AttemptClosed { ordinal, .. } =
-                            self.read_fact(previous)?
-                        else {
-                            return Err(integrity(
-                                "strict-completion-sequence-fact-is-not-attempt-closure",
-                            ));
-                        };
-                        ordinal
-                    }
-                    _ => {
-                        return Err(integrity(
-                            "strict-completion-sequence-has-invalid-record-kind",
-                        ));
-                    }
-                };
-                previous_ordinal
-                    .value()
-                    .checked_add(1)
-                    .ok_or_else(|| integrity("strict-completion-sequence-overflow"))?
-            }
-        };
+        let expected = self.next_strict_completion_ordinal(parent.snapshot.roots().accounting)?;
         if ordinal.value() != expected {
             return Err(integrity("strict-completion-order-gap"));
         }
         Ok(())
+    }
+
+    pub(super) fn strict_migration_sequence_anchor(
+        &self,
+        accounting: ContentId,
+        transition: ContentId,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        // Streaming retains a prior strict anchor but may complete later
+        // ordinals around holes. Advance only through the authenticated
+        // contiguous prefix; the derivation fact represents ordinal zero when
+        // the first admission is still open.
+        let sequence = self.merkle.get(accounting, observation_sequence_key())?;
+        let baseline = self.strict_sequence_anchor_ordinal(accounting, sequence)?;
+        let admitted = self.accounted_attempts(accounting)?;
+        if baseline > admitted {
+            return Err(integrity("strict-completion-sequence-past-admission-head"));
+        }
+
+        let mut anchor = sequence.filter(|_| baseline != 0).unwrap_or(transition);
+        let Some(mut candidate) = baseline.checked_add(1) else {
+            return Err(integrity("strict-completion-sequence-overflow"));
+        };
+        while candidate <= admitted {
+            let ordinal = AdmissionOrdinal::new(candidate);
+            let Some(completion) = self.completion_at_ordinal(accounting, ordinal)? else {
+                break;
+            };
+            anchor = completion;
+            candidate = candidate
+                .checked_add(1)
+                .ok_or_else(|| integrity("strict-completion-sequence-overflow"))?;
+        }
+        Ok(anchor)
+    }
+
+    fn next_strict_completion_ordinal(
+        &self,
+        accounting: ContentId,
+    ) -> Result<u64, CampaignRepositoryError> {
+        let sequence = self.merkle.get(accounting, observation_sequence_key())?;
+        let baseline = self.strict_sequence_anchor_ordinal(accounting, sequence)?;
+        let admitted = self.accounted_attempts(accounting)?;
+        if baseline > admitted {
+            return Err(integrity("strict-completion-sequence-past-admission-head"));
+        }
+
+        let mut candidate = baseline
+            .checked_add(1)
+            .ok_or_else(|| integrity("strict-completion-sequence-overflow"))?;
+        while candidate <= admitted
+            && self
+                .completion_at_ordinal(accounting, AdmissionOrdinal::new(candidate))?
+                .is_some()
+        {
+            candidate = candidate
+                .checked_add(1)
+                .ok_or_else(|| integrity("strict-completion-sequence-overflow"))?;
+        }
+        Ok(candidate)
+    }
+
+    fn strict_sequence_anchor_ordinal(
+        &self,
+        accounting: ContentId,
+        sequence: Option<ContentId>,
+    ) -> Result<u64, CampaignRepositoryError> {
+        let Some(sequence) = sequence else {
+            return Ok(0);
+        };
+        let envelope = self.read_envelope(sequence)?;
+        let ordinal = match envelope.record_kind() {
+            crate::CampaignRecordKind::Observation => {
+                let observation = self.decode_observation(sequence)?;
+                self.observation_execution_basis(accounting, &observation)?
+                    .1
+            }
+            crate::CampaignRecordKind::Fact => match self.read_fact(sequence)? {
+                CampaignFact::AttemptClosed { ordinal, .. } => ordinal,
+                CampaignFact::CampaignDerived(derivation) => {
+                    self.validate_strict_migration_marker(derivation)?;
+                    return Ok(0);
+                }
+                _ => {
+                    return Err(integrity(
+                        "strict-completion-sequence-fact-is-not-a-completion-or-migration",
+                    ));
+                }
+            },
+            _ => {
+                return Err(integrity(
+                    "strict-completion-sequence-has-invalid-record-kind",
+                ));
+            }
+        };
+        if ordinal.value() == 0 {
+            return Err(integrity("strict-completion-sequence-has-zero-ordinal"));
+        }
+        Ok(ordinal.value())
+    }
+
+    fn validate_strict_migration_marker(
+        &self,
+        derivation: CampaignDerivation,
+    ) -> Result<(), CampaignRepositoryError> {
+        let source = self.read_snapshot(derivation.source().content_id())?;
+        let prior = self.read_policy(source.snapshot.active_policy().content_id())?;
+        let next = self.read_policy(derivation.active_policy().content_id())?;
+        if !is_streaming_to_strict_migration(prior.mode(), next.mode()) {
+            return Err(integrity(
+                "strict-completion-sequence-has-invalid-migration-marker",
+            ));
+        }
+        Ok(())
+    }
+
+    fn completion_at_ordinal(
+        &self,
+        accounting: ContentId,
+        ordinal: AdmissionOrdinal,
+    ) -> Result<Option<ContentId>, CampaignRepositoryError> {
+        // Both terminal forms close the same semantic ordinal. Finding both is
+        // an invalid owner projection rather than an arbitrary precedence.
+        let observation = self
+            .merkle
+            .get(accounting, observation_ordinal_key(ordinal))?;
+        let non_modeled = self
+            .merkle
+            .get(accounting, non_modeled_ordinal_key(ordinal))?;
+        let completion = match (observation, non_modeled) {
+            (None, None) => return Ok(None),
+            (Some(_), Some(_)) => {
+                return Err(integrity(
+                    "completion-ordinal-has-modeled-and-non-modeled-results",
+                ));
+            }
+            (Some(observation), None) => {
+                let record = self.decode_observation(observation)?;
+                if self.observation_execution_basis(accounting, &record)?.1 != ordinal {
+                    return Err(integrity("observation-ordinal-index-mismatch"));
+                }
+                observation
+            }
+            (None, Some(non_modeled)) => {
+                let CampaignFact::AttemptClosed {
+                    ordinal: recorded, ..
+                } = self.read_fact(non_modeled)?
+                else {
+                    return Err(integrity("attempt-closure-ordinal-index-type-mismatch"));
+                };
+                if recorded != ordinal {
+                    return Err(integrity("attempt-closure-ordinal-index-mismatch"));
+                }
+                non_modeled
+            }
+        };
+        Ok(Some(completion))
     }
 
     fn validate_compatible_upserts(
@@ -1151,11 +1267,4 @@ impl CampaignRepository {
         self.verify_campaign_closures_anchored_cached(roots, &anchors, choice_cache)?;
         Ok(())
     }
-}
-
-fn ordinal_hash(ordinal: AdmissionOrdinal) -> CampaignHash {
-    CampaignHash::derive(
-        "crucible.campaign-observation-ordinal.v1",
-        &ordinal.value().to_be_bytes(),
-    )
 }

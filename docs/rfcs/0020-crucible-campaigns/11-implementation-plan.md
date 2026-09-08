@@ -1458,7 +1458,20 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   an audited successor of an exact authenticated source snapshot, optionally
   activates a compatible imported policy, leaves the source ref unchanged, and
   exactly replays the original derived snapshot after later target mutations,
-  cache eviction, restart, or a same-basis CAS race. Canonical bounded finding
+  cache eviction, restart, or a same-basis CAS race. A supplied policy may now
+  migrate `Strict` to `Streaming` or `Streaming` to `Strict`; same-ref policy
+  activation still preserves mode, and the current implementation rejects
+  derivation that enters or leaves `Statistical`. Broader statistical-mode
+  migration design and implementation remain open. The streaming-to-strict
+  transition authenticates the retained completion indexes, writes an explicit
+  strict sequence anchor, and advances across inherited out-of-order
+  completions only after every lower admission hole closes. Focused repository
+  tests cover a historical source snapshot, modeled and non-modeled inherited
+  completions, a retained nonzero strict anchor, exact derivation replay, cold
+  reconstruction, source immutability, statistical rejection, and the legacy
+  two-layer ordinal-key vector. This automated slice does not complete the
+  Phase 1 manual model flight or the Phase 8 operator-acceptance flight.
+  Canonical bounded finding
   and self-contained reproduction records now have a verifier-backed Crucible
   importer and an atomic occurrence-clustering owner with restart validation.
   Rich frontier explanation, start-attachment porcelain, and richer
