@@ -617,13 +617,20 @@ fn hot_fork_clone_does_not_fall_back_to_uncoordinated_ninep_service()
         region_len,
         None,
     )?;
+    let snapshot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM).snapshot();
 
+    let error = child
+        .service_ninep_io_for_test(&snapshot)
+        .expect_err("a hot-fork child must require a fresh 9p coordinator");
     assert!(
-        child
-            .await_child(QemuAsyncWait::AdvanceCompletion, Duration::from_millis(1))
-            .is_err()
+        error
+            .to_string()
+            .contains("requires a fresh signal coordinator"),
+        "unexpected missing-coordinator error: {error}"
     );
+
     child.install_ninep_fault_coordinator(Box::new(TestNinepCoordinator))?;
+    assert!(!child.service_ninep_io_for_test(&snapshot)?);
     Ok(())
 }
 
