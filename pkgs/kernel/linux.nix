@@ -49,8 +49,8 @@
     LD="$LD" \
     AR="$AR" \
     NM="$NM" \
-    OBJCOPY="$OBJCOPY" \
-    OBJDUMP="$OBJDUMP" \
+    OBJCOPY="${stdenv.binutils}/bin/objcopy" \
+    OBJDUMP="${stdenv.binutils}/bin/objdump" \
     READELF="${stdenv.binutils}/bin/readelf" \
     STRIP="$STRIP" \
     HOSTCC="env C_INCLUDE_PATH=${hostIncludePath} LIBRARY_PATH=${hostLibraryPath} ${buildPackages.cc}/bin/cc" \
