@@ -343,6 +343,18 @@ pub(super) fn backend_machine_readable_trace_entries(
     outcome: &BackendCommandOutcome,
 ) -> Vec<CanonicalLogEntry> {
     let mut entries = outcome.canonical_log.clone();
+    for evidence in &outcome.host_scheduler_preemption {
+        entries.push(CanonicalLogEntry {
+            sequence: entries.len() as u64,
+            virtual_time_ticks: entries
+                .last()
+                .map(|entry| entry.virtual_time_ticks.saturating_add(1))
+                .unwrap_or(0),
+            node: String::from("host"),
+            kind: String::from("bounded_scheduler_preemption"),
+            summary: evidence.summary(),
+        });
+    }
     entries.push(CanonicalLogEntry {
         sequence: entries.len() as u64,
         virtual_time_ticks: entries

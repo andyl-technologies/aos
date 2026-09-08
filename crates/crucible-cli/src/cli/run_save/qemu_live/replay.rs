@@ -8,6 +8,8 @@ pub(crate) struct LiveQemuReplayResources {
         Option<crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure>,
     pub(crate) effect_trace: Option<crucible::ResolvedEffectTrace>,
     pub(crate) signal_artifacts: Option<std::sync::Arc<crucible::MemoryDagStore>>,
+    pub(crate) bounded_scheduler_preemption:
+        Option<crucible_api::BoundedSchedulerPreemptionEvidence>,
 }
 
 /// Re-executes a v3 artifact through a fresh packaged-QEMU lifecycle session.
@@ -95,6 +97,9 @@ pub(crate) fn run_live_qemu_artifact_replay(
     }
     if let Some(signal_artifacts) = resources.signal_artifacts {
         config = config.with_signal_artifacts(signal_artifacts);
+    }
+    if let Some(evidence) = resources.bounded_scheduler_preemption {
+        config = config.with_bounded_scheduler_preemption(evidence);
     }
     let mut branch_evidence = None;
     match &contract.branch {

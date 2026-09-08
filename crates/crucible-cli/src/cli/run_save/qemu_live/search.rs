@@ -1096,6 +1096,7 @@ mod mutation_search_tests {
             save_boundary_evidence: None,
             reproduction_artifact: Some(artifact.to_vec()),
             side_reproduction_artifacts: Vec::new(),
+            host_scheduler_preemption: Vec::new(),
         }
     }
 

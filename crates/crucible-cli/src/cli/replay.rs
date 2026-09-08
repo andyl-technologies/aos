@@ -293,6 +293,15 @@ fn replay_live_qemu_evidence(
         .iter()
         .map(|node| node.id.name.clone())
         .collect::<std::collections::BTreeSet<_>>();
+    let preemption_evidence =
+        bounded_scheduler_preemption_evidence_from_env(REPLAY_BOUNDED_SCHEDULER_PREEMPTION_ENV, 1)?
+            .and_then(|mut evidence| evidence.pop());
+    let expected_execution_owner = expected_live_qemu_execution_owner(&contract, model.schedule());
+    if preemption_evidence.is_some() && expected_execution_owner == RunExecutionOwner::Campaign {
+        return Err(backend_error(
+            "bounded scheduler-preemption artifact replay requires a session-owned replay contract",
+        ));
+    }
     let (_run_plan, report) = run_live_qemu_artifact_replay(
         backend,
         cli.campaign_deployment.as_deref(),
@@ -303,9 +312,22 @@ fn replay_live_qemu_evidence(
             campaign_closure: campaign_replay_closure,
             effect_trace: resolved_effect_trace,
             signal_artifacts: signal_artifact_bundle,
+            bounded_scheduler_preemption: preemption_evidence.clone(),
         },
     )?;
-    let expected_execution_owner = expected_live_qemu_execution_owner(&contract, model.schedule());
+    let host_scheduler_preemption = preemption_evidence
+        .as_ref()
+        .map(|evidence| {
+            required_bounded_scheduler_preemption_snapshot(evidence, "live QEMU artifact replay")
+        })
+        .transpose()?
+        .map(|snapshot| ReplayHostSchedulerPreemptionProof {
+            profile: "bounded-scheduler-preemption",
+            applied: snapshot.applied,
+            pending_quantum_certified: snapshot.pending_quantum_certified,
+            perturbations: snapshot.perturbations,
+            requested_stopped_milliseconds: snapshot.requested_stopped_milliseconds,
+        });
     if report.execution_owner != expected_execution_owner {
         return Err(CliError::ReplayCheck(format!(
             "live QEMU producer `{}` was replayed by the wrong execution owner",
@@ -407,6 +429,7 @@ fn replay_live_qemu_evidence(
         event_stream_digest: content_address_bytes(expected_events),
         fingerprint_stream_digest: content_address_bytes(expected_fingerprints),
         controls: contract.controls.len(),
+        host_scheduler_preemption,
     })
 }
 

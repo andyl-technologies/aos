@@ -258,11 +258,11 @@ pub use node::{
     QemuHotForkSchedulerNodeContinuation, QemuHotForkSchedulerNodeInstallError,
 };
 pub use node::{
-    QemuLogicalTimeCalibration, QemuNode, QemuNodeChannelError, QemuNodeChannelPlane,
-    QemuNodeChannels, QemuNodeChild, QemuNodeEmittedFrame, QemuNodeError,
-    QemuNodeExternalProcessControl, QemuNodeIdleState, QemuNodeLifecycleState,
-    QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuQmpMachineControlChannel,
-    QemuShmemHotPathChannel,
+    QemuBoundedSchedulerPreemptionTargetError, QemuLogicalTimeCalibration, QemuNode,
+    QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeChannels, QemuNodeChild,
+    QemuNodeEmittedFrame, QemuNodeError, QemuNodeExternalProcessControl, QemuNodeIdleState,
+    QemuNodeLifecycleState, QemuNodePendingQuantum, QemuPluginIpcControlChannel,
+    QemuQmpMachineControlChannel, QemuShmemHotPathChannel,
 };
 #[cfg(target_os = "linux")]
 pub use node::{QemuProcessIdentity, linux_process_identity, quarantine_orphaned_qemu_process};
@@ -471,6 +471,10 @@ pub use storage_fault_resolver::{
 };
 #[cfg(target_os = "linux")]
 pub use supervision::bounded_scheduler_preemption::BoundedSchedulerPreemptionError;
+pub use supervision::bounded_scheduler_preemption::{
+    BoundedSchedulerPreemptionEvidence, BoundedSchedulerPreemptionEvidenceClaim,
+    BoundedSchedulerPreemptionEvidenceError, BoundedSchedulerPreemptionEvidenceSnapshot,
+};
 #[cfg(target_os = "linux")]
 pub use supervision::{
     BlockIoAdvanceOutcome, BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, BlockNodeOutcome,

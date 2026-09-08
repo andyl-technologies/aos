@@ -101,7 +101,47 @@ impl ProductionVmLifecycleConfig {
             fault_replay: None,
             world_artifacts: None,
             validate_guest_asset_references: false,
+            bounded_scheduler_preemption: None,
         }
+    }
+
+    /// Returns this configuration with one pidfd-authenticated host preemption sequence.
+    ///
+    /// The production lifecycle applies the bounded sequence to the first VM's
+    /// first scheduler quantum and writes its non-canonical report to
+    /// `evidence`. This hook is intended for native replay gates that compare
+    /// canonical guest identity across different host scheduling profiles.
+    #[must_use]
+    pub fn with_bounded_scheduler_preemption(
+        self,
+        evidence: crucible_qemu::BoundedSchedulerPreemptionEvidence,
+    ) -> Self {
+        self.with_bounded_scheduler_preemption_flights(vec![evidence])
+    }
+
+    /// Returns this configuration with one fresh host preemption sequence per flight.
+    ///
+    /// Cloned lifecycle factories share the finite flight queue, but every
+    /// construction consumes and claims a distinct single-use evidence handle.
+    /// Construction fails closed when more lifecycles are requested than the
+    /// supplied evidence handles. An empty vector therefore rejects the first
+    /// lifecycle construction rather than silently disabling the adversary.
+    #[must_use]
+    pub fn with_bounded_scheduler_preemption_flights(
+        mut self,
+        evidence: Vec<crucible_qemu::BoundedSchedulerPreemptionEvidence>,
+    ) -> Self {
+        self.bounded_scheduler_preemption = Some(BoundedSchedulerPreemptionFlights::new(evidence));
+        self
+    }
+
+    pub(super) fn claim_bounded_scheduler_preemption(
+        &self,
+    ) -> Result<Option<crucible_qemu::BoundedSchedulerPreemptionEvidenceClaim>, String> {
+        self.bounded_scheduler_preemption
+            .as_ref()
+            .map(BoundedSchedulerPreemptionFlights::claim_next)
+            .transpose()
     }
 
     /// Returns this configuration with the materialized initrd passed to QEMU.
@@ -382,5 +422,49 @@ mod tests {
             worker.run_state_root(),
             Path::new("worker-state/worker-001")
         );
+    }
+
+    #[test]
+    fn bounded_scheduler_preemption_is_opt_in_and_single_flight() {
+        let base =
+            ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state");
+        assert!(base.bounded_scheduler_preemption.is_none());
+
+        let evidence = crucible_qemu::BoundedSchedulerPreemptionEvidence::default();
+        let enabled = base.with_bounded_scheduler_preemption(evidence.clone());
+        assert!(enabled.bounded_scheduler_preemption.is_some());
+        let claim = enabled
+            .claim_bounded_scheduler_preemption()
+            .unwrap_or_else(|error| panic!("first flight should claim evidence: {error}"))
+            .unwrap_or_else(|| panic!("enabled flight should return a claim"));
+        assert!(evidence.snapshot().is_none());
+        drop(claim);
+        assert!(enabled.claim_bounded_scheduler_preemption().is_err());
+        assert!(evidence.snapshot().is_none());
+    }
+
+    #[test]
+    fn bounded_scheduler_preemption_clones_consume_distinct_flights() {
+        let first = crucible_qemu::BoundedSchedulerPreemptionEvidence::default();
+        let second = crucible_qemu::BoundedSchedulerPreemptionEvidence::default();
+        let config =
+            ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state")
+                .with_bounded_scheduler_preemption_flights(vec![first.clone(), second.clone()]);
+        let clone = config.clone();
+
+        let first_claim = config
+            .claim_bounded_scheduler_preemption()
+            .unwrap_or_else(|error| panic!("first flight should claim evidence: {error}"))
+            .unwrap_or_else(|| panic!("configured first flight should return a claim"));
+        let second_claim = clone
+            .claim_bounded_scheduler_preemption()
+            .unwrap_or_else(|error| panic!("second flight should claim evidence: {error}"))
+            .unwrap_or_else(|| panic!("configured second flight should return a claim"));
+
+        assert!(config.claim_bounded_scheduler_preemption().is_err());
+        drop(first_claim);
+        drop(second_claim);
+        assert!(first.claim().is_err());
+        assert!(second.claim().is_err());
     }
 }

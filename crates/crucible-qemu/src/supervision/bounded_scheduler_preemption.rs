@@ -11,7 +11,7 @@ use std::os::fd::AsFd;
 use std::sync::mpsc;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
 };
 use std::thread;
 use std::time::{Duration, Instant};
@@ -54,6 +54,155 @@ const DEFAULT_PREEMPTION_POLICY: PreemptionPolicy = PreemptionPolicy {
 pub(crate) struct BoundedSchedulerPreemptionReport {
     pub(crate) perturbations: u32,
     pub(crate) requested_stopped_milliseconds: u64,
+}
+
+/// Shareable host-only evidence for one bounded scheduler-preemption flight.
+///
+/// This evidence is deliberately separate from the guest's canonical event
+/// stream. A caller can therefore prove that replay used a different host
+/// scheduling profile without changing the deterministic guest identity being
+/// compared.
+#[derive(Clone, Debug, Default)]
+pub struct BoundedSchedulerPreemptionEvidence {
+    inner: Arc<BoundedSchedulerPreemptionEvidenceInner>,
+}
+
+#[derive(Debug, Default)]
+struct BoundedSchedulerPreemptionEvidenceInner {
+    state: AtomicU8,
+    pending_quantum_certified: AtomicBool,
+    perturbations: AtomicU32,
+    requested_stopped_milliseconds: AtomicU64,
+}
+
+const EVIDENCE_FRESH: u8 = 0;
+const EVIDENCE_CLAIMED: u8 = 1;
+const EVIDENCE_COMPLETE: u8 = 2;
+const EVIDENCE_FAILED: u8 = 3;
+
+/// Failure to bind or publish a single-use preemption evidence handle.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum BoundedSchedulerPreemptionEvidenceError {
+    /// The handle has already been claimed by another lifecycle flight.
+    #[error("bounded scheduler-preemption evidence was already claimed")]
+    AlreadyClaimed,
+    /// The claim no longer owns this evidence handle.
+    #[error("bounded scheduler-preemption evidence claim lost ownership")]
+    ClaimLost,
+}
+
+/// Single-use authority to publish one lifecycle flight's preemption evidence.
+///
+/// Dropping an unpublished claim marks its handle failed. This prevents a
+/// later lifecycle from reusing the handle or mistaking an earlier flight's
+/// success for current evidence.
+pub struct BoundedSchedulerPreemptionEvidenceClaim {
+    evidence: BoundedSchedulerPreemptionEvidence,
+    armed: bool,
+}
+
+/// Immutable snapshot of bounded scheduler-preemption evidence.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BoundedSchedulerPreemptionEvidenceSnapshot {
+    /// Whether a complete bounded perturbation sequence was applied.
+    pub applied: bool,
+    /// Whether the first authenticated stop overlapped a pending QEMU quantum.
+    pub pending_quantum_certified: bool,
+    /// Number of authenticated stop/continue pairs applied to QEMU.
+    pub perturbations: u32,
+    /// Total requested stopped time across the bounded sequence.
+    pub requested_stopped_milliseconds: u64,
+}
+
+impl BoundedSchedulerPreemptionEvidence {
+    /// Claims this handle for exactly one lifecycle flight.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BoundedSchedulerPreemptionEvidenceError::AlreadyClaimed`] when
+    /// this handle was claimed previously, including by a failed flight.
+    pub fn claim(
+        &self,
+    ) -> Result<BoundedSchedulerPreemptionEvidenceClaim, BoundedSchedulerPreemptionEvidenceError>
+    {
+        self.inner
+            .state
+            .compare_exchange(
+                EVIDENCE_FRESH,
+                EVIDENCE_CLAIMED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|_| BoundedSchedulerPreemptionEvidenceError::AlreadyClaimed)?;
+        Ok(BoundedSchedulerPreemptionEvidenceClaim {
+            evidence: self.clone(),
+            armed: true,
+        })
+    }
+
+    /// Returns a consistent snapshot after a completed perturbation sequence.
+    #[must_use]
+    pub fn snapshot(&self) -> Option<BoundedSchedulerPreemptionEvidenceSnapshot> {
+        if self.inner.state.load(Ordering::Acquire) != EVIDENCE_COMPLETE {
+            return None;
+        }
+
+        Some(BoundedSchedulerPreemptionEvidenceSnapshot {
+            applied: true,
+            pending_quantum_certified: self.inner.pending_quantum_certified.load(Ordering::Relaxed),
+            perturbations: self.inner.perturbations.load(Ordering::Relaxed),
+            requested_stopped_milliseconds: self
+                .inner
+                .requested_stopped_milliseconds
+                .load(Ordering::Relaxed),
+        })
+    }
+}
+
+impl BoundedSchedulerPreemptionEvidenceClaim {
+    pub(crate) fn record(
+        mut self,
+        report: BoundedSchedulerPreemptionReport,
+        pending_quantum_certified: bool,
+    ) -> Result<(), BoundedSchedulerPreemptionEvidenceError> {
+        self.evidence
+            .inner
+            .pending_quantum_certified
+            .store(pending_quantum_certified, Ordering::Relaxed);
+        self.evidence
+            .inner
+            .perturbations
+            .store(report.perturbations, Ordering::Relaxed);
+        self.evidence
+            .inner
+            .requested_stopped_milliseconds
+            .store(report.requested_stopped_milliseconds, Ordering::Relaxed);
+        self.evidence
+            .inner
+            .state
+            .compare_exchange(
+                EVIDENCE_CLAIMED,
+                EVIDENCE_COMPLETE,
+                Ordering::Release,
+                Ordering::Acquire,
+            )
+            .map_err(|_| BoundedSchedulerPreemptionEvidenceError::ClaimLost)?;
+        self.armed = false;
+        Ok(())
+    }
+}
+
+impl Drop for BoundedSchedulerPreemptionEvidenceClaim {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.evidence.inner.state.compare_exchange(
+                EVIDENCE_CLAIMED,
+                EVIDENCE_FAILED,
+                Ordering::Release,
+                Ordering::Relaxed,
+            );
+        }
+    }
 }
 
 /// Failure while applying the bounded host-scheduling adversary.

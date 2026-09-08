@@ -6,7 +6,21 @@ use std::time::Duration;
 use crucible::BackendError;
 use thiserror::Error;
 
-use crate::{QemuAsyncDriverError, QemuNodeRunStatus, QemuShutdownError, QemuShutdownReport};
+use crate::{
+    BoundedSchedulerPreemptionError, QemuAsyncDriverError, QemuNodeRunStatus, QemuShutdownError,
+    QemuShutdownReport,
+};
+
+/// Process-control states that cannot safely admit a new pidfd adversary.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum QemuBoundedSchedulerPreemptionTargetError {
+    /// The QEMU process is parented and reaped by a retained outer lifecycle.
+    #[error("the QEMU process is externally owned")]
+    ExternallyOwned,
+    /// The directly owned QEMU child has already been reaped.
+    #[error("the directly owned QEMU process was already reaped")]
+    AlreadyReaped,
+}
 
 /// The role assigned to one QEMU node channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -118,6 +132,18 @@ pub enum QemuNodeError {
     AsyncDriver {
         /// Underlying async-driver failure.
         source: QemuAsyncDriverError,
+    },
+    /// The host-only bounded scheduling adversary failed closed.
+    #[error("bounded QEMU scheduler preemption failed: {message}")]
+    BoundedSchedulerPreemption {
+        /// Deterministic failure detail from the pidfd controller.
+        message: String,
+    },
+    /// The node cannot prove that its numeric PID still names its owned child.
+    #[error("bounded QEMU scheduler preemption rejected its process target: {target}")]
+    BoundedSchedulerPreemptionTarget {
+        /// Ownership or lifecycle state that made pidfd admission unsafe.
+        target: QemuBoundedSchedulerPreemptionTargetError,
     },
     /// The bounded async driver classified the child as crashed and shut it down.
     #[error("QEMU node crashed during bounded await: {status:?}; shutdown={shutdown:?}")]
@@ -259,6 +285,20 @@ impl QemuNodeError {
             };
         }
         Self::AsyncDriver { source }
+    }
+
+    /// Converts a pidfd scheduling-adversary failure into node context.
+    #[must_use]
+    pub fn from_bounded_scheduler_preemption(source: BoundedSchedulerPreemptionError) -> Self {
+        Self::bounded_scheduler_preemption_message(source.to_string())
+    }
+
+    /// Attaches node context to a host-adversary evidence failure.
+    #[must_use]
+    pub fn bounded_scheduler_preemption_message(message: impl Into<String>) -> Self {
+        Self::BoundedSchedulerPreemption {
+            message: message.into(),
+        }
     }
 
     /// Attaches scheduler-node context to a gdbstub proxy failure.

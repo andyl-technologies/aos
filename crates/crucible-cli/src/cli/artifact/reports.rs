@@ -25,6 +25,29 @@ pub(crate) struct ReplayLiveQemuProof {
     pub(crate) event_stream_digest: String,
     pub(crate) fingerprint_stream_digest: String,
     pub(crate) controls: usize,
+    pub(crate) host_scheduler_preemption: Option<ReplayHostSchedulerPreemptionProof>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ReplayHostSchedulerPreemptionProof {
+    pub(crate) profile: &'static str,
+    pub(crate) applied: bool,
+    pub(crate) pending_quantum_certified: bool,
+    pub(crate) perturbations: u32,
+    pub(crate) requested_stopped_milliseconds: u64,
+}
+
+impl ReplayHostSchedulerPreemptionProof {
+    pub(crate) fn summary(&self) -> String {
+        format!(
+            "profile={} applied={} pending_quantum_certified={} perturbations={} requested_stopped_ms={}",
+            self.profile,
+            self.applied,
+            self.pending_quantum_certified,
+            self.perturbations,
+            self.requested_stopped_milliseconds
+        )
+    }
 }
 
 #[derive(Debug)]

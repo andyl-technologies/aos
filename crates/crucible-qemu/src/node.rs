@@ -90,7 +90,10 @@ mod hot_fork_scheduler_continuation;
 mod process_control;
 #[cfg(target_os = "linux")]
 mod process_identity;
-pub use error::{QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeError};
+pub use error::{
+    QemuBoundedSchedulerPreemptionTargetError, QemuNodeChannelError, QemuNodeChannelPlane,
+    QemuNodeError,
+};
 #[cfg(target_os = "linux")]
 use hot_fork_child_console::QemuHotForkChildConsoleStage;
 #[cfg(target_os = "linux")]
@@ -515,6 +518,7 @@ pub struct QemuNode {
     gdbstub: Option<QemuGdbstubChannelConfig>,
     active_gdbstub: Option<QemuGdbstubProxyServer>,
     pending_preemption: Option<crucible::PreemptionDecision>,
+    bounded_scheduler_preemption: Option<crate::BoundedSchedulerPreemptionEvidenceClaim>,
     pending_network_outputs: Vec<QemuNodeEmittedFrame>,
     pending_priming_observations: Vec<ObservableEvent>,
     next_network_output_sequence: u64,
@@ -718,6 +722,7 @@ impl QemuNode {
             gdbstub: None,
             active_gdbstub: None,
             pending_preemption: None,
+            bounded_scheduler_preemption: None,
             pending_network_outputs: Vec::new(),
             pending_priming_observations: Vec::new(),
             next_network_output_sequence: 0,
@@ -730,6 +735,18 @@ impl QemuNode {
             next_fault_event_sequence: 1,
             fault_event_terminal_failure: None,
         }
+    }
+
+    /// Enables one host-only bounded preemption sequence for this node.
+    ///
+    /// The sequence is consumed by the node's next published scheduler quantum.
+    /// Its pidfd-authenticated report is written to `evidence` and never enters
+    /// the deterministic guest event stream.
+    pub fn enable_bounded_scheduler_preemption(
+        &mut self,
+        evidence: crate::BoundedSchedulerPreemptionEvidenceClaim,
+    ) {
+        self.bounded_scheduler_preemption = Some(evidence);
     }
 
     /// Installs the capability rows negotiated during plugin setup.
@@ -1896,21 +1913,94 @@ impl QemuNode {
         &mut self,
         ceiling: Icount,
     ) -> Result<crate::QemuAsyncNodeStepReport, QemuNodeError> {
+        let Some(evidence) = self.bounded_scheduler_preemption.take() else {
+            return self.advance_to_ceiling_report_without_host_preemption(ceiling);
+        };
+        // `pidfd_open` starts from a numeric PID. Only a directly owned,
+        // unreaped child proves that the PID cannot have been recycled before
+        // the kernel turns it into a stable process handle.
+        let process_id = match &self.child {
+            QemuNodeProcessControl::Direct(child) if child.reaped() => {
+                return Err(QemuNodeError::BoundedSchedulerPreemptionTarget {
+                    target: QemuBoundedSchedulerPreemptionTargetError::AlreadyReaped,
+                });
+            }
+            QemuNodeProcessControl::Direct(child) => child.process_id(),
+            QemuNodeProcessControl::External(_control) => {
+                return Err(QemuNodeError::BoundedSchedulerPreemptionTarget {
+                    target: QemuBoundedSchedulerPreemptionTargetError::ExternallyOwned,
+                });
+            }
+        };
+        let mut adversary =
+            crate::supervision::bounded_scheduler_preemption::BoundedSchedulerPreemption::start_if(
+                true, process_id,
+            )
+            .map_err(QemuNodeError::from_bounded_scheduler_preemption)?;
+        let mut pending_quantum_certified = false;
         let mut target = QemuNodeAsyncStepTarget {
             child: &mut self.child,
             channels: &mut self.channels,
             lifecycle_state: &mut self.lifecycle_state,
             shutdown_policy: self.shutdown_policy,
         };
-        let report = run_bounded_qemu_node_step(
+        let step = run_bounded_qemu_node_step_with_start_hook(
+            &mut target,
+            self.host_io_runtime.as_mut(),
+            self.async_policy,
+            &self.crash_detector,
+            ExecutionHorizon { icount: ceiling },
+            |target, pending| {
+                pending_quantum_certified = crate::supervision::bounded_scheduler_preemption::BoundedSchedulerPreemption::certify_async_quantum_pending(
+                    &mut adversary,
+                    target,
+                    pending,
+                )
+                .map_err(|source| {
+                    QemuNodeChannelError::new(
+                        "certify bounded scheduler preemption over pending quantum",
+                        source.to_string(),
+                    )
+                })?;
+                Ok(())
+            },
+        );
+        let preemption = crate::supervision::bounded_scheduler_preemption::BoundedSchedulerPreemption::finish_if_present(
+            &mut adversary,
+        );
+        let report = step.map_err(QemuNodeError::from_async_driver)?;
+        let preemption = preemption.map_err(QemuNodeError::from_bounded_scheduler_preemption)?;
+        let preemption = preemption.ok_or_else(|| {
+            QemuNodeError::from_bounded_scheduler_preemption(
+                crate::BoundedSchedulerPreemptionError::NotStarted,
+            )
+        })?;
+        evidence
+            .record(preemption, pending_quantum_certified)
+            .map_err(|source| {
+                QemuNodeError::bounded_scheduler_preemption_message(source.to_string())
+            })?;
+        Ok(report)
+    }
+
+    fn advance_to_ceiling_report_without_host_preemption(
+        &mut self,
+        ceiling: Icount,
+    ) -> Result<crate::QemuAsyncNodeStepReport, QemuNodeError> {
+        let mut target = QemuNodeAsyncStepTarget {
+            child: &mut self.child,
+            channels: &mut self.channels,
+            lifecycle_state: &mut self.lifecycle_state,
+            shutdown_policy: self.shutdown_policy,
+        };
+        run_bounded_qemu_node_step(
             &mut target,
             self.host_io_runtime.as_mut(),
             self.async_policy,
             &self.crash_detector,
             ExecutionHorizon { icount: ceiling },
         )
-        .map_err(QemuNodeError::from_async_driver)?;
-        Ok(report)
+        .map_err(QemuNodeError::from_async_driver)
     }
 
     fn finish_advance_report(

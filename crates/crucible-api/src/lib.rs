@@ -104,6 +104,7 @@ pub use vm_lifecycle::{
     build_authenticated_production_checkpoint_codec_fixture,
 };
 pub use vm_lifecycle::{
+    BoundedSchedulerPreemptionEvidence, BoundedSchedulerPreemptionEvidenceSnapshot,
     PreparedProductionReplayOraclePromotion, ProductionBlockFaultEvidence,
     ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
     ProductionExactCheckpointReplayArtifact, ProductionExactCheckpointReplayCatalog,
