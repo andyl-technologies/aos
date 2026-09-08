@@ -413,6 +413,7 @@ fn release_plan(
         name: "fleet-package".into(),
         role: aos_release::qualification::PackageRole::GeneralCatalog,
         inherit_dependency_obligations: true,
+        execution: None,
     }];
     plan.schema_version = aos_release::RELEASE_PLAN_V2.into();
     plan.gates = contract.gates(plan.release_class)?;

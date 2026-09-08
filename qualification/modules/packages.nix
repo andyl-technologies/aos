@@ -16,7 +16,7 @@ in {
     };
     integrityPackages = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = ["aos" "bash" "coreutils" "systemd" "linux" "nix" "openssl" "openssh" "chrony" "e2fsprogs" "cryptsetup" "tpm2-tools"];
+      default = ["aos" "aos-recovery" "bash" "coreutils" "systemd" "linux" "nix" "openssl" "openssh" "chrony" "e2fsprogs" "cryptsetup" "tpm2-tools"];
       description = "Roots whose dependencies inherit system-integrity obligations.";
     };
     workloadPackages = lib.mkOption {
@@ -39,13 +39,20 @@ in {
     };
     packageRules = builtins.listToAttrs (map (name: {
         inherit name;
-        value.role = lib.mkDefault (
-          if builtins.elem name cfg.integrityPackages
-          then "system-integrity"
-          else if builtins.elem name cfg.workloadPackages
-          then "qualified-workload"
-          else "general-catalog"
-        );
+        value = {
+          role = lib.mkDefault (
+            if builtins.elem name cfg.integrityPackages
+            then "system-integrity"
+            else if builtins.elem name cfg.workloadPackages
+            then "qualified-workload"
+            else "general-catalog"
+          );
+        } // lib.optionalAttrs (name == "aos-recovery") {
+          execution = {
+            kind = "recovery-image";
+            system_variant = "server";
+          };
+        };
       })
       packageNames);
     assertions = [

@@ -40,12 +40,14 @@ use crate::cli::{
 const SCENARIO_REPORT_V1: &str = "aos.release.qualification-scenario-report/v1";
 
 /// Immutable executable selection, produced by `mkQualificationExecutor`.
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ScenarioRegistry {
     schema_version: String,
     platform: Platform,
     scenarios: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    case_scenarios: BTreeMap<String, String>,
 }
 
 /// Common evidence fields embedded in every canonical native scenario report.
@@ -658,14 +660,21 @@ fn select<'a>(
     registry: &'a ScenarioRegistry,
     request: &QualificationExecutorRequestV1,
 ) -> Result<&'a str> {
-    if registry.schema_version != "aos.release.qualification-scenarios/v1"
+    let v1 = registry.schema_version == "aos.release.qualification-scenarios/v1";
+    let v2 = registry.schema_version == "aos.release.qualification-scenarios/v2";
+    if (!v1 && !v2)
+        || (v1 && !registry.case_scenarios.is_empty())
         || registry.platform != request.platform
     {
         bail!("scenario registry does not cover this request schema/platform");
     }
-    let executable = registry
-        .scenarios
-        .get(&request.policy_id)
+    let case_id = request
+        .qualification_case
+        .as_ref()
+        .map(|case| case.id.as_str());
+    let executable = case_id
+        .and_then(|id| registry.case_scenarios.get(id))
+        .or_else(|| registry.scenarios.get(&request.policy_id))
         .context("required scenario is not implemented in this executor")?;
     if !executable.starts_with("/nix/store/") || executable.contains("/../") {
         bail!("scenario executable must belong to an immutable Nix closure");
@@ -761,6 +770,7 @@ mod tests {
                 "gate".into(),
                 "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-scenario/bin/run".into(),
             )]),
+            case_scenarios: BTreeMap::new(),
         };
         let mut request = QualificationExecutorRequestV1 {
             schema_version: aos_release::evidence::QUALIFICATION_EXECUTOR_REQUEST_V1.into(),
@@ -789,6 +799,40 @@ mod tests {
             ..registry
         };
         assert!(select(&mutable, &request).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn scenario_registry_v2_prefers_an_exact_case_override() -> Result<()> {
+        let request = package_request()?;
+        let case_id = request
+            .qualification_case
+            .as_ref()
+            .context("fixture lacks a qualification case")?
+            .id
+            .clone();
+        let generic = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-generic/bin/run";
+        let recovery = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-recovery/bin/run";
+        let registry = ScenarioRegistry {
+            schema_version: "aos.release.qualification-scenarios/v2".into(),
+            platform: Platform::X86_64Linux,
+            scenarios: BTreeMap::from([("package-function".into(), generic.into())]),
+            case_scenarios: BTreeMap::from([(case_id, recovery.into())]),
+        };
+
+        assert_eq!(select(&registry, &request)?, recovery);
+
+        let fallback = ScenarioRegistry {
+            case_scenarios: BTreeMap::new(),
+            ..registry.clone()
+        };
+        assert_eq!(select(&fallback, &request)?, generic);
+
+        let v1 = ScenarioRegistry {
+            schema_version: "aos.release.qualification-scenarios/v1".into(),
+            ..registry
+        };
+        assert!(select(&v1, &request).is_err());
         Ok(())
     }
 

@@ -164,6 +164,9 @@
   imageRecovery = builtins.head (
     builtins.filter (requirement: requirement.id == "image-update-recovery") contract.requirements
   );
+  recoveryPackage = builtins.head (
+    builtins.filter (rule: rule.name == "aos-recovery") contract.package_rules
+  );
   coveredAndMissingPackageNames = builtins.sort builtins.lessThan (
     packageCoverage.implementedPackages ++ packageCoverage.missingPackages
   );
@@ -258,11 +261,17 @@ in
   )
   packageCoverage.neverPublicationEligiblePackages;
   assert builtins.all (rule: rule.inherit_dependency_obligations) contract.package_rules;
+  assert recoveryPackage.role == "system-integrity";
+  assert recoveryPackage.execution == {
+    kind = "recovery-image";
+    system_variant = "server";
+  };
   assert builtins.all (phase: builtins.elem phase phases) ["build" "staging" "rollout" "complete"];
   assert builtins.length contract.targets == 4;
   assert builtins.all (target: builtins.length target.environment.layers == 2) contract.targets;
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+/scenarios.json$" executor.passthru.qualification.registryPath != null;
   assert executor.passthru.qualification.platform == "x86_64-linux";
+  assert executor.passthru.qualification.caseScenarios == {};
   assert executor.passthru.qualification.scenarios.package-function == "/nix/store/00000000000000000000000000000000-scenario/bin/run";
   assert packageExecutor.passthru.qualification.platform == "x86_64-linux";
   assert packageExecutor.passthru.qualification.packageNames == ["fixture"];
@@ -302,6 +311,8 @@ in
   assert builtins.match ".*/aos-qualification-x86_64-linux-package-function" releaseExecutor.passthru.qualification.scenarios.package-function != null;
   assert builtins.match ".*/aos-qualification-x86_64-linux-container-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-container-x86_64-linux-functional != null;
   assert builtins.match ".*/aos-qualification-x86_64-linux-image-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-disk-x86_64-linux-functional != null;
+  assert builtins.attrNames releaseExecutor.passthru.qualification.caseScenarios == ["package-function/aos-recovery/x86_64-linux"];
+  assert builtins.match ".*/aos-qualification-x86_64-linux-aos-recovery" releaseExecutor.passthru.qualification.caseScenarios."package-function/aos-recovery/x86_64-linux" != null;
   assert builtins.length contract.claims == 8;
   assert contract.support.default
   == {

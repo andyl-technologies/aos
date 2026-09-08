@@ -30,6 +30,7 @@ in {
   mkQualificationImageScenario = import ./qualification-image.nix {inherit pkgs lib;};
   mkQualificationPackageProbe = import ./qualification-package-probe.nix {inherit pkgs lib;};
   mkQualificationPackageScenario = import ./qualification-package.nix {inherit pkgs lib;};
+  mkQualificationRecoveryPackageScenario = import ./qualification-recovery-package.nix {inherit pkgs;};
   mkQualificationExecutor = import ./qualification.nix {inherit pkgs;};
   mkQualificationReportScenario = import ./qualification-report.nix {inherit pkgs;};
   inherit (vm) mkVMTest mkTestDisk;

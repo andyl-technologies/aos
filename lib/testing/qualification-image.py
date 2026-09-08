@@ -18,6 +18,7 @@ import re
 import shlex
 import shutil
 import socket
+import stat
 import subprocess
 import threading
 import time
@@ -49,6 +50,9 @@ SSH = os.environ["AOS_QUALIFICATION_SSH"]
 SCP = os.environ["AOS_QUALIFICATION_SCP"]
 SSH_KEYGEN = os.environ["AOS_QUALIFICATION_SSH_KEYGEN"]
 OPENSSL = os.environ["AOS_QUALIFICATION_OPENSSL"]
+OBJCOPY = os.environ["AOS_QUALIFICATION_OBJCOPY"]
+NIX_STORE = os.environ["AOS_QUALIFICATION_NIX_STORE"]
+BOUND_IMAGE_VARIANT = os.environ.get("AOS_QUALIFICATION_BOUND_IMAGE_VARIANT")
 
 EXPECTED_CHECKS = {
     "anonymous-download-and-resume",
@@ -79,6 +83,15 @@ EXPECTED_CHECKS = {
     "offline-recovery",
     "update-after-recovery",
 }
+PACKAGE_CHECKS = {
+    "anonymous-download",
+    "closure-verification",
+    "functional-behavior",
+    "dependency-obligations",
+    "permissions-and-confinement",
+}
+MAX_RECOVERY_INITRD_BYTES = 2 * 1024 * 1024 * 1024
+MAX_RECOVERY_EXECUTABLE_BYTES = 128 * 1024 * 1024
 
 
 def canonical(value: Any) -> bytes:
@@ -132,6 +145,124 @@ def run(
             f"command failed ({result.returncode}): {arguments!r}\n{result.stdout}"
         )
     return result
+
+
+def decode_zstd_bounded(source: pathlib.Path, destination: pathlib.Path) -> None:
+    """Decodes one recovery initrd without allowing unbounded output."""
+
+    process = subprocess.Popen(
+        [ZSTD, "-q", "-d", "-c", str(source)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if process.stdout is None:
+        raise RuntimeError("zstd decoder did not expose the recovery initrd")
+    decoded_size = 0
+    try:
+        with destination.open("xb") as output:
+            while block := process.stdout.read(8 * 1024 * 1024):
+                decoded_size += len(block)
+                if decoded_size > MAX_RECOVERY_INITRD_BYTES:
+                    process.kill()
+                    process.wait()
+                    if process.stderr is not None:
+                        process.stderr.close()
+                    raise RuntimeError("recovery initrd exceeds its decompressed size limit")
+                output.write(block)
+    finally:
+        process.stdout.close()
+    stderr = process.stderr.read() if process.stderr is not None else b""
+    if process.wait() != 0:
+        raise RuntimeError(
+            "zstd failed while decoding the recovery initrd: "
+            + stderr[-64 * 1024 :].decode(errors="replace")
+        )
+
+
+def read_newc_entries(
+    archive: pathlib.Path,
+    selected_names: set[str],
+) -> dict[str, tuple[int, bytes]]:
+    """Reads selected paths from a newc archive without filesystem extraction."""
+
+    entries: dict[str, tuple[int, bytes]] = {}
+    seen: set[str] = set()
+    archive_size = archive.stat().st_size
+    if archive_size > MAX_RECOVERY_INITRD_BYTES:
+        raise RuntimeError("recovery initrd exceeds its decompressed size limit")
+    with archive.open("rb") as source:
+        while source.tell() < archive_size:
+            header = source.read(110)
+            if len(header) != 110 or header[:6] != b"070701":
+                raise RuntimeError("recovery initrd is not a deterministic newc archive")
+            try:
+                fields = [
+                    int(header[offset : offset + 8], 16)
+                    for offset in range(6, 110, 8)
+                ]
+            except ValueError as error:
+                raise RuntimeError("recovery initrd has a malformed newc header") from error
+            mode = fields[1]
+            file_size = fields[6]
+            name_size = fields[11]
+            if not 1 <= name_size <= 4096 or file_size > archive_size:
+                raise RuntimeError("recovery initrd has an invalid newc entry size")
+
+            raw_name = source.read(name_size)
+            if len(raw_name) != name_size or not raw_name.endswith(b"\0"):
+                raise RuntimeError("recovery initrd has a truncated newc name")
+            try:
+                name = raw_name[:-1].decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise RuntimeError("recovery initrd path is not UTF-8") from error
+            normalized = name.removeprefix("./")
+            parts = pathlib.PurePosixPath(normalized).parts
+            if (
+                not normalized
+                or normalized.startswith("/")
+                or ".." in parts
+                or normalized in seen
+                or "\0" in normalized
+                or (
+                    normalized != "."
+                    and str(pathlib.PurePosixPath(normalized)) != normalized
+                )
+            ):
+                raise RuntimeError("recovery initrd has an unsafe or duplicate path")
+            seen.add(normalized)
+
+            name_padding = -(110 + name_size) % 4
+            if len(source.read(name_padding)) != name_padding:
+                raise RuntimeError("recovery initrd has truncated name padding")
+            if normalized == "TRAILER!!!":
+                if file_size != 0:
+                    raise RuntimeError("recovery initrd has data after its newc trailer")
+                while trailing := source.read(1024 * 1024):
+                    if any(trailing):
+                        raise RuntimeError("recovery initrd has data after its newc trailer")
+                break
+
+            remaining = archive_size - source.tell()
+            data_padding = -file_size % 4
+            if file_size + data_padding > remaining:
+                raise RuntimeError("recovery initrd entry extends beyond the archive")
+            if normalized in selected_names:
+                if file_size > MAX_RECOVERY_EXECUTABLE_BYTES:
+                    raise RuntimeError("recovery package binding entry exceeds its size limit")
+                contents = source.read(file_size)
+                if len(contents) != file_size:
+                    raise RuntimeError("recovery initrd has truncated file data")
+                entries[normalized] = (mode, contents)
+            else:
+                source.seek(file_size, os.SEEK_CUR)
+            if len(source.read(data_padding)) != data_padding:
+                raise RuntimeError("recovery initrd has truncated data padding")
+        else:
+            raise RuntimeError("recovery initrd omits its newc trailer")
+
+    if set(entries) != selected_names:
+        raise RuntimeError("recovery initrd omits a package binding path")
+    return entries
 
 
 def object_with_suffix(objects: dict[str, str], suffix: str) -> tuple[str, pathlib.Path]:
@@ -454,6 +585,8 @@ class Scenario:
     def __init__(self) -> None:
         self.request = read_json(REQUEST)
         self.case = self.request["qualification_case"]
+        self.package_mode = self.case["id"] == f"package-function/aos-recovery/{PLATFORM}"
+        self.image_variant = BOUND_IMAGE_VARIANT if self.package_mode else None
         self.objects: dict[str, str] = read_json(OBJECTS)
         self.predecessor_objects: dict[str, str] = read_json(PREDECESSOR_OBJECTS)
         self.counts = Counts()
@@ -463,6 +596,7 @@ class Scenario:
             time.gmtime(self.started),
         )
         self.current: VirtualMachine | None = None
+        self.recovery_bindings: list[dict[str, Any]] = []
 
         self.work = ROOT / "image-work"
         self.work.mkdir()
@@ -490,12 +624,28 @@ class Scenario:
             )
         if self.request["platform"] != PLATFORM:
             raise RuntimeError("request platform differs from native executor")
-        if self.case["target"]["kind"] != "image" or self.case["phase"] != "staging":
-            raise RuntimeError("scenario received a non-staging image claim")
-        if self.case["claim"]["minimum_assurance"] != "A2":
-            raise RuntimeError("scenario requires the A2 image claim")
-        if set(self.case["checks"]) != EXPECTED_CHECKS:
-            raise RuntimeError("image claim check set differs from the implemented program")
+        if self.package_mode:
+            if (
+                self.case.get("schema_version")
+                != "aos.release.qualification-case/v2"
+                or self.case["requirement_id"] != "package-function"
+                or self.case["phase"] != "staging"
+                or self.case["platform"] != PLATFORM
+                or self.case.get("target") is not None
+                or self.case.get("claim") is not None
+                or set(self.case["checks"]) != PACKAGE_CHECKS
+                or self.image_variant is None
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", self.image_variant)
+                is None
+            ):
+                raise RuntimeError("recovery package case differs from the implemented program")
+        else:
+            if self.case["target"]["kind"] != "image" or self.case["phase"] != "staging":
+                raise RuntimeError("scenario received a non-staging image claim")
+            if self.case["claim"]["minimum_assurance"] != "A2":
+                raise RuntimeError("scenario requires the A2 image claim")
+            if set(self.case["checks"]) != EXPECTED_CHECKS:
+                raise RuntimeError("image claim check set differs from the implemented program")
         if self.case.get("predecessor") is None or not self.predecessor_objects:
             raise RuntimeError("image transition lacks its verified retained predecessor")
         registry_name = self.request["registry"]
@@ -527,7 +677,10 @@ class Scenario:
             for trace in downloads.values()
             if trace["mode"] == "range-resume"
         ]
-        if len(resumed) != 1 or [
+        if self.package_mode:
+            if resumed:
+                raise RuntimeError("recovery package download unexpectedly used image resume mode")
+        elif len(resumed) != 1 or [
             request["status"] for request in resumed[0]["requests"]
         ] != [206, 206]:
             raise RuntimeError("public download did not exercise the exact two-range resume path")
@@ -557,8 +710,16 @@ class Scenario:
             != self.case["predecessor"]["manifest_digest"]
         ):
             raise RuntimeError("retained predecessor differs from the frozen transition")
+        self.candidate_manifest = candidate_manifest
+        self.predecessor_manifest = predecessor_manifest
         self.candidate_version = candidate_manifest["payload"]["version"]
         self.predecessor_version = predecessor_manifest["payload"]["version"]
+
+        if self.package_mode:
+            self._validate_recovery_subjects(candidate_manifest)
+            self._validate_recovery_subjects(predecessor_manifest)
+            self.assessment = None
+            return
 
         target = self.case["target"]["id"]
         assessment_path = ASSESSMENT_ROOT / f"{target}.json"
@@ -572,6 +733,188 @@ class Scenario:
         profile_digest = digest("aos.release.environment-profile/v1", profile)
         if self.assessment["scope_digest"] != profile_digest:
             raise RuntimeError("reviewed assessment covers another environment profile")
+
+    def _validate_recovery_subjects(self, manifest: dict[str, Any]) -> None:
+        payload = manifest["payload"]
+        package = one(
+            [entry for entry in payload["packages"] if entry["name"] == "aos-recovery"],
+            "aos-recovery package entry",
+        )
+        package_cell = one(
+            [entry for entry in package["platforms"] if entry["platform"] == PLATFORM],
+            "aos-recovery package cell",
+        )
+        image = one(
+            [
+                entry
+                for entry in payload["images"]
+                if entry["system_variant"] == self.image_variant
+            ],
+            "bound image entry",
+        )
+        image_cell = one(
+            [entry for entry in image["platforms"] if entry["platform"] == PLATFORM],
+            "bound image cell",
+        )
+        if (
+            package_cell["decision"].get("state") != "artifact"
+            or image_cell["decision"].get("state") != "artifact"
+        ):
+            raise RuntimeError("recovery package or server image cell is not an artifact")
+        expected = sorted(
+            set(package_cell["decision"]["artifact"]["artifact_ids"])
+            | set(image_cell["decision"]["artifact"]["artifact_ids"])
+        )
+        if expected != self.case["subjects"]:
+            raise RuntimeError("recovery package subjects differ from package and image cells")
+
+    def verify_recovery_package_binding(self) -> None:
+        if not self.package_mode:
+            return
+        for generation, manifest, objects in (
+            ("candidate", self.candidate_manifest, self.objects),
+            ("predecessor", self.predecessor_manifest, self.predecessor_objects),
+        ):
+            self._verify_recovery_generation(generation, manifest, objects)
+
+    def _verify_recovery_generation(
+        self,
+        generation: str,
+        manifest: dict[str, Any],
+        objects: dict[str, str],
+    ) -> None:
+        payload = manifest["payload"]
+        artifacts = {artifact["id"]: artifact for artifact in payload["artifacts"]}
+        package = one(
+            [entry for entry in payload["packages"] if entry["name"] == "aos-recovery"],
+            f"{generation} aos-recovery package entry",
+        )
+        package_cell = one(
+            [entry for entry in package["platforms"] if entry["platform"] == PLATFORM],
+            f"{generation} aos-recovery package cell",
+        )
+        package_ids = package_cell["decision"]["artifact"]["artifact_ids"]
+        output = one(
+            [
+                artifacts[identity]
+                for identity in package_ids
+                if artifacts[identity].get("output") == "out"
+            ],
+            f"{generation} aos-recovery primary output",
+        )
+        if (
+            output.get("kind") != "package-nar"
+            or output.get("compression") != "zstd"
+            or output.get("output") != "out"
+            or not output.get("derivation")
+            or not output.get("nar_hash")
+        ):
+            raise RuntimeError(f"{generation} recovery output is not a compressed package NAR")
+        store_path = output.get("store_path")
+        if not isinstance(store_path, str) or not store_path.startswith("/nix/store/"):
+            raise RuntimeError(f"{generation} recovery output lacks its store identity")
+
+        restored = self.work / f"{generation}-aos-recovery-output"
+        decoder = subprocess.Popen(
+            [ZSTD, "-q", "-d", "-c", objects[output["id"]]],
+            stdout=subprocess.PIPE,
+        )
+        if decoder.stdout is None:
+            raise RuntimeError("zstd decoder did not expose the package NAR")
+        restore = subprocess.run(
+            [NIX_STORE, "--restore", str(restored)],
+            stdin=decoder.stdout,
+            check=False,
+        )
+        decoder.stdout.close()
+        if restore.returncode != 0 or decoder.wait() != 0:
+            raise RuntimeError(f"failed to restore {generation} recovery package NAR")
+        dump = subprocess.Popen([NIX_STORE, "--dump", str(restored)], stdout=subprocess.PIPE)
+        if dump.stdout is None:
+            raise RuntimeError("nix-store dump did not expose the restored package NAR")
+        nar_hash = hashlib.sha256()
+        while block := dump.stdout.read(8 * 1024 * 1024):
+            nar_hash.update(block)
+        if dump.wait() != 0 or "sha256:" + nar_hash.hexdigest() != output["nar_hash"]:
+            raise RuntimeError(f"{generation} restored recovery NAR differs from its identity")
+        expected_binary = restored / "bin/aos-recovery"
+        if not expected_binary.is_file() or not os.access(expected_binary, os.X_OK):
+            raise RuntimeError(f"{generation} recovery output lacks its executable")
+
+        image = one(
+            [
+                entry
+                for entry in payload["images"]
+                if entry["system_variant"] == self.image_variant
+            ],
+            f"{generation} bound image entry",
+        )
+        image_cell = one(
+            [entry for entry in image["platforms"] if entry["platform"] == PLATFORM],
+            f"{generation} bound image cell",
+        )
+        image_ids = image_cell["decision"]["artifact"]["artifact_ids"]
+        for slot in ("a", "b"):
+            local_id = f"recovery-uki-{slot}"
+            uki = one(
+                [
+                    artifacts[identity]
+                    for identity in image_ids
+                    if artifacts[identity]["kind"] == "recovery-uki"
+                    and identity.rsplit("/", 1)[-1] == local_id
+                ],
+                f"{generation} {local_id}",
+            )
+            initrd = self.work / f"{generation}-{slot}.initrd.zst"
+            run(
+                [
+                    OBJCOPY,
+                    "-O",
+                    "binary",
+                    "--only-section=.initrd",
+                    objects[uki["id"]],
+                    str(initrd),
+                ]
+            )
+            archive = self.work / f"{generation}-{slot}.cpio"
+            decode_zstd_bounded(initrd, archive)
+            embedded_name = store_path.removeprefix("/") + "/bin/aos-recovery"
+            entries = read_newc_entries(
+                archive,
+                {"bin/aos-recovery", embedded_name},
+            )
+            link_mode, link_contents = entries["bin/aos-recovery"]
+            expected_target = f"{store_path}/bin/aos-recovery"
+            if not stat.S_ISLNK(link_mode) or link_contents != expected_target.encode():
+                raise RuntimeError(
+                    f"{generation} recovery {slot.upper()} selects another package output"
+                )
+            embedded_mode, embedded_contents = entries[embedded_name]
+            embedded_sha256 = hashlib.sha256(embedded_contents).hexdigest()
+            if (
+                not stat.S_ISREG(embedded_mode)
+                or embedded_mode & 0o111 == 0
+                or embedded_sha256 != hash_file(expected_binary)
+                or (embedded_mode & 0o7777)
+                != (expected_binary.stat().st_mode & 0o7777)
+            ):
+                raise RuntimeError(
+                    f"{generation} recovery {slot.upper()} embeds different executable bytes"
+                )
+            self.recovery_bindings.append(
+                {
+                    "generation": generation,
+                    "release_id": payload["release_id"],
+                    "slot": slot.upper(),
+                    "package_artifact": output["id"],
+                    "package_store_path": store_path,
+                    "package_nar_hash": output["nar_hash"],
+                    "uki_artifact": uki["id"],
+                    "uki_sha256": uki["sha256"],
+                    "embedded_sha256": "sha256:" + embedded_sha256,
+                    "embedded_mode": format(embedded_mode & 0o7777, "04o"),
+                }
+            )
 
     def verify_formats(self) -> None:
         _, logical = object_with_suffix(self.objects, "logical-disk")
@@ -1453,9 +1796,21 @@ http {
                 "data_integrity_failures": 0,
             },
             "environment": environment,
-            "assessment": self.assessment,
-            "capabilities": {"metadata_artifact": metadata_id, "metadata": metadata},
         }
+        if self.package_mode and len(self.recovery_bindings) != 4:
+            raise RuntimeError("recovery package report lacks both slots in both generations")
+        if not self.package_mode:
+            report["assessment"] = self.assessment
+            report["capabilities"] = {
+                "metadata_artifact": metadata_id,
+                "metadata": metadata,
+            }
+        else:
+            report["recovery_binding"] = {
+                "schema_version": "aos.release.recovery-package-binding/v1",
+                "system_variant": self.image_variant,
+                "generations": self.recovery_bindings,
+            }
         if (
             self.counts.reboot_cycles < 10
             or self.counts.cold_boot_cycles < 3
@@ -1467,6 +1822,7 @@ http {
     def run(self) -> None:
         try:
             self.validate_inputs()
+            self.verify_recovery_package_binding()
             self.verify_formats()
             self.exercise_candidate()
             self.exercise_transition()
@@ -1530,6 +1886,25 @@ def cpu_identity_text(text: str) -> dict[str, Any]:
 
 
 CHECK_DETAILS = {
+    "anonymous-download": (
+        "The exact recovery package and server image object graph was downloaded anonymously."
+    ),
+    "closure-verification": (
+        "The staged package closure and both generations of recovery UKIs "
+        "carried the exact signed executable."
+    ),
+    "functional-behavior": (
+        "The recovery console booted from both recovery copies and completed "
+        "the authenticated transition."
+    ),
+    "dependency-obligations": (
+        "The package NAR and image closure identities remained bound across "
+        "candidate and predecessor execution."
+    ),
+    "permissions-and-confinement": (
+        "The embedded executable mode matched the staged package and recovery "
+        "retained its bounded environment."
+    ),
     "anonymous-download-and-resume": (
         "The candidate graph was downloaded anonymously and its largest object "
         "completed through two exact HTTP ranges."

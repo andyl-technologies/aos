@@ -716,6 +716,7 @@ pub(crate) mod tests {
                 name: package.name.clone(),
                 role: crate::qualification::PackageRole::GeneralCatalog,
                 inherit_dependency_obligations: true,
+                execution: None,
             })
             .collect();
         plan.schema_version = crate::RELEASE_PLAN_V2.into();
@@ -966,11 +967,13 @@ pub(crate) mod tests {
                 name: dependency_name.to_owned(),
                 role: PackageRole::GeneralCatalog,
                 inherit_dependency_obligations: true,
+                execution: None,
             },
             PackageRule {
                 name: "example".to_owned(),
                 role: PackageRole::SystemIntegrity,
                 inherit_dependency_obligations: true,
+                execution: None,
             },
         ];
         plan.gates = policy.gates(plan.release_class)?;
@@ -993,6 +996,88 @@ pub(crate) mod tests {
                 .all(|case| case.package_role == Some(PackageRole::SystemIntegrity))
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_package_case_binds_the_matching_image_and_predecessor() -> anyhow::Result<()> {
+        use crate::qualification::{PackageExecution, QualificationPhase};
+
+        let (mut plan, mut manifest) = qualification_fixture()?;
+        let platform = Platform::X86_64Linux;
+        let package = manifest
+            .packages
+            .iter_mut()
+            .find(|package| package.name == "example")
+            .unwrap();
+        package.platforms.retain(|cell| cell.platform == platform);
+        let package_subjects = match &package.platforms[0].decision {
+            MatrixCell::Artifact { artifact } => artifact.artifact_ids.clone(),
+            MatrixCell::Blocked { .. } | MatrixCell::NotApplicable { .. } => unreachable!(),
+        };
+        let image = manifest
+            .images
+            .iter()
+            .find(|image| image.system_variant == "server")
+            .unwrap();
+        let image_subjects = match &image
+            .platforms
+            .iter()
+            .find(|cell| cell.platform == platform)
+            .unwrap()
+            .decision
+        {
+            MatrixCell::Artifact { artifact } => artifact.artifact_ids.clone(),
+            MatrixCell::Blocked { .. } | MatrixCell::NotApplicable { .. } => unreachable!(),
+        };
+        let policy = plan.qualification.as_mut().unwrap();
+        policy
+            .package_rules
+            .iter_mut()
+            .find(|rule| rule.name == "example")
+            .unwrap()
+            .execution = Some(PackageExecution::RecoveryImage {
+            system_variant: "server".into(),
+        });
+        plan.gates = policy.gates(plan.release_class)?;
+        plan.public_evidence_policy_digest = policy.digest()?;
+
+        let cases =
+            crate::qualification_evidence::cases(&plan, &manifest, QualificationPhase::Staging)?;
+        let case = cases
+            .iter()
+            .find(|case| case.id == "package-function/example/x86_64-linux")
+            .unwrap();
+        let mut expected = package_subjects;
+        expected.extend(image_subjects);
+        expected.sort();
+        expected.dedup();
+
+        assert_eq!(case.subjects, expected);
+        assert_eq!(case.predecessor, plan.qualification_predecessor);
+
+        let mut missing_predecessor = plan.clone();
+        missing_predecessor.qualification_predecessor = None;
+        assert!(
+            crate::qualification_evidence::cases(
+                &missing_predecessor,
+                &manifest,
+                QualificationPhase::Staging,
+            )
+            .is_err()
+        );
+        let mut missing_image = manifest.clone();
+        missing_image
+            .images
+            .retain(|image| image.system_variant != "server");
+        assert!(
+            crate::qualification_evidence::cases(
+                &plan,
+                &missing_image,
+                QualificationPhase::Staging,
+            )
+            .is_err()
+        );
         Ok(())
     }
 

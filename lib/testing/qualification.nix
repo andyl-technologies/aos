@@ -4,16 +4,21 @@
   platform,
   identity,
   scenarios,
+  caseScenarios ? {},
   workRoot,
   timeoutSeconds ? 1800,
 }: let
   registry = pkgs.writeTextFile {
     name = "${name}-scenarios";
     destination = "/scenarios.json";
-    text = builtins.toJSON {
-      schema_version = "aos.release.qualification-scenarios/v1";
-      inherit platform scenarios;
-    };
+    text = builtins.toJSON ({
+        schema_version =
+          if caseScenarios == {}
+          then "aos.release.qualification-scenarios/v1"
+          else "aos.release.qualification-scenarios/v2";
+        inherit platform scenarios;
+      }
+      // (if caseScenarios == {} then {} else {case_scenarios = caseScenarios;}));
   };
   quote = value: "'" + builtins.replaceStrings ["'"] ["'\\''"] value + "'";
   registryPath = "${registry}/scenarios.json";
@@ -34,7 +39,7 @@ in
         (executor.passthru or {})
         // {
           qualification = {
-            inherit identity platform registryPath scenarios;
+            inherit identity platform registryPath scenarios caseScenarios;
           };
         };
     }

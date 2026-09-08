@@ -3,7 +3,9 @@
 use aos_release::{
     canonical,
     plan::ReleaseClass,
-    qualification::{QualificationContract, QualificationPhase, QualificationScope},
+    qualification::{
+        PackageExecution, QualificationContract, QualificationPhase, QualificationScope,
+    },
 };
 
 fn contract() -> QualificationContract {
@@ -86,6 +88,11 @@ fn contract_rejects_weakened_platform_and_production_obligations() {
     assert!(policy.validate().is_err());
     let mut policy = contract();
     policy.package_rules[0].inherit_dependency_obligations = false;
+    assert!(policy.validate().is_err());
+    let mut policy = contract();
+    policy.package_rules[0].execution = Some(PackageExecution::RecoveryImage {
+        system_variant: String::new(),
+    });
     assert!(policy.validate().is_err());
 }
 
