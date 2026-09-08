@@ -113,6 +113,8 @@ pub use vm_lifecycle::{
     ProductionVmNodeLease, ProductionVmNodePreparationKind, ProductionVmNodeReplayLaunchProfile,
     authenticate_portable_exact_checkpoint_replay_oracle_promotion,
     authenticate_portable_exact_checkpoint_replay_oracle_promotion_with_boundary,
+    authenticate_portable_exact_checkpoint_resume_basis,
+    authenticate_portable_exact_checkpoint_resume_basis_with_boundary,
     build_production_vm_lifecycle_loop, build_production_vm_lifecycle_loop_from_checkpoint,
     build_production_vm_lifecycle_loop_from_checkpoint_with_launcher,
     build_production_vm_lifecycle_loop_from_exact_closure,

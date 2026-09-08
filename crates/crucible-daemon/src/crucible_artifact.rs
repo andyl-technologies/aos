@@ -45,8 +45,9 @@ use crucible_campaign::{
     CoverageProjection, FindingCandidateBundle, FindingCandidateBundleId, FindingExactPins,
     FindingMinimizationAttempt, FindingMinimizationEvidence, FindingReplaySignature,
     FindingSignature, FindingSignatureMinimizationEvidence, MeasurementSet, ObservationId,
-    PropertyVerdictSet, ReproductionArtifact, ReproductionArtifactId, ScenarioArtifact,
-    ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin,
+    PropertyVerdictSet, ReproductionArtifact, ReproductionArtifactId, ResolvedSelection,
+    ScenarioArtifact, ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, Selection,
+    SelectionId, SelectionOrigin,
 };
 
 /// Payload schema for a compact canonical Crucible scenario definition.
@@ -1402,11 +1403,27 @@ pub fn decode_crucible_configuration_artifact_with_selections(
     artifact: &ConfigurationArtifact,
     store: &CampaignExecutorStore,
 ) -> Result<Configuration, CrucibleArtifactError> {
-    decode_crucible_configuration_artifact_with_signal_fault_replay(
+    decode_crucible_configuration_artifact_with_resolver(
         scenario,
         scenario_artifact,
         artifact,
         store,
+    )
+    .map(|(configuration, _)| configuration)
+}
+
+/// Decodes a configuration through the full repository selection verifier.
+pub(crate) fn decode_crucible_configuration_artifact_from_repository(
+    scenario: &ScenarioDefForm,
+    scenario_artifact: &ScenarioArtifact,
+    artifact: &ConfigurationArtifact,
+    repository: &CampaignRepository,
+) -> Result<Configuration, CrucibleArtifactError> {
+    decode_crucible_configuration_artifact_with_resolver(
+        scenario,
+        scenario_artifact,
+        artifact,
+        repository,
     )
     .map(|(configuration, _)| configuration)
 }
@@ -1430,10 +1447,49 @@ pub fn decode_crucible_configuration_artifact_with_signal_fault_replay(
     artifact: &ConfigurationArtifact,
     store: &CampaignExecutorStore,
 ) -> Result<(Configuration, SignalFaultCampaignReplayPlan), CrucibleArtifactError> {
+    decode_crucible_configuration_artifact_with_resolver(
+        scenario,
+        scenario_artifact,
+        artifact,
+        store,
+    )
+}
+
+fn decode_crucible_configuration_artifact_with_resolver(
+    scenario: &ScenarioDefForm,
+    scenario_artifact: &ScenarioArtifact,
+    artifact: &ConfigurationArtifact,
+    resolver: &impl ConfigurationSelectionResolver,
+) -> Result<(Configuration, SignalFaultCampaignReplayPlan), CrucibleArtifactError> {
     let configuration =
         decode_crucible_configuration_artifact_structural(scenario, scenario_artifact, artifact)?;
-    let replay = resolve_selection_decisions(&configuration, artifact, store)?;
+    let replay = resolve_selection_decisions(&configuration, artifact, resolver)?;
     Ok((configuration, replay))
+}
+
+trait ConfigurationSelectionResolver {
+    fn resolve_configuration_selections(
+        &self,
+        ids: &[SelectionId],
+    ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError>;
+}
+
+impl ConfigurationSelectionResolver for CampaignExecutorStore {
+    fn resolve_configuration_selections(
+        &self,
+        ids: &[SelectionId],
+    ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
+        self.resolve_selections(ids)
+    }
+}
+
+impl ConfigurationSelectionResolver for CampaignRepository {
+    fn resolve_configuration_selections(
+        &self,
+        ids: &[SelectionId],
+    ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
+        self.resolve_distinct_selections(ids)
+    }
 }
 
 fn decode_crucible_configuration_artifact_structural(
@@ -1479,7 +1535,7 @@ fn decode_crucible_configuration_artifact_structural(
 fn resolve_selection_decisions(
     configuration: &Configuration,
     artifact: &ConfigurationArtifact,
-    store: &CampaignExecutorStore,
+    resolver: &impl ConfigurationSelectionResolver,
 ) -> Result<SignalFaultCampaignReplayPlan, CrucibleArtifactError> {
     let mut selections = Vec::new();
     let mut campaign_branch_count = 0usize;
@@ -1522,7 +1578,7 @@ fn resolve_selection_decisions(
         .iter()
         .map(|(_, selection)| selection.id())
         .collect::<Result<Vec<_>, _>>()?;
-    let resolved = store.resolve_selections(&selection_ids)?;
+    let resolved = resolver.resolve_configuration_selections(&selection_ids)?;
     let mut signal_fault_branches = Vec::new();
     let mut covered_signal_fault_overrides = BTreeSet::new();
     for ((index, selection), resolved) in selections.into_iter().zip(resolved) {

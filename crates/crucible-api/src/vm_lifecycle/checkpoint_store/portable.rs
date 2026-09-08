@@ -350,6 +350,50 @@ pub fn install_exact_checkpoint_closure_with_boundary_and_admission(
     )
 }
 
+/// Authenticates one portable checkpoint and returns its modeled resume basis.
+///
+/// Complete scenario-aware validation runs in isolated temporary storage. The
+/// source and destination checkpoint stores are not mutated. This is suitable
+/// for admission paths that must prove an imported closure can resume before
+/// publishing a separate ownership record.
+///
+/// # Errors
+///
+/// Returns an error when the manifest, inventory, object streams, scheduler
+/// continuation, replay evidence, or scenario/configuration bindings fail the
+/// same validation used by [`install_exact_checkpoint_closure_with_boundary`].
+pub fn authenticate_portable_exact_checkpoint_resume_basis(
+    source: &ScenarioDefForm,
+    portable: &dyn ProductionExactCheckpointSource,
+) -> Result<ProductionExactCheckpointResumeBasis, LifecycleApiError> {
+    authenticate_portable_exact_checkpoint_resume_basis_with_boundary(source, portable, &mut || {
+        Ok(())
+    })
+}
+
+/// Authenticates one portable checkpoint with cooperative cancellation checks.
+///
+/// `boundary` runs before and during bounded manifest and object processing.
+/// No durable checkpoint catalog is mutated.
+///
+/// # Errors
+///
+/// Returns the same validation errors as
+/// [`authenticate_portable_exact_checkpoint_resume_basis`] and returns the
+/// exact [`LifecycleApiError`] produced by `boundary`.
+pub fn authenticate_portable_exact_checkpoint_resume_basis_with_boundary(
+    source: &ScenarioDefForm,
+    portable: &dyn ProductionExactCheckpointSource,
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+) -> Result<ProductionExactCheckpointResumeBasis, LifecycleApiError> {
+    boundary()?;
+    let preflight = preflight_portable_source(source, portable, boundary)?;
+    let (_staging, basis) =
+        stage_and_validate_portable_source(source, portable, &preflight, boundary)?;
+    boundary()?;
+    Ok(basis)
+}
+
 fn preflight_portable_source(
     source: &ScenarioDefForm,
     portable: &dyn ProductionExactCheckpointSource,
@@ -948,6 +992,11 @@ mod tests {
         closure
             .validate_complete()
             .expect("authenticate complete source checkpoint");
+        let authenticated =
+            authenticate_portable_exact_checkpoint_resume_basis(&source.0, &closure)
+                .expect("authenticate portable resume basis without publication");
+        assert_eq!(authenticated.identity(), closure.identity());
+        assert_eq!(authenticated.configuration().id(), closure.configuration());
         let destination = tempfile::tempdir().expect("create destination checkpoint store");
 
         let installed = install_exact_checkpoint_closure(destination.path(), &source.0, &closure)

@@ -45,6 +45,13 @@ fn archive_plan() -> CampaignArchivePlan {
 }
 
 fn plan_in_repository(repository: &CampaignRepository) -> CampaignArchivePlan {
+    plan_in_repository_with_policy(repository, CampaignArchivePolicy::Metadata)
+}
+
+fn plan_in_repository_with_policy(
+    repository: &CampaignRepository,
+    archive_policy: CampaignArchivePolicy,
+) -> CampaignArchivePlan {
     let scenario = ScenarioDefId::from_hash(CampaignHash::derive("transfer-test", b"scenario"));
     let genesis = ConfigurationId::from_hash(CampaignHash::derive("transfer-test", b"genesis"));
     let scenario_artifact = repository
@@ -91,12 +98,7 @@ fn plan_in_repository(repository: &CampaignRepository) -> CampaignArchivePlan {
         .create("source", &lineage, &policy, &BTreeMap::new())
         .expect("create campaign");
     repository
-        .plan_campaign_archive(
-            head.snapshot_id(),
-            CampaignArchivePolicy::Metadata,
-            [],
-            None,
-        )
+        .plan_campaign_archive(head.snapshot_id(), archive_policy, [], None)
         .expect("archive plan")
 }
 
@@ -687,6 +689,207 @@ fn destination_rejects_checkpoint_whose_configuration_disagrees_with_manifest() 
         destination.head("imported"),
         Err(CampaignRepositoryError::NotFound)
     ));
+}
+
+#[test]
+fn conflicting_destination_campaign_preserves_its_exact_selection() {
+    let temporary = tempfile::tempdir().expect("temporary transfer root");
+    let source = CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new("conflict-source", 64 * 1024 * 1024)),
+        Arc::new(MemoryRefBackend::new()),
+    );
+    let plan = plan_in_repository_with_policy(&source, CampaignArchivePolicy::Executable);
+
+    let destination_backend = Arc::new(DirectoryBlobBackend::new(
+        "conflict-destination",
+        temporary.path().join("destination-objects"),
+    ));
+    let destination = CampaignRepository::new(
+        destination_backend.clone(),
+        Arc::new(DirectoryRefBackend::new(
+            temporary.path().join("destination-refs"),
+        )),
+    );
+    let scenario =
+        ScenarioDef::from_canonical_material("crucible.test.archive-transfer", "existing");
+    let configuration = Configuration::genesis(scenario.clone());
+    let scenario_id = ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario.id().bytes));
+    let configuration_id =
+        ConfigurationId::from_hash(CampaignHash::from_bytes(configuration.id().bytes));
+    let scenario_artifact = destination
+        .publish_scenario_artifact(scenario_id, 1, b"existing scenario".to_vec())
+        .expect("existing scenario artifact");
+    let configuration_artifact = destination
+        .publish_configuration_artifact(
+            scenario_id,
+            scenario_artifact,
+            configuration_id,
+            1,
+            b"existing configuration".to_vec(),
+        )
+        .expect("existing configuration artifact");
+    let lineage = CampaignLineage::new(
+        scenario_id,
+        scenario_artifact,
+        configuration_id,
+        configuration_artifact,
+        "crucible-existing-transfer-test",
+        "qemu-existing-transfer-test",
+        BTreeMap::from([("control".to_owned(), 1)]),
+        1,
+        1,
+    )
+    .expect("existing lineage");
+    let campaign = CampaignName::new("imported").expect("destination campaign");
+    let created = destination
+        .create(
+            campaign.as_str(),
+            &lineage,
+            &CampaignPolicy::new(
+                scenario_id,
+                CampaignSeed::from_bytes([0x91; 32]),
+                CampaignMode::Strict,
+                ExplorerPolicy::Exhaustive {
+                    maximum_cardinality: 1,
+                },
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeSet::new(),
+                FairnessPolicy::new(0, 0).expect("fairness"),
+                RetentionPolicy::new(true, 1, true, true),
+                true,
+            )
+            .expect("existing policy"),
+            &BTreeMap::new(),
+        )
+        .expect("create existing destination campaign");
+    destination
+        .apply_pin(
+            campaign.as_str(),
+            &PinRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "crucible.test.archive-transfer.command",
+                    b"existing pin",
+                )),
+                expected_snapshot: created.snapshot_id(),
+                change: PinChange::new(
+                    configuration_id,
+                    Some(PinRetention::Exact),
+                    "preserve existing exact selection",
+                )
+                .expect("existing pin change"),
+            },
+        )
+        .expect("pin existing destination campaign");
+    let existing_snapshot = destination
+        .head(campaign.as_str())
+        .expect("existing destination head")
+        .snapshot_id();
+
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &configuration,
+        None,
+        VirtualTime::default(),
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("existing checkpoint");
+    let snapshot = QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
+        .expect("existing QEMU snapshot");
+    let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = destination_backend;
+    let checkpoints = ExactCheckpointStore::new(checkpoint_backend, 1024 * 1024)
+        .expect("destination checkpoint store");
+    let prepared = checkpoints
+        .prepare(&snapshot, BlobHandle::from_bytes(vec![0x33; 4096]))
+        .expect("prepare existing checkpoint");
+    let checkpoint = checkpoints
+        .publish(&prepared)
+        .expect("publish existing checkpoint")
+        .root();
+    let existing = ExactPinMaterializationSelection::prepare(
+        &destination,
+        &checkpoints,
+        &campaign,
+        configuration_id,
+        checkpoint,
+    )
+    .expect("prepare existing selection");
+    let mut exact_pins = DirectoryExactPinMaterializationStore::open(
+        temporary.path().join("destination-exact-pins"),
+    )
+    .expect("open exact-pin store");
+    exact_pins
+        .select(existing.clone())
+        .expect("store existing selection");
+
+    let mut source_journal =
+        DirectoryCampaignTransferJournal::open(temporary.path().join("source-journal"))
+            .expect("source journal");
+    let mut destination_journal =
+        DirectoryCampaignTransferJournal::open(temporary.path().join("destination-journal"))
+            .expect("destination journal");
+    let durability = DurabilityRequirement::new(1, false).expect("durability");
+    let operation = CampaignTransferOperationId::for_archive(
+        plan.manifest_id(),
+        "destination",
+        "conflicting",
+        Some(campaign.as_str()),
+        durability,
+    )
+    .expect("operation");
+    let mut source_endpoint =
+        CampaignArchiveTransferEndpoint::new(&source, &mut source_journal, "source", true);
+    let mut destination_endpoint =
+        CampaignArchiveTransferEndpoint::new_with_operational_checkpoints(
+            &destination,
+            &mut destination_journal,
+            "destination",
+            true,
+            &checkpoints,
+            &mut exact_pins,
+        );
+
+    assert!(matches!(
+        transfer_campaign_archive_durably(
+            &mut source_endpoint,
+            &mut destination_endpoint,
+            &plan,
+            "conflicting",
+            Some(campaign.as_str()),
+            durability,
+        ),
+        Err(CampaignArchiveTransferError::DestinationCampaignConflict { .. })
+    ));
+    assert!(
+        !source_endpoint
+            .journal
+            .contains(operation)
+            .expect("source journal")
+    );
+    assert!(
+        !destination_endpoint
+            .journal
+            .contains(operation)
+            .expect("destination journal")
+    );
+    let mut fence = exact_pins
+        .acquire_exact_pin_retention_fence()
+        .expect("exact-pin fence");
+    assert_eq!(
+        fence
+            .selection(&campaign, configuration_id)
+            .expect("preserved exact selection"),
+        Some(existing)
+    );
+    assert_eq!(
+        destination
+            .head(campaign.as_str())
+            .expect("preserved destination campaign")
+            .snapshot_id(),
+        existing_snapshot
+    );
 }
 
 #[test]

@@ -2031,6 +2031,52 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
 }
 
 #[test]
+fn imported_selection_never_replaces_an_existing_campaign_owner() {
+    let temp = tempfile::tempdir().expect("selection journal root");
+    let fixture = fixture("import-conflict");
+    let original = ExactPinMaterializationSelection::prepare(
+        &fixture.repository,
+        &fixture.checkpoints,
+        &fixture.campaign,
+        fixture.configuration,
+        fixture.checkpoint,
+    )
+    .expect("prepare original selection");
+    let mut conflicting = original.clone();
+    let conflicting_content = crucible_cas::content_store::ContentId::for_bytes(
+        crucible_cas::content_store::ObjectKind::ExactManifest,
+        2,
+        b"conflicting imported checkpoint",
+    );
+    conflicting.checkpoint = ExactCheckpointId::parse(&format!(
+        "crucible.executor.exact-checkpoint-root@{conflicting_content}"
+    ))
+    .expect("conflicting checkpoint ID");
+    let mut store = DirectoryExactPinMaterializationStore::open(temp.path())
+        .expect("open exact-pin selection store");
+
+    assert_eq!(
+        store
+            .select_import_if_absent(original.clone())
+            .expect("install original selection"),
+        ExactPinSelectionDisposition::Stored
+    );
+    assert!(matches!(
+        store.select_import_if_absent(conflicting),
+        Err(ExactPinRetentionError::SelectionConflict { .. })
+    ));
+    let mut fence = store
+        .acquire_exact_pin_retention_fence()
+        .expect("acquire exact-pin selection fence");
+    assert_eq!(
+        fence
+            .selection(&fixture.campaign, fixture.configuration)
+            .expect("read preserved selection"),
+        Some(original)
+    );
+}
+
+#[test]
 fn finding_exact_pin_selection_uses_nearest_authenticated_event_boundaries() {
     let fixture = fixture("finding-boundaries");
     let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(

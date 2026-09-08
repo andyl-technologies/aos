@@ -691,6 +691,27 @@ impl PreparedCampaignLocalService {
         )
     }
 
+    /// Borrows an endpoint that imports operational exact-pin selections.
+    ///
+    /// Before an executable campaign ref is published, every selected
+    /// production checkpoint is fully authenticated and its snapshot-bound
+    /// materialization selection is persisted in `exact_pins`.
+    #[must_use]
+    pub fn archive_transfer_endpoint_with_operational_checkpoints<'a>(
+        &'a mut self,
+        checkpoints: &'a crate::ExactCheckpointStore,
+        exact_pins: &'a mut crate::DirectoryExactPinMaterializationStore,
+    ) -> crate::CampaignArchiveTransferEndpoint<'a> {
+        crate::CampaignArchiveTransferEndpoint::new_with_operational_checkpoints(
+            self.repository.as_ref(),
+            &mut self.transfer_journal,
+            &self.transfer_identity,
+            self.mode == CampaignLocalServiceMode::ReadWrite,
+            checkpoints,
+            exact_pins,
+        )
+    }
+
     /// Borrows the complete owner-only destructive-store maintenance boundary.
     ///
     /// The returned authority cannot outlive this prepared owner and disappears

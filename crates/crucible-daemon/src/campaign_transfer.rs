@@ -23,16 +23,18 @@ use std::cell::Cell;
 
 use crucible_campaign::{
     CampaignArchiveCheckpointResolver, CampaignArchiveManifestId, CampaignArchivePlan,
-    CampaignArchiveTransferReport, CampaignFactId, CampaignHash, CampaignName, CampaignRepository,
+    CampaignArchiveTransferReport, CampaignFactId, CampaignName, CampaignRepository,
     CampaignRepositoryError, ConfigurationId,
 };
 use crucible_cas::content_store::{ContentId, DurabilityRequirement, StoreError};
 use rustix::fs::{FlockOperation, flock};
 use thiserror::Error;
 
+use crate::exact_pin_retention::authenticate_archive_checkpoint;
 use crate::{
-    ExactCheckpointStore, ExactCheckpointStoreError, ExactPinRetentionAdmin,
-    ExactPinRetentionError, ExactPinRetentionFence,
+    DirectoryExactPinMaterializationStore, ExactCheckpointStore, ExactCheckpointStoreError,
+    ExactPinMaterializationSelection, ExactPinRetentionAdmin, ExactPinRetentionError,
+    ExactPinRetentionFence,
 };
 
 #[cfg(test)]
@@ -457,6 +459,7 @@ pub struct CampaignArchiveTransferEndpoint<'a> {
     identity: &'a str,
     writable: bool,
     checkpoints: Option<&'a ExactCheckpointStore>,
+    exact_pins: Option<&'a mut DirectoryExactPinMaterializationStore>,
 }
 
 impl<'a> CampaignArchiveTransferEndpoint<'a> {
@@ -472,6 +475,7 @@ impl<'a> CampaignArchiveTransferEndpoint<'a> {
             identity,
             writable,
             checkpoints: None,
+            exact_pins: None,
         }
     }
 
@@ -488,6 +492,25 @@ impl<'a> CampaignArchiveTransferEndpoint<'a> {
             identity,
             writable,
             checkpoints: Some(checkpoints),
+            exact_pins: None,
+        }
+    }
+
+    pub(crate) fn new_with_operational_checkpoints(
+        repository: &'a CampaignRepository,
+        journal: &'a mut DirectoryCampaignTransferJournal,
+        identity: &'a str,
+        writable: bool,
+        checkpoints: &'a ExactCheckpointStore,
+        exact_pins: &'a mut DirectoryExactPinMaterializationStore,
+    ) -> Self {
+        Self {
+            repository,
+            journal,
+            identity,
+            writable,
+            checkpoints: Some(checkpoints),
+            exact_pins: Some(exact_pins),
         }
     }
 }
@@ -706,7 +729,21 @@ pub fn transfer_campaign_archive_durably(
             campaign_name,
             plan.manifest().policy(),
         )?;
-    if !plan.manifest().checkpoint_selections().is_empty() && destination.checkpoints.is_none() {
+    if let Some(campaign_name) = campaign_name {
+        match destination.repository.head(campaign_name) {
+            Ok(current) if current.snapshot_id() == plan.manifest().source_snapshot() => {}
+            Ok(current) => {
+                return Err(CampaignArchiveTransferError::DestinationCampaignConflict {
+                    current: current.snapshot_id(),
+                    imported: plan.manifest().source_snapshot(),
+                });
+            }
+            Err(CampaignRepositoryError::NotFound) => {}
+            Err(source) => return Err(source.into()),
+        }
+    }
+    let checkpoint_selections = plan.manifest().checkpoint_selections();
+    if !checkpoint_selections.is_empty() && destination.checkpoints.is_none() {
         return Err(CampaignArchiveTransferError::CheckpointStoreUnavailable);
     }
     let operation = CampaignTransferOperationId::for_archive(
@@ -736,12 +773,43 @@ pub fn transfer_campaign_archive_durably(
         destination_durability,
     )?;
     if let Some(checkpoints) = destination.checkpoints {
-        for selection in plan.manifest().checkpoint_selections() {
-            let loaded = checkpoints.load_attempt_checkpoint(selection.checkpoint())?;
-            let configuration =
-                ConfigurationId::from_hash(CampaignHash::from_bytes(loaded.configuration().bytes));
-            if configuration != selection.configuration() {
-                return Err(CampaignArchiveTransferError::CheckpointConfigurationMismatch);
+        let destination_campaign = campaign_name
+            .map(CampaignName::new)
+            .transpose()
+            .map_err(ExactPinRetentionError::from)?;
+        let mut prepared = Vec::with_capacity(checkpoint_selections.len());
+        for selection in checkpoint_selections {
+            if let Some(campaign) = destination_campaign.as_ref() {
+                prepared.push(
+                    ExactPinMaterializationSelection::prepare_at_snapshot(
+                        destination.repository,
+                        checkpoints,
+                        campaign,
+                        plan.manifest().source_snapshot(),
+                        selection.configuration(),
+                        selection.pin_fact(),
+                        selection.checkpoint(),
+                    )
+                    .map_err(map_archive_exact_pin_error)?,
+                );
+            } else {
+                authenticate_archive_checkpoint(
+                    destination.repository,
+                    checkpoints,
+                    plan.manifest().source_snapshot(),
+                    selection.configuration(),
+                    selection.pin_fact(),
+                    selection.checkpoint(),
+                )
+                .map_err(map_archive_exact_pin_error)?;
+            }
+        }
+        if !prepared.is_empty() && destination.exact_pins.is_none() {
+            return Err(CampaignArchiveTransferError::ExactPinStoreUnavailable);
+        }
+        if let Some(exact_pins) = destination.exact_pins.as_deref_mut() {
+            for selection in prepared {
+                exact_pins.select_import_if_absent(selection)?;
             }
         }
     }
@@ -760,6 +828,15 @@ pub fn transfer_campaign_archive_durably(
     Ok(report)
 }
 
+fn map_archive_exact_pin_error(error: ExactPinRetentionError) -> CampaignArchiveTransferError {
+    match error {
+        ExactPinRetentionError::CheckpointConfigurationMismatch { .. } => {
+            CampaignArchiveTransferError::CheckpointConfigurationMismatch
+        }
+        error => CampaignArchiveTransferError::ExactPin(error),
+    }
+}
+
 /// Failure to journal, transfer, publish, or retire one campaign archive.
 #[derive(Debug, Error)]
 pub enum CampaignArchiveTransferError {
@@ -769,12 +846,26 @@ pub enum CampaignArchiveTransferError {
     /// The selected destination deployment does not permit mutation.
     #[error("campaign archive transfer destination is read-only")]
     DestinationReadOnly,
+    /// The destination campaign name already belongs to another snapshot.
+    #[error("destination campaign already names {current}, cannot import {imported}")]
+    DestinationCampaignConflict {
+        /// Existing destination campaign snapshot preserved by the preflight.
+        current: crucible_campaign::CampaignSnapshotId,
+        /// Source snapshot requested by this transfer.
+        imported: crucible_campaign::CampaignSnapshotId,
+    },
     /// An executable archive has exact selections but no destination checkpoint verifier.
     #[error("campaign archive transfer destination has no exact-checkpoint store")]
     CheckpointStoreUnavailable,
+    /// An ordinary executable import cannot persist its exact-pin selections.
+    #[error("campaign archive transfer destination has no exact-pin materialization store")]
+    ExactPinStoreUnavailable,
     /// A destination checkpoint materializes another configuration than its manifest selection.
     #[error("campaign archive transfer checkpoint configuration does not match its manifest")]
     CheckpointConfigurationMismatch,
+    /// Imported exact-pin materialization or production resume validation failed.
+    #[error(transparent)]
+    ExactPin(#[from] ExactPinRetentionError),
     /// Destination exact-checkpoint authentication failed.
     #[error(transparent)]
     Checkpoint(#[from] ExactCheckpointStoreError),
