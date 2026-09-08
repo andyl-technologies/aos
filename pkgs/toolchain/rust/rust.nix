@@ -152,7 +152,10 @@ in
 
             [rust]
             channel = "stable"
-            codegen-units = 0
+            # Zero auto-detects all physical host CPUs, bypassing x.py's job
+            # limit. Keep compiler-internal code generation within the same
+            # scheduler allocation as the surrounding bootstrap.
+            codegen-units = $NIX_BUILD_CORES
             rpath = true
             omit-git-hash = true
             download-rustc = false
