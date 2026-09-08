@@ -958,7 +958,7 @@ impl ProductionExactCheckpointClosure {
 
         let mut hasher = blake3::Hasher::new();
         let mut copied = 0_u64;
-        let mut buffer = [0_u8; CLOSURE_EXPORT_COPY_BUFFER_BYTES];
+        let mut buffer = allocate_closure_export_copy_buffer()?;
         loop {
             let count = source.read(&mut buffer).map_err(|error| {
                 loop_factory_error(format!(

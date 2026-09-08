@@ -349,7 +349,17 @@ pub(super) fn prepare_root_overlay(
 pub(super) fn hash_file(path: &Path) -> Result<crucible::ContentHash, std::io::Error> {
     let mut file = fs::File::open(path)?;
     let mut hasher = blake3::Hasher::new();
-    let mut buffer = [0_u8; 1024 * 1024];
+
+    // Checkpoint staging can hash files while another copy frame remains live.
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(1024 * 1024).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::OutOfMemory,
+            "reserve file hashing buffer",
+        )
+    })?;
+    buffer.resize(1024 * 1024, 0);
+
     loop {
         let count = file.read(&mut buffer)?;
         if count == 0 {
