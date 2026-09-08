@@ -4812,6 +4812,23 @@ The complete Network all-target suite passes 138 library tests and the
 `aos-netd` binary test; the 13 focused namespace-store tests, Rust formatting,
 and all-target no-dependency Clippy with warnings denied also pass.
 
+Commit `e508b0c321` records this observer slice. Its closed nftables decoder now
+requires the exact mandatory table name on the table object and the exact table
+identity on every chain and rule. A regression first accepts the complete
+pinned nftables 1.1.1 fixture after reserialization, then independently rejects
+wrong, absent, and non-string identities at all three object kinds for the
+identity-specific reason.
+
+An isolated materialization of the exact committed candidate passed 139
+Network library tests, the `aos-netd` binary test, the systemd-custody fixture
+test, and 101 Linux boundary tests. The Linux run intentionally ignored
+`pidfd::tests::liveness_target_fixture` and
+`process::tests::isolated_nondefault_sigchld_case`; their names remain explicit
+qualification limits rather than claims of blanket privileged-kernel coverage.
+All three packages also passed all-target no-dependency Clippy with warnings
+denied. The five-VM fleet result above qualifies the stated privileged custody
+and observer scenarios separately.
+
 This qualifies the current custody and read-only observer composition, not
 Network Apply. No production namespace/veth/address/route/nftables/BPF mutator,
 authenticated Apply handler, controller dispatch and orchestration, guardian
