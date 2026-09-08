@@ -4629,16 +4629,47 @@ produced
 preserved. This is focused disk-construction evidence; it does not qualify the
 AArch64 nspawn runtime.
 
-The complete AArch64 fleet proof remains unqualified. Earlier focused package
-results, including PostgreSQL, libgpg-error, libgcrypt, Linux, Git, D-Bus, and
-EROFS, record the fixes that advanced prior candidates, but later cross-stdenv
-and package changes mean they are not all exact-current-source realizations.
-No guest boot or end-to-end sandbox result is claimed until the complete fleet
-derivation succeeds from the reviewed candidate.
+Commit `1f6ae6fee` makes bounded payload discovery tolerate only transient
+`ENOENT` churn from six named descendant scan operations while the original
+supervisor remains pinned and authenticated. An exact-root open or read may be
+retried only after the old payload pidfd is dead, and a partial scan cannot
+publish a successor. The repository regression exercises all admitted
+operations plus live-old-payload, wrong-root operation, prefix-collision,
+unknown-operation, non-`ENOENT`, supervisor-loss, and partial-result controls.
 
-These focused package and guest results do not qualify the complete AArch64
-system. The fleet VM still requires successful end-to-end runtime evidence, so
-`SBX-P0-04` and `SBX-P0-05` remain open.
+The focused observer derivations ran that regression with warnings denied on
+both architectures. Native
+`/nix/store/xf2hw0ijglypp3lh35mlpkqgrqgpb0gj-aos-nspawn-host-observer-1.drv`
+passed and produced
+`/nix/store/jqr1n92chha5295bb999c8wc8snx7rm5-aos-nspawn-host-observer-1`.
+AArch64
+`/nix/store/mn9xw865fzgkmc7avjzm02qlv5zin1lz-aos-nspawn-host-observer-1.drv`
+passed under the AOS user-mode runner and produced
+`/nix/store/0nirx7sz2ffarl707rsrrfxcyihymwrx-aos-nspawn-host-observer-1`.
+
+The same reviewed observer candidate's complete AArch64 fleet derivation
+`/nix/store/sk67b8dyx9p6d043z3wrk62s1253hbf5-aos-fleet-test-sandbox-nspawn-platform-proof-0.drv`
+passed under TCG and produced
+`/nix/store/iix8vnrkz840jin404q56nxyafkdmarz-aos-fleet-test-sandbox-nspawn-platform-proof-0`.
+Its corresponding native KVM guard
+`/nix/store/3c1i3nl6za01aamr0syjxasa5c6cmwwy-aos-fleet-test-sandbox-nspawn-platform-proof-0.drv`
+also passed and produced
+`/nix/store/ja4vmlhp9i1pwj7va4s27kqgfsqdfyg1-aos-fleet-test-sandbox-nspawn-platform-proof-0`.
+Both runs booted the packaged systemd 259.8 and nspawn, kept machined masked,
+authenticated three payload generations beneath one stable
+supervisor/root/network boundary, proved fresh payload cgroup and mount/PID/user
+namespace identities after each reboot, rejected the configured stale cgroup
+state, and rechecked the syscall, user-map, hostile-settings, descriptor-pin,
+unit-property, and page-size contracts.
+
+These immutable runs qualify the checked-in nspawn platform fixture on x86_64
+and AArch64 for the reviewed observer candidate: commit `b649cc079` plus exactly
+the three observer files later recorded by `1f6ae6fee`. The separately qualified
+runtime-link changes in `562f2fc94` were not inputs to these fleet derivations,
+so an exact integrated-tree realization remains outstanding. The fixture also
+remains distinct from the production detached-root transient-unit compiler,
+controller cgroup-identity reconciliation, enforcing MAC, guardian, and
+publisher paths. `SBX-P0-04` and `SBX-P0-05` therefore remain open.
 
 ### Production Storage worker and deadline qualification (in progress)
 
