@@ -98,6 +98,11 @@ pub use rpc_abi::{
     encode_rpc_hello_request, encode_rpc_hello_response, encode_rpc_message,
     negotiate_rpc_protocol, rpc_status_code_from_wire_name, rpc_status_code_wire_name,
 };
+#[cfg(feature = "test-support")]
+pub use vm_lifecycle::{
+    AuthenticatedProductionCheckpointCodecFixture,
+    build_authenticated_production_checkpoint_codec_fixture,
+};
 pub use vm_lifecycle::{
     PreparedProductionReplayOraclePromotion, ProductionBlockFaultEvidence,
     ProductionExactCheckpointClosure, ProductionExactCheckpointObject,

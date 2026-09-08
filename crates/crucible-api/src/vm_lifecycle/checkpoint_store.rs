@@ -48,6 +48,13 @@ use sparse::{
     validate_sparse_artifact_manifest, validate_sparse_artifact_manifest_with_lifecycle_boundary,
     validate_sparse_artifact_manifest_with_scheduler_boundary, validate_sparse_artifact_shape,
 };
+#[cfg(feature = "test-support")]
+mod test_support;
+#[cfg(feature = "test-support")]
+pub use test_support::{
+    AuthenticatedProductionCheckpointCodecFixture,
+    build_authenticated_production_checkpoint_codec_fixture,
+};
 
 const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v7\0";
 const PREVIOUS_MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v6\0";
