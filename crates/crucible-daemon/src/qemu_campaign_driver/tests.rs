@@ -15,11 +15,13 @@ use crucible::{
     WorldNode,
 };
 use crucible_campaign::{
-    Attempt, AttemptResourceLimits, AttemptStart, BooleanDomain, BranchPath, CampaignHash,
-    CampaignLineage, ChoiceClassContext, ChoiceCoordinate, ChoiceDiscovery, ChoiceDomain,
-    ChoiceOpportunity, ChoiceSource, ChoiceValue, ConfigurationId, ExecutionRetentionIntent,
-    PropertyVerdict, ScenarioDefId, SelectableDeclaration, StopCondition, StopOutcome,
+    Attempt, AttemptResourceLimits, AttemptStart, BooleanDomain, BranchPath, CampaignFactId,
+    CampaignHash, CampaignLineage, ChoiceClassContext, ChoiceCoordinate, ChoiceDiscovery,
+    ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue, ConfigurationArtifactId,
+    ConfigurationId, ExecutionRetentionIntent, PropertyVerdict, ScenarioDefId,
+    SelectableDeclaration, StopCondition, StopOutcome,
 };
+use crucible_cas::content_store::ObjectKind;
 use crucible_protocol::SelectionRequest;
 use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
 #[cfg(target_os = "linux")]
@@ -358,6 +360,139 @@ fn sticky_checkpoint_request_stops_at_a_safe_boundary_without_driving() {
         QemuFreshDriveOutcome::CheckpointRequested
     ));
     assert_eq!(owner.drives, 0);
+}
+
+#[test]
+fn savepoint_capture_ignores_prelatched_checkpoint_until_attempt_stop() {
+    let input = input(StopCondition::ExecutionQuanta(2));
+    let configuration = starting_configuration(&input);
+    let checkpoint_request = ExecutionCheckpointRequest::default();
+    checkpoint_request.request_for_test();
+    let context = AttemptExecutionContext::new(
+        AttemptResourceLimits::new(1, 1, 0, 2).expect("capture resources"),
+        ExecutionRetentionIntent::RetainAlways,
+        ExecutionCancellation::default(),
+        checkpoint_request,
+    )
+    .with_start_mode(AttemptStartMode::SavepointCapture {
+        request: CampaignFactId::parse(&format!(
+            "crucible.campaign.fact@{}",
+            ContentId::for_bytes(ObjectKind::CampaignFact, 11, b"capture-at-stop-request")
+        ))
+        .expect("capture request ID"),
+        configuration: ConfigurationArtifactId::parse(&format!(
+            "crucible.campaign.configuration-artifact@{}",
+            ContentId::for_bytes(
+                ObjectKind::Configuration,
+                1,
+                b"capture-at-stop-configuration"
+            )
+        ))
+        .expect("configuration artifact ID"),
+    });
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([
+            Ok(outcome(
+                configuration.clone(),
+                Vec::new(),
+                EventLogOffset::default(),
+                1,
+            )),
+            Ok(outcome(
+                configuration,
+                Vec::new(),
+                EventLogOffset::default(),
+                2,
+            )),
+        ]),
+        terminal: None,
+        initial_quanta: 0,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+
+    let result = QemuFreshModeledDriver::new()
+        .drive(
+            &mut lifecycle,
+            &input,
+            &context,
+            QemuFreshStartMaterialization::genesis(),
+        )
+        .expect("capture reaches its modeled stop");
+
+    assert!(matches!(result, QemuFreshDriveOutcome::CheckpointRequested));
+    assert_eq!(owner.drives, 2);
+}
+
+#[test]
+fn savepoint_replay_probe_records_the_reached_boundary_before_shutdown() {
+    let input = input(StopCondition::ExecutionQuanta(2));
+    let configuration = starting_configuration(&input);
+    let expected_configuration = configuration.id();
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([
+            Ok(outcome(
+                configuration.clone(),
+                Vec::new(),
+                EventLogOffset::default(),
+                1,
+            )),
+            Ok(outcome(
+                configuration,
+                Vec::new(),
+                EventLogOffset::default(),
+                2,
+            )),
+        ]),
+        terminal: None,
+        initial_quanta: 0,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+    let (mut probe, receipt) = QemuSavepointReplayProbe::new();
+
+    let outcome = probe
+        .drive(
+            &mut lifecycle,
+            &input,
+            &context(),
+            QemuFreshStartMaterialization::genesis(),
+        )
+        .expect("independent replay reaches the attempt stop");
+    let proof = receipt.take().expect("replay proof");
+
+    assert!(matches!(outcome, QemuFreshDriveOutcome::Observation(_)));
+    assert_eq!(owner.drives, 2);
+    assert_eq!(proof.configuration, expected_configuration);
+    assert_eq!(proof.completed_quanta, 2);
+    assert_eq!(proof.frontier, VirtualTime { ticks: 2 });
+    assert_eq!(proof.event_count, 0);
+}
+
+#[test]
+fn savepoint_replay_proof_rejects_quiet_progress_at_another_coordinate() {
+    let configuration = starting_configuration(&input(StopCondition::ExecutionQuanta(200)));
+    let earlier = QemuSavepointReplayProof::from_reached_boundary(
+        &configuration,
+        100,
+        VirtualTime { ticks: 100 },
+        &[],
+    )
+    .expect("quiet q100 proof");
+    let later = QemuSavepointReplayProof::from_reached_boundary(
+        &configuration,
+        200,
+        VirtualTime { ticks: 200 },
+        &[],
+    )
+    .expect("quiet q200 proof");
+    let earlier_frontier = VirtualTime { ticks: 100 };
+    let later_frontier = VirtualTime { ticks: 200 };
+
+    assert_ne!(earlier, later);
+    assert!(!earlier.matches_boundary(&configuration, 200, earlier_frontier, 0, &[]));
+    assert!(!earlier.matches_boundary(&configuration, 100, later_frontier, 0, &[]));
+    assert!(later.matches_boundary(&configuration, 200, later_frontier, 0, &[]));
 }
 
 #[test]

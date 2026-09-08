@@ -1220,6 +1220,7 @@ where
         if matches!(
             context.start_mode(),
             AttemptStartMode::CaptureMaterializedStart { .. }
+                | AttemptStartMode::SavepointCapture { .. }
         ) && !context.checkpoint_request().is_requested()
         {
             return Err(AttemptWorkerFailure::Terminal(
@@ -1318,6 +1319,21 @@ where
                         return Err(AttemptWorkerFailure::Terminal(
                             QemuFreshExecutionRunnerError::UnsolicitedCheckpoint,
                         ));
+                    }
+                    if matches!(
+                        context.start_mode(),
+                        AttemptStartMode::SavepointCapture { .. }
+                    ) && let Some(verdict) = lifecycle.terminal_verdict_for_stop()
+                    {
+                        let cause = match verdict {
+                            QuantumTerminalVerdict::Passed => CheckpointTerminalCause::Passed,
+                            QuantumTerminalVerdict::Failed(violations) => {
+                                CheckpointTerminalCause::Failed(violations)
+                            }
+                        };
+                        lifecycle
+                            .prepare_terminal_checkpoint(cause)
+                            .map_err(map_checkpoint_capture_failure)?;
                     }
                     let capture = lifecycle
                         .capture_attempt_checkpoint(context)

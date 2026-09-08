@@ -25,10 +25,34 @@ impl CampaignRepository {
         request: &SubmitAttemptRequest,
         profile: &ExecutorCompatibilityProfile,
     ) -> Result<(), CampaignRepositoryError> {
+        self.validate_executor_execution_scope(
+            request.lineage(),
+            request.attempt(),
+            request.start_mode(),
+        )?;
+        if !matches!(
+            request.start_mode(),
+            AttemptStartMode::SavepointCapture { .. }
+        ) {
+            return Ok(());
+        }
+        let lineage = self.read_lineage(request.lineage().content_id())?;
+        if !profile.admits(&lineage) {
+            return Err(integrity("executor-compatibility-profile-mismatch"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_executor_execution_scope(
+        &self,
+        lineage: CampaignLineageId,
+        attempt: AttemptId,
+        start_mode: AttemptStartMode,
+    ) -> Result<(), CampaignRepositoryError> {
         let AttemptStartMode::SavepointCapture {
             request: capture_id,
             configuration,
-        } = request.start_mode()
+        } = start_mode
         else {
             return Ok(());
         };
@@ -40,7 +64,7 @@ impl CampaignRepository {
                 "executor-savepoint-capture-scope-is-not-capture-request",
             ));
         };
-        if capture.configuration != configuration || capture.attempt != request.attempt() {
+        if capture.configuration != configuration || capture.attempt != attempt {
             return Err(integrity(
                 "executor-savepoint-capture-scope-request-basis-mismatch",
             ));
@@ -48,21 +72,16 @@ impl CampaignRepository {
 
         let parent = self.read_snapshot(capture.expected_snapshot.content_id())?;
         self.validate_complete_head(capture.expected_snapshot.content_id())?;
-        if parent.snapshot.lineage() != request.lineage() {
+        if parent.snapshot.lineage() != lineage {
             return Err(integrity(
                 "executor-savepoint-capture-scope-lineage-mismatch",
             ));
         }
         let attempt = self.savepoint_capture_basis(&parent, &capture)?;
-        if attempt.id()? != request.attempt() {
+        if attempt.id()? != capture.attempt {
             return Err(integrity(
                 "executor-savepoint-capture-scope-attempt-mismatch",
             ));
-        }
-
-        let lineage = self.read_lineage(parent.snapshot.lineage().content_id())?;
-        if !profile.admits(&lineage) {
-            return Err(integrity("executor-compatibility-profile-mismatch"));
         }
         Ok(())
     }
