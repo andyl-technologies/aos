@@ -20,7 +20,7 @@ key, upload grants, and environment receipt signers are separate authorities.
 | TUF root | Three offline hardware-backed keys in independent custody; 2-of-3 threshold |
 | TUF top-level targets and delegations | Separate offline hardware-backed keys; 2-of-3 threshold |
 | TUF stable release | Separate offline hardware-backed keys in independent custody; 2-of-3 threshold |
-| TUF candidate release | Dedicated operator-present hardware-backed keys; 1-of-2 policy |
+| TUF edge and candidate release | Dedicated operator-present hardware-backed keys; 1-of-2 policy |
 | TUF snapshot | Dedicated restricted online signer; may bind only authorized metadata |
 | TUF timestamp | Separate restricted online signer; may renew only an authorized snapshot |
 | Registry Git commit and tag | Dedicated hardware-backed Ed25519 signer |
@@ -31,7 +31,8 @@ key, upload grants, and environment receipt signers are separate authorities.
 
 Both registries accept edge, candidate, stable, and emergency release classes.
 Main requires strict pipeline provenance for every class, including edge;
-testing exercises new build and release mechanisms with lighter assurance. Do not import testing keys into main's trust policy. A threshold is
+testing exercises new build and release mechanisms with lighter assurance.
+Do not import testing keys into main's trust policy. A threshold is
 meaningful only when its custodians and administrative access are independent;
 several keys accessible through one online credential do not provide that
 separation.

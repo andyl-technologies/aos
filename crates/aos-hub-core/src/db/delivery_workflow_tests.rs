@@ -183,6 +183,150 @@ async fn verified_fixture() -> (Database, DeliveryWorkflowRecord, DeliveryActiva
 }
 
 #[tokio::test]
+async fn public_object_delivery_requires_current_route_and_exact_publication_evidence() {
+    use crate::db::{
+        SetRegistryPublicationObject, SetRegistryPublicationPlacement, SetSurfaceObject,
+    };
+
+    let (db, workflow, route) = verified_fixture().await;
+    let SurfaceTarget::Registry(registry_id) = workflow.surface else {
+        panic!("registry fixture required");
+    };
+    let snapshot = db.route_snapshot(&route.route_id).await.unwrap().unwrap();
+    let placement_id = snapshot.spec.placement_id.unwrap();
+    let placement = db.surface_placement(placement_id).await.unwrap().unwrap();
+    db.observe_surface_placement(
+        placement_id,
+        "ready",
+        "complete",
+        placement.observation_version.unwrap(),
+    )
+    .await
+    .unwrap();
+    db.activate_delivery_workflow(
+        &workflow,
+        &route,
+        &[DeliveryAudienceBaseline {
+            audience: "nix_cache".into(),
+            resource_version: None,
+        }],
+        "active",
+    )
+    .await
+    .unwrap();
+
+    let hash = "a".repeat(64);
+    let key = format!("oci/blobs/sha256/{hash}");
+    let object = db
+        .create_surface_object(&SetSurfaceObject {
+            surface: workflow.surface,
+            object_key: key.clone(),
+            content_hash: Some(hash.clone()),
+            size: Some(42),
+            object_kind: "immutable".into(),
+            mutable_publication_id: None,
+        })
+        .await
+        .unwrap();
+    db.backend
+        .execute(
+            "INSERT INTO object_placements (surface_object_id, registry_id, placement_id, state,
+         observed_hash, observed_size, observed_inventory_generation, observed_at)
+         VALUES (?1, ?2, ?3, 'present', ?4, 42, 1, 1)",
+            &vals![object.id, registry_id, placement_id, hash],
+        )
+        .await
+        .unwrap();
+    db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+        publication_id: "workflow-publication".into(),
+        placement_id,
+        required: true,
+        state: "preparing".into(),
+        observed_at: 1,
+    })
+    .await
+    .unwrap();
+    db.set_registry_publication_object(&SetRegistryPublicationObject {
+        publication_id: "workflow-publication".into(),
+        surface_object_id: object.id,
+        object_kind: "immutable".into(),
+        expected_hash: hash.clone(),
+        expected_size: 42,
+    })
+    .await
+    .unwrap();
+    db.record_registry_publication_object_presence(
+        "workflow-publication",
+        object.id,
+        placement_id,
+        &hash,
+        42,
+        Some("\"object-etag\""),
+        1,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        db.public_object_delivery_url(registry_id, &key, &hash, 42)
+            .await
+            .unwrap(),
+        None
+    );
+    db.backend.execute("UPDATE registry_publications SET state = 'ready', completed_at = created_at WHERE publication_id = 'workflow-publication'", &[]).await.unwrap();
+    db.backend.execute("UPDATE registry_publication_placements SET state = 'ready' WHERE publication_id = 'workflow-publication'", &[]).await.unwrap();
+    assert_eq!(
+        db.public_object_delivery_url(registry_id, &key, &hash, 42)
+            .await
+            .unwrap(),
+        Some(format!("{}/{key}", snapshot.canonical_url))
+    );
+    assert_eq!(
+        db.public_object_delivery_url(registry_id, &key, &"b".repeat(64), 42)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        db.public_object_delivery_url(registry_id, &key, &hash, 43)
+            .await
+            .unwrap(),
+        None
+    );
+
+    db.backend
+        .execute(
+            "UPDATE object_placements SET state = 'missing' WHERE surface_object_id = ?1",
+            &vals![object.id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        db.public_object_delivery_url(registry_id, &key, &hash, 42)
+            .await
+            .unwrap(),
+        None
+    );
+    db.backend
+        .execute(
+            "UPDATE object_placements SET state = 'present' WHERE surface_object_id = ?1",
+            &vals![object.id],
+        )
+        .await
+        .unwrap();
+    db.backend
+        .execute("UPDATE gateways SET enabled = 0", &[])
+        .await
+        .unwrap();
+    assert_eq!(
+        db.public_object_delivery_url(registry_id, &key, &hash, 42)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
 async fn activation_rolls_back_every_audience_when_a_later_baseline_is_stale() {
     let (db, workflow, route) = verified_fixture().await;
     assert!(db.delivery_workflow_route_ready(&route).await.unwrap());

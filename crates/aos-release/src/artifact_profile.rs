@@ -9,7 +9,7 @@
 //!   "registry": "andyl/testing",
 //!   "rootEpoch": 1,
 //!   "clientName": "andyl-testing",
-//!   "url": "https://aos.andyl.org/andyl/testing/",
+//!   "url": "https://cdn.aos.andyl.org/andyl/testing/",
 //!   "channel": "edge",
 //!   "trustKeys": ["andyl-testing:Ed25519:<OpenSSH public-key blob>"],
 //!   "warning": "Experimental image; not for production workloads."
@@ -80,7 +80,7 @@ impl ArtifactProfile {
             RegistryTier::Testing => registry.replace('/', "-"),
         };
         if self.client_name != expected_alias
-            || self.url != format!("https://aos.andyl.org/{registry}/")
+            || self.url != format!("https://cdn.aos.andyl.org/{registry}/")
         {
             bail!("artifact package-manager alias or URL differs from its registry");
         }
@@ -119,7 +119,7 @@ mod tests {
             registry: registry.into(),
             root_epoch: registry_policy(registry).unwrap().root_epoch(),
             client_name: alias.clone(),
-            url: format!("https://aos.andyl.org/{registry}/"),
+            url: format!("https://cdn.aos.andyl.org/{registry}/"),
             channel: if testing { "edge" } else { "stable" }.into(),
             trust_keys: vec![aos_registry_surface::sshsig::trusted_key_line(&alias, &key)],
             warning: "Experimental image; not for production workloads.".into(),
@@ -163,7 +163,10 @@ mod tests {
         let valid = profile("andyl/testing");
         for change in [
             |profile: &mut ArtifactProfile| {
-                profile.url = "https://aos.andyl.org/andyl/main/".into()
+                profile.url = "https://cdn.aos.andyl.org/andyl/main/".into()
+            },
+            |profile: &mut ArtifactProfile| {
+                profile.url = "https://aos.andyl.org/andyl/testing/".into()
             },
             |profile: &mut ArtifactProfile| profile.client_name = "andyl".into(),
             |profile: &mut ArtifactProfile| profile.channel = "unknown".into(),

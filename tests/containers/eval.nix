@@ -181,6 +181,9 @@ in
     && entry.container.publication.referenceTag == entry.channel
     && entry.container.runtime.environment.AOS_REGISTRY == "andyl/testing")
   testingChannels;
+  assert testing.config.aos.release.url == "https://cdn.aos.andyl.org/andyl/testing/";
+  assert testing.config.aos.apm.registries.andyl-testing.url == "https://cdn.aos.andyl.org/andyl/testing/";
+  assert lib.hasInfix "https://cdn.aos.andyl.org/andyl/testing/" testingFileText;
   assert testing.config.aos.release.channel == "edge";
   assert builtins.attrNames testing.config.aos.apm.registries == ["andyl-testing"];
   assert testingAos.publication.repository == "aos-testing";
