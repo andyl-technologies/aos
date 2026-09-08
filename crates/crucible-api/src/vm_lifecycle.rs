@@ -95,7 +95,7 @@ pub use hot_fork::{
     ProductionVmHotForkSourceWorld, ProductionVmHotForkSourceWorldPreparationFailure,
     ProductionVmHotForkSourceWorldResourceUsage, ProductionVmHotForkWorldContinuation,
 };
-#[cfg(all(target_os = "linux", feature = "test-support"))]
+#[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
 pub use hot_fork::{
     hot_fork_adoption_count_for_test, prepared_hot_fork_source_world_for_test,
     prepared_multi_node_hot_fork_source_world_for_scenario_for_test,
