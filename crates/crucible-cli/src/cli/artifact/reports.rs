@@ -1,4 +1,4 @@
-//! Replay and failure artifact report types.
+//! Replay and reproduction artifact report types.
 
 use super::*;
 
@@ -103,8 +103,8 @@ pub(crate) struct ReplayBisectionReport {
 }
 
 #[derive(Debug)]
-pub(crate) struct FailureArtifactReport {
+pub(crate) struct ReproductionArtifactWriteReport {
     pub(crate) path: PathBuf,
     pub(crate) digest: String,
-    pub(crate) footer: FailureReproductionFooter,
+    pub(crate) footer: ReproductionFooter,
 }

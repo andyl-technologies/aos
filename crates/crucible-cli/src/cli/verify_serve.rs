@@ -231,6 +231,7 @@ pub(super) fn verify_witness_from_run_report(
         canonical_verify_log_stream_bytes(&canonical_log, &report.streamed_event_frames);
     let fingerprint_samples = verify_fingerprint_samples(report)?;
     let fingerprint_stream = verify_fingerprint_stream_bytes(&fingerprint_samples);
+    let live_event_evidence = verify_live_event_evidence(&report.streamed_event_frames)?;
     let request_seed = run_plan
         .request_seed
         .unwrap_or_else(|| run_plan.scenario.scenario_def().seed());
@@ -298,6 +299,7 @@ pub(super) fn verify_witness_from_run_report(
         canonical_log_bytes,
         fingerprint_samples,
         fingerprint_stream,
+        live_event_evidence,
         state_dump,
         artifact,
     })
@@ -319,9 +321,92 @@ pub(super) fn verify_witness_from_artifact(
         canonical_log_bytes,
         fingerprint_samples,
         fingerprint_stream,
+        live_event_evidence: VerifyLiveEventEvidence::default(),
         state_dump,
         artifact: Some(bytes),
     })
+}
+
+pub(super) fn verify_live_event_evidence(
+    frames: &[Vec<u8>],
+) -> Result<VerifyLiveEventEvidence, CliError> {
+    let mut evidence = VerifyLiveEventEvidence::default();
+    for frame in frames {
+        let event = std::str::from_utf8(frame)
+            .map_err(|error| backend_error(format!("verify event frame is not UTF-8: {error}")))?;
+        let kind = verify_frame_value(event, "kind");
+        if kind == Some("crucible.event.effect_applied") {
+            evidence.fault_effects_applied += 1;
+            if let Some(binding) = verify_frame_string_attribute(event, "binding")? {
+                evidence.applied_fault_bindings.push(binding);
+            }
+        } else if kind == Some("crucible.event.assertion_evaluated") {
+            evidence.assertions_evaluated += 1;
+            if let Some(assertion) = verify_frame_string_attribute(event, "id")? {
+                evidence.evaluated_assertions.push(assertion);
+            }
+        } else if kind == Some("crucible.event.assertion_state_changed") {
+            evidence.assertion_state_changes += 1;
+            if let (Some(assertion), Some(state)) = (
+                verify_frame_string_attribute(event, "id")?,
+                verify_frame_string_attribute(event, "new_state")?,
+            ) {
+                evidence
+                    .assertion_transitions
+                    .push(format!("{assertion}:{state}"));
+            }
+        }
+    }
+    evidence.applied_fault_bindings.sort();
+    evidence.applied_fault_bindings.dedup();
+    evidence.evaluated_assertions.sort();
+    evidence.evaluated_assertions.dedup();
+    evidence.assertion_transitions.sort();
+    evidence.assertion_transitions.dedup();
+    Ok(evidence)
+}
+
+fn verify_frame_value<'a>(frame: &'a str, key: &str) -> Option<&'a str> {
+    frame.lines().find_map(|line| {
+        line.strip_prefix(key)
+            .and_then(|rest| rest.strip_prefix('='))
+    })
+}
+
+fn verify_frame_string_attribute(
+    frame: &str,
+    requested_name: &str,
+) -> Result<Option<String>, CliError> {
+    for attribute in frame
+        .lines()
+        .filter_map(|line| line.strip_prefix("attribute="))
+    {
+        let mut fields = attribute.split('|');
+        let (Some(name_hex), Some(value_kind), Some(value_hex)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let name = String::from_utf8(parse_hex_bytes(0, "attribute-name", name_hex)?).map_err(
+            |error| backend_error(format!("event attribute name is not UTF-8: {error}")),
+        )?;
+        if name != requested_name {
+            continue;
+        }
+        if value_kind != "string" {
+            return Err(backend_error(format!(
+                "verify event attribute `{requested_name}` is not a string"
+            )));
+        }
+        return String::from_utf8(parse_hex_bytes(0, requested_name, value_hex)?)
+            .map(Some)
+            .map_err(|error| {
+                backend_error(format!(
+                    "verify event attribute `{requested_name}` is not UTF-8: {error}"
+                ))
+            });
+    }
+    Ok(None)
 }
 
 pub(super) fn canonical_run_log_entries(

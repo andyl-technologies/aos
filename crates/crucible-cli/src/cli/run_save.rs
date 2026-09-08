@@ -207,8 +207,19 @@ pub(super) struct VerifyRunWitness {
     pub(super) canonical_log_bytes: Vec<u8>,
     pub(super) fingerprint_samples: Vec<VerifyFingerprintSample>,
     pub(super) fingerprint_stream: Vec<u8>,
+    pub(super) live_event_evidence: VerifyLiveEventEvidence,
     pub(super) state_dump: String,
     pub(super) artifact: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct VerifyLiveEventEvidence {
+    pub(super) fault_effects_applied: usize,
+    pub(super) applied_fault_bindings: Vec<String>,
+    pub(super) assertions_evaluated: usize,
+    pub(super) evaluated_assertions: Vec<String>,
+    pub(super) assertion_state_changes: usize,
+    pub(super) assertion_transitions: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

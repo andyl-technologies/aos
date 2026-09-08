@@ -364,14 +364,26 @@ pub(in super::super) fn finish_verify_workflow_outcome(
     for witness in &report.witnesses {
         let canonical_log_digest = content_address_bytes(&witness.canonical_log_bytes);
         let fingerprint_digest = content_address_bytes(&witness.fingerprint_stream);
+        let artifact_digest = witness
+            .artifact
+            .as_deref()
+            .map(content_address_bytes)
+            .unwrap_or_else(|| String::from("producer-provenance-unavailable"));
         outcome.stdout.push(format!(
-            "verify-run\tindex={}\trun={}\tprofile={}\tcanonical_log={}\tfingerprint={}\tsamples={}",
+            "verify-run\tindex={}\trun={}\tprofile={}\tcanonical_log={}\tfingerprint={}\tartifact={}\tsamples={}\teffect_applied={}\tapplied_fault_bindings={}\tassertion_evaluated={}\tevaluated_assertions={}\tassertion_state_changed={}\tassertion_transitions={}",
             witness.reduction.index,
             witness.reduction.run_index,
             witness.reduction.host_profile.label(),
             canonical_log_digest,
             fingerprint_digest,
-            witness.fingerprint_samples.len()
+            artifact_digest,
+            witness.fingerprint_samples.len(),
+            witness.live_event_evidence.fault_effects_applied,
+            verify_evidence_list(&witness.live_event_evidence.applied_fault_bindings),
+            witness.live_event_evidence.assertions_evaluated,
+            verify_evidence_list(&witness.live_event_evidence.evaluated_assertions),
+            witness.live_event_evidence.assertion_state_changes,
+            verify_evidence_list(&witness.live_event_evidence.assertion_transitions)
         ));
         outcome.canonical_log.push(CanonicalLogEntry {
             sequence: outcome.canonical_log.len() as u64,
@@ -379,13 +391,20 @@ pub(in super::super) fn finish_verify_workflow_outcome(
             node: String::from("verify"),
             kind: String::from("independent_reduction"),
             summary: format!(
-                "index={} run={} profile={} canonical_log={} fingerprint={} samples={}",
+                "index={} run={} profile={} canonical_log={} fingerprint={} artifact={} samples={} effect_applied={} applied_fault_bindings={} assertion_evaluated={} evaluated_assertions={} assertion_state_changed={} assertion_transitions={}",
                 witness.reduction.index,
                 witness.reduction.run_index,
                 witness.reduction.host_profile.label(),
                 canonical_log_digest,
                 fingerprint_digest,
-                witness.fingerprint_samples.len()
+                artifact_digest,
+                witness.fingerprint_samples.len(),
+                witness.live_event_evidence.fault_effects_applied,
+                verify_evidence_list(&witness.live_event_evidence.applied_fault_bindings),
+                witness.live_event_evidence.assertions_evaluated,
+                verify_evidence_list(&witness.live_event_evidence.evaluated_assertions),
+                witness.live_event_evidence.assertion_state_changes,
+                verify_evidence_list(&witness.live_event_evidence.assertion_transitions)
             ),
         });
     }
@@ -504,7 +523,48 @@ pub(in super::super) fn finish_verify_workflow_outcome(
                 .map(|witness| content_address_bytes(&witness.fingerprint_stream))
                 .unwrap_or_else(|| content_address_bytes(b"verify-empty-fingerprint"))
         ));
+        if matches!(verify_plan.mode, VerifyMode::RunScenario { .. }) {
+            let artifacts = report
+                .witnesses
+                .into_iter()
+                .map(|witness| {
+                    witness.artifact.map(|artifact| {
+                        (format!("reduction-{}", witness.reduction.index), artifact)
+                    })
+                })
+                .collect::<Option<Vec<_>>>();
+            if let Some(artifacts) = artifacts {
+                outcome.artifact_digest = verify_artifact_set_digest(&artifacts);
+                outcome.side_reproduction_artifacts = artifacts;
+            } else {
+                outcome.stdout.push(String::from(
+                    "verify-reproduction-artifacts\tskipped=producer-provenance-unavailable",
+                ));
+            }
+        }
     }
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
     Ok(outcome)
+}
+
+fn verify_artifact_set_digest(artifacts: &[(String, Vec<u8>)]) -> String {
+    let mut material = Vec::with_capacity(artifacts.len().saturating_mul(128));
+    material.extend_from_slice(b"crucible.verify.retained-artifact-set.v1\n");
+    for (label, artifact) in artifacts {
+        material.extend_from_slice(label.len().to_string().as_bytes());
+        material.push(b':');
+        material.extend_from_slice(label.as_bytes());
+        material.push(b'\n');
+        material.extend_from_slice(content_address_bytes(artifact).as_bytes());
+        material.push(b'\n');
+    }
+    content_address_bytes(&material)
+}
+
+fn verify_evidence_list(values: &[String]) -> String {
+    if values.is_empty() {
+        String::from("none")
+    } else {
+        values.join(",")
+    }
 }
