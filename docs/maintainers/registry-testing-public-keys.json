@@ -13,7 +13,7 @@
       "algorithm": "Ed25519",
       "public_key_sha256": "d4a9efce8626c32b7bd28c8fc28668f3e804914f0b11be0eb6be8d074358d679",
       "fingerprint_encoding": "OpenSSH public-key blob",
-      "status": "prepared",
+      "status": "configured",
       "successor_key_id": null
     },
     {
@@ -113,7 +113,7 @@
       "public_key_sha256": "436ae5b8f1166433fc8ad109db8193be5efa98a1976309262d90e253f40f37d6",
       "algorithm": "Ed25519",
       "fingerprint_encoding": "raw Ed25519 public key",
-      "status": "prepared",
+      "status": "configured",
       "successor_key_id": null
     },
     {
@@ -123,7 +123,7 @@
       "public_key_sha256": "97989ea77e4e75079f051f1ed420f452f90a6be32ec272b239ec7484802b3afc",
       "algorithm": "Ed25519",
       "fingerprint_encoding": "raw Ed25519 public key",
-      "status": "prepared",
+      "status": "configured",
       "successor_key_id": null
     },
     {
@@ -133,7 +133,7 @@
       "public_key_sha256": "d06cb9ce1aac3801552b545c69c3219676df965132a75ee14a92244853564ea8",
       "algorithm": "Ed25519",
       "fingerprint_encoding": "raw Ed25519 public key",
-      "status": "prepared",
+      "status": "configured",
       "successor_key_id": null,
       "endpoint_id": "endpoint:286ae94fd33d4e65abb888431fa4795b",
       "endpoint_generation": 1
