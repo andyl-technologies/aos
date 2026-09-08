@@ -6,6 +6,7 @@
   perl,
 }: let
   version = "0.007";
+  runtimeClosureManifest = builtins.toString perl;
 in
   mkDerivation {
     pname = "perl-b-cow";
@@ -48,6 +49,11 @@ in
           make install
           cp -a "$out"/lib/perl5/*-thread-multi/. "$out/lib/perl5/"
           rm -f "$out"/lib/perl5/*/*/perllocal.pod "$out"/lib/perl5/*/*/.packlist
+
+          # The XS module does not retain the interpreter used to load it.
+          mkdir -p "$out/nix-support"
+          echo '${runtimeClosureManifest}' > "$out/nix-support/runtime-closure"
+
           PERL5LIB="$out/lib/perl5" ${perl}/bin/perl -MB::COW -e 1
         '';
       }
