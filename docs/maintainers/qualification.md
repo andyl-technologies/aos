@@ -596,6 +596,21 @@ builds and `--version` checks do not establish complete functionality.
 
 ## Test execution and reuse
 
+Package qualification expands every published package/platform cell into a
+separate case. A package published for both `x86_64-linux` and `aarch64-linux`
+requires successful observations for both; a local check on one architecture
+does not satisfy the other. Package publication support policy determines
+which cells apply. The package probe schema has no architecture selector that
+can silently exempt an otherwise published cell.
+
+`qualify-run` routes each case to its platform's `--executor` mapping. The
+package executor runs natively and validates the requested platform; it does
+not create a VM itself. To qualify packages in Linux VMs, provision an executor
+inside each architecture's VM and route the corresponding mapping to it.
+Installing both executor closures on a coordinator does not establish that
+either ran inside a VM. Retain the execution environment with the resulting
+evidence. Image qualification separately boots the exact published image.
+
 Nix derivations own hermetic evaluation, build, and fixture/fleet regression
 tests. Nix-packaged executors own fresh public-download and live-environment
 qualification. Physical equipment and operator observations use the same
