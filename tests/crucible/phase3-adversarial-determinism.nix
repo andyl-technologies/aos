@@ -34,8 +34,8 @@
         needle = "phase3  gate:adversarial-determinism       (modeled hostile-condition matrix)";
       }
       {
-        label = "production fleet composition";
-        needle = "composed with the live-QEMU production fleet run";
+        label = "production fleet component boundary";
+        needle = "complemented by the live-QEMU production fleet run";
       }
     ]
     ++ failuresFor "crates/crucible-harness/src/adversarial.rs" adversarial [

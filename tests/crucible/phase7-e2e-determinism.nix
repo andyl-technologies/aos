@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.gates.e2eDeterminism",
-  taskIds ? ["T-HARN-23"],
-  openTaskIds ? [],
+  taskIds ? [],
+  openTaskIds ? ["T-HARN-23"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -17,6 +17,8 @@
   defaultChecks = builtins.readFile ./default.nix;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   phase4E2e = builtins.readFile ./phase4-e2e-determinism.nix;
+  fleetRunner = builtins.readFile ./_fleet-runner.nix;
+  rootDefault = builtins.readFile ../../default.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -24,8 +26,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
-        label = "T-HARN-23 production fleet evidence";
-        needle = "Production closure evidence is provided by `checks.fleet.crucible-e2e-determinism`";
+        label = "T-HARN-23 open acceptance evidence";
+        needle = "T-HARN-23 remains open";
       }
     ]
     ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
@@ -36,8 +38,8 @@
     ]
     ++ failuresFor "crates/crucible-cli/tests/gate_e2e_determinism.rs" cliE2eGate [
       {
-        label = "CLI final acceptance artifact test";
-        needle = "gate_e2e_determinism_cli_target_runs_final_acceptance_artifact";
+        label = "CLI modeled artifact component test";
+        needle = "e2e_artifact_component_runs_mock_fault_and_property_corpus";
       }
       {
         label = "fault class coverage";
@@ -52,16 +54,16 @@
         needle = "canonical_host_adversary_matrix()";
       }
       {
-        label = "cross-machine artifact replay";
-        needle = "gate_e2e_determinism_cli_target_replays_from_artifact_on_different_machine_profile";
+        label = "modeled profile artifact replay";
+        needle = "e2e_artifact_component_replays_across_modeled_machine_profiles";
       }
       {
         label = "build identity negative control";
-        needle = "gate_e2e_determinism_cli_target_rejects_build_identity_drift";
+        needle = "e2e_artifact_component_rejects_build_identity_drift";
       }
       {
-        label = "different machine profile negative control";
-        needle = "gate_e2e_determinism_cli_target_requires_cross_machine_reproduction";
+        label = "distinct modeled profile negative control";
+        needle = "e2e_artifact_component_requires_distinct_modeled_machine_profiles";
       }
     ]
     ++ forbiddenFor "crates/crucible-cli/tests/gate_e2e_determinism.rs" cliE2eGate [
@@ -84,11 +86,11 @@
         needle = "pub fn run_mock_e2e_determinism_gate";
       }
       {
-        label = "cross-machine profile replay API";
+        label = "modeled-profile replay API";
         needle = "pub fn reproduce_mock_e2e_artifact_on_profile";
       }
       {
-        label = "different machine profile enforcement";
+        label = "distinct modeled-profile enforcement";
         needle = "MissingDifferentMachineProfile";
       }
     ]
@@ -98,7 +100,7 @@
         needle = "gate_e2e_determinism_runs_fault_injected_multi_vm_artifact_under_adversarial_profiles";
       }
       {
-        label = "harness cross-machine negative control";
+        label = "harness modeled-profile negative control";
         needle = "gate_e2e_determinism_requires_cross_machine_reproduction_profile";
       }
     ]
@@ -126,8 +128,36 @@
     ]
     ++ failuresFor "tests/crucible/phase4-e2e-determinism.nix" phase4E2e [
       {
-        label = "phase4 check records implemented CLI target";
-        needle = "final_acceptance_cli_target=implemented_shared_mock_artifact";
+        label = "phase4 check records modeled component scope";
+        needle = "component=gate:e2e-determinism/scheduler-and-assertion-model";
+      }
+    ]
+    ++ failuresFor "tests/crucible/_fleet-runner.nix" fleetRunner [
+      {
+        label = "live QEMU durable process state root";
+        needle = ''CRUCIBLE_RUN_STATE_ROOT="$FLEET_WORKDIR/run-state"'';
+      }
+    ]
+    ++ failuresFor "default.nix" rootDefault [
+      {
+        label = "packaged QEMU verifier";
+        needle = ''--backend qemu'';
+      }
+      {
+        label = "native slice identifies the exact modeled component";
+        needle = "source_component=checks.crucible.phase7.gates.e2eDeterminism.rawGate";
+      }
+      {
+        label = "positive live fingerprint samples";
+        needle = ''grep -c 'samples=[1-9][0-9]*')'';
+      }
+      {
+        label = "bit-identical live fingerprint streams";
+        needle = ''distinct_fingerprints="$('';
+      }
+      {
+        label = "native slice leaves cross-machine replay open";
+        needle = "missing_evidence=artifact-replay-on-different-machine-profile";
       }
     ];
 in
@@ -205,23 +235,25 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            gate=gate:e2e-determinism
+            component=gate:e2e-determinism/mock-artifact-validation
+            canonical_gate=gate:e2e-determinism
             tasks=${builtins.concatStringsSep "," taskIds}
             open_tasks=${builtins.concatStringsSep "," openTaskIds}
-            status=complete
+            canonical_gate_status=unmet
             owner=crucible-cli
             phase=phase7
             scenario=shared-mock-multi-node-fault-injected-artifact
             artifact=mock-seed-scenario-schedule-build-identity
-            adversarial_profiles=canonical-host-adversary-matrix
-            cross_machine_reproduction=different-machine-profile-replay
+            modeled_adversarial_profiles=canonical-host-adversary-matrix
+            modeled_profile_reproduction=true
+            native_qemu_execution=false
+            cross_machine_reproduction=false
             shared_artifact_format=checks.crucible.phase7.reproductionArtifactFormat
             machine_independent_reproduction=checks.crucible.phase7.machineIndependentReproduction
-            real_host_reproduction=checks.fleet.crucible-e2e-determinism
-            ci_check_class=fleet-check-surface
-            fleet_check_surface=checks.fleet.crucible-e2e-determinism
+            native_reduction_slice=checks.fleet.crucible-e2e-determinism
             ci_wiring_guard=checks.crucible.phase7.crucibleGateCiWiring
-            cli_target=implemented_shared_mock_artifact
+            cli_component=implemented_shared_mock_artifact
+            missing_evidence=artifact-replay-on-different-machine-profile
             RESULT
           '';
         }

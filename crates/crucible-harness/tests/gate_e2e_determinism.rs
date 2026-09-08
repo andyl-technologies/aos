@@ -1,4 +1,6 @@
-//! Implements the harness-level mock `gate:e2e-determinism`.
+//! Tests the harness-level mock artifact used by the end-to-end component checks.
+//!
+//! This target does not execute QEMU or reproduce on another physical machine.
 
 #![forbid(unsafe_code)]
 

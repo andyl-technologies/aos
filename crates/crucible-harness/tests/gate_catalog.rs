@@ -37,7 +37,7 @@ fn canonical_gate_statuses_are_current() {
             }
         })
         .collect();
-    let expected = BTreeSet::new();
+    let expected = BTreeSet::from(["gate:e2e-determinism"]);
 
     assert_eq!(placeholders, expected);
 
@@ -111,7 +111,7 @@ fn canonical_gate_statuses_are_current() {
     ));
     assert!(matches!(
         find_gate("gate:e2e-determinism").map(|spec| spec.status),
-        Some(GateStatus::Implemented)
+        Some(GateStatus::RedPlaceholder)
     ));
     assert!(matches!(
         find_gate("gate:fleet-equivalence").map(|spec| spec.status),

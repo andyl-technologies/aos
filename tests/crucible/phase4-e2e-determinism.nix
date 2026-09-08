@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.gates.e2eDeterminism",
-  taskIds ? ["T-DET-26" "T-ASRT-16"],
+  taskIds ? ["T-ASRT-16"],
+  openTaskIds ? ["T-DET-26"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -25,8 +26,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
       {
-        label = "T-DET-26 completion note";
-        needle = "Completed by `checks.crucible.phase4.gates.e2eDeterminism`";
+        label = "T-DET-26 open acceptance note";
+        needle = "remains open: `checks.crucible.phase4.gates.e2eDeterminism.rawGate`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionsDoc [
@@ -213,8 +214,8 @@
         needle = "pub mod e2e;";
       }
       {
-        label = "e2e canonical gate implemented";
-        needle = "name: \"gate:e2e-determinism\",\n        phase: GatePhase::Phase4,\n        owner: \"crucible-harness\",\n        status: GateStatus::Implemented,";
+        label = "e2e canonical gate remains red";
+        needle = "name: \"gate:e2e-determinism\",\n        phase: GatePhase::Phase4,\n        owner: \"crucible-harness\",\n        status: GateStatus::RedPlaceholder,";
       }
     ]
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
@@ -223,22 +224,22 @@
         needle = "gate: \"gate:e2e-determinism\",\n        package: \"crucible\",\n        test_target: \"gate_e2e_determinism_concurrency\",\n        required_features: &[\"test-double\"],\n        placeholder: false,";
       }
       {
-        label = "implemented CLI final e2e target";
+        label = "implemented CLI artifact component target";
         needle = "gate: \"gate:e2e-determinism\",\n        package: \"crucible-cli\",\n        test_target: \"gate_e2e_determinism\",\n        required_features: &[],\n        placeholder: false,";
       }
     ]
     ++ failuresFor "crates/crucible-cli/tests/gate_e2e_determinism.rs" cliE2eGate [
       {
-        label = "CLI e2e final acceptance implemented";
-        needle = "gate_e2e_determinism_cli_target_runs_final_acceptance_artifact";
+        label = "CLI modeled artifact component";
+        needle = "e2e_artifact_component_runs_mock_fault_and_property_corpus";
       }
       {
         label = "CLI e2e build identity negative control";
-        needle = "gate_e2e_determinism_cli_target_rejects_build_identity_drift";
+        needle = "e2e_artifact_component_rejects_build_identity_drift";
       }
       {
-        label = "CLI e2e cross-machine negative control";
-        needle = "gate_e2e_determinism_cli_target_requires_cross_machine_reproduction";
+        label = "CLI modeled-profile negative control";
+        needle = "e2e_artifact_component_requires_distinct_modeled_machine_profiles";
       }
     ]
     ++ forbiddenFor "crates/crucible-cli/tests/gate_e2e_determinism.rs" cliE2eGate [
@@ -257,7 +258,7 @@
         needle = "gate = import ./phase4-e2e-determinism.nix";
       }
       {
-        label = "phase7 e2e final acceptance green check";
+        label = "phase7 e2e component check";
         needle = "gate = import ./phase7-e2e-determinism.nix";
       }
     ]
@@ -277,8 +278,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
-        label = "T-HARN-23 production fleet evidence note";
-        needle = "Production closure evidence is provided by `checks.fleet.crucible-e2e-determinism`";
+        label = "T-HARN-23 open native acceptance note";
+        needle = "T-HARN-23 remains open";
       }
     ];
 in
@@ -350,13 +351,18 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            gate=gate:e2e-determinism
+            component=gate:e2e-determinism/scheduler-and-assertion-model
+            canonical_gate=gate:e2e-determinism
+            canonical_gate_status=unmet
             tasks=${builtins.concatStringsSep "," taskIds}
+            open_tasks=${builtins.concatStringsSep "," openTaskIds}
             backend=crucible-scheduler
             scenario=serial-vs-concurrent-authoritative-drive
             artifact=self-contained-seed-scenario-schedule-build-identity
-            adversarial_profiles=canonical-host-adversary-matrix
-            final_acceptance_cli_target=implemented_shared_mock_artifact
+            modeled_adversarial_profiles=canonical-host-adversary-matrix
+            cli_artifact_component=implemented-shared-mock-artifact
+            native_qemu_execution=false
+            cross_machine_reproduction=false
             assertion_online_offline_outcomes=bit-identical
             assertion_cross_mode_outcomes=normalized-bit-identical
             assertion_run_verdict=deterministic

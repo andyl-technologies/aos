@@ -1,9 +1,9 @@
-//! Canonical mapping from gate names to isolable Cargo test targets.
+//! Mapping from canonical gate names to isolable Cargo component tests.
 //!
 //! RFC-0010 file 27 requires each per-layer determinism gate to have an
-//! addressable test target in the crate that owns it. Most real gate bodies are
-//! intentionally still later-phase work; this map names the targets without
-//! marking those gates implemented.
+//! addressable test target in the crate that owns it. A mapped target proves
+//! its crate-level contribution; it does not by itself discharge an aggregate
+//! gate that also requires packaged processes, VM execution, or host variation.
 
 /// A named Cargo test target for a determinism gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -263,9 +263,9 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         required_features: &[],
         placeholder: false,
     },
-    // The canonical e2e-determinism gate is the crucible-side real-simulator test
-    // that anchors serial-vs-concurrent driving to the authoritative `drive_quantum`
-    // path, not the harness-side mock artifact.
+    // These targets cover the scheduler and artifact-format components. The
+    // aggregate acceptance gate additionally requires packaged-QEMU execution
+    // and artifact replay on a different machine profile.
     GateTargetSpec {
         gate: "gate:e2e-determinism",
         package: "crucible",

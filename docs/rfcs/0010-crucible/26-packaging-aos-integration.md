@@ -742,30 +742,31 @@ carries findings across an incompatible build.
   - Completed by `checks.crucible.phase7.crucibleGateCiWiring`: the CI guard
     classifies the canonical determinism gates into eval-class L0/L1/ABI checks,
     package-class `checks.integration.qemu-crucible-*` checks, and the phase-7
-    `checks.fleet.crucible-e2e-determinism` fleet check surface for
-    `gate:e2e-determinism`. It fails if the checked canonical gate targets or
+    `checks.fleet.crucible-e2e-determinism` native fleet slice for
+    `gate:e2e-determinism`. It fails if the checked gate components or
     required green-before-advance dependency edges drift from the current wiring.
     `T-PKG-15` supplies the concrete TCG-only VM/fleet runner for the e2e scenario.
-- [x] **T-PKG-15** Wire `gate:e2e-determinism` as a VM/fleet check that builds the
+- [ ] **T-PKG-15** Wire `gate:e2e-determinism` as a VM/fleet check that builds the
   whole Crucible closure and runs the adversarial multi-VM + reproduce scenario,
   **without** `requiredSystemFeatures = [ "kvm" ]` (TCG only). — satisfies
   [PKG-29], [PKG-30]; spec §26.8.
-  - Completed by `checks.fleet.crucible-e2e-determinism`: the fleet check is now a
-    real AOS VM/fleet runner (`tests/crucible/_fleet-runner.nix`) rather than a
-    surface-only gate wrapper. It assembles the **entire Crucible closure**
+  - Partially implemented by `checks.fleet.crucible-e2e-determinism`: the check
+    is a real packaged-QEMU runner (`tests/crucible/_fleet-runner.nix`). It
+    assembles the **entire Crucible closure**
     hermetically as build inputs — `pkgs.crucible` (which carries `qemu-crucible`
     and `crucible-qemu-plugin` through its `runtimeDeps`), `pkgs.linux-crucible`,
     and `pkgs.crucible-fixtures` ([PKG-1], [PKG-29]) — and **executes the built
-    `crucible` CLI end to end** over the built-in adversarial multi-node,
-    fault-injected example corpus (`happy-path.scn`, `partition-recovery.scn`,
-    `crash-restart.scn`, `fault-campaign.fam`) under the hostile host-condition
-    matrix (`verify --adversarial --bisect --runs 2`), asserting bit-identical
-    reductions and reproduction — the representative multi-VM + reproduce scenario
-    of §26.8. The runner **never** sets `requiredSystemFeatures = [ "kvm" ]` and
+    `crucible` CLI** over the built-in multi-node, fault-injected example corpus
+    (`happy-path.scn`, `partition-recovery.scn`, `crash-restart.scn`,
+    `fault-campaign.fam`) with `verify --adversarial --bisect --runs 2`. It
+    asserts non-empty, bit-identical live event and fingerprint streams across
+    observer scheduling perturbations. Artifact replay under a different
+    effective CPU-affinity and scheduler-preemption profile remains open. The runner **never** sets
+    `requiredSystemFeatures = [ "kvm" ]` and
     records `tcg_only=true`, `required_system_features=none`, `kvm_required=false`
-    ([PKG-30], [G-1]). The phase7 e2e gate
-    (`checks.crucible.phase7.gates.e2eDeterminism`, the in-process determinism
-    proof of the same scenario) is consumed as a green precondition. The same
+    ([PKG-30], [G-1]). The phase7 mock-artifact component
+    (`checks.crucible.phase7.gates.e2eDeterminism.rawGate`) is consumed as a green
+    precondition. The same
     `mkCrucibleFleetCheck` substrate is reused by the real-VM performance checks.
     Each independent reduction uses `--backend qemu` and launches the
     closure-owned `qemu-crucible` with the production plugin under TCG against

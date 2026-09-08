@@ -795,19 +795,17 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     model-side single-VM fingerprint adversarial matrix through the shared
     runner while leaving the later `gate:adversarial-determinism` placeholder
     untouched.
-- [x] **T-DET-26** Implement `gate:e2e-determinism`: a representative multi-VM
+- [ ] **T-DET-26** Implement `gate:e2e-determinism`: a representative multi-VM
   fault-injected scenario runs bit-identically under adversarial conditions and
   reproduces from its self-contained artifact. — satisfies [DET-40], [DET-4],
   [G-1]; spec §4.11.
-  - Completed by `checks.crucible.phase4.gates.e2eDeterminism`: the harness-level
-    mock backend now runs a representative multi-node partition-recovery artifact
-    containing `(seed, scenario, schedule, build identity)` across the canonical
-    adversarial host profile matrix, compares canonical logs and final
-    fingerprints, verifies reproduction from the artifact, and rejects build
-    identity, fault-corpus, and schedule-drift regressions. The phase7 CLI-owned
-    target is completed by `checks.crucible.phase7.gates.e2eDeterminism` over
-    the same shared mock artifact route; the real artifact format, real-host
-    reproduction check, and AOS VM/fleet wiring remain later tasks.
+  - T-DET-26 remains open: `checks.crucible.phase4.gates.e2eDeterminism.rawGate`
+    and `checks.crucible.phase7.gates.e2eDeterminism.rawGate` cover scheduler
+    and mock artifact semantics. `checks.fleet.crucible-e2e-determinism` executes each
+    reduction through the packaged QEMU/plugin lifecycle and compares non-empty
+    live fingerprint and event streams under observer scheduling perturbations.
+    The required artifact replay on a different machine profile is not yet an
+    executed acceptance check.
 - [x] **T-DET-27** Add the `gate:replay-oracle` reproduction-artifact round-trip:
   re-run from `(seed, scenario, schedule, build identity)` and assert
   fingerprint and oracle equality. — satisfies [DET-28], [DET-41], [DET-40];
