@@ -69,7 +69,8 @@ impl SingleScheduler {
         };
         let target = next
             .min(self.time_limit)
-            .min(self.branch_frontier_cap.unwrap_or(next));
+            .min(self.branch_frontier_cap.unwrap_or(next))
+            .min(self.attempt_stop_frontier_cap.unwrap_or(next));
         if target.nanos <= self.frontier.ticks {
             return false;
         }

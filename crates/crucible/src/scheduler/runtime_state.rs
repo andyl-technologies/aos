@@ -412,6 +412,8 @@ pub struct SingleScheduler {
     pub(super) time_limit: SimInstant,
     /// Runtime-only common-time cap for an exact production branch boundary.
     pub(super) branch_frontier_cap: Option<SimInstant>,
+    /// Runtime-only common-time cap for the caller's current modeled stop.
+    pub(super) attempt_stop_frontier_cap: Option<SimInstant>,
     pub(super) rendezvous: SchedulerRendezvous,
     pub(super) effective_topology: SchedulerLookaheadGraph,
     pub(super) nodes: Vec<RuntimeSchedulerNode>,

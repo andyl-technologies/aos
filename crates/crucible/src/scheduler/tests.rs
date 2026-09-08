@@ -1315,6 +1315,52 @@ fn test_scheduler(
 }
 
 #[test]
+fn attempt_stop_frontier_precedes_branch_and_trigger_horizons() {
+    let mut scheduler = test_scheduler(
+        vec![test_scenario_node(
+            "node-a",
+            0,
+            SchedulerNodeActivity::Runnable,
+            NetworkLookahead::Infinite,
+            ExactLocalEvent::NoArmedTimer,
+        )],
+        Vec::new(),
+    );
+    scheduler
+        .set_trigger_wakeup(Some(VirtualTime { ticks: 30 }), None)
+        .unwrap_or_else(|error| panic!("trigger wakeup should install: {error}"));
+    scheduler
+        .set_branch_frontier_cap(VirtualTime { ticks: 25 })
+        .unwrap_or_else(|error| panic!("branch frontier should install: {error}"));
+    scheduler
+        .set_attempt_stop_frontier(Some(VirtualTime { ticks: 20 }))
+        .unwrap_or_else(|error| panic!("attempt stop should install: {error}"));
+
+    let outcome = scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("attempt-capped quantum should run: {error}"));
+
+    assert_eq!(outcome.frontier, VirtualTime { ticks: 20 });
+    assert!(!scheduler.reached_time_limit().unwrap_or_else(|error| {
+        panic!("scenario terminal state should remain inspectable: {error}")
+    }));
+
+    scheduler
+        .set_attempt_stop_frontier(None)
+        .unwrap_or_else(|error| panic!("attempt stop should clear: {error}"));
+    let continued = scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("cleared attempt cap should continue: {error}"));
+    assert_eq!(continued.frontier, VirtualTime { ticks: 25 });
+}
+
+#[test]
 fn signal_fault_frontier_preserves_parent_time_and_typed_candidates() {
     let mut scheduler = test_scheduler(Vec::new(), Vec::new());
     let parent = scheduler.configuration().clone();
@@ -1380,6 +1426,9 @@ fn single_scheduler_checkpoint_round_trips_complete_device_and_event_state() {
     let pending = event(17, &consumer, &producer, 0, b"pending-input");
     let mut scheduler = test_scheduler(vec![node.clone()], vec![pending.clone()]);
     scheduler = scheduler.with_device_sub_node(disk_with_reads("a", "disk-a", &[(11, 8)]));
+    scheduler
+        .set_attempt_stop_frontier(Some(VirtualTime { ticks: 23 }))
+        .unwrap_or_else(|error| panic!("attempt stop should install: {error}"));
     let retained = ObservableEvent::console_output(
         VirtualTime { ticks: 11 },
         NodeId {
@@ -1408,6 +1457,7 @@ fn single_scheduler_checkpoint_round_trips_complete_device_and_event_state() {
         .restore_into(&mut restored)
         .unwrap_or_else(|error| panic!("scheduler checkpoint should restore: {error}"));
 
+    assert_eq!(restored.attempt_stop_frontier_cap, None);
     assert_eq!(
         restored
             .checkpoint()

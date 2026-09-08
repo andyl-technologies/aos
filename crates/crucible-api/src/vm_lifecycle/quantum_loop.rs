@@ -185,6 +185,25 @@ impl ProductionVmLifecycleLoop {
         self.promote_signal_fault_campaign_choices = true;
     }
 
+    /// Installs the exact nonterminal frontier for the active modeled attempt.
+    ///
+    /// The scheduler composes this caller-owned frontier with its trigger,
+    /// branch, topology, and rendezvous horizons before it advances a backend.
+    /// Passing `None` clears the prior attempt's frontier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `frontier` precedes
+    /// the scheduler's committed frontier.
+    pub fn set_attempt_stop_frontier(
+        &mut self,
+        frontier: Option<VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        self.inner
+            .loop_impl_mut()
+            .set_attempt_stop_frontier(frontier)
+    }
+
     fn authenticate_signal_fault_campaign_branch(
         &self,
         branch: &crucible::SignalFaultCampaignBranch,

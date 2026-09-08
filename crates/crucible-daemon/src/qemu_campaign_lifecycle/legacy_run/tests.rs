@@ -67,6 +67,13 @@ enum TerminalLifecycleMode {
 impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
     fn enable_signal_fault_campaign_promotion(&mut self) {}
 
+    fn set_attempt_stop_frontier(
+        &mut self,
+        _frontier: Option<crucible::VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         self.completed_quanta = self.completed_quanta.saturating_add(1);
         self.frontier.ticks = match self.mode {
@@ -219,6 +226,13 @@ struct SelectableLifecycle {
 
 impl QemuFreshAttemptLifecycleOwner for SelectableLifecycle {
     fn enable_signal_fault_campaign_promotion(&mut self) {}
+
+    fn set_attempt_stop_frontier(
+        &mut self,
+        _frontier: Option<crucible::VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        Ok(())
+    }
 
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         self.completed_quanta = self.completed_quanta.saturating_add(1);

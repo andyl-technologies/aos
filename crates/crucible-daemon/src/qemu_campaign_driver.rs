@@ -534,6 +534,19 @@ impl QemuFreshModeledDriver {
 /// hot materialization must implement this same boundary before the common
 /// modeled driver can produce campaign evidence.
 pub trait QemuModeledAttemptLifecycle {
+    /// Installs the exact nonterminal scheduler frontier for this attempt.
+    ///
+    /// Passing `None` clears the prior attempt's frontier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the lifecycle cannot install the
+    /// frontier without crossing its current scheduler boundary.
+    fn set_attempt_stop_frontier(
+        &mut self,
+        frontier: Option<VirtualTime>,
+    ) -> Result<(), SchedulerError>;
+
     /// Advances exactly one scheduler quantum.
     ///
     /// # Errors
@@ -586,6 +599,13 @@ pub trait QemuModeledAttemptLifecycle {
 }
 
 impl QemuModeledAttemptLifecycle for QemuFreshAttemptLifecycle<'_> {
+    fn set_attempt_stop_frontier(
+        &mut self,
+        frontier: Option<VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        QemuFreshAttemptLifecycle::set_attempt_stop_frontier(self, frontier)
+    }
+
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         QemuFreshAttemptLifecycle::drive_quantum(self, request)
     }
@@ -868,6 +888,9 @@ fn drive_modeled_attempt_inner(
             },
         ));
     }
+    lifecycle
+        .set_attempt_stop_frontier(None)
+        .map_err(classify_scheduler_error)?;
     let mut terminal_at = frontier;
     let mut discoveries = RetainedChoiceDiscoveries::default();
     check_cancellation(context)?;
@@ -1024,6 +1047,12 @@ fn drive_modeled_attempt_inner(
                 attempt_event_count: observed_event_count,
             },
         );
+    }
+
+    if let Some(frontier) = requested_attempt_stop_frontier(input.attempt().stop()) {
+        lifecycle
+            .set_attempt_stop_frontier(Some(frontier))
+            .map_err(classify_scheduler_error)?;
     }
 
     loop {
@@ -1192,6 +1221,23 @@ fn drive_modeled_attempt_inner(
                 attempt_event_count: observed_event_count,
             },
         );
+    }
+}
+
+fn requested_attempt_stop_frontier(requested: &StopCondition) -> Option<VirtualTime> {
+    match requested {
+        StopCondition::VirtualTimeNanoseconds(deadline) => Some(VirtualTime { ticks: *deadline }),
+        StopCondition::VirtualTimeOrExecutionQuanta {
+            virtual_time_nanoseconds,
+            ..
+        } => Some(VirtualTime {
+            ticks: *virtual_time_nanoseconds,
+        }),
+        StopCondition::NextChoice
+        | StopCondition::NamedBoundary(_)
+        | StopCondition::EventCount(_)
+        | StopCondition::Terminal
+        | StopCondition::ExecutionQuanta(_) => None,
     }
 }
 

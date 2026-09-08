@@ -1256,10 +1256,15 @@ impl SingleScheduler {
             self.rendezvous,
         )?;
         let topology_cap = self.pending_topology_activation_cap()?;
-        Ok([fixed_cap, topology_cap, self.branch_frontier_cap]
-            .into_iter()
-            .flatten()
-            .min())
+        Ok([
+            fixed_cap,
+            topology_cap,
+            self.branch_frontier_cap,
+            self.attempt_stop_frontier_cap,
+        ]
+        .into_iter()
+        .flatten()
+        .min())
     }
 
     pub(super) fn drive_concurrent_authoritative_quantum(

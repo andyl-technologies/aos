@@ -51,6 +51,13 @@ impl QemuFreshAttemptLifecycleOwner for FakeResumeLifecycle {
         panic!("exact resume tests must not use the fresh-attempt promotion gate");
     }
 
+    fn set_attempt_stop_frontier(
+        &mut self,
+        _frontier: Option<crucible::VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
     fn drive_quantum(
         &mut self,
         _request: crucible::QuantumRequest,

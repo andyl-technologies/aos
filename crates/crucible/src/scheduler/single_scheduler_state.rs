@@ -272,6 +272,7 @@ impl SingleScheduler {
             quantum_budget: scenario.quantum_budget,
             time_limit: scenario.time_limit,
             branch_frontier_cap: None,
+            attempt_stop_frontier_cap: None,
             rendezvous: scenario.rendezvous,
             effective_topology: scenario.effective_topology,
             nodes,

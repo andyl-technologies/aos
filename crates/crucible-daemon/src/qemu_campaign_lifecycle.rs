@@ -13,7 +13,7 @@ use crucible::{
     CheckpointTerminalCause, Configuration, ContentHash, Decision, FingerprintSample, NodeId,
     QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ScenarioDef,
     ScenarioDefForm, SchedulerError, SchedulerEventLogEntry, SchedulerOperationalFailureClass,
-    SchedulerQuiescence, SelectionDecision,
+    SchedulerQuiescence, SelectionDecision, VirtualTime,
 };
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
@@ -119,6 +119,22 @@ pub trait QemuFreshAttemptLifecycleOwner {
     /// has been materialized. Previously retained signal-fault frontiers remain
     /// replay-only evidence and cannot become discoveries retroactively.
     fn enable_signal_fault_campaign_promotion(&mut self);
+
+    /// Installs an exact nonterminal scheduler frontier for this attempt.
+    ///
+    /// Passing `None` clears the prior attempt's frontier.
+    ///
+    /// Deterministic fixture lifecycles whose outcomes are already bounded may
+    /// accept the frontier without additional work.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the lifecycle cannot install the
+    /// frontier without crossing its current scheduler boundary.
+    fn set_attempt_stop_frontier(
+        &mut self,
+        frontier: Option<VirtualTime>,
+    ) -> Result<(), SchedulerError>;
 
     /// Advances one scheduler quantum under the attempt resource guard.
     ///
@@ -268,6 +284,13 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         ProductionVmLifecycleLoop::enable_signal_fault_campaign_promotion(self);
     }
 
+    fn set_attempt_stop_frontier(
+        &mut self,
+        frontier: Option<VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        ProductionVmLifecycleLoop::set_attempt_stop_frontier(self, frontier)
+    }
+
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         QuantumLoop::drive_quantum(self, request)
     }
@@ -406,6 +429,21 @@ impl QemuFreshAttemptLifecycle<'_> {
         request: QuantumRequest,
     ) -> Result<QuantumOutcome, SchedulerError> {
         self.owner.drive_quantum(request)
+    }
+
+    /// Installs the exact nonterminal frontier for the current attempt.
+    ///
+    /// Passing `None` clears the prior attempt's frontier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the lifecycle cannot install the
+    /// frontier without crossing its current scheduler boundary.
+    pub fn set_attempt_stop_frontier(
+        &mut self,
+        frontier: Option<VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        self.owner.set_attempt_stop_frontier(frontier)
     }
 
     /// Returns the absolute scheduler-quantum coordinate at the current boundary.

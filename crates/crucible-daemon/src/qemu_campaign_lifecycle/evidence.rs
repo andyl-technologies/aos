@@ -8,7 +8,7 @@
 
 use crucible::{
     Configuration, FingerprintSample, NodeId, QuantumTerminalVerdict, SchedulerError,
-    SchedulerEventLogEntry, SelectionDecision,
+    SchedulerEventLogEntry, SelectionDecision, VirtualTime,
 };
 
 // crucible-lint: allow host-nondeterminism-state -- the observer forwards scheduler-owned quantum requests and records successful outcomes without selecting modeled state.
@@ -63,6 +63,13 @@ where
 {
     fn enable_signal_fault_campaign_promotion(&mut self) {
         self.lifecycle.enable_signal_fault_campaign_promotion();
+    }
+
+    fn set_attempt_stop_frontier(
+        &mut self,
+        frontier: Option<VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        self.lifecycle.set_attempt_stop_frontier(frontier)
     }
 
     // crucible-lint: allow host-nondeterminism-state -- quantum authority remains with the wrapped scheduler lifecycle; this wrapper retains its successful result.

@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 // crucible-lint: allow host-nondeterminism-state -- immutable scheduler inputs are forwarded through lifecycle ownership while status remains operational-only.
 use crucible::{Configuration, ScenarioDef, SelectionDecision};
-use crucible::{ScenarioDefForm, SchedulerError, SchedulerEventLogEntry};
+use crucible::{ScenarioDefForm, SchedulerError, SchedulerEventLogEntry, VirtualTime};
 // crucible-lint: allow host-nondeterminism-state -- These engine types are forwarded only through scheduler-owned lifecycle traits; operational observations never influence engine state.
 use crucible::{QuantumOutcome, QuantumRequest, QuantumTerminalVerdict};
 // crucible-lint: allow host-nondeterminism-state -- The wrapper preserves the validated production lifecycle boundary and observes only ownership phases.
@@ -491,6 +491,13 @@ where
 {
     fn enable_signal_fault_campaign_promotion(&mut self) {
         self.inner.enable_signal_fault_campaign_promotion();
+    }
+
+    fn set_attempt_stop_frontier(
+        &mut self,
+        frontier: Option<VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        self.inner.set_attempt_stop_frontier(frontier)
     }
 
     // crucible-lint: allow host-nondeterminism-state -- Quantum ownership remains with the wrapped lifecycle; this method forwards the request and outcome unchanged.
