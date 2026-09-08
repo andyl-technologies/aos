@@ -247,6 +247,7 @@ impl CampaignRepository {
                             self.validate_derivation_successor(
                                 &parent_snapshot,
                                 &loaded,
+                                transition.content_id(),
                                 derivation,
                                 &mut validated_generator_policies,
                             )?;
@@ -696,6 +697,7 @@ impl CampaignRepository {
         &self,
         parent: &LoadedSnapshot,
         child: &LoadedSnapshot,
+        transition_content: ContentId,
         derivation: CampaignDerivation,
         validated_generator_policies: &mut BTreeSet<CampaignPolicyId>,
     ) -> Result<(), CampaignRepositoryError> {
@@ -712,7 +714,8 @@ impl CampaignRepository {
         let lineage = self.read_lineage(parent.snapshot.lineage().content_id())?;
         let prior_policy = self.read_policy(parent.snapshot.active_policy().content_id())?;
         let next_policy = self.read_policy(derivation.active_policy().content_id())?;
-        if next_policy.scenario() != lineage.scenario() || next_policy.mode() != prior_policy.mode()
+        if next_policy.scenario() != lineage.scenario()
+            || !derivation_modes_are_compatible(prior_policy.mode(), next_policy.mode())
         {
             return Err(integrity("derivation-policy-incompatible-with-source"));
         }
@@ -724,13 +727,25 @@ impl CampaignRepository {
 
         let prior_roots = parent.snapshot.roots();
         let next_roots = child.snapshot.roots();
+        let accounting_matches =
+            if is_streaming_to_strict_migration(prior_policy.mode(), next_policy.mode()) {
+                let anchor = self
+                    .strict_migration_sequence_anchor(prior_roots.accounting, transition_content)?;
+                self.merkle.equals_after_upserts(
+                    prior_roots.accounting,
+                    next_roots.accounting,
+                    &BTreeMap::from([(observation_sequence_key(), anchor)]),
+                )?
+            } else {
+                prior_roots.accounting == next_roots.accounting
+            };
         if prior_roots.graph != next_roots.graph
             || prior_roots.observations != next_roots.observations
             || prior_roots.corpus != next_roots.corpus
             || prior_roots.coverage != next_roots.coverage
             || prior_roots.findings != next_roots.findings
             || prior_roots.pins != next_roots.pins
-            || prior_roots.accounting != next_roots.accounting
+            || !accounting_matches
         {
             return Err(integrity("derivation-transition-changed-semantic-root"));
         }

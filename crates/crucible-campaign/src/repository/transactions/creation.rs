@@ -187,8 +187,10 @@ impl CampaignRepository {
     /// The source ref is never mutated. The derived ref begins with one audited
     /// derivation transition whose parent is the exact requested source
     /// snapshot. A compatible supplied policy becomes active atomically with
-    /// ref creation; omitting it preserves the source policy. Exact retries are
-    /// resolved from the derived history even after later mutations.
+    /// ref creation. Strict and streaming policies may migrate between those
+    /// modes; statistical policies remain in their original mode. Omitting a
+    /// policy preserves the source policy. Exact retries are resolved from the
+    /// derived history even after later mutations.
     ///
     /// # Errors
     ///
@@ -219,9 +221,12 @@ impl CampaignRepository {
 
         let lineage = self.read_lineage(source.snapshot.lineage().content_id())?;
         let prior_policy = self.read_policy(source.snapshot.active_policy().content_id())?;
+        let prior_mode = prior_policy.mode();
         let active_policy = match policy {
             Some(next) => {
-                if next.scenario() != lineage.scenario() || next.mode() != prior_policy.mode() {
+                if next.scenario() != lineage.scenario()
+                    || !derivation_modes_are_compatible(prior_mode, next.mode())
+                {
                     return Err(CampaignRepositoryError::InvalidRequest {
                         reason: "derived policy is incompatible with the source campaign",
                     });
@@ -265,6 +270,15 @@ impl CampaignRepository {
         let fact = CampaignFact::CampaignDerived(derivation);
         let transition_content = self.put_fact(&fact)?;
         let mut roots = source.snapshot.roots();
+        let active_mode = policy.map_or(prior_mode, CampaignPolicy::mode);
+        if is_streaming_to_strict_migration(prior_mode, active_mode) {
+            let anchor =
+                self.strict_migration_sequence_anchor(roots.accounting, transition_content)?;
+            roots.accounting = self
+                .merkle
+                .insert(roots.accounting, observation_sequence_key(), anchor)?
+                .content_id();
+        }
         roots.coordination = self.coordination_with_parent_result(source_content, &source)?;
         let next = self.budgeted_successor(
             source_snapshot,

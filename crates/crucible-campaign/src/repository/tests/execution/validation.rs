@@ -3,6 +3,14 @@
 use super::*;
 
 #[test]
+fn observation_ordinal_key_preserves_the_persisted_two_layer_identity() {
+    assert_eq!(
+        observation_ordinal_key(AdmissionOrdinal::new(3)).to_hex(),
+        "dd44cfc393c27fe74fc0f8ee6f953dcbf94880589faed965da05e4b802d06225"
+    );
+}
+
+#[test]
 fn observation_growth_bound_rebases_and_remains_restart_readable() {
     let (repository, lineage, policy) = fixture();
     let (_, admitted, observation) =

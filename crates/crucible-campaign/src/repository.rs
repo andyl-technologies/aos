@@ -1594,6 +1594,34 @@ fn observation_sequence_key() -> CampaignHash {
     CampaignHash::derive("crucible.campaign-observation-sequence.v1", b"")
 }
 
+fn observation_ordinal_key(ordinal: AdmissionOrdinal) -> CampaignHash {
+    let ordinal = CampaignHash::derive(
+        "crucible.campaign-observation-ordinal.v1",
+        &ordinal.value().to_be_bytes(),
+    );
+    map_key_hash("accounting.observation-ordinal", ordinal)
+}
+
+fn non_modeled_ordinal_key(ordinal: AdmissionOrdinal) -> CampaignHash {
+    CampaignHash::derive(
+        "crucible.campaign-accounting-admission-disposition.v1",
+        &ordinal.value().to_be_bytes(),
+    )
+}
+
+fn derivation_modes_are_compatible(prior: CampaignMode, next: CampaignMode) -> bool {
+    prior == next
+        || matches!(
+            (prior, next),
+            (CampaignMode::Strict, CampaignMode::Streaming)
+                | (CampaignMode::Streaming, CampaignMode::Strict)
+        )
+}
+
+fn is_streaming_to_strict_migration(prior: CampaignMode, next: CampaignMode) -> bool {
+    prior == CampaignMode::Streaming && next == CampaignMode::Strict
+}
+
 pub(crate) fn attempt_index_key(attempt: AttemptId) -> CampaignHash {
     map_key_content("accounting.attempt", attempt.content_id())
 }
