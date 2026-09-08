@@ -721,6 +721,7 @@ let
     "kubernetes/_source.nix" = "mixed-source";
     "toolchain/_bazel.nix" = "native-build-helper";
     "toolchain/go/_go-darwin.nix" = "cross-build-helper";
+    "toolchain/go/_go-linux-cross.nix" = "cross-build-helper";
     "toolchain/java/_darwin-mig.nix" = "linux-only-build-helper";
     "toolchain/java/_openjdk-bootstrap.nix" = "native-build-helper";
     "toolchain/llvm/_llvm.nix" = "cross-build-helper";
