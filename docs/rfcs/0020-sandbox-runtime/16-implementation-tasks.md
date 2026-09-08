@@ -4768,3 +4768,53 @@ composition, or root-guest positive BPF observation has qualified the path. No
 namespace, veth, route, nftables or BPF mutation is implemented, and Apply
 remains unadvertised. The Network runtime and end-to-end qualification tasks
 remain open.
+
+### Network custody and observer qualification (in progress)
+
+The current source closes the descriptor-backed observation gaps above. A safe
+`RTM_GETNSID` wrapper now derives the local namespace ID only from a retained
+peer descriptor. The single-threaded observer validates protected lifecycle
+publication against systemd activation custody, proves the host and sandbox
+veth ends through reciprocal descriptor-derived namespace IDs, and restores
+the retained initial-host namespace after every successful transition. Failure
+to restore terminates the worker instead of returning from an unknown network
+namespace. The composed stable snapshot reads rtnetlink, the exact
+`inet aos_sandbox` nftables table, and the retained lease-gate BPF graph twice
+before admitting one observation.
+
+The real-systemd x86_64 fleet gate now passes isolated and managed observer
+paths from signed admission through protected preparation, operation, namespace
+catalog, retained nsfs custody, real `iproute2` and nftables inventory, and
+observer-scoped BPF pins. Its false-peer control preserves the expected link
+indexes, reciprocal peer indexes, names, MAC addresses, MTUs, veth kind, and
+complete flags while moving the physical peers into two unauthorized
+namespaces. The observer rejects that substitution as `PeerMismatch` only after
+proving restoration to the initial host namespace. The gate also covers
+immutable observer and BPF-object custody and rejects writable or symlinked
+substitutes.
+
+The same gate qualifies descriptor-store acceptance and exact readback,
+idempotent replay, retention across process crash and service restart,
+fail-closed deliberate stop/start when the protected pin is absent, actual
+manager-capacity partial acceptance, and post-mutation denial, malformed-row,
+and inconsistent-count ambiguity followed by process-lifetime poisoning. A
+systemd dump path is treated only as diagnostic text because `fd_get_path()`
+may report an nsfs name, bind path, or deleted bind path; the adapter continues
+to require a read-only typed namespace descriptor and exact device/inode
+identity. Same-name identity substitution is ambiguous and poisons subsequent
+operations.
+
+The exact fleet derivation
+`/nix/store/pf9g9323wa9k5hhjxj820hnbp93faldi-aos-fleet-test-sandbox-network-namespace-custody-0.drv`
+passes at
+`/nix/store/9lkq2p5v8cxxmda8zcflz5nz8nvxk3f0-aos-fleet-test-sandbox-network-namespace-custody-0`.
+The complete Network all-target suite passes 138 library tests and the
+`aos-netd` binary test; the 13 focused namespace-store tests, Rust formatting,
+and all-target no-dependency Clippy with warnings denied also pass.
+
+This qualifies the current custody and read-only observer composition, not
+Network Apply. No production namespace/veth/address/route/nftables/BPF mutator,
+authenticated Apply handler, controller dispatch and orchestration, guardian
+coupling, or full production lifecycle end-to-end test exists yet. Apply
+remains unadvertised, and `SBX-NET-01`, `SBX-NET-02`, `SBX-NET-03`, and
+`SBX-P0-06` remain open.
