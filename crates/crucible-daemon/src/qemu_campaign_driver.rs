@@ -264,6 +264,45 @@ pub struct QemuSavepointReplayProof {
     attempt_event_count: Option<u64>,
 }
 
+/// Authenticated event prefix reconstructed at an ordinary attempt's start.
+///
+/// The proof is sealed before lifecycle shutdown, so it covers inherited
+/// genesis-to-start evidence and excludes later same-attempt and final-drain
+/// events. Exact resume uses that boundary to derive attempt-local progress.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuAttemptStartReplayProof {
+    configuration: ContentHash,
+    event_count: u64,
+    event_digest: [u8; 32],
+}
+
+impl QemuAttemptStartReplayProof {
+    pub(crate) fn from_reached_boundary(
+        configuration: &Configuration,
+        entries: &[SchedulerEventLogEntry],
+    ) -> Result<Self, QemuFreshModeledDriverError> {
+        let event_count = u64::try_from(entries.len())
+            .map_err(|_| QemuFreshModeledDriverError::SavepointReplayProof)?;
+        Ok(Self {
+            configuration: configuration.id(),
+            event_count,
+            event_digest: savepoint_event_prefix_digest(entries),
+        })
+    }
+
+    pub(crate) fn attempt_event_count(
+        self,
+        start: &Configuration,
+        entries: &[SchedulerEventLogEntry],
+    ) -> Option<usize> {
+        let event_count = usize::try_from(self.event_count).ok()?;
+        let prefix = entries.get(..event_count)?;
+        (self.configuration == start.id()
+            && self.event_digest == savepoint_event_prefix_digest(prefix))
+        .then_some(entries.len() - event_count)
+    }
+}
+
 impl QemuSavepointReplayProof {
     /// Binds a reached configuration to its scheduler coordinate and complete
     /// event prefix.

@@ -7,7 +7,7 @@
 //! keeps fresh execution and durable paused-root resume on disjoint runners.
 
 use crucible::{Configuration, SingleSchedulerCheckpoint};
-use crucible_campaign::{AttemptResourceLimits, ExactCheckpointId};
+use crucible_campaign::{AttemptResourceLimits, ExactCheckpointId, StopCondition};
 use crucible_qemu::{
     QemuExactSnapshotPolicy, QemuVmRealization, QemuVmRealizationError, QemuVmRealizationExecutor,
     QemuVmRealizationKind, QemuVmRealizationStore, QemuVmSnapshot, instantiate_qemu_vm,
@@ -17,7 +17,8 @@ use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
     CapturedExactCheckpoint, CrucibleAttemptExecution, CrucibleExecutionOutcome,
     CrucibleExecutionRunner, CrucibleMaterializationTier, CrucibleResolvedAttemptStart,
-    ExecutionCancellation, QemuExactCheckpointRealization, QemuSavepointReplayProof,
+    ExecutionCancellation, QemuAttemptStartReplayProof, QemuExactCheckpointRealization,
+    QemuSavepointReplayProof,
 };
 
 /// Cancellation-aware checkpoint reads used by one campaign realization.
@@ -212,9 +213,14 @@ pub struct QemuExactThinExecutionRunner<S, F> {
 /// Exact-origin router for fresh and durable-resume QEMU execution paths.
 ///
 /// The resume root in [`AttemptExecutionContext`] is an operational execution
-/// origin, not a materialization hint. This router therefore sends every
-/// context with a root exclusively to `resume` and every context without one
-/// exclusively to `fresh`; neither path may silently substitute for the other.
+/// origin, not a materialization hint. A context with a root always obtains its
+/// execution outcome from `resume`; `fresh` may only authenticate its immutable
+/// semantic basis and never becomes an execution fallback. A context without a
+/// root executes through `fresh`.
+/// Ordinary `EventCount` resumes first cold replay the immutable attempt start
+/// so the resumed driver can distinguish inherited evidence from same-attempt
+/// progress. Other stop modes do not consume that counter and retain the direct
+/// exact-resume path, including starts unsupported by cold replay.
 pub struct QemuAttemptExecutionRouter<F, R> {
     fresh: F,
     resume: R,
@@ -234,6 +240,27 @@ pub trait QemuSelectedOriginVerifier: CrucibleExecutionRunner {
         context: &AttemptExecutionContext,
         target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
     ) -> Result<QemuSavepointReplayProof, AttemptWorkerFailure<Self::Error>>;
+}
+
+/// Independent cold-replay authority for an ordinary attempt's start boundary.
+///
+/// The exact-checkpoint version-four envelope does not retain an authenticated
+/// attempt-local event count. Implementations therefore launch a fresh lifecycle
+/// and replay only genesis through the immutable Discover or Branch start. This
+/// adds one lifecycle launch and start-prefix replay to each ordinary EventCount
+/// resume; it does not replay the resumed attempt's own progress.
+pub trait QemuAttemptStartVerifier: CrucibleExecutionRunner {
+    /// Reconstructs the immutable start and authenticates its inherited event prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified execution failure when cold replay cannot reproduce
+    /// the admitted start configuration and complete inherited event prefix.
+    fn verify_attempt_start(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<QemuAttemptStartReplayProof, AttemptWorkerFailure<Self::Error>>;
 }
 
 /// Exact-resume authority that consumes an independently reconstructed origin proof.
@@ -266,6 +293,23 @@ pub trait QemuSelectedOriginResumeRunner: CrucibleExecutionRunner {
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
         proof: QemuSavepointReplayProof,
+    ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>>;
+}
+
+/// Exact-resume authority that consumes an independently replayed attempt start.
+pub trait QemuOrdinaryResumeRunner: CrucibleExecutionRunner {
+    /// Resumes an ordinary attempt after authenticating its inherited event prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified execution failure when the physical checkpoint is
+    /// unavailable, malformed, or does not begin with the independently replayed
+    /// start evidence.
+    fn execute_verified_attempt_start(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        proof: QemuAttemptStartReplayProof,
     ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>>;
 }
 
@@ -320,8 +364,8 @@ pub enum QemuAttemptExecutionRouterError<F, R> {
 
 impl<F, R> CrucibleExecutionRunner for QemuAttemptExecutionRouter<F, R>
 where
-    F: QemuSelectedOriginVerifier,
-    R: QemuSelectedOriginResumeRunner,
+    F: QemuAttemptStartVerifier + QemuSelectedOriginVerifier,
+    R: QemuOrdinaryResumeRunner + QemuSelectedOriginResumeRunner,
 {
     type Error = QemuAttemptExecutionRouterError<F::Error, R::Error>;
 
@@ -355,6 +399,14 @@ where
                 .map_err(|failure| map_routed_failure(failure, Self::Error::Fresh))?;
             self.resume
                 .execute_verified_selected_origin(input, context, proof)
+                .map_err(|failure| map_routed_failure(failure, Self::Error::Resume))
+        } else if matches!(input.attempt().stop(), StopCondition::EventCount(_)) {
+            let proof = self
+                .fresh
+                .verify_attempt_start(input, context)
+                .map_err(|failure| map_routed_failure(failure, Self::Error::Fresh))?;
+            self.resume
+                .execute_verified_attempt_start(input, context, proof)
                 .map_err(|failure| map_routed_failure(failure, Self::Error::Resume))
         } else {
             self.resume
@@ -777,6 +829,18 @@ mod tests {
         message: &'static str,
     }
 
+    impl RoutedFailureRunner {
+        fn failure(&self) -> AttemptWorkerFailure<&'static str> {
+            match self.disposition {
+                RoutedFailureDisposition::Retryable => {
+                    AttemptWorkerFailure::Retryable(self.message)
+                }
+                RoutedFailureDisposition::Canceled => AttemptWorkerFailure::Canceled(self.message),
+                RoutedFailureDisposition::Terminal => AttemptWorkerFailure::Terminal(self.message),
+            }
+        }
+    }
+
     impl CrucibleExecutionRunner for RoutedFailureRunner {
         type Error = &'static str;
 
@@ -787,13 +851,7 @@ mod tests {
         ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             assert_eq!(context.resume_checkpoint().is_some(), self.expects_resume);
-            Err(match self.disposition {
-                RoutedFailureDisposition::Retryable => {
-                    AttemptWorkerFailure::Retryable(self.message)
-                }
-                RoutedFailureDisposition::Canceled => AttemptWorkerFailure::Canceled(self.message),
-                RoutedFailureDisposition::Terminal => AttemptWorkerFailure::Terminal(self.message),
-            })
+            Err(self.failure())
         }
     }
 
@@ -805,6 +863,19 @@ mod tests {
             _target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
         ) -> Result<QemuSavepointReplayProof, AttemptWorkerFailure<Self::Error>> {
             panic!("ordinary routing fixture has no selected origin")
+        }
+    }
+
+    impl QemuAttemptStartVerifier for RoutedFailureRunner {
+        fn verify_attempt_start(
+            &mut self,
+            input: &CrucibleAttemptExecution,
+            context: &AttemptExecutionContext,
+        ) -> Result<QemuAttemptStartReplayProof, AttemptWorkerFailure<Self::Error>> {
+            assert!(context.resume_checkpoint().is_some());
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            QemuAttemptStartReplayProof::from_reached_boundary(input.start().configuration(), &[])
+                .map_err(|_| AttemptWorkerFailure::Terminal("build attempt-start proof"))
         }
     }
 
@@ -830,7 +901,24 @@ mod tests {
         }
     }
 
+    impl QemuOrdinaryResumeRunner for RoutedFailureRunner {
+        fn execute_verified_attempt_start(
+            &mut self,
+            _input: &CrucibleAttemptExecution,
+            context: &AttemptExecutionContext,
+            _proof: QemuAttemptStartReplayProof,
+        ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+            assert!(context.resume_checkpoint().is_some());
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(self.failure())
+        }
+    }
+
     fn routed_input() -> CrucibleAttemptExecution {
+        routed_input_for_stop(StopCondition::Terminal)
+    }
+
+    fn routed_input_for_stop(stop: StopCondition) -> CrucibleAttemptExecution {
         let scenario = crucible::crash_restart_scenario()
             .expect("built-in scenario")
             .scenario;
@@ -871,7 +959,7 @@ mod tests {
                 configuration: configuration_content,
             },
             path.id().expect("branch path id"),
-            StopCondition::Terminal,
+            stop,
         )
         .expect("discovery attempt");
 
@@ -895,7 +983,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_origin_router_never_crosses_fresh_and_resume_paths() {
+    fn exact_origin_router_keeps_non_event_count_resumes_off_the_fresh_path() {
         let fresh_calls = Arc::new(AtomicUsize::new(0));
         let resume_calls = Arc::new(AtomicUsize::new(0));
         let mut router = QemuAttemptExecutionRouter::new(
@@ -942,6 +1030,37 @@ mod tests {
             ))
         ));
         assert_eq!(fresh_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(resume_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn exact_origin_router_verifies_event_count_resumes_before_restore() {
+        let fresh_calls = Arc::new(AtomicUsize::new(0));
+        let resume_calls = Arc::new(AtomicUsize::new(0));
+        let mut router = QemuAttemptExecutionRouter::new(
+            RoutedFailureRunner {
+                calls: Arc::clone(&fresh_calls),
+                expects_resume: false,
+                disposition: RoutedFailureDisposition::Retryable,
+                message: "unused fresh failure",
+            },
+            RoutedFailureRunner {
+                calls: Arc::clone(&resume_calls),
+                expects_resume: true,
+                disposition: RoutedFailureDisposition::Canceled,
+                message: "verified resume canceled",
+            },
+        );
+        let input = routed_input_for_stop(StopCondition::EventCount(4));
+        let checkpoint = exact_checkpoint_id(b"router-event-count-resume");
+
+        assert!(matches!(
+            router.execute(&input, &routed_context(Some(checkpoint))),
+            Err(AttemptWorkerFailure::Canceled(
+                QemuAttemptExecutionRouterError::Resume("verified resume canceled")
+            ))
+        ));
+        assert_eq!(fresh_calls.load(Ordering::SeqCst), 1);
         assert_eq!(resume_calls.load(Ordering::SeqCst), 1);
     }
 

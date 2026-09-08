@@ -704,6 +704,16 @@ impl QemuSelectedOriginVerifier for CannedSelectedOriginVerifier {
     }
 }
 
+impl crate::QemuAttemptStartVerifier for CannedSelectedOriginVerifier {
+    fn verify_attempt_start(
+        &mut self,
+        _input: &CrucibleAttemptExecution,
+        _context: &crate::AttemptExecutionContext,
+    ) -> Result<crate::QemuAttemptStartReplayProof, AttemptWorkerFailure<Self::Error>> {
+        panic!("selected-origin transfer fixture must not verify an ordinary start")
+    }
+}
+
 struct NonDrivingObservationDriver;
 
 impl QemuFreshAttemptDriver for NonDrivingObservationDriver {
