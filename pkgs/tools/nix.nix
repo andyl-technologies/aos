@@ -23,6 +23,7 @@
   libarchive,
   gc,
   lowdown,
+  libseccomp,
   bzip2,
   zlib,
   stdenv,
@@ -86,23 +87,31 @@ in
       # from `boost` (the lib output) in runtimeDeps below.
       boost.dev
     ];
-    runtimeDeps = [
-      curl
-      openssl
-      sqlite
-      boost
-      editline
-      libsodium
-      nlohmann-json
-      toml11
-      libgit2
-      brotli
-      libarchive
-      gc
-      lowdown
-      bzip2
-      zlib
-    ];
+    runtimeDeps =
+      [
+        curl
+        openssl
+        sqlite
+        boost
+        editline
+        libsodium
+        nlohmann-json
+        toml11
+        libgit2
+        brotli
+        libarchive
+        gc
+        lowdown
+        bzip2
+        zlib
+      ]
+      # Nix uses libseccomp to enforce its Linux build sandbox. Darwin uses
+      # its native sandbox profile instead.
+      ++ (
+        if stdenv.hostPlatform.isLinux
+        then [libseccomp]
+        else []
+      );
     propagatedDeps = [];
 
     phases = [
@@ -133,6 +142,12 @@ in
           # upstream in 2.28.0 (commit 6a1a3fa1c).
           sed -i "s|configdata.set_quoted('SYSTEM', host_machine.system())|configdata.set_quoted('SYSTEM', host_machine.cpu_family() + '-' + host_machine.system())|" \
             src/libstore/meson.build${darwinGitCacheFix}
+
+          # Lowdown 3 renamed the renderer-specific no-link flag to the shared
+          # LOWDOWN_NOLINK name without changing its value or behavior.
+          test "$(grep -c 'LOWDOWN_TERM_NOLINK' src/libcmd/markdown.cc)" -eq 1
+          sed -i 's/LOWDOWN_TERM_NOLINK/LOWDOWN_NOLINK/' src/libcmd/markdown.cc
+
           # Boost is split across two outputs (headers in boost.dev, libs in
           # boost). Point meson's Boost finder at each explicitly — these
           # split-aware vars work where BOOST_ROOT (single prefix) would not.

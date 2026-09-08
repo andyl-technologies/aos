@@ -21,7 +21,7 @@ impl GuestEntropySeed {
         let mut bytes = [0; GUEST_ENTROPY_SEED_BYTES];
         let mut state = scenario_seed ^ 0x4352_5543_4942_4c45;
 
-        for (index, chunk) in bytes.chunks_exact_mut(8).enumerate() {
+        for (index, chunk) in bytes.as_chunks_mut::<8>().0.iter_mut().enumerate() {
             state = state
                 .wrapping_add(0x9e37_79b9_7f4a_7c15)
                 .wrapping_add(index as u64);

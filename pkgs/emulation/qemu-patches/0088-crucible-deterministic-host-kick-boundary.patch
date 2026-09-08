@@ -1,8 +1,8 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index 54ed19223..fccb3f282 100644
+index 95ecf0e2d..e0a6d4e22 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -46,11 +46,63 @@
+@@ -47,11 +47,63 @@
  #include "system/crucible-sim-ipi.h"
  #include "system/crucible-sim-preemption.h"
  
@@ -64,9 +64,9 @@ index 54ed19223..fccb3f282 100644
 +        return;
 +    }
      CPU_FOREACH(cpu) {
-         cpu_exit(cpu);
+         tcg_kick_vcpu_thread(cpu);
      };
-@@ -69,7 +121,6 @@ void rr_kick_vcpu_thread(CPUState *unused)
+@@ -70,7 +122,6 @@ void rr_kick_vcpu_thread(CPUState *unused)
   */
  
  static QEMUTimer *rr_kick_vcpu_timer;
@@ -75,10 +75,10 @@ index 54ed19223..fccb3f282 100644
  #define RR_CRUCIBLE_SIM_TCG_BATCH_LIMIT 4
  
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 5cd7c7eac..cc17de758 100644
+index d99c857a7..343752a14 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
-@@ -196,6 +196,7 @@ void qemu_plugin_fire_control_boundary_cb(CPUState *cpu);
+@@ -204,6 +204,7 @@ void qemu_plugin_fire_control_boundary_cb(CPUState *cpu);
  void qemu_plugin_crucible_exact_boundary_enter(void);
  void qemu_plugin_crucible_exact_boundary_leave(void);
  bool qemu_plugin_crucible_exact_boundary_active(void);
@@ -86,7 +86,7 @@ index 5cd7c7eac..cc17de758 100644
  bool qemu_plugin_crucible_vmstop_pending(void);
  bool qemu_plugin_crucible_vmstop_admission_pending(void);
  void qemu_plugin_crucible_vmstop_request_stopped(int flush_status);
-@@ -363,6 +364,11 @@ static inline void qemu_plugin_crucible_exact_boundary_enter(void)
+@@ -404,6 +405,11 @@ static inline void qemu_plugin_crucible_exact_boundary_enter(void)
  static inline void qemu_plugin_crucible_exact_boundary_leave(void)
  { }
  
@@ -99,10 +99,10 @@ index 5cd7c7eac..cc17de758 100644
  {
      return false;
 diff --git a/plugins/api.c b/plugins/api.c
-index 54d33612c..592d85f46 100644
+index 0626c3b7c..ba2f9d068 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -1126,6 +1126,11 @@ static void crucible_terminal_pause_bh(void *opaque)
+@@ -1305,6 +1305,11 @@ static void crucible_terminal_pause_bh(void *opaque)
      g_free(request);
  }
  

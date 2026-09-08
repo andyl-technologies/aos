@@ -87,7 +87,7 @@ double is not acceptable for that aggregate gate.
 ## Licensing and source obligations
 
 The patch modifies existing `block/crucible-shmem.c` and
-`include/qemu/qemu-plugin.h`; both retain their current GPL-compatible notices.
+`include/plugins/qemu-plugin.h`; both retain their current GPL-compatible notices.
 It creates no QEMU file, so `LICENSES.md` needs no new-file row. The patch commit
 requires DCO sign-off and is included in the pinned branch bundle, patch-series
 identity, corresponding-source artifact, prefix/drop-one checks, and release

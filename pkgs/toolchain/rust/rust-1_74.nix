@@ -12,6 +12,7 @@
   pkg-config,
   bash,
   which,
+  curl,
   zlib,
   openssl,
   stdenv,
@@ -79,10 +80,12 @@ in
         pkg-config
         bash
         which
+        curl
         zlib
         openssl
       ];
       runtimeDeps = [
+        curl
         zlib
         openssl
       ];
@@ -140,6 +143,10 @@ in
         {
           name = "build-mrustc";
           script = ''
+            # GCC 16 no longer exposes fixed-width integer types through
+            # mrustc's transitive C++ includes. Apply the owning standard
+            # header to mrustc, its common library, and minicargo uniformly.
+            export CXXFLAGS_EXTRA="''${CXXFLAGS_EXTRA:-} -include cstdint"
             # Build mrustc (the C++ Rust compiler)
             make -j"$NIX_BUILD_CORES" V=
             # Build minicargo (minimal cargo replacement)
@@ -168,8 +175,32 @@ in
             # Build standard libraries
             make -f minicargo.mk LIBS -j"$NIX_BUILD_CORES"
 
+            # The standard-library recipe extracts Rust's source again. Patch
+            # its bundled LLVM 17 only after that extraction has completed.
+            # These declarations relied on transitive fixed-width integer
+            # includes that GCC 16 no longer provides.
+            llvmSource=rustc-${version}-src/src/llvm-project
+            sed -i \
+              '/#include <algorithm>/a #include <cstdint>' \
+              "$llvmSource/llvm/include/llvm/ADT/SmallVector.h"
+            sed -i \
+              '/#include <string>/i #include <cstdint>' \
+              "$llvmSource/llvm/lib/Target/X86/MCTargetDesc/X86MCTargetDesc.h"
+            sed -i \
+              '/#include <memory>/i #include <cstdint>' \
+              "$llvmSource/compiler-rt/lib/orc/error.h"
+
             # Build rustc using mrustc (this also builds LLVM via cmake)
             RUSTC_INSTALL_BINDIR=bin make -f minicargo.mk "output-${version}/rustc" -j"$NIX_BUILD_CORES"
+
+            # Cargo 1.74's openssl-sys predates OpenSSL 4 and rejects it before
+            # compiling. Cargo uses the OpenSSL 3-compatible API subset, so
+            # classify later major releases as that API family for bootstrap.
+            opensslSysBuild=rustc-${version}-src/vendor/openssl-sys/build/main.rs
+            test "$(grep -c 'if openssl_version >= 0x4_00_00_00_0 {' "$opensslSysBuild")" -eq 1
+            sed -i \
+              '/if openssl_version >= 0x4_00_00_00_0 {/,/} else if openssl_version >= 0x3_00_00_00_0 {/c\        if openssl_version >= 0x3_00_00_00_0 {' \
+              "$opensslSysBuild"
 
             # Build cargo using mrustc
             LIBGIT2_SYS_USE_PKG_CONFIG=1 make -f minicargo.mk "output-${version}/cargo" -j"$NIX_BUILD_CORES"

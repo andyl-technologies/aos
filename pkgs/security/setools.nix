@@ -10,7 +10,7 @@
   libsepol,
   libselinux,
 }: let
-  version = "4.6.0";
+  version = "4.7.1";
 in
   mkDerivation {
     pname = "setools";
@@ -20,7 +20,7 @@ in
       urls = [
         "https://github.com/SELinuxProject/setools/releases/download/${version}/setools-${version}.tar.bz2"
       ];
-      hash = "sha256-lzGaq6+dQjeEHuYNzJsvKR5zp2HzF/0T4pPqI2fVgGw=";
+      hash = "sha256-m0FOrn8XqmylMkjRHXT60BWCohmFx4pIP6EkDnC9O2o=";
     };
 
     buildDeps = [

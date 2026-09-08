@@ -1,0 +1,303 @@
+diff --git a/src/fileio.c b/src/fileio.c
+index 032eb1e..b0565b4 100644
+--- a/src/fileio.c
++++ b/src/fileio.c
+@@ -39,7 +39,9 @@
+ #include <openssl/bio.h>
+ #include <openssl/pem.h>
+ #include <openssl/err.h>
+-#include <openssl/engine.h>
++#include <openssl/provider.h>
++#include <openssl/store.h>
++#include <openssl/ui.h>
+ 
+ #include <ccan/talloc/talloc.h>
+ #include <ccan/read_write_all/read_write_all.h>
+@@ -55,22 +57,22 @@ static int ui_read(UI *ui, UI_STRING *uis)
+ 	if (UI_get_string_type(uis) != UIT_PROMPT)
+ 		return 0;
+ 
+-	EVP_read_pw_string(password, sizeof(password), "Enter engine key pass phrase:", 0);
++	EVP_read_pw_string(password, sizeof(password), "Enter private key pass phrase:", 0);
+ 	UI_set_result(ui, uis, password);
+ 	return 1;
+ }
+ 
+-EVP_PKEY *fileio_read_engine_key(const char *engine, const char *filename)
++EVP_PKEY *fileio_read_provider_key(const char *provider_name,
++		const char *key_uri)
+ {
+ 	UI_METHOD *ui;
+-	ENGINE *e;
++	OSSL_PROVIDER *provider;
++	OSSL_STORE_CTX *store = NULL;
+ 	EVP_PKEY *pkey = NULL;
+ 
+-	ENGINE_load_builtin_engines();
+-	e = ENGINE_by_id(engine);
+-
+-	if (!e) {
+-		fprintf(stderr, "Failed to load engine: %s\n", engine);
++	provider = OSSL_PROVIDER_load(NULL, provider_name);
++	if (!provider) {
++		fprintf(stderr, "Failed to load provider: %s\n", provider_name);
+ 		ERR_print_errors_fp(stderr);
+ 		return NULL;
+ 	}
+@@ -79,21 +81,44 @@ EVP_PKEY *fileio_read_engine_key(const char *engine, const char *filename)
+ 	if (!ui) {
+ 		fprintf(stderr, "Failed to create UI method\n");
+ 		ERR_print_errors_fp(stderr);
+-		goto out_free;
++		goto out_provider;
+ 	}
+ 	UI_method_set_reader(ui, ui_read);
+ 
+-	if (!ENGINE_init(e)) {
+-		fprintf(stderr, "Failed to initialize engine %s\n", engine);
++	store = OSSL_STORE_open(key_uri, ui, NULL, NULL, NULL);
++	if (!store) {
++		fprintf(stderr, "Failed to open private key URI: %s\n", key_uri);
+ 		ERR_print_errors_fp(stderr);
+-		goto out_free;
++		goto out_ui;
+ 	}
+ 
+-	pkey = ENGINE_load_private_key(e, filename, ui, NULL);
+-	ENGINE_finish(e);
++	if (!OSSL_STORE_expect(store, OSSL_STORE_INFO_PKEY)) {
++		fprintf(stderr, "Failed to select a private key from URI: %s\n",
++				key_uri);
++		ERR_print_errors_fp(stderr);
++		goto out_store;
++	}
++
++	while (!OSSL_STORE_eof(store)) {
++		OSSL_STORE_INFO *info = OSSL_STORE_load(store);
++
++		if (!info && OSSL_STORE_error(store))
++			break;
++		if (!info)
++			continue;
++		if (OSSL_STORE_INFO_get_type(info) == OSSL_STORE_INFO_PKEY)
++			pkey = OSSL_STORE_INFO_get1_PKEY(info);
++		OSSL_STORE_INFO_free(info);
++		if (pkey)
++			break;
++	}
+ 
+- out_free:
+-	ENGINE_free(e);
++ out_store:
++	OSSL_STORE_close(store);
++ out_ui:
++	UI_destroy_method(ui);
++ out_provider:
++	OSSL_PROVIDER_unload(provider);
+ 	return pkey;
+ }
+ 
+diff --git a/src/fileio.h b/src/fileio.h
+index b3ed22c..9e74751 100644
+--- a/src/fileio.h
++++ b/src/fileio.h
+@@ -38,7 +38,8 @@
+ #include <openssl/x509.h>
+ 
+ EVP_PKEY *fileio_read_pkey(const char *filename);
+-EVP_PKEY *fileio_read_engine_key(const char *engine, const char *filename);
++EVP_PKEY *fileio_read_provider_key(const char *provider_name,
++		const char *key_uri);
+ X509 *fileio_read_cert(const char *filename);
+ 
+ int fileio_read_file(void *ctx, const char *filename,
+@@ -48,4 +49,3 @@ int fileio_read_file_noerror(void *ctx, const char *filename,
+ int fileio_write_file(const char *filename, uint8_t *buf, size_t len);
+ 
+ #endif /* FILEIO_H */
+-
+diff --git a/src/image.c b/src/image.c
+index a828b5a..ee9cd25 100644
+--- a/src/image.c
++++ b/src/image.c
+@@ -42,7 +42,7 @@
+ #include <ccan/talloc/talloc.h>
+ #include <ccan/read_write_all/read_write_all.h>
+ #include <ccan/build_assert/build_assert.h>
+-#include <openssl/sha.h>
++#include <openssl/evp.h>
+ 
+ #include "fileio.h"
+ #include "image.h"
+@@ -511,18 +511,20 @@ err:
+ int image_hash_sha256(struct image *image, uint8_t digest[])
+ {
+ 	struct region *region;
+-	SHA256_CTX ctx;
+-	int rc, i, n;
++	EVP_MD_CTX *ctx;
++	unsigned int digest_len;
++	int rc, i;
+ 
+-	rc = SHA256_Init(&ctx);
+-	if (!rc)
++	ctx = EVP_MD_CTX_new();
++	if (!ctx)
+ 		return -1;
+ 
+-	n = 0;
++	rc = EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
++	if (!rc)
++		goto out;
+ 
+ 	for (i = 0; i < image->n_checksum_regions; i++) {
+ 		region = &image->checksum_regions[i];
+-		n += region->size;
+ #if 0
+ 		printf("sum region: 0x%04lx -> 0x%04lx [0x%04x bytes]\n",
+ 				region->data - image->buf,
+@@ -530,13 +532,15 @@ int image_hash_sha256(struct image *image, uint8_t digest[])
+ 				region->size);
+ 
+ #endif
+-		rc = SHA256_Update(&ctx, region->data, region->size);
++		rc = EVP_DigestUpdate(ctx, region->data, region->size);
+ 		if (!rc)
+-			return -1;
++			goto out;
+ 	}
+ 
+-	rc = SHA256_Final(digest, &ctx);
++	rc = EVP_DigestFinal_ex(ctx, digest, &digest_len);
+ 
++out:
++	EVP_MD_CTX_free(ctx);
+ 	return !rc;
+ }
+ 
+diff --git a/src/sbsign.c b/src/sbsign.c
+index 898fe66..c3602fe 100644
+--- a/src/sbsign.c
++++ b/src/sbsign.c
+@@ -76,6 +76,7 @@ static struct option options[] = {
+ 	{ "verbose", no_argument, NULL, 'v' },
+ 	{ "help", no_argument, NULL, 'h' },
+ 	{ "version", no_argument, NULL, 'V' },
++	{ "provider", required_argument, NULL, 'e'},
+ 	{ "engine", required_argument, NULL, 'e'},
+ 	{ "addcert", required_argument, NULL, 'a'},
+ 	{ NULL, 0, NULL, 0 },
+@@ -87,7 +88,8 @@ static void usage(void)
+ 			"<efi-boot-image>\n"
+ 		"Sign an EFI boot image for use with secure boot.\n\n"
+ 		"Options:\n"
+-		"\t--engine <eng>     use the specified engine to load the key\n"
++		"\t--provider <name>  load an OpenSSL provider for the key URI\n"
++		"\t--engine <name>    compatibility alias for --provider\n"
+ 		"\t--key <keyfile>    signing key (PEM-encoded RSA "
+ 						"private key)\n"
+ 		"\t--cert <certfile>  certificate (x509 certificate)\n"
+@@ -152,7 +154,8 @@ static int add_intermediate_certs(PKCS7 *p7, const char *filename)
+ 
+ int main(int argc, char **argv)
+ {
+-	const char *keyfilename, *certfilename, *addcertfilename, *engine;
++	const char *keyfilename, *certfilename, *addcertfilename;
++	const char *provider_name;
+ 	struct sign_context *ctx;
+ 	uint8_t *buf, *tmp;
+ 	int rc, c, sigsize;
+@@ -163,7 +166,7 @@ int main(int argc, char **argv)
+ 	keyfilename = NULL;
+ 	certfilename = NULL;
+ 	addcertfilename = NULL;
+-	engine = NULL;
++	provider_name = NULL;
+ 
+ 	for (;;) {
+ 		int idx;
+@@ -194,7 +197,7 @@ int main(int argc, char **argv)
+ 			usage();
+ 			return EXIT_SUCCESS;
+ 		case 'e':
+-			engine = optarg;
++			provider_name = optarg;
+ 			break;
+ 		case 'a':
+ 			addcertfilename = optarg;
+@@ -244,8 +247,8 @@ int main(int argc, char **argv)
+ 	 * module isn't present).  In either case ignore the errors
+ 	 * (malloc will cause other failures out lower down */
+ 	ERR_clear_error();
+-	if (engine)
+-		pkey = fileio_read_engine_key(engine, keyfilename);
++	if (provider_name)
++		pkey = fileio_read_provider_key(provider_name, keyfilename);
+ 	else
+ 		pkey = fileio_read_pkey(keyfilename);
+ 	if (!pkey)
+@@ -300,4 +303,3 @@ int main(int argc, char **argv)
+ 
+ 	return EXIT_SUCCESS;
+ }
+-
+diff --git a/src/sbvarsign.c b/src/sbvarsign.c
+index 58031ec..11b2850 100644
+--- a/src/sbvarsign.c
++++ b/src/sbvarsign.c
+@@ -397,6 +397,7 @@ static struct option options[] = {
+ 	{ "verbose", no_argument, NULL, 'v' },
+ 	{ "help", no_argument, NULL, 'h' },
+ 	{ "version", no_argument, NULL, 'V' },
++	{ "provider", required_argument, NULL, 'e'},
+ 	{ "engine", required_argument, NULL, 'e'},
+ 	{ NULL, 0, NULL, 0 },
+ };
+@@ -409,7 +410,8 @@ void usage(void)
+ 			"<var-name> <var-data-file>\n"
+ 		"Sign a blob of data for use in SetVariable().\n\n"
+ 		"Options:\n"
+-		"\t--engine <eng>     use the specified engine to load the key\n"
++		"\t--provider <name>  load an OpenSSL provider for the key URI\n"
++		"\t--engine <name>    compatibility alias for --provider\n"
+ 		"\t--key <keyfile>    signing key (PEM-encoded RSA "
+ 						"private key)\n"
+ 		"\t--cert <certfile>  certificate (x509 certificate)\n"
+@@ -438,7 +440,7 @@ static void version(void)
+ 
+ int main(int argc, char **argv)
+ {
+-	const char *guid_str, *attr_str, *varname, *engine;
++	const char *guid_str, *attr_str, *varname, *provider_name;
+ 	const char *keyfilename, *certfilename;
+ 	struct varsign_context *ctx;
+ 	bool include_attrs;
+@@ -448,7 +450,7 @@ int main(int argc, char **argv)
+ 
+ 	keyfilename = NULL;
+ 	certfilename = NULL;
+-	engine = NULL;
++	provider_name = NULL;
+ 	guid_str = NULL;
+ 	attr_str= NULL;
+ 	include_attrs = false;
+@@ -488,7 +490,7 @@ int main(int argc, char **argv)
+ 			usage();
+ 			return EXIT_SUCCESS;
+ 		case 'e':
+-			engine = optarg;
++			provider_name = optarg;
+ 			break;
+ 		}
+ 	}
+@@ -551,8 +553,8 @@ int main(int argc, char **argv)
+ 	if (fileio_read_file(ctx, ctx->infilename, &ctx->data, &ctx->data_len))
+ 		return EXIT_FAILURE;
+ 
+-	if (engine)
+-		ctx->key = fileio_read_engine_key(engine, keyfilename);
++	if (provider_name)
++		ctx->key = fileio_read_provider_key(provider_name, keyfilename);
+ 	else
+ 		ctx->key = fileio_read_pkey(keyfilename);
+ 	if (!ctx->key)

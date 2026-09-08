@@ -264,7 +264,7 @@ in
               cd source
             fi
             target_dir="$TMPDIR/crucible-plugin-abi-scaffold-target"
-            qemu_header="${pkgs.qemu-crucible}/include/qemu/qemu-plugin.h"
+            qemu_header="${pkgs.qemu-crucible}/include/qemu-plugin.h"
             test -f "$qemu_header"
             grep -q '#define QEMU_PLUGIN_VERSION 4' "$qemu_header"
             grep -q 'extern QEMU_PLUGIN_EXPORT int qemu_plugin_version;' "$qemu_header"

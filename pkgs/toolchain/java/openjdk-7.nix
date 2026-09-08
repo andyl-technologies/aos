@@ -732,6 +732,16 @@ in
                       find "$dir" -name '*.c' -o -name '*.cpp' -o -name '*.h' 2>/dev/null | while read f; do
                         sed -i 's|#include <sys/sysctl\.h>|/* removed: sys/sysctl.h */|g' "$f" 2>/dev/null || true
                       done
+                      # GCC 16 defaults C sources to C23, where bool is a
+                      # keyword. Restrict the old Serviceability Agent C code
+                      # without passing a C-only option to HotSpot's C++ build.
+                      find "$dir" -path '*/hotspot/make/linux/makefiles/saproc.make' 2>/dev/null | while read f; do
+                        test "$(grep -Fc '$(QUIETLY) $(CC) -D$(BUILDARCH)' "$f")" = 1
+                        sed -i \
+                          's|$(QUIETLY) $(CC) -D$(BUILDARCH)|$(QUIETLY) $(CC) -std=gnu17 -D$(BUILDARCH)|' \
+                          "$f"
+                        test "$(grep -Fc '$(QUIETLY) $(CC) -std=gnu17 -D$(BUILDARCH)' "$f")" = 1
+                      done
                       # Fix hardcoded /bin/echo in Defs-utils.gmk
                       find "$dir" -name 'Defs-utils.gmk' 2>/dev/null | while read f; do
                         sed -i \
@@ -829,11 +839,12 @@ in
                         sed -i 's/^const char \*\*parentPathv;/extern const char **parentPathv;/' "$f" 2>/dev/null || true
                         sed -i 's/^char \*\*parentPathv;/extern char **parentPathv;/' "$f" 2>/dev/null || true
                       done
-                      # Add -fcommon and -Wno-implicit-function-declaration globally
-                      # as safety nets for other GCC 14 issues in JDK native code.
-                      # Append to Defs-linux.gmk which defines CFLAGS_COMMON used by all builds.
+                      # Keep the legacy JDK native C sources on the pre-C23
+                      # language rules they were written for. OTHER_CFLAGS is
+                      # intentionally C-only; HotSpot's C++ flags stay intact.
+                      # The remaining flags tolerate known GCC 14-era sources.
                       find "$dir" -path '*/jdk/make/common/Defs-linux.gmk' 2>/dev/null | while read f; do
-                        echo 'OTHER_CFLAGS += -fcommon -Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion -Wno-incompatible-pointer-types' >> "$f" 2>/dev/null || true
+                        echo 'OTHER_CFLAGS += -std=gnu17 -fcommon -Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion -Wno-incompatible-pointer-types' >> "$f" 2>/dev/null || true
                         # Fix empty OPENWIN_HOME: bare -I flag eats -c flag, causing
                         # gcc to link instead of compile in headless AWT build
                         echo 'OPENWIN_HOME = ${xorg-stubs}' >> "$f" 2>/dev/null || true

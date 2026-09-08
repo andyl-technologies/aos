@@ -9,6 +9,7 @@
   python3,
   bash,
   which,
+  curl,
   openssl,
   zlib,
   stdenv,
@@ -27,6 +28,7 @@
       python3
       bash
       which
+      curl
       openssl
       zlib
       stdenv

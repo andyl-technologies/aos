@@ -15,7 +15,7 @@
   systemd,
   glibc-locales,
 }: let
-  version = "3.6a";
+  version = "3.7c";
 in
   mkDerivation {
     pname = "tmux";
@@ -23,7 +23,7 @@ in
 
     src = fetchurl {
       urls = ["https://github.com/tmux/tmux/archive/refs/tags/${version}.tar.gz"];
-      hash = "sha256-zY2X80TNL6qJ5BNYQos62og+THL9fU9DzKyT2uwUQus=";
+      hash = "sha256-XnsPUztm5WM+K3Kp1IP5U0o0OrcBHrJiG2MJ37pVPao=";
     };
 
     buildDeps = [autoconf automake libtool gnumake bison pkg-config];

@@ -1,5 +1,5 @@
 diff --git a/hw/virtio/Kconfig b/hw/virtio/Kconfig
-index 7648a2d68..805bea400 100644
+index 91cf83340..3c1e258dc 100644
 --- a/hw/virtio/Kconfig
 +++ b/hw/virtio/Kconfig
 @@ -6,6 +6,11 @@ config VIRTIO_RNG
@@ -15,21 +15,21 @@ index 7648a2d68..805bea400 100644
     bool
     depends on LIBCBOR && VIRTIO
 diff --git a/hw/virtio/meson.build b/hw/virtio/meson.build
-index 164f6fd99..2a90eff26 100644
+index 0e0232351..a39624951 100644
 --- a/hw/virtio/meson.build
 +++ b/hw/virtio/meson.build
-@@ -55,6 +55,7 @@ specific_virtio_ss.add(when: 'CONFIG_VIRTIO_PMEM', if_true: files('virtio-pmem.c
- specific_virtio_ss.add(when: 'CONFIG_VHOST_VSOCK', if_true: files('vhost-vsock.c'))
- specific_virtio_ss.add(when: 'CONFIG_VHOST_USER_VSOCK', if_true: files('vhost-user-vsock.c'))
- specific_virtio_ss.add(when: 'CONFIG_VIRTIO_RNG', if_true: files('virtio-rng.c'))
-+specific_virtio_ss.add(when: 'CONFIG_VIRTIO_CRUCIBLE_ACCELERATOR', if_true: files('virtio-crucible-accelerator.c'))
- specific_virtio_ss.add(when: 'CONFIG_VIRTIO_NSM', if_true: [files('virtio-nsm.c', 'cbor-helpers.c'), libcbor])
- specific_virtio_ss.add(when: 'CONFIG_VIRTIO_MEM', if_true: files('virtio-mem.c'))
- specific_virtio_ss.add(when: 'CONFIG_VHOST_USER_SCMI', if_true: files('vhost-user-scmi.c'))
-@@ -72,6 +73,7 @@ virtio_pci_ss.add(when: 'CONFIG_VIRTIO_CRYPTO', if_true: files('virtio-crypto-pc
- virtio_pci_ss.add(when: 'CONFIG_VIRTIO_INPUT_HOST', if_true: files('virtio-input-host-pci.c'))
+@@ -64,6 +64,7 @@ system_virtio_ss.add(when: 'CONFIG_VIRTIO_MEM', if_true: files('virtio-mem.c'))
+ system_virtio_ss.add(when: 'CONFIG_VIRTIO_NSM', if_true: files('virtio-nsm.c'))
+ system_virtio_ss.add(when: 'CONFIG_VIRTIO_NSM', if_true: [files('cbor-helpers.c'), libcbor])
+ system_virtio_ss.add(when: 'CONFIG_VHOST_USER_SCMI', if_true: files('vhost-user-scmi.c'))
++system_virtio_ss.add(when: 'CONFIG_VIRTIO_CRUCIBLE_ACCELERATOR', if_true: files('virtio-crucible-accelerator.c'))
+ 
+ virtio_pci_ss = ss.source_set()
+ virtio_pci_ss.add(when: 'CONFIG_VHOST_VSOCK', if_true: files('vhost-vsock-pci.c'))
+@@ -79,6 +80,7 @@ virtio_pci_ss.add(when: 'CONFIG_VIRTIO_INPUT_HOST', if_true: files('virtio-input
  virtio_pci_ss.add(when: 'CONFIG_VIRTIO_INPUT', if_true: files('virtio-input-pci.c'))
  virtio_pci_ss.add(when: 'CONFIG_VIRTIO_RNG', if_true: files('virtio-rng-pci.c'))
+ virtio_pci_ss.add(when: 'CONFIG_VIRTIO_RTC', if_true: files('virtio-rtc-pci.c'))
 +virtio_pci_ss.add(when: 'CONFIG_VIRTIO_CRUCIBLE_ACCELERATOR', if_true: files('virtio-crucible-accelerator-pci.c'))
  virtio_pci_ss.add(when: 'CONFIG_VIRTIO_NSM', if_true: [files('virtio-nsm-pci.c', 'cbor-helpers.c'), libcbor])
  virtio_pci_ss.add(when: 'CONFIG_VIRTIO_BALLOON', if_true: files('virtio-balloon-pci.c'))
@@ -119,7 +119,7 @@ index 000000000..63b812455
 +type_init(accelerator_pci_register)
 diff --git a/hw/virtio/virtio-crucible-accelerator.c b/hw/virtio/virtio-crucible-accelerator.c
 new file mode 100644
-index 000000000..49756ef03
+index 000000000..dea3f1724
 --- /dev/null
 +++ b/hw/virtio/virtio-crucible-accelerator.c
 @@ -0,0 +1,503 @@
@@ -138,7 +138,7 @@ index 000000000..49756ef03
 +#include "qemu/iov.h"
 +#include "qemu/module.h"
 +#include "qemu/crucible-fault.h"
-+#include "qemu/qemu-plugin.h"
++#include "plugins/qemu-plugin.h"
 +#include "hw/virtio/virtio-crucible-accelerator.h"
 +#include "migration/qemu-file-types.h"
 +#include "migration/qemu-file.h"
@@ -627,10 +627,10 @@ index 000000000..49756ef03
 +
 +type_init(accelerator_register_types)
 diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
-index 91caba2e8..0b17824e8 100644
+index 30dde4d78..84c8a89d0 100644
 --- a/hw/virtio/virtio.c
 +++ b/hw/virtio/virtio.c
-@@ -3511,12 +3511,21 @@ void virtio_instance_init_common(Object *proxy_obj, void *data,
+@@ -3823,12 +3823,21 @@ void virtio_instance_init_common(Object *proxy_obj, void *data,
  }
  
  void virtio_init(VirtIODevice *vdev, uint16_t device_id, size_t config_size)
@@ -652,7 +652,7 @@ index 91caba2e8..0b17824e8 100644
      if (nvectors) {
          vdev->vector_queues =
              g_malloc0(sizeof(*vdev->vector_queues) * nvectors);
-@@ -3540,7 +3549,7 @@ void virtio_init(VirtIODevice *vdev, uint16_t device_id, size_t config_size)
+@@ -3852,7 +3861,7 @@ void virtio_init(VirtIODevice *vdev, uint16_t device_id, size_t config_size)
          vdev->vq[i].host_notifier_enabled = false;
      }
  
@@ -726,10 +726,10 @@ index 000000000..d15d5f9b1
 +
 +#endif
 diff --git a/include/hw/virtio/virtio.h b/include/hw/virtio/virtio.h
-index 15c9f88d4..edeeda738 100644
+index cb0d2aa02..6c2415eee 100644
 --- a/include/hw/virtio/virtio.h
 +++ b/include/hw/virtio/virtio.h
-@@ -242,6 +242,20 @@ void virtio_instance_init_common(Object *proxy_obj, void *data,
+@@ -294,6 +294,20 @@ void virtio_instance_init_common(Object *proxy_obj, void *data,
   */
  void virtio_init(VirtIODevice *vdev, uint16_t device_id, size_t config_size);
  
@@ -750,8 +750,115 @@ index 15c9f88d4..edeeda738 100644
  void virtio_cleanup(VirtIODevice *vdev);
  
  void virtio_error(VirtIODevice *vdev, const char *fmt, ...) G_GNUC_PRINTF(2, 3);
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index c30f30078..c113694df 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -368,6 +368,43 @@ typedef int (*qemu_plugin_blk_transport_restore_cb_t)(
+     const uint8_t *data, size_t len, uint64_t epoch,
+     uint32_t next_request_id, void *userdata);
+ 
++/** Accelerator job submission callback. */
++typedef int (*qemu_plugin_accelerator_submit_cb_t)(
++    uint64_t sequence, const uint8_t device_id[32], uint16_t class_id,
++    uint16_t job_kind, uint16_t queue_id, uint64_t service_units,
++    const uint8_t *data, size_t len, size_t output_capacity, void *userdata);
++
++/** Accelerator continuation restore callback. */
++typedef int (*qemu_plugin_accelerator_restore_cb_t)(
++    uint64_t sequence, const uint8_t device_id[32], uint16_t class_id,
++    uint16_t job_kind, uint16_t queue_id, uint64_t service_units,
++    size_t output_capacity, void *userdata);
++
++/** Begin one all-or-nothing accelerator pending-request restore. */
++typedef int (*qemu_plugin_accelerator_restore_begin_cb_t)(uint32_t count,
++                                                          void *userdata);
++
++/** Commit all accelerator pending requests staged by the current restore. */
++typedef int (*qemu_plugin_accelerator_restore_commit_cb_t)(void *userdata);
++
++/** Discard all accelerator pending requests staged by the current restore. */
++typedef void (*qemu_plugin_accelerator_restore_abort_cb_t)(void *userdata);
++
++/** Accelerator pending-request cancellation callback. */
++typedef int (*qemu_plugin_accelerator_cancel_cb_t)(uint64_t sequence,
++                                                   void *userdata);
++
++/** Accelerator completion poll callback. */
++typedef int64_t (*qemu_plugin_accelerator_poll_cb_t)(
++    uint64_t sequence, uint16_t *status, uint8_t *data, size_t capacity,
++    void *userdata);
++
++/** Accelerator device-wait callback. */
++typedef void (*qemu_plugin_accelerator_wait_cb_t)(uint64_t sequence,
++                                                  void *userdata);
++
++#define QEMU_PLUGIN_ACCELERATOR_POLL_PENDING (-2)
++
+ #define QEMU_PLUGIN_BLK_OP_READ 0u
+ #define QEMU_PLUGIN_BLK_OP_WRITE 1u
+ #define QEMU_PLUGIN_BLK_OP_FLUSH 2u
+@@ -1335,6 +1372,27 @@ QEMU_PLUGIN_API
+ void qemu_plugin_register_blk_wait_cb(qemu_plugin_blk_wait_cb_t wait_cb,
+                                       void *userdata);
+ 
++/**
++ * qemu_plugin_register_accelerator_cb() - register accelerator transport hooks
++ * @submit_cb: typed job submission callback
++ * @poll_cb: typed completion poll callback
++ * @wait_cb: callback fired before a guest job waits
++ * @userdata: opaque pointer passed to every callback
++ *
++ * The sim-only virtio-crucible-accelerator is inert unless all callbacks are
++ * registered. The callbacks cross only the public shared-memory protocol.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_register_accelerator_cb(
++    qemu_plugin_accelerator_submit_cb_t submit_cb,
++    qemu_plugin_accelerator_poll_cb_t poll_cb,
++    qemu_plugin_accelerator_wait_cb_t wait_cb,
++    qemu_plugin_accelerator_restore_begin_cb_t restore_begin_cb,
++    qemu_plugin_accelerator_restore_cb_t restore_cb,
++    qemu_plugin_accelerator_restore_commit_cb_t restore_commit_cb,
++    qemu_plugin_accelerator_restore_abort_cb_t restore_abort_cb,
++    qemu_plugin_accelerator_cancel_cb_t cancel_cb, void *userdata);
++
+ /**
+  * qemu_plugin_register_9p_cb() - register shmem 9p callbacks
+  * @burst_start_cb: burst-start callback, or NULL to disable shmem forwarding
+@@ -2277,6 +2335,30 @@ size_t qemu_plugin_crucible_fault_clock_manifest(
+     struct qemu_plugin_crucible_fault_clock_capability *out,
+     size_t capacity, uint16_t *architecture);
+ 
++/** One immutable realized accelerator-device capability row. */
++struct qemu_plugin_crucible_fault_accelerator_capability {
++    uint16_t class_mask;
++    uint16_t fault_family_mask;
++    uint16_t queue_start;
++    uint16_t queue_end;
++    uint32_t queue_depth;
++    uint32_t maximum_input_bytes;
++    uint32_t maximum_output_bytes;
++    uint64_t device_memory_bytes;
++    uint32_t ecc_mode_mask;
++    uint32_t job_kind_count;
++    uint8_t vmstate;
++    uint8_t reserved[7];
++    const char *id;
++    const char *implementation;
++};
++
++/** Copies the complete immutable accelerator-device manifest. */
++QEMU_PLUGIN_API
++size_t qemu_plugin_crucible_fault_accelerator_manifest(
++    struct qemu_plugin_crucible_fault_accelerator_capability *out,
++    size_t capacity);
++
+ /** Binds one manifest row to the canonical public object identity. */
+ QEMU_PLUGIN_API
+ int qemu_plugin_crucible_fault_clock_bind(
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 0f0fee953..ef4ece29e 100644
+index c30e6cd9b..7e31001b7 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -20,6 +20,9 @@ typedef struct QemuCrucibleFaultEventReservation
@@ -804,113 +911,6 @@ index 0f0fee953..ef4ece29e 100644
  int qemu_crucible_fault_register_validate(const QemuCrucibleFaultRule *rule);
  bool qemu_crucible_fault_register_ensure_registered(void);
  bool qemu_crucible_fault_register_rules_active(void);
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index fe47a6861..8d0ed1876 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -324,6 +324,43 @@ typedef int (*qemu_plugin_blk_transport_restore_cb_t)(
-     const uint8_t *data, size_t len, uint64_t epoch,
-     uint32_t next_request_id, void *userdata);
- 
-+/** Accelerator job submission callback. */
-+typedef int (*qemu_plugin_accelerator_submit_cb_t)(
-+    uint64_t sequence, const uint8_t device_id[32], uint16_t class_id,
-+    uint16_t job_kind, uint16_t queue_id, uint64_t service_units,
-+    const uint8_t *data, size_t len, size_t output_capacity, void *userdata);
-+
-+/** Accelerator continuation restore callback. */
-+typedef int (*qemu_plugin_accelerator_restore_cb_t)(
-+    uint64_t sequence, const uint8_t device_id[32], uint16_t class_id,
-+    uint16_t job_kind, uint16_t queue_id, uint64_t service_units,
-+    size_t output_capacity, void *userdata);
-+
-+/** Begin one all-or-nothing accelerator pending-request restore. */
-+typedef int (*qemu_plugin_accelerator_restore_begin_cb_t)(uint32_t count,
-+                                                          void *userdata);
-+
-+/** Commit all accelerator pending requests staged by the current restore. */
-+typedef int (*qemu_plugin_accelerator_restore_commit_cb_t)(void *userdata);
-+
-+/** Discard all accelerator pending requests staged by the current restore. */
-+typedef void (*qemu_plugin_accelerator_restore_abort_cb_t)(void *userdata);
-+
-+/** Accelerator pending-request cancellation callback. */
-+typedef int (*qemu_plugin_accelerator_cancel_cb_t)(uint64_t sequence,
-+                                                   void *userdata);
-+
-+/** Accelerator completion poll callback. */
-+typedef int64_t (*qemu_plugin_accelerator_poll_cb_t)(
-+    uint64_t sequence, uint16_t *status, uint8_t *data, size_t capacity,
-+    void *userdata);
-+
-+/** Accelerator device-wait callback. */
-+typedef void (*qemu_plugin_accelerator_wait_cb_t)(uint64_t sequence,
-+                                                  void *userdata);
-+
-+#define QEMU_PLUGIN_ACCELERATOR_POLL_PENDING (-2)
-+
- #define QEMU_PLUGIN_BLK_OP_READ 0u
- #define QEMU_PLUGIN_BLK_OP_WRITE 1u
- #define QEMU_PLUGIN_BLK_OP_FLUSH 2u
-@@ -1237,6 +1274,27 @@ QEMU_PLUGIN_API
- void qemu_plugin_register_blk_wait_cb(qemu_plugin_blk_wait_cb_t wait_cb,
-                                       void *userdata);
- 
-+/**
-+ * qemu_plugin_register_accelerator_cb() - register accelerator transport hooks
-+ * @submit_cb: typed job submission callback
-+ * @poll_cb: typed completion poll callback
-+ * @wait_cb: callback fired before a guest job waits
-+ * @userdata: opaque pointer passed to every callback
-+ *
-+ * The sim-only virtio-crucible-accelerator is inert unless all callbacks are
-+ * registered. The callbacks cross only the public shared-memory protocol.
-+ */
-+QEMU_PLUGIN_API
-+void qemu_plugin_register_accelerator_cb(
-+    qemu_plugin_accelerator_submit_cb_t submit_cb,
-+    qemu_plugin_accelerator_poll_cb_t poll_cb,
-+    qemu_plugin_accelerator_wait_cb_t wait_cb,
-+    qemu_plugin_accelerator_restore_begin_cb_t restore_begin_cb,
-+    qemu_plugin_accelerator_restore_cb_t restore_cb,
-+    qemu_plugin_accelerator_restore_commit_cb_t restore_commit_cb,
-+    qemu_plugin_accelerator_restore_abort_cb_t restore_abort_cb,
-+    qemu_plugin_accelerator_cancel_cb_t cancel_cb, void *userdata);
-+
- /**
-  * qemu_plugin_register_9p_cb() - register shmem 9p callbacks
-  * @burst_start_cb: burst-start callback, or NULL to disable shmem forwarding
-@@ -1916,6 +1974,30 @@ size_t qemu_plugin_crucible_fault_clock_manifest(
-     struct qemu_plugin_crucible_fault_clock_capability *out,
-     size_t capacity, uint16_t *architecture);
- 
-+/** One immutable realized accelerator-device capability row. */
-+struct qemu_plugin_crucible_fault_accelerator_capability {
-+    uint16_t class_mask;
-+    uint16_t fault_family_mask;
-+    uint16_t queue_start;
-+    uint16_t queue_end;
-+    uint32_t queue_depth;
-+    uint32_t maximum_input_bytes;
-+    uint32_t maximum_output_bytes;
-+    uint64_t device_memory_bytes;
-+    uint32_t ecc_mode_mask;
-+    uint32_t job_kind_count;
-+    uint8_t vmstate;
-+    uint8_t reserved[7];
-+    const char *id;
-+    const char *implementation;
-+};
-+
-+/** Copies the complete immutable accelerator-device manifest. */
-+QEMU_PLUGIN_API
-+size_t qemu_plugin_crucible_fault_accelerator_manifest(
-+    struct qemu_plugin_crucible_fault_accelerator_capability *out,
-+    size_t capacity);
-+
- /** Binds one manifest row to the canonical public object identity. */
- QEMU_PLUGIN_API
- int qemu_plugin_crucible_fault_clock_bind(
 diff --git a/plugins/crucible-fault-accelerator.c b/plugins/crucible-fault-accelerator.c
 new file mode 100644
 index 000000000..9867870b1
@@ -2483,7 +2483,7 @@ index 000000000..9867870b1
 +    qemu_crucible_fault_vmstate_register(&accelerator_vmstate_section);
 +}
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 2e5ac74ec..f3eacac66 100644
+index 8fb2dfc28..50d3dd5a0 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -2037,7 +2037,7 @@ static const NodeSchemaField schema_accel_result[] = {
@@ -2562,13 +2562,14 @@ index 2e5ac74ec..f3eacac66 100644
              qemu_crucible_fault_event_reservation_release(
                  staging->event_reservation);
 diff --git a/plugins/meson.build b/plugins/meson.build
-index a100e609e..a9448a764 100644
+index 4c736df33..a18e5f296 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
-@@ -69,5 +69,6 @@ system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
+@@ -89,6 +89,7 @@ system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
                      'crucible-fault-hardware-error.c',
                      'crucible-fault-vcpu-service.c',
                      'crucible-fault-lifecycle.c'))
 +system_ss.add(files('crucible-fault-accelerator.c'))
  
- common_ss.add(files('loader.c', 'api.c', 'core.c'))
+ user_ss.add(files('api.c', 'core.c'))
+ system_ss.add(files('api.c', 'core.c'))

@@ -1,8 +1,8 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index acd85e050..a181beba6 100644
+index 0837c0d5e..9a821967c 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -262,6 +262,18 @@ static void rr_crucible_sim_drain_vcpu_work(void)
+@@ -263,6 +263,18 @@ static void rr_crucible_sim_drain_vcpu_work(void)
      }
  }
  
@@ -21,7 +21,7 @@ index acd85e050..a181beba6 100644
  static void rr_crucible_sim_park_vmstop(void)
  {
      while (qemu_plugin_crucible_vmstop_pending()) {
-@@ -272,8 +284,20 @@ static void rr_crucible_sim_park_vmstop(void)
+@@ -273,8 +285,20 @@ static void rr_crucible_sim_park_vmstop(void)
           * converts those stop requests into CPUState::stopped before we park.
           */
          rr_crucible_sim_drain_vcpu_work();

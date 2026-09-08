@@ -130,13 +130,19 @@
   in "${normalized.scheme}://${normalized.authority}/${path}";
 
   normalizeProvider = provider: let
-    providerName = requireEnum "discovery provider" ["github-tags"] provider.provider;
-    checked = assertFields "primary discovery" ["provider" "repository"] ["tagPrefix"] provider;
-  in {
-    provider = providerName;
-    repository = requireString "primary repository" checked.repository;
-    tagPrefix = checked.tagPrefix or "";
-  };
+    providerName = requireEnum "discovery provider" ["github-releases" "github-tags" "go-releases"] provider.provider;
+    checked =
+      if providerName == "go-releases"
+      then assertFields "primary discovery" ["provider"] [] provider
+      else assertFields "primary discovery" ["provider" "repository"] ["tagPrefix"] provider;
+  in
+    if providerName == "go-releases"
+    then {provider = providerName;}
+    else {
+      provider = providerName;
+      repository = requireString "primary repository" checked.repository;
+      tagPrefix = checked.tagPrefix or "";
+    };
 
   normalizeAdvisors = advisors:
     if advisors == {}
@@ -158,7 +164,7 @@
     checked = assertFields "releasePolicy" ["strategy" "versionScheme"] ["series" "allowPrerelease" "minimumAgeDays"] policy;
     series =
       if checked ? series
-      then assertFields "releasePolicy.series" ["major"] [] checked.series
+      then assertFields "releasePolicy.series" ["major"] ["minor"] checked.series
       else null;
   in {
     strategy = requireEnum "release strategy" ["latest-in-series" "channel" "vcs-lineage"] checked.strategy;
@@ -169,6 +175,12 @@
       else if series == null
       then null
       else throw "mkUpstream: releasePolicy.series.major must be a non-negative integer";
+    seriesMinor =
+      if series != null && series ? minor && builtins.isInt series.minor && series.minor >= 0
+      then series.minor
+      else if series == null || !(series ? minor)
+      then null
+      else throw "mkUpstream: releasePolicy.series.minor must be a non-negative integer";
     allowPrerelease = checked.allowPrerelease or false;
     minimumAgeDays = checked.minimumAgeDays or 0;
   };
@@ -247,7 +259,8 @@
         go-modules = "fetchGoModules/v1";
         npm-deps = "fetchNpmDeps/v1";
         bazel-deps = "fetchBazelDeps/v1";
-      }.${
+      }
+      .${
         kind
       };
     builder = requireString "artifact builder identity" materializer.builder;
@@ -381,7 +394,7 @@ in
               name: value: let
                 actual =
                   artifactDerivations.${name}.passthru.aos.fixedOutput
-                    or (throw "mkUpstream: artifact '${name}' lacks AOS fixed-output instrumentation");
+                  or (throw "mkUpstream: artifact '${name}' lacks AOS fixed-output instrumentation");
               in
                 if actual.schema != "aos.fixed-output/v1"
                 then throw "mkUpstream: artifact '${name}' has an incompatible fixed-output contract"

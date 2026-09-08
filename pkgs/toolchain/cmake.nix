@@ -3,13 +3,12 @@
   mkDerivation,
   fetchurl,
   gnumake,
-  curl,
   openssl,
   zlib,
   stdenv,
   buildPackages,
 }: let
-  version = "3.31.6";
+  version = "4.4.3";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   zlibLibrary =
     if isDarwinCross
@@ -23,10 +22,12 @@
     if isDarwinCross
     then "${openssl}/lib/libssl.dylib"
     else "${openssl}/lib/libssl.so";
-  curlLibrary =
+  # CMake 4's libarchive probe uses find_path, which cannot infer headers
+  # injected by the compiler wrapper. Point it at the target libc explicitly.
+  iconvIncludeDir =
     if isDarwinCross
-    then "${curl}/lib/libcurl.dylib"
-    else "${curl}/lib/libcurl.so";
+    then "${stdenv.sdk}/usr/include"
+    else "${stdenv.glibc.dev}/include";
 in
   mkDerivation {
     pname = "cmake";
@@ -36,7 +37,7 @@ in
       urls = [
         "https://github.com/Kitware/CMake/releases/download/v${version}/cmake-${version}.tar.gz"
       ];
-      hash = "sha256-ZTQn8PUBR1Cq//InJ/sqpgxscyypGAjPt4ziLd2eVfA=";
+      hash = "sha256-xGQAYYtPHytDUH8k+yLzroMMNBbPI7d24W4dQTqokvA=";
     };
 
     buildDeps =
@@ -46,16 +47,10 @@ in
         buildPackages.ninja
       ]
       else [gnumake];
-    runtimeDeps =
-      [
-        openssl
-        zlib
-      ]
-      ++ (
-        if isDarwinCross
-        then [curl]
-        else []
-      );
+    runtimeDeps = [
+      openssl
+      zlib
+    ];
 
     phases =
       [
@@ -77,23 +72,24 @@ in
               # digest implementation. Use target executable links for the
               # remaining feature checks so absent libc APIs do not become
               # false positives merely because a static archive was created.
+              # Bundled curl breaks the target-curl -> native-CMake bootstrap
+              # cycle while retaining CMake's network support.
               cmake -S . -B build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX=$out \
                 -DBUILD_TESTING=OFF \
                 -DCMake_BUILD_TESTING=OFF \
                 -DCMAKE_USE_OPENSSL=ON \
-                -DCMAKE_USE_SYSTEM_CURL=ON \
+                -DCMAKE_USE_SYSTEM_CURL=OFF \
                 -DCMAKE_USE_SYSTEM_ZLIB=ON \
                 -DLIBMD_FOUND=FALSE \
-                -DCURL_LIBRARY=${curlLibrary} \
-                -DCURL_INCLUDE_DIR=${curl}/include \
                 -DZLIB_LIBRARY=${zlibLibrary} \
                 -DZLIB_INCLUDE_DIR=${zlib}/include \
                 -DOPENSSL_ROOT_DIR=${openssl} \
                 -DOPENSSL_CRYPTO_LIBRARY=${opensslCryptoLibrary} \
                 -DOPENSSL_SSL_LIBRARY=${opensslSslLibrary} \
                 -DOPENSSL_INCLUDE_DIR=${openssl}/include \
+                -DICONV_INCLUDE_DIR=${iconvIncludeDir} \
                 $cmakeFlags \
                 -DCMAKE_TRY_COMPILE_TARGET_TYPE=EXECUTABLE
             '';
@@ -126,7 +122,8 @@ in
                 -DOPENSSL_ROOT_DIR=${openssl} \
                 -DOPENSSL_CRYPTO_LIBRARY=${opensslCryptoLibrary} \
                 -DOPENSSL_SSL_LIBRARY=${opensslSslLibrary} \
-                -DOPENSSL_INCLUDE_DIR=${openssl}/include
+                -DOPENSSL_INCLUDE_DIR=${openssl}/include \
+                -DICONV_INCLUDE_DIR=${iconvIncludeDir}
             '';
           }
           {

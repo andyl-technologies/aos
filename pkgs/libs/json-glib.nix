@@ -12,7 +12,7 @@
   stdenv,
   buildPackages,
 }: let
-  version = "1.10.6";
+  version = "1.10.8";
   majorMinor = "1.10";
   isCross = stdenv.isCross;
 in
@@ -24,7 +24,7 @@ in
       urls = [
         "https://download.gnome.org/sources/json-glib/${majorMinor}/json-glib-${version}.tar.xz"
       ];
-      hash = "sha256-d/S8v5M5Uo8Wa4BzRYaT8KILd7cFnbwtthdGoZKLApM=";
+      hash = "sha256-VcXBQaVkJFuPj752mGY8h6RaczPCosVvBvgRq3OyEt0=";
     };
 
     buildDeps =

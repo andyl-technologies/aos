@@ -143,10 +143,11 @@ in
           script = ''
             set -eu
 
-            mkdir -p accel/tcg hw/core qemu system
+            mkdir -p accel/tcg exec hw/core qemu system
             : > accel/tcg/tcg-accel-ops.h
             : > accel/tcg/tcg-accel-ops-icount.h
             : > accel/tcg/tcg-accel-ops-rr.h
+            : > exec/icount.h
             : > hw/core/cpu.h
             : > qemu/accel.h
             : > qemu/guest-random.h
@@ -157,8 +158,9 @@ in
 
             cat > accel/tcg/tcg-accel-ops-icount.c <<'QEMU_FIXTURE'
             #include "qemu/osdep.h"
-            #include "system/replay.h"
             #include "system/cpu-timers.h"
+            #include "system/replay.h"
+            #include "exec/icount.h"
             #include "qemu/main-loop.h"
             #include "qemu/guest-random.h"
             #include "hw/core/cpu.h"

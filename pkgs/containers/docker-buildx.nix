@@ -4,14 +4,14 @@
   fetchGoModules,
   fetchurl,
 }: let
-  version = "0.31.1";
+  version = "0.37.0";
   src = fetchurl {
     urls = ["https://github.com/docker/buildx/archive/refs/tags/v${version}.tar.gz"];
-    hash = "sha256-LyBpVUMFyWWd1KK06xDHrquX5S6Jz+7aB/DAxD0Z7oA=";
+    hash = "sha256-xuPv37l3jZ72ngBepDq8MEFRHwiHYMknY3489r58tBA=";
   };
   goModules = fetchGoModules {
     inherit src;
-    hash = "sha256-a7b0+AMgOja34Cl/Rck3JLY9MeZ5k6U+09b5LnnkoTo=";
+    hash = "sha256-DTFvFifYcN38oKWUcBojNQdD/dpj9BHVi64SpDRHgt8=";
   };
 in
   mkGoPackage {

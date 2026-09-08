@@ -1,13 +1,13 @@
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index c3a6c9596..eed7f3d1e 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -728,6 +728,21 @@ const void *qemu_plugin_request_time_control(void);
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index bd0b9c317..9ddbf51e3 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -826,6 +826,21 @@ const void *qemu_plugin_request_time_control(void);
  QEMU_PLUGIN_API
  void qemu_plugin_update_ns(const void *handle, int64_t time);
  
 +/**
-+ * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
++ * qemu_plugin_net_inject() - injects an inbound frame into the default NIC
 + * @data: Ethernet frame bytes
 + * @len: byte length of @data
 + *
@@ -21,11 +21,11 @@ index c3a6c9596..eed7f3d1e 100644
 +QEMU_PLUGIN_API
 +int qemu_plugin_net_inject(const uint8_t *data, size_t len);
 +
- typedef void
- (*qemu_plugin_vcpu_syscall_cb_t)(qemu_plugin_id_t id, unsigned int vcpu_index,
-                                  int64_t num, uint64_t a1, uint64_t a2,
+ /**
+  * typedef qemu_plugin_vcpu_syscall_cb_t - vCPU syscall callback function type
+  * @vcpu_index: the executing vCPU
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index bdd5ac235..303501cf6 100644
+index 889c60502..33002b814 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -12,6 +12,7 @@
@@ -35,8 +35,8 @@ index bdd5ac235..303501cf6 100644
 +#include "net/net.h"
  #include "qapi/error.h"
  #include "migration/blocker.h"
- #include "hw/boards.h"
-@@ -132,6 +133,58 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
+ #include "hw/core/boards.h"
+@@ -135,6 +136,58 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
      }
  }
  

@@ -1,10 +1,10 @@
 diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
-index e5d142090..0277dda5e 100644
+index 371cfa1f1..04f55d819 100644
 --- a/accel/tcg/tcg-accel-ops-icount.c
 +++ b/accel/tcg/tcg-accel-ops-icount.c
 @@ -27,6 +27,7 @@
  #include "system/replay.h"
- #include "system/cpu-timers.h"
+ #include "exec/icount.h"
  #include "qemu/main-loop.h"
 +#include "qemu/accel.h"
  #include "qemu/guest-random.h"

@@ -85,7 +85,6 @@ shape-line|crates/crucible-qemu-plugin/src/abi.rs|2372
 shape-line|crates/crucible-qemu-plugin/src/block_io.rs|2375
 shape-line|crates/crucible-qemu-plugin/src/block_io_tests.rs|783
 shape-line|crates/crucible-qemu-plugin/src/coverage.rs|1157
-shape-line|crates/crucible-qemu-plugin/src/coverage/tests.rs|673
 shape-line|crates/crucible-qemu-plugin/src/fault_command.rs|2453
 shape-line|crates/crucible-qemu-plugin/src/fault_command/bridge.rs|1300
 shape-line|crates/crucible-qemu-plugin/src/fault_command/instruction_evidence.rs|1822
@@ -97,7 +96,6 @@ shape-line|crates/crucible-qemu-plugin/src/network_tx.rs|835
 shape-line|crates/crucible-qemu-plugin/src/ninep_io.rs|1742
 shape-line|crates/crucible-qemu-plugin/src/preemption.rs|910
 shape-line|crates/crucible-qemu-plugin/src/registration.rs|806
-shape-line|crates/crucible-qemu-plugin/src/registration/tests.rs|722
 shape-line|crates/crucible-qemu-plugin/src/round_robin.rs|786
 shape-line|crates/crucible-qemu-plugin/src/runtime.rs|1756
 shape-line|crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs|2378

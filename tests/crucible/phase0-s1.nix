@@ -7,7 +7,7 @@
     then "bounded-scheduler-preemption"
     else "none"
   ),
-  sampleCount ? 36,
+  sampleCount ? 40,
 }: let
   boundedSchedulerPreemptionCheck = import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;};
   cadence = 100000000;

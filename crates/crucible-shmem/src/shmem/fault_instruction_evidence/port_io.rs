@@ -115,7 +115,10 @@ impl FaultInstructionPortIoEvidenceV1 {
         }
         let mut byte_count = 0_u32;
         let mut entries = Vec::with_capacity(count);
-        for raw in raw_entries.chunks_exact(FAULT_INSTRUCTION_PORT_IO_EVIDENCE_ENTRY_V1_BYTES) {
+        for raw in raw_entries
+            .as_chunks::<FAULT_INSTRUCTION_PORT_IO_EVIDENCE_ENTRY_V1_BYTES>()
+            .0
+        {
             let direction = match raw[0] {
                 0 => FaultInstructionPortIoDirectionV1::Read,
                 1 => FaultInstructionPortIoDirectionV1::Write,

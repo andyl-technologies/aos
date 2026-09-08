@@ -13,7 +13,7 @@
   pcre2,
   stdenv,
 }: let
-  version = "3.11";
+  version = "3.12";
 in
   mkDerivation ({
       pname = "grep";
@@ -21,7 +21,7 @@ in
 
       src = fetchurl {
         urls = ["https://mirrors.kernel.org/gnu/grep/grep-${version}.tar.xz"];
-        hash = "1avf4x8skxbqrjp5j2qr9sp5vlf8jkw2i5bdn51fl3cxx3fsxchx";
+        hash = "sha256-JkmyfA6Q5jLq3NdXvgbG6aT0jZQd5R58D4P/dkCKB7k=";
       };
 
       buildDeps = [m4 flex bison autoconf automake texinfo gnumake sed];

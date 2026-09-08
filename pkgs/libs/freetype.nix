@@ -8,7 +8,7 @@
   stdenv,
   buildPackages,
 }: let
-  version = "2.13.3";
+  version = "2.14.3";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
@@ -17,9 +17,9 @@ in
 
     src = fetchurl {
       urls = [
-        "https://download.savannah.gnu.org/releases/freetype/freetype-${version}.tar.xz"
+        "https://download-mirror.savannah.gnu.org/releases/freetype/freetype-${version}.tar.xz"
       ];
-      hash = "sha256-BVA1BmbUJ8dNrrhdWse7NTrLpfdpVjlZlTEanG8GMok=";
+      hash = "sha256-NrxPHMQTM1No7mVsQq/KZcWjmH6HaMwozxG6d154Wl8=";
     };
 
     buildDeps = [gnumake];

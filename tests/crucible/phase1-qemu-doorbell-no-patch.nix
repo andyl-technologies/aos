@@ -234,7 +234,7 @@ in
             source_dir="$TMPDIR/qemu-source"
             mkdir -p "$source_dir"
             tar -xf ${qemuPackage.src} -C "$source_dir"
-            header="$source_dir/qemu-${qemuPackage.version}/include/qemu/qemu-plugin.h"
+            header="$source_dir/qemu-${qemuPackage.version}/include/plugins/qemu-plugin.h"
             [ -f "$header" ] || fail "missing QEMU plugin header: $header"
 
             for declaration in \

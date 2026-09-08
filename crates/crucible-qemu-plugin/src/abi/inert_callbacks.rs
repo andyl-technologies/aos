@@ -54,18 +54,25 @@ pub extern "C" fn crucible_qemu_plugin_inert_whitebox_doorbell_cb(
 }
 
 /// Inert scaffold vCPU init callback.
-pub extern "C" fn crucible_qemu_plugin_inert_vcpu_init_cb(_id: QemuPluginId, _vcpu_index: c_uint) {
+pub extern "C" fn crucible_qemu_plugin_inert_vcpu_init_cb(
+    _vcpu_index: c_uint,
+    _userdata: *mut c_void,
+) {
     if let Some(force_vcpu_exit) = resolve_qemu_force_vcpu_exit_symbol() {
         force_vcpu_exit();
     }
 }
 
 /// Inert scaffold vCPU idle callback.
-pub extern "C" fn crucible_qemu_plugin_inert_vcpu_idle_cb(_id: QemuPluginId, _vcpu_index: c_uint) {}
+pub extern "C" fn crucible_qemu_plugin_inert_vcpu_idle_cb(
+    _vcpu_index: c_uint,
+    _userdata: *mut c_void,
+) {
+}
 
 /// Inert scaffold vCPU resume callback.
 pub extern "C" fn crucible_qemu_plugin_inert_vcpu_resume_cb(
-    _id: QemuPluginId,
     _vcpu_index: c_uint,
+    _userdata: *mut c_void,
 ) {
 }

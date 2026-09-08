@@ -173,7 +173,9 @@ pub(in crate::vm_lifecycle::quantum_loop) fn lifecycle_hash_matches(
     storage.len() == 64
         && storage
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .zip(value.bytes)
             .all(|(encoded, byte)| {
                 encoded[0] == HEX[(byte >> 4) as usize] && encoded[1] == HEX[(byte & 0x0f) as usize]

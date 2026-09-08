@@ -319,13 +319,10 @@ impl PluginStableHasher {
     fn write_bytes(&mut self, bytes: &[u8]) {
         self.mix_word(bytes.len() as u64);
         self.bytes_written = self.bytes_written.wrapping_add(8);
-        let mut chunks = bytes.chunks_exact(8);
-        for chunk in &mut chunks {
-            let mut word = [0; 8];
-            word.copy_from_slice(chunk);
-            self.mix_word(u64::from_le_bytes(word));
+        let (chunks, remainder) = bytes.as_chunks::<8>();
+        for chunk in chunks {
+            self.mix_word(u64::from_le_bytes(*chunk));
         }
-        let remainder = chunks.remainder();
         if !remainder.is_empty() {
             let mut word = [0; 8];
             word[..remainder.len()].copy_from_slice(remainder);

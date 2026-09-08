@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index 7a657fff1..263674246 100644
+index 8251e8ae4..b7ce421b0 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -89,20 +89,143 @@ uint64_t icount_crucible_rr_switch_quantum(void)
@@ -157,11 +157,11 @@ index 7a657fff1..263674246 100644
 +    g_assert(executed >= 0);
 +    icount_crucible_rr_account(cpu, executed);
 +
-     qatomic_set_i64(&timers_state.qemu_icount,
-                     timers_state.qemu_icount + executed);
+     qatomic_set(&timers_state.qemu_icount,
+                 timers_state.qemu_icount + executed);
  }
 diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
-index 0277dda5e..cc96b8a7b 100644
+index 04f55d819..c9bdd5df1 100644
 --- a/accel/tcg/tcg-accel-ops-icount.c
 +++ b/accel/tcg/tcg-accel-ops-icount.c
 @@ -104,17 +104,21 @@ int64_t icount_percpu_budget(int cpu_count)
@@ -189,10 +189,10 @@ index 0277dda5e..cc96b8a7b 100644
  
      timeslice = limit / cpu_count;
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index a47e73e93..acd85e050 100644
+index c031517ca..0837c0d5e 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -797,6 +797,7 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -798,6 +798,7 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu = first_cpu;
          }
          cpu = rr_crucible_sim_loop_cpu(cpu);
@@ -200,11 +200,27 @@ index a47e73e93..acd85e050 100644
          if (rr_crucible_sim_mode() && cpu && cpu->exit_request &&
              cpu_work_list_empty(cpu) && !cpu->stop && !cpu->unplug &&
              cpu_can_run(cpu) &&
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index e904e6d70..13569f0ce 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -2124,9 +2124,10 @@ struct qemu_plugin_rr_cursor {
+diff --git a/include/exec/icount.h b/include/exec/icount.h
+index c19c6e5cc..40c2dd2bd 100644
+--- a/include/exec/icount.h
++++ b/include/exec/icount.h
+@@ -76,7 +76,10 @@ bool icount_configure(QemuOpts *opts, Error **errp);
+ int64_t icount_round(int64_t count);
+ 
+ uint64_t icount_crucible_rr_switch_quantum(void);
+-uint64_t icount_crucible_rr_cursor_position(CPUState *cpu);
++uint64_t icount_crucible_rr_current_vcpu(void);
++uint64_t icount_crucible_rr_cursor_position(void);
++uint64_t icount_crucible_rr_cursor_position_observed(CPUState *cpu);
++CPUState *icount_crucible_rr_select_cpu(CPUState *suggested);
+ 
+ /* if the CPUs are idle, start accounting real time to virtual clock. */
+ void icount_start_warp_timer(void);
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index e799f825a..f2e213413 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -2485,9 +2485,10 @@ struct qemu_plugin_rr_cursor {
   * qemu_plugin_rr_cursor() - read the current round-robin cursor
   * @out: plugin-owned cursor output
   *
@@ -218,7 +234,7 @@ index e904e6d70..13569f0ce 100644
   */
  QEMU_PLUGIN_API
  int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out);
-@@ -2134,7 +2135,9 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out);
+@@ -2495,7 +2496,9 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out);
  /**
   * qemu_plugin_crucible_rr_current_vcpu() - return the current RR vCPU index
   *
@@ -229,7 +245,7 @@ index e904e6d70..13569f0ce 100644
   *
   * This AOS Crucible extension is available only in system emulation.
   */
-@@ -2145,7 +2148,10 @@ uint64_t qemu_plugin_crucible_rr_current_vcpu(void);
+@@ -2506,7 +2509,10 @@ uint64_t qemu_plugin_crucible_rr_current_vcpu(void);
   * qemu_plugin_crucible_rr_cursor_position() - return position in RR quantum
   *
   * Returns the retired-instruction offset within the current pinned
@@ -242,7 +258,7 @@ index e904e6d70..13569f0ce 100644
   * This AOS Crucible extension is available only in system emulation.
   */
 diff --git a/include/system/cpu-timers-internal.h b/include/system/cpu-timers-internal.h
-index 94bb7394c..2f5f47f5a 100644
+index 8c262ce13..2422d2986 100644
 --- a/include/system/cpu-timers-internal.h
 +++ b/include/system/cpu-timers-internal.h
 @@ -55,6 +55,12 @@ typedef struct TimersState {
@@ -258,27 +274,11 @@ index 94bb7394c..2f5f47f5a 100644
      /* for adjusting icount */
      QEMUTimer *icount_rt_timer;
      QEMUTimer *icount_vm_timer;
-diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
-index fe2bc7c3c..3cbfd5c37 100644
---- a/include/system/cpu-timers.h
-+++ b/include/system/cpu-timers.h
-@@ -79,7 +79,10 @@ bool icount_configure(QemuOpts *opts, Error **errp);
- int64_t icount_round(int64_t count);
- 
- uint64_t icount_crucible_rr_switch_quantum(void);
--uint64_t icount_crucible_rr_cursor_position(CPUState *cpu);
-+uint64_t icount_crucible_rr_current_vcpu(void);
-+uint64_t icount_crucible_rr_cursor_position(void);
-+uint64_t icount_crucible_rr_cursor_position_observed(CPUState *cpu);
-+CPUState *icount_crucible_rr_select_cpu(CPUState *suggested);
- 
- /* if the CPUs are idle, start accounting real time to virtual clock. */
- void icount_start_warp_timer(void);
 diff --git a/plugins/api.c b/plugins/api.c
-index a8d454964..746476382 100644
+index 9d0dbb14a..2afa17034 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -684,12 +684,15 @@ int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
+@@ -863,12 +863,15 @@ int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
  
  int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
  {
@@ -298,7 +298,7 @@ index a8d454964..746476382 100644
          current_vcpu >= (uint64_t)num_vcpus || rr_switch_quantum == 0 ||
          cursor_position >= rr_switch_quantum) {
          return -1;
-@@ -703,16 +706,18 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
+@@ -882,16 +885,18 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
  
  uint64_t qemu_plugin_crucible_rr_current_vcpu(void)
  {
@@ -322,7 +322,7 @@ index a8d454964..746476382 100644
  
  uint64_t qemu_plugin_crucible_rr_switch_quantum(void)
 diff --git a/plugins/crucible-fault-vcpu-service.c b/plugins/crucible-fault-vcpu-service.c
-index ca55e1aee..64834d322 100644
+index 7ebfccbd7..69fa9a956 100644
 --- a/plugins/crucible-fault-vcpu-service.c
 +++ b/plugins/crucible-fault-vcpu-service.c
 @@ -576,7 +576,7 @@ static void crucible_vcpu_state_event(
@@ -344,10 +344,10 @@ index ca55e1aee..64834d322 100644
          rr.rr_switch_quantum = icount_crucible_rr_switch_quantum();
      }
 diff --git a/system/cpu-timers.c b/system/cpu-timers.c
-index 91fa99975..166600d1d 100644
+index 7e6a550c8..e09f38002 100644
 --- a/system/cpu-timers.c
 +++ b/system/cpu-timers.c
-@@ -196,17 +196,38 @@ static const VMStateDescription icount_vmstate_shift = {
+@@ -197,17 +197,38 @@ static const VMStateDescription icount_vmstate_shift = {
      }
  };
  

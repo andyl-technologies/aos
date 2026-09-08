@@ -298,6 +298,31 @@ in
               sed -i 's/base() > 0/base() != (char*)0/' "$f"
             fi
           done
+
+          # These collectors call BlockOffsetTable::block_start(), whose body
+          # lives in the inline header. GCC 16 no longer happens to emit an
+          # external copy from blockOffsetTable.cpp for callers that omit it.
+          for f in \
+            hotspot/src/share/vm/gc/cms/parCardTableModRefBS.cpp \
+            hotspot/src/share/vm/gc/shared/cardTableRS.cpp \
+            src/hotspot/share/gc/cms/parCardTableModRefBS.cpp \
+            src/hotspot/share/gc/shared/cardTableRS.cpp; do
+            if [ -f "$f" ]; then
+              case "$f" in
+                hotspot/*) inlineHeader=hotspot/src/share/vm/gc/shared/blockOffsetTable.inline.hpp ;;
+                src/*) inlineHeader=src/hotspot/share/gc/shared/blockOffsetTable.inline.hpp ;;
+              esac
+              if [ -f "$inlineHeader" ] \
+                && ! grep -Fq '#include "gc/shared/blockOffsetTable.inline.hpp"' "$f"; then
+                test "$(grep -Fc '#include "precompiled.hpp"' "$f")" -eq 1
+                sed -i \
+                  '/#include "precompiled.hpp"/a #include "gc/shared/blockOffsetTable.inline.hpp"' \
+                  "$f"
+                test "$(grep -Fc '#include "gc/shared/blockOffsetTable.inline.hpp"' "$f")" -eq 1
+              fi
+            fi
+          done
+
           # Fix os_linux.cpp: "if (p < 0)" where p is char*
           for f in hotspot/src/os/linux/vm/os_linux.cpp src/hotspot/os/linux/os_linux.cpp; do
             if [ -f "$f" ]; then
@@ -1131,6 +1156,9 @@ in
                         grep -q '^ENABLE_HEADLESS_ONLY := true$' build/*/spec.gmk
           ''
           else ''
+            # GCC 16 defaults C sources to C23. The bootstrap ladder starts
+            # with pre-C23 native code whose empty parameter lists retain
+            # their historical unspecified-argument meaning under C17.
             $CONFIG_SHELL configure \
               --with-boot-jdk=${prevJdk} \
               --enable-headless-only \
@@ -1150,7 +1178,7 @@ in
               --with-version-build=${build} \
               --with-version-opt=aos \
               --with-version-pre= \
-              --with-extra-cflags="-Wno-error -fcommon -fno-lifetime-dse -fno-delete-null-pointer-checks" \
+              --with-extra-cflags="-std=gnu17 -Wno-error -fcommon -fno-lifetime-dse -fno-delete-null-pointer-checks" \
               --with-extra-cxxflags="-Wno-error -fno-lifetime-dse -fno-delete-null-pointer-checks" \
               --with-extra-ldflags="''${NIX_LDFLAGS:-}" \
               --with-jobs=$NIX_BUILD_CORES \
@@ -1163,6 +1191,17 @@ in
           # Remove -z defs from generated spec.gmk — our xorg-stubs don't
           # export all X11 symbols and some JDK libs use runtime-resolved deps
           find build -name 'spec.gmk' 2>/dev/null | while read f; do
+            # Older configure releases also copy extra C flags into HotSpot's
+            # C++ flags. Keep the C17 compatibility mode confined to C code.
+            sed -i \
+              '/^JVM_CFLAGS[[:space:]]*:=/s/-std=gnu17[[:space:]]*//g' \
+              "$f"
+            sed -i \
+              '/^EXTRA_CFLAGS[[:space:]]*=/s/-std=gnu17[[:space:]]*//g' \
+              "$f"
+            test "$(sed -n '/^JVM_CFLAGS[[:space:]]*:=/p' "$f" | grep -Fc -- '-std=gnu17')" -eq 0
+            test "$(sed -n '/^EXTRA_CFLAGS[[:space:]]*=/p' "$f" | grep -Fc -- '-std=gnu17')" -eq 0
+
             sed -i 's/-Xlinker -z -Xlinker defs//g; s/-Wl,-z,defs//g' "$f" 2>/dev/null || true
           done
 

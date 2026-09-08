@@ -5,9 +5,9 @@
   gnumake,
   stdenv,
 }: let
-  version = "3.51.2";
+  version = "3.53.4";
   # SQLite uses a year+version encoding for the download filename
-  srcVersion = "3510200";
+  srcVersion = "3530400";
 in
   mkDerivation {
     pname = "sqlite";
@@ -17,7 +17,7 @@ in
       urls = [
         "https://www.sqlite.org/2026/sqlite-autoconf-${srcVersion}.tar.gz"
       ];
-      hash = "sha256-+9ifhmsUA7tmoUMGVEAInddhAPIjgxTZInSggtTyt7s=";
+      hash = "sha256-DpSDkA6SzV3o/UjRa/kgAUWmH3/VvlQqWsgdipUW65w=";
     };
 
     buildDeps = [gnumake];

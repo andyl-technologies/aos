@@ -362,8 +362,8 @@ in
               patch --batch --fuzz=0 -p1 < "${patchDir}/$patch"
             done
 
-            grep -q 'qemu_plugin_register_9p_cb' include/qemu/qemu-plugin.h
-            grep -q '#define QEMU_PLUGIN_9P_POLL_PENDING (-2)' include/qemu/qemu-plugin.h
+            grep -q 'qemu_plugin_register_9p_cb' include/plugins/qemu-plugin.h
+            grep -q '#define QEMU_PLUGIN_9P_POLL_PENDING (-2)' include/plugins/qemu-plugin.h
             grep -q 'virtio_9p_forward_crucible' hw/9pfs/virtio-9p-device.c
             grep -q 'crucible_9p_callbacks_ready()' hw/9pfs/virtio-9p-device.c
             grep -q 'next_crucible_9p_request_id' hw/9pfs/virtio-9p.h
@@ -865,7 +865,7 @@ in
             cp stock-9p-negative.err "$out/stock-negative-control.err"
             cp hw/9pfs/virtio-9p-device.c "$out/virtio-9p-device.c.patched"
             cp hw/9pfs/virtio-9p.h "$out/virtio-9p.h.patched"
-            cp include/qemu/qemu-plugin.h "$out/qemu-plugin.h.patched"
+            cp include/plugins/qemu-plugin.h "$out/qemu-plugin.h.patched"
 
             cat > "$out/result" <<'RESULT'
             PASS

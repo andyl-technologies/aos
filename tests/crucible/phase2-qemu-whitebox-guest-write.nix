@@ -69,11 +69,11 @@ in
               patch --batch --fuzz=0 -p1 < "${patchDir}/$patch" > /dev/null
             done
 
-            if grep -q 'qemu_plugin_crucible_write_memory_vaddr' include/qemu/qemu-plugin.h; then
+            if grep -q 'qemu_plugin_crucible_write_memory_vaddr' include/plugins/qemu-plugin.h; then
               fail "prefix unexpectedly exposes the guest-write capability"
             fi
             patch --batch --fuzz=0 -p1 < "${patchDir}/${patchName}" > /dev/null
-            grep -q 'qemu_plugin_crucible_write_memory_vaddr' include/qemu/qemu-plugin.h
+            grep -q 'qemu_plugin_crucible_write_memory_vaddr' include/plugins/qemu-plugin.h
             grep -q 'cpu_memory_rw_debug(current_cpu' plugins/api.c
 
             cat > "$TMPDIR/write-memory-fixture.c" <<'FIXTURE'

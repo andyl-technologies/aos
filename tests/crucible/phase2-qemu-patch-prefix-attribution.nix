@@ -532,6 +532,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0116-crucible-qemu-11-api-port.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

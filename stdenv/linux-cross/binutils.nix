@@ -14,6 +14,8 @@ buildStdenv.mkDerivation {
   targetPlatform = hostPlatform;
 
   buildDeps = [
+    # Libtool calls the build platform's ldconfig while installing libctf.
+    buildStdenv.glibc.bin
     buildPackages.gnumake
     buildPackages.perl
     buildPackages.texinfo
@@ -67,8 +69,16 @@ buildStdenv.mkDerivation {
         make install MAKEINFO=true
 
         for tool in ar as ld nm objcopy objdump ranlib readelf size strings strip; do
-          test -x "$out/bin/${hostPlatform.config}-$tool"
-          ln -s "${hostPlatform.config}-$tool" "$out/bin/$tool"
+          prefixed="$out/bin/${hostPlatform.config}-$tool"
+          unprefixed="$out/bin/$tool"
+
+          if test -x "$prefixed"; then
+            test ! -e "$unprefixed"
+            ln -s "${hostPlatform.config}-$tool" "$unprefixed"
+          else
+            test -x "$unprefixed"
+            ln -s "$tool" "$prefixed"
+          fi
         done
         test -x "$out/bin/${hostPlatform.config}-ld.gold"
         ln -s "${hostPlatform.config}-ld.gold" "$out/bin/ld.gold"

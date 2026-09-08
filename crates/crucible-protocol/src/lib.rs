@@ -2660,9 +2660,7 @@ fn send_flags() -> libc::c_int {
 
 #[cfg(unix)]
 fn last_errno_value() -> i32 {
-    std::io::Error::last_os_error()
-        .raw_os_error()
-        .map_or(0, |errno| errno)
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 fn validate_slot_assignment(slot_index: u32, node_count: u32) -> Result<(), HandshakeError> {

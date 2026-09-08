@@ -10,7 +10,7 @@
   bash,
   stdenv,
 }: let
-  version = "1.7.2";
+  version = "1.8.1";
 in
   mkDerivation {
     pname = "dtc";
@@ -20,7 +20,7 @@ in
       urls = [
         "https://mirrors.edge.kernel.org/pub/software/utils/dtc/dtc-${version}.tar.xz"
       ];
-      hash = "sha256-ktjKdpgFrh8XYgQjBDj+UoCPThx5RAU8nuwOZJsjdTk=";
+      hash = "sha256-I1JgFabxVQ4FQaU/56zqG1oR42l83zo73AdqvDj2BF0=";
     };
 
     buildDeps = [

@@ -10,7 +10,7 @@
   bzip2,
   zstd,
 }: let
-  version = "0.192";
+  version = "0.196";
 in
   mkDerivation {
     pname = "elfutils";
@@ -20,7 +20,7 @@ in
       urls = [
         "https://sourceware.org/elfutils/ftp/${version}/elfutils-${version}.tar.bz2"
       ];
-      hash = "sha256-YWCZvq4kq6Efm2PYbKbMjVZtlouAI5EzTJHfVOq0FrQ=";
+      hash = "sha256-/VzGt3rWdzysk8s/QV+TGKw7NFXuz4Afa0p0LE9scgk=";
     };
 
     buildDeps = [

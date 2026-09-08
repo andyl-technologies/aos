@@ -8,7 +8,7 @@
   stdenv,
   buildPackages,
 }: let
-  version = "1.12.2";
+  version = "1.12.3";
 in
   mkDerivation {
     pname = "libgcrypt";
@@ -19,7 +19,7 @@ in
         "https://gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-${version}.tar.bz2"
         "https://mirrors.dotsrc.org/gcrypt/libgcrypt/libgcrypt-${version}.tar.bz2"
       ];
-      hash = "sha256-fOM8JJIiGgQ2+WqFACFenz49y1/SanV81BXnqEO6vV4=";
+      hash = "sha256-mNGwsyAtKwP6dUo1qjy7/PUmoyYNjS7iE3SAAbEEMAY=";
     };
 
     buildDeps = [gnumake];

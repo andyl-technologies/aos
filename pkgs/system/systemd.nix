@@ -36,7 +36,7 @@
   python3-pefile,
   python3-pyelftools,
 }: let
-  version = "259.1";
+  version = "261.2";
 
   # PYTHONPATH that makes `import pefile` / `import elftools` succeed
   # when ukify runs (both also needed during meson configure — see
@@ -84,7 +84,7 @@ in
       urls = [
         "https://github.com/systemd/systemd/archive/refs/tags/v${version}.tar.gz"
       ];
-      hash = "sha256-evTzbbUSrS8PdJoPmIY3Dt6yu1EoAU/EfN9zcCx+GRE=";
+      hash = "sha256-7RBZ/5ZPXfNbYFZDTMF8yD+G3JE/EEiZSKCxm2CBxew=";
     };
 
     # Patches applied after unpack (via mkDerivation's built-in patch phase):
@@ -94,9 +94,6 @@ in
     #   0002 — Add PREFIX "/lib/" to CONF_PATHS macro in constants.h so
     #          systemd finds tmpfiles.d, sysctl.d, modules-load.d etc. in
     #          the Nix store.
-    #   0003 — Remove install_emptydir(systemdstatedir) from meson.build
-    #          (resolves to /var/lib/systemd which can't be created in the
-    #          sandbox; created at system activation time instead).
     #   0004 — Skip creating /run/systemd for test-run managers so offline
     #          analysis tools can run inside the Nix sandbox.
     #   0005 — Fail closed when RootHashSignature= is present but the kernel
@@ -106,7 +103,6 @@ in
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
-      ./patches/0003-remove-install-emptydir-systemdstatedir.patch
       ./patches/0004-skip-runtime-dir-for-test-run-manager.patch
       ./patches/0005-fail-closed-on-roothash-signature-rejection.patch
       ./patches/0006-ignore-external-cmdline-for-embedded-uki.patch

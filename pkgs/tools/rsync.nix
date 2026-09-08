@@ -12,7 +12,7 @@
   stdenv,
   writeShellScriptBin,
 }: let
-  version = "3.4.1";
+  version = "3.5.0";
   control = writeShellScriptBin "rsyncd-control" ''
     set -eu
     case "''${1:-}" in
@@ -35,7 +35,7 @@ in
       urls = [
         "https://download.samba.org/pub/rsync/src/rsync-${version}.tar.gz"
       ];
-      hash = "sha256-KSS8s6Hti1UfwQH3QLnw/gogKxFQJ2R89phQ1l/YjFI=";
+      hash = "sha256-x//R72U+mVQPZh5HywC3+crR7muXI5mxb5PWcmVuDTM=";
     };
 
     buildDeps = [gnumake];

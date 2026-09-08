@@ -1,5 +1,5 @@
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
-index 178851578..afc442b02 100644
+index fc10c0ff7..9bc1a0990 100644
 --- a/block/crucible-shmem.c
 +++ b/block/crucible-shmem.c
 @@ -357,6 +357,26 @@ crucible_shmem_co_flush(BlockDriverState *bs)
@@ -37,11 +37,11 @@ index 178851578..afc442b02 100644
      .bdrv_refresh_filename  = crucible_shmem_refresh_filename,
  };
  
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 23b398a2e..f3c4cbd44 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -222,9 +222,9 @@ typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index 8f545b7e0..086316db2 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -266,9 +266,9 @@ typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata
   * typedef qemu_plugin_blk_submit_cb_t - shmem block submit callback
   * @request_id: driver-assigned request id
   * @op: one of QEMU_PLUGIN_BLK_OP_*
@@ -54,7 +54,7 @@ index 23b398a2e..f3c4cbd44 100644
   * @userdata: a pointer supplied when callbacks were registered
   *
   * Returns: 0 when the request was accepted, nonzero on fail-loud rejection.
-@@ -269,6 +269,7 @@ typedef void (*qemu_plugin_blk_wait_cb_t)(uint32_t request_id,
+@@ -313,6 +313,7 @@ typedef void (*qemu_plugin_blk_wait_cb_t)(uint32_t request_id,
  #define QEMU_PLUGIN_BLK_OP_READ 0u
  #define QEMU_PLUGIN_BLK_OP_WRITE 1u
  #define QEMU_PLUGIN_BLK_OP_FLUSH 2u

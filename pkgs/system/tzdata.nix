@@ -11,18 +11,18 @@
   gnumake,
   stdenv,
 }: let
-  version = "2026b";
+  version = "2026c";
   tzcodeSrc = fetchurl {
     urls = [
       "https://data.iana.org/time-zones/releases/tzcode${version}.tar.gz"
     ];
-    hash = "sha256-N+nthCf101IcIvxY4pPL+wQ9cO7fEAOHCzPzY/Yco0Q=";
+    hash = "sha256-sc/8Os5MTHzQ77ovet2G7D0LedpIvPA1gmcf08j+rOg=";
   };
   tzdataSrc = fetchurl {
     urls = [
       "https://data.iana.org/time-zones/releases/tzdata${version}.tar.gz"
     ];
-    hash = "sha256-EUVD2fGaa/61vKQ2hq6hc9OHVaPbHy7sESZHrpLG9UQ=";
+    hash = "sha256-5KF4pEd/PQ6nfMMYKP9yqjj+/41hqhPn6Z4ULp2QK+Q=";
   };
 in
   mkDerivation {

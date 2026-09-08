@@ -4,7 +4,7 @@
   fetchurl,
   gnumake,
 }: let
-  version = "1.2.13";
+  version = "1.2.16.1";
 in
   mkDerivation {
     pname = "alsa-lib";
@@ -14,7 +14,7 @@ in
       urls = [
         "https://www.alsa-project.org/files/pub/lib/alsa-lib-${version}.tar.bz2"
       ];
-      hash = "sha256-jE/zdVPL6JYY4Yfkx3n3GpuyqLJ7kfh+1AmHzJIz2PY=";
+      hash = "sha256-90Dbf0iCVZRP/UQoQW7jOQqWdChWkWQz30aMKBQ2SA4=";
     };
 
     buildDeps = [gnumake];

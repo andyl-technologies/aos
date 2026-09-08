@@ -15,6 +15,7 @@
     version = "1.2.0";
     upstreamId = "v1.2.0";
     repository = "google/brotli";
+    provider = "github-releases";
     tagPrefix = "v";
     major = 1;
     source = {
