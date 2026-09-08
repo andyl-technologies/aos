@@ -1226,6 +1226,44 @@ fn repository_lock_excludes_a_second_socket_incarnation() {
 }
 
 #[test]
+fn repository_owner_drop_releases_lock_held_by_a_duplicated_descriptor() {
+    let (_directory, config) = fixture();
+    let metadata = fs::metadata(config.state_directory()).expect("state directory metadata");
+    let owner = CampaignStateOwner::open(
+        config.state_directory(),
+        metadata.uid(),
+        metadata.gid(),
+        false,
+    )
+    .expect("first repository owner");
+    let inherited = owner
+        .lock
+        .try_clone()
+        .expect("duplicate inherited repository descriptor");
+
+    assert!(matches!(
+        CampaignStateOwner::open(
+            config.state_directory(),
+            metadata.uid(),
+            metadata.gid(),
+            false,
+        ),
+        Err(CampaignLocalServiceError::StateInUse)
+    ));
+    drop(owner);
+
+    let replacement = CampaignStateOwner::open(
+        config.state_directory(),
+        metadata.uid(),
+        metadata.gid(),
+        false,
+    )
+    .expect("owner drop releases inherited repository lock");
+    drop(replacement);
+    drop(inherited);
+}
+
+#[test]
 fn repository_transfer_identity_survives_rename_and_distinguishes_replacement() {
     let directory = tempdir().expect("temporary state parent");
     let original = directory.path().join("original");

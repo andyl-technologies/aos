@@ -1462,7 +1462,7 @@ pub enum CampaignLocalServiceError {
 
 struct CampaignStateOwner {
     _root: File,
-    _lock: File,
+    lock: File,
     transfer_identity: String,
 }
 
@@ -1545,13 +1545,23 @@ impl CampaignStateOwner {
             .map_err(|source| io_error("sync-state-directory", path, source))?;
         Ok(Self {
             _root: root,
-            _lock: lock,
+            lock,
             transfer_identity,
         })
     }
 
     fn transfer_identity(&self) -> &str {
         &self.transfer_identity
+    }
+}
+
+impl Drop for CampaignStateOwner {
+    fn drop(&mut self) {
+        // A fork can retain a duplicate of this open-file description until
+        // exec closes it. Release ownership explicitly when the Rust owner
+        // ends so inherited or duplicated descriptors cannot extend the
+        // repository's writer lease.
+        let _ = flock(&self.lock, FlockOperation::Unlock);
     }
 }
 
