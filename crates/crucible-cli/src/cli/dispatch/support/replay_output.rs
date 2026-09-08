@@ -39,6 +39,13 @@ pub(crate) fn write_replay_report_human(
             live.fingerprint_stream_digest,
             live.controls
         )?;
+        if let Some(preemption) = &live.host_scheduler_preemption {
+            writeln!(
+                output,
+                "crucible: replay host-preemption {}",
+                preemption.summary()
+            )?;
+        }
     }
     if let Some(check) = &report.check {
         match &check.mismatch {

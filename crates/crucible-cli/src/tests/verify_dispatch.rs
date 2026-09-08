@@ -559,7 +559,7 @@ pub(super) fn cli_verify_workflow_retains_every_passing_reduction_artifact()
         divergence: None,
     };
 
-    let outcome = finish_verify_workflow_outcome(
+    let mut outcome = finish_verify_workflow_outcome(
         &plan_cli_invocation(&cli),
         &backend_plan,
         None,
@@ -584,6 +584,46 @@ pub(super) fn cli_verify_workflow_retains_every_passing_reduction_artifact()
                 && line.contains("assertion_transitions=request-succeeded:Satisfied"))
     );
 
+    let canonical_log_before_host_evidence = outcome.canonical_log.clone();
+    let canonical_digest_before_host_evidence = outcome.canonical_log_digest.clone();
+    let artifact_digest_before_host_evidence = outcome.artifact_digest.clone();
+    let artifact_bytes_before_host_evidence = outcome.side_reproduction_artifacts.clone();
+    append_verify_bounded_scheduler_preemption_snapshot(
+        &mut outcome,
+        verify_plan
+            .reductions
+            .first()
+            .expect("verify plan should carry a reduction"),
+        crucible_api::BoundedSchedulerPreemptionEvidenceSnapshot {
+            applied: true,
+            pending_quantum_certified: true,
+            perturbations: 6,
+            requested_stopped_milliseconds: 90,
+        },
+    )?;
+    assert_eq!(outcome.canonical_log, canonical_log_before_host_evidence);
+    assert_eq!(
+        outcome.canonical_log_digest,
+        canonical_digest_before_host_evidence
+    );
+    assert_eq!(
+        outcome.artifact_digest,
+        artifact_digest_before_host_evidence
+    );
+    assert_eq!(
+        outcome.side_reproduction_artifacts,
+        artifact_bytes_before_host_evidence
+    );
+    assert!(
+        backend_machine_readable_trace_entries(&outcome)
+            .iter()
+            .any(|entry| {
+                entry.node == "host"
+                    && entry.kind == "bounded_scheduler_preemption"
+                    && entry.summary.contains("pending_quantum_certified=true")
+            })
+    );
+
     emit_backend_command_output(&cli, &outcome)?;
     let written = fs::read_dir(&artifact_dir)?.collect::<Result<Vec<_>, _>>()?;
     assert_eq!(written.len(), 2);
@@ -601,6 +641,69 @@ pub(super) fn cli_verify_workflow_retains_every_passing_reduction_artifact()
             content_address_bytes(&artifact)
         );
     }
+
+    Ok(())
+}
+
+#[test]
+pub(super) fn cli_replay_reports_host_preemption_separately_from_guest_identity()
+-> Result<(), Box<dyn Error>> {
+    let expected_event_stream = content_address_bytes(b"canonical guest events");
+    let expected_fingerprint_stream = content_address_bytes(b"canonical guest fingerprints");
+    let report = ReplayArtifactReport {
+        path: PathBuf::from("reproduction.crucible"),
+        digest: content_address_bytes(b"artifact"),
+        seed: 17,
+        scenario_digest: content_address_bytes(b"scenario"),
+        reduction: None,
+        live_qemu: Some(ReplayLiveQemuProof {
+            execution_owner: "session",
+            producer: String::from("run"),
+            terminal_status: String::from("passed"),
+            terminal_outcome: String::from("quiescence"),
+            terminal_configuration: content_address_bytes(b"terminal configuration"),
+            event_stream_digest: expected_event_stream.clone(),
+            fingerprint_stream_digest: expected_fingerprint_stream.clone(),
+            controls: 3,
+            host_scheduler_preemption: Some(ReplayHostSchedulerPreemptionProof {
+                profile: "bounded-scheduler-preemption",
+                applied: true,
+                pending_quantum_certified: true,
+                perturbations: 6,
+                requested_stopped_milliseconds: 90,
+            }),
+        }),
+        to_savepoint: None,
+        check: None,
+        bisect: None,
+    };
+
+    let entries = replay_machine_readable_trace_entries(&report, BackendCommandStatus::Passed, 0);
+    let live = entries
+        .iter()
+        .find(|entry| entry.kind == "replay_live_qemu")
+        .expect("machine replay output should retain live guest identity");
+    assert!(
+        live.summary
+            .contains(&format!("event_stream={expected_event_stream}"))
+    );
+    assert!(
+        live.summary
+            .contains(&format!("fingerprint_stream={expected_fingerprint_stream}"))
+    );
+    let host = entries
+        .iter()
+        .find(|entry| entry.kind == "bounded_scheduler_preemption")
+        .expect("machine replay output should include host preemption evidence");
+    assert_eq!(host.node, "host");
+    assert!(host.summary.contains("applied=true"));
+    assert!(host.summary.contains("pending_quantum_certified=true"));
+
+    let mut human = Vec::new();
+    write_replay_report_human(&mut human, &report)?;
+    let human = String::from_utf8(human)?;
+    assert!(human.contains("replay host-preemption"));
+    assert!(human.contains("requested_stopped_ms=90"));
 
     Ok(())
 }

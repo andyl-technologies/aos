@@ -119,6 +119,18 @@ pub(crate) fn replay_machine_readable_trace_entries(
                 live.controls
             ),
         );
+        if let Some(preemption) = &live.host_scheduler_preemption {
+            entries.push(CanonicalLogEntry {
+                sequence: entries.len() as u64,
+                virtual_time_ticks: entries
+                    .last()
+                    .map(|entry| entry.virtual_time_ticks.saturating_add(1))
+                    .unwrap_or(0),
+                node: String::from("host"),
+                kind: String::from("bounded_scheduler_preemption"),
+                summary: preemption.summary(),
+            });
+        }
     }
     if let Some(check) = &report.check {
         push_replay_trace_entry(

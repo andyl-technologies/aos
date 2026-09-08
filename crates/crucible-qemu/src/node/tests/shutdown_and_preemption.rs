@@ -472,3 +472,58 @@ fn qemu_node_retains_process_endpoints_when_reap_fails() -> Result<(), Box<dyn E
     );
     Ok(())
 }
+
+#[test]
+fn bounded_scheduler_preemption_rejects_externally_owned_process() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node_with_options(
+        Arc::clone(&log),
+        ScriptedNodeOptions::default(),
+        [QemuAsyncWaitOutcome::Completed],
+    )?;
+    assert!(node.shutdown_child()?.reaped);
+    node.child = QemuNodeProcessControl::External(Box::new(UnreapableExternalProcessControl));
+
+    let evidence = crate::BoundedSchedulerPreemptionEvidence::default();
+    node.enable_bounded_scheduler_preemption(evidence.claim()?);
+    let error = node
+        .advance_to_ceiling_report(Icount { retired: 31 })
+        .expect_err("externally owned process must be rejected before pidfd_open");
+
+    assert!(matches!(
+        error,
+        QemuNodeError::BoundedSchedulerPreemptionTarget {
+            target: QemuBoundedSchedulerPreemptionTargetError::ExternallyOwned,
+        }
+    ));
+    assert!(evidence.snapshot().is_none());
+    assert!(evidence.claim().is_err());
+    Ok(())
+}
+
+#[test]
+fn bounded_scheduler_preemption_rejects_reaped_direct_child() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node_with_options(
+        log,
+        ScriptedNodeOptions::default(),
+        [QemuAsyncWaitOutcome::Completed],
+    )?;
+    assert!(node.shutdown_child()?.reaped);
+
+    let evidence = crate::BoundedSchedulerPreemptionEvidence::default();
+    node.enable_bounded_scheduler_preemption(evidence.claim()?);
+    let error = node
+        .advance_to_ceiling_report(Icount { retired: 31 })
+        .expect_err("reaped direct child must be rejected before pidfd_open");
+
+    assert!(matches!(
+        error,
+        QemuNodeError::BoundedSchedulerPreemptionTarget {
+            target: QemuBoundedSchedulerPreemptionTargetError::AlreadyReaped,
+        }
+    ));
+    assert!(evidence.snapshot().is_none());
+    assert!(evidence.claim().is_err());
+    Ok(())
+}

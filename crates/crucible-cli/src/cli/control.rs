@@ -1101,6 +1101,7 @@ pub(super) fn backend_command_outcome(
         save_boundary_evidence: None,
         reproduction_artifact: None,
         side_reproduction_artifacts: Vec::new(),
+        host_scheduler_preemption: Vec::new(),
     }
 }
 
