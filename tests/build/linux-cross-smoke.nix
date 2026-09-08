@@ -37,9 +37,33 @@
             'int main(void) { return puts("shared fixup") < 0; }' \
             > shared-fixup.c
           "$CC" -g shared-fixup.c -o "$out/bin/shared-fixup"
+
+          "$CC" -g -c shared-fixup.c -o shared-fixup.o
+          "$AR" rcs "$out/libshared-fixup.a" shared-fixup.o
+          chmod 0444 "$out/libshared-fixup.a"
         '';
       }
       sharedPhases.fixupPhase
+    ];
+  };
+  defaultFixup = cross.pkgs.mkDerivation {
+    pname = "linux-cross-default-fixup-smoke";
+    version = "0";
+    src = null;
+    phases = [
+      {
+        name = "build";
+        script = ''
+          mkdir -p "$out"
+          printf '%s\n' \
+            '#include <stdio.h>' \
+            'int readonly_archive(void) { return puts("default fixup"); }' \
+            > default-fixup.c
+          "$CC" -g -c default-fixup.c -o default-fixup.o
+          "$AR" rcs "$out/libdefault-fixup.a" default-fixup.o
+          chmod 0444 "$out/libdefault-fixup.a"
+        '';
+      }
     ];
   };
 in
@@ -71,11 +95,17 @@ in
               'int main() { std::cout << "aos Linux C++ cross smoke\\n"; return 0; }' \
               > smoke.cc
             "$CXX" smoke.cc -o "$out/bin/aos-linux-cxx-smoke"
+            "$CC" -fuse-ld=gold smoke.c -o "$out/bin/aos-linux-gold-smoke"
 
-            for executable in "$out/bin/aos-linux-c-smoke" "$out/bin/aos-linux-cxx-smoke"; do
+            for executable in \
+              "$out/bin/aos-linux-c-smoke" \
+              "$out/bin/aos-linux-cxx-smoke" \
+              "$out/bin/aos-linux-gold-smoke"; do
               ${cross.stdenv.binutils}/bin/readelf -h "$executable" | grep -Fq 'Machine:                           AArch64'
               ${cross.stdenv.binutils}/bin/readelf -l "$executable" | grep -Fq '${cross.stdenv.glibc}/lib/${cross.stdenv.hostPlatform.dynamicLinker}'
             done
+
+            ${cross.stdenv.binutils}/bin/${cross.stdenv.hostPlatform.config}-ld.gold --version | grep -Fq 'GNU gold'
 
             ${cross.stdenv.binutils}/bin/readelf -d "$out/bin/aos-linux-cxx-smoke" | grep -Fq 'Shared library: [libstdc++.so.6]'
             ${cross.stdenv.binutils}/bin/readelf -d "$out/bin/aos-linux-cxx-smoke" | grep -Fq '${compilerRuntimeDirectory}'
@@ -95,6 +125,17 @@ in
                 exit 1
                 ;;
             esac
+            for archive in \
+              ${defaultFixup}/libdefault-fixup.a \
+              ${sharedFixup}/libshared-fixup.a; do
+              archive_sections=$(${cross.stdenv.binutils}/bin/readelf -S "$archive")
+              case "$archive_sections" in
+                *.debug_info*)
+                  echo "cross fixup retained debug sections in $archive" >&2
+                  exit 1
+                  ;;
+              esac
+            done
           '';
         }
       ];

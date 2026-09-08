@@ -177,11 +177,14 @@
         for o in ''${AOS_OUTPUT_NAMES:-out}; do
           eval "p=\"\''${$o:-}\""
           [ -d "$p" ] || continue
-          find "$p" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) -exec ${stripCommand} --strip-unneeded {} \; 2>/dev/null || true
-          find "$p" -type f -name '*.a' -exec ${stripCommand} -S {} \; 2>/dev/null || true
+          find "$p" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) \
+            -exec chmod u+w {} \; -exec ${stripCommand} --strip-unneeded {} \; 2>/dev/null || true
+          find "$p" -type f -name '*.a' \
+            -exec chmod u+w {} \; -exec ${stripCommand} -S {} \; 2>/dev/null || true
           for d in bin sbin libexec; do
             if [ -d "$p/$d" ]; then
-              find "$p/$d" -type f -exec ${stripCommand} -s {} \; 2>/dev/null || true
+              find "$p/$d" -type f \
+                -exec chmod u+w {} \; -exec ${stripCommand} -s {} \; 2>/dev/null || true
             fi
           done
         done

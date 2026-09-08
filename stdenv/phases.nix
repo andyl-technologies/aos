@@ -93,16 +93,21 @@ let
       # gcc-stage2 into its runtime closure via Nix's reference scanner.
       if [ -z "''${dontStrip:-}" ]; then
         echo "stripping..."
-        find "$out" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) -exec ${stripCommand} --strip-unneeded {} \; 2>/dev/null || true
-        find "$out" -type f -name '*.a' -exec ${stripCommand} -S {} \; 2>/dev/null || true
+        find "$out" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) \
+          -exec chmod u+w {} \; -exec ${stripCommand} --strip-unneeded {} \; 2>/dev/null || true
+        find "$out" -type f -name '*.a' \
+          -exec chmod u+w {} \; -exec ${stripCommand} -S {} \; 2>/dev/null || true
         if [ -d "$out/bin" ]; then
-          find "$out/bin" -type f -exec ${stripCommand} -s {} \; 2>/dev/null || true
+          find "$out/bin" -type f \
+            -exec chmod u+w {} \; -exec ${stripCommand} -s {} \; 2>/dev/null || true
         fi
         if [ -d "$out/sbin" ]; then
-          find "$out/sbin" -type f -exec ${stripCommand} -s {} \; 2>/dev/null || true
+          find "$out/sbin" -type f \
+            -exec chmod u+w {} \; -exec ${stripCommand} -s {} \; 2>/dev/null || true
         fi
         if [ -d "$out/libexec" ]; then
-          find "$out/libexec" -type f -exec ${stripCommand} -s {} \; 2>/dev/null || true
+          find "$out/libexec" -type f \
+            -exec chmod u+w {} \; -exec ${stripCommand} -s {} \; 2>/dev/null || true
         fi
       fi
 
