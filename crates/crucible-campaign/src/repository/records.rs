@@ -398,6 +398,39 @@ impl CampaignRepository {
             .ok_or_else(|| integrity("selection-resolution-empty"))
     }
 
+    /// Resolves one exact duplicate-free selection batch with shared decoding.
+    ///
+    /// The result has the same order and cardinality as `ids`. This stricter
+    /// form is intended for immutable configuration admission, where a repeated
+    /// selection identity would make the schedule-to-record correspondence
+    /// ambiguous.
+    ///
+    /// # Errors
+    ///
+    /// Returns an integrity error for repeated input identities or an inexact
+    /// result, and otherwise returns the bounded store, codec, or dependency
+    /// error produced while authenticating the records.
+    pub fn resolve_distinct_selections(
+        &self,
+        ids: &[SelectionId],
+    ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
+        if ids.len() > MAX_SELECTION_RESOLUTION_RECORDS {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "selection resolution batch exceeds record limit",
+            }
+            .into());
+        }
+        let distinct = ids.iter().copied().collect::<BTreeSet<_>>();
+        if distinct.len() != ids.len() {
+            return Err(integrity("configuration-selection-identity-repeated"));
+        }
+        let resolved = self.resolve_selections(ids)?;
+        if resolved.len() != ids.len() {
+            return Err(integrity("configuration-selection-resolution-inexact"));
+        }
+        Ok(resolved)
+    }
+
     /// Resolves selections while decoding each unique dependency once.
     pub(super) fn resolve_selections(
         &self,

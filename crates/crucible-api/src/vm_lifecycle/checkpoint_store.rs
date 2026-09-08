@@ -18,6 +18,8 @@ pub use portable::{
     ProductionExactCheckpointSource,
     authenticate_portable_exact_checkpoint_replay_oracle_promotion,
     authenticate_portable_exact_checkpoint_replay_oracle_promotion_with_boundary,
+    authenticate_portable_exact_checkpoint_resume_basis,
+    authenticate_portable_exact_checkpoint_resume_basis_with_boundary,
     install_exact_checkpoint_closure, install_exact_checkpoint_closure_with_boundary,
     install_exact_checkpoint_closure_with_boundary_and_admission,
 };
