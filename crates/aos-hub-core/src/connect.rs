@@ -1286,8 +1286,13 @@ pub async fn rewrite_for_route(
         };
         if let Some(kv) = &svc.kv {
             if let Ok(Some(registry)) = svc.db.registry_by_id(registry_id).await {
-                let key = crate::oci::oci_route_projection_key(&authority);
-                if let Err(error) = kv.put_str(&key, &registry.stable_id, None).await {
+                if let Err(error) = crate::oci::refresh_oci_route_projection(
+                    kv.as_ref(),
+                    &authority,
+                    &registry.stable_id,
+                )
+                .await
+                {
                     tracing::warn!(
                         authority,
                         registry_id,
