@@ -17,7 +17,7 @@ in
 
     src = fetchurl {
       urls = ["https://mirrors.kernel.org/gnu/sed/sed-${version}.tar.xz"];
-      hash = "sha256-biJrcy4c1zlGStaGK9Ghq6QteYKSLaelNRljHSSXUYE=";
+      hash = "sha256-uOchgrLslqNXTimYxHt6qmTMIM4ADY6awxPMB87PKMc=";
     };
 
     buildDeps = [m4 flex bison autoconf automake texinfo gnumake];
