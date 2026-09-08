@@ -162,7 +162,9 @@ When a compiler or generator fails, preserve its inputs, command, and build
 log, then reproduce the failure before choosing a workaround. Fix missing
 dependency edges or shared-output races where a reproducer demonstrates them.
 Do not treat a successful retry at a lower job count as a diagnosis of compiler
-corruption or as evidence for a permanent package-specific limit.
+corruption or as evidence for a permanent package-specific limit. See the
+[build concurrency notes](../../maintainers/build-concurrency.md) for packages
+to watch under resource pressure and the available reproduction results.
 
 For an upstream release, add `fetchurl` and `fakeHash` to the package function
 arguments, keep `version` beside the source, and replace `src = null` with:

@@ -172,8 +172,10 @@
  static void *
  do_std_select (void *args)
 @@ -1525,6 +1681,8 @@
- 	    select_args->read_fds, select_args->write_fds,
- 	    select_args->except_fds, select_args->timeout);
+-	    select_args->read_fds, select_args->write_fds,
++            select_args->read_fds, select_args->write_fds,
+-	    select_args->except_fds, select_args->timeout);
++            select_args->except_fds, select_args->timeout);
    select_args->errno_value = errno;
 +  select_args->wakeup_ready = select_args->result > 0
 +    && FD_ISSET (select_args->wakeup_fd, select_args->read_fds);
