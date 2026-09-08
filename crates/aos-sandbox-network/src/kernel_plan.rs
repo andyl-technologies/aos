@@ -106,6 +106,7 @@ pub struct NetworkKernelPlanV1 {
     allocation_generation: u64,
     namespace_plan_digest: ObjectDigest,
     policy_program_digest: ObjectDigest,
+    expectation: crate::kernel_observation::NetworkKernelExpectationV1,
     digest: ObjectDigest,
     bytes: Vec<u8>,
 }
@@ -283,12 +284,47 @@ impl NetworkKernelPlanV1 {
         }
 
         let digest = kernel_plan_digest(bytes);
+        let expected_veth = if namespace.veth_present {
+            Some(crate::kernel_observation::ExpectedVethV1 {
+                mtu: namespace.mtu,
+                host_name: wire::decode_name_bytes(namespace.host_name)?,
+                sandbox_name: wire::decode_name_bytes(namespace.sandbox_name)?,
+                host_mac: namespace.host_mac,
+                sandbox_mac: namespace.sandbox_mac,
+            })
+        } else {
+            None
+        };
+        let expectation = crate::kernel_observation::NetworkKernelExpectationV1::new(
+            assignment,
+            network_handle,
+            allocation_generation,
+            kind,
+            profile_digest,
+            enforcement_program_digest,
+            lease_gate_program_digest,
+            expected_veth,
+            namespace
+                .address_pairs
+                .iter()
+                .copied()
+                .map(expected_address_pair)
+                .collect(),
+            namespace
+                .routes
+                .iter()
+                .copied()
+                .map(expected_route)
+                .collect(),
+            policy,
+        );
         Ok(Self {
             assignment,
             network_handle,
             allocation_generation,
             namespace_plan_digest,
             policy_program_digest,
+            expectation,
             digest,
             bytes: bytes.to_vec(),
         })
@@ -324,6 +360,14 @@ impl NetworkKernelPlanV1 {
         self.policy_program_digest
     }
 
+    /// Returns the complete semantic contract used for kernel observation.
+    #[must_use]
+    pub const fn observation_expectation(
+        &self,
+    ) -> &crate::kernel_observation::NetworkKernelExpectationV1 {
+        &self.expectation
+    }
+
     /// Returns the domain-separated digest of the complete canonical artifact.
     #[must_use]
     pub const fn digest(&self) -> ObjectDigest {
@@ -334,6 +378,35 @@ impl NetworkKernelPlanV1 {
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
+    }
+}
+
+fn expected_address_pair(pair: wire::KernelAddressPair) -> crate::ExpectedAddressPairV1 {
+    crate::ExpectedAddressPairV1 {
+        host: expected_address(pair.host),
+        sandbox: expected_address(pair.sandbox),
+        prefix_length: pair.prefix_length,
+    }
+}
+
+fn expected_route(route: wire::KernelRoute) -> crate::ExpectedRouteV1 {
+    crate::ExpectedRouteV1 {
+        destination: crate::ObservedIpPrefixV1 {
+            address: expected_address(route.destination.address),
+            prefix_length: route.destination.prefix_length,
+        },
+        gateway: expected_address(route.gateway),
+    }
+}
+
+fn expected_address(address: wire::KernelAddress) -> crate::ObservedIpAddressV1 {
+    match address.family {
+        wire::AddressFamily::Ipv4 => {
+            let mut octets = [0; 4];
+            octets.copy_from_slice(&address.octets[..4]);
+            crate::ObservedIpAddressV1::Ipv4(octets)
+        }
+        wire::AddressFamily::Ipv6 => crate::ObservedIpAddressV1::Ipv6(address.octets),
     }
 }
 

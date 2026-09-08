@@ -453,6 +453,8 @@ let
     "aos-registry-server"
     "aos-sandbox-hostd"
     "aos-sandbox-mountd"
+    "aos-sandbox-network-lease-gate"
+    "aos-sandbox-network-observer"
     "aos-sandbox-zfs-worker"
     "aos-service-root"
     "aos-selinux-run"

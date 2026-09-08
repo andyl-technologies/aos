@@ -27,7 +27,9 @@ pub mod allocation;
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
+pub mod kernel_observation;
 pub mod kernel_plan;
+pub mod kernel_reader;
 pub mod namespace_catalog;
 pub mod namespace_store;
 pub mod policy;
@@ -49,9 +51,22 @@ pub use catalog::{
     AuthenticatedNetworkPreparationV1, NetworkCatalogBindingV1, ResolvedEndpointV1,
     ResolvedNetworkPreparationV1,
 };
+pub use kernel_observation::{
+    ExpectedAddressPairV1, ExpectedRouteV1, ExpectedVethV1, NetworkKernelExpectationV1,
+    NetworkKernelObservationError, NetworkKernelObservationV1, ObservedAddressV1,
+    ObservedBpfArtifactV1, ObservedBpfAttachmentV1, ObservedBpfBindingV1, ObservedBpfMapV1,
+    ObservedFlowV1, ObservedInterfaceV1, ObservedIpAddressV1, ObservedIpPrefixV1,
+    ObservedLeaseDirectionV1, ObservedLeaseGateV1, ObservedLeaseStateV1, ObservedLinkV1,
+    ObservedNetworkNamespaceV1, ObservedNftAntiSpoofRuleV1, ObservedNftBaseChainV1,
+    ObservedNftVerdictV1, ObservedNftablesPolicyV1, ObservedRouteProtocolV1, ObservedRouteScopeV1,
+    ObservedRouteTypeV1, ObservedRouteV1,
+};
 pub use kernel_plan::{
     NetworkKernelActionV1, NetworkKernelPlanError, NetworkKernelPlanV1,
     NetworkNamespacePublicationRequirementV1,
+};
+pub use kernel_reader::{
+    FixedBpfObservationReader, NetworkKernelReaderError, decode_bpf_observation,
 };
 pub use namespace_catalog::{
     NetworkNamespaceCatalogError, NetworkNamespaceCatalogOutcomeV1, NetworkNamespaceCatalogV1,

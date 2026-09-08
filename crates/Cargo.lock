@@ -907,6 +907,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-network-systemd-custody-fixture"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "aos-sandbox-linux",
+ "aos-sandbox-network",
+ "rustix 1.1.4",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "aos-sandbox-ownership-protocol"
 version = "0.1.0"
 dependencies = [

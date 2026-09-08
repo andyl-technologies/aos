@@ -4600,3 +4600,57 @@ authorization for the manager inspection API and the protected-catalog policy
 remain to be qualified. Authenticated worker descriptor transfer, namespace and
 veth mutation, netlink/nftables effects, BPF installation, and authoritative
 publication also remain open. Apply remains unadvertised.
+
+### Exact Network kernel observation foundation (in progress)
+
+The Network library now carries a concrete, namespace-qualified observation
+model and an exact comparator for one complete kernel plan. It distinguishes
+equal host and sandbox interface indexes, admits no extra sandbox links,
+addresses, routes, nftables chains or rules, and binds route table, type,
+scope, protocol, metric and preferred-source fields. Nftables comparison
+requires the fixed base-chain hooks and default-drop policies, inverted
+local-address anti-spoof DROP guards before endpoint ACCEPT rules, exact flow
+positions, and measured-versus-loader artifact and policy commitments. The
+lease gate comparison binds the installed object digest, loader provenance,
+map schemas, TCX links, program tags, referenced maps, concrete interface and
+the current two-direction lifecycle state. Two individually valid snapshots
+must also have the same versioned observation digest.
+
+The installed C BPF observer opens one plan-derived pin root through retained
+`openat2` directory custody, validates root-owned protected ancestry and the
+exact four-pin inventory, and opens each map and TCX link relative to that
+held directory using `BPF_F_PATH_FD`. It validates map ABI and reserved fields,
+the exact queried TCX link IDs, attached program IDs and tags, and both
+programs' exact map relationship before emitting a closed JSON record. A
+nonzero completion discards all output, including a syntactically complete
+record.
+
+The Rust reader measures the fixed observer executable and lease-gate object
+through retained readable descriptors. It admits only normalized hash-named
+Nix store paths resolved component-by-component without symlinks or magic
+links. Root and `/nix` reject group/other writes; the deployed root-owned
+sticky group-writable `/nix/store` contract protects existing root-owned
+entries; and every store-output directory, descendant and artifact rejects all
+write bits. Retained ancestry and artifact identities, bytes and current fixed
+path association are revalidated before and after the bounded helper process.
+The JSON decoder independently rejects unknown fields, oversized records,
+noncanonical hexadecimal values, invalid versions and booleans, wrong map
+schemas or attachment types, zero tags, and inconsistent graph identities.
+
+The native observer package builds hermetically with warnings denied at
+`/nix/store/miyxja70mcfcx4dp7mp6x6dxj7r7h7bl-aos-sandbox-network-observer-1`.
+The AArch64 derivation evaluates with the target Linux headers explicitly ahead
+of ambient build-machine include paths. Rust formatting passes, the complete
+Network library suite passes all 87 tests, and the real systemd-custody fixture
+compiles with a root-guest command that constructs the reader from the
+installed observer and BPF object. That new command has not yet run in a guest;
+the existing long fleet realization predates it. Strict whole-crate Clippy is
+currently blocked before this crate by generated `aos-proto` `HashMap` output.
+
+This is observation-model and BPF-reader foundation only. No actual
+rtnetlink address or route reader, nftables reader, namespace-switching worker,
+authenticated request protocol, double-snapshot production composition, or
+root-guest positive BPF observation has qualified the path. No namespace,
+veth, route, nftables or BPF mutation is implemented, and Apply remains
+unadvertised. The Network runtime and end-to-end qualification tasks remain
+open.
