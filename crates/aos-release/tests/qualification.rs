@@ -20,8 +20,8 @@ fn contract() -> QualificationContract {
 fn one_contract_selects_class_obligations_without_renaming_requirements() {
     let contract = contract();
     contract.validate().unwrap();
-    let edge = contract.gates(ReleaseClass::Edge).unwrap();
-    let stable = contract.gates(ReleaseClass::Stable).unwrap();
+    let edge = contract.gates("andyl/testing", ReleaseClass::Edge).unwrap();
+    let stable = contract.gates("andyl/main", ReleaseClass::Stable).unwrap();
     assert!(
         edge.iter()
             .all(|gate| stable.iter().any(|other| other.policy_id == gate.policy_id))
@@ -126,7 +126,7 @@ fn archival_contracts_preserve_their_original_bytes_and_gate_domains() {
         aos_release::Sha256Digest::of_canonical(aos_release::qualification::CONTRACT_V1, &value)
             .unwrap()
     );
-    let gates = archived.gates(ReleaseClass::Stable).unwrap();
+    let gates = archived.gates("andyl/main", ReleaseClass::Stable).unwrap();
     for (gate, requirement) in gates.iter().zip(value["requirements"].as_array().unwrap()) {
         assert_eq!(
             gate.policy_digest,
@@ -141,4 +141,50 @@ fn archival_contracts_preserve_their_original_bytes_and_gate_domains() {
     smuggled["claims"] = serde_json::to_value(contract().claims).unwrap();
     let parsed: QualificationContract = serde_json::from_value(smuggled).unwrap();
     assert!(parsed.validate().is_err());
+}
+
+#[test]
+fn main_edge_requires_production_assurance_and_testing_stable_does_not() {
+    let contract = contract();
+    for class in [
+        ReleaseClass::Edge,
+        ReleaseClass::Candidate,
+        ReleaseClass::Stable,
+        ReleaseClass::Emergency,
+    ] {
+        let main = contract.gates("andyl/main", class).unwrap();
+        let testing = contract.gates("andyl/testing", class).unwrap();
+        assert!(
+            main.iter()
+                .any(|gate| gate.policy_id == "production-recovery")
+        );
+        assert!(
+            !testing
+                .iter()
+                .any(|gate| gate.policy_id == "production-recovery")
+        );
+        assert!(
+            contract
+                .thresholds_for("andyl/main", class)
+                .unwrap()
+                .require_independent_review
+        );
+        assert!(
+            !contract
+                .thresholds_for("andyl/testing", class)
+                .unwrap()
+                .require_independent_review
+        );
+        assert_eq!(
+            contract
+                .thresholds_for("andyl/main", class)
+                .unwrap()
+                .soak_seconds,
+            contract
+                .thresholds_for("andyl/testing", class)
+                .unwrap()
+                .soak_seconds
+        );
+        assert_ne!(main[0].policy_digest, testing[0].policy_digest);
+    }
 }

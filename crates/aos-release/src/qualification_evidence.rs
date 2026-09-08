@@ -172,7 +172,7 @@ pub fn cases(
     let qualification_snapshot = plan.is_qualification_snapshot();
     let package_roles = inherited_package_roles(contract, manifest)?;
     let mut requirements: Vec<_> = contract
-        .selected(plan.release_class)
+        .selected(&plan.registry, plan.release_class)?
         .filter(|gate| gate.phase == phase)
         .filter(|gate| !qualification_snapshot || gate.id != "image-update-recovery")
         .filter(|gate| {
@@ -328,7 +328,11 @@ pub fn cases(
                     .as_ref()
                     .is_some_and(|claim| claim.minimum_assurance == AssuranceLevel::A3)
                 {
-                    Some(contract.thresholds_for(plan.release_class)?.soak_seconds)
+                    Some(
+                        contract
+                            .thresholds_for(&plan.registry, plan.release_class)?
+                            .soak_seconds,
+                    )
                 } else {
                     None
                 },
@@ -612,7 +616,7 @@ pub fn assess_observations(
         .qualification
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("missing qualification contract"))?;
-    let thresholds = contract.thresholds_for(plan.release_class)?;
+    let thresholds = contract.thresholds_for(&plan.registry, plan.release_class)?;
     if evidence.windows(2).any(|pair| pair[0].id >= pair[1].id) {
         bail!("qualification evidence count differs from applicable cases");
     }

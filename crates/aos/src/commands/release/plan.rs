@@ -46,7 +46,7 @@ pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) ->
     }
     let expected_policy = qualification.digest()?;
     if request.public_evidence_policy_digest != expected_policy
-        || request.gates != qualification.gates(request.release_class)?
+        || request.gates != qualification.gates(&request.registry, request.release_class)?
     {
         bail!(
             "reviewed request must select the complete shared qualification policy; inspect aos release contract"
@@ -74,6 +74,7 @@ pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) ->
     plan.schema_version = aos_release::RELEASE_PLAN_V2.to_owned();
     plan.qualification = Some(qualification);
     plan.validate()?;
+    super::artifact_profiles::require_plan(nix, &plan)?;
     let bytes = canonical::to_vec(&plan)?;
     write_new_file(&args.output, &bytes)?;
 
@@ -153,6 +154,22 @@ fn derive_source_identity(
         source_tag: source_policy.source_tag.clone(),
         contributor_authorization_digest: authorization_digest,
     })
+}
+
+/// Rejects profile evaluation from a checkout other than the frozen clean source.
+pub(super) fn require_planned_source(root: &Path, source: &SourceIdentity) -> Result<()> {
+    let status = git_text(
+        root,
+        &["status", "--porcelain=v1", "--untracked-files=normal"],
+    )?;
+    if !status.is_empty() {
+        bail!("release artifact profile verification requires a clean source tree");
+    }
+    let commit = git_text(root, &["rev-parse", "--verify", "HEAD^{commit}"])?;
+    if commit != source.commit || source_tree_digest(root)? != source.tree_digest {
+        bail!("release artifact profile source differs from the frozen release plan");
+    }
+    Ok(())
 }
 
 fn source_tree_digest(root: &Path) -> Result<Sha256Digest> {
@@ -311,8 +328,18 @@ mod tests {
             authorization_digest,
         )?;
         assert_eq!(identity.commit.len(), 40);
+        require_planned_source(directory.path(), &identity)?;
+
+        let mut wrong_commit = identity.clone();
+        wrong_commit.commit = "0".repeat(40);
+        assert!(require_planned_source(directory.path(), &wrong_commit).is_err());
+
+        let mut wrong_tree = identity.clone();
+        wrong_tree.tree_digest = Sha256Digest::of_bytes("different source");
+        assert!(require_planned_source(directory.path(), &wrong_tree).is_err());
 
         fs::write(directory.path().join("source.txt"), b"source-v2")?;
+        assert!(require_planned_source(directory.path(), &identity).is_err());
         assert!(
             derive_source_identity(
                 directory.path(),

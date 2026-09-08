@@ -2,8 +2,11 @@
 
 AOS uses one versioned system contract for testing and production. The
 authoritative inputs are [`qualification/`](../../qualification/default.nix).
-The release class selects obligations in that contract; operators cannot
-remove individual mandatory gates from a release request.
+The registry selects pipeline assurance: main requires production recovery and
+independent signed review even for edge releases; testing uses lighter pipeline
+assurance even for stable releases. The release class selects software soak and
+matrix completeness obligations. Operators cannot remove individual mandatory
+gates from a release request.
 
 Start with the [release checklist](release-checklist.md), which includes the
 manual recovery checks and when to perform them. This page specifies the
@@ -15,7 +18,7 @@ documents command arguments.
 The support matrix records compatibility claims and the evidence supporting them.
 Each claim identifies an artifact, a function, an environment scope, and an
 assurance level. Release policy specifies the minimum assurance required for
-selected claims. The release class sets observation duration and review obligations.
+selected claims. The release class sets observation duration; the registry sets independent review obligations.
 
 ### Assurance levels
 
@@ -272,9 +275,9 @@ path.
 ## Inspect and freeze the contract
 
 ```sh
-aos release contract --class edge --output qualification-contract.json
-aos --json release contract --class edge
-aos release contract --class stable --input qualification-contract.json
+aos release contract --registry andyl/testing --class edge --output qualification-contract.json
+aos --json release contract --registry andyl/testing --class edge
+aos release contract --registry andyl/main --class stable --input qualification-contract.json
 ```
 
 The output lists requirements, never claims that they passed. JSON output

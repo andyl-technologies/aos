@@ -44,16 +44,17 @@ pub(super) fn run(args: &ReleaseContractArgs, nix: &NixRunner, printer: &Printer
         "schema_version": "aos.release.contract-result/v1",
         "contract": contract,
         "release_class": class,
+        "registry": args.registry,
         "public_evidence_policy_digest": digest,
-        "gates": contract.gates(class)?,
+        "gates": contract.gates(&args.registry, class)?,
     })) {
         return Ok(());
     }
     printer.success(&format!(
-        "{} ({}) policy {}",
-        contract.id, args.release_class, digest
+        "{} ({} {}) policy {}",
+        contract.id, args.registry, args.release_class, digest
     ));
-    for requirement in contract.selected(class) {
+    for requirement in contract.selected(&args.registry, class)? {
         println!(
             "{:?}: {} ({:?}, {:?})",
             requirement.phase, requirement.id, requirement.scope, requirement.method

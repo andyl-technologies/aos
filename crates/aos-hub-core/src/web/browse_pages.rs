@@ -469,7 +469,7 @@ pub fn registry_home(
             escape(&setup.plain_nix())
         );
     } else {
-        body.push_str("<p class=\"dim\">Setup is unavailable until a registry delivery route is configured.</p>");
+        body.push_str("<p class=\"dim\">Setup instructions will be available when registry delivery is ready.</p>");
     }
     body.push_str("</section><section class=\"registry-rollouts\"><h2>Release rollouts</h2>");
     if channels.is_empty() {
