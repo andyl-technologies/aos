@@ -87,22 +87,24 @@ recovery-bundle metadata.
 
 ## Choose an image format
 
-The same golden system may be published in several disk encodings:
+When possible, pass `--target` to `aos image download` and let the registry
+select the compatible format. For a manual download or import, choose the
+format required by the destination:
 
-| Format | Typical target |
-| --- | --- | --- |
-| Zstd-compressed raw GPT disk | Bare metal, custom image pipelines, QEMU |
-| QCOW2 | QEMU/KVM, OpenStack, Proxmox |
-| VMDK | VMware and vSphere |
-| Dynamic VHD | Hyper-V and VHD-based conversion pipelines |
+| Format | Use it for |
+| --- | --- |
+| Raw GPT (`.img.zst`) | Writing a physical disk or supplying a raw disk file to an image pipeline |
+| QCOW2 | QEMU/KVM, OpenStack, or Proxmox imports |
+| Stream-optimized VMDK | VMware or vSphere imports |
+| Dynamic VHD | Hyper-V or an import pipeline that specifically requires dynamic VHD |
 
-Use the format published for the target. Raw images are delivered as
-`aos-<system>.img.zst`; fixed partition headroom and the empty inactive slot
-therefore add almost no transfer cost. The CLI verifies the compressed object's
-signed size and SHA-256. Publication also verifies that decompression produces
-the exact `virtualSizeBytes` and `logicalDiskSha256` recorded in
-`image-info.json`. Retain that metadata with the deployment record. UEFI
-firmware is required; do not pass a separate kernel or initrd.
+Raw images are delivered as `aos-<system>.img.zst`; fixed partition headroom
+and the empty inactive slot therefore add almost no transfer cost. The CLI
+verifies the compressed object's signed size and SHA-256. Publication also
+verifies that decompression produces the exact `virtualSizeBytes` and
+`logicalDiskSha256` recorded in `image-info.json`. Retain that metadata with the
+deployment record. UEFI firmware is required; do not pass a separate kernel or
+initrd.
 
 ## Size the target
 
