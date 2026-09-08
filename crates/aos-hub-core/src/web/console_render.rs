@@ -45,9 +45,9 @@ static APP_VERSION: OnceLock<String> = OnceLock::new();
 /// Editable, database-backed site chrome.
 ///
 /// An instance admin's edit takes effect immediately for the serving process.
-/// Each shell seeds it from `instance_config` at startup (native) or isolate
-/// initialization (Worker); a save updates both the system-of-record database
-/// and this cell.
+/// Native startup and settings applies refresh it from `instance_config`.
+/// Worker browser requests reload it because other isolates may have saved
+/// settings since this request shard was initialized.
 #[derive(Default)]
 struct SiteChrome {
     title: Option<String>,
@@ -104,6 +104,19 @@ pub fn set_site_chrome(
         privacy_url: privacy_url.map(str::to_string),
         support_url: support_url.map(str::to_string),
     };
+}
+
+/// Refreshes all shared presentation settings from one database snapshot.
+pub fn apply_instance_settings(settings: &crate::db::InstanceSettings) {
+    set_site_chrome(
+        settings.site_title.as_deref(),
+        settings.tagline.as_deref(),
+        settings.announcement.as_deref(),
+        settings.tos_url.as_deref(),
+        settings.privacy_url.as_deref(),
+        settings.support_url.as_deref(),
+    );
+    set_caches_public(settings.caches_public);
 }
 
 /// The configured tagline (empty when unset) — a short dim subtitle beside the
@@ -203,11 +216,11 @@ pub(crate) fn app_version() -> &'static str {
         .unwrap_or(concat!("aos-hub ", env!("CARGO_PKG_VERSION")))
 }
 
-/// The `<title>` text: `"<page> — <brand>"`, or `"<page> — Registry Hub"`
+/// The `<title>` text: `"<page> — <brand>"`, or `"<page> — AOS Hub"`
 /// when no brand is configured.
 fn page_title(brand: &str, title: &str) -> String {
     if brand.is_empty() {
-        format!("{} — Registry Hub", escape(title))
+        format!("{} — AOS Hub", escape(title))
     } else {
         format!("{} — {}", escape(title), escape(brand))
     }
