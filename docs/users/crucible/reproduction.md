@@ -71,9 +71,21 @@ length. These coordinates distinguish repeated scheduler boundaries and make a
 fault or violated assertion findable without exposing console or channel data.
 
 In table mode, the failure footer prints copy-pasteable `replay` and `debug`
-commands. JSON/JSONL records the artifact digest in the final outcome but does
-not add the host path to the canonical log; locate the matching `repro-*.crucible`
-file below `--artifact-dir`.
+commands. For commands that produce one artifact, JSON/JSONL records its digest
+in the final outcome but does not add the host path to the canonical log; locate
+the matching `repro-*.crucible` file below `--artifact-dir`.
+
+For repeated `verify` runs, Crucible also retains one successful reproduction
+artifact for every independent reduction. The files use the
+`repro-passed-reduction-<index>-<digest>.crucible` form below `--artifact-dir`.
+Each `verify-run` row records that reduction's artifact digest. The final
+outcome artifact digest authenticates the ordered set of retained artifacts,
+so it does not correspond to one file name.
+Each artifact can be replayed independently, so CI can produce an artifact
+under one host scheduling profile and replay it under another while requiring
+the live terminal tuple, event stream, and execution-fingerprint stream to
+match exactly. Remote verification reports that artifact retention was skipped
+when the daemon does not provide producer provenance.
 
 Search and fuzz also emit a signed `.crucible-findings` ledger that can be passed
 directly to `triage`. Use `--findings-out <path>` for a fixed ledger location;

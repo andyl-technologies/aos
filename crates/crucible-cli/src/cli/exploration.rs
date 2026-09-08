@@ -268,31 +268,33 @@ pub(super) fn emit_backend_command_output(
             println!("{line}");
         }
     }
-    if outcome.status.is_non_passing() {
-        if !outcome.side_reproduction_artifacts.is_empty() {
-            for (label, artifact) in &outcome.side_reproduction_artifacts {
-                let slug = format!("{}-{label}", outcome.status.failure_slug());
-                let report = write_failure_reproduction_artifact(cli, artifact, &slug)?;
-                if emit_human {
-                    println!(
-                        "crucible: wrote reproduction artifact side={} {} ({}) digest={}",
-                        label,
-                        report.path.display(),
-                        REPRODUCTION_ARTIFACT_MEDIA_TYPE,
-                        report.digest
-                    );
-                    println!(
-                        "crucible: reproduce side {} with:\n    {}",
-                        label, report.footer.replay_command
-                    );
+    if !outcome.side_reproduction_artifacts.is_empty() {
+        for (label, artifact) in &outcome.side_reproduction_artifacts {
+            let slug = format!("{}-{label}", outcome.status.artifact_slug());
+            let report = write_reproduction_artifact(cli, artifact, &slug)?;
+            if emit_human {
+                println!(
+                    "crucible: wrote reproduction artifact side={} {} ({}) digest={}",
+                    label,
+                    report.path.display(),
+                    REPRODUCTION_ARTIFACT_MEDIA_TYPE,
+                    report.digest
+                );
+                println!(
+                    "crucible: reproduce side {} with:\n    {}",
+                    label, report.footer.replay_command
+                );
+                if outcome.status.is_non_passing() {
                     println!(
                         "crucible: debug side {} at the failure with:\n    {}",
                         label, report.footer.debug_command
                     );
                 }
             }
-            return Ok(());
         }
+        return Ok(());
+    }
+    if outcome.status.is_non_passing() {
         if outcome_skipped_reproduction_artifacts(outcome) {
             return Ok(());
         }
@@ -302,8 +304,7 @@ pub(super) fn emit_backend_command_output(
                 outcome.status
             )));
         };
-        let report =
-            write_failure_reproduction_artifact(cli, artifact, outcome.status.failure_slug())?;
+        let report = write_reproduction_artifact(cli, artifact, outcome.status.artifact_slug())?;
         if emit_human {
             println!(
                 "crucible: wrote reproduction artifact {} ({}) digest={}",

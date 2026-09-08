@@ -204,6 +204,7 @@ pub(super) fn cli_verify_workflow_remote_divergence_skips_side_artifacts_without
             canonical_log_bytes: canonical_log_entry_bytes(&left_log),
             fingerprint_stream: verify_fingerprint_stream_bytes(&left_samples),
             fingerprint_samples: left_samples,
+            live_event_evidence: VerifyLiveEventEvidence::default(),
             state_dump: String::from("left-state"),
             artifact: None,
         },
@@ -213,6 +214,7 @@ pub(super) fn cli_verify_workflow_remote_divergence_skips_side_artifacts_without
             canonical_log_bytes: canonical_log_entry_bytes(&right_log),
             fingerprint_stream: verify_fingerprint_stream_bytes(&right_samples),
             fingerprint_samples: right_samples,
+            live_event_evidence: VerifyLiveEventEvidence::default(),
             state_dump: String::from("right-state"),
             artifact: None,
         },
@@ -233,6 +235,10 @@ pub(super) fn cli_verify_workflow_remote_divergence_skips_side_artifacts_without
 
     assert_eq!(outcome.status, BackendCommandStatus::Failed);
     assert!(outcome.side_reproduction_artifacts.is_empty());
+    assert!(outcome.stdout.iter().any(|line| {
+        line.starts_with("verify-run\t")
+            && line.contains("artifact=producer-provenance-unavailable")
+    }));
     assert!(outcome.stdout.iter().any(
         |line| line == "verify-reproduction-artifacts\tskipped=producer-provenance-unavailable"
     ));
@@ -471,7 +477,193 @@ pub(super) fn cli_verify_workflow_runs_fresh_remote_daemon_reductions() -> Resul
             .iter()
             .any(|line| line.contains("verify-result\tstatus=passed"))
     );
+    assert!(outcome.side_reproduction_artifacts.is_empty());
+    assert!(outcome.stdout.iter().any(
+        |line| line == "verify-reproduction-artifacts\tskipped=producer-provenance-unavailable"
+    ));
 
+    Ok(())
+}
+
+#[test]
+pub(super) fn cli_verify_workflow_retains_every_passing_reduction_artifact()
+-> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let scenario_path = write_valid_run_scenario(&temp)?;
+    let artifact_dir = temp.path().join("passing-verify-artifacts");
+    let cli = Cli::parse_from([
+        String::from("crucible"),
+        String::from("--backend"),
+        String::from("double"),
+        String::from("--seed"),
+        String::from("41"),
+        String::from("--artifact-dir"),
+        artifact_dir.display().to_string(),
+        String::from("verify"),
+        scenario_path.display().to_string(),
+        String::from("--runs"),
+        String::from("2"),
+    ]);
+    let Commands::Verify(args) = &cli.command else {
+        panic!("expected verify command");
+    };
+    let verify_plan = plan_verify_invocation(args, temp.path())?;
+    let backend_plan =
+        plan_backend_selection(&cli)?.expect("verify should require backend selection");
+    let backend = backend_plan
+        .resolved_backend
+        .as_ref()
+        .expect("local verify should resolve its backend");
+    let scenario_path_text = scenario_path.display().to_string();
+    let scenario = resolve_run_scenario(Some(&scenario_path_text), temp.path())?
+        .scenario_def()
+        .clone();
+    let canonical_log = canonical_trace_entries();
+    let fingerprint_samples = vec![VerifyFingerprintSample {
+        index: 0,
+        instruction: 19,
+        node: String::from("node-b"),
+        digest: content_address_bytes(b"passing-verify-fingerprint"),
+    }];
+    let artifact = verify_reproduction_artifact_bytes(
+        41,
+        Some(backend),
+        &scenario,
+        &canonical_log,
+        &fingerprint_samples,
+    )?;
+    let event_evidence = VerifyLiveEventEvidence {
+        fault_effects_applied: 1,
+        applied_fault_bindings: vec![String::from("partition-server")],
+        assertions_evaluated: 2,
+        evaluated_assertions: vec![String::from("request-succeeded")],
+        assertion_state_changes: 1,
+        assertion_transitions: vec![String::from("request-succeeded:Satisfied")],
+    };
+    let witnesses = verify_plan
+        .reductions
+        .iter()
+        .map(|reduction| VerifyRunWitness {
+            reduction: reduction.clone(),
+            canonical_log: canonical_log.clone(),
+            canonical_log_bytes: canonical_log_entry_bytes(&canonical_log),
+            fingerprint_samples: fingerprint_samples.clone(),
+            fingerprint_stream: verify_fingerprint_stream_bytes(&fingerprint_samples),
+            live_event_evidence: event_evidence.clone(),
+            state_dump: String::from("passing-state"),
+            artifact: Some(artifact.clone()),
+        })
+        .collect::<Vec<_>>();
+    let report = VerifyWorkflowReport {
+        witnesses,
+        divergence: None,
+    };
+
+    let outcome = finish_verify_workflow_outcome(
+        &plan_cli_invocation(&cli),
+        &backend_plan,
+        None,
+        &verify_plan,
+        report,
+    )?;
+
+    assert_eq!(outcome.status, BackendCommandStatus::Passed);
+    assert_eq!(outcome.side_reproduction_artifacts.len(), 2);
+    let expected_artifact_field = format!("artifact={}", content_address_bytes(&artifact));
+    assert!(
+        outcome
+            .stdout
+            .iter()
+            .filter(|line| line.starts_with("verify-run\t"))
+            .all(|line| line.contains("effect_applied=1")
+                && line.contains(&expected_artifact_field)
+                && line.contains("applied_fault_bindings=partition-server")
+                && line.contains("assertion_evaluated=2")
+                && line.contains("evaluated_assertions=request-succeeded")
+                && line.contains("assertion_state_changed=1")
+                && line.contains("assertion_transitions=request-succeeded:Satisfied"))
+    );
+
+    emit_backend_command_output(&cli, &outcome)?;
+    let written = fs::read_dir(&artifact_dir)?.collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(written.len(), 2);
+    assert!(written.iter().all(|entry| {
+        entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("repro-passed-reduction-")
+    }));
+    for entry in written {
+        let written_artifact = fs::read(entry.path())?;
+        assert_eq!(written_artifact, artifact);
+        assert_eq!(
+            content_address_bytes(&written_artifact),
+            content_address_bytes(&artifact)
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+pub(super) fn cli_verify_live_event_evidence_decodes_production_event_frames()
+-> Result<(), Box<dyn Error>> {
+    let assertion = crucible::AssertionId::from_name("request-succeeded");
+    let mut event_log = crucible::EventLog::new();
+    let fault = event_log.append_fault_observations([crucible_core::model::FaultObservation {
+        semantic_version: crucible_core::model::FAULT_RUNTIME_STATE_VERSION,
+        kind: crucible_core::model::FaultObservationKind::EffectApplied,
+        coordinate: crucible_core::model::FaultCoordinate {
+            virtual_nanos: 11,
+            retired_instructions: Some(7),
+        },
+        binding: Some(crucible_core::model::FaultObjectId::parse(
+            "partition-server",
+        )?),
+        target: None,
+        opportunity: None,
+        evidence: crucible::ContentHash::from_bytes(b"native-fault-evidence"),
+    }])?;
+    let assertions = event_log.append_observable_events([
+        crucible::ObservableEvent::assertion_evaluated(
+            crucible::VirtualTime { ticks: 12 },
+            assertion.clone(),
+            crucible::AssertionQuantifierKind::Sometimes,
+            true,
+            "request succeeded",
+            Vec::new(),
+        ),
+        crucible::ObservableEvent::assertion_state_changed(
+            crucible::VirtualTime { ticks: 13 },
+            assertion,
+            crucible::AssertionPhase::Satisfied,
+        ),
+    ])?;
+    let frames = fault
+        .entries
+        .iter()
+        .chain(&assertions.entries)
+        .map(|entry| {
+            canonical_streaming_event_frame_bytes(&crucible_api::StreamingEventFrame {
+                generation: 0,
+                cursor: crucible_api::EventLogCursor::new(entry.sequence()),
+                next_cursor: crucible_api::EventLogCursor::new(entry.sequence() + 1),
+                event: crucible_api::open_set_event_envelope_from_entry(entry),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let evidence = verify_live_event_evidence(&frames)?;
+
+    assert_eq!(evidence.fault_effects_applied, 1);
+    assert_eq!(evidence.applied_fault_bindings, ["partition-server"]);
+    assert_eq!(evidence.assertions_evaluated, 1);
+    assert_eq!(evidence.evaluated_assertions, ["request-succeeded"]);
+    assert_eq!(evidence.assertion_state_changes, 1);
+    assert_eq!(
+        evidence.assertion_transitions,
+        ["request-succeeded:Satisfied"]
+    );
     Ok(())
 }
 
@@ -1115,7 +1307,7 @@ pub(super) fn cli_determinism_ergonomics_failure_artifact_carries_resolved_seed_
         .expect("run should resolve a seed");
     let artifact_bytes = mock_failure_reproduction_artifact_bytes(&cli, plan.seed.value)?;
     let artifact = ReproductionArtifact::decode(&artifact_bytes)?;
-    let report = write_failure_reproduction_artifact(&cli, &artifact_bytes, "Property Violation")?;
+    let report = write_reproduction_artifact(&cli, &artifact_bytes, "Property Violation")?;
 
     assert_eq!(artifact.seed, 0x1234);
     assert_eq!(report.footer.artifact_path, report.path);
@@ -1184,7 +1376,7 @@ pub(super) fn cli_determinism_ergonomics_emits_trace_and_failure_artifact_from_o
     let artifact_path = artifact_entries[0].path();
     let artifact = ReproductionArtifact::decode(&fs::read(&artifact_path)?)?;
     assert_eq!(artifact.seed, 0x55);
-    let footer = failure_reproduction_footer(artifact_path);
+    let footer = reproduction_footer(artifact_path);
     assert!(footer.replay_command.contains('\''));
     assert!(footer.debug_command.contains('\''));
     assert!(footer.replay_command.starts_with("crucible replay "));
@@ -3149,7 +3341,7 @@ pub(super) fn cli_failure_artifact_writer_emits_replay_and_debug_commands()
     let artifact = mock_e2e_reproduction_artifact()?;
     let artifact_bytes = artifact.encode()?;
 
-    let report = write_failure_reproduction_artifact(&cli, &artifact_bytes, "Property Violation")?;
+    let report = write_reproduction_artifact(&cli, &artifact_bytes, "Property Violation")?;
 
     assert!(report.path.starts_with(temp.path()));
     assert!(report.path.exists());
