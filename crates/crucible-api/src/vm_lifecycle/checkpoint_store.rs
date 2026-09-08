@@ -79,6 +79,19 @@ const CLOSURE_EXPORT_COPY_BUFFER_BYTES: usize = 1024 * 1024;
 const SMALL_CONTINUATION_MAX_BYTES: u64 = 268_435_456;
 const LARGE_CONTINUATION_MAX_BYTES: u64 = 1_610_612_800;
 
+/// Allocates the bounded streaming buffer outside nested checkpoint stack frames.
+///
+/// Staging can nest copy and hash operations on bounded worker stacks.
+fn allocate_closure_export_copy_buffer() -> Result<Vec<u8>, LifecycleApiError> {
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(CLOSURE_EXPORT_COPY_BUFFER_BYTES)
+        .map_err(|_| loop_factory_error("reserve exact checkpoint copy buffer"))?;
+    buffer.resize(CLOSURE_EXPORT_COPY_BUFFER_BYTES, 0);
+
+    Ok(buffer)
+}
+
 mod replay;
 #[cfg(test)]
 use replay::validate_replay_oracle_manifest_basis;

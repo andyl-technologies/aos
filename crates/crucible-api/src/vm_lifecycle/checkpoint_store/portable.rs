@@ -47,7 +47,7 @@ pub trait ProductionExactCheckpointSource: Send + Sync {
     ) -> Result<u64, LifecycleApiError> {
         let mut source = self.open_object(identity)?;
         let mut copied = 0_u64;
-        let mut buffer = [0_u8; CLOSURE_EXPORT_COPY_BUFFER_BYTES];
+        let mut buffer = allocate_closure_export_copy_buffer()?;
         loop {
             let count = source.read(&mut buffer).map_err(|error| {
                 loop_factory_error(format!("read portable checkpoint object: {error}"))
@@ -555,7 +555,7 @@ fn stage_portable_object(
     let (observed, hash) = {
         let mut writer = BoundedObjectWriter::new(&mut file, object.length());
         let mut source = portable.open_object(object.identity())?;
-        let mut buffer = [0_u8; CLOSURE_EXPORT_COPY_BUFFER_BYTES];
+        let mut buffer = allocate_closure_export_copy_buffer()?;
         loop {
             boundary()?;
             let count = match source.read(&mut buffer) {

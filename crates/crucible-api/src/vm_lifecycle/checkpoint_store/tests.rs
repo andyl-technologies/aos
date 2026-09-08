@@ -951,13 +951,7 @@ fn replay_oracle_source_pair_is_bound_to_every_exact_snapshot() {
 
 #[test]
 fn production_replay_oracle_promotion_is_no_write_and_restart_authenticatable() {
-    std::thread::Builder::new()
-        .name(String::from("production-replay-oracle-promotion"))
-        .stack_size(32 * 1024 * 1024)
-        .spawn(run_production_replay_oracle_promotion_test)
-        .expect("spawn large-stack production promotion test")
-        .join()
-        .expect("production promotion test should not panic");
+    run_production_replay_oracle_promotion_test();
 }
 
 fn run_production_replay_oracle_promotion_test() {
