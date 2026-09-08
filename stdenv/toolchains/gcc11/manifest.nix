@@ -357,6 +357,11 @@ in {
     buildScript = ''
       make -j"$NIX_BUILD_CORES" ${autotoolsVars}
     '';
+    postConfigure = ''
+      # bashline.c includes the generated builtin declarations, but Bash 5.1's
+      # Makefile omits that edge from its parallel dependency graph.
+      echo 'bashline.o: $(DEFDIR)/builtext.h' >> Makefile
+    '';
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"
     '';
