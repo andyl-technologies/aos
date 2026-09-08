@@ -87,6 +87,63 @@ fn validate_selectable_reply_pairing(
 }
 
 impl ProductionVmLifecycleLoop {
+    // Returns true only when this call authenticates and consumes the boundary.
+    pub(super) fn settle_logical_replay_boundary(
+        &mut self,
+        control_present: bool,
+    ) -> Result<bool, SchedulerError> {
+        let Some(boundary) = self.logical_replay_boundary.as_ref() else {
+            return Ok(false);
+        };
+        let configuration = self.inner.loop_impl().configuration();
+        let frontier = self.inner.loop_impl().frontier();
+        if frontier > boundary.frontier {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "logical replay frontier {} was passed at {}",
+                    boundary.frontier.ticks, frontier.ticks
+                ),
+            });
+        }
+        let prefix_len = configuration.schedule.len();
+        let expected_prefix =
+            boundary
+                .configuration
+                .schedule
+                .prefix(prefix_len)
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("derive logical replay target prefix: {error}"),
+                })?;
+        let expected_configuration = Configuration {
+            def: boundary.configuration.def.clone(),
+            schedule: expected_prefix,
+        };
+        if configuration != &expected_configuration {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "logical replay diverged at frontier {} with configuration {}; expected target prefix {}",
+                    frontier.ticks,
+                    configuration.id().to_hex(),
+                    expected_configuration.id().to_hex(),
+                ),
+            });
+        }
+        if frontier == boundary.frontier && configuration == &boundary.configuration {
+            if control_present {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "logical replay boundary cannot discard simultaneous control",
+                    ),
+                });
+            }
+            self.inner.loop_impl_mut().set_attempt_stop_frontier(None)?;
+            self.logical_replay_boundary = None;
+            self.config.logical_replay_boundary = None;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// Drains node-qualified guest selectable requests at the paused boundary.
     ///
     /// The returned requests remain untrusted guest input. Callers must bind
@@ -223,7 +280,9 @@ impl ProductionVmLifecycleLoop {
     /// Returns [`SchedulerError`] when a live node is missing from the backend
     /// set or its shared device-I/O state cannot be inspected consistently.
     pub fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
-        if self.inner.loop_impl().pending_branch_effect_choice_count() != 0
+        self.settle_logical_replay_boundary(false)?;
+        if self.logical_replay_boundary.is_some()
+            || self.inner.loop_impl().pending_branch_effect_choice_count() != 0
             || !self.signal_fault_branches.is_empty()
         {
             return Ok(false);

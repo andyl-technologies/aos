@@ -371,11 +371,15 @@ pub(super) fn run_local_qemu_resume_workflow(
         .as_ref()
         .ok_or_else(|| backend_error("local QEMU resume requires a resolved backend"))?;
     let evidence = resume_handle_evidence(resume_plan)?;
-    let config = production_qemu_lifecycle_config(backend)?;
+    let config = production_qemu_lifecycle_config(backend)?.with_logical_replay_boundary(
+        evidence.configuration.clone(),
+        evidence.checkpoint.virtual_time,
+    );
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let control_plane = production_qemu_control_plane(config, &evidence.scenario_form);
+    let control_plane =
+        production_qemu_control_plane(config, &evidence.scenario_form).with_thin_replay_resume();
     let client = InProcessLifecycleClient::new(control_plane);
     let report = runtime.block_on(run_remote_control_client_resume_workflow_async(
         &client,
@@ -388,7 +392,7 @@ pub(super) fn run_local_qemu_resume_workflow(
         resume_plan,
         report,
     )?;
-    append_qemu_control_plane_execution_proof(&mut outcome, backend, "resume-exact-checkpoint");
+    append_qemu_control_plane_execution_proof(&mut outcome, backend, "resume-thin-replay");
     Ok(outcome)
 }
 

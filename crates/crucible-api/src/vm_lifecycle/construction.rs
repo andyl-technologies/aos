@@ -31,6 +31,15 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             "raw production branch configuration cannot coexist with typed signal-fault replay",
         ));
     }
+    if config.logical_replay_boundary.is_some()
+        && (config.branch.is_some()
+            || config.signal_fault_replay.is_some()
+            || restore_checkpoint.is_some())
+    {
+        return Err(loop_factory_error(
+            "logical replay boundary cannot coexist with branch replay, signal-fault replay, or exact-checkpoint restore",
+        ));
+    }
     if let Some(replay) = &config.signal_fault_replay
         && replay.target().def.id() != scenario.id()
     {
@@ -831,6 +840,18 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             })?;
     } else {
         if let Some(frontier) = config
+            .logical_replay_boundary
+            .as_ref()
+            .map(|boundary| boundary.frontier)
+        {
+            // This CLI-session replay owns the runtime-only attempt cap until
+            // the authenticated logical boundary is reached and disarmed.
+            scheduler
+                .set_attempt_stop_frontier(Some(frontier))
+                .map_err(|error| {
+                    loop_factory_error(format!("cap QEMU logical replay frontier: {error}"))
+                })?;
+        } else if let Some(frontier) = config
             .branch
             .as_ref()
             .map(|branch| branch.frontier)
@@ -1109,6 +1130,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         initial_lifecycle_observations_pending: restore_checkpoint
             .as_ref()
             .is_none_or(|checkpoint| checkpoint.initial_lifecycle_observations_pending),
+        logical_replay_boundary: config.logical_replay_boundary.clone(),
         branch: active_branch,
         signal_fault_branches,
         promote_signal_fault_campaign_choices: false,

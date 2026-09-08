@@ -287,6 +287,7 @@ fn lifecycle_without_backends(
         terminal_verdict: None,
         checkpoint_terminal_cause: None,
         initial_lifecycle_observations_pending: true,
+        logical_replay_boundary: None,
         branch: None,
         signal_fault_branches: VecDeque::new(),
         promote_signal_fault_campaign_choices: false,

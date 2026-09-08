@@ -179,7 +179,7 @@
       }
       {
         label = "resume local-QEMU thin-replay proof";
-        needle = "resume-exact-checkpoint";
+        needle = "resume-thin-replay";
       }
       {
         label = "resume terminal configuration report";

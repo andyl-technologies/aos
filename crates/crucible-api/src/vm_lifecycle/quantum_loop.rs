@@ -390,6 +390,27 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                     ),
                 });
             }
+            let control_present = !request.control.is_empty();
+            if self.settle_logical_replay_boundary(control_present)? {
+                let scheduler = self.inner.loop_impl();
+                let mut outcome = QuantumOutcome {
+                    configuration: scheduler.configuration().clone(),
+                    frontier: scheduler.frontier(),
+                    advanced_node: None,
+                    resolved_events: Vec::new(),
+                    decisions: pre_quantum_decisions,
+                    discovered_choices: Vec::new(),
+                    event_log_entries: Vec::new(),
+                    event_log_segment_bytes: Vec::new(),
+                    event_log_segment_text: String::new(),
+                    event_log_segment_hash: None,
+                    event_log_offset: scheduler.event_log_offset(),
+                    scheduler_quiescence: Some(scheduler.quiescence()?),
+                };
+                prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+                self.capture_debug_runtime_evidence()?;
+                return Ok(outcome);
+            }
             let boundary_search_choices = self
                 .fault_runtime
                 .lock()
@@ -695,6 +716,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             for append in self.settle_trigger_graph()? {
                 merge_event_log_append(&mut outcome, append);
             }
+            self.settle_logical_replay_boundary(control_present)?;
             self.append_live_signal_fault_campaign_discoveries(
                 signal_fault_frontier_start,
                 &mut outcome,

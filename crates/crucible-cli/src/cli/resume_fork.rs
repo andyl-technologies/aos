@@ -72,7 +72,8 @@ pub(super) fn run_local_qemu_fork_workflow(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let control_plane = production_qemu_control_plane(config, &evidence.scenario_form);
+    let control_plane =
+        production_qemu_control_plane(config, &evidence.scenario_form).with_thin_replay_resume();
     let client = InProcessLifecycleClient::new(control_plane);
     let resume_plan = ResumeInvocationPlan {
         savepoint: fork_plan.source.clone(),

@@ -220,7 +220,8 @@ pub(crate) fn run_live_qemu_artifact_replay(
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let control_plane = production_qemu_control_plane(config, &scenario);
+        let control_plane =
+            production_qemu_control_plane(config, &scenario).with_thin_replay_resume();
         let client = InProcessLifecycleClient::new(control_plane);
         if contract.producer == "fork" {
             let evidence = branch_evidence.ok_or_else(|| {

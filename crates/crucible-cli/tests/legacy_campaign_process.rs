@@ -189,10 +189,111 @@ fn public_default_run_executes_through_an_authenticated_campaign() -> Result<(),
     Ok(())
 }
 
+#[test]
+#[ignore = "requires the packaged patched-QEMU, plugin, kernel, and root image VM fixture"]
+fn campaign_virtual_time_save_feeds_native_resume_and_fork() -> Result<(), Box<dyn Error>> {
+    let temporary = TempDir::new()?;
+    let root = temporary.path();
+    let save_state = secure_state_root(root, "save-state")?;
+    let resume_state = secure_state_root(root, "resume-state")?;
+    let fork_state = secure_state_root(root, "fork-state")?;
+    let save_artifacts = root.join("save-artifacts");
+    let resume_artifacts = root.join("resume-artifacts");
+    let fork_artifacts = root.join("fork-artifacts");
+    let store = root.join("store");
+    let handle = root.join("campaign-save.crucible-savepoint");
+    let deployment = required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
+    let scenario_path =
+        write_scenario_with_terminal_delay(root, Action::Pass, SimDuration { nanos: 4_000_000 })?;
+
+    let save = native_state_command(&save_artifacts, &store, &save_state, &deployment)?
+        .arg("save")
+        .arg(&scenario_path)
+        .args([
+            "--at",
+            "virtual-time",
+            "--max-virtual-time",
+            "2ms",
+            "--label",
+            "native-campaign-save",
+            "--out",
+        ])
+        .arg(&handle)
+        .output()?;
+    require_success(&save, "campaign virtual-time save")?;
+    let save_stdout = String::from_utf8(save.stdout)?;
+    assert!(
+        save_stdout.contains("operation=save-live-checkpoint"),
+        "native save omitted its live-checkpoint operation proof; stdout:\n{save_stdout}"
+    );
+
+    let handle_text = fs::read_to_string(&handle)?;
+    assert!(handle_text.contains("schema\tcrucible.savepoint-handle.v3\n"));
+    assert_eq!(artifact_field(&handle_text, "frontier")?, "2000000");
+    assert!(handle_text.contains("boundary-proof\tcoordinate\t2000000\t"));
+    let checkpoint = artifact_field(&handle_text, "checkpoint")?;
+    assert!(checkpoint.starts_with("blake3:"));
+
+    let resume = native_state_command(&resume_artifacts, &store, &resume_state, &deployment)?
+        .arg("resume")
+        .arg(&handle)
+        .output()?;
+    require_success(&resume, "native resume from campaign save handle")?;
+    let resume_stdout = String::from_utf8(resume.stdout)?;
+    assert!(
+        resume_stdout.contains("operation=resume-thin-replay"),
+        "native resume omitted its thin-replay operation proof; stdout:\n{resume_stdout}"
+    );
+    let resume_final = session_summary(&resume_stdout, "resume-session")?;
+    assert_eq!(
+        summary_field(resume_final, "outcome"),
+        Some("passed"),
+        "native resume did not pass; stdout:\n{resume_stdout}"
+    );
+    assert_eq!(
+        summary_field(resume_final, "frontier_ticks"),
+        Some("4000000"),
+        "native resume did not reach four milliseconds; stdout:\n{resume_stdout}"
+    );
+
+    let fork = native_state_command(&fork_artifacts, &store, &fork_state, &deployment)?
+        .arg("fork")
+        .arg(checkpoint)
+        .args(["--label", "native-campaign-fork"])
+        .output()?;
+    require_success(&fork, "native fork from campaign save DAG checkpoint")?;
+    let fork_stdout = String::from_utf8(fork.stdout)?;
+    assert!(
+        fork_stdout.contains("operation=fork-thin-replay"),
+        "native fork omitted its thin-replay operation proof; stdout:\n{fork_stdout}"
+    );
+    let fork_final = session_summary(&fork_stdout, "fork-session")?;
+    assert_eq!(
+        summary_field(fork_final, "outcome"),
+        Some("passed"),
+        "native fork did not pass; stdout:\n{fork_stdout}"
+    );
+    assert_eq!(
+        summary_field(fork_final, "frontier_ticks"),
+        Some("4000000"),
+        "native fork did not reach four milliseconds; stdout:\n{fork_stdout}"
+    );
+
+    println!("\nlegacy_campaign_native_save_resume_fork=true");
+    Ok(())
+}
+
 fn summary_field<'a>(summary: &'a str, name: &str) -> Option<&'a str> {
     summary
         .split_ascii_whitespace()
         .find_map(|field| field.strip_prefix(name)?.strip_prefix('='))
+}
+
+fn session_summary<'a>(stdout: &'a str, prefix: &str) -> Result<&'a str, Box<dyn Error>> {
+    stdout
+        .lines()
+        .find(|line| line.starts_with(prefix) && line.as_bytes().get(prefix.len()) == Some(&b'\t'))
+        .ok_or_else(|| format!("native continuation omitted `{prefix}`; stdout:\n{stdout}").into())
 }
 
 #[test]
@@ -337,6 +438,14 @@ fn guarded_campaign_rejects_insufficient_capacity_before_guest_launch() -> Resul
 }
 
 fn write_scenario(root: &std::path::Path, terminal: Action) -> Result<PathBuf, Box<dyn Error>> {
+    write_scenario_with_terminal_delay(root, terminal, SimDuration { nanos: 2_000_000 })
+}
+
+fn write_scenario_with_terminal_delay(
+    root: &std::path::Path,
+    terminal: Action,
+    terminal_delay: SimDuration,
+) -> Result<PathBuf, Box<dyn Error>> {
     let kernel = required_path("CRUCIBLE_KERNEL")?;
     let root_image = required_path("CRUCIBLE_ROOT_IMAGE")?;
     let world = World::from_nodes_and_links(
@@ -370,7 +479,7 @@ fn write_scenario(root: &std::path::Path, terminal: Action) -> Result<PathBuf, B
         .event("complete-flight")
         .when(Predicate::After {
             of: EventId::from_name("begin-flight"),
-            duration: SimDuration { nanos: 2_000_000 },
+            duration: terminal_delay,
         })
         .action(terminal)
         .build_for_world(&world)?;
@@ -383,6 +492,43 @@ fn write_scenario(root: &std::path::Path, terminal: Action) -> Result<PathBuf, B
     let scenario_path = root.join("scenario.toml");
     fs::write(&scenario_path, scenario.to_canonical_toml()?)?;
     Ok(scenario_path)
+}
+
+fn secure_state_root(root: &std::path::Path, name: &str) -> Result<PathBuf, Box<dyn Error>> {
+    let path = root.join(name);
+    fs::create_dir(&path)?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+    Ok(path)
+}
+
+fn native_state_command(
+    artifact_dir: &std::path::Path,
+    store: &std::path::Path,
+    run_state: &std::path::Path,
+    deployment: &std::path::Path,
+) -> Result<Command, Box<dyn Error>> {
+    let mut native = command();
+    native
+        .args(["--backend", "qemu", "--qemu"])
+        .arg(required_path("CRUCIBLE_FLIGHT_QEMU")?)
+        .arg("--plugin")
+        .arg(required_path("CRUCIBLE_FLIGHT_PLUGIN")?)
+        .args(["--format", "table", "--artifact-dir"])
+        .arg(artifact_dir)
+        .arg("--store")
+        .arg(store)
+        .arg("--campaign-deployment")
+        .arg(deployment)
+        .env("CRUCIBLE_RUN_STATE_ROOT", run_state);
+    Ok(native)
+}
+
+fn artifact_field<'a>(artifact: &'a str, name: &str) -> Result<&'a str, Box<dyn Error>> {
+    artifact
+        .lines()
+        .find_map(|line| line.split_once('\t').filter(|(field, _)| *field == name))
+        .map(|(_, value)| value)
+        .ok_or_else(|| format!("artifact omitted `{name}`").into())
 }
 
 fn guarded_run_command(
