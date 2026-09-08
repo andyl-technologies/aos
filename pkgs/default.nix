@@ -1165,6 +1165,44 @@
     bash = self.bash;
     zlib = self.zlib;
   };
+  linuxHostedBinutils = import ./toolchain/_linux-hosted-binutils.nix {
+    inherit mkDerivation fetchurl stdenv buildPackages;
+    bash = self.bash;
+    zlib = self.zlib;
+  };
+  linuxHostedGcc = import ./toolchain/_linux-hosted-gcc.nix {
+    inherit mkDerivation stdenv buildPackages;
+    bash = self.bash;
+    binutils = linuxHostedBinutils;
+  };
+  linuxHostedCc = import ./toolchain/_linux-hosted-cc.nix {
+    inherit lib stdenv buildPackages;
+    bash = self.bash;
+    gcc = linuxHostedGcc;
+    binutils = linuxHostedBinutils;
+  };
+  linuxTargetGccLibs = mkDerivation {
+    pname = "gcc-libs";
+    inherit (stdenv.gccRuntime) version;
+    src = null;
+    runtimeDeps = [stdenv.gccRuntime];
+    propagatedDeps = [];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          ln -s ${stdenv.gccRuntime}/lib "$out/lib"
+        '';
+      }
+    ];
+    passthru.evidenceSources = stdenv.gccRuntime.passthru.evidenceSources;
+    meta = {
+      description = "GCC runtime shared libraries for ${stdenv.hostPlatform.system}";
+      homepage = "https://gcc.gnu.org/";
+      license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+    };
+  };
   darwinDtraceCompiler = import ./darwin/_darwin-dtrace-compiler.nix {
     inherit mkDerivation fetchurl;
     llvm = resolvedBuildPackages.llvm;
@@ -1531,6 +1569,8 @@
           (
             if stdenv.hostPlatform.isDarwin
             then darwinGcc
+            else if stdenv.isCross && stdenv.hostPlatform.isLinux
+            then linuxHostedGcc
             else stdenv.gcc
           ))
         // {version = "16.2.0";};
@@ -1555,6 +1595,8 @@
           (
             if stdenv.hostPlatform.isDarwin
             then darwinBinutils
+            else if stdenv.isCross && stdenv.hostPlatform.isLinux
+            then linuxHostedBinutils
             else stdenv.binutils
           ))
         // {version = "2.41.0";};
@@ -1569,6 +1611,8 @@
           (
             if stdenv.hostPlatform.isDarwin
             then darwinCc
+            else if stdenv.isCross && stdenv.hostPlatform.isLinux
+            then linuxHostedCc
             else stdenv.cc
           ))
         // {version = "0.1.0";};
@@ -1584,6 +1628,8 @@
           (
             if stdenv.hostPlatform.isDarwin
             then darwinGcc
+            else if stdenv.isCross && stdenv.hostPlatform.isLinux
+            then linuxHostedGcc
             else if stdenv ? gccStage2
             then stdenv.gccStage2
             else stdenv.gcc
@@ -1592,6 +1638,8 @@
       gcc-libs =
         if stdenv.hostPlatform.isDarwin
         then withDefaultMaintainers darwinGcc
+        else if stdenv.isCross && stdenv.hostPlatform.isLinux
+        then withDefaultMaintainers linuxTargetGccLibs
         else discoveredPackages.gcc-libs;
       getent =
         (withDistributionMeta {

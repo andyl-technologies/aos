@@ -2,10 +2,10 @@
 {
   mkDerivation,
   fetchurl,
+  stdenv,
   gnumake,
   perl,
   linux-headers,
-  binutils,
 }: let
   version = "2.78";
 in
@@ -24,7 +24,6 @@ in
     buildDeps = [
       gnumake
       perl
-      binutils
       # Kernel UAPI headers are compile-time only; in runtimeDeps they would
       # ride into the closure of everything that links libcap (a dead RPATH,
       # since linux-headers ships no shared library).
@@ -59,7 +58,7 @@ in
             CC="$CC" \
             AR="$AR" \
             RANLIB="$RANLIB" \
-            OBJCOPY="${binutils}/bin/objcopy" \
+            OBJCOPY="${stdenv.binutils}/bin/objcopy" \
             BUILD_CC="$build_cc" \
             prefix=$out \
             lib=lib \
@@ -78,7 +77,7 @@ in
             CC="$CC" \
             AR="$AR" \
             RANLIB="$RANLIB" \
-            OBJCOPY="${binutils}/bin/objcopy" \
+            OBJCOPY="${stdenv.binutils}/bin/objcopy" \
             BUILD_CC="$build_cc" \
             prefix=$out \
             lib=lib \

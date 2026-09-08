@@ -41,7 +41,7 @@
       ;
   };
 
-  gcc = import ./gcc.nix {
+  gccDerivation = import ./gcc.nix {
     inherit
       buildStdenv
       buildPackages
@@ -54,6 +54,21 @@
     libc = glibc;
     stage = "final";
   };
+  gcc =
+    gccDerivation
+    // {
+      passthru =
+        (gccDerivation.passthru or {})
+        // {
+          evidenceSources = [
+            sources.gcc
+            sources.gmp
+            sources.mpfr
+            sources.mpc
+            sources.isl
+          ];
+        };
+    };
 
   gccRuntime = import ./gcc-runtime.nix {
     inherit buildStdenv buildPlatform hostPlatform binutils gcc;
