@@ -12,6 +12,9 @@
 //! SubmitAttemptRequestV4 = version | assignment | daemon-epoch | lineage |
 //!                          attempt | resource-limits | retention-intent |
 //!                          scoped-start-mode
+//! SubmitAttemptRequestV5 = version | assignment | daemon-epoch | lineage |
+//!                          attempt | resource-limits | retention-intent |
+//!                          selected-savepoint-start-mode
 //! SubmitAttemptResponseV2/V3 = version | assignment | daemon-epoch | attempt |
 //!                              request-digest | disposition
 //! SubmitAttemptResponseV4 = version | assignment | daemon-epoch | attempt |
@@ -34,6 +37,10 @@
 //!                                    lineage | attempt | prior-execution |
 //!                                    checkpoint | resource-limits |
 //!                                    retention-intent | prior-start-mode
+//! ResumeAttemptExecutionRequestV4 = version | assignment | daemon-epoch |
+//!                                    lineage | attempt | prior-execution |
+//!                                    checkpoint | resource-limits |
+//!                                    retention-intent | selected-start-mode
 //! ResumeAttemptExecutionResponseV2/V3 = version | assignment | daemon-epoch |
 //!                                        attempt | prior-execution | checkpoint |
 //!                                        request-digest | disposition
@@ -77,15 +84,17 @@ use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::policy::validate_identifier;
 use crate::{
     AttemptId, CampaignCodecError, CampaignFactId, CampaignHash, CampaignLineage,
-    CampaignLineageId, ConfigurationArtifactId, ExactCheckpointId, FindingCandidateBundleId,
-    ObservationId,
+    CampaignLineageId, CampaignSnapshotId, ConfigurationArtifactId, ExactCheckpointId,
+    FindingCandidateBundleId, ObservationId,
 };
 
 const EXECUTOR_MESSAGE_SCHEMA_VERSION: u32 = 2;
 const MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION: u32 = 3;
 const SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION: u32 = 4;
+const SELECTED_SAVEPOINT_SUBMIT_REQUEST_SCHEMA_VERSION: u32 = 5;
 const SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION: u32 = 3;
 const RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION: u32 = 3;
+const SELECTED_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION: u32 = 4;
 const SUBMIT_ATTEMPT_RESPONSE_SCHEMA_VERSION: u32 = 3;
 const GET_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION: u32 = 3;
 const RESUME_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION: u32 = 3;
@@ -527,6 +536,15 @@ pub enum AttemptStartMode {
         /// Exact configuration artifact the worker must authenticate at start.
         configuration: ConfigurationArtifactId,
     },
+    /// Prefers the first authenticated physical source for a semantic continuation.
+    SelectedSavepoint {
+        /// Snapshot whose accounting root authenticates the immutable first source.
+        snapshot: CampaignSnapshotId,
+        /// Selection fact naming the first accepted physical-source cause.
+        selection: CampaignFactId,
+        /// Capture request whose paused ledger scope owns the preferred root.
+        request: CampaignFactId,
+    },
 }
 
 impl AttemptStartMode {
@@ -540,6 +558,7 @@ impl AttemptStartMode {
             Self::SavepointCapture { request, .. } => {
                 AttemptExecutionScope::SavepointCapture { request }
             }
+            Self::SelectedSavepoint { .. } => AttemptExecutionScope::Semantic,
         }
     }
 }
@@ -560,6 +579,16 @@ impl Canonical for AttemptStartMode {
                 request.encode(encoder);
                 configuration.encode(encoder);
             }
+            Self::SelectedSavepoint {
+                snapshot,
+                selection,
+                request,
+            } => {
+                encoder.u8(3);
+                snapshot.encode(encoder);
+                selection.encode(encoder);
+                request.encode(encoder);
+            }
         }
     }
 
@@ -572,6 +601,11 @@ impl Canonical for AttemptStartMode {
             2 => Ok(Self::SavepointCapture {
                 request: CampaignFactId::decode(decoder)?,
                 configuration: ConfigurationArtifactId::decode(decoder)?,
+            }),
+            3 => Ok(Self::SelectedSavepoint {
+                snapshot: CampaignSnapshotId::decode(decoder)?,
+                selection: CampaignFactId::decode(decoder)?,
+                request: CampaignFactId::decode(decoder)?,
             }),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "attempt-start-mode",
@@ -710,6 +744,51 @@ impl SubmitAttemptRequest {
         Ok(request)
     }
 
+    /// Builds an ordinary semantic assignment with a selected savepoint preference.
+    ///
+    /// The executor reauthenticates `selection` as the immutable first-source
+    /// mapping at `snapshot` and resolves `request` through its own operational
+    /// ledger. An absent physical root permits deterministic cold replay; an
+    /// inconsistent retained root fails closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resulting component message exceeds its strict
+    /// encoded bound.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_selected_savepoint(
+        assignment: AssignmentId,
+        daemon_epoch: DaemonEpoch,
+        lineage: CampaignLineageId,
+        attempt: AttemptId,
+        resources: AttemptResourceLimits,
+        retention: ExecutionRetentionIntent,
+        snapshot: CampaignSnapshotId,
+        selection: CampaignFactId,
+        request: CampaignFactId,
+    ) -> Result<Self, CampaignCodecError> {
+        let request = Self {
+            schema_version: SELECTED_SAVEPOINT_SUBMIT_REQUEST_SCHEMA_VERSION,
+            assignment,
+            daemon_epoch,
+            lineage,
+            attempt,
+            resources,
+            retention,
+            start_mode: AttemptStartMode::SelectedSavepoint {
+                snapshot,
+                selection,
+                request,
+            },
+        };
+        codec::ensure_encoded_size(
+            &request,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "submit-attempt-request-encoded-bytes",
+        )?;
+        Ok(request)
+    }
+
     /// Returns the idempotent operational assignment identity.
     #[must_use]
     pub const fn assignment(&self) -> AssignmentId {
@@ -769,6 +848,9 @@ impl SubmitAttemptRequest {
             SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION => {
                 "crucible.campaign.submit-attempt-request.v4"
             }
+            SELECTED_SAVEPOINT_SUBMIT_REQUEST_SCHEMA_VERSION => {
+                "crucible.campaign.submit-attempt-request.v5"
+            }
             _ => unreachable!("validated submit request schema"),
         };
         CampaignHash::derive(domain, &self.canonical_bytes())
@@ -818,6 +900,7 @@ impl Canonical for SubmitAttemptRequest {
         self.retention.encode(encoder);
         if self.schema_version == MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION
             || self.schema_version == SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION
+            || self.schema_version == SELECTED_SAVEPOINT_SUBMIT_REQUEST_SCHEMA_VERSION
         {
             self.start_mode.encode(encoder);
         }
@@ -873,6 +956,24 @@ impl Canonical for SubmitAttemptRequest {
                 request,
                 configuration,
             ),
+            (
+                SELECTED_SAVEPOINT_SUBMIT_REQUEST_SCHEMA_VERSION,
+                AttemptStartMode::SelectedSavepoint {
+                    snapshot,
+                    selection,
+                    request,
+                },
+            ) => Self::new_selected_savepoint(
+                assignment,
+                daemon_epoch,
+                lineage,
+                attempt,
+                resources,
+                retention,
+                snapshot,
+                selection,
+                request,
+            ),
             (MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION, _) => {
                 Err(CampaignCodecError::InvalidValue {
                     reason: "submit attempt request version 3 requires materialized-start capture",
@@ -881,6 +982,11 @@ impl Canonical for SubmitAttemptRequest {
             (SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION, _) => {
                 Err(CampaignCodecError::InvalidValue {
                     reason: "submit attempt request version 4 requires savepoint capture",
+                })
+            }
+            (SELECTED_SAVEPOINT_SUBMIT_REQUEST_SCHEMA_VERSION, _) => {
+                Err(CampaignCodecError::InvalidValue {
+                    reason: "submit attempt request version 5 requires selected savepoint",
                 })
             }
             _ => unreachable!("validated submit request schema"),
@@ -1748,16 +1854,25 @@ impl ResumeAttemptExecutionRequest {
     ///
     /// # Errors
     ///
-    /// Returns an error if `assignment` is a materialized-start capture or the
+    /// Returns an error if `assignment` is an operational capture or the
     /// resulting component message exceeds 4 KiB.
     pub fn new(
         assignment: &SubmitAttemptRequest,
         prior_execution: ExecutionId,
         checkpoint: ExactCheckpointId,
     ) -> Result<Self, CampaignCodecError> {
-        require_execute_resume_assignment(assignment)?;
+        require_semantic_resume_assignment(assignment)?;
+        let prior_start_mode = assignment.start_mode();
+        let schema_version = match prior_start_mode {
+            AttemptStartMode::Execute => EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            AttemptStartMode::SelectedSavepoint { .. } => {
+                SELECTED_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
+            }
+            AttemptStartMode::CaptureMaterializedStart { .. }
+            | AttemptStartMode::SavepointCapture { .. } => unreachable!("validated semantic mode"),
+        };
         let request = Self {
-            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            schema_version,
             assignment: assignment.assignment(),
             daemon_epoch: assignment.daemon_epoch(),
             lineage: assignment.lineage(),
@@ -1766,7 +1881,7 @@ impl ResumeAttemptExecutionRequest {
             checkpoint,
             resources: assignment.resources(),
             retention: assignment.retention(),
-            prior_start_mode: AttemptStartMode::Execute,
+            prior_start_mode,
         };
         codec::ensure_encoded_size(
             &request,
@@ -1874,20 +1989,51 @@ impl ResumeAttemptExecutionRequest {
     /// Returns an error only if the fields of this already-valid request no
     /// longer satisfy the bounded submit-message contract.
     pub fn assignment_request(&self) -> Result<SubmitAttemptRequest, CampaignCodecError> {
-        SubmitAttemptRequest::new(
-            self.assignment,
-            self.daemon_epoch,
-            self.lineage,
-            self.attempt,
-            self.resources,
-            self.retention,
-        )
+        match self.prior_start_mode {
+            AttemptStartMode::SelectedSavepoint {
+                snapshot,
+                selection,
+                request,
+            } => SubmitAttemptRequest::new_selected_savepoint(
+                self.assignment,
+                self.daemon_epoch,
+                self.lineage,
+                self.attempt,
+                self.resources,
+                self.retention,
+                snapshot,
+                selection,
+                request,
+            ),
+            AttemptStartMode::Execute
+            | AttemptStartMode::CaptureMaterializedStart { .. }
+            | AttemptStartMode::SavepointCapture { .. } => SubmitAttemptRequest::new(
+                self.assignment,
+                self.daemon_epoch,
+                self.lineage,
+                self.attempt,
+                self.resources,
+                self.retention,
+            ),
+        }
     }
 
     /// Returns the assignment-neutral execution-contract digest.
     #[must_use]
     pub fn execution_basis_digest(&self) -> CampaignHash {
-        attempt_execution_basis_digest(self.lineage, self.attempt, self.resources, self.retention)
+        let start_mode = match self.prior_start_mode {
+            selected @ AttemptStartMode::SelectedSavepoint { .. } => selected,
+            AttemptStartMode::Execute
+            | AttemptStartMode::CaptureMaterializedStart { .. }
+            | AttemptStartMode::SavepointCapture { .. } => AttemptStartMode::Execute,
+        };
+        attempt_execution_basis_digest_for_start_mode(
+            self.lineage,
+            self.attempt,
+            self.resources,
+            self.retention,
+            start_mode,
+        )
     }
 
     /// Returns the execution basis that must own the paused checkpoint.
@@ -1905,10 +2051,17 @@ impl ResumeAttemptExecutionRequest {
     /// Returns the domain-separated digest of every canonical request field.
     #[must_use]
     pub fn request_digest(&self) -> CampaignHash {
-        let domain = if self.schema_version == EXECUTOR_MESSAGE_SCHEMA_VERSION {
-            "crucible.campaign.resume-attempt-execution-request.v2"
-        } else {
-            "crucible.campaign.resume-attempt-execution-request.v3"
+        let domain = match self.schema_version {
+            EXECUTOR_MESSAGE_SCHEMA_VERSION => {
+                "crucible.campaign.resume-attempt-execution-request.v2"
+            }
+            RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION => {
+                "crucible.campaign.resume-attempt-execution-request.v3"
+            }
+            SELECTED_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION => {
+                "crucible.campaign.resume-attempt-execution-request.v4"
+            }
+            _ => unreachable!("validated resume request schema"),
         };
         CampaignHash::derive(domain, &self.canonical_bytes())
     }
@@ -1941,7 +2094,9 @@ impl Canonical for ResumeAttemptExecutionRequest {
         self.checkpoint.encode(encoder);
         self.resources.encode(encoder);
         self.retention.encode(encoder);
-        if self.schema_version == RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION {
+        if self.schema_version == RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
+            || self.schema_version == SELECTED_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
+        {
             self.prior_start_mode.encode(encoder);
         }
     }
@@ -1970,12 +2125,43 @@ impl Canonical for ResumeAttemptExecutionRequest {
         }
 
         let prior_start_mode = AttemptStartMode::decode(decoder)?;
-        let AttemptStartMode::CaptureMaterializedStart { configuration } = prior_start_mode else {
+        if schema_version == RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION {
+            let AttemptStartMode::CaptureMaterializedStart { configuration } = prior_start_mode
+            else {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "resume attempt request version 3 requires materialized-start capture",
+                });
+            };
+            return Self::new_from_materialized_start(
+                &assignment,
+                prior_execution,
+                checkpoint,
+                configuration,
+            );
+        }
+
+        let AttemptStartMode::SelectedSavepoint {
+            snapshot,
+            selection,
+            request,
+        } = prior_start_mode
+        else {
             return Err(CampaignCodecError::InvalidValue {
-                reason: "resume attempt request version 3 requires materialized-start capture",
+                reason: "resume attempt request version 4 requires selected-savepoint start",
             });
         };
-        Self::new_from_materialized_start(&assignment, prior_execution, checkpoint, configuration)
+        let selected = SubmitAttemptRequest::new_selected_savepoint(
+            assignment.assignment(),
+            assignment.daemon_epoch(),
+            assignment.lineage(),
+            assignment.attempt(),
+            assignment.resources(),
+            assignment.retention(),
+            snapshot,
+            selection,
+            request,
+        )?;
+        Self::new(&selected, prior_execution, checkpoint)
     }
 }
 
@@ -3468,6 +3654,7 @@ const fn require_submit_attempt_request_version(version: u32) -> Result<(), Camp
     if version == EXECUTOR_MESSAGE_SCHEMA_VERSION
         || version == MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION
         || version == SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION
+        || version == SELECTED_SAVEPOINT_SUBMIT_REQUEST_SCHEMA_VERSION
     {
         Ok(())
     } else {
@@ -3482,6 +3669,7 @@ const fn require_resume_attempt_execution_request_version(
 ) -> Result<(), CampaignCodecError> {
     if version == EXECUTOR_MESSAGE_SCHEMA_VERSION
         || version == RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
+        || version == SELECTED_RESUME_ATTEMPT_EXECUTION_REQUEST_SCHEMA_VERSION
     {
         Ok(())
     } else {
@@ -3499,6 +3687,21 @@ fn require_execute_resume_assignment(
     } else {
         Err(CampaignCodecError::InvalidValue {
             reason: "resume requires an execute assignment",
+        })
+    }
+}
+
+fn require_semantic_resume_assignment(
+    assignment: &SubmitAttemptRequest,
+) -> Result<(), CampaignCodecError> {
+    if matches!(
+        assignment.start_mode(),
+        AttemptStartMode::Execute | AttemptStartMode::SelectedSavepoint { .. }
+    ) {
+        Ok(())
+    } else {
+        Err(CampaignCodecError::InvalidValue {
+            reason: "resume requires a semantic assignment",
         })
     }
 }

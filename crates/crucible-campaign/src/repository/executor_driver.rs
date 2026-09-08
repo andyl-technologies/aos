@@ -301,7 +301,8 @@ impl<S> CampaignExecutorDriver<S> {
         }
         self.active_executions.remove(&worker_slot);
 
-        let request = self.request_for(reservation, head.snapshot().lineage())?;
+        let request =
+            self.request_for(reservation, head.snapshot().lineage(), head.snapshot_id())?;
         let response = self
             .executor
             .submit_attempt(&request)
@@ -993,17 +994,36 @@ impl<S> CampaignExecutorDriver<S> {
         &self,
         reservation: AttemptReservation,
         lineage: CampaignLineageId,
-    ) -> Result<SubmitAttemptRequest, CampaignCodecError> {
+        snapshot: CampaignSnapshotId,
+    ) -> Result<SubmitAttemptRequest, CampaignRepositoryError> {
         let assignment =
             assignment_for_reservation(reservation, lineage, self.resources, self.retention)?;
-        SubmitAttemptRequest::new(
-            assignment,
-            reservation.daemon_epoch(),
-            lineage,
-            reservation.attempt(),
-            self.resources,
-            self.retention,
-        )
+        let source = self
+            .repository
+            .savepoint_continuation_source_at(snapshot, reservation.attempt())?;
+        match source {
+            Some(source) => SubmitAttemptRequest::new_selected_savepoint(
+                assignment,
+                reservation.daemon_epoch(),
+                lineage,
+                reservation.attempt(),
+                self.resources,
+                self.retention,
+                source.snapshot(),
+                source.selection(),
+                source.provenance().request,
+            )
+            .map_err(Into::into),
+            None => SubmitAttemptRequest::new(
+                assignment,
+                reservation.daemon_epoch(),
+                lineage,
+                reservation.attempt(),
+                self.resources,
+                self.retention,
+            )
+            .map_err(Into::into),
+        }
     }
 
     fn capture_request_for(

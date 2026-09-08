@@ -119,7 +119,286 @@ pub struct SavepointCaptureResolutionResult {
     pub replayed: bool,
 }
 
+/// Stable result of selecting a ready savepoint as a semantic continuation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavepointContinuationResult {
+    /// Snapshot named by the accepted command's precondition.
+    pub prior_snapshot: CampaignSnapshotId,
+    /// Snapshot first produced by accepting this cause.
+    pub new_snapshot: CampaignSnapshotId,
+    /// Semantic continuation admitted or reused by this cause.
+    pub continuation: AttemptId,
+    /// Immutable execution-basis admission shared by every duplicate cause.
+    pub admission: AttemptAdmissionId,
+    /// Exact cause fact accepted by this command.
+    pub selection: CampaignFactId,
+    /// First immutable physical-source preference for the continuation.
+    pub source: CampaignFactId,
+    /// Whether this call observed a previously committed command.
+    pub replayed: bool,
+}
+
+/// First immutable physical-source preference for one semantic continuation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavepointContinuationSource {
+    snapshot: CampaignSnapshotId,
+    selection: CampaignFactId,
+    provenance: SavepointContinuationSelection,
+}
+
+impl SavepointContinuationSource {
+    /// Returns the immutable snapshot that first installed this source mapping.
+    #[must_use]
+    pub const fn snapshot(&self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the immutable selection fact identity.
+    #[must_use]
+    pub const fn selection(&self) -> CampaignFactId {
+        self.selection
+    }
+
+    /// Returns the authenticated capture and Ready provenance.
+    #[must_use]
+    pub const fn provenance(&self) -> &SavepointContinuationSelection {
+        &self.provenance
+    }
+}
+
 impl CampaignRepository {
+    /// Loads the first selected physical-source provenance for a continuation.
+    ///
+    /// Historical selection remains readable after the capture's operational
+    /// source is discarded. Callers treat an absent physical root as a cold
+    /// replay decision; a malformed retained fact is an integrity failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid snapshot, malformed accounting index,
+    /// or invalid selection fact closure.
+    pub fn savepoint_continuation_source_at(
+        &self,
+        snapshot: CampaignSnapshotId,
+        continuation: AttemptId,
+    ) -> Result<Option<SavepointContinuationSource>, CampaignRepositoryError> {
+        self.validate_complete_head(snapshot.content_id())?;
+        let loaded = self.read_snapshot(snapshot.content_id())?;
+        let Some(content) = self.merkle.get(
+            loaded.snapshot.roots().accounting,
+            savepoint_continuation_source_key(continuation),
+        )?
+        else {
+            return Ok(None);
+        };
+        let CampaignFact::SavepointContinuationSelected(provenance) = self.read_fact(content)?
+        else {
+            return Err(integrity(
+                "savepoint-continuation-source-index-type-mismatch",
+            ));
+        };
+        if provenance.continuation != continuation {
+            return Err(integrity("savepoint-continuation-source-index-mismatch"));
+        }
+        let continuation = self.read_attempt(continuation.content_id())?;
+        let result = self.find_savepoint_continuation_result(
+            snapshot.content_id(),
+            &provenance,
+            &continuation,
+            true,
+        )?;
+        Ok(Some(SavepointContinuationSource {
+            snapshot: result.new_snapshot,
+            selection: CampaignFactId::from_content_id(content)?,
+            provenance,
+        }))
+    }
+
+    /// Admits one semantic continuation from a ready savepoint cause.
+    ///
+    /// The continuation identity excludes every capture and command identity.
+    /// The first accepted source remains immutable; later commands for the same
+    /// semantic continuation retain additional provenance without spending a
+    /// second attempt or replacing that source.
+    ///
+    /// This campaign transaction authenticates immutable provenance and the
+    /// caller's reached-configuration claim. A concrete executor must still
+    /// independently replay the origin and verify the exact reached scheduler
+    /// boundary before handing physical checkpoint authority to the
+    /// continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for command reuse, stale input, inactive state, a
+    /// capture that is not currently Ready, mismatched continuation closure,
+    /// exhausted attempt budget, malformed history, storage failure, or final
+    /// ref conflict.
+    pub fn select_savepoint_continuation(
+        &self,
+        name: &str,
+        selection: &SavepointContinuationSelection,
+        continuation: &Attempt,
+    ) -> Result<SavepointContinuationResult, CampaignRepositoryError> {
+        let _guard = self.lock_mutation()?;
+        let campaign_ref = campaign_ref(name)?;
+        let current_content = self
+            .refs
+            .read_ref(&campaign_ref)?
+            .ok_or(CampaignRepositoryError::NotFound)?;
+        let current = self.read_snapshot(current_content)?;
+        self.validate_complete_head(current_content)?;
+
+        let command_key = map_key_hash("accounting.command", selection.command.as_hash());
+        if let Some(fact_content) = self
+            .merkle
+            .get(current.snapshot.roots().accounting, command_key)?
+        {
+            return match self.read_fact(fact_content)? {
+                CampaignFact::SavepointContinuationSelected(prior) if prior == *selection => self
+                    .find_savepoint_continuation_result(
+                        current_content,
+                        selection,
+                        continuation,
+                        true,
+                    ),
+                CampaignFact::ControlRequested(_)
+                | CampaignFact::BranchRequestIssued(_)
+                | CampaignFact::BranchRequestAccepted { .. }
+                | CampaignFact::PinCommandAccepted(_)
+                | CampaignFact::DiscoveryRequested(_)
+                | CampaignFact::SavepointCaptureRequested(_)
+                | CampaignFact::SavepointCaptureResolved(_)
+                | CampaignFact::SavepointContinuationSelected(_) => {
+                    Err(CampaignRepositoryError::CommandReuse)
+                }
+                _ => Err(integrity("command-index-value-is-not-mutation-fact")),
+            };
+        }
+
+        let current_id = CampaignSnapshotId::from_content_id(current_content)?;
+        if selection.expected_snapshot != current_id {
+            return Err(CampaignRepositoryError::Stale {
+                expected: selection.expected_snapshot,
+                current: current_id,
+            });
+        }
+        let state = self.current_lifecycle(current_content)?.visible;
+        if state != CampaignState::Running {
+            return Err(CampaignRepositoryError::InvalidTransition { state });
+        }
+
+        self.validate_savepoint_continuation_basis(&current, selection, continuation)?;
+        let continuation_id = continuation.id()?;
+        let roots = current.snapshot.roots();
+        let basis_key = attempt_execution_basis_key(continuation_id);
+        let source_key = savepoint_continuation_source_key(continuation_id);
+        let indexed_basis = self.merkle.get(roots.accounting, basis_key)?;
+        let indexed_source = self.merkle.get(roots.accounting, source_key)?;
+        let new_basis = indexed_basis.is_none();
+        match (indexed_basis, indexed_source) {
+            (None, None) => {}
+            (Some(admission), Some(source)) => {
+                let admission = self.read_attempt_admission(admission)?;
+                if admission.attempt() != continuation_id
+                    || !matches!(
+                        admission.role(),
+                        AttemptAdmissionRole::ExecutionBasis { proposal: None, .. }
+                    )
+                {
+                    return Err(integrity("savepoint-continuation-basis-index-mismatch"));
+                }
+                let CampaignFact::SavepointContinuationSelected(first) = self.read_fact(source)?
+                else {
+                    return Err(integrity(
+                        "savepoint-continuation-source-index-type-mismatch",
+                    ));
+                };
+                if first.continuation != continuation_id {
+                    return Err(integrity("savepoint-continuation-source-index-mismatch"));
+                }
+            }
+            _ => return Err(integrity("savepoint-continuation-index-shape")),
+        }
+        self.ensure_budget_available(&current, 0, u64::from(new_basis))?;
+
+        let continuation_content = self.put_attempt(continuation)?;
+        if continuation_content != continuation_id.content_id() {
+            return Err(integrity("savepoint-continuation-publication-id-mismatch"));
+        }
+        let admission = match indexed_basis {
+            Some(content) => self.read_attempt_admission(content)?,
+            None => AttemptAdmission::new(
+                continuation_id,
+                AttemptAdmissionRole::ExecutionBasis {
+                    proposal: None,
+                    cause: BranchRequestCause::Operator(selection.command),
+                    admission_ordinal: self.next_admission_ordinal(roots.accounting)?,
+                },
+            ),
+        };
+        let admission_id = admission.id()?;
+
+        let fact = CampaignFact::SavepointContinuationSelected(selection.clone());
+        let transition_content = self.put_fact(&fact)?;
+        let transition_id = CampaignFactId::from_content_id(transition_content)?;
+        let mut upserts = BTreeMap::from([(command_key, transition_content)]);
+        if new_basis {
+            let admission_content = self.put_attempt_admission(&admission)?;
+            if admission_content != admission_id.content_id() {
+                return Err(integrity("savepoint-continuation-admission-id-mismatch"));
+            }
+            upserts.extend(attempt_admission_upserts(admission_content, admission)?);
+            upserts.insert(source_key, transition_content);
+        }
+        let mut accounting = roots.accounting;
+        for (key, value) in upserts {
+            accounting = self.merkle.insert(accounting, key, value)?.content_id();
+        }
+
+        let mut next_roots = roots;
+        next_roots.accounting = accounting;
+        next_roots.coordination =
+            self.coordination_with_parent_result(current_content, &current)?;
+        let next = self.budgeted_successor(
+            current_id,
+            current.snapshot.lineage(),
+            current.snapshot.active_policy(),
+            next_roots,
+            transition_id,
+        )?;
+        let next_content = self.put_snapshot(&next)?;
+        let checkpoint = self.prepare_local_successor_checkpoint(
+            current_content,
+            next_content,
+            None,
+            MAX_SIMPLE_SUCCESSOR_GROWTH,
+        )?;
+
+        match self
+            .refs
+            .compare_exchange(&campaign_ref, Some(current_content), next_content)?
+        {
+            RefCasOutcome::Advanced { .. } => {
+                self.promote_local_successor(current_content, next_content, checkpoint);
+                Ok(SavepointContinuationResult {
+                    prior_snapshot: current_id,
+                    new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
+                    continuation: continuation_id,
+                    admission: admission_id,
+                    selection: transition_id,
+                    source: indexed_source
+                        .map(CampaignFactId::from_content_id)
+                        .transpose()?
+                        .unwrap_or(transition_id),
+                    replayed: false,
+                })
+            }
+            RefCasOutcome::Conflict { current, .. } => {
+                Err(CampaignRepositoryError::RefConflict { current })
+            }
+        }
+    }
+
     /// Atomically records one request to capture an immutable attempt at its stop.
     ///
     /// Command lookup precedes stale-precondition checking. An exact retry
@@ -162,7 +441,8 @@ impl CampaignRepository {
                 | CampaignFact::PinCommandAccepted(_)
                 | CampaignFact::DiscoveryRequested(_)
                 | CampaignFact::SavepointCaptureRequested(_)
-                | CampaignFact::SavepointCaptureResolved(_) => {
+                | CampaignFact::SavepointCaptureResolved(_)
+                | CampaignFact::SavepointContinuationSelected(_) => {
                     Err(CampaignRepositoryError::CommandReuse)
                 }
                 _ => Err(integrity("command-index-value-is-not-mutation-fact")),
@@ -305,7 +585,8 @@ impl CampaignRepository {
                 | CampaignFact::PinCommandAccepted(_)
                 | CampaignFact::DiscoveryRequested(_)
                 | CampaignFact::SavepointCaptureRequested(_)
-                | CampaignFact::SavepointCaptureResolved(_) => {
+                | CampaignFact::SavepointCaptureResolved(_)
+                | CampaignFact::SavepointContinuationSelected(_) => {
                     Err(CampaignRepositoryError::CommandReuse)
                 }
                 _ => Err(integrity("command-index-value-is-not-mutation-fact")),
@@ -421,6 +702,19 @@ impl CampaignRepository {
         loaded: &LoadedSnapshot,
         capture: CampaignFactId,
     ) -> Result<Option<SavepointCaptureRequest>, CampaignRepositoryError> {
+        self.savepoint_capture_request_in_loaded_cached(
+            loaded,
+            capture,
+            &mut ChoiceValidationCache::default(),
+        )
+    }
+
+    fn savepoint_capture_request_in_loaded_cached(
+        &self,
+        loaded: &LoadedSnapshot,
+        capture: CampaignFactId,
+        cache: &mut ChoiceValidationCache,
+    ) -> Result<Option<SavepointCaptureRequest>, CampaignRepositoryError> {
         let Some(content) = self.merkle.get(
             loaded.snapshot.roots().accounting,
             savepoint_capture_request_key(capture),
@@ -436,7 +730,7 @@ impl CampaignRepository {
         if content != capture.content_id() {
             return Err(integrity("savepoint-capture-request-index-mismatch"));
         }
-        self.validate_persisted_savepoint_capture(loaded, content, &request)?;
+        self.validate_persisted_savepoint_capture_cached(loaded, content, &request, cache)?;
         Ok(Some(request))
     }
 
@@ -512,6 +806,7 @@ impl CampaignRepository {
         let loaded = self.read_snapshot(snapshot.content_id())?;
         let page = self.merkle.scan(accounting, after, scan_limit)?;
         let mut captures = Vec::new();
+        let mut cache = ChoiceValidationCache::default();
         for (key, content) in page.entries() {
             let envelope = self.read_envelope(*content)?;
             if envelope.record_kind() != crate::CampaignRecordKind::Fact {
@@ -525,7 +820,9 @@ impl CampaignRepository {
             if *key != savepoint_capture_request_key(request) {
                 continue;
             }
-            self.validate_persisted_savepoint_capture(&loaded, *content, &capture)?;
+            self.validate_persisted_savepoint_capture_cached(
+                &loaded, *content, &capture, &mut cache,
+            )?;
             if self
                 .merkle
                 .get(accounting, savepoint_capture_resolution_key(request))?
@@ -569,6 +866,19 @@ impl CampaignRepository {
         parent: &LoadedSnapshot,
         request: &SavepointCaptureRequest,
     ) -> Result<Attempt, CampaignRepositoryError> {
+        self.validate_savepoint_capture_basis_cached(
+            parent,
+            request,
+            &mut ChoiceValidationCache::default(),
+        )
+    }
+
+    fn validate_savepoint_capture_basis_cached(
+        &self,
+        parent: &LoadedSnapshot,
+        request: &SavepointCaptureRequest,
+        cache: &mut ChoiceValidationCache,
+    ) -> Result<Attempt, CampaignRepositoryError> {
         let roots = parent.snapshot.roots();
         let artifact = self.read_configuration_artifact(request.configuration.content_id())?;
         if artifact.configuration() != request.semantic_configuration
@@ -594,10 +904,11 @@ impl CampaignRepository {
             });
         }
 
-        let attempt = self.load_attempt(request.attempt)?;
+        let attempt = self.read_attempt_cached(request.attempt.content_id(), cache)?;
         let start_configuration = match attempt.start() {
             AttemptStart::Discover { configuration } => configuration,
             AttemptStart::Branch { parent, .. } => parent,
+            AttemptStart::AfterAttempt { reached, .. } => reached,
         };
         if start_configuration != request.configuration || attempt.stop() != &request.stop {
             return Err(CampaignRepositoryError::InvalidRequest {
@@ -607,11 +918,90 @@ impl CampaignRepository {
         Ok(attempt)
     }
 
-    fn validate_persisted_savepoint_capture(
+    pub(super) fn validate_savepoint_continuation_basis(
+        &self,
+        parent: &LoadedSnapshot,
+        selection: &SavepointContinuationSelection,
+        continuation: &Attempt,
+    ) -> Result<(), CampaignRepositoryError> {
+        self.validate_savepoint_continuation_basis_cached(
+            parent,
+            selection,
+            continuation,
+            &mut ChoiceValidationCache::default(),
+        )
+    }
+
+    fn validate_savepoint_continuation_basis_cached(
+        &self,
+        parent: &LoadedSnapshot,
+        selection: &SavepointContinuationSelection,
+        continuation: &Attempt,
+        cache: &mut ChoiceValidationCache,
+    ) -> Result<(), CampaignRepositoryError> {
+        if selection.expected_snapshot != parent.snapshot.id()? {
+            return Err(integrity(
+                "savepoint-continuation-precondition-parent-mismatch",
+            ));
+        }
+        if selection.continuation != continuation.id()? {
+            return Err(integrity("savepoint-continuation-id-mismatch"));
+        }
+        let capture = self
+            .savepoint_capture_request_in_loaded_cached(parent, selection.request, cache)?
+            .ok_or_else(|| integrity("savepoint-continuation-capture-is-not-in-history"))?;
+        if self.merkle.get(
+            parent.snapshot.roots().accounting,
+            savepoint_capture_resolution_key(selection.request),
+        )? != Some(selection.ready.content_id())
+        {
+            return Err(integrity("savepoint-continuation-ready-is-not-current"));
+        }
+        let CampaignFact::SavepointCaptureResolved(ready) =
+            self.read_fact(selection.ready.content_id())?
+        else {
+            return Err(integrity("savepoint-continuation-ready-fact-type-mismatch"));
+        };
+        if ready.request != selection.request || ready.outcome != SavepointCaptureOutcome::Ready {
+            return Err(integrity("savepoint-continuation-ready-fact-mismatch"));
+        }
+
+        let AttemptStart::AfterAttempt { origin, reached } = continuation.start() else {
+            return Err(integrity("savepoint-continuation-attempt-start-mismatch"));
+        };
+        if origin != capture.attempt {
+            return Err(integrity("savepoint-continuation-origin-mismatch"));
+        }
+        let origin = self.read_attempt_cached(origin.content_id(), cache)?;
+        if origin.path() != continuation.path() {
+            return Err(integrity("savepoint-continuation-path-mismatch"));
+        }
+
+        let lineage = self.read_lineage(parent.snapshot.lineage().content_id())?;
+        let reached = self.read_configuration_artifact(reached.content_id())?;
+        if reached.scenario() != lineage.scenario()
+            || reached.scenario_artifact() != lineage.scenario_content()
+        {
+            return Err(integrity("savepoint-continuation-reached-lineage-mismatch"));
+        }
+        continuation.stop().validate()?;
+        let policy = self.read_policy(parent.snapshot.active_policy().content_id())?;
+        if let StopCondition::NamedBoundary(name) = continuation.stop()
+            && !policy.stop_conditions().contains(name)
+        {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "savepoint-continuation-stop-boundary-is-not-in-active-policy",
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_persisted_savepoint_capture_cached(
         &self,
         snapshot: &LoadedSnapshot,
         transition_content: ContentId,
         request: &SavepointCaptureRequest,
+        cache: &mut ChoiceValidationCache,
     ) -> Result<(), CampaignRepositoryError> {
         let roots = snapshot.snapshot.roots();
         if self.merkle.get(
@@ -621,10 +1011,11 @@ impl CampaignRepository {
         {
             return Err(integrity("savepoint-capture-persisted-index-mismatch"));
         }
-        let attempt = self.read_attempt(request.attempt.content_id())?;
+        let attempt = self.read_attempt_cached(request.attempt.content_id(), cache)?;
         let start_configuration = match attempt.start() {
             AttemptStart::Discover { configuration } => configuration,
             AttemptStart::Branch { parent, .. } => parent,
+            AttemptStart::AfterAttempt { reached, .. } => reached,
         };
         if start_configuration != request.configuration || attempt.stop() != &request.stop {
             return Err(integrity("savepoint-capture-persisted-attempt-mismatch"));
@@ -638,13 +1029,14 @@ impl CampaignRepository {
         child: &LoadedSnapshot,
         transition_content: ContentId,
         request: &SavepointCaptureRequest,
+        cache: &mut ChoiceValidationCache,
     ) -> Result<(), CampaignRepositoryError> {
         if child.snapshot.lineage() != parent.snapshot.lineage()
             || child.snapshot.active_policy() != parent.snapshot.active_policy()
         {
             return Err(integrity("savepoint-capture-changed-lineage-or-policy"));
         }
-        self.validate_savepoint_capture_basis(parent, request)?;
+        self.validate_savepoint_capture_basis_cached(parent, request, cache)?;
 
         let prior = parent.snapshot.roots();
         let next = child.snapshot.roots();
@@ -688,6 +1080,7 @@ impl CampaignRepository {
         child: &LoadedSnapshot,
         transition_content: ContentId,
         resolution: &SavepointCaptureResolution,
+        cache: &mut ChoiceValidationCache,
     ) -> Result<(), CampaignRepositoryError> {
         if child.snapshot.lineage() != parent.snapshot.lineage()
             || child.snapshot.active_policy() != parent.snapshot.active_policy()
@@ -701,7 +1094,7 @@ impl CampaignRepository {
                 "savepoint-capture-resolution-precondition-parent-mismatch",
             ));
         }
-        self.savepoint_capture_request_in_loaded(parent, resolution.request)?
+        self.savepoint_capture_request_in_loaded_cached(parent, resolution.request, cache)?
             .ok_or_else(|| {
                 integrity("savepoint-capture-resolution-request-is-not-in-parent-history")
             })?;
@@ -747,6 +1140,96 @@ impl CampaignRepository {
         if !self.coordination_matches_parent_result(parent, next.coordination)? {
             return Err(integrity(
                 "savepoint-capture-resolution-coordination-root-mismatch",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_savepoint_continuation_successor(
+        &self,
+        parent: &LoadedSnapshot,
+        child: &LoadedSnapshot,
+        transition_content: ContentId,
+        selection: &SavepointContinuationSelection,
+        cache: &mut ChoiceValidationCache,
+    ) -> Result<(), CampaignRepositoryError> {
+        if child.snapshot.lineage() != parent.snapshot.lineage()
+            || child.snapshot.active_policy() != parent.snapshot.active_policy()
+        {
+            return Err(integrity(
+                "savepoint-continuation-changed-lineage-or-policy",
+            ));
+        }
+        let continuation = self.read_attempt_cached(selection.continuation.content_id(), cache)?;
+        self.validate_savepoint_continuation_basis_cached(parent, selection, &continuation, cache)?;
+
+        let prior = parent.snapshot.roots();
+        let next = child.snapshot.roots();
+        if prior.graph != next.graph
+            || prior.exploration != next.exploration
+            || prior.observations != next.observations
+            || prior.corpus != next.corpus
+            || prior.coverage != next.coverage
+            || prior.findings != next.findings
+            || prior.pins != next.pins
+        {
+            return Err(integrity("savepoint-continuation-changed-unrelated-root"));
+        }
+
+        let basis_key = attempt_execution_basis_key(selection.continuation);
+        let source_key = savepoint_continuation_source_key(selection.continuation);
+        let indexed_basis = self.merkle.get(prior.accounting, basis_key)?;
+        let indexed_source = self.merkle.get(prior.accounting, source_key)?;
+        let mut upserts = BTreeMap::from([(
+            map_key_hash("accounting.command", selection.command.as_hash()),
+            transition_content,
+        )]);
+        match (indexed_basis, indexed_source) {
+            (None, None) => {
+                let admission = AttemptAdmission::new(
+                    selection.continuation,
+                    AttemptAdmissionRole::ExecutionBasis {
+                        proposal: None,
+                        cause: BranchRequestCause::Operator(selection.command),
+                        admission_ordinal: self.next_admission_ordinal(prior.accounting)?,
+                    },
+                );
+                let admission_content = admission.id()?.content_id();
+                self.read_attempt_admission_cached(admission_content, cache)?;
+                upserts.extend(attempt_admission_upserts(admission_content, admission)?);
+                upserts.insert(source_key, transition_content);
+            }
+            (Some(admission), Some(source)) => {
+                let admission = self.read_attempt_admission_cached(admission, cache)?;
+                if admission.attempt() != selection.continuation
+                    || !matches!(
+                        admission.role(),
+                        AttemptAdmissionRole::ExecutionBasis { proposal: None, .. }
+                    )
+                {
+                    return Err(integrity("savepoint-continuation-basis-index-mismatch"));
+                }
+                let CampaignFact::SavepointContinuationSelected(first) = self.read_fact(source)?
+                else {
+                    return Err(integrity(
+                        "savepoint-continuation-source-index-type-mismatch",
+                    ));
+                };
+                if first.continuation != selection.continuation {
+                    return Err(integrity("savepoint-continuation-source-index-mismatch"));
+                }
+            }
+            _ => return Err(integrity("savepoint-continuation-index-shape")),
+        }
+        if !self
+            .merkle
+            .equals_after_upserts(prior.accounting, next.accounting, &upserts)?
+        {
+            return Err(integrity("savepoint-continuation-accounting-root-mismatch"));
+        }
+        if !self.coordination_matches_parent_result(parent, next.coordination)? {
+            return Err(integrity(
+                "savepoint-continuation-coordination-root-mismatch",
             ));
         }
         Ok(())

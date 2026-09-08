@@ -13,9 +13,9 @@ use crucible::{
 };
 use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmLifecycleResumeState};
 use crucible_campaign::{
-    Attempt, AttemptResourceLimits, AttemptStart, BranchPath, CampaignHash, CampaignLineage,
-    ConfigurationArtifact, ConfigurationId, ExactCheckpointId, ExecutionRetentionIntent,
-    ScenarioArtifact, ScenarioDefId, StopCondition,
+    Attempt, AttemptResourceLimits, AttemptStart, BranchPath, CampaignFactId, CampaignHash,
+    CampaignLineage, ConfigurationArtifact, ConfigurationId, ExactCheckpointId, ExecutionId,
+    ExecutionRetentionIntent, ScenarioArtifact, ScenarioDefId, StopCondition,
 };
 use crucible_cas::content_store::{
     BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, ObjectKind,
@@ -128,6 +128,24 @@ impl QemuProductionExactResumeLifecycleFactory for FakeResumeFactory {
     type Lifecycle = FakeResumeLifecycle;
     type Error = &'static str;
 
+    fn authenticate_resume_boundary(
+        &mut self,
+        _checkpoints: &ExactCheckpointStore,
+        _checkpoint: ExactCheckpointId,
+        _scenario: &ScenarioDef,
+        _source: &ScenarioDefForm,
+        _initial: &Configuration,
+        _post_selection: Option<&Configuration>,
+        _context: &AttemptExecutionContext,
+    ) -> Result<
+        Option<crate::qemu_campaign_driver::QemuSelectedResumeBoundary>,
+        AttemptWorkerFailure<Self::Error>,
+    > {
+        Err(AttemptWorkerFailure::Terminal(
+            "ordinary resume fixture has no selected boundary",
+        ))
+    }
+
     fn start_resume_lifecycle(
         &mut self,
         _checkpoints: &ExactCheckpointStore,
@@ -162,6 +180,7 @@ struct ObservedResume {
     frontier: VirtualTime,
     quiescence: Option<SchedulerQuiescence>,
     final_events: Vec<SchedulerEventLogEntry>,
+    attempt_event_count: usize,
 }
 
 impl QemuFreshAttemptDriver for FakeResumeDriver {
@@ -176,6 +195,7 @@ impl QemuFreshAttemptDriver for FakeResumeDriver {
         materialization: QemuFreshStartMaterialization,
     ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>> {
         self.calls.drives.fetch_add(1, Ordering::SeqCst);
+        let attempt_event_count = materialization.attempt_event_count();
         let (events, bytes, completed_quanta, frontier, quiescence, _terminal) =
             materialization.into_parts();
         *self.observed.lock().expect("resume observation") = Some(ObservedResume {
@@ -185,6 +205,7 @@ impl QemuFreshAttemptDriver for FakeResumeDriver {
             frontier,
             quiescence,
             final_events: Vec::new(),
+            attempt_event_count,
         });
         Ok(QemuFreshDriveOutcome::Observation(()))
     }
@@ -213,6 +234,7 @@ fn resume_runner_rejects_missing_root_before_factory_invocation() {
         Arc::clone(&calls),
         Arc::clone(&observed),
         ProductionVmLifecycleResumeState::new(
+            test_configuration(),
             Vec::new(),
             0,
             0,
@@ -238,6 +260,41 @@ fn resume_runner_rejects_missing_root_before_factory_invocation() {
 }
 
 #[test]
+fn cold_fallback_distinguishes_an_absent_selected_root_from_a_missing_child() {
+    let checkpoint = checkpoint_id("selected-source-root");
+    let context = selected_source_context(checkpoint);
+    let absent_root = crate::QemuAttemptProductionVmLifecycleError::CheckpointRestore(
+        crate::ProductionAttemptCheckpointRestoreError::Checkpoint(
+            crate::ExactCheckpointStoreError::Store(
+                crucible_cas::content_store::StoreError::NotFound {
+                    id: checkpoint.content_id(),
+                },
+            ),
+        ),
+    );
+    let missing_child = crate::QemuAttemptProductionVmLifecycleError::CheckpointRestore(
+        crate::ProductionAttemptCheckpointRestoreError::Checkpoint(
+            crate::ExactCheckpointStoreError::Store(
+                crucible_cas::content_store::StoreError::NotFound {
+                    id: ContentId::for_bytes(ObjectKind::DeviceState, 1, b"missing-child"),
+                },
+            ),
+        ),
+    );
+
+    assert!(initial_selected_source_is_absent(
+        &absent_root,
+        checkpoint,
+        &context
+    ));
+    assert!(!initial_selected_source_is_absent(
+        &missing_child,
+        checkpoint,
+        &context
+    ));
+}
+
+#[test]
 fn resume_runner_preserves_exact_event_prefix_and_final_drain() {
     let calls = Arc::new(ResumeCalls::default());
     let observed = Arc::new(Mutex::new(None));
@@ -251,6 +308,7 @@ fn resume_runner_preserves_exact_event_prefix_and_final_drain() {
         Arc::clone(&calls),
         Arc::clone(&observed),
         ProductionVmLifecycleResumeState::new(
+            test_configuration(),
             prefix.clone(),
             0,
             4,
@@ -285,10 +343,47 @@ fn resume_runner_preserves_exact_event_prefix_and_final_drain() {
     assert_eq!(observed.frontier, VirtualTime { ticks: 17 });
     assert_eq!(observed.quiescence, Some(SchedulerQuiescence::default()));
     assert_eq!(observed.final_events, final_events);
+    assert_eq!(observed.attempt_event_count, 0);
     assert_eq!(calls.starts.load(Ordering::SeqCst), 1);
     assert_eq!(calls.drives.load(Ordering::SeqCst), 1);
     assert_eq!(calls.shutdowns.load(Ordering::SeqCst), 1);
     assert_eq!(calls.seals.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn selected_resume_materialization_carries_cold_derived_attempt_event_progress() {
+    let calls = Arc::new(ResumeCalls::default());
+    let configuration = test_configuration();
+    let events = (0..5)
+        .map(|sequence| event(sequence, sequence + 1, "selected-resume-prefix"))
+        .collect::<Vec<_>>();
+    let proof = QemuSavepointReplayProof::from_reached_boundary(
+        &configuration,
+        5,
+        VirtualTime { ticks: 5 },
+        &events,
+    )
+    .and_then(|proof| proof.with_attempt_event_count(2))
+    .expect("cold-derived selected proof");
+    let lifecycle = FakeResumeLifecycle {
+        calls,
+        state: ProductionVmLifecycleResumeState::new(
+            configuration,
+            events,
+            0,
+            5,
+            VirtualTime { ticks: 5 },
+            SchedulerQuiescence::default(),
+            None,
+        ),
+        final_events: Vec::new(),
+    };
+
+    let materialization =
+        resume_start_materialization::<&'static str, &'static str>(&lifecycle, Some(proof))
+            .expect("selected resume materialization");
+
+    assert_eq!(materialization.attempt_event_count(), 2);
 }
 
 #[test]
@@ -299,6 +394,7 @@ fn resume_runner_rejects_suffix_only_evidence_and_still_cleans_up() {
         Arc::clone(&calls),
         Arc::clone(&observed),
         ProductionVmLifecycleResumeState::new(
+            test_configuration(),
             vec![event(7, 21, "retained-suffix")],
             7,
             9,
@@ -373,8 +469,39 @@ fn test_context(checkpoint: Option<ExactCheckpointId>) -> AttemptExecutionContex
     .with_resume_checkpoint(checkpoint)
 }
 
+fn selected_source_context(checkpoint: ExactCheckpointId) -> AttemptExecutionContext {
+    let source_attempt = test_input().attempt().id().expect("source attempt");
+    let certificate = CampaignFactId::parse(&format!(
+        "crucible.campaign.fact@{}",
+        ContentId::for_bytes(ObjectKind::CampaignFact, 10, b"selected-source-certificate")
+    ))
+    .expect("selection certificate");
+    let request = CampaignFactId::parse(&format!(
+        "crucible.campaign.fact@{}",
+        ContentId::for_bytes(ObjectKind::CampaignFact, 10, b"selected-source-request")
+    ))
+    .expect("capture request");
+    test_context(None).with_execution_origin(crate::AttemptExecutionOrigin::SelectedSavepoint {
+        certificate,
+        request,
+        source_attempt,
+        source_execution: ExecutionId::from_bytes([0x71; 16]).expect("source execution"),
+        source_checkpoint: checkpoint,
+        resume: None,
+    })
+}
+
 fn event(sequence: u64, ticks: u64, kind: &str) -> SchedulerEventLogEntry {
     SchedulerEventLogEntry::execution_budget_exhausted(sequence, VirtualTime { ticks }, kind)
+}
+
+fn test_configuration() -> Configuration {
+    Configuration::genesis(
+        crucible::crash_restart_scenario()
+            .expect("built-in scenario")
+            .scenario
+            .scenario_def(),
+    )
 }
 
 fn test_input() -> CrucibleAttemptExecution {

@@ -6,6 +6,8 @@
 //! v11 = 11:u32be | 18:u8 | command | expected-snapshot | attempt |
 //!       configuration-artifact | semantic-configuration | stop | reason
 //! v12 = 12:u32be | 19:u8 | command | expected-snapshot | request-fact | outcome
+//! v13 = 13:u32be | 20:u8 | command | expected-snapshot | request-fact |
+//!       ready-resolution-fact | continuation-attempt
 //! ```
 
 use crate::codec::{self, Canonical, Decoder, Encoder};
@@ -29,6 +31,7 @@ const EXTENDED_STOP_DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 9;
 const TERMINAL_WORKER_FAILURE_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 10;
 const SAVEPOINT_CAPTURE_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 11;
 const SAVEPOINT_CAPTURE_RESOLUTION_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 12;
+const SAVEPOINT_CONTINUATION_SELECTION_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 13;
 
 #[derive(Clone, Copy)]
 enum CampaignFactDecodeExtension {
@@ -42,6 +45,7 @@ enum CampaignFactDecodeExtension {
     TerminalWorkerFailure,
     SavepointCapture,
     SavepointCaptureResolution,
+    SavepointContinuationSelection,
     All,
 }
 
@@ -715,6 +719,56 @@ impl Canonical for SavepointCaptureResolution {
     }
 }
 
+/// Durable semantic admission cause for continuing one ready savepoint.
+///
+/// The continuation attempt carries only semantic origin and reached-boundary
+/// identity. This fact separately retains the operator command and exact
+/// capture/Ready provenance used to prefer one physical source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavepointContinuationSelection {
+    /// Stable caller-supplied command identity.
+    pub command: CampaignCommandId,
+    /// Snapshot the caller expects to mutate.
+    pub expected_snapshot: CampaignSnapshotId,
+    /// Immutable capture request whose exact source was selected.
+    pub request: CampaignFactId,
+    /// Exact Ready resolution authenticating the selected request.
+    pub ready: CampaignFactId,
+    /// Semantic continuation admitted by this cause.
+    pub continuation: AttemptId,
+}
+
+impl SavepointContinuationSelection {
+    /// Returns a domain-separated digest of the exact selection command.
+    #[must_use]
+    pub fn request_digest(&self) -> CampaignHash {
+        CampaignHash::derive(
+            "crucible.campaign-savepoint-continuation-selection.v1",
+            &codec::encode(self),
+        )
+    }
+}
+
+impl Canonical for SavepointContinuationSelection {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.command.encode(encoder);
+        self.expected_snapshot.encode(encoder);
+        self.request.encode(encoder);
+        self.ready.encode(encoder);
+        self.continuation.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Ok(Self {
+            command: CampaignCommandId::decode(decoder)?,
+            expected_snapshot: CampaignSnapshotId::decode(decoder)?,
+            request: CampaignFactId::decode(decoder)?,
+            ready: CampaignFactId::decode(decoder)?,
+            continuation: AttemptId::decode(decoder)?,
+        })
+    }
+}
+
 impl DiscoveryRequest {
     /// Builds a validated explicit discovery request.
     ///
@@ -875,6 +929,8 @@ pub enum CampaignFact {
     SavepointCaptureRequested(SavepointCaptureRequest),
     /// One accepted savepoint capture reached a terminal operational outcome.
     SavepointCaptureResolved(SavepointCaptureResolution),
+    /// One ready savepoint was selected as a semantic continuation cause.
+    SavepointContinuationSelected(SavepointContinuationSelection),
 }
 
 impl CampaignFact {
@@ -896,6 +952,9 @@ impl CampaignFact {
             Self::SavepointCaptureRequested(_) => SAVEPOINT_CAPTURE_CAMPAIGN_FACT_SCHEMA_VERSION,
             Self::SavepointCaptureResolved(_) => {
                 SAVEPOINT_CAPTURE_RESOLUTION_CAMPAIGN_FACT_SCHEMA_VERSION
+            }
+            Self::SavepointContinuationSelected(_) => {
+                SAVEPOINT_CONTINUATION_SELECTION_CAMPAIGN_FACT_SCHEMA_VERSION
             }
             _ => LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION,
         }
@@ -1070,6 +1129,18 @@ impl CampaignFact {
                         }
                         Ok(Self { version, fact })
                     }
+                    SAVEPOINT_CONTINUATION_SELECTION_CAMPAIGN_FACT_SCHEMA_VERSION => {
+                        let fact = CampaignFact::decode_versioned(
+                            decoder,
+                            CampaignFactDecodeExtension::SavepointContinuationSelection,
+                        )?;
+                        if !matches!(fact, CampaignFact::SavepointContinuationSelected(_)) {
+                            return Err(CampaignCodecError::InvalidValue {
+                                reason: "campaign fact variant requires its original schema version",
+                            });
+                        }
+                        Ok(Self { version, fact })
+                    }
                     _ => Err(CampaignCodecError::InvalidValue {
                         reason: "unsupported campaign object schema version",
                     }),
@@ -1175,6 +1246,10 @@ impl Canonical for CampaignFact {
             Self::SavepointCaptureResolved(resolution) => {
                 encoder.u8(19);
                 resolution.encode(encoder);
+            }
+            Self::SavepointContinuationSelected(selection) => {
+                encoder.u8(20);
+                selection.encode(encoder);
             }
             Self::AttemptClosed {
                 attempt,
@@ -1295,6 +1370,15 @@ impl CampaignFact {
             ) =>
             {
                 SavepointCaptureResolution::decode(decoder).map(Self::SavepointCaptureResolved)
+            }
+            20 if matches!(
+                extension,
+                CampaignFactDecodeExtension::SavepointContinuationSelection
+                    | CampaignFactDecodeExtension::All
+            ) =>
+            {
+                SavepointContinuationSelection::decode(decoder)
+                    .map(Self::SavepointContinuationSelected)
             }
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-fact",

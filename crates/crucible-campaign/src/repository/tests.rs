@@ -30,6 +30,67 @@ use crate::{
 
 struct AllowCampaignQueries;
 
+struct FailOnOpenBlobBackend {
+    inner: Arc<MemoryBlobBackend>,
+    target: ContentId,
+    target_logical_length: u64,
+    open_calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ImmutableBlobBackend for FailOnOpenBlobBackend {
+    fn name(&self) -> &str {
+        "fail-on-open-campaign-test"
+    }
+
+    fn capabilities(&self) -> crucible_cas::content_store::BackendCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+        self.inner.contains(id)
+    }
+
+    fn read(
+        &self,
+        id: ContentId,
+        range: Option<crucible_cas::content_store::ByteRange>,
+    ) -> Result<BlobHandle, StoreError> {
+        if id != self.target || range.is_some() {
+            return self.inner.read(id, range);
+        }
+
+        Ok(BlobHandle::new(Arc::new(FailOnOpenBlobSource {
+            logical_length: self.target_logical_length,
+            open_calls: self.open_calls.clone(),
+        })))
+    }
+
+    fn put_if_absent(
+        &self,
+        id: ContentId,
+        source: &BlobHandle,
+    ) -> Result<crucible_cas::content_store::PutReceipt, StoreError> {
+        self.inner.put_if_absent(id, source)
+    }
+}
+
+struct FailOnOpenBlobSource {
+    logical_length: u64,
+    open_calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl crucible_cas::content_store::BlobSource for FailOnOpenBlobSource {
+    fn logical_length(&self) -> u64 {
+        self.logical_length
+    }
+
+    fn open(&self) -> Result<Box<dyn std::io::Read + Send>, StoreError> {
+        self.open_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(StoreError::Unavailable)
+    }
+}
+
 impl CampaignRepository {
     /// Creates an explicitly funded fixture for tests that issue semantic work.
     fn create_funded(
@@ -522,7 +583,7 @@ fn branch_attempt(
 
 #[test]
 fn selection_batch_resolution_shares_dependencies_and_bounds_records() {
-    let (repository, lineage, _) = fixture();
+    let (repository, lineage, _, blobs) = counted_fixture();
     let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
     let declaration = SelectableDeclaration::new(
         "product.test.selection-batch",
@@ -584,6 +645,33 @@ fn selection_batch_resolution_shares_dependencies_and_bounds_records() {
             .iter()
             .all(|selection| std::ptr::eq(selection.domain(), resolved[0].domain()))
     );
+    let target_logical_length = blobs
+        .read(ids[0].content_id(), None)
+        .expect("selection record")
+        .logical_length();
+    let open_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let bounded_repository = CampaignRepository::new(
+        Arc::new(FailOnOpenBlobBackend {
+            inner: blobs,
+            target: ids[0].content_id(),
+            target_logical_length,
+            open_calls: open_calls.clone(),
+        }),
+        repository.refs.clone(),
+    );
+    let undersized_limit = usize::try_from(target_logical_length)
+        .expect("selection record length")
+        .checked_sub(1)
+        .expect("nonempty selection record");
+
+    assert!(matches!(
+        bounded_repository
+            .resolve_selections_with_canonical_byte_limit(&ids[..1], undersized_limit),
+        Err(CampaignRepositoryError::SelectionResolutionBudgetExceeded {
+            maximum_canonical_bytes
+        }) if maximum_canonical_bytes == undersized_limit
+    ));
+    assert_eq!(open_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
 
     let oversized = vec![ids[0]; MAX_SELECTION_RESOLUTION_RECORDS + 1];
     assert!(matches!(

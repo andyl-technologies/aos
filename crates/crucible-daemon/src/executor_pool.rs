@@ -219,10 +219,10 @@ where
         }
 
         let validation = match catch_unwind(AssertUnwindSafe(|| {
-            self.shared
-                .validator
-                .validate(request)
-                .and_then(|()| self.shared.validator.validate_execution_scope(request))
+            crate::executor_supervisor::ValidatedSubmitAdmission::validate(
+                self.shared.validator.as_ref(),
+                request,
+            )
         })) {
             Ok(validation) => validation,
             Err(_) => {

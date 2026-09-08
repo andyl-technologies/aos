@@ -173,11 +173,72 @@ struct FakeLifecycle {
     drives: u64,
 }
 
+struct RestoredFrontierLifecycle {
+    expected_first: Configuration,
+    next: Option<QuantumOutcome>,
+    completed_quanta: u64,
+    observed_first: Option<Configuration>,
+}
+
+impl QemuModeledAttemptLifecycle for RestoredFrontierLifecycle {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        self.observed_first = Some(request.configuration.clone());
+        if request.configuration != self.expected_first {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("first resumed request did not use the restored frontier"),
+            });
+        }
+        self.completed_quanta += 1;
+        self.next
+            .take()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("restored-frontier fixture exhausted outcomes"),
+            })
+    }
+
+    fn completed_quanta(&self) -> u64 {
+        self.completed_quanta
+    }
+
+    fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
+        None
+    }
+
+    fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
+        Ok(false)
+    }
+
+    fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<Vec<crucible_qemu::QemuNodeSelectablePendingRequest>, SchedulerError> {
+        Ok(Vec::new())
+    }
+
+    fn apply_selectable_reply(
+        &mut self,
+        _parent: &Configuration,
+        _decision: crucible::SelectionDecision,
+        _selected: &Configuration,
+        _pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
+        _reply: &crucible_protocol::SelectionReply,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("restored-frontier fixture has no selectable transport"),
+        })
+    }
+
+    fn pending_network_output_count(&self) -> usize {
+        0
+    }
+}
+
 struct PendingSelectableLifecycle {
     frontier: crucible::Configuration,
     outcomes: VecDeque<QuantumOutcome>,
     completed_coordinates: VecDeque<u64>,
     pending: VecDeque<Vec<crucible_qemu::QemuNodeSelectablePendingRequest>>,
+    active_pending: Vec<crucible_qemu::QemuNodeSelectablePendingRequest>,
+    reply_entries: VecDeque<Vec<crucible::SchedulerEventLogEntry>>,
     replies: Vec<crucible_protocol::SelectionReply>,
     completed_quanta: u64,
     drives: u64,
@@ -259,6 +320,11 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
     fn enable_signal_fault_campaign_promotion(&mut self) {}
 
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        if !self.active_pending.is_empty() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("selectable lifecycle stepped with a pending request"),
+            });
+        }
         if request.configuration != self.frontier {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
@@ -280,6 +346,7 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
         })?;
         outcome.configuration = request.configuration.clone();
         self.frontier = request.configuration;
+        self.active_pending = self.pending.pop_front().unwrap_or_default();
         Ok(outcome)
     }
 
@@ -292,13 +359,13 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
     }
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
-        Ok(false)
+        Ok(self.drives > 0)
     }
 
     fn drain_pending_selectable_requests(
         &mut self,
     ) -> Result<Vec<crucible_qemu::QemuNodeSelectablePendingRequest>, SchedulerError> {
-        Ok(self.pending.pop_front().unwrap_or_default())
+        Ok(std::mem::take(&mut self.active_pending))
     }
 
     fn apply_selectable_reply(
@@ -318,7 +385,7 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
         }
         self.replies.push(reply.clone());
         self.frontier = selected.clone();
-        Ok(Vec::new())
+        Ok(self.reply_entries.pop_front().unwrap_or_default())
     }
 
     fn capture_attempt_checkpoint(
@@ -737,6 +804,7 @@ fn hot_fork_absolute_quantum_stop_uses_the_complete_source_materialization() {
     let mut live = HotModeledLive {
         modeled: &mut modeled,
         start_materialization: Some(QemuFreshStartMaterialization::from_resume_parts(
+            input.start().configuration().clone(),
             prefix.entries.clone(),
             prefix_bytes,
             completed_quanta,
@@ -800,6 +868,7 @@ fn hot_fork_virtual_time_stop_and_terminal_precedence_use_the_source_boundary() 
         let mut live = HotModeledLive {
             modeled: &mut modeled,
             start_materialization: Some(QemuFreshStartMaterialization::from_resume_parts(
+                input.start().configuration().clone(),
                 prefix.entries.clone(),
                 prefix_bytes,
                 completed_quanta,
@@ -1374,6 +1443,7 @@ fn restored_virtual_time_uses_the_scheduler_frontier_when_the_log_tail_is_earlie
                 &input,
                 &context(),
                 QemuFreshStartMaterialization::from_resume_parts(
+                    input.start().configuration().clone(),
                     prefix.entries.clone(),
                     prefix_bytes,
                     3,
@@ -1393,6 +1463,63 @@ fn restored_virtual_time_uses_the_scheduler_frontier_when_the_log_tail_is_earlie
         ModeledStop::Reached(StopCondition::VirtualTimeNanoseconds(value))
             if value == deadline
     ));
+}
+
+#[test]
+fn resumed_driver_starts_from_the_actual_restored_configuration() {
+    let input = input(StopCondition::ExecutionQuanta(2));
+    let original = input.start().configuration().clone();
+    let prior_decision = crucible::Decision::RngDraw(crucible::RngDecision {
+        stream: crucible::RngStreamId::from_name("prior-resumed-decision"),
+        value: 11,
+    });
+    let next_decision = crucible::Decision::RngDraw(crucible::RngDecision {
+        stream: crucible::RngStreamId::from_name("next-resumed-decision"),
+        value: 12,
+    });
+    let restored = crucible::step(&original, prior_decision);
+    let continued = crucible::step(&restored, next_decision.clone());
+    let mut lifecycle = RestoredFrontierLifecycle {
+        expected_first: restored.clone(),
+        next: Some(QuantumOutcome {
+            configuration: continued.clone(),
+            frontier: VirtualTime { ticks: 2 },
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: vec![next_decision],
+            discovered_choices: Vec::new(),
+            event_log_entries: Vec::new(),
+            event_log_segment_bytes: Vec::new(),
+            event_log_segment_text: String::new(),
+            event_log_segment_hash: None,
+            event_log_offset: EventLogOffset::default(),
+            scheduler_quiescence: None,
+        }),
+        completed_quanta: 1,
+        observed_first: None,
+    };
+
+    let pending = expect_observation(
+        drive_modeled_attempt(
+            &mut lifecycle,
+            &input,
+            &context(),
+            QemuFreshStartMaterialization::from_resume_parts(
+                restored.clone(),
+                Vec::new(),
+                0,
+                1,
+                VirtualTime { ticks: 1 },
+                SchedulerQuiescence::default(),
+                None,
+            ),
+        )
+        .expect("resume from progressed configuration"),
+    );
+
+    assert_eq!(lifecycle.observed_first, Some(restored));
+    assert_eq!(pending.configuration, continued);
+    assert_eq!(pending.configuration.schedule.len(), 2);
 }
 
 #[test]
@@ -1539,6 +1666,7 @@ fn execution_quanta_resume_charges_only_the_suffix_and_matches_uninterrupted_evi
                     &input,
                     &context(),
                     QemuFreshStartMaterialization::from_resume_parts(
+                        input.start().configuration().clone(),
                         prefix,
                         prefix_bytes,
                         checkpoint_quanta,
@@ -1577,6 +1705,144 @@ fn execution_quanta_resume_charges_only_the_suffix_and_matches_uninterrupted_evi
     assert_eq!(
         uninterrupted.observation().canonical_bytes(),
         resumed.observation().canonical_bytes()
+    );
+}
+
+#[test]
+fn event_count_resume_excludes_origin_events_and_counts_the_same_attempt_prefix() {
+    let origin_quanta = 2_u64;
+    let checkpoint_attempt_events = 2_usize;
+    let stop_events = 4_usize;
+    let input = input(StopCondition::EventCount(
+        u64::try_from(stop_events).expect("event stop"),
+    ));
+    let configuration = starting_configuration(&input);
+    let mut log = EventLog::new();
+    let segments = (0..origin_quanta as usize + stop_events)
+        .map(|index| {
+            log.append_observable_events([ObservableEvent::guest_marker(
+                Icount {
+                    retired: u64::try_from(index + 1).expect("event frontier"),
+                },
+                node("node-a"),
+                MarkerId::from_name(format!("event-{index}")),
+            )])
+            .expect("event-log segment")
+        })
+        .collect::<Vec<_>>();
+    let origin_entries = segments[..origin_quanta as usize]
+        .iter()
+        .flat_map(|segment| segment.entries.iter().cloned())
+        .collect::<Vec<_>>();
+    let origin_bytes = origin_entries
+        .iter()
+        .map(SchedulerEventLogEntry::canonical_material_len)
+        .sum();
+    let attempt_outcome = |attempt_index: usize| {
+        let segment = &segments[origin_quanta as usize + attempt_index];
+        outcome(
+            configuration.clone(),
+            segment.entries.clone(),
+            segment.offset,
+            origin_quanta + u64::try_from(attempt_index + 1).expect("attempt frontier"),
+        )
+    };
+
+    let mut uninterrupted_owner = FakeLifecycle {
+        outcomes: (0..stop_events)
+            .map(|index| Ok(attempt_outcome(index)))
+            .collect(),
+        terminal: None,
+        initial_quanta: origin_quanta,
+        drives: 0,
+    };
+    let uninterrupted = {
+        let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut uninterrupted_owner);
+        let mut driver = QemuFreshModeledDriver::new();
+        let pending = expect_observation(
+            driver
+                .drive(
+                    &mut lifecycle,
+                    &input,
+                    &context(),
+                    QemuFreshStartMaterialization::from_origin_parts(
+                        origin_entries.clone(),
+                        origin_bytes,
+                        origin_quanta,
+                        VirtualTime {
+                            ticks: origin_quanta,
+                        },
+                        None,
+                    ),
+                )
+                .expect("uninterrupted event-count stop"),
+        );
+        driver
+            .seal(pending, Vec::new())
+            .expect("uninterrupted evidence")
+    };
+
+    let attempt_prefix = segments
+        [origin_quanta as usize..origin_quanta as usize + checkpoint_attempt_events]
+        .iter()
+        .flat_map(|segment| segment.entries.iter().cloned());
+    let resumed_entries = origin_entries
+        .into_iter()
+        .chain(attempt_prefix)
+        .collect::<Vec<_>>();
+    let resumed_bytes = resumed_entries
+        .iter()
+        .map(SchedulerEventLogEntry::canonical_material_len)
+        .sum();
+    let resumed_quanta =
+        origin_quanta + u64::try_from(checkpoint_attempt_events).expect("checkpoint event count");
+    let mut resumed_owner = FakeLifecycle {
+        outcomes: (checkpoint_attempt_events..stop_events)
+            .map(|index| Ok(attempt_outcome(index)))
+            .collect(),
+        terminal: None,
+        initial_quanta: resumed_quanta,
+        drives: 0,
+    };
+    let resumed = {
+        let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut resumed_owner);
+        let mut driver = QemuFreshModeledDriver::new();
+        let pending = expect_observation(
+            driver
+                .drive(
+                    &mut lifecycle,
+                    &input,
+                    &context(),
+                    QemuFreshStartMaterialization::from_resume_parts(
+                        configuration,
+                        resumed_entries,
+                        resumed_bytes,
+                        resumed_quanta,
+                        VirtualTime {
+                            ticks: resumed_quanta,
+                        },
+                        SchedulerQuiescence::default(),
+                        None,
+                    )
+                    .with_attempt_event_count(checkpoint_attempt_events),
+                )
+                .expect("resumed event-count stop"),
+        );
+        driver.seal(pending, Vec::new()).expect("resumed evidence")
+    };
+
+    assert_eq!(uninterrupted_owner.drives, stop_events as u64);
+    assert_eq!(
+        resumed_owner.drives,
+        (stop_events - checkpoint_attempt_events) as u64
+    );
+    assert_eq!(
+        prepared_semantic_observation(uninterrupted)
+            .observation()
+            .canonical_bytes(),
+        prepared_semantic_observation(resumed)
+            .observation()
+            .canonical_bytes()
     );
 }
 
@@ -1766,6 +2032,191 @@ fn signal_fault_frontier_is_not_published_after_execution_passes_it() {
 }
 
 #[test]
+fn pending_guest_choice_at_start_stops_without_an_extra_quantum() {
+    let (input, node) = input_with_guest_selectable(StopCondition::NextChoice);
+    let configuration = starting_configuration(&input);
+    let mut owner = PendingSelectableLifecycle {
+        frontier: configuration,
+        outcomes: VecDeque::new(),
+        completed_coordinates: VecDeque::new(),
+        pending: VecDeque::new(),
+        active_pending: vec![pending_guest_request(node, None)],
+        reply_entries: VecDeque::new(),
+        replies: Vec::new(),
+        completed_quanta: 0,
+        drives: 0,
+    };
+
+    let pending = {
+        let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+        expect_observation(
+            QemuFreshModeledDriver::new()
+                .drive(
+                    &mut lifecycle,
+                    &input,
+                    &context(),
+                    QemuFreshStartMaterialization::genesis(),
+                )
+                .expect("choice already pending at continuation start"),
+        )
+    };
+
+    assert_eq!(owner.drives, 0);
+    assert!(owner.replies.is_empty());
+    assert_eq!(pending.discoveries.len(), 1);
+    assert!(matches!(
+        pending.stop,
+        ModeledStop::Reached(StopCondition::NextChoice)
+    ));
+}
+
+#[test]
+fn named_boundary_reached_with_checkpoint_request_returns_the_semantic_stop() {
+    let boundary = "checkpoint-coincident-boundary";
+    let input = input(StopCondition::NamedBoundary(String::from(boundary)));
+    let configuration = starting_configuration(&input);
+    let mut event_log = EventLog::new();
+    let event = event_log
+        .append_observable_events([ObservableEvent::guest_marker(
+            Icount { retired: 1 },
+            node("node-a"),
+            MarkerId::from_name(boundary),
+        )])
+        .expect("named-boundary event");
+    let mut owner = PendingSelectableLifecycle {
+        frontier: configuration.clone(),
+        outcomes: VecDeque::from([outcome(configuration, event.entries, event.offset, 1)]),
+        completed_coordinates: VecDeque::from([1]),
+        pending: VecDeque::new(),
+        active_pending: Vec::new(),
+        reply_entries: VecDeque::new(),
+        replies: Vec::new(),
+        completed_quanta: 0,
+        drives: 0,
+    };
+    let context = context();
+    context.checkpoint_request().request_for_test();
+
+    let pending = {
+        let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+        expect_observation(
+            QemuFreshModeledDriver::new()
+                .drive(
+                    &mut lifecycle,
+                    &input,
+                    &context,
+                    QemuFreshStartMaterialization::genesis(),
+                )
+                .expect("semantic stop must win over a coincident checkpoint"),
+        )
+    };
+
+    assert_eq!(owner.drives, 1);
+    assert!(matches!(
+        pending.stop,
+        ModeledStop::Reached(StopCondition::NamedBoundary(name)) if name == boundary
+    ));
+}
+
+#[test]
+fn pending_default_reply_at_start_reaches_event_count_without_an_extra_quantum() {
+    let (input, node) = input_with_guest_selectable(StopCondition::EventCount(1));
+    let configuration = starting_configuration(&input);
+    let mut event_log = EventLog::new();
+    let reply_event = event_log
+        .append_observable_events([ObservableEvent::guest_marker(
+            Icount { retired: 0 },
+            node.clone(),
+            MarkerId::from_name("selection-reply"),
+        )])
+        .expect("reply event");
+    let mut owner = PendingSelectableLifecycle {
+        frontier: configuration,
+        outcomes: VecDeque::new(),
+        completed_coordinates: VecDeque::new(),
+        pending: VecDeque::new(),
+        active_pending: vec![pending_guest_request(node, None)],
+        reply_entries: VecDeque::from([reply_event.entries]),
+        replies: Vec::new(),
+        completed_quanta: 0,
+        drives: 0,
+    };
+
+    let pending = {
+        let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+        expect_observation(
+            QemuFreshModeledDriver::new()
+                .drive(
+                    &mut lifecycle,
+                    &input,
+                    &context(),
+                    QemuFreshStartMaterialization::genesis(),
+                )
+                .expect("pending default reaches the event-count stop"),
+        )
+    };
+
+    assert_eq!(owner.drives, 0);
+    assert_eq!(owner.replies.len(), 1);
+    assert_eq!(pending.event_log.len(), 1);
+    assert!(matches!(
+        pending.stop,
+        ModeledStop::Reached(StopCondition::EventCount(1))
+    ));
+}
+
+#[test]
+fn checkpoint_replay_matches_the_pre_choice_pending_boundary() {
+    let (input, node) = input_with_guest_selectable(StopCondition::ExecutionQuanta(5));
+    let configuration = starting_configuration(&input);
+    let target = QemuSelectedResumeBoundary::new(
+        configuration.clone(),
+        QemuSavepointReplayProof::from_reached_boundary(
+            &configuration,
+            1,
+            VirtualTime { ticks: 1 },
+            &[],
+        )
+        .expect("target proof"),
+    );
+    let mut owner = PendingSelectableLifecycle {
+        frontier: configuration.clone(),
+        outcomes: VecDeque::from([outcome(
+            configuration,
+            Vec::new(),
+            EventLogOffset::default(),
+            1,
+        )]),
+        completed_coordinates: VecDeque::from([1]),
+        pending: VecDeque::from([vec![pending_guest_request(node, None)]]),
+        active_pending: Vec::new(),
+        reply_entries: VecDeque::new(),
+        replies: Vec::new(),
+        completed_quanta: 0,
+        drives: 0,
+    };
+
+    let pending = {
+        let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+        expect_observation(
+            replay_modeled_attempt_to_boundary(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+                &target,
+            )
+            .expect("replay must stop before applying the pending default"),
+        )
+    };
+
+    assert_eq!(owner.drives, 1);
+    assert!(owner.replies.is_empty());
+    assert_eq!(owner.active_pending.len(), 1);
+    assert!(matches!(pending.stop, ModeledStop::ReplayBoundary));
+}
+
+#[test]
 fn pending_guest_choice_stops_without_reply_and_retains_scenario_discovery() {
     let (input, node) = input_with_guest_selectable(StopCondition::NextChoice);
     let configuration = starting_configuration(&input);
@@ -1779,6 +2230,8 @@ fn pending_guest_choice_stops_without_reply_and_retains_scenario_discovery() {
         )]),
         completed_coordinates: VecDeque::from([0]),
         pending: VecDeque::from([vec![pending_guest_request(node, None)]]),
+        active_pending: Vec::new(),
+        reply_entries: VecDeque::new(),
         replies: Vec::new(),
         completed_quanta: 0,
         drives: 0,
@@ -1819,6 +2272,8 @@ fn pending_guest_choice_applies_and_replies_with_exact_default() {
         outcomes: VecDeque::from([outcome(configuration, event.entries, event.offset, 41)]),
         completed_coordinates: VecDeque::from([0]),
         pending: VecDeque::from([vec![pending_guest_request(node, None)]]),
+        active_pending: Vec::new(),
+        reply_entries: VecDeque::new(),
         replies: Vec::new(),
         completed_quanta: 0,
         drives: 0,
@@ -1878,6 +2333,8 @@ fn zero_progress_choice_discovery_does_not_consume_execution_quanta() {
         ]),
         completed_coordinates: VecDeque::from([0, 1]),
         pending: VecDeque::from([vec![pending_guest_request(node, None)], Vec::new()]),
+        active_pending: Vec::new(),
+        reply_entries: VecDeque::new(),
         replies: Vec::new(),
         completed_quanta: 0,
         drives: 0,

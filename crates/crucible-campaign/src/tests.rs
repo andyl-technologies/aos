@@ -217,7 +217,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     assert_eq!(
         rows.get("crucible.campaign.fact")
             .expect("missing campaign fact schema")[1],
-        "12"
+        "13"
     );
     let mut owned_campaign_schemas = CampaignRecordKind::ALL
         .into_iter()
@@ -272,9 +272,9 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             .unwrap_or_else(|| panic!("missing executor component schema {schema}"));
         let expected_version = match schema {
             "crucible.campaign.attempt-execution-scope" => "1",
-            "crucible.campaign.submit-attempt-request" => "4",
-            "crucible.campaign.resume-attempt-execution-request"
-            | "crucible.campaign.get-attempt-execution-request"
+            "crucible.campaign.submit-attempt-request" => "5",
+            "crucible.campaign.resume-attempt-execution-request" => "4",
+            "crucible.campaign.get-attempt-execution-request"
             | "crucible.campaign.cancel-attempt-execution-request"
             | "crucible.campaign.checkpoint-attempt-execution-request" => "3",
             _ => "4",

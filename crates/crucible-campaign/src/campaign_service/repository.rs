@@ -45,7 +45,10 @@ pub(super) fn repository_service_failure(
     error: &CampaignRepositoryError,
 ) -> CampaignServiceFailure {
     match error {
-        CampaignRepositoryError::Budget(_) => CampaignServiceFailure::ResourceExhausted,
+        CampaignRepositoryError::Budget(_)
+        | CampaignRepositoryError::SelectionResolutionBudgetExceeded { .. } => {
+            CampaignServiceFailure::ResourceExhausted
+        }
         CampaignRepositoryError::Store(error) => store_service_failure(error),
         CampaignRepositoryError::Codec(_) => CampaignServiceFailure::IntegrityFailure,
         CampaignRepositoryError::Merkle(crate::CampaignStoreError::Store(error)) => {
@@ -611,7 +614,9 @@ where
         let path = self.repository.load_branch_path(attempt.path())?;
         let (selection, proposal, proposal_proof, planner_step, planner_step_proof) =
             match attempt.start() {
-                crate::AttemptStart::Discover { .. } => (None, None, None, None, None),
+                crate::AttemptStart::Discover { .. } | crate::AttemptStart::AfterAttempt { .. } => {
+                    (None, None, None, None, None)
+                }
                 crate::AttemptStart::Branch { selection, .. } => {
                     let resolved = self.repository.resolve_selection(selection)?;
                     let crate::AttemptAdmissionRole::ExecutionBasis {

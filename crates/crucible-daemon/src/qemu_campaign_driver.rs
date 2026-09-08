@@ -33,16 +33,17 @@ use crucible_protocol::SelectionReply;
 use crucible_qemu::QemuNodeSelectablePendingRequest;
 use thiserror::Error;
 
+#[cfg(test)]
+use crate::CrucibleResolvedAttemptStart;
 use crate::guest_selectable::{
     GuestSelectableError, resolve_guest_selectable, selected_guest_reply,
 };
 use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure, CrucibleArtifactError,
-    CrucibleAttemptExecution, CrucibleMeasurementError, CrucibleResolvedAttemptStart,
-    PreparedSemanticAttemptResult, PreparedSemanticResultCodecError, QemuFreshAttemptDriver,
-    QemuFreshAttemptLifecycle, QemuFreshDriveOutcome, QemuFreshStartMaterialization,
-    encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
-    evaluate_crucible_measurement_publication,
+    CrucibleAttemptExecution, CrucibleMeasurementError, PreparedSemanticAttemptResult,
+    PreparedSemanticResultCodecError, QemuFreshAttemptDriver, QemuFreshAttemptLifecycle,
+    QemuFreshDriveOutcome, QemuFreshStartMaterialization, encode_crucible_configuration_artifact,
+    encode_crucible_scenario_artifact, evaluate_crucible_measurement_publication,
 };
 #[cfg(target_os = "linux")]
 use crate::{QemuHotForkAttemptDriver, QemuHotForkLiveExecution};
@@ -109,6 +110,9 @@ pub enum QemuFreshModeledDriverError {
         /// Stable name of the exceeded limit.
         limit: &'static str,
     },
+    /// Physical driving exhausted the execution-wide quantum reservation.
+    #[error("fresh campaign resource refusal: {0}")]
+    ResourceRefusal(#[source] crate::executor_worker::ExecutionQuantumBudgetError),
     /// A modeled stop was reported while network output remained uncommitted.
     #[error("fresh campaign stop retained {0} uncommitted network outputs")]
     PendingNetworkOutput(usize),
@@ -133,6 +137,15 @@ pub enum QemuFreshModeledDriverError {
     /// An internal savepoint-replay proof was absent, repeated, or poisoned.
     #[error("savepoint replay proof state is inconsistent")]
     SavepointReplayProof,
+    /// A selected continuation replay did not stop at its claimed boundary.
+    #[error("selected continuation origin replay did not match its claimed boundary")]
+    SelectedOriginBoundaryMismatch,
+    /// A later own checkpoint lies beyond the immutable attempt stop.
+    #[error("selected continuation checkpoint target lies beyond the attempt stop")]
+    SelectedResumeBeyondAttemptStop,
+    /// Replay passed or disagreed with a later own checkpoint boundary.
+    #[error("selected continuation checkpoint replay did not match its boundary")]
+    SelectedResumeBoundaryMismatch,
 }
 
 impl From<CrucibleArtifactError> for QemuFreshModeledDriverError {
@@ -199,6 +212,45 @@ pub struct QemuFreshPendingObservation {
     discoveries: BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
     terminal_quiescence: Option<SchedulerQuiescence>,
     terminal_at: VirtualTime,
+    attempt_event_count: usize,
+}
+
+impl QemuFreshPendingObservation {
+    /// Converts one nonterminal origin stop into the next replay start.
+    pub(crate) fn into_origin_materialization(
+        self,
+        completed_quanta: u64,
+    ) -> Result<(Configuration, QemuFreshStartMaterialization), QemuFreshModeledDriverError> {
+        if !matches!(self.stop, ModeledStop::Reached(_)) {
+            return Err(QemuFreshModeledDriverError::SelectedOriginBoundaryMismatch);
+        }
+        let materialization = QemuFreshStartMaterialization::from_origin_parts(
+            self.event_log,
+            self.event_log_bytes,
+            completed_quanta,
+            self.terminal_at,
+            self.terminal_quiescence,
+        );
+        Ok((self.configuration, materialization))
+    }
+
+    /// Converts an authenticated private checkpoint target into replay state.
+    pub(crate) fn into_checkpoint_replay_materialization(
+        self,
+        completed_quanta: u64,
+    ) -> Result<QemuFreshStartMaterialization, QemuFreshModeledDriverError> {
+        if !matches!(self.stop, ModeledStop::ReplayBoundary) {
+            return Err(QemuFreshModeledDriverError::SelectedResumeBoundaryMismatch);
+        }
+        Ok(QemuFreshStartMaterialization::from_origin_parts(
+            self.event_log,
+            self.event_log_bytes,
+            completed_quanta,
+            self.terminal_at,
+            self.terminal_quiescence,
+        )
+        .with_attempt_event_count(self.attempt_event_count))
+    }
 }
 
 /// Compact proof of the modeled boundary reached by an independent replay.
@@ -209,6 +261,7 @@ pub struct QemuSavepointReplayProof {
     frontier: VirtualTime,
     event_count: u64,
     event_digest: [u8; 32],
+    attempt_event_count: Option<u64>,
 }
 
 impl QemuSavepointReplayProof {
@@ -233,7 +286,33 @@ impl QemuSavepointReplayProof {
             frontier,
             event_count,
             event_digest: savepoint_event_prefix_digest(entries),
+            attempt_event_count: None,
         })
+    }
+
+    pub(crate) fn with_attempt_event_count(
+        mut self,
+        event_count: usize,
+    ) -> Result<Self, QemuFreshModeledDriverError> {
+        let event_count = u64::try_from(event_count)
+            .map_err(|_| QemuFreshModeledDriverError::SavepointReplayProof)?;
+        if event_count > self.event_count {
+            return Err(QemuFreshModeledDriverError::SavepointReplayProof);
+        }
+        self.attempt_event_count = Some(event_count);
+        Ok(self)
+    }
+
+    pub(crate) const fn attempt_event_count(self) -> Option<u64> {
+        self.attempt_event_count
+    }
+
+    pub(crate) fn same_boundary(self, other: Self) -> bool {
+        self.configuration == other.configuration
+            && self.completed_quanta == other.completed_quanta
+            && self.frontier == other.frontier
+            && self.event_count == other.event_count
+            && self.event_digest == other.event_digest
     }
 
     /// Returns whether one restored checkpoint has this exact modeled boundary.
@@ -252,7 +331,13 @@ impl QemuSavepointReplayProof {
         )
     }
 
-    fn matches_boundary(
+    /// Returns the cumulative scheduler work required to reconstruct the boundary.
+    #[must_use]
+    pub const fn completed_quanta(self) -> u64 {
+        self.completed_quanta
+    }
+
+    pub(crate) fn matches_boundary(
         self,
         configuration: &Configuration,
         completed_quanta: u64,
@@ -309,8 +394,82 @@ impl QemuSavepointReplayReceipt {
 #[derive(Debug)]
 enum ModeledStop {
     Reached(StopCondition),
+    ReplayBoundary,
     TerminalPassed,
     TerminalFailed(Vec<String>),
+}
+
+/// Authenticated private target used only to verify a later own checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuSelectedResumeBoundary {
+    configuration: Configuration,
+    proof: QemuSavepointReplayProof,
+}
+
+impl QemuSelectedResumeBoundary {
+    /// Binds the complete decoded configuration to its scheduler/evidence proof.
+    #[must_use]
+    pub const fn new(configuration: Configuration, proof: QemuSavepointReplayProof) -> Self {
+        Self {
+            configuration,
+            proof,
+        }
+    }
+
+    /// Returns the authenticated full configuration at the checkpoint boundary.
+    #[must_use]
+    pub const fn configuration(&self) -> &Configuration {
+        &self.configuration
+    }
+
+    /// Returns the compact scheduler and event-prefix proof for the boundary.
+    #[must_use]
+    pub const fn proof(&self) -> QemuSavepointReplayProof {
+        self.proof
+    }
+
+    fn matches(
+        &self,
+        configuration: &Configuration,
+        completed_quanta: u64,
+        frontier: VirtualTime,
+        entries: &[SchedulerEventLogEntry],
+    ) -> bool {
+        self.configuration == *configuration
+            && self
+                .proof
+                .matches_boundary(configuration, completed_quanta, frontier, 0, entries)
+    }
+
+    fn was_passed(&self, completed_quanta: u64, frontier: VirtualTime) -> bool {
+        completed_quanta > self.proof.completed_quanta || frontier > self.proof.frontier
+    }
+
+    fn matches_pre_choice_quantum(
+        &self,
+        configuration: &Configuration,
+        completed_quanta: u64,
+        frontier: VirtualTime,
+        prior_entries: &[SchedulerEventLogEntry],
+        quantum_entries: &[SchedulerEventLogEntry],
+    ) -> bool {
+        let Some(event_count) = prior_entries.len().checked_add(quantum_entries.len()) else {
+            return false;
+        };
+        let Ok(portable_event_count) = u64::try_from(event_count) else {
+            return false;
+        };
+        self.configuration == *configuration
+            && self.proof.configuration == configuration.id()
+            && self.proof.completed_quanta == completed_quanta
+            && self.proof.frontier == frontier
+            && self.proof.event_count == portable_event_count
+            && self.proof.event_digest
+                == savepoint_event_prefix_digest_iter(
+                    event_count,
+                    prior_entries.iter().chain(quantum_entries),
+                )
+    }
 }
 
 impl QemuFreshModeledDriver {
@@ -499,9 +658,16 @@ impl QemuFreshAttemptDriver for QemuSavepointReplayProbe {
 }
 
 fn savepoint_event_prefix_digest(entries: &[SchedulerEventLogEntry]) -> [u8; 32] {
+    savepoint_event_prefix_digest_iter(entries.len(), entries.iter())
+}
+
+fn savepoint_event_prefix_digest_iter<'a>(
+    count: usize,
+    entries: impl Iterator<Item = &'a SchedulerEventLogEntry>,
+) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"crucible.savepoint-replay-event-prefix.v1\0");
-    hasher.update(&(entries.len() as u64).to_be_bytes());
+    hasher.update(&(count as u64).to_be_bytes());
     for entry in entries {
         hasher.update(&entry.sequence().to_be_bytes());
         hasher.update(&entry.content_hash().bytes);
@@ -597,7 +763,8 @@ fn map_hot_modeled_failure(
     }
 }
 
-fn drive_modeled_attempt(
+/// Drives one already-materialized attempt through its declared modeled stop.
+pub(crate) fn drive_modeled_attempt(
     lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
     input: &CrucibleAttemptExecution,
     context: &AttemptExecutionContext,
@@ -606,11 +773,39 @@ fn drive_modeled_attempt(
     QemuFreshDriveOutcome<QemuFreshPendingObservation>,
     AttemptWorkerFailure<QemuFreshModeledDriverError>,
 > {
+    drive_modeled_attempt_inner(lifecycle, input, context, materialization, None)
+}
+
+/// Replays one attempt to a private authenticated checkpoint boundary.
+pub(crate) fn replay_modeled_attempt_to_boundary(
+    lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
+    input: &CrucibleAttemptExecution,
+    context: &AttemptExecutionContext,
+    materialization: QemuFreshStartMaterialization,
+    target: &QemuSelectedResumeBoundary,
+) -> Result<
+    QemuFreshDriveOutcome<QemuFreshPendingObservation>,
+    AttemptWorkerFailure<QemuFreshModeledDriverError>,
+> {
+    drive_modeled_attempt_inner(lifecycle, input, context, materialization, Some(target))
+}
+
+fn drive_modeled_attempt_inner(
+    lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
+    input: &CrucibleAttemptExecution,
+    context: &AttemptExecutionContext,
+    materialization: QemuFreshStartMaterialization,
+    replay_target: Option<&QemuSelectedResumeBoundary>,
+) -> Result<
+    QemuFreshDriveOutcome<QemuFreshPendingObservation>,
+    AttemptWorkerFailure<QemuFreshModeledDriverError>,
+> {
     let scenario = input.scenario().scenario_def();
-    let mut configuration = match input.start() {
-        CrucibleResolvedAttemptStart::Discover { configuration } => configuration.clone(),
-        CrucibleResolvedAttemptStart::Branch { selected, .. } => selected.clone(),
-    };
+    let mut observed_event_count = materialization.attempt_event_count();
+    let mut configuration = materialization
+        .restored_configuration()
+        .unwrap_or_else(|| input.start().configuration())
+        .clone();
     if configuration.def != scenario {
         return Err(AttemptWorkerFailure::Terminal(
             QemuFreshModeledDriverError::ScenarioMismatch,
@@ -652,13 +847,41 @@ fn drive_modeled_attempt(
                 discoveries: discoveries.discoveries,
                 terminal_quiescence,
                 terminal_at,
+                attempt_event_count: observed_event_count,
             },
         );
     }
-    if checkpoint_is_ready(lifecycle, context)? {
-        return Ok(QemuFreshDriveOutcome::CheckpointRequested);
+    if replay_target.is_some_and(|target| {
+        target.matches(&configuration, completed_quanta, terminal_at, &event_log)
+    }) {
+        require_settled_network(lifecycle)?;
+        return modeled_stop_outcome(
+            lifecycle,
+            context,
+            QemuFreshPendingObservation {
+                input: input.clone(),
+                configuration,
+                stop: ModeledStop::ReplayBoundary,
+                event_log,
+                event_log_bytes,
+                discoveries: discoveries.discoveries,
+                terminal_quiescence,
+                terminal_at,
+                attempt_event_count: observed_event_count,
+            },
+        );
     }
-    if initial_requested_stop_reached(input.attempt().stop(), terminal_at, completed_quanta) {
+    if initial_requested_stop_reached(
+        input.attempt().stop(),
+        terminal_at,
+        completed_quanta,
+        observed_event_count,
+    ) {
+        if replay_target.is_some() {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshModeledDriverError::SelectedResumeBeyondAttemptStop,
+            ));
+        }
         require_settled_network(lifecycle)?;
         return modeled_stop_outcome(
             lifecycle,
@@ -672,15 +895,105 @@ fn drive_modeled_attempt(
                 discoveries: discoveries.discoveries,
                 terminal_quiescence,
                 terminal_at,
+                attempt_event_count: observed_event_count,
+            },
+        );
+    }
+    if checkpoint_is_ready(lifecycle, context)? {
+        return Ok(QemuFreshDriveOutcome::CheckpointRequested);
+    }
+
+    let initial_choice_count = discoveries.discoveries.len();
+    let initial_reply_entries = resolve_pending_guest_choices_at_configuration(
+        lifecycle,
+        input,
+        &mut configuration,
+        &mut discoveries,
+    )?;
+    observed_event_count = observed_event_count
+        .checked_add(initial_reply_entries.len())
+        .ok_or(AttemptWorkerFailure::Terminal(
+            QemuFreshModeledDriverError::LimitExceeded {
+                limit: "fresh-campaign-event-log-entry-count",
+            },
+        ))?;
+    append_event_entries(&mut event_log, &mut event_log_bytes, initial_reply_entries)
+        .map_err(AttemptWorkerFailure::Terminal)?;
+    if replay_target.is_some_and(|target| {
+        target.matches(&configuration, completed_quanta, terminal_at, &event_log)
+    }) {
+        require_settled_network(lifecycle)?;
+        return modeled_stop_outcome(
+            lifecycle,
+            context,
+            QemuFreshPendingObservation {
+                input: input.clone(),
+                configuration,
+                stop: ModeledStop::ReplayBoundary,
+                event_log,
+                event_log_bytes,
+                discoveries: discoveries.discoveries,
+                terminal_quiescence,
+                terminal_at,
+                attempt_event_count: observed_event_count,
+            },
+        );
+    }
+    if input.attempt().stop() == &StopCondition::NextChoice
+        && discoveries.discoveries.len() > initial_choice_count
+    {
+        require_settled_network(lifecycle)?;
+        return modeled_stop_outcome(
+            lifecycle,
+            context,
+            QemuFreshPendingObservation {
+                input: input.clone(),
+                configuration,
+                stop: ModeledStop::Reached(StopCondition::NextChoice),
+                event_log,
+                event_log_bytes,
+                discoveries: discoveries.discoveries,
+                terminal_quiescence,
+                terminal_at,
+                attempt_event_count: observed_event_count,
+            },
+        );
+    }
+    if matches!(
+        input.attempt().stop(),
+        StopCondition::EventCount(count)
+            if u64::try_from(observed_event_count).is_ok_and(|events| events >= *count)
+    ) {
+        if replay_target.is_some() {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshModeledDriverError::SelectedResumeBeyondAttemptStop,
+            ));
+        }
+        require_settled_network(lifecycle)?;
+        return modeled_stop_outcome(
+            lifecycle,
+            context,
+            QemuFreshPendingObservation {
+                input: input.clone(),
+                configuration,
+                stop: ModeledStop::Reached(input.attempt().stop().clone()),
+                event_log,
+                event_log_bytes,
+                discoveries: discoveries.discoveries,
+                terminal_quiescence,
+                terminal_at,
+                attempt_event_count: observed_event_count,
             },
         );
     }
 
-    let mut observed_event_count = 0usize;
     loop {
         if check_operational_signals(lifecycle, context)? {
             return Ok(QemuFreshDriveOutcome::CheckpointRequested);
         }
+        context.charge_execution_quantum().map_err(|error| {
+            AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::ResourceRefusal(error))
+        })?;
         let mut outcome = lifecycle
             .drive_quantum(QuantumRequest {
                 configuration: configuration.clone(),
@@ -711,8 +1024,49 @@ fn drive_modeled_attempt(
             }
             None => None,
         };
-        if terminal_stop.is_none() && checkpoint_is_ready(lifecycle, context)? {
-            return Ok(QemuFreshDriveOutcome::CheckpointRequested);
+        if terminal_stop.is_none()
+            && replay_target.is_some_and(|target| {
+                target.matches_pre_choice_quantum(
+                    &outcome.configuration,
+                    completed_quanta,
+                    terminal_at.max(outcome.frontier),
+                    &event_log,
+                    &outcome.event_log_entries,
+                )
+            })
+        {
+            let attempt_event_count = observed_event_count
+                .checked_add(outcome.event_log_entries.len())
+                .ok_or(AttemptWorkerFailure::Terminal(
+                    QemuFreshModeledDriverError::LimitExceeded {
+                        limit: "fresh-campaign-event-log-entry-count",
+                    },
+                ))?;
+            configuration = append_quantum(
+                &mut event_log,
+                &mut event_log_bytes,
+                &mut discoveries,
+                &mut terminal_quiescence,
+                &mut terminal_at,
+                false,
+                outcome,
+            )?;
+            require_settled_network(lifecycle)?;
+            return modeled_stop_outcome(
+                lifecycle,
+                context,
+                QemuFreshPendingObservation {
+                    input: input.clone(),
+                    configuration,
+                    stop: ModeledStop::ReplayBoundary,
+                    event_log,
+                    event_log_bytes,
+                    discoveries: discoveries.discoveries,
+                    terminal_quiescence,
+                    terminal_at,
+                    attempt_event_count,
+                },
+            );
         }
         if terminal_stop.is_none() {
             resolve_pending_guest_choices(lifecycle, input, &mut outcome, &mut discoveries)?;
@@ -746,7 +1100,40 @@ fn drive_modeled_attempt(
             retain_signal_fault_discoveries,
             outcome,
         )?;
+        if let Some(target) = replay_target {
+            if target.matches(&configuration, completed_quanta, terminal_at, &event_log) {
+                require_settled_network(lifecycle)?;
+                return modeled_stop_outcome(
+                    lifecycle,
+                    context,
+                    QemuFreshPendingObservation {
+                        input: input.clone(),
+                        configuration,
+                        stop: ModeledStop::ReplayBoundary,
+                        event_log,
+                        event_log_bytes,
+                        discoveries: discoveries.discoveries,
+                        terminal_quiescence,
+                        terminal_at,
+                        attempt_event_count: observed_event_count,
+                    },
+                );
+            }
+            if stop.is_some() {
+                return Err(AttemptWorkerFailure::Terminal(
+                    QemuFreshModeledDriverError::SelectedResumeBeyondAttemptStop,
+                ));
+            }
+            if target.was_passed(completed_quanta, terminal_at) {
+                return Err(AttemptWorkerFailure::Terminal(
+                    QemuFreshModeledDriverError::SelectedResumeBoundaryMismatch,
+                ));
+            }
+        }
         let Some(stop) = stop else {
+            if checkpoint_is_ready(lifecycle, context)? {
+                return Ok(QemuFreshDriveOutcome::CheckpointRequested);
+            }
             continue;
         };
 
@@ -763,6 +1150,7 @@ fn drive_modeled_attempt(
                 discoveries: discoveries.discoveries,
                 terminal_quiescence,
                 terminal_at,
+                attempt_event_count: observed_event_count,
             },
         );
     }
@@ -810,6 +1198,22 @@ fn resolve_pending_guest_choices(
     outcome: &mut QuantumOutcome,
     discoveries: &mut RetainedChoiceDiscoveries,
 ) -> Result<(), AttemptWorkerFailure<QemuFreshModeledDriverError>> {
+    let entries = resolve_pending_guest_choices_at_configuration(
+        lifecycle,
+        input,
+        &mut outcome.configuration,
+        discoveries,
+    )?;
+    outcome.event_log_entries.extend(entries);
+    Ok(())
+}
+
+fn resolve_pending_guest_choices_at_configuration(
+    lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
+    input: &CrucibleAttemptExecution,
+    configuration: &mut Configuration,
+    discoveries: &mut RetainedChoiceDiscoveries,
+) -> Result<Vec<SchedulerEventLogEntry>, AttemptWorkerFailure<QemuFreshModeledDriverError>> {
     let pending = lifecycle
         .drain_pending_selectable_requests()
         .map_err(classify_scheduler_error)?;
@@ -849,16 +1253,17 @@ fn resolve_pending_guest_choices(
             continuations.push((pending, reply, SelectionDecision::new(&selection)));
         }
     }
+    let mut entries = Vec::new();
     for (pending, reply, decision) in continuations {
-        let parent = outcome.configuration.clone();
+        let parent = configuration.clone();
         let selected = step(&parent, Decision::Selection(decision.clone()));
-        let entries = lifecycle
+        let reply_entries = lifecycle
             .apply_selectable_reply(&parent, decision, &selected, &pending, &reply)
             .map_err(classify_scheduler_error)?;
-        outcome.configuration = selected;
-        outcome.event_log_entries.extend(entries);
+        *configuration = selected;
+        entries.extend(reply_entries);
     }
-    Ok(())
+    Ok(entries)
 }
 
 fn require_settled_network(
@@ -1121,6 +1526,7 @@ fn initial_requested_stop_reached(
     requested: &StopCondition,
     frontier: VirtualTime,
     completed_quanta: u64,
+    observed_event_count: usize,
 ) -> bool {
     match requested {
         StopCondition::VirtualTimeNanoseconds(deadline) => frontier.ticks >= *deadline,
@@ -1129,10 +1535,12 @@ fn initial_requested_stop_reached(
             virtual_time_nanoseconds,
             execution_quanta,
         } => frontier.ticks >= *virtual_time_nanoseconds || completed_quanta >= *execution_quanta,
-        StopCondition::NextChoice
-        | StopCondition::NamedBoundary(_)
-        | StopCondition::EventCount(_)
-        | StopCondition::Terminal => false,
+        StopCondition::EventCount(count) => {
+            u64::try_from(observed_event_count).is_ok_and(|observed| observed >= *count)
+        }
+        StopCondition::NextChoice | StopCondition::NamedBoundary(_) | StopCondition::Terminal => {
+            false
+        }
     }
 }
 
@@ -1177,7 +1585,7 @@ fn build_observation_candidate(
     )?;
     let measurement_publication = campaign_measurements(&pending, child.configuration())?;
     let (measurement_evidence, _, measurements) = measurement_publication.into_parts();
-    let stop = stop_outcome(pending.stop, &report);
+    let stop = stop_outcome(pending.stop, &report)?;
     let coverage = coverage_projection(&pending.event_log)?;
     let discovered_choices = pending.discoveries.into_values().collect::<Vec<_>>();
     let discovered_ids = discovered_choices
@@ -1301,15 +1709,23 @@ fn property_verdicts(
     PropertyVerdictSet::new(properties).map_err(Into::into)
 }
 
-fn stop_outcome(stop: ModeledStop, report: &crucible::HostAssertionReport) -> StopOutcome {
+fn stop_outcome(
+    stop: ModeledStop,
+    report: &crucible::HostAssertionReport,
+) -> Result<StopOutcome, QemuFreshModeledDriverError> {
     if let Some(failure) = report.verdict().failures().first() {
-        return StopOutcome::AssertionFailure(failure.assertion.name.clone());
+        return Ok(StopOutcome::AssertionFailure(
+            failure.assertion.name.clone(),
+        ));
     }
-    match stop {
+    Ok(match stop {
         ModeledStop::Reached(stop) => StopOutcome::Reached(stop),
         ModeledStop::TerminalPassed => StopOutcome::TerminalSuccess,
         ModeledStop::TerminalFailed(reasons) => StopOutcome::ScenarioFailure(reasons),
-    }
+        ModeledStop::ReplayBoundary => {
+            return Err(QemuFreshModeledDriverError::SelectedResumeBoundaryMismatch);
+        }
+    })
 }
 
 fn modeled_terminal_stop(

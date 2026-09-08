@@ -2,16 +2,17 @@
 
 use super::*;
 use crate::{
-    CampaignCommandId, CampaignExecutorCancelOutcome, CampaignExecutorCheckpointOutcome,
-    CampaignExecutorDriver, CampaignExecutorStepOutcome, CancelAttemptExecutionDisposition,
-    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
-    CheckpointAttemptExecutionDisposition, CheckpointAttemptExecutionRequest,
-    CheckpointAttemptExecutionResponse, DaemonEpoch, ExactCheckpointId, ExecutionId,
-    ExecutionRetentionIntent, ExecutorClient, ExecutorCompatibilityProfile, ExecutorControlService,
-    ExecutorResumeService, ExecutorService, ExecutorStatusService, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse, ResumeAttemptExecutionDisposition,
-    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, SubmitAttemptDisposition,
-    SubmitAttemptRequest, SubmitAttemptResponse, WorkerSlotId,
+    BranchEdgeId, BranchPathSegment, BranchPointId, CampaignCommandId,
+    CampaignExecutorCancelOutcome, CampaignExecutorCheckpointOutcome, CampaignExecutorDriver,
+    CampaignExecutorStepOutcome, CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
+    CancelAttemptExecutionResponse, CheckpointAttemptExecutionDisposition,
+    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, DaemonEpoch,
+    ExactCheckpointId, ExecutionId, ExecutionRetentionIntent, ExecutorClient,
+    ExecutorCompatibilityProfile, ExecutorControlService, ExecutorResumeService, ExecutorService,
+    ExecutorStatusService, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
+    GetAttemptExecutionResponse, ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
+    ResumeAttemptExecutionResponse, SubmitAttemptDisposition, SubmitAttemptRequest,
+    SubmitAttemptResponse, WorkerSlotId,
 };
 use crucible_cas::content_store::{BackendCapabilities, ByteRange, PutReceipt};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -20,6 +21,37 @@ struct CaptureReadCountingBackend {
     inner: Arc<dyn ImmutableBlobBackend>,
     reads: AtomicUsize,
     writes: AtomicUsize,
+}
+
+struct AttemptReadCountingBackend {
+    inner: Arc<dyn ImmutableBlobBackend>,
+    attempts: BTreeSet<ContentId>,
+    reads: AtomicUsize,
+}
+
+impl ImmutableBlobBackend for AttemptReadCountingBackend {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+        self.inner.contains(id)
+    }
+
+    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        if self.attempts.contains(&id) {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+        }
+        self.inner.read(id, range)
+    }
+
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        self.inner.put_if_absent(id, source)
+    }
 }
 
 impl ImmutableBlobBackend for CaptureReadCountingBackend {
@@ -76,9 +108,11 @@ impl ExecutorService for FairCaptureExecutor {
     ) -> Result<SubmitAttemptResponse, Self::Error> {
         self.requests.push(request.clone());
         let disposition = match request.start_mode() {
-            AttemptStartMode::Execute => SubmitAttemptDisposition::Accepted {
-                execution: self.ordinary_execution,
-            },
+            AttemptStartMode::Execute | AttemptStartMode::SelectedSavepoint { .. } => {
+                SubmitAttemptDisposition::Accepted {
+                    execution: self.ordinary_execution,
+                }
+            }
             AttemptStartMode::SavepointCapture {
                 request: capture, ..
             } if capture == self.unavailable_capture => SubmitAttemptDisposition::Rejected {
@@ -735,6 +769,528 @@ fn ordinary_attempt_and_scoped_capture_coexist_and_resolution_survives_restart()
         .expect("historical discard command replay after restart");
     assert_eq!(discard_replay.new_snapshot, discarded.new_snapshot);
     assert!(discard_replay.replayed);
+}
+
+#[test]
+fn selected_continuation_identity_deduplicates_distinct_capture_causes() {
+    const CAMPAIGN: &str = "savepoint-continuation-dedup";
+
+    let (repository, lineage, policy) = fixture();
+    let head = running_campaign(&repository, &lineage, &policy, CAMPAIGN, 1);
+    let first_request = capture_request(
+        &repository,
+        "first-continuation-capture",
+        &head,
+        &lineage,
+        StopCondition::ExecutionQuanta(100),
+    );
+    let first_capture = repository
+        .request_savepoint_capture(CAMPAIGN, &first_request)
+        .expect("first capture request");
+    let first_assignment = scoped_assignment(&lineage, &first_capture, [0x31; 16], [0x32; 16]);
+    let first_execution = ExecutionId::from_bytes([0x33; 16]).expect("first execution");
+    let first_query = GetAttemptExecutionRequest::new(&first_assignment, first_execution)
+        .expect("first status query");
+    let first_status = GetAttemptExecutionResponse::new(
+        &first_query,
+        GetAttemptExecutionDisposition::Paused {
+            checkpoint: exact_checkpoint("first-continuation-checkpoint"),
+        },
+    )
+    .expect("first paused status");
+    let first_ready = SavepointCaptureResolution {
+        command: CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"first-continuation-ready",
+        )),
+        expected_snapshot: first_capture.new_snapshot,
+        request: first_capture.request,
+        outcome: SavepointCaptureOutcome::Ready,
+    };
+    let first_ready_result = repository
+        .resolve_savepoint_capture(CAMPAIGN, &first_ready, &first_assignment, &first_status)
+        .expect("first ready resolution");
+    let origin = repository
+        .load_attempt(first_capture.attempt)
+        .expect("capture origin");
+    let continuation = Attempt::new(
+        AttemptStart::AfterAttempt {
+            origin: first_capture.attempt,
+            reached: lineage.genesis_content(),
+        },
+        origin.path(),
+        StopCondition::ExecutionQuanta(200),
+    )
+    .expect("semantic continuation");
+    assert_eq!(&continuation.canonical_bytes()[..4], &3_u32.to_be_bytes());
+
+    let first_selection = SavepointContinuationSelection {
+        command: CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"first-continuation-selection",
+        )),
+        expected_snapshot: first_ready_result.new_snapshot,
+        request: first_capture.request,
+        ready: CampaignFact::SavepointCaptureResolved(first_ready.clone())
+            .id()
+            .expect("first Ready fact ID"),
+        continuation: continuation.id().expect("continuation ID"),
+    };
+    let selection_fact = CampaignFact::SavepointContinuationSelected(first_selection.clone());
+    assert_eq!(
+        &selection_fact.canonical_bytes()[..4],
+        &13_u32.to_be_bytes()
+    );
+    assert_eq!(
+        CampaignFact::from_canonical_bytes(&selection_fact.canonical_bytes())
+            .expect("decode v13 selection"),
+        selection_fact
+    );
+
+    let wrong_ready = SavepointContinuationSelection {
+        command: CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"continuation-selection-wrong-ready",
+        )),
+        ready: first_capture.request,
+        ..first_selection.clone()
+    };
+    assert!(matches!(
+        repository.select_savepoint_continuation(CAMPAIGN, &wrong_ready, &continuation),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "savepoint-continuation-ready-is-not-current"
+        })
+    ));
+
+    let wrong_path = BranchPath::new(vec![BranchPathSegment::new(
+        BranchPointId::from_hash(CampaignHash::derive("test", b"wrong-path-point")),
+        BranchEdgeId::from_hash(CampaignHash::derive("test", b"wrong-path-edge")),
+    )])
+    .expect("wrong continuation path");
+    repository
+        .put_branch_path(&wrong_path)
+        .expect("publish wrong continuation path");
+    let wrong_path_continuation = Attempt::new(
+        continuation.start(),
+        wrong_path.id().expect("wrong path ID"),
+        continuation.stop().clone(),
+    )
+    .expect("wrong-path continuation");
+    let wrong_path_selection = SavepointContinuationSelection {
+        command: CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"continuation-selection-wrong-path",
+        )),
+        continuation: wrong_path_continuation.id().expect("wrong continuation ID"),
+        ..first_selection.clone()
+    };
+    assert!(matches!(
+        repository.select_savepoint_continuation(
+            CAMPAIGN,
+            &wrong_path_selection,
+            &wrong_path_continuation,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "savepoint-continuation-path-mismatch"
+        })
+    ));
+
+    let first = repository
+        .select_savepoint_continuation(CAMPAIGN, &first_selection, &continuation)
+        .expect("select first capture");
+    assert_eq!(first.selection, first.source);
+    assert_eq!(
+        repository
+            .budget_projection(CAMPAIGN)
+            .expect("first selection budget")
+            .spent_attempts,
+        1
+    );
+
+    let command_collision = SavepointContinuationSelection {
+        ready: first_capture.request,
+        ..first_selection.clone()
+    };
+    assert!(matches!(
+        repository.select_savepoint_continuation(CAMPAIGN, &command_collision, &continuation),
+        Err(CampaignRepositoryError::CommandReuse)
+    ));
+
+    let second_head = repository.head(CAMPAIGN).expect("second capture head");
+    let second_request = capture_request(
+        &repository,
+        "second-continuation-capture",
+        &second_head,
+        &lineage,
+        StopCondition::ExecutionQuanta(100),
+    );
+    assert_eq!(second_request.attempt, first_request.attempt);
+    let second_capture = repository
+        .request_savepoint_capture(CAMPAIGN, &second_request)
+        .expect("second capture request");
+    let second_assignment = scoped_assignment(&lineage, &second_capture, [0x34; 16], [0x35; 16]);
+    let second_execution = ExecutionId::from_bytes([0x36; 16]).expect("second execution");
+    let second_query = GetAttemptExecutionRequest::new(&second_assignment, second_execution)
+        .expect("second status query");
+    let second_status = GetAttemptExecutionResponse::new(
+        &second_query,
+        GetAttemptExecutionDisposition::Paused {
+            checkpoint: exact_checkpoint("second-continuation-checkpoint"),
+        },
+    )
+    .expect("second paused status");
+    let second_ready = SavepointCaptureResolution {
+        command: CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"second-continuation-ready",
+        )),
+        expected_snapshot: second_capture.new_snapshot,
+        request: second_capture.request,
+        outcome: SavepointCaptureOutcome::Ready,
+    };
+    let second_ready_result = repository
+        .resolve_savepoint_capture(CAMPAIGN, &second_ready, &second_assignment, &second_status)
+        .expect("second ready resolution");
+    let second_selection = SavepointContinuationSelection {
+        command: CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"second-continuation-selection",
+        )),
+        expected_snapshot: second_ready_result.new_snapshot,
+        request: second_capture.request,
+        ready: CampaignFact::SavepointCaptureResolved(second_ready)
+            .id()
+            .expect("second Ready fact ID"),
+        continuation: continuation.id().expect("continuation ID"),
+    };
+    let second = repository
+        .select_savepoint_continuation(CAMPAIGN, &second_selection, &continuation)
+        .expect("select duplicate semantic continuation");
+    assert_eq!(second.continuation, first.continuation);
+    assert_eq!(second.admission, first.admission);
+    assert_ne!(second.selection, first.selection);
+    assert_eq!(second.source, first.source);
+    assert_eq!(
+        repository
+            .budget_projection(CAMPAIGN)
+            .expect("deduplicated selection budget")
+            .spent_attempts,
+        1
+    );
+
+    let replay = repository
+        .select_savepoint_continuation(CAMPAIGN, &first_selection, &continuation)
+        .expect("exact first command replay");
+    assert_eq!(replay.new_snapshot, first.new_snapshot);
+    assert!(replay.replayed);
+
+    let discard = SavepointCaptureResolution {
+        command: CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"discard-first-selected-source",
+        )),
+        expected_snapshot: second.new_snapshot,
+        request: first_capture.request,
+        outcome: SavepointCaptureOutcome::Discarded,
+    };
+    let discarded = repository
+        .install_historical_savepoint_capture_resolution(
+            CAMPAIGN,
+            &discard,
+            &first_assignment,
+            &first_status,
+        )
+        .expect("historical selected-source discard");
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let selected = restarted
+        .savepoint_continuation_source_at(discarded.new_snapshot, second.continuation)
+        .expect("cold selected source")
+        .expect("selected source exists");
+    assert_eq!(selected.selection(), first.selection);
+    assert_eq!(selected.provenance(), &first_selection);
+}
+
+#[test]
+fn continuation_origin_loading_rejects_overdeep_chains_iteratively() {
+    const ORIGIN_LIMIT: usize = 4096;
+
+    let (repository, lineage, _policy) = fixture();
+    let path = BranchPath::new(Vec::new()).expect("empty path");
+    repository
+        .put_branch_path(&path)
+        .expect("publish empty path");
+    let mut origin = Attempt::new(
+        AttemptStart::Discover {
+            configuration: lineage.genesis_content(),
+        },
+        path.id().expect("path ID"),
+        StopCondition::ExecutionQuanta(1),
+    )
+    .expect("base attempt");
+    repository.put_attempt(&origin).expect("publish base");
+
+    for quantum in 2..=ORIGIN_LIMIT + 1 {
+        origin = Attempt::new(
+            AttemptStart::AfterAttempt {
+                origin: origin.id().expect("origin ID"),
+                reached: lineage.genesis_content(),
+            },
+            path.id().expect("path ID"),
+            StopCondition::ExecutionQuanta(quantum as u64),
+        )
+        .expect("continuation attempt");
+        repository
+            .put_attempt(&origin)
+            .expect("publish continuation");
+    }
+
+    assert!(matches!(
+        repository.load_attempt(origin.id().expect("deep origin ID")),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "attempt-continuation-origin-depth-exceeded"
+        })
+    ));
+}
+
+#[test]
+fn continuation_origin_loading_rejects_an_overdeep_prefix_joined_to_a_cached_suffix() {
+    const ORIGIN_LIMIT: usize = 4096;
+
+    let (repository, lineage, _policy) = fixture();
+    let path = BranchPath::new(Vec::new()).expect("empty path");
+    repository
+        .put_branch_path(&path)
+        .expect("publish empty path");
+    let mut suffix = Attempt::new(
+        AttemptStart::Discover {
+            configuration: lineage.genesis_content(),
+        },
+        path.id().expect("path ID"),
+        StopCondition::ExecutionQuanta(1),
+    )
+    .expect("base attempt");
+    repository.put_attempt(&suffix).expect("publish base");
+
+    for quantum in 2..=ORIGIN_LIMIT {
+        suffix = Attempt::new(
+            AttemptStart::AfterAttempt {
+                origin: suffix.id().expect("origin ID"),
+                reached: lineage.genesis_content(),
+            },
+            path.id().expect("path ID"),
+            StopCondition::ExecutionQuanta(quantum as u64),
+        )
+        .expect("continuation attempt");
+        repository
+            .put_attempt(&suffix)
+            .expect("publish continuation");
+    }
+
+    let mut cache = ChoiceValidationCache::default();
+    repository
+        .read_attempt_cached(suffix.id().expect("suffix ID").content_id(), &mut cache)
+        .expect("validate maximum-depth suffix");
+
+    let overdeep = Attempt::new(
+        AttemptStart::AfterAttempt {
+            origin: suffix.id().expect("suffix ID"),
+            reached: lineage.genesis_content(),
+        },
+        path.id().expect("path ID"),
+        StopCondition::ExecutionQuanta((ORIGIN_LIMIT + 1) as u64),
+    )
+    .expect("overdeep continuation attempt");
+    repository
+        .put_attempt(&overdeep)
+        .expect("publish overdeep continuation");
+
+    assert!(matches!(
+        repository
+            .read_attempt_cached(overdeep.id().expect("overdeep ID").content_id(), &mut cache,),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "attempt-continuation-origin-depth-exceeded"
+        })
+    ));
+}
+
+#[test]
+fn continuation_closure_authenticates_a_valid_origin_chain_with_linear_reads() {
+    const ORIGIN_RECORDS: usize = 512;
+
+    let (repository, lineage, _policy) = fixture();
+    let path = BranchPath::new(Vec::new()).expect("empty path");
+    repository
+        .put_branch_path(&path)
+        .expect("publish empty path");
+    let mut attempt = Attempt::new(
+        AttemptStart::Discover {
+            configuration: lineage.genesis_content(),
+        },
+        path.id().expect("path ID"),
+        StopCondition::ExecutionQuanta(1),
+    )
+    .expect("base attempt");
+    repository.put_attempt(&attempt).expect("publish base");
+
+    for quantum in 2..=ORIGIN_RECORDS {
+        attempt = Attempt::new(
+            AttemptStart::AfterAttempt {
+                origin: attempt.id().expect("origin ID"),
+                reached: lineage.genesis_content(),
+            },
+            path.id().expect("path ID"),
+            StopCondition::ExecutionQuanta(quantum as u64),
+        )
+        .expect("continuation attempt");
+        repository
+            .put_attempt(&attempt)
+            .expect("publish continuation");
+    }
+
+    let reads = Arc::new(CaptureReadCountingBackend {
+        inner: Arc::clone(&repository.blobs),
+        reads: AtomicUsize::new(0),
+        writes: AtomicUsize::new(0),
+    });
+    let cold = CampaignRepository::new(reads.clone(), Arc::clone(&repository.refs));
+    let root = attempt.id().expect("continuation root").content_id();
+
+    let closure = cold
+        .authenticated_closure_ids([root])
+        .expect("authenticate continuation closure");
+    assert!(closure.contains(&root));
+
+    let read_count = reads.reads.load(Ordering::SeqCst);
+    let linear_read_bound = ORIGIN_RECORDS * 8 + 64;
+    assert!(
+        read_count <= linear_read_bound,
+        "valid {ORIGIN_RECORDS}-record chain used {read_count} reads; bound {linear_read_bound}"
+    );
+}
+
+#[test]
+fn cold_selected_continuation_history_authenticates_each_attempt_a_constant_number_of_times() {
+    const CONTINUATIONS: usize = 48;
+    const CAMPAIGN: &str = "savepoint-continuation-history-scale";
+
+    let (repository, lineage, policy) = fixture();
+    running_campaign(
+        &repository,
+        &lineage,
+        &policy,
+        CAMPAIGN,
+        CONTINUATIONS as u64,
+    );
+    let path = BranchPath::new(Vec::new()).expect("empty path");
+    repository
+        .put_branch_path(&path)
+        .expect("publish empty path");
+    let mut attempt = Attempt::new(
+        AttemptStart::Discover {
+            configuration: lineage.genesis_content(),
+        },
+        path.id().expect("path ID"),
+        StopCondition::ExecutionQuanta(1),
+    )
+    .expect("base attempt");
+    repository.put_attempt(&attempt).expect("publish base");
+    let mut attempt_contents =
+        BTreeSet::from([attempt.id().expect("base attempt ID").content_id()]);
+
+    for ordinal in 0..CONTINUATIONS {
+        let head = repository.head(CAMPAIGN).expect("continuation head");
+        let request = SavepointCaptureRequest::new(
+            CampaignCommandId::from_hash(CampaignHash::derive(
+                "test",
+                format!("history-capture-{ordinal}").as_bytes(),
+            )),
+            head.snapshot_id(),
+            attempt.id().expect("origin attempt ID"),
+            lineage.genesis_content(),
+            lineage.genesis(),
+            attempt.stop().clone(),
+            "selected continuation history scale",
+        )
+        .expect("capture request");
+        let capture = repository
+            .request_savepoint_capture(CAMPAIGN, &request)
+            .expect("accept capture");
+        let identity = u8::try_from(ordinal + 1).expect("bounded identity");
+        let assignment = scoped_assignment(
+            &lineage,
+            &capture,
+            [identity; 16],
+            [identity.wrapping_add(1); 16],
+        );
+        let execution =
+            ExecutionId::from_bytes([identity.wrapping_add(2); 16]).expect("execution ID");
+        let query = GetAttemptExecutionRequest::new(&assignment, execution).expect("status query");
+        let status = GetAttemptExecutionResponse::new(
+            &query,
+            GetAttemptExecutionDisposition::Paused {
+                checkpoint: exact_checkpoint(&format!("history-checkpoint-{ordinal}")),
+            },
+        )
+        .expect("paused status");
+        let ready = SavepointCaptureResolution {
+            command: CampaignCommandId::from_hash(CampaignHash::derive(
+                "test",
+                format!("history-ready-{ordinal}").as_bytes(),
+            )),
+            expected_snapshot: capture.new_snapshot,
+            request: capture.request,
+            outcome: SavepointCaptureOutcome::Ready,
+        };
+        let ready_result = repository
+            .resolve_savepoint_capture(CAMPAIGN, &ready, &assignment, &status)
+            .expect("resolve capture");
+
+        let continuation = Attempt::new(
+            AttemptStart::AfterAttempt {
+                origin: attempt.id().expect("origin attempt ID"),
+                reached: lineage.genesis_content(),
+            },
+            path.id().expect("path ID"),
+            StopCondition::ExecutionQuanta((ordinal + 2) as u64),
+        )
+        .expect("continuation attempt");
+        let continuation_id = continuation.id().expect("continuation ID");
+        let selection = SavepointContinuationSelection {
+            command: CampaignCommandId::from_hash(CampaignHash::derive(
+                "test",
+                format!("history-selection-{ordinal}").as_bytes(),
+            )),
+            expected_snapshot: ready_result.new_snapshot,
+            request: capture.request,
+            ready: CampaignFact::SavepointCaptureResolved(ready)
+                .id()
+                .expect("Ready fact ID"),
+            continuation: continuation_id,
+        };
+        repository
+            .select_savepoint_continuation(CAMPAIGN, &selection, &continuation)
+            .expect("select continuation");
+        attempt_contents.insert(continuation_id.content_id());
+        attempt = continuation;
+    }
+
+    let reads = Arc::new(AttemptReadCountingBackend {
+        inner: Arc::clone(&repository.blobs),
+        attempts: attempt_contents,
+        reads: AtomicUsize::new(0),
+    });
+    let cold = CampaignRepository::new(reads.clone(), Arc::clone(&repository.refs));
+    cold.head(CAMPAIGN)
+        .expect("cold selected-continuation history");
+
+    let read_count = reads.reads.load(Ordering::SeqCst);
+    let attempt_count = CONTINUATIONS + 1;
+    let constant_read_bound = attempt_count * 12 + 32;
+    assert!(
+        read_count <= constant_read_bound,
+        "cold history used {read_count} attempt reads for {attempt_count} attempts; bound {constant_read_bound}"
+    );
 }
 
 #[test]

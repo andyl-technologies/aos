@@ -1043,7 +1043,7 @@ where
         &ProductionVmLifecycleConfig,
         AttemptResourceLimits,
     ) -> Result<PackagedQemuInitialRunnerBuild<R>, PackagedQemuExecutorError>,
-    R: crate::CrucibleExecutionRunner + Send + 'static,
+    R: crate::QemuSelectedOriginVerifier + Send + 'static,
     R::Error: std::error::Error + 'static,
 {
     let campaigns = config.campaigns.clone();
@@ -1400,6 +1400,15 @@ impl AttemptAdmissionValidator for PackagedAttemptAdmission {
             .validate_executor_execution_scope_with_profile(request, &self.profile)
             .map_err(|error| error.executor_rejection())?;
         self.validate_scenario(request)
+    }
+
+    fn selected_savepoint_source_attempt(
+        &self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<Option<crucible_campaign::AttemptId>, ExecutorRejection> {
+        self.repository
+            .executor_selected_savepoint_source_attempt(request)
+            .map_err(|error| error.executor_rejection())
     }
 
     fn validate_completion(

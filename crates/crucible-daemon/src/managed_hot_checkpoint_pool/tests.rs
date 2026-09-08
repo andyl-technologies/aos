@@ -676,10 +676,7 @@ fn key(byte: u8) -> QemuHotForkTemplateKey {
 fn template_key(input: &CrucibleAttemptExecution) -> QemuHotForkTemplateKey {
     QemuHotForkTemplateKey::new(
         execution_basis(input).key().lineage(),
-        match input.start() {
-            crate::CrucibleResolvedAttemptStart::Discover { configuration } => configuration.id(),
-            crate::CrucibleResolvedAttemptStart::Branch { parent, .. } => parent.id(),
-        },
+        input.start().configuration().id(),
     )
 }
 

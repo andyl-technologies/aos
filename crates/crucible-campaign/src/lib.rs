@@ -166,7 +166,7 @@ pub use model::{
     CampaignState, ControlRequest, DiscoveryRequest, NonModeledAttemptDisposition, PinChange,
     PinRequest, PinRetention, PlannerEngine, PlannerInvocation, PlannerState, PlanningBudget,
     PolicyActivation, PolicyArtifact, SavepointCaptureOutcome, SavepointCaptureRequest,
-    SavepointCaptureResolution,
+    SavepointCaptureResolution, SavepointContinuationSelection,
 };
 pub use object::{CampaignRecordKind, ChildReference, ObjectEnvelope};
 pub use object_profile::{CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignObjectProfiler};
@@ -236,7 +236,7 @@ pub use repository::{
     ObjectiveEvaluationPublicationResult, ObservationCandidate, ObservationDisposition,
     ObservationResult, PendingSavepointCapture, PendingSavepointCapturePage, PlannerStepResult,
     ProposalResult, ResolvedSelection, SavepointCaptureCursor, SavepointCaptureResolutionResult,
-    SavepointCaptureResult, WorkerSlotId,
+    SavepointCaptureResult, SavepointContinuationResult, SavepointContinuationSource, WorkerSlotId,
 };
 
 #[cfg(test)]

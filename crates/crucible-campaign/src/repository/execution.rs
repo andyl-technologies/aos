@@ -8,6 +8,42 @@
 use super::*;
 
 impl CampaignRepository {
+    /// Resolves the immutable capture attempt behind a selected-savepoint request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the selected-source mapping or capture request is
+    /// unavailable, malformed, or differs from the exact request basis.
+    pub fn executor_selected_savepoint_source_attempt(
+        &self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<Option<AttemptId>, CampaignRepositoryError> {
+        let AttemptStartMode::SelectedSavepoint {
+            snapshot,
+            selection,
+            request: capture_request,
+        } = request.start_mode()
+        else {
+            return Ok(None);
+        };
+        let source = self
+            .savepoint_continuation_source_at(snapshot, request.attempt())?
+            .ok_or_else(|| integrity("executor-selected-savepoint-source-is-absent"))?;
+        if source.selection() != selection || source.provenance().request != capture_request {
+            return Err(integrity(
+                "executor-selected-savepoint-source-basis-mismatch",
+            ));
+        }
+        let CampaignFact::SavepointCaptureRequested(capture) =
+            self.read_fact(capture_request.content_id())?
+        else {
+            return Err(integrity(
+                "executor-selected-savepoint-request-is-not-capture-request",
+            ));
+        };
+        Ok(Some(capture.attempt))
+    }
+
     /// Authenticates the operational scope of one executor request.
     ///
     /// Semantic requests need no authority beyond ordinary immutable attempt
@@ -32,7 +68,7 @@ impl CampaignRepository {
         )?;
         if !matches!(
             request.start_mode(),
-            AttemptStartMode::SavepointCapture { .. }
+            AttemptStartMode::SavepointCapture { .. } | AttemptStartMode::SelectedSavepoint { .. }
         ) {
             return Ok(());
         }
@@ -49,12 +85,35 @@ impl CampaignRepository {
         attempt: AttemptId,
         start_mode: AttemptStartMode,
     ) -> Result<(), CampaignRepositoryError> {
-        let AttemptStartMode::SavepointCapture {
-            request: capture_id,
-            configuration,
-        } = start_mode
-        else {
-            return Ok(());
+        let (capture_id, configuration) = match start_mode {
+            AttemptStartMode::Execute | AttemptStartMode::CaptureMaterializedStart { .. } => {
+                return Ok(());
+            }
+            AttemptStartMode::SavepointCapture {
+                request,
+                configuration,
+            } => (request, configuration),
+            AttemptStartMode::SelectedSavepoint {
+                snapshot,
+                selection,
+                request,
+            } => {
+                let source = self
+                    .savepoint_continuation_source_at(snapshot, attempt)?
+                    .ok_or_else(|| integrity("executor-selected-savepoint-source-is-absent"))?;
+                if source.selection() != selection || source.provenance().request != request {
+                    return Err(integrity(
+                        "executor-selected-savepoint-source-basis-mismatch",
+                    ));
+                }
+                let snapshot = self.read_snapshot(snapshot.content_id())?;
+                if snapshot.snapshot.lineage() != lineage {
+                    return Err(integrity(
+                        "executor-selected-savepoint-source-lineage-mismatch",
+                    ));
+                }
+                return Ok(());
+            }
         };
 
         let CampaignFact::SavepointCaptureRequested(capture) =
@@ -141,6 +200,7 @@ impl CampaignRepository {
                 }
                 parent
             }
+            AttemptStart::AfterAttempt { reached, .. } => reached,
         };
         let start = self.read_configuration_artifact(start.content_id())?;
         if start.scenario() != lineage.scenario()

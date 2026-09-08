@@ -13,7 +13,6 @@ use crate::{
     AttemptExecutionReconciliationStep, AttemptResultPreparationFailure,
     AttemptResultPublicationFailure, CompletionValidationFailure, ExecutionCancellation,
     ExecutionCheckpointRequest, PreparedSemanticAttemptResult, RepositoryAttemptAdmission,
-    resolve_attempt_execution_input,
 };
 use crucible_campaign::{
     AssignmentId, AttemptExecutionScope, AttemptResourceLimits, CampaignCodecError,
@@ -227,8 +226,12 @@ where
             )
             .map_err(SynchronousCampaignExecutorError::Protocol);
         }
-        let input = resolve_attempt_execution_input(&self.store, key)
-            .map_err(SynchronousCampaignExecutorError::Repository)?;
+        let input = crate::resolve_attempt_execution_input_with_resources(
+            &self.store,
+            key,
+            request.resources(),
+        )
+        .map_err(SynchronousCampaignExecutorError::Repository)?;
         let context = AttemptExecutionContext::new(
             request.resources(),
             request.retention(),

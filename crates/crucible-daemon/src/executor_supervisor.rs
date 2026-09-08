@@ -30,7 +30,7 @@ use crucible_campaign::{
 use crate::{
     AssignmentLedger, AssignmentPublish, AssignmentRecord, AttemptExecutionKey,
     AttemptExecutionOrigin, AttemptRuntimeState, AttemptStateCas, CapturedAttemptCheckpoint,
-    CompletedFindingCandidate, PreparedAttemptCheckpoint,
+    CompletedFindingCandidate, ExactCheckpointResumeBasis, PreparedAttemptCheckpoint,
 };
 
 mod checkpoint_promotion;
@@ -76,6 +76,29 @@ pub trait AttemptAdmissionValidator {
             Ok(())
         } else {
             Err(ExecutorRejection::Incompatible)
+        }
+    }
+
+    /// Resolves the immutable capture attempt for a selected-savepoint assignment.
+    ///
+    /// The default accepts ordinary assignments and fails closed for a selected
+    /// source because only a repository-backed validator can authenticate that
+    /// source's capture request.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable rejection when the selected source cannot be authenticated.
+    fn selected_savepoint_source_attempt(
+        &self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<Option<AttemptId>, ExecutorRejection> {
+        if matches!(
+            request.start_mode(),
+            AttemptStartMode::SelectedSavepoint { .. }
+        ) {
+            Err(ExecutorRejection::Incompatible)
+        } else {
+            Ok(None)
         }
     }
 
@@ -856,6 +879,34 @@ pub(crate) enum SubmitPreflight {
     NeedsValidation,
 }
 
+/// Repository-authenticated operational data retained across actor reacquisition.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ValidatedSubmitAdmission {
+    selected_source_attempt: Option<AttemptId>,
+}
+
+impl ValidatedSubmitAdmission {
+    pub(crate) fn validate<V: AttemptAdmissionValidator>(
+        validator: &V,
+        request: &SubmitAttemptRequest,
+    ) -> Result<Self, ExecutorRejection> {
+        validator.validate(request)?;
+        validator.validate_execution_scope(request)?;
+        let selected_source_attempt = validator.selected_savepoint_source_attempt(request)?;
+        if selected_source_attempt.is_some()
+            != matches!(
+                request.start_mode(),
+                AttemptStartMode::SelectedSavepoint { .. }
+            )
+        {
+            return Err(ExecutorRejection::Incompatible);
+        }
+        Ok(Self {
+            selected_source_attempt,
+        })
+    }
+}
+
 /// Sole-writer bounded local executor over one operational ledger.
 pub struct LocalExecutorSupervisor<L, V> {
     ledger: L,
@@ -1079,7 +1130,7 @@ where
     pub(crate) fn submit_after_validation(
         &mut self,
         request: &SubmitAttemptRequest,
-        validation: Result<(), ExecutorRejection>,
+        validation: Result<ValidatedSubmitAdmission, ExecutorRejection>,
     ) -> Result<SubmitAttemptResponse, LocalExecutorError<L::Error>> {
         if let Some(response) = self.assignment_response(request)? {
             return Ok(response);
@@ -1092,10 +1143,14 @@ where
                 },
             );
         }
-        if let Err(reason) = validation {
-            return self.persist_response(request, SubmitAttemptDisposition::Rejected { reason });
-        }
-        self.submit_admitted(request)
+        let admission = match validation {
+            Ok(admission) => admission,
+            Err(reason) => {
+                return self
+                    .persist_response(request, SubmitAttemptDisposition::Rejected { reason });
+            }
+        };
+        self.submit_admitted(request, admission)
     }
 
     /// Reconciles a caught worker panic after its linear token was unwound.
@@ -2224,10 +2279,7 @@ where
             SubmitPreflight::Resolved(response) => return Ok(response),
             SubmitPreflight::NeedsValidation => {}
         }
-        let validation = self
-            .validator
-            .validate(request)
-            .and_then(|()| self.validator.validate_execution_scope(request));
+        let validation = ValidatedSubmitAdmission::validate(self.validator.as_ref(), request);
         self.submit_after_validation(request, validation)
     }
 
@@ -2298,24 +2350,14 @@ where
         let execution_basis = request.execution_basis_digest();
         let request_digest = request.request_digest();
         let resume_origin_matches = |origin: AttemptExecutionOrigin| {
-            matches!(
-                origin,
-                AttemptExecutionOrigin::ExactCheckpoint {
-                    prior_execution,
-                    checkpoint,
-                    ..
-                } if prior_execution == request.prior_execution()
-                    && checkpoint == request.checkpoint()
-            )
+            origin.resume_basis().is_some_and(|basis| {
+                basis.prior_execution == request.prior_execution()
+                    && basis.checkpoint == request.checkpoint()
+            })
         };
-        if matches!(
-            current.origin(),
-            AttemptExecutionOrigin::ExactCheckpoint {
-                assignment,
-                request_digest: current_digest,
-                ..
-            } if assignment == request.assignment() && current_digest != request_digest
-        ) {
+        if current.origin().resume_basis().is_some_and(|basis| {
+            basis.assignment == request.assignment() && basis.request_digest != request_digest
+        }) {
             return ResumeAttemptExecutionResponse::new(
                 request,
                 ResumeAttemptExecutionDisposition::Rejected {
@@ -2423,12 +2465,14 @@ where
                         .map_err(Into::into);
                     }
                     let execution = self.allocate_execution_id()?;
-                    let origin = AttemptExecutionOrigin::ExactCheckpoint {
-                        assignment: request.assignment(),
-                        request_digest,
-                        prior_execution: request.prior_execution(),
-                        checkpoint: request.checkpoint(),
-                    };
+                    let origin = current
+                        .origin()
+                        .with_resume_basis(ExactCheckpointResumeBasis {
+                            assignment: request.assignment(),
+                            request_digest,
+                            prior_execution: request.prior_execution(),
+                            checkpoint: request.checkpoint(),
+                        });
                     let next = match current {
                         AttemptRuntimeState::Running { .. } => AttemptRuntimeState::Running {
                             execution_basis,
@@ -2540,12 +2584,14 @@ where
         }
 
         let execution = self.allocate_execution_id()?;
-        let origin = AttemptExecutionOrigin::ExactCheckpoint {
-            assignment: request.assignment(),
-            request_digest,
-            prior_execution,
-            checkpoint,
-        };
+        let origin = current
+            .origin()
+            .with_resume_basis(ExactCheckpointResumeBasis {
+                assignment: request.assignment(),
+                request_digest,
+                prior_execution,
+                checkpoint,
+            });
         let running = AttemptRuntimeState::Running {
             execution_basis,
             origin,
@@ -2590,6 +2636,7 @@ where
     fn submit_admitted(
         &mut self,
         request: &SubmitAttemptRequest,
+        admission: ValidatedSubmitAdmission,
     ) -> Result<SubmitAttemptResponse, LocalExecutorError<L::Error>> {
         if !self.capacity.supports(request.resources()) {
             return self.persist_response(
@@ -2617,11 +2664,11 @@ where
             )
             && !(state.daemon_epoch() == self.daemon_epoch
                 && self.active.contains_key(&state.execution()))
-            && let AttemptExecutionOrigin::ExactCheckpoint {
+            && let Some(ExactCheckpointResumeBasis {
                 prior_execution,
                 checkpoint,
                 ..
-            } = state.origin()
+            }) = state.origin().resume_basis()
         {
             return self.persist_response(
                 request,
@@ -2986,6 +3033,60 @@ where
         }
 
         let execution = self.allocate_execution_id()?;
+        let origin = if let AttemptStartMode::SelectedSavepoint {
+            selection,
+            request: capture_request,
+            ..
+        } = request.start_mode()
+        {
+            if let Some(state) = prior
+                && state.execution_basis() == execution_basis
+            {
+                state.origin()
+            } else {
+                let source_attempt = admission.selected_source_attempt.ok_or(
+                    LocalExecutorError::LedgerInvariant {
+                        reason: "validated selected source attempt is absent",
+                    },
+                )?;
+                let source_key = AttemptExecutionKey::new_scoped(
+                    request.lineage(),
+                    source_attempt,
+                    AttemptExecutionScope::SavepointCapture {
+                        request: capture_request,
+                    },
+                );
+                let source_state = self
+                    .ledger
+                    .load_attempt(source_key)
+                    .map_err(LocalExecutorError::Ledger)?;
+                match source_state {
+                    Some(AttemptRuntimeState::Paused {
+                        execution: source_execution,
+                        checkpoint: source_checkpoint,
+                        ..
+                    }) => AttemptExecutionOrigin::SelectedSavepoint {
+                        certificate: selection,
+                        request: capture_request,
+                        source_attempt,
+                        source_execution,
+                        source_checkpoint,
+                        resume: None,
+                    },
+                    None => AttemptExecutionOrigin::Initial,
+                    Some(_) => {
+                        return self.persist_response(
+                            request,
+                            SubmitAttemptDisposition::Rejected {
+                                reason: ExecutorRejection::Incompatible,
+                            },
+                        );
+                    }
+                }
+            }
+        } else {
+            AttemptExecutionOrigin::Initial
+        };
         let capture_materialized_start = matches!(
             request.start_mode(),
             AttemptStartMode::CaptureMaterializedStart { .. }
@@ -2994,14 +3095,14 @@ where
         let initial_state = if capture_materialized_start {
             AttemptRuntimeState::CheckpointRequested {
                 execution_basis,
-                origin: AttemptExecutionOrigin::Initial,
+                origin,
                 daemon_epoch: self.daemon_epoch,
                 execution,
             }
         } else {
             AttemptRuntimeState::Running {
                 execution_basis,
-                origin: AttemptExecutionOrigin::Initial,
+                origin,
                 daemon_epoch: self.daemon_epoch,
                 execution,
             }
@@ -3009,13 +3110,9 @@ where
         let advance = self.advance_attempt_optional(key, prior, Some(initial_state))?;
         if let AttemptAdvance::CommittedAfterError(error) = advance {
             if capture_materialized_start {
-                self.reserve_checkpoint_recovery(
-                    request,
-                    execution,
-                    AttemptExecutionOrigin::Initial,
-                )?;
+                self.reserve_checkpoint_recovery(request, execution, origin)?;
             } else {
-                self.reserve(request, execution, AttemptExecutionOrigin::Initial)?;
+                self.reserve(request, execution, origin)?;
             }
             return Err(LocalExecutorError::Ledger(error));
         }
@@ -3025,9 +3122,9 @@ where
         // is indeterminate, retain and run the prepared work so a response that
         // did become visible can never name an execution the daemon abandoned.
         if capture_materialized_start {
-            self.reserve_checkpoint_recovery(request, execution, AttemptExecutionOrigin::Initial)?;
+            self.reserve_checkpoint_recovery(request, execution, origin)?;
         } else {
-            self.reserve(request, execution, AttemptExecutionOrigin::Initial)?;
+            self.reserve(request, execution, origin)?;
         }
         response
     }

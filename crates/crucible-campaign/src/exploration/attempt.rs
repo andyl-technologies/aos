@@ -154,7 +154,7 @@ impl Canonical for BranchPath {
     }
 }
 
-/// Explicit discovery or one-selection branch execution start.
+/// Semantic starting boundary for one immutable execution attempt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AttemptStart {
     /// Realizes an existing configuration until the next boundary.
@@ -170,6 +170,13 @@ pub enum AttemptStart {
         parent: ConfigurationArtifactId,
         /// Exact recorded selection.
         selection: SelectionId,
+    },
+    /// Continues from the exact modeled boundary reached by an older attempt.
+    AfterAttempt {
+        /// Immutable attempt whose declared stop produced the boundary.
+        origin: AttemptId,
+        /// Exact configuration artifact reached at the origin attempt's stop.
+        reached: ConfigurationArtifactId,
     },
 }
 
@@ -190,6 +197,11 @@ impl Canonical for AttemptStart {
                 parent.encode(encoder);
                 selection.encode(encoder);
             }
+            Self::AfterAttempt { origin, reached } => {
+                encoder.u8(2);
+                origin.encode(encoder);
+                reached.encode(encoder);
+            }
         }
     }
 
@@ -202,6 +214,10 @@ impl Canonical for AttemptStart {
                 edge: BranchEdgeId::decode(decoder)?,
                 parent: ConfigurationArtifactId::decode(decoder)?,
                 selection: SelectionId::decode(decoder)?,
+            }),
+            2 => Ok(Self::AfterAttempt {
+                origin: AttemptId::decode(decoder)?,
+                reached: ConfigurationArtifactId::decode(decoder)?,
             }),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "attempt-start",
@@ -232,19 +248,24 @@ impl Attempt {
         stop: StopCondition,
     ) -> Result<Self, CampaignCodecError> {
         stop.validate()?;
-        Ok(Self {
-            schema_version: if stop.uses_extended_wire_schema() {
+        let schema_version = match start {
+            AttemptStart::AfterAttempt { .. } => AFTER_ATTEMPT_SCHEMA_VERSION,
+            AttemptStart::Discover { .. } | AttemptStart::Branch { .. }
+                if stop.uses_extended_wire_schema() =>
+            {
                 ATTEMPT_SCHEMA_VERSION
-            } else {
-                RECORD_SCHEMA_VERSION
-            },
+            }
+            AttemptStart::Discover { .. } | AttemptStart::Branch { .. } => RECORD_SCHEMA_VERSION,
+        };
+        Ok(Self {
+            schema_version,
             start,
             path,
             stop,
         })
     }
 
-    /// Returns discovery or branch start semantics.
+    /// Returns the exact semantic start boundary.
     #[must_use]
     pub const fn start(&self) -> AttemptStart {
         self.start
@@ -311,6 +332,10 @@ impl Attempt {
                 children.push(("parent", parent.content_id()));
                 children.push(("selection", selection.content_id()));
             }
+            AttemptStart::AfterAttempt { origin, reached } => {
+                children.push(("origin-attempt", origin.content_id()));
+                children.push(("reached-configuration", reached.content_id()));
+            }
         }
         children
     }
@@ -328,7 +353,7 @@ impl Canonical for Attempt {
         let schema_version = u32::decode(decoder)?;
         if !matches!(
             schema_version,
-            RECORD_SCHEMA_VERSION | ATTEMPT_SCHEMA_VERSION
+            RECORD_SCHEMA_VERSION | ATTEMPT_SCHEMA_VERSION | AFTER_ATTEMPT_SCHEMA_VERSION
         ) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported attempt schema version",
@@ -337,9 +362,21 @@ impl Canonical for Attempt {
         let start = AttemptStart::decode(decoder)?;
         let path = BranchPathId::decode(decoder)?;
         let stop = StopCondition::decode(decoder)?;
-        if stop.uses_extended_wire_schema() != (schema_version == ATTEMPT_SCHEMA_VERSION) {
+        let compatible = match schema_version {
+            RECORD_SCHEMA_VERSION => {
+                !stop.uses_extended_wire_schema()
+                    && !matches!(start, AttemptStart::AfterAttempt { .. })
+            }
+            ATTEMPT_SCHEMA_VERSION => {
+                stop.uses_extended_wire_schema()
+                    && !matches!(start, AttemptStart::AfterAttempt { .. })
+            }
+            AFTER_ATTEMPT_SCHEMA_VERSION => matches!(start, AttemptStart::AfterAttempt { .. }),
+            _ => false,
+        };
+        if !compatible {
             return Err(CampaignCodecError::InvalidValue {
-                reason: "attempt schema disagrees with stop-condition schema",
+                reason: "attempt schema disagrees with start or stop semantics",
             });
         }
         Ok(Self {
@@ -356,7 +393,7 @@ impl Canonical for Attempt {
 pub enum AttemptAdmissionRole {
     /// The one cause that spends attempt budget and fixes estimator provenance.
     ExecutionBasis {
-        /// Proposal, absent only for discovery.
+        /// Proposal, absent for discovery and savepoint continuation.
         proposal: Option<ProposalId>,
         /// Operator/planner/debugger/policy cause.
         cause: BranchRequestCause,

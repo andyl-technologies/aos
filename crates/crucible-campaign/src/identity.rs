@@ -470,9 +470,9 @@ content_object_id!(
 content_object_id!(
     CampaignFactId,
     ObjectKind::CampaignFact,
-    [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
     "crucible.campaign.fact",
-    "Identifies one immutable campaign fact; versions 2 through 10 remain decodable for history compatibility, version 11 carries savepoint capture intent, and version 12 records its operational resolution."
+    "Identifies one immutable campaign fact; versions 2 through 12 remain decodable for history compatibility, and version 13 selects a ready savepoint continuation."
 );
 semantic_id!(
     CampaignCommandId,
@@ -570,9 +570,9 @@ content_object_id!(
 content_object_id!(
     AttemptId,
     ObjectKind::CampaignFact,
-    [1, 2],
+    [1, 2, 3],
     "crucible.campaign.attempt",
-    "Identifies one immutable semantic execution attempt; version 1 remains decodable for history compatibility."
+    "Identifies one immutable semantic execution attempt; versions 1 and 2 remain decodable for history compatibility."
 );
 content_object_id!(
     AttemptAdmissionId,

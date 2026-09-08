@@ -394,6 +394,30 @@ where
     type Lifecycle = PackagedStatusLifecycle<F::Lifecycle>;
     type Error = F::Error;
 
+    fn authenticate_resume_boundary(
+        &mut self,
+        checkpoints: &ExactCheckpointStore,
+        checkpoint: crucible_campaign::ExactCheckpointId,
+        scenario: &ScenarioDef,
+        source: &ScenarioDefForm,
+        initial: &Configuration,
+        post_selection: Option<&Configuration>,
+        context: &AttemptExecutionContext,
+    ) -> Result<
+        Option<crate::qemu_campaign_driver::QemuSelectedResumeBoundary>,
+        AttemptWorkerFailure<Self::Error>,
+    > {
+        self.inner.authenticate_resume_boundary(
+            checkpoints,
+            checkpoint,
+            scenario,
+            source,
+            initial,
+            post_selection,
+            context,
+        )
+    }
+
     fn start_resume_lifecycle(
         &mut self,
         checkpoints: &ExactCheckpointStore,

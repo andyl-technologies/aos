@@ -17,7 +17,7 @@ use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
     CapturedExactCheckpoint, CrucibleAttemptExecution, CrucibleExecutionOutcome,
     CrucibleExecutionRunner, CrucibleMaterializationTier, CrucibleResolvedAttemptStart,
-    ExecutionCancellation, QemuExactCheckpointRealization,
+    ExecutionCancellation, QemuExactCheckpointRealization, QemuSavepointReplayProof,
 };
 
 /// Cancellation-aware checkpoint reads used by one campaign realization.
@@ -220,6 +220,55 @@ pub struct QemuAttemptExecutionRouter<F, R> {
     resume: R,
 }
 
+/// Independent cold-replay authority for a selected continuation origin.
+pub trait QemuSelectedOriginVerifier: CrucibleExecutionRunner {
+    /// Reconstructs the selected semantic boundary without using its physical source.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified execution failure when cold replay cannot reproduce
+    /// the complete configuration, quantum, frontier, and event-prefix basis.
+    fn verify_selected_origin(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
+    ) -> Result<QemuSavepointReplayProof, AttemptWorkerFailure<Self::Error>>;
+}
+
+/// Exact-resume authority that consumes an independently reconstructed origin proof.
+pub trait QemuSelectedOriginResumeRunner: CrucibleExecutionRunner {
+    /// Authenticates the portable source boundary without launching QEMU.
+    ///
+    /// `None` means an initial preferred source is absent and permits cold
+    /// execution. A later own resume never returns `None` for absence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified failure for unavailable or malformed source state.
+    fn authenticate_selected_resume_boundary(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<
+        Option<crate::qemu_campaign_driver::QemuSelectedResumeBoundary>,
+        AttemptWorkerFailure<Self::Error>,
+    >;
+
+    /// Resumes a physical source only after comparing it with `proof`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified execution failure when the physical checkpoint is
+    /// unavailable, malformed, or differs from the independent semantic proof.
+    fn execute_verified_selected_origin(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        proof: QemuSavepointReplayProof,
+    ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>>;
+}
+
 impl<F, R> QemuAttemptExecutionRouter<F, R> {
     /// Creates an exact-origin execution router.
     #[must_use]
@@ -271,8 +320,8 @@ pub enum QemuAttemptExecutionRouterError<F, R> {
 
 impl<F, R> CrucibleExecutionRunner for QemuAttemptExecutionRouter<F, R>
 where
-    F: CrucibleExecutionRunner,
-    R: CrucibleExecutionRunner,
+    F: QemuSelectedOriginVerifier,
+    R: QemuSelectedOriginResumeRunner,
 {
     type Error = QemuAttemptExecutionRouterError<F::Error, R::Error>;
 
@@ -281,14 +330,36 @@ where
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
     ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
-        if context.resume_checkpoint().is_some() {
-            self.resume
-                .execute(input, context)
-                .map_err(|failure| map_routed_failure(failure, Self::Error::Resume))
-        } else {
+        if context.resume_checkpoint().is_none() {
             self.fresh
                 .execute(input, context)
                 .map_err(|failure| map_routed_failure(failure, Self::Error::Fresh))
+        } else if matches!(
+            input.start(),
+            CrucibleResolvedAttemptStart::AfterAttempt { .. }
+        ) {
+            let Some(target) = self
+                .resume
+                .authenticate_selected_resume_boundary(input, context)
+                .map_err(|failure| map_routed_failure(failure, Self::Error::Resume))?
+            else {
+                let cold_context = context.for_absent_selected_source();
+                return self
+                    .fresh
+                    .execute(input, &cold_context)
+                    .map_err(|failure| map_routed_failure(failure, Self::Error::Fresh));
+            };
+            let proof = self
+                .fresh
+                .verify_selected_origin(input, context, &target)
+                .map_err(|failure| map_routed_failure(failure, Self::Error::Fresh))?;
+            self.resume
+                .execute_verified_selected_origin(input, context, proof)
+                .map_err(|failure| map_routed_failure(failure, Self::Error::Resume))
+        } else {
+            self.resume
+                .execute(input, context)
+                .map_err(|failure| map_routed_failure(failure, Self::Error::Resume))
         }
     }
 }
@@ -346,6 +417,9 @@ pub enum QemuExactThinRunnerError<E> {
     /// The post-materialization attempt driver failed.
     #[error("QEMU campaign attempt driver failed")]
     Driver(E),
+    /// This legacy runner cannot independently authenticate a selected origin.
+    #[error("exact-thin runner cannot execute a selected continuation origin")]
+    SelectedOriginUnsupported,
 }
 
 impl<S, F> CrucibleExecutionRunner for QemuExactThinExecutionRunner<S, F>
@@ -360,6 +434,14 @@ where
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
     ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+        if matches!(
+            input.start(),
+            CrucibleResolvedAttemptStart::AfterAttempt { .. }
+        ) {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuExactThinRunnerError::SelectedOriginUnsupported,
+            ));
+        }
         if context.cancellation().is_canceled() {
             return Err(AttemptWorkerFailure::Canceled(
                 QemuExactThinRunnerError::Canceled,
@@ -411,6 +493,7 @@ fn attempt_resume_configurations(
         CrucibleResolvedAttemptStart::Branch {
             parent, selected, ..
         } => (parent, Some(selected)),
+        CrucibleResolvedAttemptStart::AfterAttempt { .. } => (input.start().configuration(), None),
     }
 }
 
@@ -622,7 +705,9 @@ fn classify_realization_failure<E>(
         ) => AttemptWorkerFailure::Retryable(error),
         QemuExactThinRunnerError::Realization(QemuVmRealizationError::Canceled { .. })
         | QemuExactThinRunnerError::Canceled => AttemptWorkerFailure::Canceled(error),
-        QemuExactThinRunnerError::Realization(_) | QemuExactThinRunnerError::Driver(_) => {
+        QemuExactThinRunnerError::Realization(_)
+        | QemuExactThinRunnerError::Driver(_)
+        | QemuExactThinRunnerError::SelectedOriginUnsupported => {
             AttemptWorkerFailure::Terminal(error)
         }
     }
@@ -709,6 +794,39 @@ mod tests {
                 RoutedFailureDisposition::Canceled => AttemptWorkerFailure::Canceled(self.message),
                 RoutedFailureDisposition::Terminal => AttemptWorkerFailure::Terminal(self.message),
             })
+        }
+    }
+
+    impl QemuSelectedOriginVerifier for RoutedFailureRunner {
+        fn verify_selected_origin(
+            &mut self,
+            _input: &CrucibleAttemptExecution,
+            _context: &AttemptExecutionContext,
+            _target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
+        ) -> Result<QemuSavepointReplayProof, AttemptWorkerFailure<Self::Error>> {
+            panic!("ordinary routing fixture has no selected origin")
+        }
+    }
+
+    impl QemuSelectedOriginResumeRunner for RoutedFailureRunner {
+        fn authenticate_selected_resume_boundary(
+            &mut self,
+            _input: &CrucibleAttemptExecution,
+            _context: &AttemptExecutionContext,
+        ) -> Result<
+            Option<crate::qemu_campaign_driver::QemuSelectedResumeBoundary>,
+            AttemptWorkerFailure<Self::Error>,
+        > {
+            panic!("ordinary routing fixture has no selected origin")
+        }
+
+        fn execute_verified_selected_origin(
+            &mut self,
+            _input: &CrucibleAttemptExecution,
+            _context: &AttemptExecutionContext,
+            _proof: QemuSavepointReplayProof,
+        ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+            panic!("ordinary routing fixture has no selected origin")
         }
     }
 

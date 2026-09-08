@@ -4,24 +4,63 @@ use super::projection::PlannerCandidateProjectionCache;
 use super::*;
 use crate::IntegerValue;
 
+const MAX_AFTER_ATTEMPT_ORIGIN_DEPTH: usize = 4096;
+
+type PendingAttemptContinuation = (ContentId, Attempt, (ScenarioDefId, ScenarioArtifactId));
+
+fn cache_attempt_continuation_prefix(
+    cache: &mut ChoiceValidationCache,
+    requested: ContentId,
+    pending: Vec<PendingAttemptContinuation>,
+    mut validated: ValidatedAttempt,
+) -> Result<Attempt, CampaignRepositoryError> {
+    for (id, attempt, lineage) in pending.into_iter().rev() {
+        if lineage != validated.lineage {
+            return Err(integrity("attempt-continuation-lineage-mismatch"));
+        }
+        let origin_depth = validated
+            .origin_depth
+            .checked_add(1)
+            .ok_or_else(|| integrity("attempt-continuation-origin-depth-exceeded"))?;
+        if origin_depth > MAX_AFTER_ATTEMPT_ORIGIN_DEPTH {
+            return Err(integrity("attempt-continuation-origin-depth-exceeded"));
+        }
+
+        validated = ValidatedAttempt {
+            attempt,
+            path: validated.path,
+            lineage,
+            origin_depth,
+        };
+        cache.validated_attempts.insert(id, validated.clone());
+    }
+
+    if validated.attempt.id()?.content_id() != requested {
+        return Err(integrity("attempt-continuation-cache-root-mismatch"));
+    }
+    Ok(validated.attempt)
+}
+
 fn charge_selection_resolution_record(
     envelope: &ObjectEnvelope,
+    canonical_bytes: usize,
     charged: &mut BTreeSet<ContentId>,
     charged_bytes: &mut usize,
+    maximum_canonical_bytes: usize,
 ) -> Result<(), CampaignRepositoryError> {
     if !charged.insert(envelope.content_id()) {
         return Ok(());
     }
-    *charged_bytes = charged_bytes.checked_add(envelope.body().len()).ok_or(
-        CampaignCodecError::InvalidValue {
-            reason: "selection resolution byte accounting overflow",
-        },
-    )?;
-    if *charged_bytes > MAX_SELECTION_RESOLUTION_BYTES {
-        return Err(CampaignCodecError::InvalidValue {
-            reason: "selection resolution exceeds canonical record byte limit",
-        }
-        .into());
+    *charged_bytes =
+        charged_bytes
+            .checked_add(canonical_bytes)
+            .ok_or(CampaignCodecError::InvalidValue {
+                reason: "selection resolution byte accounting overflow",
+            })?;
+    if *charged_bytes > maximum_canonical_bytes {
+        return Err(CampaignRepositoryError::SelectionResolutionBudgetExceeded {
+            maximum_canonical_bytes,
+        });
     }
     Ok(())
 }
@@ -179,6 +218,39 @@ impl CampaignRepository {
     /// semantic reference is missing, corrupt, or inconsistent.
     pub fn load_attempt(&self, id: AttemptId) -> Result<Attempt, CampaignRepositoryError> {
         self.read_attempt(id.content_id())
+    }
+
+    /// Loads one attempt followed by its complete bounded continuation ancestry.
+    ///
+    /// The returned vector is ordered from the requested attempt toward its
+    /// oldest discovery or branch root. All entries are authenticated with one
+    /// shared validation cache, so a continuation chain is read in linear time.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error when the attempt chain is
+    /// missing, corrupt, cyclic, too deep, or semantically inconsistent.
+    pub fn load_attempt_origin_chain(
+        &self,
+        id: AttemptId,
+    ) -> Result<Vec<Attempt>, CampaignRepositoryError> {
+        let mut cache = ChoiceValidationCache::default();
+        let mut chain = Vec::new();
+        let mut current_id = id;
+
+        loop {
+            let attempt = self.read_attempt_cached(current_id.content_id(), &mut cache)?;
+            let origin = match attempt.start() {
+                AttemptStart::AfterAttempt { origin, .. } => Some(origin),
+                AttemptStart::Discover { .. } | AttemptStart::Branch { .. } => None,
+            };
+            chain.push(attempt);
+
+            let Some(origin) = origin else {
+                return Ok(chain);
+            };
+            current_id = origin;
+        }
     }
 
     /// Loads an attempt admission and validates its attempt and cause closure.
@@ -436,12 +508,30 @@ impl CampaignRepository {
         &self,
         ids: &[SelectionId],
     ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
+        self.resolve_selections_with_canonical_byte_limit(ids, MAX_SELECTION_RESOLUTION_BYTES)
+            .map_err(|error| match error {
+                CampaignRepositoryError::SelectionResolutionBudgetExceeded { .. } => {
+                    CampaignCodecError::InvalidValue {
+                        reason: "selection resolution exceeds canonical record byte limit",
+                    }
+                    .into()
+                }
+                error => error,
+            })
+    }
+
+    pub(super) fn resolve_selections_with_canonical_byte_limit(
+        &self,
+        ids: &[SelectionId],
+        maximum_canonical_bytes: usize,
+    ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
         if ids.len() > MAX_SELECTION_RESOLUTION_RECORDS {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "selection resolution batch exceeds record limit",
             }
             .into());
         }
+        let maximum_canonical_bytes = maximum_canonical_bytes.min(MAX_SELECTION_RESOLUTION_BYTES);
 
         let mut charged = BTreeSet::new();
         let mut charged_bytes = 0usize;
@@ -457,12 +547,19 @@ impl CampaignRepository {
                 continue;
             }
 
-            let selection_envelope =
-                self.require_record_kind(id.content_id(), crate::CampaignRecordKind::Selection)?;
+            let (selection_envelope, selection_envelope_bytes) = self
+                .require_record_kind_with_canonical_byte_limit(
+                    id.content_id(),
+                    crate::CampaignRecordKind::Selection,
+                    maximum_canonical_bytes.saturating_sub(charged_bytes),
+                    maximum_canonical_bytes,
+                )?;
             charge_selection_resolution_record(
                 &selection_envelope,
+                selection_envelope_bytes,
                 &mut charged,
                 &mut charged_bytes,
+                maximum_canonical_bytes,
             )?;
             let selection = Selection::from_canonical_bytes(selection_envelope.body())?;
             if selection.id()? != *id {
@@ -474,11 +571,20 @@ impl CampaignRepository {
             let opportunity = if let Some(opportunity) = opportunities.get(&opportunity_id) {
                 Arc::clone(opportunity)
             } else {
-                let envelope = self.require_record_kind(
-                    opportunity_id,
-                    crate::CampaignRecordKind::ChoiceOpportunity,
+                let (envelope, envelope_bytes) = self
+                    .require_record_kind_with_canonical_byte_limit(
+                        opportunity_id,
+                        crate::CampaignRecordKind::ChoiceOpportunity,
+                        maximum_canonical_bytes.saturating_sub(charged_bytes),
+                        maximum_canonical_bytes,
+                    )?;
+                charge_selection_resolution_record(
+                    &envelope,
+                    envelope_bytes,
+                    &mut charged,
+                    &mut charged_bytes,
+                    maximum_canonical_bytes,
                 )?;
-                charge_selection_resolution_record(&envelope, &mut charged, &mut charged_bytes)?;
                 let opportunity = crate::codec::decode::<ChoiceOpportunity>(envelope.body())?;
                 if opportunity.id()?.content_id() != opportunity_id {
                     return Err(integrity("choice-opportunity-envelope-shape"));
@@ -490,11 +596,20 @@ impl CampaignRepository {
             let declaration = if let Some(declaration) = declarations.get(&declaration_id) {
                 Arc::clone(declaration)
             } else {
-                let envelope = self.require_record_kind(
-                    declaration_id,
-                    crate::CampaignRecordKind::SelectableDeclaration,
+                let (envelope, envelope_bytes) = self
+                    .require_record_kind_with_canonical_byte_limit(
+                        declaration_id,
+                        crate::CampaignRecordKind::SelectableDeclaration,
+                        maximum_canonical_bytes.saturating_sub(charged_bytes),
+                        maximum_canonical_bytes,
+                    )?;
+                charge_selection_resolution_record(
+                    &envelope,
+                    envelope_bytes,
+                    &mut charged,
+                    &mut charged_bytes,
+                    maximum_canonical_bytes,
                 )?;
-                charge_selection_resolution_record(&envelope, &mut charged, &mut charged_bytes)?;
                 let declaration = SelectableDeclaration::from_canonical_bytes(envelope.body())?;
                 if declaration.id()?.content_id() != declaration_id {
                     return Err(integrity("selectable-envelope-shape"));
@@ -511,9 +626,20 @@ impl CampaignRepository {
             let domain = if let Some(domain) = domains.get(&domain_id) {
                 Arc::clone(domain)
             } else {
-                let envelope =
-                    self.require_record_kind(domain_id, crate::CampaignRecordKind::ChoiceDomain)?;
-                charge_selection_resolution_record(&envelope, &mut charged, &mut charged_bytes)?;
+                let (envelope, envelope_bytes) = self
+                    .require_record_kind_with_canonical_byte_limit(
+                        domain_id,
+                        crate::CampaignRecordKind::ChoiceDomain,
+                        maximum_canonical_bytes.saturating_sub(charged_bytes),
+                        maximum_canonical_bytes,
+                    )?;
+                charge_selection_resolution_record(
+                    &envelope,
+                    envelope_bytes,
+                    &mut charged,
+                    &mut charged_bytes,
+                    maximum_canonical_bytes,
+                )?;
                 let domain = ChoiceDomain::from_canonical_bytes(envelope.body())?;
                 if domain.id()?.content_id() != domain_id {
                     return Err(integrity("choice-domain-envelope-shape"));
@@ -1487,7 +1613,8 @@ impl CampaignRepository {
             | CampaignFact::PinCommandAccepted(_)
             | CampaignFact::DiscoveryRequested(_)
             | CampaignFact::SavepointCaptureRequested(_)
-            | CampaignFact::SavepointCaptureResolved(_) => {
+            | CampaignFact::SavepointCaptureResolved(_)
+            | CampaignFact::SavepointContinuationSelected(_) => {
                 self.validate_command_fact_references(fact)?
             }
             CampaignFact::BranchRequestIssued(id)
@@ -2247,7 +2374,7 @@ impl CampaignRepository {
         observation: &Observation,
         choice_cache: &mut ChoiceValidationCache,
     ) -> Result<(), CampaignRepositoryError> {
-        let attempt = self.read_attempt(observation.attempt().content_id())?;
+        let attempt = self.read_attempt_cached(observation.attempt().content_id(), choice_cache)?;
         let child = self.read_configuration_artifact(observation.child_content().content_id())?;
         if child.configuration() != observation.child()
             || attempt.path() != observation.path()
@@ -2284,49 +2411,122 @@ impl CampaignRepository {
     }
 
     pub(super) fn read_attempt(&self, id: ContentId) -> Result<Attempt, CampaignRepositoryError> {
+        self.read_attempt_cached(id, &mut ChoiceValidationCache::default())
+    }
+
+    pub(super) fn read_attempt_cached(
+        &self,
+        id: ContentId,
+        cache: &mut ChoiceValidationCache,
+    ) -> Result<Attempt, CampaignRepositoryError> {
+        if let Some(validated) = cache.validated_attempts.get(&id) {
+            return Ok(validated.attempt.clone());
+        }
+
+        let attempt = self.read_attempt_record(id)?;
+        let path = self.read_branch_path(attempt.path().content_id())?;
+        let mut current = Some(attempt.clone());
+        let mut current_id = id;
+        let mut visited = BTreeSet::new();
+        let mut pending = Vec::new();
+
+        loop {
+            if !visited.insert(current_id) {
+                return Err(integrity("attempt-continuation-origin-cycle"));
+            }
+
+            if let Some(validated) = cache.validated_attempts.get(&current_id).cloned() {
+                if validated.path != attempt.path() {
+                    return Err(integrity("attempt-continuation-path-mismatch"));
+                }
+                return cache_attempt_continuation_prefix(cache, id, pending, validated);
+            }
+
+            let current = match current.take() {
+                Some(current) => current,
+                None => self.read_attempt_record(current_id)?,
+            };
+            if current.path() != attempt.path() {
+                return Err(integrity("attempt-continuation-path-mismatch"));
+            }
+
+            let validated = match current.start() {
+                AttemptStart::Discover { configuration } => {
+                    let configuration =
+                        self.read_configuration_artifact(configuration.content_id())?;
+                    ValidatedAttempt {
+                        attempt: current,
+                        path: attempt.path(),
+                        lineage: (configuration.scenario(), configuration.scenario_artifact()),
+                        origin_depth: 1,
+                    }
+                }
+                AttemptStart::Branch {
+                    edge,
+                    parent,
+                    selection,
+                } => {
+                    if path.edges().last() != Some(&edge) {
+                        return Err(integrity("attempt-branch-path-terminal-edge-mismatch"));
+                    }
+                    let parent = self.read_configuration_artifact(parent.content_id())?;
+                    let resolved = self.resolve_selection(selection)?;
+                    let branch_point = resolved
+                        .opportunity()
+                        .branch_point_id(parent.configuration());
+                    resolved.selection().validate_branch_replay(
+                        resolved.opportunity(),
+                        resolved.domain(),
+                        branch_point,
+                    )?;
+                    if let crate::SelectionOrigin::CampaignBranch {
+                        edge: selected_edge,
+                        ..
+                    } = resolved.selection().origin()
+                        && selected_edge != edge
+                    {
+                        return Err(integrity("attempt-branch-edge-mismatch"));
+                    }
+                    if path.segments().is_some_and(|segments| {
+                        segments.last().copied()
+                            != Some(crate::BranchPathSegment::new(branch_point, edge))
+                    }) {
+                        return Err(integrity("attempt-branch-path-terminal-scope-mismatch"));
+                    }
+                    ValidatedAttempt {
+                        attempt: current,
+                        path: attempt.path(),
+                        lineage: (parent.scenario(), parent.scenario_artifact()),
+                        origin_depth: 1,
+                    }
+                }
+                AttemptStart::AfterAttempt { origin, reached } => {
+                    let reached = self.read_configuration_artifact(reached.content_id())?;
+                    pending.push((
+                        current_id,
+                        current,
+                        (reached.scenario(), reached.scenario_artifact()),
+                    ));
+                    if pending.len() >= MAX_AFTER_ATTEMPT_ORIGIN_DEPTH {
+                        return Err(integrity("attempt-continuation-origin-depth-exceeded"));
+                    }
+                    current_id = origin.content_id();
+                    continue;
+                }
+            };
+
+            cache
+                .validated_attempts
+                .insert(current_id, validated.clone());
+            return cache_attempt_continuation_prefix(cache, id, pending, validated);
+        }
+    }
+
+    fn read_attempt_record(&self, id: ContentId) -> Result<Attempt, CampaignRepositoryError> {
         let envelope = self.require_record_kind(id, crate::CampaignRecordKind::Attempt)?;
         let attempt = Attempt::from_canonical_bytes(envelope.body())?;
         if attempt.id()?.content_id() != id {
             return Err(integrity("attempt-envelope-shape"));
-        }
-        let path = self.read_branch_path(attempt.path().content_id())?;
-        match attempt.start() {
-            AttemptStart::Discover { configuration } => {
-                self.read_configuration_artifact(configuration.content_id())?;
-            }
-            AttemptStart::Branch {
-                edge,
-                parent,
-                selection,
-            } => {
-                if path.edges().last() != Some(&edge) {
-                    return Err(integrity("attempt-branch-path-terminal-edge-mismatch"));
-                }
-                let parent = self.read_configuration_artifact(parent.content_id())?;
-                let resolved = self.resolve_selection(selection)?;
-                let branch_point = resolved
-                    .opportunity()
-                    .branch_point_id(parent.configuration());
-                resolved.selection().validate_branch_replay(
-                    resolved.opportunity(),
-                    resolved.domain(),
-                    branch_point,
-                )?;
-                if let crate::SelectionOrigin::CampaignBranch {
-                    edge: selected_edge,
-                    ..
-                } = resolved.selection().origin()
-                    && selected_edge != edge
-                {
-                    return Err(integrity("attempt-branch-edge-mismatch"));
-                }
-                if path.segments().is_some_and(|segments| {
-                    segments.last().copied()
-                        != Some(crate::BranchPathSegment::new(branch_point, edge))
-                }) {
-                    return Err(integrity("attempt-branch-path-terminal-scope-mismatch"));
-                }
-            }
         }
         Ok(attempt)
     }
@@ -2383,8 +2583,16 @@ impl CampaignRepository {
         &self,
         id: ContentId,
     ) -> Result<AttemptAdmission, CampaignRepositoryError> {
+        self.read_attempt_admission_cached(id, &mut ChoiceValidationCache::default())
+    }
+
+    pub(super) fn read_attempt_admission_cached(
+        &self,
+        id: ContentId,
+        cache: &mut ChoiceValidationCache,
+    ) -> Result<AttemptAdmission, CampaignRepositoryError> {
         let admission = self.decode_attempt_admission(id)?;
-        let attempt = self.read_attempt(admission.attempt().content_id())?;
+        let attempt = self.read_attempt_cached(admission.attempt().content_id(), cache)?;
         match admission.role() {
             AttemptAdmissionRole::ExecutionBasis {
                 proposal: Some(proposal),
@@ -2398,7 +2606,10 @@ impl CampaignRepository {
                 }
             }
             AttemptAdmissionRole::ExecutionBasis { proposal: None, .. }
-                if !matches!(attempt.start(), AttemptStart::Discover { .. }) =>
+                if !matches!(
+                    attempt.start(),
+                    AttemptStart::Discover { .. } | AttemptStart::AfterAttempt { .. }
+                ) =>
             {
                 return Err(integrity("branch-attempt-execution-basis-has-no-proposal"));
             }
@@ -2423,11 +2634,12 @@ impl CampaignRepository {
         Ok(admission)
     }
 
-    pub(super) fn validate_attempt_admission_references_shallow(
+    pub(super) fn validate_attempt_admission_references_shallow_cached(
         &self,
         admission: &AttemptAdmission,
+        cache: &mut ChoiceValidationCache,
     ) -> Result<(), CampaignRepositoryError> {
-        let attempt = self.read_attempt(admission.attempt().content_id())?;
+        let attempt = self.read_attempt_cached(admission.attempt().content_id(), cache)?;
         match admission.role() {
             AttemptAdmissionRole::ExecutionBasis {
                 proposal: Some(proposal),
@@ -2444,7 +2656,10 @@ impl CampaignRepository {
                 }
             }
             AttemptAdmissionRole::ExecutionBasis { proposal: None, .. }
-                if !matches!(attempt.start(), AttemptStart::Discover { .. }) =>
+                if !matches!(
+                    attempt.start(),
+                    AttemptStart::Discover { .. } | AttemptStart::AfterAttempt { .. }
+                ) =>
             {
                 return Err(integrity("branch-attempt-execution-basis-has-no-proposal"));
             }
@@ -2808,6 +3023,38 @@ impl CampaignRepository {
             return Err(integrity("campaign-child-record-kind-mismatch"));
         }
         Ok(envelope)
+    }
+
+    fn require_record_kind_with_canonical_byte_limit(
+        &self,
+        id: ContentId,
+        expected: crate::CampaignRecordKind,
+        remaining_canonical_bytes: usize,
+        maximum_canonical_bytes: usize,
+    ) -> Result<(ObjectEnvelope, usize), CampaignRepositoryError> {
+        let source = self.blobs.read(id, None)?;
+        let source_bytes = usize::try_from(source.logical_length()).map_err(|_| {
+            CampaignRepositoryError::SelectionResolutionBudgetExceeded {
+                maximum_canonical_bytes,
+            }
+        })?;
+        if source.logical_length() > MAX_ENVELOPE_BYTES {
+            return Err(StoreError::Quota.into());
+        }
+        if source_bytes > remaining_canonical_bytes {
+            return Err(CampaignRepositoryError::SelectionResolutionBudgetExceeded {
+                maximum_canonical_bytes,
+            });
+        }
+        let bytes = source.read_all(source.logical_length())?;
+        let envelope = ObjectEnvelope::from_canonical_bytes(&bytes)?;
+        if envelope.content_id() != id {
+            return Err(integrity("envelope-content-id-mismatch"));
+        }
+        if envelope.record_kind() != expected {
+            return Err(integrity("campaign-child-record-kind-mismatch"));
+        }
+        Ok((envelope, source_bytes))
     }
 
     pub(super) fn validate_policy_artifact_references(

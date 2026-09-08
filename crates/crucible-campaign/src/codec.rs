@@ -435,11 +435,6 @@ impl<'a> Decoder<'a> {
     ) -> Result<Vec<T>, CampaignCodecError> {
         let length = self.bounded_length(MAX_COLLECTION_ITEMS, "collection-item-count")?;
         let mut values = Vec::new();
-        values
-            .try_reserve_exact(length)
-            .map_err(|_| CampaignCodecError::LimitExceeded {
-                limit: "collection-allocation",
-            })?;
         for _ in 0..length {
             values.push(decode_value(self)?);
         }
@@ -454,9 +449,6 @@ impl<'a> Decoder<'a> {
     ) -> Result<Vec<T>, CampaignCodecError> {
         let length = self.bounded_length(maximum as u64, limit)?;
         let mut values = Vec::new();
-        values
-            .try_reserve_exact(length)
-            .map_err(|_| CampaignCodecError::LimitExceeded { limit })?;
         for _ in 0..length {
             values.push(decode_value(self)?);
         }
@@ -551,5 +543,21 @@ impl<'a> Decoder<'a> {
         self.take(N)?
             .try_into()
             .map_err(|_| CampaignCodecError::Truncated)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn declared_sequence_length_does_not_preallocate_without_item_bytes() {
+        let bytes = MAX_COLLECTION_ITEMS.to_be_bytes();
+        let mut decoder = Decoder::new(&bytes);
+
+        assert_eq!(
+            decoder.sequence_bounded(MAX_COLLECTION_ITEMS as usize, "test-sequence", Decoder::u8),
+            Err(CampaignCodecError::Truncated)
+        );
     }
 }

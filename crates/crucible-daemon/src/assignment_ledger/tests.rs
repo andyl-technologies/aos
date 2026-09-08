@@ -557,6 +557,59 @@ fn resumed_origin_round_trips_and_retains_input_and_output_roots() {
 }
 
 #[test]
+fn selected_origin_round_trips_and_retains_certificate_resume_and_output_roots() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let submit = request(0x1a, 0x3a, 1);
+    let key = AttemptExecutionKey::new(submit.lineage(), submit.attempt());
+    let source = checkpoint(0x7b);
+    let resume = checkpoint(0x7c);
+    let output = checkpoint(0x7d);
+    let origin = AttemptExecutionOrigin::SelectedSavepoint {
+        certificate: campaign_fact(0x8a),
+        request: campaign_fact(0x8b),
+        source_attempt: request(0x2a, 0x4a, 1).attempt(),
+        source_execution: execution(0x5b),
+        source_checkpoint: source,
+        resume: Some(ExactCheckpointResumeBasis {
+            assignment: AssignmentId::from_bytes([0x6b; 16]).expect("resume assignment"),
+            request_digest: CampaignHash::derive("crucible.test.selected-resume.v1", b"resume"),
+            prior_execution: execution(0x5c),
+            checkpoint: resume,
+        }),
+    };
+    let state = AttemptRuntimeState::CheckpointPublishing {
+        execution_basis: submit.execution_basis_digest(),
+        origin,
+        daemon_epoch: submit.daemon_epoch(),
+        execution: execution(0x5d),
+        checkpoint: output,
+    };
+
+    {
+        let mut ledger =
+            DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
+        assert_eq!(
+            ledger
+                .compare_exchange_attempt(key, None, Some(state))
+                .expect("publish selected resumed state"),
+            AttemptStateCas::Advanced
+        );
+    }
+
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("reopen durable ledger");
+    assert_eq!(
+        ledger.load_attempt(key).expect("load selected state"),
+        Some(state)
+    );
+    let mut roots = Vec::new();
+    ledger
+        .visit_checkpoint_roots(&mut |checkpoint| roots.push(checkpoint))
+        .expect("visit selected checkpoint roots");
+    roots.sort();
+    assert_eq!(roots, vec![source, resume, output]);
+}
+
+#[test]
 fn directory_ledger_rejects_corrupt_bounded_records() {
     let directory = tempfile::tempdir().expect("ledger tempdir");
     let request = request(0x13, 0x33, 1);
@@ -1304,6 +1357,121 @@ fn directory_ledger_reads_legacy_v10_materialized_capture_basis_as_semantic() {
         ledger.load_attempt(key).expect("load legacy paused state"),
         Some(state)
     );
+    assert_eq!(key.scope(), AttemptExecutionScope::Semantic);
+}
+
+#[test]
+fn directory_ledger_reads_v11_scoped_savepoint_capture_basis() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let capture_fact = campaign_fact(0x92);
+    let request = savepoint_capture_request(0x23, 0x43, 1, capture_fact, configuration(0x93));
+    let key = AttemptExecutionKey::for_request(&request);
+    let promotion_basis = CheckpointPromotionExecutionBasis::new_for_start_mode(
+        request.resources(),
+        request.retention(),
+        request.start_mode(),
+    );
+    let state = AttemptRuntimeState::Paused {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x63),
+        checkpoint: checkpoint(0x83),
+        promotion_basis: Some(promotion_basis),
+    };
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
+
+    let mut payload = Vec::with_capacity(512);
+    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V11);
+    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
+    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
+    push_bytes(&mut payload, &request.execution_scope().canonical_bytes());
+    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
+    encode_attempt_origin(&mut payload, AttemptExecutionOrigin::Initial);
+    payload.push(6);
+    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
+    payload.extend_from_slice(&execution(0x63).as_bytes());
+    push_bytes(&mut payload, checkpoint(0x83).to_text().as_bytes());
+    encode_checkpoint_promotion_basis(&mut payload, Some(promotion_basis));
+    let path = ledger.attempt_path(key);
+    fs::create_dir_all(path.parent().expect("attempt-state parent"))
+        .expect("create v11 attempt-state parent");
+    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V11))
+        .expect("write v11 attempt state");
+
+    assert_eq!(
+        ledger.load_attempt(key).expect("load v11 paused state"),
+        Some(state)
+    );
+    assert_eq!(
+        key.scope(),
+        AttemptExecutionScope::SavepointCapture {
+            request: capture_fact,
+        }
+    );
+}
+
+#[test]
+fn v11_rejects_v12_selected_origin_and_promotion_tags() {
+    let request = request(0x24, 0x44, 1);
+    let key = AttemptExecutionKey::for_request(&request);
+
+    let mut selected_origin = Vec::with_capacity(512);
+    selected_origin.extend_from_slice(ATTEMPT_STATE_MAGIC_V11);
+    push_bytes(&mut selected_origin, request.lineage().to_text().as_bytes());
+    push_bytes(&mut selected_origin, request.attempt().to_text().as_bytes());
+    push_bytes(
+        &mut selected_origin,
+        &request.execution_scope().canonical_bytes(),
+    );
+    selected_origin.extend_from_slice(&request.execution_basis_digest().as_bytes());
+    selected_origin.push(2);
+    assert!(matches!(
+        decode_attempt_state(&seal(selected_origin, ATTEMPT_STATE_CHECKSUM_DOMAIN_V11,)),
+        Err(AssignmentLedgerError::Corrupt {
+            reason: "attempt-state-origin-unknown-tag"
+        })
+    ));
+
+    let mut selected_promotion = Vec::with_capacity(512);
+    selected_promotion.extend_from_slice(ATTEMPT_STATE_MAGIC_V11);
+    push_bytes(
+        &mut selected_promotion,
+        request.lineage().to_text().as_bytes(),
+    );
+    push_bytes(
+        &mut selected_promotion,
+        request.attempt().to_text().as_bytes(),
+    );
+    push_bytes(
+        &mut selected_promotion,
+        &request.execution_scope().canonical_bytes(),
+    );
+    selected_promotion.extend_from_slice(&request.execution_basis_digest().as_bytes());
+    encode_attempt_origin(&mut selected_promotion, AttemptExecutionOrigin::Initial);
+    selected_promotion.push(6);
+    selected_promotion.extend_from_slice(&request.daemon_epoch().as_bytes());
+    selected_promotion.extend_from_slice(&execution(0x64).as_bytes());
+    push_bytes(
+        &mut selected_promotion,
+        checkpoint(0x84).to_text().as_bytes(),
+    );
+    selected_promotion.push(1);
+    selected_promotion.extend_from_slice(&request.resources().maximum_vcpus().to_be_bytes());
+    selected_promotion
+        .extend_from_slice(&request.resources().maximum_resident_bytes().to_be_bytes());
+    selected_promotion.extend_from_slice(&request.resources().maximum_disk_bytes().to_be_bytes());
+    selected_promotion
+        .extend_from_slice(&request.resources().maximum_execution_quanta().to_be_bytes());
+    selected_promotion.push(1);
+    selected_promotion.push(3);
+    assert!(matches!(
+        decode_attempt_state(&seal(selected_promotion, ATTEMPT_STATE_CHECKSUM_DOMAIN_V11,)),
+        Err(AssignmentLedgerError::Corrupt {
+            reason: "checkpoint-promotion-start-mode-tag"
+        })
+    ));
+
     assert_eq!(key.scope(), AttemptExecutionScope::Semantic);
 }
 

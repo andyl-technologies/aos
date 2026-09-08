@@ -585,10 +585,7 @@ fn factory(
 }
 
 fn template_configuration(input: &CrucibleAttemptExecution) -> ContentHash {
-    match input.start() {
-        CrucibleResolvedAttemptStart::Discover { configuration } => configuration.id(),
-        CrucibleResolvedAttemptStart::Branch { parent, .. } => parent.id(),
-    }
+    input.start().configuration().id()
 }
 
 fn exit_policy() -> QemuHotForkChildExitPolicy {

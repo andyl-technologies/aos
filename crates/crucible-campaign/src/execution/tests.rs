@@ -853,7 +853,7 @@ fn materialized_start_resume_authenticates_prior_and_new_execution_bases() {
     assert_eq!(
         ResumeAttemptExecutionRequest::new(&capture_assignment, prior_execution, checkpoint),
         Err(CampaignCodecError::InvalidValue {
-            reason: "resume requires an execute assignment",
+            reason: "resume requires a semantic assignment",
         })
     );
     assert_eq!(
@@ -887,6 +887,80 @@ fn materialized_start_resume_authenticates_prior_and_new_execution_bases() {
         ResumeAttemptExecutionRequest::from_canonical_bytes(&version_three_execute),
         Err(CampaignCodecError::InvalidValue {
             reason: "resume attempt request version 3 requires materialized-start capture",
+        })
+    );
+}
+
+#[test]
+fn selected_savepoint_resume_preserves_the_semantic_start_authority() {
+    let ordinary = fixture_request();
+    let snapshot = CampaignSnapshotId::from_content_id(ContentId::for_bytes(
+        ObjectKind::CampaignSnapshot,
+        2,
+        b"selected-resume-snapshot",
+    ))
+    .expect("snapshot");
+    let selected = SubmitAttemptRequest::new_selected_savepoint(
+        ordinary.assignment(),
+        ordinary.daemon_epoch(),
+        ordinary.lineage(),
+        ordinary.attempt(),
+        ordinary.resources(),
+        ordinary.retention(),
+        snapshot,
+        fixture_campaign_fact(0xb1),
+        fixture_campaign_fact(0xb2),
+    )
+    .expect("selected assignment");
+    let prior_execution = ExecutionId::from_bytes([0xb3; 16]).expect("prior execution");
+    let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
+        ObjectKind::ExactManifest,
+        2,
+        b"selected-resume-checkpoint",
+    ))
+    .expect("checkpoint");
+
+    let request = ResumeAttemptExecutionRequest::new(&selected, prior_execution, checkpoint)
+        .expect("selected resume request");
+    let bytes = request.canonical_bytes();
+
+    assert_eq!(&bytes[..4], &4_u32.to_be_bytes());
+    assert_eq!(
+        ResumeAttemptExecutionRequest::from_canonical_bytes(&bytes)
+            .expect("decode selected resume"),
+        request
+    );
+    assert_eq!(request.assignment_request().expect("assignment"), selected);
+    assert_eq!(
+        request.execution_basis_digest(),
+        selected.execution_basis_digest()
+    );
+    assert_eq!(
+        request.prior_execution_basis_digest(),
+        selected.execution_basis_digest()
+    );
+
+    let ordinary_resume =
+        ResumeAttemptExecutionRequest::new(&ordinary, prior_execution, checkpoint)
+            .expect("ordinary resume request");
+    let mut version_four_execute = bytes.clone();
+    version_four_execute.truncate(ordinary_resume.canonical_bytes().len() + 1);
+    *version_four_execute
+        .last_mut()
+        .expect("prior start mode tag") = 0;
+    assert_eq!(
+        ResumeAttemptExecutionRequest::from_canonical_bytes(&version_four_execute),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "resume attempt request version 4 requires selected-savepoint start",
+        })
+    );
+
+    let mut unsupported_version = bytes;
+    unsupported_version[..4].copy_from_slice(&5_u32.to_be_bytes());
+    assert_eq!(
+        ResumeAttemptExecutionRequest::from_canonical_bytes(&unsupported_version),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported executor component-message schema version",
         })
     );
 }

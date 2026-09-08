@@ -995,6 +995,9 @@ impl CampaignRepository {
                 }
                 parent
             }
+            AttemptStart::AfterAttempt { reached, .. } => {
+                self.read_configuration_artifact(reached.content_id())?
+            }
         };
 
         if child.id()? != observation.child_content()

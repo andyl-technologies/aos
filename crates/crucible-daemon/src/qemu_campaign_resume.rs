@@ -12,6 +12,7 @@ use crucible::{
 };
 use crucible_api::{ProductionVmLifecycleLoop, ProductionVmLifecycleResumeState};
 use crucible_campaign::ExactCheckpointId;
+use crucible_cas::content_store::StoreError;
 
 use crate::qemu_campaign_lifecycle::classify_production_lifecycle_failure;
 use crate::{
@@ -22,6 +23,7 @@ use crate::{
     QemuAttemptProcessResourceGuard, QemuAttemptProductionVmLifecycleFactory,
     QemuAttemptResourceGuardFactory, QemuFreshAttemptDriver, QemuFreshAttemptLifecycle,
     QemuFreshAttemptLifecycleOwner, QemuFreshDriveOutcome, QemuFreshStartMaterialization,
+    QemuSavepointReplayProof, QemuSelectedOriginResumeRunner,
 };
 
 #[cfg(test)]
@@ -50,6 +52,26 @@ pub trait QemuProductionExactResumeLifecycleFactory {
     type Lifecycle: QemuProductionExactResumeLifecycleOwner;
     /// Factory-specific installation or guarded-construction failure.
     type Error;
+
+    /// Authenticates the checkpoint's modeled boundary without launching QEMU.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified source, integrity, cancellation, or compatibility failure.
+    #[allow(clippy::too_many_arguments)]
+    fn authenticate_resume_boundary(
+        &mut self,
+        checkpoints: &ExactCheckpointStore,
+        checkpoint: ExactCheckpointId,
+        scenario: &ScenarioDef,
+        source: &ScenarioDefForm,
+        initial: &Configuration,
+        post_selection: Option<&Configuration>,
+        context: &AttemptExecutionContext,
+    ) -> Result<
+        Option<crate::qemu_campaign_driver::QemuSelectedResumeBoundary>,
+        AttemptWorkerFailure<Self::Error>,
+    >;
 
     /// Restores one exact root under the admitted operational context.
     ///
@@ -82,6 +104,38 @@ where
     type Lifecycle = ProductionVmLifecycleLoop;
     type Error = crate::QemuAttemptProductionVmLifecycleError;
 
+    fn authenticate_resume_boundary(
+        &mut self,
+        checkpoints: &ExactCheckpointStore,
+        checkpoint: ExactCheckpointId,
+        scenario: &ScenarioDef,
+        source: &ScenarioDefForm,
+        initial: &Configuration,
+        post_selection: Option<&Configuration>,
+        context: &AttemptExecutionContext,
+    ) -> Result<
+        Option<crate::qemu_campaign_driver::QemuSelectedResumeBoundary>,
+        AttemptWorkerFailure<Self::Error>,
+    > {
+        let result = QemuAttemptProductionVmLifecycleFactory::authenticate_resume_boundary(
+            self,
+            checkpoints,
+            checkpoint,
+            scenario,
+            source,
+            initial,
+            post_selection,
+            context,
+        );
+        match result {
+            Ok(boundary) => Ok(Some(boundary)),
+            Err(error) if initial_selected_source_is_absent(&error, checkpoint, context) => {
+                Ok(None)
+            }
+            Err(error) => Err(classify_production_lifecycle_failure(error)),
+        }
+    }
+
     fn start_resume_lifecycle(
         &mut self,
         checkpoints: &ExactCheckpointStore,
@@ -103,6 +157,24 @@ where
         )
         .map_err(classify_production_lifecycle_failure)
     }
+}
+
+fn initial_selected_source_is_absent(
+    error: &crate::QemuAttemptProductionVmLifecycleError,
+    checkpoint: ExactCheckpointId,
+    context: &AttemptExecutionContext,
+) -> bool {
+    matches!(
+        error,
+        crate::QemuAttemptProductionVmLifecycleError::CheckpointRestore(
+            crate::ProductionAttemptCheckpointRestoreError::Checkpoint(
+                crate::ExactCheckpointStoreError::Store(StoreError::NotFound { id }),
+            ),
+        ) if *id == checkpoint.content_id()
+    ) && matches!(
+        context.execution_origin(),
+        crate::AttemptExecutionOrigin::SelectedSavepoint { resume: None, .. }
+    )
 }
 
 /// Version-four exact-resume runner with runner-owned final drain and sealing.
@@ -157,6 +229,10 @@ pub enum QemuProductionExactResumeExecutionRunnerError<F, D> {
     Lifecycle(F),
     /// The checkpoint retained only an event-log suffix.
     IncompleteEventLog(u64),
+    /// A selected continuation reached resume without an independent cold proof.
+    MissingSelectedOriginProof,
+    /// The restored physical source differs from the independently replayed boundary.
+    SelectedOriginMismatch,
     /// Restored cumulative event evidence exceeded a campaign bound.
     EventLogLimit {
         /// Stable name of the exceeded bound.
@@ -181,6 +257,9 @@ pub enum QemuProductionExactResumeExecutionRunnerError<F, D> {
     },
 }
 
+type ExactResumeWorkerFailure<F, D> =
+    AttemptWorkerFailure<QemuProductionExactResumeExecutionRunnerError<F, D>>;
+
 impl<F, D> std::fmt::Display for QemuProductionExactResumeExecutionRunnerError<F, D> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -192,6 +271,10 @@ impl<F, D> std::fmt::Display for QemuProductionExactResumeExecutionRunnerError<F
                 formatter,
                 "production checkpoint event log begins after {prior} prior events"
             ),
+            Self::MissingSelectedOriginProof => formatter
+                .write_str("selected continuation resume received no independent origin proof"),
+            Self::SelectedOriginMismatch => formatter
+                .write_str("selected continuation physical source differs from cold replay"),
             Self::EventLogLimit { limit } => {
                 write!(
                     formatter,
@@ -235,6 +318,8 @@ where
             Self::CleanupAfterRunner { failure, .. } => Some(failure.as_ref()),
             Self::MissingCheckpoint
             | Self::IncompleteEventLog(_)
+            | Self::MissingSelectedOriginProof
+            | Self::SelectedOriginMismatch
             | Self::EventLogLimit { .. }
             | Self::UnsolicitedCheckpoint => None,
         }
@@ -258,18 +343,80 @@ where
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
     ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
-        let checkpoint = context
-            .resume_checkpoint()
-            .ok_or_else(|| AttemptWorkerFailure::Terminal(Self::Error::MissingCheckpoint))?;
+        self.execute_with_optional_origin_proof(input, context, None)
+    }
+}
+
+impl<F, D> QemuSelectedOriginResumeRunner for QemuProductionExactResumeExecutionRunner<F, D>
+where
+    F: QemuProductionExactResumeLifecycleFactory,
+    D: QemuFreshAttemptDriver,
+{
+    fn authenticate_selected_resume_boundary(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<
+        Option<crate::qemu_campaign_driver::QemuSelectedResumeBoundary>,
+        AttemptWorkerFailure<Self::Error>,
+    > {
+        let checkpoint = context.resume_checkpoint().ok_or_else(|| {
+            AttemptWorkerFailure::Terminal(
+                QemuProductionExactResumeExecutionRunnerError::MissingCheckpoint,
+            )
+        })?;
         let scenario = input.scenario().scenario_def();
-        let (initial, post_selection) = match input.start() {
-            crate::CrucibleResolvedAttemptStart::Discover { configuration } => {
-                (configuration, None)
-            }
-            crate::CrucibleResolvedAttemptStart::Branch {
-                parent, selected, ..
-            } => (parent, Some(selected)),
-        };
+        let (initial, post_selection) = attempt_resume_configurations(input);
+        self.lifecycles
+            .authenticate_resume_boundary(
+                &self.checkpoints,
+                checkpoint,
+                &scenario,
+                input.scenario(),
+                initial,
+                post_selection,
+                context,
+            )
+            .map_err(map_resume_lifecycle_failure)
+    }
+
+    fn execute_verified_selected_origin(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        proof: QemuSavepointReplayProof,
+    ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+        self.execute_with_optional_origin_proof(input, context, Some(proof))
+    }
+}
+
+impl<F, D> QemuProductionExactResumeExecutionRunner<F, D>
+where
+    F: QemuProductionExactResumeLifecycleFactory,
+    D: QemuFreshAttemptDriver,
+{
+    fn execute_with_optional_origin_proof(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        origin_proof: Option<QemuSavepointReplayProof>,
+    ) -> Result<CrucibleExecutionOutcome, ExactResumeWorkerFailure<F::Error, D::Error>> {
+        let checkpoint = context.resume_checkpoint().ok_or_else(|| {
+            AttemptWorkerFailure::Terminal(
+                QemuProductionExactResumeExecutionRunnerError::MissingCheckpoint,
+            )
+        })?;
+        let selected_origin = matches!(
+            input.start(),
+            crate::CrucibleResolvedAttemptStart::AfterAttempt { .. }
+        );
+        if selected_origin && origin_proof.is_none() {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuProductionExactResumeExecutionRunnerError::MissingSelectedOriginProof,
+            ));
+        }
+        let scenario = input.scenario().scenario_def();
+        let (initial, post_selection) = attempt_resume_configurations(input);
         let mut lifecycle = self
             .lifecycles
             .start_resume_lifecycle(
@@ -282,40 +429,41 @@ where
                 context,
             )
             .map_err(map_resume_lifecycle_failure)?;
-        let driven = resume_start_materialization(&lifecycle).and_then(|materialization| {
-            let mut facade = QemuFreshAttemptLifecycle::new(&mut lifecycle);
-            match self
-                .driver
-                .drive(&mut facade, input, context, materialization)
-                .map_err(map_resume_driver_failure)?
-            {
-                QemuFreshDriveOutcome::Observation(pending) => {
-                    Ok(ResumeRunnerResult::Observation(pending))
-                }
-                QemuFreshDriveOutcome::CheckpointRequested => {
-                    if !context.checkpoint_request().is_requested() {
-                        return Err(AttemptWorkerFailure::Terminal(
-                            Self::Error::UnsolicitedCheckpoint,
-                        ));
+        let driven =
+            resume_start_materialization(&lifecycle, origin_proof).and_then(|materialization| {
+                let mut facade = QemuFreshAttemptLifecycle::new(&mut lifecycle);
+                match self
+                    .driver
+                    .drive(&mut facade, input, context, materialization)
+                    .map_err(map_resume_driver_failure)?
+                {
+                    QemuFreshDriveOutcome::Observation(pending) => {
+                        Ok(ResumeRunnerResult::Observation(pending))
                     }
-                    let capture = lifecycle
-                        .capture_attempt_checkpoint(context)
-                        .map_err(map_resume_checkpoint_capture_failure)?;
-                    context
-                        .prepare_and_stage_checkpoint(capture)
-                        .map(ResumeRunnerResult::Checkpoint)
-                        .map_err(map_resume_checkpoint_handoff_failure)
+                    QemuFreshDriveOutcome::CheckpointRequested => {
+                        if !context.checkpoint_request().is_requested() {
+                            return Err(AttemptWorkerFailure::Terminal(
+                            QemuProductionExactResumeExecutionRunnerError::UnsolicitedCheckpoint,
+                        ));
+                        }
+                        let capture = lifecycle
+                            .capture_attempt_checkpoint(context)
+                            .map_err(map_resume_checkpoint_capture_failure)?;
+                        context
+                            .prepare_and_stage_checkpoint(capture)
+                            .map(ResumeRunnerResult::Checkpoint)
+                            .map_err(map_resume_checkpoint_handoff_failure)
+                    }
                 }
-            }
-        });
+            });
         let cleanup = lifecycle.shutdown();
         let (pending, final_events) = match (driven, cleanup) {
             (Ok(pending), Ok(events)) => (pending, events),
             (Err(failure), Ok(_)) => return Err(failure),
             (Ok(_), Err(cleanup)) => {
-                return Err(AttemptWorkerFailure::Terminal(Self::Error::Cleanup(
-                    cleanup,
-                )));
+                return Err(AttemptWorkerFailure::Terminal(
+                    QemuProductionExactResumeExecutionRunnerError::Cleanup(cleanup),
+                ));
             }
             (Err(failure), Err(cleanup)) => {
                 let failure = match failure {
@@ -324,7 +472,7 @@ where
                     | AttemptWorkerFailure::Terminal(error) => error,
                 };
                 return Err(AttemptWorkerFailure::Terminal(
-                    Self::Error::CleanupAfterRunner {
+                    QemuProductionExactResumeExecutionRunnerError::CleanupAfterRunner {
                         failure: Box::new(failure),
                         cleanup,
                     },
@@ -349,14 +497,30 @@ where
 
 fn resume_start_materialization<F, D>(
     lifecycle: &impl QemuProductionExactResumeLifecycleOwner,
+    selected_origin: Option<QemuSavepointReplayProof>,
 ) -> Result<
     QemuFreshStartMaterialization,
     AttemptWorkerFailure<QemuProductionExactResumeExecutionRunnerError<F, D>>,
 > {
-    let (events, base, completed_quanta, frontier, quiescence, terminal) = lifecycle
+    let (configuration, events, base, completed_quanta, frontier, quiescence, terminal) = lifecycle
         .resume_state()
         .map_err(map_resume_checkpoint_capture_failure)?
         .into_parts();
+    let attempt_event_count = if let Some(proof) = selected_origin {
+        if !proof.matches_boundary(&configuration, completed_quanta, frontier, base, &events) {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuProductionExactResumeExecutionRunnerError::SelectedOriginMismatch,
+            ));
+        }
+        proof
+            .attempt_event_count()
+            .and_then(|count| usize::try_from(count).ok())
+            .ok_or(AttemptWorkerFailure::Terminal(
+                QemuProductionExactResumeExecutionRunnerError::SelectedOriginMismatch,
+            ))?
+    } else {
+        0
+    };
     if base != 0 {
         return Err(AttemptWorkerFailure::Terminal(
             QemuProductionExactResumeExecutionRunnerError::IncompleteEventLog(base),
@@ -374,13 +538,29 @@ fn resume_start_materialization<F, D>(
         return Err(resume_event_log_limit("campaign-event-log-bytes"));
     }
     Ok(QemuFreshStartMaterialization::from_resume_parts(
+        configuration,
         events,
         bytes,
         completed_quanta,
         frontier,
         quiescence,
         terminal,
-    ))
+    )
+    .with_attempt_event_count(attempt_event_count))
+}
+
+fn attempt_resume_configurations(
+    input: &CrucibleAttemptExecution,
+) -> (&Configuration, Option<&Configuration>) {
+    match input.start() {
+        crate::CrucibleResolvedAttemptStart::Discover { configuration } => (configuration, None),
+        crate::CrucibleResolvedAttemptStart::Branch {
+            parent, selected, ..
+        } => (parent, Some(selected)),
+        crate::CrucibleResolvedAttemptStart::AfterAttempt { .. } => {
+            (input.start().configuration(), None)
+        }
+    }
 }
 
 fn resume_event_log_limit<F, D>(

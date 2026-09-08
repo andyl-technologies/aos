@@ -594,6 +594,7 @@ pub struct ProductionVmLifecycleLoop {
 /// Exact scheduler/evidence boundary exposed after production checkpoint restore.
 #[derive(Clone, Debug)]
 pub struct ProductionVmLifecycleResumeState {
+    configuration: Configuration,
     event_log: Vec<SchedulerEventLogEntry>,
     event_log_base_events: u64,
     scheduler_quanta: u64,
@@ -611,6 +612,7 @@ impl ProductionVmLifecycleResumeState {
     /// whole run.
     #[must_use]
     pub fn new(
+        configuration: Configuration,
         event_log: Vec<SchedulerEventLogEntry>,
         event_log_base_events: u64,
         scheduler_quanta: u64,
@@ -619,6 +621,7 @@ impl ProductionVmLifecycleResumeState {
         terminal_verdict: Option<QuantumTerminalVerdict>,
     ) -> Self {
         Self {
+            configuration,
             event_log,
             event_log_base_events,
             scheduler_quanta,
@@ -645,6 +648,7 @@ impl ProductionVmLifecycleResumeState {
     pub fn into_parts(
         self,
     ) -> (
+        Configuration,
         Vec<SchedulerEventLogEntry>,
         u64,
         u64,
@@ -653,6 +657,7 @@ impl ProductionVmLifecycleResumeState {
         Option<QuantumTerminalVerdict>,
     ) {
         (
+            self.configuration,
             self.event_log,
             self.event_log_base_events,
             self.scheduler_quanta,
