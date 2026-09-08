@@ -1,0 +1,227 @@
+--- a/libguile/threads.c
++++ b/libguile/threads.c
+@@ -29,6 +29,9 @@
+ #include <fcntl.h>
+ #include <full-read.h>
+ #include <nproc.h>
++#include <limits.h>
++#include <poll.h>
++#include <time.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>   /* for memset used by FD_ZERO on Solaris 10 */
+@@ -1511,7 +1514,160 @@
+ 
+   int             result;
+   int             errno_value;
++  int             wakeup_fd;
++  int             wakeup_ready;
+ };
++
++/* Preserve select's remaining timeout for scm_std_sleep and scm_std_usleep.
++   Poll's millisecond timeout is rounded up, and long waits are split without
++   returning early when the millisecond count would exceed INT_MAX.  */
++static int
++poll_with_select_timeout (struct pollfd *fds, nfds_t nfds,
++                          struct timeval *timeout)
++{
++  if (timeout == NULL)
++    return poll (fds, nfds, -1);
++
++  if (timeout->tv_sec < 0 || timeout->tv_usec < 0
++      || timeout->tv_usec >= 1000000)
++    {
++      errno = EINVAL;
++      return -1;
++    }
++
++  for (;;)
++    {
++      struct timespec before, after;
++      time_t elapsed_secs;
++      long elapsed_usecs;
++      int milliseconds, result, saved_errno;
++
++      if (clock_gettime (CLOCK_MONOTONIC, &before) < 0)
++        return -1;
++
++      if (timeout->tv_sec > (INT_MAX - 1000) / 1000)
++        milliseconds = INT_MAX;
++      else
++        milliseconds = timeout->tv_sec * 1000
++          + (timeout->tv_usec + 999) / 1000;
++
++      result = poll (fds, nfds, milliseconds);
++      saved_errno = errno;
++      if (clock_gettime (CLOCK_MONOTONIC, &after) < 0)
++        return -1;
++
++      elapsed_secs = after.tv_sec - before.tv_sec;
++      elapsed_usecs = (after.tv_nsec - before.tv_nsec) / 1000;
++      if (elapsed_usecs < 0)
++        {
++          elapsed_secs--;
++          elapsed_usecs += 1000000;
++        }
++
++      if (elapsed_secs > timeout->tv_sec
++          || (elapsed_secs == timeout->tv_sec
++              && elapsed_usecs >= timeout->tv_usec))
++        timeout->tv_sec = timeout->tv_usec = 0;
++      else
++        {
++          timeout->tv_sec -= elapsed_secs;
++          timeout->tv_usec -= elapsed_usecs;
++          if (timeout->tv_usec < 0)
++            {
++              timeout->tv_sec--;
++              timeout->tv_usec += 1000000;
++            }
++        }
++
++      if (result != 0 || (timeout->tv_sec == 0 && timeout->tv_usec == 0))
++        {
++          errno = saved_errno;
++          return result;
++        }
++    }
++}
++
++/* The caller's sets fit fd_set, but the private wakeup pipe need not.
++   Keep that descriptor in poll's array rather than indexing past fd_set.  */
++static void *
++do_std_select_with_high_wakeup_fd (void *data)
++{
++  struct select_args *args = data;
++  struct pollfd fds[FD_SETSIZE + 1];
++  nfds_t count = 0, i;
++  int fd, result;
++
++  args->result = -1;
++  if (args->nfds < 0 || args->nfds > FD_SETSIZE)
++    {
++      args->errno_value = EINVAL;
++      return NULL;
++    }
++
++  for (fd = 0; fd < args->nfds; fd++)
++    {
++      short events = 0;
++
++      if (args->read_fds && FD_ISSET (fd, args->read_fds))
++        events |= POLLIN;
++      if (args->write_fds && FD_ISSET (fd, args->write_fds))
++        events |= POLLOUT;
++      if (args->except_fds && FD_ISSET (fd, args->except_fds))
++        events |= POLLPRI;
++
++      if (events)
++        fds[count++] = (struct pollfd) { fd, events, 0 };
++    }
++  fds[count] = (struct pollfd) { args->wakeup_fd, POLLIN, 0 };
++
++  result = poll_with_select_timeout (fds, count + 1, args->timeout);
++  args->errno_value = errno;
++  if (result < 0)
++    return NULL;
++
++  /* Unlike select, poll reports invalid descriptors as returned events.  */
++  for (i = 0; i <= count; i++)
++    if (fds[i].revents & POLLNVAL)
++      {
++        args->errno_value = EBADF;
++        return NULL;
++      }
++
++  if (args->read_fds)
++    FD_ZERO (args->read_fds);
++  if (args->write_fds)
++    FD_ZERO (args->write_fds);
++  if (args->except_fds)
++    FD_ZERO (args->except_fds);
++
++  /* Select counts ready bits, so a descriptor ready in two sets counts twice. */
++  result = 0;
++  for (i = 0; i < count; i++)
++    {
++      fd = fds[i].fd;
++      if ((fds[i].events & POLLIN)
++          && (fds[i].revents & (POLLIN | POLLHUP | POLLERR)))
++        {
++          FD_SET (fd, args->read_fds);
++          result++;
++        }
++      if ((fds[i].events & POLLOUT)
++          && (fds[i].revents & (POLLOUT | POLLERR)))
++        {
++          FD_SET (fd, args->write_fds);
++          result++;
++        }
++      if ((fds[i].events & POLLPRI) && (fds[i].revents & POLLPRI))
++        {
++          FD_SET (fd, args->except_fds);
++          result++;
++        }
++    }
++
++  args->wakeup_ready = !!(fds[count].revents & (POLLIN | POLLHUP | POLLERR));
++  args->result = result + args->wakeup_ready;
++  return NULL;
++}
+ 
+ static void *
+ do_std_select (void *args)
+@@ -1525,6 +1681,8 @@
+ 	    select_args->read_fds, select_args->write_fds,
+ 	    select_args->except_fds, select_args->timeout);
+   select_args->errno_value = errno;
++  select_args->wakeup_ready = select_args->result > 0
++    && FD_ISSET (select_args->wakeup_fd, select_args->read_fds);
+ 
+   return NULL;
+ }
+@@ -1555,30 +1713,38 @@
+   else
+     {
+       wakeup_fd = t->sleep_pipe[0];
+-      FD_SET (wakeup_fd, readfds);
+-      if (wakeup_fd >= nfds)
+-        nfds = wakeup_fd+1;
++      if (wakeup_fd < FD_SETSIZE)
++        {
++          FD_SET (wakeup_fd, readfds);
++          if (wakeup_fd >= nfds)
++            nfds = wakeup_fd+1;
++        }
+ 
+       args.nfds = nfds;
+       args.read_fds = readfds;
+       args.write_fds = writefds;
+       args.except_fds = exceptfds;
+       args.timeout = timeout;
++      args.wakeup_fd = wakeup_fd;
++      args.wakeup_ready = 0;
+ 
+       /* Explicitly cooperate with the GC.  */
+-      scm_without_guile (do_std_select, &args);
++      scm_without_guile (wakeup_fd < FD_SETSIZE
++                         ? do_std_select : do_std_select_with_high_wakeup_fd,
++                         &args);
+ 
+       res = args.result;
+       eno = args.errno_value;
+ 
+       scm_i_wait_finished (t);
+ 
+-      if (res > 0 && FD_ISSET (wakeup_fd, readfds))
++      if (res > 0 && args.wakeup_ready)
+         {
+           char dummy;
+           full_read (wakeup_fd, &dummy, 1);
+ 
+-          FD_CLR (wakeup_fd, readfds);
++          if (wakeup_fd < FD_SETSIZE)
++            FD_CLR (wakeup_fd, readfds);
+           res -= 1;
+           if (res == 0)
+             {
