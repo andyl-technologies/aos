@@ -5,6 +5,7 @@
   fetchurl,
   gnumake,
   pkg-config,
+  patchelf,
   util-linux,
   openssl,
   zlib,
@@ -15,6 +16,7 @@
   kmod,
   elfutils,
   dwarves,
+  gcc-libs,
   kernel ? null,
 }: let
   version = "2.4.0";
@@ -34,6 +36,7 @@ in
       [
         gnumake
         pkg-config
+        patchelf
       ]
       ++ (
         if kernel == null
@@ -45,6 +48,7 @@ in
       openssl
       zlib
       libtirpc
+      gcc-libs
     ];
     propagatedDeps = [];
     disallowedReferences = lib.optional (kernel != null) kernel.dev;
@@ -142,6 +146,23 @@ in
           # generic fixup pass does not recognize it as a runtime executable.
           # Remove its compile-time include paths explicitly.
           strip --strip-debug "$out/lib/udev/zvol_id"
+
+          # glibc loads libgcc_s by soname when pthread cancellation needs
+          # unwind support. A caller's DT_RUNPATH is not used for that
+          # libc-originated lookup, so make libzfs retain the AOS unwind
+          # runtime as a direct dependency. This covers every libzfs caller,
+          # including ordinary `zfs send`, without relying on ambient state.
+          patched_libzfs=0
+          for library in "$out"/lib/libzfs.so.*.*.*; do
+            [ -f "$library" ] || continue
+            patchelf --add-needed libgcc_s.so.1 "$library"
+            patchelf --add-rpath ${gcc-libs}/lib "$library"
+            patchelf --print-needed "$library" | grep -Fx libgcc_s.so.1
+            patchelf --print-rpath "$library" | tr ':' '\n' | \
+              grep -Fx ${gcc-libs}/lib
+            patched_libzfs=$((patched_libzfs + 1))
+          done
+          [ "$patched_libzfs" -eq 1 ]
         '';
       }
     ];

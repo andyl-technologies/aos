@@ -10,6 +10,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <linux/mount.h>
 #include <sched.h>
 #include <stdbool.h>
@@ -52,6 +53,115 @@ static void write_all(int fd, const char *buffer, size_t length,
         }
         offset += (size_t)written;
     }
+}
+
+struct namespace_observation {
+    uid_t existing_uid;
+    gid_t existing_gid;
+    uid_t created_uid;
+    gid_t created_gid;
+    int error_number;
+    unsigned int error_step;
+};
+
+static void child_error(int fd, struct namespace_observation *observation,
+                        unsigned int step)
+{
+    ssize_t written;
+
+    observation->error_number = errno;
+    observation->error_step = step;
+    written = write(fd, observation, sizeof(*observation));
+    if (written != (ssize_t)sizeof(*observation))
+        _exit(EXIT_FAILURE);
+    _exit(EXIT_FAILURE);
+}
+
+static void read_exact(int fd, void *buffer, size_t length,
+                       const char *operation)
+{
+    char *bytes = buffer;
+    size_t offset = 0;
+
+    while (offset < length) {
+        ssize_t received = read(fd, bytes + offset, length - offset);
+
+        if (received < 0) {
+            if (errno == EINTR)
+                continue;
+            fail(operation);
+        }
+        if (received == 0) {
+            errno = EIO;
+            fail(operation);
+        }
+        offset += (size_t)received;
+    }
+}
+
+static struct namespace_observation observe_from_mapped_namespace(
+    int user_namespace_fd, const char *existing_file, const char *created_file)
+{
+    struct namespace_observation observation = {0};
+    struct stat status;
+    int result_pipe[2];
+    pid_t child;
+    int created_fd;
+    int wait_status;
+
+    if (pipe2(result_pipe, O_CLOEXEC) < 0)
+        fail("creating namespace observation pipe");
+    child = fork();
+    if (child < 0)
+        fail("forking namespace observer");
+    if (child == 0) {
+        if (close(result_pipe[0]) < 0)
+            child_error(result_pipe[1], &observation, 1);
+        if (setgroups(0, NULL) < 0)
+            child_error(result_pipe[1], &observation, 2);
+        if (setns(user_namespace_fd, CLONE_NEWUSER) < 0)
+            child_error(result_pipe[1], &observation, 3);
+        if (setresgid(0, 0, 0) < 0)
+            child_error(result_pipe[1], &observation, 4);
+        if (setresuid(0, 0, 0) < 0)
+            child_error(result_pipe[1], &observation, 5);
+        if (stat(existing_file, &status) < 0)
+            child_error(result_pipe[1], &observation, 6);
+        observation.existing_uid = status.st_uid;
+        observation.existing_gid = status.st_gid;
+
+        created_fd = open(created_file,
+                          O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        if (created_fd < 0)
+            child_error(result_pipe[1], &observation, 7);
+        if (close(created_fd) < 0)
+            child_error(result_pipe[1], &observation, 8);
+        if (stat(created_file, &status) < 0)
+            child_error(result_pipe[1], &observation, 9);
+        observation.created_uid = status.st_uid;
+        observation.created_gid = status.st_gid;
+
+        write_all(result_pipe[1], (const char *)&observation,
+                  sizeof(observation), "returning namespace observation");
+        _exit(EXIT_SUCCESS);
+    }
+
+    if (close(result_pipe[1]) < 0)
+        fail("closing parent namespace observation pipe");
+    read_exact(result_pipe[0], &observation, sizeof(observation),
+               "reading namespace observation");
+    if (close(result_pipe[0]) < 0)
+        fail("closing namespace observation pipe");
+    if (waitpid(child, &wait_status, 0) < 0)
+        fail("waiting for namespace observer");
+    if (!WIFEXITED(wait_status) || WEXITSTATUS(wait_status) != EXIT_SUCCESS) {
+        fprintf(stderr,
+                "zfs-idmapped-mount-probe: namespace observation step %u "
+                "failed: %s\n",
+                observation.error_step, strerror(observation.error_number));
+        exit(EXIT_FAILURE);
+    }
+    return observation;
 }
 
 static void write_proc_file(pid_t pid, const char *name, const char *value)
@@ -130,10 +240,17 @@ static int open_mapped_user_namespace(void)
 int main(int argc, char **argv)
 {
     struct mount_attr attributes = {0};
+    struct namespace_observation namespace_observation;
+    struct stat created_mapped_status;
+    struct stat created_source_status;
     struct stat source_status;
     struct stat mapped_status;
+    char created_mapped_file[4096];
+    char created_source_file[4096];
     char mapped_file[4096];
     const char *file_name;
+    int created_mapped_length;
+    int created_source_length;
     int mapped_length;
     int user_namespace_fd;
     int mount_fd;
@@ -143,13 +260,11 @@ int main(int argc, char **argv)
                 argv[0]);
         return EXIT_FAILURE;
     }
-    if (chown(argv[3], IDMAP_BASE, IDMAP_BASE) < 0)
-        fail("chown source fixture");
     if (stat(argv[3], &source_status) < 0)
         fail("stat source fixture");
-    if (source_status.st_uid != IDMAP_BASE || source_status.st_gid != IDMAP_BASE) {
+    if (source_status.st_uid != 0 || source_status.st_gid != 0) {
         errno = EBADE;
-        fail("source ownership did not persist on ZFS");
+        fail("source fixture is not canonically root-owned on ZFS");
     }
 
     user_namespace_fd = open_mapped_user_namespace();
@@ -179,18 +294,76 @@ int main(int argc, char **argv)
     }
     if (stat(mapped_file, &mapped_status) < 0)
         fail("stat idmapped fixture");
-    if (mapped_status.st_uid != 0 || mapped_status.st_gid != 0) {
+    if (mapped_status.st_uid != IDMAP_BASE ||
+        mapped_status.st_gid != IDMAP_BASE) {
         errno = EBADE;
+        fprintf(stderr,
+                "zfs-idmapped-mount-probe: host idmapped ownership was "
+                "%lu:%lu, expected %u:%u\n",
+                (unsigned long)mapped_status.st_uid,
+                (unsigned long)mapped_status.st_gid, IDMAP_BASE, IDMAP_BASE);
+        fail("host idmapped ZFS ownership translation");
+    }
+
+    created_mapped_length = snprintf(created_mapped_file,
+                                     sizeof(created_mapped_file),
+                                     "%s/idmap-created", argv[2]);
+    created_source_length = snprintf(created_source_file,
+                                     sizeof(created_source_file),
+                                     "%s/idmap-created", argv[1]);
+    if (created_mapped_length < 0 ||
+        (size_t)created_mapped_length >= sizeof(created_mapped_file) ||
+        created_source_length < 0 ||
+        (size_t)created_source_length >= sizeof(created_source_file)) {
+        errno = ENAMETOOLONG;
+        fail("constructing created fixture paths");
+    }
+    namespace_observation = observe_from_mapped_namespace(
+        user_namespace_fd, mapped_file, created_mapped_file);
+    if (stat(argv[3], &source_status) < 0)
+        fail("restat source fixture after idmapped access");
+    if (stat(created_source_file, &created_source_status) < 0)
+        fail("stat created source fixture");
+    if (stat(created_mapped_file, &created_mapped_status) < 0)
+        fail("stat created idmapped fixture");
+
+    if (namespace_observation.existing_uid != 0 ||
+        namespace_observation.existing_gid != 0 ||
+        namespace_observation.created_uid != 0 ||
+        namespace_observation.created_gid != 0 || source_status.st_uid != 0 ||
+        source_status.st_gid != 0 ||
+        created_source_status.st_uid != 0 || created_source_status.st_gid != 0 ||
+        created_mapped_status.st_uid != IDMAP_BASE ||
+        created_mapped_status.st_gid != IDMAP_BASE) {
+        errno = EBADE;
+        fprintf(stderr,
+                "zfs-idmapped-mount-probe: ownership mismatch: sandbox "
+                "existing=%lu:%lu created=%lu:%lu; source created=%lu:%lu; "
+                "host mapped created=%lu:%lu\n",
+                (unsigned long)namespace_observation.existing_uid,
+                (unsigned long)namespace_observation.existing_gid,
+                (unsigned long)namespace_observation.created_uid,
+                (unsigned long)namespace_observation.created_gid,
+                (unsigned long)created_source_status.st_uid,
+                (unsigned long)created_source_status.st_gid,
+                (unsigned long)created_mapped_status.st_uid,
+                (unsigned long)created_mapped_status.st_gid);
         fail("idmapped ZFS ownership translation");
     }
 
     printf("{\"schema_version\":\"aos.sandbox.zfs-idmapped-mount/v1\","
            "\"source_uid\":%lu,\"source_gid\":%lu,"
-           "\"mapped_uid\":%lu,\"mapped_gid\":%lu,"
+           "\"host_mapped_uid\":%lu,\"host_mapped_gid\":%lu,"
+           "\"sandbox_mapped_uid\":%lu,\"sandbox_mapped_gid\":%lu,"
+           "\"created_source_uid\":%lu,\"created_source_gid\":%lu,"
            "\"idmapped_mount\":true}\n",
            (unsigned long)source_status.st_uid,
            (unsigned long)source_status.st_gid,
            (unsigned long)mapped_status.st_uid,
-           (unsigned long)mapped_status.st_gid);
+           (unsigned long)mapped_status.st_gid,
+           (unsigned long)namespace_observation.existing_uid,
+           (unsigned long)namespace_observation.existing_gid,
+           (unsigned long)created_source_status.st_uid,
+           (unsigned long)created_source_status.st_gid);
     return EXIT_SUCCESS;
 }
