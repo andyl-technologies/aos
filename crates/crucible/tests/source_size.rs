@@ -10,10 +10,7 @@ const TEST_RUST_LINE_LIMIT: usize = 4_000;
 // Existing cohesive modules that crossed the repository-wide threshold are
 // capped at their reviewed size so new growth still fails closed while their
 // follow-up splits can proceed independently.
-const SOURCE_LINE_DEBT: &[(&str, usize)] = &[
-    ("crucible-api/src/vm_lifecycle/checkpoint_store.rs", 3_217),
-    ("crucible-cas/src/content_store/tests.rs", 5_357),
-];
+const SOURCE_LINE_DEBT: &[(&str, usize)] = &[("crucible-cas/src/content_store/tests.rs", 5_357)];
 
 #[test]
 fn crucible_rust_sources_stay_human_sized() -> Result<(), Box<dyn Error>> {
