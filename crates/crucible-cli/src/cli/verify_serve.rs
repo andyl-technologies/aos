@@ -427,6 +427,7 @@ pub(super) fn canonical_run_log_entries(
         save_boundary_evidence: None,
         reproduction_artifact: None,
         side_reproduction_artifacts: Vec::new(),
+        host_scheduler_preemption: Vec::new(),
     };
     append_local_double_run_entries(&mut outcome, run_plan, report);
     outcome.canonical_log

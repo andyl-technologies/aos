@@ -722,6 +722,11 @@ pub(crate) use search::*;
 mod replay;
 pub(crate) use replay::*;
 
+const VERIFY_BOUNDED_SCHEDULER_PREEMPTION_ENV: &str =
+    "CRUCIBLE_VERIFY_BOUNDED_SCHEDULER_PREEMPTION";
+pub(crate) const REPLAY_BOUNDED_SCHEDULER_PREEMPTION_ENV: &str =
+    "CRUCIBLE_REPLAY_BOUNDED_SCHEDULER_PREEMPTION";
+
 /// Verifies every reduction through an independent packaged-QEMU session.
 pub(crate) fn run_local_qemu_verify_workflow(
     thin_plan: &CliThinWrapperPlan,
@@ -736,7 +741,14 @@ pub(crate) fn run_local_qemu_verify_workflow(
     let scenario = verify_plan.scenario().ok_or_else(|| {
         backend_error("QEMU verify compare mode must use the artifact comparison path")
     })?;
-    let config = production_qemu_lifecycle_config(backend)?;
+    let mut config = production_qemu_lifecycle_config(backend)?;
+    let preemption_evidence = bounded_scheduler_preemption_evidence_from_env(
+        VERIFY_BOUNDED_SCHEDULER_PREEMPTION_ENV,
+        verify_plan.reductions.len(),
+    )?;
+    if let Some(evidence) = &preemption_evidence {
+        config = config.with_bounded_scheduler_preemption_flights(evidence.clone());
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -748,13 +760,114 @@ pub(crate) fn run_local_qemu_verify_workflow(
         Some(backend),
         ergonomics_plan,
     ))?;
-    finish_verify_workflow_outcome(
+    let mut outcome = finish_verify_workflow_outcome(
         thin_plan,
         backend_plan,
         ergonomics_plan,
         verify_plan,
         report,
-    )
+    )?;
+    if let Some(evidence) = preemption_evidence {
+        append_verify_bounded_scheduler_preemption_evidence(&mut outcome, verify_plan, &evidence)?;
+    }
+    Ok(outcome)
+}
+
+pub(crate) fn bounded_scheduler_preemption_evidence_from_env(
+    variable: &str,
+    flights: usize,
+) -> Result<Option<Vec<crucible_api::BoundedSchedulerPreemptionEvidence>>, CliError> {
+    let Some(value) = std::env::var_os(variable) else {
+        return Ok(None);
+    };
+    if value == "0" {
+        return Ok(None);
+    }
+    if value != "1" {
+        return Err(backend_error(format!(
+            "{variable} must be 0 or 1, got `{}`",
+            value.to_string_lossy()
+        )));
+    }
+
+    Ok(Some(
+        (0..flights)
+            .map(|_| crucible_api::BoundedSchedulerPreemptionEvidence::default())
+            .collect(),
+    ))
+}
+
+fn append_verify_bounded_scheduler_preemption_evidence(
+    outcome: &mut BackendCommandOutcome,
+    verify_plan: &VerifyInvocationPlan,
+    evidence: &[crucible_api::BoundedSchedulerPreemptionEvidence],
+) -> Result<(), CliError> {
+    if evidence.len() != verify_plan.reductions.len() {
+        return Err(backend_error(format!(
+            "bounded scheduler-preemption evidence count {} did not match {} verification reductions",
+            evidence.len(),
+            verify_plan.reductions.len()
+        )));
+    }
+    for (reduction, evidence) in verify_plan.reductions.iter().zip(evidence) {
+        let context = format!("verification reduction {}", reduction.index);
+        let snapshot = required_bounded_scheduler_preemption_snapshot(evidence, &context)?;
+        append_verify_bounded_scheduler_preemption_snapshot(outcome, reduction, snapshot)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn append_verify_bounded_scheduler_preemption_snapshot(
+    outcome: &mut BackendCommandOutcome,
+    reduction: &VerifyReductionPlan,
+    snapshot: crucible_api::BoundedSchedulerPreemptionEvidenceSnapshot,
+) -> Result<(), CliError> {
+    if !snapshot.applied
+        || !snapshot.pending_quantum_certified
+        || snapshot.perturbations == 0
+        || snapshot.requested_stopped_milliseconds == 0
+    {
+        return Err(backend_error(format!(
+            "verification reduction {} published incomplete bounded scheduler-preemption evidence",
+            reduction.index
+        )));
+    }
+    let host_evidence = HostSchedulerPreemptionEvidence {
+        reduction_index: reduction.index,
+        run_index: reduction.run_index,
+        host_profile: reduction.host_profile.label().to_owned(),
+        applied: snapshot.applied,
+        pending_quantum_certified: snapshot.pending_quantum_certified,
+        perturbations: snapshot.perturbations,
+        requested_stopped_milliseconds: snapshot.requested_stopped_milliseconds,
+    };
+    outcome.stdout.push(format!(
+        "verify-host-preemption\t{}",
+        host_evidence.summary()
+    ));
+    outcome.host_scheduler_preemption.push(host_evidence);
+    Ok(())
+}
+
+pub(crate) fn required_bounded_scheduler_preemption_snapshot(
+    evidence: &crucible_api::BoundedSchedulerPreemptionEvidence,
+    context: &str,
+) -> Result<crucible_api::BoundedSchedulerPreemptionEvidenceSnapshot, CliError> {
+    let snapshot = evidence.snapshot().ok_or_else(|| {
+        backend_error(format!(
+            "{context} did not publish bounded scheduler-preemption evidence"
+        ))
+    })?;
+    if !snapshot.applied
+        || !snapshot.pending_quantum_certified
+        || snapshot.perturbations == 0
+        || snapshot.requested_stopped_milliseconds == 0
+    {
+        return Err(backend_error(format!(
+            "{context} published incomplete bounded scheduler-preemption evidence"
+        )));
+    }
+    Ok(snapshot)
 }
 
 pub(crate) fn production_qemu_control_plane(

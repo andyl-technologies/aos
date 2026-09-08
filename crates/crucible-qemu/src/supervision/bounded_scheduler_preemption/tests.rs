@@ -107,6 +107,8 @@ fn preemption_target_process() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn asynchronous_preemption_completes_while_target_runs() -> Result<(), Box<dyn Error>> {
+    let evidence = BoundedSchedulerPreemptionEvidence::default();
+    let claim = evidence.claim()?;
     let mut target = TestTarget::spawn()?;
     let mut adversary = BoundedSchedulerPreemption::start_if(true, target.pid())?
         .ok_or("enabled adversary was not created")?;
@@ -114,10 +116,50 @@ fn asynchronous_preemption_completes_while_target_runs() -> Result<(), Box<dyn E
     assert_eq!(process_state(target.pid())?, Some('T'));
     observation.confirm_pending(true)?;
     let report = adversary.finish()?;
+    claim.record(report, true)?;
 
-    assert_eq!(report.perturbations, BOUNDED_PREEMPTION_COUNT);
-    assert_eq!(report.requested_stopped_milliseconds, 90);
+    assert_eq!(
+        evidence.snapshot(),
+        Some(BoundedSchedulerPreemptionEvidenceSnapshot {
+            applied: true,
+            pending_quantum_certified: true,
+            perturbations: BOUNDED_PREEMPTION_COUNT,
+            requested_stopped_milliseconds: 90,
+        })
+    );
     assert!(target.is_running()?);
+    Ok(())
+}
+
+#[test]
+fn abandoned_evidence_claim_cannot_be_reused() -> Result<(), Box<dyn Error>> {
+    let evidence = BoundedSchedulerPreemptionEvidence::default();
+    drop(evidence.claim()?);
+
+    assert_eq!(evidence.snapshot(), None);
+    assert!(matches!(
+        evidence.claim(),
+        Err(BoundedSchedulerPreemptionEvidenceError::AlreadyClaimed)
+    ));
+    Ok(())
+}
+
+#[test]
+fn completed_evidence_handle_rejects_a_second_flight() -> Result<(), Box<dyn Error>> {
+    let evidence = BoundedSchedulerPreemptionEvidence::default();
+    evidence.claim()?.record(
+        BoundedSchedulerPreemptionReport {
+            perturbations: BOUNDED_PREEMPTION_COUNT,
+            requested_stopped_milliseconds: 90,
+        },
+        true,
+    )?;
+
+    assert!(matches!(
+        evidence.claim(),
+        Err(BoundedSchedulerPreemptionEvidenceError::AlreadyClaimed)
+    ));
+    assert!(evidence.snapshot().is_some_and(|snapshot| snapshot.applied));
     Ok(())
 }
 

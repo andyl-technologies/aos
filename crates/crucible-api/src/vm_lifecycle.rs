@@ -32,6 +32,9 @@ use crucible::{
     SimDuration, SimInstant, SimulationBackend, SingleScheduler, SingleSchedulerCheckpoint,
     VirtualTime, VmArchitecture, World,
 };
+pub use crucible_qemu::{
+    BoundedSchedulerPreemptionEvidence, BoundedSchedulerPreemptionEvidenceSnapshot,
+};
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
     QemuLaunchResourceRequirements, QemuNode, QemuNodeLifecycleDecision,
@@ -51,7 +54,7 @@ use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod assets;
@@ -164,6 +167,32 @@ pub struct ProductionVmLifecycleConfig {
     fault_replay: Option<ResolvedEffectTrace>,
     world_artifacts: Option<Arc<dyn DagStore>>,
     validate_guest_asset_references: bool,
+    bounded_scheduler_preemption: Option<BoundedSchedulerPreemptionFlights>,
+}
+
+#[derive(Clone)]
+struct BoundedSchedulerPreemptionFlights {
+    pending: Arc<Mutex<VecDeque<crucible_qemu::BoundedSchedulerPreemptionEvidence>>>,
+}
+
+impl BoundedSchedulerPreemptionFlights {
+    fn new(evidence: Vec<crucible_qemu::BoundedSchedulerPreemptionEvidence>) -> Self {
+        Self {
+            pending: Arc::new(Mutex::new(evidence.into())),
+        }
+    }
+
+    fn claim_next(&self) -> Result<crucible_qemu::BoundedSchedulerPreemptionEvidenceClaim, String> {
+        let evidence = self
+            .pending
+            .lock()
+            .map_err(|_poisoned| String::from("bounded preemption flight queue was poisoned"))?
+            .pop_front()
+            .ok_or_else(|| String::from("bounded preemption flight queue was exhausted"))?;
+        evidence
+            .claim()
+            .map_err(|error| format!("claim bounded preemption flight: {error}"))
+    }
 }
 
 impl std::fmt::Debug for ProductionVmLifecycleConfig {
@@ -207,6 +236,10 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
             .field(
                 "world_artifacts_configured",
                 &self.world_artifacts.is_some(),
+            )
+            .field(
+                "bounded_scheduler_preemption_configured",
+                &self.bounded_scheduler_preemption.is_some(),
             )
             .finish()
     }

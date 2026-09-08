@@ -151,6 +151,14 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             "production QEMU debugging requires a standalone debugger gateway executable",
         ));
     }
+    let mut bounded_scheduler_preemption =
+        config
+            .claim_bounded_scheduler_preemption()
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "claim bounded scheduler-preemption evidence: {error}"
+                ))
+            })?;
 
     let (run_directory, mut run_manifest, lifecycle_journal) = production_run_directory(
         scenario,
@@ -595,6 +603,13 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             }
         };
         let (mut launched, adopted_process) = launched?;
+        if index == 0
+            && let Some(evidence) = bounded_scheduler_preemption.take()
+        {
+            launched
+                .node_mut()
+                .enable_bounded_scheduler_preemption(evidence);
+        }
         let observed = SimulationBackend::now(launched.node()).ticks;
         if let Some(expected_time) = hot_fork_expected_time {
             if expected_time.ticks != observed {
