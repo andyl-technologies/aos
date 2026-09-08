@@ -18,8 +18,10 @@ impl DeriveCampaignRequest {
     /// Builds one bounded derivation request.
     ///
     /// A supplied policy is activated only for the new ref and must reference
-    /// an already imported transitive generator closure. Omitting it preserves
-    /// the policy active at the source snapshot.
+    /// an already imported transitive generator closure. It may explicitly
+    /// migrate between strict and streaming modes; statistical mode cannot be
+    /// entered or left through derivation. Omitting the policy preserves the
+    /// policy active at the source snapshot.
     ///
     /// # Errors
     ///

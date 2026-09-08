@@ -284,8 +284,9 @@ pub struct PolicyActivation {
 /// Immutable basis of one newly derived campaign ref.
 ///
 /// A derivation starts a new linear writer history from an authenticated source
-/// snapshot. It can retain the source policy or select another compatible
-/// already-imported policy without mutating the source ref.
+/// snapshot. It can retain the source policy, select another compatible
+/// already-imported revision, or explicitly migrate between strict and
+/// streaming modes without mutating the source ref.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CampaignDerivation {
     source: CampaignSnapshotId,

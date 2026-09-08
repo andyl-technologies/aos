@@ -557,6 +557,31 @@ Status and watch authenticate one exact head and lifecycle projection:
 `watch` is advisory and coalescing: sequence gaps do not imply lost immutable
 history. Use `snapshot` for an exact historical body.
 
+Derive a new name from one authenticated current or historical snapshot with
+the source policy or an explicitly supplied compiled policy:
+
+```sh
+crucible campaign --socket "$CAMPAIGN_SOCKET" --principal operator \
+  derive network-recovery --snapshot "$SNAPSHOT" network-recovery-streaming \
+  --policy ./streaming-policy.bin --format json
+```
+
+The current implementation lets the supplied policy retain the source mode or
+migrate `strict` to `streaming` and `streaming` to `strict`. It rejects
+derivations that enter or leave statistical mode. `steer policy` on an existing
+campaign name remains a same-mode operation; derive a new name to change
+between strict and streaming. Broader cross-mode statistical derivation remains
+open design and implementation work.
+
+Derivation shares the exact immutable history reachable from the selected
+source snapshot and leaves the source name unchanged. A streaming-to-strict
+derivation reconstructs the authenticated contiguous completion prefix. Any
+inherited attempts completed beyond an open lower admission ordinal remain
+recorded, but strict publication waits for the hole; after it closes, ordering
+advances across those already-completed ordinals. This behavior also applies
+when streaming inherited a nonzero strict sequence position. Retry the exact
+same source snapshot, target name, and policy after an indeterminate result.
+
 ## Run, pause, and resume
 
 Every mutation against an existing campaign carries the exact expected

@@ -268,13 +268,6 @@ pub(super) fn non_modeled_attempt_key(attempt: AttemptId) -> CampaignHash {
     map_key_content("accounting.attempt-disposition", attempt.content_id())
 }
 
-fn non_modeled_ordinal_key(ordinal: AdmissionOrdinal) -> CampaignHash {
-    CampaignHash::derive(
-        "crucible.campaign-accounting-admission-disposition.v1",
-        &ordinal.value().to_be_bytes(),
-    )
-}
-
 fn non_modeled_attempt_upserts(
     attempt: AttemptId,
     ordinal: AdmissionOrdinal,

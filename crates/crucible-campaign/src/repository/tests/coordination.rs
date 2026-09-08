@@ -148,6 +148,71 @@ fn policy_with_seed(policy: &CampaignPolicy, seed: [u8; 32]) -> CampaignPolicy {
     .expect("policy with changed seed")
 }
 
+fn policy_with_mode(policy: &CampaignPolicy, mode: CampaignMode) -> CampaignPolicy {
+    CampaignPolicy::new(
+        policy.scenario(),
+        policy.campaign_seed(),
+        mode,
+        policy.explorer().clone(),
+        policy.choice_policies().clone(),
+        policy.objectives().clone(),
+        policy.guidance().clone(),
+        policy.stop_conditions().clone(),
+        policy.fairness(),
+        policy.retention(),
+        policy.admits_scenario_defaults(),
+    )
+    .expect("policy with changed mode")
+}
+
+fn admit_distinct_attempt(
+    repository: &CampaignRepository,
+    lineage: &CampaignLineage,
+    policy: &CampaignPolicy,
+    campaign: &str,
+    label: &str,
+) -> (AttemptAdmissionResult, BranchRequest, BranchPath) {
+    let request = branch_request(
+        repository,
+        lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        label,
+    );
+    let requested = repository
+        .submit_known_branch_request(
+            campaign,
+            repository
+                .head(campaign)
+                .expect("attempt request head")
+                .snapshot_id(),
+            &request,
+        )
+        .expect("submit attempt request");
+    let proposal = finite_proposal(
+        &request,
+        policy,
+        &repository.head(campaign).expect("proposal basis head"),
+        ChoiceValue::Boolean(false),
+        1,
+    );
+    let proposed = repository
+        .issue_proposal(campaign, requested.new_snapshot, &proposal)
+        .expect("issue attempt proposal");
+    let (selection, path, attempt) = branch_attempt(repository, &request, &proposal);
+    let admitted = repository
+        .admit_proposal(
+            campaign,
+            proposed.new_snapshot,
+            proposed.proposal,
+            &selection,
+            &path,
+            &attempt,
+        )
+        .expect("admit distinct attempt");
+    (admitted, request, path)
+}
+
 #[test]
 fn campaign_service_creation_replays_the_exact_genesis_after_later_mutation() {
     let (repository, lineage, policy) = fixture();
@@ -546,6 +611,289 @@ fn derivation_is_atomic_historical_and_replays_after_later_mutations() {
         .expect("restart replay");
     assert!(restarted_replay.replayed);
     assert_eq!(restarted_replay.new_snapshot, derived.new_snapshot);
+}
+
+#[test]
+fn streaming_to_strict_derivation_reconstructs_inherited_completion_holes() {
+    let (repository, lineage, strict_policy) = fixture();
+    let streaming_policy = policy_with_mode(&strict_policy, CampaignMode::Streaming);
+    let (_, first, first_observation) =
+        admitted_observation_fixture(&repository, &lineage, &streaming_policy, "mode-source");
+    let (second, _, _) = admit_distinct_attempt(
+        &repository,
+        &lineage,
+        &streaming_policy,
+        "mode-source",
+        "mode-source-second",
+    );
+    let (third, third_request, third_path) = admit_distinct_attempt(
+        &repository,
+        &lineage,
+        &streaming_policy,
+        "mode-source",
+        "mode-source-third",
+    );
+    let third_observation = Observation::new(
+        third.attempt,
+        first_observation.child(),
+        first_observation.child_content(),
+        third_path.id().expect("third path ID"),
+        StopOutcome::Reached(StopCondition::NextChoice),
+        first_observation.measurements(),
+        first_observation.properties(),
+        first_observation.coverage(),
+        BTreeSet::from([third_request.opportunity()]),
+    )
+    .expect("third observation");
+
+    let third_completed = repository
+        .publish_observation("mode-source", third.new_snapshot, &third_observation)
+        .expect("streaming mode accepts ordinal three first");
+    let second_completed = repository
+        .close_attempt_non_modeled(
+            "mode-source",
+            third_completed.new_snapshot,
+            second.attempt,
+            NonModeledAttemptDisposition::OperatorCancelled,
+        )
+        .expect("streaming mode accepts ordinal two after ordinal three");
+    let historical_source = second_completed.new_snapshot;
+    let source_later = repository
+        .publish_observation("mode-source", historical_source, &first_observation)
+        .expect("source later completes ordinal one");
+
+    let derived = repository
+        .derive_campaign(
+            "mode-source",
+            historical_source,
+            "mode-strict-target",
+            Some(&strict_policy),
+        )
+        .expect("derive strict campaign from historical streaming state");
+    assert_eq!(
+        repository
+            .head("mode-source")
+            .expect("unchanged source head")
+            .snapshot_id(),
+        source_later.new_snapshot
+    );
+    assert_eq!(
+        repository
+            .head("mode-strict-target")
+            .expect("derived target head")
+            .snapshot()
+            .parent(),
+        Some(historical_source)
+    );
+
+    repository
+        .validated_heads
+        .lock()
+        .expect("validation checkpoints")
+        .clear();
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        restarted
+            .head("mode-strict-target")
+            .expect("cold-authenticated migration head")
+            .snapshot_id(),
+        derived.new_snapshot
+    );
+
+    let (fourth, _, _) = admit_distinct_attempt(
+        &restarted,
+        &lineage,
+        &strict_policy,
+        "mode-strict-target",
+        "mode-strict-target-fourth",
+    );
+    assert!(matches!(
+        restarted.close_attempt_non_modeled(
+            "mode-strict-target",
+            fourth.new_snapshot,
+            fourth.attempt,
+            NonModeledAttemptDisposition::OperatorCancelled,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "strict-completion-order-gap"
+        })
+    ));
+    let first_completed = restarted
+        .close_attempt_non_modeled(
+            "mode-strict-target",
+            fourth.new_snapshot,
+            first.attempt,
+            NonModeledAttemptDisposition::OperatorCancelled,
+        )
+        .expect("strict target closes inherited ordinal one");
+    let fourth_completed = restarted
+        .close_attempt_non_modeled(
+            "mode-strict-target",
+            first_completed.new_snapshot,
+            fourth.attempt,
+            NonModeledAttemptDisposition::OperatorCancelled,
+        )
+        .expect("strict target skips inherited completed ordinals two and three");
+    assert_eq!(fourth_completed.ordinal, AdmissionOrdinal::new(4));
+
+    let replay = restarted
+        .derive_campaign(
+            "mode-source",
+            historical_source,
+            "mode-strict-target",
+            Some(&strict_policy),
+        )
+        .expect("replay historical mode migration after target mutations");
+    assert!(replay.replayed);
+    assert_eq!(replay.new_snapshot, derived.new_snapshot);
+
+    let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        cold.head("mode-strict-target")
+            .expect("restart validates reconstructed strict sequence")
+            .snapshot_id(),
+        fourth_completed.new_snapshot
+    );
+}
+
+#[test]
+fn strict_streaming_round_trip_advances_a_retained_nonzero_sequence_anchor() {
+    let (repository, lineage, strict_policy) = fixture();
+    let (_, first, _) =
+        admitted_observation_fixture(&repository, &lineage, &strict_policy, "strict-mode-source");
+    let (second, _, _) = admit_distinct_attempt(
+        &repository,
+        &lineage,
+        &strict_policy,
+        "strict-mode-source",
+        "strict-mode-source-second",
+    );
+    let (third, _, _) = admit_distinct_attempt(
+        &repository,
+        &lineage,
+        &strict_policy,
+        "strict-mode-source",
+        "strict-mode-source-third",
+    );
+    let first_completed = repository
+        .close_attempt_non_modeled(
+            "strict-mode-source",
+            third.new_snapshot,
+            first.attempt,
+            NonModeledAttemptDisposition::OperatorCancelled,
+        )
+        .expect("strict source establishes ordinal-one sequence anchor");
+    assert!(matches!(
+        repository.close_attempt_non_modeled(
+            "strict-mode-source",
+            first_completed.new_snapshot,
+            third.attempt,
+            NonModeledAttemptDisposition::OperatorCancelled,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "strict-completion-order-gap"
+        })
+    ));
+
+    let streaming_policy = policy_with_mode(&strict_policy, CampaignMode::Streaming);
+    let derived = repository
+        .derive_campaign(
+            "strict-mode-source",
+            first_completed.new_snapshot,
+            "streaming-mode-target",
+            Some(&streaming_policy),
+        )
+        .expect("derive streaming campaign");
+    let third_completed = repository
+        .close_attempt_non_modeled(
+            "streaming-mode-target",
+            derived.new_snapshot,
+            third.attempt,
+            NonModeledAttemptDisposition::OperatorCancelled,
+        )
+        .expect("streaming target closes ordinal three while ordinal two is open");
+    let strict_round_trip = repository
+        .derive_campaign(
+            "streaming-mode-target",
+            third_completed.new_snapshot,
+            "strict-round-trip-target",
+            Some(&strict_policy),
+        )
+        .expect("derive strict campaign from retained nonzero anchor");
+
+    repository
+        .validated_heads
+        .lock()
+        .expect("validation checkpoints")
+        .clear();
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        restarted
+            .head("strict-round-trip-target")
+            .expect("cold-authenticated round-trip migration")
+            .snapshot_id(),
+        strict_round_trip.new_snapshot
+    );
+    let (fourth, _, _) = admit_distinct_attempt(
+        &restarted,
+        &lineage,
+        &strict_policy,
+        "strict-round-trip-target",
+        "strict-round-trip-fourth",
+    );
+    assert!(matches!(
+        restarted.close_attempt_non_modeled(
+            "strict-round-trip-target",
+            fourth.new_snapshot,
+            fourth.attempt,
+            NonModeledAttemptDisposition::OperatorCancelled,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "strict-completion-order-gap"
+        })
+    ));
+    let second_completed = restarted
+        .close_attempt_non_modeled(
+            "strict-round-trip-target",
+            fourth.new_snapshot,
+            second.attempt,
+            NonModeledAttemptDisposition::OperatorCancelled,
+        )
+        .expect("round-trip target closes inherited ordinal two");
+    let fourth_completed = restarted
+        .close_attempt_non_modeled(
+            "strict-round-trip-target",
+            second_completed.new_snapshot,
+            fourth.attempt,
+            NonModeledAttemptDisposition::OperatorCancelled,
+        )
+        .expect("round-trip target skips inherited completed ordinal three");
+    assert_eq!(fourth_completed.ordinal, AdmissionOrdinal::new(4));
+
+    assert_eq!(
+        repository
+            .head("strict-mode-source")
+            .expect("unchanged strict source")
+            .snapshot_id(),
+        first_completed.new_snapshot
+    );
+
+    let statistical_policy = policy_with_mode(&strict_policy, CampaignMode::Statistical);
+    assert!(matches!(
+        repository.derive_campaign(
+            "strict-mode-source",
+            first_completed.new_snapshot,
+            "statistical-mode-target",
+            Some(&statistical_policy),
+        ),
+        Err(CampaignRepositoryError::InvalidRequest {
+            reason: "derived policy is incompatible with the source campaign"
+        })
+    ));
+    assert!(matches!(
+        repository.head("statistical-mode-target"),
+        Err(CampaignRepositoryError::NotFound)
+    ));
 }
 
 #[test]
