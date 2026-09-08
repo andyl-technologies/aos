@@ -106,6 +106,7 @@ where
             &report,
             backend,
             ergonomics_plan,
+            &verify_plan.store_root,
         )?);
     }
     let divergence = compare_verify_witnesses(&witnesses);
@@ -225,6 +226,7 @@ pub(super) fn verify_witness_from_run_report(
     report: &RunWorkflowReport,
     backend: Option<&ResolvedLocalBackend>,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    store_root: &Path,
 ) -> Result<VerifyRunWitness, CliError> {
     let canonical_log = canonical_run_log_entries(run_plan, report);
     let canonical_log_bytes =
@@ -278,6 +280,13 @@ pub(super) fn verify_witness_from_run_report(
             )?;
             let mut payloads = model_reproduction_artifact_payloads(&model, replay.state);
             payloads.extend(live_qemu_artifact_payloads(&live));
+            let store = crucible::LocalDagStore::new(store_root.to_path_buf());
+            payloads.extend(lifecycle_artifact_payloads(
+                scenario.world(),
+                scenario.plan().fault_signals(),
+                &store,
+                None,
+            )?);
             let scenario_bytes = scenario.to_compact_binary();
             reproduction_artifact_bytes_with_scenario_payload(
                 seed,

@@ -163,13 +163,24 @@ fn replay_live_qemu_evidence(
         LIVE_QEMU_RESOLVED_EFFECT_TRACE_MEDIA_TYPE,
         "live QEMU resolved-effect trace",
     )?;
-    let signal_artifact_bundle = optional_single_component_payload(
+    if artifact.scenario.media_type != "application/vnd.crucible.scenario.compact-binary" {
+        return Err(artifact_error(
+            "v3 live-QEMU replay requires a compact binary scenario component",
+        ));
+    }
+    let scenario = crucible::ScenarioDefForm::from_compact_binary(resolved_component_payload(
         artifact,
-        SIGNAL_ARTIFACT_BUNDLE_MEDIA_TYPE,
-        "signal artifact bundle",
-    )?
-    .map(decode_signal_artifact_bundle)
-    .transpose()?;
+        &artifact.scenario,
+    )?)
+    .map_err(|error| artifact_error(format!("decode live-QEMU replay scenario: {error}")))?;
+    let lifecycle_artifacts = replay_lifecycle_artifacts(
+        artifact,
+        scenario
+            .plan()
+            .fault_signals()
+            .resource_limits()
+            .fat_checkpoint_bytes,
+    )?;
     let campaign_replay_closure_bytes = optional_single_component_payload(
         artifact,
         CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE,
@@ -203,16 +214,6 @@ fn replay_live_qemu_evidence(
             "live-QEMU fingerprint component does not match top-level artifact samples",
         ));
     }
-    if artifact.scenario.media_type != "application/vnd.crucible.scenario.compact-binary" {
-        return Err(artifact_error(
-            "v3 live-QEMU replay requires a compact binary scenario component",
-        ));
-    }
-    let scenario = crucible::ScenarioDefForm::from_compact_binary(resolved_component_payload(
-        artifact,
-        &artifact.scenario,
-    )?)
-    .map_err(|error| artifact_error(format!("decode live-QEMU replay scenario: {error}")))?;
     let resolved_effect_trace = resolved_effect_trace_bytes
         .map(|bytes| {
             crucible::ResolvedEffectTrace::from_canonical_bytes(
@@ -311,7 +312,7 @@ fn replay_live_qemu_evidence(
         LiveQemuReplayResources {
             campaign_closure: campaign_replay_closure,
             effect_trace: resolved_effect_trace,
-            signal_artifacts: signal_artifact_bundle,
+            lifecycle_artifacts,
             bounded_scheduler_preemption: preemption_evidence.clone(),
         },
     )?;
@@ -431,6 +432,34 @@ fn replay_live_qemu_evidence(
         controls: contract.controls.len(),
         host_scheduler_preemption,
     })
+}
+
+fn replay_lifecycle_artifacts(
+    artifact: &CliReproductionArtifact,
+    maximum_payload_bytes: u64,
+) -> Result<Option<std::sync::Arc<crucible::MemoryDagStore>>, CliError> {
+    let lifecycle_artifact_bundle = optional_single_component_payload(
+        artifact,
+        LIFECYCLE_ARTIFACT_BUNDLE_MEDIA_TYPE,
+        "lifecycle artifact bundle",
+    )?
+    .map(|bytes| decode_lifecycle_artifact_bundle(bytes, maximum_payload_bytes))
+    .transpose()?;
+    let legacy_signal_artifact_bundle = optional_single_component_payload(
+        artifact,
+        SIGNAL_ARTIFACT_BUNDLE_MEDIA_TYPE,
+        "signal artifact bundle",
+    )?
+    .map(|bytes| decode_signal_artifact_bundle(bytes, maximum_payload_bytes))
+    .transpose()?;
+
+    match (lifecycle_artifact_bundle, legacy_signal_artifact_bundle) {
+        (Some(_), Some(_)) => Err(artifact_error(
+            "live-QEMU replay accepts one lifecycle or legacy signal artifact bundle, not both",
+        )),
+        (Some(bundle), None) | (None, Some(bundle)) => Ok(Some(bundle)),
+        (None, None) => Ok(None),
+    }
 }
 
 fn required_single_component_payload<'a>(
@@ -999,6 +1028,49 @@ mod tests {
     //! Production-QEMU compatibility flights for historical replay artifacts.
 
     use super::*;
+
+    #[test]
+    fn historical_signal_bundle_is_accepted_as_replay_lifecycle_closure()
+    -> Result<(), Box<dyn Error>> {
+        let object = b"historical signal artifact".to_vec();
+        let identity = crucible::ContentHash::from_bytes(&object);
+        let mut legacy_bundle = Vec::from(&b"CSAB\0\0\0\x01"[..]);
+        legacy_bundle.extend_from_slice(&1_u64.to_le_bytes());
+        legacy_bundle.extend_from_slice(&identity.bytes);
+        legacy_bundle.extend_from_slice(&(object.len() as u64).to_le_bytes());
+        legacy_bundle.extend_from_slice(&object);
+        let source = crucible::happy_path_scenario()?.scenario;
+        let canonical_log = vec![CanonicalLogEntry {
+            sequence: 0,
+            virtual_time_ticks: 1,
+            node: String::from("historical-node"),
+            kind: String::from("event"),
+            summary: String::from("historical replay fixture"),
+        }];
+        let artifact_bytes = verify_reproduction_artifact_bytes_with_components(
+            7,
+            None,
+            &source.scenario_def(),
+            &canonical_log,
+            &[],
+            &[ReproductionArtifactComponentPayload {
+                kind: String::from("signal_artifact_bundle"),
+                name: String::from("signal-artifacts.bundle"),
+                media_type: String::from(SIGNAL_ARTIFACT_BUNDLE_MEDIA_TYPE),
+                bytes: legacy_bundle,
+            }],
+        )?;
+        let artifact = decode_reproduction_artifact(&artifact_bytes)?;
+
+        let restored = replay_lifecycle_artifacts(
+            &artifact,
+            crucible::FaultResourceLimits::default().fat_checkpoint_bytes,
+        )?
+        .ok_or_else(|| std::io::Error::other("legacy replay closure was omitted"))?;
+
+        assert_eq!(restored.get(&identity)?, object);
+        Ok(())
+    }
 
     #[test]
     #[ignore = "requires the packaged patched-QEMU, plugin, kernel, root image, and campaign deployment"]
