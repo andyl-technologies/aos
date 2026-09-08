@@ -11,7 +11,8 @@
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   qmpLib = builtins.readFile ../../crates/crucible-qemu/src/qmp.rs;
   qmpSnapshotTag = builtins.readFile ../../crates/crucible-qemu/src/qmp/snapshot_tag.rs;
-  qmpSurface = qmpLib + qmpSnapshotTag;
+  qmpVmstateControl = builtins.readFile ../../crates/crucible-qemu/src/qmp/vmstate_control.rs;
+  qmpSurface = qmpLib + qmpSnapshotTag + qmpVmstateControl;
   qmpTest = builtins.readFile ../../crates/crucible-qemu/tests/qmp.rs;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
