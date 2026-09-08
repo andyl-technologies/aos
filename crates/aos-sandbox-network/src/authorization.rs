@@ -278,6 +278,24 @@ impl NetworkAuthorityV1 {
     ) -> Result<aos_sandbox_broker::BrokerAuthorizationFenceV1, NetworkAdmissionError> {
         self.0.open_operation_fence(request_id, bytes)
     }
+
+    pub(crate) fn check_current_fence(
+        &self,
+        fence: &aos_sandbox_broker::BrokerAuthorizationFenceV1,
+    ) -> Result<(), NetworkAdmissionError> {
+        self.0.check_current_fence(fence)
+    }
+
+    pub(crate) fn check_before_effect<F>(
+        &self,
+        effect: &aos_sandbox_broker::BrokerEffectIntentV2,
+        trusted_clock: &mut F,
+    ) -> Result<(), NetworkAdmissionError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, NetworkAdmissionError>,
+    {
+        self.0.check_before_effect(effect, trusted_clock)
+    }
 }
 
 pub(crate) fn decode_assignment(body: &[u8]) -> Result<BrokerAssignment, NetworkAdmissionError> {

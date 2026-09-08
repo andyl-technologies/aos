@@ -37,6 +37,8 @@ pub mod preparation_catalog;
 pub mod rtnetlink_reader;
 pub mod service;
 pub mod state;
+pub mod worker_protocol;
+pub mod worker_replay;
 
 pub use allocation::{
     NetworkAddressPairV1, NetworkAddressPoolV1, NetworkAllocationError, NetworkAllocationPolicyV1,
@@ -46,7 +48,7 @@ pub use allocation::{
 pub use authorization::{NetworkAdmissionError, NetworkAuthorityV1};
 pub use broker::{
     NetworkAdmissionCoordinator, NetworkAdmissionOutcome, NetworkBrokerError,
-    advertised_network_methods,
+    NetworkEffectDispatchPermitV1, advertised_network_methods,
 };
 pub use catalog::{
     AuthenticatedNetworkPreparationV1, NetworkCatalogBindingV1, ResolvedEndpointV1,
@@ -101,3 +103,9 @@ pub use state::{
     CommittedNetworkResultV1, DurableNetworkPhase, NetworkRecoveryEntry, NetworkRecoverySnapshotV1,
     NetworkStateError, NetworkStateStore, VerifiedNetworkResultV1,
 };
+pub use worker_protocol::{
+    AuthenticatedNetworkPrepareWorkerDispatchV1, MAXIMUM_NETWORK_WORKER_REQUEST_BYTES,
+    NetworkActivationAuthorizationV1, NetworkMutationAuthorizationV1,
+    NetworkPrepareWorkerDispatchV1, NetworkWorkerProtocolError,
+};
+pub use worker_replay::NetworkWorkerReplayLedger;

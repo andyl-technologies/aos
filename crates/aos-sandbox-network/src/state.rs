@@ -256,6 +256,23 @@ pub struct NetworkRecoverySnapshotV1 {
     entries: Vec<NetworkRecoveryEntry>,
 }
 
+/// Carries the exact authenticated records produced by one fresh ambiguity transition.
+///
+/// There is deliberately no recovery accessor for this value. A process that
+/// loses it can only observe or clean up the recovered ambiguous operation;
+/// it cannot reconstruct effect-dispatch authority from durable state.
+pub(crate) struct AmbiguousNetworkDispatchV1 {
+    pub(crate) request_id: [u8; 16],
+    pub(crate) sandbox_id: [u8; 16],
+    pub(crate) transport_digest: ObjectDigest,
+    pub(crate) semantic_digest: ObjectDigest,
+    pub(crate) effect_digest: ObjectDigest,
+    pub(crate) catalog: ResolvedNetworkPreparationV1,
+    pub(crate) current_fence: Vec<u8>,
+    pub(crate) operation_fence: Vec<u8>,
+    pub(crate) effect: Vec<u8>,
+}
+
 impl NetworkRecoverySnapshotV1 {
     /// Returns the journal snapshot boundary.
     #[must_use]
@@ -661,13 +678,14 @@ impl NetworkStateStore {
         authority: &NetworkAuthorityV1,
         request_id: [u8; 16],
         effect_digest: ObjectDigest,
-    ) -> Result<(), NetworkStateError> {
+    ) -> Result<AmbiguousNetworkDispatchV1, NetworkStateError> {
         let mut record = self.exact_current(request_id, effect_digest)?.clone();
         if record.phase != DurableNetworkPhase::Prepared || record.operation_fence.is_none() {
             return Err(NetworkStateError::InvalidTransition);
         }
         record.phase = DurableNetworkPhase::Ambiguous;
-        self.publish(authority, record)
+        self.publish(authority, record.clone())?;
+        ambiguous_dispatch(record)
     }
 
     /// Commits a complete typed observation for one ambiguous preparation.
@@ -807,6 +825,32 @@ fn recovery_entry(record: &DurableRecord) -> NetworkRecoveryEntry {
         catalog_resolution: record.catalog.clone(),
         result: record.result,
     }
+}
+
+fn ambiguous_dispatch(
+    record: DurableRecord,
+) -> Result<AmbiguousNetworkDispatchV1, NetworkStateError> {
+    let operation_fence = record
+        .operation_fence
+        .ok_or(NetworkStateError::InvalidTransition)?;
+    if record.phase != DurableNetworkPhase::Ambiguous
+        || record.verb != BrokerVerb::NetworkPrepare
+        || record.result.is_some()
+    {
+        return Err(NetworkStateError::InvalidTransition);
+    }
+
+    Ok(AmbiguousNetworkDispatchV1 {
+        request_id: record.request_id,
+        sandbox_id: record.sandbox_id,
+        transport_digest: record.transport_digest,
+        semantic_digest: record.semantic_digest,
+        effect_digest: record.effect_digest,
+        catalog: record.catalog,
+        current_fence: record.current_fence,
+        operation_fence,
+        effect: record.effect,
+    })
 }
 
 fn validate_record_links(
@@ -1225,7 +1269,7 @@ const fn phase_label(phase: DurableNetworkPhase) -> &'static [u8] {
     }
 }
 
-fn effect_digest(
+pub(crate) fn effect_digest(
     request_id: [u8; 16],
     transport_digest: ObjectDigest,
     catalog: &ResolvedNetworkPreparationV1,

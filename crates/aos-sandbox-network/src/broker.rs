@@ -17,14 +17,18 @@ use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 use sha2::{Digest as _, Sha256};
 
+use crate::NetworkKernelPlanV1;
 use crate::authorization::{NetworkAuthorityV1, decode_assignment};
 use crate::catalog::{AuthenticatedNetworkPreparationV1, ResolvedNetworkPreparationV1};
 use crate::namespace_catalog::{NetworkNamespaceCatalogError, NetworkNamespacePublicationV1};
 use crate::preparation_catalog::{NetworkPreparationCatalogError, NetworkPreparationCatalogV1};
 use crate::state::{
-    CommittedNetworkResultV1, DurableNetworkPhase, NetworkBeginOutcome, NetworkRecoveryEntry,
-    NetworkStateError, NetworkStateStore, PreparedNetworkRecordInput, VerifiedNetworkResultV1,
-    prepared_record,
+    AmbiguousNetworkDispatchV1, CommittedNetworkResultV1, DurableNetworkPhase, NetworkBeginOutcome,
+    NetworkRecoveryEntry, NetworkStateError, NetworkStateStore, PreparedNetworkRecordInput,
+    VerifiedNetworkResultV1, prepared_record,
+};
+use crate::worker_protocol::{
+    NetworkPrepareWorkerDispatchV1, NetworkWorkerProtocolError, issue_prepare_dispatch,
 };
 
 /// Reports fail-closed network admission failure.
@@ -45,6 +49,9 @@ pub enum NetworkBrokerError {
     /// A committed observation cannot form a current namespace publication.
     #[error("network namespace publication was rejected: {0}")]
     NamespaceCatalog(#[from] NetworkNamespaceCatalogError),
+    /// The exact durable effect could not form an authenticated worker request.
+    #[error("network worker dispatch was rejected: {0}")]
+    WorkerProtocol(#[from] NetworkWorkerProtocolError),
 }
 
 /// Classifies durable admission without implying an executable effect.
@@ -64,6 +71,16 @@ pub enum NetworkAdmissionOutcome {
     },
     /// The exact request already committed and returns its prior result.
     Replay(CommittedNetworkResultV1),
+}
+
+/// Authorizes construction of one first and only preparation-worker request.
+///
+/// This non-clone value exists only in memory after the exact synchronous
+/// `Prepared -> Ambiguous` journal transition. Recovery deliberately cannot
+/// reconstruct it, so an ambiguous operation is observation/cleanup-only.
+#[must_use]
+pub struct NetworkEffectDispatchPermitV1 {
+    durable: AmbiguousNetworkDispatchV1,
 }
 
 /// Serializes protected network authority and durable preparation state.
@@ -181,10 +198,32 @@ impl NetworkAdmissionCoordinator {
         &mut self,
         request_id: [u8; 16],
         effect_digest: ObjectDigest,
-    ) -> Result<(), NetworkBrokerError> {
-        self.state
-            .mark_effect_ambiguous(&self.authority, request_id, effect_digest)?;
-        Ok(())
+    ) -> Result<NetworkEffectDispatchPermitV1, NetworkBrokerError> {
+        let durable =
+            self.state
+                .mark_effect_ambiguous(&self.authority, request_id, effect_digest)?;
+        Ok(NetworkEffectDispatchPermitV1 { durable })
+    }
+
+    /// Consumes a fresh ambiguity-transition permit into one worker request.
+    ///
+    /// The supplied canonical plan must reproduce the exact durable request,
+    /// assignment, protected preparation, and effect identity. Losing either
+    /// this permit or the resulting request never permits reconstruction from
+    /// recovered ambiguous state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkBrokerError::WorkerProtocol`] when any request, plan,
+    /// catalog, fence, or effect relationship differs.
+    pub fn issue_prepare_worker_dispatch(
+        &self,
+        permit: NetworkEffectDispatchPermitV1,
+        request_body: &[u8],
+        kernel_plan: NetworkKernelPlanV1,
+    ) -> Result<NetworkPrepareWorkerDispatchV1, NetworkBrokerError> {
+        issue_prepare_dispatch(&self.authority, permit.durable, request_body, kernel_plan)
+            .map_err(Into::into)
     }
 
     /// Commits one verified current-boot namespace observation.
@@ -300,11 +339,12 @@ mod tests {
         encode_trust_policy,
     };
     use aos_sandbox_core::model::{
-        KeyReference, KeyUsage, SignaturePurpose, SignatureStatement, StableKeyId, TrustPolicy,
+        KeyReference, KeyUsage, NetworkKind, SignaturePurpose, SignatureStatement, StableKeyId,
+        TrustPolicy,
     };
     use aos_sandbox_core::{
         BrokerAudience, BrokerAuthorizationPlan, BrokerGrant, BrokerPlanTrustAnchor, BrokerVerb,
-        DecodeLimits, LeaseAssignment, MediaType, NodeId, OwnershipLease,
+        DecodeLimits, LeaseAssignment, MediaType, NetworkEndpointId, NodeId, OwnershipLease,
         OwnershipLeaseTrustAnchor, PortableMediaType, ProtocolId, RawClockProvenance,
         RevocationScopeId, TrustScopeId, descriptor_for_bytes, sign_statement,
     };
@@ -314,7 +354,13 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::{ResolvedEndpointV1, ResolvedNetworkPreparationV1};
+    use crate::{
+        NetworkAddressPoolV1, NetworkAdmissionError, NetworkAllocationPolicyV1,
+        NetworkEndpointPolicyV1, NetworkFlowDirectionV1, NetworkFlowPolicyV1, NetworkIpPrefixV1,
+        NetworkKernelPlanV1, NetworkNamespacePlanV1, NetworkPolicyProgramV1, NetworkPortRangeV1,
+        NetworkPrepareWorkerDispatchV1, NetworkTransportProtocolV1, NetworkWorkerProtocolError,
+        NetworkWorkerReplayLedger, ResolvedEndpointV1, ResolvedNetworkPreparationV1,
+    };
 
     const NODE: NodeId = NodeId::from_bytes([31; 16]);
 
@@ -366,6 +412,10 @@ mod tests {
         }
 
         fn authority(&self) -> NetworkAuthorityV1 {
+            self.authority_for(NODE)
+        }
+
+        fn authority_for(&self, node: NodeId) -> NetworkAuthorityV1 {
             let plan = BrokerPlanTrustAnchor::from_trusted_configuration(
                 self.plan_policy.clone(),
                 self.plan_descriptor.clone(),
@@ -385,7 +435,7 @@ mod tests {
                 DecodeLimits::default(),
             )
             .unwrap();
-            NetworkAuthorityV1::new(plan, lease, NODE, [46; 16], [47; 32]).unwrap()
+            NetworkAuthorityV1::new(plan, lease, node, [46; 16], [47; 32]).unwrap()
         }
 
         fn artifacts(&self, request: &[u8]) -> ValidatedUntrustedAuthorizationArtifacts {
@@ -500,6 +550,16 @@ mod tests {
         .unwrap()
     }
 
+    fn expired_clock() -> RawPairedClockSample {
+        RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
+            [50; 16],
+            151,
+            1_000_000_100,
+        )
+        .unwrap()
+    }
+
     fn request() -> Vec<u8> {
         request_for(7, 2, &[7, 8])
     }
@@ -570,6 +630,135 @@ mod tests {
                 decode_assignment(request).unwrap(),
             )
             .unwrap()
+    }
+
+    fn isolated_worker_case() -> (Vec<u8>, ResolvedNetworkPreparationV1, NetworkKernelPlanV1) {
+        let request = request_for(7, 2, &[]);
+        let catalog = catalog_for(9, 10, 11, &[]);
+        let policy = NetworkPolicyProgramV1::new(
+            NetworkKind::Isolated,
+            ObjectDigest::from_bytes([55; 32]),
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        let namespace = NetworkNamespacePlanV1::derive(
+            [10; 32],
+            1,
+            ObjectDigest::from_bytes([11; 32]),
+            &policy,
+            &NetworkAllocationPolicyV1::isolated(),
+        )
+        .unwrap();
+        let plan =
+            NetworkKernelPlanV1::compile(decode_assignment(&request).unwrap(), &namespace, &policy)
+                .unwrap();
+
+        (request, catalog, plan)
+    }
+
+    fn nonempty_worker_case() -> (
+        Vec<u8>,
+        ResolvedNetworkPreparationV1,
+        NetworkKernelPlanV1,
+        NetworkKernelPlanV1,
+    ) {
+        let request = request_for(7, 2, &[7]);
+        let first_flow = NetworkFlowPolicyV1::new(
+            NetworkFlowDirectionV1::Ingress,
+            NetworkTransportProtocolV1::Tcp,
+            NetworkIpPrefixV1::ipv4([198, 51, 100, 0], 24).unwrap(),
+            Some(NetworkPortRangeV1::new(443, 443).unwrap()),
+        )
+        .unwrap();
+        let substituted_flow = NetworkFlowPolicyV1::new(
+            NetworkFlowDirectionV1::Ingress,
+            NetworkTransportProtocolV1::Tcp,
+            NetworkIpPrefixV1::ipv4([203, 0, 113, 0], 24).unwrap(),
+            Some(NetworkPortRangeV1::new(443, 443).unwrap()),
+        )
+        .unwrap();
+        let endpoint_id = NetworkEndpointId::from_bytes([7; 16]);
+        let endpoint = NetworkEndpointPolicyV1::new(endpoint_id, vec![first_flow]).unwrap();
+        let substituted_endpoint =
+            NetworkEndpointPolicyV1::new(endpoint_id, vec![substituted_flow]).unwrap();
+        let catalog = ResolvedNetworkPreparationV1::new(
+            9,
+            [10; 32],
+            ObjectDigest::from_bytes([11; 32]),
+            vec![ResolvedEndpointV1::new([7; 16], endpoint.digest()).unwrap()],
+        )
+        .unwrap();
+        let allocation = NetworkAllocationPolicyV1::veth(
+            1_500,
+            [0x02, 0xaa, 0xbb],
+            vec![
+                NetworkAddressPoolV1::new(NetworkIpPrefixV1::ipv4([10, 40, 0, 0], 17).unwrap())
+                    .unwrap(),
+            ],
+            Vec::new(),
+        )
+        .unwrap();
+        let assignment = decode_assignment(&request).unwrap();
+        let compile = |endpoint| {
+            let policy = NetworkPolicyProgramV1::new(
+                NetworkKind::Project,
+                ObjectDigest::from_bytes([55; 32]),
+                Some(ObjectDigest::from_bytes([56; 32])),
+                vec![endpoint],
+            )
+            .unwrap();
+            let namespace = NetworkNamespacePlanV1::derive(
+                [10; 32],
+                1,
+                ObjectDigest::from_bytes([11; 32]),
+                &policy,
+                &allocation,
+            )
+            .unwrap();
+            NetworkKernelPlanV1::compile(assignment, &namespace, &policy).unwrap()
+        };
+
+        (
+            request,
+            catalog,
+            compile(endpoint),
+            compile(substituted_endpoint),
+        )
+    }
+
+    fn issue_isolated_worker_dispatch(
+        directory: &Path,
+        fixture: &Fixture,
+    ) -> (Vec<u8>, NetworkKernelPlanV1) {
+        let (request, catalog, plan) = isolated_worker_case();
+        let artifacts = fixture.artifacts(&request);
+        let authority = fixture.authority();
+        let token = authenticated_catalog(&authority, catalog, &request);
+        let store = NetworkStateStore::open_for_test(directory, &authority, 0).unwrap();
+        let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
+        let NetworkAdmissionOutcome::Prepared { effect_digest } = coordinator
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &token,
+                ProtocolVersion::new(1, 1),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("worker request did not prepare the effect");
+        };
+        let permit = coordinator
+            .mark_effect_ambiguous([7; 16], effect_digest)
+            .unwrap();
+        let dispatch = coordinator
+            .issue_prepare_worker_dispatch(permit, &request, plan.clone())
+            .unwrap();
+
+        (dispatch.encode().unwrap(), plan)
     }
 
     fn key_ref(id: &str, generation: u64, usage: KeyUsage, key: &SigningKey) -> KeyReference {
@@ -643,6 +832,281 @@ mod tests {
             advertised_network_methods(),
             [BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES]
         );
+    }
+
+    #[test]
+    fn worker_dispatch_authenticates_and_rejects_replay_after_restart() {
+        let state_directory = TempDir::new().unwrap();
+        let replay_directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (bytes, expected_plan) =
+            issue_isolated_worker_dispatch(state_directory.path(), &fixture);
+
+        let authority = fixture.authority();
+        let dispatch = NetworkPrepareWorkerDispatchV1::decode(&bytes).unwrap();
+        assert_eq!(dispatch.encode().unwrap(), bytes);
+        let authenticated = dispatch.authenticate(&authority).unwrap();
+        let mut replay = NetworkWorkerReplayLedger::open_for_test(replay_directory.path()).unwrap();
+        let mut trusted_clock = || Ok(clock());
+        let mutation = authenticated
+            .authorize_mutation(&authority, &mut replay, &mut trusted_clock)
+            .unwrap();
+        assert_eq!(mutation.kernel_plan(), &expected_plan);
+        assert_eq!(
+            mutation
+                .authorize_activation(&authority, &mut trusted_clock)
+                .unwrap()
+                .kernel_plan(),
+            &expected_plan
+        );
+        drop(mutation);
+        drop(replay);
+
+        let replayed = NetworkPrepareWorkerDispatchV1::decode(&bytes)
+            .unwrap()
+            .authenticate(&authority)
+            .unwrap();
+        let mut reopened =
+            NetworkWorkerReplayLedger::open_for_test(replay_directory.path()).unwrap();
+        assert!(matches!(
+            replayed.authorize_mutation(&authority, &mut reopened, &mut trusted_clock),
+            Err(NetworkWorkerProtocolError::Replay)
+        ));
+    }
+
+    #[test]
+    fn mutation_and_activation_recheck_current_authority() {
+        let state_directory = TempDir::new().unwrap();
+        let replay_directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (bytes, _) = issue_isolated_worker_dispatch(state_directory.path(), &fixture);
+        let authority = fixture.authority();
+        let changed_authority = fixture.authority_for(NodeId::from_bytes([99; 16]));
+        let mut replay = NetworkWorkerReplayLedger::open_for_test(replay_directory.path()).unwrap();
+        let mut trusted_clock = || Ok(clock());
+
+        let before_mutation = NetworkPrepareWorkerDispatchV1::decode(&bytes)
+            .unwrap()
+            .authenticate(&authority)
+            .unwrap();
+        assert!(matches!(
+            before_mutation.authorize_mutation(&changed_authority, &mut replay, &mut trusted_clock),
+            Err(NetworkWorkerProtocolError::Authority)
+        ));
+
+        // Rejection precedes the durable claim, so the unchanged authority may
+        // still consume the one legitimate attempt.
+        let authenticated = NetworkPrepareWorkerDispatchV1::decode(&bytes)
+            .unwrap()
+            .authenticate(&authority)
+            .unwrap();
+        let mutation = authenticated
+            .authorize_mutation(&authority, &mut replay, &mut trusted_clock)
+            .unwrap();
+        assert!(matches!(
+            mutation.authorize_activation(&changed_authority, &mut trusted_clock),
+            Err(NetworkWorkerProtocolError::Authority)
+        ));
+        assert!(
+            mutation
+                .authorize_activation(&authority, &mut trusted_clock)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn mutation_expiry_after_claim_consumes_the_attempt() {
+        let state_directory = TempDir::new().unwrap();
+        let replay_directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (bytes, _) = issue_isolated_worker_dispatch(state_directory.path(), &fixture);
+        let authority = fixture.authority();
+        let mut replay = NetworkWorkerReplayLedger::open_for_test(replay_directory.path()).unwrap();
+        let mut samples = [clock(), expired_clock()].into_iter();
+        let mut advancing_clock = || samples.next().ok_or(NetworkAdmissionError::FenceRejected);
+
+        let authenticated = NetworkPrepareWorkerDispatchV1::decode(&bytes)
+            .unwrap()
+            .authenticate(&authority)
+            .unwrap();
+        assert!(matches!(
+            authenticated.authorize_mutation(&authority, &mut replay, &mut advancing_clock),
+            Err(NetworkWorkerProtocolError::Authority)
+        ));
+
+        let replayed = NetworkPrepareWorkerDispatchV1::decode(&bytes)
+            .unwrap()
+            .authenticate(&authority)
+            .unwrap();
+        let mut trusted_clock = || Ok(clock());
+        assert!(matches!(
+            replayed.authorize_mutation(&authority, &mut replay, &mut trusted_clock),
+            Err(NetworkWorkerProtocolError::Replay)
+        ));
+    }
+
+    #[test]
+    fn activation_rejects_expired_effect_time() {
+        let state_directory = TempDir::new().unwrap();
+        let replay_directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (bytes, _) = issue_isolated_worker_dispatch(state_directory.path(), &fixture);
+        let authority = fixture.authority();
+        let mut replay = NetworkWorkerReplayLedger::open_for_test(replay_directory.path()).unwrap();
+        let mut trusted_clock = || Ok(clock());
+        let authenticated = NetworkPrepareWorkerDispatchV1::decode(&bytes)
+            .unwrap()
+            .authenticate(&authority)
+            .unwrap();
+        let mutation = authenticated
+            .authorize_mutation(&authority, &mut replay, &mut trusted_clock)
+            .unwrap();
+        let mut expired = || Ok(expired_clock());
+
+        assert!(matches!(
+            mutation.authorize_activation(&authority, &mut expired),
+            Err(NetworkWorkerProtocolError::Authority)
+        ));
+    }
+
+    #[test]
+    fn dispatch_rejects_substituted_nonempty_endpoint_policy() {
+        let valid_state_directory = TempDir::new().unwrap();
+        let substituted_state_directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (request, catalog, valid_plan, substituted_plan) = nonempty_worker_case();
+        let artifacts = fixture.artifacts(&request);
+        let authority = fixture.authority();
+        let token = authenticated_catalog(&authority, catalog.clone(), &request);
+        let store =
+            NetworkStateStore::open_for_test(valid_state_directory.path(), &authority, 0).unwrap();
+        let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
+        let NetworkAdmissionOutcome::Prepared { effect_digest } = coordinator
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &token,
+                ProtocolVersion::new(1, 1),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("nonempty request did not prepare the effect");
+        };
+        let permit = coordinator
+            .mark_effect_ambiguous([7; 16], effect_digest)
+            .unwrap();
+        let dispatch = coordinator
+            .issue_prepare_worker_dispatch(permit, &request, valid_plan.clone())
+            .unwrap();
+
+        dispatch.authenticate(&fixture.authority()).unwrap();
+
+        let authority = fixture.authority();
+        let token = authenticated_catalog(&authority, catalog, &request);
+        let store =
+            NetworkStateStore::open_for_test(substituted_state_directory.path(), &authority, 0)
+                .unwrap();
+        let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
+        let NetworkAdmissionOutcome::Prepared { effect_digest } = coordinator
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &token,
+                ProtocolVersion::new(1, 1),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("nonempty substituted request did not prepare the effect");
+        };
+        let permit = coordinator
+            .mark_effect_ambiguous([7; 16], effect_digest)
+            .unwrap();
+
+        assert_ne!(
+            valid_plan.policy_program_digest(),
+            substituted_plan.policy_program_digest()
+        );
+        assert!(matches!(
+            coordinator.issue_prepare_worker_dispatch(permit, &request, substituted_plan),
+            Err(NetworkBrokerError::WorkerProtocol(
+                NetworkWorkerProtocolError::Authority
+            ))
+        ));
+    }
+
+    #[test]
+    fn recovered_ambiguous_state_cannot_reconstruct_dispatch_authority() {
+        let state_directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (bytes, _) = issue_isolated_worker_dispatch(state_directory.path(), &fixture);
+        let (request, catalog, _) = isolated_worker_case();
+        let artifacts = fixture.artifacts(&request);
+        let authority = fixture.authority();
+        let token = authenticated_catalog(&authority, catalog, &request);
+        let store =
+            NetworkStateStore::open_for_test(state_directory.path(), &authority, 0).unwrap();
+        let mut recovered = NetworkAdmissionCoordinator::new(authority, store);
+
+        let snapshot = recovered.recovery_snapshot();
+        assert_eq!(snapshot.entries().len(), 1);
+        assert_eq!(
+            snapshot.entries()[0].phase(),
+            DurableNetworkPhase::Ambiguous
+        );
+        let outcome = recovered
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &token,
+                ProtocolVersion::new(1, 1),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+        let NetworkAdmissionOutcome::ObserveOnly {
+            phase,
+            effect_digest,
+        } = outcome
+        else {
+            panic!("recovered ambiguity unexpectedly regained dispatch authority");
+        };
+        assert_eq!(phase, DurableNetworkPhase::Ambiguous);
+        assert!(
+            recovered
+                .mark_effect_ambiguous([7; 16], effect_digest)
+                .is_err()
+        );
+
+        // Previously issued bytes remain authenticated data, but no recovered
+        // broker API can mint a second message or worker attempt from them.
+        assert!(
+            NetworkPrepareWorkerDispatchV1::decode(&bytes)
+                .unwrap()
+                .authenticate(&fixture.authority())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn worker_dispatch_rejects_a_tampered_local_seal() {
+        let state_directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (mut bytes, _) = issue_isolated_worker_dispatch(state_directory.path(), &fixture);
+        let final_byte = bytes.last_mut().unwrap();
+        *final_byte ^= 1;
+
+        let decoded = NetworkPrepareWorkerDispatchV1::decode(&bytes).unwrap();
+        assert!(matches!(
+            decoded.authenticate(&fixture.authority()),
+            Err(NetworkWorkerProtocolError::Authority)
+        ));
     }
 
     #[test]
@@ -749,9 +1213,11 @@ mod tests {
                 .mark_effect_ambiguous([7; 16], ObjectDigest::from_bytes([1; 32]))
                 .is_err()
         );
-        coordinator
-            .mark_effect_ambiguous([7; 16], effect_digest)
-            .unwrap();
+        drop(
+            coordinator
+                .mark_effect_ambiguous([7; 16], effect_digest)
+                .unwrap(),
+        );
         assert!(
             coordinator
                 .mark_effect_ambiguous([7; 16], effect_digest)
@@ -839,9 +1305,11 @@ mod tests {
                 NetworkAdmissionOutcome::Prepared { effect_digest } => effect_digest,
                 _ => panic!("first admission did not prepare the effect"),
             };
-            coordinator
-                .mark_effect_ambiguous([7; 16], effect_digest)
-                .unwrap();
+            drop(
+                coordinator
+                    .mark_effect_ambiguous([7; 16], effect_digest)
+                    .unwrap(),
+            );
         }
 
         let authority = fixture.authority();
@@ -943,9 +1411,11 @@ mod tests {
             NetworkAdmissionOutcome::Prepared { effect_digest } => effect_digest,
             _ => panic!("first admission did not prepare the effect"),
         };
-        coordinator
-            .mark_effect_ambiguous([7; 16], first_effect)
-            .unwrap();
+        drop(
+            coordinator
+                .mark_effect_ambiguous([7; 16], first_effect)
+                .unwrap(),
+        );
         let mismatched = VerifiedNetworkResultV1::verify_preparation(
             [7; 16],
             ObjectDigest::from_bytes(Sha256::digest(&first_request).into()),
@@ -990,9 +1460,11 @@ mod tests {
             NetworkAdmissionOutcome::Prepared { effect_digest } => effect_digest,
             _ => panic!("second admission did not prepare the effect"),
         };
-        coordinator
-            .mark_effect_ambiguous([8; 16], second_effect)
-            .unwrap();
+        drop(
+            coordinator
+                .mark_effect_ambiguous([8; 16], second_effect)
+                .unwrap(),
+        );
         let collision = VerifiedNetworkResultV1::verify_preparation(
             [8; 16],
             ObjectDigest::from_bytes(Sha256::digest(&second_request).into()),
@@ -1043,9 +1515,11 @@ mod tests {
                 NetworkAdmissionOutcome::Prepared { effect_digest } => effect_digest,
                 _ => panic!("first admission did not prepare the effect"),
             };
-            coordinator
-                .mark_effect_ambiguous([7; 16], first_effect)
-                .unwrap();
+            drop(
+                coordinator
+                    .mark_effect_ambiguous([7; 16], first_effect)
+                    .unwrap(),
+            );
             let verified = VerifiedNetworkResultV1::verify_preparation(
                 [7; 16],
                 ObjectDigest::from_bytes(Sha256::digest(&first_request).into()),
