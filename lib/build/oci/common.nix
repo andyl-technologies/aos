@@ -182,17 +182,17 @@
     }
   '';
 
-  # Layer ABI v1, frozen by RFC-0019 and tests/containers/phase0.nix.
+  # Layer ABI v2 uses gzip 1.14; the original frozen byte vector is retained.
   archiveScript = ''
     verify_archive_tools() {
       tar_version=$(tar --version | head -n 1)
       gzip_version=$(gzip --version | head -n 1)
       if [ "$tar_version" != "tar (GNU tar) 1.35" ]; then
-        echo "OCI layer ABI v1 requires AOS GNU tar 1.35, found: $tar_version" >&2
+        echo "OCI layer ABI v2 requires AOS GNU tar 1.35, found: $tar_version" >&2
         exit 1
       fi
-      if [ "$gzip_version" != "gzip 1.13" ]; then
-        echo "OCI layer ABI v1 requires AOS gzip 1.13, found: $gzip_version" >&2
+      if [ "$gzip_version" != "gzip 1.14" ]; then
+        echo "OCI layer ABI v2 requires AOS gzip 1.14, found: $gzip_version" >&2
         exit 1
       fi
     }

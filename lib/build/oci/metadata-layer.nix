@@ -25,7 +25,7 @@
 }: let
   normalizeOwner = context: entry:
     if (entry.uid or 0) != 0 || (entry.gid or 0) != 0
-    then common.fail "${context} requests non-root ownership, which layer ABI v1 forbids"
+    then common.fail "${context} requests non-root ownership, which layer ABI v2 forbids"
     else entry;
   normalizedDirectories =
     lib.imap (
