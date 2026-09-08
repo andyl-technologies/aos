@@ -57,8 +57,8 @@ impl Database {
                  WHERE id = ?1
                    AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
                      WHERE registry_lock.registry_id = ?1)
-                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
-                     WHERE purge.registry_id = ?1 AND purge.state = 'collecting')",
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge_fence
+                     WHERE purge_fence.registry_id = ?1 AND purge_fence.state = 'collecting')",
                 vals![input.registry_id],
             )
             .expecting(1),
@@ -131,8 +131,8 @@ impl Database {
                  WHERE reservation.id = ?5 AND reservation.state = 'reserved'
                    AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
                      WHERE registry_lock.registry_id = ?2)
-                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
-                     WHERE purge.registry_id = ?2 AND purge.state = 'collecting')",
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge_fence
+                     WHERE purge_fence.registry_id = ?2 AND purge_fence.state = 'collecting')",
                 vals![
                     upload_id,
                     input.registry_id,
@@ -167,8 +167,8 @@ impl Database {
                  WHERE registry_id = ?1
                    AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
                      WHERE registry_lock.registry_id = ?1)
-                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
-                     WHERE purge.registry_id = ?1 AND purge.state = 'collecting')",
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge_fence
+                     WHERE purge_fence.registry_id = ?1 AND purge_fence.state = 'collecting')",
                 vals![input.registry_id, input.now],
             )
             .expecting(1),
@@ -292,9 +292,9 @@ impl Database {
                      AND expires_at > ?5)
                    AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
                      WHERE registry_lock.registry_id = oci_registry_state.registry_id)
-                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
-                     WHERE purge.registry_id = oci_registry_state.registry_id
-                       AND purge.state = 'collecting')",
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge_fence
+                     WHERE purge_fence.registry_id = oci_registry_state.registry_id
+                       AND purge_fence.state = 'collecting')",
                 vals![
                     input.upload_id,
                     input.writer_id,
@@ -594,9 +594,9 @@ impl Database {
                      AND expires_at > ?5)
                    AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
                      WHERE registry_lock.registry_id = oci_registry_state.registry_id)
-                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
-                     WHERE purge.registry_id = oci_registry_state.registry_id
-                       AND purge.state = 'collecting')
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge_fence
+                     WHERE purge_fence.registry_id = oci_registry_state.registry_id
+                       AND purge_fence.state = 'collecting')
                    AND NOT EXISTS (SELECT 1 FROM oci_blobs deleting_blob
                      WHERE deleting_blob.registry_id = oci_registry_state.registry_id
                        AND deleting_blob.digest = ?4
@@ -773,8 +773,8 @@ impl Database {
                  WHERE registry_id = ?1
                    AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
                      WHERE registry_lock.registry_id = ?1)
-                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
-                     WHERE purge.registry_id = ?1 AND purge.state = 'collecting')
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge_fence
+                     WHERE purge_fence.registry_id = ?1 AND purge_fence.state = 'collecting')
                    AND NOT EXISTS (SELECT 1 FROM oci_blobs deleting_blob
                      WHERE deleting_blob.registry_id = ?1 AND deleting_blob.digest = ?2
                        AND deleting_blob.lifecycle_state <> 'active')
@@ -1335,9 +1335,9 @@ impl Database {
                  WHERE registry_id = (SELECT registry_id FROM oci_upload_sessions WHERE id = ?1)
                    AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
                      WHERE registry_lock.registry_id = oci_registry_state.registry_id)
-                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
-                     WHERE purge.registry_id = oci_registry_state.registry_id
-                       AND purge.state = 'collecting')",
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge_fence
+                     WHERE purge_fence.registry_id = oci_registry_state.registry_id
+                       AND purge_fence.state = 'collecting')",
                 vals![input.upload_id, input.now],
             )
             .expecting(1),
@@ -1481,9 +1481,9 @@ impl Database {
                  WHERE registry_id = (SELECT registry_id FROM oci_repositories WHERE id = ?2)
                    AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
                      WHERE registry_lock.registry_id = oci_registry_state.registry_id)
-                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
-                     WHERE purge.registry_id = oci_registry_state.registry_id
-                       AND purge.state = 'collecting')",
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge_fence
+                     WHERE purge_fence.registry_id = oci_registry_state.registry_id
+                       AND purge_fence.state = 'collecting')",
                 vals![source_repository_id, destination_repository_id, now],
             )
             .expecting(1),

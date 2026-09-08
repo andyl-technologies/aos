@@ -148,10 +148,10 @@ impl Database {
                          WHERE registry_id = ?1)
                        AND NOT EXISTS (SELECT 1 FROM oci_gc_snapshot_lease_holds
                          WHERE registry_id = ?1)
-                       AND EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
-                         WHERE purge.registry_id = ?1 AND purge.state = 'collecting'
-                           AND purge.registry_resource_version = ?3
-                           AND purge.captured_mutation_epoch =
+                       AND EXISTS (SELECT 1 FROM oci_registry_purge_fences purge_fence
+                         WHERE purge_fence.registry_id = ?1 AND purge_fence.state = 'collecting'
+                           AND purge_fence.registry_resource_version = ?3
+                           AND purge_fence.captured_mutation_epoch =
                              (SELECT mutation_epoch FROM oci_registry_state
                               WHERE registry_id = ?1))
                        AND NOT EXISTS (SELECT 1
@@ -192,15 +192,15 @@ impl Database {
                              AND inventory.binding_write_revision =
                                write_state.current_write_revision
                              AND inventory.purge_fence_resource_version =
-                               (SELECT resource_version FROM oci_registry_purge_fences purge
-                                WHERE purge.registry_id = ?1 AND purge.state = 'collecting')
+                               (SELECT resource_version FROM oci_registry_purge_fences purge_fence
+                                WHERE purge_fence.registry_id = ?1 AND purge_fence.state = 'collecting')
                              AND inventory.object_count = 0
                              AND inventory.started_at >=
-                               (SELECT created_at FROM oci_registry_purge_fences purge
-                                WHERE purge.registry_id = ?1 AND purge.state = 'collecting')
+                               (SELECT created_at FROM oci_registry_purge_fences purge_fence
+                                WHERE purge_fence.registry_id = ?1 AND purge_fence.state = 'collecting')
                              AND inventory.observed_at >=
-                               (SELECT created_at FROM oci_registry_purge_fences purge
-                                WHERE purge.registry_id = ?1 AND purge.state = 'collecting')
+                               (SELECT created_at FROM oci_registry_purge_fences purge_fence
+                                WHERE purge_fence.registry_id = ?1 AND purge_fence.state = 'collecting')
                              AND NOT EXISTS (SELECT 1
                                FROM oci_provider_inventory_generations failed
                                WHERE failed.placement_id = placement.id
