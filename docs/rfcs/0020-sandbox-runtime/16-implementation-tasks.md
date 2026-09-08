@@ -4598,6 +4598,48 @@ fresh repair admission is not implemented. The runtime remains
 `IntegrationIncomplete`, Storage Apply remains unadvertised, and
 `SBX-STOR-01` and `SBX-P0-07` remain open.
 
+### Signed Storage catalog preparation retention (in progress)
+
+The local commit `1d36f09ae` advances `SBX-STOR-01` with a library coordinator
+path for independently authorized `PrepareCatalog`. The coordinator decodes
+the canonical protocol 1.3 request, validates its signed preparation grant,
+requires exact trusted inventory and durable catalog-head bindings, invokes a
+protected resolver, and seals the resulting non-authorizing receipt and
+retained record. The store commits that record with its current fence, effect
+intent, and operation fence in one catalog-head compare-and-swap transaction.
+Preparation performs no physical ZFS effect and does not advance the catalog
+head.
+
+Exact replay authenticates the retained record and authority links at their
+durable locations, then binds the request, operation, plan, lease, host boot,
+and exclusive deadline. Same-operation equivocation, stale inventory or head,
+tamper, and missing links fail closed. Apply now requires the exact retained
+catalog and assignment, rechecks an unconsumed preparation's boot, deadline,
+head, and current signed authority, independently validates the Apply grant,
+and atomically records the Apply binding while beginning the existing durable
+mutation transaction. Startup authenticates both unconsumed preparations and
+the Apply cross-links of consumed preparations before recovery proceeds.
+
+An exact archive of the six-file staged increment, identified by binary-diff
+SHA-256
+`9600b5a4abc99e067e547ea32c020963da64130d498a7dd228ef1cfe1880e59f`,
+passes Rust formatting and the scoped Storage tests: 101 library tests passed,
+none failed, and one real-systemd test was ignored; the worker binary and
+doctest targets contained no tests. Strict all-target, no-dependency Clippy
+with warnings denied is not green at the parent baseline. The exact parent
+reported 24 library and 10 test-target diagnostics, while the increment reports
+the same 24 library diagnostics and 9 test-target diagnostics. Normalizing
+shifted line numbers leaves no increment-only diagnostic; the increment removes
+one existing `clone_on_copy` test diagnostic, and the existing
+`large_enum_variant` layout report remains 1720 bytes versus 696 bytes. This is
+differential no-regression evidence, not a passing lint result.
+
+This increment provides no worker-VM or end-to-end production qualification.
+The ignored real-systemd test remains ignored, no passing VM result is claimed,
+and the runtime still does not advertise Storage Apply. The complete production
+handler, protected resolver provisioning, and integrated lifecycle remain open;
+`SBX-STOR-01` is not complete.
+
 ### Canonical Network kernel plan (in progress)
 
 The Network broker can now compile one exact assignment, namespace allocation,
