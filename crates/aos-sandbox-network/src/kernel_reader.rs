@@ -38,6 +38,9 @@ pub enum NetworkKernelReaderError {
     /// The fixed helper emitted an oversized or invalid closed JSON record.
     #[error("invalid Network BPF observation: {0}")]
     InvalidBpf(&'static str),
+    /// The fixed iproute2 reader emitted unsupported or incomplete state.
+    #[error("invalid Network rtnetlink observation: {0}")]
+    InvalidRtnetlink(&'static str),
     /// JSON syntax or the closed schema was invalid.
     #[error("invalid Network BPF observation JSON: {0}")]
     Json(#[from] serde_json::Error),
@@ -51,7 +54,7 @@ pub enum NetworkKernelReaderError {
     #[error("Network kernel observer process failed: {0}")]
     Linux(#[from] aos_sandbox_linux::Error),
     /// The fixed helper timed out, exceeded output bounds, or rejected state.
-    #[error("fixed Network BPF observer did not return a complete snapshot")]
+    #[error("fixed Network observer did not return a complete snapshot")]
     HelperFailed,
 }
 
@@ -99,26 +102,20 @@ impl FixedBpfObservationReader {
                 "network handle is zero",
             ));
         }
-        self.helper.validate_current()?;
         self.gate_object.validate_current()?;
 
         let pin_root = format!("{BPF_PIN_PREFIX}/{}", encode_hex(network_handle));
-        let output = run_fixed_process(FixedProcessRequest {
-            executable: &self.helper.path,
-            arguments: &[OsString::from(pin_root)],
-            timeout: HELPER_TIMEOUT,
-            maximum_stdout_bytes: MAXIMUM_BPF_OBSERVATION_BYTES,
-            maximum_stderr_bytes: MAXIMUM_HELPER_STDERR_BYTES,
-        })?;
+        let output = self
+            .helper
+            .run(&[OsString::from(pin_root)], MAXIMUM_BPF_OBSERVATION_BYTES)?;
         let stdout = successful_helper_stdout(output)?;
 
-        self.helper.validate_current()?;
         self.gate_object.validate_current()?;
         decode_bpf_observation(&stdout, self.gate_object.digest)
     }
 }
 
-fn successful_helper_stdout(
+pub(crate) fn successful_helper_stdout(
     outcome: FixedProcessOutcome,
 ) -> Result<Vec<u8>, NetworkKernelReaderError> {
     match outcome {
@@ -134,7 +131,7 @@ fn successful_helper_stdout(
 }
 
 #[derive(Debug)]
-struct PinnedArtifact {
+pub(crate) struct PinnedArtifact {
     path: PathBuf,
     descriptor: File,
     ancestors: Vec<ArtifactAncestor>,
@@ -176,7 +173,7 @@ struct ArtifactIdentity {
 }
 
 impl PinnedArtifact {
-    fn open(path: PathBuf, executable: bool) -> Result<Self, NetworkKernelReaderError> {
+    pub(crate) fn open(path: PathBuf, executable: bool) -> Result<Self, NetworkKernelReaderError> {
         let components = validate_artifact_path(&path)?;
         let (descriptor, ancestors) = open_store_artifact(&components)?;
         let identity = ArtifactIdentity::from_descriptor(&descriptor, executable)?;
@@ -227,6 +224,23 @@ impl PinnedArtifact {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn run(
+        &self,
+        arguments: &[OsString],
+        maximum_stdout_bytes: usize,
+    ) -> Result<FixedProcessOutcome, NetworkKernelReaderError> {
+        self.validate_current()?;
+        let outcome = run_fixed_process(FixedProcessRequest {
+            executable: &self.path,
+            arguments,
+            timeout: HELPER_TIMEOUT,
+            maximum_stdout_bytes,
+            maximum_stderr_bytes: MAXIMUM_HELPER_STDERR_BYTES,
+        })?;
+        self.validate_current()?;
+        Ok(outcome)
     }
 }
 
@@ -764,6 +778,8 @@ fn narrow_u16(value: u32) -> Result<u16, NetworkKernelReaderError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
     use aos_sandbox_linux::process::FixedProcessOutput;
 
@@ -868,7 +884,10 @@ mod tests {
             format!("/nix/store/{}e-observer/bin/helper", "0".repeat(31)),
             format!("/nix/store/{hash}-observer"),
         ] {
-            assert!(validate_artifact_path(Path::new(&invalid)).is_err(), "{invalid}");
+            assert!(
+                validate_artifact_path(Path::new(&invalid)).is_err(),
+                "{invalid}"
+            );
         }
     }
 

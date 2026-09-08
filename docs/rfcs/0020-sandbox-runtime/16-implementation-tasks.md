@@ -4683,20 +4683,43 @@ The JSON decoder independently rejects unknown fields, oversized records,
 noncanonical hexadecimal values, invalid versions and booleans, wrong map
 schemas or attachment types, zero tags, and inconsistent graph identities.
 
+The same retained-artifact boundary now drives an immutable AOS `iproute2`
+binary for read-only rtnetlink inventory. Host observation accepts only the
+plan-derived veth name. Sandbox observation deliberately dumps every link and
+address, IPv4 and IPv6 routes from every table, and both policy-rule families.
+Each command has a fixed timeout and output ceiling; nonzero, timed-out,
+oversized, malformed, or non-newline-terminated output is discarded. The
+closed decoder rejects unmodeled behavioral fields, non-permanent or tentative
+addresses, unexpected link roles, route attributes, tables, protocols, scopes,
+metrics, flags, and nonbaseline policy rules.
+
+The comparator includes the complete fresh-namespace local-table baseline:
+IPv4 loopback local and broadcast routes, IPv6 loopback local route, each
+assigned-address local route, and the veth IPv6 `ff00::/8` multicast route. It
+also binds the five default IPv4/IPv6 table-lookup rules. Family-specific Linux
+defaults are explicit: IPv4 connected and static routes retain metric zero;
+IPv6 connected and multicast routes use metric 256 and IPv6 static routes use
+metric 1024. A checked raw Linux 6.18.44 fixture captured with the AOS
+`iproute2` 6.18.0 executable is decoded and compared against an independently
+specified dual-stack plan in the full stable-snapshot validator. This is
+host-kernel behavior evidence, not AOS guest qualification.
+
 The native observer package builds hermetically with warnings denied at
 `/nix/store/miyxja70mcfcx4dp7mp6x6dxj7r7h7bl-aos-sandbox-network-observer-1`.
 The AArch64 derivation evaluates with the target Linux headers explicitly ahead
 of ambient build-machine include paths. Rust formatting passes, the complete
-Network library suite passes all 87 tests, and the real systemd-custody fixture
+Network library suite passes all 97 tests, and the real systemd-custody fixture
 compiles with a root-guest command that constructs the reader from the
 installed observer and BPF object. That new command has not yet run in a guest;
-the existing long fleet realization predates it. Strict whole-crate Clippy is
-currently blocked before this crate by generated `aos-proto` `HashMap` output.
+the existing long fleet realization predates it. Scoped all-target Clippy with
+dependency linting disabled passes with warnings denied.
 
-This is observation-model and BPF-reader foundation only. No actual
-rtnetlink address or route reader, nftables reader, namespace-switching worker,
-authenticated request protocol, double-snapshot production composition, or
-root-guest positive BPF observation has qualified the path. No namespace,
-veth, route, nftables or BPF mutation is implemented, and Apply remains
-unadvertised. The Network runtime and end-to-end qualification tasks remain
-open.
+This remains observation foundation only. The rtnetlink reader does not yet
+prove each reported peer network-namespace ID against the retained authorized
+namespace descriptor with `RTM_GETNSID`; a matching peer interface index and a
+present namespace ID are not sufficient identity proof. No nftables reader,
+authenticated single-thread namespace worker, double-snapshot production
+composition, or root-guest positive BPF observation has qualified the path. No
+namespace, veth, route, nftables or BPF mutation is implemented, and Apply
+remains unadvertised. The Network runtime and end-to-end qualification tasks
+remain open.

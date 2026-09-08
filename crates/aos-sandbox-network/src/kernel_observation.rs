@@ -44,6 +44,9 @@ pub enum NetworkKernelObservationError {
     /// The exact route inventory differs.
     #[error("Network kernel route inventory mismatched")]
     RouteMismatch,
+    /// The exact policy-routing rule inventory differs.
+    #[error("Network kernel policy-routing rule inventory mismatched")]
+    PolicyRuleMismatch,
     /// The exact nftables policy differs.
     #[error("Network kernel nftables policy mismatched")]
     NftablesMismatch,
@@ -274,6 +277,9 @@ impl NetworkKernelExpectationV1 {
         if observed.routes != expected_routes(self, observed) {
             return Err(NetworkKernelObservationError::RouteMismatch);
         }
+        if observed.policy_rules != expected_policy_rules(self) {
+            return Err(NetworkKernelObservationError::PolicyRuleMismatch);
+        }
         if !valid_nftables(self, observed) {
             return Err(NetworkKernelObservationError::NftablesMismatch);
         }
@@ -321,6 +327,15 @@ pub enum ObservedIpAddressV1 {
     Ipv6([u8; 16]),
 }
 
+/// Names an IP protocol family even when no concrete address is present.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ObservedIpFamilyV1 {
+    /// IPv4 routing state.
+    Ipv4,
+    /// IPv6 routing state.
+    Ipv6,
+}
+
 /// Carries one concrete canonical IP prefix.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ObservedIpPrefixV1 {
@@ -337,6 +352,8 @@ pub struct ObservedLinkV1 {
     pub ifindex: u32,
     /// Peer interface index, or zero for loopback.
     pub peer_ifindex: u32,
+    /// Observer-local network-namespace ID for a cross-namespace peer.
+    pub peer_namespace_id: Option<u32>,
     /// Kernel interface name.
     pub name: String,
     /// Link kind reported by rtnetlink.
@@ -347,6 +364,17 @@ pub struct ObservedLinkV1 {
     pub mac: [u8; 6],
     /// Whether `IFF_UP` is set.
     pub up: bool,
+    /// Kernel IPv6 interface-identifier generation mode.
+    pub ipv6_address_generation: ObservedIpv6AddressGenerationV1,
+}
+
+/// Names an admitted kernel IPv6 interface-identifier generation mode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObservedIpv6AddressGenerationV1 {
+    /// Automatic address generation is disabled.
+    None,
+    /// Standard EUI-64 generation used by loopback.
+    Eui64,
 }
 
 /// Carries one concrete interface address.
@@ -401,15 +429,34 @@ pub enum ObservedNetworkNamespaceV1 {
 pub enum ObservedRouteTypeV1 {
     /// Ordinary forwarding route.
     Unicast,
+    /// Route selecting a local address.
+    Local,
+    /// Route selecting an IPv4 broadcast address.
+    Broadcast,
+    /// IPv6 multicast catch-all route synthesized for an enabled link.
+    Multicast,
 }
 
 /// Names the admitted kernel route scope.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ObservedRouteScopeV1 {
+    /// Destination is owned by this network namespace.
+    Host,
     /// Destination is directly reachable on the link.
     Link,
     /// Destination is reachable through a gateway.
     Universe,
+}
+
+/// Carries one admitted policy-routing table lookup rule.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ObservedPolicyRuleV1 {
+    /// Address family to which the rule applies.
+    pub family: ObservedIpFamilyV1,
+    /// Kernel rule priority.
+    pub priority: u32,
+    /// Kernel route table ID selected by the rule.
+    pub table: u32,
 }
 
 /// Names the admitted kernel route protocol.
@@ -663,6 +710,8 @@ pub struct NetworkKernelObservationV1 {
     pub addresses: Vec<ObservedAddressV1>,
     /// Exact sandbox route inventory.
     pub routes: Vec<ObservedRouteV1>,
+    /// Exact sandbox policy-routing rule inventory.
+    pub policy_rules: Vec<ObservedPolicyRuleV1>,
     /// Exact namespace nftables policy.
     pub nftables: ObservedNftablesPolicyV1,
     /// Exact tc-BPF gate, absent only for isolated networking.
@@ -677,7 +726,7 @@ impl NetworkKernelObservationV1 {
     pub fn digest(&self) -> ObjectDigest {
         let mut digest = Sha256::new();
         digest.update(OBSERVATION_DIGEST_DOMAIN);
-        digest.update(1_u16.to_be_bytes());
+        digest.update(2_u16.to_be_bytes());
         encode_observation(&mut digest, self);
         ObjectDigest::from_bytes(digest.finalize().into())
     }
@@ -685,11 +734,13 @@ impl NetworkKernelObservationV1 {
 
 fn valid_loopback(link: &ObservedLinkV1) -> bool {
     link.peer_ifindex == 0
+        && link.peer_namespace_id.is_none()
         && link.name == "lo"
         && link.kind == "loopback"
         && link.mtu == 65_536
         && link.mac == [0; 6]
         && link.up
+        && link.ipv6_address_generation == ObservedIpv6AddressGenerationV1::Eui64
 }
 
 fn valid_veth(
@@ -703,6 +754,8 @@ fn valid_veth(
         && sandbox.ifindex != loopback_ifindex
         && host.peer_ifindex == sandbox.ifindex
         && sandbox.peer_ifindex == host.ifindex
+        && host.peer_namespace_id.is_some()
+        && sandbox.peer_namespace_id.is_some()
         && host.name == expected.host_name
         && sandbox.name == expected.sandbox_name
         && host.kind == "veth"
@@ -713,6 +766,8 @@ fn valid_veth(
         && sandbox.mac == expected.sandbox_mac
         && host.up
         && sandbox.up
+        && host.ipv6_address_generation == ObservedIpv6AddressGenerationV1::None
+        && sandbox.ipv6_address_generation == ObservedIpv6AddressGenerationV1::None
 }
 
 fn expected_addresses(
@@ -757,42 +812,187 @@ fn expected_routes(
     expected: &NetworkKernelExpectationV1,
     observed: &NetworkKernelObservationV1,
 ) -> Vec<ObservedRouteV1> {
+    let mut routes = baseline_loopback_routes(observed.loopback.ifindex);
     let Some(sandbox) = &observed.sandbox_veth else {
-        return Vec::new();
+        return routes;
     };
-    let mut routes = expected
-        .address_pairs
-        .iter()
-        .map(|pair| ObservedRouteV1 {
+    for pair in &expected.address_pairs {
+        let (scope, metric) = match pair.sandbox {
+            ObservedIpAddressV1::Ipv4(_) => (ObservedRouteScopeV1::Link, 0),
+            ObservedIpAddressV1::Ipv6(_) => (ObservedRouteScopeV1::Universe, 256),
+        };
+        routes.push(ObservedRouteV1 {
             namespace: ObservedNetworkNamespaceV1::Sandbox,
             ifindex: sandbox.ifindex,
             destination: point_to_point_prefix(pair.sandbox, pair.prefix_length),
             gateway: None,
-            preferred_source: Some(pair.sandbox),
+            preferred_source: match pair.sandbox {
+                ObservedIpAddressV1::Ipv4(_) => Some(pair.sandbox),
+                ObservedIpAddressV1::Ipv6(_) => None,
+            },
             table: 254,
             route_type: ObservedRouteTypeV1::Unicast,
-            scope: ObservedRouteScopeV1::Link,
+            scope,
+            protocol: ObservedRouteProtocolV1::Kernel,
+            metric,
+        });
+        routes.push(ObservedRouteV1 {
+            namespace: ObservedNetworkNamespaceV1::Sandbox,
+            ifindex: sandbox.ifindex,
+            destination: host_prefix(pair.sandbox),
+            gateway: None,
+            preferred_source: match pair.sandbox {
+                ObservedIpAddressV1::Ipv4(_) => Some(pair.sandbox),
+                ObservedIpAddressV1::Ipv6(_) => None,
+            },
+            table: 255,
+            route_type: ObservedRouteTypeV1::Local,
+            scope: ObservedRouteScopeV1::Host,
             protocol: ObservedRouteProtocolV1::Kernel,
             metric: 0,
-        })
-        .chain(expected.routes.iter().map(|route| ObservedRouteV1 {
+        });
+    }
+    routes.push(ObservedRouteV1 {
+        namespace: ObservedNetworkNamespaceV1::Sandbox,
+        ifindex: sandbox.ifindex,
+        destination: ObservedIpPrefixV1 {
+            address: ObservedIpAddressV1::Ipv6([0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            prefix_length: 8,
+        },
+        gateway: None,
+        preferred_source: None,
+        table: 255,
+        route_type: ObservedRouteTypeV1::Multicast,
+        scope: ObservedRouteScopeV1::Universe,
+        protocol: ObservedRouteProtocolV1::Kernel,
+        metric: 256,
+    });
+    routes.extend(expected.routes.iter().map(|route| {
+        let metric = match route.destination.address {
+            ObservedIpAddressV1::Ipv4(_) => 0,
+            ObservedIpAddressV1::Ipv6(_) => 1_024,
+        };
+        ObservedRouteV1 {
             namespace: ObservedNetworkNamespaceV1::Sandbox,
             ifindex: sandbox.ifindex,
             destination: route.destination,
             gateway: Some(route.gateway),
-            preferred_source:
-                expected.address_pairs.iter().find_map(|pair| {
-                    same_family(pair.sandbox, route.gateway).then_some(pair.sandbox)
-                }),
+            preferred_source: expected
+                .address_pairs
+                .iter()
+                .find_map(|pair| same_family(pair.sandbox, route.gateway).then_some(pair.sandbox)),
             table: 254,
             route_type: ObservedRouteTypeV1::Unicast,
             scope: ObservedRouteScopeV1::Universe,
             protocol: ObservedRouteProtocolV1::Static,
-            metric: 0,
-        }))
-        .collect::<Vec<_>>();
+            metric,
+        }
+    }));
     routes.sort_unstable();
     routes
+}
+
+fn baseline_loopback_routes(ifindex: u32) -> Vec<ObservedRouteV1> {
+    let ipv4_loopback = ObservedIpAddressV1::Ipv4([127, 0, 0, 1]);
+    vec![
+        ObservedRouteV1 {
+            namespace: ObservedNetworkNamespaceV1::Sandbox,
+            ifindex,
+            destination: ObservedIpPrefixV1 {
+                address: ObservedIpAddressV1::Ipv4([127, 0, 0, 0]),
+                prefix_length: 8,
+            },
+            gateway: None,
+            preferred_source: Some(ipv4_loopback),
+            table: 255,
+            route_type: ObservedRouteTypeV1::Local,
+            scope: ObservedRouteScopeV1::Host,
+            protocol: ObservedRouteProtocolV1::Kernel,
+            metric: 0,
+        },
+        ObservedRouteV1 {
+            namespace: ObservedNetworkNamespaceV1::Sandbox,
+            ifindex,
+            destination: host_prefix(ipv4_loopback),
+            gateway: None,
+            preferred_source: Some(ipv4_loopback),
+            table: 255,
+            route_type: ObservedRouteTypeV1::Local,
+            scope: ObservedRouteScopeV1::Host,
+            protocol: ObservedRouteProtocolV1::Kernel,
+            metric: 0,
+        },
+        ObservedRouteV1 {
+            namespace: ObservedNetworkNamespaceV1::Sandbox,
+            ifindex,
+            destination: ObservedIpPrefixV1 {
+                address: ObservedIpAddressV1::Ipv4([127, 255, 255, 255]),
+                prefix_length: 32,
+            },
+            gateway: None,
+            preferred_source: Some(ipv4_loopback),
+            table: 255,
+            route_type: ObservedRouteTypeV1::Broadcast,
+            scope: ObservedRouteScopeV1::Link,
+            protocol: ObservedRouteProtocolV1::Kernel,
+            metric: 0,
+        },
+        ObservedRouteV1 {
+            namespace: ObservedNetworkNamespaceV1::Sandbox,
+            ifindex,
+            destination: host_prefix(ObservedIpAddressV1::Ipv6([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+            ])),
+            gateway: None,
+            preferred_source: None,
+            table: 255,
+            route_type: ObservedRouteTypeV1::Local,
+            scope: ObservedRouteScopeV1::Host,
+            protocol: ObservedRouteProtocolV1::Kernel,
+            metric: 0,
+        },
+    ]
+}
+
+const fn host_prefix(address: ObservedIpAddressV1) -> ObservedIpPrefixV1 {
+    let prefix_length = match address {
+        ObservedIpAddressV1::Ipv4(_) => 32,
+        ObservedIpAddressV1::Ipv6(_) => 128,
+    };
+    ObservedIpPrefixV1 {
+        address,
+        prefix_length,
+    }
+}
+
+fn expected_policy_rules(_expected: &NetworkKernelExpectationV1) -> Vec<ObservedPolicyRuleV1> {
+    vec![
+        ObservedPolicyRuleV1 {
+            family: ObservedIpFamilyV1::Ipv4,
+            priority: 0,
+            table: 255,
+        },
+        ObservedPolicyRuleV1 {
+            family: ObservedIpFamilyV1::Ipv4,
+            priority: 32_766,
+            table: 254,
+        },
+        ObservedPolicyRuleV1 {
+            family: ObservedIpFamilyV1::Ipv4,
+            priority: 32_767,
+            table: 253,
+        },
+        ObservedPolicyRuleV1 {
+            family: ObservedIpFamilyV1::Ipv6,
+            priority: 0,
+            table: 255,
+        },
+        ObservedPolicyRuleV1 {
+            family: ObservedIpFamilyV1::Ipv6,
+            priority: 32_766,
+            table: 254,
+        },
+    ]
 }
 
 const fn same_family(left: ObservedIpAddressV1, right: ObservedIpAddressV1) -> bool {
@@ -868,15 +1068,13 @@ fn expected_anti_spoof_rules(
         ifindex: sandbox.ifindex,
     };
     let mut rules = Vec::with_capacity(expected.address_pairs.len() * 2);
-    let mut ingress_position = 0_u32;
-    let mut egress_position = 0_u32;
-    for pair in &expected.address_pairs {
+    for (pair, position) in expected.address_pairs.iter().zip(0_u32..) {
         rules.push(ObservedNftAntiSpoofRuleV1 {
             direction: NetworkFlowDirectionV1::Ingress,
             interface,
             local_address: pair.sandbox,
             inverted_match: true,
-            position: ingress_position,
+            position,
             verdict: ObservedNftVerdictV1::Drop,
         });
         rules.push(ObservedNftAntiSpoofRuleV1 {
@@ -884,11 +1082,9 @@ fn expected_anti_spoof_rules(
             interface,
             local_address: pair.sandbox,
             inverted_match: true,
-            position: egress_position,
+            position,
             verdict: ObservedNftVerdictV1::Drop,
         });
-        ingress_position += 1;
-        egress_position += 1;
     }
     rules
 }
@@ -1051,6 +1247,13 @@ fn encode_observation(digest: &mut Sha256, observation: &NetworkKernelObservatio
         encode_u32(digest, route.metric);
     }
 
+    encode_length(digest, observation.policy_rules.len());
+    for rule in &observation.policy_rules {
+        digest.update([ip_family_code(rule.family)]);
+        encode_u32(digest, rule.priority);
+        encode_u32(digest, rule.table);
+    }
+
     encode_nftables(digest, &observation.nftables);
     match &observation.lease_gate {
         Some(gate) => {
@@ -1176,11 +1379,19 @@ fn encode_bpf_attachment(digest: &mut Sha256, attachment: &ObservedBpfAttachment
 fn encode_link(digest: &mut Sha256, link: &ObservedLinkV1) {
     encode_u32(digest, link.ifindex);
     encode_u32(digest, link.peer_ifindex);
+    match link.peer_namespace_id {
+        Some(namespace_id) => {
+            digest.update([1]);
+            digest.update(namespace_id.to_be_bytes());
+        }
+        None => digest.update([0]),
+    }
     encode_text(digest, &link.name);
     encode_text(digest, &link.kind);
     encode_u32(digest, link.mtu);
     digest.update(link.mac);
     encode_bool(digest, link.up);
+    digest.update([ipv6_address_generation_code(link.ipv6_address_generation)]);
 }
 
 fn encode_optional_link(digest: &mut Sha256, link: Option<&ObservedLinkV1>) {
@@ -1303,13 +1514,31 @@ const fn verdict_code(verdict: ObservedNftVerdictV1) -> u8 {
 const fn route_type_code(route_type: ObservedRouteTypeV1) -> u8 {
     match route_type {
         ObservedRouteTypeV1::Unicast => 1,
+        ObservedRouteTypeV1::Local => 2,
+        ObservedRouteTypeV1::Broadcast => 3,
+        ObservedRouteTypeV1::Multicast => 4,
     }
 }
 
 const fn route_scope_code(scope: ObservedRouteScopeV1) -> u8 {
     match scope {
-        ObservedRouteScopeV1::Link => 1,
-        ObservedRouteScopeV1::Universe => 2,
+        ObservedRouteScopeV1::Host => 1,
+        ObservedRouteScopeV1::Link => 2,
+        ObservedRouteScopeV1::Universe => 3,
+    }
+}
+
+const fn ip_family_code(family: ObservedIpFamilyV1) -> u8 {
+    match family {
+        ObservedIpFamilyV1::Ipv4 => 1,
+        ObservedIpFamilyV1::Ipv6 => 2,
+    }
+}
+
+const fn ipv6_address_generation_code(mode: ObservedIpv6AddressGenerationV1) -> u8 {
+    match mode {
+        ObservedIpv6AddressGenerationV1::None => 1,
+        ObservedIpv6AddressGenerationV1::Eui64 => 2,
     }
 }
 
@@ -1422,11 +1651,13 @@ mod tests {
         ObservedLinkV1 {
             ifindex,
             peer_ifindex,
+            peer_namespace_id: Some(0),
             name: name.to_owned(),
             kind: "veth".to_owned(),
             mtu: 1_500,
             mac,
             up: true,
+            ipv6_address_generation: ObservedIpv6AddressGenerationV1::None,
         }
     }
 
@@ -1434,11 +1665,13 @@ mod tests {
         let loopback = ObservedLinkV1 {
             ifindex: 1,
             peer_ifindex: 0,
+            peer_namespace_id: None,
             name: "lo".to_owned(),
             kind: "loopback".to_owned(),
             mtu: 65_536,
             mac: [0; 6],
             up: true,
+            ipv6_address_generation: ObservedIpv6AddressGenerationV1::Eui64,
         };
         let host = link(
             HOST_IFINDEX,
@@ -1481,7 +1714,8 @@ mod tests {
             },
         ];
         addresses.sort_unstable();
-        let mut routes = vec![
+        let mut routes = baseline_loopback_routes(1);
+        routes.extend([
             ObservedRouteV1 {
                 namespace: ObservedNetworkNamespaceV1::Sandbox,
                 ifindex: SANDBOX_IFINDEX,
@@ -1500,6 +1734,35 @@ mod tests {
             ObservedRouteV1 {
                 namespace: ObservedNetworkNamespaceV1::Sandbox,
                 ifindex: SANDBOX_IFINDEX,
+                destination: host_prefix(ObservedIpAddressV1::Ipv4([192, 0, 0, 1])),
+                gateway: None,
+                preferred_source: Some(ObservedIpAddressV1::Ipv4([192, 0, 0, 1])),
+                table: 255,
+                route_type: ObservedRouteTypeV1::Local,
+                scope: ObservedRouteScopeV1::Host,
+                protocol: ObservedRouteProtocolV1::Kernel,
+                metric: 0,
+            },
+            ObservedRouteV1 {
+                namespace: ObservedNetworkNamespaceV1::Sandbox,
+                ifindex: SANDBOX_IFINDEX,
+                destination: ObservedIpPrefixV1 {
+                    address: ObservedIpAddressV1::Ipv6([
+                        0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    ]),
+                    prefix_length: 8,
+                },
+                gateway: None,
+                preferred_source: None,
+                table: 255,
+                route_type: ObservedRouteTypeV1::Multicast,
+                scope: ObservedRouteScopeV1::Universe,
+                protocol: ObservedRouteProtocolV1::Kernel,
+                metric: 256,
+            },
+            ObservedRouteV1 {
+                namespace: ObservedNetworkNamespaceV1::Sandbox,
+                ifindex: SANDBOX_IFINDEX,
                 destination: ObservedIpPrefixV1 {
                     address: ObservedIpAddressV1::Ipv4([203, 0, 113, 0]),
                     prefix_length: 24,
@@ -1512,7 +1775,7 @@ mod tests {
                 protocol: ObservedRouteProtocolV1::Static,
                 metric: 0,
             },
-        ];
+        ]);
         routes.sort_unstable();
 
         let policy = policy();
@@ -1531,6 +1794,7 @@ mod tests {
             sandbox_link_count: 2,
             addresses,
             routes,
+            policy_rules: expected_policy_rules(&expectation()),
             nftables: ObservedNftablesPolicyV1 {
                 family: "inet".to_owned(),
                 table: "aos_sandbox".to_owned(),
@@ -1648,6 +1912,133 @@ mod tests {
     }
 
     #[test]
+    fn captured_managed_dual_stack_inventory_matches_the_plan_contract() {
+        use std::collections::BTreeMap;
+
+        use crate::rtnetlink_reader::{
+            decode_addresses, decode_links, decode_routes, decode_rules,
+        };
+
+        let mut expected = expectation();
+        expected.address_pairs[0] = ExpectedAddressPairV1 {
+            host: ObservedIpAddressV1::Ipv4([192, 0, 2, 0]),
+            sandbox: ObservedIpAddressV1::Ipv4([192, 0, 2, 1]),
+            prefix_length: 31,
+        };
+        expected.routes[0].gateway = ObservedIpAddressV1::Ipv4([192, 0, 2, 0]);
+        expected.address_pairs.push(ExpectedAddressPairV1 {
+            host: ObservedIpAddressV1::Ipv6([
+                0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]),
+            sandbox: ObservedIpAddressV1::Ipv6([
+                0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+            ]),
+            prefix_length: 127,
+        });
+        expected.routes.push(ExpectedRouteV1 {
+            destination: ObservedIpPrefixV1 {
+                address: ObservedIpAddressV1::Ipv6([
+                    0x20, 0x01, 0x0d, 0xb8, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                ]),
+                prefix_length: 64,
+            },
+            gateway: ObservedIpAddressV1::Ipv6([
+                0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]),
+        });
+        expected.address_pairs.sort_unstable();
+        expected.routes.sort_unstable();
+
+        let host_links = decode_links(include_bytes!(
+            "../tests/fixtures/rtnetlink-managed-dual-stack/host-link.json"
+        ))
+        .unwrap();
+        let mut host_addresses = decode_addresses(
+            include_bytes!("../tests/fixtures/rtnetlink-managed-dual-stack/host-addresses.json"),
+            &host_links,
+            ObservedNetworkNamespaceV1::Host,
+        )
+        .unwrap();
+        let sandbox_links = decode_links(include_bytes!(
+            "../tests/fixtures/rtnetlink-managed-dual-stack/links.json"
+        ))
+        .unwrap();
+        let mut sandbox_addresses = decode_addresses(
+            include_bytes!("../tests/fixtures/rtnetlink-managed-dual-stack/addresses.json"),
+            &sandbox_links,
+            ObservedNetworkNamespaceV1::Sandbox,
+        )
+        .unwrap();
+        let interface_indices = BTreeMap::from([("lo", 1), ("aog000000000001", 2)]);
+        let mut routes = decode_routes(
+            include_bytes!("../tests/fixtures/rtnetlink-managed-dual-stack/routes-v4.json"),
+            ObservedIpFamilyV1::Ipv4,
+            &interface_indices,
+        )
+        .unwrap();
+        routes.extend(
+            decode_routes(
+                include_bytes!("../tests/fixtures/rtnetlink-managed-dual-stack/routes-v6.json"),
+                ObservedIpFamilyV1::Ipv6,
+                &interface_indices,
+            )
+            .unwrap(),
+        );
+        routes.sort_unstable();
+        let mut policy_rules = decode_rules(
+            include_bytes!("../tests/fixtures/rtnetlink-managed-dual-stack/rules-v4.json"),
+            ObservedIpFamilyV1::Ipv4,
+        )
+        .unwrap();
+        policy_rules.extend(
+            decode_rules(
+                include_bytes!("../tests/fixtures/rtnetlink-managed-dual-stack/rules-v6.json"),
+                ObservedIpFamilyV1::Ipv6,
+            )
+            .unwrap(),
+        );
+        policy_rules.sort_unstable();
+
+        let mut observed = observation();
+        let host_veth = host_links.into_iter().next().unwrap();
+        let loopback = sandbox_links
+            .iter()
+            .find(|link| link.name == "lo")
+            .unwrap()
+            .clone();
+        let sandbox_veth = sandbox_links
+            .iter()
+            .find(|link| link.name == "aog000000000001")
+            .unwrap()
+            .clone();
+        host_addresses.append(&mut sandbox_addresses);
+        host_addresses.sort_unstable();
+        observed.loopback = loopback;
+        observed.host_veth = Some(host_veth.clone());
+        observed.sandbox_veth = Some(sandbox_veth.clone());
+        observed.sandbox_link_count = u32::try_from(sandbox_links.len()).unwrap();
+        observed.addresses = host_addresses;
+        observed.routes = routes;
+        observed.policy_rules = policy_rules;
+        observed.nftables.anti_spoof_rules = expected_anti_spoof_rules(&expected, &observed);
+        observed.nftables.flows =
+            expected_flow_rules(&expected, &observed.nftables.anti_spoof_rules);
+
+        let gate = observed.lease_gate.as_mut().unwrap();
+        gate.binding.host_ifindex = host_veth.ifindex;
+        gate.binding.peer_ifindex = sandbox_veth.ifindex;
+        gate.binding.host_mac = host_veth.mac;
+        gate.binding.peer_mac = sandbox_veth.mac;
+        gate.ingress.interface.ifindex = host_veth.ifindex;
+        gate.egress.interface.ifindex = host_veth.ifindex;
+
+        assert_eq!(observed.addresses, expected_addresses(&expected, &observed));
+        expected
+            .validate_stable(BOOT_ID, NAMESPACE, &lifecycle(), &observed, &observed)
+            .unwrap();
+    }
+
+    #[test]
     fn extra_or_partial_kernel_inventory_fails_closed() {
         let expected = expectation();
         let baseline = observation();
@@ -1655,6 +2046,12 @@ mod tests {
         extra_link.sandbox_link_count += 1;
         let mut extra_route = baseline.clone();
         extra_route.routes.push(extra_route.routes[0]);
+        let mut extra_policy_rule = baseline.clone();
+        extra_policy_rule.policy_rules.push(ObservedPolicyRuleV1 {
+            family: ObservedIpFamilyV1::Ipv4,
+            priority: 100,
+            table: 100,
+        });
         let mut extra_chain = baseline.clone();
         extra_chain
             .nftables
@@ -1668,6 +2065,16 @@ mod tests {
         assert_eq!(
             expected.validate_stable(BOOT_ID, NAMESPACE, &lifecycle(), &extra_route, &extra_route),
             Err(NetworkKernelObservationError::RouteMismatch)
+        );
+        assert_eq!(
+            expected.validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                &lifecycle(),
+                &extra_policy_rule,
+                &extra_policy_rule,
+            ),
+            Err(NetworkKernelObservationError::PolicyRuleMismatch)
         );
         assert_eq!(
             expected.validate_stable(BOOT_ID, NAMESPACE, &lifecycle(), &extra_chain, &extra_chain),

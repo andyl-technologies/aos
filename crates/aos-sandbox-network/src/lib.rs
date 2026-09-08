@@ -34,6 +34,7 @@ pub mod namespace_catalog;
 pub mod namespace_store;
 pub mod policy;
 pub mod preparation_catalog;
+pub mod rtnetlink_reader;
 pub mod service;
 pub mod state;
 
@@ -55,10 +56,11 @@ pub use kernel_observation::{
     ExpectedAddressPairV1, ExpectedRouteV1, ExpectedVethV1, NetworkKernelExpectationV1,
     NetworkKernelObservationError, NetworkKernelObservationV1, ObservedAddressV1,
     ObservedBpfArtifactV1, ObservedBpfAttachmentV1, ObservedBpfBindingV1, ObservedBpfMapV1,
-    ObservedFlowV1, ObservedInterfaceV1, ObservedIpAddressV1, ObservedIpPrefixV1,
-    ObservedLeaseDirectionV1, ObservedLeaseGateV1, ObservedLeaseStateV1, ObservedLinkV1,
-    ObservedNetworkNamespaceV1, ObservedNftAntiSpoofRuleV1, ObservedNftBaseChainV1,
-    ObservedNftVerdictV1, ObservedNftablesPolicyV1, ObservedRouteProtocolV1, ObservedRouteScopeV1,
+    ObservedFlowV1, ObservedInterfaceV1, ObservedIpAddressV1, ObservedIpFamilyV1,
+    ObservedIpPrefixV1, ObservedIpv6AddressGenerationV1, ObservedLeaseDirectionV1,
+    ObservedLeaseGateV1, ObservedLeaseStateV1, ObservedLinkV1, ObservedNetworkNamespaceV1,
+    ObservedNftAntiSpoofRuleV1, ObservedNftBaseChainV1, ObservedNftVerdictV1,
+    ObservedNftablesPolicyV1, ObservedPolicyRuleV1, ObservedRouteProtocolV1, ObservedRouteScopeV1,
     ObservedRouteTypeV1, ObservedRouteV1,
 };
 pub use kernel_plan::{
@@ -90,6 +92,9 @@ pub use preparation_catalog::{
     NetworkPolicyCatalogV1, NetworkPolicyProfileV1, NetworkPreparationCatalogError,
     NetworkPreparationCatalogOutcomeV1, NetworkPreparationCatalogV1,
     NetworkPreparationReservationV1,
+};
+pub use rtnetlink_reader::{
+    FixedRtnetlinkObservationReader, RtnetlinkLinkInventoryV1, RtnetlinkNamespaceInventoryV1,
 };
 pub use service::{NetworkConnectionOutcome, NetworkInventoryService, NetworkServiceError};
 pub use state::{
