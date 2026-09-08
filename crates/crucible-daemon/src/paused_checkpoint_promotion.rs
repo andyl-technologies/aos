@@ -76,7 +76,8 @@ pub struct ProductionPausedCheckpointPromotionTarget<'a> {
     run_state_root: &'a Path,
     cancellation: &'a ExecutionCancellation,
     resources: AttemptResourceLimits,
-    require_materialized_start: bool,
+    start_mode: AttemptStartMode,
+    attempt: &'a CrucibleAttemptExecution,
 }
 
 /// Owned semantic input for restarting one raw paused-root comparison.
@@ -115,11 +116,8 @@ impl ResolvedProductionPausedCheckpointPromotionRecovery {
             run_state_root,
             &self.cancellation,
             self.recovery.promotion_basis().resources(),
-            matches!(
-                self.recovery.promotion_basis().start_mode(),
-                AttemptStartMode::CaptureMaterializedStart { .. }
-                    | AttemptStartMode::SavepointCapture { .. }
-            ),
+            self.recovery.promotion_basis().start_mode(),
+            &self.execution,
         )
     }
 }
@@ -139,7 +137,8 @@ impl<'a> ProductionPausedCheckpointPromotionTarget<'a> {
         run_state_root: &'a Path,
         cancellation: &'a ExecutionCancellation,
         resources: AttemptResourceLimits,
-        require_materialized_start: bool,
+        start_mode: AttemptStartMode,
+        attempt: &'a CrucibleAttemptExecution,
     ) -> Self {
         Self {
             key,
@@ -151,7 +150,8 @@ impl<'a> ProductionPausedCheckpointPromotionTarget<'a> {
             run_state_root,
             cancellation,
             resources,
-            require_materialized_start,
+            start_mode,
+            attempt,
         }
     }
 
@@ -212,6 +212,29 @@ pub trait ProductionPausedCheckpointReplayFactory {
         ProductionPausedCheckpointReplaySession<Self::Store, Self::Launcher, Self::Guard>,
         QemuVmRealizationError,
     >;
+
+    /// Reexecutes one savepoint attempt and returns its reached modeled boundary.
+    ///
+    /// The default fails closed for replay factories that provide only the
+    /// legacy per-node fat/thin comparison authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when the attempt cannot be replayed
+    /// under the supplied resource and cancellation authority or its exact
+    /// reached boundary cannot be collected.
+    fn replay_savepoint_capture(
+        &mut self,
+        _attempt: &CrucibleAttemptExecution,
+        _run_state_root: &Path,
+        _cancellation: &ExecutionCancellation,
+        _resources: AttemptResourceLimits,
+    ) -> Result<crate::QemuSavepointReplayProof, QemuVmRealizationError> {
+        Err(QemuVmRealizationError::InvalidCheckpoint {
+            role: "savepoint capture replay",
+            message: String::from("replay factory does not support attempt-stop reexecution"),
+        })
+    }
 }
 
 /// Newly admitted node-specific replay session before either QEMU path starts.
@@ -434,6 +457,9 @@ pub enum PausedCheckpointPromotionPreparationError {
     /// The source-bound immutable replacement could not be prepared.
     #[error(transparent)]
     Preparation(#[from] PrepareReplayOraclePromotionError),
+    /// Independent execution did not reproduce the captured stop boundary.
+    #[error("savepoint capture does not match an independent attempt-stop replay")]
+    SavepointReplayMismatch,
 }
 
 /// Failure to resolve one durable raw pause into guarded comparison input.
@@ -503,6 +529,11 @@ pub fn resolve_production_paused_checkpoint_promotion_recovery(
 > {
     let basis = recovery.promotion_basis();
     validate_promotion_execution_basis(recovery.key(), recovery.execution_basis(), basis)?;
+    store.validate_execution_scope(
+        recovery.key().lineage(),
+        recovery.key().attempt(),
+        basis.start_mode(),
+    )?;
     let input = resolve_attempt_execution_input(store, recovery.key())?;
     validate_capture_attempt_start(&input, basis.start_mode())?;
     let execution = decode_crucible_attempt_execution(store, &input)?;
@@ -536,18 +567,27 @@ fn validate_capture_attempt_start(
     input: &crate::AttemptExecutionInput,
     start_mode: AttemptStartMode,
 ) -> Result<(), PausedCheckpointPromotionRecoveryResolutionError> {
-    if let AttemptStartMode::CaptureMaterializedStart { configuration }
-    | AttemptStartMode::SavepointCapture { configuration, .. } = start_mode
-    {
-        let AttemptStart::Discover {
-            configuration: resolved,
-        } = input.attempt().start()
-        else {
-            return Err(PausedCheckpointPromotionRecoveryResolutionError::CaptureStartMismatch);
-        };
-        if resolved != configuration {
-            return Err(PausedCheckpointPromotionRecoveryResolutionError::CaptureStartMismatch);
+    let configuration = match start_mode {
+        AttemptStartMode::Execute => return Ok(()),
+        AttemptStartMode::CaptureMaterializedStart { configuration } => {
+            let AttemptStart::Discover {
+                configuration: resolved,
+            } = input.attempt().start()
+            else {
+                return Err(PausedCheckpointPromotionRecoveryResolutionError::CaptureStartMismatch);
+            };
+            (resolved == configuration).then_some(configuration)
         }
+        AttemptStartMode::SavepointCapture { configuration, .. } => {
+            let resolved = match input.attempt().start() {
+                AttemptStart::Discover { configuration } => configuration,
+                AttemptStart::Branch { parent, .. } => parent,
+            };
+            (resolved == configuration).then_some(configuration)
+        }
+    };
+    if configuration.is_none() {
+        return Err(PausedCheckpointPromotionRecoveryResolutionError::CaptureStartMismatch);
     }
 
     Ok(())
@@ -603,17 +643,53 @@ where
                     recovery.execution_basis(),
                     basis,
                 )?;
+                store.validate_execution_scope(
+                    recovery.key().lineage(),
+                    recovery.key().attempt(),
+                    basis.start_mode(),
+                )?;
             }
             let input = resolve_attempt_execution_input(store, recovery.key())?;
             if let Some(basis) = promotion_basis {
                 validate_capture_attempt_start(&input, basis.start_mode())?;
             }
             let execution = decode_crucible_attempt_execution(store, &input)?;
+            if matches!(
+                promotion_basis.map(|basis| basis.start_mode()),
+                Some(AttemptStartMode::SavepointCapture { .. })
+            ) {
+                let (initial, post_selection) = execution_start_parts(&execution);
+                let installed = install_attempt_production_exact_checkpoint(
+                    checkpoints,
+                    recovery.source(),
+                    execution.scenario(),
+                    initial,
+                    post_selection,
+                    run_state_root,
+                    &cancellation,
+                )
+                .map_err(PausedCheckpointPromotionPreparationError::from)
+                .map_err(Box::new)?;
+                let replay = factory
+                    .replay_savepoint_capture(
+                        &execution,
+                        run_state_root,
+                        &cancellation,
+                        promotion_basis
+                            .ok_or(PausedCheckpointPromotionRecoveryResolutionError::ExecutionBasisMismatch)?
+                            .resources(),
+                    )
+                    .map_err(PausedCheckpointPromotionPreparationError::from)
+                    .map_err(Box::new)?;
+                validate_savepoint_replay_boundary(
+                    replay,
+                    installed.configuration(),
+                    installed.scheduler(),
+                )
+                .map_err(Box::new)?;
+            }
             let materialized_start = match promotion_basis.map(|basis| basis.start_mode()) {
-                Some(
-                    AttemptStartMode::CaptureMaterializedStart { .. }
-                    | AttemptStartMode::SavepointCapture { .. },
-                ) => {
+                Some(AttemptStartMode::CaptureMaterializedStart { .. }) => {
                     let CrucibleResolvedAttemptStart::Discover { configuration } =
                         execution.start()
                     else {
@@ -624,7 +700,8 @@ where
                     };
                     Some(configuration)
                 }
-                Some(AttemptStartMode::Execute) | None => None,
+                Some(AttemptStartMode::SavepointCapture { .. } | AttemptStartMode::Execute)
+                | None => None,
             };
             let published = recover_published_production_paused_checkpoint_promotion(
                 checkpoints,
@@ -637,6 +714,17 @@ where
                 Box::new(published),
             ))
         }
+    }
+}
+
+fn execution_start_parts(
+    execution: &CrucibleAttemptExecution,
+) -> (&Configuration, Option<&Configuration>) {
+    match execution.start() {
+        CrucibleResolvedAttemptStart::Discover { configuration } => (configuration, None),
+        CrucibleResolvedAttemptStart::Branch {
+            parent, selected, ..
+        } => (parent, Some(selected)),
     }
 }
 
@@ -752,12 +840,28 @@ where
         target.run_state_root,
         target.cancellation,
     )?;
-    if target.require_materialized_start {
-        validate_materialized_start_configuration(
-            target.raw,
-            target.initial,
-            installed.configuration().id(),
-        )?;
+    match target.start_mode {
+        AttemptStartMode::CaptureMaterializedStart { .. } => {
+            validate_materialized_start_configuration(
+                target.raw,
+                target.initial,
+                installed.configuration().id(),
+            )?;
+        }
+        AttemptStartMode::SavepointCapture { .. } => {
+            let replay = factory.replay_savepoint_capture(
+                target.attempt,
+                target.run_state_root,
+                target.cancellation,
+                target.resources,
+            )?;
+            validate_savepoint_replay_boundary(
+                replay,
+                installed.configuration(),
+                installed.scheduler(),
+            )?;
+        }
+        AttemptStartMode::Execute => {}
     }
     let mut boundary = || {
         if target.cancellation.is_canceled() {
@@ -844,6 +948,18 @@ where
         target.execution,
         promotion,
     ))
+}
+
+fn validate_savepoint_replay_boundary(
+    replay: crate::QemuSavepointReplayProof,
+    configuration: &Configuration,
+    scheduler: &crucible::SingleSchedulerCheckpoint,
+) -> Result<(), PausedCheckpointPromotionPreparationError> {
+    if replay.matches_checkpoint(configuration, scheduler) {
+        Ok(())
+    } else {
+        Err(PausedCheckpointPromotionPreparationError::SavepointReplayMismatch)
+    }
 }
 
 fn map_production_target_error(
@@ -1096,4 +1212,50 @@ where
         recovery.source(),
         recovery.promoted(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
+    #![allow(clippy::expect_used)]
+
+    use crucible::{
+        ScenarioDef, SchedulerLivenessScenario, Shift, SimInstant, SingleScheduler, VirtualTime,
+    };
+
+    use super::*;
+
+    #[test]
+    fn promotion_boundary_check_rejects_mismatched_progress_before_store_work() {
+        let scenario = ScenarioDef::from_canonical_material(
+            "crucible.test.savepoint-promotion-progress",
+            "quiet-progress",
+        );
+        let configuration = Configuration::genesis(scenario.clone());
+        let scheduler = SingleScheduler::new(
+            SchedulerLivenessScenario::from_canonical_material(
+                "quiet-progress",
+                Shift::new(0).expect("zero shift"),
+                1,
+                SimInstant { nanos: 1 },
+                Vec::new(),
+                Vec::new(),
+            )
+            .with_scenario_def(scenario),
+        )
+        .expect("quiet scheduler");
+        let checkpoint = scheduler.checkpoint().expect("quiet checkpoint");
+        let replay = crate::QemuSavepointReplayProof::from_reached_boundary(
+            &configuration,
+            100,
+            VirtualTime { ticks: 100 },
+            &[],
+        )
+        .expect("quiet replay proof");
+
+        assert!(matches!(
+            validate_savepoint_replay_boundary(replay, &configuration, &checkpoint),
+            Err(PausedCheckpointPromotionPreparationError::SavepointReplayMismatch)
+        ));
+    }
 }

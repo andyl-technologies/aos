@@ -170,7 +170,8 @@ where
     let catalog = ProductionBakedGenesisReplayCatalogFactory::new(
         baked.into_values(),
         ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
-    )?;
+    )?
+    .with_savepoint_replay_config(config.lifecycle.clone());
     let promotion_catalog = catalog.clone();
     let source_catalog = catalog;
     let source_bases = basis.sources.values().cloned().collect::<Vec<_>>();

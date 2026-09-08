@@ -16,6 +16,28 @@ pub struct SavepointCaptureCursor {
     accounting_after: CampaignHash,
 }
 
+impl SavepointCaptureCursor {
+    /// Returns the immutable campaign snapshot that owns this cursor.
+    #[must_use]
+    pub const fn snapshot(self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+
+    pub(super) fn after_request(snapshot: CampaignSnapshotId, request: CampaignFactId) -> Self {
+        Self {
+            snapshot,
+            accounting_after: savepoint_capture_request_key(request),
+        }
+    }
+
+    pub(super) const fn rebase(self, snapshot: CampaignSnapshotId) -> Self {
+        Self {
+            snapshot,
+            accounting_after: self.accounting_after,
+        }
+    }
+}
+
 /// One immutable capture request awaiting a terminal coordinator disposition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingSavepointCapture {
@@ -217,15 +239,47 @@ impl CampaignRepository {
     /// # Errors
     ///
     /// Returns an error for command reuse, stale input, a missing or already
-    /// resolved capture, assignment/request mismatch, an unauthenticated status
-    /// response, a status that differs from the requested outcome, publication
-    /// failure, or final ref conflict.
+    /// resolved capture, a new discard transition, assignment/request mismatch,
+    /// an unauthenticated status response, a status that differs from the
+    /// requested outcome, publication failure, or final ref conflict.
     pub fn resolve_savepoint_capture(
         &self,
         name: &str,
         resolution: &SavepointCaptureResolution,
         assignment: &SubmitAttemptRequest,
         status: &GetAttemptExecutionResponse,
+    ) -> Result<SavepointCaptureResolutionResult, CampaignRepositoryError> {
+        self.resolve_savepoint_capture_with_discard_policy(
+            name, resolution, assignment, status, false,
+        )
+    }
+
+    #[cfg(test)]
+    /// Installs a formerly supported discard transition for cold-history tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation and storage errors as the historical owner
+    /// transaction.
+    pub(super) fn install_historical_savepoint_capture_resolution(
+        &self,
+        name: &str,
+        resolution: &SavepointCaptureResolution,
+        assignment: &SubmitAttemptRequest,
+        status: &GetAttemptExecutionResponse,
+    ) -> Result<SavepointCaptureResolutionResult, CampaignRepositoryError> {
+        self.resolve_savepoint_capture_with_discard_policy(
+            name, resolution, assignment, status, true,
+        )
+    }
+
+    fn resolve_savepoint_capture_with_discard_policy(
+        &self,
+        name: &str,
+        resolution: &SavepointCaptureResolution,
+        assignment: &SubmitAttemptRequest,
+        status: &GetAttemptExecutionResponse,
+        allow_discard: bool,
     ) -> Result<SavepointCaptureResolutionResult, CampaignRepositoryError> {
         let _guard = self.lock_mutation()?;
         let campaign_ref = campaign_ref(name)?;
@@ -256,6 +310,15 @@ impl CampaignRepository {
                 }
                 _ => Err(integrity("command-index-value-is-not-mutation-fact")),
             };
+        }
+
+        // Historical Ready -> Discarded facts remain canonical and must pass
+        // cold validation. New discard requires the future source-handoff and
+        // ledger-release transaction, so reject it only on this mutation path.
+        if resolution.outcome == SavepointCaptureOutcome::Discarded && !allow_discard {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "savepoint-capture-discard-is-not-yet-supported",
+            });
         }
 
         let current_id = CampaignSnapshotId::from_content_id(current_content)?;

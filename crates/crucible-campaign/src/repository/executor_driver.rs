@@ -5,16 +5,18 @@
 //! authoritative repository records, so restart discards this object and
 //! rebuilds safely from the current snapshot.
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use super::*;
 use crate::{
-    AssignmentId, AttemptResourceLimits, CancelAttemptExecutionDisposition,
+    AssignmentId, AttemptResourceLimits, CampaignCommandId, CancelAttemptExecutionDisposition,
     CancelAttemptExecutionRequest, CheckpointAttemptExecutionDisposition,
     CheckpointAttemptExecutionRequest, ExactCheckpointId, ExecutionId, ExecutionRetentionIntent,
     ExecutorClient, ExecutorClientError, ExecutorControlService, ExecutorRejection,
-    ExecutorResumeService, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
-    ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
+    ExecutorResumeService, ExecutorStatusService, GetAttemptExecutionDisposition,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, ResumeAttemptExecutionDisposition,
+    ResumeAttemptExecutionRequest, SavepointCaptureOutcome, SavepointCaptureRequest,
+    SavepointCaptureResolution,
 };
 
 /// Coordinator-owned bounded driver for one local executor component.
@@ -28,6 +30,15 @@ pub struct CampaignExecutorDriver<S> {
     cursor: Option<AttemptQueueCursor>,
     settled_snapshot: Option<CampaignSnapshotId>,
     active_executions: BTreeMap<WorkerSlotId, ActiveExecutionPoll>,
+    capture_cursor: Option<SavepointCaptureCursor>,
+    capture_settled_snapshot: Option<CampaignSnapshotId>,
+    capture_scan_requires_full_pass: bool,
+    capture_next_generation: u64,
+    prefer_capture_new_work: bool,
+    deferred_capture_requests: BTreeSet<CampaignFactId>,
+    capture_by_request: BTreeMap<CampaignFactId, SavepointCaptureReservation>,
+    capture_by_slot: BTreeMap<WorkerSlotId, CampaignFactId>,
+    active_captures: BTreeMap<WorkerSlotId, ActiveSavepointCapturePoll>,
 }
 
 #[derive(Clone)]
@@ -35,6 +46,24 @@ struct ActiveExecutionPoll {
     reservation: AttemptReservation,
     request: SubmitAttemptRequest,
     execution: ExecutionId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SavepointCaptureReservation {
+    request: CampaignFactId,
+    capture: SavepointCaptureRequest,
+    scan_after: SavepointCaptureCursor,
+    daemon_epoch: DaemonEpoch,
+    worker_slot: WorkerSlotId,
+    generation: u64,
+}
+
+#[derive(Clone)]
+struct ActiveSavepointCapturePoll {
+    reservation: SavepointCaptureReservation,
+    assignment: SubmitAttemptRequest,
+    execution: ExecutionId,
+    cancellation_requested: bool,
 }
 
 impl<S> CampaignExecutorDriver<S> {
@@ -66,6 +95,15 @@ impl<S> CampaignExecutorDriver<S> {
             cursor: None,
             settled_snapshot: None,
             active_executions: BTreeMap::new(),
+            capture_cursor: None,
+            capture_settled_snapshot: None,
+            capture_scan_requires_full_pass: false,
+            capture_next_generation: 1,
+            prefer_capture_new_work: true,
+            deferred_capture_requests: BTreeSet::new(),
+            capture_by_request: BTreeMap::new(),
+            capture_by_slot: BTreeMap::new(),
+            active_captures: BTreeMap::new(),
         })
     }
 
@@ -104,9 +142,73 @@ impl<S> CampaignExecutorDriver<S> {
         S: ExecutorResumeService,
     {
         let (head, state) = self.repository.head_with_state(campaign)?;
+
+        // An already-owned semantic attempt keeps polling priority. A capture
+        // reservation also stays with its slot until it resolves. New capture
+        // and semantic admissions alternate after transient capture failures.
+        if self.queue.reservation_for_slot(worker_slot).is_none() {
+            if let Some(reservation) = self.capture_reservation_for_slot(worker_slot) {
+                return self.step_savepoint_capture(campaign, reservation);
+            }
+            if state == CampaignState::Running
+                && self.prefer_capture_new_work
+                && self.capture_settled_snapshot != Some(head.snapshot_id())
+            {
+                if self
+                    .capture_cursor
+                    .is_some_and(|cursor| cursor.snapshot() != head.snapshot_id())
+                {
+                    self.capture_cursor = self
+                        .capture_cursor
+                        .map(|cursor| cursor.rebase(head.snapshot_id()));
+                    self.capture_scan_requires_full_pass = true;
+                }
+                let page = self.repository.project_pending_savepoint_captures(
+                    campaign,
+                    self.capture_cursor,
+                    self.scan_limit,
+                )?;
+                if page.snapshot() != head.snapshot_id() {
+                    self.reset_capture_scan();
+                    return Ok(CampaignExecutorStepOutcome::ScanRestarted {
+                        snapshot: page.snapshot(),
+                    });
+                }
+                if let Some(reservation) =
+                    self.reserve_savepoint_capture_from_page(&page, worker_slot)?
+                {
+                    return self.step_savepoint_capture(campaign, reservation);
+                }
+                self.capture_cursor = page.next();
+                if self.capture_cursor.is_none() {
+                    if self.capture_scan_requires_full_pass {
+                        // A head advance can insert a lower-key request behind
+                        // the retained cursor. Finish the old suffix, then make
+                        // one fresh pass before declaring the new head settled.
+                        self.capture_scan_requires_full_pass = false;
+                        self.deferred_capture_requests.clear();
+                        self.prefer_capture_new_work = false;
+                    } else if self.deferred_capture_requests.is_empty() {
+                        self.capture_settled_snapshot = Some(page.snapshot());
+                    } else {
+                        // Every transient request gets skipped once before the
+                        // scan cycles. Give semantic work a turn between cycles.
+                        self.deferred_capture_requests.clear();
+                        self.prefer_capture_new_work = false;
+                    }
+                } else {
+                    self.prefer_capture_new_work = false;
+                    return Ok(CampaignExecutorStepOutcome::CaptureScanPending {
+                        snapshot: page.snapshot(),
+                    });
+                }
+            }
+        }
+
         let reservation = match self.queue.reservation_for_slot(worker_slot) {
             Some(reservation) => reservation,
             None => {
+                self.prefer_capture_new_work = true;
                 if state != CampaignState::Running {
                     return Ok(CampaignExecutorStepOutcome::Inactive {
                         snapshot: head.snapshot_id(),
@@ -135,6 +237,9 @@ impl<S> CampaignExecutorDriver<S> {
                     return Ok(CampaignExecutorStepOutcome::ScanRestarted {
                         snapshot: page.snapshot(),
                     });
+                }
+                if self.reservation_count() >= self.maximum_reservations() {
+                    return Err(AttemptQueueError::CapacityExhausted.into());
                 }
                 match self.queue.reserve_from_page(&page, worker_slot)? {
                     Some(reservation) => reservation,
@@ -343,7 +448,7 @@ impl<S> CampaignExecutorDriver<S> {
     /// Returns the number of process-local attempt reservations currently held.
     #[must_use]
     pub fn reservation_count(&self) -> usize {
-        self.queue.reservation_count()
+        self.queue.reservation_count() + self.capture_by_request.len()
     }
 
     /// Returns the fixed reservation ceiling configured for this driver.
@@ -355,18 +460,293 @@ impl<S> CampaignExecutorDriver<S> {
     /// Returns the number of exact executor incarnations being polled.
     #[must_use]
     pub fn active_execution_count(&self) -> usize {
-        self.active_executions.len()
+        self.active_executions.len() + self.active_captures.len()
     }
 
     pub(super) fn first_drain_worker_slot(&self) -> Option<WorkerSlotId> {
-        self.active_executions
-            .first_key_value()
-            .map(|(worker_slot, _)| *worker_slot)
-            .or_else(|| {
-                self.queue
-                    .first_reservation()
-                    .map(AttemptReservation::worker_slot)
-            })
+        [
+            self.active_executions
+                .first_key_value()
+                .map(|(worker_slot, _)| *worker_slot),
+            self.active_captures
+                .first_key_value()
+                .map(|(worker_slot, _)| *worker_slot),
+            self.queue
+                .first_reservation()
+                .map(AttemptReservation::worker_slot),
+            self.capture_by_slot
+                .first_key_value()
+                .map(|(worker_slot, _)| *worker_slot),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    fn capture_reservation_for_slot(
+        &self,
+        worker_slot: WorkerSlotId,
+    ) -> Option<SavepointCaptureReservation> {
+        self.capture_by_slot
+            .get(&worker_slot)
+            .and_then(|request| self.capture_by_request.get(request))
+            .cloned()
+    }
+
+    fn reserve_savepoint_capture_from_page(
+        &mut self,
+        page: &PendingSavepointCapturePage,
+        worker_slot: WorkerSlotId,
+    ) -> Result<Option<SavepointCaptureReservation>, AttemptQueueError> {
+        if let Some(reservation) = self.capture_reservation_for_slot(worker_slot) {
+            return Ok(Some(reservation));
+        }
+        let Some(pending) = page.captures().iter().find(|pending| {
+            !self.capture_by_request.contains_key(&pending.request())
+                && !self.deferred_capture_requests.contains(&pending.request())
+        }) else {
+            return Ok(None);
+        };
+        if self.reservation_count() >= self.maximum_reservations() {
+            return Err(AttemptQueueError::CapacityExhausted);
+        }
+        let generation = self.capture_next_generation;
+        self.capture_next_generation = generation
+            .checked_add(1)
+            .ok_or(AttemptQueueError::GenerationExhausted)?;
+        let reservation = SavepointCaptureReservation {
+            request: pending.request(),
+            capture: pending.capture().clone(),
+            scan_after: SavepointCaptureCursor::after_request(page.snapshot(), pending.request()),
+            daemon_epoch: self.queue.daemon_epoch(),
+            worker_slot,
+            generation,
+        };
+        self.capture_by_request
+            .insert(reservation.request, reservation.clone());
+        self.capture_by_slot
+            .insert(worker_slot, reservation.request);
+        Ok(Some(reservation))
+    }
+
+    fn release_savepoint_capture(
+        &mut self,
+        reservation: &SavepointCaptureReservation,
+    ) -> Result<(), AttemptQueueError> {
+        if reservation.daemon_epoch != self.queue.daemon_epoch()
+            || self.capture_by_request.get(&reservation.request) != Some(reservation)
+            || self.capture_by_slot.get(&reservation.worker_slot) != Some(&reservation.request)
+        {
+            return Err(AttemptQueueError::ReservationMismatch);
+        }
+        self.capture_by_request.remove(&reservation.request);
+        self.capture_by_slot.remove(&reservation.worker_slot);
+        self.active_captures.remove(&reservation.worker_slot);
+        Ok(())
+    }
+
+    fn step_savepoint_capture(
+        &mut self,
+        campaign: &str,
+        reservation: SavepointCaptureReservation,
+    ) -> Result<CampaignExecutorStepOutcome, CampaignExecutorDriverError<S::Error>>
+    where
+        S: ExecutorResumeService,
+    {
+        let head = self.repository.head(campaign)?;
+        if self
+            .repository
+            .savepoint_capture_resolution_at(head.snapshot_id(), reservation.request)?
+            .is_some()
+        {
+            self.release_savepoint_capture(&reservation)?;
+            self.reset_capture_scan();
+            return Ok(CampaignExecutorStepOutcome::CaptureAlreadyResolved {
+                request: reservation.request,
+                snapshot: head.snapshot_id(),
+            });
+        }
+
+        if let Some(active) = self
+            .active_captures
+            .get(&reservation.worker_slot)
+            .filter(|active| active.reservation == reservation)
+            .cloned()
+        {
+            return self.poll_savepoint_capture(campaign, active);
+        }
+        self.active_captures.remove(&reservation.worker_slot);
+
+        let assignment = self.capture_request_for(&reservation, head.snapshot().lineage())?;
+        let response = self
+            .executor
+            .submit_attempt(&assignment)
+            .map_err(CampaignExecutorDriverError::Executor)?;
+        self.repository
+            .validate_executor_response(&assignment, &response)?;
+
+        match response.disposition() {
+            SubmitAttemptDisposition::Accepted { execution }
+            | SubmitAttemptDisposition::AlreadyRunning { execution }
+            | SubmitAttemptDisposition::AlreadyPaused { execution, .. } => {
+                let newly_accepted = matches!(
+                    response.disposition(),
+                    SubmitAttemptDisposition::Accepted { .. }
+                );
+                self.active_captures.insert(
+                    reservation.worker_slot,
+                    ActiveSavepointCapturePoll {
+                        reservation: reservation.clone(),
+                        assignment,
+                        execution,
+                        cancellation_requested: false,
+                    },
+                );
+                Ok(CampaignExecutorStepOutcome::CaptureRunning {
+                    request: reservation.request,
+                    attempt: reservation.capture.attempt,
+                    execution,
+                    newly_accepted,
+                })
+            }
+            SubmitAttemptDisposition::Rejected {
+                reason:
+                    reason @ (ExecutorRejection::Backpressure | ExecutorRejection::UnavailableInput),
+            }
+            | SubmitAttemptDisposition::Rejected {
+                reason: reason @ ExecutorRejection::ConflictingAssignment,
+            } => {
+                self.release_savepoint_capture(&reservation)?;
+                self.defer_savepoint_capture(reservation.request, reservation.scan_after);
+                Ok(CampaignExecutorStepOutcome::CaptureRetryScheduled {
+                    request: reservation.request,
+                    attempt: reservation.capture.attempt,
+                    reason,
+                })
+            }
+            SubmitAttemptDisposition::Rejected { reason } => {
+                Ok(CampaignExecutorStepOutcome::CaptureBlocked {
+                    request: reservation.request,
+                    attempt: reservation.capture.attempt,
+                    reason,
+                })
+            }
+            SubmitAttemptDisposition::AlreadyCompleted { observation } => {
+                Ok(CampaignExecutorStepOutcome::CaptureUnexpectedCompletion {
+                    request: reservation.request,
+                    attempt: reservation.capture.attempt,
+                    observation,
+                })
+            }
+        }
+    }
+
+    fn poll_savepoint_capture(
+        &mut self,
+        campaign: &str,
+        active: ActiveSavepointCapturePoll,
+    ) -> Result<CampaignExecutorStepOutcome, CampaignExecutorDriverError<S::Error>>
+    where
+        S: ExecutorStatusService,
+    {
+        let query = GetAttemptExecutionRequest::new(&active.assignment, active.execution)?;
+        let status = self
+            .executor
+            .get_attempt_execution(&query)
+            .map_err(CampaignExecutorDriverError::Executor)?;
+        match status.disposition() {
+            GetAttemptExecutionDisposition::Running
+            | GetAttemptExecutionDisposition::CheckpointRequested
+            | GetAttemptExecutionDisposition::CheckpointPublishing { .. } => {
+                Ok(CampaignExecutorStepOutcome::CaptureRunning {
+                    request: active.reservation.request,
+                    attempt: active.reservation.capture.attempt,
+                    execution: active.execution,
+                    newly_accepted: false,
+                })
+            }
+            GetAttemptExecutionDisposition::Paused { checkpoint } => self
+                .resolve_savepoint_capture(
+                    campaign,
+                    active,
+                    status,
+                    SavepointCaptureOutcome::Ready,
+                    Some(checkpoint),
+                ),
+            GetAttemptExecutionDisposition::Canceled => self.resolve_savepoint_capture(
+                campaign,
+                active,
+                status,
+                SavepointCaptureOutcome::Canceled,
+                None,
+            ),
+            GetAttemptExecutionDisposition::TerminalFailure => self.resolve_savepoint_capture(
+                campaign,
+                active,
+                status,
+                SavepointCaptureOutcome::Failed,
+                None,
+            ),
+            GetAttemptExecutionDisposition::NotCurrent => {
+                self.release_savepoint_capture(&active.reservation)?;
+                self.defer_savepoint_capture(
+                    active.reservation.request,
+                    active.reservation.scan_after,
+                );
+                Ok(CampaignExecutorStepOutcome::CaptureAssignmentRenewed {
+                    request: active.reservation.request,
+                    attempt: active.reservation.capture.attempt,
+                })
+            }
+            GetAttemptExecutionDisposition::Completed { observation } => {
+                Ok(CampaignExecutorStepOutcome::CaptureUnexpectedCompletion {
+                    request: active.reservation.request,
+                    attempt: active.reservation.capture.attempt,
+                    observation,
+                })
+            }
+        }
+    }
+
+    fn resolve_savepoint_capture(
+        &mut self,
+        campaign: &str,
+        active: ActiveSavepointCapturePoll,
+        status: GetAttemptExecutionResponse,
+        outcome: SavepointCaptureOutcome,
+        checkpoint: Option<ExactCheckpointId>,
+    ) -> Result<CampaignExecutorStepOutcome, CampaignExecutorDriverError<S::Error>>
+    where
+        S: ExecutorStatusService,
+    {
+        let head = self.repository.head(campaign)?;
+        let command = savepoint_resolution_command(
+            active.reservation.request,
+            active.execution,
+            outcome,
+            head.snapshot_id(),
+        );
+        let resolution = SavepointCaptureResolution {
+            command,
+            expected_snapshot: head.snapshot_id(),
+            request: active.reservation.request,
+            outcome,
+        };
+        let result = self.repository.resolve_savepoint_capture(
+            campaign,
+            &resolution,
+            &active.assignment,
+            &status,
+        )?;
+        self.release_savepoint_capture(&active.reservation)?;
+        self.reset_scan();
+        self.reset_capture_scan();
+        Ok(CampaignExecutorStepOutcome::CaptureResolved {
+            result,
+            attempt: active.reservation.capture.attempt,
+            execution: active.execution,
+            checkpoint,
+        })
     }
 
     /// Releases or requests cancellation of at most one held reservation.
@@ -393,20 +773,50 @@ impl<S> CampaignExecutorDriver<S> {
     where
         S: ExecutorControlService,
     {
-        let Some((worker_slot, active)) = self
+        let semantic_active = self
             .active_executions
             .iter()
             .next()
-            .map(|(worker_slot, active)| (*worker_slot, active.clone()))
-        else {
-            let Some(reservation) = self.queue.first_reservation() else {
-                return Ok(CampaignExecutorCancelOutcome::Idle);
-            };
-            self.queue.release(reservation)?;
-            self.reset_scan();
-            return Ok(CampaignExecutorCancelOutcome::Released {
-                attempt: reservation.attempt(),
-            });
+            .map(|(worker_slot, active)| (*worker_slot, active.clone()));
+        let capture_active = self
+            .active_captures
+            .first_key_value()
+            .map(|(worker_slot, active)| (*worker_slot, active.clone()));
+        if capture_active.as_ref().is_some_and(|(capture_slot, _)| {
+            semantic_active
+                .as_ref()
+                .is_none_or(|(semantic_slot, _)| capture_slot < semantic_slot)
+        }) {
+            let (_, active) = capture_active.ok_or(AttemptQueueError::ReservationMismatch)?;
+            return self.cancel_savepoint_capture(campaign, active);
+        }
+        let Some((worker_slot, active)) = semantic_active else {
+            let semantic_reservation = self.queue.first_reservation();
+            let capture_reservation = self
+                .capture_by_slot
+                .first_key_value()
+                .and_then(|(worker_slot, _)| self.capture_reservation_for_slot(*worker_slot));
+            if capture_reservation.as_ref().is_some_and(|capture| {
+                semantic_reservation
+                    .is_none_or(|semantic| capture.worker_slot < semantic.worker_slot())
+            }) {
+                let reservation =
+                    capture_reservation.ok_or(AttemptQueueError::ReservationMismatch)?;
+                self.release_savepoint_capture(&reservation)?;
+                self.reset_capture_scan();
+                return Ok(CampaignExecutorCancelOutcome::CaptureReleased {
+                    request: reservation.request,
+                    attempt: reservation.capture.attempt,
+                });
+            }
+            if let Some(reservation) = semantic_reservation {
+                self.queue.release(reservation)?;
+                self.reset_scan();
+                return Ok(CampaignExecutorCancelOutcome::Released {
+                    attempt: reservation.attempt(),
+                });
+            }
+            return Ok(CampaignExecutorCancelOutcome::Idle);
         };
         let request = CancelAttemptExecutionRequest::new(&active.request, active.execution)?;
         let response = self
@@ -469,20 +879,51 @@ impl<S> CampaignExecutorDriver<S> {
     where
         S: ExecutorControlService,
     {
-        let Some((worker_slot, active)) = self
+        let semantic_active = self
             .active_executions
             .iter()
             .next()
-            .map(|(worker_slot, active)| (*worker_slot, active.clone()))
-        else {
-            let Some(reservation) = self.queue.first_reservation() else {
-                return Ok(CampaignExecutorCheckpointOutcome::Idle);
-            };
-            self.queue.release(reservation)?;
-            self.reset_scan();
-            return Ok(CampaignExecutorCheckpointOutcome::Released {
-                attempt: reservation.attempt(),
-            });
+            .map(|(worker_slot, active)| (*worker_slot, active.clone()));
+        let capture_active = self
+            .active_captures
+            .first_key_value()
+            .map(|(worker_slot, active)| (*worker_slot, active.clone()));
+        if capture_active.as_ref().is_some_and(|(capture_slot, _)| {
+            semantic_active
+                .as_ref()
+                .is_none_or(|(semantic_slot, _)| capture_slot < semantic_slot)
+        }) {
+            let (_, active) = capture_active.ok_or(AttemptQueueError::ReservationMismatch)?;
+            let outcome = self.poll_savepoint_capture(campaign, active)?;
+            return capture_step_as_checkpoint(outcome).map_err(Into::into);
+        }
+        let Some((worker_slot, active)) = semantic_active else {
+            let semantic_reservation = self.queue.first_reservation();
+            let capture_reservation = self
+                .capture_by_slot
+                .first_key_value()
+                .and_then(|(worker_slot, _)| self.capture_reservation_for_slot(*worker_slot));
+            if capture_reservation.as_ref().is_some_and(|capture| {
+                semantic_reservation
+                    .is_none_or(|semantic| capture.worker_slot < semantic.worker_slot())
+            }) {
+                let reservation =
+                    capture_reservation.ok_or(AttemptQueueError::ReservationMismatch)?;
+                self.release_savepoint_capture(&reservation)?;
+                self.reset_capture_scan();
+                return Ok(CampaignExecutorCheckpointOutcome::CaptureReleased {
+                    request: reservation.request,
+                    attempt: reservation.capture.attempt,
+                });
+            }
+            if let Some(reservation) = semantic_reservation {
+                self.queue.release(reservation)?;
+                self.reset_scan();
+                return Ok(CampaignExecutorCheckpointOutcome::Released {
+                    attempt: reservation.attempt(),
+                });
+            }
+            return Ok(CampaignExecutorCheckpointOutcome::Idle);
         };
         let request = CheckpointAttemptExecutionRequest::new(&active.request, active.execution)?;
         let response = self
@@ -565,9 +1006,110 @@ impl<S> CampaignExecutorDriver<S> {
         )
     }
 
+    fn capture_request_for(
+        &self,
+        reservation: &SavepointCaptureReservation,
+        lineage: CampaignLineageId,
+    ) -> Result<SubmitAttemptRequest, CampaignCodecError> {
+        let retention = ExecutionRetentionIntent::RetainAlways;
+        let assignment =
+            assignment_for_savepoint_capture(reservation, lineage, self.resources, retention)?;
+        SubmitAttemptRequest::new_savepoint_capture(
+            assignment,
+            reservation.daemon_epoch,
+            lineage,
+            reservation.capture.attempt,
+            self.resources,
+            retention,
+            reservation.request,
+            reservation.capture.configuration,
+        )
+    }
+
     fn reset_scan(&mut self) {
         self.cursor = None;
         self.settled_snapshot = None;
+    }
+
+    fn reset_capture_scan(&mut self) {
+        self.capture_cursor = None;
+        self.capture_settled_snapshot = None;
+        self.capture_scan_requires_full_pass = false;
+    }
+
+    fn defer_savepoint_capture(
+        &mut self,
+        request: CampaignFactId,
+        scan_after: SavepointCaptureCursor,
+    ) {
+        if self.deferred_capture_requests.len() == self.scan_limit {
+            self.deferred_capture_requests.clear();
+        }
+        self.deferred_capture_requests.insert(request);
+        self.prefer_capture_new_work = false;
+        self.capture_cursor = Some(scan_after);
+        self.capture_settled_snapshot = None;
+    }
+
+    fn cancel_savepoint_capture(
+        &mut self,
+        campaign: &str,
+        active: ActiveSavepointCapturePoll,
+    ) -> Result<CampaignExecutorCancelOutcome, CampaignExecutorDriverError<S::Error>>
+    where
+        S: ExecutorControlService,
+    {
+        if active.cancellation_requested {
+            let outcome = self.poll_savepoint_capture(campaign, active)?;
+            return capture_step_as_cancel(outcome).map_err(Into::into);
+        }
+        let request = CancelAttemptExecutionRequest::new(&active.assignment, active.execution)?;
+        let response = self
+            .executor
+            .cancel_attempt_execution(&request)
+            .map_err(CampaignExecutorDriverError::Executor)?;
+        match response.disposition() {
+            CancelAttemptExecutionDisposition::Canceled
+            | CancelAttemptExecutionDisposition::AlreadyCanceled => {
+                let already_canceled = matches!(
+                    response.disposition(),
+                    CancelAttemptExecutionDisposition::AlreadyCanceled
+                );
+                let Some(held) = self
+                    .active_captures
+                    .get_mut(&active.reservation.worker_slot)
+                else {
+                    return Err(AttemptQueueError::ReservationMismatch.into());
+                };
+                held.cancellation_requested = true;
+                Ok(
+                    CampaignExecutorCancelOutcome::CaptureCancellationRequested {
+                        request: active.reservation.request,
+                        attempt: active.reservation.capture.attempt,
+                        execution: active.execution,
+                        already_canceled,
+                    },
+                )
+            }
+            CancelAttemptExecutionDisposition::AlreadyCompleted { observation } => {
+                Ok(CampaignExecutorCancelOutcome::CaptureUnexpectedCompletion {
+                    request: active.reservation.request,
+                    attempt: active.reservation.capture.attempt,
+                    observation,
+                })
+            }
+            CancelAttemptExecutionDisposition::NotCurrent => {
+                self.release_savepoint_capture(&active.reservation)?;
+                self.defer_savepoint_capture(
+                    active.reservation.request,
+                    active.reservation.scan_after,
+                );
+                Ok(CampaignExecutorCancelOutcome::CaptureAssignmentRenewed {
+                    request: active.reservation.request,
+                    attempt: active.reservation.capture.attempt,
+                })
+            }
+        }
     }
 
     fn poll_execution(
@@ -789,6 +1331,186 @@ impl<S> CampaignExecutorDriver<S> {
     }
 }
 
+fn capture_step_as_cancel(
+    outcome: CampaignExecutorStepOutcome,
+) -> Result<CampaignExecutorCancelOutcome, CampaignRepositoryError> {
+    match outcome {
+        CampaignExecutorStepOutcome::CaptureRunning {
+            request,
+            attempt,
+            execution,
+            ..
+        } => Ok(CampaignExecutorCancelOutcome::CaptureCancellationPending {
+            request,
+            attempt,
+            execution,
+        }),
+        CampaignExecutorStepOutcome::CaptureResolved {
+            result,
+            attempt,
+            execution,
+            ..
+        } => Ok(CampaignExecutorCancelOutcome::CaptureResolved {
+            result,
+            attempt,
+            execution,
+        }),
+        CampaignExecutorStepOutcome::CaptureAssignmentRenewed { request, attempt } => {
+            Ok(CampaignExecutorCancelOutcome::CaptureAssignmentRenewed { request, attempt })
+        }
+        CampaignExecutorStepOutcome::CaptureUnexpectedCompletion {
+            request,
+            attempt,
+            observation,
+        } => Ok(CampaignExecutorCancelOutcome::CaptureUnexpectedCompletion {
+            request,
+            attempt,
+            observation,
+        }),
+        CampaignExecutorStepOutcome::CaptureAlreadyResolved { .. }
+        | CampaignExecutorStepOutcome::CaptureBlocked { .. }
+        | CampaignExecutorStepOutcome::CaptureRetryScheduled { .. }
+        | CampaignExecutorStepOutcome::CaptureScanPending { .. }
+        | CampaignExecutorStepOutcome::Inactive { .. }
+        | CampaignExecutorStepOutcome::ScanPending { .. }
+        | CampaignExecutorStepOutcome::ScanRestarted { .. }
+        | CampaignExecutorStepOutcome::Idle { .. }
+        | CampaignExecutorStepOutcome::Running { .. }
+        | CampaignExecutorStepOutcome::Checkpointed { .. }
+        | CampaignExecutorStepOutcome::RetryScheduled { .. }
+        | CampaignExecutorStepOutcome::Blocked { .. }
+        | CampaignExecutorStepOutcome::AssignmentRenewed { .. }
+        | CampaignExecutorStepOutcome::AlreadyResolved { .. }
+        | CampaignExecutorStepOutcome::Incorporated(_)
+        | CampaignExecutorStepOutcome::Closed(_) => Err(CampaignRepositoryError::InvalidRequest {
+            reason: "savepoint-capture-cancellation-produced-invalid-driver-outcome",
+        }),
+    }
+}
+
+fn capture_step_as_checkpoint(
+    outcome: CampaignExecutorStepOutcome,
+) -> Result<CampaignExecutorCheckpointOutcome, CampaignRepositoryError> {
+    match outcome {
+        CampaignExecutorStepOutcome::CaptureRunning {
+            request,
+            attempt,
+            execution,
+            ..
+        } => Ok(CampaignExecutorCheckpointOutcome::CaptureInProgress {
+            request,
+            attempt,
+            execution,
+        }),
+        CampaignExecutorStepOutcome::CaptureResolved {
+            result,
+            attempt,
+            execution,
+            checkpoint,
+        } => Ok(CampaignExecutorCheckpointOutcome::CaptureResolved {
+            result,
+            attempt,
+            execution,
+            checkpoint,
+        }),
+        CampaignExecutorStepOutcome::CaptureAssignmentRenewed { request, attempt } => {
+            Ok(CampaignExecutorCheckpointOutcome::CaptureAssignmentRenewed { request, attempt })
+        }
+        CampaignExecutorStepOutcome::CaptureUnexpectedCompletion {
+            request,
+            attempt,
+            observation,
+        } => Ok(
+            CampaignExecutorCheckpointOutcome::CaptureUnexpectedCompletion {
+                request,
+                attempt,
+                observation,
+            },
+        ),
+        CampaignExecutorStepOutcome::CaptureAlreadyResolved { .. }
+        | CampaignExecutorStepOutcome::CaptureBlocked { .. }
+        | CampaignExecutorStepOutcome::CaptureRetryScheduled { .. }
+        | CampaignExecutorStepOutcome::CaptureScanPending { .. }
+        | CampaignExecutorStepOutcome::Inactive { .. }
+        | CampaignExecutorStepOutcome::ScanPending { .. }
+        | CampaignExecutorStepOutcome::ScanRestarted { .. }
+        | CampaignExecutorStepOutcome::Idle { .. }
+        | CampaignExecutorStepOutcome::Running { .. }
+        | CampaignExecutorStepOutcome::Checkpointed { .. }
+        | CampaignExecutorStepOutcome::RetryScheduled { .. }
+        | CampaignExecutorStepOutcome::Blocked { .. }
+        | CampaignExecutorStepOutcome::AssignmentRenewed { .. }
+        | CampaignExecutorStepOutcome::AlreadyResolved { .. }
+        | CampaignExecutorStepOutcome::Incorporated(_)
+        | CampaignExecutorStepOutcome::Closed(_) => Err(CampaignRepositoryError::InvalidRequest {
+            reason: "savepoint-capture-checkpoint-produced-invalid-driver-outcome",
+        }),
+    }
+}
+
+fn assignment_for_savepoint_capture(
+    reservation: &SavepointCaptureReservation,
+    lineage: CampaignLineageId,
+    resources: AttemptResourceLimits,
+    retention: ExecutionRetentionIntent,
+) -> Result<AssignmentId, CampaignCodecError> {
+    let mut basis = Vec::new();
+    basis.extend_from_slice(&reservation.daemon_epoch.as_bytes());
+    basis.extend_from_slice(lineage.content_id().encode().as_bytes());
+    basis.extend_from_slice(reservation.request.content_id().encode().as_bytes());
+    basis.extend_from_slice(reservation.capture.attempt.content_id().encode().as_bytes());
+    basis.extend_from_slice(
+        reservation
+            .capture
+            .configuration
+            .content_id()
+            .encode()
+            .as_bytes(),
+    );
+    basis.extend_from_slice(&reservation.worker_slot.get().to_be_bytes());
+    basis.extend_from_slice(&reservation.generation.to_be_bytes());
+    basis.extend_from_slice(&resources.maximum_vcpus().to_be_bytes());
+    basis.extend_from_slice(&resources.maximum_resident_bytes().to_be_bytes());
+    basis.extend_from_slice(&resources.maximum_disk_bytes().to_be_bytes());
+    basis.extend_from_slice(&resources.maximum_execution_quanta().to_be_bytes());
+    basis.push(match retention {
+        ExecutionRetentionIntent::Discard => 0,
+        ExecutionRetentionIntent::RetainOnFailure => 1,
+        ExecutionRetentionIntent::RetainAlways => 2,
+    });
+    let digest = CampaignHash::derive(
+        "crucible.campaign.local-savepoint-capture-assignment.v1",
+        &basis,
+    )
+    .as_bytes();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[0] |= 0x80;
+    AssignmentId::from_bytes(bytes)
+}
+
+fn savepoint_resolution_command(
+    request: CampaignFactId,
+    execution: ExecutionId,
+    outcome: SavepointCaptureOutcome,
+    snapshot: CampaignSnapshotId,
+) -> CampaignCommandId {
+    let mut basis = Vec::new();
+    basis.extend_from_slice(request.content_id().encode().as_bytes());
+    basis.extend_from_slice(&execution.as_bytes());
+    basis.push(match outcome {
+        SavepointCaptureOutcome::Ready => 0,
+        SavepointCaptureOutcome::Canceled => 1,
+        SavepointCaptureOutcome::Failed => 2,
+        SavepointCaptureOutcome::Discarded => 3,
+    });
+    basis.extend_from_slice(snapshot.content_id().encode().as_bytes());
+    CampaignCommandId::from_hash(CampaignHash::derive(
+        "crucible.campaign.local-savepoint-capture-resolution-command.v1",
+        &basis,
+    ))
+}
+
 fn assignment_for_reservation(
     reservation: AttemptReservation,
     lineage: CampaignLineageId,
@@ -867,6 +1589,74 @@ pub enum CampaignExecutorStepOutcome {
         /// Exact snapshot proven idle by the completed scan.
         snapshot: CampaignSnapshotId,
     },
+    /// One bounded capture page was consumed before semantic queue scanning.
+    CaptureScanPending {
+        /// Exact snapshot owning the operational projection.
+        snapshot: CampaignSnapshotId,
+    },
+    /// The executor accepted or still owns one scoped savepoint capture.
+    CaptureRunning {
+        /// Immutable fact that owns the operational execution scope.
+        request: CampaignFactId,
+        /// Existing semantic attempt being independently reexecuted.
+        attempt: AttemptId,
+        /// Exact local execution incarnation returned by the executor.
+        execution: ExecutionId,
+        /// Whether this call first admitted the scoped execution.
+        newly_accepted: bool,
+    },
+    /// One authenticated scoped status resolved a savepoint capture.
+    CaptureResolved {
+        /// Durable campaign resolution fact and successor snapshot.
+        result: SavepointCaptureResolutionResult,
+        /// Existing semantic attempt that was independently reexecuted.
+        attempt: AttemptId,
+        /// Exact local execution incarnation whose status was authenticated.
+        execution: ExecutionId,
+        /// Ready capture root, absent for canceled or failed outcomes.
+        checkpoint: Option<ExactCheckpointId>,
+    },
+    /// Another owner already resolved a held scoped capture.
+    CaptureAlreadyResolved {
+        /// Immutable capture request whose lease was released.
+        request: CampaignFactId,
+        /// Authenticated snapshot containing its resolution.
+        snapshot: CampaignSnapshotId,
+    },
+    /// A transient executor condition released a capture for fresh assignment.
+    CaptureRetryScheduled {
+        /// Immutable fact that remains pending.
+        request: CampaignFactId,
+        /// Existing semantic attempt named by the capture.
+        attempt: AttemptId,
+        /// Retryable executor rejection.
+        reason: ExecutorRejection,
+    },
+    /// A stable executor rejection retained the scoped capture lease.
+    CaptureBlocked {
+        /// Immutable fact whose operational execution could not start.
+        request: CampaignFactId,
+        /// Existing semantic attempt named by the capture.
+        attempt: AttemptId,
+        /// Stable executor rejection requiring operator or configuration action.
+        reason: ExecutorRejection,
+    },
+    /// A stale scoped execution released the capture for a fresh generation.
+    CaptureAssignmentRenewed {
+        /// Immutable fact that remains pending.
+        request: CampaignFactId,
+        /// Existing semantic attempt named by the capture.
+        attempt: AttemptId,
+    },
+    /// A scoped capture returned an ordinary observation instead of pausing.
+    CaptureUnexpectedCompletion {
+        /// Immutable fact whose executor violated the capture contract.
+        request: CampaignFactId,
+        /// Existing semantic attempt named by the capture.
+        attempt: AttemptId,
+        /// Unexpected ordinary observation retained by the executor.
+        observation: ObservationId,
+    },
     /// The executor accepted or still owns the exact assignment.
     Running {
         /// Immutable semantic attempt being executed.
@@ -927,6 +1717,49 @@ pub enum CampaignExecutorCheckpointOutcome {
         /// Immutable attempt made claimable after resume.
         attempt: AttemptId,
     },
+    /// A scoped capture reservation had not reached the executor and was released.
+    CaptureReleased {
+        /// Immutable capture request that remains pending for campaign resume.
+        request: CampaignFactId,
+        /// Existing semantic attempt named by the capture.
+        attempt: AttemptId,
+    },
+    /// A scoped capture remains active under its already-latched checkpoint request.
+    CaptureInProgress {
+        /// Immutable capture request being driven to its modeled stop.
+        request: CampaignFactId,
+        /// Existing semantic attempt named by the capture.
+        attempt: AttemptId,
+        /// Exact local execution incarnation.
+        execution: ExecutionId,
+    },
+    /// An authenticated terminal status resolved one scoped capture.
+    CaptureResolved {
+        /// Durable campaign resolution fact and successor snapshot.
+        result: SavepointCaptureResolutionResult,
+        /// Existing semantic attempt named by the capture.
+        attempt: AttemptId,
+        /// Exact local execution incarnation.
+        execution: ExecutionId,
+        /// Ready capture root, absent for canceled or failed outcomes.
+        checkpoint: Option<ExactCheckpointId>,
+    },
+    /// A stale scoped execution released the capture for fresh assignment.
+    CaptureAssignmentRenewed {
+        /// Immutable capture request that remains pending.
+        request: CampaignFactId,
+        /// Existing semantic attempt named by the capture.
+        attempt: AttemptId,
+    },
+    /// A scoped capture unexpectedly returned an ordinary observation.
+    CaptureUnexpectedCompletion {
+        /// Immutable capture request whose executor violated the contract.
+        request: CampaignFactId,
+        /// Existing semantic attempt named by the capture.
+        attempt: AttemptId,
+        /// Unexpected observation retained by the executor.
+        observation: ObservationId,
+    },
     /// The exact worker has durably latched the checkpoint request.
     Requested {
         /// Immutable semantic attempt being paused.
@@ -972,6 +1805,58 @@ pub enum CampaignExecutorCancelOutcome {
     Released {
         /// Immutable attempt made claimable again for a later resume.
         attempt: AttemptId,
+    },
+    /// A scoped capture reservation had not reached the executor and was released.
+    CaptureReleased {
+        /// Immutable capture request that remains pending for campaign resume.
+        request: CampaignFactId,
+        /// Existing semantic attempt named by the capture.
+        attempt: AttemptId,
+    },
+    /// The executor durably accepted cancellation of one scoped capture.
+    CaptureCancellationRequested {
+        /// Immutable capture request being canceled.
+        request: CampaignFactId,
+        /// Existing semantic attempt named by the capture.
+        attempt: AttemptId,
+        /// Exact local execution incarnation.
+        execution: ExecutionId,
+        /// Whether cancellation had already been accepted.
+        already_canceled: bool,
+    },
+    /// A canceled capture is awaiting a terminal authenticated status.
+    CaptureCancellationPending {
+        /// Immutable capture request being canceled.
+        request: CampaignFactId,
+        /// Existing semantic attempt named by the capture.
+        attempt: AttemptId,
+        /// Exact local execution incarnation.
+        execution: ExecutionId,
+    },
+    /// An authenticated terminal status resolved one capture during cancellation.
+    CaptureResolved {
+        /// Durable campaign resolution fact and successor snapshot.
+        result: SavepointCaptureResolutionResult,
+        /// Existing semantic attempt named by the capture.
+        attempt: AttemptId,
+        /// Exact local execution incarnation.
+        execution: ExecutionId,
+    },
+    /// A stale scoped execution released the capture for fresh assignment.
+    CaptureAssignmentRenewed {
+        /// Immutable capture request that remains pending.
+        request: CampaignFactId,
+        /// Existing semantic attempt named by the capture.
+        attempt: AttemptId,
+    },
+    /// A scoped capture unexpectedly returned an ordinary observation.
+    CaptureUnexpectedCompletion {
+        /// Immutable capture request whose executor violated the contract.
+        request: CampaignFactId,
+        /// Existing semantic attempt named by the capture.
+        attempt: AttemptId,
+        /// Unexpected observation retained by the executor.
+        observation: ObservationId,
     },
     /// Cancellation is durable for one exact executor incarnation.
     Canceled {

@@ -11,6 +11,7 @@
 //! campaign observation candidate.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
 
 use crucible::model::{
     BoundarySelector, CohortPolicy, MeasurementDefinitions, MeasurementId, MeasurementInstanceKey,
@@ -18,17 +19,18 @@ use crucible::model::{
     MetricId, MetricSource, MetricValueType, ReducedRational, append_model_measurement_samples,
 };
 use crucible::{
-    Decision, EventLogCoverageObservation, GuestMeasurementEvent, GuestMeasurementValue,
-    HostAssertionOutcomeKind, NodeId, ObservableEventPayload, OfflineAssertionCheckError,
-    OfflineAssertionChecker, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
-    SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    Configuration, ContentHash, Decision, EventLogCoverageObservation, GuestMeasurementEvent,
+    GuestMeasurementValue, HostAssertionOutcomeKind, NodeId, ObservableEventPayload,
+    OfflineAssertionCheckError, OfflineAssertionChecker, QuantumOutcome, QuantumRequest,
+    QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
     SchedulerOperationalFailureClass, SchedulerQuiescence, SelectionDecision, VirtualTime, step,
 };
 use crucible_campaign::{
-    CampaignCodecError, CampaignHash, ChoiceDiscovery, ChoiceDomainId, ChoiceOpportunityId,
-    CoverageProjection, MAX_OBSERVATION_CHOICE_DISCOVERIES, MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES,
-    Observation, ObservationCandidate, PropertyEvidence, PropertyVerdict, PropertyVerdictSet,
-    SelectableId, Selection, SelectionOrigin, StopCondition, StopOutcome,
+    AttemptStartMode, CampaignCodecError, CampaignHash, ChoiceDiscovery, ChoiceDomainId,
+    ChoiceOpportunityId, CoverageProjection, MAX_OBSERVATION_CHOICE_DISCOVERIES,
+    MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, Observation, ObservationCandidate, PropertyEvidence,
+    PropertyVerdict, PropertyVerdictSet, SelectableId, Selection, SelectionOrigin, StopCondition,
+    StopOutcome,
 };
 use crucible_cas::content_store::ContentId;
 use crucible_protocol::SelectionReply;
@@ -128,6 +130,9 @@ pub enum QemuFreshModeledDriverError {
         /// Coordinate reported by the live scheduler lifecycle.
         authoritative: u64,
     },
+    /// An internal savepoint-replay proof was absent, repeated, or poisoned.
+    #[error("savepoint replay proof state is inconsistent")]
+    SavepointReplayProof,
 }
 
 impl From<CrucibleArtifactError> for QemuFreshModeledDriverError {
@@ -188,6 +193,111 @@ pub struct QemuFreshPendingObservation {
     discoveries: BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
     terminal_quiescence: Option<SchedulerQuiescence>,
     terminal_at: VirtualTime,
+}
+
+/// Compact proof of the modeled boundary reached by an independent replay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuSavepointReplayProof {
+    configuration: ContentHash,
+    completed_quanta: u64,
+    frontier: VirtualTime,
+    event_count: u64,
+    event_digest: [u8; 32],
+}
+
+impl QemuSavepointReplayProof {
+    /// Binds a reached configuration to its scheduler coordinate and complete
+    /// event prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuFreshModeledDriverError::SavepointReplayProof`] when the
+    /// event count cannot be represented by the portable proof.
+    pub fn from_reached_boundary(
+        configuration: &Configuration,
+        completed_quanta: u64,
+        frontier: VirtualTime,
+        entries: &[SchedulerEventLogEntry],
+    ) -> Result<Self, QemuFreshModeledDriverError> {
+        let event_count = u64::try_from(entries.len())
+            .map_err(|_| QemuFreshModeledDriverError::SavepointReplayProof)?;
+        Ok(Self {
+            configuration: configuration.id(),
+            completed_quanta,
+            frontier,
+            event_count,
+            event_digest: savepoint_event_prefix_digest(entries),
+        })
+    }
+
+    /// Returns whether one restored checkpoint has this exact modeled boundary.
+    #[must_use]
+    pub fn matches_checkpoint(
+        self,
+        configuration: &Configuration,
+        scheduler: &crucible::SingleSchedulerCheckpoint,
+    ) -> bool {
+        self.matches_boundary(
+            configuration,
+            scheduler.quanta(),
+            scheduler.frontier(),
+            scheduler.retained_event_log_base_events(),
+            scheduler.retained_event_log_entries(),
+        )
+    }
+
+    fn matches_boundary(
+        self,
+        configuration: &Configuration,
+        completed_quanta: u64,
+        frontier: VirtualTime,
+        event_base: u64,
+        entries: &[SchedulerEventLogEntry],
+    ) -> bool {
+        let Ok(event_count) = u64::try_from(entries.len()) else {
+            return false;
+        };
+        self.configuration == configuration.id()
+            && self.completed_quanta == completed_quanta
+            && self.frontier == frontier
+            && event_base == 0
+            && self.event_count == event_count
+            && self.event_digest == savepoint_event_prefix_digest(entries)
+    }
+}
+
+/// Modeled driver that records the reached boundary while producing no durable result.
+pub(crate) struct QemuSavepointReplayProbe {
+    proof: Arc<Mutex<Option<QemuSavepointReplayProof>>>,
+}
+
+/// Read side of one independent savepoint replay probe.
+pub(crate) struct QemuSavepointReplayReceipt {
+    proof: Arc<Mutex<Option<QemuSavepointReplayProof>>>,
+}
+
+impl QemuSavepointReplayProbe {
+    /// Creates one single-use replay driver and its disjoint proof receipt.
+    pub(crate) fn new() -> (Self, QemuSavepointReplayReceipt) {
+        let proof = Arc::new(Mutex::new(None));
+        (
+            Self {
+                proof: Arc::clone(&proof),
+            },
+            QemuSavepointReplayReceipt { proof },
+        )
+    }
+}
+
+impl QemuSavepointReplayReceipt {
+    /// Consumes the exact boundary proof recorded before lifecycle shutdown.
+    pub(crate) fn take(self) -> Result<QemuSavepointReplayProof, QemuFreshModeledDriverError> {
+        self.proof
+            .lock()
+            .map_err(|_| QemuFreshModeledDriverError::SavepointReplayProof)?
+            .take()
+            .ok_or(QemuFreshModeledDriverError::SavepointReplayProof)
+    }
 }
 
 #[derive(Debug)]
@@ -343,6 +453,58 @@ impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
     }
 }
 
+impl QemuFreshAttemptDriver for QemuSavepointReplayProbe {
+    type Pending = QemuFreshPendingObservation;
+    type Error = QemuFreshModeledDriverError;
+
+    fn drive(
+        &mut self,
+        lifecycle: &mut QemuFreshAttemptLifecycle<'_>,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        materialization: QemuFreshStartMaterialization,
+    ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>> {
+        let outcome = drive_modeled_attempt(lifecycle, input, context, materialization)?;
+        if let QemuFreshDriveOutcome::Observation(pending) = &outcome {
+            let proof = QemuSavepointReplayProof::from_reached_boundary(
+                &pending.configuration,
+                lifecycle.completed_quanta(),
+                pending.terminal_at,
+                &pending.event_log,
+            )
+            .map_err(AttemptWorkerFailure::Terminal)?;
+            let mut slot = self.proof.lock().map_err(|_| {
+                AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::SavepointReplayProof)
+            })?;
+            if slot.replace(proof).is_some() {
+                return Err(AttemptWorkerFailure::Terminal(
+                    QemuFreshModeledDriverError::SavepointReplayProof,
+                ));
+            }
+        }
+        Ok(outcome)
+    }
+
+    fn seal(
+        &mut self,
+        pending: Self::Pending,
+        final_events: Vec<SchedulerEventLogEntry>,
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
+        QemuFreshModeledDriver.seal(pending, final_events)
+    }
+}
+
+fn savepoint_event_prefix_digest(entries: &[SchedulerEventLogEntry]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"crucible.savepoint-replay-event-prefix.v1\0");
+    hasher.update(&(entries.len() as u64).to_be_bytes());
+    for entry in entries {
+        hasher.update(&entry.sequence().to_be_bytes());
+        hasher.update(&entry.content_hash().bytes);
+    }
+    *hasher.finalize().as_bytes()
+}
+
 #[cfg(target_os = "linux")]
 impl QemuHotForkAttemptDriver for QemuHotForkModeledDriver {
     type Pending = QemuFreshPendingObservation;
@@ -475,7 +637,9 @@ fn drive_modeled_attempt(
     if let Some(verdict) = terminal_verdict {
         let stop = modeled_terminal_stop(verdict).map_err(AttemptWorkerFailure::Terminal)?;
         require_settled_network(lifecycle)?;
-        return Ok(QemuFreshDriveOutcome::Observation(
+        return modeled_stop_outcome(
+            lifecycle,
+            context,
             QemuFreshPendingObservation {
                 input: input.clone(),
                 configuration,
@@ -486,14 +650,16 @@ fn drive_modeled_attempt(
                 terminal_quiescence,
                 terminal_at,
             },
-        ));
+        );
     }
     if checkpoint_is_ready(lifecycle, context)? {
         return Ok(QemuFreshDriveOutcome::CheckpointRequested);
     }
     if initial_requested_stop_reached(input.attempt().stop(), terminal_at, completed_quanta) {
         require_settled_network(lifecycle)?;
-        return Ok(QemuFreshDriveOutcome::Observation(
+        return modeled_stop_outcome(
+            lifecycle,
+            context,
             QemuFreshPendingObservation {
                 input: input.clone(),
                 configuration,
@@ -504,7 +670,7 @@ fn drive_modeled_attempt(
                 terminal_quiescence,
                 terminal_at,
             },
-        ));
+        );
     }
 
     let mut observed_event_count = 0usize;
@@ -582,7 +748,9 @@ fn drive_modeled_attempt(
         };
 
         require_settled_network(lifecycle)?;
-        return Ok(QemuFreshDriveOutcome::Observation(
+        return modeled_stop_outcome(
+            lifecycle,
+            context,
             QemuFreshPendingObservation {
                 input: input.clone(),
                 configuration,
@@ -593,8 +761,44 @@ fn drive_modeled_attempt(
                 terminal_quiescence,
                 terminal_at,
             },
+        );
+    }
+}
+
+fn modeled_stop_outcome(
+    lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
+    context: &AttemptExecutionContext,
+    pending: QemuFreshPendingObservation,
+) -> Result<
+    QemuFreshDriveOutcome<QemuFreshPendingObservation>,
+    AttemptWorkerFailure<QemuFreshModeledDriverError>,
+> {
+    if !matches!(
+        context.start_mode(),
+        AttemptStartMode::SavepointCapture { .. }
+    ) {
+        return Ok(QemuFreshDriveOutcome::Observation(pending));
+    }
+    if !context.checkpoint_request().is_requested() {
+        return Err(classify_scheduler_error(
+            SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "savepoint capture reached its stop without a checkpoint request",
+                ),
+            },
         ));
     }
+    if !lifecycle
+        .exact_checkpoint_ready()
+        .map_err(classify_scheduler_error)?
+    {
+        return Err(classify_scheduler_error(
+            SchedulerError::BoundaryViolation {
+                message: String::from("savepoint capture stop is not checkpoint ready"),
+            },
+        ));
+    }
+    Ok(QemuFreshDriveOutcome::CheckpointRequested)
 }
 
 fn resolve_pending_guest_choices(
@@ -690,6 +894,12 @@ fn checkpoint_is_ready(
     lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
     context: &AttemptExecutionContext,
 ) -> Result<bool, AttemptWorkerFailure<QemuFreshModeledDriverError>> {
+    if matches!(
+        context.start_mode(),
+        AttemptStartMode::SavepointCapture { .. }
+    ) {
+        return Ok(false);
+    }
     if context.checkpoint_request().is_requested() {
         return lifecycle
             .exact_checkpoint_ready()

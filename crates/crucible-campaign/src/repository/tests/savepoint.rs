@@ -2,8 +2,16 @@
 
 use super::*;
 use crate::{
-    CampaignCommandId, ExactCheckpointId, ExecutionRetentionIntent, ExecutorCompatibilityProfile,
-    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
+    CampaignCommandId, CampaignExecutorCancelOutcome, CampaignExecutorCheckpointOutcome,
+    CampaignExecutorDriver, CampaignExecutorStepOutcome, CancelAttemptExecutionDisposition,
+    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
+    CheckpointAttemptExecutionDisposition, CheckpointAttemptExecutionRequest,
+    CheckpointAttemptExecutionResponse, DaemonEpoch, ExactCheckpointId, ExecutionId,
+    ExecutionRetentionIntent, ExecutorClient, ExecutorCompatibilityProfile, ExecutorControlService,
+    ExecutorResumeService, ExecutorService, ExecutorStatusService, GetAttemptExecutionDisposition,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, ResumeAttemptExecutionDisposition,
+    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, SubmitAttemptDisposition,
+    SubmitAttemptRequest, SubmitAttemptResponse, WorkerSlotId,
 };
 use crucible_cas::content_store::{BackendCapabilities, ByteRange, PutReceipt};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -35,6 +43,156 @@ impl ImmutableBlobBackend for CaptureReadCountingBackend {
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
         self.writes.fetch_add(1, Ordering::SeqCst);
         self.inner.put_if_absent(id, source)
+    }
+}
+
+struct PausingCaptureExecutor {
+    requests: Vec<SubmitAttemptRequest>,
+    status_requests: Vec<GetAttemptExecutionRequest>,
+    resume_requests: Vec<ResumeAttemptExecutionRequest>,
+    execution: ExecutionId,
+    checkpoint: ExactCheckpointId,
+    cancellation_requested: bool,
+    checkpoint_requests: Vec<CheckpointAttemptExecutionRequest>,
+    cancel_requests: Vec<CancelAttemptExecutionRequest>,
+}
+
+struct FairCaptureExecutor {
+    requests: Vec<SubmitAttemptRequest>,
+    status_requests: Vec<GetAttemptExecutionRequest>,
+    unavailable_capture: CampaignFactId,
+    ordinary_execution: ExecutionId,
+    capture_execution: ExecutionId,
+    observation: ObservationId,
+    checkpoint: ExactCheckpointId,
+}
+
+impl ExecutorService for FairCaptureExecutor {
+    type Error = &'static str;
+
+    fn submit_attempt(
+        &mut self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<SubmitAttemptResponse, Self::Error> {
+        self.requests.push(request.clone());
+        let disposition = match request.start_mode() {
+            AttemptStartMode::Execute => SubmitAttemptDisposition::Accepted {
+                execution: self.ordinary_execution,
+            },
+            AttemptStartMode::SavepointCapture {
+                request: capture, ..
+            } if capture == self.unavailable_capture => SubmitAttemptDisposition::Rejected {
+                reason: ExecutorRejection::UnavailableInput,
+            },
+            AttemptStartMode::SavepointCapture { .. } => SubmitAttemptDisposition::Accepted {
+                execution: self.capture_execution,
+            },
+            AttemptStartMode::CaptureMaterializedStart { .. } => {
+                return Err("unexpected materialized-start capture");
+            }
+        };
+        SubmitAttemptResponse::new(request, disposition).map_err(|_| "response encoding")
+    }
+}
+
+impl ExecutorStatusService for FairCaptureExecutor {
+    fn get_attempt_execution(
+        &mut self,
+        request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        self.status_requests.push(request.clone());
+        let disposition = if request.execution() == self.ordinary_execution {
+            GetAttemptExecutionDisposition::Completed {
+                observation: self.observation,
+            }
+        } else if request.execution() == self.capture_execution {
+            GetAttemptExecutionDisposition::Paused {
+                checkpoint: self.checkpoint,
+            }
+        } else {
+            return Err("unexpected execution");
+        };
+        GetAttemptExecutionResponse::new(request, disposition).map_err(|_| "response encoding")
+    }
+}
+
+impl ExecutorResumeService for FairCaptureExecutor {
+    fn resume_attempt_execution(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        ResumeAttemptExecutionResponse::new(request, ResumeAttemptExecutionDisposition::NotCurrent)
+            .map_err(|_| "response encoding")
+    }
+}
+
+impl ExecutorService for PausingCaptureExecutor {
+    type Error = &'static str;
+
+    fn submit_attempt(
+        &mut self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<SubmitAttemptResponse, Self::Error> {
+        self.requests.push(request.clone());
+        SubmitAttemptResponse::new(
+            request,
+            SubmitAttemptDisposition::Accepted {
+                execution: self.execution,
+            },
+        )
+        .map_err(|_| "response encoding")
+    }
+}
+
+impl ExecutorStatusService for PausingCaptureExecutor {
+    fn get_attempt_execution(
+        &mut self,
+        request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        self.status_requests.push(request.clone());
+        let disposition = if self.cancellation_requested {
+            GetAttemptExecutionDisposition::Canceled
+        } else {
+            GetAttemptExecutionDisposition::Paused {
+                checkpoint: self.checkpoint,
+            }
+        };
+        GetAttemptExecutionResponse::new(request, disposition).map_err(|_| "response encoding")
+    }
+}
+
+impl ExecutorResumeService for PausingCaptureExecutor {
+    fn resume_attempt_execution(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        self.resume_requests.push(request.clone());
+        ResumeAttemptExecutionResponse::new(request, ResumeAttemptExecutionDisposition::NotCurrent)
+            .map_err(|_| "response encoding")
+    }
+}
+
+impl ExecutorControlService for PausingCaptureExecutor {
+    fn checkpoint_attempt_execution(
+        &mut self,
+        request: &CheckpointAttemptExecutionRequest,
+    ) -> Result<CheckpointAttemptExecutionResponse, Self::Error> {
+        self.checkpoint_requests.push(request.clone());
+        CheckpointAttemptExecutionResponse::new(
+            request,
+            CheckpointAttemptExecutionDisposition::Requested,
+        )
+        .map_err(|_| "response encoding")
+    }
+
+    fn cancel_attempt_execution(
+        &mut self,
+        request: &CancelAttemptExecutionRequest,
+    ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
+        self.cancel_requests.push(request.clone());
+        self.cancellation_requested = true;
+        CancelAttemptExecutionResponse::new(request, CancelAttemptExecutionDisposition::Canceled)
+            .map_err(|_| "response encoding")
     }
 }
 
@@ -527,15 +685,34 @@ fn ordinary_attempt_and_scoped_capture_coexist_and_resolution_survives_restart()
         request: accepted.request,
         outcome: SavepointCaptureOutcome::Discarded,
     };
+    assert!(matches!(
+        repository.resolve_savepoint_capture("savepoint-coexist", &discard, &assignment, &status,),
+        Err(CampaignRepositoryError::InvalidRequest {
+            reason: "savepoint-capture-discard-is-not-yet-supported"
+        })
+    ));
+    assert_eq!(
+        repository
+            .head("savepoint-coexist")
+            .expect("discard rejection leaves head unchanged")
+            .snapshot_id(),
+        resolved.new_snapshot
+    );
+
     let discarded = repository
-        .resolve_savepoint_capture("savepoint-coexist", &discard, &assignment, &status)
-        .expect("discard ready capture");
+        .install_historical_savepoint_capture_resolution(
+            "savepoint-coexist",
+            &discard,
+            &assignment,
+            &status,
+        )
+        .expect("install formerly supported discard history");
     assert_eq!(discarded.outcome, SavepointCaptureOutcome::Discarded);
     assert_eq!(
         repository
             .savepoint_capture_resolution_at(discarded.new_snapshot, accepted.request)
-            .expect("current capture disposition")
-            .expect("capture is resolved")
+            .expect("historical capture disposition")
+            .expect("historical capture is resolved")
             .outcome,
         SavepointCaptureOutcome::Discarded
     );
@@ -555,7 +732,7 @@ fn ordinary_attempt_and_scoped_capture_coexist_and_resolution_survives_restart()
     assert!(ready_replay.replayed);
     let discard_replay = restarted
         .resolve_savepoint_capture("savepoint-coexist", &discard, &assignment, &status)
-        .expect("discard replay after restart");
+        .expect("historical discard command replay after restart");
     assert_eq!(discard_replay.new_snapshot, discarded.new_snapshot);
     assert!(discard_replay.replayed);
 }
@@ -696,6 +873,520 @@ fn capture_rejects_stale_and_mismatched_configuration_without_state_change() {
             .expect("unchanged budget"),
         baseline_budget,
     );
+}
+
+#[test]
+fn executor_driver_runs_scoped_capture_to_ready_without_resume_or_semantic_ownership() {
+    let (repository, lineage, policy) = fixture();
+    let head = running_campaign(&repository, &lineage, &policy, "savepoint-driver", 2);
+    let request = capture_request(
+        &repository,
+        "savepoint-driver-request",
+        &head,
+        &lineage,
+        StopCondition::ExecutionQuanta(200),
+    );
+    let accepted = repository
+        .request_savepoint_capture("savepoint-driver", &request)
+        .expect("accept driver capture");
+    let repository = Arc::new(repository);
+    let execution = ExecutionId::from_bytes([0xd1; 16]).expect("capture execution");
+    let checkpoint = exact_checkpoint("savepoint-driver-ready");
+    let service = PausingCaptureExecutor {
+        requests: Vec::new(),
+        status_requests: Vec::new(),
+        resume_requests: Vec::new(),
+        execution,
+        checkpoint,
+        cancellation_requested: false,
+        checkpoint_requests: Vec::new(),
+        cancel_requests: Vec::new(),
+    };
+    let mut driver = CampaignExecutorDriver::new(
+        repository.clone(),
+        ExecutorClient::new(service),
+        DaemonEpoch::from_bytes([0xd2; 16]).expect("daemon epoch"),
+        1,
+        resources(),
+        ExecutionRetentionIntent::Discard,
+        10_000,
+    )
+    .expect("capture driver");
+
+    assert!(matches!(
+        driver
+            .step("savepoint-driver", WorkerSlotId::new(0))
+            .expect("submit scoped capture"),
+        CampaignExecutorStepOutcome::CaptureRunning {
+            request,
+            attempt,
+            execution: actual_execution,
+            newly_accepted: true,
+        } if request == accepted.request
+            && attempt == accepted.attempt
+            && actual_execution == execution
+    ));
+    assert_eq!(driver.reservation_count(), 1);
+    assert_eq!(driver.active_execution_count(), 1);
+
+    let resolved = driver
+        .checkpoint_one("savepoint-driver")
+        .expect("checkpoint policy polls prelatched capture");
+    let CampaignExecutorCheckpointOutcome::CaptureResolved {
+        result,
+        attempt,
+        execution: actual_execution,
+        checkpoint: actual_checkpoint,
+    } = resolved
+    else {
+        panic!("expected ready capture resolution")
+    };
+    assert_eq!(result.request, accepted.request);
+    assert_eq!(result.outcome, SavepointCaptureOutcome::Ready);
+    assert_eq!(attempt, accepted.attempt);
+    assert_eq!(actual_execution, execution);
+    assert_eq!(actual_checkpoint, Some(checkpoint));
+    assert_eq!(driver.reservation_count(), 0);
+    assert_eq!(driver.active_execution_count(), 0);
+
+    let service = driver.into_executor().into_inner();
+    assert_eq!(service.requests.len(), 1);
+    assert_eq!(service.status_requests.len(), 1);
+    assert!(service.resume_requests.is_empty());
+    assert!(service.checkpoint_requests.is_empty());
+    assert!(service.cancel_requests.is_empty());
+    let assignment = &service.requests[0];
+    assert_eq!(
+        assignment.retention(),
+        ExecutionRetentionIntent::RetainAlways
+    );
+    assert_eq!(assignment.resources(), resources());
+    assert_eq!(
+        assignment.start_mode(),
+        AttemptStartMode::SavepointCapture {
+            request: accepted.request,
+            configuration: accepted.configuration,
+        }
+    );
+
+    let restarted_repository = Arc::new(CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+    ));
+    let mut restarted = CampaignExecutorDriver::new(
+        restarted_repository,
+        ExecutorClient::new(PausingCaptureExecutor {
+            requests: Vec::new(),
+            status_requests: Vec::new(),
+            resume_requests: Vec::new(),
+            execution,
+            checkpoint,
+            cancellation_requested: false,
+            checkpoint_requests: Vec::new(),
+            cancel_requests: Vec::new(),
+        }),
+        DaemonEpoch::from_bytes([0xd3; 16]).expect("restart epoch"),
+        1,
+        resources(),
+        ExecutionRetentionIntent::Discard,
+        10_000,
+    )
+    .expect("restarted capture driver");
+    assert!(matches!(
+        restarted
+            .step("savepoint-driver", WorkerSlotId::new(0))
+            .expect("restart excludes resolved capture"),
+        CampaignExecutorStepOutcome::Idle { snapshot }
+            if snapshot == result.new_snapshot
+    ));
+    assert!(restarted.into_executor().into_inner().requests.is_empty());
+}
+
+#[test]
+fn executor_driver_cancels_capture_then_records_authenticated_terminal_status() {
+    const CAMPAIGN: &str = "savepoint-driver-cancel";
+
+    let (repository, lineage, policy) = fixture();
+    let head = running_campaign(&repository, &lineage, &policy, CAMPAIGN, 2);
+    let request = capture_request(
+        &repository,
+        "savepoint-driver-cancel-request",
+        &head,
+        &lineage,
+        StopCondition::ExecutionQuanta(200),
+    );
+    let accepted = repository
+        .request_savepoint_capture(CAMPAIGN, &request)
+        .expect("accept cancelable capture");
+    let execution = ExecutionId::from_bytes([0xd4; 16]).expect("capture execution");
+    let repository = Arc::new(repository);
+    let mut driver = CampaignExecutorDriver::new(
+        repository,
+        ExecutorClient::new(PausingCaptureExecutor {
+            requests: Vec::new(),
+            status_requests: Vec::new(),
+            resume_requests: Vec::new(),
+            execution,
+            checkpoint: exact_checkpoint("unused-canceled-savepoint"),
+            cancellation_requested: false,
+            checkpoint_requests: Vec::new(),
+            cancel_requests: Vec::new(),
+        }),
+        DaemonEpoch::from_bytes([0xd5; 16]).expect("daemon epoch"),
+        1,
+        resources(),
+        ExecutionRetentionIntent::Discard,
+        10_000,
+    )
+    .expect("capture driver");
+    assert!(matches!(
+        driver.step(CAMPAIGN, WorkerSlotId::new(0)),
+        Ok(CampaignExecutorStepOutcome::CaptureRunning { request, .. })
+            if request == accepted.request
+    ));
+
+    assert!(matches!(
+        driver.cancel_one(CAMPAIGN),
+        Ok(CampaignExecutorCancelOutcome::CaptureCancellationRequested {
+            request,
+            execution: actual_execution,
+            already_canceled: false,
+            ..
+        }) if request == accepted.request && actual_execution == execution
+    ));
+    assert_eq!(driver.reservation_count(), 1);
+    assert_eq!(driver.active_execution_count(), 1);
+    assert!(matches!(
+        driver.cancel_one(CAMPAIGN),
+        Ok(CampaignExecutorCancelOutcome::CaptureResolved {
+            ref result,
+            execution: actual_execution,
+            ..
+        }) if result.request == accepted.request
+            && result.outcome == SavepointCaptureOutcome::Canceled
+            && actual_execution == execution
+    ));
+    assert_eq!(driver.reservation_count(), 0);
+    assert_eq!(driver.active_execution_count(), 0);
+
+    let service = driver.into_executor().into_inner();
+    assert_eq!(service.cancel_requests.len(), 1);
+    assert_eq!(service.status_requests.len(), 1);
+    assert!(service.resume_requests.is_empty());
+    assert!(service.checkpoint_requests.is_empty());
+}
+
+#[test]
+fn transient_capture_failure_cannot_starve_semantic_work_or_later_captures() {
+    const CAMPAIGN: &str = "savepoint-driver-fairness";
+
+    let (repository, lineage, policy) = fixture();
+    let (_, admitted, observation) =
+        admitted_observation_fixture(&repository, &lineage, &policy, CAMPAIGN);
+    let observation_id = observation.id().expect("ordinary observation ID");
+    repository
+        .put_observation(&observation)
+        .expect("publish ordinary observation");
+    let running = repository
+        .apply_control(
+            CAMPAIGN,
+            &command(
+                "savepoint-driver-fairness-resume",
+                admitted.new_snapshot,
+                CampaignControlAction::Resume,
+            ),
+        )
+        .expect("start campaign");
+    let attempt = repository
+        .load_attempt(admitted.attempt)
+        .expect("load admitted attempt");
+
+    let first_request = SavepointCaptureRequest::new(
+        CampaignCommandId::from_hash(CampaignHash::derive("test", b"fair-capture-one")),
+        running.new_snapshot,
+        admitted.attempt,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        attempt.stop().clone(),
+        "first capture",
+    )
+    .expect("first capture request");
+    let first = repository
+        .request_savepoint_capture(CAMPAIGN, &first_request)
+        .expect("accept first capture");
+    let second_request = SavepointCaptureRequest::new(
+        CampaignCommandId::from_hash(CampaignHash::derive("test", b"fair-capture-two")),
+        first.new_snapshot,
+        admitted.attempt,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        attempt.stop().clone(),
+        "second capture",
+    )
+    .expect("second capture request");
+    let second = repository
+        .request_savepoint_capture(CAMPAIGN, &second_request)
+        .expect("accept second capture");
+    let pending = repository
+        .project_pending_savepoint_captures(CAMPAIGN, None, 10_000)
+        .expect("pending captures");
+    assert_eq!(pending.captures().len(), 2);
+    let unavailable_capture = pending.captures()[0].request();
+    let ready_capture = pending.captures()[1].request();
+    assert_eq!(
+        BTreeSet::from([first.request, second.request]),
+        BTreeSet::from([unavailable_capture, ready_capture])
+    );
+
+    let ordinary_execution = ExecutionId::from_bytes([0xe1; 16]).expect("ordinary execution");
+    let capture_execution = ExecutionId::from_bytes([0xe2; 16]).expect("capture execution");
+    let checkpoint = exact_checkpoint("savepoint-driver-fairness-ready");
+    let repository = Arc::new(repository);
+    let mut driver = CampaignExecutorDriver::new(
+        repository,
+        ExecutorClient::new(FairCaptureExecutor {
+            requests: Vec::new(),
+            status_requests: Vec::new(),
+            unavailable_capture,
+            ordinary_execution,
+            capture_execution,
+            observation: observation_id,
+            checkpoint,
+        }),
+        DaemonEpoch::from_bytes([0xe3; 16]).expect("daemon epoch"),
+        1,
+        resources(),
+        ExecutionRetentionIntent::Discard,
+        10_000,
+    )
+    .expect("fair capture driver");
+
+    assert!(matches!(
+        driver.step(CAMPAIGN, WorkerSlotId::new(0)),
+        Ok(CampaignExecutorStepOutcome::CaptureRetryScheduled {
+            request,
+            reason: ExecutorRejection::UnavailableInput,
+            ..
+        }) if request == unavailable_capture
+    ));
+    assert!(matches!(
+        driver.step(CAMPAIGN, WorkerSlotId::new(0)),
+        Ok(CampaignExecutorStepOutcome::Running {
+            attempt,
+            execution,
+            newly_accepted: true,
+        }) if attempt == admitted.attempt && execution == ordinary_execution
+    ));
+    assert!(matches!(
+        driver.step(CAMPAIGN, WorkerSlotId::new(0)),
+        Ok(CampaignExecutorStepOutcome::Incorporated(ref result))
+            if result.observation == observation_id
+    ));
+    assert!(matches!(
+        driver.step(CAMPAIGN, WorkerSlotId::new(0)),
+        Ok(CampaignExecutorStepOutcome::CaptureRunning {
+            request,
+            execution,
+            newly_accepted: true,
+            ..
+        }) if request == ready_capture && execution == capture_execution
+    ));
+    assert!(matches!(
+        driver.step(CAMPAIGN, WorkerSlotId::new(0)),
+        Ok(CampaignExecutorStepOutcome::CaptureResolved {
+            ref result,
+            checkpoint: Some(actual_checkpoint),
+            ..
+        }) if result.request == ready_capture && actual_checkpoint == checkpoint
+    ));
+    assert!(matches!(
+        driver.step(CAMPAIGN, WorkerSlotId::new(0)),
+        Ok(CampaignExecutorStepOutcome::Idle { .. })
+    ));
+    assert!(matches!(
+        driver.step(CAMPAIGN, WorkerSlotId::new(0)),
+        Ok(CampaignExecutorStepOutcome::CaptureRetryScheduled { request, .. })
+            if request == unavailable_capture
+    ));
+
+    let service = driver.into_executor().into_inner();
+    assert_eq!(
+        service
+            .requests
+            .iter()
+            .filter(|request| {
+                matches!(
+                    request.start_mode(),
+                    AttemptStartMode::SavepointCapture { request, .. }
+                        if request == unavailable_capture
+                )
+            })
+            .count(),
+        2
+    );
+    assert_eq!(
+        service
+            .requests
+            .iter()
+            .filter(|request| request.start_mode() == AttemptStartMode::Execute)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn capture_scan_rechecks_lower_keys_inserted_while_finishing_an_old_suffix() {
+    const CAMPAIGN: &str = "savepoint-driver-head-advance";
+
+    let (repository, lineage, policy) = fixture();
+    let running = running_campaign(&repository, &lineage, &policy, CAMPAIGN, 1);
+    let attempt = capture_attempt(&repository, &lineage, StopCondition::Terminal);
+    let (initial_request, _) = (0_u64..10_000)
+        .find_map(|nonce| {
+            let command = CampaignCommandId::from_hash(CampaignHash::derive(
+                "test",
+                format!("savepoint-driver-head-advance-initial-{nonce}").as_bytes(),
+            ));
+            let request = SavepointCaptureRequest::new(
+                command,
+                running.snapshot_id(),
+                attempt,
+                lineage.genesis_content(),
+                lineage.genesis(),
+                StopCondition::Terminal,
+                "initial capture",
+            )
+            .expect("initial capture candidate");
+            let id = CampaignFact::SavepointCaptureRequested(request.clone())
+                .id()
+                .expect("initial capture fact ID");
+            let request_key = savepoint_capture_request_key(id);
+            let command_key = map_key_hash("accounting.command", command.as_hash());
+            (request_key < command_key).then_some((request, id))
+        })
+        .expect("find initial capture with an accounting suffix");
+    let initial = repository
+        .request_savepoint_capture(CAMPAIGN, &initial_request)
+        .expect("accept initial capture");
+    let capture_execution = ExecutionId::from_bytes([0xf1; 16]).expect("capture execution");
+    let checkpoint = exact_checkpoint("savepoint-driver-head-advance-ready");
+    let repository = Arc::new(repository);
+    let mut driver = CampaignExecutorDriver::new(
+        Arc::clone(&repository),
+        ExecutorClient::new(PausingCaptureExecutor {
+            requests: Vec::new(),
+            status_requests: Vec::new(),
+            resume_requests: Vec::new(),
+            execution: capture_execution,
+            checkpoint,
+            cancellation_requested: false,
+            checkpoint_requests: Vec::new(),
+            cancel_requests: Vec::new(),
+        }),
+        DaemonEpoch::from_bytes([0xf3; 16]).expect("daemon epoch"),
+        2,
+        resources(),
+        ExecutionRetentionIntent::Discard,
+        1,
+    )
+    .expect("head-advance capture driver");
+
+    let mut submitted_initial = false;
+    for _ in 0..64 {
+        match driver
+            .step(CAMPAIGN, WorkerSlotId::new(0))
+            .expect("scan initial capture")
+        {
+            CampaignExecutorStepOutcome::CaptureRunning {
+                request,
+                newly_accepted: true,
+                ..
+            } if request == initial.request => {
+                submitted_initial = true;
+                break;
+            }
+            CampaignExecutorStepOutcome::CaptureScanPending { .. }
+            | CampaignExecutorStepOutcome::ScanPending { .. }
+            | CampaignExecutorStepOutcome::Idle { .. } => continue,
+            other => panic!("unexpected initial scan outcome: {other:?}"),
+        }
+    }
+    assert!(submitted_initial, "initial capture page was not reached");
+    assert!(matches!(
+        driver.step(CAMPAIGN, WorkerSlotId::new(1)),
+        Ok(CampaignExecutorStepOutcome::CaptureScanPending { .. })
+    ));
+
+    let current = repository.head(CAMPAIGN).expect("current capture head");
+    let (inserted_request, inserted_id) = (0_u64..10_000)
+        .find_map(|nonce| {
+            let request = SavepointCaptureRequest::new(
+                CampaignCommandId::from_hash(CampaignHash::derive(
+                    "test",
+                    format!("savepoint-driver-head-advance-inserted-{nonce}").as_bytes(),
+                )),
+                current.snapshot_id(),
+                attempt,
+                lineage.genesis_content(),
+                lineage.genesis(),
+                StopCondition::Terminal,
+                "inserted capture",
+            )
+            .expect("inserted capture candidate");
+            let id = CampaignFact::SavepointCaptureRequested(request.clone())
+                .id()
+                .expect("candidate capture fact ID");
+            (savepoint_capture_request_key(id) < savepoint_capture_request_key(initial.request))
+                .then_some((request, id))
+        })
+        .expect("find a lower-key capture request");
+    let inserted = repository
+        .request_savepoint_capture(CAMPAIGN, &inserted_request)
+        .expect("insert lower-key capture under a newer head");
+    assert_eq!(inserted.request, inserted_id);
+
+    let mut submitted_inserted = false;
+    for _ in 0..128 {
+        match driver
+            .step(CAMPAIGN, WorkerSlotId::new(1))
+            .expect("finish old suffix and rescan new head")
+        {
+            CampaignExecutorStepOutcome::CaptureRunning {
+                request,
+                execution,
+                newly_accepted: true,
+                ..
+            } if request == inserted.request && execution == capture_execution => {
+                submitted_inserted = true;
+                break;
+            }
+            CampaignExecutorStepOutcome::CaptureScanPending { .. }
+            | CampaignExecutorStepOutcome::ScanPending { .. }
+            | CampaignExecutorStepOutcome::Idle { .. } => continue,
+            other => panic!("unexpected rescan outcome: {other:?}"),
+        }
+    }
+    assert!(
+        submitted_inserted,
+        "lower-key capture was skipped after head advance"
+    );
+    assert!(matches!(
+        driver.step(CAMPAIGN, WorkerSlotId::new(1)),
+        Ok(CampaignExecutorStepOutcome::CaptureResolved {
+            ref result,
+            checkpoint: Some(actual_checkpoint),
+            ..
+        }) if result.request == inserted.request && actual_checkpoint == checkpoint
+    ));
+
+    let service = driver.into_executor().into_inner();
+    assert!(service.requests.iter().any(|request| {
+        matches!(
+            request.start_mode(),
+            AttemptStartMode::SavepointCapture { request, .. }
+                if request == inserted.request
+        )
+    }));
 }
 
 fn running_campaign(
