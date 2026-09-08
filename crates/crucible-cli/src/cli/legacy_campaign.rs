@@ -12,10 +12,10 @@ use super::packaged_executor::{
     load_guarded_campaign_run_deployment, resolve_guarded_campaign_deployment_path,
 };
 use crucible_campaign::{AttemptResourceLimits, CampaignState, StopCondition, StopOutcome};
-use crucible_cas::content_store::{DirectoryBlobBackend, ImmutableBlobBackend};
 // crucible-lint: allow host-nondeterminism-state -- rendering projects accepted scheduler evidence into the existing CLI wire-frame contract without influencing execution.
 use crucible_api as campaign_output_api;
 use crucible_daemon::ExactCheckpointStore;
+use crucible_daemon::campaign_store_composition::{DirectoryBlobBackend, ImmutableBlobBackend};
 use crucible_daemon::qemu_campaign_lifecycle::{
     GuardedCampaignReplayClosure, GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest,
     GuardedDefaultCampaignSavepoint, GuardedDefaultCampaignWatchFrame,
