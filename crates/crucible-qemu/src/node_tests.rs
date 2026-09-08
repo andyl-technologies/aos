@@ -35,12 +35,12 @@ mod fault_command;
 pub(crate) mod host_io_runtime;
 #[path = "node/tests/hot_fork.rs"]
 mod hot_fork;
+#[path = "node/tests/scripted_qmp.rs"]
+mod scripted_qmp;
 #[path = "node/tests/selectable_node_set.rs"]
 mod selectable_node_set;
 #[path = "node/tests/sequence_restore.rs"]
 mod sequence_restore;
-#[path = "node/tests/scripted_qmp.rs"]
-mod scripted_qmp;
 #[path = "node/tests/shutdown_and_preemption.rs"]
 mod shutdown_and_preemption;
 
