@@ -332,7 +332,18 @@ class PackageScenario:
         probe_registry = read_json(PROBES)
         if probe_registry.get("schema_version") != PROBE_REGISTRY_SCHEMA:
             raise RuntimeError("package probe registry has an unsupported schema")
-        self.probes: dict[str, str] = probe_registry["packages"]
+        probes = probe_registry.get("packages")
+        if (
+            not isinstance(probes, dict)
+            or any(
+                not isinstance(name, str)
+                or re.fullmatch(r"[A-Za-z0-9_.+@-]+", name) is None
+                or not isinstance(path, str)
+                for name, path in probes.items()
+            )
+        ):
+            raise RuntimeError("package probe registry has invalid entries")
+        self.probes: dict[str, str] = probes
         self.package = ""
         self.version = ""
         self.client_name = ""
@@ -436,6 +447,10 @@ class PackageScenario:
             raise RuntimeError("package case has no primary out output")
 
         self.probe = self.probes.get(self.package, "")
+        if not self.probe:
+            raise RuntimeError(
+                f"package {self.package!r} has no reviewed functional probe"
+            )
         probe_path = pathlib.Path(self.probe)
         if (
             not self.probe.startswith("/nix/store/")
