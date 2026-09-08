@@ -1,5 +1,5 @@
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
-index 3db26a7aa..b8d9057d8 100644
+index a476da508..396154b9e 100644
 --- a/block/crucible-shmem.c
 +++ b/block/crucible-shmem.c
 @@ -39,6 +39,8 @@ typedef struct BDRVCrucibleShmemState {
@@ -41,11 +41,11 @@ index 3db26a7aa..b8d9057d8 100644
          crucible_shmem_wait_one_poll(bs, observed_generation);
      }
  }
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index c62471c50..b37dfd519 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -240,6 +240,18 @@ typedef int64_t (*qemu_plugin_blk_poll_cb_t)(uint32_t request_id,
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index 5670ac692..d019f5ada 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -284,6 +284,18 @@ typedef int64_t (*qemu_plugin_blk_poll_cb_t)(uint32_t request_id,
                                               size_t capacity,
                                               void *userdata);
  
@@ -64,7 +64,7 @@ index c62471c50..b37dfd519 100644
  #define QEMU_PLUGIN_BLK_OP_READ 0u
  #define QEMU_PLUGIN_BLK_OP_WRITE 1u
  #define QEMU_PLUGIN_BLK_OP_FLUSH 2u
-@@ -1094,6 +1106,19 @@ void qemu_plugin_register_blk_cb(qemu_plugin_blk_submit_cb_t submit_cb,
+@@ -1192,6 +1204,19 @@ void qemu_plugin_register_blk_cb(qemu_plugin_blk_submit_cb_t submit_cb,
                                   qemu_plugin_blk_poll_cb_t poll_cb,
                                   void *userdata);
  
@@ -85,10 +85,10 @@ index c62471c50..b37dfd519 100644
   * qemu_plugin_register_9p_cb() - register shmem 9p callbacks
   * @burst_start_cb: burst-start callback, or NULL to disable shmem forwarding
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index b577dc8ac..6744c564c 100644
+index ddc9a30fb..71a694d7c 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
-@@ -216,6 +216,16 @@ static void qemu_plugin_time_advance_complete_bh(void *opaque)
+@@ -219,6 +219,16 @@ static void qemu_plugin_time_advance_complete_bh(void *opaque)
      if (cb) {
          cb(status, target, userdata);
      }

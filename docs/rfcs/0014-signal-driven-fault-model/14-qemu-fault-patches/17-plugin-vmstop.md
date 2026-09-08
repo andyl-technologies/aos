@@ -150,7 +150,7 @@ is rejected outright. The Apache host never links QEMU,
 includes a QEMU header, or calls the export. Only the GPL-2.0-only plugin
 resolves and invokes it inside the QEMU process.
 
-The patch stack modifies `include/qemu/qemu-plugin.h`, `include/qemu/plugin.h`,
+The patch stack modifies `include/plugins/qemu-plugin.h`, `include/qemu/plugin.h`,
 `plugins/api-system.c`, `block/crucible-shmem.c`,
 `accel/tcg/tcg-accel-ops-sim-shmem.c`,
 `accel/tcg/tcg-accel-ops-rr.c`, `system/cpus.c`, and `monitor/qmp-cmds.c`. It

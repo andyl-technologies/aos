@@ -23,8 +23,9 @@
   json-c,
   zlib,
   readline,
+  tzdata,
 }: let
-  version = "9.20.26";
+  version = "9.20.27";
 in
   mkDerivation {
     pname = "bind";
@@ -35,10 +36,10 @@ in
       urls = [
         "https://downloads.isc.org/isc/bind9/${version}/bind-${version}.tar.xz"
       ];
-      hash = "sha256-VSSN7w+HDExGs95yl46pcmFRMVFmYxiKRWTcodIL81A=";
+      hash = "sha256-FFq3pQszoG2dSIteZoyIfnVPQqz4lU4rXcfiOLCA5KA=";
     };
 
-    buildDeps = [gnumake perl pkg-config cmocka];
+    buildDeps = [gnumake perl pkg-config cmocka tzdata];
     runtimeDeps = [
       libcap
       libidn2
@@ -66,10 +67,6 @@ in
         script = ''
           tar xf "$src"
           cd bind-${version}
-
-          # This timezone-formatting case relies on host timezone data and is
-          # not deterministic in a hermetic build sandbox.
-          sed -i '/^ISC_TEST_ENTRY(isc_time_formatISO8601L/d' tests/isc/time_test.c
 
           # These are scheduler-sensitive performance benchmarks with a fixed
           # watchdog, rather than rwlock/mutex correctness tests. Concurrent
@@ -117,7 +114,11 @@ in
           # BIND defaults each test binary to one loop worker per detected CPU.
           # Large builders can then expose an upstream netmgr teardown race in
           # qpdb_test, while two workers still exercise its concurrent paths.
-          ISC_TASK_WORKERS=2 make -j"$NIX_BUILD_CORES" unit
+          # Exercise named-zone formatting against the AOS timezone database;
+          # the sandbox deliberately has no host /usr/share/zoneinfo.
+          TZDIR=${tzdata}/share/zoneinfo \
+            ISC_TASK_WORKERS=2 \
+            make -j"$NIX_BUILD_CORES" unit
         '';
       }
       {

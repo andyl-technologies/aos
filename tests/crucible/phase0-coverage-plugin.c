@@ -93,9 +93,9 @@ on_tb_exec(unsigned int vcpu_index, void *userdata)
 }
 
 static void
-on_tb_translate(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
+on_tb_translate(struct qemu_plugin_tb *tb, void *userdata)
 {
-  (void)id;
+  (void)userdata;
 
   struct tb_info *info = calloc(1, sizeof(*info));
   if (info == NULL) {
@@ -139,9 +139,9 @@ on_tb_translate(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 }
 
 static void
-on_tb_flush(qemu_plugin_id_t id)
+on_tb_flush(void *userdata)
 {
-  (void)id;
+  (void)userdata;
 
   /* QEMU removes generated dynamic callbacks before invoking this callback. */
   free_tb_infos();
@@ -161,9 +161,8 @@ mode_name(void)
 }
 
 static void
-on_plugin_exit(qemu_plugin_id_t id, void *userdata)
+on_plugin_exit(void *userdata)
 {
-  (void)id;
   (void)userdata;
 
   if (out_file == NULL) {
@@ -252,8 +251,8 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
   }
 
   if (mode != MODE_DISABLED) {
-    qemu_plugin_register_flush_cb(id, on_tb_flush);
-    qemu_plugin_register_vcpu_tb_trans_cb(id, on_tb_translate);
+    qemu_plugin_register_flush_cb(id, on_tb_flush, NULL);
+    qemu_plugin_register_vcpu_tb_trans_cb(id, on_tb_translate, NULL);
   }
   qemu_plugin_register_atexit_cb(id, on_plugin_exit, NULL);
   return 0;

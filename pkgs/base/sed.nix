@@ -9,7 +9,7 @@
   texinfo,
   gnumake,
 }: let
-  version = "4.9";
+  version = "4.10";
 in
   mkDerivation {
     pname = "sed";
@@ -17,7 +17,7 @@ in
 
     src = fetchurl {
       urls = ["https://mirrors.kernel.org/gnu/sed/sed-${version}.tar.xz"];
-      hash = "10aijwj1sqqr6njsfbcjh9wjv95bl78jp1nn9933kmqw5rrnn8kf";
+      hash = "sha256-biJrcy4c1zlGStaGK9Ghq6QteYKSLaelNRljHSSXUYE=";
     };
 
     buildDeps = [m4 flex bison autoconf automake texinfo gnumake];

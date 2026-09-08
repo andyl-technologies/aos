@@ -746,8 +746,8 @@ in
             require_fixed "spike=single-vm-fingerprint"
             require_fixed "scenario=stock-linux-diskless-initramfs-workload"
             require_fixed "host_adversary=bounded-scheduler-preemption"
-            require_fixed "samples=36"
-            require_fixed "horizon_icount=3600000000"
+            require_fixed "samples=40"
+            require_fixed "horizon_icount=4000000000"
             require_fixed "extended_fingerprint_match=true"
             require_fixed "aggregate_icount_stream_match=true"
             require_fixed "cadence_fingerprint_match=true"
@@ -783,8 +783,8 @@ in
             run_model=run-twice-and-diff
             scenario=stock-linux-diskless-initramfs-workload
             host_adversary=bounded-scheduler-preemption
-            samples=36
-            horizon_icount=3600000000
+            samples=40
+            horizon_icount=4000000000
             execution_fingerprint=icount-registers-ram
             sampling_axis=icount
             sampling_period_instructions=100000000

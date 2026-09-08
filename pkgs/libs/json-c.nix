@@ -7,7 +7,7 @@
   gnumake,
   pkg-config,
 }: let
-  version = "0.18";
+  version = "0.19";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
@@ -19,7 +19,7 @@ in
         "https://s3.amazonaws.com/json-c_releases/releases/json-c-${version}.tar.gz"
         "https://github.com/json-c/json-c/archive/refs/tags/json-c-${version}-20240915.tar.gz"
       ];
-      hash = "sha256-h2qwRkeRZrhpr8aJbSiBg7vA5YQ/FBIAxnez6N+xFyQ=";
+      hash = "sha256-N60CSZAuMBvZBSv3EuUR/Mas/07KrUtZAKrZzlZOJt4=";
     };
 
     buildDeps = [

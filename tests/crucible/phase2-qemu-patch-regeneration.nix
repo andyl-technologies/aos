@@ -86,7 +86,7 @@
       "pkgs/emulation/qemu-patches/_series.nix: QEMU version does not match qemu-crucible.version"
     ]
     ++ lib.optionals (patchBranchBundleHash != series.patchBranchBundleSha256) [
-      "pkgs/emulation/qemu-patches/crucible-qemu-10.0.0.bundle: bundle hash does not match manifest pin"
+      "pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.bundle: bundle hash does not match manifest pin"
     ]
     ++ lib.optionals (patchBranchBundleHash != qemuPackage.passthru.patchBranchBundleHash) [
       "pkgs/emulation/qemu.nix: QEMU package build identity does not consume the patch branch bundle hash"
@@ -360,7 +360,7 @@ in
             changed_build_id=$(
               {
                 cat "$out/build-id-material.txt"
-                printf 'qemu_version_bump_negative_control=%s\n' "10.0.1"
+                printf 'qemu_version_bump_negative_control=%s\n' "11.1.2"
               } | sha256sum | gawk '{ print $1 }'
             )
             test "$changed_build_id" != "$qemu_build_id" \

@@ -182,9 +182,9 @@ in
           script = ''
             set -eu
 
-            test -f ${referenceQemu}/include/qemu/qemu-plugin.h
+            test -f ${referenceQemu}/include/qemu-plugin.h
             if grep -q 'qemu_plugin_inject_preemption' \
-              ${referenceQemu}/include/qemu/qemu-plugin.h
+              ${referenceQemu}/include/qemu-plugin.h
             then
               echo "reference QEMU header unexpectedly declares qemu_plugin_inject_preemption" >&2
               exit 1
@@ -192,7 +192,7 @@ in
 
             cat > stock-preemption-negative.c <<'STOCK_NEGATIVE'
             #include <stdint.h>
-            #include <qemu/qemu-plugin.h>
+            #include <qemu-plugin.h>
 
             int main(void)
             {
@@ -223,7 +223,7 @@ in
 
             cat > patched-preemption-positive.c <<'PATCHED_POSITIVE'
             #include <stdint.h>
-            #include <qemu/qemu-plugin.h>
+            #include <qemu-plugin.h>
 
             int main(void)
             {

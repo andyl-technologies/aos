@@ -186,7 +186,7 @@ fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
         Ordering::Release,
     );
     state
-        .on_vcpu_init(49, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     TEST_CLOCK_DEADLINE_NS.set(-1);
     LAST_QUEUED_ADVANCE_NS.set(-1);
@@ -287,7 +287,7 @@ fn busy_boundary_retains_backpressured_inbound_until_guest_acceptance() {
         Ordering::Release,
     );
     state
-        .on_vcpu_init(50, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     TEST_RX_INJECT_COUNT.store(0, Ordering::SeqCst);
     TEST_RX_LAST_LEN.store(0, Ordering::SeqCst);

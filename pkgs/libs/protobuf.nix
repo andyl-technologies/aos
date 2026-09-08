@@ -13,7 +13,7 @@
   abseil-cpp,
   zlib,
 }: let
-  version = "29.5";
+  version = "36.1";
 in
   mkDerivation {
     pname = "protobuf";
@@ -23,7 +23,7 @@ in
       urls = [
         "https://github.com/protocolbuffers/protobuf/releases/download/v${version}/protobuf-${version}.tar.gz"
       ];
-      hash = "sha256-oZHSr911mXuln2IBlCUBZwPa7TVqnZL3Ql9HQUOa5UQ=";
+      hash = "sha256-3HT6WC9VnL0xYU3f77SGj0PJGdcYS95RS7R/kMYCXrg=";
     };
 
     buildDeps = [

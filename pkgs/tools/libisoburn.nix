@@ -23,7 +23,8 @@
   bash,
   stdenv,
 }: let
-  version = "1.5.6";
+  version = "1.5.8.pl02";
+  sourceVersion = "1.5.8";
 in
   mkDerivation {
     pname = "libisoburn";
@@ -33,7 +34,7 @@ in
       urls = [
         "https://files.libburnia-project.org/releases/libisoburn-${version}.tar.gz"
       ];
-      hash = "sha256-K4Cm9z3WM6XSQ/rL6XoV5cmgdkSl4aJCwhm5N1pF9xs=";
+      hash = "sha256-qXewPcNobZ/cpgBFixV4+crCuHVgm9XsIfWtpV8g7FA=";
     };
 
     buildDeps = [gnumake pkg-config];
@@ -57,7 +58,7 @@ in
         name = "unpack";
         script = ''
           tar xf $src
-          cd libisoburn-${version}
+          cd libisoburn-${sourceVersion}
         '';
       }
       {

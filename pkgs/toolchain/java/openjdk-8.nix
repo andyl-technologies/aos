@@ -400,7 +400,7 @@ in
         script = ''
           export PATH="$(pwd)/tools-bin:${buildTools.pkg-config}/bin:$PATH"
           # Set CFLAGS/CXXFLAGS for modern GCC compatibility
-          export CFLAGS="-fcommon -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -Wno-error=int-conversion${lib.optionalString isDarwinCross " -Wno-reserved-user-defined-literal -Wno-register"}"
+          export CFLAGS="-std=gnu17 -fcommon -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -Wno-error=int-conversion${lib.optionalString isDarwinCross " -Wno-reserved-user-defined-literal -Wno-register"}"
           export CXXFLAGS="-fcommon -Wno-error${lib.optionalString isDarwinCross " -Wno-reserved-user-defined-literal -Wno-register"}"
 
           # Set X11 extension include path
@@ -483,7 +483,7 @@ in
           find . \( -name 'configure' -o -name 'Makefile.in' \) 2>/dev/null | while read f; do
             touch -t 200001010200.00 "$f" 2>/dev/null || true
           done
-          export CFLAGS="-fcommon -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -Wno-error=int-conversion${lib.optionalString isDarwinCross " -Wno-reserved-user-defined-literal -Wno-register"} -I${xorg-stubs}/include"
+          export CFLAGS="-std=gnu17 -fcommon -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -Wno-error=int-conversion${lib.optionalString isDarwinCross " -Wno-reserved-user-defined-literal -Wno-register"} -I${xorg-stubs}/include"
           export CXXFLAGS="-fcommon -Wno-error${lib.optionalString isDarwinCross " -Wno-reserved-user-defined-literal -Wno-register"} -I${xorg-stubs}/include"
           export LDFLAGS="-L${xorg-stubs}/lib"
 
@@ -984,6 +984,21 @@ in
                                              "$adlcMake"
                                            fi
                                          done
+          ''}
+
+          ${lib.optionalString (!isDarwinCross) ''
+            # IcedTea passes HotSpot's C++98 compatibility flag through
+            # EXTRA_CFLAGS to the C-only Serviceability Agent link recipe.
+            # Override it at the final flag position for GCC 16, whose C23
+            # default reserves `bool` as a keyword.
+            for saprocMake in \
+              openjdk-boot/hotspot/make/linux/makefiles/saproc.make \
+              openjdk/hotspot/make/linux/makefiles/saproc.make; do
+              test -f "$saprocMake"
+              test "$(grep -Fc '$(EXTRA_CFLAGS)' "$saprocMake")" -eq 1
+              sed -i 's|$(EXTRA_CFLAGS)|$(EXTRA_CFLAGS) -std=gnu17|' "$saprocMake"
+              test "$(grep -Fc '$(EXTRA_CFLAGS) -std=gnu17' "$saprocMake")" -eq 1
+            done
           ''}
 
           ${lib.optionalString isDarwinCross "# Native OpenJDK 8 already supplies JAXB/JAF, so retain the target Nimbus classes.\n          if false; then\n          "}# Patch BuildJaxws.gmk: add jaf_classes to bootclasspath for JAXWS

@@ -362,7 +362,7 @@ pub(super) fn outcome_kind_from_engine_state(state: &EngineState) -> Option<Outc
 
 pub(super) fn content_hash_to_words(hash: ContentHash) -> [u64; 4] {
     let mut words = [0_u64; 4];
-    for (index, chunk) in hash.bytes.chunks_exact(8).enumerate() {
+    for (index, chunk) in hash.bytes.as_chunks::<8>().0.iter().enumerate() {
         let mut word = [0_u8; 8];
         word.copy_from_slice(chunk);
         words[index] = u64::from_be_bytes(word);

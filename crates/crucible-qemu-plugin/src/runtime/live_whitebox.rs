@@ -239,6 +239,7 @@ impl LiveWhiteboxState {
         (self.apis.register_tb_trans_cb)(
             plugin_id,
             Some(crucible_qemu_plugin_live_whitebox_tb_trans_cb),
+            std::ptr::from_mut(self).cast(),
         );
         Ok(())
     }
@@ -401,8 +402,8 @@ impl LiveWhiteboxState {
         let Some(array) = NonNull::new(array) else {
             return Err(LiveWhiteboxError::ByteArrayAllocation);
         };
-        let size = (self.apis.read_register)(handle.as_ptr(), array.as_ptr());
-        if size <= 0 {
+        let read = (self.apis.read_register)(handle.as_ptr(), array.as_ptr());
+        if !read {
             (self.apis.g_byte_array_free)(array.as_ptr(), true);
             return Err(LiveWhiteboxError::RegisterRead);
         }
@@ -468,10 +469,10 @@ impl GuestMemoryReader for LiveGuestMemoryReader {
 }
 
 extern "C" fn crucible_qemu_plugin_live_whitebox_tb_trans_cb(
-    _plugin_id: QemuPluginId,
     tb: *mut QemuPluginTb,
+    userdata: *mut c_void,
 ) {
-    let Some(mut state) = NonNull::new(LIVE_WHITEBOX_STATE.load(Ordering::Acquire)) else {
+    let Some(mut state) = NonNull::new(userdata.cast::<LiveWhiteboxState>()) else {
         return;
     };
     if tb.is_null() {
@@ -556,8 +557,8 @@ extern "C" fn crucible_qemu_plugin_live_whitebox_insn_exec_cb(
 
 /// Initializes the register handles for one live vCPU.
 pub(crate) extern "C" fn crucible_qemu_plugin_live_whitebox_vcpu_init_cb(
-    _plugin_id: QemuPluginId,
     vcpu_index: c_uint,
+    _userdata: *mut c_void,
 ) {
     let Some(mut state) = NonNull::new(LIVE_WHITEBOX_STATE.load(Ordering::Acquire)) else {
         return;

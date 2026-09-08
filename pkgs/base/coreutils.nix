@@ -10,7 +10,7 @@
   gnumake,
   perl,
 }: let
-  version = "9.5";
+  version = "9.11";
 in
   mkDerivation {
     pname = "coreutils";
@@ -18,7 +18,7 @@ in
 
     src = fetchurl {
       urls = ["https://mirrors.kernel.org/gnu/coreutils/coreutils-${version}.tar.xz"];
-      hash = "12hv193nj10hyzrqh39fpic1ibqjny9kqclzvrjsdxljmkg8wcnd";
+      hash = "sha256-OUAk7aCllVIXztqc0SAeZdyPo6opwpURNaSVIdV8PMM=";
     };
 
     buildDeps = [m4 flex bison autoconf automake texinfo gnumake perl];

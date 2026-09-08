@@ -60,7 +60,7 @@ in
       export CRUCIBLE_QEMU_BUILD_ID=${qemu-crucible.passthru.qemuBuildIdentity}
       export CRUCIBLE_QEMU_PATCH_SERIES_HASH=${qemu-crucible.passthru.patchSeriesHash}
       export CRUCIBLE_SHMEM_HEADER_HASH=${qemu-crucible.passthru.shmemHeaderHash}
-      header="${qemu-crucible}/include/qemu/qemu-plugin.h"
+      header="${qemu-crucible}/include/qemu-plugin.h"
       test -f "$header"
       grep -q 'qemu_plugin_crucible_rr_switch_quantum' "$header"
       grep -q 'qemu_plugin_read_vcpu_regs' "$header"
@@ -97,7 +97,7 @@ in
       cat > "$TMPDIR/crucible-qemu-plugin-header-probe.c" <<'EOF'
       #include <stdint.h>
       #include <aos/crucible/crucible_shmem_abi.h>
-      #include <qemu/qemu-plugin.h>
+      #include <qemu-plugin.h>
 
       #ifndef QEMU_PLUGIN_VERSION
       #error "QEMU_PLUGIN_VERSION must be exposed by qemu-crucible headers"
@@ -169,7 +169,7 @@ in
       qemu_package=qemu-crucible
       qemu_build_id=${qemu-crucible.passthru.qemuBuildIdentity}
       qemu_sim_capability_marker=${qemu-crucible}/share/aos/crucible/qemu-build-identity.env
-      qemu_plugin_header=${qemu-crucible}/include/qemu/qemu-plugin.h
+      qemu_plugin_header=${qemu-crucible}/include/qemu-plugin.h
       qemu_plugin_api_version=$qemu_plugin_api_version
       qemu_plugin_abi=qemu-plugin-api-v$qemu_plugin_api_version
       shmem_abi_version=$shmem_abi_version

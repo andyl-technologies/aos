@@ -62,7 +62,7 @@ fn test_live_state(
 // crucible-lint: allow rust-allow -- test factory carries the complete live callback state boundary.
 #[allow(clippy::too_many_arguments)]
 fn test_live_state_with_teardown(
-    plugin_id: QemuPluginId,
+    _plugin_id: QemuPluginId,
     vcpu_count: u32,
     icount_shift: u8,
     initial_raw_icount: u64,
@@ -75,7 +75,6 @@ fn test_live_state_with_teardown(
     let queued_idle_advance = QueuedIdleAdvance::require(Some(test_queue_idle_advance))
         .unwrap_or_else(|error| panic!("test queued advance should validate: {error}"));
     LiveVcpuTimeCallbackState::new(
-        plugin_id,
         test_icount_raw,
         test_force_vcpu_exit,
         test_request_vmstop,
@@ -114,7 +113,7 @@ fn shared_shutdown_resume_signal_is_one_shot_and_defers_done_to_worker() {
     let state = test_live_state_with_teardown(70, 1, 0, 0, &header, &slot, sender)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state
-        .on_vcpu_init(70, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     state
         .halted_vcpus
@@ -188,7 +187,7 @@ fn shared_shutdown_idle_signal_is_one_shot_and_defers_done_to_worker() {
     let state = test_live_state_with_teardown(71, 1, 0, 0, &header, &slot, sender)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state
-        .on_vcpu_init(71, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     header
         .request_shutdown([&slot])
@@ -216,7 +215,7 @@ fn shared_shutdown_signal_is_fail_loud_when_teardown_worker_disconnected() {
     let state = test_live_state_with_teardown(72, 1, 0, 0, &header, &slot, sender)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state
-        .on_vcpu_init(72, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     state
         .halted_vcpus
@@ -246,10 +245,10 @@ fn live_state_dispatches_vcpu_init_publish_and_ceiling() {
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
 
     state
-        .on_vcpu_init(41, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU 0 should initialize: {error}"));
     state
-        .on_vcpu_init(41, 1)
+        .on_vcpu_init(1)
         .unwrap_or_else(|error| panic!("vCPU 1 should initialize: {error}"));
     state
         .publish_current_icount(5)
@@ -309,7 +308,7 @@ fn drained_control_boundary_acknowledges_pause_without_resuming_halted_vcpu() {
     let state = test_live_state_with_teardown(78, 1, 0, 0, &header, &slot, sender)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state
-        .on_vcpu_init(78, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("test vCPU should initialize: {error}"));
     state
         .halted_vcpus
@@ -500,7 +499,7 @@ fn every_live_callback_entry_rejects_work_after_quiescence() {
     let userdata = state_pointer.cast::<c_void>();
     let before = slot.snapshot();
 
-    crucible_qemu_plugin_live_vcpu_init_cb(71, 0);
+    crucible_qemu_plugin_live_vcpu_init_cb(0, userdata);
     crucible_qemu_plugin_live_vcpu_idle_cb(0, 0, userdata);
     crucible_qemu_plugin_live_vcpu_resume_cb(0, 0, userdata);
     crucible_qemu_plugin_live_publish_icount_cb(9, userdata);
@@ -718,7 +717,7 @@ fn live_idle_callback_queues_then_commits_only_from_normal_loop_completion() {
     let state = test_live_state(46, 1, 0, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state
-        .on_vcpu_init(46, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
 
     state
@@ -750,7 +749,7 @@ fn live_idle_callback_parks_when_an_advance_still_owns_the_qemu_barrier() {
     let state = test_live_state(54, 1, 0, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state
-        .on_vcpu_init(54, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     TEST_CLOCK_DEADLINE_NS.set(-1);
     TEST_QUEUED_ADVANCE_STATUS.set(-libc::EBUSY);
@@ -782,7 +781,7 @@ fn live_idle_callback_queues_the_exact_timer_deadline() {
     let state = test_live_state(47, 1, 0, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state
-        .on_vcpu_init(47, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     TEST_CLOCK_DEADLINE_NS.set(7);
     LAST_QUEUED_ADVANCE_NS.set(-1);
@@ -810,7 +809,7 @@ fn live_idle_callback_waits_for_every_vcpu_to_halt() {
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     for vcpu_index in 0..4 {
         state
-            .on_vcpu_init(73, vcpu_index)
+            .on_vcpu_init(vcpu_index)
             .unwrap_or_else(|error| panic!("vCPU {vcpu_index} should initialize: {error}"));
     }
     TEST_CLOCK_DEADLINE_NS.set(7);
@@ -887,7 +886,7 @@ fn live_pending_advance_rejects_idle_resume_and_allows_read_only_reentrant_publi
     let state = test_live_state(48, 1, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state
-        .on_vcpu_init(48, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     state
         .halted_vcpus
@@ -1001,18 +1000,14 @@ fn live_state_rejects_bad_init_and_regressing_or_excess_progress() {
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
 
     assert!(matches!(
-        state.on_vcpu_init(99, 0),
-        Err(LiveVcpuTimeCallbackError::PluginIdMismatch { .. })
-    ));
-    assert!(matches!(
-        state.on_vcpu_init(42, 2),
+        state.on_vcpu_init(2),
         Err(LiveVcpuTimeCallbackError::VcpuOutOfRange {
             vcpu_index: 2,
             vcpu_count: 2,
         })
     ));
     state
-        .on_vcpu_init(42, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     state
         .publish_current_icount(4)
@@ -1036,6 +1031,7 @@ fn live_state_rejects_bad_init_and_regressing_or_excess_progress() {
 extern "C" fn test_register_vcpu_init(
     _plugin_id: QemuPluginId,
     _callback: crate::QemuVcpuSimpleCbFn,
+    _userdata: *mut c_void,
 ) {
 }
 

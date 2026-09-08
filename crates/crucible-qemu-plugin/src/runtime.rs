@@ -241,7 +241,6 @@ impl OwnedCallbackRuntimeState {
     )]
     fn prepare_live_vcpu_time_state(
         self: Pin<&mut Self>,
-        plugin_id: QemuPluginId,
         vcpu_count: u32,
         slot_index: u32,
         fault_node_hash: [u8; 32],
@@ -299,7 +298,6 @@ impl OwnedCallbackRuntimeState {
         // validated pair and remains live while callback state is retained.
         let header = unsafe { header.as_ref() };
         let callback_state = live_callbacks::LiveVcpuTimeCallbackState::new(
-            plugin_id,
             icount_raw,
             force_vcpu_exit,
             request_vmstop,

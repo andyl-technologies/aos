@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/atomic_template.h b/accel/tcg/atomic_template.h
-index 89593b250..40c4ae084 100644
+index f7924078f..e015adb4d 100644
 --- a/accel/tcg/atomic_template.h
 +++ b/accel/tcg/atomic_template.h
 @@ -20,35 +20,52 @@
@@ -26,8 +26,8 @@ index 89593b250..40c4ae084 100644
 +# define DATA_EQUAL(a, b) int128_eq((a), (b))
  #elif DATA_SIZE == 8
  # define SUFFIX     q
- # define DATA_TYPE  aligned_uint64_t
- # define SDATA_TYPE aligned_int64_t
+ # define DATA_TYPE  uint64_t
+ # define SDATA_TYPE int64_t
  # define BSWAP      bswap64
  # define SHIFT      3
 +# define DATA_EQUAL(a, b) ((a) == (b))
@@ -55,7 +55,7 @@ index 89593b250..40c4ae084 100644
  #else
  # error unsupported data size
  #endif
-@@ -81,15 +98,21 @@ ABI_TYPE ATOMIC_NAME(cmpxchg)(CPUArchState *env, abi_ptr addr,
+@@ -81,15 +98,21 @@ ABI_TYPE ATOMIC_NAME(cmpxchg)(CPUArchState *env, vaddr addr,
                                ABI_TYPE cmpv, ABI_TYPE newv,
                                MemOpIdx oi, uintptr_t retaddr)
  {
@@ -79,8 +79,8 @@ index 89593b250..40c4ae084 100644
      ATOMIC_MMU_CLEANUP;
      atomic_trace_rmw_post(env, addr,
                            VALUE_LOW(ret),
-@@ -104,11 +127,15 @@ ABI_TYPE ATOMIC_NAME(cmpxchg)(CPUArchState *env, abi_ptr addr,
- ABI_TYPE ATOMIC_NAME(xchg)(CPUArchState *env, abi_ptr addr, ABI_TYPE val,
+@@ -103,15 +126,19 @@ ABI_TYPE ATOMIC_NAME(cmpxchg)(CPUArchState *env, vaddr addr,
+ ABI_TYPE ATOMIC_NAME(xchg)(CPUArchState *env, vaddr addr, ABI_TYPE val,
                             MemOpIdx oi, uintptr_t retaddr)
  {
 -    DATA_TYPE *haddr = atomic_mmu_lookup(env_cpu(env), addr, oi,
@@ -92,13 +92,17 @@ index 89593b250..40c4ae084 100644
  
 +    CRUCIBLE_ATOMIC_CAPTURE(haddr);
 +    CRUCIBLE_ATOMIC_PREFLIGHT(cpu, oi, retaddr, true);
+ #if DATA_SIZE == 16
+     ret = atomic16_xchg(haddr, val);
+ #else
      ret = qatomic_xchg__nocheck(haddr, val);
+ #endif
 +    CRUCIBLE_ATOMIC_FINISH(cpu, oi, retaddr, ret, true);
      ATOMIC_MMU_CLEANUP;
      atomic_trace_rmw_post(env, addr,
                            VALUE_LOW(ret),
-@@ -123,9 +150,14 @@ ABI_TYPE ATOMIC_NAME(xchg)(CPUArchState *env, abi_ptr addr, ABI_TYPE val,
- ABI_TYPE ATOMIC_NAME(X)(CPUArchState *env, abi_ptr addr,            \
+@@ -159,9 +186,14 @@ ABI_TYPE ATOMIC_NAME(fetch_or)(CPUArchState *env, vaddr addr, ABI_TYPE val,
+ ABI_TYPE ATOMIC_NAME(X)(CPUArchState *env, vaddr addr,              \
                          ABI_TYPE val, MemOpIdx oi, uintptr_t retaddr) \
  {                                                                   \
 +    CPUState *cpu = env_cpu(env);                                   \
@@ -113,8 +117,8 @@ index 89593b250..40c4ae084 100644
      ATOMIC_MMU_CLEANUP;                                             \
      atomic_trace_rmw_post(env, addr,                                \
                            VALUE_LOW(ret),                           \
-@@ -159,14 +191,19 @@ GEN_ATOMIC_HELPER(xor_fetch)
- ABI_TYPE ATOMIC_NAME(X)(CPUArchState *env, abi_ptr addr,            \
+@@ -195,14 +227,19 @@ GEN_ATOMIC_HELPER(xor_fetch)
+ ABI_TYPE ATOMIC_NAME(X)(CPUArchState *env, vaddr addr,              \
                          ABI_TYPE xval, MemOpIdx oi, uintptr_t retaddr) \
  {                                                                   \
 +    CPUState *cpu = env_cpu(env);                                   \
@@ -134,7 +138,7 @@ index 89593b250..40c4ae084 100644
      ATOMIC_MMU_CLEANUP;                                             \
      atomic_trace_rmw_post(env, addr,                                \
                            VALUE_LOW(old),                           \
-@@ -206,15 +243,21 @@ ABI_TYPE ATOMIC_NAME(cmpxchg)(CPUArchState *env, abi_ptr addr,
+@@ -242,15 +279,21 @@ ABI_TYPE ATOMIC_NAME(cmpxchg)(CPUArchState *env, vaddr addr,
                                ABI_TYPE cmpv, ABI_TYPE newv,
                                MemOpIdx oi, uintptr_t retaddr)
  {
@@ -158,8 +162,8 @@ index 89593b250..40c4ae084 100644
      ATOMIC_MMU_CLEANUP;
      atomic_trace_rmw_post(env, addr,
                            VALUE_LOW(ret),
-@@ -229,11 +272,15 @@ ABI_TYPE ATOMIC_NAME(cmpxchg)(CPUArchState *env, abi_ptr addr,
- ABI_TYPE ATOMIC_NAME(xchg)(CPUArchState *env, abi_ptr addr, ABI_TYPE val,
+@@ -264,15 +307,19 @@ ABI_TYPE ATOMIC_NAME(cmpxchg)(CPUArchState *env, vaddr addr,
+ ABI_TYPE ATOMIC_NAME(xchg)(CPUArchState *env, vaddr addr, ABI_TYPE val,
                             MemOpIdx oi, uintptr_t retaddr)
  {
 -    DATA_TYPE *haddr = atomic_mmu_lookup(env_cpu(env), addr, oi,
@@ -171,13 +175,17 @@ index 89593b250..40c4ae084 100644
  
 +    CRUCIBLE_ATOMIC_CAPTURE(haddr);
 +    CRUCIBLE_ATOMIC_PREFLIGHT(cpu, oi, retaddr, true);
+ #if DATA_SIZE == 16
+     ret = atomic16_xchg(haddr, BSWAP(val));
+ #else
      ret = qatomic_xchg__nocheck(haddr, BSWAP(val));
+ #endif
 +    CRUCIBLE_ATOMIC_FINISH(cpu, oi, retaddr, ret, true);
      ATOMIC_MMU_CLEANUP;
      atomic_trace_rmw_post(env, addr,
                            VALUE_LOW(ret),
-@@ -248,9 +295,14 @@ ABI_TYPE ATOMIC_NAME(xchg)(CPUArchState *env, abi_ptr addr, ABI_TYPE val,
- ABI_TYPE ATOMIC_NAME(X)(CPUArchState *env, abi_ptr addr,            \
+@@ -320,9 +367,14 @@ ABI_TYPE ATOMIC_NAME(fetch_or)(CPUArchState *env, vaddr addr, ABI_TYPE val,
+ ABI_TYPE ATOMIC_NAME(X)(CPUArchState *env, vaddr addr,              \
                          ABI_TYPE val, MemOpIdx oi, uintptr_t retaddr) \
  {                                                                   \
 +    CPUState *cpu = env_cpu(env);                                   \
@@ -192,13 +200,13 @@ index 89593b250..40c4ae084 100644
      ATOMIC_MMU_CLEANUP;                                             \
      atomic_trace_rmw_post(env, addr,                                \
                            VALUE_LOW(ret),                           \
-@@ -277,18 +329,24 @@ GEN_ATOMIC_HELPER(xor_fetch)
+@@ -349,18 +401,24 @@ GEN_ATOMIC_HELPER(xor_fetch)
   * Trace this load + RMW loop as a single RMW op. This way, regardless
   * of CF_PARALLEL's value, we'll trace just a read and a write.
   */
 -#define GEN_ATOMIC_HELPER_FN(X, FN, XDATA_TYPE, RET)                \
 +#define GEN_ATOMIC_HELPER_FN(X, FN, XDATA_TYPE, RET, RAWRET)        \
- ABI_TYPE ATOMIC_NAME(X)(CPUArchState *env, abi_ptr addr,            \
+ ABI_TYPE ATOMIC_NAME(X)(CPUArchState *env, vaddr addr,              \
                          ABI_TYPE xval, MemOpIdx oi, uintptr_t retaddr) \
  {                                                                   \
 -    XDATA_TYPE *haddr, ldo, ldn, old, new, val = xval;              \
@@ -220,7 +228,7 @@ index 89593b250..40c4ae084 100644
      ATOMIC_MMU_CLEANUP;                                             \
      atomic_trace_rmw_post(env, addr,                                \
                            VALUE_LOW(old),                           \
-@@ -296,24 +354,24 @@ ABI_TYPE ATOMIC_NAME(X)(CPUArchState *env, abi_ptr addr,            \
+@@ -368,24 +426,24 @@ ABI_TYPE ATOMIC_NAME(X)(CPUArchState *env, vaddr addr,              \
                            VALUE_LOW(xval),                          \
                            VALUE_HIGH(xval),                         \
                            oi);                                      \
@@ -256,7 +264,7 @@ index 89593b250..40c4ae084 100644
  #undef ADD
  
  #undef GEN_ATOMIC_HELPER_FN
-@@ -331,3 +389,13 @@ GEN_ATOMIC_HELPER_FN(add_fetch, ADD, DATA_TYPE, new)
+@@ -403,3 +461,13 @@ GEN_ATOMIC_HELPER_FN(add_fetch, ADD, DATA_TYPE, new)
  #undef SHIFT
  #undef VALUE_LOW
  #undef VALUE_HIGH
@@ -271,7 +279,7 @@ index 89593b250..40c4ae084 100644
 +#undef CRUCIBLE_ATOMIC_FALLBACK
 +#endif
 diff --git a/accel/tcg/cpu-exec-common.c b/accel/tcg/cpu-exec-common.c
-index c5c513f1e..d752ee41c 100644
+index 44e84344f..01c5654ac 100644
 --- a/accel/tcg/cpu-exec-common.c
 +++ b/accel/tcg/cpu-exec-common.c
 @@ -21,6 +21,7 @@
@@ -279,10 +287,10 @@ index c5c513f1e..d752ee41c 100644
  #include "system/tcg.h"
  #include "qemu/plugin.h"
 +#include "qemu/crucible-fault.h"
+ #include "accel/tcg/cpu-loop.h"
  #include "internal-common.h"
  
- bool tcg_allowed;
-@@ -53,6 +54,9 @@ uint32_t curr_cflags(CPUState *cpu)
+@@ -54,6 +55,9 @@ uint32_t curr_cflags(CPUState *cpu)
      } else if (qemu_loglevel_mask(CPU_LOG_TB_NOCHAIN)) {
          cflags |= CF_NO_GOTO_TB;
      }
@@ -293,18 +301,18 @@ index c5c513f1e..d752ee41c 100644
      return cflags;
  }
 diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
-index 5eeef83e6..dc1fe9034 100644
+index dc3b9b379..3d443bf8f 100644
 --- a/accel/tcg/cpu-exec.c
 +++ b/accel/tcg/cpu-exec.c
-@@ -33,6 +33,7 @@
+@@ -36,6 +36,7 @@
  #include "qemu/rcu.h"
  #include "exec/log.h"
  #include "qemu/main-loop.h"
 +#include "qemu/crucible-fault.h"
- #include "exec/cpu-all.h"
- #include "system/cpu-timers.h"
+ #include "exec/icount.h"
  #include "exec/replay-core.h"
-@@ -500,6 +501,10 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
+ #include "system/tcg.h"
+@@ -490,6 +491,10 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
          cpu_loop_exit(cpu);
      }
  
@@ -315,7 +323,7 @@ index 5eeef83e6..dc1fe9034 100644
      return last_tb;
  }
  
-@@ -526,6 +531,7 @@ static void cpu_exec_longjmp_cleanup(CPUState *cpu)
+@@ -516,6 +521,7 @@ static void cpu_exec_longjmp_cleanup(CPUState *cpu)
  {
      /* Non-buggy compilers preserve this; assert the correct value. */
      g_assert(cpu == current_cpu);
@@ -323,62 +331,64 @@ index 5eeef83e6..dc1fe9034 100644
  
  #ifdef CONFIG_USER_ONLY
      clear_helper_retaddr();
-@@ -574,32 +580,36 @@ void cpu_exec_step_atomic(CPUState *cpu)
+@@ -560,32 +566,38 @@ void cpu_exec_step_atomic(CPUState *cpu)
          g_assert(!cpu->running);
          cpu->running = true;
  
--        cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
-+        do {
-+            cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+-        TCGTBCPUState s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
+-        s.cflags = curr_cflags(cpu);
++        TCGTBCPUState s;
  
--        cflags = curr_cflags(cpu);
 -        /* Execute in a serial context. */
--        cflags &= ~CF_PARALLEL;
+-        s.cflags &= ~CF_PARALLEL;
 -        /* After 1 insn, return and release the exclusive lock. */
--        cflags |= CF_NO_GOTO_TB | CF_NO_GOTO_PTR | 1;
+-        s.cflags |= CF_NO_GOTO_TB | CF_NO_GOTO_PTR | 1;
 -        /*
 -         * No need to check_for_breakpoints here.
 -         * We only arrive in cpu_exec_step_atomic after beginning execution
 -         * of an insn that includes an atomic operation we can't handle.
 -         * Any breakpoint for this insn will have been recognized earlier.
 -         */
-+            cflags = curr_cflags(cpu);
++        do {
++            s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
++            s.cflags = curr_cflags(cpu);
+ 
+-        tb = tb_lookup(cpu, s);
+-        if (tb == NULL) {
+-            mmap_lock();
+-            tb = tb_gen_code(cpu, s);
+-            mmap_unlock();
+-        }
 +            /* Execute in a serial context. */
-+            cflags &= ~CF_PARALLEL;
++            s.cflags &= ~CF_PARALLEL;
 +            /* After 1 insn, return and release the exclusive lock. */
-+            cflags |= CF_NO_GOTO_TB | CF_NO_GOTO_PTR | 1;
++            s.cflags |= CF_NO_GOTO_TB | CF_NO_GOTO_PTR | 1;
 +            /*
 +             * No need to check_for_breakpoints here.
 +             * We only arrive in cpu_exec_step_atomic after beginning
 +             * execution of an insn that includes an atomic operation we
-+             * can't handle.  Any breakpoint for this insn will have been
++             * can't handle. Any breakpoint for this insn will have been
 +             * recognized earlier.
 +             */
- 
--        tb = tb_lookup(cpu, pc, cs_base, flags, cflags);
--        if (tb == NULL) {
--            mmap_lock();
--            tb = tb_gen_code(cpu, pc, cs_base, flags, cflags);
--            mmap_unlock();
--        }
-+            tb = tb_lookup(cpu, pc, cs_base, flags, cflags);
++
++            tb = tb_lookup(cpu, s);
 +            if (tb == NULL) {
 +                mmap_lock();
-+                tb = tb_gen_code(cpu, pc, cs_base, flags, cflags);
++                tb = tb_gen_code(cpu, s);
 +                mmap_unlock();
 +            }
 +        } while (qemu_crucible_fault_memory_fetch_service_apply(cpu));
  
          cpu_exec_enter(cpu);
          /* execute the generated code */
-         trace_exec_tb(tb, pc);
+         trace_exec_tb(tb, s.pc);
          cpu_tb_exec(cpu, tb, &tb_exit);
          cpu_exec_exit(cpu);
 +        qemu_crucible_fault_memory_service_apply(cpu);
      } else {
          cpu_exec_longjmp_cleanup(cpu);
      }
-@@ -901,7 +911,7 @@ static inline void cpu_loop_exec_tb(CPUState *cpu, TranslationBlock *tb,
+@@ -891,7 +903,7 @@ static inline void cpu_loop_exec_tb(CPUState *cpu, TranslationBlock *tb,
      trace_exec_tb(tb, pc);
      tb = cpu_tb_exec(cpu, tb, tb_exit);
      if (*tb_exit != TB_EXIT_REQUESTED) {
@@ -387,20 +397,20 @@ index 5eeef83e6..dc1fe9034 100644
          return;
      }
  
-@@ -978,6 +988,12 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+@@ -964,6 +976,12 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
                  break;
              }
  
 +            if (unlikely(qemu_crucible_fault_memory_fetch_rules_active())) {
-+                cflags &= ~CF_COUNT_MASK;
-+                cflags |= CF_NO_GOTO_TB | CF_NO_GOTO_PTR | 1;
++                s.cflags &= ~CF_COUNT_MASK;
++                s.cflags |= CF_NO_GOTO_TB | CF_NO_GOTO_PTR | 1;
 +                last_tb = NULL;
 +            }
 +
-             tb = tb_lookup(cpu, pc, cs_base, flags, cflags);
+             tb = tb_lookup(cpu, s);
              if (tb == NULL) {
                  CPUJumpCache *jc;
-@@ -1013,12 +1029,20 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+@@ -998,12 +1016,20 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
                  last_tb = NULL;
              }
  #endif
@@ -414,7 +424,7 @@ index 5eeef83e6..dc1fe9034 100644
                  tb_add_jump(last_tb, tb_exit, tb);
              }
  
-             cpu_loop_exec_tb(cpu, tb, pc, &last_tb, &tb_exit);
+             cpu_loop_exec_tb(cpu, tb, s.pc, &last_tb, &tb_exit);
 +            if (qemu_crucible_fault_memory_service_apply(cpu)) {
 +                last_tb = NULL;
 +            }
@@ -422,18 +432,18 @@ index 5eeef83e6..dc1fe9034 100644
              /* Try to align the host and virtual clocks
                 if the guest is in advance */
 diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
-index fb2204887..40c17f020 100644
+index 7f7c208ba..bcb916087 100644
 --- a/accel/tcg/cputlb.c
 +++ b/accel/tcg/cputlb.c
-@@ -35,6 +35,7 @@
+@@ -39,6 +39,7 @@
  #include "qemu/error-report.h"
  #include "exec/log.h"
  #include "exec/helper-proto-common.h"
 +#include "qemu/crucible-fault.h"
+ #include "exec/tlb-flags.h"
  #include "qemu/atomic.h"
  #include "qemu/atomic128.h"
- #include "tb-internal.h"
-@@ -1097,6 +1098,19 @@ void tlb_set_page_full(CPUState *cpu, int mmu_idx,
+@@ -1103,6 +1104,19 @@ void tlb_set_page_full(CPUState *cpu, int mmu_idx,
          }
      }
  
@@ -453,7 +463,7 @@ index fb2204887..40c17f020 100644
      wp_flags = cpu_watchpoint_address_matches(cpu, addr_page,
                                                TARGET_PAGE_SIZE);
  
-@@ -1799,7 +1813,8 @@ static bool mmu_lookup(CPUState *cpu, vaddr addr, MemOpIdx oi,
+@@ -1798,7 +1812,8 @@ static bool mmu_lookup(CPUState *cpu, vaddr addr, MemOpIdx oi,
   * or io operations to proceed.  Return the host address.
   */
  static void *atomic_mmu_lookup(CPUState *cpu, vaddr addr, MemOpIdx oi,
@@ -464,7 +474,7 @@ index fb2204887..40c17f020 100644
      uintptr_t mmu_idx = get_mmuidx(oi);
      MemOp mop = get_memop(oi);
 @@ -1897,6 +1912,13 @@ static void *atomic_mmu_lookup(CPUState *cpu, vaddr addr, MemOpIdx oi,
-         }
+                              full->attrs, wp_flags, retaddr);
      }
  
 +    if (fault_page) {
@@ -477,7 +487,7 @@ index fb2204887..40c17f020 100644
      return hostaddr;
  
   stop_the_world:
-@@ -2143,6 +2165,16 @@ static Int128 do_ld_whole_be16(CPUState *cpu, uintptr_t ra,
+@@ -2120,6 +2142,16 @@ static Int128 do_ld_whole_be16(CPUState *cpu, uintptr_t ra,
      return int128_or(x, y);
  }
  
@@ -494,7 +504,7 @@ index fb2204887..40c17f020 100644
  /*
   * Wrapper for the above.
   */
-@@ -2165,7 +2197,8 @@ static uint64_t do_ld_beN(CPUState *cpu, MMULookupPageData *p,
+@@ -2142,7 +2174,8 @@ static uint64_t do_ld_beN(CPUState *cpu, MMULookupPageData *p,
      atom = mop & MO_ATOM_MASK;
      switch (atom) {
      case MO_ATOM_SUBALIGN:
@@ -504,23 +514,17 @@ index fb2204887..40c17f020 100644
  
      case MO_ATOM_IFALIGN_PAIR:
      case MO_ATOM_WITHIN16_PAIR:
-@@ -2176,9 +2209,13 @@ static uint64_t do_ld_beN(CPUState *cpu, MMULookupPageData *p,
+@@ -2152,26 +2185,81 @@ static uint64_t do_ld_beN(CPUState *cpu, MMULookupPageData *p,
+         if (atom == MO_ATOM_IFALIGN_PAIR
              ? p->size == half_size
              : p->size >= half_size) {
-             if (!HAVE_al8_fast && p->size < 4) {
--                return do_ld_whole_be4(p, ret_be);
-+                return crucible_fault_load_beN(
-+                    cpu, p, do_ld_whole_be4(p, ret_be), mmu_idx, type, mop,
-+                    ra);
-             } else {
--                return do_ld_whole_be8(cpu, ra, p, ret_be);
-+                return crucible_fault_load_beN(
-+                    cpu, p, do_ld_whole_be8(cpu, ra, p, ret_be), mmu_idx,
-+                    type, mop, ra);
-             }
+-            return do_ld_whole_be8(cpu, ra, p, ret_be);
++            return crucible_fault_load_beN(
++                cpu, p, do_ld_whole_be8(cpu, ra, p, ret_be), mmu_idx,
++                type, mop, ra);
          }
          /* fall through */
-@@ -2186,19 +2223,72 @@ static uint64_t do_ld_beN(CPUState *cpu, MMULookupPageData *p,
+ 
      case MO_ATOM_IFALIGN:
      case MO_ATOM_WITHIN16:
      case MO_ATOM_NONE:
@@ -594,7 +598,7 @@ index fb2204887..40c17f020 100644
      int size = p->size;
      uint64_t b;
      MemOp atom;
-@@ -2214,16 +2304,22 @@ static Int128 do_ld16_beN(CPUState *cpu, MMULookupPageData *p,
+@@ -2187,16 +2275,22 @@ static Int128 do_ld16_beN(CPUState *cpu, MMULookupPageData *p,
      atom = mop & MO_ATOM_MASK;
      switch (atom) {
      case MO_ATOM_SUBALIGN:
@@ -623,7 +627,7 @@ index fb2204887..40c17f020 100644
  
      case MO_ATOM_IFALIGN_PAIR:
          /*
-@@ -2233,9 +2329,16 @@ static Int128 do_ld16_beN(CPUState *cpu, MMULookupPageData *p,
+@@ -2206,9 +2300,16 @@ static Int128 do_ld16_beN(CPUState *cpu, MMULookupPageData *p,
      case MO_ATOM_IFALIGN:
      case MO_ATOM_WITHIN16:
      case MO_ATOM_NONE:
@@ -643,7 +647,7 @@ index fb2204887..40c17f020 100644
          break;
  
      default:
-@@ -2245,14 +2348,156 @@ static Int128 do_ld16_beN(CPUState *cpu, MMULookupPageData *p,
+@@ -2218,14 +2319,156 @@ static Int128 do_ld16_beN(CPUState *cpu, MMULookupPageData *p,
      return int128_make128(b, a);
  }
  
@@ -802,7 +806,7 @@ index fb2204887..40c17f020 100644
  }
  
  static uint16_t do_ld_2(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
-@@ -2271,6 +2516,21 @@ static uint16_t do_ld_2(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
+@@ -2244,6 +2487,21 @@ static uint16_t do_ld_2(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
          if (memop & MO_BSWAP) {
              ret = bswap16(ret);
          }
@@ -824,7 +828,7 @@ index fb2204887..40c17f020 100644
      }
      return ret;
  }
-@@ -2291,6 +2551,21 @@ static uint32_t do_ld_4(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
+@@ -2264,6 +2522,21 @@ static uint32_t do_ld_4(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
          if (memop & MO_BSWAP) {
              ret = bswap32(ret);
          }
@@ -846,7 +850,7 @@ index fb2204887..40c17f020 100644
      }
      return ret;
  }
-@@ -2311,6 +2586,21 @@ static uint64_t do_ld_8(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
+@@ -2284,6 +2557,21 @@ static uint64_t do_ld_8(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
          if (memop & MO_BSWAP) {
              ret = bswap64(ret);
          }
@@ -868,7 +872,7 @@ index fb2204887..40c17f020 100644
      }
      return ret;
  }
-@@ -2318,12 +2608,17 @@ static uint64_t do_ld_8(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
+@@ -2291,12 +2579,17 @@ static uint64_t do_ld_8(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
  static uint8_t do_ld1_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
                            uintptr_t ra, MMUAccessType access_type)
  {
@@ -877,7 +881,7 @@ index fb2204887..40c17f020 100644
      MMULookupLocals l;
      bool crosspage;
  
-     cpu_req_mo(TCG_MO_LD_LD | TCG_MO_ST_LD);
+     cpu_req_mo(cpu, TCG_MO_LD_LD | TCG_MO_ST_LD);
      crosspage = mmu_lookup(cpu, addr, oi, ra, access_type, &l);
      tcg_debug_assert(!crosspage);
 +    transaction = crucible_fault_memory_transaction_start(
@@ -886,7 +890,7 @@ index fb2204887..40c17f020 100644
  
      return do_ld_1(cpu, &l.page[0], l.mmu_idx, access_type, ra);
  }
-@@ -2331,6 +2626,8 @@ static uint8_t do_ld1_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
+@@ -2304,6 +2597,8 @@ static uint8_t do_ld1_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
  static uint16_t do_ld2_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
                             uintptr_t ra, MMUAccessType access_type)
  {
@@ -895,9 +899,9 @@ index fb2204887..40c17f020 100644
      MMULookupLocals l;
      bool crosspage;
      uint16_t ret;
-@@ -2338,6 +2635,9 @@ static uint16_t do_ld2_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
+@@ -2311,6 +2606,9 @@ static uint16_t do_ld2_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
  
-     cpu_req_mo(TCG_MO_LD_LD | TCG_MO_ST_LD);
+     cpu_req_mo(cpu, TCG_MO_LD_LD | TCG_MO_ST_LD);
      crosspage = mmu_lookup(cpu, addr, oi, ra, access_type, &l);
 +    transaction = crucible_fault_memory_transaction_start(
 +        cpu, crucible_fault_load_class(access_type), addr, 2, ra,
@@ -905,7 +909,7 @@ index fb2204887..40c17f020 100644
      if (likely(!crosspage)) {
          return do_ld_2(cpu, &l.page[0], l.mmu_idx, access_type, l.memop, ra);
      }
-@@ -2356,12 +2656,17 @@ static uint16_t do_ld2_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
+@@ -2329,12 +2627,17 @@ static uint16_t do_ld2_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
  static uint32_t do_ld4_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
                             uintptr_t ra, MMUAccessType access_type)
  {
@@ -915,7 +919,7 @@ index fb2204887..40c17f020 100644
      bool crosspage;
      uint32_t ret;
  
-     cpu_req_mo(TCG_MO_LD_LD | TCG_MO_ST_LD);
+     cpu_req_mo(cpu, TCG_MO_LD_LD | TCG_MO_ST_LD);
      crosspage = mmu_lookup(cpu, addr, oi, ra, access_type, &l);
 +    transaction = crucible_fault_memory_transaction_start(
 +        cpu, crucible_fault_load_class(access_type), addr, 4, ra,
@@ -923,7 +927,7 @@ index fb2204887..40c17f020 100644
      if (likely(!crosspage)) {
          return do_ld_4(cpu, &l.page[0], l.mmu_idx, access_type, l.memop, ra);
      }
-@@ -2377,12 +2682,17 @@ static uint32_t do_ld4_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
+@@ -2350,12 +2653,17 @@ static uint32_t do_ld4_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
  static uint64_t do_ld8_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
                             uintptr_t ra, MMUAccessType access_type)
  {
@@ -933,7 +937,7 @@ index fb2204887..40c17f020 100644
      bool crosspage;
      uint64_t ret;
  
-     cpu_req_mo(TCG_MO_LD_LD | TCG_MO_ST_LD);
+     cpu_req_mo(cpu, TCG_MO_LD_LD | TCG_MO_ST_LD);
      crosspage = mmu_lookup(cpu, addr, oi, ra, access_type, &l);
 +    transaction = crucible_fault_memory_transaction_start(
 +        cpu, crucible_fault_load_class(access_type), addr, 8, ra,
@@ -941,7 +945,7 @@ index fb2204887..40c17f020 100644
      if (likely(!crosspage)) {
          return do_ld_8(cpu, &l.page[0], l.mmu_idx, access_type, l.memop, ra);
      }
-@@ -2398,6 +2708,8 @@ static uint64_t do_ld8_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
+@@ -2371,6 +2679,8 @@ static uint64_t do_ld8_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
  static Int128 do_ld16_mmu(CPUState *cpu, vaddr addr,
                            MemOpIdx oi, uintptr_t ra)
  {
@@ -950,9 +954,9 @@ index fb2204887..40c17f020 100644
      MMULookupLocals l;
      bool crosspage;
      uint64_t a, b;
-@@ -2406,6 +2718,9 @@ static Int128 do_ld16_mmu(CPUState *cpu, vaddr addr,
+@@ -2379,6 +2689,9 @@ static Int128 do_ld16_mmu(CPUState *cpu, vaddr addr,
  
-     cpu_req_mo(TCG_MO_LD_LD | TCG_MO_ST_LD);
+     cpu_req_mo(cpu, TCG_MO_LD_LD | TCG_MO_ST_LD);
      crosspage = mmu_lookup(cpu, addr, oi, ra, MMU_DATA_LOAD, &l);
 +    transaction = crucible_fault_memory_transaction_start(
 +        cpu, QEMU_CRUCIBLE_MEMORY_CPU_LOAD, addr, 16, ra,
@@ -960,7 +964,7 @@ index fb2204887..40c17f020 100644
      if (likely(!crosspage)) {
          if (unlikely(l.page[0].flags & TLB_MMIO)) {
              ret = do_ld16_mmio_beN(cpu, l.page[0].full, 0, addr, 16,
-@@ -2419,6 +2734,21 @@ static Int128 do_ld16_mmu(CPUState *cpu, vaddr addr,
+@@ -2392,6 +2705,21 @@ static Int128 do_ld16_mmu(CPUState *cpu, vaddr addr,
              if (l.memop & MO_BSWAP) {
                  ret = bswap128(ret);
              }
@@ -982,7 +986,7 @@ index fb2204887..40c17f020 100644
          }
          return ret;
      }
-@@ -2567,6 +2897,35 @@ static uint64_t do_st_leN(CPUState *cpu, MMULookupPageData *p,
+@@ -2536,6 +2864,35 @@ static uint64_t do_st_leN(CPUState *cpu, MMULookupPageData *p,
      } else if (unlikely(p->flags & TLB_DISCARD_WRITE)) {
          return val_le >> (p->size * 8);
      }
@@ -1018,7 +1022,7 @@ index fb2204887..40c17f020 100644
  
      /*
       * It is a given that we cross a page and therefore there is no atomicity
-@@ -2575,7 +2934,8 @@ static uint64_t do_st_leN(CPUState *cpu, MMULookupPageData *p,
+@@ -2544,7 +2901,8 @@ static uint64_t do_st_leN(CPUState *cpu, MMULookupPageData *p,
      atom = mop & MO_ATOM_MASK;
      switch (atom) {
      case MO_ATOM_SUBALIGN:
@@ -1028,23 +1032,16 @@ index fb2204887..40c17f020 100644
  
      case MO_ATOM_IFALIGN_PAIR:
      case MO_ATOM_WITHIN16_PAIR:
-@@ -2586,10 +2946,13 @@ static uint64_t do_st_leN(CPUState *cpu, MMULookupPageData *p,
+@@ -2554,14 +2912,16 @@ static uint64_t do_st_leN(CPUState *cpu, MMULookupPageData *p,
+         if (atom == MO_ATOM_IFALIGN_PAIR
              ? p->size == half_size
              : p->size >= half_size) {
-             if (!HAVE_al8_fast && p->size <= 4) {
--                return store_whole_le4(p->haddr, p->size, val_le);
-+                return crucible_fault_store_done(
-+                    p, store_whole_le4(p->haddr, p->size, val_le));
-             } else if (HAVE_al8) {
--                return store_whole_le8(p->haddr, p->size, val_le);
-+                return crucible_fault_store_done(
-+                    p, store_whole_le8(p->haddr, p->size, val_le));
-             } else {
-+                crucible_fault_memory_store_finish(p);
-                 cpu_loop_exit_atomic(cpu, ra);
-             }
+-            return store_whole_le8(p->haddr, p->size, val_le);
++            return crucible_fault_store_done(
++                p, store_whole_le8(p->haddr, p->size, val_le));
          }
-@@ -2598,7 +2961,8 @@ static uint64_t do_st_leN(CPUState *cpu, MMULookupPageData *p,
+         /* fall through */
+ 
      case MO_ATOM_IFALIGN:
      case MO_ATOM_WITHIN16:
      case MO_ATOM_NONE:
@@ -1054,7 +1051,7 @@ index fb2204887..40c17f020 100644
  
      default:
          g_assert_not_reached();
-@@ -2621,6 +2985,19 @@ static uint64_t do_st16_leN(CPUState *cpu, MMULookupPageData *p,
+@@ -2584,6 +2944,19 @@ static uint64_t do_st16_leN(CPUState *cpu, MMULookupPageData *p,
      } else if (unlikely(p->flags & TLB_DISCARD_WRITE)) {
          return int128_gethi(val_le) >> ((size - 8) * 8);
      }
@@ -1074,7 +1071,7 @@ index fb2204887..40c17f020 100644
  
      /*
       * It is a given that we cross a page and therefore there is no atomicity
-@@ -2630,15 +3007,18 @@ static uint64_t do_st16_leN(CPUState *cpu, MMULookupPageData *p,
+@@ -2593,15 +2966,18 @@ static uint64_t do_st16_leN(CPUState *cpu, MMULookupPageData *p,
      switch (atom) {
      case MO_ATOM_SUBALIGN:
          store_parts_leN(p->haddr, 8, int128_getlo(val_le));
@@ -1096,7 +1093,7 @@ index fb2204887..40c17f020 100644
  
      case MO_ATOM_IFALIGN_PAIR:
          /*
-@@ -2649,8 +3029,9 @@ static uint64_t do_st16_leN(CPUState *cpu, MMULookupPageData *p,
+@@ -2612,8 +2988,9 @@ static uint64_t do_st16_leN(CPUState *cpu, MMULookupPageData *p,
      case MO_ATOM_WITHIN16:
      case MO_ATOM_NONE:
          stq_le_p(p->haddr, int128_getlo(val_le));
@@ -1108,7 +1105,7 @@ index fb2204887..40c17f020 100644
  
      default:
          g_assert_not_reached();
-@@ -2665,7 +3046,18 @@ static void do_st_1(CPUState *cpu, MMULookupPageData *p, uint8_t val,
+@@ -2628,7 +3005,18 @@ static void do_st_1(CPUState *cpu, MMULookupPageData *p, uint8_t val,
      } else if (unlikely(p->flags & TLB_DISCARD_WRITE)) {
          /* nothing */
      } else {
@@ -1128,7 +1125,7 @@ index fb2204887..40c17f020 100644
      }
  }
  
-@@ -2680,11 +3072,23 @@ static void do_st_2(CPUState *cpu, MMULookupPageData *p, uint16_t val,
+@@ -2643,11 +3031,23 @@ static void do_st_2(CPUState *cpu, MMULookupPageData *p, uint16_t val,
      } else if (unlikely(p->flags & TLB_DISCARD_WRITE)) {
          /* nothing */
      } else {
@@ -1153,7 +1150,7 @@ index fb2204887..40c17f020 100644
      }
  }
  
-@@ -2699,11 +3103,23 @@ static void do_st_4(CPUState *cpu, MMULookupPageData *p, uint32_t val,
+@@ -2662,11 +3062,23 @@ static void do_st_4(CPUState *cpu, MMULookupPageData *p, uint32_t val,
      } else if (unlikely(p->flags & TLB_DISCARD_WRITE)) {
          /* nothing */
      } else {
@@ -1178,7 +1175,7 @@ index fb2204887..40c17f020 100644
      }
  }
  
-@@ -2718,23 +3134,40 @@ static void do_st_8(CPUState *cpu, MMULookupPageData *p, uint64_t val,
+@@ -2681,23 +3093,40 @@ static void do_st_8(CPUState *cpu, MMULookupPageData *p, uint64_t val,
      } else if (unlikely(p->flags & TLB_DISCARD_WRITE)) {
          /* nothing */
      } else {
@@ -1211,7 +1208,7 @@ index fb2204887..40c17f020 100644
      MMULookupLocals l;
      bool crosspage;
  
-     cpu_req_mo(TCG_MO_LD_ST | TCG_MO_ST_ST);
+     cpu_req_mo(cpu, TCG_MO_LD_ST | TCG_MO_ST_ST);
      crosspage = mmu_lookup(cpu, addr, oi, ra, MMU_DATA_STORE, &l);
      tcg_debug_assert(!crosspage);
 +    transaction = crucible_fault_memory_transaction_start(
@@ -1220,7 +1217,7 @@ index fb2204887..40c17f020 100644
  
      do_st_1(cpu, &l.page[0], val, l.mmu_idx, ra);
  }
-@@ -2742,12 +3175,17 @@ static void do_st1_mmu(CPUState *cpu, vaddr addr, uint8_t val,
+@@ -2705,12 +3134,17 @@ static void do_st1_mmu(CPUState *cpu, vaddr addr, uint8_t val,
  static void do_st2_mmu(CPUState *cpu, vaddr addr, uint16_t val,
                         MemOpIdx oi, uintptr_t ra)
  {
@@ -1230,7 +1227,7 @@ index fb2204887..40c17f020 100644
      bool crosspage;
      uint8_t a, b;
  
-     cpu_req_mo(TCG_MO_LD_ST | TCG_MO_ST_ST);
+     cpu_req_mo(cpu, TCG_MO_LD_ST | TCG_MO_ST_ST);
      crosspage = mmu_lookup(cpu, addr, oi, ra, MMU_DATA_STORE, &l);
 +    transaction = crucible_fault_memory_transaction_start(
 +        cpu, QEMU_CRUCIBLE_MEMORY_CPU_STORE, addr, 2, ra,
@@ -1238,7 +1235,7 @@ index fb2204887..40c17f020 100644
      if (likely(!crosspage)) {
          do_st_2(cpu, &l.page[0], val, l.mmu_idx, l.memop, ra);
          return;
-@@ -2765,11 +3203,16 @@ static void do_st2_mmu(CPUState *cpu, vaddr addr, uint16_t val,
+@@ -2728,11 +3162,16 @@ static void do_st2_mmu(CPUState *cpu, vaddr addr, uint16_t val,
  static void do_st4_mmu(CPUState *cpu, vaddr addr, uint32_t val,
                         MemOpIdx oi, uintptr_t ra)
  {
@@ -1247,7 +1244,7 @@ index fb2204887..40c17f020 100644
      MMULookupLocals l;
      bool crosspage;
  
-     cpu_req_mo(TCG_MO_LD_ST | TCG_MO_ST_ST);
+     cpu_req_mo(cpu, TCG_MO_LD_ST | TCG_MO_ST_ST);
      crosspage = mmu_lookup(cpu, addr, oi, ra, MMU_DATA_STORE, &l);
 +    transaction = crucible_fault_memory_transaction_start(
 +        cpu, QEMU_CRUCIBLE_MEMORY_CPU_STORE, addr, 4, ra,
@@ -1255,7 +1252,7 @@ index fb2204887..40c17f020 100644
      if (likely(!crosspage)) {
          do_st_4(cpu, &l.page[0], val, l.mmu_idx, l.memop, ra);
          return;
-@@ -2786,11 +3229,16 @@ static void do_st4_mmu(CPUState *cpu, vaddr addr, uint32_t val,
+@@ -2749,11 +3188,16 @@ static void do_st4_mmu(CPUState *cpu, vaddr addr, uint32_t val,
  static void do_st8_mmu(CPUState *cpu, vaddr addr, uint64_t val,
                         MemOpIdx oi, uintptr_t ra)
  {
@@ -1264,7 +1261,7 @@ index fb2204887..40c17f020 100644
      MMULookupLocals l;
      bool crosspage;
  
-     cpu_req_mo(TCG_MO_LD_ST | TCG_MO_ST_ST);
+     cpu_req_mo(cpu, TCG_MO_LD_ST | TCG_MO_ST_ST);
      crosspage = mmu_lookup(cpu, addr, oi, ra, MMU_DATA_STORE, &l);
 +    transaction = crucible_fault_memory_transaction_start(
 +        cpu, QEMU_CRUCIBLE_MEMORY_CPU_STORE, addr, 8, ra,
@@ -1272,7 +1269,7 @@ index fb2204887..40c17f020 100644
      if (likely(!crosspage)) {
          do_st_8(cpu, &l.page[0], val, l.mmu_idx, l.memop, ra);
          return;
-@@ -2807,6 +3255,8 @@ static void do_st8_mmu(CPUState *cpu, vaddr addr, uint64_t val,
+@@ -2770,6 +3214,8 @@ static void do_st8_mmu(CPUState *cpu, vaddr addr, uint64_t val,
  static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
                          MemOpIdx oi, uintptr_t ra)
  {
@@ -1281,9 +1278,9 @@ index fb2204887..40c17f020 100644
      MMULookupLocals l;
      bool crosspage;
      uint64_t a, b;
-@@ -2814,6 +3264,9 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
+@@ -2777,6 +3223,9 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
  
-     cpu_req_mo(TCG_MO_LD_ST | TCG_MO_ST_ST);
+     cpu_req_mo(cpu, TCG_MO_LD_ST | TCG_MO_ST_ST);
      crosspage = mmu_lookup(cpu, addr, oi, ra, MMU_DATA_STORE, &l);
 +    transaction = crucible_fault_memory_transaction_start(
 +        cpu, QEMU_CRUCIBLE_MEMORY_CPU_STORE, addr, 16, ra,
@@ -1291,7 +1288,7 @@ index fb2204887..40c17f020 100644
      if (likely(!crosspage)) {
          if (unlikely(l.page[0].flags & TLB_MMIO)) {
              if ((l.memop & MO_BSWAP) != MO_LE) {
-@@ -2823,11 +3276,29 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
+@@ -2786,11 +3235,29 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
          } else if (unlikely(l.page[0].flags & TLB_DISCARD_WRITE)) {
              /* nothing */
          } else {
@@ -1322,7 +1319,7 @@ index fb2204887..40c17f020 100644
          }
          return;
      }
-@@ -2862,6 +3333,93 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
+@@ -2825,6 +3292,93 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
      }
  }
  
@@ -1416,7 +1413,7 @@ index fb2204887..40c17f020 100644
  #include "ldst_common.c.inc"
  
  /*
-@@ -2895,6 +3453,12 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
+@@ -2856,6 +3410,12 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
  #include "atomic_template.h"
  #endif
  
@@ -1428,12 +1425,12 @@ index fb2204887..40c17f020 100644
 +
  /* Code access functions.  */
  
- uint32_t cpu_ldub_code(CPUArchState *env, abi_ptr addr)
+ uint8_t cpu_ldb_code_mmu(CPUArchState *env, vaddr addr,
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index 67dc55855..285d36133 100644
+index 8be839589..fdcabc3bd 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
-@@ -192,6 +192,40 @@ int64_t icount_get_raw_observed(void)
+@@ -191,6 +191,40 @@ int64_t icount_get_raw_observed(void)
      return icount;
  }
  
@@ -1474,7 +1471,7 @@ index 67dc55855..285d36133 100644
  /* Return the virtual CPU time, based on the instruction counter.  */
  int64_t icount_get(void)
  {
-@@ -422,7 +456,8 @@ void icount_start_warp_timer(void)
+@@ -421,7 +455,8 @@ void icount_start_warp_timer(void)
  
      if (strcmp(current_accel_name(), "sim") == 0 &&
          crucible_sim_observer_registered() &&
@@ -1485,7 +1482,7 @@ index 67dc55855..285d36133 100644
           * The sim guest is clamped at the observer's max-advance boundary
           * (the terminal target icount): it cannot retire instructions, so
 diff --git a/accel/tcg/internal-common.h b/accel/tcg/internal-common.h
-index c243eda43..98cd2d9cf 100644
+index 45ae1e0fc..402994e15 100644
 --- a/accel/tcg/internal-common.h
 +++ b/accel/tcg/internal-common.h
 @@ -58,6 +58,9 @@ void tb_reset_jump(TranslationBlock *tb, int n);
@@ -1499,7 +1496,7 @@ index c243eda43..98cd2d9cf 100644
  /**
   * tlb_init - initialize a CPU's TLB
 diff --git a/accel/tcg/translate-all.c b/accel/tcg/translate-all.c
-index 82bc16bd5..87e597d47 100644
+index 328d96aba..b337a2a63 100644
 --- a/accel/tcg/translate-all.c
 +++ b/accel/tcg/translate-all.c
 @@ -18,6 +18,7 @@
@@ -1510,7 +1507,7 @@ index 82bc16bd5..87e597d47 100644
  
  #include "trace.h"
  #include "disas/disas.h"
-@@ -196,6 +197,30 @@ static int cpu_unwind_data_from_tb(TranslationBlock *tb, uintptr_t host_pc,
+@@ -167,6 +168,30 @@ static int cpu_unwind_data_from_tb(TranslationBlock *tb, uintptr_t host_pc,
      return -1;
  }
  
@@ -1541,7 +1538,7 @@ index 82bc16bd5..87e597d47 100644
  /*
   * The cpu state corresponding to 'host_pc' is restored in
   * preparation for exiting the TB.
-@@ -316,6 +341,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
+@@ -285,6 +310,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
      QEMU_BUILD_BUG_ON(CF_COUNT_MASK + 1 != TCG_MAX_INSNS);
  
   buffer_overflow:
@@ -1549,7 +1546,7 @@ index 82bc16bd5..87e597d47 100644
      assert_no_pages_locked();
      tb = tcg_tb_alloc(tcg_ctx);
      if (unlikely(!tb)) {
-@@ -405,6 +431,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
+@@ -369,6 +395,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
                  tb_unlock_page1(phys_pc, phys_p2);
                  tb_set_page_addr1(tb, -1);
              }
@@ -1557,7 +1554,7 @@ index 82bc16bd5..87e597d47 100644
              goto restart_translate;
  
          case -3:
-@@ -416,6 +443,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
+@@ -380,6 +407,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
               */
              qemu_log_mask(CPU_LOG_TB_OP | CPU_LOG_TB_OP_OPT,
                            "Restarting code generation with re-locked pages");
@@ -1565,7 +1562,7 @@ index 82bc16bd5..87e597d47 100644
              goto restart_translate;
  
          default:
-@@ -553,6 +581,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
+@@ -518,6 +546,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
       */
      if (tb_page_addr0(tb) == -1) {
          assert_no_pages_locked();
@@ -1573,7 +1570,7 @@ index 82bc16bd5..87e597d47 100644
          return tb;
      }
  
-@@ -570,8 +599,10 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
+@@ -535,8 +564,10 @@ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
          orig_aligned -= ROUND_UP(sizeof(*tb), qemu_icache_linesize);
          qatomic_set(&tcg_ctx->code_gen_ptr, (void *)orig_aligned);
          tcg_tb_remove(tb);
@@ -1585,18 +1582,18 @@ index 82bc16bd5..87e597d47 100644
  }
  
 diff --git a/accel/tcg/translator.c b/accel/tcg/translator.c
-index ef1538b4f..d56305f97 100644
+index 57daded60..7e685fd69 100644
 --- a/accel/tcg/translator.c
 +++ b/accel/tcg/translator.c
-@@ -10,6 +10,7 @@
- #include "qemu/osdep.h"
+@@ -11,6 +11,7 @@
+ #include "qemu/bswap.h"
  #include "qemu/log.h"
  #include "qemu/error-report.h"
 +#include "qemu/crucible-fault.h"
- #include "exec/exec-all.h"
- #include "exec/translator.h"
- #include "exec/cpu_ldst.h"
-@@ -156,6 +157,8 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
+ #include "accel/tcg/cpu-ldst-common.h"
+ #include "accel/tcg/cpu-mmu-index.h"
+ #include "exec/target_page.h"
+@@ -158,6 +159,8 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
  
      while (true) {
          *max_insns = ++db->num_insns;
@@ -1605,7 +1602,7 @@ index ef1538b4f..d56305f97 100644
          ops->insn_start(db, cpu);
          db->insn_start = tcg_last_op();
          if (first_insn_start == NULL) {
-@@ -167,6 +170,19 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
+@@ -169,6 +172,19 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
              plugin_gen_insn_start(cpu, db);
          }
  
@@ -1625,7 +1622,7 @@ index ef1538b4f..d56305f97 100644
          /*
           * Disassemble one instruction.  The translate_insn hook should
           * update db->pc_next and db->is_jmp to indicate what should be
-@@ -175,6 +191,34 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
+@@ -177,6 +193,34 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
           */
          ops->translate_insn(db, cpu);
  
@@ -1660,7 +1657,7 @@ index ef1538b4f..d56305f97 100644
          /*
           * We can't instrument after instructions that change control
           * flow although this only really affects post-load operations.
-@@ -245,6 +289,81 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
+@@ -247,6 +291,81 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
      }
  }
  
@@ -1742,7 +1739,7 @@ index ef1538b4f..d56305f97 100644
  static bool translator_ld(CPUArchState *env, DisasContextBase *db,
                            void *dest, vaddr pc, size_t len)
  {
-@@ -252,6 +371,9 @@ static bool translator_ld(CPUArchState *env, DisasContextBase *db,
+@@ -254,6 +373,9 @@ static bool translator_ld(CPUArchState *env, DisasContextBase *db,
      vaddr last = pc + len - 1;
      void *host;
      vaddr base;
@@ -1752,31 +1749,46 @@ index ef1538b4f..d56305f97 100644
  
      /* Use slow path if first page is MMIO. */
      if (unlikely(tb_page_addr0(tb) == -1)) {
-@@ -266,7 +388,8 @@ static bool translator_ld(CPUArchState *env, DisasContextBase *db,
-     if (likely(((base ^ last) & TARGET_PAGE_MASK) == 0)) {
-         /* Entire read is from the first page. */
-         memcpy(dest, host + (pc - base), len);
--        return true;
-+        return crucible_translator_fetch(env, db, original_dest, original_pc,
-+                                         original_len);
+@@ -344,27 +466,30 @@ static bool translator_ld(CPUArchState *env, DisasContextBase *db,
+         if (QEMU_IS_ALIGNED(pc, 2)) {
+             uint16_t t = qatomic_read((uint16_t *)host);
+             stw_he_p(dest, t);
+-            return true;
++            goto fault_fetch;
+         }
+         break;
+     case 4:
+         if (QEMU_IS_ALIGNED(pc, 4)) {
+             uint32_t t = qatomic_read((uint32_t *)host);
+             stl_he_p(dest, t);
+-            return true;
++            goto fault_fetch;
+         }
+         break;
+     case 8:
+         if (QEMU_IS_ALIGNED(pc, 8)) {
+             uint64_t t = qatomic_read((uint64_t *)host);
+             stq_he_p(dest, t);
+-            return true;
++            goto fault_fetch;
+         }
+         break;
      }
- 
-     if (unlikely(((base ^ pc) & TARGET_PAGE_MASK) == 0)) {
-@@ -330,7 +453,8 @@ static bool translator_ld(CPUArchState *env, DisasContextBase *db,
-     }
- 
-     memcpy(dest, host + (pc - base), len);
+     /* Unaligned or partial read from the second page is not atomic. */
+     memcpy(dest, host, len);
 -    return true;
++
++ fault_fetch:
 +    return crucible_translator_fetch(env, db, original_dest, original_pc,
 +                                     original_len);
  }
  
  static void record_save(DisasContextBase *db, vaddr pc,
 diff --git a/hw/core/cpu-common.c b/hw/core/cpu-common.c
-index 9064dd24f..9ceb7859f 100644
+index e314f916f..9f225d452 100644
 --- a/hw/core/cpu-common.c
 +++ b/hw/core/cpu-common.c
-@@ -125,6 +125,9 @@ static void cpu_common_reset_hold(Object *obj, ResetType type)
+@@ -113,6 +113,9 @@ static void cpu_common_reset_hold(Object *obj, ResetType type)
      cpu->halted = cpu->start_powered_off;
      cpu->mem_io_pc = 0;
      cpu->icount_extra = 0;
@@ -1787,7 +1799,7 @@ index 9064dd24f..9ceb7859f 100644
      cpu->neg.can_do_io = true;
      cpu->exception_index = -1;
 diff --git a/hw/core/cpu-system.c b/hw/core/cpu-system.c
-index 6d1775e9b..c1aa5a3f5 100644
+index 74daec3f7..d66ea72f7 100644
 --- a/hw/core/cpu-system.c
 +++ b/hw/core/cpu-system.c
 @@ -20,6 +20,7 @@
@@ -1795,10 +1807,10 @@ index 6d1775e9b..c1aa5a3f5 100644
  #include "qemu/osdep.h"
  #include "qapi/error.h"
 +#include "qemu/error-report.h"
- #include "exec/address-spaces.h"
+ #include "system/address-spaces.h"
  #include "exec/cputlb.h"
- #include "exec/memory.h"
-@@ -304,6 +305,7 @@ void cpu_vmstate_unregister(CPUState *cpu)
+ #include "exec/target_page.h"
+@@ -295,6 +296,7 @@ void cpu_vmstate_unregister(CPUState *cpu)
      }
  }
  bool cpu_get_fault_translation(CPUState *cpu, vaddr addr,
@@ -1806,7 +1818,7 @@ index 6d1775e9b..c1aa5a3f5 100644
                                 CPUFaultTranslation *result)
  {
      const SysemuCPUOps *ops;
-@@ -316,5 +318,45 @@ bool cpu_get_fault_translation(CPUState *cpu, vaddr addr,
+@@ -307,5 +309,45 @@ bool cpu_get_fault_translation(CPUState *cpu, vaddr addr,
          return false;
      }
      memset(result, 0, sizeof(*result));
@@ -1854,10 +1866,10 @@ index 6d1775e9b..c1aa5a3f5 100644
 +    g_assert_not_reached();
  }
 diff --git a/hw/intc/apic.c b/hw/intc/apic.c
-index 1284d02de..b6b1b605d 100644
+index 114813aaf..f3298b0ba 100644
 --- a/hw/intc/apic.c
 +++ b/hw/intc/apic.c
-@@ -336,7 +336,7 @@ static void crucible_sim_det_ipi_deliver_event(
+@@ -337,7 +337,7 @@ static void crucible_sim_det_ipi_deliver_event(
          return;
      }
  
@@ -1866,7 +1878,7 @@ index 1284d02de..b6b1b605d 100644
      qemu_plugin_crucible_maybe_fire_ipi_delivery_cb(
          event->event_id, delivery_icount, event->src_vcpu, dst_cpu->cpu_index,
          event->delivery_mode, crucible_sim_det_ipi_trace_vector(event));
-@@ -384,7 +384,7 @@ int crucible_sim_det_ipi_deliver_commanded(unsigned int target_vcpu,
+@@ -385,7 +385,7 @@ int crucible_sim_det_ipi_deliver_commanded(unsigned int target_vcpu,
      if (current_cpu) {
          src_vcpu = current_cpu->cpu_index;
      }
@@ -1876,37 +1888,37 @@ index 1284d02de..b6b1b605d 100644
          ++crucible_sim_det_ipi_next_event_id, delivery_icount, src_vcpu,
          dst_cpu->cpu_index, APIC_DM_FIXED, vector);
 diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
-index 5c1154221..ea6d5f934 100644
+index bfc2a4ff6..3d794223e 100644
 --- a/hw/virtio/virtio.c
 +++ b/hw/virtio/virtio.c
-@@ -248,6 +248,8 @@ void virtio_init_region_cache(VirtIODevice *vdev, int n)
+@@ -282,6 +282,8 @@ void virtio_init_region_cache(VirtIODevice *vdev, int n)
                                     true : false;
      len = address_space_cache_init(&new->desc, vdev->dma_as,
                                     addr, size, packed);
 +    address_space_cache_set_crucible_dma_identity(
 +        &new->desc, vdev->crucible_dma_identity);
      if (len < size) {
-         virtio_error(vdev, "Cannot map desc");
-         goto err_desc;
-@@ -256,6 +258,8 @@ void virtio_init_region_cache(VirtIODevice *vdev, int n)
+         g_autofree char *devname = qdev_get_human_name(DEVICE(vdev));
+ 
+@@ -295,6 +297,8 @@ void virtio_init_region_cache(VirtIODevice *vdev, int n)
      size = virtio_queue_get_used_size(vdev, n);
      len = address_space_cache_init(&new->used, vdev->dma_as,
                                     vq->vring.used, size, true);
 +    address_space_cache_set_crucible_dma_identity(
 +        &new->used, vdev->crucible_dma_identity);
      if (len < size) {
-         virtio_error(vdev, "Cannot map used");
-         goto err_used;
-@@ -264,6 +268,8 @@ void virtio_init_region_cache(VirtIODevice *vdev, int n)
+         g_autofree char *devname = qdev_get_human_name(DEVICE(vdev));
+ 
+@@ -308,6 +312,8 @@ void virtio_init_region_cache(VirtIODevice *vdev, int n)
      size = virtio_queue_get_avail_size(vdev, n);
      len = address_space_cache_init(&new->avail, vdev->dma_as,
                                     vq->vring.avail, size, false);
 +    address_space_cache_set_crucible_dma_identity(
 +        &new->avail, vdev->crucible_dma_identity);
      if (len < size) {
-         virtio_error(vdev, "Cannot map avail");
-         goto err_avail;
-@@ -1294,6 +1300,8 @@ static void virtqueue_split_get_avail_bytes(VirtQueue *vq,
+         g_autofree char *devname = qdev_get_human_name(DEVICE(vdev));
+ 
+@@ -1357,6 +1363,8 @@ static void virtqueue_split_get_avail_bytes(VirtQueue *vq,
              len = address_space_cache_init(&indirect_desc_cache,
                                             vdev->dma_as,
                                             desc.addr, desc.len, false);
@@ -1915,7 +1927,7 @@ index 5c1154221..ea6d5f934 100644
              desc_cache = &indirect_desc_cache;
              if (len < desc.len) {
                  virtio_error(vdev, "Cannot map indirect buffer");
-@@ -1433,6 +1441,8 @@ static void virtqueue_packed_get_avail_bytes(VirtQueue *vq,
+@@ -1496,6 +1504,8 @@ static void virtqueue_packed_get_avail_bytes(VirtQueue *vq,
              len = address_space_cache_init(&indirect_desc_cache,
                                             vdev->dma_as,
                                             desc.addr, desc.len, false);
@@ -1924,7 +1936,7 @@ index 5c1154221..ea6d5f934 100644
              desc_cache = &indirect_desc_cache;
              if (len < desc.len) {
                  virtio_error(vdev, "Cannot map indirect buffer");
-@@ -1577,11 +1587,10 @@ static bool virtqueue_map_desc(VirtIODevice *vdev, unsigned int *p_num_sg,
+@@ -1640,11 +1650,10 @@ static bool virtqueue_map_desc(VirtIODevice *vdev, unsigned int *p_num_sg,
              goto out;
          }
  
@@ -1940,7 +1952,7 @@ index 5c1154221..ea6d5f934 100644
          if (!iov[num_sg].iov_base) {
              virtio_error(vdev, "virtio: bogus descriptor or out of resources");
              goto out;
-@@ -1627,11 +1636,10 @@ static void virtqueue_map_iovec(VirtIODevice *vdev, struct iovec *sg,
+@@ -1691,11 +1700,10 @@ static void virtqueue_map_iovec(VirtIODevice *vdev, struct iovec *sg,
  
      for (i = 0; i < num_sg; i++) {
          len = sg[i].iov_len;
@@ -1956,7 +1968,7 @@ index 5c1154221..ea6d5f934 100644
          if (!sg[i].iov_base) {
              error_report("virtio: error trying to map MMIO memory");
              exit(1);
-@@ -1739,6 +1747,8 @@ static void *virtqueue_split_pop(VirtQueue *vq, size_t sz)
+@@ -1804,6 +1812,8 @@ static void *virtqueue_split_pop(VirtQueue *vq, size_t sz)
          /* loop over the indirect descriptor table */
          len = address_space_cache_init(&indirect_desc_cache, vdev->dma_as,
                                         desc.addr, desc.len, false);
@@ -1965,7 +1977,7 @@ index 5c1154221..ea6d5f934 100644
          desc_cache = &indirect_desc_cache;
          if (len < desc.len) {
              virtio_error(vdev, "Cannot map indirect buffer");
-@@ -1876,6 +1886,8 @@ static void *virtqueue_packed_pop(VirtQueue *vq, size_t sz)
+@@ -1942,6 +1952,8 @@ static void *virtqueue_packed_pop(VirtQueue *vq, size_t sz)
          /* loop over the indirect descriptor table */
          len = address_space_cache_init(&indirect_desc_cache, vdev->dma_as,
                                         desc.addr, desc.len, false);
@@ -1974,7 +1986,7 @@ index 5c1154221..ea6d5f934 100644
          desc_cache = &indirect_desc_cache;
          if (len < desc.len) {
              virtio_error(vdev, "Cannot map indirect buffer");
-@@ -3985,6 +3997,50 @@ static void virtio_device_realize(DeviceState *dev, Error **errp)
+@@ -4296,6 +4308,50 @@ static void virtio_device_realize(DeviceState *dev, Error **errp)
          return;
      }
  
@@ -2025,7 +2037,7 @@ index 5c1154221..ea6d5f934 100644
      vdev->listener.commit = virtio_memory_listener_commit;
      vdev->listener.name = "virtio";
      memory_listener_register(&vdev->listener, vdev->dma_as);
-@@ -4338,6 +4394,8 @@ VirtioQueueElement *qmp_x_query_virtio_queue_element(const char *path,
+@@ -4663,6 +4719,8 @@ VirtioQueueElement *qmp_x_query_virtio_queue_element(const char *path,
              int64_t len;
              len = address_space_cache_init(&indirect_desc_cache, vdev->dma_as,
                                             desc.addr, desc.len, false);
@@ -2034,260 +2046,11 @@ index 5c1154221..ea6d5f934 100644
              desc_cache = &indirect_desc_cache;
              if (len < desc.len) {
                  error_setg(errp, "Cannot map indirect buffer");
-diff --git a/include/exec/memory.h b/include/exec/memory.h
-index 1a444df77..f16e3d281 100644
---- a/include/exec/memory.h
-+++ b/include/exec/memory.h
-@@ -2775,6 +2775,23 @@ MemTxResult address_space_write_rom(AddressSpace *as, hwaddr addr,
- #define ARG1_DECL    AddressSpace *as
- #include "exec/memory_ldst_phys.h.inc"
- 
-+#ifndef QEMU_CRUCIBLE_FAULT_MEMORY_RULES_ACTIVE_DECLARED
-+#define QEMU_CRUCIBLE_FAULT_MEMORY_RULES_ACTIVE_DECLARED
-+bool qemu_crucible_fault_memory_rules_active(void);
-+bool qemu_crucible_fault_memory_fetch_rules_active(void);
-+bool qemu_crucible_fault_memory_cpu_rules_active(void);
-+bool qemu_crucible_fault_memory_page_table_walk_rules_active(void);
-+bool qemu_crucible_fault_memory_page_table_walk_matches(
-+    uint64_t entry_gpa, size_t length);
-+bool qemu_crucible_fault_memory_dma_rules_active(bool is_write);
-+#endif
-+MemTxResult address_space_read_cached_fault(MemoryRegionCache *cache,
-+                                            hwaddr addr, MemTxAttrs attrs,
-+                                            void *buf, hwaddr len);
-+MemTxResult address_space_write_cached_fault(MemoryRegionCache *cache,
-+                                             hwaddr addr, MemTxAttrs attrs,
-+                                             const void *buf, hwaddr len);
-+
- struct MemoryRegionCache {
-     uint8_t *ptr;
-     hwaddr xlat;
-@@ -2782,8 +2799,14 @@ struct MemoryRegionCache {
-     FlatView *fv;
-     MemoryRegionSection mrs;
-     bool is_write;
-+    AddressSpace *crucible_as;
-+    hwaddr crucible_addr;
-+    uint8_t crucible_dma_identity[32];
- };
- 
-+void address_space_cache_set_crucible_dma_identity(
-+    MemoryRegionCache *cache, const uint8_t device_identity[32]);
-+
- /* address_space_ld*_cached: load from a cached #MemoryRegion
-  * address_space_st*_cached: store into a cached #MemoryRegion
-  *
-@@ -2817,7 +2840,18 @@ struct MemoryRegionCache {
- static inline uint8_t address_space_ldub_cached(MemoryRegionCache *cache,
-     hwaddr addr, MemTxAttrs attrs, MemTxResult *result)
- {
-+    uint8_t value = 0;
-+
-     assert(addr < cache->len);
-+    if (unlikely(qemu_crucible_fault_memory_dma_rules_active(false))) {
-+        MemTxResult fault = address_space_read_cached_fault(
-+            cache, addr, attrs, &value, sizeof(value));
-+
-+        if (result) {
-+            *result = fault;
-+        }
-+        return value;
-+    }
-     if (likely(cache->ptr)) {
-         return ldub_p(cache->ptr + addr);
-     } else {
-@@ -2829,6 +2863,15 @@ static inline void address_space_stb_cached(MemoryRegionCache *cache,
-     hwaddr addr, uint8_t val, MemTxAttrs attrs, MemTxResult *result)
- {
-     assert(addr < cache->len);
-+    if (unlikely(qemu_crucible_fault_memory_dma_rules_active(true))) {
-+        MemTxResult fault = address_space_write_cached_fault(
-+            cache, addr, attrs, &val, sizeof(val));
-+
-+        if (result) {
-+            *result = fault;
-+        }
-+        return;
-+    }
-     if (likely(cache->ptr)) {
-         stb_p(cache->ptr + addr, val);
-     } else {
-@@ -3016,6 +3059,15 @@ void address_space_unregister_map_client(AddressSpace *as, QEMUBH *bh);
- /* Internal functions, part of the implementation of address_space_read.  */
- MemTxResult address_space_read_full(AddressSpace *as, hwaddr addr,
-                                     MemTxAttrs attrs, void *buf, hwaddr len);
-+#ifndef QEMU_CRUCIBLE_FAULT_DMA_CONTEXT_ACTIVE_DECLARED
-+#define QEMU_CRUCIBLE_FAULT_DMA_CONTEXT_ACTIVE_DECLARED
-+bool qemu_crucible_fault_dma_context_active(void);
-+#endif
-+bool address_space_translate_crucible_dma(
-+    AddressSpace *as, hwaddr iova, hwaddr *gpa, MemoryRegion **mr,
-+    hwaddr *mr_addr, hwaddr *plen, bool is_write, MemTxAttrs attrs);
-+MemTxResult address_space_rw_crucible_dma_frozen(
-+    void *buf, hwaddr len, bool is_write);
- MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
-                                    MemTxAttrs attrs, void *buf,
-                                    hwaddr len, hwaddr addr1, hwaddr l,
-@@ -3093,7 +3145,8 @@ MemTxResult address_space_read(AddressSpace *as, hwaddr addr,
-             fv = address_space_to_flatview(as);
-             l = len;
-             mr = flatview_translate(fv, addr, &addr1, &l, false, attrs);
--            if (len == l && memory_access_is_direct(mr, false, attrs)) {
-+            if (len == l && memory_access_is_direct(mr, false, attrs) &&
-+                !qemu_crucible_fault_dma_context_active()) {
-                 ptr = qemu_map_ram_ptr(mr->ram_block, addr1);
-                 memcpy(buf, ptr, len);
-             } else {
-@@ -3120,6 +3173,11 @@ address_space_read_cached(MemoryRegionCache *cache, hwaddr addr,
-                           void *buf, hwaddr len)
- {
-     assert(addr < cache->len && len <= cache->len - addr);
-+    if (unlikely(qemu_crucible_fault_memory_dma_rules_active(false))) {
-+        return address_space_read_cached_fault(cache, addr,
-+                                               MEMTXATTRS_UNSPECIFIED,
-+                                               buf, len);
-+    }
-     fuzz_dma_read_cb(cache->xlat + addr, len, cache->mrs.mr);
-     if (likely(cache->ptr)) {
-         memcpy(buf, cache->ptr + addr, len);
-@@ -3142,6 +3200,11 @@ address_space_write_cached(MemoryRegionCache *cache, hwaddr addr,
-                            const void *buf, hwaddr len)
- {
-     assert(addr < cache->len && len <= cache->len - addr);
-+    if (unlikely(qemu_crucible_fault_memory_dma_rules_active(true))) {
-+        return address_space_write_cached_fault(cache, addr,
-+                                                MEMTXATTRS_UNSPECIFIED,
-+                                                buf, len);
-+    }
-     if (likely(cache->ptr)) {
-         memcpy(cache->ptr + addr, buf, len);
-         return MEMTX_OK;
-diff --git a/include/exec/memory_ldst_cached.h.inc b/include/exec/memory_ldst_cached.h.inc
-index d7834f852..2811b72a9 100644
---- a/include/exec/memory_ldst_cached.h.inc
-+++ b/include/exec/memory_ldst_cached.h.inc
-@@ -27,7 +27,18 @@
- static inline uint16_t ADDRESS_SPACE_LD_CACHED(uw)(MemoryRegionCache *cache,
-     hwaddr addr, MemTxAttrs attrs, MemTxResult *result)
- {
-+    uint16_t value = 0;
-+
-     assert(addr < cache->len && 2 <= cache->len - addr);
-+    if (unlikely(qemu_crucible_fault_memory_rules_active())) {
-+        MemTxResult fault = address_space_read_cached_fault(
-+            cache, addr, attrs, &value, sizeof(value));
-+
-+        if (result) {
-+            *result = fault;
-+        }
-+        return LD_P(uw)(&value);
-+    }
-     fuzz_dma_read_cb(cache->xlat + addr, 2, cache->mrs.mr);
-     if (likely(cache->ptr)) {
-         return LD_P(uw)(cache->ptr + addr);
-@@ -39,7 +50,18 @@ static inline uint16_t ADDRESS_SPACE_LD_CACHED(uw)(MemoryRegionCache *cache,
- static inline uint32_t ADDRESS_SPACE_LD_CACHED(l)(MemoryRegionCache *cache,
-     hwaddr addr, MemTxAttrs attrs, MemTxResult *result)
- {
-+    uint32_t value = 0;
-+
-     assert(addr < cache->len && 4 <= cache->len - addr);
-+    if (unlikely(qemu_crucible_fault_memory_rules_active())) {
-+        MemTxResult fault = address_space_read_cached_fault(
-+            cache, addr, attrs, &value, sizeof(value));
-+
-+        if (result) {
-+            *result = fault;
-+        }
-+        return LD_P(l)(&value);
-+    }
-     fuzz_dma_read_cb(cache->xlat + addr, 4, cache->mrs.mr);
-     if (likely(cache->ptr)) {
-         return LD_P(l)(cache->ptr + addr);
-@@ -51,7 +73,18 @@ static inline uint32_t ADDRESS_SPACE_LD_CACHED(l)(MemoryRegionCache *cache,
- static inline uint64_t ADDRESS_SPACE_LD_CACHED(q)(MemoryRegionCache *cache,
-     hwaddr addr, MemTxAttrs attrs, MemTxResult *result)
- {
-+    uint64_t value = 0;
-+
-     assert(addr < cache->len && 8 <= cache->len - addr);
-+    if (unlikely(qemu_crucible_fault_memory_rules_active())) {
-+        MemTxResult fault = address_space_read_cached_fault(
-+            cache, addr, attrs, &value, sizeof(value));
-+
-+        if (result) {
-+            *result = fault;
-+        }
-+        return LD_P(q)(&value);
-+    }
-     fuzz_dma_read_cb(cache->xlat + addr, 8, cache->mrs.mr);
-     if (likely(cache->ptr)) {
-         return LD_P(q)(cache->ptr + addr);
-@@ -74,7 +107,19 @@ static inline uint64_t ADDRESS_SPACE_LD_CACHED(q)(MemoryRegionCache *cache,
- static inline void ADDRESS_SPACE_ST_CACHED(w)(MemoryRegionCache *cache,
-     hwaddr addr, uint16_t val, MemTxAttrs attrs, MemTxResult *result)
- {
-+    uint16_t value;
-+
-     assert(addr < cache->len && 2 <= cache->len - addr);
-+    if (unlikely(qemu_crucible_fault_memory_rules_active())) {
-+        ST_P(w)(&value, val);
-+        MemTxResult fault = address_space_write_cached_fault(
-+            cache, addr, attrs, &value, sizeof(value));
-+
-+        if (result) {
-+            *result = fault;
-+        }
-+        return;
-+    }
-     if (likely(cache->ptr)) {
-         ST_P(w)(cache->ptr + addr, val);
-     } else {
-@@ -85,7 +130,19 @@ static inline void ADDRESS_SPACE_ST_CACHED(w)(MemoryRegionCache *cache,
- static inline void ADDRESS_SPACE_ST_CACHED(l)(MemoryRegionCache *cache,
-     hwaddr addr, uint32_t val, MemTxAttrs attrs, MemTxResult *result)
- {
-+    uint32_t value;
-+
-     assert(addr < cache->len && 4 <= cache->len - addr);
-+    if (unlikely(qemu_crucible_fault_memory_rules_active())) {
-+        ST_P(l)(&value, val);
-+        MemTxResult fault = address_space_write_cached_fault(
-+            cache, addr, attrs, &value, sizeof(value));
-+
-+        if (result) {
-+            *result = fault;
-+        }
-+        return;
-+    }
-     if (likely(cache->ptr)) {
-         ST_P(l)(cache->ptr + addr, val);
-     } else {
-@@ -96,7 +153,19 @@ static inline void ADDRESS_SPACE_ST_CACHED(l)(MemoryRegionCache *cache,
- static inline void ADDRESS_SPACE_ST_CACHED(q)(MemoryRegionCache *cache,
-     hwaddr addr, uint64_t val, MemTxAttrs attrs, MemTxResult *result)
- {
-+    uint64_t value;
-+
-     assert(addr < cache->len && 8 <= cache->len - addr);
-+    if (unlikely(qemu_crucible_fault_memory_rules_active())) {
-+        ST_P(q)(&value, val);
-+        MemTxResult fault = address_space_write_cached_fault(
-+            cache, addr, attrs, &value, sizeof(value));
-+
-+        if (result) {
-+            *result = fault;
-+        }
-+        return;
-+    }
-     if (likely(cache->ptr)) {
-         ST_P(q)(cache->ptr + addr, val);
-     } else {
 diff --git a/include/exec/translator.h b/include/exec/translator.h
-index d70942a10..545fcff19 100644
+index 978dee25a..afacfa2d1 100644
 --- a/include/exec/translator.h
 +++ b/include/exec/translator.h
-@@ -87,6 +87,11 @@ struct DisasContextBase {
+@@ -89,6 +89,11 @@ struct DisasContextBase {
      int record_start;
      int record_len;
      uint8_t record[32];
@@ -2300,12 +2063,12 @@ index d70942a10..545fcff19 100644
  
  /**
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index 025827193..310314cbd 100644
+index 0a109ed9b..42160effa 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
-@@ -424,6 +424,14 @@ struct qemu_work_item;
+@@ -442,6 +442,14 @@ struct qemu_work_item;
   * @crash_occurred: Indicates the OS reported a crash (panic) for this CPU
-  * @singlestep_enabled: Flags for single-stepping.
+  * @singlestep_flags: Flags for single-stepping.
   * @icount_extra: Instructions until next timer event.
 + * @crucible_fetch_service_nanos: Service delay staged by instruction fetch
 + * @crucible_memory_service_nanos: Service delay staged until translated code
@@ -2317,9 +2080,9 @@ index 025827193..310314cbd 100644
 + *   generation succeeds or is discarded.
   * @cpu_ases: Pointer to array of CPUAddressSpaces (which define the
   *            AddressSpaces this CPU has)
-  * @num_ases: number of CPUAddressSpaces in @cpu_ases
-@@ -492,6 +500,15 @@ struct CPUState {
-     int singlestep_enabled;
+  * @as: Pointer to the first AddressSpace, for the convenience of targets which
+@@ -508,6 +516,15 @@ struct CPUState {
+     unsigned singlestep_flags;
      int64_t icount_budget;
      int64_t icount_extra;
 +    uint64_t crucible_fetch_service_nanos;
@@ -2334,7 +2097,7 @@ index 025827193..310314cbd 100644
      uint64_t random_seed;
      sigjmp_buf jmp_env;
  
-@@ -724,10 +741,33 @@ typedef struct CPUFaultTranslation {
+@@ -760,10 +777,33 @@ typedef struct CPUFaultTranslation {
      bool user;
  } CPUFaultTranslation;
  
@@ -2368,7 +2131,7 @@ index 025827193..310314cbd 100644
   * @result: Receives the exact translation and effective permissions.
   *
   * Performs an architecture page-table walk without updating accessed, dirty,
-@@ -735,10 +775,18 @@ typedef struct CPUFaultTranslation {
+@@ -771,10 +811,18 @@ typedef struct CPUFaultTranslation {
   * fault injection at a stopped safe boundary, not for debugger access.
   *
   * Returns: %true on success, or %false when translation is unsupported or the
@@ -2387,12 +2150,12 @@ index 025827193..310314cbd 100644
 +    MMUAccessType access_type, uintptr_t retaddr);
  
  /**
-  * cpu_get_phys_page_attrs_debug:
+  * TranslateForDebugResult: gives result of cpu_translate_for_debug()
 diff --git a/include/hw/core/sysemu-cpu-ops.h b/include/hw/core/sysemu-cpu-ops.h
-index 06b7cb016..b8dcbd290 100644
+index bdb42b311..d18de8535 100644
 --- a/include/hw/core/sysemu-cpu-ops.h
 +++ b/include/hw/core/sysemu-cpu-ops.h
-@@ -47,7 +47,16 @@ typedef struct SysemuCPUOps {
+@@ -63,7 +63,16 @@ typedef struct SysemuCPUOps {
       *       deterministic fault boundary.
       */
      bool (*get_fault_translation)(CPUState *cpu, vaddr addr,
@@ -2410,10 +2173,10 @@ index 06b7cb016..b8dcbd290 100644
       * @asidx_from_attrs: Callback to return the CPU AddressSpace to use for
       *       a memory access with the specified memory transaction attributes.
 diff --git a/include/hw/virtio/virtio.h b/include/hw/virtio/virtio.h
-index 638691028..006d49b12 100644
+index c99cb19d8..ab1adb56c 100644
 --- a/include/hw/virtio/virtio.h
 +++ b/include/hw/virtio/virtio.h
-@@ -160,6 +160,7 @@ struct VirtIODevice
+@@ -201,6 +201,7 @@ struct VirtIODevice
       */
      bool use_guest_notifier_mask;
      AddressSpace *dma_as;
@@ -2421,8 +2184,77 @@ index 638691028..006d49b12 100644
      QLIST_HEAD(, VirtQueue) *vector_queues;
      QTAILQ_ENTRY(VirtIODevice) next;
      /**
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index a256a781c..b2e1d8948 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -2177,6 +2177,30 @@ struct qemu_plugin_crucible_fault_result {
+     uint8_t evidence_hash[32];
+ };
+ 
++/**
++ * struct qemu_plugin_crucible_fault_event - one real rule occurrence
++ *
++ * The separately copied payload contains effect-specific canonical evidence.
++ * Event sequence is owned and checkpointed by QEMU, not by the plugin.
++ */
++struct qemu_plugin_crucible_fault_event {
++    uint16_t command_kind;
++    uint16_t outcome;
++    uint16_t model_phase;
++    uint16_t target_kind;
++    uint32_t reserved;
++    uint64_t event_sequence;
++    uint64_t rule_command_sequence;
++    uint64_t observed_icount;
++    uint64_t generation;
++    uint8_t binding_hash[32];
++    uint8_t opportunity_hash[32];
++    uint8_t action_hash[32];
++    uint8_t target_hash[32];
++    uint8_t before_hash[32];
++    uint8_t after_hash[32];
++};
++
+ enum qemu_plugin_crucible_fault_scope {
+     QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL = 1,
+     QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64 = 2,
+@@ -2265,6 +2289,33 @@ int qemu_plugin_crucible_fault_poll(
+     struct qemu_plugin_crucible_fault_result *result,
+     uint8_t *payload, size_t payload_capacity, size_t *payload_length);
+ 
++/**
++ * qemu_plugin_crucible_fault_event_peek() - inspect one occurrence
++ * @event: fixed event destination
++ * @payload_length: exact evidence payload byte count
++ *
++ * Returns one when an event is ready, zero when none is ready, or -EINVAL.
++ * The event is not consumed.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_event_peek(
++    struct qemu_plugin_crucible_fault_event *event, size_t *payload_length);
++
++/**
++ * qemu_plugin_crucible_fault_event_poll() - copy one occurrence
++ * @event: fixed event destination
++ * @payload: evidence destination
++ * @payload_capacity: bytes available at @payload
++ * @payload_length: required/copied evidence byte count
++ *
++ * Returns one when consumed, zero when empty, -ENOSPC without consumption, or
++ * -EINVAL for an invalid pointer contract.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_event_poll(
++    struct qemu_plugin_crucible_fault_event *event, uint8_t *payload,
++    size_t payload_capacity, size_t *payload_length);
++
+ /**
+  * qemu_plugin_register_crucible_fault_completion_cb() - register completion
+  * @cb: callback invoked after each boundary-dispatched result, or NULL to clear
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index bbe9daa2b..a9b6bb375 100644
+index 720bd7e52..630ec4753 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -10,9 +10,12 @@
@@ -2430,7 +2262,7 @@ index bbe9daa2b..a9b6bb375 100644
  
  #include "aos/crucible/crucible_shmem_abi.h"
 +#include "exec/memattrs.h"
- #include "qemu/qemu-plugin.h"
+ #include "plugins/qemu-plugin.h"
 +#include "qemu/typedefs.h"
  
  typedef struct QemuCrucibleFaultHandler QemuCrucibleFaultHandler;
@@ -2539,7 +2371,7 @@ index bbe9daa2b..a9b6bb375 100644
 +    uint32_t instruction_ordinal);
 +void qemu_crucible_fault_memory_dma_transaction_begin(
 +    enum QemuCrucibleMemoryAccessClass access_class, uint32_t actor,
-+    AddressSpace *as, uint64_t iova, size_t length, MemTxAttrs attrs,
++    const AddressSpace *as, uint64_t iova, size_t length, MemTxAttrs attrs,
 +    uint64_t observed_icount);
 +void qemu_crucible_fault_memory_fetch_transaction_begin(
 +    uint32_t actor, uint64_t address, uint64_t observed_icount,
@@ -2599,97 +2431,14 @@ index bbe9daa2b..a9b6bb375 100644
 +bool qemu_crucible_fault_dma_identity(uint8_t device_identity[32]);
 +
  #endif
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 0b30e2f01..8e3a5634e 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -1816,6 +1816,30 @@ struct qemu_plugin_crucible_fault_result {
-     uint8_t evidence_hash[32];
- };
- 
-+/**
-+ * struct qemu_plugin_crucible_fault_event - one real rule occurrence
-+ *
-+ * The separately copied payload contains effect-specific canonical evidence.
-+ * Event sequence is owned and checkpointed by QEMU, not by the plugin.
-+ */
-+struct qemu_plugin_crucible_fault_event {
-+    uint16_t command_kind;
-+    uint16_t outcome;
-+    uint16_t model_phase;
-+    uint16_t target_kind;
-+    uint32_t reserved;
-+    uint64_t event_sequence;
-+    uint64_t rule_command_sequence;
-+    uint64_t observed_icount;
-+    uint64_t generation;
-+    uint8_t binding_hash[32];
-+    uint8_t opportunity_hash[32];
-+    uint8_t action_hash[32];
-+    uint8_t target_hash[32];
-+    uint8_t before_hash[32];
-+    uint8_t after_hash[32];
-+};
-+
- enum qemu_plugin_crucible_fault_scope {
-     QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL = 1,
-     QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64 = 2,
-@@ -1904,6 +1928,33 @@ int qemu_plugin_crucible_fault_poll(
-     struct qemu_plugin_crucible_fault_result *result,
-     uint8_t *payload, size_t payload_capacity, size_t *payload_length);
- 
-+/**
-+ * qemu_plugin_crucible_fault_event_peek() - inspect one occurrence
-+ * @event: fixed event destination
-+ * @payload_length: exact evidence payload byte count
-+ *
-+ * Returns one when an event is ready, zero when none is ready, or -EINVAL.
-+ * The event is not consumed.
-+ */
-+QEMU_PLUGIN_API
-+int qemu_plugin_crucible_fault_event_peek(
-+    struct qemu_plugin_crucible_fault_event *event, size_t *payload_length);
-+
-+/**
-+ * qemu_plugin_crucible_fault_event_poll() - copy one occurrence
-+ * @event: fixed event destination
-+ * @payload: evidence destination
-+ * @payload_capacity: bytes available at @payload
-+ * @payload_length: required/copied evidence byte count
-+ *
-+ * Returns one when consumed, zero when empty, -ENOSPC without consumption, or
-+ * -EINVAL for an invalid pointer contract.
-+ */
-+QEMU_PLUGIN_API
-+int qemu_plugin_crucible_fault_event_poll(
-+    struct qemu_plugin_crucible_fault_event *event, uint8_t *payload,
-+    size_t payload_capacity, size_t *payload_length);
-+
- /**
-  * qemu_plugin_register_crucible_fault_completion_cb() - register completion
-  * @cb: callback invoked after each boundary-dispatched result, or NULL to clear
-diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
-index ed2d445e0..8c62f9823 100644
---- a/include/system/cpu-timers.h
-+++ b/include/system/cpu-timers.h
-@@ -49,6 +49,9 @@ int64_t icount_get_raw(void);
- /* observe raw icount without committing the current vCPU's executed count */
- int64_t icount_get_raw_observed(void);
- 
-+/* observe virtual CPU time without committing the current vCPU's icount */
-+int64_t icount_get_observed(void);
-+
- /* return the virtual CPU time in ns, based on the instruction counter. */
- int64_t icount_get(void);
- /*
 diff --git a/include/system/dma.h b/include/system/dma.h
-index e142f7efa..64ca04103 100644
+index 82e7ad543..68eaf51ee 100644
 --- a/include/system/dma.h
 +++ b/include/system/dma.h
 @@ -12,6 +12,7 @@
  
- #include "exec/memory.h"
- #include "exec/address-spaces.h"
+ #include "system/memory.h"
+ #include "system/address-spaces.h"
 +#include "qemu/crucible-fault.h"
  #include "block/block.h"
  #include "block/accounting.h"
@@ -2786,8 +2535,249 @@ index e142f7efa..64ca04103 100644
  }
  
  #define DEFINE_LDST_DMA(_lname, _sname, _bits, _end) \
+diff --git a/include/system/memory.h b/include/system/memory.h
+index ec2dc47d9..8c03e9bd1 100644
+--- a/include/system/memory.h
++++ b/include/system/memory.h
+@@ -2708,6 +2708,15 @@ void address_space_unregister_map_client(AddressSpace *as, QEMUBH *bh);
+ /* Internal functions, part of the implementation of address_space_read.  */
+ MemTxResult address_space_read_full(const AddressSpace *as, hwaddr addr,
+                                     MemTxAttrs attrs, void *buf, hwaddr len);
++#ifndef QEMU_CRUCIBLE_FAULT_DMA_CONTEXT_ACTIVE_DECLARED
++#define QEMU_CRUCIBLE_FAULT_DMA_CONTEXT_ACTIVE_DECLARED
++bool qemu_crucible_fault_dma_context_active(void);
++#endif
++bool address_space_translate_crucible_dma(
++    const AddressSpace *as, hwaddr iova, hwaddr *gpa, MemoryRegion **mr,
++    hwaddr *mr_addr, hwaddr *plen, bool is_write, MemTxAttrs attrs);
++MemTxResult address_space_rw_crucible_dma_frozen(
++    void *buf, hwaddr len, bool is_write);
+ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+                                    MemTxAttrs attrs, void *buf,
+                                    hwaddr len, hwaddr addr1, hwaddr l,
+@@ -2777,7 +2786,8 @@ MemTxResult address_space_read(const AddressSpace *as, hwaddr addr,
+             fv = address_space_to_flatview(as);
+             l = len;
+             mr = flatview_translate(fv, addr, &addr1, &l, false, attrs);
+-            if (len == l && memory_access_is_direct(mr, false, attrs)) {
++            if (len == l && memory_access_is_direct(mr, false, attrs) &&
++                !qemu_crucible_fault_dma_context_active()) {
+                 ptr = qemu_map_ram_ptr(mr->ram_block, addr1);
+                 memcpy(buf, ptr, len);
+             } else {
+diff --git a/include/system/memory_cached.h b/include/system/memory_cached.h
+index 09d46821b..4f95433d8 100644
+--- a/include/system/memory_cached.h
++++ b/include/system/memory_cached.h
+@@ -14,6 +14,7 @@
+ 
+ #include "exec/hwaddr.h"
+ #include "system/memory.h"
++#include "qemu/crucible-fault.h"
+ 
+ struct MemoryRegionCache {
+     uint8_t *ptr;
+@@ -22,8 +23,20 @@ struct MemoryRegionCache {
+     FlatView *fv;
+     MemoryRegionSection mrs;
+     bool is_write;
++    const AddressSpace *crucible_as;
++    hwaddr crucible_addr;
++    uint8_t crucible_dma_identity[32];
+ };
+ 
++MemTxResult address_space_read_cached_fault(const MemoryRegionCache *cache,
++                                            hwaddr addr, MemTxAttrs attrs,
++                                            void *buf, hwaddr len);
++MemTxResult address_space_write_cached_fault(const MemoryRegionCache *cache,
++                                             hwaddr addr, MemTxAttrs attrs,
++                                             const void *buf, hwaddr len);
++void address_space_cache_set_crucible_dma_identity(
++    MemoryRegionCache *cache, const uint8_t device_identity[32]);
++
+ /**
+  * address_space_ld*_cached: load from a cached #MemoryRegion
+  * address_space_st*_cached: store into a cached #MemoryRegion
+@@ -59,7 +72,18 @@ static inline
+ uint8_t address_space_ldub_cached(const MemoryRegionCache *cache, hwaddr addr,
+                                   MemTxAttrs attrs, MemTxResult *result)
+ {
++    uint8_t value = 0;
++
+     assert(addr < cache->len);
++    if (unlikely(qemu_crucible_fault_memory_dma_rules_active(false))) {
++        MemTxResult fault = address_space_read_cached_fault(
++            cache, addr, attrs, &value, sizeof(value));
++
++        if (result) {
++            *result = fault;
++        }
++        return value;
++    }
+     if (likely(cache->ptr)) {
+         return ldub_p(cache->ptr + addr);
+     } else {
+@@ -73,6 +97,15 @@ void address_space_stb_cached(const MemoryRegionCache *cache,
+                               MemTxAttrs attrs, MemTxResult *result)
+ {
+     assert(addr < cache->len);
++    if (unlikely(qemu_crucible_fault_memory_dma_rules_active(true))) {
++        MemTxResult fault = address_space_write_cached_fault(
++            cache, addr, attrs, &val, sizeof(val));
++
++        if (result) {
++            *result = fault;
++        }
++        return;
++    }
+     if (likely(cache->ptr)) {
+         stb_p(cache->ptr + addr, val);
+     } else {
+@@ -179,6 +212,10 @@ address_space_read_cached(const MemoryRegionCache *cache, hwaddr addr,
+                           void *buf, hwaddr len)
+ {
+     assert(addr < cache->len && len <= cache->len - addr);
++    if (unlikely(qemu_crucible_fault_memory_dma_rules_active(false))) {
++        return address_space_read_cached_fault(
++            cache, addr, MEMTXATTRS_UNSPECIFIED, buf, len);
++    }
+     fuzz_dma_read_cb(cache->xlat + addr, len, cache->mrs.mr);
+     if (likely(cache->ptr)) {
+         memcpy(buf, cache->ptr + addr, len);
+@@ -201,6 +238,10 @@ address_space_write_cached(const MemoryRegionCache *cache, hwaddr addr,
+                            const void *buf, hwaddr len)
+ {
+     assert(addr < cache->len && len <= cache->len - addr);
++    if (unlikely(qemu_crucible_fault_memory_dma_rules_active(true))) {
++        return address_space_write_cached_fault(
++            cache, addr, MEMTXATTRS_UNSPECIFIED, buf, len);
++    }
+     if (likely(cache->ptr)) {
+         memcpy(cache->ptr + addr, buf, len);
+         return MEMTX_OK;
+diff --git a/include/system/memory_ldst_cached.h.inc b/include/system/memory_ldst_cached.h.inc
+index b4c696bff..303e82010 100644
+--- a/include/system/memory_ldst_cached.h.inc
++++ b/include/system/memory_ldst_cached.h.inc
+@@ -28,7 +28,18 @@ static inline
+ uint16_t ADDRESS_SPACE_LD_CACHED(uw)(const MemoryRegionCache *cache,
+     hwaddr addr, MemTxAttrs attrs, MemTxResult *result)
+ {
++    uint16_t value = 0;
++
+     assert(addr < cache->len && 2 <= cache->len - addr);
++    if (unlikely(qemu_crucible_fault_memory_dma_rules_active(false))) {
++        MemTxResult fault = address_space_read_cached_fault(
++            cache, addr, attrs, &value, sizeof(value));
++
++        if (result) {
++            *result = fault;
++        }
++        return LD_P(uw)(&value);
++    }
+     fuzz_dma_read_cb(cache->xlat + addr, 2, cache->mrs.mr);
+     if (likely(cache->ptr)) {
+         return LD_P(uw)(cache->ptr + addr);
+@@ -41,7 +52,18 @@ static inline
+ uint32_t ADDRESS_SPACE_LD_CACHED(l)(const MemoryRegionCache *cache,
+     hwaddr addr, MemTxAttrs attrs, MemTxResult *result)
+ {
++    uint32_t value = 0;
++
+     assert(addr < cache->len && 4 <= cache->len - addr);
++    if (unlikely(qemu_crucible_fault_memory_dma_rules_active(false))) {
++        MemTxResult fault = address_space_read_cached_fault(
++            cache, addr, attrs, &value, sizeof(value));
++
++        if (result) {
++            *result = fault;
++        }
++        return LD_P(l)(&value);
++    }
+     fuzz_dma_read_cb(cache->xlat + addr, 4, cache->mrs.mr);
+     if (likely(cache->ptr)) {
+         return LD_P(l)(cache->ptr + addr);
+@@ -54,7 +76,18 @@ static inline
+ uint64_t ADDRESS_SPACE_LD_CACHED(q)(const MemoryRegionCache *cache,
+     hwaddr addr, MemTxAttrs attrs, MemTxResult *result)
+ {
++    uint64_t value = 0;
++
+     assert(addr < cache->len && 8 <= cache->len - addr);
++    if (unlikely(qemu_crucible_fault_memory_dma_rules_active(false))) {
++        MemTxResult fault = address_space_read_cached_fault(
++            cache, addr, attrs, &value, sizeof(value));
++
++        if (result) {
++            *result = fault;
++        }
++        return LD_P(q)(&value);
++    }
+     fuzz_dma_read_cb(cache->xlat + addr, 8, cache->mrs.mr);
+     if (likely(cache->ptr)) {
+         return LD_P(q)(cache->ptr + addr);
+@@ -77,7 +110,19 @@ uint64_t ADDRESS_SPACE_LD_CACHED(q)(const MemoryRegionCache *cache,
+ static inline void ADDRESS_SPACE_ST_CACHED(w)(const MemoryRegionCache *cache,
+     hwaddr addr, uint16_t val, MemTxAttrs attrs, MemTxResult *result)
+ {
++    uint16_t value;
++
+     assert(addr < cache->len && 2 <= cache->len - addr);
++    if (unlikely(qemu_crucible_fault_memory_dma_rules_active(true))) {
++        ST_P(w)(&value, val);
++        MemTxResult fault = address_space_write_cached_fault(
++            cache, addr, attrs, &value, sizeof(value));
++
++        if (result) {
++            *result = fault;
++        }
++        return;
++    }
+     if (likely(cache->ptr)) {
+         ST_P(w)(cache->ptr + addr, val);
+     } else {
+@@ -88,7 +133,19 @@ static inline void ADDRESS_SPACE_ST_CACHED(w)(const MemoryRegionCache *cache,
+ static inline void ADDRESS_SPACE_ST_CACHED(l)(const MemoryRegionCache *cache,
+     hwaddr addr, uint32_t val, MemTxAttrs attrs, MemTxResult *result)
+ {
++    uint32_t value;
++
+     assert(addr < cache->len && 4 <= cache->len - addr);
++    if (unlikely(qemu_crucible_fault_memory_dma_rules_active(true))) {
++        ST_P(l)(&value, val);
++        MemTxResult fault = address_space_write_cached_fault(
++            cache, addr, attrs, &value, sizeof(value));
++
++        if (result) {
++            *result = fault;
++        }
++        return;
++    }
+     if (likely(cache->ptr)) {
+         ST_P(l)(cache->ptr + addr, val);
+     } else {
+@@ -99,7 +156,19 @@ static inline void ADDRESS_SPACE_ST_CACHED(l)(const MemoryRegionCache *cache,
+ static inline void ADDRESS_SPACE_ST_CACHED(q)(const MemoryRegionCache *cache,
+     hwaddr addr, uint64_t val, MemTxAttrs attrs, MemTxResult *result)
+ {
++    uint64_t value;
++
+     assert(addr < cache->len && 8 <= cache->len - addr);
++    if (unlikely(qemu_crucible_fault_memory_dma_rules_active(true))) {
++        ST_P(q)(&value, val);
++        MemTxResult fault = address_space_write_cached_fault(
++            cache, addr, attrs, &value, sizeof(value));
++
++        if (result) {
++            *result = fault;
++        }
++        return;
++    }
+     if (likely(cache->ptr)) {
+         ST_P(q)(cache->ptr + addr, val);
+     } else {
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index 8252173a5..b1dcce5ec 100644
+index 23b73379b..44273102a 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -24,6 +24,7 @@
@@ -2798,7 +2788,7 @@ index 8252173a5..b1dcce5ec 100644
  #include "system/cpu-timers.h"
  #include "system/crucible-sim-preemption.h"
  
-@@ -284,13 +285,29 @@ uint64_t qemu_plugin_icount_raw(void)
+@@ -287,13 +288,29 @@ uint64_t qemu_plugin_icount_raw(void)
          return 0;
      }
  
@@ -2830,10 +2820,10 @@ index 8252173a5..b1dcce5ec 100644
                                     uint64_t *entry_icount)
  {
 diff --git a/plugins/api.c b/plugins/api.c
-index 964a40aa4..5fa29d640 100644
+index 4c7efeeb7..bed067f3b 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -1514,7 +1514,13 @@ int qemu_plugin_crucible_process_argv_attestation(
+@@ -1693,7 +1693,13 @@ int qemu_plugin_crucible_process_argv_attestation(
  
  uint64_t qemu_plugin_crucible_icount(void)
  {
@@ -2864,7 +2854,7 @@ index b1422b8e9..6e6c2b3fb 100644
              return -EFAULT;
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 new file mode 100644
-index 000000000..3d7d5024b
+index 000000000..b03e579cc
 --- /dev/null
 +++ b/plugins/crucible-fault-node.c
 @@ -0,0 +1,9711 @@
@@ -10763,7 +10753,7 @@ index 000000000..3d7d5024b
 +
 +static void node_memory_transaction_preflight_dma(
 +    enum QemuCrucibleMemoryAccessClass access_class, uint32_t actor,
-+    AddressSpace *as, uint64_t iova, size_t length, MemTxAttrs attrs,
++    const AddressSpace *as, uint64_t iova, size_t length, MemTxAttrs attrs,
 +    uint64_t identity)
 +{
 +    g_autoptr(GHashTable) counter_rules = g_hash_table_new(
@@ -11122,7 +11112,7 @@ index 000000000..3d7d5024b
 +
 +void qemu_crucible_fault_memory_dma_transaction_begin(
 +    enum QemuCrucibleMemoryAccessClass access_class, uint32_t actor,
-+    AddressSpace *as, uint64_t iova, size_t length, MemTxAttrs attrs,
++    const AddressSpace *as, uint64_t iova, size_t length, MemTxAttrs attrs,
 +    uint64_t observed_icount)
 +{
 +    if ((access_class != QEMU_CRUCIBLE_MEMORY_DMA_READ &&
@@ -12767,22 +12757,23 @@ index b2e1dfca2..333af60e9 100644
  }
  
 diff --git a/plugins/meson.build b/plugins/meson.build
-index e5bd2ce7c..dffdd9734 100644
+index b4fea8466..a4f49727e 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
-@@ -60,6 +60,6 @@ endif
+@@ -80,7 +80,7 @@ endif
  
  user_ss.add(files('user.c', 'api-user.c'))
  system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
 -                    'crucible-fault-memory.c'))
 +                    'crucible-fault-memory.c', 'crucible-fault-node.c'))
  
- common_ss.add(files('loader.c', 'api.c', 'core.c'))
+ user_ss.add(files('api.c', 'core.c'))
+ system_ss.add(files('api.c', 'core.c'))
 diff --git a/system/physmem.c b/system/physmem.c
-index a16c3ad01..d29aabf24 100644
+index c3e5335a5..8ce4514e5 100644
 --- a/system/physmem.c
 +++ b/system/physmem.c
-@@ -78,6 +78,7 @@
+@@ -80,6 +80,7 @@
  #include "migration/vmstate.h"
  
  #include "qemu/range.h"
@@ -12790,7 +12781,7 @@ index a16c3ad01..d29aabf24 100644
  #ifndef _WIN32
  #include "qemu/mmap-alloc.h"
  #endif
-@@ -95,6 +96,82 @@
+@@ -97,6 +98,82 @@
   */
  RAMList ram_list = { .blocks = QLIST_HEAD_INITIALIZER(ram_list.blocks) };
  
@@ -12873,7 +12864,7 @@ index a16c3ad01..d29aabf24 100644
  static MemoryRegion *system_memory;
  static MemoryRegion *system_io;
  
-@@ -586,6 +663,57 @@ MemoryRegion *flatview_translate(FlatView *fv, hwaddr addr, hwaddr *xlat,
+@@ -588,6 +665,58 @@ MemoryRegion *flatview_translate(FlatView *fv, hwaddr addr, hwaddr *xlat,
      return mr;
  }
  
@@ -12893,7 +12884,8 @@ index a16c3ad01..d29aabf24 100644
 +        *physical = *xlat + section.offset_within_address_space -
 +                    section.offset_within_region;
 +    }
-+    if (xen_enabled() && memory_access_is_direct(mr, is_write, attrs)) {
++    if (xen_map_cache_enabled() &&
++        memory_access_is_direct(mr, is_write, attrs)) {
 +        hwaddr page = ((addr & TARGET_PAGE_MASK) + TARGET_PAGE_SIZE) - addr;
 +
 +        *plen = MIN(page, *plen);
@@ -12902,7 +12894,7 @@ index a16c3ad01..d29aabf24 100644
 +}
 +
 +bool address_space_translate_crucible_dma(
-+    AddressSpace *as, hwaddr iova, hwaddr *gpa, MemoryRegion **mr,
++    const AddressSpace *as, hwaddr iova, hwaddr *gpa, MemoryRegion **mr,
 +    hwaddr *mr_addr, hwaddr *plen, bool is_write, MemTxAttrs attrs)
 +{
 +    AddressSpace *target_as = NULL;
@@ -12928,10 +12920,10 @@ index a16c3ad01..d29aabf24 100644
 +    return true;
 +}
 +
+ #ifdef CONFIG_TCG
+ 
  typedef struct TCGIOMMUNotifier {
-     IOMMUNotifier n;
-     MemoryRegion *mr;
-@@ -2940,7 +3068,8 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
+@@ -3250,7 +3379,8 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
  static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
                                                  const uint8_t *buf,
                                                  hwaddr len, hwaddr mr_addr,
@@ -12941,7 +12933,7 @@ index a16c3ad01..d29aabf24 100644
  {
      if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
          return MEMTX_ACCESS_ERROR;
-@@ -2980,8 +3109,35 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
+@@ -3290,8 +3420,35 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
          uint8_t *ram_ptr = qemu_ram_ptr_length(mr->ram_block, mr_addr, l,
                                                 false, true);
  
@@ -12979,7 +12971,7 @@ index a16c3ad01..d29aabf24 100644
  
          return MEMTX_OK;
      }
-@@ -2992,14 +3148,15 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
+@@ -3302,14 +3459,15 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
                                             MemTxAttrs attrs,
                                             const void *ptr,
                                             hwaddr len, hwaddr mr_addr,
@@ -12998,7 +12990,7 @@ index a16c3ad01..d29aabf24 100644
  
          len -= l;
          buf += l;
-@@ -3010,7 +3167,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
+@@ -3320,7 +3478,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
          }
  
          l = len;
@@ -13008,7 +13000,7 @@ index a16c3ad01..d29aabf24 100644
      }
  
      return result;
-@@ -3022,21 +3180,24 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
+@@ -3332,21 +3491,24 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
  {
      hwaddr l;
      hwaddr mr_addr;
@@ -13019,7 +13011,7 @@ index a16c3ad01..d29aabf24 100644
 -    mr = flatview_translate(fv, addr, &mr_addr, &l, true, attrs);
 +    mr = flatview_translate_crucible(
 +        fv, addr, &mr_addr, &l, true, attrs, &physical);
-     if (!flatview_access_allowed(mr, attrs, addr, len)) {
+     if (!flatview_access_allowed(mr, attrs, mr_addr, l)) {
          return MEMTX_ACCESS_ERROR;
      }
      return flatview_write_continue(fv, addr, attrs, buf, len,
@@ -13036,7 +13028,7 @@ index a16c3ad01..d29aabf24 100644
  {
      if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
          return MEMTX_ACCESS_ERROR;
-@@ -3075,6 +3236,26 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
+@@ -3385,6 +3547,26 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
  
          memcpy(buf, ram_ptr, *l);
  
@@ -13063,7 +13055,7 @@ index a16c3ad01..d29aabf24 100644
          return MEMTX_OK;
      }
  }
-@@ -3087,10 +3268,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+@@ -3397,10 +3579,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
  {
      MemTxResult result = MEMTX_OK;
      uint8_t *buf = ptr;
@@ -13083,7 +13075,7 @@ index a16c3ad01..d29aabf24 100644
  
          len -= l;
          buf += l;
-@@ -3101,7 +3290,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+@@ -3411,7 +3601,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
          }
  
          l = len;
@@ -13093,7 +13085,7 @@ index a16c3ad01..d29aabf24 100644
      }
  
      return result;
-@@ -3113,10 +3303,12 @@ static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
+@@ -3423,10 +3614,12 @@ static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
  {
      hwaddr l;
      hwaddr mr_addr;
@@ -13104,10 +13096,10 @@ index a16c3ad01..d29aabf24 100644
 -    mr = flatview_translate(fv, addr, &mr_addr, &l, false, attrs);
 +    mr = flatview_translate_crucible(
 +        fv, addr, &mr_addr, &l, false, attrs, &physical);
-     if (!flatview_access_allowed(mr, attrs, addr, len)) {
+     if (!flatview_access_allowed(mr, attrs, mr_addr, l)) {
          return MEMTX_ACCESS_ERROR;
      }
-@@ -3165,6 +3357,73 @@ MemTxResult address_space_rw(AddressSpace *as, hwaddr addr, MemTxAttrs attrs,
+@@ -3476,6 +3669,73 @@ MemTxResult address_space_rw(const AddressSpace *as, hwaddr addr,
      }
  }
  
@@ -13178,10 +13170,10 @@ index a16c3ad01..d29aabf24 100644
 +    return MEMTX_OK;
 +}
 +
- MemTxResult address_space_set(AddressSpace *as, hwaddr addr,
+ MemTxResult address_space_set(const AddressSpace *as, hwaddr addr,
                                uint8_t c, hwaddr len, MemTxAttrs attrs)
  {
-@@ -3273,6 +3532,11 @@ typedef struct {
+@@ -3575,6 +3835,11 @@ typedef struct {
      MemoryRegion *mr;
      hwaddr addr;
      size_t len;
@@ -13193,7 +13185,7 @@ index a16c3ad01..d29aabf24 100644
      uint8_t buffer[];
  } BounceBuffer;
  
-@@ -3431,7 +3695,8 @@ void *address_space_map(AddressSpace *as,
+@@ -3744,7 +4009,8 @@ void *address_space_map(AddressSpace *as,
      fv = address_space_to_flatview(as);
      mr = flatview_translate(fv, addr, &xlat, &l, is_write, attrs);
  
@@ -13203,7 +13195,7 @@ index a16c3ad01..d29aabf24 100644
          size_t used = qatomic_read(&as->bounce_buffer_size);
          for (;;) {
              hwaddr alloc = MIN(as->max_bounce_buffer_size - used, l);
-@@ -3456,10 +3721,47 @@ void *address_space_map(AddressSpace *as,
+@@ -3769,10 +4035,47 @@ void *address_space_map(AddressSpace *as,
          bounce->mr = mr;
          bounce->addr = addr;
          bounce->len = l;
@@ -13255,7 +13247,7 @@ index a16c3ad01..d29aabf24 100644
          }
  
          *plen = l;
-@@ -3500,8 +3802,43 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
+@@ -3813,8 +4116,43 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
      assert(bounce->magic == BOUNCE_BUFFER_MAGIC);
  
      if (is_write) {
@@ -13301,7 +13293,7 @@ index a16c3ad01..d29aabf24 100644
      }
  
      qatomic_sub(&as->bounce_buffer_size, bounce->len);
-@@ -3548,6 +3885,10 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
+@@ -3859,6 +4197,10 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
  
      assert(len > 0);
  
@@ -13312,7 +13304,7 @@ index a16c3ad01..d29aabf24 100644
      l = len;
      cache->fv = address_space_get_flatview(as);
      d = flatview_to_dispatch(cache->fv);
-@@ -3583,6 +3924,66 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
+@@ -3894,6 +4236,66 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
      return l;
  }
  
@@ -13323,7 +13315,7 @@ index a16c3ad01..d29aabf24 100644
 +           sizeof(cache->crucible_dma_identity));
 +}
 +
-+MemTxResult address_space_read_cached_fault(MemoryRegionCache *cache,
++MemTxResult address_space_read_cached_fault(const MemoryRegionCache *cache,
 +                                            hwaddr addr, MemTxAttrs attrs,
 +                                            void *buf, hwaddr len)
 +{
@@ -13349,7 +13341,7 @@ index a16c3ad01..d29aabf24 100644
 +    return result;
 +}
 +
-+MemTxResult address_space_write_cached_fault(MemoryRegionCache *cache,
++MemTxResult address_space_write_cached_fault(const MemoryRegionCache *cache,
 +                                             hwaddr addr, MemTxAttrs attrs,
 +                                             const void *buf, hwaddr len)
 +{
@@ -13376,10 +13368,10 @@ index a16c3ad01..d29aabf24 100644
 +    return result;
 +}
 +
- void address_space_cache_invalidate(MemoryRegionCache *cache,
+ void address_space_cache_invalidate(const MemoryRegionCache *cache,
                                      hwaddr addr,
                                      hwaddr access_len)
-@@ -3650,8 +4051,8 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
+@@ -3961,8 +4363,8 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
      const uint8_t *buf = ptr;
  
      for (;;) {
@@ -13390,7 +13382,7 @@ index a16c3ad01..d29aabf24 100644
  
          len -= l;
          buf += l;
-@@ -3677,7 +4078,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
+@@ -3988,7 +4390,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
      uint8_t *buf = ptr;
  
      for (;;) {
@@ -13401,10 +13393,10 @@ index a16c3ad01..d29aabf24 100644
          buf += l;
          mr_addr += l;
 diff --git a/target/arm/cpu.c b/target/arm/cpu.c
-index 6657597e5..a51367113 100644
+index 70a62488e..a6322d6ba 100644
 --- a/target/arm/cpu.c
 +++ b/target/arm/cpu.c
-@@ -84,7 +84,7 @@ int crucible_sim_det_ipi_deliver_commanded(unsigned int target_vcpu,
+@@ -88,7 +88,7 @@ int crucible_sim_det_ipi_deliver_commanded(unsigned int target_vcpu,
      if (current_cpu) {
          src_vcpu = current_cpu->cpu_index;
      }
@@ -13413,9 +13405,9 @@ index 6657597e5..a51367113 100644
      qemu_plugin_crucible_maybe_fire_ipi_delivery_cb(
          0, delivery_icount, src_vcpu, dst_cpu->cpu_index, 0, vector);
      return 0;
-@@ -2698,6 +2698,9 @@ static const struct SysemuCPUOps arm_sysemu_ops = {
+@@ -2590,6 +2590,9 @@ static const struct SysemuCPUOps arm_sysemu_ops = {
      .has_work = arm_cpu_has_work,
-     .get_phys_page_attrs_debug = arm_cpu_get_phys_page_attrs_debug,
+     .translate_for_debug = arm_cpu_translate_for_debug,
      .get_fault_translation = arm_cpu_get_fault_translation,
 +    .validate_fault_exception = arm_cpu_validate_fault_exception,
 +    .inject_fault_exception = arm_cpu_inject_fault_exception,
@@ -13424,12 +13416,12 @@ index 6657597e5..a51367113 100644
      .write_elf32_note = arm_cpu_write_elf32_note,
      .write_elf64_note = arm_cpu_write_elf64_note,
 diff --git a/target/arm/cpu.h b/target/arm/cpu.h
-index 290efb9c2..83b3596b1 100644
+index 7753337cd..8cfb98921 100644
 --- a/target/arm/cpu.h
 +++ b/target/arm/cpu.h
-@@ -1205,7 +1205,15 @@ void arm_v7m_cpu_do_interrupt(CPUState *cpu);
- hwaddr arm_cpu_get_phys_page_attrs_debug(CPUState *cpu, vaddr addr,
-                                          MemTxAttrs *attrs);
+@@ -1278,7 +1278,15 @@ bool arm_granule_protection_check(ARMGranuleProtectionConfig config,
+                                   ARMMMUFaultInfo *fi);
+ 
  bool arm_cpu_get_fault_translation(CPUState *cpu, vaddr addr,
 +                                   MMUAccessType access_type,
                                     CPUFaultTranslation *result);
@@ -13444,10 +13436,10 @@ index 290efb9c2..83b3596b1 100644
  
  int arm_cpu_gdb_read_register(CPUState *cpu, GByteArray *buf, int reg);
 diff --git a/target/arm/internals.h b/target/arm/internals.h
-index 28585c075..4641218a5 100644
+index 4026f6757..41b19b53d 100644
 --- a/target/arm/internals.h
 +++ b/target/arm/internals.h
-@@ -981,6 +981,10 @@ G_NORETURN void arm_cpu_do_unaligned_access(CPUState *cs, vaddr vaddr,
+@@ -1053,6 +1053,10 @@ G_NORETURN void arm_cpu_do_unaligned_access(CPUState *cs, vaddr vaddr,
                                              int mmu_idx, uintptr_t retaddr);
  
  #ifndef CONFIG_USER_ONLY
@@ -13459,18 +13451,18 @@ index 28585c075..4641218a5 100644
   * (eg "no device/memory present at address") by raising an external abort
   * exception
 diff --git a/target/arm/ptw.c b/target/arm/ptw.c
-index 011358e86..b42acb36b 100644
+index 964d20831..76bd22676 100644
 --- a/target/arm/ptw.c
 +++ b/target/arm/ptw.c
-@@ -12,6 +12,7 @@
+@@ -11,6 +11,7 @@
+ #include "qemu/range.h"
  #include "qemu/main-loop.h"
- #include "exec/exec-all.h"
  #include "exec/page-protection.h"
 +#include "qemu/crucible-fault.h"
- #include "cpu.h"
- #include "internals.h"
- #include "cpu-features.h"
-@@ -648,6 +649,7 @@ static bool S1_ptw_translate(CPUARMState *env, S1Translate *ptw,
+ #include "exec/target_page.h"
+ #include "exec/tlb-flags.h"
+ #ifdef CONFIG_TCG
+@@ -811,6 +812,7 @@ static bool S1_ptw_translate(CPUARMState *env, S1Translate *ptw,
  
  /* All loads done in the course of a page table walk go through here. */
  static uint32_t arm_ldl_ptw(CPUARMState *env, S1Translate *ptw,
@@ -13478,7 +13470,7 @@ index 011358e86..b42acb36b 100644
                              ARMMMUFaultInfo *fi)
  {
      CPUState *cs = env_cpu(env);
-@@ -682,10 +684,34 @@ static uint32_t arm_ldl_ptw(CPUARMState *env, S1Translate *ptw,
+@@ -845,10 +847,34 @@ static uint32_t arm_ldl_ptw(CPUARMState *env, S1Translate *ptw,
              return 0;
          }
      }
@@ -13513,7 +13505,7 @@ index 011358e86..b42acb36b 100644
                              ARMMMUFaultInfo *fi)
  {
      CPUState *cs = env_cpu(env);
-@@ -728,6 +754,29 @@ static uint64_t arm_ldq_ptw(CPUARMState *env, S1Translate *ptw,
+@@ -883,6 +909,29 @@ static uint64_t arm_ldq_ptw(CPUARMState *env, S1Translate *ptw,
              return 0;
          }
      }
@@ -13543,7 +13535,7 @@ index 011358e86..b42acb36b 100644
      return data;
  }
  
-@@ -1000,7 +1049,7 @@ static bool get_phys_addr_v5(CPUARMState *env, S1Translate *ptw,
+@@ -1155,7 +1204,7 @@ static bool get_phys_addr_v5(CPUARMState *env, S1Translate *ptw,
      if (!S1_ptw_translate(env, ptw, table, fi)) {
          goto do_fault;
      }
@@ -13552,7 +13544,7 @@ index 011358e86..b42acb36b 100644
      if (fi->type != ARMFault_None) {
          goto do_fault;
      }
-@@ -1041,7 +1090,7 @@ static bool get_phys_addr_v5(CPUARMState *env, S1Translate *ptw,
+@@ -1196,7 +1245,7 @@ static bool get_phys_addr_v5(CPUARMState *env, S1Translate *ptw,
          if (!S1_ptw_translate(env, ptw, table, fi)) {
              goto do_fault;
          }
@@ -13561,7 +13553,7 @@ index 011358e86..b42acb36b 100644
          if (fi->type != ARMFault_None) {
              goto do_fault;
          }
-@@ -1130,7 +1179,7 @@ static bool get_phys_addr_v6(CPUARMState *env, S1Translate *ptw,
+@@ -1284,7 +1333,7 @@ static bool get_phys_addr_v6(CPUARMState *env, S1Translate *ptw,
      if (!S1_ptw_translate(env, ptw, table, fi)) {
          goto do_fault;
      }
@@ -13570,7 +13562,7 @@ index 011358e86..b42acb36b 100644
      if (fi->type != ARMFault_None) {
          goto do_fault;
      }
-@@ -1186,7 +1235,7 @@ static bool get_phys_addr_v6(CPUARMState *env, S1Translate *ptw,
+@@ -1340,7 +1389,7 @@ static bool get_phys_addr_v6(CPUARMState *env, S1Translate *ptw,
          if (!S1_ptw_translate(env, ptw, table, fi)) {
              goto do_fault;
          }
@@ -13579,7 +13571,7 @@ index 011358e86..b42acb36b 100644
          if (fi->type != ARMFault_None) {
              goto do_fault;
          }
-@@ -1859,7 +1908,7 @@ static bool get_phys_addr_lpae(CPUARMState *env, S1Translate *ptw,
+@@ -2171,7 +2220,7 @@ static bool get_phys_addr_lpae(CPUARMState *env, S1Translate *ptw,
      if (!S1_ptw_translate(env, ptw, descaddr, fi)) {
          goto do_fault;
      }
@@ -13588,7 +13580,7 @@ index 011358e86..b42acb36b 100644
      if (fi->type != ARMFault_None) {
          goto do_fault;
      }
-@@ -3647,6 +3696,7 @@ hwaddr arm_cpu_get_phys_page_attrs_debug(CPUState *cs, vaddr addr,
+@@ -4142,6 +4191,7 @@ bool arm_cpu_translate_for_debug(CPUState *cs, vaddr addr,
  }
  
  bool arm_cpu_get_fault_translation(CPUState *cs, vaddr addr,
@@ -13596,7 +13588,7 @@ index 011358e86..b42acb36b 100644
                                     CPUFaultTranslation *result)
  {
      ARMCPU *cpu = ARM_CPU(cs);
-@@ -3660,9 +3710,11 @@ bool arm_cpu_get_fault_translation(CPUState *cs, vaddr addr,
+@@ -4155,9 +4205,11 @@ bool arm_cpu_get_fault_translation(CPUState *cs, vaddr addr,
      GetPhysAddrResult res = {};
      ARMMMUFaultInfo fi = {};
  
@@ -13611,7 +13603,7 @@ index 011358e86..b42acb36b 100644
          return false;
      }
      result->physical_address = res.f.phys_addr;
-@@ -3674,3 +3726,51 @@ bool arm_cpu_get_fault_translation(CPUState *cs, vaddr addr,
+@@ -4169,3 +4221,51 @@ bool arm_cpu_get_fault_translation(CPUState *cs, vaddr addr,
      result->user = arm_current_el(env) == 0;
      return true;
  }
@@ -13664,19 +13656,20 @@ index 011358e86..b42acb36b 100644
 +                      cpu_mmu_index(cs, false), &fi);
 +}
 diff --git a/target/arm/tcg/tlb_helper.c b/target/arm/tcg/tlb_helper.c
-index 8841f039b..47616e5f8 100644
+index 4c3f16dc2..de1dd7ccd 100644
 --- a/target/arm/tcg/tlb_helper.c
 +++ b/target/arm/tcg/tlb_helper.c
-@@ -11,6 +11,8 @@
+@@ -12,6 +12,9 @@
+ #include "internals.h"
  #include "cpu-features.h"
- #include "exec/exec-all.h"
- #include "exec/helper-proto.h"
+ #include "hw/intc/armv7m_nvic.h"
++#include "exec/helper-proto.h"
 +#include "accel/tcg/internal-common.h"
 +#include "qemu/crucible-fault.h"
  
- 
  /*
-@@ -167,7 +169,7 @@ static unsigned encode_gpcsc(ARMMMUFaultInfo *fi)
+  * Returns true if the stage 1 translation regime is using LPAE format page
+@@ -172,7 +175,7 @@ static unsigned encode_gpcsc(ARMMMUFaultInfo *fi)
      return gpcsc[fi->gpcf] | fi->level;
  }
  
@@ -13685,7 +13678,7 @@ index 8841f039b..47616e5f8 100644
  void arm_deliver_fault(ARMCPU *cpu, vaddr addr,
                         MMUAccessType access_type,
                         int mmu_idx, ARMMMUFaultInfo *fi)
-@@ -325,6 +327,9 @@ bool arm_cpu_tlb_fill_align(CPUState *cs, CPUTLBEntryFull *out, vaddr address,
+@@ -360,6 +363,9 @@ bool arm_cpu_tlb_fill_align(CPUState *cs, CPUTLBEntryFull *out, vaddr address,
      ARMCPU *cpu = ARM_CPU(cs);
      GetPhysAddrResult res = {};
      ARMMMUFaultInfo local_fi, *fi;
@@ -13695,13 +13688,16 @@ index 8841f039b..47616e5f8 100644
  
      /*
       * Allow S1_ptw_translate to see any fault generated here.
-@@ -344,9 +349,31 @@ bool arm_cpu_tlb_fill_align(CPUState *cs, CPUTLBEntryFull *out, vaddr address,
-      */
-     if (address & ((1 << memop_alignment_bits(memop)) - 1)) {
+@@ -384,11 +390,34 @@ bool arm_cpu_tlb_fill_align(CPUState *cs, CPUTLBEntryFull *out, vaddr address,
+     if (access_type == MMU_INST_FETCH && !cpu->env.thumb &&
+         (address & 3)) {
          fi->type = ARMFault_Alignment;
--    } else if (!get_phys_addr(&cpu->env, address, access_type, memop,
--                              core_to_arm_mmu_idx(&cpu->env, mmu_idx),
--                              &res, fi)) {
++        translation_fault = true;
+     } else if (address & ((1 << memop_alignment_bits(memop)) - 1)) {
+         fi->type = ARMFault_Alignment;
+-    } else if (get_phys_addr(&cpu->env, address, access_type, memop,
+-                             core_to_arm_mmu_idx(&cpu->env, mmu_idx),
+-                             &res, fi)) {
 +        translation_fault = true;
 +    } else {
 +        if (walk_root) {
@@ -13731,12 +13727,12 @@ index 8841f039b..47616e5f8 100644
          res.f.extra.arm.shareability = res.cacheattrs.shareability;
          *out = res.f;
 diff --git a/target/i386/cpu.c b/target/i386/cpu.c
-index deee0bfa7..f593c0ee4 100644
+index 2271e5dc3..2344214fc 100644
 --- a/target/i386/cpu.c
 +++ b/target/i386/cpu.c
-@@ -8897,6 +8897,9 @@ static const struct SysemuCPUOps i386_sysemu_ops = {
+@@ -10888,6 +10888,9 @@ static const struct SysemuCPUOps i386_sysemu_ops = {
      .get_paging_enabled = x86_cpu_get_paging_enabled,
-     .get_phys_page_attrs_debug = x86_cpu_get_phys_page_attrs_debug,
+     .translate_for_debug = x86_cpu_translate_for_debug,
      .get_fault_translation = x86_cpu_get_fault_translation,
 +    .validate_fault_exception = x86_cpu_validate_fault_exception,
 +    .inject_fault_exception = x86_cpu_inject_fault_exception,
@@ -13745,12 +13741,12 @@ index deee0bfa7..f593c0ee4 100644
      .get_crash_info = x86_cpu_get_crash_info,
      .write_elf32_note = x86_cpu_write_elf32_note,
 diff --git a/target/i386/cpu.h b/target/i386/cpu.h
-index 0b07cae57..1ada85b2e 100644
+index 23770e4f0..423d8be81 100644
 --- a/target/i386/cpu.h
 +++ b/target/i386/cpu.h
-@@ -2376,7 +2376,15 @@ int x86_cpu_pending_interrupt(CPUState *cs, int interrupt_request);
- hwaddr x86_cpu_get_phys_page_attrs_debug(CPUState *cpu, vaddr addr,
-                                          MemTxAttrs *attrs);
+@@ -2589,7 +2589,15 @@ int x86_cpu_pending_interrupt(CPUState *cs, int interrupt_request);
+ bool x86_cpu_translate_for_debug(CPUState *cpu, vaddr addr,
+                                  TranslateForDebugResult *result);
  bool x86_cpu_get_fault_translation(CPUState *cpu, vaddr addr,
 +                                   MMUAccessType access_type,
                                     CPUFaultTranslation *result);
@@ -13765,19 +13761,19 @@ index 0b07cae57..1ada85b2e 100644
  
  /* MS-DOS compatibility mode FPU exception support */
 diff --git a/target/i386/tcg/system/excp_helper.c b/target/i386/tcg/system/excp_helper.c
-index f7e228874..22e9dbc84 100644
+index 7b5192d6d..ed73746d7 100644
 --- a/target/i386/tcg/system/excp_helper.c
 +++ b/target/i386/tcg/system/excp_helper.c
-@@ -22,6 +22,8 @@
- #include "exec/cpu_ldst.h"
- #include "exec/cputlb.h"
+@@ -25,6 +25,8 @@
  #include "exec/page-protection.h"
+ #include "exec/target_page.h"
+ #include "exec/tlb-flags.h"
 +#include "accel/tcg/internal-common.h"
 +#include "qemu/crucible-fault.h"
  #include "tcg/helper-tcg.h"
  
  typedef struct TranslateParams {
-@@ -30,6 +32,7 @@ typedef struct TranslateParams {
+@@ -33,6 +35,7 @@ typedef struct TranslateParams {
      int pg_mode;
      int mmu_idx;
      int ptw_idx;
@@ -13785,7 +13781,7 @@ index f7e228874..22e9dbc84 100644
      MMUAccessType access_type;
      bool update_page_tables;
  } TranslateParams;
-@@ -57,17 +60,21 @@ typedef struct PTETranslate {
+@@ -60,17 +63,21 @@ typedef struct PTETranslate {
      CPUX86State *env;
      TranslateFault *err;
      int ptw_idx;
@@ -13808,7 +13804,7 @@ index f7e228874..22e9dbc84 100644
  
      if (unlikely(flags & TLB_INVALID_MASK)) {
          TranslateFault *err = inout->err;
-@@ -80,23 +87,66 @@ static bool ptw_translate(PTETranslate *inout, hwaddr addr)
+@@ -83,23 +90,66 @@ static bool ptw_translate(PTETranslate *inout, hwaddr addr)
          };
          return false;
      }
@@ -13825,7 +13821,7 @@ index f7e228874..22e9dbc84 100644
 -        return ldl_p(in->haddr);
 +        value = ldl_p(in->haddr);
 +    } else {
-+        value = cpu_ldl_mmuidx_ra(in->env, in->gaddr, in->ptw_idx, ra);
++        value = cpu_ldl_le_mmuidx_ra(in->env, in->gaddr, in->ptw_idx, ra);
 +    }
 +    if (in->faultable && likely(in->haddr) &&
 +        qemu_crucible_fault_memory_page_table_walk_context_active(
@@ -13844,7 +13840,7 @@ index f7e228874..22e9dbc84 100644
 +        }
 +        value = ldl_le_p(after);
      }
--    return cpu_ldl_mmuidx_ra(in->env, in->gaddr, in->ptw_idx, ra);
+-    return cpu_ldl_le_mmuidx_ra(in->env, in->gaddr, in->ptw_idx, ra);
 +    return value;
  }
  
@@ -13857,7 +13853,7 @@ index f7e228874..22e9dbc84 100644
 -        return ldq_p(in->haddr);
 +        value = ldq_p(in->haddr);
 +    } else {
-+        value = cpu_ldq_mmuidx_ra(in->env, in->gaddr, in->ptw_idx, ra);
++        value = cpu_ldq_le_mmuidx_ra(in->env, in->gaddr, in->ptw_idx, ra);
 +    }
 +    if (in->faultable && likely(in->haddr) &&
 +        qemu_crucible_fault_memory_page_table_walk_context_active(
@@ -13876,12 +13872,12 @@ index f7e228874..22e9dbc84 100644
 +        }
 +        value = ldq_le_p(after);
      }
--    return cpu_ldq_mmuidx_ra(in->env, in->gaddr, in->ptw_idx, ra);
+-    return cpu_ldq_le_mmuidx_ra(in->env, in->gaddr, in->ptw_idx, ra);
 +    return value;
  }
  
  /*
-@@ -150,6 +200,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+@@ -153,6 +203,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
          .env = env,
          .err = err,
          .ptw_idx = in->ptw_idx,
@@ -13890,7 +13886,7 @@ index f7e228874..22e9dbc84 100644
      };
      hwaddr pte_addr, paddr;
      uint32_t pkr;
-@@ -176,7 +228,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+@@ -179,7 +231,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
                      return false;
                  }
              restart_5:
@@ -13899,7 +13895,7 @@ index f7e228874..22e9dbc84 100644
                  if (!(pte & PG_PRESENT_MASK)) {
                      goto do_fault;
                  }
-@@ -201,7 +253,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+@@ -204,7 +256,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
                  return false;
              }
          restart_4:
@@ -13908,7 +13904,7 @@ index f7e228874..22e9dbc84 100644
              if (!(pte & PG_PRESENT_MASK)) {
                  goto do_fault;
              }
-@@ -222,7 +274,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+@@ -225,7 +277,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
                  return false;
              }
          restart_3_lma:
@@ -13917,7 +13913,7 @@ index f7e228874..22e9dbc84 100644
              if (!(pte & PG_PRESENT_MASK)) {
                  goto do_fault;
              }
-@@ -251,7 +303,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+@@ -254,7 +306,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
              }
              rsvd_mask |= PG_HI_USER_MASK;
          restart_3_nolma:
@@ -13926,7 +13922,7 @@ index f7e228874..22e9dbc84 100644
              if (!(pte & PG_PRESENT_MASK)) {
                  goto do_fault;
              }
-@@ -273,7 +325,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+@@ -276,7 +328,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
              return false;
          }
      restart_2_pae:
@@ -13935,7 +13931,7 @@ index f7e228874..22e9dbc84 100644
          if (!(pte & PG_PRESENT_MASK)) {
              goto do_fault;
          }
-@@ -299,7 +351,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+@@ -302,7 +354,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
          if (!ptw_translate(&pte_trans, pte_addr)) {
              return false;
          }
@@ -13944,7 +13940,7 @@ index f7e228874..22e9dbc84 100644
          if (!(pte & PG_PRESENT_MASK)) {
              goto do_fault;
          }
-@@ -318,7 +370,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+@@ -321,7 +373,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
              return false;
          }
      restart_2_nopae:
@@ -13953,7 +13949,7 @@ index f7e228874..22e9dbc84 100644
          if (!(pte & PG_PRESENT_MASK)) {
              goto do_fault;
          }
-@@ -347,7 +399,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+@@ -350,7 +402,7 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
          if (!ptw_translate(&pte_trans, pte_addr)) {
              return false;
          }
@@ -13962,7 +13958,7 @@ index f7e228874..22e9dbc84 100644
          if (!(pte & PG_PRESENT_MASK)) {
              goto do_fault;
          }
-@@ -570,6 +622,7 @@ static bool get_physical_address(CPUX86State *env, vaddr addr,
+@@ -573,6 +625,7 @@ static bool get_physical_address(CPUX86State *env, vaddr addr,
              in.mmu_idx =
                  env->nested_pg_mode & PG_MODE_LMA ? MMU_USER64_IDX : MMU_USER32_IDX;
              in.ptw_idx = MMU_PHYS_IDX;
@@ -13970,7 +13966,7 @@ index f7e228874..22e9dbc84 100644
  
              if (!mmu_translate(env, &in, out, err, ra)) {
                  err->stage2 = S2_GPA;
-@@ -588,6 +641,7 @@ static bool get_physical_address(CPUX86State *env, vaddr addr,
+@@ -591,6 +644,7 @@ static bool get_physical_address(CPUX86State *env, vaddr addr,
              in.cr3 = env->cr[3];
              in.mmu_idx = mmu_idx;
              in.ptw_idx = use_stage2 ? MMU_NESTED_IDX : MMU_PHYS_IDX;
@@ -13978,7 +13974,7 @@ index f7e228874..22e9dbc84 100644
              in.pg_mode = get_pg_mode(env);
  
              if (in.pg_mode & PG_MODE_LMA) {
-@@ -615,6 +669,7 @@ static bool get_physical_address(CPUX86State *env, vaddr addr,
+@@ -619,6 +673,7 @@ static bool get_physical_address(CPUX86State *env, vaddr addr,
  }
  
  bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
@@ -13986,7 +13982,7 @@ index f7e228874..22e9dbc84 100644
                                     CPUFaultTranslation *result)
  {
      CPUX86State *env = cpu_env(cs);
-@@ -623,8 +678,9 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
+@@ -627,8 +682,9 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
      int mmu_idx = cpu_mmu_index(cs, false);
      TranslateParams in = {
          .addr = addr,
@@ -13997,7 +13993,7 @@ index f7e228874..22e9dbc84 100644
      };
  
      if (env->hflags2 & HF2_NPT_MASK) {
-@@ -654,8 +710,10 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
+@@ -658,8 +714,10 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
          out.prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
          out.page_size = TARGET_PAGE_SIZE;
      }
@@ -14010,7 +14006,7 @@ index f7e228874..22e9dbc84 100644
          return false;
      }
      result->physical_address = out.paddr;
-@@ -668,6 +726,52 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
+@@ -672,6 +730,52 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
      return true;
  }
  
@@ -14063,7 +14059,7 @@ index f7e228874..22e9dbc84 100644
  bool x86_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
                        MMUAccessType access_type, int mmu_idx,
                        bool probe, uintptr_t retaddr)
-@@ -675,9 +779,31 @@ bool x86_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
+@@ -679,9 +783,31 @@ bool x86_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
      CPUX86State *env = cpu_env(cs);
      TranslateResult out;
      TranslateFault err;
@@ -15551,16 +15547,15 @@ index 000000000..e1e096d68
 +    return 0;
 +}
 diff --git a/tests/tcg/plugins/meson.build b/tests/tcg/plugins/meson.build
-index 24a8a7b92..6b2c7aa5a 100644
+index 854e888e7..a6c87da20 100644
 --- a/tests/tcg/plugins/meson.build
 +++ b/tests/tcg/plugins/meson.build
 @@ -1,6 +1,8 @@
- t = []
- if get_option('plugins')
--  foreach i : ['bb', 'crucible-memory', 'empty', 'inline', 'insn', 'mem',
-+  foreach i : ['bb', 'crucible-memory', 'crucible-memory-access',
-+               'crucible-memory-dma',
-+               'empty', 'inline', 'insn', 'mem',
-                'reset', 'syscall']
-     if host_os == 'windows'
-       t += shared_module(i, files(i + '.c') + '../../../contrib/plugins/win32_linker.c',
+ test_plugins = [
+ 'bb.c',
+ 'crucible-memory.c',
++'crucible-memory-access.c',
++'crucible-memory-dma.c',
+ 'discons.c',
+ 'empty.c',
+ 'inline.c',

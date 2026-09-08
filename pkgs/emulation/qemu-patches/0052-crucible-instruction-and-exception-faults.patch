@@ -1,8 +1,8 @@
 diff --git a/MAINTAINERS b/MAINTAINERS
-index b5b12db2e..ac1b6993b 100644
+index 460768363..182dec6cd 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -3839,7 +3839,9 @@ S: Maintained
+@@ -4204,7 +4204,9 @@ S: Maintained
  F: docs/devel/tcg-plugins.rst
  F: plugins/
  F: include/qemu/crucible-fault.h
@@ -10,13 +10,13 @@ index b5b12db2e..ac1b6993b 100644
  F: plugins/crucible-fault-memory.c
 +F: tests/tcg/plugins/crucible-instruction.c
  F: tests/tcg/plugins/
- F: tests/functional/test_aarch64_tcg_plugins.py
- F: contrib/plugins/
+ F: tests/tcg/multiarch/plugin/
+ F: tests/functional/aarch64/test_tcg_plugins.py
 diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
-index 777ccacd0..55c096523 100644
+index 4cb51fae4..7eb51b20d 100644
 --- a/accel/tcg/cpu-exec.c
 +++ b/accel/tcg/cpu-exec.c
-@@ -532,6 +532,8 @@ static void cpu_exec_longjmp_cleanup(CPUState *cpu)
+@@ -522,6 +522,8 @@ static void cpu_exec_longjmp_cleanup(CPUState *cpu)
  {
      /* Non-buggy compilers preserve this; assert the correct value. */
      g_assert(cpu == current_cpu);
@@ -25,17 +25,17 @@ index 777ccacd0..55c096523 100644
      qemu_crucible_fault_register_execution_complete(cpu);
      qemu_crucible_fault_memory_fetch_stage_discard(cpu);
  
-@@ -575,6 +577,8 @@ void cpu_exec_step_atomic(CPUState *cpu)
-     uint64_t cs_base;
-     uint32_t flags, cflags;
+@@ -561,6 +563,8 @@ void cpu_exec_step_atomic(CPUState *cpu)
+ {
+     TranslationBlock *tb;
      int tb_exit;
 +    bool skip_instruction;
 +    bool fault_boundary;
  
      if (sigsetjmp(cpu->jmp_env, 0) == 0) {
          start_exclusive();
-@@ -583,12 +587,23 @@ void cpu_exec_step_atomic(CPUState *cpu)
-         cpu->running = true;
+@@ -571,13 +575,24 @@ void cpu_exec_step_atomic(CPUState *cpu)
+         TCGTBCPUState s;
  
          do {
 -            if (unlikely(qemu_crucible_fault_register_boundaries_active())) {
@@ -47,9 +47,10 @@ index 777ccacd0..55c096523 100644
                      cpu, QEMU_CRUCIBLE_MODEL_PHASE_BEFORE_INSTRUCTION,
                      qemu_crucible_fault_observed_icount());
              }
-             cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+             s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
+             s.cflags = curr_cflags(cpu);
 +            fault_boundary = qemu_crucible_fault_instruction_pc_active(
-+                cpu, pc);
++                cpu, s.pc);
 +            if (unlikely(fault_boundary && !before_dispatched)) {
 +                qemu_crucible_fault_register_instruction_boundary(
 +                    cpu, QEMU_CRUCIBLE_MODEL_PHASE_BEFORE_INSTRUCTION,
@@ -57,9 +58,9 @@ index 777ccacd0..55c096523 100644
 +            }
 +            fault_boundary |= before_dispatched;
  
-             cflags = curr_cflags(cpu);
              /* Execute in a serial context. */
-@@ -611,15 +626,27 @@ void cpu_exec_step_atomic(CPUState *cpu)
+             s.cflags &= ~CF_PARALLEL;
+@@ -599,15 +614,27 @@ void cpu_exec_step_atomic(CPUState *cpu)
              }
          } while (qemu_crucible_fault_memory_fetch_service_apply(cpu));
  
@@ -69,15 +70,15 @@ index 777ccacd0..55c096523 100644
 +        skip_instruction =
 +            unlikely(fault_boundary) &&
 +            qemu_crucible_fault_instruction_prepare(
-+                cpu, tb, pc, qemu_crucible_fault_observed_icount());
++                cpu, tb, s.pc, qemu_crucible_fault_observed_icount());
 +        if (!skip_instruction) {
 +            cpu_exec_enter(cpu);
 +            if (unlikely(fault_boundary)) {
 +                qemu_crucible_fault_register_execution_begin(cpu);
 +            }
-+            qemu_crucible_fault_instruction_execution_begin(cpu, pc);
++            qemu_crucible_fault_instruction_execution_begin(cpu, s.pc);
 +            /* execute the generated code */
-+            trace_exec_tb(tb, pc);
++            trace_exec_tb(tb, s.pc);
 +            cpu_tb_exec(cpu, tb, &tb_exit);
 +            qemu_crucible_fault_instruction_execution_complete(
 +                cpu, qemu_crucible_fault_observed_icount(), false);
@@ -88,14 +89,14 @@ index 777ccacd0..55c096523 100644
 +            qatomic_set_mb(&cpu->exit_request, 1);
          }
 -        /* execute the generated code */
--        trace_exec_tb(tb, pc);
+-        trace_exec_tb(tb, s.pc);
 -        cpu_tb_exec(cpu, tb, &tb_exit);
 -        qemu_crucible_fault_register_execution_complete(cpu);
 -        cpu_exec_exit(cpu);
          qemu_crucible_fault_memory_service_apply(cpu);
      } else {
          cpu_exec_longjmp_cleanup(cpu);
-@@ -917,17 +944,23 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
+@@ -909,17 +936,23 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
  
  static inline void cpu_loop_exec_tb(CPUState *cpu, TranslationBlock *tb,
                                      vaddr pc, TranslationBlock **last_tb,
@@ -122,10 +123,10 @@ index 777ccacd0..55c096523 100644
              NULL : tb;
          return;
      }
-@@ -984,13 +1017,25 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
-             vaddr pc;
-             uint64_t cs_base;
-             uint32_t flags, cflags;
+@@ -974,13 +1007,25 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+         while (!cpu_handle_interrupt(cpu, &last_tb)) {
+             TranslationBlock *tb;
+             TCGTBCPUState s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
 +            bool before_dispatched;
 +            bool fault_boundary;
  
@@ -137,9 +138,9 @@ index 777ccacd0..55c096523 100644
                      cpu, QEMU_CRUCIBLE_MODEL_PHASE_BEFORE_INSTRUCTION,
                      qemu_crucible_fault_observed_icount());
              }
-             cpu_get_tb_cpu_state(cpu_env(cpu), &pc, &cs_base, &flags);
+             s.cflags = cpu->cflags_next_tb;
 +            fault_boundary = qemu_crucible_fault_instruction_pc_active(
-+                cpu, pc);
++                cpu, s.pc);
 +            if (unlikely(fault_boundary && !before_dispatched)) {
 +                qemu_crucible_fault_register_instruction_boundary(
 +                    cpu, QEMU_CRUCIBLE_MODEL_PHASE_BEFORE_INSTRUCTION,
@@ -149,22 +150,22 @@ index 777ccacd0..55c096523 100644
  
              /*
               * When requested, use an exact setting for cflags for the next
-@@ -1011,7 +1056,7 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+@@ -1000,7 +1045,7 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
              }
  
              if (unlikely(qemu_crucible_fault_memory_fetch_rules_active() ||
 -                         qemu_crucible_fault_register_boundaries_active())) {
 +                         fault_boundary)) {
-                 cflags &= ~CF_COUNT_MASK;
-                 cflags |= CF_NO_GOTO_TB | CF_NO_GOTO_PTR | 1;
+                 s.cflags &= ~CF_COUNT_MASK;
+                 s.cflags |= CF_NO_GOTO_TB | CF_NO_GOTO_PTR | 1;
                  last_tb = NULL;
-@@ -1056,13 +1101,22 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+@@ -1044,13 +1089,22 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
                  last_tb = NULL;
                  continue;
              }
 +            if (unlikely(fault_boundary) &&
 +                qemu_crucible_fault_instruction_prepare(
-+                    cpu, tb, pc, qemu_crucible_fault_observed_icount())) {
++                    cpu, tb, s.pc, qemu_crucible_fault_observed_icount())) {
 +                last_tb = NULL;
 +                qatomic_set_mb(&cpu->exit_request, 1);
 +                qemu_crucible_fault_memory_service_apply(cpu);
@@ -176,17 +177,17 @@ index 777ccacd0..55c096523 100644
                  tb_add_jump(last_tb, tb_exit, tb);
              }
  
--            cpu_loop_exec_tb(cpu, tb, pc, &last_tb, &tb_exit);
+-            cpu_loop_exec_tb(cpu, tb, s.pc, &last_tb, &tb_exit);
 +            cpu_loop_exec_tb(
-+                cpu, tb, pc, &last_tb, &tb_exit, fault_boundary);
++                cpu, tb, s.pc, &last_tb, &tb_exit, fault_boundary);
              if (qemu_crucible_fault_memory_service_apply(cpu)) {
                  last_tb = NULL;
              }
 diff --git a/accel/tcg/translator.c b/accel/tcg/translator.c
-index d56305f97..633961198 100644
+index 7e685fd69..24867146e 100644
 --- a/accel/tcg/translator.c
 +++ b/accel/tcg/translator.c
-@@ -113,7 +113,8 @@ bool translator_is_same_page(const DisasContextBase *db, vaddr addr)
+@@ -112,7 +112,8 @@ bool translator_is_same_page(const DisasContextBase *db, vaddr addr)
  bool translator_use_goto_tb(DisasContextBase *db, vaddr dest)
  {
      /* Suppress goto_tb if requested. */
@@ -196,7 +197,7 @@ index d56305f97..633961198 100644
          return false;
      }
  
-@@ -154,6 +155,7 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
+@@ -156,6 +157,7 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
  
      plugin_enabled = plugin_gen_tb_start(cpu, db);
      db->plugin_enabled = plugin_enabled;
@@ -204,7 +205,7 @@ index d56305f97..633961198 100644
  
      while (true) {
          *max_insns = ++db->num_insns;
-@@ -232,6 +234,19 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
+@@ -234,6 +236,19 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
              plugin_gen_insn_end();
          }
  
@@ -225,10 +226,10 @@ index d56305f97..633961198 100644
          if (db->is_jmp != DISAS_NEXT) {
              break;
 diff --git a/include/exec/translator.h b/include/exec/translator.h
-index 545fcff19..70575d097 100644
+index afacfa2d1..c0038fd0a 100644
 --- a/include/exec/translator.h
 +++ b/include/exec/translator.h
-@@ -59,6 +59,7 @@ typedef enum DisasJumpType {
+@@ -60,6 +60,7 @@ typedef enum DisasJumpType {
   * @max_insns: Maximum number of instructions to be translated in this TB.
   * @plugin_enabled: TCG plugin enabled in this TB.
   * @fake_insn: True if translator_fake_ldb used.
@@ -236,19 +237,19 @@ index 545fcff19..70575d097 100644
   * @insn_start: The last op emitted by the insn_start hook,
   *              which is expected to be INDEX_op_insn_start.
   *
-@@ -73,6 +74,7 @@ struct DisasContextBase {
-     int max_insns;
+@@ -75,6 +76,7 @@ struct DisasContextBase {
      bool plugin_enabled;
      bool fake_insn;
+     uint8_t code_mmuidx;
 +    bool crucible_fault_boundary_exit;
      struct TCGOp *insn_start;
      void *host_addr[2];
  
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index 1d4589fd4..c33007482 100644
+index eab188f17..590cf58b6 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
-@@ -796,6 +796,13 @@ typedef enum CPUFaultExceptionRecord {
+@@ -832,6 +832,13 @@ typedef enum CPUFaultExceptionRecord {
      CPU_FAULT_EXCEPTION_AARCH64_RAS = 3,
  } CPUFaultExceptionRecord;
  
@@ -262,8 +263,48 @@ index 1d4589fd4..c33007482 100644
  typedef struct CPUFaultException {
      CPUFaultExceptionArchitecture architecture;
      CPUFaultExceptionRecord record;
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index 8ea783f26..95368e9da 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -1064,9 +1064,9 @@ int qemu_plugin_icount_at_tb_entry(uint64_t tb_insns,
+ /**
+  * qemu_plugin_force_vcpu_exit() - force the current vCPU out of cpu_exec
+  *
+- * Sets the current vCPU's exit request so Crucible can normalize the first
+- * tcg_cpu_exec exit/run phase from a vCPU-init callback. Calls made before a
+- * current vCPU exists are ignored.
++ * Sets the exit request for the current vCPU so Crucible can normalize the
++ * first tcg_cpu_exec exit/run phase from a vCPU-init callback. Calls made
++ * before a current vCPU exists are ignored.
+  */
+ QEMU_PLUGIN_API
+ void qemu_plugin_force_vcpu_exit(void);
+@@ -2068,6 +2068,22 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
+                                              size_t out_value_capacity,
+                                              size_t *out_value_len);
+ 
++/**
++ * qemu_plugin_crucible_fault_instruction_manifest() - copy decoder contract
++ * @manifest: optional plugin-owned output bytes
++ * @capacity: available bytes at @manifest
++ * @sha256: required output for the immutable manifest SHA-256 digest
++ * @architecture: required output for the realized architecture scope
++ *
++ * Returns the exact manifest length. A zero-capacity call queries the length
++ * and identity without copying. The return is zero when the realized CPU does
++ * not support instruction faults or an output pointer is invalid.
++ */
++QEMU_PLUGIN_API
++size_t qemu_plugin_crucible_fault_instruction_manifest(
++    uint8_t *manifest, size_t capacity, uint8_t sha256[32],
++    uint16_t *architecture);
++
+ /** Bind the public architecture identity used by every register target. */
+ QEMU_PLUGIN_API
+ int qemu_plugin_crucible_fault_register_bind_architecture(
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 1622d08db..4ff51630a 100644
+index e65445765..8420166aa 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -16,6 +16,10 @@
@@ -413,49 +454,9 @@ index 1622d08db..4ff51630a 100644
  #ifndef QEMU_CRUCIBLE_FAULT_MEMORY_RULES_ACTIVE_DECLARED
  #define QEMU_CRUCIBLE_FAULT_MEMORY_RULES_ACTIVE_DECLARED
  bool qemu_crucible_fault_memory_rules_active(void);
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 4cf2a588a..d7668180a 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -966,9 +966,9 @@ int qemu_plugin_icount_at_tb_entry(uint64_t tb_insns,
- /**
-  * qemu_plugin_force_vcpu_exit() - force the current vCPU out of cpu_exec
-  *
-- * Sets the current vCPU's exit request so Crucible can normalize the first
-- * tcg_cpu_exec exit/run phase from a vCPU-init callback. Calls made before a
-- * current vCPU exists are ignored.
-+ * Sets the exit request for the current vCPU so Crucible can normalize the
-+ * first tcg_cpu_exec exit/run phase from a vCPU-init callback. Calls made
-+ * before a current vCPU exists are ignored.
-  */
- QEMU_PLUGIN_API
- void qemu_plugin_force_vcpu_exit(void);
-@@ -1707,6 +1707,22 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
-                                              size_t out_value_capacity,
-                                              size_t *out_value_len);
- 
-+/**
-+ * qemu_plugin_crucible_fault_instruction_manifest() - copy decoder contract
-+ * @manifest: optional plugin-owned output bytes
-+ * @capacity: available bytes at @manifest
-+ * @sha256: required output for the immutable manifest SHA-256 digest
-+ * @architecture: required output for the realized architecture scope
-+ *
-+ * Returns the exact manifest length. A zero-capacity call queries the length
-+ * and identity without copying. The return is zero when the realized CPU does
-+ * not support instruction faults or an output pointer is invalid.
-+ */
-+QEMU_PLUGIN_API
-+size_t qemu_plugin_crucible_fault_instruction_manifest(
-+    uint8_t *manifest, size_t capacity, uint8_t sha256[32],
-+    uint16_t *architecture);
-+
- /** Bind the public architecture identity used by every register target. */
- QEMU_PLUGIN_API
- int qemu_plugin_crucible_fault_register_bind_architecture(
 diff --git a/plugins/crucible-fault-instruction.c b/plugins/crucible-fault-instruction.c
 new file mode 100644
-index 000000000..8c56d0d15
+index 000000000..19549ec49
 --- /dev/null
 +++ b/plugins/crucible-fault-instruction.c
 @@ -0,0 +1,2825 @@
@@ -475,7 +476,7 @@ index 000000000..8c56d0d15
 +#include "qemu/crucible-fault.h"
 +#include "qemu/error-report.h"
 +#include "qemu/interval-tree.h"
-+#include "qemu/qemu-plugin.h"
++#include "plugins/qemu-plugin.h"
 +#include "qobject/qdict.h"
 +#include "qobject/qnum.h"
 +#include "qobject/qstring.h"
@@ -3285,7 +3286,7 @@ index 000000000..8c56d0d15
 +    return true;
 +}
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 6c36ed529..76b092a32 100644
+index 6ca2476d7..7c96506eb 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -104,6 +104,8 @@ struct QemuCrucibleFaultRule {
@@ -3848,13 +3849,13 @@ index 6c36ed529..76b092a32 100644
                              qdict_get_qdict(policy, "parameters"),
                              "exception"),
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
-index ef2cf2f96..4c19a52eb 100644
+index a26755ddb..bd7a53f7b 100644
 --- a/plugins/crucible-fault-register.c
 +++ b/plugins/crucible-fault-register.c
 @@ -11,6 +11,8 @@
  #include "qemu/crucible-fault.h"
  #include "qemu/error-report.h"
- #include "qemu/qemu-plugin.h"
+ #include "plugins/qemu-plugin.h"
 +#include "qobject/qdict.h"
 +#include "qobject/qstring.h"
  
@@ -4251,10 +4252,10 @@ index 6e96e52f2..8f34479d1 100644
          }
      }
 diff --git a/plugins/meson.build b/plugins/meson.build
-index 550ed0dee..75bafa1d4 100644
+index 1f12b5b4e..f55352de2 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
-@@ -61,6 +61,7 @@ endif
+@@ -81,7 +81,8 @@ endif
  user_ss.add(files('user.c', 'api-user.c'))
  system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
                      'crucible-fault-memory.c', 'crucible-fault-node.c',
@@ -4262,60 +4263,63 @@ index 550ed0dee..75bafa1d4 100644
 +                    'crucible-fault-register.c',
 +                    'crucible-fault-instruction.c'))
  
- common_ss.add(files('loader.c', 'api.c', 'core.c'))
+ user_ss.add(files('api.c', 'core.c'))
+ system_ss.add(files('api.c', 'core.c'))
 diff --git a/system/ioport.c b/system/ioport.c
-index 55c2a7523..ff2dfeecb 100644
+index 0a1b80f29..a4a44491d 100644
 --- a/system/ioport.c
 +++ b/system/ioport.c
-@@ -30,6 +30,7 @@
- #include "exec/ioport.h"
- #include "exec/memory.h"
- #include "exec/address-spaces.h"
+@@ -26,10 +26,12 @@
+  */
+ 
+ #include "qemu/osdep.h"
 +#include "qemu/crucible-fault.h"
+ #include "system/ioport.h"
+ #include "system/memory.h"
+ #include "system/address-spaces.h"
+ #include "hw/core/qdev.h"
++#include "hw/core/cpu.h"
  #include "trace.h"
  
  struct MemoryRegionPortioList {
-@@ -61,37 +62,50 @@ const MemoryRegionOps unassigned_io_ops = {
+@@ -61,31 +63,50 @@ const MemoryRegionOps unassigned_io_ops = {
  
  void cpu_outb(uint32_t addr, uint8_t val)
  {
 +    MemTxResult result;
 +
      trace_cpu_out(addr, 'b', val);
--    address_space_write(&address_space_io, addr, MEMTXATTRS_UNSPECIFIED,
--                        &val, 1);
-+    result = address_space_write(&address_space_io, addr,
-+                                 MEMTXATTRS_UNSPECIFIED, &val, 1);
+     address_space_stb(&address_space_io, addr, val,
+-                      MEMTXATTRS_UNSPECIFIED, NULL);
++                      MEMTXATTRS_UNSPECIFIED, &result);
 +    qemu_crucible_fault_instruction_port_io(
 +        current_cpu, true, addr, &val, 1, result == MEMTX_OK);
  }
  
  void cpu_outw(uint32_t addr, uint16_t val)
  {
-     uint8_t buf[2];
++    uint8_t buf[2];
 +    MemTxResult result;
- 
++
      trace_cpu_out(addr, 'w', val);
-     stw_p(buf, val);
--    address_space_write(&address_space_io, addr, MEMTXATTRS_UNSPECIFIED,
--                        buf, 2);
-+    result = address_space_write(&address_space_io, addr,
-+                                 MEMTXATTRS_UNSPECIFIED, buf, 2);
++    stw_le_p(buf, val);
+     address_space_stw_le(&address_space_io, addr, val,
+-                         MEMTXATTRS_UNSPECIFIED, NULL);
++                         MEMTXATTRS_UNSPECIFIED, &result);
 +    qemu_crucible_fault_instruction_port_io(
 +        current_cpu, true, addr, buf, 2, result == MEMTX_OK);
  }
  
  void cpu_outl(uint32_t addr, uint32_t val)
  {
-     uint8_t buf[4];
++    uint8_t buf[4];
 +    MemTxResult result;
- 
++
      trace_cpu_out(addr, 'l', val);
-     stl_p(buf, val);
--    address_space_write(&address_space_io, addr, MEMTXATTRS_UNSPECIFIED,
--                        buf, 4);
-+    result = address_space_write(&address_space_io, addr,
-+                                 MEMTXATTRS_UNSPECIFIED, buf, 4);
++    stl_le_p(buf, val);
+     address_space_stl_le(&address_space_io, addr, val,
+-                         MEMTXATTRS_UNSPECIFIED, NULL);
++                         MEMTXATTRS_UNSPECIFIED, &result);
 +    qemu_crucible_fault_instruction_port_io(
 +        current_cpu, true, addr, buf, 4, result == MEMTX_OK);
  }
@@ -4325,45 +4329,48 @@ index 55c2a7523..ff2dfeecb 100644
      uint8_t val;
 +    MemTxResult result;
  
--    address_space_read(&address_space_io, addr, MEMTXATTRS_UNSPECIFIED,
--                       &val, 1);
-+    result = address_space_read(&address_space_io, addr,
-+                                MEMTXATTRS_UNSPECIFIED, &val, 1);
+     val = address_space_ldub(&address_space_io, addr,
+-                             MEMTXATTRS_UNSPECIFIED, NULL);
++                             MEMTXATTRS_UNSPECIFIED, &result);
 +    qemu_crucible_fault_instruction_port_io(
 +        current_cpu, false, addr, &val, 1, result == MEMTX_OK);
      trace_cpu_in(addr, 'b', val);
      return val;
  }
-@@ -100,8 +114,12 @@ uint16_t cpu_inw(uint32_t addr)
+@@ -93,9 +114,14 @@ uint8_t cpu_inb(uint32_t addr)
+ uint16_t cpu_inw(uint32_t addr)
  {
-     uint8_t buf[2];
      uint16_t val;
 +    MemTxResult result;
++    uint8_t buf[2];
  
--    address_space_read(&address_space_io, addr, MEMTXATTRS_UNSPECIFIED, buf, 2);
-+    result = address_space_read(&address_space_io, addr,
-+                                MEMTXATTRS_UNSPECIFIED, buf, 2);
+     val = address_space_lduw_le(&address_space_io, addr,
+-                                MEMTXATTRS_UNSPECIFIED, NULL);
++                                MEMTXATTRS_UNSPECIFIED, &result);
++    stw_le_p(buf, val);
 +    qemu_crucible_fault_instruction_port_io(
 +        current_cpu, false, addr, buf, 2, result == MEMTX_OK);
-     val = lduw_p(buf);
      trace_cpu_in(addr, 'w', val);
      return val;
-@@ -111,8 +129,12 @@ uint32_t cpu_inl(uint32_t addr)
+ }
+@@ -103,9 +129,14 @@ uint16_t cpu_inw(uint32_t addr)
+ uint32_t cpu_inl(uint32_t addr)
  {
-     uint8_t buf[4];
      uint32_t val;
 +    MemTxResult result;
++    uint8_t buf[4];
  
--    address_space_read(&address_space_io, addr, MEMTXATTRS_UNSPECIFIED, buf, 4);
-+    result = address_space_read(&address_space_io, addr,
-+                                MEMTXATTRS_UNSPECIFIED, buf, 4);
+     val = address_space_ldl_le(&address_space_io, addr,
+-                               MEMTXATTRS_UNSPECIFIED, NULL);
++                               MEMTXATTRS_UNSPECIFIED, &result);
++    stl_le_p(buf, val);
 +    qemu_crucible_fault_instruction_port_io(
 +        current_cpu, false, addr, buf, 4, result == MEMTX_OK);
-     val = ldl_p(buf);
      trace_cpu_in(addr, 'l', val);
      return val;
+ }
 diff --git a/target/arm/helper.c b/target/arm/helper.c
-index bb445e30c..72dba9ce5 100644
+index af45234ad..dd9a1f0a3 100644
 --- a/target/arm/helper.c
 +++ b/target/arm/helper.c
 @@ -8,6 +8,7 @@
@@ -4374,10 +4381,10 @@ index bb445e30c..72dba9ce5 100644
  #include "trace.h"
  #include "cpu.h"
  #include "internals.h"
-@@ -10880,6 +10881,27 @@ void arm_cpu_do_interrupt(CPUState *cs)
-     ARMCPU *cpu = ARM_CPU(cs);
+@@ -9624,6 +9625,27 @@ void arm_cpu_do_interrupt(CPUState *cs)
      CPUARMState *env = &cpu->env;
      unsigned int new_el = env->exception.target_el;
+     uint64_t last_pc = cs->cc->get_pc(cs);
 +    uint32_t crucible_vector = 0;
 +    uint64_t crucible_syndrome = env->exception.syndrome;
 +    uint64_t crucible_address = env->exception.vaddress;
@@ -4402,7 +4409,7 @@ index bb445e30c..72dba9ce5 100644
  
      assert(!arm_feature(env, ARM_FEATURE_M));
  
-@@ -10929,6 +10951,12 @@ void arm_cpu_do_interrupt(CPUState *cs)
+@@ -9675,6 +9697,12 @@ void arm_cpu_do_interrupt(CPUState *cs)
  
      arm_call_el_change_hook(cpu);
  
@@ -4412,14 +4419,14 @@ index bb445e30c..72dba9ce5 100644
 +            crucible_has_address, crucible_address);
 +    }
 +
-     if (!kvm_enabled()) {
-         cs->interrupt_request |= CPU_INTERRUPT_EXITTB;
+     if (tcg_enabled()) {
+         cpu_set_interrupt(cs, CPU_INTERRUPT_EXITTB);
      }
 diff --git a/target/arm/ptw.c b/target/arm/ptw.c
-index b42acb36b..5e32dfb46 100644
+index 76bd22676..c6f9f27c2 100644
 --- a/target/arm/ptw.c
 +++ b/target/arm/ptw.c
-@@ -3730,15 +3730,44 @@ bool arm_cpu_get_fault_translation(CPUState *cs, vaddr addr,
+@@ -4225,15 +4225,44 @@ bool arm_cpu_get_fault_translation(CPUState *cs, vaddr addr,
  bool arm_cpu_validate_fault_exception(
      CPUState *cs, const CPUFaultException *exception)
  {
@@ -4470,7 +4477,7 @@ index b42acb36b..5e32dfb46 100644
             (abort || !exception->has_fault_address);
  }
  
-@@ -3746,15 +3775,33 @@ void arm_cpu_inject_fault_exception(
+@@ -4241,15 +4270,33 @@ void arm_cpu_inject_fault_exception(
      CPUState *cs, const CPUFaultException *exception, uintptr_t retaddr)
  {
      CPUARMState *env = cpu_env(cs);
@@ -4507,10 +4514,10 @@ index b42acb36b..5e32dfb46 100644
  }
  
 diff --git a/target/arm/tcg/translate-a64.c b/target/arm/tcg/translate-a64.c
-index 39014325d..151298e35 100644
+index 178049006..088baf208 100644
 --- a/target/arm/tcg/translate-a64.c
 +++ b/target/arm/tcg/translate-a64.c
-@@ -10339,7 +10339,12 @@ static void aarch64_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
+@@ -11237,7 +11237,12 @@ static void aarch64_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
          switch (dc->base.is_jmp) {
          case DISAS_NEXT:
          case DISAS_TOO_MANY:
@@ -4525,7 +4532,7 @@ index 39014325d..151298e35 100644
          default:
          case DISAS_UPDATE_EXIT:
 diff --git a/target/i386/tcg/seg_helper.c b/target/i386/tcg/seg_helper.c
-index 71962113f..b92300059 100644
+index 6d424349a..39a3ef905 100644
 --- a/target/i386/tcg/seg_helper.c
 +++ b/target/i386/tcg/seg_helper.c
 @@ -21,6 +21,7 @@
@@ -4534,23 +4541,24 @@ index 71962113f..b92300059 100644
  #include "qemu/log.h"
 +#include "qemu/crucible-fault.h"
  #include "exec/helper-proto.h"
- #include "exec/exec-all.h"
- #include "exec/cpu_ldst.h"
-@@ -1238,6 +1239,9 @@ void do_interrupt_all(X86CPU *cpu, int intno, int is_int,
+ #include "accel/tcg/cpu-ldst.h"
+ #include "accel/tcg/probe.h"
+@@ -1274,7 +1275,9 @@ void do_interrupt_all(X86CPU *cpu, int intno, int is_int,
                   event_inj & ~SVM_EVTINJ_VALID);
      }
  #endif
+-
 +    qemu_crucible_fault_instruction_exception_delivered(
 +        CPU(cpu), intno, error_code, intno == EXCP0E_PAGE,
 +        intno == EXCP0E_PAGE ? env->cr[2] : 0);
+     qemu_plugin_vcpu_interrupt_cb(CPU(cpu), last_pc);
  }
  
- void do_interrupt_x86_hardirq(CPUX86State *env, int intno, int is_hw)
 diff --git a/target/i386/tcg/system/excp_helper.c b/target/i386/tcg/system/excp_helper.c
-index 22e9dbc84..5763a1518 100644
+index ed73746d7..31e9dafdd 100644
 --- a/target/i386/tcg/system/excp_helper.c
 +++ b/target/i386/tcg/system/excp_helper.c
-@@ -729,12 +729,47 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
+@@ -733,12 +733,47 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
  bool x86_cpu_validate_fault_exception(
      CPUState *cs, const CPUFaultException *exception)
  {
@@ -4603,7 +4611,7 @@ index 22e9dbc84..5763a1518 100644
  
  void x86_cpu_inject_fault_exception(
 diff --git a/target/i386/tcg/system/misc_helper.c b/target/i386/tcg/system/misc_helper.c
-index ce18c75b9..d2734345e 100644
+index 2998b1aae..8f6f6b128 100644
 --- a/target/i386/tcg/system/misc_helper.c
 +++ b/target/i386/tcg/system/misc_helper.c
 @@ -18,6 +18,8 @@
@@ -4615,7 +4623,7 @@ index ce18c75b9..d2734345e 100644
  #include "qemu/main-loop.h"
  #include "cpu.h"
  #include "exec/helper-proto.h"
-@@ -29,38 +31,74 @@
+@@ -31,38 +33,74 @@
  
  void helper_outb(CPUX86State *env, uint32_t port, uint32_t data)
  {
@@ -4648,19 +4656,19 @@ index ce18c75b9..d2734345e 100644
 +    uint8_t value[2];
 +
 +    stw_le_p(value, data);
-     address_space_stw(&address_space_io, port, data,
--                      cpu_get_mem_attrs(env), NULL);
-+                      cpu_get_mem_attrs(env), &result);
+     address_space_stw_le(&address_space_io, port, data,
+-                         cpu_get_mem_attrs(env), NULL);
++                         cpu_get_mem_attrs(env), &result);
 +    qemu_crucible_fault_instruction_port_io(
 +        env_cpu(env), true, port, value, 2, result == MEMTX_OK);
  }
  
  target_ulong helper_inw(CPUX86State *env, uint32_t port)
  {
--    return address_space_lduw(&address_space_io, port,
--                              cpu_get_mem_attrs(env), NULL);
+-    return address_space_lduw_le(&address_space_io, port,
+-                                 cpu_get_mem_attrs(env), NULL);
 +    MemTxResult result;
-+    uint16_t data = address_space_lduw(
++    uint16_t data = address_space_lduw_le(
 +        &address_space_io, port, cpu_get_mem_attrs(env), &result);
 +    uint8_t value[2];
 +
@@ -4676,19 +4684,19 @@ index ce18c75b9..d2734345e 100644
 +    uint8_t value[4];
 +
 +    stl_le_p(value, data);
-     address_space_stl(&address_space_io, port, data,
--                      cpu_get_mem_attrs(env), NULL);
-+                      cpu_get_mem_attrs(env), &result);
+     address_space_stl_le(&address_space_io, port, data,
+-                         cpu_get_mem_attrs(env), NULL);
++                         cpu_get_mem_attrs(env), &result);
 +    qemu_crucible_fault_instruction_port_io(
 +        env_cpu(env), true, port, value, 4, result == MEMTX_OK);
  }
  
  target_ulong helper_inl(CPUX86State *env, uint32_t port)
  {
--    return address_space_ldl(&address_space_io, port,
--                             cpu_get_mem_attrs(env), NULL);
+-    return address_space_ldl_le(&address_space_io, port,
+-                                cpu_get_mem_attrs(env), NULL);
 +    MemTxResult result;
-+    uint32_t data = address_space_ldl(
++    uint32_t data = address_space_ldl_le(
 +        &address_space_io, port, cpu_get_mem_attrs(env), &result);
 +    uint8_t value[4];
 +
@@ -4700,10 +4708,10 @@ index ce18c75b9..d2734345e 100644
  
  target_ulong helper_read_cr8(CPUX86State *env)
 diff --git a/target/i386/tcg/translate.c b/target/i386/tcg/translate.c
-index a8935f487..d77748b54 100644
+index 2115c5cd2..b06a89107 100644
 --- a/target/i386/tcg/translate.c
 +++ b/target/i386/tcg/translate.c
-@@ -3850,6 +3850,9 @@ static void i386_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
+@@ -3585,6 +3585,9 @@ static void i386_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
          break;
      case DISAS_TOO_MANY:
          gen_update_cc_op(dc);
@@ -6493,15 +6501,14 @@ index 000000000..eb88c4987
 +    return 0;
 +}
 diff --git a/tests/tcg/plugins/meson.build b/tests/tcg/plugins/meson.build
-index 6b2c7aa5a..97ad9e7ab 100644
+index a6c87da20..a8a3671c7 100644
 --- a/tests/tcg/plugins/meson.build
 +++ b/tests/tcg/plugins/meson.build
-@@ -1,7 +1,7 @@
- t = []
- if get_option('plugins')
-   foreach i : ['bb', 'crucible-memory', 'crucible-memory-access',
--               'crucible-memory-dma',
-+               'crucible-memory-dma', 'crucible-instruction',
-                'empty', 'inline', 'insn', 'mem',
-                'reset', 'syscall']
-     if host_os == 'windows'
+@@ -3,6 +3,7 @@ test_plugins = [
+ 'crucible-memory.c',
+ 'crucible-memory-access.c',
+ 'crucible-memory-dma.c',
++'crucible-instruction.c',
+ 'discons.c',
+ 'empty.c',
+ 'inline.c',

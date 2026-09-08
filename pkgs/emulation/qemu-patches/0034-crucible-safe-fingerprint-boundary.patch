@@ -1,8 +1,8 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index c792d98b9..67f748038 100644
+index dbe7032f2..985e4e87a 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -222,20 +222,44 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+@@ -223,20 +223,44 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
          int r;
  
          if (rr_crucible_sim_mode() &&
@@ -57,7 +57,7 @@ index c792d98b9..67f748038 100644
              }
          }
  
-@@ -254,6 +278,12 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+@@ -255,6 +279,12 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
          qemu_plugin_maybe_fire_tcg_exec_cb(cpu);
          bql_lock();
  
@@ -70,8 +70,8 @@ index c792d98b9..67f748038 100644
          if (rr_crucible_sim_mode() &&
              crucible_sim_shmem_dispatch_registered() &&
              crucible_sim_preemption_apply_due(cpu_ptr)) {
-@@ -527,19 +557,44 @@ static void *rr_cpu_thread_fn(void *arg)
-                               (cpu->singlestep_enabled & SSTEP_NOTIMER) == 0);
+@@ -535,19 +565,44 @@ static void *rr_cpu_thread_fn(void *arg)
+                               (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
              if (rr_crucible_sim_mode() &&
 -                crucible_sim_shmem_dispatch_registered()) {
@@ -125,7 +125,7 @@ index c792d98b9..67f748038 100644
                  }
              }
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-shmem.c
-index 0a7de7063..702e9bf18 100644
+index 424f477d0..9a05b8ed1 100644
 --- a/accel/tcg/tcg-accel-ops-sim-shmem.c
 +++ b/accel/tcg/tcg-accel-ops-sim-shmem.c
 @@ -11,6 +11,8 @@ static qemu_plugin_sim_shmem_publish_icount_cb_t crucible_publish_icount_cb;
@@ -256,11 +256,11 @@ index 69553f35f..913017c3e 100644
  bool crucible_sim_shmem_may_advance_to(uint64_t candidate_icount);
  
  #endif /* TCG_ACCEL_OPS_SIM_SHMEM_H */
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index ff009c2e7..a44cf90ee 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -1064,17 +1064,20 @@ void qemu_plugin_register_sim_shmem_dispatch_cb(
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index 1016e455a..c224309da 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -1162,17 +1162,20 @@ void qemu_plugin_register_sim_shmem_dispatch_cb(
  
  /**
   * qemu_plugin_register_sim_shmem_observer_cb() - observe exact sim boundaries

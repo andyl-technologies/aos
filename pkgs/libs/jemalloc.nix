@@ -75,6 +75,12 @@ in
         '';
       }
       {
+        name = "patch";
+        script = ''
+          patch -p1 < ${./jemalloc-gcc-16.patch}
+        '';
+      }
+      {
         name = "configure";
         script =
           if stdenv.hostPlatform.isDarwin

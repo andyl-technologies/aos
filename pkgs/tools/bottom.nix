@@ -4,16 +4,15 @@
   fetchCargoDeps,
   fetchurl,
 }: let
-  # Newer releases use language features beyond the bootstrapped AOS Rust
-  # toolchain even where their manifest declares an older compiler floor.
-  version = "0.12.3";
+  # Bottom 0.14 requires Rust 1.95 or newer.
+  version = "0.14.9";
   src = fetchurl {
     urls = ["https://github.com/ClementTsang/bottom/archive/refs/tags/${version}.tar.gz"];
-    hash = "sha256-HHCJTw7OtwNAdZWf8wgM9HBsEdfAEpEsJOd3q+TmK3A=";
+    hash = "sha256-HbuUDHY/tYO34cffoWW3PtmgunEucsyXMRxbHAmNW3I=";
   };
   cargoDeps = fetchCargoDeps {
     inherit src;
-    hash = "sha256-K3rSi+R/XU/yT2EkhUlrOEnizMsoZdNPAjHz+FBzepE=";
+    hash = "sha256-98cmahv5kYjNHW8lEWDTtWzOPnnX4RTdq3ZQ9Xm4Zb0=";
   };
 in
   mkCargoPackage {

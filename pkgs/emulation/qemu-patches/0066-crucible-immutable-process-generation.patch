@@ -1,8 +1,8 @@
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 88bc19986..29eb2e39c 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -2091,6 +2091,19 @@ struct qemu_plugin_crucible_fault_result {
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index fe21c8656..ebcff26d3 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -2452,6 +2452,19 @@ struct qemu_plugin_crucible_fault_result {
      uint8_t evidence_hash[32];
  };
  
@@ -23,7 +23,7 @@ index 88bc19986..29eb2e39c 100644
   * struct qemu_plugin_crucible_fault_event - one real rule occurrence
   *
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
-index 5dba33f7b..1ecf09976 100644
+index 842f11f62..7fc430b95 100644
 --- a/plugins/crucible-fault-lifecycle.c
 +++ b/plugins/crucible-fault-lifecycle.c
 @@ -117,7 +117,7 @@ static uint32_t crucible_lifecycle_terminal_transition;

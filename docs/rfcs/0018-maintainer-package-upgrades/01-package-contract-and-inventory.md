@@ -269,9 +269,9 @@ Conceptually:
 ```nix
 {mkUpstream}: let
   upstream = mkUpstream {
-    unitId = "linux-6.18";
+    unitId = "linux-7.2";
     family = "linux";
-    stream = "6.18";
+    stream = "7.2";
     owner = "pkgs/kernel/_source.nix";
     # current, discovery, policy, and sources
   };

@@ -1177,9 +1177,9 @@ impl WorldNodeFaultCapabilities {
 }
 
 fn decode_world_mask(value: &str) -> Option<Vec<u8>> {
-    value
-        .as_bytes()
-        .chunks_exact(2)
+    let (pairs, _) = value.as_bytes().as_chunks::<2>();
+    pairs
+        .iter()
         .map(|pair| {
             let high = world_hex_nibble(pair[0])?;
             let low = world_hex_nibble(pair[1])?;

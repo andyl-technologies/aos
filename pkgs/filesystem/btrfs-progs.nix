@@ -14,7 +14,7 @@
   zlib,
   zstd,
 }: let
-  version = "6.19.1";
+  version = "7.1";
 in
   mkDerivation {
     pname = "btrfs-progs";
@@ -22,7 +22,7 @@ in
 
     src = fetchurl {
       urls = ["https://mirrors.edge.kernel.org/pub/linux/kernel/people/kdave/btrfs-progs/btrfs-progs-v${version}.tar.xz"];
-      hash = "sha256-uyfh7FTnw8C3suWW+FOnPAej1y8hvJQEIHPCTb8EV5Y=";
+      hash = "sha256-0fVcwpcTmMkULqp50gPmPVhqO0uGf5VmZKHWgyLNTjQ=";
     };
 
     buildDeps = [gnumake pkg-config];

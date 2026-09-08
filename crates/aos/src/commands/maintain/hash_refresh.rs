@@ -25,6 +25,8 @@ use rnix::types::{
 use super::materialize::parse_hash_mismatch;
 
 const FAKE_HASH: &str = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+const MAX_NIX_DIAGNOSTIC_BYTES: usize = 32 * 1024;
+const NIX_DIAGNOSTIC_HEAD_BYTES: usize = 8 * 1024;
 const MAX_OWNER_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_REFRESHABLE_HASHES: usize = 128;
 const REFRESHABLE_BUILDERS: &[&str] = &[
@@ -71,9 +73,9 @@ struct HashLocation {
 /// # Errors
 ///
 /// Returns an error if the unit or owner is ambiguous, the Nix source is not a
-/// regular bounded file, a hash is dynamic, evaluation does not expose exactly
-/// one corresponding fixed-output derivation, or realization does not report
-/// one unambiguous SRI SHA-256 hash.
+/// regular bounded file, a hash is dynamic, the unit's members and supported
+/// targets do not expose exactly one corresponding fixed-output derivation, or
+/// realization does not report one unambiguous SRI SHA-256 hash.
 pub(super) fn execute(
     envelope: &InventoryEnvelopeV1,
     unit_id: &str,
@@ -101,9 +103,9 @@ pub(super) fn execute(
             owners.join(", ")
         );
     }
-    let [member] = unit.members.as_slice() else {
-        bail!("hash refresh requires an update unit with exactly one package member");
-    };
+    if unit.members.is_empty() {
+        bail!("hash refresh requires an update unit with at least one package member");
+    }
 
     let root = Path::new(&envelope.repository_root);
     let owner = root.join(&unit.owner);
@@ -140,7 +142,7 @@ pub(super) fn execute(
     }
 
     let nix = NixCli::new(verbose);
-    let package_attribute = format!("pkgs.{member}");
+    let evaluation_roots = evaluation_roots(&unit.members, &unit.platforms, target);
     let mut candidate = original.clone();
     let mut refreshed = Vec::with_capacity(locations.len());
     let result = (|| {
@@ -153,14 +155,19 @@ pub(super) fn execute(
             candidate.replace_range(location.start..location.end, &format!("\"{FAKE_HASH}\""));
             replace_file(&owner, metadata.permissions().mode(), candidate.as_bytes())?;
 
-            let package_drv = instantiate_package(
-                &root.join("default.nix"),
-                &package_attribute,
-                target,
-                verbose,
-            )?;
-            let artifact_drv = fake_hash_derivation(&nix, &package_drv)?;
-            let hash = realize_hash_mismatch(&artifact_drv)?;
+            let artifact_drvs =
+                fake_hash_derivations(&nix, &root.join("default.nix"), &evaluation_roots, verbose)?;
+            let hashes = artifact_drvs
+                .iter()
+                .map(|derivation| realize_hash_mismatch(derivation))
+                .collect::<Result<BTreeSet<_>>>()?;
+            if hashes.len() != 1 {
+                bail!("fixed-output derivations disagree on the refreshed hash");
+            }
+            let hash = hashes
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("refreshed hash disappeared"))?;
 
             let fake_location = hash_locations(&candidate)?
                 .get(ordinal)
@@ -197,6 +204,34 @@ pub(super) fn execute(
         hashes: refreshed,
         wrote: !check,
     })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct EvaluationRoot {
+    attribute: String,
+    target: Option<String>,
+}
+
+fn evaluation_roots(
+    members: &[impl std::fmt::Display],
+    platforms: &[String],
+    requested_target: Option<&str>,
+) -> Vec<EvaluationRoot> {
+    let targets = match requested_target {
+        Some(target) => vec![Some(target.to_string())],
+        None if platforms.is_empty() => vec![None],
+        None => platforms.iter().cloned().map(Some).collect(),
+    };
+
+    members
+        .iter()
+        .flat_map(|member| {
+            targets.iter().cloned().map(move |target| EvaluationRoot {
+                attribute: format!("pkgs.{member}"),
+                target,
+            })
+        })
+        .collect()
 }
 
 fn hash_locations(source: &str) -> Result<Vec<HashLocation>> {
@@ -277,24 +312,46 @@ fn valid_sha256(value: &str) -> bool {
     value.len() == 52 && value.bytes().all(|byte| NIX_BASE32.contains(&byte))
 }
 
-fn fake_hash_derivation(nix: &NixCli, package_drv: &Path) -> Result<PathBuf> {
-    let package_drv = package_drv
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("package derivation path is not UTF-8"))?;
-    let mut matches = BTreeSet::new();
-    for path in nix.closure(package_drv)? {
-        if !path.ends_with(".drv") {
-            continue;
+fn fake_hash_derivations(
+    nix: &NixCli,
+    default_nix: &Path,
+    roots: &[EvaluationRoot],
+    verbose: u8,
+) -> Result<Vec<PathBuf>> {
+    let mut derivations = BTreeSet::new();
+    for root in roots {
+        let mut matches = BTreeSet::new();
+        let package_drv = instantiate_package(
+            default_nix,
+            &root.attribute,
+            root.target.as_deref(),
+            verbose,
+        )?;
+        let package_drv = package_drv
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("package derivation path is not UTF-8"))?;
+
+        for path in nix.closure(package_drv)? {
+            if !path.ends_with(".drv") {
+                continue;
+            }
+            if parse_drv_for_fod(&path)?.is_some_and(|fod| fod.output_hash == FAKE_HASH) {
+                matches.insert(path);
+            }
         }
-        if parse_drv_for_fod(&path)?.is_some_and(|fod| fod.output_hash == FAKE_HASH) {
-            matches.insert(path);
-        }
+
+        let matches = matches.into_iter().collect::<Vec<_>>();
+        let [derivation] = matches.as_slice() else {
+            let target = root.target.as_deref().unwrap_or("native target");
+            bail!(
+                "evaluation of {} for {target} did not expose exactly one fake-hash fixed-output derivation",
+                root.attribute
+            );
+        };
+        derivations.insert(PathBuf::from(derivation));
     }
-    let matches = matches.into_iter().collect::<Vec<_>>();
-    let [derivation] = matches.as_slice() else {
-        bail!("package evaluation did not expose exactly one fake-hash fixed-output derivation");
-    };
-    Ok(PathBuf::from(derivation))
+
+    Ok(derivations.into_iter().collect())
 }
 
 fn instantiate_package(
@@ -310,7 +367,11 @@ fn instantiate_package(
         .arg("-A")
         .arg(attribute);
     if let Some(target) = target {
-        command.args(["--argstr", "crossSystem", target]);
+        let target = serde_json::to_string(target).context("encoding hash refresh target")?;
+        let cross_system = format!(
+            "let target = {target}; in if target == builtins.currentSystem then null else target"
+        );
+        command.args(["--arg", "crossSystem", &cross_system]);
     }
     if verbose > 0 {
         command.arg("--show-trace");
@@ -322,7 +383,7 @@ fn instantiate_package(
     if !output.status.success() {
         bail!(
             "Nix could not instantiate {attribute}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            bounded_nix_diagnostic(&output.stderr)
         );
     }
     let derivation = String::from_utf8(output.stdout)
@@ -332,6 +393,21 @@ fn instantiate_package(
         bail!("nix-instantiate emitted an invalid derivation path");
     }
     Ok(PathBuf::from(derivation))
+}
+
+fn bounded_nix_diagnostic(stderr: &[u8]) -> String {
+    if stderr.len() <= MAX_NIX_DIAGNOSTIC_BYTES {
+        return String::from_utf8_lossy(stderr).trim().to_string();
+    }
+
+    let omitted = stderr.len() - MAX_NIX_DIAGNOSTIC_BYTES;
+    let tail_start = stderr.len() - (MAX_NIX_DIAGNOSTIC_BYTES - NIX_DIAGNOSTIC_HEAD_BYTES);
+
+    format!(
+        "{}\n... omitted {omitted} bytes of Nix diagnostics ...\n{}",
+        String::from_utf8_lossy(&stderr[..NIX_DIAGNOSTIC_HEAD_BYTES]).trim_end(),
+        String::from_utf8_lossy(&stderr[tail_start..]).trim()
+    )
 }
 
 fn realize_hash_mismatch(derivation: &Path) -> Result<String> {
@@ -416,5 +492,66 @@ in mkGoPackage { inherit src goModules; }
         assert_eq!(locations.len(), 1);
         assert_eq!(locations[0].builder, "fetchurl");
         Ok(())
+    }
+
+    #[test]
+    fn evaluates_every_member_on_every_supported_platform() {
+        let members = vec!["linux".to_string(), "linux-headers".to_string()];
+        let platforms = vec!["aarch64-linux".to_string(), "x86_64-linux".to_string()];
+
+        let roots = evaluation_roots(&members, &platforms, None);
+
+        assert_eq!(
+            roots,
+            vec![
+                EvaluationRoot {
+                    attribute: "pkgs.linux".to_string(),
+                    target: Some("aarch64-linux".to_string()),
+                },
+                EvaluationRoot {
+                    attribute: "pkgs.linux".to_string(),
+                    target: Some("x86_64-linux".to_string()),
+                },
+                EvaluationRoot {
+                    attribute: "pkgs.linux-headers".to_string(),
+                    target: Some("aarch64-linux".to_string()),
+                },
+                EvaluationRoot {
+                    attribute: "pkgs.linux-headers".to_string(),
+                    target: Some("x86_64-linux".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_target_limits_evaluation() {
+        let roots = evaluation_roots(
+            &["krb5".to_string()],
+            &["aarch64-darwin".to_string(), "x86_64-linux".to_string()],
+            Some("x86_64-linux"),
+        );
+
+        assert_eq!(
+            roots,
+            vec![EvaluationRoot {
+                attribute: "pkgs.krb5".to_string(),
+                target: Some("x86_64-linux".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn bounds_nix_diagnostics_while_preserving_both_ends() {
+        let mut stderr = b"diagnostic start\n".to_vec();
+        stderr.extend(std::iter::repeat_n(b'x', MAX_NIX_DIAGNOSTIC_BYTES * 2));
+        stderr.extend_from_slice(b"\ndiagnostic end\n");
+
+        let diagnostic = bounded_nix_diagnostic(&stderr);
+
+        assert!(diagnostic.starts_with("diagnostic start\n"));
+        assert!(diagnostic.contains("bytes of Nix diagnostics"));
+        assert!(diagnostic.ends_with("diagnostic end"));
+        assert!(diagnostic.len() < stderr.len());
     }
 }

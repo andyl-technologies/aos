@@ -4,8 +4,8 @@
   fetchurl,
   gnumake,
 }: let
-  version = "2.47";
-  sourceVersion = "247";
+  version = "2.50";
+  sourceVersion = "250";
 in
   mkDerivation {
     pname = "liblinear";
@@ -15,7 +15,7 @@ in
       urls = [
         "https://github.com/cjlin1/liblinear/archive/refs/tags/v${sourceVersion}.tar.gz"
       ];
-      hash = "sha256-pixG8goBpGJiYEYskFch9UcdpFUNOMO2j/rPCqZAZ7Q=";
+      hash = "sha256-yHW6tNWuU6W0ipEIHGbzmgvSUk9J6TTc2u2QKE3WBeQ=";
     };
 
     buildDeps = [gnumake];
@@ -42,8 +42,8 @@ in
         script = ''
           mkdir -p "$out/bin" "$out/include" "$out/lib"
           cp linear.h "$out/include/"
-          cp liblinear.so.5 "$out/lib/"
-          ln -s liblinear.so.5 "$out/lib/liblinear.so"
+          cp liblinear.so.6 "$out/lib/"
+          ln -s liblinear.so.6 "$out/lib/liblinear.so"
           cp train "$out/bin/liblinear-train"
           cp predict "$out/bin/liblinear-predict"
         '';
@@ -63,7 +63,7 @@ in
           #include <linear.h>
 
           int main(void) {
-              return liblinear_version == 247 ? 0 : 1;
+              return liblinear_version == 250 ? 0 : 1;
           }
         '';
       };
