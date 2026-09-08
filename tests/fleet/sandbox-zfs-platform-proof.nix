@@ -8,12 +8,14 @@
     pname = "aos-zfs-idmapped-mount-probe";
     version = "1";
     src = null;
-    buildDeps = [pkgs.linux-headers];
+    # Kernel UAPI is a target input; buildDeps would splice native headers.
+    runtimeDeps = [pkgs.linux-headers];
     phases = [
       {
         name = "build";
         script = ''
           $CC -std=c17 -Wall -Wextra -Werror \
+            -I${pkgs.linux-headers}/include \
             ${../sandbox/zfs-idmapped-mount-probe.c} \
             -o aos-zfs-idmapped-mount-probe
         '';
@@ -36,12 +38,14 @@
     pname = "aos-zfs-fsopen-mount-probe";
     version = "1";
     src = null;
-    buildDeps = [pkgs.linux-headers];
+    # Kernel UAPI is a target input; buildDeps would splice native headers.
+    runtimeDeps = [pkgs.linux-headers];
     phases = [
       {
         name = "build";
         script = ''
           $CC -std=c17 -Wall -Wextra -Werror \
+            -I${pkgs.linux-headers}/include \
             ${../sandbox/zfs-fsopen-mount-probe.c} \
             -o aos-zfs-fsopen-mount-probe
         '';

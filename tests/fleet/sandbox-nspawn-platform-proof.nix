@@ -10,12 +10,14 @@
     pname = "aos-nspawn-platform-probe";
     version = "1";
     src = null;
-    buildDeps = [pkgs.linux-headers];
+    # Kernel UAPI is a target input; buildDeps would splice native headers.
+    runtimeDeps = [pkgs.linux-headers];
     phases = [
       {
         name = "build";
         script = ''
           $CC -std=c17 -Wall -Wextra -Werror \
+            -I${pkgs.linux-headers}/include \
             ${../sandbox/nspawn-platform-probe.c} -o aos-nspawn-platform-probe
         '';
       }
@@ -37,12 +39,14 @@
     pname = "aos-nspawn-host-observer";
     version = "1";
     src = null;
-    buildDeps = [pkgs.linux-headers];
+    # Kernel UAPI is a target input; buildDeps would splice native headers.
+    runtimeDeps = [pkgs.linux-headers];
     phases = [
       {
         name = "build";
         script = ''
           $CC -std=c17 -Wall -Wextra -Werror \
+            -I${pkgs.linux-headers}/include \
             ${../sandbox/nspawn-host-observer.c} -o aos-nspawn-host-observer
         '';
       }

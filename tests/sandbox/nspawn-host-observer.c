@@ -17,6 +17,14 @@
 #include <time.h>
 #include <unistd.h>
 
+#if defined(__aarch64__) || defined(__x86_64__)
+_Static_assert(SYS_pidfd_send_signal == 424,
+               "unexpected pidfd_send_signal syscall number");
+_Static_assert(SYS_pidfd_open == 434, "unexpected pidfd_open syscall number");
+#else
+#error "nspawn platform proof supports only AArch64 and x86-64"
+#endif
+
 #define PIDFD_GET_MNT_NAMESPACE 0xff03
 #define PIDFD_GET_NET_NAMESPACE 0xff04
 #define PIDFD_GET_PID_NAMESPACE 0xff05

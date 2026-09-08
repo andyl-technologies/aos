@@ -19,13 +19,41 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#if defined(__aarch64__)
+_Static_assert(SYS_clone == 220, "unexpected AArch64 clone syscall number");
+_Static_assert(SYS_unshare == 97, "unexpected AArch64 unshare syscall number");
+_Static_assert(SYS_setns == 268, "unexpected AArch64 setns syscall number");
+_Static_assert(SYS_clone3 == 435, "unexpected AArch64 clone3 syscall number");
+#elif defined(__x86_64__)
+_Static_assert(SYS_clone == 56, "unexpected x86-64 clone syscall number");
+_Static_assert(SYS_unshare == 272, "unexpected x86-64 unshare syscall number");
+_Static_assert(SYS_setns == 308, "unexpected x86-64 setns syscall number");
+_Static_assert(SYS_clone3 == 435, "unexpected x86-64 clone3 syscall number");
+#else
+#error "nspawn platform proof supports only AArch64 and x86-64"
+#endif
+
 struct status_fields {
         long no_new_privileges;
         long seccomp;
 };
 
-static bool errno_is(long result, int expected) {
-        return result == -1 && errno == expected;
+struct syscall_observation {
+        long result;
+        int error_number;
+};
+
+static struct syscall_observation observe_syscall(long result) {
+        return (struct syscall_observation) {
+                .result = result,
+                .error_number = result == -1 ? errno : 0,
+        };
+}
+
+static bool syscall_failed_with(
+                const struct syscall_observation *observation,
+                int expected_error) {
+        return observation->result == -1 && observation->error_number == expected_error;
 }
 
 static int read_status(pid_t pid, struct status_fields *fields) {
@@ -79,6 +107,11 @@ int main(int argc, char **argv) {
         unsigned long uid_inside = 0;
         unsigned long uid_outside = 0;
         unsigned long uid_length = 0;
+        struct syscall_observation mount_observation;
+        struct syscall_observation unshare_observation;
+        struct syscall_observation setns_observation;
+        struct syscall_observation clone_observation;
+        struct syscall_observation clone3_observation;
         bool mount_denied;
         bool unshare_denied;
         bool setns_denied;
@@ -144,16 +177,26 @@ int main(int argc, char **argv) {
                 return EXIT_FAILURE;
 
         errno = 0;
-        mount_denied = errno_is(mount(NULL, NULL, NULL, 0, NULL), EPERM);
+        mount_observation = observe_syscall(mount(NULL, NULL, NULL, 0, NULL));
+        mount_denied = syscall_failed_with(&mount_observation, EPERM);
         errno = 0;
-        unshare_denied = errno_is(syscall(SYS_unshare, 0), EPERM);
+        unshare_observation = observe_syscall(syscall(SYS_unshare, 0));
+        unshare_denied = syscall_failed_with(&unshare_observation, EPERM);
         errno = 0;
-        setns_denied = errno_is(syscall(SYS_setns, -1, 0), EPERM);
+        setns_observation = observe_syscall(syscall(SYS_setns, -1, 0));
+        setns_denied = syscall_failed_with(&setns_observation, EPERM);
         errno = 0;
-        clone_namespace_denied = errno_is(
-                syscall(SYS_clone, CLONE_NEWNS | SIGCHLD, NULL, NULL, NULL, 0), EPERM);
+        clone_observation = observe_syscall(
+                syscall(SYS_clone, CLONE_NEWNS | SIGCHLD, NULL, NULL, NULL, 0));
+        if (clone_observation.result == 0)
+                _exit(EXIT_FAILURE);
+        if (clone_observation.result > 0 &&
+            waitpid((pid_t) clone_observation.result, NULL, 0) != clone_observation.result)
+                return EXIT_FAILURE;
+        clone_namespace_denied = syscall_failed_with(&clone_observation, EPERM);
         errno = 0;
-        clone3_hidden = errno_is(syscall(SYS_clone3, NULL, 0), ENOSYS);
+        clone3_observation = observe_syscall(syscall(SYS_clone3, NULL, 0));
+        clone3_hidden = syscall_failed_with(&clone3_observation, ENOSYS);
         fork_allowed = ordinary_fork_works();
         settings_ignored = getenv("AOS_HOSTILE_NSPAWN_SETTINGS") == NULL;
         hostile_mount_absent = access("/host-etc", F_OK) < 0 && errno == ENOENT;
@@ -199,6 +242,13 @@ int main(int argc, char **argv) {
                     "  \"setns_denied_eperm\":%s,\n"
                     "  \"clone_namespace_denied_eperm\":%s,\n"
                     "  \"clone3_hidden_enosys\":%s,\n"
+                    "  \"syscall_results\":{\n"
+                    "    \"mount\":{\"result\":%ld,\"errno\":%d},\n"
+                    "    \"unshare\":{\"result\":%ld,\"errno\":%d},\n"
+                    "    \"setns\":{\"result\":%ld,\"errno\":%d},\n"
+                    "    \"clone_namespace\":{\"result\":%ld,\"errno\":%d},\n"
+                    "    \"clone3\":{\"result\":%ld,\"errno\":%d}\n"
+                    "  },\n"
                     "  \"ordinary_fork_allowed\":%s,\n"
                     "  \"hostile_settings_ignored\":%s,\n"
                     "  \"hostile_mount_absent\":%s,\n"
@@ -217,6 +267,16 @@ int main(int argc, char **argv) {
                     setns_denied ? "true" : "false",
                     clone_namespace_denied ? "true" : "false",
                     clone3_hidden ? "true" : "false",
+                    mount_observation.result,
+                    mount_observation.error_number,
+                    unshare_observation.result,
+                    unshare_observation.error_number,
+                    setns_observation.result,
+                    setns_observation.error_number,
+                    clone_observation.result,
+                    clone_observation.error_number,
+                    clone3_observation.result,
+                    clone3_observation.error_number,
                     fork_allowed ? "true" : "false",
                     settings_ignored ? "true" : "false",
                     hostile_mount_absent ? "true" : "false",
