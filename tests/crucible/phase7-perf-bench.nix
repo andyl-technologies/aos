@@ -498,9 +498,11 @@ in
             PASS
             check=${attrPath}
             gate=gate:perf-bench
+            evidence_scope=deterministic-cost-model
+            live_qemu_acceptance=not-established-by-this-check
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=complete
+            status=component-only
             owner=crucible-harness
             phase=phase7
             gate_class=regression

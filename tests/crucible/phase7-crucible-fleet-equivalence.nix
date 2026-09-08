@@ -407,6 +407,9 @@ in
             PASS
             check=${attrPath}
             gate=gate:fleet-equivalence
+            status=component-only
+            evidence_scope=simdouble-fleet
+            live_qemu_acceptance=not-established-by-this-check
             tasks=${builtins.concatStringsSep "," taskIds}
             single_host_search=exhaustive-breadth-first
             fleet_search=shared-worklist-work-stealing
