@@ -715,6 +715,22 @@ impl CampaignExecutorStore {
         Self { repository }
     }
 
+    /// Reauthenticates an operational execution scope during durable recovery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a savepoint owner fact or its immutable attempt
+    /// closure is unavailable, corrupt, or inconsistent with the supplied key.
+    pub fn validate_execution_scope(
+        &self,
+        lineage: CampaignLineageId,
+        attempt: AttemptId,
+        start_mode: AttemptStartMode,
+    ) -> Result<(), CampaignRepositoryError> {
+        self.repository
+            .validate_executor_execution_scope(lineage, attempt, start_mode)
+    }
+
     /// Loads and authenticates one campaign compatibility lineage.
     ///
     /// # Errors

@@ -420,6 +420,18 @@ release of that source; canceled and failed resolutions close captures that
 never became selectable. The assignment ledger remains the physical GC root
 until discard or a chosen-source continuation completes its explicit handoff.
 
+> **Implementation status.** The coordinator has a bounded, restart-rebuildable
+> capture queue, and the QEMU runner drives scoped requests to their declared
+> stop before capturing and independently replay-validating the reached
+> configuration, scheduler coordinate, and dense event prefix. Ready, canceled,
+> and failed resolutions are supported. Discard remains a stable rejected
+> transition, and a ready capture cannot yet be selected as an ordinary
+> continuation origin, so its paused ledger entry remains the physical GC root.
+> Focused tests cover scoped routing, queue fairness and head changes, quiet
+> q100/q200 boundary distinction, and the pre-write promotion decision. A
+> packaged end-to-end flight through fresh and restart promotion plus selected
+> continuation handoff remains open.
+
 Facts are immutable and carry causal references. They may be represented in
 persistent Merkle maps rather than replayed from a flat log. A projection cache
 may summarize them, but the facts remain sufficient to rebuild it.

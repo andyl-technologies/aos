@@ -1072,19 +1072,6 @@ where
                 )
                 .map(SubmitPreflight::Resolved);
         }
-        if matches!(
-            request.start_mode(),
-            AttemptStartMode::SavepointCapture { .. }
-        ) {
-            return self
-                .persist_response(
-                    request,
-                    SubmitAttemptDisposition::Rejected {
-                        reason: ExecutorRejection::Incompatible,
-                    },
-                )
-                .map(SubmitPreflight::Resolved);
-        }
         Ok(SubmitPreflight::NeedsValidation)
     }
 
@@ -1102,17 +1089,6 @@ where
                 request,
                 SubmitAttemptDisposition::Rejected {
                     reason: ExecutorRejection::Unauthorized,
-                },
-            );
-        }
-        if matches!(
-            request.start_mode(),
-            AttemptStartMode::SavepointCapture { .. }
-        ) {
-            return self.persist_response(
-                request,
-                SubmitAttemptDisposition::Rejected {
-                    reason: ExecutorRejection::Incompatible,
                 },
             );
         }

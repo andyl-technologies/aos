@@ -21,9 +21,9 @@ use crucible_api::{
 };
 use crucible_campaign::{
     Attempt, AttemptResourceLimits, AttemptStart, AttemptStartMode, BooleanDomain, BranchPath,
-    CampaignHash, CampaignLineage, ChoiceClassContext, ChoiceDomain, ChoiceSource, ChoiceValue,
-    ConfigurationArtifact, ConfigurationId, ExecutionRetentionIntent, ScenarioArtifact,
-    ScenarioDefId, SelectableDeclaration, Selection, StopCondition,
+    CampaignFactId, CampaignHash, CampaignLineage, ChoiceClassContext, ChoiceDomain, ChoiceSource,
+    ChoiceValue, ConfigurationArtifact, ConfigurationId, ExecutionRetentionIntent,
+    ScenarioArtifact, ScenarioDefId, SelectableDeclaration, Selection, StopCondition,
 };
 use crucible_cas::content_store::{
     BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, ObjectKind,
@@ -37,12 +37,14 @@ use crucible_qemu::{
 };
 
 use super::*;
+use crate::exact_checkpoint_store::AttemptCheckpointResultState;
 use crate::executor_supervisor::{AttemptCheckpointHandoff, ExecutionCheckpointHandoff};
 use crate::{
     AttemptExecutionProduct, CapturedAttemptCheckpoint, CheckpointHandoffFailure,
     CrucibleAttemptExecution, CrucibleMaterializationTier, CrucibleResolvedAttemptStart,
     ExactCheckpointStore, ExecutionCancellation, ExecutionCheckpointRequest,
     PreparedAttemptCheckpoint, QemuAttemptOperationalBoundary, QemuAttemptResourceGuard,
+    QemuFreshModeledDriver,
 };
 
 #[test]
@@ -760,6 +762,161 @@ struct FakeFreshLifecycleFactory {
     checkpoint_ready: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CapturedBoundary {
+    quanta: u64,
+    configuration: crucible::ContentHash,
+    events: Vec<SchedulerEventLogEntry>,
+}
+
+struct BoundaryCaptureLifecycle {
+    configuration: Configuration,
+    quanta: u64,
+    events: Vec<SchedulerEventLogEntry>,
+    captured: Arc<Mutex<Vec<CapturedBoundary>>>,
+}
+
+impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
+    fn enable_signal_fault_campaign_promotion(&mut self) {}
+
+    fn drive_quantum(
+        &mut self,
+        request: crucible::QuantumRequest,
+    ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
+        let sequence = self.quanta;
+        let entry = SchedulerEventLogEntry::execution_budget_exhausted(
+            sequence,
+            VirtualTime {
+                ticks: sequence + 1,
+            },
+            "savepoint-boundary",
+        );
+        self.quanta += 1;
+        self.events.push(entry.clone());
+        Ok(crucible::QuantumOutcome {
+            configuration: request.configuration,
+            frontier: VirtualTime { ticks: self.quanta },
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: Vec::new(),
+            discovered_choices: Vec::new(),
+            event_log_entries: vec![entry],
+            event_log_segment_bytes: Vec::new(),
+            event_log_segment_text: String::new(),
+            event_log_segment_hash: None,
+            event_log_offset: crucible::EventLogOffset::default(),
+            scheduler_quiescence: None,
+        })
+    }
+
+    fn completed_quanta(&self) -> u64 {
+        self.quanta
+    }
+
+    fn terminal_verdict_for_stop(&mut self) -> Option<crucible::QuantumTerminalVerdict> {
+        None
+    }
+
+    fn exact_checkpoint_ready(&mut self) -> Result<bool, crucible::SchedulerError> {
+        Ok(true)
+    }
+
+    fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<Vec<crucible_qemu::QemuNodeSelectablePendingRequest>, crucible::SchedulerError>
+    {
+        Ok(Vec::new())
+    }
+
+    fn apply_selectable_reply(
+        &mut self,
+        _parent: &Configuration,
+        _decision: SelectionDecision,
+        _selected: &Configuration,
+        _pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
+        _reply: &crucible_protocol::SelectionReply,
+    ) -> Result<Vec<SchedulerEventLogEntry>, crucible::SchedulerError> {
+        Err(crucible::SchedulerError::BoundaryViolation {
+            message: String::from("boundary capture fixture has no selectable requests"),
+        })
+    }
+
+    fn capture_attempt_checkpoint(
+        &mut self,
+        _context: &AttemptExecutionContext,
+    ) -> Result<CapturedAttemptCheckpoint, crucible::SchedulerError> {
+        self.captured
+            .lock()
+            .expect("captured boundaries")
+            .push(CapturedBoundary {
+                quanta: self.quanta,
+                configuration: self.configuration.id(),
+                events: self.events.clone(),
+            });
+        let checkpoint = Checkpoint::from_recorded_configuration(
+            &self.configuration,
+            None,
+            VirtualTime { ticks: self.quanta },
+            BTreeMap::new(),
+            CheckpointKind::Fat,
+            BTreeMap::new(),
+        )
+        .map_err(|error| crucible::SchedulerError::BoundaryViolation {
+            message: error.to_string(),
+        })?;
+        let snapshot = QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
+            .map_err(|error| crucible::SchedulerError::BoundaryViolation {
+                message: error.to_string(),
+            })?;
+        let byte = u8::try_from(self.quanta).unwrap_or(0xff);
+        Ok(
+            crate::CapturedExactCheckpoint::new(snapshot, BlobHandle::from_bytes(vec![byte; 512]))
+                .into(),
+        )
+    }
+
+    fn fault_evidence_snapshot(
+        &self,
+    ) -> Result<ProductionFaultEvidenceSnapshot, crucible::SchedulerError> {
+        Err(crucible::SchedulerError::BoundaryViolation {
+            message: String::from("boundary capture fixture has no fault evidence"),
+        })
+    }
+
+    fn pending_network_output_count(&self) -> usize {
+        0
+    }
+
+    fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, crucible::SchedulerError> {
+        Ok(Vec::new())
+    }
+}
+
+struct BoundaryCaptureLifecycleFactory {
+    captured: Arc<Mutex<Vec<CapturedBoundary>>>,
+}
+
+impl QemuFreshAttemptLifecycleFactory for BoundaryCaptureLifecycleFactory {
+    type Lifecycle = BoundaryCaptureLifecycle;
+    type Error = &'static str;
+
+    fn start_fresh_lifecycle(
+        &mut self,
+        _scenario: &ScenarioDef,
+        _source: &ScenarioDefForm,
+        start: &Configuration,
+        _signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
+        _context: &AttemptExecutionContext,
+    ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
+        Ok(BoundaryCaptureLifecycle {
+            configuration: start.clone(),
+            quanta: 0,
+            events: Vec::new(),
+            captured: Arc::clone(&self.captured),
+        })
+    }
+}
+
 impl QemuFreshAttemptLifecycleFactory for FakeFreshLifecycleFactory {
     type Lifecycle = FakeFreshLifecycle;
     type Error = &'static str;
@@ -1155,6 +1312,80 @@ fn fresh_runner_captures_a_sticky_checkpoint_before_shutdown_and_seal() {
         outcome.product(),
         AttemptExecutionProduct::ExactCheckpoint(_)
     ));
+}
+
+#[test]
+fn savepoint_captures_same_start_at_q100_and_q200_as_distinct_physical_prefixes() {
+    fn capture_at(
+        quanta: u64,
+        label: &[u8],
+        captured: Arc<Mutex<Vec<CapturedBoundary>>>,
+    ) -> ExactCheckpointId {
+        let input = fresh_runner_input_for_stop(StopCondition::ExecutionQuanta(quanta));
+        let AttemptStart::Discover { configuration } = input.attempt().start() else {
+            panic!("savepoint fixture must begin with discovery")
+        };
+        let request = CampaignFactId::parse(&format!(
+            "crucible.campaign.fact@{}",
+            ContentId::for_bytes(ObjectKind::CampaignFact, 11, label)
+        ))
+        .expect("capture request ID");
+        let mut runner = QemuFreshExecutionRunner::new(
+            BoundaryCaptureLifecycleFactory { captured },
+            QemuFreshModeledDriver::new(),
+        );
+        let checkpoint_directory = tempfile::tempdir().expect("savepoint checkpoint directory");
+        let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(
+            DirectoryBlobBackend::new("savepoint-checkpoint-handoff", checkpoint_directory.path()),
+        );
+        let checkpoints = ExactCheckpointStore::new(checkpoint_backend, 1024 * 1024)
+            .expect("savepoint checkpoint store");
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let handoff = ExecutionCheckpointHandoff::new(Arc::new(OrderingCheckpointHandoff {
+            order,
+            checkpoints,
+        }));
+        let checkpoint_request = ExecutionCheckpointRequest::default();
+        checkpoint_request.request_for_test();
+        let context = AttemptExecutionContext::new(
+            resources(250),
+            ExecutionRetentionIntent::RetainAlways,
+            ExecutionCancellation::default(),
+            checkpoint_request,
+        )
+        .with_start_mode(AttemptStartMode::SavepointCapture {
+            request,
+            configuration,
+        })
+        .with_checkpoint_handoff(input.scenario().scenario_def().id(), Some(handoff));
+
+        let outcome = runner
+            .execute(&input, &context)
+            .expect("savepoint capture reaches exact quanta boundary");
+        let (product, _) = outcome.into_parts();
+        let AttemptExecutionProduct::ExactCheckpoint(checkpoint) = product else {
+            panic!("savepoint capture must return an exact checkpoint")
+        };
+        let AttemptCheckpointResultState::Prepared(checkpoint) = checkpoint.into_state() else {
+            panic!("runner handoff must prepare the exact root before return")
+        };
+        checkpoint.root()
+    }
+
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let q100 = capture_at(100, b"savepoint-q100", Arc::clone(&captured));
+    let q200 = capture_at(200, b"savepoint-q200", Arc::clone(&captured));
+    let captured = captured.lock().expect("captured boundary records");
+
+    assert_ne!(q100, q200);
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[0].quanta, 100);
+    assert_eq!(captured[1].quanta, 200);
+    assert_eq!(captured[0].configuration, captured[1].configuration);
+    assert_eq!(captured[0].events.len(), 100);
+    assert_eq!(captured[1].events.len(), 200);
+    assert_eq!(captured[0].events, captured[1].events[..100]);
+    assert_ne!(captured[0].events, captured[1].events);
 }
 
 #[test]

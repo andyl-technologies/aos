@@ -194,6 +194,9 @@ fn classify_preparation_failure(
         PausedCheckpointPromotionPreparationError::ProductionClosure(_) => {
             PromotionFailureClass::Terminal
         }
+        PausedCheckpointPromotionPreparationError::SavepointReplayMismatch => {
+            PromotionFailureClass::Terminal
+        }
         PausedCheckpointPromotionPreparationError::Realization(error) => {
             classify_realization_failure(error)
         }

@@ -14,9 +14,10 @@ use std::sync::Arc;
 use crucible::{Configuration, ContentHash, NodeId, ScenarioDef, ScenarioDefForm, World};
 use crucible_api::{
     LifecycleApiError, ProductionExactCheckpointClosure, ProductionExactCheckpointReplayCatalog,
-    ProductionExactCheckpointReplayTargets, ProductionVmNodeReplayLaunchProfile,
+    ProductionExactCheckpointReplayTargets, ProductionVmLifecycleConfig,
+    ProductionVmNodeReplayLaunchProfile,
 };
-use crucible_campaign::{AttemptResourceLimits, ExactCheckpointId};
+use crucible_campaign::{AttemptResourceLimits, ExactCheckpointId, ExecutionRetentionIntent};
 use crucible_qemu::{
     QemuBakedGenesisSnapshot, QemuCachedAncestor, QemuExactProfileWarmRestoreNodeLauncher,
     QemuNodeRealizationExecutor, QemuReplayValidationNodeLauncher,
@@ -26,11 +27,14 @@ use crucible_qemu::{
 use thiserror::Error;
 
 use crate::{
-    AttemptExecutionContext, CapturedAttemptCheckpoint, ProductionPausedCheckpointReplayFactory,
+    AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
+    CapturedAttemptCheckpoint, CrucibleAttemptExecution, CrucibleExecutionRunner,
+    ExecutionCancellation, ExecutionCheckpointRequest, ProductionPausedCheckpointReplayFactory,
     ProductionPausedCheckpointReplaySession, QemuAttemptOperationalBoundary,
-    QemuAttemptProcessResourceGuard, QemuAttemptResourceGuardFactory,
-    QemuFreshAttemptLifecycleFactory, QemuFreshGenesisCheckpointCandidate,
-    QemuFreshGenesisCheckpointError, capture_fresh_genesis_checkpoint_candidate,
+    QemuAttemptProcessResourceGuard, QemuAttemptProductionVmLifecycleFactory,
+    QemuAttemptResourceGuardFactory, QemuFreshAttemptLifecycleFactory, QemuFreshExecutionRunner,
+    QemuFreshGenesisCheckpointCandidate, QemuFreshGenesisCheckpointError, QemuSavepointReplayProbe,
+    QemuSavepointReplayProof, capture_fresh_genesis_checkpoint_candidate,
 };
 
 /// One completely authenticated native baked-genesis checkpoint closure.
@@ -82,6 +86,7 @@ pub struct ProductionBakedGenesisReplayFactory<R> {
 pub struct ProductionBakedGenesisReplayCatalogFactory<R> {
     baked_by_basis: BTreeMap<(ContentHash, ContentHash), ProductionBakedGenesisCheckpoint>,
     resources: R,
+    savepoint_replay_config: Option<ProductionVmLifecycleConfig>,
 }
 
 /// Concrete exact/thin launcher pair produced for one replay target.
@@ -364,7 +369,15 @@ impl<R> ProductionBakedGenesisReplayCatalogFactory<R> {
         Ok(Self {
             baked_by_basis,
             resources,
+            savepoint_replay_config: None,
         })
+    }
+
+    /// Enables independent full-attempt replay for savepoint promotion.
+    #[must_use]
+    pub fn with_savepoint_replay_config(mut self, config: ProductionVmLifecycleConfig) -> Self {
+        self.savepoint_replay_config = Some(config);
+        self
     }
 
     /// Returns the number of exact World/scenario checkpoints in the catalog.
@@ -488,7 +501,7 @@ where
 impl<R> ProductionPausedCheckpointReplayFactory for ProductionBakedGenesisReplayCatalogFactory<R>
 where
     R: QemuAttemptResourceGuardFactory + Clone,
-    R::Guard: QemuAttemptProcessResourceGuard,
+    R::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
 {
     type Store = ProductionBakedGenesisReplayStore;
     type Launcher = ProductionBakedGenesisReplayLauncher;
@@ -518,6 +531,67 @@ where
             cancellation,
             resources,
         )
+    }
+
+    fn replay_savepoint_capture(
+        &mut self,
+        attempt: &CrucibleAttemptExecution,
+        run_state_root: &std::path::Path,
+        cancellation: &ExecutionCancellation,
+        resources: AttemptResourceLimits,
+    ) -> Result<QemuSavepointReplayProof, QemuVmRealizationError> {
+        let lifecycle = self
+            .savepoint_replay_config
+            .as_ref()
+            .ok_or_else(|| QemuVmRealizationError::InvalidCheckpoint {
+                role: "savepoint capture replay",
+                message: String::from("packaged lifecycle replay configuration is unavailable"),
+            })?
+            .clone()
+            .with_run_state_root(run_state_root.join("savepoint-replay"));
+        let factory =
+            QemuAttemptProductionVmLifecycleFactory::new(lifecycle, self.resources.clone());
+        let (probe, receipt) = QemuSavepointReplayProbe::new();
+        let mut runner = QemuFreshExecutionRunner::new(factory, probe);
+        let context = AttemptExecutionContext::new(
+            resources,
+            ExecutionRetentionIntent::Discard,
+            cancellation.clone(),
+            ExecutionCheckpointRequest::default(),
+        );
+        let outcome = runner
+            .execute(attempt, &context)
+            .map_err(map_savepoint_replay_failure)?;
+        if !matches!(outcome.product(), AttemptExecutionProduct::Observation(_)) {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "savepoint capture replay",
+                message: String::from("independent attempt replay did not produce an observation"),
+            });
+        }
+        receipt
+            .take()
+            .map_err(|error| QemuVmRealizationError::Executor {
+                operation: "collect savepoint capture replay proof",
+                message: error.to_string(),
+            })
+    }
+}
+
+fn map_savepoint_replay_failure<E: std::fmt::Display>(
+    failure: AttemptWorkerFailure<E>,
+) -> QemuVmRealizationError {
+    match failure {
+        AttemptWorkerFailure::Retryable(error) => QemuVmRealizationError::ExecutorUnavailable {
+            operation: "replay savepoint capture attempt",
+            message: error.to_string(),
+        },
+        AttemptWorkerFailure::Canceled(_) => QemuVmRealizationError::Canceled {
+            operation: "replay savepoint capture attempt",
+        },
+        AttemptWorkerFailure::Terminal(error) => QemuVmRealizationError::Executor {
+            operation: "replay savepoint capture attempt",
+            message: error.to_string(),
+        },
     }
 }
 

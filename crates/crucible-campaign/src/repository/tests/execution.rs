@@ -2163,7 +2163,8 @@ fn campaign_executor_driver_incorporates_completion_and_rebuilds_after_restart()
             .step("executor-driver-completion", WorkerSlotId::new(0))
             .expect("restart projection")
         {
-            CampaignExecutorStepOutcome::ScanPending { .. } => {}
+            CampaignExecutorStepOutcome::ScanPending { .. }
+            | CampaignExecutorStepOutcome::CaptureScanPending { .. } => {}
             CampaignExecutorStepOutcome::Idle { snapshot } => {
                 assert_eq!(snapshot, incorporated.new_snapshot);
                 break;
@@ -2312,7 +2313,8 @@ fn campaign_executor_driver_closes_terminal_failure_without_reassignment() {
             .step("executor-driver-terminal-failure", WorkerSlotId::new(0))
             .expect("settle closed campaign")
         {
-            CampaignExecutorStepOutcome::ScanPending { .. } => {}
+            CampaignExecutorStepOutcome::ScanPending { .. }
+            | CampaignExecutorStepOutcome::CaptureScanPending { .. } => {}
             CampaignExecutorStepOutcome::Idle { snapshot } => {
                 assert_eq!(snapshot, closed.new_snapshot);
                 break;
@@ -2351,7 +2353,8 @@ fn campaign_executor_driver_closes_terminal_failure_without_reassignment() {
             .step("executor-driver-terminal-failure", WorkerSlotId::new(0))
             .expect("rebuild closed campaign")
         {
-            CampaignExecutorStepOutcome::ScanPending { .. } => {}
+            CampaignExecutorStepOutcome::ScanPending { .. }
+            | CampaignExecutorStepOutcome::CaptureScanPending { .. } => {}
             CampaignExecutorStepOutcome::Idle { snapshot } => {
                 assert_eq!(snapshot, closed.new_snapshot);
                 break;

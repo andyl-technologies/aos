@@ -731,25 +731,37 @@ fn capture_start_validation_reason(
     start: &ResolvedAttemptStart,
     start_mode: AttemptStartMode,
 ) -> Result<Option<&'static str>, crucible_campaign::CampaignCodecError> {
-    let configuration = match start_mode {
-        AttemptStartMode::Execute => return Ok(None),
-        AttemptStartMode::CaptureMaterializedStart { configuration }
-        | AttemptStartMode::SavepointCapture { configuration, .. } => configuration,
-    };
-    let ResolvedAttemptStart::Discover {
-        configuration: resolved,
-    } = start
-    else {
-        return Ok(Some(
-            "materialized-start capture requires a discovery attempt",
-        ));
-    };
-    if resolved.id()? != configuration {
-        return Ok(Some(
-            "materialized-start capture configuration differs from resolved discovery start",
-        ));
+    match start_mode {
+        AttemptStartMode::Execute => Ok(None),
+        AttemptStartMode::CaptureMaterializedStart { configuration } => {
+            let ResolvedAttemptStart::Discover {
+                configuration: resolved,
+            } = start
+            else {
+                return Ok(Some(
+                    "materialized-start capture requires a discovery attempt",
+                ));
+            };
+            if resolved.id()? != configuration {
+                return Ok(Some(
+                    "materialized-start capture configuration differs from resolved discovery start",
+                ));
+            }
+            Ok(None)
+        }
+        AttemptStartMode::SavepointCapture { configuration, .. } => {
+            let resolved = match start {
+                ResolvedAttemptStart::Discover { configuration } => configuration,
+                ResolvedAttemptStart::Branch { parent, .. } => parent,
+            };
+            if resolved.id()? != configuration {
+                return Ok(Some(
+                    "savepoint capture configuration differs from resolved attempt start",
+                ));
+            }
+            Ok(None)
+        }
     }
-    Ok(None)
 }
 
 impl<M> LocalAttemptWorker for RepositoryAttemptWorker<M>

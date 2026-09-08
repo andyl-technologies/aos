@@ -469,6 +469,10 @@ fn supervisor_step_disposition(
         | CampaignSupervisorStepOutcome::Executor {
             outcome:
                 CampaignExecutorStepOutcome::Inactive { .. }
+                | CampaignExecutorStepOutcome::CaptureRunning { .. }
+                | CampaignExecutorStepOutcome::CaptureRetryScheduled { .. }
+                | CampaignExecutorStepOutcome::CaptureBlocked { .. }
+                | CampaignExecutorStepOutcome::CaptureUnexpectedCompletion { .. }
                 | CampaignExecutorStepOutcome::Running { .. }
                 | CampaignExecutorStepOutcome::Checkpointed { .. }
                 | CampaignExecutorStepOutcome::RetryScheduled { .. }
@@ -476,7 +480,9 @@ fn supervisor_step_disposition(
             ..
         }
         | CampaignSupervisorStepOutcome::Checkpoint(
-            CampaignExecutorCheckpointOutcome::Requested { .. }
+            CampaignExecutorCheckpointOutcome::CaptureInProgress { .. }
+            | CampaignExecutorCheckpointOutcome::CaptureUnexpectedCompletion { .. }
+            | CampaignExecutorCheckpointOutcome::Requested { .. }
             | CampaignExecutorCheckpointOutcome::Publishing { .. }
             | CampaignExecutorCheckpointOutcome::Paused { .. },
         ) => CampaignRuntimeStepDisposition::Wait,
@@ -486,6 +492,9 @@ fn supervisor_step_disposition(
         | CampaignSupervisorStepOutcome::Cancellation(
             CampaignExecutorCancelOutcome::Idle
             | CampaignExecutorCancelOutcome::Released { .. }
+            | CampaignExecutorCancelOutcome::CaptureReleased { .. }
+            | CampaignExecutorCancelOutcome::CaptureResolved { .. }
+            | CampaignExecutorCancelOutcome::CaptureAssignmentRenewed { .. }
             | CampaignExecutorCancelOutcome::Canceled { .. }
             | CampaignExecutorCancelOutcome::AssignmentRenewed { .. }
             | CampaignExecutorCancelOutcome::Incorporated(_),
@@ -493,9 +502,17 @@ fn supervisor_step_disposition(
         | CampaignSupervisorStepOutcome::Checkpoint(
             CampaignExecutorCheckpointOutcome::Idle
             | CampaignExecutorCheckpointOutcome::Released { .. }
+            | CampaignExecutorCheckpointOutcome::CaptureReleased { .. }
+            | CampaignExecutorCheckpointOutcome::CaptureResolved { .. }
+            | CampaignExecutorCheckpointOutcome::CaptureAssignmentRenewed { .. }
             | CampaignExecutorCheckpointOutcome::Incorporated(_)
             | CampaignExecutorCheckpointOutcome::AssignmentRenewed { .. },
         ) => CampaignRuntimeStepDisposition::Continue,
+        CampaignSupervisorStepOutcome::Cancellation(
+            CampaignExecutorCancelOutcome::CaptureCancellationRequested { .. }
+            | CampaignExecutorCancelOutcome::CaptureCancellationPending { .. }
+            | CampaignExecutorCancelOutcome::CaptureUnexpectedCompletion { .. },
+        ) => CampaignRuntimeStepDisposition::Wait,
     }
 }
 
