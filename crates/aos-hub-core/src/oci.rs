@@ -1614,7 +1614,7 @@ mod tests {
     fn push_only_rollout_allows_authenticated_head_preflight_but_not_get() {
         let rollout = crate::container_rollout::ContainerRollout {
             push: true,
-            ..crate::container_rollout::ContainerRollout::default()
+            ..crate::container_rollout::ContainerRollout::all_disabled()
         };
         let request = OciRequest::Blob {
             repository: RepositoryName::parse("aos").unwrap(),

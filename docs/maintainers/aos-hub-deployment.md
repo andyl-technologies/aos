@@ -384,6 +384,11 @@ would remove it from the generated Worker configuration.
   --external-url https://aos.andyl.org \
   --deployment-id "$production_deployment_id" \
   --database-instance hub-v2 \
+  --oci-pull-enabled \
+  --oci-push-enabled \
+  --oci-verified-publication-enabled \
+  --oci-administration-enabled \
+  --oci-gc-enabled \
   --rate-limit-namespace-base 1000 \
   --email-from noreply+aos@send.andyl.org \
   --route-reservation-keys-file "$keyring" \
@@ -393,6 +398,13 @@ would remove it from the generated Worker configuration.
 Repeat `--domain DOMAIN` for every additional domain owned by the production
 Worker. Probe `https://aos.andyl.org/.well-known/aos-deployment` exactly as for
 staging, then repeat the relevant hosted acceptance tests.
+
+OCI capabilities are enabled by default; the production command records that
+intended configuration explicitly. Use `--oci-<capability>-enabled=false` for a
+deliberate opt-out and retain it on subsequent deployments. The public Containers page must render an
+empty catalog for a new enabled registry, or an explanatory page when the
+capability is disabled. Verify it alongside Packages, Images, and Releases;
+a deployment-identity response alone does not establish browser readiness.
 
 ### First correct production setup
 

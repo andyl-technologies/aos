@@ -339,6 +339,17 @@ fn browse_response(rendered: Rendered) -> Response {
         Rendered::NotFound => StatusCode::NOT_FOUND.into_response(),
         Rendered::NotAcceptable => StatusCode::NOT_ACCEPTABLE.into_response(),
         Rendered::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Rendered::PageUnavailable(message) => crate::web::status_pages::unavailable(message),
+    }
+}
+
+/// Keeps unavailable browser content inside the page shell without changing API errors.
+fn browse_page_response(rendered: Rendered) -> Response {
+    match rendered {
+        Rendered::ServiceUnavailable => crate::web::status_pages::unavailable(
+            "We could not load the content for this page. Please try again later.",
+        ),
+        other => browse_response(other),
     }
 }
 
@@ -382,7 +393,11 @@ async fn browse_dispatch(
                 }
             },
         };
-        return browse_response(rendered);
+        return if rest.starts_with("api/") {
+            browse_response(rendered)
+        } else {
+            browse_page_response(rendered)
+        };
     }
     let api_rest = rest
         .strip_prefix("api/v1/")
@@ -487,7 +502,11 @@ async fn browse_dispatch(
             }
         },
     };
-    browse_response(rendered)
+    if api_rest.is_some() {
+        browse_response(rendered)
+    } else {
+        browse_page_response(rendered)
+    }
 }
 
 fn documentation_selection<'a>(path: &'a str, prefix: &str) -> Option<(&'a str, &'a str, &'a str)> {
@@ -3921,7 +3940,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
                     let svc = from_state(state);
                     send_bridge(async move {
                         let q = browse::BrowseQuery::parse(uri.query());
-                        browse_response(browse::home(&svc, &headers, &q).await)
+                        browse_page_response(browse::home(&svc, &headers, &q).await)
                     })
                 },
             ),
@@ -4304,6 +4323,20 @@ mod tests {
             response.headers().get(header::VARY),
             Some(&HeaderValue::from_static("Authorization, Cookie"))
         );
+    }
+
+    #[test]
+    fn unavailable_browser_pages_keep_machine_error_statuses_separate() {
+        let page = browse_page_response(Rendered::ServiceUnavailable);
+        assert_eq!(page.status(), StatusCode::OK);
+        assert_eq!(
+            page.headers()[header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(page.headers()[header::CACHE_CONTROL], "private, no-store");
+
+        let api = browse_response(Rendered::ServiceUnavailable);
+        assert_eq!(api.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[test]

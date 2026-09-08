@@ -115,23 +115,59 @@ enum Command {
         #[arg(long, env = "HUB_CLOUDFLARE_API_TOKEN")]
         cloudflare_api_token: Option<String>,
         /// Enable OCI Distribution discovery and repository pulls.
-        #[arg(long, env = "HUB_OCI_PULL_ENABLED", default_value_t = false)]
+        #[arg(
+            long,
+            env = "HUB_OCI_PULL_ENABLED",
+            default_value_t = true,
+            action = clap::ArgAction::Set,
+            num_args = 0..=1,
+            default_missing_value = "true",
+            require_equals = true
+        )]
         oci_pull_enabled: bool,
         /// Enable OCI Distribution discovery and repository pushes.
-        #[arg(long, env = "HUB_OCI_PUSH_ENABLED", default_value_t = false)]
+        #[arg(
+            long,
+            env = "HUB_OCI_PUSH_ENABLED",
+            default_value_t = true,
+            action = clap::ArgAction::Set,
+            num_args = 0..=1,
+            default_missing_value = "true",
+            require_equals = true
+        )]
         oci_push_enabled: bool,
         /// Enable verified AOS container publication transactions.
         #[arg(
             long,
             env = "HUB_OCI_VERIFIED_PUBLICATION_ENABLED",
-            default_value_t = false
+            default_value_t = true,
+            action = clap::ArgAction::Set,
+            num_args = 0..=1,
+            default_missing_value = "true",
+            require_equals = true
         )]
         oci_verified_publication_enabled: bool,
         /// Enable reviewed container repository, tag, and retention mutations.
-        #[arg(long, env = "HUB_OCI_ADMINISTRATION_ENABLED", default_value_t = false)]
+        #[arg(
+            long,
+            env = "HUB_OCI_ADMINISTRATION_ENABLED",
+            default_value_t = true,
+            action = clap::ArgAction::Set,
+            num_args = 0..=1,
+            default_missing_value = "true",
+            require_equals = true
+        )]
         oci_administration_enabled: bool,
         /// Enable reviewed OCI garbage collection.
-        #[arg(long, env = "HUB_OCI_GC_ENABLED", default_value_t = false)]
+        #[arg(
+            long,
+            env = "HUB_OCI_GC_ENABLED",
+            default_value_t = true,
+            action = clap::ArgAction::Set,
+            num_args = 0..=1,
+            default_missing_value = "true",
+            require_equals = true
+        )]
         oci_gc_enabled: bool,
         /// File containing the scoped Cloudflare API token.
         #[arg(
@@ -333,23 +369,59 @@ struct WorkerArgs {
     #[arg(long, env = "HUB_DEPLOYMENT_ID")]
     deployment_id: Option<String>,
     /// Enable OCI Distribution discovery and repository pulls.
-    #[arg(long, env = "HUB_OCI_PULL_ENABLED", default_value_t = false)]
+    #[arg(
+        long,
+        env = "HUB_OCI_PULL_ENABLED",
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true
+    )]
     oci_pull_enabled: bool,
     /// Enable OCI Distribution discovery and repository pushes.
-    #[arg(long, env = "HUB_OCI_PUSH_ENABLED", default_value_t = false)]
+    #[arg(
+        long,
+        env = "HUB_OCI_PUSH_ENABLED",
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true
+    )]
     oci_push_enabled: bool,
     /// Enable verified AOS container publication transactions.
     #[arg(
         long,
         env = "HUB_OCI_VERIFIED_PUBLICATION_ENABLED",
-        default_value_t = false
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true
     )]
     oci_verified_publication_enabled: bool,
     /// Enable reviewed container repository, tag, and retention mutations.
-    #[arg(long, env = "HUB_OCI_ADMINISTRATION_ENABLED", default_value_t = false)]
+    #[arg(
+        long,
+        env = "HUB_OCI_ADMINISTRATION_ENABLED",
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true
+    )]
     oci_administration_enabled: bool,
     /// Enable reviewed OCI garbage collection.
-    #[arg(long, env = "HUB_OCI_GC_ENABLED", default_value_t = false)]
+    #[arg(
+        long,
+        env = "HUB_OCI_GC_ENABLED",
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true
+    )]
     oci_gc_enabled: bool,
     /// Stable name of the colocated SQLite Durable Object instance.
     ///
@@ -1681,6 +1753,68 @@ mod production_vm_coverage {
     use clap::{Command as ClapCommand, CommandFactory as _, Parser as _};
 
     use super::{Cli, Command, WorkerCommand};
+
+    fn parsed_container_capabilities(arguments: &[&str]) -> [bool; 5] {
+        match Cli::try_parse_from(arguments).unwrap().command {
+            Command::Serve {
+                oci_pull_enabled,
+                oci_push_enabled,
+                oci_verified_publication_enabled,
+                oci_administration_enabled,
+                oci_gc_enabled,
+                ..
+            } => [
+                oci_pull_enabled,
+                oci_push_enabled,
+                oci_verified_publication_enabled,
+                oci_administration_enabled,
+                oci_gc_enabled,
+            ],
+            Command::Worker {
+                command: WorkerCommand::Install(arguments) | WorkerCommand::Deploy(arguments),
+            } => [
+                arguments.oci_pull_enabled,
+                arguments.oci_push_enabled,
+                arguments.oci_verified_publication_enabled,
+                arguments.oci_administration_enabled,
+                arguments.oci_gc_enabled,
+            ],
+            _ => panic!("expected a native or Worker deployment command"),
+        }
+    }
+
+    #[test]
+    fn native_and_worker_oci_defaults_support_independent_explicit_opt_outs() {
+        for prefix in [
+            vec!["aos-hub", "serve"],
+            vec!["aos-hub", "worker", "install"],
+            vec!["aos-hub", "worker", "deploy"],
+        ] {
+            assert_eq!(parsed_container_capabilities(&prefix), [true; 5]);
+
+            let mut explicit_enable = prefix.clone();
+            explicit_enable.push("--oci-pull-enabled");
+            assert_eq!(parsed_container_capabilities(&explicit_enable), [true; 5]);
+
+            for (index, flag) in [
+                "--oci-pull-enabled=false",
+                "--oci-push-enabled=false",
+                "--oci-verified-publication-enabled=false",
+                "--oci-administration-enabled=false",
+                "--oci-gc-enabled=false",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut arguments = prefix.clone();
+                arguments.push(flag);
+                let mut expected = [true; 5];
+                expected[index] = false;
+
+                assert_eq!(parsed_container_capabilities(&arguments), expected);
+            }
+        }
+    }
 
     #[test]
     fn parses_closed_worker_recovery_commands() {

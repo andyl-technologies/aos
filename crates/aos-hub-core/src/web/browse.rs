@@ -108,6 +108,8 @@ pub enum Rendered {
     NotAcceptable,
     /// Required topology configuration is absent or temporarily unreadable.
     ServiceUnavailable,
+    /// A browser capability is disabled; carries a safe explanation for its page.
+    PageUnavailable(&'static str),
 }
 
 /// Maximum packages loaded for one browse page view.
@@ -779,7 +781,7 @@ pub async fn containers(
         return Rendered::NotFound;
     };
     if !svc.container_rollout.pull {
-        return Rendered::ServiceUnavailable;
+        return Rendered::PageUnavailable("Container browsing is not enabled for this Hub.");
     }
     let context = match super::release_browse::ReleaseContext::load(
         &svc.db,
@@ -835,7 +837,7 @@ pub async fn container_repositories(
         return Rendered::NotFound;
     };
     if !svc.container_rollout.pull {
-        return Rendered::ServiceUnavailable;
+        return Rendered::PageUnavailable("Container browsing is not enabled for this Hub.");
     }
     let filter = crate::db::OciRepositoryListFilter {
         repository_prefix: query.query().map(str::to_string),
@@ -892,7 +894,7 @@ pub async fn container_repository(
         return Rendered::NotFound;
     };
     if !svc.container_rollout.pull {
-        return Rendered::ServiceUnavailable;
+        return Rendered::PageUnavailable("Container browsing is not enabled for this Hub.");
     }
     let Ok(Some(repository)) = svc
         .db
@@ -1003,7 +1005,7 @@ pub async fn container_tag(
         return Rendered::NotFound;
     };
     if !svc.container_rollout.pull {
-        return Rendered::ServiceUnavailable;
+        return Rendered::PageUnavailable("Container browsing is not enabled for this Hub.");
     }
     let Ok(Some(tag_record)) = svc
         .db
@@ -1079,7 +1081,7 @@ pub async fn container_manifest(
         return Rendered::NotFound;
     };
     if !svc.container_rollout.pull {
-        return Rendered::ServiceUnavailable;
+        return Rendered::PageUnavailable("Container browsing is not enabled for this Hub.");
     }
     let context = if let Some(release) = query.release.as_deref() {
         let context = match super::release_browse::ReleaseContext::load(
