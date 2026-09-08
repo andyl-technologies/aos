@@ -26,6 +26,17 @@
   fcLib = import ./firecracker.nix {inherit pkgs lib;};
   kernel = pkgs.linux;
 
+  guestArchitecture = pkgs.stdenv.hostPlatform.constraints.cpu;
+  dpsRootPartitionTypes = {
+    x86_64 = "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709";
+    aarch64 = "B921B045-1DF0-41C3-AF44-4C6F280D3FAE";
+    i686 = "44479540-F297-41B2-9AF7-D131D5F0458A";
+    riscv64 = "72EC70A6-CF74-40E6-BD49-4BDA08E8F224";
+  };
+  rootPartitionType =
+    dpsRootPartitionTypes.${guestArchitecture}
+    or (throw "vm: no DPS root partition type for '${guestArchitecture}'");
+
   # Shared rootfs helper (lib/build/rootfs.nix) — produces root.img.
   mkRootfs = import ../build/rootfs.nix;
 
@@ -386,13 +397,14 @@
         pkgs.e2fsprogs
         pkgs.coreutils
         pkgs.fakeroot
-        pkgs.util-linux # sfdisk
+        pkgs.buildPackages.jq
+        pkgs.buildPackages.util-linux
       ];
 
       ROOT_IMG = "${rootfs}/root.img";
       ROOT_SIZE_FILE = "${rootfs}/rootfs-size-bytes";
 
-      passthru = {inherit rootfs;};
+      passthru = {inherit rootfs rootPartitionType;};
 
       phases = [
         {
@@ -455,23 +467,35 @@
             echo "==> Assembling $(( DISK_BYTES / 1048576 )) MiB GPT disk image"
             truncate -s "$DISK_BYTES" disk.img
 
-            # The x86-64 DPS root GUID isolates root-a from operator
-            # linux-generic data. The reserved AOS GUID marks a baked /var
-            # disk as provisioned out-of-band. The partlabel `var` is what
-            # mount-var.service binds to via /dev/disk/by-partlabel/var.
-            # The root partition is labelled `root-a` to match the
-            # production A/B layout. The var line is omitted under "repart"
-            # because it is created at first boot.
+            # The target architecture's DPS root GUID isolates both immutable
+            # slots from operator linux-generic data. The reserved AOS GUID
+            # marks a baked /var disk as provisioned out-of-band. The partlabel
+            # `var` is what mount-var.service binds to via
+            # /dev/disk/by-partlabel/var. The var line is omitted under
+            # "repart" because it is created at first boot.
             {
               echo "label: gpt"
               echo "size=$BOOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=boot"
-              echo "size=$ROOT_SECTORS, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=root-a"
-              echo "size=$ROOT_SECTORS, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=root-b"
+              echo "size=$ROOT_SECTORS, type=${rootPartitionType}, name=root-a"
+              echo "size=$ROOT_SECTORS, type=${rootPartitionType}, name=root-b"
               echo "size=$SWAP_SECTORS, type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F, name=swap"
               ${lib.optionalString bakeVar ''echo "size=$SENTINEL_SECTORS, type=163BEA60-58C7-46E7-B69A-6846A5A688AF, name=aos-provenance-fallback-v1"''}
               ${lib.optionalString bakeVar ''echo "size=$VAR_SECTORS,  type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=var"''}
             } > ptable.sfdisk
-            sfdisk disk.img < ptable.sfdisk
+            ${pkgs.buildPackages.util-linux}/sbin/sfdisk disk.img < ptable.sfdisk
+
+            ${pkgs.buildPackages.util-linux}/sbin/sfdisk --json disk.img \
+              > partition-table.json
+            ${pkgs.buildPackages.jq}/bin/jq --exit-status \
+              --arg rootType '${rootPartitionType}' \
+              '
+                .partitiontable.partitions as $partitions
+                | (($partitions | length) >= 3)
+                  and ($partitions[1].name == "root-a")
+                  and ($partitions[2].name == "root-b")
+                  and (($partitions[1].type | ascii_downcase) == ($rootType | ascii_downcase))
+                  and (($partitions[2].type | ascii_downcase) == ($rootType | ascii_downcase))
+              ' partition-table.json > /dev/null
 
             # Partition starts are MiB-aligned. Copy at that granularity so
             # production-scale /var fixtures do not issue tens of millions of
