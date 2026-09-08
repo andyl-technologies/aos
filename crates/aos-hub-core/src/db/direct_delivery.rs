@@ -6,6 +6,9 @@ use super::{Database, DeliveryActivationRoute, PlacementReadRequirement, Surface
 
 impl Database {
     /// Resolves a public CDN object only while routing and publication evidence agree.
+    ///
+    /// # Errors
+    /// Returns an error when stored routing or publication data cannot be read.
     pub(crate) async fn public_object_delivery_url(
         &self,
         registry_id: i64,

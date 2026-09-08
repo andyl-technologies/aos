@@ -15,6 +15,10 @@ activated release authority: signed trust metadata and the applicable release
 gates still establish where it is accepted. Custody and recovery records are
 maintained separately from the public inventory.
 
+`configured` means the production registry or Hub has loaded the public anchor
+or signing configuration. It does not claim that release metadata has been
+published or that a prepared release-signing authority has been activated.
+
 Use the shared [qualification contract](qualification.md) and
 [release checklist](release-checklist.md). This runbook owns registry-specific
 identity and lifecycle operations, not a separate testing qualification process.

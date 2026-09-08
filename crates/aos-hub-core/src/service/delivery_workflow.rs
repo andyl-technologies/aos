@@ -109,6 +109,10 @@ fn digest<T: Serialize>(value: &T) -> Result<String, RpcError> {
 
 impl RpcService {
     /// Resolves setup instructions only after the requested delivery switch finishes.
+    ///
+    /// # Errors
+    /// Returns an error for unavailable canonical delivery, a pending destination
+    /// switch, or unreadable persisted workflow state.
     pub(crate) async fn registry_setup_url(
         &self,
         registry: &crate::db::RegistryRecord,
