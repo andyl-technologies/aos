@@ -30,10 +30,28 @@
 }: let
   version = "2.24.12";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
   buildMeson =
     if stdenv.isCross
     then buildPackages.meson
     else meson;
+  # These target libraries are direct DT_NEEDED providers for Nix's installed
+  # ELF objects. Header-only inputs and libraries already retained by the
+  # linker are deliberately absent.
+  crossLinuxRpathLibraries = [
+    curl
+    openssl
+    editline
+    libsodium
+    libgit2
+    brotli
+    libarchive
+    gc
+    lowdown
+  ];
+  crossLinuxRuntimeLibraryPath = builtins.concatStringsSep ":" (
+    map (dependency: "${dependency}/lib") crossLinuxRpathLibraries
+  );
   mesonSetupFlags =
     if stdenv.isCross
     then ''      --buildtype=release \
@@ -73,19 +91,25 @@ in
       hash = "sha256-862Kc2J+EH5X9JFIaKzWN6oODXCmh91nGLrC0vZPUMg=";
     };
 
-    buildDeps = [
-      gnumake
-      cmake
-      pkg-config
-      meson
-      ninja
-      python3
-      bison
-      flex
-      # Boost headers for compilation only; the runtime lib reference comes
-      # from `boost` (the lib output) in runtimeDeps below.
-      boost.dev
-    ];
+    buildDeps =
+      [
+        gnumake
+        cmake
+        pkg-config
+        meson
+        ninja
+        python3
+        bison
+        flex
+        # Boost headers for compilation only; the runtime lib reference comes
+        # from `boost` (the lib output) in runtimeDeps below.
+        boost.dev
+      ]
+      ++ (
+        if isLinuxCross
+        then [buildPackages.patchelf]
+        else []
+      );
     runtimeDeps = [
       curl
       openssl
@@ -182,6 +206,24 @@ in
             mkdir -p "$dev/lib"
             mv "$out/lib/pkgconfig" "$dev/lib/pkgconfig"
           fi
+
+          ${
+            if isLinuxCross
+            then ''
+              # Meson removes build-tree RPATHs during cross installation, so
+              # restore the declared target runtime closure before the generic
+              # fixup shrinks each ELF to the directories it actually needs.
+              find "$out" -type f \( -name '*.so*' -o -perm -u+x \) |
+                while IFS= read -r object; do
+                  if ${buildPackages.patchelf}/bin/patchelf \
+                    --print-needed "$object" >/dev/null 2>&1; then
+                    ${buildPackages.patchelf}/bin/patchelf \
+                      --add-rpath "$out/lib:${crossLinuxRuntimeLibraryPath}" "$object"
+                  fi
+                done
+            ''
+            else ""
+          }
         '';
       }
     ];

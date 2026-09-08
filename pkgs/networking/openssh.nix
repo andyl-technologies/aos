@@ -7,6 +7,7 @@
   openpam,
   openssl,
   zlib,
+  libxcrypt,
   bash,
   stdenv,
 }: let
@@ -37,7 +38,9 @@ in
       ++ (
         if stdenv.hostPlatform.isDarwin
         then [bash]
-        else []
+        # Portable OpenSSH links the server processes directly against crypt(3)
+        # when the target libc provides it through a separate library.
+        else [libxcrypt]
       );
     propagatedDeps = [];
 
