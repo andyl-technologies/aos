@@ -4529,6 +4529,30 @@ HTTP remote-helper capability exchange passed. Native build-time Bash and
 gettext paths are absent from the output and its closure. This is focused
 `git-minimal` Linux qualification, not full Git or Darwin qualification.
 
+Commit `562f2fc942137a7357dee099a645eaf13e3369ea` closes two target-runtime
+linkage gaps found while realizing the complete fleet closure. OpenSSH now
+retains Linux `libxcrypt` as the provider for its direct `libcrypt.so.2`
+dependency. Cross-Linux Nix uses native `patchelf` only during the build to
+restore its declared target-library search roots before the standard fixup
+shrinks each installed ELF's runtime path to actual providers. No OpenSSH or
+Nix feature was disabled.
+
+The exact AArch64 package outputs passed at
+`/nix/store/p38iskqqjhawy2qqmy56zz442aqw843v-openssh-10.3p1`, from
+derivation
+`/nix/store/b8d592makjhznbgqjx8cpsqvpxy29acz-openssh-10.3p1.drv`, and
+`/nix/store/hrcsiy22r1mhj5v87wvxr55as0ba7ig3-nix-2.24.12`, from derivation
+`/nix/store/0cn915sdbp8nzl6g8msdqrwx930l9cy0-nix-2.24.12.drv`. A full target
+ELF audit checked 14 OpenSSH objects and 56 direct dependency edges, plus eight
+Nix objects and 75 edges, with no unresolved dependency, wrong-machine
+provider, or SONAME mismatch. Their final runtime paths contain only target
+runtime providers and Nix's own library output. No native `patchelf`,
+build-machine object, or header-only output appears in those runtime paths. In
+a clean environment without `LD_LIBRARY_PATH`, the AOS AArch64 user-mode
+runner executed `ssh -V`, `sshd -V`, `nix --version`, and
+`nix eval --expr '1 + 1'`, which returned 2. This is focused package
+runtime-link and command-startup evidence, not an end-to-end fleet result.
+
 The system-image generators now make the same build-machine/target split.
 Native Python produces the composefs dump; native `mkcomposefs` and
 `fsck.erofs` create and validate its EROFS metadata image; and native `sed`
