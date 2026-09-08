@@ -123,7 +123,7 @@ pub struct PageChrome {
     /// The operator-configured masthead brand (company/instance name).
     ///
     /// When empty, the masthead uses "AOS Hub" and titles default
-    /// to `"<page> — AOS Registry Hub"`; when set, the brand leads the masthead
+    /// to `"<page> — AOS Hub"`; when set, the brand leads the masthead
     /// and titles every page.
     pub brand: String,
 }
@@ -135,11 +135,11 @@ impl PageChrome {
         Self::default()
     }
 
-    /// The `<title>` text: `"<page> — <brand>"`, or `"<page> — AOS Registry
-    /// Hub"` when no brand is configured.
+    /// The `<title>` text: `"<page> — <brand>"`, or `"<page> — AOS Hub"`
+    /// when no brand is configured.
     fn page_title(&self, title: &str) -> String {
         if self.brand.is_empty() {
-            format!("{} — AOS Registry Hub", escape(title))
+            format!("{} — AOS Hub", escape(title))
         } else {
             format!("{} — {}", escape(title), escape(&self.brand))
         }
@@ -835,7 +835,7 @@ mod tests {
         // Anonymous pages retain a home-linked identity and a neutral title.
         let anon = PageChrome::anonymous();
         assert!(masthead("", "", &[], &anon.session_span()).contains(">AOS Hub</a>"));
-        assert_eq!(anon.page_title("log in"), "log in — AOS Registry Hub");
+        assert_eq!(anon.page_title("log in"), "log in — AOS Hub");
         assert!(anon.session_span().contains("log in"));
         // Branded + signed in: home-linked brand, branded title, email + logout.
         let signed = PageChrome {
