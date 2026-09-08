@@ -543,6 +543,13 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
         }
     }
 
+    fn set_attempt_stop_frontier(
+        &mut self,
+        _frontier: Option<crucible::VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
     fn drive_quantum(
         &mut self,
         request: crucible::QuantumRequest,
@@ -782,6 +789,13 @@ struct BoundaryCaptureLifecycle {
 impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
     fn enable_signal_fault_campaign_promotion(&mut self) {}
 
+    fn set_attempt_stop_frontier(
+        &mut self,
+        _frontier: Option<crucible::VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
     fn drive_quantum(
         &mut self,
         request: crucible::QuantumRequest,
@@ -996,6 +1010,13 @@ struct FakeGenesisCheckpointLifecycle {
 impl QemuFreshAttemptLifecycleOwner for FakeGenesisCheckpointLifecycle {
     fn enable_signal_fault_campaign_promotion(&mut self) {
         panic!("fresh genesis capture must not enable signal-fault promotion");
+    }
+
+    fn set_attempt_stop_frontier(
+        &mut self,
+        _frontier: Option<crucible::VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        Ok(())
     }
 
     fn drive_quantum(

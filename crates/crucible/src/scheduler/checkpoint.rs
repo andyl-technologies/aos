@@ -446,6 +446,9 @@ impl SingleSchedulerCheckpoint {
             .wire
             .branch_frontier_cap
             .map(|nanos| SimInstant { nanos });
+        // An attempt stop belongs to the active caller, not the captured
+        // scheduler continuation. A resumed attempt installs its own stop.
+        staged.attempt_stop_frontier_cap = None;
         staged.rendezvous = match self.wire.rendezvous_interval {
             Some(nanos) => SchedulerRendezvous::every(SimDuration { nanos })
                 .map_err(|_| SingleSchedulerCheckpointError::State)?,

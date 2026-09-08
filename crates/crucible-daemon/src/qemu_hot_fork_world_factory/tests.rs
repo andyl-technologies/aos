@@ -388,6 +388,13 @@ struct BranchReplayLifecycle {
 impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
     fn enable_signal_fault_campaign_promotion(&mut self) {}
 
+    fn set_attempt_stop_frontier(
+        &mut self,
+        _frontier: Option<crucible::VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
     fn drive_quantum(
         &mut self,
         request: crucible::QuantumRequest,
@@ -583,6 +590,13 @@ struct InheritedBoundaryLifecycle {
 
 impl QemuFreshAttemptLifecycleOwner for InheritedBoundaryLifecycle {
     fn enable_signal_fault_campaign_promotion(&mut self) {}
+
+    fn set_attempt_stop_frontier(
+        &mut self,
+        _frontier: Option<crucible::VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        Ok(())
+    }
 
     fn drive_quantum(
         &mut self,

@@ -484,6 +484,37 @@ impl SingleScheduler {
         self.branch_frontier_cap = None;
     }
 
+    /// Caps advancement at the exact stop frontier for the active attempt.
+    ///
+    /// This runtime-only cap composes with branch, rendezvous, topology, and
+    /// trigger horizons. It does not synthesize an event or become part of a
+    /// captured scheduler continuation. Passing `None` clears the prior
+    /// attempt's cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `frontier` precedes
+    /// the scheduler's committed frontier.
+    pub fn set_attempt_stop_frontier(
+        &mut self,
+        frontier: Option<VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        if let Some(frontier) = frontier
+            && frontier < self.frontier
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "attempt stop frontier {} precedes committed frontier {}",
+                    frontier.ticks, self.frontier.ticks
+                ),
+            });
+        }
+        self.attempt_stop_frontier_cap = frontier.map(|frontier| SimInstant {
+            nanos: frontier.ticks,
+        });
+        Ok(())
+    }
+
     /// Re-anchors a restarted VM to its replacement backend's physical counter.
     ///
     /// The scheduler time at the restart boundary is preserved. Only the
