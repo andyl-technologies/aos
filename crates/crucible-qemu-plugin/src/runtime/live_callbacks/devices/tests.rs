@@ -617,7 +617,6 @@ fn live_device_callback_reentry_is_rejected_before_ring_or_freeze_mutation() {
     let (teardown_sender, teardown_receiver) = std::sync::mpsc::channel();
     std::mem::forget(teardown_receiver);
     let state = LiveVcpuTimeCallbackState::new(
-        61,
         test_icount_raw,
         super::super::test_support::test_force_vcpu_exit,
         super::super::test_support::test_request_vmstop,
@@ -674,7 +673,6 @@ fn live_ninep_burst_release_is_legal_while_idle_advance_retires() {
     let (teardown_sender, teardown_receiver) = std::sync::mpsc::channel();
     std::mem::forget(teardown_receiver);
     let state = LiveVcpuTimeCallbackState::new(
-        62,
         test_icount_raw,
         super::super::test_support::test_force_vcpu_exit,
         super::super::test_support::test_request_vmstop,
@@ -736,7 +734,6 @@ fn live_block_event_poll_consumes_the_wake_during_idle_advance() {
     let (teardown_sender, teardown_receiver) = std::sync::mpsc::channel();
     std::mem::forget(teardown_receiver);
     let state = LiveVcpuTimeCallbackState::new(
-        64,
         test_icount_raw,
         super::super::test_support::test_force_vcpu_exit,
         super::super::test_support::test_request_vmstop,
@@ -855,7 +852,6 @@ fn live_device_submits_during_idle_completion_use_the_advance_target() {
     let (teardown_sender, teardown_receiver) = std::sync::mpsc::channel();
     std::mem::forget(teardown_receiver);
     let state = LiveVcpuTimeCallbackState::new(
-        63,
         test_icount_raw,
         capture_force_vcpu_exit,
         super::super::test_support::test_request_vmstop,

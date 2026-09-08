@@ -4,7 +4,7 @@
   fetchurl,
   gnumake,
 }: let
-  version = "0.406";
+  version = "0.411";
 in
   mkDerivation {
     pname = "hwdata";
@@ -14,7 +14,7 @@ in
       urls = [
         "https://github.com/vcrhonek/hwdata/archive/refs/tags/v${version}.tar.gz"
       ];
-      hash = "sha256-HM/RynI1lbH+h5T0FX7FY1vh6+210TdptL510LdbwZk=";
+      hash = "sha256-11RiGB+9MHIo4KSLjRRJ8Xc+pLHxfoodVjRpB/mZzjM=";
     };
 
     buildDeps = [gnumake];

@@ -5,7 +5,7 @@
   gnumake,
   stdenv,
 }: let
-  version = "2.7.4";
+  version = "2.8.4";
 in
   mkDerivation {
     pname = "expat";
@@ -17,7 +17,7 @@ in
           builtins.replaceStrings ["."] ["_"] version
         }/expat-${version}.tar.xz"
       ];
-      hash = "sha256-npyrtFfB4J3pHbJwbYNlZFeSY46zvh+U27IUkwEIasA=";
+      hash = "sha256-ZWrhzI2jtOpRO7TiVPM+YkOTgITA7GI52oczdrCZhac=";
     };
 
     buildDeps = [gnumake];

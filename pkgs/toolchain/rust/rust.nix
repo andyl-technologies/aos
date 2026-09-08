@@ -10,18 +10,19 @@
   bash,
   which,
   llvm,
-  rust-1_92,
+  rust-1_97,
   openssl,
   zlib,
   stdenv,
   buildPackages,
 }: let
-  version = "1.93.1";
+  current = import ./_current.nix;
+  inherit (current) version changeId configFileName;
   src = fetchurl {
     urls = [
       "https://static.rust-lang.org/dist/rustc-${version}-src.tar.gz"
     ];
-    hash = "sha256-TCMKRLPZyfPO+VCUNxn4OABY0nyR/aXjapqUfvAT4B8=";
+    hash = current.srcHash;
   };
 in
   if stdenv.isCross
@@ -30,8 +31,7 @@ in
       inherit buildPackages src version;
       crossCc = stdenv.cc;
       hostPlatform = stdenv.hostPlatform;
-      changeId = 148795;
-      configFileName = "bootstrap.toml";
+      inherit changeId configFileName;
       nativeRust = buildPackages.rust;
       nativeLlvm = buildPackages.llvm;
     };
@@ -54,9 +54,8 @@ in
           zlib
           ;
         pname = "rust";
-        changeId = 148795;
-        configFileName = "bootstrap.toml";
-        nativeRust = buildPackages.rust-1_92;
+        inherit changeId configFileName;
+        nativeRust = buildPackages.rust-1_97;
         nativeLlvm = buildPackages.llvm;
         targetLlvm = llvm;
         additionalTargets = ["wasm32-unknown-unknown"];
@@ -95,7 +94,7 @@ in
         python3
         bash
         which
-        rust-1_92
+        rust-1_97
         llvm
         openssl
       ];
@@ -126,7 +125,7 @@ in
             chmod +x .fake-bin/git
             export PATH="$PWD/.fake-bin:$PATH"
             cat > bootstrap.toml << TOML
-            change-id = 148795
+            change-id = ${toString changeId}
 
             [llvm]
             link-shared = true
@@ -138,8 +137,8 @@ in
             tools = ["cargo", "rustdoc", "clippy", "rustfmt", "rust-analyzer", "src"]
             vendor = true
             profiler = true
-            cargo = "${rust-1_92}/bin/cargo"
-            rustc = "${rust-1_92}/bin/rustc"
+            cargo = "${rust-1_97}/bin/cargo"
+            rustc = "${rust-1_97}/bin/rustc"
             # Build std for the native host plus the bare wasm32 target. The
             # wasm32-unknown-unknown std (core + alloc, with the wasm shims; it
             # has no full libstd, which is expected) lets cargo cross-compile the
@@ -159,16 +158,16 @@ in
             rpath = true
             omit-git-hash = true
             download-rustc = false
-            # `lld = false`: x.py refuses `rust.lld = true` when configured with an
-            # external `llvm-config` (it has no bundled llvm-project to build lld
-            # from). The wasm32-unknown-unknown target nonetheless needs `rust-lld`
+            # With lld disabled, x.py refuses rust.lld = true when configured with an
+            # external llvm-config (it has no bundled llvm-project to build lld
+            # from). The wasm32-unknown-unknown target nonetheless needs rust-lld
             # (wasm has no system linker), so the install phase symlinks it from
-            # the AOS LLVM's own `lld` driver instead. `use-lld = false` keeps the
-            # host (x86_64) target on GCC's `ld` — rust-lld as the default host
+            # the AOS LLVM's own lld driver instead. The bootstrap override keeps the
+            # host (x86_64) target on GCC's ld; rust-lld as the default host
             # linker chokes on the zlib-compressed debug sections in GCC 14's
             # libgcc.a.
             lld = false
-            use-lld = false
+            bootstrap-override-lld = false
 
             [target.x86_64-unknown-linux-gnu]
             llvm-config = "${llvm}/bin/llvm-config"

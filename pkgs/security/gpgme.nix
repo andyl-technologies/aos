@@ -11,7 +11,7 @@
   npth,
   glib,
 }: let
-  version = "2.0.1";
+  version = "2.2.0";
 in
   mkDerivation {
     pname = "gpgme";
@@ -21,7 +21,7 @@ in
       urls = [
         "https://gnupg.org/ftp/gcrypt/gpgme/gpgme-${version}.tar.bz2"
       ];
-      hash = "sha256-ghqwaVyELqtRdSqBmAySsEEMfq3QQQP3kdXSpSZ4SWY=";
+      hash = "sha256-cWDoDoTa/QDZVshIkcUzu3qxampU++FXSy86zwSWl3s=";
     };
 
     buildDeps = [gnumake pkg-config texinfo gnupg];

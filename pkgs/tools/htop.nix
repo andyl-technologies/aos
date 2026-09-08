@@ -13,7 +13,7 @@
   lm-sensors,
   systemd,
 }: let
-  version = "3.5.1";
+  version = "3.5.3";
 in
   mkDerivation {
     pname = "htop";
@@ -21,7 +21,7 @@ in
 
     src = fetchurl {
       urls = ["https://github.com/htop-dev/htop/archive/refs/tags/${version}.tar.gz"];
-      hash = "sha256-38SgmEXpvIb0Zqci5iuPh9WQKP85aJB3/yJXpqYFBh0=";
+      hash = "sha256-7fJe4CClJj/7757vWowUOSv3Tniz1ci8ZNk0PdmoJgU=";
     };
 
     buildDeps = [autoconf automake libtool gnumake pkg-config];

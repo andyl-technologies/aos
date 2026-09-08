@@ -1,8 +1,8 @@
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 185890b47..dcd51e30a 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -1394,6 +1394,48 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index 39647b4f9..e741a5219 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -1755,6 +1755,48 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
                                              struct qemu_plugin_register *handle,
                                              GByteArray *buf);
  
@@ -52,10 +52,10 @@ index 185890b47..dcd51e30a 100644
   * qemu_plugin_crucible_rr_current_vcpu() - return the current RR vCPU index
   *
 diff --git a/plugins/api.c b/plugins/api.c
-index 9276590a6..591363c5a 100644
+index cfe9bf135..e89baf2b4 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -498,6 +498,163 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
+@@ -677,6 +677,163 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
      return gdb_read_register(cpu, buf, GPOINTER_TO_INT(reg) - 1);
  }
  

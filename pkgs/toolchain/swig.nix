@@ -12,14 +12,14 @@
   python3,
   tcl,
 }: let
-  version = "4.4.1";
+  version = "4.5.1";
 in
   mkDerivation {
     pname = "swig";
     inherit version;
     src = fetchurl {
       urls = ["https://github.com/swig/swig/archive/refs/tags/v${version}.tar.gz"];
-      hash = "sha256-i/MgQr637h7rXHGqFaYlE9lkiT+EI08s135Kji7UHoc=";
+      hash = "sha256-3SGaDIlHr+Y7gYiSMEOQQnwu5/bt+ho3hT1O/YkZgr4=";
     };
     buildDeps = [autoconf automake libtool bison gnumake perl python3 tcl];
     runtimeDeps = [pcre2];

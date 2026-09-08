@@ -10,6 +10,7 @@
   python3,
   bash,
   which,
+  curl,
   openssl,
   zlib,
   stdenv,
@@ -82,9 +83,10 @@ in
         which
         prevRust
         llvm
+        curl
         openssl
       ];
-      runtimeDeps = [zlib openssl llvm];
+      runtimeDeps = [zlib curl openssl llvm];
 
       phases = [
         {
@@ -111,6 +113,44 @@ in
             printf '#!/bin/sh\nexit 1\n' > .fake-bin/git
             chmod +x .fake-bin/git
             export PATH="$PWD/.fake-bin:$PATH"
+
+            # Older bootstrap Cargo releases vendor openssl-sys versions that
+            # reject OpenSSL 4 before compiling, despite using the OpenSSL
+            # 3-compatible API subset. Remove that obsolete upper-major check
+            # when the vendored source still contains its exact old shape.
+            patchedOpenSslSys=0
+            for opensslSysBuild in vendor/openssl-sys*/build/main.rs; do
+              test -f "$opensslSysBuild" || continue${
+              if version == "1.97.0"
+              then ''
+
+                # openssl-sys 0.9.114 already supports OpenSSL 4 and rejects
+                # only the unreleased next major. Leave that branch intact.
+                grep -q 'Version::Openssl4xx' "$opensslSysBuild" && continue
+              ''
+              else ""
+            }
+              grep -q 'if openssl_version >= 0x4_00_00_00_0 {' "$opensslSysBuild" || continue
+
+              test "$(grep -c 'if openssl_version >= 0x4_00_00_00_0 {' "$opensslSysBuild")" -eq 1
+              sed -i \
+                '/if openssl_version >= 0x4_00_00_00_0 {/,/} else if openssl_version >= 0x3_00_00_00_0 {/c\        if openssl_version >= 0x3_00_00_00_0 {' \
+                "$opensslSysBuild"
+              test "$(grep -c 'if openssl_version >= 0x4_00_00_00_0 {' "$opensslSysBuild")" -eq 0
+
+              opensslSysDir=''${opensslSysBuild%/build/main.rs}
+              opensslSysChecksum=$opensslSysDir/.cargo-checksum.json
+              test "$(grep -o '"build/main.rs":"[0-9a-f]*"' "$opensslSysChecksum" | wc -l)" -eq 1
+              updatedChecksum=$(sha256sum "$opensslSysBuild")
+              updatedChecksum=''${updatedChecksum%% *}
+              sed -i \
+                "s|\"build/main.rs\":\"[0-9a-f]*\"|\"build/main.rs\":\"$updatedChecksum\"|" \
+                "$opensslSysChecksum"
+              grep -q "\"build/main.rs\":\"$updatedChecksum\"" "$opensslSysChecksum"
+
+              patchedOpenSslSys=$((patchedOpenSslSys + 1))
+            done
+            test "$patchedOpenSslSys" -ge 1
 
             cat > ${configFileName} << TOML
             change-id = ${toString changeId}
@@ -152,7 +192,11 @@ in
             }
             ${
               if disableLld
-              then "lld = false\n        use-lld = false"
+              then "lld = false\n        ${
+                if builtins.compareVersions version "1.94.0" >= 0
+                then "bootstrap-override-lld"
+                else "use-lld"
+              } = false"
               else ""
             }
             TOML

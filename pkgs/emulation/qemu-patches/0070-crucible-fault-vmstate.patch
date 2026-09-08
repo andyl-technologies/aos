@@ -1,8 +1,8 @@
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 8d0ed1876..d2e89855f 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -1998,6 +1998,31 @@ size_t qemu_plugin_crucible_fault_accelerator_manifest(
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index c113694df..73689da28 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -2359,6 +2359,31 @@ size_t qemu_plugin_crucible_fault_accelerator_manifest(
      struct qemu_plugin_crucible_fault_accelerator_capability *out,
      size_t capacity);
  
@@ -35,7 +35,7 @@ index 8d0ed1876..d2e89855f 100644
  QEMU_PLUGIN_API
  int qemu_plugin_crucible_fault_clock_bind(
 diff --git a/plugins/crucible-fault-vmstate.c b/plugins/crucible-fault-vmstate.c
-index 486b17a13..9843d6135 100644
+index d29397f9b..18adc976a 100644
 --- a/plugins/crucible-fault-vmstate.c
 +++ b/plugins/crucible-fault-vmstate.c
 @@ -25,6 +25,16 @@

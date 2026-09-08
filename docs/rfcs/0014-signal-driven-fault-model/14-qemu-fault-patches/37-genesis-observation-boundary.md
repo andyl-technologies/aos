@@ -45,7 +45,7 @@ digest fails the run loudly.
 
 ## Files and license scope
 
-The patch modifies `include/qemu/qemu-plugin.h` and `plugins/api.c`. Both retain
+The patch modifies `include/plugins/qemu-plugin.h` and `plugins/api.c`. Both retain
 their existing upstream licenses. It creates no QEMU source file, so
 `LICENSES.md` does not gain a row. The trace plugin remains GPL-2.0-only and
 communicates only serialized evidence across the established process boundary.

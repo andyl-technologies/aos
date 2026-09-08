@@ -7,7 +7,7 @@
   linux-headers,
   binutils,
 }: let
-  version = "2.77";
+  version = "2.78";
 in
   mkDerivation {
     pname = "libcap";
@@ -18,7 +18,7 @@ in
         "https://mirrors.edge.kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-${version}.tar.xz"
         "https://mirrors.kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-${version}.tar.xz"
       ];
-      hash = "sha256-iXvBi0Svwmxw54zq09uzHhVKzCS+4IWloJB5qI2/b1I=";
+      hash = "sha256-DWIeVi/ZMsz2e5Zg+wGORopoPXuCdUHfJ4EyKMmWuxE=";
     };
 
     buildDeps = [

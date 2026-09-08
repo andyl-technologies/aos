@@ -1135,9 +1135,9 @@ fn decode_lower_hex(value: &str) -> Result<Vec<u8>, FaultAbiError> {
     if !value.len().is_multiple_of(2) {
         return Err(FaultAbiError::CapabilityInvariant);
     }
-    value
-        .as_bytes()
-        .chunks_exact(2)
+    let (pairs, _) = value.as_bytes().as_chunks::<2>();
+    pairs
+        .iter()
         .map(|pair| {
             let high = hex_nibble(pair[0]).ok_or(FaultAbiError::CapabilityInvariant)?;
             let low = hex_nibble(pair[1]).ok_or(FaultAbiError::CapabilityInvariant)?;

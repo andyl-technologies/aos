@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index 2a86b16bb..f2ece4ee0 100644
+index f14280bc8..3314ea892 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -31,6 +31,7 @@
@@ -9,8 +9,8 @@ index 2a86b16bb..f2ece4ee0 100644
 +#include "qemu/accel.h"
  #include "qemu/plugin.h"
  #include "exec/cpu-common.h"
- #include "tcg/startup.h"
-@@ -63,6 +64,33 @@ void rr_kick_vcpu_thread(CPUState *unused)
+ #include "accel/tcg/cpu-loop.h"
+@@ -64,6 +65,33 @@ void rr_kick_vcpu_thread(CPUState *unused)
  static QEMUTimer *rr_kick_vcpu_timer;
  static CPUState *rr_current_cpu;
  
@@ -44,20 +44,59 @@ index 2a86b16bb..f2ece4ee0 100644
  static inline int64_t rr_next_kick_time(void)
  {
      return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
-@@ -252,6 +280,7 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -227,26 +255,6 @@ static void *rr_cpu_thread_fn(void *arg)
+         /* Only used for icount_enabled() */
+         int64_t cpu_budget = 0;
+ 
+-        if (cpu) {
+-            /*
+-             * This could even reset exit_request for all CPUs, but in practice
+-             * races between CPU exits and changes to "cpu" are so rare that
+-             * there's no advantage in doing so.
+-             */
+-            qatomic_set(&cpu->exit_request, false);
+-        }
+-
+-        if (icount_enabled() && all_cpu_threads_idle()) {
+-            /*
+-             * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
+-             * in the main_loop, wake it up in order to start the warp timer.
+-             */
+-            qemu_notify_event();
+-        }
+-
+-        rr_wait_io_event();
+-        rr_deal_with_unplugged_cpus();
+-
+         bql_unlock();
+         replay_mutex_lock();
+         bql_lock();
+@@ -270,6 +278,7 @@ static void *rr_cpu_thread_fn(void *arg)
          if (!cpu) {
              cpu = first_cpu;
          }
 +        cpu = rr_crucible_sim_loop_cpu(cpu);
  
-         while (cpu && cpu_work_list_empty(cpu) && !cpu->exit_request) {
-             /* Store rr_current_cpu before evaluating cpu_can_run().  */
-@@ -299,7 +328,7 @@ static void *rr_cpu_thread_fn(void *arg)
+         while (cpu && cpu_work_list_empty(cpu)) {
+             /*
+@@ -322,6 +331,20 @@ static void *rr_cpu_thread_fn(void *arg)
+ 
+         /* Does not need a memory barrier because a spurious wakeup is okay.  */
          qatomic_set(&rr_current_cpu, NULL);
- 
-         if (cpu && cpu->exit_request) {
--            qatomic_set_mb(&cpu->exit_request, 0);
++        if (cpu && cpu->exit_request) {
 +            rr_crucible_sim_reset_exit_request(cpu);
-         }
++        }
++
++        if (icount_enabled() && all_cpu_threads_idle()) {
++            /*
++             * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
++             * in the main_loop, wake it up in order to start the warp timer.
++             */
++            qemu_notify_event();
++        }
++
++        rr_wait_io_event();
++        rr_deal_with_unplugged_cpus();
+     }
  
-         if (icount_enabled() && all_cpu_threads_idle()) {
+     g_assert_not_reached();

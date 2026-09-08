@@ -9,7 +9,7 @@
   perl,
   gdb,
 }: let
-  version = "3.26.0";
+  version = "3.27.1";
 in
   mkDerivation {
     pname = "valgrind";
@@ -17,7 +17,7 @@ in
 
     src = fetchurl {
       urls = ["https://sourceware.org/pub/valgrind/valgrind-${version}.tar.bz2"];
-      hash = "sha256-jVTHFwKRBvFkSq2vgCq5aS5T2T3QFcvRnnQZDrpha9c=";
+      hash = "sha256-XViRUuuAccAv6rjOarcZ5DGh+8PisXAPVDJjKouSZNw=";
     };
 
     buildDeps = [autoconf automake libtool gnumake perl];

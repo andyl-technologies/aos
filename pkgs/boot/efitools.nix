@@ -42,6 +42,7 @@ in
       ];
       hash = "sha256-DzFbNufRunS/yXq58wTwowcsR1eLvl5CWUrK44H5rP4=";
     };
+    patches = [./efitools-openssl-4.patch];
 
     # gnu-efi supplies <efi.h> (the EFI type definitions efi-updatevar /
     # efi-readvar pull in); only headers are needed, the host tools don't

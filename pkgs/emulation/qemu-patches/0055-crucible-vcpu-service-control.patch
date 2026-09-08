@@ -1,8 +1,8 @@
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index 285d36133..7a657fff1 100644
+index fdcabc3bd..8251e8ae4 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
-@@ -270,6 +270,23 @@ int64_t icount_to_ns(int64_t icount)
+@@ -269,6 +269,23 @@ int64_t icount_to_ns(int64_t icount)
      return icount << qatomic_read(&timers_state.icount_time_shift);
  }
  
@@ -27,10 +27,10 @@ index 285d36133..7a657fff1 100644
   * Correlation between real and virtual time is always going to be
   * fairly approximate, so ignore small variation.
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index e5a54f3b6..8bc1b2109 100644
+index f9b85ba21..ff767e715 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -120,7 +120,8 @@ static bool rr_crucible_sim_skip_second_events_pass(CPUState *cpu)
+@@ -121,7 +121,8 @@ static bool rr_crucible_sim_skip_second_events_pass(CPUState *cpu)
  
  static bool rr_crucible_sim_vcpu_is_halted(CPUState *cpu)
  {
@@ -40,7 +40,7 @@ index e5a54f3b6..8bc1b2109 100644
  }
  
  static bool rr_crucible_sim_all_vcpus_halted(void)
-@@ -223,6 +224,8 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+@@ -224,6 +225,8 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
  
      while (true) {
          int r;
@@ -49,7 +49,7 @@ index e5a54f3b6..8bc1b2109 100644
  
          if (rr_crucible_sim_mode() &&
              qemu_plugin_time_advance_is_pending()) {
-@@ -279,6 +282,12 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+@@ -280,6 +283,12 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
              }
          }
  
@@ -62,7 +62,7 @@ index e5a54f3b6..8bc1b2109 100644
          bql_unlock();
          if (icount_enabled()) {
              icount_prepare_for_run(cpu, *cpu_budget);
-@@ -293,6 +302,15 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+@@ -294,6 +303,15 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
          }
          qemu_plugin_maybe_fire_tcg_exec_cb(cpu);
          bql_lock();
@@ -78,7 +78,7 @@ index e5a54f3b6..8bc1b2109 100644
  
          if (rr_crucible_sim_mode() &&
              qemu_crucible_fault_next_icount(
-@@ -321,9 +339,6 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+@@ -322,9 +340,6 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
              cpu_handle_guest_debug(cpu);
              return true;
          } else if (r == EXCP_ATOMIC) {
@@ -88,7 +88,7 @@ index e5a54f3b6..8bc1b2109 100644
              return true;
          } else if (r == EXCP_HALTED) {
              return false;
-@@ -641,7 +656,9 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -649,7 +664,9 @@ static void *rr_cpu_thread_fn(void *arg)
                  }
              }
  
@@ -99,8 +99,23 @@ index e5a54f3b6..8bc1b2109 100644
                  if (rr_crucible_sim_run_tcg_batch(&cpu, &cpu_budget)) {
                      break;
                  }
+diff --git a/include/exec/icount.h b/include/exec/icount.h
+index 6b3388b6e..c19c6e5cc 100644
+--- a/include/exec/icount.h
++++ b/include/exec/icount.h
+@@ -59,6 +59,10 @@ int64_t icount_get(void);
+  */
+ int64_t icount_to_ns(int64_t icount);
+ 
++/* Convert an unsigned Crucible service interval without signed overflow. */
++bool icount_crucible_instructions_to_ns(uint64_t instructions,
++                                        int64_t *nanoseconds);
++
+ /**
+  * icount_configure: configure the icount options, including "shift"
+  * @opts: Options to parse
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 9d38f9825..8b3eced85 100644
+index 556328223..8e51bff93 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -229,6 +229,21 @@ bool qemu_crucible_fault_hardware_exception_delivered(
@@ -125,23 +140,8 @@ index 9d38f9825..8b3eced85 100644
  /*
   * Architecture interrupt-controller interception contract.  These objects are
   * private QEMU process state: only their closed scalar projection is exported
-diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
-index 8c62f9823..fe2bc7c3c 100644
---- a/include/system/cpu-timers.h
-+++ b/include/system/cpu-timers.h
-@@ -62,6 +62,10 @@ int64_t icount_get(void);
-  */
- int64_t icount_to_ns(int64_t icount);
- 
-+/* Convert an unsigned Crucible service interval without signed overflow. */
-+bool icount_crucible_instructions_to_ns(uint64_t instructions,
-+                                        int64_t *nanoseconds);
-+
- /**
-  * icount_configure: configure the icount options, including "shift"
-  * @opts: Options to parse
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index f4de87a4b..24bdbb225 100644
+index 7bc66442d..ac3997d1b 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -3304,6 +3304,16 @@ static int node_prepare(
@@ -230,7 +230,7 @@ index f4de87a4b..24bdbb225 100644
      case CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE:
 diff --git a/plugins/crucible-fault-vcpu-service.c b/plugins/crucible-fault-vcpu-service.c
 new file mode 100644
-index 000000000..ff1e179e4
+index 000000000..5935ee79e
 --- /dev/null
 +++ b/plugins/crucible-fault-vcpu-service.c
 @@ -0,0 +1,950 @@
@@ -249,7 +249,7 @@ index 000000000..ff1e179e4
 +#include "qemu/crucible-fault.h"
 +#include "qemu/error-report.h"
 +#include "qemu/module.h"
-+#include "qemu/qemu-plugin.h"
++#include "plugins/qemu-plugin.h"
 +#include "qobject/qlist.h"
 +#include "qobject/qnum.h"
 +#include "system/cpu-timers.h"
@@ -1185,10 +1185,10 @@ index 000000000..ff1e179e4
 +
 +type_init(crucible_vcpu_service_register)
 diff --git a/plugins/meson.build b/plugins/meson.build
-index 09bbc6c4e..30ff5ba97 100644
+index 671509ace..b3be9deae 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
-@@ -64,6 +64,7 @@ system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
+@@ -84,7 +84,8 @@ system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
                      'crucible-fault-register.c',
                      'crucible-fault-instruction.c',
                      'crucible-fault-interrupt.c',
@@ -1196,4 +1196,5 @@ index 09bbc6c4e..30ff5ba97 100644
 +                    'crucible-fault-hardware-error.c',
 +                    'crucible-fault-vcpu-service.c'))
  
- common_ss.add(files('loader.c', 'api.c', 'core.c'))
+ user_ss.add(files('api.c', 'core.c'))
+ system_ss.add(files('api.c', 'core.c'))

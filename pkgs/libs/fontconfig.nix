@@ -3,6 +3,10 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  autoconf,
+  automake,
+  libtool,
+  gettext,
   gperf,
   pkg-config,
   python3,
@@ -10,7 +14,7 @@
   expat,
   zlib,
 }: let
-  version = "2.15.0";
+  version = "2.18.3";
 in
   mkDerivation {
     pname = "fontconfig";
@@ -18,13 +22,17 @@ in
 
     src = fetchurl {
       urls = [
-        "https://www.freedesktop.org/software/fontconfig/release/fontconfig-${version}.tar.xz"
+        "https://gitlab.freedesktop.org/fontconfig/fontconfig/-/archive/${version}/fontconfig-${version}.tar.gz"
       ];
-      hash = "sha256-Y6BljQ4G4PqIYQZFK1jvBPIfWCAuoCqUw53g0zNdfA4=";
+      hash = "sha256-muAeHVOs3vVgEMVFHNNKpB0yWy+szYYGRI2PoBsklrM=";
     };
 
     buildDeps = [
       gnumake
+      autoconf
+      automake
+      libtool
+      gettext
       gperf
       pkg-config
       python3
@@ -43,6 +51,13 @@ in
         script = ''
           tar xf $src
           cd fontconfig-${version}
+        '';
+      }
+      {
+        name = "patch";
+        script = ''
+          export ACLOCAL_PATH="${libtool}/share/aclocal"
+          NOCONFIGURE=1 $CONFIG_SHELL ./autogen.sh
         '';
       }
       {

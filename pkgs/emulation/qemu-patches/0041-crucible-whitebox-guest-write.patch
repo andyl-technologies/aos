@@ -1,8 +1,8 @@
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index b37dfd519..9a893df07 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -1367,6 +1367,24 @@ QEMU_PLUGIN_API
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index d019f5ada..8a0696f61 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -1630,6 +1630,24 @@ QEMU_PLUGIN_API
  bool qemu_plugin_read_memory_vaddr(uint64_t addr,
                                     GByteArray *data, size_t len);
  
@@ -25,13 +25,13 @@ index b37dfd519..9a893df07 100644
 +                                             size_t len);
 +
  /**
-  * qemu_plugin_read_register() - read register for current vCPU
+  * qemu_plugin_write_memory_vaddr() - write to memory using a virtual address
   *
 diff --git a/plugins/api.c b/plugins/api.c
-index 9fb02d1ad..8c1f5b41d 100644
+index 4c21472bf..fd9d2ff48 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -468,6 +468,20 @@ bool qemu_plugin_read_memory_vaddr(uint64_t addr, GByteArray *data, size_t len)
+@@ -540,6 +540,20 @@ bool qemu_plugin_read_memory_vaddr(uint64_t addr, GByteArray *data, size_t len)
      return true;
  }
  
@@ -49,6 +49,6 @@ index 9fb02d1ad..8c1f5b41d 100644
 +                               len, true) == 0;
 +}
 +
- int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+ bool qemu_plugin_write_memory_vaddr(uint64_t addr, GByteArray *data)
  {
      g_assert(current_cpu);

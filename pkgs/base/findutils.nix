@@ -12,7 +12,7 @@
   bash,
   coreutils,
 }: let
-  version = "4.10.0";
+  version = "4.11.0";
 in
   mkDerivation {
     pname = "findutils";
@@ -20,7 +20,7 @@ in
 
     src = fetchurl {
       urls = ["https://mirrors.kernel.org/gnu/findutils/findutils-${version}.tar.xz"];
-      hash = "1xd4y24qfsdfp3ndz7d5j49lkhbhpzgr13wrvsmx4izjgyvf11qk";
+      hash = "sha256-v9GcsGzHHzNS1WfpAoTYzawCrIl3S76t8LUzsMEUMv0=";
     };
 
     buildDeps = [m4 flex bison autoconf automake texinfo gnumake sed];

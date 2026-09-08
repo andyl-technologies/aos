@@ -14,7 +14,7 @@
   stdenv,
   buildPackages,
 }: let
-  version = "1.3.3";
+  version = "1.3.5";
 in
   mkDerivation {
     pname = "slirp4netns";
@@ -22,7 +22,7 @@ in
 
     src = fetchurl {
       urls = ["https://github.com/rootless-containers/slirp4netns/archive/refs/tags/v${version}.tar.gz"];
-      hash = "sha256-jSRTmWeFC62pRNVkWeuekWc1fVeznoZNle19bA3QKY0=";
+      hash = "sha256-on7UxzEWFlFrVgFcx0+gbGQx9cjrra8zHA4IFQ0ahM4=";
     };
 
     buildDeps =

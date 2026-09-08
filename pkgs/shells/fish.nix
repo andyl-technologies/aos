@@ -18,14 +18,14 @@
   procps-ng,
   getent,
 }: let
-  version = "4.7.1";
+  version = "4.9.2";
   src = fetchurl {
     urls = ["https://github.com/fish-shell/fish-shell/releases/download/${version}/fish-${version}.tar.xz"];
-    hash = "sha256-b01bQ4pjOOP13NoZooJh4uznqbf/l2hmhear3DHbt98=";
+    hash = "sha256-JrlXac4XqJYrIguj8gdxEX2/6cssO6b07ROeDL/fArE=";
   };
   cargoDeps = fetchCargoDeps {
     inherit src;
-    hash = "sha256-pCaaYkpolNTQIrc6q7QVbc16PiU9tuAlOLxb/ykLW2s=";
+    hash = "sha256-BHPHlOJ4y0YcwAJT7ZPp9KCFpS4ts6WlkHpUcnxZqEg=";
   };
 in
   mkDerivation {
@@ -88,6 +88,16 @@ in
           [source."git+https://github.com/fish-shell/rust-pcre2?tag=0.2.9-utf32"]
           git = "https://github.com/fish-shell/rust-pcre2"
           tag = "0.2.9-utf32"
+          replace-with = "vendored-sources"
+
+          [source."git+https://github.com/danielrainer/fluent-rs?rev=cf712bced280b217b6307edabc2089b3e57204ab"]
+          git = "https://github.com/danielrainer/fluent-rs"
+          rev = "cf712bced280b217b6307edabc2089b3e57204ab"
+          replace-with = "vendored-sources"
+
+          [source."git+https://codeberg.org/danielrainer/fluent-ftl-tools?rev=5917664c8f2e4928ef1e480ff5c13bbe1e226066"]
+          git = "https://codeberg.org/danielrainer/fluent-ftl-tools"
+          rev = "5917664c8f2e4928ef1e480ff5c13bbe1e226066"
           replace-with = "vendored-sources"
 
           [source.vendored-sources]

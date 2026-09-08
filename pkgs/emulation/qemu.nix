@@ -10,6 +10,8 @@
   python3,
   setuptools,
   distlib,
+  pip,
+  wheel,
   glib,
   pixman,
   zlib,
@@ -55,6 +57,14 @@
     if stdenv.isCross
     then buildPackages.distlib
     else distlib;
+  buildPip =
+    if stdenv.isCross
+    then buildPackages.pip
+    else pip;
+  buildWheel =
+    if stdenv.isCross
+    then buildPackages.wheel
+    else wheel;
   darwinSigner =
     if isDarwinCross
     then
@@ -160,6 +170,7 @@
       "--disable-bsd-user"
       "--disable-linux-user"
       "--disable-docs"
+      "--disable-download"
       "--disable-guest-agent"
       "--disable-sdl"
       "--disable-gtk"
@@ -337,6 +348,8 @@ in
             buildPython
             buildSetuptools
             buildDistlib
+            buildPip
+            buildWheel
             buildPackages.glib.tools
             buildPackages.dtc
           ]
@@ -349,6 +362,8 @@ in
           python3
           setuptools
           distlib
+          pip
+          wheel
           glib.dev
           glib.tools
         ];
@@ -442,7 +457,7 @@ in
               ''
               else ""
             }
-            export PYTHONPATH="${buildMeson}/lib/python3/site-packages:${buildDistlib}/lib/python3.14/site-packages:${buildSetuptools}/lib/python3.14/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
+            export PYTHONPATH="${buildMeson}/lib/python3/site-packages:${buildDistlib}/lib/python3.14/site-packages:${buildSetuptools}/lib/python3.14/site-packages:${buildPip}/lib/python3.14/site-packages:${buildWheel}/lib/python3.14/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
             ${
               if stdenv.isCross
               then ''
@@ -501,10 +516,9 @@ in
               done
             ''}
 
-            if [ -f include/qemu/qemu-plugin.h ]; then
-              mkdir -p "$out/include/qemu"
-              install -m 644 include/qemu/qemu-plugin.h "$out/include/qemu/qemu-plugin.h"
-            fi
+            test -f include/plugins/qemu-plugin.h
+            mkdir -p "$out/include"
+            install -m 644 include/plugins/qemu-plugin.h "$out/include/qemu-plugin.h"
             mkdir -p "$out/include/aos/crucible"
             install -m 644 include/aos/crucible/crucible_shmem_abi.h \
               "$out/${shmemHeaderInstallPath}"

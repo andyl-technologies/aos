@@ -1924,7 +1924,7 @@ pub(super) fn parse_debug_reverse_condition(value: &str) -> Result<crucible::Pre
             ));
         }
         let mut bytes = Vec::with_capacity(encoded.len() / 2);
-        for pair in encoded.as_bytes().chunks_exact(2) {
+        for pair in encoded.as_bytes().as_chunks::<2>().0 {
             let high = hex_nibble(pair[0]).ok_or_else(|| {
                 usage_error("reverse-continue hex condition contains a non-hex digit")
             })?;
@@ -2605,7 +2605,7 @@ fn parse_debug_session_ref(value: &str) -> Result<SessionRef, CliError> {
         ));
     }
     let mut seed = [0_u8; 32];
-    for (index, chunk) in seed_text.as_bytes().chunks_exact(2).enumerate() {
+    for (index, chunk) in seed_text.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let pair = std::str::from_utf8(chunk)
             .map_err(|_| usage_error("--session seed must be lowercase hexadecimal"))?;
         if pair.bytes().any(|byte| byte.is_ascii_uppercase()) {

@@ -4,7 +4,7 @@
   fetchurl,
   gnumake,
 }: let
-  version = "2.21";
+  version = "2.25";
 in
   mkDerivation {
     pname = "which";
@@ -15,7 +15,7 @@ in
         "https://gnu.mirror.constant.com/which/which-${version}.tar.gz"
         "https://mirrors.kernel.org/gnu/which/which-${version}.tar.gz"
       ];
-      hash = "sha256-9KJFuUEks3fYtJZGv0IfkVXTaqdhS26/g3BdP/x26q0=";
+      hash = "sha256-HLg+T3AuYLghGrXsTCr7qxsd7IAglFan0vr3WE7SJeo=";
     };
 
     buildDeps = [gnumake];

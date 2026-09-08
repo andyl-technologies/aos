@@ -377,6 +377,12 @@ impl Component {
         {
             bail!("unit {unit_id} component {component_id} has no source slots");
         }
+        if self.release_policy.series_minor.is_some() && self.release_policy.series_major.is_none()
+        {
+            bail!(
+                "unit {unit_id} component {component_id} declares a minor series without a major series"
+            );
+        }
         for (slot_id, slot) in &self.sources {
             slot.validate(slot_id, unit_id, component_id, components)?;
         }
@@ -415,6 +421,16 @@ impl ComponentVersion {
     deny_unknown_fields
 )]
 pub enum DiscoveryProvider {
+    /// Enumerates stable source releases from Go's official download feed.
+    GoReleases,
+    /// Enumerates published releases from one GitHub repository.
+    GithubReleases {
+        /// Repository in `owner/name` form.
+        repository: String,
+        /// Literal prefix removed before version normalization.
+        #[serde(default)]
+        tag_prefix: String,
+    },
     /// Enumerates tags from one GitHub repository with pagination proof.
     GithubTags {
         /// Repository in `owner/name` form.
@@ -441,10 +457,13 @@ pub struct ReleasePolicy {
     /// Optional required major series for concurrent streams.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub series_major: Option<u64>,
+    /// Optional required minor series for packages with minor compatibility lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_minor: Option<u64>,
     /// Allows prerelease candidates when true.
     #[serde(default)]
     pub allow_prerelease: bool,
-    /// Minimum elapsed days since first observation.
+    /// Minimum elapsed days since provider publication or first observation.
     #[serde(default)]
     pub minimum_age_days: u32,
 }
@@ -1216,6 +1235,22 @@ mod tests {
         let mut escaped = canary();
         escaped["units"][0]["owner"] = json!("pkgs/../secrets.nix");
         assert!(MaintenanceInventoryV1::from_slice(&canonical::canonical_json(&escaped)?).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn minor_series_requires_an_explicit_major_series() -> Result<()> {
+        let mut inventory = canary();
+        let policy = &mut inventory["units"][0]["components"]["main"]["releasePolicy"];
+        policy
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("release policy fixture"))?
+            .remove("seriesMajor");
+        policy["seriesMinor"] = json!(27);
+
+        assert!(
+            MaintenanceInventoryV1::from_slice(&canonical::canonical_json(&inventory)?).is_err()
+        );
         Ok(())
     }
 

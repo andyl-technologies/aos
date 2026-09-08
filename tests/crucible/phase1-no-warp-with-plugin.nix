@@ -214,9 +214,6 @@ in
             {
                 if (!has_control) {
                     has_control = true;
-                    error_setg(&migration_blocker,
-                               "TCG plugin time control does not support migration");
-                    migrate_add_blocker(&migration_blocker, NULL);
                     return &has_control;
                 }
                 return NULL;

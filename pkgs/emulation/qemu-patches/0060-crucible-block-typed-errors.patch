@@ -1,5 +1,5 @@
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
-index b8d9057d8..178851578 100644
+index 396154b9e..fc10c0ff7 100644
 --- a/block/crucible-shmem.c
 +++ b/block/crucible-shmem.c
 @@ -239,6 +239,25 @@ crucible_shmem_poll_until_ready(BlockDriverState *bs, uint32_t request_id,
@@ -44,11 +44,11 @@ index b8d9057d8..178851578 100644
  }
  
  static int coroutine_fn GRAPH_RDLOCK
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 80b958974..23b398a2e 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -243,8 +243,11 @@ typedef int (*qemu_plugin_blk_submit_cb_t)(uint32_t request_id,
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index e634ab71c..8f545b7e0 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -287,8 +287,11 @@ typedef int (*qemu_plugin_blk_submit_cb_t)(uint32_t request_id,
   * @capacity: byte capacity of @data
   * @userdata: a pointer supplied when callbacks were registered
   *
@@ -62,7 +62,7 @@ index 80b958974..23b398a2e 100644
   */
  typedef int64_t (*qemu_plugin_blk_poll_cb_t)(uint32_t request_id,
                                               uint8_t *data,
-@@ -267,6 +270,10 @@ typedef void (*qemu_plugin_blk_wait_cb_t)(uint32_t request_id,
+@@ -311,6 +314,10 @@ typedef void (*qemu_plugin_blk_wait_cb_t)(uint32_t request_id,
  #define QEMU_PLUGIN_BLK_OP_WRITE 1u
  #define QEMU_PLUGIN_BLK_OP_FLUSH 2u
  #define QEMU_PLUGIN_BLK_POLL_PENDING (-2)

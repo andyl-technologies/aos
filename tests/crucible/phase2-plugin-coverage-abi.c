@@ -13,7 +13,7 @@
 static qemu_plugin_id_t registered_plugin_id;
 static qemu_plugin_vcpu_tb_trans_cb_t registered_translate;
 static qemu_plugin_vcpu_udata_cb_t registered_execute;
-static qemu_plugin_simple_cb_t registered_flush;
+static qemu_plugin_udata_cb_t registered_flush;
 static struct qemu_plugin_tb *registered_tb;
 static enum qemu_plugin_cb_flags registered_flags;
 static void *registered_userdata;
@@ -28,10 +28,10 @@ static int model_single_threaded_rr;
 static uint64_t observed_entry_icount;
 
 static void
-coverage_probe_translate(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
+coverage_probe_translate(struct qemu_plugin_tb *tb, void *userdata)
 {
-  (void)id;
   (void)tb;
+  (void)userdata;
 }
 
 static void
@@ -42,9 +42,9 @@ coverage_probe_execute(unsigned int vcpu_index, void *userdata)
 }
 
 static void
-coverage_probe_flush(qemu_plugin_id_t id)
+coverage_probe_flush(void *userdata)
 {
-  (void)id;
+  (void)userdata;
 }
 
 int
@@ -52,20 +52,22 @@ crucible_coverage_abi_probe(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 {
   uint64_t entry_icount = 0;
 
-  qemu_plugin_register_vcpu_tb_trans_cb(id, coverage_probe_translate);
+  qemu_plugin_register_vcpu_tb_trans_cb(id, coverage_probe_translate, NULL);
   qemu_plugin_register_vcpu_tb_exec_cb(
     tb, coverage_probe_execute, QEMU_PLUGIN_CB_NO_REGS, NULL);
-  qemu_plugin_register_flush_cb(id, coverage_probe_flush);
+  qemu_plugin_register_flush_cb(id, coverage_probe_flush, NULL);
   return qemu_plugin_icount_at_tb_entry(
     (uint64_t)qemu_plugin_tb_n_insns(tb), &entry_icount);
 }
 
 void
 qemu_plugin_register_vcpu_tb_trans_cb(qemu_plugin_id_t id,
-                                      qemu_plugin_vcpu_tb_trans_cb_t cb)
+                                      qemu_plugin_vcpu_tb_trans_cb_t cb,
+                                      void *userdata)
 {
   registered_plugin_id = id;
   registered_translate = cb;
+  registered_userdata = userdata;
 }
 
 void
@@ -82,10 +84,12 @@ qemu_plugin_register_vcpu_tb_exec_cb(struct qemu_plugin_tb *tb,
 
 void
 qemu_plugin_register_flush_cb(qemu_plugin_id_t id,
-                              qemu_plugin_simple_cb_t cb)
+                              qemu_plugin_udata_cb_t cb,
+                              void *userdata)
 {
   registered_plugin_id = id;
   registered_flush = cb;
+  registered_userdata = userdata;
 }
 
 size_t
@@ -155,9 +159,9 @@ main(void)
     return 2;
   }
 
-  registered_translate(registered_plugin_id, tb);
+  registered_translate(tb, registered_userdata);
   registered_execute(2, registered_userdata);
-  registered_flush(registered_plugin_id);
+  registered_flush(registered_userdata);
 
   /* First TB, chained TB, post-budget-refill TB, and next RR vCPU. */
   if (check_entry(100, 40, 33, 7, 100) ||

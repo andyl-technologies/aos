@@ -506,9 +506,9 @@ on_insn(unsigned int vcpu_index, void *userdata)
 }
 
 static void
-on_tb_translate(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
+on_tb_translate(struct qemu_plugin_tb *tb, void *userdata)
 {
-  (void)id;
+  (void)userdata;
   const size_t count = qemu_plugin_tb_n_insns(tb);
 
   for (size_t i = 0; i < count; i++) {
@@ -533,18 +533,17 @@ on_tb_translate(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 }
 
 static void
-on_vcpu_init(qemu_plugin_id_t id, unsigned int vcpu_index)
+on_vcpu_init(unsigned int vcpu_index, void *userdata)
 {
-  (void)id;
+  (void)userdata;
   if (vcpu_index < MAX_TRACKED_VCPUS) {
     (void)init_register_set(vcpu_index);
   }
 }
 
 static void
-on_plugin_exit(qemu_plugin_id_t id, void *userdata)
+on_plugin_exit(void *userdata)
 {
-  (void)id;
   (void)userdata;
 
   record_final_sample(false);
@@ -620,8 +619,8 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
     return -1;
   }
 
-  qemu_plugin_register_vcpu_init_cb(id, on_vcpu_init);
-  qemu_plugin_register_vcpu_tb_trans_cb(id, on_tb_translate);
+  qemu_plugin_register_vcpu_init_cb(id, on_vcpu_init, NULL);
+  qemu_plugin_register_vcpu_tb_trans_cb(id, on_tb_translate, NULL);
   qemu_plugin_register_sim_shmem_observer_cb(
       on_pause_boundary, next_pause_boundary, NULL);
   qemu_plugin_register_atexit_cb(id, on_plugin_exit, NULL);

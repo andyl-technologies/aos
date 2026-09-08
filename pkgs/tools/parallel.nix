@@ -8,7 +8,7 @@
   coreutils,
   gawk,
 }: let
-  version = "20260422";
+  version = "20260822";
 in
   mkDerivation {
     pname = "parallel";
@@ -16,7 +16,7 @@ in
 
     src = fetchurl {
       urls = ["https://ftpmirror.gnu.org/parallel/parallel-${version}.tar.bz2"];
-      hash = "sha256-ZkzxZdZuohey9JzZanhl7PkMnQYWWZzCq6jK1IHZB7s=";
+      hash = "sha256-HTinJYeWAVqSpabu4pM0C5JOT/aOTo6EW4vbtfT32eg=";
     };
 
     buildDeps = [gnumake perl];

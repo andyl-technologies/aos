@@ -37,8 +37,9 @@
     stream = "9";
     owner = "pkgs/toolchain/bazel-9.nix";
     member = "bazel-9";
-    version = "9.0.1";
+    version = "9.2.0";
     reason = "Bazel source and repository dependencies form one curated artifact graph that requires maintainer review.";
+    successorUnit = "bazel-9";
   };
   mkBazel = import ./_bazel.nix {
     inherit
@@ -76,6 +77,6 @@
 in
   mkBazel {
     inherit (upstream) version update;
-    srcHash = "sha256-PzNrRRCoIQ+VT6On1s+9JxtvnWOXMv3BHAALb7/KP74=";
-    vendorDepsHash = "sha256-Lk2PZdE1eT4opu/TWQy5glbrIOBTlScNO1CA79X7S3Y=";
+    srcHash = "sha256-ga8CszEo7BkixrYCEt8/thULqpa7M9Mv+gIOX+1H/vw=";
+    vendorDepsHash = "sha256-pD976akvFsYAqJMgAzxCgUlqsVgtjne2XgpCCEALc2g=";
   }

@@ -9,9 +9,10 @@
     family = "pcre2";
     stream = "10";
     owner = "pkgs/libs/pcre2.nix";
-    version = "10.47";
-    upstreamId = "pcre2-10.47";
+    version = "10.48";
+    upstreamId = "pcre2-10.48";
     repository = "PCRE2Project/pcre2";
+    provider = "github-releases";
     tagPrefix = "pcre2-";
     major = 10;
     versionScheme = "numeric";
@@ -46,7 +47,7 @@
           ];
         }
       ];
-      hash = "sha256-R/6MmUYSUNQviebo/a66naBXhV0G63/AjZygP9CNe8c=";
+      hash = "sha256-tsaP3286wxOItQqon/D8ScAMmHwW57UUZJHRIAPyyO0=";
     };
   };
   inherit (upstream) version;

@@ -46,6 +46,10 @@ in
       hash = "sha256-qX1VSemtgf4XFZ7QLGh3StXSZscvjZoLWpw3H+hdkCs=";
     };
 
+    # CPython's upstream OpenSSL 4 compatibility fix guards protocol methods
+    # removed by OpenSSL and const-corrects the affected certificate helpers.
+    patches = [./python3-openssl-4.patch];
+
     buildDeps =
       [
         gnumake

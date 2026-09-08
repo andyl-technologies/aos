@@ -22,11 +22,12 @@
   pcre2,
   gettext,
   bash,
+  rust,
   stdenv,
   buildPackages,
   minimal ? false,
 }: let
-  version = "2.48.1";
+  version = "2.55.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   buildBash =
     if isDarwinCross
@@ -40,6 +41,25 @@
     if isDarwinCross
     then buildPackages.python3
     else python3;
+  cargoBuildTool =
+    if isDarwinCross
+    then let
+      currentRust = import ../toolchain/rust/_current.nix;
+      rustSource = fetchurl {
+        urls = [
+          "https://static.rust-lang.org/dist/rustc-${currentRust.version}-src.tar.gz"
+        ];
+        hash = currentRust.srcHash;
+      };
+    in
+      import ../toolchain/rust/_rust-darwin-build-tool.nix {
+        inherit buildPackages;
+        crossCc = stdenv.cc;
+        hostPlatform = stdenv.hostPlatform;
+        src = rustSource;
+        inherit (currentRust) version changeId configFileName;
+      }
+    else rust;
   gettextRuntime =
     if isDarwinCross
     then gettext.lib
@@ -64,6 +84,9 @@
   # Darwin's precompose support calls iconv directly; its SDK provides the
   # canonical header and system-library stub.
   iconvConfigureFlag = lib.optionalString (!isDarwinCross) "--without-iconv";
+  cargoTargetFlags = lib.optionalString isDarwinCross ''
+    CARGO_ARGS="--release --target ${stdenv.hostPlatform.config}" \
+    RUST_TARGET_DIR=target/${stdenv.hostPlatform.config}/release'';
 in
   mkDerivation {
     pname = "git" + lib.optionalString minimal "-minimal";
@@ -74,7 +97,7 @@ in
         "https://mirrors.edge.kernel.org/pub/software/scm/git/git-${version}.tar.xz"
         "https://www.kernel.org/pub/software/scm/git/git-${version}.tar.xz"
       ];
-      hash = "sha256-HF1UX13B61HpXSxQ2Y/fiLGja6H6MOmuXVOFxgJPgq0=";
+      hash = "sha256-RX/bBNyHKOAH1GiGleaRLm9oByeSDypAvxHqzBdQU1c=";
     };
 
     buildDeps =
@@ -82,6 +105,7 @@ in
         gnumake
         pkg-config
         autoconf
+        cargoBuildTool
       ]
       ++ lib.optionals (!minimal) [
         perl
@@ -138,7 +162,6 @@ in
             --with-openssl=${openssl} \
             --with-expat=${expat} \
             --with-zlib=${zlib} \
-            --with-pcre2=${pcre2} \
             --with-libpcre2 \
             --without-tcltk \
             ${iconvConfigureFlag}
@@ -150,6 +173,7 @@ in
           make -j$NIX_BUILD_CORES \
             NO_INSTALL_HARDLINKS=1${targetPlatformFlags} \
             ${buildShellFlag} \
+            ${cargoTargetFlags} \
             ${buildFeatureFlags}
         '';
       }
@@ -159,6 +183,7 @@ in
           make install \
             NO_INSTALL_HARDLINKS=1${targetPlatformFlags} \
             ${buildShellFlag} \
+            ${cargoTargetFlags} \
             ${buildFeatureFlags}
           ${lib.optionalString isDarwinCross ''
             retarget_tool_root() {

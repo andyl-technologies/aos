@@ -36,6 +36,7 @@ in
             $cmakeFlags \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_CXX_FLAGS=-Wno-error=maybe-uninitialized \
             -DBUILD_SHARED_LIBS=OFF
         '';
       }

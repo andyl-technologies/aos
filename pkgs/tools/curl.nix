@@ -20,7 +20,7 @@
   stdenv,
   buildPackages,
 }: let
-  version = "8.12.1";
+  version = "8.22.0";
 in
   mkDerivation {
     pname = "curl";
@@ -30,7 +30,7 @@ in
       urls = [
         "https://curl.se/download/curl-${version}.tar.xz"
       ];
-      hash = "sha256-A0Hx7ZeibIEauuvTfWK4M5VnkrdgfqPxXQAWE8dt4gI=";
+      hash = "sha256-9+866KIuUh8omAP+k1Q+tkwym1iqc6niJN/ZFaKl9Pc=";
     };
 
     buildDeps = [

@@ -6,7 +6,7 @@
   automake,
   gnumake,
 }: let
-  version = "2.17.0";
+  version = "2.18.0";
 in
   mkDerivation {
     pname = "bash-completion";
@@ -16,7 +16,7 @@ in
       urls = [
         "https://github.com/scop/bash-completion/releases/download/${version}/bash-completion-${version}.tar.xz"
       ];
-      hash = "sha256-3Z2CXklkNfs766Oue+qfd+gh6JRmfQdDHR1MjFcLnlg=";
+      hash = "sha256-iLz4UST3f3Ty8vi80WrEOC2AeoJ+3nQqZJQMcRauoz8=";
     };
 
     buildDeps = [autoconf automake gnumake];

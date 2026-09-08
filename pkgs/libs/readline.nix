@@ -3,10 +3,26 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  patch,
   ncurses,
   stdenv,
 }: let
-  version = "8.3";
+  version = "8.3p3";
+  sourceVersion = "8.3";
+  readlinePatches = [
+    (fetchurl {
+      urls = ["https://ftp.gnu.org/gnu/readline/readline-8.3-patches/readline83-001"];
+      hash = "sha256-IfCgMQbb5pczfNJccOsO26or221ZW0X4MoXN01ushN4=";
+    })
+    (fetchurl {
+      urls = ["https://ftp.gnu.org/gnu/readline/readline-8.3-patches/readline83-002"];
+      hash = "sha256-4nNkOWup9t6/fLqvGmaeKyhUJBrgf37KdMqKi6DJdHI=";
+    })
+    (fetchurl {
+      urls = ["https://ftp.gnu.org/gnu/readline/readline-8.3-patches/readline83-003"];
+      hash = "sha256-ct7hNgHOOPZ0brFSOZmafFb44f9eseyBU6HyE+Ss2yk=";
+    })
+  ];
 in
   mkDerivation {
     pname = "readline";
@@ -14,13 +30,12 @@ in
 
     src = fetchurl {
       urls = [
-        "https://mirrors.kernel.org/gnu/readline/readline-${version}.tar.gz"
-        "https://mirrors.kernel.org/gnu/readline/readline-${version}.tar.gz"
+        "https://mirrors.kernel.org/gnu/readline/readline-${sourceVersion}.tar.gz"
       ];
       hash = "sha256-/lODIERngozUle6NHTwDen66E4nCK8agQfYnl2+QYcw=";
     };
 
-    buildDeps = [gnumake];
+    buildDeps = [gnumake patch];
     runtimeDeps = [ncurses];
     propagatedDeps = [ncurses];
 
@@ -29,7 +44,15 @@ in
         name = "unpack";
         script = ''
           tar xf $src
-          cd readline-${version}
+          cd readline-${sourceVersion}
+        '';
+      }
+      {
+        name = "patch";
+        script = ''
+          for patchFile in ${builtins.concatStringsSep " " readlinePatches}; do
+            patch -p0 < "$patchFile"
+          done
         '';
       }
       {

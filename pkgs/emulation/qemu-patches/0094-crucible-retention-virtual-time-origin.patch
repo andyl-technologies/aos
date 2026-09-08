@@ -1,5 +1,5 @@
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index b5e8c8b5f..bc4b818a5 100644
+index b7cefc5d1..07f7292a1 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -3141,8 +3141,7 @@ static bool node_memory_translate_rule(QemuCrucibleFaultRule *rule,
