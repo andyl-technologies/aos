@@ -15,13 +15,17 @@ use aos_sandbox_core::ObjectDigest;
 use hmac::{Hmac, Mac as _};
 use sha2::{Digest as _, Sha256};
 
+use crate::catalog_transition::{CatalogReservation, StorageCatalogTransitionProvider};
 use crate::{CatalogBindingV1, CatalogPlanV1, PostconditionPolicyV1, ResolvedCatalogCommitmentV1};
 
 type HmacSha256 = Hmac<Sha256>;
 
 const MAGIC: &[u8; 8] = b"AOSSTX01";
-const VERSION: u16 = 3;
+const VERSION: u16 = 4;
+const IDENTITY_VERSION: u16 = 3;
 const LEGACY_VERSION: u16 = 2;
+#[cfg(test)]
+pub(crate) const TEST_LEGACY_FORMAT_VERSIONS: [u16; 2] = [LEGACY_VERSION, IDENTITY_VERSION];
 const RECORD_DOMAIN: &[u8] = b"aos.sandbox.storage.state.record.v1\0";
 const MUTATION_DOMAIN: &[u8] = b"aos.sandbox.storage.mutation.v1\0";
 const POSTCONDITION_DOMAIN: &[u8] = b"aos.sandbox.storage.postcondition.v1\0";
@@ -35,6 +39,9 @@ const RESULT_HAS_STORAGE_HANDLE: u8 = 1;
 const RESULT_HAS_VERSION_HANDLE: u8 = 1 << 1;
 const RESULT_HAS_OBJECT_GUID: u8 = 1 << 2;
 const MAXIMUM_OPERATIONS: usize = 256;
+const MATERIALIZED_RECORDS_PER_OPERATION: usize = 6;
+const GLOBAL_MATERIALIZED_RECORDS: usize = 1;
+const MAXIMUM_JOURNAL_RECORD_BYTES: usize = MAXIMUM_RECORD_BYTES + 128;
 
 /// Reports durable storage state validation or transition failure.
 #[derive(Debug, thiserror::Error)]
@@ -264,6 +271,7 @@ pub struct StorageRecoveryEntry {
     operation_id: [u8; 16],
     sandbox_id: [u8; 16],
     request_id: [u8; 16],
+    request_digest: ObjectDigest,
     phase: DurableStoragePhase,
     mutation_digest: ObjectDigest,
     catalog: CatalogBindingV1,
@@ -288,6 +296,12 @@ impl StorageRecoveryEntry {
         self.request_id
     }
 
+    /// Returns SHA-256 over the exact admitted request body.
+    #[must_use]
+    pub const fn request_digest(self) -> ObjectDigest {
+        self.request_digest
+    }
+
     /// Returns the crash-recovery phase.
     #[must_use]
     pub const fn phase(self) -> DurableStoragePhase {
@@ -309,6 +323,7 @@ impl StorageRecoveryEntry {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DurableRecord {
+    format_version: u16,
     phase: DurableStoragePhase,
     operation_id: [u8; 16],
     sandbox_id: [u8; 16],
@@ -331,6 +346,10 @@ pub struct StorageTransactionStore {
     journal: Journal,
     key: StorageStateKey,
     records: BTreeMap<[u8; 16], DurableRecord>,
+    catalog_transitions: StorageCatalogTransitionProvider,
+    commit_failed: bool,
+    #[cfg(test)]
+    fail_after_next_journal_commit: bool,
 }
 
 impl StorageTransactionStore {
@@ -372,6 +391,17 @@ impl StorageTransactionStore {
         Self::from_journal(journal, key, minimum_generation)
     }
 
+    #[cfg(test)]
+    fn open_for_test_with_limits(
+        directory: &Path,
+        key: StorageStateKey,
+        minimum_generation: u64,
+        limits: JournalLimits,
+    ) -> Result<Self, StorageStateError> {
+        let (journal, _) = Journal::open(directory.join("storage-state.journal"), limits)?;
+        Self::from_journal(journal, key, minimum_generation)
+    }
+
     fn from_journal(
         journal: Journal,
         key: StorageStateKey,
@@ -385,21 +415,75 @@ impl StorageTransactionStore {
             }
             records.insert(record.operation_id, record);
         }
-        let latest_generation = latest_generation(&records);
+        let catalog_transitions =
+            StorageCatalogTransitionProvider::load(&journal, key.key_id, &key.secret)?;
+        let latest_generation = latest_generation(&records).max(
+            catalog_transitions
+                .head_binding()
+                .map_or(0, CatalogBindingV1::generation),
+        );
         if latest_generation < minimum_generation {
             return Err(StorageStateError::Rollback);
         }
+        for record in records.values() {
+            let catalog = ResolvedCatalogCommitmentV1::from_canonical_bytes(&record.catalog_bytes)
+                .map_err(|_| StorageStateError::CorruptRecord)?;
+            let evidence = catalog_transitions.validates_operation_transition(
+                record.format_version,
+                record.operation_id,
+                record.request_digest,
+                record.mutation_digest,
+                &catalog,
+                record.phase,
+                record.result.map(|result| result.catalog),
+                key.key_id,
+                &key.secret,
+            )?;
+            match (record.result, evidence) {
+                (Some(result), Some(evidence)) => {
+                    let verified = VerifiedStorageResultV1::verify_observation(
+                        record.operation_id,
+                        record.request_digest,
+                        &catalog,
+                        &catalog.plan().postcondition(),
+                        evidence.object_guid,
+                        evidence.result_catalog,
+                        evidence.observation_digest,
+                    )?;
+                    if committed_result_with_key(&key, &verified)? != result {
+                        return Err(StorageStateError::CorruptRecord);
+                    }
+                }
+                (Some(_), None)
+                    if matches!(record.format_version, LEGACY_VERSION | IDENTITY_VERSION) => {}
+                (None, None) => {}
+                _ => return Err(StorageStateError::CorruptRecord),
+            }
+        }
+        catalog_transitions.validate_operation_set(records.keys().copied())?;
         Ok(Self {
             journal,
             key,
             records,
+            catalog_transitions,
+            commit_failed: false,
+            #[cfg(test)]
+            fail_after_next_journal_commit: false,
         })
     }
 
     /// Returns the durable crash phase for `operation_id`.
-    #[must_use]
-    pub fn phase(&self, operation_id: [u8; 16]) -> Option<DurableStoragePhase> {
-        self.records.get(&operation_id).map(|record| record.phase)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageStateError::Journal`] after any commit failure makes
+    /// the cached materialized view unsafe for authority decisions.
+    pub fn phase(
+        &self,
+        operation_id: [u8; 16],
+    ) -> Result<Option<DurableStoragePhase>, StorageStateError> {
+        self.ensure_authority_readable()?;
+        Ok(self.records.get(&operation_id).map(|record| record.phase))
     }
 
     /// Iterates every bounded durable operation for startup reconciliation.
@@ -408,14 +492,34 @@ impl StorageTransactionStore {
     /// lease cannot silently orphan an older pending/ambiguous operation. A
     /// privileged observer must still authenticate that operation's persisted
     /// authority links before reconciling it.
-    pub fn recovery_entries(&self) -> impl Iterator<Item = StorageRecoveryEntry> + '_ {
-        self.records.values().map(recovery_entry)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageStateError::Journal`] after any commit failure makes
+    /// the cached materialized view unsafe for startup reconciliation.
+    pub fn recovery_entries(
+        &self,
+    ) -> Result<impl Iterator<Item = StorageRecoveryEntry> + '_, StorageStateError> {
+        self.ensure_authority_readable()?;
+        Ok(self.records.values().map(recovery_entry))
+    }
+
+    pub(crate) fn current_recovery_entry(
+        &self,
+        operation_id: [u8; 16],
+    ) -> Result<StorageRecoveryEntry, StorageStateError> {
+        self.ensure_authority_readable()?;
+        self.records
+            .get(&operation_id)
+            .map(recovery_entry)
+            .ok_or(StorageStateError::InvalidTransition)
     }
 
     pub(crate) fn committed_recovery_entry(
         &self,
         result: CommittedStorageResultV1,
     ) -> Result<StorageRecoveryEntry, StorageStateError> {
+        self.ensure_authority_readable()?;
         self.records
             .get(&result.operation_id)
             .filter(|record| {
@@ -437,10 +541,13 @@ impl StorageTransactionStore {
     /// Returns [`StorageStateError::InvalidTransition`] when `entry` is not the
     /// current exact record, and [`StorageStateError::CorruptRecord`] when its
     /// authenticated catalog bytes cannot reproduce the committed binding.
+    /// Returns [`StorageStateError::Journal`] after a commit failure poisons
+    /// the cached authority view until reopen.
     pub fn recover_catalog(
         &self,
         entry: StorageRecoveryEntry,
     ) -> Result<ResolvedCatalogCommitmentV1, StorageStateError> {
+        self.ensure_authority_readable()?;
         let record = self
             .records
             .get(&entry.operation_id)
@@ -471,10 +578,62 @@ impl StorageTransactionStore {
             PreparedRecord::Existing(outcome) => Ok(outcome),
             PreparedRecord::New(record) => {
                 let mutation_digest = record.mutation_digest;
-                self.publish(*record)?;
+                let reservation = self.reserve_catalog_transition(&record, catalog)?;
+                self.publish_with(
+                    *record,
+                    vec![StorageCatalogTransitionProvider::reservation_record(
+                        &reservation,
+                    )],
+                )?;
+                self.catalog_transitions.install_reservation(reservation);
                 Ok(BeginStorageTransaction::Prepared { mutation_digest })
             }
         }
+    }
+
+    /// Initializes the physical catalog head from one complete protected snapshot.
+    ///
+    /// Every catalog in `catalogs` contributes its already-existing roots,
+    /// datasets, snapshots, and holds. Planned destinations are not imported.
+    /// Initialization is permitted exactly once, before any operation or
+    /// physical-catalog transition has been recorded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageStateError::InvalidTransition`] if the catalog was
+    /// already initialized or operation state exists. Returns another
+    /// [`StorageStateError`] if the snapshot is empty, inconsistent, exceeds
+    /// a bounded record limit, or cannot be committed durably.
+    pub fn initialize_catalog_from_protected_snapshot(
+        &mut self,
+        generation: u64,
+        catalogs: &[ResolvedCatalogCommitmentV1],
+    ) -> Result<CatalogBindingV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        if !self.records.is_empty() {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        let bootstrap = self.catalog_transitions.prepare_bootstrap(
+            generation,
+            catalogs,
+            self.key.key_id,
+            &self.key.secret,
+        )?;
+        let binding = bootstrap.binding();
+        let mut hash = Sha256::new();
+        hash.update(b"aos.sandbox.storage.catalog-bootstrap.v1\0");
+        hash.update(binding.generation().to_be_bytes());
+        hash.update(binding.digest().as_bytes());
+        let digest: [u8; 32] = hash.finalize().into();
+        let mut transaction_id = [0; 16];
+        transaction_id.copy_from_slice(&digest[..16]);
+        if transaction_id == [0; 16] {
+            transaction_id[15] = 1;
+        }
+        let transaction = JournalTransaction::new(transaction_id, vec![bootstrap.record()])?;
+        self.commit_journal(&transaction)?;
+        self.catalog_transitions.install_bootstrap(bootstrap);
+        Ok(binding)
     }
 
     fn prepare_record(
@@ -483,6 +642,7 @@ impl StorageTransactionStore {
         request_digest: ObjectDigest,
         catalog: &ResolvedCatalogCommitmentV1,
     ) -> Result<PreparedRecord, StorageStateError> {
+        self.ensure_authority_readable()?;
         if operation_id == [0; 16] || request_digest.as_bytes() == &[0; 32] {
             return Err(StorageStateError::InvalidValue);
         }
@@ -519,6 +679,7 @@ impl StorageTransactionStore {
             return Err(StorageStateError::Equivocation);
         }
         let record = DurableRecord {
+            format_version: VERSION,
             phase: DurableStoragePhase::Prepared,
             operation_id,
             sandbox_id: [0; 16],
@@ -533,8 +694,13 @@ impl StorageTransactionStore {
         Ok(PreparedRecord::New(Box::new(record)))
     }
 
-    pub(crate) fn authority_record(&self, namespace: RecordNamespace, key: &[u8]) -> Option<&[u8]> {
-        self.journal.get(namespace, key)
+    pub(crate) fn authority_record(
+        &self,
+        namespace: RecordNamespace,
+        key: &[u8],
+    ) -> Result<Option<&[u8]>, StorageStateError> {
+        self.ensure_authority_readable()?;
+        Ok(self.journal.get(namespace, key))
     }
 
     #[cfg(test)]
@@ -550,6 +716,51 @@ impl StorageTransactionStore {
         )
         .unwrap();
         self.journal.commit(&transaction).unwrap();
+    }
+
+    #[cfg(test)]
+    fn fail_after_next_journal_commit_for_test(&mut self) {
+        self.fail_after_next_journal_commit = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rewrite_legacy_ambiguous_for_test(
+        &mut self,
+        operation_id: [u8; 16],
+        format_version: u16,
+    ) -> Result<(), StorageStateError> {
+        let mut record = self
+            .records
+            .get(&operation_id)
+            .cloned()
+            .ok_or(StorageStateError::InvalidTransition)?;
+        if record.phase != DurableStoragePhase::Prepared || record.format_version != VERSION {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        if !TEST_LEGACY_FORMAT_VERSIONS.contains(&format_version) {
+            return Err(StorageStateError::InvalidValue);
+        }
+        record.format_version = format_version;
+        record.phase = DurableStoragePhase::Ambiguous;
+        let transaction = JournalTransaction::new(
+            transaction_id(operation_id, DurableStoragePhase::Ambiguous),
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::Operation,
+                    operation_id.to_vec(),
+                    encode_record(&record, &self.key)?,
+                ),
+                JournalRecord::delete(
+                    RecordNamespace::StorageCatalogReservation,
+                    operation_id.to_vec(),
+                ),
+            ],
+        )?;
+        self.commit_journal(&transaction)?;
+        self.records.insert(operation_id, record);
+        self.catalog_transitions
+            .remove_reservation_for_test(operation_id);
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -591,6 +802,7 @@ impl StorageTransactionStore {
             }
         };
         let mutation_digest = record.mutation_digest;
+        let reservation = self.reserve_catalog_transition(&record, catalog)?;
         self.publish_with(
             record,
             vec![
@@ -605,19 +817,39 @@ impl StorageTransactionStore {
                     operation_id.to_vec(),
                     sealed_operation_fence,
                 ),
+                StorageCatalogTransitionProvider::reservation_record(&reservation),
             ],
         )?;
+        self.catalog_transitions.install_reservation(reservation);
         Ok(BeginStorageTransaction::Prepared { mutation_digest })
+    }
+
+    fn reserve_catalog_transition(
+        &self,
+        record: &DurableRecord,
+        catalog: &ResolvedCatalogCommitmentV1,
+    ) -> Result<CatalogReservation, StorageStateError> {
+        self.catalog_transitions.reserve(
+            record.operation_id,
+            record.request_digest,
+            record.mutation_digest,
+            catalog,
+            self.key.key_id,
+            &self.key.secret,
+        )
     }
 
     /// Durably crosses the point after which mutation outcome may be ambiguous.
     ///
-    /// A future helper must call this and sync it before invoking ZFS.
+    /// The privileged helper calls this and syncs it before invoking ZFS.
     ///
     /// # Errors
     ///
     /// Returns [`StorageStateError::InvalidTransition`] unless the exact
-    /// prepared operation and mutation digest are current.
+    /// prepared operation and mutation digest are current. Returns
+    /// [`StorageStateError::Journal`] if the cached view is poisoned, the
+    /// complete effect sequence cannot fit its preflight budget, or the
+    /// Ambiguous publication fails.
     pub fn mark_mutation_ambiguous(
         &mut self,
         operation_id: [u8; 16],
@@ -626,6 +858,9 @@ impl StorageTransactionStore {
         let mut record = self.exact_current(operation_id, mutation_digest)?.clone();
         if record.phase != DurableStoragePhase::Prepared {
             return Err(StorageStateError::InvalidTransition);
+        }
+        if record.format_version >= VERSION {
+            self.preflight_effect_capacity(&record)?;
         }
         record.phase = DurableStoragePhase::Ambiguous;
         self.publish(record)
@@ -649,6 +884,7 @@ impl StorageTransactionStore {
         mutation_digest: ObjectDigest,
         catalog: &ResolvedCatalogCommitmentV1,
     ) -> Result<(), StorageStateError> {
+        self.ensure_authority_readable()?;
         // This read-only guard runs before a privileged observer is allowed to
         // derive names from the supplied catalog. The state transition repeats
         // the same comparison immediately before publishing Ambiguous so a
@@ -664,21 +900,32 @@ impl StorageTransactionStore {
         Ok(())
     }
 
-    /// Publishes a committed result after observation verifies the postcondition.
+    /// Publishes a committed result for a recovered legacy transaction.
+    ///
+    /// Current records must use the observation-bound catalog transition path.
+    /// This low-level compatibility entry point can finish an already-ambiguous
+    /// version 2 or 3 record only when a trusted migration caller supplies the
+    /// externally published result-catalog binding. The production helper has
+    /// no such migration source and deliberately leaves legacy recovery open
+    /// and observation-only; it never redispatches the mutation.
     ///
     /// # Errors
     ///
     /// Returns [`StorageStateError::InvalidTransition`] unless the exact
-    /// ambiguous operation is current and the result advances catalog generation.
+    /// ambiguous legacy operation is current and the result advances catalog
+    /// generation. Returns [`StorageStateError::Journal`] after a commit
+    /// failure poisons the cached authority view until reopen.
     pub fn commit_verified(
         &mut self,
         operation_id: [u8; 16],
         mutation_digest: ObjectDigest,
         verified: VerifiedStorageResultV1,
     ) -> Result<CommittedStorageResultV1, StorageStateError> {
+        self.ensure_authority_readable()?;
         let mut record = self.exact_current(operation_id, mutation_digest)?.clone();
         let latest_generation = latest_generation(&self.records);
-        if record.phase != DurableStoragePhase::Ambiguous
+        if record.format_version >= VERSION
+            || record.phase != DurableStoragePhase::Ambiguous
             || verified.operation_id != record.operation_id
             || verified.request_digest != record.request_digest
             || verified.mutation_digest != record.mutation_digest
@@ -702,63 +949,133 @@ impl StorageTransactionStore {
         Ok(result)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn commit_observed(
+        &mut self,
+        operation_id: [u8; 16],
+        mutation_digest: ObjectDigest,
+        catalog: &ResolvedCatalogCommitmentV1,
+        observed: &PostconditionPolicyV1,
+        observed_object_guid: Option<u64>,
+        observation_digest: ObjectDigest,
+    ) -> Result<CommittedStorageResultV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        let mut record = self.exact_current(operation_id, mutation_digest)?.clone();
+        if record.phase != DurableStoragePhase::Ambiguous
+            || record.catalog != catalog.binding()
+            || record.catalog_bytes != catalog.canonical_bytes()
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
+
+        let transition = self.catalog_transitions.prepare_transition(
+            operation_id,
+            mutation_digest,
+            catalog,
+            observed_object_guid,
+            observation_digest,
+            self.key.key_id,
+            &self.key.secret,
+        )?;
+        let verified = VerifiedStorageResultV1::verify_observation(
+            operation_id,
+            record.request_digest,
+            catalog,
+            observed,
+            observed_object_guid,
+            transition.result_binding(),
+            observation_digest,
+        )?;
+        self.validate_verified_result(&record, &verified)?;
+
+        let result = self.committed_result(&verified)?;
+        record.phase = DurableStoragePhase::Committed;
+        record.result = Some(result);
+        self.publish_with(record, transition.records())?;
+        self.catalog_transitions.install_transition(transition);
+        Ok(result)
+    }
+
+    fn validate_verified_result(
+        &self,
+        record: &DurableRecord,
+        verified: &VerifiedStorageResultV1,
+    ) -> Result<(), StorageStateError> {
+        let latest_generation = latest_generation(&self.records);
+        if verified.operation_id != record.operation_id
+            || verified.request_digest != record.request_digest
+            || verified.mutation_digest != record.mutation_digest
+            || verified.catalog != record.catalog
+            || verified.postcondition_digest != record.postcondition_digest
+            || verified.result_catalog.generation() <= record.catalog.generation()
+            || verified.result_catalog.generation() < latest_generation
+            || self.records.values().any(|existing| {
+                catalog_forks(existing.catalog, verified.result_catalog)
+                    || existing.result.is_some_and(|result| {
+                        catalog_forks(result.catalog, verified.result_catalog)
+                    })
+            })
+        {
+            Err(StorageStateError::InvalidTransition)
+        } else {
+            Ok(())
+        }
+    }
+
     fn committed_result(
         &self,
         verified: &VerifiedStorageResultV1,
     ) -> Result<CommittedStorageResultV1, StorageStateError> {
-        let (storage_handle, immutable_version_handle, object_guid) =
-            match verified.resource_identity {
-                VerifiedResourceIdentity::MintWorkspace { object_guid } => (
-                    Some(self.mint_resource_handle(1, verified, object_guid)?),
-                    None,
-                    Some(object_guid),
-                ),
-                VerifiedResourceIdentity::MintVersion {
-                    storage_handle,
-                    object_guid,
-                } => (
-                    Some(storage_handle),
-                    Some(self.mint_resource_handle(2, verified, object_guid)?),
-                    Some(object_guid),
-                ),
-                VerifiedResourceIdentity::Existing {
-                    storage_handle,
-                    immutable_version_handle,
-                    object_guid,
-                } => (Some(storage_handle), immutable_version_handle, object_guid),
-            };
-
-        Ok(CommittedStorageResultV1 {
-            operation_id: verified.operation_id,
-            catalog: verified.result_catalog,
-            result_digest: verified.result_digest,
-            storage_handle,
-            immutable_version_handle,
-            object_guid,
-        })
+        committed_result_with_key(&self.key, verified)
     }
 
-    fn mint_resource_handle(
-        &self,
-        kind: u8,
-        verified: &VerifiedStorageResultV1,
-        object_guid: u64,
-    ) -> Result<[u8; 32], StorageStateError> {
-        let mut mac = HmacSha256::new_from_slice(&self.key.secret)
-            .map_err(|_| StorageStateError::InvalidValue)?;
-        mac.update(RESOURCE_HANDLE_DOMAIN);
-        mac.update(&self.key.key_id);
-        mac.update(&[kind]);
-        mac.update(&verified.operation_id);
-        mac.update(verified.request_digest.as_bytes());
-        mac.update(&object_guid.to_be_bytes());
-        mac.update(&verified.result_catalog.generation().to_be_bytes());
-        mac.update(verified.result_catalog.digest().as_bytes());
-        let mut handle: [u8; 32] = mac.finalize().into_bytes().into();
-        if handle == [0; 32] {
-            handle[31] = 1;
-        }
-        Ok(handle)
+    fn preflight_effect_capacity(&self, prepared: &DurableRecord) -> Result<(), StorageStateError> {
+        let mut ambiguous = prepared.clone();
+        ambiguous.phase = DurableStoragePhase::Ambiguous;
+        let ambiguous_transaction = JournalTransaction::new(
+            transaction_id(prepared.operation_id, DurableStoragePhase::Ambiguous),
+            vec![JournalRecord::put(
+                RecordNamespace::Operation,
+                prepared.operation_id.to_vec(),
+                encode_record(&ambiguous, &self.key)?,
+            )],
+        )?;
+
+        let result_catalog = CatalogBindingV1::from_publisher(
+            prepared
+                .catalog
+                .generation()
+                .checked_add(1)
+                .ok_or(StorageStateError::InvalidValue)?,
+            ObjectDigest::from_bytes([u8::MAX; 32]),
+        )
+        .map_err(|_| StorageStateError::InvalidValue)?;
+        let mut committed = prepared.clone();
+        committed.phase = DurableStoragePhase::Committed;
+        committed.result = Some(CommittedStorageResultV1 {
+            operation_id: prepared.operation_id,
+            catalog: result_catalog,
+            result_digest: ObjectDigest::from_bytes([u8::MAX; 32]),
+            storage_handle: Some([u8::MAX; 32]),
+            immutable_version_handle: Some([u8::MAX; 32]),
+            object_guid: Some(u64::MAX),
+        });
+        let mut completion_records = self
+            .catalog_transitions
+            .effect_capacity_records(prepared.operation_id)?;
+        completion_records.push(JournalRecord::put(
+            RecordNamespace::Operation,
+            prepared.operation_id.to_vec(),
+            encode_record(&committed, &self.key)?,
+        ));
+        let completion_transaction = JournalTransaction::new(
+            transaction_id(prepared.operation_id, DurableStoragePhase::Committed),
+            completion_records,
+        )?;
+
+        self.journal
+            .preflight_transactions(&[ambiguous_transaction, completion_transaction])?;
+        Ok(())
     }
 
     fn exact_current(
@@ -766,6 +1083,7 @@ impl StorageTransactionStore {
         operation_id: [u8; 16],
         mutation_digest: ObjectDigest,
     ) -> Result<&DurableRecord, StorageStateError> {
+        self.ensure_authority_readable()?;
         self.records
             .get(&operation_id)
             .filter(|record| record.mutation_digest == mutation_digest)
@@ -791,10 +1109,103 @@ impl StorageTransactionStore {
             transaction_id(record.operation_id, record.phase),
             additional,
         )?;
-        self.journal.commit(&transaction)?;
+        self.commit_journal(&transaction)?;
         self.records.insert(record.operation_id, record);
         Ok(())
     }
+
+    fn commit_journal(
+        &mut self,
+        transaction: &JournalTransaction,
+    ) -> Result<(), StorageStateError> {
+        let result = self.journal.commit(transaction);
+        #[cfg(test)]
+        let result = result.and_then(|commit| {
+            if std::mem::take(&mut self.fail_after_next_journal_commit) {
+                // Model an error returned after the commit reached durable
+                // storage, before callers update their materialized cache.
+                Err(aos_sandbox::JournalError::Io(std::io::Error::other(
+                    "injected failure after durable journal commit",
+                )))
+            } else {
+                Ok(commit)
+            }
+        });
+        if let Err(error) = result {
+            // An append or sync error may have reached durable storage even
+            // when the caller received failure. Cached records cannot remain
+            // an authority source until protected reopen replays the prefix.
+            self.commit_failed = true;
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn ensure_authority_readable(&self) -> Result<(), StorageStateError> {
+        if self.commit_failed {
+            Err(aos_sandbox::JournalError::Poisoned.into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn committed_result_with_key(
+    key: &StorageStateKey,
+    verified: &VerifiedStorageResultV1,
+) -> Result<CommittedStorageResultV1, StorageStateError> {
+    let (storage_handle, immutable_version_handle, object_guid) = match verified.resource_identity {
+        VerifiedResourceIdentity::MintWorkspace { object_guid } => (
+            Some(mint_resource_handle(key, 1, verified, object_guid)?),
+            None,
+            Some(object_guid),
+        ),
+        VerifiedResourceIdentity::MintVersion {
+            storage_handle,
+            object_guid,
+        } => (
+            Some(storage_handle),
+            Some(mint_resource_handle(key, 2, verified, object_guid)?),
+            Some(object_guid),
+        ),
+        VerifiedResourceIdentity::Existing {
+            storage_handle,
+            immutable_version_handle,
+            object_guid,
+        } => (Some(storage_handle), immutable_version_handle, object_guid),
+    };
+
+    Ok(CommittedStorageResultV1 {
+        operation_id: verified.operation_id,
+        catalog: verified.result_catalog,
+        result_digest: verified.result_digest,
+        storage_handle,
+        immutable_version_handle,
+        object_guid,
+    })
+}
+
+fn mint_resource_handle(
+    key: &StorageStateKey,
+    kind: u8,
+    verified: &VerifiedStorageResultV1,
+    object_guid: u64,
+) -> Result<[u8; 32], StorageStateError> {
+    let mut mac =
+        HmacSha256::new_from_slice(&key.secret).map_err(|_| StorageStateError::InvalidValue)?;
+    mac.update(RESOURCE_HANDLE_DOMAIN);
+    mac.update(&key.key_id);
+    mac.update(&[kind]);
+    mac.update(&verified.operation_id);
+    mac.update(verified.request_digest.as_bytes());
+    mac.update(&object_guid.to_be_bytes());
+    mac.update(&verified.result_catalog.generation().to_be_bytes());
+    mac.update(verified.result_catalog.digest().as_bytes());
+    let mut handle: [u8; 32] = mac.finalize().into_bytes().into();
+    if handle == [0; 32] {
+        handle[31] = 1;
+    }
+    Ok(handle)
 }
 
 fn recovery_entry(record: &DurableRecord) -> StorageRecoveryEntry {
@@ -802,6 +1213,7 @@ fn recovery_entry(record: &DurableRecord) -> StorageRecoveryEntry {
         operation_id: record.operation_id,
         sandbox_id: record.sandbox_id,
         request_id: record.request_id,
+        request_digest: record.request_digest,
         phase: record.phase,
         mutation_digest: record.mutation_digest,
         catalog: record.catalog,
@@ -810,14 +1222,17 @@ fn recovery_entry(record: &DurableRecord) -> StorageRecoveryEntry {
 
 const fn journal_limits() -> JournalLimits {
     JournalLimits {
-        maximum_journal_bytes: 64 * 1024 * 1024,
-        maximum_record_bytes: MAXIMUM_RECORD_BYTES,
+        maximum_journal_bytes: 512 * 1024 * 1024,
+        maximum_record_bytes: MAXIMUM_JOURNAL_RECORD_BYTES,
         maximum_key_bytes: 128,
-        maximum_records_per_transaction: 4,
-        maximum_transaction_bytes: MAXIMUM_RECORD_BYTES * 4,
+        maximum_records_per_transaction: 5,
+        maximum_transaction_bytes: MAXIMUM_JOURNAL_RECORD_BYTES * 5,
         maximum_transactions: 65_536,
-        maximum_materialized_bytes: MAXIMUM_RECORD_BYTES * MAXIMUM_OPERATIONS * 4,
-        maximum_materialized_records: MAXIMUM_OPERATIONS * 4,
+        maximum_materialized_bytes: MAXIMUM_JOURNAL_RECORD_BYTES
+            * (MAXIMUM_OPERATIONS * MATERIALIZED_RECORDS_PER_OPERATION
+                + GLOBAL_MATERIALIZED_RECORDS),
+        maximum_materialized_records: MAXIMUM_OPERATIONS * MATERIALIZED_RECORDS_PER_OPERATION
+            + GLOBAL_MATERIALIZED_RECORDS,
     }
 }
 
@@ -960,7 +1375,7 @@ fn encode_record(
     record: &DurableRecord,
     key: &StorageStateKey,
 ) -> Result<Vec<u8>, StorageStateError> {
-    encode_record_version(record, key, VERSION)
+    encode_record_version(record, key, record.format_version)
 }
 
 fn encode_record_version(
@@ -968,11 +1383,11 @@ fn encode_record_version(
     key: &StorageStateKey,
     version: u16,
 ) -> Result<Vec<u8>, StorageStateError> {
-    if !matches!(version, LEGACY_VERSION | VERSION) {
+    if !matches!(version, LEGACY_VERSION | IDENTITY_VERSION | VERSION) {
         return Err(StorageStateError::CorruptRecord);
     }
     let result_len = if record.result.is_some() {
-        if version == VERSION {
+        if version >= IDENTITY_VERSION {
             RESULT_BYTES
         } else {
             LEGACY_RESULT_BYTES
@@ -1006,7 +1421,7 @@ fn encode_record_version(
         bytes.extend_from_slice(&result.catalog.generation().to_be_bytes());
         bytes.extend_from_slice(result.catalog.digest().as_bytes());
         bytes.extend_from_slice(result.result_digest.as_bytes());
-        if version == VERSION {
+        if version >= IDENTITY_VERSION {
             let flags = (u8::from(result.storage_handle.is_some()) * RESULT_HAS_STORAGE_HANDLE)
                 | (u8::from(result.immutable_version_handle.is_some()) * RESULT_HAS_VERSION_HANDLE)
                 | (u8::from(result.object_guid.is_some()) * RESULT_HAS_OBJECT_GUID);
@@ -1040,7 +1455,7 @@ fn decode_record(bytes: &[u8], key: &StorageStateKey) -> Result<DurableRecord, S
         return Err(StorageStateError::CorruptRecord);
     }
     let version = cursor.u16()?;
-    if !matches!(version, LEGACY_VERSION | VERSION) {
+    if !matches!(version, LEGACY_VERSION | IDENTITY_VERSION | VERSION) {
         return Err(StorageStateError::CorruptRecord);
     }
     let phase = match cursor.u8()? {
@@ -1071,7 +1486,7 @@ fn decode_record(bytes: &[u8], key: &StorageStateKey) -> Result<DurableRecord, S
         )
         .map_err(|_| StorageStateError::CorruptRecord)?;
         let result_digest = ObjectDigest::from_bytes(cursor.array()?);
-        let identity = if version == VERSION {
+        let identity = if version >= IDENTITY_VERSION {
             decode_result_identity(&mut cursor)?
         } else {
             DecodedResultIdentity {
@@ -1104,6 +1519,7 @@ fn decode_record(bytes: &[u8], key: &StorageStateKey) -> Result<DurableRecord, S
         return Err(StorageStateError::CorruptRecord);
     }
     Ok(DurableRecord {
+        format_version: version,
         phase,
         operation_id,
         sandbox_id,
@@ -1214,9 +1630,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        CatalogPlanV1, ManagedDatasetRoot, PlannedDataset, PlannedSnapshot,
-        ProjectAncestorPolicyV1, ReservationPolicy, ResolvedDataset, StorageDomainsV1,
-        StorageOperation, WorkspaceSpacePolicyV1, ZfsTransaction,
+        ActiveHoldEvidence, CatalogPlanV1, HoldId, ManagedDatasetRoot, PlannedDataset,
+        PlannedSnapshot, ProjectAncestorPolicyV1, ReservationPolicy, ResolvedDataset,
+        ResolvedSnapshot, StorageDomainsV1, StorageOperation, WorkspaceSpacePolicyV1,
+        ZfsTransaction,
     };
 
     fn key(byte: u8) -> StorageStateKey {
@@ -1286,6 +1703,15 @@ mod tests {
         ObjectDigest::from_bytes([byte; 32])
     }
 
+    fn initialize(store: &mut StorageTransactionStore, catalog: &ResolvedCatalogCommitmentV1) {
+        store
+            .initialize_catalog_from_protected_snapshot(
+                catalog.generation() - 1,
+                std::slice::from_ref(catalog),
+            )
+            .unwrap();
+    }
+
     #[test]
     fn lock_excludes_a_second_store() {
         let directory = TempDir::new().unwrap();
@@ -1293,6 +1719,31 @@ mod tests {
         assert!(matches!(
             StorageTransactionStore::open_for_test(directory.path(), key(1), 0),
             Err(StorageStateError::Journal(JournalError::AlreadyLocked))
+        ));
+    }
+
+    #[test]
+    fn bootstrap_only_head_participates_in_the_rollback_anchor() {
+        let directory = TempDir::new().unwrap();
+        let catalog = catalog(7, "tank/aos/project/work");
+        {
+            let mut store =
+                StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+            assert_eq!(
+                store
+                    .initialize_catalog_from_protected_snapshot(6, &[catalog])
+                    .unwrap()
+                    .generation(),
+                6
+            );
+        }
+
+        let equal = StorageTransactionStore::open_for_test(directory.path(), key(1), 6).unwrap();
+        assert_eq!(equal.recovery_entries().unwrap().count(), 0);
+        drop(equal);
+        assert!(matches!(
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 7),
+            Err(StorageStateError::Rollback)
         ));
     }
 
@@ -1305,6 +1756,7 @@ mod tests {
         let mutation_digest = {
             let mut store =
                 StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+            initialize(&mut store, &catalog);
             match store.begin(operation_id, request_digest, &catalog).unwrap() {
                 BeginStorageTransaction::Prepared { mutation_digest } => mutation_digest,
                 other => panic!("unexpected preparation: {other:?}"),
@@ -1350,6 +1802,7 @@ mod tests {
         {
             let mut store =
                 StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+            initialize(&mut store, &catalog);
             assert!(matches!(
                 store
                     .begin_authorized(
@@ -1369,18 +1822,405 @@ mod tests {
 
         let store = StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
         assert_eq!(
-            store.authority_record(RecordNamespace::DesiredState, &sandbox_id),
+            store
+                .authority_record(RecordNamespace::DesiredState, &sandbox_id)
+                .unwrap(),
             Some(fence.as_slice())
         );
         assert_eq!(
-            store.authority_record(RecordNamespace::Effect, &request_id),
+            store
+                .authority_record(RecordNamespace::Effect, &request_id)
+                .unwrap(),
             Some(intent.as_slice())
         );
         assert_eq!(
-            store.authority_record(RecordNamespace::AuthorityPublication, &[31; 16]),
+            store
+                .authority_record(RecordNamespace::AuthorityPublication, &[31; 16])
+                .unwrap(),
             Some(operation_fence.as_slice())
         );
-        assert_eq!(store.phase([31; 16]), Some(DurableStoragePhase::Prepared));
+        assert_eq!(
+            store.phase([31; 16]).unwrap(),
+            Some(DurableStoragePhase::Prepared)
+        );
+    }
+
+    #[test]
+    fn effect_preflight_rejects_append_exhaustion_before_ambiguous() {
+        let catalog = catalog(7, "tank/aos/project/work");
+        let reference = TempDir::new().unwrap();
+        let admitted_bytes = {
+            let mut store =
+                StorageTransactionStore::open_for_test(reference.path(), key(1), 0).unwrap();
+            initialize(&mut store, &catalog);
+            store
+                .begin_authorized(
+                    [81; 16],
+                    digest(82),
+                    &catalog,
+                    [83; 16],
+                    [84; 16],
+                    vec![1; 32],
+                    vec![2; 32],
+                    vec![3; 32],
+                )
+                .unwrap();
+            fs::metadata(reference.path().join("storage-state.journal"))
+                .unwrap()
+                .len()
+        };
+
+        let directory = TempDir::new().unwrap();
+        let limits = JournalLimits {
+            maximum_journal_bytes: admitted_bytes,
+            ..journal_limits()
+        };
+        let mut store =
+            StorageTransactionStore::open_for_test_with_limits(directory.path(), key(1), 0, limits)
+                .unwrap();
+        initialize(&mut store, &catalog);
+        let BeginStorageTransaction::Prepared { mutation_digest } = store
+            .begin_authorized(
+                [81; 16],
+                digest(82),
+                &catalog,
+                [83; 16],
+                [84; 16],
+                vec![1; 32],
+                vec![2; 32],
+                vec![3; 32],
+            )
+            .unwrap()
+        else {
+            panic!("bounded fixture did not admit the prepared intent")
+        };
+
+        assert!(matches!(
+            store.mark_mutation_ambiguous([81; 16], mutation_digest),
+            Err(StorageStateError::Journal(JournalError::JournalTooLarge))
+        ));
+        assert_eq!(
+            store.phase([81; 16]).unwrap(),
+            Some(DurableStoragePhase::Prepared)
+        );
+    }
+
+    #[test]
+    fn post_commit_failure_poisons_cache_and_reopen_recovers_durable_record() {
+        let directory = TempDir::new().unwrap();
+        let catalog = catalog(7, "tank/aos/project/work");
+        let mut store =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        initialize(&mut store, &catalog);
+        store.fail_after_next_journal_commit_for_test();
+
+        assert!(matches!(
+            store.begin([71; 16], digest(72), &catalog),
+            Err(StorageStateError::Journal(JournalError::Io(_)))
+        ));
+        assert!(matches!(
+            store.phase([71; 16]),
+            Err(StorageStateError::Journal(JournalError::Poisoned))
+        ));
+        assert!(matches!(
+            store.recovery_entries(),
+            Err(StorageStateError::Journal(JournalError::Poisoned))
+        ));
+        assert!(matches!(
+            store.authority_record(RecordNamespace::DesiredState, &[71; 16]),
+            Err(StorageStateError::Journal(JournalError::Poisoned))
+        ));
+        drop(store);
+
+        let reopened = StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        assert_eq!(
+            reopened.phase([71; 16]).unwrap(),
+            Some(DurableStoragePhase::Prepared)
+        );
+        assert_eq!(reopened.recovery_entries().unwrap().count(), 1);
+    }
+
+    #[test]
+    fn materialized_budget_accounts_for_six_rows_per_distinct_sandbox() {
+        let directory = TempDir::new().unwrap();
+        let first = catalog(7, "tank/aos/project/first");
+        let second = catalog(9, "tank/aos/project/second");
+        let third = catalog(11, "tank/aos/project/third");
+        let limits = JournalLimits {
+            maximum_materialized_records: 2 * MATERIALIZED_RECORDS_PER_OPERATION
+                + GLOBAL_MATERIALIZED_RECORDS,
+            ..journal_limits()
+        };
+        let mut store =
+            StorageTransactionStore::open_for_test_with_limits(directory.path(), key(1), 0, limits)
+                .unwrap();
+        initialize(&mut store, &first);
+
+        for (index, catalog) in [(1_u8, &first), (2, &second)] {
+            let operation_id = [index; 16];
+            let BeginStorageTransaction::Prepared { mutation_digest } = store
+                .begin_authorized(
+                    operation_id,
+                    digest(90 + index),
+                    catalog,
+                    [10 + index; 16],
+                    [20 + index; 16],
+                    vec![30 + index; 8],
+                    vec![40 + index; 8],
+                    vec![50 + index; 8],
+                )
+                .unwrap()
+            else {
+                panic!("distinct sandbox did not prepare")
+            };
+            store
+                .mark_mutation_ambiguous(operation_id, mutation_digest)
+                .unwrap();
+            store
+                .commit_observed(
+                    operation_id,
+                    mutation_digest,
+                    catalog,
+                    &catalog.plan().postcondition(),
+                    Some(100 + u64::from(index)),
+                    digest(60 + index),
+                )
+                .unwrap();
+        }
+
+        assert!(matches!(
+            store.begin_authorized(
+                [3; 16],
+                digest(93),
+                &third,
+                [13; 16],
+                [23; 16],
+                vec![33; 8],
+                vec![43; 8],
+                vec![53; 8],
+            ),
+            Err(StorageStateError::Journal(JournalError::LimitExceeded(
+                "materialized record count"
+            )))
+        ));
+        assert!(matches!(
+            store.phase([1; 16]),
+            Err(StorageStateError::Journal(JournalError::Poisoned))
+        ));
+        assert!(matches!(
+            store.recovery_entries(),
+            Err(StorageStateError::Journal(JournalError::Poisoned))
+        ));
+        assert!(matches!(
+            store.authority_record(RecordNamespace::DesiredState, &[11; 16]),
+            Err(StorageStateError::Journal(JournalError::Poisoned))
+        ));
+        drop(store);
+
+        let reopened =
+            StorageTransactionStore::open_for_test_with_limits(directory.path(), key(1), 0, limits)
+                .unwrap();
+        assert_eq!(
+            reopened.phase([1; 16]).unwrap(),
+            Some(DurableStoragePhase::Committed)
+        );
+        assert_eq!(reopened.phase([3; 16]).unwrap(), None);
+    }
+
+    #[test]
+    fn physical_catalog_chain_recovers_every_zfs_transition_kind() {
+        let directory = TempDir::new().unwrap();
+        let root = ManagedDatasetRoot::from_catalog("tank", "tank/aos", 10).unwrap();
+        let ancestor_dataset =
+            ResolvedDataset::from_catalog(root.clone(), "tank/aos/project", 15, [1; 32], domains())
+                .unwrap();
+        let ancestor = ProjectAncestorPolicyV1::new(ancestor_dataset, 65_536, 8, 16).unwrap();
+        let space = WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1024)).unwrap();
+        let workspace = ResolvedDataset::from_catalog(
+            root.clone(),
+            "tank/aos/project/work",
+            101,
+            [31; 32],
+            domains(),
+        )
+        .unwrap();
+        let snapshot =
+            ResolvedSnapshot::from_catalog(workspace.clone(), "revision-1", 201, [32; 32]).unwrap();
+        let clone = ResolvedDataset::from_catalog(
+            root.clone(),
+            "tank/aos/project/clone",
+            301,
+            [33; 32],
+            domains(),
+        )
+        .unwrap();
+        let hold_id = HoldId::from_bytes([34; 16]).unwrap();
+        let catalogs = vec![
+            ResolvedCatalogCommitmentV1::new(
+                7,
+                domains(),
+                CatalogPlanV1::CreateWorkspace {
+                    destination: PlannedDataset::from_catalog(
+                        root.clone(),
+                        workspace.name(),
+                        domains(),
+                    )
+                    .unwrap(),
+                    space,
+                    ancestor: ancestor.clone(),
+                },
+            )
+            .unwrap(),
+            ResolvedCatalogCommitmentV1::new(
+                9,
+                domains(),
+                CatalogPlanV1::Snapshot {
+                    source: workspace.clone(),
+                    destination: PlannedSnapshot::from_catalog(
+                        workspace.clone(),
+                        snapshot.component(),
+                    )
+                    .unwrap(),
+                },
+            )
+            .unwrap(),
+            ResolvedCatalogCommitmentV1::new(
+                11,
+                domains(),
+                CatalogPlanV1::HoldSnapshot {
+                    snapshot: snapshot.clone(),
+                    hold_id,
+                },
+            )
+            .unwrap(),
+            ResolvedCatalogCommitmentV1::new(
+                13,
+                domains(),
+                CatalogPlanV1::Clone {
+                    source: Box::new(snapshot.clone()),
+                    origin_hold: ActiveHoldEvidence::from_catalog(snapshot.guid(), hold_id)
+                        .unwrap(),
+                    destination: PlannedDataset::from_catalog(root, clone.name(), domains())
+                        .unwrap(),
+                    space,
+                    ancestor: ancestor.clone(),
+                },
+            )
+            .unwrap(),
+            ResolvedCatalogCommitmentV1::new(
+                15,
+                domains(),
+                CatalogPlanV1::SetQuota {
+                    dataset: clone.clone(),
+                    space: WorkspaceSpacePolicyV1::new(8192, ReservationPolicy::None).unwrap(),
+                    ancestor: ancestor.clone(),
+                },
+            )
+            .unwrap(),
+            ResolvedCatalogCommitmentV1::new(
+                17,
+                domains(),
+                CatalogPlanV1::DestroyDataset {
+                    dataset: clone.clone(),
+                },
+            )
+            .unwrap(),
+            ResolvedCatalogCommitmentV1::new(
+                19,
+                domains(),
+                CatalogPlanV1::ReleaseHold {
+                    snapshot: snapshot.clone(),
+                    hold_id,
+                },
+            )
+            .unwrap(),
+            ResolvedCatalogCommitmentV1::new(
+                21,
+                domains(),
+                CatalogPlanV1::DestroySnapshot {
+                    snapshot: snapshot.clone(),
+                },
+            )
+            .unwrap(),
+            ResolvedCatalogCommitmentV1::new(
+                23,
+                domains(),
+                CatalogPlanV1::DestroyDataset { dataset: workspace },
+            )
+            .unwrap(),
+        ];
+        let mut store =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        initialize(&mut store, &catalogs[0]);
+
+        for (index, catalog) in catalogs.iter().enumerate() {
+            let operation_byte = u8::try_from(index + 1).unwrap();
+            let operation_id = [operation_byte; 16];
+            let BeginStorageTransaction::Prepared { mutation_digest } = store
+                .begin(operation_id, digest(100 + operation_byte), catalog)
+                .unwrap()
+            else {
+                panic!("lifecycle operation did not prepare")
+            };
+            store
+                .mark_mutation_ambiguous(operation_id, mutation_digest)
+                .unwrap();
+            let object_guid = match catalog.plan() {
+                CatalogPlanV1::CreateWorkspace { .. } => Some(101),
+                CatalogPlanV1::Snapshot { .. }
+                | CatalogPlanV1::HoldSnapshot { .. }
+                | CatalogPlanV1::ReleaseHold { .. } => Some(201),
+                CatalogPlanV1::Clone { .. } => Some(301),
+                CatalogPlanV1::SetQuota { .. } => Some(301),
+                _ => None,
+            };
+            if matches!(
+                catalog.plan(),
+                CatalogPlanV1::HoldSnapshot { .. }
+                    | CatalogPlanV1::ReleaseHold { .. }
+                    | CatalogPlanV1::SetQuota { .. }
+            ) {
+                assert!(matches!(
+                    store.commit_observed(
+                        operation_id,
+                        mutation_digest,
+                        catalog,
+                        &catalog.plan().postcondition(),
+                        object_guid.map(|guid| guid + 1),
+                        digest(120 + operation_byte),
+                    ),
+                    Err(StorageStateError::InvalidTransition)
+                ));
+                assert_eq!(
+                    store.phase(operation_id).unwrap(),
+                    Some(DurableStoragePhase::Ambiguous)
+                );
+            }
+            store
+                .commit_observed(
+                    operation_id,
+                    mutation_digest,
+                    catalog,
+                    &catalog.plan().postcondition(),
+                    object_guid,
+                    digest(120 + operation_byte),
+                )
+                .unwrap_or_else(|error| panic!("lifecycle operation {index} failed: {error}"));
+        }
+        drop(store);
+
+        let recovered =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 24).unwrap();
+        assert_eq!(
+            recovered.recovery_entries().unwrap().count(),
+            catalogs.len()
+        );
+        for index in 1..=catalogs.len() {
+            assert_eq!(
+                recovered.phase([u8::try_from(index).unwrap(); 16]).unwrap(),
+                Some(DurableStoragePhase::Committed)
+            );
+        }
     }
 
     #[test]
@@ -1389,15 +2229,18 @@ mod tests {
         let catalog = catalog(7, "tank/aos/project/work");
         let mut store =
             StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        initialize(&mut store, &catalog);
         store.begin([35; 16], digest(36), &catalog).unwrap();
         assert!(
             store
                 .authority_record(RecordNamespace::DesiredState, &[37; 16])
+                .unwrap()
                 .is_none()
         );
         assert!(
             store
                 .authority_record(RecordNamespace::Effect, &[38; 16])
+                .unwrap()
                 .is_none()
         );
     }
@@ -1408,8 +2251,9 @@ mod tests {
         let catalog = catalog(7, "tank/aos/project/work");
         let mut store =
             StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        initialize(&mut store, &catalog);
         store.begin([39; 16], digest(40), &catalog).unwrap();
-        let entries = store.recovery_entries().collect::<Vec<_>>();
+        let entries = store.recovery_entries().unwrap().collect::<Vec<_>>();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].operation_id(), [39; 16]);
         assert_eq!(entries[0].phase(), DurableStoragePhase::Prepared);
@@ -1421,13 +2265,14 @@ mod tests {
     fn exact_committed_result_replays_after_reopen() {
         let directory = TempDir::new().unwrap();
         let initial_catalog = catalog(7, "tank/aos/project/work");
-        let next_catalog = catalog(8, "tank/aos/project/next");
+        let next_catalog = catalog(9, "tank/aos/project/next");
         let program = program(&initial_catalog);
         let operation_id = [41; 16];
         let request_digest = digest(42);
         let expected = {
             let mut store =
                 StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+            initialize(&mut store, &initial_catalog);
             let BeginStorageTransaction::Prepared { mutation_digest } = store
                 .begin(operation_id, request_digest, &initial_catalog)
                 .unwrap()
@@ -1437,18 +2282,15 @@ mod tests {
             store
                 .mark_mutation_ambiguous(operation_id, mutation_digest)
                 .unwrap();
-            let verified = VerifiedStorageResultV1::verify_observation(
-                operation_id,
-                request_digest,
-                &initial_catalog,
-                program.postcondition(),
-                Some(91),
-                next_catalog.binding(),
-                digest(44),
-            )
-            .unwrap();
             store
-                .commit_verified(operation_id, mutation_digest, verified)
+                .commit_observed(
+                    operation_id,
+                    mutation_digest,
+                    &initial_catalog,
+                    program.postcondition(),
+                    Some(91),
+                    digest(44),
+                )
                 .unwrap()
         };
         let mut recovered =
@@ -1483,6 +2325,7 @@ mod tests {
         let request_digest = digest(48);
         let mut store =
             StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        initialize(&mut store, &catalog);
         let BeginStorageTransaction::Prepared { mutation_digest } =
             store.begin(operation_id, request_digest, &catalog).unwrap()
         else {
@@ -1491,18 +2334,15 @@ mod tests {
         store
             .mark_mutation_ambiguous(operation_id, mutation_digest)
             .unwrap();
-        let verified = VerifiedStorageResultV1::verify_observation(
-            operation_id,
-            request_digest,
-            &catalog,
-            &catalog.plan().postcondition(),
-            Some(91),
-            CatalogBindingV1::from_publisher(8, digest(49)).unwrap(),
-            digest(50),
-        )
-        .unwrap();
         let result = store
-            .commit_verified(operation_id, mutation_digest, verified)
+            .commit_observed(
+                operation_id,
+                mutation_digest,
+                &catalog,
+                &catalog.plan().postcondition(),
+                Some(91),
+                digest(50),
+            )
             .unwrap();
 
         assert_eq!(result.storage_handle(), Some([81; 32]));
@@ -1558,6 +2398,7 @@ mod tests {
         let substituted = catalog(8, "tank/aos/project/other");
         let mut store =
             StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        initialize(&mut store, &original);
         store.begin([51; 16], digest(52), &original).unwrap();
         assert!(matches!(
             store.begin([51; 16], digest(53), &original),
@@ -1580,6 +2421,7 @@ mod tests {
         let fork = catalog(7, "tank/aos/project/other");
         let mut store =
             StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        initialize(&mut store, &original);
         store.begin([61; 16], digest(62), &original).unwrap();
         assert!(matches!(
             store.begin([63; 16], digest(64), &fork),
@@ -1622,28 +2464,20 @@ mod tests {
         store
             .mark_mutation_ambiguous([61; 16], first_mutation)
             .unwrap();
-        let verified_for_first = VerifiedStorageResultV1::verify_observation(
-            [61; 16],
-            digest(62),
-            &original,
-            &original.plan().postcondition(),
-            Some(91),
-            catalog(8, "tank/aos/project/next").binding(),
-            digest(67),
-        )
-        .unwrap();
-        let BeginStorageTransaction::Prepared {
-            mutation_digest: second_mutation,
-        } = store.begin([63; 16], digest(64), &original).unwrap()
-        else {
-            panic!("second operation was not prepared")
-        };
-        store
-            .mark_mutation_ambiguous([63; 16], second_mutation)
+        let result = store
+            .commit_observed(
+                [61; 16],
+                first_mutation,
+                &original,
+                &original.plan().postcondition(),
+                Some(91),
+                digest(67),
+            )
             .unwrap();
+        assert_eq!(result.catalog().generation(), 8);
         assert!(matches!(
-            store.commit_verified([63; 16], second_mutation, verified_for_first),
-            Err(StorageStateError::InvalidTransition)
+            store.begin([63; 16], digest(64), &original),
+            Err(StorageStateError::Rollback)
         ));
     }
 
@@ -1654,6 +2488,7 @@ mod tests {
         {
             let mut store =
                 StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+            initialize(&mut store, &catalog);
             store.begin([71; 16], digest(72), &catalog).unwrap();
         }
         assert!(matches!(

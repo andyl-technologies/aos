@@ -134,6 +134,12 @@ pub enum RecordNamespace {
     NetworkResourceInventory = 26,
     /// Durable pending and confirmed complete Host launch catalogs.
     HostCatalogReconciliation = 27,
+    /// Storage operation reservations bound to one physical catalog head.
+    StorageCatalogReservation = 28,
+    /// Immutable observed Storage physical-catalog transitions.
+    StorageCatalogTransition = 29,
+    /// Current authenticated Storage physical-catalog head.
+    StorageCatalogHead = 30,
 }
 
 impl RecordNamespace {
@@ -166,6 +172,9 @@ impl RecordNamespace {
             25 => Ok(Self::StorageResourceInventory),
             26 => Ok(Self::NetworkResourceInventory),
             27 => Ok(Self::HostCatalogReconciliation),
+            28 => Ok(Self::StorageCatalogReservation),
+            29 => Ok(Self::StorageCatalogTransition),
+            30 => Ok(Self::StorageCatalogHead),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -807,6 +816,9 @@ impl Journal {
             .next_sequence
             .checked_add(frame_count - 1)
             .ok_or(JournalError::SequenceExhausted)?;
+        let following_sequence = commit_sequence
+            .checked_add(1)
+            .ok_or(JournalError::SequenceExhausted)?;
         let additional_bytes = frames
             .iter()
             .try_fold(0_u64, |total, frame| total.checked_add(frame.len() as u64));
@@ -838,9 +850,7 @@ impl Journal {
             apply_record(&mut self.state, &mut self.idempotency, record)?;
         }
         self.materialized_bytes = materialized_bytes;
-        self.next_sequence = commit_sequence
-            .checked_add(1)
-            .ok_or(JournalError::SequenceExhausted)?;
+        self.next_sequence = following_sequence;
         self.committed_transactions += 1;
         self.transaction_ids.insert(transaction.id);
 
@@ -848,6 +858,74 @@ impl Journal {
             commit_sequence,
             durable_bytes,
         })
+    }
+
+    /// Validates that an ordered sequence of future transactions fits all bounds.
+    ///
+    /// This performs the same structural, transaction-count, materialized-view,
+    /// sequence, and append-length checks as [`Self::commit`] against a cloned
+    /// view. It does not write or reserve bytes. The result remains authoritative
+    /// while this exclusively locked journal has no unmodeled intervening
+    /// commits. That lets a sole controller budget all crash phases before
+    /// starting an irreversible effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError`] if the handle is poisoned, metadata cannot be
+    /// read, or any transaction in the ordered sequence would fail a commit
+    /// bound or conflict with preceding durable or simulated state.
+    pub fn preflight_transactions(
+        &self,
+        transactions: &[JournalTransaction],
+    ) -> Result<(), JournalError> {
+        self.ensure_healthy()?;
+
+        let mut state = self.state.clone();
+        let mut idempotency = self.idempotency.clone();
+        let mut transaction_ids = self.transaction_ids.clone();
+        let mut materialized_bytes = self.materialized_bytes;
+        let mut next_sequence = self.next_sequence;
+        let mut committed_transactions = self.committed_transactions;
+        let mut expected_length = self.file.metadata()?.len();
+
+        for transaction in transactions {
+            validate_transaction(transaction, self.limits)?;
+            if !transaction_ids.insert(transaction.id) {
+                return Err(JournalError::DuplicateTransaction);
+            }
+            if committed_transactions >= self.limits.maximum_transactions {
+                return Err(JournalError::LimitExceeded("committed transaction count"));
+            }
+            validate_idempotency_changes(&idempotency, transaction.records())?;
+            materialized_bytes = validate_materialized_change(
+                &state,
+                materialized_bytes,
+                transaction.records(),
+                self.limits,
+            )?;
+
+            let frames = encode_transaction(transaction, next_sequence)?;
+            let frame_count = u64::try_from(frames.len())
+                .map_err(|_| JournalError::LimitExceeded("transaction frame count"))?;
+            let additional_bytes = frames
+                .iter()
+                .try_fold(0_u64, |total, frame| total.checked_add(frame.len() as u64));
+            expected_length = expected_length
+                .checked_add(additional_bytes.ok_or(JournalError::JournalTooLarge)?)
+                .ok_or(JournalError::JournalTooLarge)?;
+            if expected_length > self.limits.maximum_journal_bytes {
+                return Err(JournalError::JournalTooLarge);
+            }
+
+            for record in transaction.records() {
+                apply_record(&mut state, &mut idempotency, record)?;
+            }
+            next_sequence = next_sequence
+                .checked_add(frame_count)
+                .ok_or(JournalError::SequenceExhausted)?;
+            committed_transactions += 1;
+        }
+        Ok(())
     }
 
     /// Rewrites the materialized state into an atomically installed journal.
@@ -1936,13 +2014,16 @@ mod tests {
             RecordNamespace::StorageResourceInventory,
             RecordNamespace::NetworkResourceInventory,
             RecordNamespace::HostCatalogReconciliation,
+            RecordNamespace::StorageCatalogReservation,
+            RecordNamespace::StorageCatalogTransition,
+            RecordNamespace::StorageCatalogHead,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 28, 255] {
+        for code in [0, 31, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }
@@ -3210,6 +3291,81 @@ mod tests {
             Err(JournalError::LimitExceeded("materialized state bytes"))
         ));
         assert_eq!(fs::metadata(path).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn preflight_checks_an_ordered_append_without_mutating_the_journal() {
+        let directory = TestDirectory::new("preflight-sequence");
+        let path = directory.journal();
+        let first = transaction(
+            1,
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                b"first".to_vec(),
+                vec![1; 32],
+            )],
+        );
+        let future = transaction(
+            2,
+            vec![JournalRecord::put(
+                RecordNamespace::Operation,
+                b"future".to_vec(),
+                vec![2; 64],
+            )],
+        );
+        let first_bytes = encode_transaction(&first, 1)
+            .unwrap()
+            .iter()
+            .map(Vec::len)
+            .sum::<usize>();
+        let future_bytes = encode_transaction(&future, 4)
+            .unwrap()
+            .iter()
+            .map(Vec::len)
+            .sum::<usize>();
+        let limits = JournalLimits {
+            maximum_journal_bytes: u64::try_from(first_bytes + future_bytes - 1).unwrap(),
+            ..JournalLimits::default()
+        };
+        let (mut journal, _) = Journal::open(&path, limits).unwrap();
+        journal.commit(&first).unwrap();
+        let length = fs::metadata(&path).unwrap().len();
+        let sequence = journal.snapshot_sequence();
+
+        assert!(matches!(
+            journal.preflight_transactions(std::slice::from_ref(&future)),
+            Err(JournalError::JournalTooLarge)
+        ));
+        assert_eq!(fs::metadata(&path).unwrap().len(), length);
+        assert_eq!(journal.snapshot_sequence(), sequence);
+        assert!(journal.get(RecordNamespace::Operation, b"future").is_none());
+    }
+
+    #[test]
+    fn sequence_exhaustion_is_rejected_before_any_frame_is_written() {
+        let directory = TestDirectory::new("sequence-exhaustion-prewrite");
+        let path = directory.journal();
+        let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        journal.next_sequence = u64::MAX - 2;
+        let entry = transaction(
+            1,
+            vec![JournalRecord::put(
+                RecordNamespace::Operation,
+                b"operation".to_vec(),
+                b"prepared".to_vec(),
+            )],
+        );
+
+        assert!(matches!(
+            journal.commit(&entry),
+            Err(JournalError::SequenceExhausted)
+        ));
+        assert_eq!(fs::metadata(path).unwrap().len(), 0);
+        assert!(
+            journal
+                .get(RecordNamespace::Operation, b"operation")
+                .is_none()
+        );
     }
 
     #[test]

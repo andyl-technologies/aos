@@ -98,6 +98,7 @@ impl StorageAdmissionCoordinator {
         policy: PeerPolicy,
         current_clock: &RawPairedClockSample,
     ) -> Result<StorageAdmissionOutcome, StorageBrokerError> {
+        self.transactions.ensure_authority_readable()?;
         let semantics = decode_resolved(
             request_body,
             catalog,
@@ -110,14 +111,17 @@ impl StorageAdmissionCoordinator {
             decode_assignment(request_body).map_err(|_| StorageBrokerError::Request)?;
         let sandbox_id = *assignment.sandbox().as_bytes();
         let request_id = *semantics.header().request_id();
-        let existing = self.transactions.phase(*semantics.operation_id()).is_some();
+        let existing = self
+            .transactions
+            .phase(*semantics.operation_id())?
+            .is_some();
         let prior_fence = self
             .transactions
-            .authority_record(RecordNamespace::DesiredState, &sandbox_id)
+            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
             .map(<[u8]>::to_vec);
         let prior_admission_intent = self
             .transactions
-            .authority_record(RecordNamespace::Effect, &request_id)
+            .authority_record(RecordNamespace::Effect, &request_id)?
             .map(<[u8]>::to_vec);
         if existing && (prior_fence.is_none() || prior_admission_intent.is_none()) {
             return Err(StorageBrokerError::State(
@@ -258,7 +262,7 @@ impl StorageAdmissionCoordinator {
         let sandbox_id = entry.sandbox_id();
         let sealed_fence = self
             .transactions
-            .authority_record(RecordNamespace::AuthorityPublication, &entry.operation_id())
+            .authority_record(RecordNamespace::AuthorityPublication, &entry.operation_id())?
             .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
         let fence = self
             .authority
@@ -321,9 +325,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        CatalogBindingV1, CatalogPlanV1, ManagedDatasetRoot, PlannedDataset,
-        ProjectAncestorPolicyV1, ReservationPolicy, ResolvedDataset, StorageDomainsV1,
-        StorageStateKey, WorkspaceSpacePolicyV1,
+        CatalogPlanV1, ManagedDatasetRoot, PlannedDataset, ProjectAncestorPolicyV1,
+        ReservationPolicy, ResolvedDataset, StorageDomainsV1, StorageStateKey,
+        WorkspaceSpacePolicyV1,
     };
 
     const NODE: NodeId = NodeId::from_bytes([31; 16]);
@@ -804,6 +808,22 @@ mod tests {
         StorageAdmissionCoordinator::new(fixture.authority(), store)
     }
 
+    fn initialized_coordinator(
+        directory: &TempDir,
+        fixture: &Fixture,
+        catalog: &ResolvedCatalogCommitmentV1,
+    ) -> StorageAdmissionCoordinator {
+        let mut coordinator = coordinator(directory, fixture);
+        coordinator
+            .transactions
+            .initialize_catalog_from_protected_snapshot(
+                catalog.generation() - 1,
+                std::slice::from_ref(catalog),
+            )
+            .unwrap();
+        coordinator
+    }
+
     #[test]
     fn real_authority_prepares_and_exact_replay_is_observation_only() {
         let directory = TempDir::new().unwrap();
@@ -817,7 +837,7 @@ mod tests {
             BrokerAudience::Storage,
             ProtocolId::StorageBroker,
         );
-        let mut broker = coordinator(&directory, &fixture);
+        let mut broker = initialized_coordinator(&directory, &fixture, &original_catalog);
         assert!(matches!(
             broker
                 .admit_apply_intent(
@@ -864,7 +884,7 @@ mod tests {
             BrokerAudience::Storage,
             ProtocolId::StorageBroker,
         );
-        let mut broker = coordinator(&directory, &fixture);
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
         let StorageAdmissionOutcome::Prepared { mutation_digest } = broker
             .admit_apply_intent(
                 &request,
@@ -883,25 +903,22 @@ mod tests {
             .transactions
             .mark_mutation_ambiguous([7; 16], mutation_digest)
             .unwrap();
-        let request_digest = ObjectDigest::from_bytes(Sha256::digest(&request).into());
-        let verified = crate::VerifiedStorageResultV1::verify_observation(
-            [7; 16],
-            request_digest,
-            &catalog,
-            &catalog.plan().postcondition(),
-            None,
-            CatalogBindingV1::from_publisher(10, ObjectDigest::from_bytes([61; 32])).unwrap(),
-            ObjectDigest::from_bytes([62; 32]),
-        )
-        .unwrap();
         let result = broker
             .transactions
-            .commit_verified([7; 16], mutation_digest, verified)
+            .commit_observed(
+                [7; 16],
+                mutation_digest,
+                &catalog,
+                &catalog.plan().postcondition(),
+                None,
+                ObjectDigest::from_bytes([62; 32]),
+            )
             .unwrap();
 
         let operation_fence = broker
             .transactions
             .authority_record(RecordNamespace::AuthorityPublication, &[7; 16])
+            .unwrap()
             .unwrap();
         assert!(
             broker
@@ -940,7 +957,7 @@ mod tests {
             BrokerAudience::Storage,
             ProtocolId::StorageBroker,
         );
-        let mut broker = coordinator(&directory, &fixture);
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
         let StorageAdmissionOutcome::Prepared { mutation_digest } = broker
             .admit_apply_intent(
                 &request,
@@ -959,20 +976,16 @@ mod tests {
             .transactions
             .mark_mutation_ambiguous([7; 16], mutation_digest)
             .unwrap();
-        let request_digest = ObjectDigest::from_bytes(Sha256::digest(&request).into());
-        let verified = crate::VerifiedStorageResultV1::verify_observation(
-            [7; 16],
-            request_digest,
-            &catalog,
-            &catalog.plan().postcondition(),
-            Some(91),
-            CatalogBindingV1::from_publisher(10, ObjectDigest::from_bytes([61; 32])).unwrap(),
-            ObjectDigest::from_bytes([62; 32]),
-        )
-        .unwrap();
         let result = broker
             .transactions
-            .commit_verified([7; 16], mutation_digest, verified)
+            .commit_observed(
+                [7; 16],
+                mutation_digest,
+                &catalog,
+                &catalog.plan().postcondition(),
+                Some(91),
+                ObjectDigest::from_bytes([62; 32]),
+            )
             .unwrap();
 
         assert!(
@@ -1008,7 +1021,7 @@ mod tests {
             BrokerAudience::Storage,
             ProtocolId::StorageBroker,
         );
-        let mut broker = coordinator(&directory, &fixture);
+        let mut broker = initialized_coordinator(&directory, &fixture, &original_catalog);
         broker
             .admit_apply_intent(
                 &original_request,
@@ -1102,7 +1115,7 @@ mod tests {
             BrokerAudience::Storage,
             ProtocolId::StorageBroker,
         );
-        let mut broker = coordinator(&directory, &fixture);
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
         broker
             .admit_apply_intent(
                 &request,
@@ -1150,7 +1163,7 @@ mod tests {
             BrokerAudience::Storage,
             ProtocolId::StorageBroker,
         );
-        let mut broker = coordinator(&directory, &fixture);
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
         broker
             .admit_apply_intent(
                 &original,
@@ -1175,7 +1188,8 @@ mod tests {
                 &clock(),
                 broker
                     .transactions
-                    .authority_record(RecordNamespace::DesiredState, &[2; 16]),
+                    .authority_record(RecordNamespace::DesiredState, &[2; 16])
+                    .unwrap(),
             )
             .unwrap();
         assert!(

@@ -12,10 +12,10 @@ use aos_sandbox_core::ObjectDigest;
 
 use crate::process::{SystemdZfsExecutor, WorkerObservationOutcome, ZfsWorkerError};
 use crate::{
-    AncestorPolicyTransaction, CatalogBindingV1, DurableStoragePhase, PostconditionPolicyV1,
-    ProjectAncestorPolicyV1, ResolvedCatalogCommitmentV1, StorageOperation, StorageStateError,
-    StorageTransactionStore, VerifiedStorageResultV1, ZfsHelperContract, ZfsPrecondition,
-    ZfsTransaction, ZfsTransactionError,
+    AncestorPolicyTransaction, DurableStoragePhase, PostconditionPolicyV1, ProjectAncestorPolicyV1,
+    ResolvedCatalogCommitmentV1, StorageOperation, StorageRecoveryEntry, StorageStateError,
+    StorageTransactionStore, ZfsHelperContract, ZfsPrecondition, ZfsTransaction,
+    ZfsTransactionError,
 };
 
 const MAXIMUM_STDOUT_BYTES: usize = 64 * 1024;
@@ -32,6 +32,8 @@ pub(crate) enum ZfsHelperError {
     PreconditionMismatch,
     #[error("ZFS postcondition observation did not match")]
     PostconditionMismatch,
+    #[error("a prepared transaction already has its physical postcondition")]
+    PreparedPostconditionConflict,
     #[error("fixed ZFS process backend failed: {0}")]
     Backend(#[from] ZfsWorkerError),
     #[error("fixed ZFS process output or timeout contract was violated")]
@@ -41,7 +43,10 @@ pub(crate) enum ZfsHelperError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ZfsHelperOutcome {
     Committed(crate::CommittedStorageResultV1),
-    ObservationRequired { mutation_digest: ObjectDigest },
+    ObservationRequired {
+        phase: DurableStoragePhase,
+        mutation_digest: ObjectDigest,
+    },
 }
 
 pub(crate) struct ZfsProcessOutput {
@@ -55,11 +60,10 @@ pub(crate) struct ZfsPostconditionObservation {
     observed: PostconditionPolicyV1,
     ancestor: Option<ProjectAncestorPolicyV1>,
     object_guid: Option<u64>,
-    catalog: CatalogBindingV1,
     digest: ObjectDigest,
 }
 
-struct SealedZfsProgram<'a> {
+pub(crate) struct SealedZfsProgram<'a> {
     executable: &'a std::path::Path,
     operation: StorageOperation,
     catalog: &'a ResolvedCatalogCommitmentV1,
@@ -70,7 +74,7 @@ struct SealedZfsProgram<'a> {
     process_tree_timeout: Duration,
 }
 
-trait ZfsProcessBackend {
+pub(crate) trait ZfsProcessBackend {
     fn observe_preconditions(
         &mut self,
         program: &SealedZfsProgram<'_>,
@@ -90,12 +94,12 @@ trait ZfsProcessBackend {
     ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError>;
 }
 
-struct SystemdZfsProcessBackend {
+pub(crate) struct SystemdZfsProcessBackend {
     executor: SystemdZfsExecutor,
 }
 
 impl SystemdZfsProcessBackend {
-    fn new(executor: SystemdZfsExecutor) -> Self {
+    pub(crate) fn new(executor: SystemdZfsExecutor) -> Self {
         Self { executor }
     }
 }
@@ -164,9 +168,6 @@ impl ZfsProcessBackend for SystemdZfsProcessBackend {
                     observed: expected.clone(),
                     ancestor: expected_ancestor.cloned(),
                     object_guid,
-                    // The worker reports physical facts only. This binding is
-                    // taken from the still-locked local transaction catalog.
-                    catalog: program.catalog.binding(),
                     digest: observation_digest,
                 }))
             }
@@ -176,58 +177,113 @@ impl ZfsProcessBackend for SystemdZfsProcessBackend {
     }
 }
 
-struct StorageMutationHelper<B> {
+pub(crate) struct StorageMutationHelper<B> {
     contract: ZfsHelperContract,
     backend: B,
 }
 
+/// Carries one pre-observed persisted transaction into its sole dispatch.
+///
+/// This capability is deliberately neither `Clone` nor `Copy`. Its fields are
+/// reconstructed from authenticated store state rather than caller input.
+pub(crate) struct PreobservedZfsMutation {
+    context: PersistedZfsMutation,
+}
+
+struct PersistedZfsMutation {
+    entry: StorageRecoveryEntry,
+    catalog: ResolvedCatalogCommitmentV1,
+    operation: StorageOperation,
+}
+
+impl PreobservedZfsMutation {
+    pub(crate) const fn entry(&self) -> StorageRecoveryEntry {
+        self.context.entry
+    }
+}
+
 impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
-    fn new(contract: ZfsHelperContract, backend: B) -> Self {
+    pub(crate) fn new(contract: ZfsHelperContract, backend: B) -> Self {
         Self { contract, backend }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn reconcile(
+    /// Observes exact preconditions for the current persisted Prepared entry.
+    pub(crate) fn preobserve(
         &mut self,
-        store: &mut StorageTransactionStore,
-        phase: DurableStoragePhase,
+        store: &StorageTransactionStore,
         operation_id: [u8; 16],
-        request_digest: ObjectDigest,
-        mutation_digest: ObjectDigest,
-        operation: StorageOperation,
-        catalog: &ResolvedCatalogCommitmentV1,
-    ) -> Result<ZfsHelperOutcome, ZfsHelperError> {
-        store.validate_mutation_exact(operation_id, request_digest, mutation_digest, catalog)?;
-        let transaction = ZfsTransaction::from_catalog(operation, catalog)?;
-        let expected_preconditions = all_preconditions(&transaction);
-        let program = SealedZfsProgram {
-            executable: self.contract.executable(),
-            operation,
-            catalog,
-            environment_is_empty: true,
-            inherited_descriptor_count: 0,
-            maximum_stdout_bytes: MAXIMUM_STDOUT_BYTES,
-            maximum_stderr_bytes: MAXIMUM_STDERR_BYTES,
-            process_tree_timeout: PROCESS_TREE_TIMEOUT,
-        };
-        if phase == DurableStoragePhase::Prepared {
-            let observed = self
-                .backend
-                .observe_preconditions(&program, &expected_preconditions)?;
-            if observed != expected_preconditions {
-                return Err(ZfsHelperError::PreconditionMismatch);
-            }
-            store.mark_mutation_ambiguous_exact(
-                operation_id,
-                request_digest,
-                mutation_digest,
-                catalog,
-            )?;
-            validate_process_output(self.backend.execute_once(&program)?)?;
-        } else if phase != DurableStoragePhase::Ambiguous {
+    ) -> Result<PreobservedZfsMutation, ZfsHelperError> {
+        let context = persisted_context(store, operation_id)?;
+        if context.entry.phase() != DurableStoragePhase::Prepared {
             return Err(StorageStateError::InvalidTransition.into());
         }
+        let transaction = ZfsTransaction::from_catalog(context.operation, &context.catalog)?;
+        let expected_preconditions = all_preconditions(&transaction);
+        let program = sealed_program(&self.contract, &context);
+        let observed = self
+            .backend
+            .observe_preconditions(&program, &expected_preconditions)?;
+        if observed != expected_preconditions {
+            return Err(ZfsHelperError::PreconditionMismatch);
+        }
+        Ok(PreobservedZfsMutation { context })
+    }
 
+    /// Crosses Ambiguous, dispatches exactly once, then observes the result.
+    pub(crate) fn execute_preobserved(
+        &mut self,
+        store: &mut StorageTransactionStore,
+        prepared: PreobservedZfsMutation,
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError> {
+        let current = persisted_context(store, prepared.context.entry.operation_id())?;
+        if current.entry != prepared.context.entry
+            || current.catalog != prepared.context.catalog
+            || current.operation != prepared.context.operation
+        {
+            return Err(StorageStateError::InvalidTransition.into());
+        }
+        store.validate_mutation_exact(
+            current.entry.operation_id(),
+            current.entry.request_digest(),
+            current.entry.mutation_digest(),
+            &current.catalog,
+        )?;
+        store.mark_mutation_ambiguous_exact(
+            current.entry.operation_id(),
+            current.entry.request_digest(),
+            current.entry.mutation_digest(),
+            &current.catalog,
+        )?;
+
+        let program = sealed_program(&self.contract, &current);
+        validate_process_output(self.backend.execute_once(&program)?)?;
+        self.observe_postcondition(store, &current, DurableStoragePhase::Ambiguous)
+    }
+
+    /// Re-observes current Prepared or Ambiguous state without dispatching.
+    pub(crate) fn observe_only(
+        &mut self,
+        store: &mut StorageTransactionStore,
+        operation_id: [u8; 16],
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError> {
+        let context = persisted_context(store, operation_id)?;
+        if !matches!(
+            context.entry.phase(),
+            DurableStoragePhase::Prepared | DurableStoragePhase::Ambiguous
+        ) {
+            return Err(StorageStateError::InvalidTransition.into());
+        }
+        self.observe_postcondition(store, &context, context.entry.phase())
+    }
+
+    fn observe_postcondition(
+        &mut self,
+        store: &mut StorageTransactionStore,
+        context: &PersistedZfsMutation,
+        phase: DurableStoragePhase,
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError> {
+        let transaction = ZfsTransaction::from_catalog(context.operation, &context.catalog)?;
+        let program = sealed_program(&self.contract, context);
         let Some(observation) = self.backend.observe_postcondition(
             &program,
             transaction.postcondition(),
@@ -236,8 +292,14 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
                 .map(AncestorPolicyTransaction::postcondition),
         )?
         else {
-            return Ok(ZfsHelperOutcome::ObservationRequired { mutation_digest });
+            return Ok(ZfsHelperOutcome::ObservationRequired {
+                phase,
+                mutation_digest: context.entry.mutation_digest(),
+            });
         };
+        if phase == DurableStoragePhase::Prepared {
+            return Err(ZfsHelperError::PreparedPostconditionConflict);
+        }
         if observation.ancestor.as_ref()
             != transaction
                 .ancestor_transaction()
@@ -245,18 +307,46 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
         {
             return Err(ZfsHelperError::PostconditionMismatch);
         }
-        let verified = VerifiedStorageResultV1::verify_observation(
-            operation_id,
-            request_digest,
-            catalog,
+        let result = store.commit_observed(
+            context.entry.operation_id(),
+            context.entry.mutation_digest(),
+            &context.catalog,
             &observation.observed,
             observation.object_guid,
-            observation.catalog,
             observation.digest,
-        )
-        .map_err(|_| ZfsHelperError::PostconditionMismatch)?;
-        let result = store.commit_verified(operation_id, mutation_digest, verified)?;
+        )?;
         Ok(ZfsHelperOutcome::Committed(result))
+    }
+}
+
+fn persisted_context(
+    store: &StorageTransactionStore,
+    operation_id: [u8; 16],
+) -> Result<PersistedZfsMutation, ZfsHelperError> {
+    let entry = store.current_recovery_entry(operation_id)?;
+    let catalog = store.recover_catalog(entry)?;
+    let operation = catalog.plan().operation();
+    ZfsTransaction::from_catalog(operation, &catalog)?;
+    Ok(PersistedZfsMutation {
+        entry,
+        catalog,
+        operation,
+    })
+}
+
+fn sealed_program<'a>(
+    contract: &'a ZfsHelperContract,
+    context: &'a PersistedZfsMutation,
+) -> SealedZfsProgram<'a> {
+    SealedZfsProgram {
+        executable: contract.executable(),
+        operation: context.operation,
+        catalog: &context.catalog,
+        environment_is_empty: true,
+        inherited_descriptor_count: 0,
+        maximum_stdout_bytes: MAXIMUM_STDOUT_BYTES,
+        maximum_stderr_bytes: MAXIMUM_STDERR_BYTES,
+        process_tree_timeout: PROCESS_TREE_TIMEOUT,
     }
 }
 
@@ -416,8 +506,6 @@ mod tests {
                     _ => None,
                 },
                 object_guid: Some(91),
-                catalog: CatalogBindingV1::from_publisher(8, ObjectDigest::from_bytes([8; 32]))
-                    .unwrap(),
                 digest: ObjectDigest::from_bytes([9; 32]),
             }),
         }
@@ -427,6 +515,12 @@ mod tests {
         store: &mut StorageTransactionStore,
         catalog: &ResolvedCatalogCommitmentV1,
     ) -> ObjectDigest {
+        store
+            .initialize_catalog_from_protected_snapshot(
+                catalog.generation() - 1,
+                std::slice::from_ref(catalog),
+            )
+            .unwrap();
         let crate::BeginStorageTransaction::Prepared { mutation_digest } = store
             .begin([3; 16], ObjectDigest::from_bytes([4; 32]), catalog)
             .unwrap()
@@ -439,35 +533,30 @@ mod tests {
     #[test]
     fn prepared_runs_once_and_commits_full_observation() {
         let directory = TempDir::new().unwrap();
-        let (catalog, operation) = fixture();
+        let (catalog, _) = fixture();
         let mut store = open_store(&directory);
         let mutation = prepare(&mut store, &catalog);
         let mut helper = StorageMutationHelper::new(
             ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
             backend(&catalog),
         );
+        let prepared = helper.preobserve(&store, [3; 16]).unwrap();
+        assert_eq!(prepared.entry().mutation_digest(), mutation);
         assert!(matches!(
-            helper
-                .reconcile(
-                    &mut store,
-                    DurableStoragePhase::Prepared,
-                    [3; 16],
-                    ObjectDigest::from_bytes([4; 32]),
-                    mutation,
-                    operation,
-                    &catalog,
-                )
-                .unwrap(),
+            helper.execute_preobserved(&mut store, prepared).unwrap(),
             ZfsHelperOutcome::Committed(_)
         ));
         assert_eq!(helper.backend.execute_count, 1);
-        assert_eq!(store.phase([3; 16]), Some(DurableStoragePhase::Committed));
+        assert_eq!(
+            store.phase([3; 16]).unwrap(),
+            Some(DurableStoragePhase::Committed)
+        );
     }
 
     #[test]
     fn crash_after_ambiguous_never_reexecutes_during_recovery() {
         let directory = TempDir::new().unwrap();
-        let (catalog, operation) = fixture();
+        let (catalog, _) = fixture();
         let mut store = open_store(&directory);
         let mutation = prepare(&mut store, &catalog);
         let mut failed = backend(&catalog);
@@ -476,20 +565,12 @@ mod tests {
             ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
             failed,
         );
-        assert!(
-            helper
-                .reconcile(
-                    &mut store,
-                    DurableStoragePhase::Prepared,
-                    [3; 16],
-                    ObjectDigest::from_bytes([4; 32]),
-                    mutation,
-                    operation,
-                    &catalog
-                )
-                .is_err()
+        let prepared = helper.preobserve(&store, [3; 16]).unwrap();
+        assert!(helper.execute_preobserved(&mut store, prepared).is_err());
+        assert_eq!(
+            store.phase([3; 16]).unwrap(),
+            Some(DurableStoragePhase::Ambiguous)
         );
-        assert_eq!(store.phase([3; 16]), Some(DurableStoragePhase::Ambiguous));
         drop(store);
 
         let mut recovered = open_store(&directory);
@@ -500,18 +581,9 @@ mod tests {
             observer,
         );
         assert_eq!(
-            helper
-                .reconcile(
-                    &mut recovered,
-                    DurableStoragePhase::Ambiguous,
-                    [3; 16],
-                    ObjectDigest::from_bytes([4; 32]),
-                    mutation,
-                    operation,
-                    &catalog
-                )
-                .unwrap(),
+            helper.observe_only(&mut recovered, [3; 16]).unwrap(),
             ZfsHelperOutcome::ObservationRequired {
+                phase: DurableStoragePhase::Ambiguous,
                 mutation_digest: mutation
             }
         );
@@ -520,54 +592,41 @@ mod tests {
     }
 
     #[test]
-    fn substitution_and_oversized_output_fail_closed() {
-        let directory = TempDir::new().unwrap();
-        let (catalog, operation) = fixture();
-        let mut store = open_store(&directory);
-        let mutation = prepare(&mut store, &catalog);
-        let (substituted_catalog, _) = fixture_named("tank/aos/project/substituted");
-        let mut helper = StorageMutationHelper::new(
-            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
-            backend(&substituted_catalog),
-        );
-        assert!(
-            helper
-                .reconcile(
-                    &mut store,
-                    DurableStoragePhase::Prepared,
-                    [3; 16],
-                    ObjectDigest::from_bytes([4; 32]),
-                    mutation,
-                    operation,
-                    &substituted_catalog,
-                )
-                .is_err()
-        );
-        assert_eq!(helper.backend.execute_count, 0);
-        assert_eq!(helper.backend.precondition_observation_count, 0);
-        assert_eq!(store.phase([3; 16]), Some(DurableStoragePhase::Prepared));
+    fn legacy_ambiguous_recovery_fails_closed_without_redispatch() {
+        for format_version in crate::state::TEST_LEGACY_FORMAT_VERSIONS {
+            let directory = TempDir::new().unwrap();
+            let (catalog, _) = fixture();
+            let mut store = open_store(&directory);
+            prepare(&mut store, &catalog);
+            store
+                .rewrite_legacy_ambiguous_for_test([3; 16], format_version)
+                .unwrap();
+            drop(store);
 
-        let mut helper = StorageMutationHelper::new(
-            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
-            backend(&catalog),
-        );
-        assert!(
-            helper
-                .reconcile(
-                    &mut store,
-                    DurableStoragePhase::Prepared,
-                    [3; 16],
-                    ObjectDigest::from_bytes([4; 32]),
-                    mutation,
-                    StorageOperation::Snapshot {
-                        storage_handle: [1; 32],
-                    },
-                    &catalog,
-                )
-                .is_err()
-        );
-        assert_eq!(helper.backend.execute_count, 0);
-        assert_eq!(helper.backend.precondition_observation_count, 0);
+            let mut recovered = open_store(&directory);
+            let mut helper = StorageMutationHelper::new(
+                ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+                backend(&catalog),
+            );
+            assert!(matches!(
+                helper.observe_only(&mut recovered, [3; 16]),
+                Err(ZfsHelperError::State(StorageStateError::InvalidTransition))
+            ));
+            assert_eq!(helper.backend.execute_count, 0);
+            assert_eq!(helper.backend.precondition_observation_count, 0);
+            assert_eq!(
+                recovered.phase([3; 16]).unwrap(),
+                Some(DurableStoragePhase::Ambiguous)
+            );
+        }
+    }
+
+    #[test]
+    fn persisted_context_mismatch_and_oversized_output_fail_closed() {
+        let directory = TempDir::new().unwrap();
+        let (catalog, _) = fixture();
+        let mut store = open_store(&directory);
+        prepare(&mut store, &catalog);
 
         let mut wrong = backend(&catalog);
         wrong.preconditions_match = false;
@@ -576,18 +635,13 @@ mod tests {
             wrong,
         );
         assert!(matches!(
-            helper.reconcile(
-                &mut store,
-                DurableStoragePhase::Prepared,
-                [3; 16],
-                ObjectDigest::from_bytes([4; 32]),
-                mutation,
-                operation,
-                &catalog
-            ),
+            helper.preobserve(&store, [3; 16]),
             Err(ZfsHelperError::PreconditionMismatch)
         ));
-        assert_eq!(store.phase([3; 16]), Some(DurableStoragePhase::Prepared));
+        assert_eq!(
+            store.phase([3; 16]).unwrap(),
+            Some(DurableStoragePhase::Prepared)
+        );
 
         let mut oversized = backend(&catalog);
         oversized.oversized_output = true;
@@ -595,18 +649,14 @@ mod tests {
             ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
             oversized,
         );
+        let prepared = helper.preobserve(&store, [3; 16]).unwrap();
         assert!(matches!(
-            helper.reconcile(
-                &mut store,
-                DurableStoragePhase::Prepared,
-                [3; 16],
-                ObjectDigest::from_bytes([4; 32]),
-                mutation,
-                operation,
-                &catalog
-            ),
+            helper.execute_preobserved(&mut store, prepared),
             Err(ZfsHelperError::ProcessContract)
         ));
-        assert_eq!(store.phase([3; 16]), Some(DurableStoragePhase::Ambiguous));
+        assert_eq!(
+            store.phase([3; 16]).unwrap(),
+            Some(DurableStoragePhase::Ambiguous)
+        );
     }
 }

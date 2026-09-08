@@ -16,6 +16,8 @@ use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol::semantics::CatalogBindingV1;
 use sha2::{Digest as _, Sha256};
 
+use crate::StorageOperation;
+
 const FORMAT_MAGIC: &[u8; 8] = b"AOSSCAT1";
 const FORMAT_VERSION: u16 = 2;
 const DIGEST_DOMAIN: &[u8] = b"aos-sandbox-storage-resolved-catalog-v1\0";
@@ -720,6 +722,43 @@ pub enum CatalogPlanV1 {
 }
 
 impl CatalogPlanV1 {
+    /// Reconstructs the portable operation exactly represented by this plan.
+    pub(crate) fn operation(&self) -> StorageOperation {
+        match self {
+            Self::CreateWorkspace { space, .. } => StorageOperation::CreateWorkspace {
+                quota_bytes: space.refquota_bytes(),
+            },
+            Self::Snapshot { source, .. } => StorageOperation::Snapshot {
+                storage_handle: source.storage_handle(),
+            },
+            Self::HoldSnapshot { snapshot, .. } => StorageOperation::HoldSnapshot {
+                storage_handle: snapshot.dataset().storage_handle(),
+                version_handle: snapshot.version_handle(),
+            },
+            Self::ReleaseHold { snapshot, .. } => StorageOperation::ReleaseHold {
+                storage_handle: snapshot.dataset().storage_handle(),
+                version_handle: snapshot.version_handle(),
+            },
+            Self::Clone { source, space, .. } => StorageOperation::Clone {
+                storage_handle: source.dataset().storage_handle(),
+                version_handle: source.version_handle(),
+                quota_bytes: space.refquota_bytes(),
+            },
+            Self::SetQuota { dataset, space, .. } => StorageOperation::SetQuota {
+                storage_handle: dataset.storage_handle(),
+                quota_bytes: space.refquota_bytes(),
+            },
+            Self::DestroyDataset { dataset } => StorageOperation::Destroy {
+                storage_handle: dataset.storage_handle(),
+                version_handle: None,
+            },
+            Self::DestroySnapshot { snapshot } => StorageOperation::Destroy {
+                storage_handle: snapshot.dataset().storage_handle(),
+                version_handle: Some(snapshot.version_handle()),
+            },
+        }
+    }
+
     fn domains(&self) -> StorageDomainsV1 {
         match self {
             Self::CreateWorkspace { destination, .. } | Self::Clone { destination, .. } => {

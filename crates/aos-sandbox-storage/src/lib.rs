@@ -24,6 +24,7 @@ pub mod authorization;
 pub mod broker;
 pub mod catalog;
 mod catalog_decode;
+mod catalog_transition;
 #[allow(
     dead_code,
     reason = "sealed helper boundary is not wired until Apply readiness exists"
