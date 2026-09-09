@@ -142,6 +142,7 @@ const CANONICAL_GATE_NAMES: &[&str] = &[
     "gate:patch-microtests",
     "gate:adversarial-determinism",
     "gate:e2e-determinism",
+    "gate:campaign-statistics",
     "gate:basic-block-coverage",
     "gate:checkpoint-materialization",
     "gate:state-space-search",
