@@ -6,6 +6,7 @@
 //!
 //! # Module map
 //!
+//! - [`builtin`] defines exact terminal contracts supplied by the platform.
 //! - [`document`] owns the closed versioned document envelopes.
 //! - [`identity`] defines stable logical identities and scoped references.
 //! - [`interface`] defines public interfaces and provider implementations.
@@ -15,6 +16,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod builtin;
 pub mod diagnostic;
 pub mod document;
 pub mod identity;
