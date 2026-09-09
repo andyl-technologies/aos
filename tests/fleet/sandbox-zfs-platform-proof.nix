@@ -1,4 +1,4 @@
-# Executable RFC-0020 storage-substrate proof against kernel-matched OpenZFS.
+# Executable RFC-0021 storage-substrate proof against kernel-matched OpenZFS.
 {
   mkSystem,
   pkgs,

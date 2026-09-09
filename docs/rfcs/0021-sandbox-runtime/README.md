@@ -1,4 +1,4 @@
-# RFC-0020: Generic sandboxes and filesystem views
+# RFC-0021: Generic sandboxes and filesystem views
 
 - **Status:** Proposed; implementation in progress
 - **Date:** 2026-09-03

@@ -1,4 +1,4 @@
-; RFC-0020 portable sandbox object schemas.
+; RFC-0021 portable sandbox object schemas.
 ; Deterministic CBOR restrictions and semantic validation in
 ; 09-portable-format-profile.md are normative in addition to this CDDL.
 

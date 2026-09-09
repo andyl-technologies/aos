@@ -1,6 +1,6 @@
 # Implementation task ledger
 
-This ledger is the durable execution record for RFC-0020. A checked task has
+This ledger is the durable execution record for RFC-0021. A checked task has
 passed its named tests and names the implementing commit. Commits may complete
 several adjacent tasks, but a task is never checked merely because scaffolding
 exists. Phase gates depend on every task in the phase unless the RFC records an
@@ -1180,10 +1180,11 @@ completes. The Git history remains authoritative for code details.
   the realized AOS development environment. Real transport and kernel
   integration remain open.
 - `28e7d6180` — merges master while preserving the sandbox Linux UAPI build
-  check alongside master's bootstrap, cross-platform, and image checks. The
-  sandbox RFC is now RFC-0020 because master assigned RFC-0019 to OCI
-  containers. Directory links and textual RFC references change; portable
-  protocol identifiers, wire versions, and golden commitments do not.
+  check alongside master's bootstrap, cross-platform, and image checks. That
+  merge renamed the sandbox RFC from RFC-0019 to RFC-0020 because master
+  assigned RFC-0019 to OCI containers. The RFC is now RFC-0021. Directory
+  links and textual RFC references changed; portable protocol identifiers,
+  wire versions, and golden commitments did not.
 
 - `38d22a948` — implements the narrow C transport library toward `SBX-FS-03`
   using packaged libfuse public APIs. A fixed-width versioned ABI carries

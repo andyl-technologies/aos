@@ -202,7 +202,7 @@ matching digest bytes with the wrong media type is invalid:
 `profile-selector.body` and the feature-owned roles above are legal only when
 the containing object lists that exact required feature and the registry entry
 defines one media type, canonical schema, affected role, version rule, and
-golden fixture digest. RFC-0020 registers no generic opaque body and no
+golden fixture digest. RFC-0021 registers no generic opaque body and no
 backend-exact checkpoint payload. Adding one is a portable-format change with a
 checked-in registry entry; arbitrary media types or locally interpreted
 feature names fail closed.
