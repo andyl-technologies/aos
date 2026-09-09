@@ -115,6 +115,8 @@ in
     #          cgroup while retaining the AOS supervisor and unit invocation.
     #   0011 — Install a broker-owned attachment anchor from an exact named
     #          descriptor with the target idmap and hard read-only attributes.
+    #   0012 — Reserve unit-reference lifetime control to root so an
+    #          unprivileged client cannot prevent exact terminal collection.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -127,6 +129,7 @@ in
       ./patches/0009-nspawn-shutdown-intent-state.patch
       ./patches/0010-nspawn-retained-supervisor-reboot.patch
       ./patches/0011-nspawn-attachment-anchor-descriptor.patch
+      ./patches/0012-restrict-unit-reference-methods.patch
     ];
 
     buildDeps = [
@@ -400,6 +403,17 @@ in
         # is effectively a no-op for prefix-relative targets.
         script = ''
           DESTDIR=/ ninja install
+
+          referencePolicy="$out/share/dbus-1/system.d/org.freedesktop.systemd1.conf"
+          for member in RefUnit UnrefUnit Ref Unref; do
+            if grep -Fq "send_member=\"$member\"" "$referencePolicy"; then
+              echo "ERROR: default system-bus policy still grants $member" >&2
+              exit 1
+            fi
+          done
+          mkdir -p "$out/share/aos"
+          printf '%s\n' 'aos.systemd.unit-reference-policy.v1' \
+            > "$out/share/aos/unit-reference-policy-v1"
 
           # Source generators must run with native Python during the cross
           # build. Retarget installed scripts to the AArch64 interpreter.
