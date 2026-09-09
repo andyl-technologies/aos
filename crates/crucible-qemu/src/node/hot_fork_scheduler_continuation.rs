@@ -308,6 +308,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             active_gdbstub: None,
             pending_preemption: state.pending_preemption,
             bounded_scheduler_preemption: None,
+            selectable_resume_pending: false,
             pending_network_outputs: Vec::new(),
             pending_priming_observations: Vec::new(),
             next_network_output_sequence: state.next_network_output_sequence,

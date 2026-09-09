@@ -39,6 +39,7 @@ mod selectable;
 mod test_restore;
 use super::live_callbacks::SelectableVmstopHandoff;
 pub(crate) use api::LiveWhiteboxApis;
+pub(super) use api::QemuForceVcpuTbExitFn;
 use api::{QemuPluginRegDescriptor, QemuPluginRegister};
 use app_random::LiveAppRandomState;
 use crucible_protocol::app_random_branch_plan::AppRandomBranchPlan;
@@ -84,6 +85,22 @@ pub(super) fn restore_selectable_continuation() -> Result<(), LiveWhiteboxError>
         Ok(()),
         selectable::LiveSelectableState::restore_continuation,
     )
+}
+
+/// Validates a deferred selectable request against its published VM-stop boundary.
+pub(super) fn rebind_selectable_pending_boundary(
+    current_icount: u64,
+) -> Result<(), LiveWhiteboxError> {
+    let Some(mut state) = NonNull::new(LIVE_WHITEBOX_STATE.load(Ordering::Acquire)) else {
+        return Ok(());
+    };
+    // SAFETY: publication retains this state for QEMU's process lifetime. The
+    // deterministic RR model serializes the sim-publication callback with the
+    // white-box instruction and resume callbacks that mutate the same catalog.
+    let state = unsafe { state.as_mut() };
+    state.selectable.as_mut().map_or(Ok(()), |selectable| {
+        selectable.rebind_pending_boundary(current_icount)
+    })
 }
 
 /// Delivers one queued host reply at the exact vCPU resume boundary.
@@ -153,7 +170,6 @@ pub(crate) struct LiveWhiteboxShmem {
 #[derive(Clone)]
 pub(crate) struct LiveWhiteboxProcessControl {
     request_shutdown: QemuRequestShutdownFn,
-    force_vcpu_exit: crate::QemuForceVcpuExitFn,
     selectable_vmstop: Arc<SelectableVmstopHandoff>,
     logical_icount_offset: Arc<AtomicU64>,
 }
@@ -161,13 +177,11 @@ pub(crate) struct LiveWhiteboxProcessControl {
 impl LiveWhiteboxProcessControl {
     pub(crate) const fn new(
         request_shutdown: QemuRequestShutdownFn,
-        force_vcpu_exit: crate::QemuForceVcpuExitFn,
         selectable_vmstop: Arc<SelectableVmstopHandoff>,
         logical_icount_offset: Arc<AtomicU64>,
     ) -> Self {
         Self {
             request_shutdown,
-            force_vcpu_exit,
             selectable_vmstop,
             logical_icount_offset,
         }
@@ -339,7 +353,7 @@ impl LiveWhiteboxState {
                 selectable::LiveSelectableState::new(
                     plan,
                     guest_input_capability,
-                    process_control.force_vcpu_exit,
+                    apis.force_vcpu_tb_exit,
                     Arc::clone(&process_control.selectable_vmstop),
                     shmem.selectable_reply_input,
                 )

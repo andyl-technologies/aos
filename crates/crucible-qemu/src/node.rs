@@ -519,6 +519,7 @@ pub struct QemuNode {
     active_gdbstub: Option<QemuGdbstubProxyServer>,
     pending_preemption: Option<crucible::PreemptionDecision>,
     bounded_scheduler_preemption: Option<crate::BoundedSchedulerPreemptionEvidenceClaim>,
+    selectable_resume_pending: bool,
     pending_network_outputs: Vec<QemuNodeEmittedFrame>,
     pending_priming_observations: Vec<ObservableEvent>,
     next_network_output_sequence: u64,
@@ -723,6 +724,7 @@ impl QemuNode {
             active_gdbstub: None,
             pending_preemption: None,
             bounded_scheduler_preemption: None,
+            selectable_resume_pending: false,
             pending_network_outputs: Vec::new(),
             pending_priming_observations: Vec::new(),
             next_network_output_sequence: 0,
@@ -1841,31 +1843,45 @@ impl QemuNode {
             })
     }
 
-    /// Enqueues one exact host-authorized selectable reply and resumes QEMU.
+    /// Enqueues one exact host-authorized selectable reply for the next quantum.
     ///
-    /// The shared-memory publication precedes the QMP running-state transition,
-    /// so the plugin's first resumed-vCPU callback observes and applies the
-    /// exact reply before guest execution continues.
+    /// QEMU remains stopped until the next bounded step publishes its scheduler
+    /// ceiling. The step then resumes QEMU, so the reply and new ceiling are
+    /// both visible before the resumed vCPU may execute.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeError`] when the pending token is stale or malformed,
-    /// the reply does not fit its guest reservation, shared-memory publication
-    /// fails, or QMP cannot acknowledge the running-state transition.
+    /// Returns [`QemuNodeError`] when QEMU cannot confirm the native paused
+    /// state, the pending token is stale or malformed, the reply does not fit
+    /// its guest reservation, shared-memory publication fails, or another
+    /// selectable resume is already pending.
     pub fn enqueue_selectable_reply(
         &mut self,
         pending: &crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
         reply: &crucible_protocol::SelectionReply,
     ) -> Result<(), QemuNodeError> {
+        if self.selectable_resume_pending {
+            return Err(QemuNodeError::from_channel(
+                QemuNodeChannelPlane::ShmemHotPath,
+                QemuNodeChannelError::new(
+                    "enqueue selectable reply",
+                    "one selectable resume is already pending",
+                ),
+            ));
+        }
+        self.channels
+            .qmp_machine_control
+            .stop_for_checkpoint()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, source)
+            })?;
         self.channels
             .shmem_hot_path
             .enqueue_selectable_reply(pending, reply)
             .map_err(|source| {
                 QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
             })?;
-        if let Err(source) = self.channels.qmp_machine_control.resume_after_checkpoint() {
-            return self.handle_qmp_channel_error(source);
-        }
+        self.selectable_resume_pending = true;
         Ok(())
     }
 
@@ -1938,6 +1954,7 @@ impl QemuNode {
             )
             .map_err(QemuNodeError::from_bounded_scheduler_preemption)?;
         let mut pending_quantum_certified = false;
+        let resume_selectable = self.selectable_resume_pending;
         let mut target = QemuNodeAsyncStepTarget {
             child: &mut self.child,
             channels: &mut self.channels,
@@ -1951,6 +1968,12 @@ impl QemuNode {
             &self.crash_detector,
             ExecutionHorizon { icount: ceiling },
             |target, pending| {
+                if resume_selectable {
+                    target
+                        .channels
+                        .qmp_machine_control
+                        .resume_after_checkpoint()?;
+                }
                 pending_quantum_certified = crate::supervision::bounded_scheduler_preemption::BoundedSchedulerPreemption::certify_async_quantum_pending(
                     &mut adversary,
                     target,
@@ -1980,6 +2003,9 @@ impl QemuNode {
             .map_err(|source| {
                 QemuNodeError::bounded_scheduler_preemption_message(source.to_string())
             })?;
+        if resume_selectable {
+            self.selectable_resume_pending = false;
+        }
         Ok(report)
     }
 
@@ -1993,14 +2019,35 @@ impl QemuNode {
             lifecycle_state: &mut self.lifecycle_state,
             shutdown_policy: self.shutdown_policy,
         };
-        run_bounded_qemu_node_step(
-            &mut target,
-            self.host_io_runtime.as_mut(),
-            self.async_policy,
-            &self.crash_detector,
-            ExecutionHorizon { icount: ceiling },
-        )
-        .map_err(QemuNodeError::from_async_driver)
+        let resume_selectable = self.selectable_resume_pending;
+        let report = if resume_selectable {
+            run_bounded_qemu_node_step_with_start_hook(
+                &mut target,
+                self.host_io_runtime.as_mut(),
+                self.async_policy,
+                &self.crash_detector,
+                ExecutionHorizon { icount: ceiling },
+                |target, _pending| {
+                    target
+                        .channels
+                        .qmp_machine_control
+                        .resume_after_checkpoint()
+                },
+            )
+        } else {
+            run_bounded_qemu_node_step(
+                &mut target,
+                self.host_io_runtime.as_mut(),
+                self.async_policy,
+                &self.crash_detector,
+                ExecutionHorizon { icount: ceiling },
+            )
+        }
+        .map_err(QemuNodeError::from_async_driver)?;
+        if resume_selectable {
+            self.selectable_resume_pending = false;
+        }
+        Ok(report)
     }
 
     fn finish_advance_report(

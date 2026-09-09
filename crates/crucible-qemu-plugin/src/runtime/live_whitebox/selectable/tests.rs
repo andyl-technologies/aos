@@ -42,8 +42,14 @@ thread_local! {
     static FORCE_EXIT_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
-extern "C" fn force_vcpu_exit() {
+extern "C" fn force_vcpu_exit() -> i32 {
     FORCE_EXIT_CALLS.set(FORCE_EXIT_CALLS.get() + 1);
+    0
+}
+
+extern "C" fn reject_vcpu_tb_exit() -> i32 {
+    FORCE_EXIT_CALLS.set(FORCE_EXIT_CALLS.get() + 1);
+    -22
 }
 
 fn vmstop_handoff() -> Arc<super::super::super::live_callbacks::SelectableVmstopHandoff> {
@@ -300,7 +306,7 @@ fn resume_delivery_binds_reply_to_pending_coordinate_and_zero_fills_reservation(
 }
 
 #[test]
-fn live_reply_rebinds_the_in_block_trap_to_the_exact_stop_boundary()
+fn live_reply_uses_stopped_boundary_while_writing_at_later_pre_execution_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
     let header = RingHeader::new();
     let mut entries = vec![WhiteboxMarkerEntry::default()];
@@ -317,7 +323,7 @@ fn live_reply_rebinds_the_in_block_trap_to_the_exact_stop_boundary()
     header.enqueue_whitebox_marker(
         &mut entries,
         WhiteboxMarkerEntry::new(
-            60,
+            51,
             1,
             WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
             &reply.encode()?,
@@ -338,13 +344,47 @@ fn live_reply_rebinds_the_in_block_trap_to_the_exact_stop_boundary()
             request.reply_capacity(),
         ),
     )?;
+    state.rebind_pending_boundary(51)?;
 
     let mut writer = RecordingWriter::default();
-    state.deliver_reply(60, 1, &mut writer)?;
+    state.deliver_reply(70, 1, &mut writer)?;
 
-    assert_eq!(writer.delivery_icount, Some(60));
+    assert_eq!(writer.delivery_icount, Some(70));
     assert!(state.catalog().pending_request().is_none());
     assert_eq!(state.catalog().total_completed_requests(), 1);
+    Ok(())
+}
+
+#[test]
+fn native_handoff_rejects_any_instruction_drift_before_vmstop()
+-> Result<(), Box<dyn std::error::Error>> {
+    let plan = cold_plan()?;
+    let mut state = live_state(&plan, reply_input())?;
+    state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
+    state.freeze()?;
+    let request = request(2)?;
+    state.serve_selection(
+        &request,
+        SelectableCallbackCoordinate::new(50, 1),
+        crate::GuestMemoryRange::new(
+            crate::GuestMemoryAddressSpace::Virtual,
+            0x4000,
+            request.reply_capacity(),
+        ),
+    )?;
+
+    let error = state
+        .rebind_pending_boundary(52)
+        .expect_err("a chained guest instruction must fail the selectable stop fence");
+
+    assert!(error.to_string().contains("expected exactly 51"));
+    assert_eq!(
+        state
+            .catalog()
+            .pending_request()
+            .map(|pending| pending.coordinate()),
+        Some(SelectableCallbackCoordinate::new(50, 1))
+    );
     Ok(())
 }
 
@@ -389,7 +429,7 @@ fn occupied_vmstop_handoff_keeps_the_exact_request_pending()
     FORCE_EXIT_CALLS.set(0);
     let plan = cold_plan()?;
     let vmstop_handoff = vmstop_handoff();
-    assert!(vmstop_handoff.defer(force_vcpu_exit));
+    assert_eq!(vmstop_handoff.defer(force_vcpu_exit), Ok(true));
     let mut state = LiveSelectableState::new(
         &plan,
         capability(),
@@ -423,6 +463,41 @@ fn occupied_vmstop_handoff_keeps_the_exact_request_pending()
             .map(|pending| pending.request()),
         Some(&request),
     );
+    Ok(())
+}
+
+#[test]
+fn rejected_tb_exit_releases_the_vmstop_handoff() -> Result<(), Box<dyn std::error::Error>> {
+    FORCE_EXIT_CALLS.set(0);
+    let plan = cold_plan()?;
+    let vmstop_handoff = vmstop_handoff();
+    let mut state = LiveSelectableState::new(
+        &plan,
+        capability(),
+        reject_vcpu_tb_exit,
+        Arc::clone(&vmstop_handoff),
+        reply_input(),
+    )?;
+    state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
+    state.freeze()?;
+    let request = request(2)?;
+
+    let error = state
+        .serve_selection(
+            &request,
+            SelectableCallbackCoordinate::new(50, 1),
+            crate::GuestMemoryRange::new(
+                crate::GuestMemoryAddressSpace::Virtual,
+                0x4000,
+                request.reply_capacity(),
+            ),
+        )
+        .expect_err("QEMU must reject a selectable outside the native exit context");
+
+    assert!(error.to_string().contains("status -22"));
+    assert_eq!(FORCE_EXIT_CALLS.get(), 1);
+    assert!(!vmstop_handoff.is_pending());
+    assert!(state.catalog().pending_request().is_some());
     Ok(())
 }
 
