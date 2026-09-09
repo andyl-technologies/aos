@@ -472,7 +472,7 @@ impl ProductionVmLifecycleLoop {
             .map_err(|_| SchedulerError::BoundaryViolation {
                 message: String::from("production block-device map lock is poisoned"),
             })?;
-        let mut block_devices = Vec::with_capacity(devices.len());
+        let mut block_devices = Vec::with_capacity(devices.len() + self.failed_host_io.len());
         for (device, handle) in devices.iter() {
             let (volatile_entries, volatile_entries_digest) = handle
                 .volatile_cache_evidence()
@@ -512,6 +512,89 @@ impl ProductionVmLifecycleLoop {
             });
         }
         drop(devices);
+
+        for (node, failed) in &self.failed_host_io {
+            let Some(block) = failed.host_io.block() else {
+                continue;
+            };
+            let binding =
+                self.block_bindings
+                    .get(node)
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "failed node `{}` retains block continuation without a World binding",
+                            node.name
+                        ),
+                    })?;
+            let device =
+                block
+                    .storage_device()
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "failed node `{}` block continuation has no World device identity",
+                            node.name
+                        ),
+                    })?;
+            if device != binding.device_hash()
+                || block.base_image()
+                    != (ContentHash {
+                        bytes: binding.base.hash(),
+                    })
+                || block.device_length() != binding.base.len()
+            {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "failed node `{}` block continuation differs from its World binding",
+                        node.name
+                    ),
+                });
+            }
+            if block_devices
+                .iter()
+                .any(|evidence| evidence.device == device)
+            {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "failed node `{}` duplicates a live block-device identity",
+                        node.name
+                    ),
+                });
+            }
+
+            let mut restored = crucible_device::block::BlockDevice::restore(
+                block.device_snapshot(),
+                binding.base.clone(),
+                None,
+            )
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("restore failed-node block continuation for diagnostics: {error}"),
+            })?;
+            let state = restored.storage_fault_state();
+            let volatile_entries = state.volatile_entries().len();
+            let volatile_entries_digest = ContentHash {
+                bytes: state.volatile_entries_digest(),
+            };
+            let actual_durable_frontier = state.actual_durable_frontier();
+            let count = u32::try_from(restored.length().min(4_096)).map_err(|_error| {
+                SchedulerError::BoundaryViolation {
+                    message: String::from("production visible-prefix length conversion failed"),
+                }
+            })?;
+            let visible = restored
+                .inspect_storage_visible(0, count)
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("inspect failed-node visible storage: {error}"),
+                })?;
+            block_devices.push(ProductionBlockFaultEvidence {
+                device,
+                volatile_entries,
+                volatile_entries_digest,
+                actual_durable_frontier,
+                visible_prefix_bytes: count,
+                visible_prefix_digest: ContentHash::from_bytes(&visible),
+            });
+        }
+        block_devices.sort_by_key(|evidence| evidence.device);
 
         let nodes = self
             .source

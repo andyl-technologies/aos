@@ -91,9 +91,30 @@ impl QemuLiveBlockIoServicerCheckpoint {
         self.storage_device = storage_device;
     }
 
-    #[cfg(target_os = "linux")]
-    pub(crate) const fn storage_device(&self) -> Option<ContentHash> {
+    /// Returns the canonical World block-device identity, when one was bound.
+    #[must_use]
+    pub const fn storage_device(&self) -> Option<ContentHash> {
         self.storage_device
+    }
+
+    /// Returns the immutable block base-image identity.
+    #[must_use]
+    pub const fn base_image(&self) -> ContentHash {
+        ContentHash {
+            bytes: self.device.base_hash,
+        }
+    }
+
+    /// Returns the declared guest-visible device length.
+    #[must_use]
+    pub const fn device_length(&self) -> u64 {
+        self.device.device_length
+    }
+
+    /// Returns the complete process-free block-device snapshot.
+    #[must_use]
+    pub const fn device_snapshot(&self) -> &BlockSnapshot {
+        &self.device
     }
 }
 

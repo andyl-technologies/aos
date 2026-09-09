@@ -62,14 +62,16 @@ pub use test_support::{
     build_raw_production_checkpoint_codec_fixture,
 };
 
-const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v7\0";
-const PREVIOUS_MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v6\0";
-const OLDER_MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v5\0";
-const LEGACY_MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v4\0";
-const MANIFEST_VERSION: u8 = 7;
-const PREVIOUS_MANIFEST_VERSION: u8 = 6;
-const OLDER_MANIFEST_VERSION: u8 = 5;
-const LEGACY_MANIFEST_VERSION: u8 = 4;
+const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v8\0";
+const PREVIOUS_MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v7\0";
+const OLDER_MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v6\0";
+const LEGACY_MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v5\0";
+const OLDEST_MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v4\0";
+const MANIFEST_VERSION: u8 = 8;
+const PREVIOUS_MANIFEST_VERSION: u8 = 7;
+const OLDER_MANIFEST_VERSION: u8 = 6;
+const LEGACY_MANIFEST_VERSION: u8 = 5;
+const OLDEST_MANIFEST_VERSION: u8 = 4;
 const MANIFEST_FILE: &str = "manifest.cbor";
 const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MANIFEST_BYTES_U64: u64 = 64 * 1024 * 1024;
@@ -127,11 +129,27 @@ struct ClosureManifest {
     fault_checkpoint: ContentHash,
     #[serde(deserialize_with = "decode::deserialize_vec")]
     targets: Vec<TargetManifest>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "decode::deserialize_vec"
+    )]
+    failed_host_io: Vec<FailedHostIoManifest>,
     #[serde(deserialize_with = "decode::deserialize_vec")]
     node_generations: Vec<(decode::FallibleString, u64)>,
     #[serde(deserialize_with = "decode::deserialize_vec")]
     node_service_states: Vec<(decode::FallibleString, u8)>,
     identity: ContentHash,
+}
+
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FailedHostIoManifest {
+    node: decode::FallibleString,
+    execution_binding: ContentHash,
+    checkpoint: ContentHash,
+    fingerprint_at: u64,
+    fingerprint: ContentHash,
 }
 
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -179,6 +197,7 @@ struct ClosureObjects {
     lifecycle_state: Vec<u8>,
     fault_checkpoint: Vec<u8>,
     snapshots: BTreeMap<NodeId, Vec<u8>>,
+    failed_host_io: BTreeMap<NodeId, Vec<u8>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -406,6 +425,17 @@ pub(super) fn prepare_exact_checkpoint_set_with_boundary(
         &objects.fault_checkpoint,
         boundary,
     )?;
+    for failed in &manifest.failed_host_io {
+        boundary()?;
+        let node = NodeId {
+            name: failed.node.to_string(),
+        };
+        let checkpoint = objects
+            .failed_host_io
+            .get(&node)
+            .ok_or_else(|| store_error("failed-node host-I/O object disappeared"))?;
+        persist_object_with_boundary(&object_directory, failed.checkpoint, checkpoint, boundary)?;
+    }
     for target in &manifest.targets {
         boundary()?;
         let node = NodeId {
@@ -821,10 +851,62 @@ fn load_exact_checkpoint_set_with_boundary(
             ));
         }
     }
+    let legacy_format = manifest.format_version != MANIFEST_VERSION;
+    let mut failed_host_io = BTreeMap::new();
+    for failed in manifest.failed_host_io {
+        boundary()?;
+        let node = NodeId {
+            name: failed.node.into_string(),
+        };
+        let bytes = read_object(
+            &object_directory,
+            failed.checkpoint,
+            &mut budget,
+            limits.fat_checkpoint_bytes,
+            boundary,
+        )?;
+        let host_io = QemuHostIoCheckpoint::from_canonical_bytes_with_limit(
+            &bytes,
+            failed.execution_binding,
+            limits.fat_checkpoint_bytes,
+        )
+        .map_err(|error| {
+            loop_factory_error(format!(
+                "decode failed-node host I/O for `{}`: {error}",
+                node.name
+            ))
+        })?;
+        let fingerprint = FingerprintSample {
+            node: node.clone(),
+            at: VirtualTime {
+                ticks: failed.fingerprint_at,
+            },
+            fingerprint: ExecutionFingerprint {
+                hash: failed.fingerprint,
+            },
+        };
+        let failed_state = ProductionFailedNodeState::new(&node, host_io, fingerprint)
+            .map_err(|error| loop_factory_error(error.to_string()))?;
+        if failed_host_io.insert(node, failed_state).is_some() {
+            return Err(loop_factory_error(
+                "exact checkpoint closure contains duplicate failed-node host I/O",
+            ));
+        }
+    }
     let node_generations = decode_generations(manifest.node_generations)?;
     boundary()?;
     let node_service_states = decode_service_states(manifest.node_service_states)?;
+    if legacy_format
+        && node_service_states
+            .values()
+            .any(|state| *state == ProductionNodeServiceState::PermanentlyFailed)
+    {
+        return Err(loop_factory_error(
+            "v4-v7 exact checkpoint cannot restore permanently failed host I/O exactly",
+        ));
+    }
     validate_restored_node_sets(source, &targets, &node_generations, &node_service_states)?;
+    validate_failed_host_io_topology(source, &node_service_states, &failed_host_io)?;
     let expected_selectable_nodes = source
         .world()
         .vm_nodes()
@@ -867,6 +949,7 @@ fn load_exact_checkpoint_set_with_boundary(
         selectable_catalog_plans: lifecycle.selectable_catalog_plans,
         fault_checkpoint: Some(fault_checkpoint),
         targets,
+        failed_host_io,
         node_generations,
         node_service_states,
     };
@@ -1018,6 +1101,12 @@ fn manifest_object_identities(manifest: &ClosureManifest) -> BTreeSet<ContentHas
     ]);
     identities.extend(manifest.event_log_segments.iter().copied());
     identities.extend(manifest.signal_artifacts.iter().copied());
+    identities.extend(
+        manifest
+            .failed_host_io
+            .iter()
+            .map(|failed| failed.checkpoint),
+    );
     for target in &manifest.targets {
         identities.insert(target.snapshot);
         identities.extend(artifact_object_identities(&target.overlay));
@@ -1122,6 +1211,27 @@ fn validate_checkpoint_set(
     {
         return Err(store_error(
             "exact checkpoint node generations and service states are incomplete",
+        ));
+    }
+    let failed_nodes = checkpoint
+        .node_service_states
+        .iter()
+        .filter_map(|(node, state)| {
+            (*state == ProductionNodeServiceState::PermanentlyFailed).then_some(node)
+        })
+        .collect::<BTreeSet<_>>();
+    if checkpoint.failed_host_io.keys().collect::<BTreeSet<_>>() != failed_nodes {
+        return Err(store_error(
+            "exact checkpoint failed-node host-I/O owner partition is incomplete",
+        ));
+    }
+    if checkpoint
+        .failed_host_io
+        .iter()
+        .any(|(node, failed)| failed.fingerprint.node != *node)
+    {
+        return Err(store_error(
+            "exact checkpoint failed-node fingerprint owner is inconsistent",
         ));
     }
     if checkpoint
@@ -1311,6 +1421,22 @@ fn enforce_persist_limits(
             )?;
         }
     }
+    for failed in &manifest.failed_host_io {
+        let node = NodeId {
+            name: failed.node.to_string(),
+        };
+        let object = objects
+            .failed_host_io
+            .get(&node)
+            .ok_or_else(|| store_error("failed-node host-I/O object disappeared"))?;
+        if identities.insert(failed.checkpoint) {
+            bytes = add_checkpoint_bytes(
+                bytes,
+                u64::try_from(object.len())
+                    .map_err(|_| store_error("failed-node host-I/O size is not representable"))?,
+            )?;
+        }
+    }
     for target in &manifest.targets {
         let node = NodeId {
             name: target.node.to_string(),
@@ -1422,6 +1548,26 @@ fn authenticate_existing_publication_with_boundary(
         validate_file_hash_with_boundary(
             &object_path(object_directory, *identity),
             *identity,
+            boundary,
+        )?;
+    }
+    for failed in &expected.failed_host_io {
+        boundary()?;
+        let node = NodeId {
+            name: failed.node.to_string(),
+        };
+        let checkpoint = objects
+            .failed_host_io
+            .get(&node)
+            .ok_or_else(|| store_error("failed-node host-I/O object disappeared"))?;
+        if hash_bytes_with_boundary(checkpoint, boundary)? != failed.checkpoint {
+            return Err(store_error(
+                "failed-node host-I/O checkpoint changed before retry",
+            ));
+        }
+        validate_file_hash_with_boundary(
+            &object_path(object_directory, failed.checkpoint),
+            failed.checkpoint,
             boundary,
         )?;
     }
@@ -1792,6 +1938,32 @@ fn manifest_and_objects_with_boundary(
         .map_err(|error| store_error(format!("encode fault continuation: {error}")))?;
     boundary()?;
     let mut snapshots = BTreeMap::new();
+    let mut failed_host_io_objects = BTreeMap::new();
+    let mut failed_host_io = Vec::new();
+    failed_host_io
+        .try_reserve_exact(checkpoint.failed_host_io.len())
+        .map_err(|error| store_error(format!("reserve failed-node host-I/O manifest: {error}")))?;
+    for (node, failed) in &checkpoint.failed_host_io {
+        boundary()?;
+        let bytes = failed
+            .host_io
+            .to_canonical_bytes_with_limit(resource_limits.fat_checkpoint_bytes)
+            .map_err(|error| {
+                store_error(format!(
+                    "encode failed-node host I/O for `{}`: {error}",
+                    node.name
+                ))
+            })?;
+        let identity = hash_bytes_with_boundary(&bytes, boundary)?;
+        failed_host_io_objects.insert(node.clone(), bytes);
+        failed_host_io.push(FailedHostIoManifest {
+            node: decode::FallibleString::new(node.name.clone()),
+            execution_binding: failed.host_io.execution_binding(),
+            checkpoint: identity,
+            fingerprint_at: failed.fingerprint.at.ticks,
+            fingerprint: failed.fingerprint.fingerprint.hash,
+        });
+    }
     let mut targets = Vec::new();
     targets
         .try_reserve_exact(checkpoint.targets.len())
@@ -1835,6 +2007,7 @@ fn manifest_and_objects_with_boundary(
         lifecycle_state: hash_bytes_with_boundary(&lifecycle_state, boundary)?,
         fault_checkpoint: hash_bytes_with_boundary(&fault_checkpoint, boundary)?,
         targets,
+        failed_host_io,
         node_generations: checkpoint
             .node_generations
             .iter()
@@ -1864,6 +2037,7 @@ fn manifest_and_objects_with_boundary(
             lifecycle_state,
             fault_checkpoint,
             snapshots,
+            failed_host_io: failed_host_io_objects,
         },
     ))
 }
@@ -1896,16 +2070,18 @@ fn closure_identity(manifest: &ClosureManifest) -> Result<ContentHash, Scheduler
                 manifest_identity: target.manifest_identity,
             })
             .collect(),
+        failed_host_io: manifest.failed_host_io.clone(),
         node_generations: manifest.node_generations.clone(),
         node_service_states: manifest.node_service_states.clone(),
         identity: ContentHash::default(),
     };
     let bytes = encode_manifest(&material)?;
     let domain = match manifest.format_version {
-        LEGACY_MANIFEST_VERSION => "crucible.production-exact-closure.v4",
-        OLDER_MANIFEST_VERSION => "crucible.production-exact-closure.v5",
-        PREVIOUS_MANIFEST_VERSION => "crucible.production-exact-closure.v6",
-        MANIFEST_VERSION => "crucible.production-exact-closure.v7",
+        OLDEST_MANIFEST_VERSION => "crucible.production-exact-closure.v4",
+        LEGACY_MANIFEST_VERSION => "crucible.production-exact-closure.v5",
+        OLDER_MANIFEST_VERSION => "crucible.production-exact-closure.v6",
+        PREVIOUS_MANIFEST_VERSION => "crucible.production-exact-closure.v7",
+        MANIFEST_VERSION => "crucible.production-exact-closure.v8",
         _ => return Err(store_error("unsupported exact checkpoint manifest version")),
     };
     Ok(ContentHash::from_canonical_material(
@@ -1924,6 +2100,7 @@ fn encode_manifest(manifest: &ClosureManifest) -> Result<Vec<u8>, SchedulerError
         ));
     }
     let magic = match manifest.format_version {
+        OLDEST_MANIFEST_VERSION => OLDEST_MANIFEST_MAGIC,
         LEGACY_MANIFEST_VERSION => LEGACY_MANIFEST_MAGIC,
         OLDER_MANIFEST_VERSION => OLDER_MANIFEST_MAGIC,
         PREVIOUS_MANIFEST_VERSION => PREVIOUS_MANIFEST_MAGIC,
@@ -1978,6 +2155,10 @@ fn validate_manifest_shape(manifest: &ClosureManifest) -> Result<(), String> {
             .windows(2)
             .all(|pair| pair[0].node < pair[1].node)
         || !manifest
+            .failed_host_io
+            .windows(2)
+            .all(|pair| pair[0].node < pair[1].node)
+        || !manifest
             .node_generations
             .windows(2)
             .all(|pair| pair[0].0 < pair[1].0)
@@ -1993,14 +2174,14 @@ fn validate_manifest_shape(manifest: &ClosureManifest) -> Result<(), String> {
     if manifest.targets.iter().any(|target| target.node.is_empty())
         || (matches!(
             manifest.format_version,
-            MANIFEST_VERSION | PREVIOUS_MANIFEST_VERSION
+            MANIFEST_VERSION | PREVIOUS_MANIFEST_VERSION | OLDER_MANIFEST_VERSION
         ) && manifest
             .targets
             .iter()
             .any(|target| target.immutable_backing.is_none()))
         || (matches!(
             manifest.format_version,
-            OLDER_MANIFEST_VERSION | LEGACY_MANIFEST_VERSION
+            LEGACY_MANIFEST_VERSION | OLDEST_MANIFEST_VERSION
         ) && manifest
             .targets
             .iter()
@@ -2023,10 +2204,13 @@ fn validate_manifest_shape(manifest: &ClosureManifest) -> Result<(), String> {
     // each target's manifest identity, including its node, artifacts, counters,
     // and fault continuation; snapshot-content uniqueness is not that boundary.
     for target in &manifest.targets {
-        if manifest.format_version == MANIFEST_VERSION {
+        if matches!(
+            manifest.format_version,
+            MANIFEST_VERSION | PREVIOUS_MANIFEST_VERSION
+        ) {
             if !target.overlay.sparse || target.vmstate.sparse {
                 return Err(String::from(
-                    "v7 closure manifest has an invalid artifact layout",
+                    "v7-v8 closure manifest has an invalid artifact layout",
                 ));
             }
             validate_sparse_artifact_shape(&target.overlay)?;
@@ -2035,6 +2219,20 @@ fn validate_manifest_shape(manifest: &ClosureManifest) -> Result<(), String> {
             validate_dense_artifact_shape(&target.overlay)?;
             validate_dense_artifact_shape(&target.vmstate)?;
         }
+    }
+    if manifest.format_version != MANIFEST_VERSION && !manifest.failed_host_io.is_empty() {
+        return Err(String::from(
+            "legacy closure manifest contains failed-node host I/O",
+        ));
+    }
+    if manifest
+        .failed_host_io
+        .iter()
+        .any(|failed| failed.node.is_empty())
+    {
+        return Err(String::from(
+            "closure manifest contains an invalid failed-node host-I/O record",
+        ));
     }
     Ok(())
 }

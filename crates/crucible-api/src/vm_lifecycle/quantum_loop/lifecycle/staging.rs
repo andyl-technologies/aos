@@ -7,6 +7,7 @@ use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 pub(in crate::vm_lifecycle::quantum_loop) struct PreparedTerminalReplacement {
     pub(in crate::vm_lifecycle::quantum_loop) decision: QemuNodeLifecycleDecision,
     pub(in crate::vm_lifecycle::quantum_loop) snapshot: ExactSnapshotHandle,
+    pub(in crate::vm_lifecycle::quantum_loop) terminal_fingerprint: Option<FingerprintSample>,
     pub(in crate::vm_lifecycle::quantum_loop) source_run_directory: PathBuf,
     pub(in crate::vm_lifecycle::quantum_loop) run_directory: PathBuf,
     pub(in crate::vm_lifecycle::quantum_loop) launch: ProductionLiveNodeStepGateConfig,

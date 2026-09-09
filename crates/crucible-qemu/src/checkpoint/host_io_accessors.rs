@@ -58,4 +58,15 @@ impl QemuHostIoCheckpoint {
     pub const fn accelerator(&self) -> Option<&crate::QemuLiveAcceleratorCheckpoint> {
         self.accelerator.as_ref()
     }
+
+    /// Returns the canonical content identity of this complete continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::QemuHostIoCheckpointCodecError`] when nested device or
+    /// ring state is malformed or exceeds the canonical checkpoint limit.
+    pub fn canonical_identity(&self) -> Result<ContentHash, super::QemuHostIoCheckpointCodecError> {
+        self.to_canonical_bytes()
+            .map(|bytes| ContentHash::from_bytes(&bytes))
+    }
 }

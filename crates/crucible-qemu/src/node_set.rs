@@ -878,6 +878,23 @@ impl QemuNodeSet {
             .selectable_reply_is_checkpoint_quiescent())
     }
 
+    /// Captures one live node's complete host-I/O state for a world inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when `node` is absent, device I/O is active, or
+    /// an attached device or shared-memory ring cannot be snapshotted exactly.
+    #[cfg(target_os = "linux")]
+    pub fn checkpoint_host_io_projection(
+        &mut self,
+        node: &NodeId,
+        scheduler_binding: ContentHash,
+    ) -> Result<crate::QemuHostIoCheckpoint, BackendError> {
+        self.node_mut(node)?
+            .checkpoint_host_io_projection(scheduler_binding)
+            .map_err(BackendError::from)
+    }
+
     /// Returns one node's authoritative live block-device handle.
     ///
     /// # Errors

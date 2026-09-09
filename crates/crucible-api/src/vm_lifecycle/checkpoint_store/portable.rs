@@ -18,7 +18,7 @@ pub trait ProductionExactCheckpointSource: Send + Sync {
     /// Returns the exact modeled configuration claimed by this source.
     fn configuration(&self) -> ContentHash;
 
-    /// Returns the canonical `crucible.production-exact-closure.v7` manifest.
+    /// Returns the canonical `crucible.production-exact-closure.v8` manifest.
     fn manifest(&self) -> &[u8];
 
     /// Returns the exact strictly sorted immutable-object inventory.
@@ -1269,6 +1269,7 @@ mod tests {
             selectable_catalog_plans: BTreeMap::new(),
             fault_checkpoint: Some(fault_checkpoint),
             targets: BTreeMap::new(),
+            failed_host_io: BTreeMap::new(),
             node_generations: BTreeMap::new(),
             node_service_states: BTreeMap::new(),
         };

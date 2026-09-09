@@ -2234,6 +2234,32 @@ impl QemuNode {
             })
     }
 
+    /// Captures the complete host-I/O state as a read-only world projection.
+    ///
+    /// The caller supplies the identity of the scheduler continuation that owns
+    /// the projection. The runtime's live execution binding is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when device I/O is active or an attached
+    /// device or shared-memory ring cannot be snapshotted exactly.
+    pub(crate) fn checkpoint_host_io_projection(
+        &mut self,
+        scheduler_binding: crucible::ContentHash,
+    ) -> Result<crate::QemuHostIoCheckpoint, QemuNodeError> {
+        if !self.checkpoint_device_io_is_quiescent()? {
+            return Err(QemuNodeError::checkpoint(
+                "host-I/O projection requested while QEMU device I/O is active",
+            ));
+        }
+
+        self.host_io_runtime
+            .checkpoint_host_io(scheduler_binding)
+            .map_err(|source| {
+                QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
+            })
+    }
+
     pub(crate) fn restore_node_continuation(
         &mut self,
         checkpoint: &crate::QemuNodeContinuationCheckpoint,
