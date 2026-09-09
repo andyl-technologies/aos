@@ -321,6 +321,31 @@ impl CampaignRepository {
                     ));
                 }
             }
+            if let Some(beam) = input.beam {
+                let content = self.put_envelope(ObjectEnvelope::for_record(
+                    crate::CampaignRecordKind::PlannerBeamCandidate,
+                    crate::object::content_children(beam.content_children())?,
+                    beam.canonical_bytes(),
+                )?)?;
+                if content != beam.id()?.content_id() {
+                    return Err(integrity("planner-Beam-candidate-publication-id-mismatch"));
+                }
+            }
+        }
+        for object_id in request.input_bundle().object_ids() {
+            let Some(object) = request.input_bundle().object(object_id)? else {
+                return Err(integrity("planner-request-bundle-object-is-missing"));
+            };
+            if matches!(
+                object.record_kind(),
+                crate::CampaignRecordKind::SurvivorSelection
+                    | crate::CampaignRecordKind::RankingExplanation
+            ) {
+                let content = self.put_envelope(object)?;
+                if content != object_id {
+                    return Err(integrity("planner-Beam-evidence-publication-id-mismatch"));
+                }
+            }
         }
         let request_content = self.put_planner_request(request)?;
         if request_content != request_id.content_id() {
@@ -477,6 +502,7 @@ impl CampaignRepository {
         )?;
 
         let engine: PlannerEngine = crate::codec::decode(engine_envelope.body())?;
+        let policy: CampaignPolicy = crate::codec::decode(policy_envelope.body())?;
         let mut retained = Vec::new();
         let mut retained_bytes = 0_usize;
         for position in invocation.scan_page().positions() {
@@ -493,6 +519,12 @@ impl CampaignRepository {
             let use_puct = engine
                 .capabilities()
                 .contains(crate::CANONICAL_FRONTIER_PUCT_CAPABILITY);
+            let use_beam = engine
+                .capabilities()
+                .contains(crate::CANONICAL_BEAM_SURVIVORS_CAPABILITY);
+            let beam_projection = use_beam
+                .then(|| self.project_beam_planner(&snapshot, &policy))
+                .transpose()?;
             let budget = engine
                 .capabilities()
                 .contains(crate::CANONICAL_FRONTIER_BUDGET_CAPABILITY)
@@ -597,6 +629,96 @@ impl CampaignRepository {
                     )?;
                 }
             }
+            if let Some(beam) = beam_projection {
+                let page_candidates = invocation
+                    .scan_page()
+                    .positions()
+                    .iter()
+                    .filter_map(|position| beam.candidates.get(position))
+                    .collect::<Vec<_>>();
+                let selection_ids = page_candidates
+                    .iter()
+                    .filter_map(|candidate| candidate.selection())
+                    .collect::<BTreeSet<_>>();
+                let mut retained_evidence = BTreeSet::new();
+                for selection_id in selection_ids {
+                    let bundle = beam.selections.get(&selection_id).ok_or_else(|| {
+                        integrity("beam-planner-projection-omits-survivor-bundle")
+                    })?;
+                    for evaluation in bundle.evaluations().values() {
+                        let envelope = ObjectEnvelope::for_record_versioned(
+                            crate::CampaignRecordKind::ObjectiveEvaluation,
+                            evaluation.schema_version(),
+                            crate::object::content_children(evaluation.content_children())?,
+                            evaluation.canonical_bytes(),
+                        )?;
+                        if retained_evidence.insert(envelope.content_id()) {
+                            push_retained_planner_input(
+                                &mut retained,
+                                &mut retained_bytes,
+                                envelope,
+                            )?;
+                        }
+                    }
+                    for explanation in bundle.explanations().values() {
+                        let envelope = ObjectEnvelope::for_record_versioned(
+                            crate::CampaignRecordKind::RankingExplanation,
+                            explanation.schema_version(),
+                            crate::object::content_children(explanation.content_children())?,
+                            explanation.canonical_bytes(),
+                        )?;
+                        if retained_evidence.insert(envelope.content_id()) {
+                            push_retained_planner_input(
+                                &mut retained,
+                                &mut retained_bytes,
+                                envelope,
+                            )?;
+                        }
+                    }
+                    let envelope = ObjectEnvelope::for_record(
+                        crate::CampaignRecordKind::SurvivorSelection,
+                        crate::object::content_children(bundle.selection().content_children())?,
+                        bundle.selection().canonical_bytes(),
+                    )?;
+                    if retained_evidence.insert(envelope.content_id()) {
+                        push_retained_planner_input(&mut retained, &mut retained_bytes, envelope)?;
+                    }
+                }
+                let mut retained_parents = BTreeSet::new();
+                let mut retained_support = retained
+                    .iter()
+                    .map(ObjectEnvelope::content_id)
+                    .collect::<BTreeSet<_>>();
+                for candidate in page_candidates {
+                    if retained_parents.insert(candidate.parent()) {
+                        push_retained_planner_input(
+                            &mut retained,
+                            &mut retained_bytes,
+                            self.read_envelope(candidate.parent().content_id())?,
+                        )?;
+                    }
+                    let cohort_content = match candidate.barrier() {
+                        crate::PlannerBeamBarrier::Standalone { attempt } => attempt.content_id(),
+                        crate::PlannerBeamBarrier::Request { request } => request.content_id(),
+                    };
+                    if retained_support.insert(cohort_content) {
+                        push_retained_planner_input(
+                            &mut retained,
+                            &mut retained_bytes,
+                            self.read_envelope(cohort_content)?,
+                        )?;
+                    }
+                    push_retained_planner_input(
+                        &mut retained,
+                        &mut retained_bytes,
+                        ObjectEnvelope::for_record(
+                            crate::CampaignRecordKind::PlannerBeamCandidate,
+                            crate::object::content_children(candidate.content_children())?,
+                            candidate.canonical_bytes(),
+                        )?,
+                    )?;
+                }
+            }
         }
 
         let request = PlannerRequest::new(
@@ -604,7 +726,7 @@ impl CampaignRepository {
             invocation,
             engine,
             crate::codec::decode(artifact_envelope.body())?,
-            self.read_policy(policy_envelope.content_id())?,
+            policy,
             crate::codec::decode(state_envelope.body())?,
             crate::codec::decode(view_envelope.body())?,
             crate::CampaignPlanningBundle::new(retained)?,
@@ -785,6 +907,8 @@ impl CampaignRepository {
                 Some(CanonicalFrontierPlanner::initial_state_for_engine(&engine)?)
             } else if CanonicalPuctPlanner::supports_descriptor(&engine)? {
                 Some(CanonicalPuctPlanner::initial_state_for_engine(&engine)?)
+            } else if CanonicalBeamPlanner::supports_descriptor(&engine)? {
+                Some(CanonicalBeamPlanner::initial_state_for_engine(&engine)?)
             } else {
                 None
             };

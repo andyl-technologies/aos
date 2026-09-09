@@ -404,3 +404,416 @@ impl Canonical for PlannerCandidateGuidance {
         )
     }
 }
+
+/// One immutable sibling cohort for Beam survival.
+///
+/// A request cohort contains the child configurations produced by one exact
+/// parent, opportunity, and candidate source. A standalone cohort covers a
+/// discovery or savepoint-continuation attempt that has no producing proposal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PlannerBeamBarrier {
+    /// A configuration reached without a producing branch request.
+    Standalone {
+        /// Exact execution attempt that reached the configuration.
+        attempt: crate::AttemptId,
+    },
+    /// Sibling configurations produced by one exact branch request.
+    Request {
+        /// Request whose admitted proposals define the complete cohort.
+        request: crate::BranchRequestId,
+    },
+}
+
+impl PlannerBeamBarrier {
+    pub(crate) const fn standalone(attempt: crate::AttemptId) -> Self {
+        Self::Standalone { attempt }
+    }
+
+    pub(crate) const fn request(request: crate::BranchRequestId) -> Self {
+        Self::Request { request }
+    }
+}
+
+impl Canonical for PlannerBeamBarrier {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Self::Standalone { attempt } => {
+                encoder.u8(0);
+                attempt.encode(encoder);
+            }
+            Self::Request { request } => {
+                encoder.u8(1);
+                request.encode(encoder);
+            }
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::standalone(crate::AttemptId::decode(decoder)?)),
+            1 => Ok(Self::request(crate::BranchRequestId::decode(decoder)?)),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "planner-beam-barrier",
+                tag,
+            }),
+        }
+    }
+}
+
+/// Counts explicit terminal reasons excluded while closing a Beam cohort.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlannerBeamClosureSummary {
+    operator_cancelled: u64,
+    permanently_incompatible: u64,
+    invalid_input: u64,
+    unauthorized: u64,
+    terminal_worker_failure: u64,
+}
+
+impl PlannerBeamClosureSummary {
+    pub(crate) fn record(
+        &mut self,
+        disposition: crate::NonModeledAttemptDisposition,
+    ) -> Result<(), CampaignCodecError> {
+        let count = match disposition {
+            crate::NonModeledAttemptDisposition::OperatorCancelled => &mut self.operator_cancelled,
+            crate::NonModeledAttemptDisposition::PermanentlyIncompatible => {
+                &mut self.permanently_incompatible
+            }
+            crate::NonModeledAttemptDisposition::InvalidInput => &mut self.invalid_input,
+            crate::NonModeledAttemptDisposition::Unauthorized => &mut self.unauthorized,
+            crate::NonModeledAttemptDisposition::TerminalWorkerFailure => {
+                &mut self.terminal_worker_failure
+            }
+        };
+        *count = count
+            .checked_add(1)
+            .ok_or(CampaignCodecError::LimitExceeded {
+                limit: "planner-beam-non-modeled-attempt-count",
+            })?;
+        Ok(())
+    }
+
+    /// Returns the total number of explicitly closed non-modeled attempts.
+    #[must_use]
+    pub fn total(self) -> Option<u64> {
+        [
+            self.operator_cancelled,
+            self.permanently_incompatible,
+            self.invalid_input,
+            self.unauthorized,
+            self.terminal_worker_failure,
+        ]
+        .into_iter()
+        .try_fold(0_u64, u64::checked_add)
+    }
+}
+
+impl Canonical for PlannerBeamClosureSummary {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.operator_cancelled.encode(encoder);
+        self.permanently_incompatible.encode(encoder);
+        self.invalid_input.encode(encoder);
+        self.unauthorized.encode(encoder);
+        self.terminal_worker_failure.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        let value = Self {
+            operator_cancelled: u64::decode(decoder)?,
+            permanently_incompatible: u64::decode(decoder)?,
+            invalid_input: u64::decode(decoder)?,
+            unauthorized: u64::decode(decoder)?,
+            terminal_worker_failure: u64::decode(decoder)?,
+        };
+        value.total().ok_or(CampaignCodecError::LimitExceeded {
+            limit: "planner-beam-non-modeled-attempt-count",
+        })?;
+        Ok(value)
+    }
+}
+
+/// Owner-recomputed closure state for one Beam sibling cohort.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlannerBeamCohortState {
+    /// The producing request can still issue or await more candidates.
+    AwaitingRequestClosure(crate::ContinuationState),
+    /// Admitted sibling attempts still lack a modeled or terminal result.
+    AwaitingAttempts(u64),
+    /// Modeled sibling observations still lack a policy evaluation.
+    AwaitingEvaluations(u64),
+    /// The closed cohort exceeds the exact ranking evidence bound.
+    CohortLimitExceeded(u64),
+    /// The immutable cohort has one replayed survivor decision.
+    Settled(SurvivorSelectionId),
+}
+
+impl PlannerBeamCohortState {
+    /// Returns the immutable survivor decision after the cohort settles.
+    #[must_use]
+    pub const fn selection(&self) -> Option<SurvivorSelectionId> {
+        match self {
+            Self::Settled(selection) => Some(*selection),
+            Self::AwaitingRequestClosure(_)
+            | Self::AwaitingAttempts(_)
+            | Self::AwaitingEvaluations(_)
+            | Self::CohortLimitExceeded(_) => None,
+        }
+    }
+}
+
+impl Canonical for PlannerBeamCohortState {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Self::AwaitingRequestClosure(state) => {
+                encoder.u8(0);
+                state.encode(encoder);
+            }
+            Self::AwaitingAttempts(count) => {
+                encoder.u8(1);
+                count.encode(encoder);
+            }
+            Self::AwaitingEvaluations(count) => {
+                encoder.u8(2);
+                count.encode(encoder);
+            }
+            Self::CohortLimitExceeded(count) => {
+                encoder.u8(3);
+                count.encode(encoder);
+            }
+            Self::Settled(selection) => {
+                encoder.u8(4);
+                selection.encode(encoder);
+            }
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::AwaitingRequestClosure(
+                crate::ContinuationState::decode(decoder)?,
+            )),
+            1 => {
+                let count = u64::decode(decoder)?;
+                if count == 0 {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "Beam pending-attempt count is zero",
+                    });
+                }
+                Ok(Self::AwaitingAttempts(count))
+            }
+            2 => {
+                let count = u64::decode(decoder)?;
+                if count == 0 {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "Beam pending-evaluation count is zero",
+                    });
+                }
+                Ok(Self::AwaitingEvaluations(count))
+            }
+            3 => {
+                let count = u64::decode(decoder)?;
+                if count <= crate::MAX_SURVIVOR_CANDIDATES as u64 {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "Beam over-limit cohort count is within the ranking bound",
+                    });
+                }
+                Ok(Self::CohortLimitExceeded(count))
+            }
+            4 => Ok(Self::Settled(SurvivorSelectionId::decode(decoder)?)),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "planner-beam-cohort-state",
+                tag,
+            }),
+        }
+    }
+}
+
+/// Snapshot-bound Beam membership for one planner scan position.
+///
+/// The owner ties the served request to its exact parent configuration and
+/// producing sibling cohort. The cohort state explains whether candidate
+/// generation, execution, or objective evaluation still blocks a durable
+/// selection. Explicit terminal attempt dispositions are counted separately.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlannerBeamCandidate {
+    schema_version: u32,
+    input_view: CampaignViewId,
+    policy: CampaignPolicyId,
+    position: PlanningScanPosition,
+    parent: ConfigurationArtifactId,
+    configuration: crate::ConfigurationId,
+    barrier: PlannerBeamBarrier,
+    cohort_state: PlannerBeamCohortState,
+    closed_attempts: PlannerBeamClosureSummary,
+}
+
+impl PlannerBeamCandidate {
+    pub(crate) fn new(
+        input_view: CampaignViewId,
+        policy: CampaignPolicyId,
+        position: PlanningScanPosition,
+        parent: ConfigurationArtifactId,
+        configuration: crate::ConfigurationId,
+        barrier: PlannerBeamBarrier,
+        cohort_state: PlannerBeamCohortState,
+        closed_attempts: PlannerBeamClosureSummary,
+    ) -> Result<Self, CampaignCodecError> {
+        let value = Self {
+            schema_version: RECORD_SCHEMA_VERSION,
+            input_view,
+            policy,
+            position,
+            parent,
+            configuration,
+            barrier,
+            cohort_state,
+            closed_attempts,
+        };
+        codec::ensure_encoded_size(
+            &value,
+            MAX_PLANNER_CANDIDATE_GUIDANCE_BYTES,
+            "planner-beam-candidate-encoded-bytes",
+        )?;
+        Ok(value)
+    }
+
+    /// Returns the exact planning view from which membership was projected.
+    #[must_use]
+    pub const fn input_view(&self) -> CampaignViewId {
+        self.input_view
+    }
+
+    /// Returns the active policy used for survivor ranking.
+    #[must_use]
+    pub const fn policy(&self) -> CampaignPolicyId {
+        self.policy
+    }
+
+    /// Returns the served frontier position.
+    #[must_use]
+    pub const fn position(&self) -> PlanningScanPosition {
+        self.position
+    }
+
+    /// Returns the exact parent configuration artifact named by the request.
+    #[must_use]
+    pub const fn parent(&self) -> ConfigurationArtifactId {
+        self.parent
+    }
+
+    /// Returns the semantic parent configuration ranked at the barrier.
+    #[must_use]
+    pub const fn configuration(&self) -> crate::ConfigurationId {
+        self.configuration
+    }
+
+    /// Returns the exact barrier group whose width applies to this candidate.
+    #[must_use]
+    pub const fn barrier(&self) -> &PlannerBeamBarrier {
+        &self.barrier
+    }
+
+    /// Returns the exact closure state of the producing sibling cohort.
+    #[must_use]
+    pub const fn cohort_state(&self) -> &PlannerBeamCohortState {
+        &self.cohort_state
+    }
+
+    /// Returns the replayed survivor decision after the cohort settles.
+    #[must_use]
+    pub const fn selection(&self) -> Option<SurvivorSelectionId> {
+        self.cohort_state.selection()
+    }
+
+    /// Returns terminal non-modeled attempt counts excluded from ranking.
+    #[must_use]
+    pub const fn closed_attempts(&self) -> PlannerBeamClosureSummary {
+        self.closed_attempts
+    }
+
+    /// Returns strict canonical record-body bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict bounded Beam candidate projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical, or oversized bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        if bytes.len() > MAX_PLANNER_CANDIDATE_GUIDANCE_BYTES {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "planner-beam-candidate-encoded-bytes",
+            });
+        }
+        codec::decode(bytes)
+    }
+
+    /// Returns the content-derived projection identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if strict envelope construction fails.
+    pub fn id(&self) -> Result<PlannerBeamCandidateId, CampaignCodecError> {
+        PlannerBeamCandidateId::from_content_id(
+            crate::ObjectEnvelope::for_record(
+                crate::CampaignRecordKind::PlannerBeamCandidate,
+                crate::object::content_children(self.content_children())?,
+                self.canonical_bytes(),
+            )?
+            .content_id(),
+        )
+    }
+
+    pub(crate) fn content_children(&self) -> Vec<(&'static str, ContentId)> {
+        let mut children = vec![
+            ("input-view", self.input_view.content_id()),
+            ("policy", self.policy.content_id()),
+            ("request", self.position.source().content_id()),
+            ("parent", self.parent.content_id()),
+        ];
+        match self.barrier {
+            PlannerBeamBarrier::Standalone { attempt } => {
+                children.push(("cohort-attempt", attempt.content_id()));
+            }
+            PlannerBeamBarrier::Request { request } => {
+                children.push(("cohort-request", request.content_id()));
+            }
+        }
+        if let Some(selection) = self.selection() {
+            children.push(("selection", selection.content_id()));
+        }
+        children
+    }
+}
+
+impl Canonical for PlannerBeamCandidate {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.input_view.encode(encoder);
+        self.policy.encode(encoder);
+        self.position.encode(encoder);
+        self.parent.encode(encoder);
+        self.configuration.encode(encoder);
+        self.barrier.encode(encoder);
+        self.cohort_state.encode(encoder);
+        self.closed_attempts.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_schema(u32::decode(decoder)?)?;
+        Self::new(
+            CampaignViewId::decode(decoder)?,
+            CampaignPolicyId::decode(decoder)?,
+            PlanningScanPosition::decode(decoder)?,
+            ConfigurationArtifactId::decode(decoder)?,
+            crate::ConfigurationId::decode(decoder)?,
+            PlannerBeamBarrier::decode(decoder)?,
+            PlannerBeamCohortState::decode(decoder)?,
+            PlannerBeamClosureSummary::decode(decoder)?,
+        )
+    }
+}

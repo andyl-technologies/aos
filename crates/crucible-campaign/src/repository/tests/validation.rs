@@ -287,6 +287,358 @@ fn objective_evaluation_publication_is_snapshot_owned_replayable_and_failure_ato
 }
 
 #[test]
+fn objective_scan_cursor_tracks_a_late_lower_ordinal_observation() {
+    let (repository, lineage, base_policy) = fixture();
+    let policy = CampaignPolicy::new(
+        base_policy.scenario(),
+        base_policy.campaign_seed(),
+        CampaignMode::Streaming,
+        base_policy.explorer().clone(),
+        base_policy.choice_policies().clone(),
+        base_policy.objectives().clone(),
+        base_policy.guidance().clone(),
+        base_policy.stop_conditions().clone(),
+        base_policy.fairness(),
+        base_policy.retention(),
+        base_policy.admits_scenario_defaults(),
+    )
+    .expect("streaming policy");
+    let name = "objective-scan-late-observation";
+    let genesis = repository
+        .create_funded(name, &lineage, &policy, &BTreeMap::new())
+        .expect("create objective scan campaign");
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        name,
+    );
+    let requested = repository
+        .submit_known_branch_request(name, genesis.snapshot_id(), &request)
+        .expect("submit objective scan request");
+
+    let first_proposal = finite_proposal(
+        &request,
+        &policy,
+        &repository.head(name).expect("first proposal head"),
+        ChoiceValue::Boolean(false),
+        1,
+    );
+    let first_issued = repository
+        .issue_proposal(name, requested.new_snapshot, &first_proposal)
+        .expect("issue first proposal");
+    let (first_selection, first_path, first_attempt) =
+        branch_attempt(&repository, &request, &first_proposal);
+    let first_admission = repository
+        .admit_proposal(
+            name,
+            first_issued.new_snapshot,
+            first_issued.proposal,
+            &first_selection,
+            &first_path,
+            &first_attempt,
+        )
+        .expect("admit first proposal");
+
+    let second_proposal = finite_proposal(
+        &request,
+        &policy,
+        &repository.head(name).expect("second proposal head"),
+        ChoiceValue::Boolean(true),
+        2,
+    );
+    let second_issued = repository
+        .issue_proposal(name, first_admission.new_snapshot, &second_proposal)
+        .expect("issue second proposal");
+    let (second_selection, second_path, second_attempt) =
+        branch_attempt(&repository, &request, &second_proposal);
+    let second_admission = repository
+        .admit_proposal(
+            name,
+            second_issued.new_snapshot,
+            second_issued.proposal,
+            &second_selection,
+            &second_path,
+            &second_attempt,
+        )
+        .expect("admit second proposal");
+
+    let first_observation = generated_observation(
+        &repository,
+        &lineage,
+        &first_admission,
+        &first_path,
+        request.opportunity(),
+        "late-first",
+    );
+    let second_observation = generated_observation(
+        &repository,
+        &lineage,
+        &second_admission,
+        &second_path,
+        request.opportunity(),
+        "early-second",
+    );
+    repository
+        .publish_observation(name, second_admission.new_snapshot, &second_observation)
+        .expect("publish second observation first");
+
+    let first_page = repository
+        .scan_objective_evaluation_inputs(name, None, 1)
+        .expect("scan missing first ordinal");
+    assert!(first_page.input().is_none());
+    assert!(!first_page.complete());
+    assert_eq!(first_page.visited_ordinals(), 1);
+    assert_eq!(first_page.cursor().after_ordinal(), 1);
+
+    let second_page = repository
+        .scan_objective_evaluation_inputs(name, Some(first_page.cursor()), 1)
+        .expect("scan available second ordinal");
+    assert!(second_page.complete());
+    assert_eq!(second_page.visited_ordinals(), 1);
+    let completed_cursor = second_page.cursor();
+    let second_input = second_page.into_input().expect("second evaluation input");
+    assert_eq!(
+        second_input
+            .observation()
+            .id()
+            .expect("second observation id"),
+        second_observation.id().expect("second observation id")
+    );
+    let second_evaluation = evaluate_objectives(
+        &policy,
+        second_input.observation(),
+        second_input.properties(),
+        BTreeMap::new(),
+    )
+    .expect("evaluate second observation");
+    let second_evaluated = repository
+        .publish_objective_evaluation(name, second_input.snapshot(), &second_evaluation)
+        .expect("publish second evaluation");
+    let completed_page = repository
+        .scan_objective_evaluation_inputs(name, Some(completed_cursor), 1)
+        .expect("reuse complete cursor");
+    assert!(completed_page.input().is_none());
+    assert!(completed_page.complete());
+    assert_eq!(completed_page.visited_ordinals(), 0);
+
+    repository
+        .publish_observation(name, second_evaluated.new_snapshot, &first_observation)
+        .expect("publish late first observation");
+    let reset_page = repository
+        .scan_objective_evaluation_inputs(name, Some(completed_page.cursor()), 1)
+        .expect("reset scan after late observation");
+    assert_ne!(
+        reset_page.cursor().accounting(),
+        completed_page.cursor().accounting()
+    );
+    assert_eq!(reset_page.cursor().after_ordinal(), 2);
+    assert_eq!(reset_page.visited_ordinals(), 1);
+    assert_eq!(
+        reset_page
+            .input()
+            .expect("late first input")
+            .observation()
+            .id()
+            .expect("late first observation id"),
+        first_observation.id().expect("first observation id")
+    );
+}
+
+#[test]
+fn objective_scan_work_is_linear_as_completed_history_grows() {
+    let (repository, lineage, base_policy) = fixture();
+    let policy = CampaignPolicy::new(
+        base_policy.scenario(),
+        base_policy.campaign_seed(),
+        base_policy.mode(),
+        ExplorerPolicy::Beam {
+            width: 1,
+            novelty_reserve: 0,
+        },
+        base_policy.choice_policies().clone(),
+        base_policy.objectives().clone(),
+        base_policy.guidance().clone(),
+        base_policy.stop_conditions().clone(),
+        base_policy.fairness(),
+        base_policy.retention(),
+        base_policy.admits_scenario_defaults(),
+    )
+    .expect("Beam objective scan policy");
+    let name = "objective-scan-linear-growth";
+    repository
+        .create_funded(name, &lineage, &policy, &BTreeMap::new())
+        .expect("create objective scan campaign");
+    let mut cursor = None;
+    let mut visited = 0_u64;
+    const ATTEMPTS: u64 = 64;
+
+    for index in 0..ATTEMPTS {
+        let label = format!("objective-linear-{index}");
+        let request = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            &label,
+        );
+        let request = BranchRequest::new(
+            request.branch_point(),
+            request.parent(),
+            request.opportunity(),
+            request.domain(),
+            CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(false)]))
+                .expect("single Beam candidate"),
+            request.cause(),
+            BranchBudget::new(1, 1).expect("single Beam attempt"),
+            request.stop().clone(),
+        )
+        .expect("closed single-candidate Beam request");
+        let requested = repository
+            .submit_known_branch_request(
+                name,
+                repository.head(name).expect("request head").snapshot_id(),
+                &request,
+            )
+            .expect("submit objective scan request");
+        let proposal = finite_proposal(
+            &request,
+            &policy,
+            &repository.head(name).expect("proposal head"),
+            ChoiceValue::Boolean(false),
+            1,
+        );
+        let proposed = repository
+            .issue_proposal(name, requested.new_snapshot, &proposal)
+            .expect("issue objective scan proposal");
+        let (selection, path, attempt) = branch_attempt(&repository, &request, &proposal);
+        let admitted = repository
+            .admit_proposal(
+                name,
+                proposed.new_snapshot,
+                proposed.proposal,
+                &selection,
+                &path,
+                &attempt,
+            )
+            .expect("admit objective scan attempt");
+
+        let pending_page = repository
+            .scan_objective_evaluation_inputs(name, cursor, 8)
+            .expect("scan newly admitted pending ordinal");
+        visited += u64::from(pending_page.visited_ordinals());
+        assert!(pending_page.input().is_none());
+        cursor = Some(pending_page.cursor());
+
+        let observation = generated_observation(
+            &repository,
+            &lineage,
+            &admitted,
+            &path,
+            request.opportunity(),
+            &label,
+        );
+        repository
+            .publish_observation(
+                name,
+                repository
+                    .head(name)
+                    .expect("pre-observation head")
+                    .snapshot_id(),
+                &observation,
+            )
+            .expect("publish objective scan observation");
+        let evaluation_page = repository
+            .scan_objective_evaluation_inputs(name, cursor, 8)
+            .expect("scan newly completed ordinal");
+        visited += u64::from(evaluation_page.visited_ordinals());
+        let input = evaluation_page
+            .input()
+            .expect("new completion must need evaluation");
+        assert_eq!(
+            input.observation().id().expect("scanned observation ID"),
+            observation.id().expect("published observation ID")
+        );
+        let evaluation = evaluate_objectives(
+            &policy,
+            input.observation(),
+            input.properties(),
+            BTreeMap::new(),
+        )
+        .expect("evaluate completed ordinal");
+        let evaluated = repository
+            .publish_objective_evaluation(name, input.snapshot(), &evaluation)
+            .expect("publish completed ordinal evaluation");
+        cursor = Some(evaluation_page.cursor());
+        let snapshot = repository
+            .read_snapshot(evaluated.new_snapshot.content_id())
+            .expect("load growing Beam snapshot");
+        repository
+            .project_beam_planner(&snapshot, &policy)
+            .expect("project growing Beam history");
+    }
+
+    assert_eq!(visited, ATTEMPTS * 2);
+    let cache = repository
+        .beam_projection_cache
+        .lock()
+        .expect("Beam projection cache");
+    let cache = cache.as_ref().expect("Beam projection cache entry");
+    assert!(cache.full_observation_root_visits < 32);
+    assert!(cache.delta_snapshot_visits <= ATTEMPTS as usize * 8);
+    assert_eq!(cache.target_attempt_visits, 0);
+}
+
+#[test]
+fn objective_cursor_cannot_skip_a_divergent_campaign_with_the_same_accounting_root() {
+    let (repository, lineage, policy) = fixture();
+    let source = "objective-cursor-source";
+    let target = "objective-cursor-target";
+    let (_, admitted, observation) =
+        admitted_observation_fixture(&repository, &lineage, &policy, source);
+    let observed = repository
+        .publish_observation(source, admitted.new_snapshot, &observation)
+        .expect("publish shared observation");
+    repository
+        .derive_campaign(source, observed.new_snapshot, target, None)
+        .expect("derive same-accounting target");
+    let source_page = repository
+        .scan_objective_evaluation_inputs(source, None, 8)
+        .expect("scan source evaluation input");
+    let source_input = source_page.input().expect("source evaluation input");
+    let evaluation = evaluate_objectives(
+        &policy,
+        source_input.observation(),
+        source_input.properties(),
+        BTreeMap::new(),
+    )
+    .expect("evaluate source observation");
+    repository
+        .publish_objective_evaluation(source, source_input.snapshot(), &evaluation)
+        .expect("publish source evaluation");
+    let complete_source = repository
+        .scan_objective_evaluation_inputs(source, Some(source_page.cursor()), 8)
+        .expect("complete source scan");
+    assert!(complete_source.complete());
+    assert!(complete_source.input().is_none());
+
+    let target_page = repository
+        .scan_objective_evaluation_inputs(target, Some(complete_source.cursor()), 8)
+        .expect("scan divergent target with source cursor");
+    assert_eq!(target_page.visited_ordinals(), 1);
+    assert_eq!(
+        target_page
+            .input()
+            .expect("target evaluation must not be skipped")
+            .observation()
+            .id()
+            .expect("target observation ID"),
+        observation.id().expect("shared observation ID")
+    );
+}
+
+#[test]
 fn canonical_frontier_planner_basis_is_complete_and_idempotent() {
     let (repository, _lineage, _policy, blobs) = counted_fixture();
     let before = blobs.object_count().expect("objects before planner basis");

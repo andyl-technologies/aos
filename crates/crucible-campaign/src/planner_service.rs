@@ -22,6 +22,8 @@ use crate::{
     PolicyArtifact, Proposal, RetainedPlannerRequestId,
 };
 
+mod beam;
+pub use beam::*;
 mod closed;
 pub use closed::*;
 
@@ -40,6 +42,8 @@ const RETAINED_PLANNER_REQUEST_FIXED_CHILDREN: usize = 7;
 pub const CANONICAL_FRONTIER_OFFERS_CAPABILITY: &str = "canonical-frontier-offers-v1";
 /// Planner-engine capability for owner-built fixed-point candidate guidance.
 pub const CANONICAL_FRONTIER_PUCT_CAPABILITY: &str = "canonical-frontier-puct-v1";
+/// Planner-engine capability for owner-replayed measurement-barrier survival.
+pub const CANONICAL_BEAM_SURVIVORS_CAPABILITY: &str = "canonical-beam-survivors-v1";
 /// Planner-engine capability for all Ready offers and exact campaign-budget eligibility.
 pub const CANONICAL_FRONTIER_BUDGET_CAPABILITY: &str = "canonical-frontier-budget-v1";
 /// Planner-engine capability for exact request-local attempt-cap eligibility.
@@ -70,6 +74,7 @@ pub(crate) struct PlannerCandidateInput {
     pub(crate) offer: Option<Proposal>,
     pub(crate) guidance: Option<crate::PlannerCandidateGuidance>,
     pub(crate) budget: Option<crate::PlannerCandidateBudget>,
+    pub(crate) beam: Option<crate::PlannerBeamCandidate>,
 }
 
 /// One validated PUCT candidate in deterministic best-first order.
@@ -252,6 +257,15 @@ impl CampaignPlanningBundle {
             .engine
             .capabilities()
             .contains(CANONICAL_FRONTIER_PUCT_CAPABILITY);
+        let beam = request
+            .engine
+            .capabilities()
+            .contains(CANONICAL_BEAM_SURVIVORS_CAPABILITY);
+        if beam && puct {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "beam and PUCT capabilities are mutually exclusive",
+            });
+        }
         let budget_aware = request
             .engine
             .capabilities()
@@ -260,6 +274,7 @@ impl CampaignPlanningBundle {
         let mut offers = BTreeMap::new();
         let mut guidance = BTreeMap::new();
         let mut budgets = BTreeMap::new();
+        let mut beam_candidates = BTreeMap::new();
         for id in self.object_ids() {
             let object = self.object(id)?.ok_or(CampaignCodecError::InvalidValue {
                 reason: "planner input bundle object disappeared during validation",
@@ -308,6 +323,18 @@ impl CampaignPlanningBundle {
                         });
                     }
                 }
+                crate::CampaignRecordKind::PlannerBeamCandidate => {
+                    let projection =
+                        crate::PlannerBeamCandidate::from_canonical_bytes(object.body())?;
+                    if beam_candidates
+                        .insert(projection.position(), projection)
+                        .is_some()
+                    {
+                        return Err(CampaignCodecError::InvalidValue {
+                            reason: "planner input bundle repeats Beam candidate membership",
+                        });
+                    }
+                }
                 _ => {}
             }
         }
@@ -338,6 +365,19 @@ impl CampaignPlanningBundle {
                 reason: "planner candidate budgets disagree with offered continuations",
             });
         }
+        let expected_beam_candidates = expected_offers.clone();
+        if (beam
+            && beam_candidates.keys().copied().collect::<BTreeSet<_>>() != expected_beam_candidates)
+            || (!beam && !beam_candidates.is_empty())
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "planner Beam membership disagrees with the served scan page",
+            });
+        }
+
+        if beam {
+            self.validate_beam_selections(request, beam_candidates.values())?;
+        }
 
         let mut inputs = BTreeMap::new();
         for position in request.invocation.scan_page().positions() {
@@ -350,6 +390,7 @@ impl CampaignPlanningBundle {
             let offer = offers.remove(position);
             let candidate_guidance = guidance.remove(position);
             let candidate_budget = budgets.remove(position);
+            let beam_candidate = beam_candidates.remove(position);
             if let Some(offer) = &offer {
                 let source = self.object(position.source().content_id())?.ok_or(
                     CampaignCodecError::InvalidValue {
@@ -382,6 +423,55 @@ impl CampaignPlanningBundle {
                     }
                 }
             }
+            if let Some(candidate) = &beam_candidate {
+                let source = self.object(position.source().content_id())?.ok_or(
+                    CampaignCodecError::InvalidValue {
+                        reason: "planner Beam candidate omits its branch request",
+                    },
+                )?;
+                let branch_request = BranchRequest::from_canonical_bytes(source.body())?;
+                let parent = self.object(candidate.parent().content_id())?.ok_or(
+                    CampaignCodecError::InvalidValue {
+                        reason: "planner Beam candidate omits its parent configuration",
+                    },
+                )?;
+                if parent.record_kind() != crate::CampaignRecordKind::ConfigurationArtifact {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "planner Beam candidate parent has the wrong record kind",
+                    });
+                }
+                let parent = crate::ConfigurationArtifact::from_canonical_bytes(parent.body())?;
+                if candidate.input_view() != request.invocation.input_view()
+                    || candidate.policy() != request.invocation.policy()
+                    || candidate.position() != *position
+                    || candidate.parent() != branch_request.parent()
+                    || parent.id()? != candidate.parent()
+                    || parent.configuration() != candidate.configuration()
+                {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "planner Beam candidate disagrees with its request basis",
+                    });
+                }
+                let (cohort_content, expected_kind) = match candidate.barrier() {
+                    crate::PlannerBeamBarrier::Standalone { attempt } => {
+                        (attempt.content_id(), crate::CampaignRecordKind::Attempt)
+                    }
+                    crate::PlannerBeamBarrier::Request { request } => (
+                        request.content_id(),
+                        crate::CampaignRecordKind::BranchRequest,
+                    ),
+                };
+                let cohort =
+                    self.object(cohort_content)?
+                        .ok_or(CampaignCodecError::InvalidValue {
+                            reason: "planner Beam candidate omits its cohort basis",
+                        })?;
+                if cohort.record_kind() != expected_kind {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "planner Beam cohort basis has the wrong record kind",
+                    });
+                }
+            }
             inputs.insert(
                 *position,
                 PlannerCandidateInput {
@@ -389,6 +479,7 @@ impl CampaignPlanningBundle {
                     offer,
                     guidance: candidate_guidance,
                     budget: candidate_budget,
+                    beam: beam_candidate,
                 },
             );
         }
@@ -396,12 +487,131 @@ impl CampaignPlanningBundle {
             || !offers.is_empty()
             || !guidance.is_empty()
             || !budgets.is_empty()
+            || !beam_candidates.is_empty()
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "planner input bundle contains an unserved candidate projection",
             });
         }
         Ok(inputs)
+    }
+
+    fn validate_beam_selections<'a>(
+        &self,
+        request: &PlannerRequest,
+        candidates: impl Iterator<Item = &'a crate::PlannerBeamCandidate>,
+    ) -> Result<(), CampaignCodecError> {
+        let crate::ExplorerPolicy::Beam {
+            width,
+            novelty_reserve,
+        } = request.policy().explorer()
+        else {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "Beam planner capability requires a Beam explorer policy",
+            });
+        };
+        let keep = u32::try_from(*width).map_err(|_| CampaignCodecError::LimitExceeded {
+            limit: "beam-survivor-width",
+        })?;
+        let novelty =
+            u32::try_from(*novelty_reserve).map_err(|_| CampaignCodecError::LimitExceeded {
+                limit: "beam-survivor-novelty-reserve",
+            })?;
+        if keep as usize > crate::MAX_SURVIVOR_CANDIDATES {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "beam-survivor-width",
+            });
+        }
+        let expected_rule =
+            crate::SurvivorRule::new(crate::RankingMethod::ParetoTopK, keep, novelty, 0)?;
+        let mut members_by_selection = BTreeMap::<_, BTreeSet<_>>::new();
+        for candidate in candidates {
+            if let Some(selection) = candidate.selection() {
+                members_by_selection
+                    .entry(selection)
+                    .or_default()
+                    .insert(candidate.configuration());
+            }
+        }
+        for (selection_id, projected_members) in members_by_selection {
+            let envelope = self.object(selection_id.content_id())?.ok_or(
+                CampaignCodecError::InvalidValue {
+                    reason: "planner Beam candidate omits its survivor selection",
+                },
+            )?;
+            if envelope.record_kind() != crate::CampaignRecordKind::SurvivorSelection {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "planner Beam selection has the wrong record kind",
+                });
+            }
+            let selection = crate::SurvivorSelection::from_canonical_bytes(envelope.body())?;
+            if selection.id()? != selection_id
+                || selection.policy() != request.invocation.policy()
+                || selection.rule() != expected_rule
+                || !projected_members
+                    .iter()
+                    .all(|configuration| selection.considered().contains_key(configuration))
+            {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "planner Beam selection disagrees with its policy basis",
+                });
+            }
+
+            let mut ranking_candidates = Vec::with_capacity(selection.considered().len());
+            for (configuration, evaluation_id) in selection.considered() {
+                let evaluation = self.object(evaluation_id.content_id())?.ok_or(
+                    CampaignCodecError::InvalidValue {
+                        reason: "planner Beam selection omits an objective evaluation",
+                    },
+                )?;
+                if evaluation.record_kind() != crate::CampaignRecordKind::ObjectiveEvaluation {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "planner Beam evaluation has the wrong record kind",
+                    });
+                }
+                let evaluation =
+                    crate::ObjectiveEvaluation::from_canonical_bytes(evaluation.body())?;
+                let explanation_id = selection.explanations().get(configuration).ok_or(
+                    CampaignCodecError::InvalidValue {
+                        reason: "planner Beam selection omits a ranking explanation",
+                    },
+                )?;
+                let explanation = self.object(explanation_id.content_id())?.ok_or(
+                    CampaignCodecError::InvalidValue {
+                        reason: "planner Beam selection omits a ranking explanation",
+                    },
+                )?;
+                if explanation.record_kind() != crate::CampaignRecordKind::RankingExplanation {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "planner Beam explanation has the wrong record kind",
+                    });
+                }
+                let explanation =
+                    crate::RankingExplanation::from_canonical_bytes(explanation.body())?;
+                if evaluation.id()? != *evaluation_id
+                    || evaluation.configuration() != *configuration
+                    || explanation.id()? != *explanation_id
+                    || explanation.evaluation() != *evaluation_id
+                {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "planner Beam selection member identity mismatch",
+                    });
+                }
+                ranking_candidates.push(crate::RankingCandidate::new(
+                    evaluation,
+                    explanation.novelty_score(),
+                    explanation.breadth_ordinal(),
+                ));
+            }
+            let replayed =
+                crate::rank_survivors(request.policy(), expected_rule, ranking_candidates)?;
+            if replayed.selection() != &selection {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "planner Beam selection differs from deterministic replay",
+                });
+            }
+        }
+        Ok(())
     }
 
     fn validate_for(&self, request: &PlannerRequest) -> Result<(), CampaignCodecError> {
@@ -503,6 +713,9 @@ impl CampaignPlanningBundle {
                 }
                 if let Some(budget) = &input.budget {
                     pending.push(budget.id()?.content_id());
+                }
+                if let Some(beam) = &input.beam {
+                    pending.push(beam.id()?.content_id());
                 }
             }
         }

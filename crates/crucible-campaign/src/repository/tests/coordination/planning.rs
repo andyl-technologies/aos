@@ -1,10 +1,714 @@
 //! Planner driving, issue admission, restart, and cursor coordination regressions.
 
 use super::*;
+use crate::{
+    CanonicalBeamPlanner, Objective, ObjectiveGoal, ObjectiveRejection, ObjectiveValue,
+    RankingDisposition, StopOutcome, evaluate_objectives,
+};
 
 mod budget;
 mod budget_scale;
 mod local_budget;
+
+#[test]
+fn beam_named_boundary_metric_selects_the_deeper_survivor_and_filters_missing_metric() {
+    let (repository, lineage, base_policy) = fixture();
+    let metric = "boundary.latency";
+    let policy = CampaignPolicy::new(
+        base_policy.scenario(),
+        base_policy.campaign_seed(),
+        base_policy.mode(),
+        ExplorerPolicy::Beam {
+            width: 1,
+            novelty_reserve: 0,
+        },
+        base_policy.choice_policies().clone(),
+        BTreeMap::from([(
+            metric.to_owned(),
+            Objective::new(metric, ObjectiveGoal::Minimize, 1_000_000).expect("Beam objective"),
+        )]),
+        base_policy.guidance().clone(),
+        base_policy.stop_conditions().clone(),
+        base_policy.fairness(),
+        base_policy.retention(),
+        base_policy.admits_scenario_defaults(),
+    )
+    .expect("Beam policy");
+    let name = "beam-boundary-metric";
+    let genesis = repository
+        .create_funded(name, &lineage, &policy, &BTreeMap::new())
+        .expect("create Beam campaign");
+    let producing_request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "beam-producing-request",
+    );
+    let requested = repository
+        .submit_known_branch_request(name, genesis.snapshot_id(), &producing_request)
+        .expect("submit producing request");
+
+    let selected_proposal = finite_proposal(
+        &producing_request,
+        &policy,
+        &repository.head(name).expect("selected proposal head"),
+        ChoiceValue::Boolean(false),
+        1,
+    );
+    let selected_issued = repository
+        .issue_proposal(name, requested.new_snapshot, &selected_proposal)
+        .expect("issue selected sibling");
+    let (selected_selection, selected_path, selected_attempt) =
+        branch_attempt(&repository, &producing_request, &selected_proposal);
+    let selected_admission = repository
+        .admit_proposal(
+            name,
+            selected_issued.new_snapshot,
+            selected_issued.proposal,
+            &selected_selection,
+            &selected_path,
+            &selected_attempt,
+        )
+        .expect("admit selected sibling");
+
+    let filtered_proposal = finite_proposal(
+        &producing_request,
+        &policy,
+        &repository.head(name).expect("filtered proposal head"),
+        ChoiceValue::Boolean(true),
+        2,
+    );
+    let filtered_issued = repository
+        .issue_proposal(name, selected_admission.new_snapshot, &filtered_proposal)
+        .expect("issue filtered sibling");
+    let (filtered_selection, filtered_path, filtered_attempt) =
+        branch_attempt(&repository, &producing_request, &filtered_proposal);
+    let filtered_admission = repository
+        .admit_proposal(
+            name,
+            filtered_issued.new_snapshot,
+            filtered_issued.proposal,
+            &filtered_selection,
+            &filtered_path,
+            &filtered_attempt,
+        )
+        .expect("admit filtered sibling");
+
+    let selected_configuration =
+        ConfigurationId::from_hash(CampaignHash::derive("test-beam-child", b"selected"));
+    let selected_content = repository
+        .publish_configuration_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            selected_configuration,
+            1,
+            b"selected child".to_vec(),
+        )
+        .expect("publish selected child");
+    let selected_continuation = branch_request(
+        &repository,
+        &lineage,
+        selected_content,
+        selected_configuration,
+        "beam-selected-continuation",
+    );
+    let filtered_configuration =
+        ConfigurationId::from_hash(CampaignHash::derive("test-beam-child", b"filtered"));
+    let filtered_content = repository
+        .publish_configuration_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            filtered_configuration,
+            1,
+            b"filtered child".to_vec(),
+        )
+        .expect("publish filtered child");
+    let filtered_continuation = branch_request(
+        &repository,
+        &lineage,
+        filtered_content,
+        filtered_configuration,
+        "beam-filtered-continuation",
+    );
+
+    let selected_measurements = MeasurementSet::new(BTreeMap::from([(
+        metric.to_owned(),
+        MeasurementSeries::new(
+            vec![MetricValue::Unsigned(7)],
+            MetricValue::Unsigned(7),
+            BTreeSet::new(),
+        )
+        .expect("selected boundary metric"),
+    )]))
+    .expect("selected measurements");
+    let selected_measurements = repository
+        .publish_measurement_set(&selected_measurements)
+        .expect("publish selected measurements");
+    let filtered_measurements = repository
+        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("empty measurements"))
+        .expect("publish filtered measurements");
+    let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
+    let properties_id = repository
+        .publish_property_verdict_set(&properties)
+        .expect("publish properties");
+    let coverage = repository
+        .publish_coverage_projection(
+            &CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage"),
+        )
+        .expect("publish coverage");
+    let selected_observation = Observation::new(
+        selected_admission.attempt,
+        selected_configuration,
+        selected_content,
+        selected_path.id().expect("selected path"),
+        StopOutcome::Reached(StopCondition::NextChoice),
+        selected_measurements,
+        properties_id,
+        coverage,
+        BTreeSet::from([selected_continuation.opportunity()]),
+    )
+    .expect("selected observation");
+    let filtered_observation = Observation::new(
+        filtered_admission.attempt,
+        filtered_configuration,
+        filtered_content,
+        filtered_path.id().expect("filtered path"),
+        StopOutcome::Reached(StopCondition::NextChoice),
+        filtered_measurements,
+        properties_id,
+        coverage,
+        BTreeSet::from([filtered_continuation.opportunity()]),
+    )
+    .expect("filtered observation");
+    let selected_observed = repository
+        .publish_observation(name, filtered_admission.new_snapshot, &selected_observation)
+        .expect("publish selected observation");
+    let filtered_observed = repository
+        .publish_observation(name, selected_observed.new_snapshot, &filtered_observation)
+        .expect("publish filtered observation");
+
+    let selected_evaluation = evaluate_objectives(
+        &policy,
+        &selected_observation,
+        &properties,
+        BTreeMap::from([(metric.to_owned(), ObjectiveValue::Unsigned(7))]),
+    )
+    .expect("evaluate selected observation");
+    let selected_evaluated = repository
+        .publish_objective_evaluation(name, filtered_observed.new_snapshot, &selected_evaluation)
+        .expect("publish selected evaluation");
+    let filtered_evaluation =
+        evaluate_objectives(&policy, &filtered_observation, &properties, BTreeMap::new())
+            .expect("evaluate missing boundary metric");
+    let filtered_evaluated = repository
+        .publish_objective_evaluation(name, selected_evaluated.new_snapshot, &filtered_evaluation)
+        .expect("publish filtered evaluation");
+
+    let selected_requested = repository
+        .submit_known_branch_request(
+            name,
+            filtered_evaluated.new_snapshot,
+            &selected_continuation,
+        )
+        .expect("submit selected continuation");
+    let filtered_requested = repository
+        .submit_known_branch_request(
+            name,
+            selected_requested.new_snapshot,
+            &filtered_continuation,
+        )
+        .expect("submit filtered continuation");
+
+    let snapshot = repository
+        .read_snapshot(filtered_requested.new_snapshot.content_id())
+        .expect("load settled Beam snapshot");
+    let projection = repository
+        .project_beam_planner(&snapshot, &policy)
+        .expect("project Beam cohort");
+    let selected_position = PlanningScanPosition::new(
+        selected_continuation.branch_point(),
+        selected_continuation
+            .id()
+            .expect("selected continuation id"),
+    );
+    let filtered_position = PlanningScanPosition::new(
+        filtered_continuation.branch_point(),
+        filtered_continuation
+            .id()
+            .expect("filtered continuation id"),
+    );
+    let selection_id = projection.candidates[&selected_position]
+        .selection()
+        .expect("settled selection");
+    assert_eq!(
+        projection.candidates[&filtered_position].selection(),
+        Some(selection_id)
+    );
+    let selection = &projection.selections[&selection_id];
+    assert_eq!(
+        selection.selection().selected(),
+        &BTreeSet::from([selected_configuration])
+    );
+    assert!(matches!(
+        selection.explanations()[&filtered_configuration].disposition(),
+        RankingDisposition::Filtered(rejections)
+            if rejections.contains(&ObjectiveRejection::MissingMeasurement(metric.to_owned()))
+    ));
+    let cached_projection = repository
+        .project_beam_planner(&snapshot, &policy)
+        .expect("reuse exact-view Beam projection");
+    assert!(Arc::ptr_eq(&projection, &cached_projection));
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted_snapshot = restarted
+        .read_snapshot(filtered_requested.new_snapshot.content_id())
+        .expect("load Beam snapshot after repository restart");
+    let restarted_projection = restarted
+        .project_beam_planner(&restarted_snapshot, &policy)
+        .expect("cold-replay Beam cohort after restart");
+    assert_eq!(restarted_projection.candidates, projection.candidates);
+    assert_eq!(restarted_projection.selections, projection.selections);
+    assert_eq!(
+        restarted_projection.candidates[&selected_position].selection(),
+        Some(selection_id)
+    );
+    assert_eq!(
+        restarted_projection.selections[&selection_id]
+            .selection()
+            .selected(),
+        &BTreeSet::from([selected_configuration])
+    );
+
+    let basis = repository
+        .publish_canonical_beam_planner_basis()
+        .expect("publish Beam planner basis");
+    let invocation = repository
+        .prepare_planner_invocation(
+            name,
+            filtered_requested.new_snapshot,
+            basis.engine(),
+            basis.artifact(),
+            basis.initial_state(),
+            None,
+            100,
+            PlanningBudget::new(4, 4, 100, 4 * 1024 * 1024, 10_000).expect("Beam planning budget"),
+        )
+        .expect("prepare Beam invocation");
+    let request = repository
+        .build_planner_request(
+            filtered_requested.new_snapshot,
+            invocation.id().expect("Beam invocation id"),
+        )
+        .expect("build authenticated Beam request");
+    let request_without = |removed: ContentId| {
+        let objects = request
+            .input_bundle()
+            .object_ids()
+            .filter(|id| *id != removed)
+            .map(|id| {
+                request
+                    .input_bundle()
+                    .object(id)
+                    .expect("decode retained Beam object")
+                    .expect("retained Beam object")
+            })
+            .collect::<Vec<_>>();
+        let bundle = CampaignPlanningBundle::new(objects).expect("tampered Beam bundle");
+        PlannerRequest::new(
+            request.expected_snapshot(),
+            request.invocation().clone(),
+            request.engine().clone(),
+            request.policy_artifact().clone(),
+            request.policy().clone(),
+            request.planner_state().clone(),
+            request.input_view().clone(),
+            bundle,
+        )
+    };
+    let missing_selection = request_without(selection_id.content_id());
+    assert!(
+        matches!(
+            &missing_selection,
+            Err(CampaignCodecError::InvalidValue {
+                reason: "planner Beam candidate omits its survivor selection"
+            })
+        ),
+        "{missing_selection:?}"
+    );
+    let selected_candidate = projection.candidates[&selected_position]
+        .id()
+        .expect("selected Beam candidate id");
+    let missing_candidate = request_without(selected_candidate.content_id());
+    assert!(
+        matches!(
+            &missing_candidate,
+            Err(CampaignCodecError::InvalidValue {
+                reason: "planner Beam membership disagrees with the served scan page"
+            })
+        ),
+        "{missing_candidate:?}"
+    );
+
+    let output = CanonicalBeamPlanner
+        .plan(&request)
+        .expect("run canonical Beam planner");
+    let PlannerProposalDisposition::Issue {
+        selected,
+        proposals,
+        ..
+    } = output.proposal().disposition()
+    else {
+        panic!("settled Beam cohort must select a deeper continuation")
+    };
+    assert_eq!(*selected, selected_position);
+    assert_eq!(proposals.len(), 1);
+    assert_eq!(
+        proposals[0].request(),
+        selected_continuation
+            .id()
+            .expect("selected continuation id")
+    );
+}
+
+#[test]
+fn beam_projection_failure_discards_partial_cache_state() {
+    let (repository, lineage, base_policy) = fixture();
+    let policy = CampaignPolicy::new(
+        base_policy.scenario(),
+        base_policy.campaign_seed(),
+        base_policy.mode(),
+        ExplorerPolicy::Beam {
+            width: 1,
+            novelty_reserve: 0,
+        },
+        base_policy.choice_policies().clone(),
+        base_policy.objectives().clone(),
+        base_policy.guidance().clone(),
+        base_policy.stop_conditions().clone(),
+        base_policy.fairness(),
+        base_policy.retention(),
+        base_policy.admits_scenario_defaults(),
+    )
+    .expect("Beam cache failure policy");
+    let name = "beam-cache-failure";
+    let created = repository
+        .create_funded(name, &lineage, &policy, &BTreeMap::new())
+        .expect("create Beam cache campaign");
+    let initial_snapshot = repository
+        .read_snapshot(created.snapshot_id().content_id())
+        .expect("load initial Beam snapshot");
+    let initial = repository
+        .project_beam_planner(&initial_snapshot, &policy)
+        .expect("warm empty Beam projection");
+
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "beam-cache-missing-source",
+    );
+    let requested = repository
+        .submit_known_branch_request(name, created.snapshot_id(), &request)
+        .expect("submit source-less frontier");
+    let invalid_snapshot = repository
+        .read_snapshot(requested.new_snapshot.content_id())
+        .expect("load source-less frontier snapshot");
+    assert!(matches!(
+        repository.project_beam_planner(&invalid_snapshot, &policy),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "beam-frontier-source-observation-is-missing"
+        })
+    ));
+    assert!(
+        repository
+            .beam_projection_cache
+            .lock()
+            .expect("Beam projection cache")
+            .is_none(),
+        "a failed incremental projection must discard partial cache state"
+    );
+
+    let recovered = repository
+        .project_beam_planner(&initial_snapshot, &policy)
+        .expect("cold retry after failed incremental projection");
+    assert_eq!(recovered.candidates, initial.candidates);
+    assert_eq!(recovered.selections, initial.selections);
+}
+
+#[test]
+fn beam_cohort_waits_for_out_of_order_streaming_and_strict_completions() {
+    for mode in [CampaignMode::Streaming, CampaignMode::Strict] {
+        exercise_beam_out_of_order_completion(mode);
+    }
+}
+
+fn exercise_beam_out_of_order_completion(mode: CampaignMode) {
+    let (repository, lineage, base_policy) = fixture();
+    let policy = CampaignPolicy::new(
+        base_policy.scenario(),
+        base_policy.campaign_seed(),
+        mode,
+        ExplorerPolicy::Beam {
+            width: 1,
+            novelty_reserve: 0,
+        },
+        base_policy.choice_policies().clone(),
+        base_policy.objectives().clone(),
+        base_policy.guidance().clone(),
+        base_policy.stop_conditions().clone(),
+        base_policy.fairness(),
+        base_policy.retention(),
+        base_policy.admits_scenario_defaults(),
+    )
+    .expect("Beam closure policy");
+    let mode_name = match mode {
+        CampaignMode::Strict => "strict",
+        CampaignMode::Streaming => "streaming",
+        CampaignMode::Statistical => panic!("test only covers deterministic completion modes"),
+    };
+    let name = format!("beam-out-of-order-{mode_name}");
+    let genesis = repository
+        .create_funded(&name, &lineage, &policy, &BTreeMap::new())
+        .expect("create Beam closure campaign");
+    let producing_request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        &format!("{name}-producing"),
+    );
+    let requested = repository
+        .submit_known_branch_request(&name, genesis.snapshot_id(), &producing_request)
+        .expect("submit producing request");
+
+    let first_proposal = finite_proposal(
+        &producing_request,
+        &policy,
+        &repository.head(&name).expect("first proposal head"),
+        ChoiceValue::Boolean(false),
+        1,
+    );
+    let first_issued = repository
+        .issue_proposal(&name, requested.new_snapshot, &first_proposal)
+        .expect("issue first sibling");
+    let (first_selection, first_path, first_attempt) =
+        branch_attempt(&repository, &producing_request, &first_proposal);
+    let first_admitted = repository
+        .admit_proposal(
+            &name,
+            first_issued.new_snapshot,
+            first_issued.proposal,
+            &first_selection,
+            &first_path,
+            &first_attempt,
+        )
+        .expect("admit first sibling");
+    let second_proposal = finite_proposal(
+        &producing_request,
+        &policy,
+        &repository.head(&name).expect("second proposal head"),
+        ChoiceValue::Boolean(true),
+        2,
+    );
+    let second_issued = repository
+        .issue_proposal(&name, first_admitted.new_snapshot, &second_proposal)
+        .expect("issue second sibling");
+    let (second_selection, second_path, second_attempt) =
+        branch_attempt(&repository, &producing_request, &second_proposal);
+    let second_admitted = repository
+        .admit_proposal(
+            &name,
+            second_issued.new_snapshot,
+            second_issued.proposal,
+            &second_selection,
+            &second_path,
+            &second_attempt,
+        )
+        .expect("admit second sibling");
+
+    let make_child = |label: &str| {
+        let configuration = ConfigurationId::from_hash(CampaignHash::derive(
+            "test-beam-closure-child",
+            format!("{mode_name}-{label}").as_bytes(),
+        ));
+        let content = repository
+            .publish_configuration_artifact(
+                lineage.scenario(),
+                lineage.scenario_content(),
+                configuration,
+                1,
+                format!("{mode_name} {label} child").into_bytes(),
+            )
+            .expect("publish Beam closure child");
+        let continuation = branch_request(
+            &repository,
+            &lineage,
+            content,
+            configuration,
+            &format!("{name}-{label}-continuation"),
+        );
+        (configuration, content, continuation)
+    };
+    let (first_configuration, first_content, first_continuation) = make_child("first");
+    let (second_configuration, second_content, second_continuation) = make_child("second");
+    let measurements = repository
+        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
+        .expect("publish measurements");
+    let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
+    let properties_id = repository
+        .publish_property_verdict_set(&properties)
+        .expect("publish properties");
+    let coverage = repository
+        .publish_coverage_projection(
+            &CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage"),
+        )
+        .expect("publish coverage");
+    let first_observation = Observation::new(
+        first_admitted.attempt,
+        first_configuration,
+        first_content,
+        first_path.id().expect("first path"),
+        StopOutcome::Reached(StopCondition::NextChoice),
+        measurements,
+        properties_id,
+        coverage,
+        BTreeSet::from([first_continuation.opportunity()]),
+    )
+    .expect("first observation");
+    let second_observation = Observation::new(
+        second_admitted.attempt,
+        second_configuration,
+        second_content,
+        second_path.id().expect("second path"),
+        StopOutcome::Reached(StopCondition::NextChoice),
+        measurements,
+        properties_id,
+        coverage,
+        BTreeSet::from([second_continuation.opportunity()]),
+    )
+    .expect("second observation");
+
+    let (first_observed, second_observed) = if mode == CampaignMode::Streaming {
+        let second = repository
+            .publish_observation(&name, second_admitted.new_snapshot, &second_observation)
+            .expect("streaming accepts ordinal two first");
+        let second_requested = repository
+            .submit_known_branch_request(&name, second.new_snapshot, &second_continuation)
+            .expect("submit second continuation");
+        let snapshot = repository
+            .read_snapshot(second_requested.new_snapshot.content_id())
+            .expect("load partially closed streaming cohort");
+        let projection = repository
+            .project_beam_planner(&snapshot, &policy)
+            .expect("project partially closed streaming cohort");
+        let second_position = PlanningScanPosition::new(
+            second_continuation.branch_point(),
+            second_continuation.id().expect("second continuation ID"),
+        );
+        assert!(matches!(
+            projection.candidates[&second_position].cohort_state(),
+            crate::PlannerBeamCohortState::AwaitingAttempts(1)
+        ));
+        let first = repository
+            .publish_observation(&name, second_requested.new_snapshot, &first_observation)
+            .expect("streaming accepts late ordinal one");
+        (first, second)
+    } else {
+        assert!(matches!(
+            repository.publish_observation(
+                &name,
+                second_admitted.new_snapshot,
+                &second_observation
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "strict-completion-order-gap"
+            })
+        ));
+        let first = repository
+            .publish_observation(&name, second_admitted.new_snapshot, &first_observation)
+            .expect("strict accepts ordinal one");
+        let first_requested = repository
+            .submit_known_branch_request(&name, first.new_snapshot, &first_continuation)
+            .expect("submit first continuation");
+        let snapshot = repository
+            .read_snapshot(first_requested.new_snapshot.content_id())
+            .expect("load partially closed strict cohort");
+        let projection = repository
+            .project_beam_planner(&snapshot, &policy)
+            .expect("project partially closed strict cohort");
+        let first_position = PlanningScanPosition::new(
+            first_continuation.branch_point(),
+            first_continuation.id().expect("first continuation ID"),
+        );
+        assert!(matches!(
+            projection.candidates[&first_position].cohort_state(),
+            crate::PlannerBeamCohortState::AwaitingAttempts(1)
+        ));
+        let second = repository
+            .publish_observation(&name, first_requested.new_snapshot, &second_observation)
+            .expect("strict accepts ordinal two after ordinal one");
+        (first, second)
+    };
+
+    let first_evaluation =
+        evaluate_objectives(&policy, &first_observation, &properties, BTreeMap::new())
+            .expect("evaluate first observation");
+    let first_evaluated = repository
+        .publish_objective_evaluation(
+            &name,
+            repository
+                .head(&name)
+                .expect("first evaluation head")
+                .snapshot_id(),
+            &first_evaluation,
+        )
+        .expect("publish first evaluation");
+    let second_evaluation =
+        evaluate_objectives(&policy, &second_observation, &properties, BTreeMap::new())
+            .expect("evaluate second observation");
+    let second_evaluated = repository
+        .publish_objective_evaluation(&name, first_evaluated.new_snapshot, &second_evaluation)
+        .expect("publish second evaluation");
+    repository
+        .submit_known_branch_request(&name, second_evaluated.new_snapshot, &first_continuation)
+        .expect("ensure first continuation");
+    let current = repository.head(&name).expect("continuation replay head");
+    repository
+        .submit_known_branch_request(&name, current.snapshot_id(), &second_continuation)
+        .expect("ensure second continuation");
+    assert!(first_observed.new_snapshot != second_observed.new_snapshot);
+    let settled_snapshot = repository
+        .head(&name)
+        .expect("settled Beam closure head")
+        .snapshot_id();
+    let snapshot = repository
+        .read_snapshot(settled_snapshot.content_id())
+        .expect("load settled Beam closure cohort");
+    let projection = repository
+        .project_beam_planner(&snapshot, &policy)
+        .expect("project settled Beam closure cohort");
+    let first_position = PlanningScanPosition::new(
+        first_continuation.branch_point(),
+        first_continuation.id().expect("first continuation ID"),
+    );
+    let selection = projection.candidates[&first_position]
+        .selection()
+        .expect("settled selection");
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted_snapshot = restarted
+        .read_snapshot(settled_snapshot.content_id())
+        .expect("load closure cohort after restart");
+    let restarted_projection = restarted
+        .project_beam_planner(&restarted_snapshot, &policy)
+        .expect("cold replay closure cohort");
+    assert_eq!(restarted_projection.candidates, projection.candidates);
+    assert_eq!(restarted_projection.selections, projection.selections);
+    assert_eq!(
+        restarted_projection.candidates[&first_position].selection(),
+        Some(selection)
+    );
+}
 
 #[test]
 fn planner_no_work_is_owned_replayable_and_state_continuous() {
