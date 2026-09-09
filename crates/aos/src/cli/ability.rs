@@ -22,6 +22,22 @@ pub struct AbilityInspectArgs {
     /// Select the rendered inspection representation
     #[arg(long, value_enum)]
     pub format: Option<AbilityRenderFormat>,
+
+    /// Restrict output to one semantic graph projection
+    #[arg(long, value_enum)]
+    pub projection: Option<AbilityProjection>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum AbilityProjection {
+    /// Show declarations, requests, interfaces, and composition aggregates
+    Composition,
+    /// Show selected providers, grants, authority, and obligations
+    BindingAuthority,
+    /// Show operations, resource access, readiness, and scheduling
+    Activation,
+    /// Show consumer and artifact retention relationships
+    Retention,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

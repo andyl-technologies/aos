@@ -6,7 +6,10 @@ use aos_ability_model::{PlanId, RequiredFeature};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{InspectionEdge, InspectionNode, InspectionView, NodeKey, ViewAnchor};
+use crate::{
+    InspectionEdge, InspectionNode, InspectionProjection, InspectionView, NodeKey, ProjectionKind,
+    ViewAnchor,
+};
 
 /// Exact schema discriminator for a portable inspection graph query.
 pub const INSPECTION_QUERY_SCHEMA: &str = "aos.ability.inspection-query/v1";
@@ -49,6 +52,8 @@ pub struct GraphSlice {
     plan: PlanId,
     binding_plan: PlanId,
     executable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    projection: Option<ProjectionKind>,
     roots: Vec<NodeKey>,
     direction: Direction,
     max_depth: usize,
@@ -169,6 +174,12 @@ impl GraphSlice {
         self.executable
     }
 
+    /// Returns the semantic projection used for traversal, when one was selected.
+    #[must_use]
+    pub const fn projection(&self) -> Option<ProjectionKind> {
+        self.projection
+    }
+
     /// Reports whether a reachable node was omitted by a query bound.
     #[must_use]
     pub const fn is_truncated(&self) -> bool {
@@ -200,66 +211,121 @@ impl InspectionView {
     /// noncanonical roots, a root absent from this checked view, an unsupported
     /// schema, or unsupported required feature semantics.
     pub fn query(&self, query: &GraphQuery) -> Result<GraphSlice, GraphQueryError> {
-        let node_index: BTreeMap<_, _> =
-            self.nodes().iter().map(|node| (node.key(), node)).collect();
-        let roots: BTreeSet<_> = query.roots.iter().cloned().collect();
-        validate_query(query, &roots, &node_index)?;
+        evaluate_query(
+            QuerySource {
+                anchor: self.anchor(),
+                plan: self.plan(),
+                binding_plan: self.binding_plan(),
+                executable: self.is_executable(),
+                projection: None,
+                nodes: self.nodes(),
+                edges: self.edges(),
+            },
+            query,
+        )
+    }
+}
 
-        let mut selected = roots.clone();
-        let mut frontier = roots;
-        let mut truncated = false;
+impl InspectionProjection {
+    /// Evaluates a bounded deterministic neighborhood within this projection.
+    ///
+    /// The slice retains the projection identity, original edge orientation,
+    /// and only relationships admitted by the selected projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for missing roots, a zero node limit, too many roots,
+    /// noncanonical roots, a root absent from this projection, an unsupported
+    /// schema, or unsupported required feature semantics.
+    pub fn query(&self, query: &GraphQuery) -> Result<GraphSlice, GraphQueryError> {
+        evaluate_query(
+            QuerySource {
+                anchor: self.anchor(),
+                plan: self.plan(),
+                binding_plan: self.binding_plan(),
+                executable: self.is_executable(),
+                projection: Some(self.kind()),
+                nodes: self.nodes(),
+                edges: self.edges(),
+            },
+            query,
+        )
+    }
+}
 
-        for depth in 0..=query.max_depth {
-            let candidates = neighbors(self.edges(), &frontier, query.direction)
-                .difference(&selected)
-                .cloned()
-                .collect::<BTreeSet<_>>();
-            if candidates.is_empty() {
-                break;
-            }
-            if depth == query.max_depth {
-                truncated = true;
-                break;
-            }
+struct QuerySource<'a> {
+    anchor: &'a ViewAnchor,
+    plan: PlanId,
+    binding_plan: PlanId,
+    executable: bool,
+    projection: Option<ProjectionKind>,
+    nodes: &'a [InspectionNode],
+    edges: &'a [InspectionEdge],
+}
 
-            let remaining = query.max_nodes.saturating_sub(selected.len());
-            if candidates.len() > remaining {
-                truncated = true;
-            }
-            frontier = candidates.into_iter().take(remaining).collect();
-            selected.extend(frontier.iter().cloned());
-            if frontier.is_empty() {
-                break;
-            }
+fn evaluate_query(
+    source: QuerySource<'_>,
+    query: &GraphQuery,
+) -> Result<GraphSlice, GraphQueryError> {
+    let node_index: BTreeMap<_, _> = source.nodes.iter().map(|node| (node.key(), node)).collect();
+    let roots: BTreeSet<_> = query.roots.iter().cloned().collect();
+    validate_query(query, &roots, &node_index)?;
+
+    let mut selected = roots.clone();
+    let mut frontier = roots;
+    let mut truncated = false;
+
+    for depth in 0..=query.max_depth {
+        let candidates = neighbors(source.edges, &frontier, query.direction)
+            .difference(&selected)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if candidates.is_empty() {
+            break;
+        }
+        if depth == query.max_depth {
+            truncated = true;
+            break;
         }
 
-        let nodes = selected
-            .iter()
-            .filter_map(|key| node_index.get(key).map(|node| (*node).clone()))
-            .collect();
-        let edges = self
-            .edges()
-            .iter()
-            .filter(|edge| selected.contains(&edge.from) && selected.contains(&edge.to))
-            .cloned()
-            .collect();
-
-        Ok(GraphSlice {
-            schema: INSPECTION_SLICE_SCHEMA.to_string(),
-            required_features: Vec::new(),
-            anchor: self.anchor().clone(),
-            plan: self.plan(),
-            binding_plan: self.binding_plan(),
-            executable: self.is_executable(),
-            roots: query.roots.clone(),
-            direction: query.direction,
-            max_depth: query.max_depth,
-            max_nodes: query.max_nodes,
-            truncated,
-            nodes,
-            edges,
-        })
+        let remaining = query.max_nodes.saturating_sub(selected.len());
+        if candidates.len() > remaining {
+            truncated = true;
+        }
+        frontier = candidates.into_iter().take(remaining).collect();
+        selected.extend(frontier.iter().cloned());
+        if frontier.is_empty() {
+            break;
+        }
     }
+
+    let nodes = selected
+        .iter()
+        .filter_map(|key| node_index.get(key).map(|node| (*node).clone()))
+        .collect();
+    let edges = source
+        .edges
+        .iter()
+        .filter(|edge| selected.contains(&edge.from) && selected.contains(&edge.to))
+        .cloned()
+        .collect();
+
+    Ok(GraphSlice {
+        schema: INSPECTION_SLICE_SCHEMA.to_string(),
+        required_features: Vec::new(),
+        anchor: source.anchor.clone(),
+        plan: source.plan,
+        binding_plan: source.binding_plan,
+        executable: source.executable,
+        projection: source.projection,
+        roots: query.roots.clone(),
+        direction: query.direction,
+        max_depth: query.max_depth,
+        max_nodes: query.max_nodes,
+        truncated,
+        nodes,
+        edges,
+    })
 }
 
 fn validate_query(

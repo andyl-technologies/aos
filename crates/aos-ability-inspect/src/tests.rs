@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::document::PackageSubject;
+use aos_ability_model::identity::compare_request_ids;
 use aos_ability_model::{
     AbilityActivationMode, AbilityValue, DeploymentObligation, ExportDeclaration,
     HandlerDescriptor, ImplementationKind, LocalKey, ObligationKind, PackageDocument,
@@ -10,12 +11,15 @@ use aos_ability_model::{
     VersionedDocument,
 };
 use aos_ability_validate::ValidationContext;
-use aos_ability_validate::test_support::{checked_effect_plan, plan_fixture};
+use aos_ability_validate::test_support::{
+    checked_effect_plan, plan_fixture, planned_provider_chain_fixture,
+};
 use aos_contract::Sha256Digest;
 
 use crate::{
-    Direction, GraphQuery, InspectionBundle, InspectionBundleError, InspectionDiff, InspectionNode,
-    InspectionView, NodeKey, RenderFormat, ViewAnchor, render, render_slice,
+    Direction, GraphQuery, InspectionBundle, InspectionBundleError, InspectionDiff, InspectionEdge,
+    InspectionNode, InspectionRelation, InspectionView, NodeKey, ProjectionKind, RenderFormat,
+    ViewAnchor, render, render_projection, render_slice,
 };
 
 #[test]
@@ -171,6 +175,23 @@ fn bundle_rejects_unsupported_inspection_features() -> Result<(), Box<dyn std::e
 }
 
 #[test]
+fn bundle_does_not_infer_support_for_a_nested_future_feature()
+-> Result<(), Box<dyn std::error::Error>> {
+    let feature = RequiredFeature::new("future-ability-semantics")?;
+    let mut fixture = plan_fixture();
+    install_package_with_feature(&mut fixture, feature.clone())?;
+    fixture.context =
+        ValidationContext::new(BTreeSet::from([feature]), fixture.interfaces.clone())?;
+
+    let bundle = InspectionBundle::from_checked(&fixture.validate()?)?;
+    assert!(matches!(
+        bundle.check(None),
+        Err(InspectionBundleError::Validation(_))
+    ));
+    Ok(())
+}
+
+#[test]
 fn view_has_stable_nodes_and_no_dangling_edges() -> Result<(), Box<dyn std::error::Error>> {
     let plan = checked_effect_plan();
     let view = InspectionView::from_checked(&plan)?;
@@ -196,7 +217,245 @@ fn view_has_stable_nodes_and_no_dangling_edges() -> Result<(), Box<dyn std::erro
             .iter()
             .any(|node| matches!(node, InspectionNode::Resource { .. }))
     );
+    assert!(
+        view.nodes()
+            .iter()
+            .any(|node| matches!(node, InspectionNode::Artifact { .. }))
+    );
     Ok(())
+}
+
+#[test]
+fn named_projections_preserve_identities_and_separate_edge_semantics()
+-> Result<(), Box<dyn std::error::Error>> {
+    let view = InspectionView::from_checked(&checked_effect_plan())?;
+    let view_keys: BTreeSet<_> = view.nodes().iter().map(InspectionNode::key).collect();
+
+    let composition = view.project(ProjectionKind::Composition)?;
+    assert!(
+        composition
+            .nodes()
+            .iter()
+            .all(|node| view_keys.contains(&node.key()))
+    );
+    assert!(composition.edges().iter().any(|edge| {
+        edge.relation == InspectionRelation::ExportsInterface
+            || edge.relation == InspectionRelation::ConsumesRequest
+    }));
+    assert!(
+        !composition
+            .nodes()
+            .iter()
+            .any(|node| matches!(node, InspectionNode::Operation { .. }))
+    );
+
+    let authority = view.project(ProjectionKind::BindingAuthority)?;
+    assert!(
+        authority
+            .nodes()
+            .iter()
+            .any(|node| matches!(node, InspectionNode::Binding { .. }))
+    );
+    assert!(
+        authority
+            .edges()
+            .iter()
+            .any(|edge| edge.relation == InspectionRelation::UsesBinding)
+    );
+
+    let activation = view.project(ProjectionKind::Activation)?;
+    assert!(activation.edges().iter().any(|edge| matches!(
+        edge.relation,
+        InspectionRelation::ReadsResource
+            | InspectionRelation::SharedWritesResource
+            | InspectionRelation::ExclusivelyWritesResource
+    )));
+
+    let retention = view.project(ProjectionKind::Retention)?;
+    assert!(
+        retention
+            .nodes()
+            .iter()
+            .any(|node| matches!(node, InspectionNode::Artifact { .. }))
+    );
+    assert!(retention.edges().iter().any(|edge| matches!(
+        edge.relation,
+        InspectionRelation::AuthenticatesArtifact
+            | InspectionRelation::UsesImplementationArtifact
+            | InspectionRelation::RetainsArtifact
+    )));
+    assert!(render_projection(&retention, RenderFormat::Text)?.contains("projection: retention"));
+    assert_eq!(
+        render_projection(&retention, RenderFormat::Json)?.into_bytes(),
+        retention.canonical_bytes()?
+    );
+    Ok(())
+}
+
+#[test]
+fn composition_projection_queries_recursive_provider_selection()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = planned_provider_chain_fixture();
+    let binding_b = fixture
+        .binding_plan
+        .bindings
+        .iter()
+        .find(|binding| binding.id.0.as_str() == "b")
+        .ok_or("fixture is missing binding b")?
+        .clone();
+    let binding_c = fixture
+        .binding_plan
+        .bindings
+        .iter_mut()
+        .find(|binding| binding.id.0.as_str() == "c")
+        .ok_or("fixture is missing binding c")?;
+    binding_c.request.consumer = binding_b.provider.clone();
+    binding_c.caller_grant.principal = binding_b.provider.clone();
+    let binding_c_id = binding_c.id.clone();
+    let request_c = binding_c.request.clone();
+    let provider_c = binding_c.provider.clone();
+
+    fixture
+        .binding_plan
+        .requests
+        .iter_mut()
+        .find(|request| request.id.key.as_str() == "c")
+        .ok_or("fixture is missing binding-plan request c")?
+        .id = request_c.clone();
+    fixture
+        .binding_inputs
+        .desired_state
+        .child_requests
+        .iter_mut()
+        .find(|request| request.id.key.as_str() == "c")
+        .ok_or("fixture is missing desired-state request c")?
+        .id = request_c.clone();
+    fixture
+        .binding_plan
+        .requests
+        .sort_by(|left, right| compare_request_ids(&left.id, &right.id));
+    fixture
+        .binding_inputs
+        .desired_state
+        .child_requests
+        .sort_by(|left, right| compare_request_ids(&left.id, &right.id));
+    fixture.refresh_commitments();
+
+    let view = InspectionView::from_checked(&fixture.validate()?)?;
+    let composition = view.project(ProjectionKind::Composition)?;
+    let slice = composition.query(&GraphQuery::new(
+        [NodeKey::Request(binding_b.request.clone())],
+        5,
+        32,
+    ))?;
+
+    assert_eq!(slice.projection(), Some(ProjectionKind::Composition));
+    assert!(!slice.is_truncated());
+    assert!(
+        slice
+            .nodes()
+            .iter()
+            .any(|node| { matches!(node, InspectionNode::Request { id, .. } if id == &request_c) })
+    );
+    assert!(
+        slice.nodes().iter().any(|node| {
+            matches!(node, InspectionNode::Provider { id, .. } if id == &provider_c)
+        })
+    );
+    let chain = [
+        InspectionEdge {
+            from: NodeKey::Request(binding_b.request),
+            to: NodeKey::Binding(binding_b.id.clone()),
+            relation: InspectionRelation::SelectsBinding,
+        },
+        InspectionEdge {
+            from: NodeKey::Binding(binding_b.id),
+            to: NodeKey::Provider(binding_b.provider.clone()),
+            relation: InspectionRelation::SelectsProvider,
+        },
+        InspectionEdge {
+            from: NodeKey::Provider(binding_b.provider),
+            to: NodeKey::Request(request_c.clone()),
+            relation: InspectionRelation::ConsumesRequest,
+        },
+        InspectionEdge {
+            from: NodeKey::Request(request_c),
+            to: NodeKey::Binding(binding_c_id.clone()),
+            relation: InspectionRelation::SelectsBinding,
+        },
+        InspectionEdge {
+            from: NodeKey::Binding(binding_c_id),
+            to: NodeKey::Provider(provider_c),
+            relation: InspectionRelation::SelectsProvider,
+        },
+    ];
+    assert!(chain.iter().all(|edge| slice.edges().contains(edge)));
+    Ok(())
+}
+
+#[test]
+fn literal_and_explicit_nested_artifacts_have_the_same_retention_edge()
+-> Result<(), Box<dyn std::error::Error>> {
+    let explicit_fixture = plan_fixture();
+    let artifact = explicit_fixture.effect_plan.artifacts[0].clone();
+    let explicit = ValueExpression::Object {
+        fields: BTreeMap::from([(
+            "payload".to_string(),
+            ValueExpression::List {
+                items: vec![ValueExpression::ArtifactReference {
+                    reference: artifact.clone(),
+                }],
+            },
+        )]),
+    };
+    let literal = ValueExpression::Literal {
+        value: AbilityValue::new(serde_json::json!({"payload": [artifact]}))?,
+    };
+
+    let explicit_view = nested_artifact_view(explicit_fixture, explicit)?;
+    let literal_view = nested_artifact_view(plan_fixture(), literal)?;
+    let explicit_edges = retention_edges(&explicit_view);
+    let literal_edges = retention_edges(&literal_view);
+
+    assert_eq!(explicit_edges.len(), 1);
+    assert_eq!(explicit_edges, literal_edges);
+    Ok(())
+}
+
+fn nested_artifact_view(
+    mut fixture: aos_ability_validate::test_support::PlanFixture,
+    inputs: ValueExpression,
+) -> Result<InspectionView, Box<dyn std::error::Error>> {
+    let payload = LocalKey::new("payload")?;
+    fixture.interfaces[0]
+        .interface
+        .methods
+        .get_mut("observe")
+        .ok_or("fixture is missing observe method")?
+        .parameters = ValueSchema::Optional {
+        value: Box::new(ValueSchema::Record {
+            fields: BTreeMap::from([(
+                payload,
+                ValueSchema::List {
+                    element: Box::new(ValueSchema::ArtifactReference),
+                    max_items: 4,
+                },
+            )]),
+            optional_fields: Vec::new(),
+        }),
+    };
+    fixture.effect_plan.operations[0].inputs = inputs;
+    fixture.refresh_interface();
+
+    Ok(InspectionView::from_checked(&fixture.validate()?)?)
+}
+
+fn retention_edges(view: &InspectionView) -> BTreeSet<InspectionEdge> {
+    view.edges()
+        .iter()
+        .filter(|edge| edge.relation == InspectionRelation::RetainsArtifact)
+        .cloned()
+        .collect()
 }
 
 #[test]

@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    GraphSlice, InspectionEdge, InspectionNode, InspectionRelation, InspectionView, NodeKey,
-    ViewAnchor,
+    GraphSlice, InspectionEdge, InspectionNode, InspectionProjection, InspectionRelation,
+    InspectionView, NodeKey, ProjectionKind, ViewAnchor,
 };
 
 /// Selects one stable inspection output representation.
@@ -54,9 +54,38 @@ pub fn render(view: &InspectionView, format: RenderFormat) -> Result<String, Ren
             plan: view.plan(),
             binding_plan: view.binding_plan(),
             executable: view.is_executable(),
+            projection: None,
             truncated: None,
             nodes: view.nodes(),
             edges: view.edges(),
+        },
+        format,
+    )
+}
+
+/// Renders one semantic graph projection in the selected stable format.
+///
+/// # Errors
+///
+/// Returns an error if canonical serialization fails or the projection
+/// contains an edge whose endpoint is absent.
+pub fn render_projection(
+    projection: &InspectionProjection,
+    format: RenderFormat,
+) -> Result<String, RenderError> {
+    if format == RenderFormat::Json {
+        return canonical_json(projection);
+    }
+    render_parts(
+        GraphParts {
+            anchor: projection.anchor(),
+            plan: projection.plan(),
+            binding_plan: projection.binding_plan(),
+            executable: projection.is_executable(),
+            projection: Some(projection.kind()),
+            truncated: None,
+            nodes: projection.nodes(),
+            edges: projection.edges(),
         },
         format,
     )
@@ -78,6 +107,7 @@ pub fn render_slice(slice: &GraphSlice, format: RenderFormat) -> Result<String, 
             plan: slice.plan(),
             binding_plan: slice.binding_plan(),
             executable: slice.is_executable(),
+            projection: slice.projection(),
             truncated: Some(slice.is_truncated()),
             nodes: slice.nodes(),
             edges: slice.edges(),
@@ -91,6 +121,7 @@ struct GraphParts<'a> {
     plan: PlanId,
     binding_plan: PlanId,
     executable: bool,
+    projection: Option<ProjectionKind>,
     truncated: Option<bool>,
     nodes: &'a [InspectionNode],
     edges: &'a [InspectionEdge],
@@ -115,6 +146,9 @@ fn render_text(parts: &GraphParts<'_>) -> Result<String, RenderError> {
     writeln!(output, "plan: {}", plan_label(parts.plan))?;
     writeln!(output, "binding plan: {}", plan_label(parts.binding_plan))?;
     writeln!(output, "executable: {}", parts.executable)?;
+    if let Some(projection) = parts.projection {
+        writeln!(output, "projection: {}", projection_label(projection))?;
+    }
     if let Some(truncated) = parts.truncated {
         writeln!(output, "query truncated: {truncated}")?;
     }
@@ -232,17 +266,31 @@ fn validate_edges(
 }
 
 fn graph_label(parts: &GraphParts<'_>) -> String {
+    let projection = parts
+        .projection
+        .map(|value| format!(", projection: {}", projection_label(value)))
+        .unwrap_or_default();
     let truncated = parts
         .truncated
         .map(|value| format!(", query truncated: {value}"))
         .unwrap_or_default();
     format!(
-        "ability plan {}, {}, executable: {}{}",
+        "ability plan {}, {}, executable: {}{}{}",
         plan_label(parts.plan),
         anchor_label(parts.anchor),
         parts.executable,
+        projection,
         truncated
     )
+}
+
+fn projection_label(projection: ProjectionKind) -> &'static str {
+    match projection {
+        ProjectionKind::Composition => "composition",
+        ProjectionKind::BindingAuthority => "binding-authority",
+        ProjectionKind::Activation => "activation",
+        ProjectionKind::Retention => "retention",
+    }
 }
 
 fn plan_label(plan: PlanId) -> String {
@@ -274,6 +322,7 @@ fn node_kind(node: &InspectionNode) -> &'static str {
         InspectionNode::Operation { .. } => "operation",
         InspectionNode::Decision { .. } => "decision",
         InspectionNode::Merge { .. } => "merge",
+        InspectionNode::Artifact { .. } => "artifact",
         InspectionNode::Resource { .. } => "resource",
         InspectionNode::Obligation { .. } => "obligation",
     }
@@ -287,6 +336,12 @@ fn relation_label(relation: InspectionRelation) -> &'static str {
         InspectionRelation::SelectsProvider => "selects-provider",
         InspectionRelation::SuppliesInterface => "supplies-interface",
         InspectionRelation::BackedByPackage => "backed-by-package",
+        InspectionRelation::RunsPackage => "runs-package",
+        InspectionRelation::ExportsInterface => "exports-interface",
+        InspectionRelation::RequiresInterface => "requires-interface",
+        InspectionRelation::AuthenticatesArtifact => "authenticates-artifact",
+        InspectionRelation::UsesImplementationArtifact => "uses-implementation-artifact",
+        InspectionRelation::RetainsArtifact => "retains-artifact",
         InspectionRelation::ContributesToAggregate => "contributes-to-aggregate",
         InspectionRelation::OwnsAggregate => "owns-aggregate",
         InspectionRelation::UsesBinding => "uses-binding",
