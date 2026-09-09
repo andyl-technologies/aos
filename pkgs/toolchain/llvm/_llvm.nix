@@ -104,7 +104,7 @@ in
         name = "configure";
         script =
           (
-            if isDarwinCross
+            if stdenv.isCross
             then ''
               # LLVM always creates a nested NATIVE tool build when CMake is
               # cross-compiling.  Give it explicit Linux compiler launchers;
@@ -160,6 +160,107 @@ in
             ''
             else ""
           )
+          + (
+            if versionMajor == "17" && stdenv.hostPlatform.isAarch64
+            then ''
+              # GCC's ACLE macro expands before Clang 17's nested token
+              # concatenation (llvm-project issue 78691). Suppress it only
+              # while expanding this token database, then restore it for
+              # consumers of the installed headers.
+              token_kinds=clang/include/clang/Basic/TokenKinds.def
+              sed -i '1i #pragma push_macro("__arm_streaming")\n#undef __arm_streaming' "$token_kinds"
+              printf '\n#pragma pop_macro("__arm_streaming")\n' >> "$token_kinds"
+            ''
+            else ""
+          )
+          + (
+            if builtins.elem versionMajor ["17" "18"] && stdenv.isCross && stdenv.hostPlatform.isLinux
+            then ''
+              # GCC 14+ emits this exception ABI entry point. Backport the
+              # libc++abi implementation from llvm-project PR 95759 so the
+              # GCC-built runtime resolves its own termination calls.
+              abi_header=libcxxabi/include/cxxabi.h
+              test "$(grep -c '^// 2.5.4 Rethrowing Exceptions$' "$abi_header")" -eq 1
+              sed -i \
+                '/^\/\/ 2.5.4 Rethrowing Exceptions$/i // GNU extension: begins catching the exception before invoking terminate.\nextern _LIBCXXABI_FUNC_VIS _LIBCXXABI_NORETURN void __cxa_call_terminate(void*) throw();\n' \
+                "$abi_header"
+
+              abi_source=libcxxabi/src/cxa_exception.cpp
+              test "$(grep -c '^// Note:  exception_header may be masquerading' "$abi_source")" -eq 1
+              sed -i \
+                '/^\/\/ Note:  exception_header may be masquerading/i void __cxa_call_terminate(void* unwind_arg) throw() {\n  __cxa_begin_catch(unwind_arg);\n  std::terminate();\n}\n' \
+                "$abi_source"
+
+              # CMAKE_REQUIRED_FLAGS also reaches C library probes. GCC's
+              # C++ driver accepts -nostdlib++, but its C driver rejects it.
+              # Test both drivers before applying the option to shared checks.
+              runtime_config=runtimes/CMakeLists.txt
+              test "$(grep -c '^if (CXX_SUPPORTS_NOSTDLIBXX_FLAG)$' "$runtime_config")" -eq 1
+              sed -i \
+                '/^if (CXX_SUPPORTS_NOSTDLIBXX_FLAG)$/c\llvm_check_compiler_linker_flag(C "-nostdlib++" C_SUPPORTS_NOSTDLIBXX_FLAG)\nif (CXX_SUPPORTS_NOSTDLIBXX_FLAG AND C_SUPPORTS_NOSTDLIBXX_FLAG)' \
+                "$runtime_config"
+
+              # GCC exposes these builtins but cannot mangle them in dependent
+              # function signatures. Keep libc++'s portable trait fallback
+              # for GCC while retaining Clang's builtin implementation.
+              decay_header=libcxx/include/__type_traits/decay.h
+              test "$(grep -c '^#if __has_builtin(__decay)$' "$decay_header")" -eq 1
+              sed -i \
+                's/^#if __has_builtin(__decay)$/#if __has_builtin(__decay) \&\& !defined(_LIBCPP_COMPILER_GCC)/' \
+                "$decay_header"
+
+              pointer_header=libcxx/include/__type_traits/remove_pointer.h
+              test "$(grep -c '^#if .*__has_builtin(__remove_pointer)$' "$pointer_header")" -eq 1
+              sed -i \
+                '/^#if .*__has_builtin(__remove_pointer)$/s/$/ \&\& !defined(_LIBCPP_COMPILER_GCC)/' \
+                "$pointer_header"
+            ''
+            else ""
+          )
+          + (
+            if builtins.elem versionMajor ["19" "20" "21"] && stdenv.isCross && stdenv.hostPlatform.isLinux
+            then
+              ''
+                # These releases already provide GCC's termination ABI and
+                # remove_pointer alias fix. Their shared C probes still inherit
+                # the C++-only flag; LLVM 22 restricts that flag to Clang.
+                runtime_config=runtimes/CMakeLists.txt
+                test "$(grep -c '^if (CXX_SUPPORTS_NOSTDLIBXX_FLAG)$' "$runtime_config")" -eq 1
+                sed -i \
+                  '/^if (CXX_SUPPORTS_NOSTDLIBXX_FLAG)$/c\llvm_check_compiler_linker_flag(C "-nostdlib++" C_SUPPORTS_NOSTDLIBXX_FLAG)\nif (CXX_SUPPORTS_NOSTDLIBXX_FLAG AND C_SUPPORTS_NOSTDLIBXX_FLAG)' \
+                  "$runtime_config"
+              ''
+              + (
+                if builtins.elem versionMajor ["19" "20"]
+                then ''
+                  # LLVM 21 routes GCC's decay alias through the class trait.
+                  # Earlier headers need the portable fallback for mangling.
+                  decay_header=libcxx/include/__type_traits/decay.h
+                  test "$(grep -c '^#if __has_builtin(__decay)$' "$decay_header")" -eq 1
+                  sed -i \
+                    's/^#if __has_builtin(__decay)$/#if __has_builtin(__decay) \&\& !defined(_LIBCPP_COMPILER_GCC)/' \
+                    "$decay_header"
+                ''
+                else ""
+              )
+            else ""
+          )
+          + (
+            if builtins.elem versionMajor ["18" "19" "20"] && stdenv.isCross && stdenv.hostPlatform.isLinux
+            then ''
+              # libunwind links with the C driver. Its C++ flag probe can
+              # succeed for GCC while the actual C link rejects -nostdlib++.
+              # Keep the existing explicit-library fallback when C rejects it.
+              unwind_checks=libunwind/cmake/config-ix.cmake
+              unwind_targets=libunwind/src/CMakeLists.txt
+              test "$(grep -c '^llvm_check_compiler_linker_flag(CXX "-nostdlib++" CXX_SUPPORTS_NOSTDLIBXX_FLAG)$' "$unwind_checks")" -eq 1
+              sed -i \
+                -e 's/CXX_SUPPORTS_NOSTDLIBXX_FLAG/C_SUPPORTS_NOSTDLIBXX_FLAG/g' \
+                -e 's/llvm_check_compiler_linker_flag(CXX "-nostdlib++"/llvm_check_compiler_linker_flag(C "-nostdlib++"/' \
+                "$unwind_checks" "$unwind_targets"
+            ''
+            else ""
+          )
           + ''
             ${
               if needsArc4randomFix
@@ -173,7 +274,9 @@ in
               else ""
             }
             ${
-              if enabledRuntimes != []
+              # Cross runtime projects inherit CMake's cross compiler through
+              # LLVMExternalProjectUtils; only native builds run the new Clang.
+              if enabledRuntimes != [] && !stdenv.isCross
               then ''
                 # Create clang config file so the just-built clang finds AOS
                 # GCC toolchain and libraries when building runtimes.
@@ -244,7 +347,7 @@ in
             } \
               -DLLVM_TARGETS_TO_BUILD="${targetsStr}" \
               ${
-              if isDarwinCross
+              if stdenv.isCross
               then ''
                 -DLLVM_DEFAULT_TARGET_TRIPLE=${stdenv.hostPlatform.config} \
                 -DLLVM_HOST_TRIPLE=${stdenv.hostPlatform.config} \
@@ -277,7 +380,7 @@ in
               -DLLVM_INCLUDE_DOCS=OFF \
               -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON \
               ${
-              if enabledRuntimes != []
+              if enabledRuntimes != [] && !stdenv.isCross
               then ''
                 -DDEFAULT_SYSROOT=/ \
                 -DCLANG_CONFIG_FILE_SYSTEM_DIR=$PWD/build/clang-cfg \
@@ -305,47 +408,69 @@ in
       }
       {
         name = "install";
-        script = ''
-          ninja -C build install
+        script =
+          ''
+            ninja -C build install
 
-          ${
-            if isDarwinCross
+          ''
+          + (
+            if stdenv.isCross && stdenv.hostPlatform.isLinux
             then ''
-              # compiler-rt, libc++, libc++abi and libunwind were bootstrapped
-              # before this target LLVM so no Darwin executable has to run
-              # while cross-compiling.  Install that exact runtime surface as
-              # part of the complete Darwin LLVM toolchain.
-              cp -a ${stdenv.darwinRuntimes}/include/. "$out/include/"
-              cp -a ${stdenv.darwinRuntimes}/lib/. "$out/lib/"
-
-              # Installed llvm-config discovers its real prefix relative to
-              # argv[0], but retains the configured source and object roots as
-              # binary fallback strings. Normalize only the sandbox prefix
-              # with an equal-length replacement so Mach-O offsets stay valid
-              # and the target toolchain does not expose an ephemeral build
-              # directory.
-              stable_source=$(printf '%s\n' "$PWD" | sed 's|^/build|/.aos_|')
-              sed -i "s|$PWD|$stable_source|g" "$out/bin/llvm-config"
-
-              # LLVM and the copied runtime install some directories without
-              # owner write permission. The following scrub phase creates an
-              # adjacent temporary file for each Mach-O before atomically
-              # replacing it, so make this build output writable while it is
-              # still owned by the sandbox builder. Nix canonicalizes store
-              # permissions after the derivation completes.
-              chmod -R u+w "$out"
+              # libc++ depends on its sibling libc++abi, but the C toolchain's
+              # injected RUNPATH only names external dependencies. Each runtime
+              # must resolve siblings itself: a consumer's RUNPATH is not inherited
+              # when the dynamic loader follows indirect DT_NEEDED entries.
+              runtime_dir="$out/lib/${stdenv.hostPlatform.config}"
+              for runtime_library in "$runtime_dir"/*.so.*; do
+                if [ ! -f "$runtime_library" ] || [ -L "$runtime_library" ]; then
+                  continue
+                fi
+                runtime_rpath=$(${buildPackages.patchelf}/bin/patchelf --print-rpath "$runtime_library")
+                ${buildPackages.patchelf}/bin/patchelf --set-rpath \
+                  "$runtime_dir''${runtime_rpath:+:$runtime_rpath}" "$runtime_library"
+              done
             ''
             else ""
-          }
+          )
+          + ''
+            ${
+              if isDarwinCross
+              then ''
+                # compiler-rt, libc++, libc++abi and libunwind were bootstrapped
+                # before this target LLVM so no Darwin executable has to run
+                # while cross-compiling.  Install that exact runtime surface as
+                # part of the complete Darwin LLVM toolchain.
+                cp -a ${stdenv.darwinRuntimes}/include/. "$out/include/"
+                cp -a ${stdenv.darwinRuntimes}/lib/. "$out/lib/"
 
-          # LLVM 22 moved PassPlugin.h from llvm/Passes/ to llvm/Plugins/.
-          # Create backward-compat symlink for consumers expecting the old path
-          # (e.g. Rust's llvm-wrapper/PassWrapper.cpp).
-          if [ -f "$out/include/llvm/Plugins/PassPlugin.h" ] && \
-             [ ! -f "$out/include/llvm/Passes/PassPlugin.h" ]; then
-            ln -s ../Plugins/PassPlugin.h "$out/include/llvm/Passes/PassPlugin.h"
-          fi
-        '';
+                # Installed llvm-config discovers its real prefix relative to
+                # argv[0], but retains the configured source and object roots as
+                # binary fallback strings. Normalize only the sandbox prefix
+                # with an equal-length replacement so Mach-O offsets stay valid
+                # and the target toolchain does not expose an ephemeral build
+                # directory.
+                stable_source=$(printf '%s\n' "$PWD" | sed 's|^/build|/.aos_|')
+                sed -i "s|$PWD|$stable_source|g" "$out/bin/llvm-config"
+
+                # LLVM and the copied runtime install some directories without
+                # owner write permission. The following scrub phase creates an
+                # adjacent temporary file for each Mach-O before atomically
+                # replacing it, so make this build output writable while it is
+                # still owned by the sandbox builder. Nix canonicalizes store
+                # permissions after the derivation completes.
+                chmod -R u+w "$out"
+              ''
+              else ""
+            }
+
+            # LLVM 22 moved PassPlugin.h from llvm/Passes/ to llvm/Plugins/.
+            # Create backward-compat symlink for consumers expecting the old path
+            # (e.g. Rust's llvm-wrapper/PassWrapper.cpp).
+            if [ -f "$out/include/llvm/Plugins/PassPlugin.h" ] && \
+               [ ! -f "$out/include/llvm/Passes/PassPlugin.h" ]; then
+              ln -s ../Plugins/PassPlugin.h "$out/include/llvm/Passes/PassPlugin.h"
+            fi
+          '';
       }
     ];
 

@@ -1,5 +1,8 @@
 ##! Boots AArch64 Linux and exercises its public hosted C/C++ toolchain.
-{pkgs}: let
+{
+  pkgs,
+  llvmVersion ? null,
+}: let
   buildSystem = pkgs.stdenv.buildPlatform.system;
   targetSystem = "aarch64-linux";
   cross = import ../.. {
@@ -7,6 +10,22 @@
     crossSystem = targetSystem;
   };
   targetPackages = cross.pkgs;
+  llvm =
+    if llvmVersion == null
+    then null
+    else targetPackages."llvm-${llvmVersion}";
+  testName =
+    if llvmVersion == null
+    then "linux-hosted-toolchain-vm"
+    else "linux-hosted-llvm-${llvmVersion}-vm";
+  llvmScript =
+    if llvm == null
+    then ""
+    else
+      import ./_linux-hosted-llvm-script.nix {
+        inherit llvm;
+        inherit (targetPackages) glibc gcc;
+      };
   targetKernel = targetPackages.linux;
   empty = targetPackages.writeTextFile {
     name = "linux-hosted-toolchain-vm-empty";
@@ -21,16 +40,22 @@
     pkgs = cross.buildPackages;
     lib = cross.lib;
     system = fakeSystem;
-    pname = "linux-hosted-toolchain-vm-rootfs";
+    pname = "${testName}-rootfs";
     shrinkToFit = false;
     minSizeMiB = 2048;
-    extraClosures = [
-      targetPackages.bash
-      targetPackages.cc
-      targetPackages.coreutils
-      targetPackages.grep
-      targetPackages.util-linux
-    ];
+    extraClosures =
+      [
+        targetPackages.bash
+        targetPackages.cc
+        targetPackages.coreutils
+        targetPackages.grep
+        targetPackages.util-linux
+      ]
+      ++ (
+        if llvm == null
+        then []
+        else [llvm targetPackages.glibc.dev targetPackages.glibc.static]
+      );
     symlinkFarmPkgs = [];
     postPopulate = ''
       ln -s ../nix.lower/store rootfs/nix/store
@@ -104,6 +129,8 @@
       fi
       test -s /tmp/invalid.stderr
 
+      ${llvmScript}
+
       echo AOS_HOSTED_TOOLCHAIN_VM_PASS
       sync
       echo b > /proc/sysrq-trigger
@@ -114,7 +141,7 @@
   };
 in
   pkgs.mkDerivation {
-    pname = "linux-hosted-toolchain-vm";
+    pname = testName;
     version = "0";
     src = null;
     buildDeps = [
@@ -144,7 +171,7 @@ in
             -monitor none \
             > serial.log 2>&1 || qemu_status=$?
 
-          cat serial.log
+          tr -d '\r' < serial.log
           if ! grep -Fq AOS_HOSTED_TOOLCHAIN_VM_PASS serial.log; then
             echo "hosted toolchain guest failed before its completion marker (QEMU status $qemu_status)" >&2
             exit 1
