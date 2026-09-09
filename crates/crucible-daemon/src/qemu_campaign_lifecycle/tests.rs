@@ -2482,8 +2482,17 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         fingerprint_node_override: Arc::new(Mutex::new(None)),
     };
     let mut current = parent.clone();
+    let diagnostic_config = crate::GuestSelectableBoundaryDiagnosticConfig::new(4)
+        .expect("guest-selectable diagnostic policy");
+    let (diagnostics, diagnostic_lines) =
+        crate::guest_selectable::GuestSelectableBoundaryDiagnosticRecorder::capture(
+            diagnostic_config,
+        );
+    let execution_context =
+        fresh_runner_context().with_guest_selectable_boundary_diagnostics(diagnostics);
     apply_replayed_guest_selectables::<(), ()>(
         &mut lifecycle,
+        &execution_context,
         GuestSelectableReplayContext {
             phase: GuestSelectableReplayPhase::FreshStart,
             attempt_role: GuestSelectableReplayAttemptRole::ExecutingAttempt,
@@ -2504,6 +2513,17 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         replies[0].selected_value(),
         Some(ChoiceValue::Boolean(true).canonical_bytes().as_slice())
     );
+    {
+        let diagnostic_lines = diagnostic_lines.lock().expect("boundary diagnostics");
+        assert_eq!(diagnostic_lines.len(), 1);
+        assert!(diagnostic_lines[0].contains("stage=replay"));
+        assert!(diagnostic_lines[0].contains("decision_index=0"));
+        assert!(diagnostic_lines[0].contains("trap_icount=41 stopped_icount=42 vcpu=0"));
+        assert!(
+            diagnostic_lines[0]
+                .contains("expected_opportunity=crucible.campaign.choice-opportunity@")
+        );
+    }
 
     let drift_request = SelectionRequest::new(9, "product.recovery", "routing-epoch-7", None, 256)
         .expect("drifted guest request");
@@ -2533,6 +2553,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
 
     let failure = apply_replayed_guest_selectables::<std::io::Error, std::io::Error>(
         &mut drift_lifecycle,
+        &execution_context,
         GuestSelectableReplayContext {
             phase: GuestSelectableReplayPhase::FreshStart,
             attempt_role: GuestSelectableReplayAttemptRole::ExecutingAttempt,

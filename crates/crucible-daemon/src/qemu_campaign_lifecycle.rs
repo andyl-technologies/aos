@@ -31,9 +31,10 @@ use std::collections::BTreeSet;
 use thiserror::Error;
 
 use crate::guest_selectable::{
-    GuestSelectableError, GuestSelectableReplayAttemptRole, GuestSelectableReplayCorrelation,
-    GuestSelectableReplayMismatch, GuestSelectableReplayOpportunityContext,
-    GuestSelectableReplayPhase, resolve_guest_selectable, selected_guest_reply,
+    GuestSelectableBoundaryDiagnosticStage, GuestSelectableError, GuestSelectableReplayAttemptRole,
+    GuestSelectableReplayCorrelation, GuestSelectableReplayMismatch,
+    GuestSelectableReplayOpportunityContext, GuestSelectableReplayPhase,
+    record_guest_selectable_boundary_diagnostic, resolve_guest_selectable, selected_guest_reply,
 };
 use crate::{
     AttemptCheckpointResult, AttemptExecutionContext, AttemptExecutionProduct,
@@ -2004,6 +2005,7 @@ pub(crate) fn materialize_start_from<F, D>(
         let selection_entries = if terminal.is_none() {
             apply_replayed_guest_selectables(
                 lifecycle,
+                context,
                 GuestSelectableReplayContext {
                     phase: GuestSelectableReplayPhase::FreshStart,
                     attempt_role: GuestSelectableReplayAttemptRole::ExecutingAttempt,
@@ -2043,6 +2045,7 @@ pub(crate) fn materialize_start_from<F, D>(
 
 fn apply_replayed_guest_selectables<F, D>(
     lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
+    context: &AttemptExecutionContext,
     replay_context: GuestSelectableReplayContext<'_>,
     scenario: crucible_campaign::ScenarioDefId,
     source: &ScenarioDefForm,
@@ -2070,6 +2073,19 @@ fn apply_replayed_guest_selectables<F, D>(
             .selection()
             .map_err(GuestSelectableError::Campaign)
             .map_err(start_replay_guest_selectable_failure)?;
+        let expected_selection = replay_context
+            .start
+            .replay_selection(replayed.schedule.len());
+        record_guest_selectable_boundary_diagnostic(
+            context,
+            replay_context.attempt,
+            GuestSelectableBoundaryDiagnosticStage::Replay,
+            replayed.schedule.len(),
+            pending.node(),
+            pending.pending(),
+            &discovery,
+            expected_selection,
+        );
         let validation = match selection.origin() {
             SelectionOrigin::Default | SelectionOrigin::LockedReplay => {
                 selection.validate_replay(discovery.opportunity(), discovery.domain())
@@ -2104,14 +2120,11 @@ fn apply_replayed_guest_selectables<F, D>(
                     let request = pending.pending().request();
                     let replayed_configuration =
                         ConfigurationId::from_hash(CampaignHash::from_bytes(replayed.id().bytes));
-                    let expected_opportunity = replay_context
-                        .start
-                        .replay_selection(replayed.schedule.len())
-                        .map(|selection| {
-                            GuestSelectableReplayOpportunityContext::from_opportunity(
-                                selection.opportunity(),
-                            )
-                        });
+                    let expected_opportunity = expected_selection.map(|selection| {
+                        GuestSelectableReplayOpportunityContext::from_opportunity(
+                            selection.opportunity(),
+                        )
+                    });
                     let correlation = GuestSelectableReplayCorrelation {
                         phase: replay_context.phase,
                         attempt_role: replay_context.attempt_role,
