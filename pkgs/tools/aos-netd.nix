@@ -20,7 +20,7 @@
     inherit src;
     name = "aos-netd-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-zpfp7rMXRvSFaTz+zClX7ktOz9ZSFcBusQzyKPcQgH8=";
+    hash = "sha256-+KiwQYF3bLrJwHf8X5PgT23l5+evxJdpbC935PnGNeI=";
   };
   cargoEnv = {
     PROTOC = "${buildProtobuf}/bin/protoc";
