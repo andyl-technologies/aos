@@ -4454,6 +4454,26 @@ The earlier PostgreSQL result remains evidence for its package corrections,
 but is not claimed as an exact-current-source realization after the later
 cross-stdenv changes.
 
+### Structured-attribute reference scrub qualification
+
+Follow-up package work retains the `libcap-ng` and `util-linux` Python bindings
+in explicit `python` outputs while keeping their default C outputs independent
+of Python. During native validation, enabling per-output requisites exposed
+list-valued runtime, propagated, and custom keep inputs as Bash arrays. Scalar
+expansion retained only array element zero, so the generic scrub phase now
+expands every element while preserving the legacy scalar representation.
+
+`checks.build.structured-attrs-scrub` exercises scalar and structured-attribute
+payloads, primary and secondary outputs, two references in each keep class,
+and two build-only references that must be rewritten. The pre-fix control
+failed exactly six retained-reference assertions: the second runtime,
+propagated, and custom reference in both outputs. The exact fixed derivation
+`/nix/store/l35hfz7hc106492b0q2cj4v9qh2pva52-structured-attrs-scrub-check-0.drv`
+was realized after a complete fresh bootstrap and passed at
+`/nix/store/gdhngfg0as98waisgjbyfz1q710qnv8m-structured-attrs-scrub-check-0`.
+This qualifies the generic scrub behavior only; native and AArch64 package and
+guest requalification for the new output split remain open.
+
 A prior AArch64 LLVM qualification snapshot installed its triple-specific Clang
 configuration at `/nix/store/nk6dg20ixrybji174awr6nq1hb1vl1zq-llvm-22.1.0`.
 Plain `clang` and `clang++` invocations load that configuration without an

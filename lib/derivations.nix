@@ -281,7 +281,9 @@
           eval "p=\"\''${$o:-}\""
           [ -n "$p" ] && keep_args="$keep_args -e $p"
         done
-        for p in ''${buildInputs:-} ''${propagatedBuildInputs:-} ''${nukeRefsKeep:-}; do
+        # Structured attrs expose list-valued inputs as Bash arrays. [@]
+        # expands every element while retaining scalar word splitting.
+        for p in ''${buildInputs[@]:-} ''${propagatedBuildInputs[@]:-} ''${nukeRefsKeep[@]:-}; do
           [ -n "$p" ] && keep_args="$keep_args -e $p"
         done
 
