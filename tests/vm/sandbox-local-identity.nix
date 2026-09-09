@@ -69,6 +69,7 @@ in
       # stays at the hierarchy root; only this test shell and its children move.
       mkdir /sys/fs/cgroup/aos-local-identity-tests
       echo $$ > /sys/fs/cgroup/aos-local-identity-tests/cgroup.procs
+      export AOS_CGROUP_TEST_SLEEP=${pkgs.coreutils}/bin/sleep
 
       run_tests() {
         executable=$1
@@ -82,6 +83,7 @@ in
       }
 
       run_tests ${fixtures}/bin/aos_sandbox_linux cgroup::tests::real_readonly_hierarchy_resolves_exact_current_membership
+      run_tests ${fixtures}/bin/aos_sandbox_linux cgroup::tests::retained_population_distinguishes_empty_retired_and_recreated_cgroups
       run_tests ${fixtures}/bin/aos_sandbox_linux pidfd::tests::cross_uid_pidfd_liveness_does_not_require_signal_permission
       run_tests ${fixtures}/bin/aos_sandbox_linux seqpacket::descriptor_subject::tests::
       run_tests ${fixtures}/bin/aos_sandbox runtime_scope::kernel_tests::
