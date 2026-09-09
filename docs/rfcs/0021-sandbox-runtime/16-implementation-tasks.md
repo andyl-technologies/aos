@@ -6324,6 +6324,43 @@ proof above still uses the five-descriptor fixture, so it is not deployment
 proof for the new role-local constructors. Network Apply remains unadvertised
 and no readiness or task checkbox changes.
 
+Commit `437527454` adds the retained kernel peer-authentication logic without
+composing a production inspector. It binds connection and record subjects to
+kernel socket credential snapshots, live pidfds, strictly resolved exact
+cgroup-v2 anchors, provisioned non-aliasing executable inodes, and exact
+three-field non-MLS effective process contexts. Broker and Inspector roles use
+fixed separate cgroups, executables, and contexts; PID 1 additionally requires
+root credentials, parent PID zero, and exact `init.scope` membership. Every
+projection repeats the complete process-identity, cgroup, executable, MAC, and
+liveness observation against retained baseline evidence. No API in the slice
+mints authenticated activation or readiness.
+
+Qualification used a clean archive of `1f2849976` plus exactly the modified
+parent module and new runtime child; the later task-list-only parent commit did
+not change the qualified `crates/` source. The two source-file SHA-256 digests
+were
+`fcfbfedf2c9e21ebb392c90e16a7005a239d1acde98048724acc01c84d484eff`
+and `8513f76118d0af1fc0000fc58805f24bb53ddee587388d67bd9549fb4551dff0`.
+The pinned realized AOS development environment and a fresh target directory
+passed all 176 Network library tests; an exact-file format check also passed.
+These results qualify only the Rust authentication logic and injected mismatch
+tests, not real procfs, SELinux, cgroup, socket, or manager behavior.
+
+Production authentication remains blocked on typed exposure and fresh checking
+of Linux 6.18 PIDFD credential fields; the current public wrapper exposes no
+credentials, so this adapter retains only the earlier `SO_PEERCRED` or
+`SCM_CREDENTIALS` snapshot. Enforcing qualification must also prove the exact
+target-SID-wide procfs access needed for `stat`, `exe`, and `attr/current`,
+including the actual behavior of sensitive same-target
+`mem`, `fd`, `fdinfo`, `root`, `cwd`, `environ`, `maps`, and `map_files`
+surfaces under their additional kernel checks. The Inspector alone may retain
+the narrow `CAP_SYS_PTRACE` and lifecycle-worker pidfs access; the Broker must
+remain ptrace-capability-empty. The read-only direct-manager property helper,
+non-atomic query fences, exact activation correlation, runtime binary and
+socket/service units, protected root provisioning, lifecycle integration, and
+an enforcing VM handshake all remain open. No readiness or task checkbox
+changes.
+
 The deployed positive handshake is currently blocked by an authorization
 conflict, not qualified. The worker calls `PR_SET_DUMPABLE(0)` before READY,
 while the capability-empty broker obtains the retained namespace through
