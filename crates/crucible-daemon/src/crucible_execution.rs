@@ -298,6 +298,17 @@ impl CrucibleResolvedAttemptStart {
             Self::Discover { .. } | Self::Branch { .. } => None,
         }
     }
+
+    /// Returns authenticated choice records for a retained branch decision.
+    pub(crate) fn replay_selection(&self, decision_index: usize) -> Option<&ResolvedSelection> {
+        match self {
+            Self::Branch {
+                parent, selection, ..
+            } if parent.schedule.len() == decision_index => Some(selection),
+            Self::AfterAttempt { base, .. } => base.replay_selection(decision_index),
+            Self::Discover { .. } | Self::Branch { .. } => None,
+        }
+    }
 }
 
 /// One decoded origin attempt and its claimed post-stop replay boundary.

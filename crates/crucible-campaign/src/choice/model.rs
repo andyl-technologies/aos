@@ -386,6 +386,101 @@ pub struct ChoiceCoordinate {
     pub producer: CampaignHash,
 }
 
+/// Identifies the first base selection replay predicate that failed.
+///
+/// Variant order follows the validation order used by [`Selection`]. It is a
+/// diagnostic classification and does not participate in canonical campaign
+/// bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionReplayMismatchKind {
+    /// The stored selection names a different runtime opportunity.
+    OpportunityIdentity,
+    /// The stored selection names a different effective domain.
+    DomainIdentity,
+    /// The replayed opportunity names a domain other than the selection.
+    OpportunityDomain,
+    /// The stored value is not legal in the replayed effective domain.
+    ValueOutsideDomain,
+}
+
+impl SelectionReplayMismatchKind {
+    /// Returns the stable diagnostic name for this failed predicate.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OpportunityIdentity => "selection-opportunity-identity",
+            Self::DomainIdentity => "selection-domain-identity",
+            Self::OpportunityDomain => "opportunity-domain-identity",
+            Self::ValueOutsideDomain => "value-membership",
+        }
+    }
+}
+
+impl std::fmt::Display for SelectionReplayMismatchKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// Describes exact expected and replayed identities for a base replay mismatch.
+///
+/// This value is operational diagnostic context. Constructing it never changes
+/// a selection, opportunity, domain, or their canonical representation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectionReplayMismatch {
+    kind: SelectionReplayMismatchKind,
+    expected_opportunity: ChoiceOpportunityId,
+    replayed_opportunity: ChoiceOpportunityId,
+    expected_domain: ChoiceDomainId,
+    replayed_domain: ChoiceDomainId,
+    replayed_opportunity_domain: ChoiceDomainId,
+    value_in_replayed_domain: bool,
+}
+
+impl SelectionReplayMismatch {
+    /// Returns the first failed predicate in validation order.
+    #[must_use]
+    pub const fn kind(self) -> SelectionReplayMismatchKind {
+        self.kind
+    }
+
+    /// Returns the runtime opportunity stored by the selection.
+    #[must_use]
+    pub const fn expected_opportunity(self) -> ChoiceOpportunityId {
+        self.expected_opportunity
+    }
+
+    /// Returns the runtime opportunity reconstructed during replay.
+    #[must_use]
+    pub const fn replayed_opportunity(self) -> ChoiceOpportunityId {
+        self.replayed_opportunity
+    }
+
+    /// Returns the effective domain stored by the selection.
+    #[must_use]
+    pub const fn expected_domain(self) -> ChoiceDomainId {
+        self.expected_domain
+    }
+
+    /// Returns the effective domain reconstructed during replay.
+    #[must_use]
+    pub const fn replayed_domain(self) -> ChoiceDomainId {
+        self.replayed_domain
+    }
+
+    /// Returns the effective domain named by the replayed opportunity.
+    #[must_use]
+    pub const fn replayed_opportunity_domain(self) -> ChoiceDomainId {
+        self.replayed_opportunity_domain
+    }
+
+    /// Returns whether the stored value belongs to the replayed domain.
+    #[must_use]
+    pub const fn value_in_replayed_domain(self) -> bool {
+        self.value_in_replayed_domain
+    }
+}
+
 impl Canonical for ChoiceCoordinate {
     fn encode(&self, encoder: &mut Encoder) {
         self.scheduler.encode(encoder);
@@ -993,15 +1088,7 @@ impl Selection {
         opportunity: &ChoiceOpportunity,
         domain: &ChoiceDomain,
     ) -> Result<(), CampaignCodecError> {
-        if self.opportunity != opportunity.id()?
-            || self.domain != domain.id()?
-            || self.domain != opportunity.domain()
-            || !domain.contains(&self.value)
-        {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "selection replay identity or domain mismatch",
-            });
-        }
+        validate_base_replay(self, opportunity, domain)?;
         match self.origin {
             SelectionOrigin::Default if self.value != *opportunity.default() => {
                 return Err(CampaignCodecError::InvalidValue {
@@ -1016,6 +1103,39 @@ impl Selection {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Classifies a base replay identity or domain mismatch.
+    ///
+    /// The classifier evaluates the same four predicates and in the same order
+    /// as [`Self::validate_replay`] and [`Self::validate_branch_replay`]. It
+    /// deliberately excludes origin-specific provenance checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when either replayed object identity
+    /// cannot be constructed.
+    pub fn replay_mismatch(
+        &self,
+        opportunity: &ChoiceOpportunity,
+        domain: &ChoiceDomain,
+    ) -> Result<Option<SelectionReplayMismatch>, CampaignCodecError> {
+        let Some(kind) = selection_replay_mismatch_kind(self, opportunity, domain)? else {
+            return Ok(None);
+        };
+        let replayed_opportunity = opportunity.id()?;
+        let replayed_domain = domain.id()?;
+        let value_in_replayed_domain = domain.contains(&self.value);
+
+        Ok(Some(SelectionReplayMismatch {
+            kind,
+            expected_opportunity: self.opportunity,
+            replayed_opportunity,
+            expected_domain: self.domain,
+            replayed_domain,
+            replayed_opportunity_domain: opportunity.domain(),
+            value_in_replayed_domain,
+        }))
     }
 
     /// Revalidates a model-sampled selection with the named pure model.
@@ -1170,16 +1290,32 @@ fn validate_base_replay(
     opportunity: &ChoiceOpportunity,
     domain: &ChoiceDomain,
 ) -> Result<(), CampaignCodecError> {
-    if selection.opportunity != opportunity.id()?
-        || selection.domain != domain.id()?
-        || selection.domain != opportunity.domain()
-        || !domain.contains(&selection.value)
-    {
+    if selection_replay_mismatch_kind(selection, opportunity, domain)?.is_some() {
         return Err(CampaignCodecError::InvalidValue {
             reason: "selection replay identity or domain mismatch",
         });
     }
     Ok(())
+}
+
+fn selection_replay_mismatch_kind(
+    selection: &Selection,
+    opportunity: &ChoiceOpportunity,
+    domain: &ChoiceDomain,
+) -> Result<Option<SelectionReplayMismatchKind>, CampaignCodecError> {
+    if selection.opportunity != opportunity.id()? {
+        return Ok(Some(SelectionReplayMismatchKind::OpportunityIdentity));
+    }
+    if selection.domain != domain.id()? {
+        return Ok(Some(SelectionReplayMismatchKind::DomainIdentity));
+    }
+    if selection.domain != opportunity.domain() {
+        return Ok(Some(SelectionReplayMismatchKind::OpportunityDomain));
+    }
+    if !domain.contains(&selection.value) {
+        return Ok(Some(SelectionReplayMismatchKind::ValueOutsideDomain));
+    }
+    Ok(None)
 }
 
 fn derive_branch_edge(
@@ -1196,3 +1332,6 @@ fn derive_branch_edge(
         &encoder.finish(),
     ))
 }
+
+#[cfg(test)]
+mod tests;

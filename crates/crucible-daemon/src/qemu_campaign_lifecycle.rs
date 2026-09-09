@@ -31,7 +31,9 @@ use std::collections::BTreeSet;
 use thiserror::Error;
 
 use crate::guest_selectable::{
-    GuestSelectableError, resolve_guest_selectable, selected_guest_reply,
+    GuestSelectableError, GuestSelectableReplayAttemptRole, GuestSelectableReplayCorrelation,
+    GuestSelectableReplayMismatch, GuestSelectableReplayOpportunityContext,
+    GuestSelectableReplayPhase, resolve_guest_selectable, selected_guest_reply,
 };
 use crate::{
     AttemptCheckpointResult, AttemptExecutionContext, AttemptExecutionProduct,
@@ -939,6 +941,14 @@ pub enum QemuFreshStartReplayError {
         /// Stable name of the exceeded limit.
         limit: &'static str,
     },
+}
+
+#[derive(Clone, Copy)]
+struct GuestSelectableReplayContext<'a> {
+    phase: GuestSelectableReplayPhase,
+    attempt_role: GuestSelectableReplayAttemptRole,
+    attempt: &'a crucible_campaign::Attempt,
+    start: &'a CrucibleResolvedAttemptStart,
 }
 
 /// Failure before a fresh genesis checkpoint candidate reached teardown.
@@ -1970,6 +1980,12 @@ pub(crate) fn materialize_start_from<F, D>(
         let selection_entries = if terminal.is_none() {
             apply_replayed_guest_selectables(
                 lifecycle,
+                GuestSelectableReplayContext {
+                    phase: GuestSelectableReplayPhase::FreshStart,
+                    attempt_role: GuestSelectableReplayAttemptRole::ExecutingAttempt,
+                    attempt: input.attempt(),
+                    start: input.start(),
+                },
                 input.lineage().scenario(),
                 input.scenario(),
                 target,
@@ -2003,6 +2019,7 @@ pub(crate) fn materialize_start_from<F, D>(
 
 fn apply_replayed_guest_selectables<F, D>(
     lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
+    replay_context: GuestSelectableReplayContext<'_>,
     scenario: crucible_campaign::ScenarioDefId,
     source: &ScenarioDefForm,
     target: &Configuration,
@@ -2029,7 +2046,7 @@ fn apply_replayed_guest_selectables<F, D>(
             .selection()
             .map_err(GuestSelectableError::Campaign)
             .map_err(start_replay_guest_selectable_failure)?;
-        match selection.origin() {
+        let validation = match selection.origin() {
             SelectionOrigin::Default | SelectionOrigin::LockedReplay => {
                 selection.validate_replay(discovery.opportunity(), discovery.domain())
             }
@@ -2043,13 +2060,60 @@ fn apply_replayed_guest_selectables<F, D>(
                 )
             }
             SelectionOrigin::ModelSample(_) => {
-                Err(crucible_campaign::CampaignCodecError::InvalidValue {
-                    reason: "guest selectable replay does not admit model-sample provenance",
-                })
+                return Err(start_replay_guest_selectable_failure(
+                    GuestSelectableError::Campaign(
+                        crucible_campaign::CampaignCodecError::InvalidValue {
+                            reason: "guest selectable replay does not admit model-sample provenance",
+                        },
+                    ),
+                ));
             }
+        };
+        if let Err(error) = validation {
+            let attempt = replay_context.attempt.id().ok();
+            let mismatch = selection
+                .replay_mismatch(discovery.opportunity(), discovery.domain())
+                .ok()
+                .flatten();
+            let error = match (attempt, mismatch) {
+                (Some(attempt), Some(mismatch)) => {
+                    let request = pending.pending().request();
+                    let replayed_configuration =
+                        ConfigurationId::from_hash(CampaignHash::from_bytes(replayed.id().bytes));
+                    let expected_opportunity = replay_context
+                        .start
+                        .replay_selection(replayed.schedule.len())
+                        .map(|selection| {
+                            GuestSelectableReplayOpportunityContext::from_opportunity(
+                                selection.opportunity(),
+                            )
+                        });
+                    let correlation = GuestSelectableReplayCorrelation {
+                        phase: replay_context.phase,
+                        attempt_role: replay_context.attempt_role,
+                        attempt,
+                        replayed_configuration,
+                        decision_index: replayed.schedule.len(),
+                        node: pending.node().name.clone(),
+                        selectable: request.selectable_id().to_owned(),
+                        request_instance: request.instance_key().to_owned(),
+                        request_sequence: request.sequence(),
+                        request_icount: pending.pending().icount(),
+                        request_vcpu_index: pending.pending().vcpu_index(),
+                        expected_opportunity,
+                        replayed_opportunity:
+                            GuestSelectableReplayOpportunityContext::from_opportunity(
+                                discovery.opportunity(),
+                            ),
+                    };
+                    GuestSelectableError::ReplayMismatch(Box::new(
+                        GuestSelectableReplayMismatch::new(correlation, mismatch, error),
+                    ))
+                }
+                _ => GuestSelectableError::Campaign(error),
+            };
+            return Err(start_replay_guest_selectable_failure(error));
         }
-        .map_err(GuestSelectableError::Campaign)
-        .map_err(start_replay_guest_selectable_failure)?;
         let reply = selected_guest_reply(pending.pending(), &discovery, &selection)
             .map_err(start_replay_guest_selectable_failure)?;
         replies.push((pending, reply, decision.clone(), replayed.clone()));
