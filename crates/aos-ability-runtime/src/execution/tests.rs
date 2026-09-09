@@ -6,12 +6,12 @@ use std::io;
 use std::num::{NonZeroU32, NonZeroUsize};
 
 use aos_ability_model::{
-    compare_edges, compare_operation_keys, AbilityValue, AccessMode, ArtifactReference, BindingId,
-    BranchMembership, DecisionAlternative, DecisionNode, DecisionPredicate, DecisionSelector,
-    DependencyEdge, DependencyKind, IncarnationId, IndeterminateSemantics, LocalKey, MergeNode,
-    MergedOutput, MethodReference, Operation, OperationResultReference, PlanNodeKey,
-    ProviderAssignment, ResourceAccess, ResourceId, ResourcePermission, ResultProducerKey,
-    RetryPolicy, RevisionId, ScopedOperationKey, TransactionId, ValueExpression,
+    AbilityValue, AccessMode, ArtifactReference, BindingId, BranchMembership, DecisionAlternative,
+    DecisionNode, DecisionPredicate, DecisionSelector, DependencyEdge, DependencyKind,
+    IncarnationId, IndeterminateSemantics, LocalKey, MergeNode, MergedOutput, MethodReference,
+    Operation, OperationResultReference, PlanNodeKey, ProviderAssignment, ResourceAccess,
+    ResourceId, ResourcePermission, ResultProducerKey, RetryPolicy, RevisionId, ScopedOperationKey,
+    TransactionId, ValueExpression, compare_edges, compare_operation_keys,
 };
 use aos_ability_validate::test_support::{
     checked_effect_plan, checked_planned_provider_chain, plan_fixture,
@@ -33,8 +33,8 @@ use crate::execution::{
 use crate::journal::JournalLimits;
 
 #[test]
-fn public_controller_completes_and_releases_a_checked_operation(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn public_controller_completes_and_releases_a_checked_operation()
+-> Result<(), Box<dyn std::error::Error>> {
     let fixture = RuntimeFixture::new()?;
     let mut store = TestStore;
     let mut transaction = fixture.open(&mut store)?;
@@ -67,9 +67,11 @@ fn public_controller_completes_and_releases_a_checked_operation(
     transaction
         .release_admitted::<TestAdapter, _, _>(admitted, &mut catalog, &clock)
         .map_err(release_error)?;
-    assert!(transaction
-        .history(fixture.operation())?
-        .resources_released());
+    assert!(
+        transaction
+            .history(fixture.operation())?
+            .resources_released()
+    );
     assert_eq!(
         transaction.next_action(fixture.operation())?,
         RecoveryAction::None
@@ -121,8 +123,8 @@ fn schema_invalid_completion_stays_at_durable_intent() -> Result<(), Box<dyn std
 }
 
 #[test]
-fn token_from_closed_controller_cannot_drive_or_release_reopened_transaction(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn token_from_closed_controller_cannot_drive_or_release_reopened_transaction()
+-> Result<(), Box<dyn std::error::Error>> {
     let fixture = RuntimeFixture::new()?;
     let mut store = TestStore;
     let mut first = fixture.open(&mut store)?;
@@ -166,8 +168,8 @@ fn token_from_closed_controller_cannot_drive_or_release_reopened_transaction(
 }
 
 #[test]
-fn dropped_failed_cleanup_keeps_duplicate_admission_blocked(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn dropped_failed_cleanup_keeps_duplicate_admission_blocked()
+-> Result<(), Box<dyn std::error::Error>> {
     let fixture = RuntimeFixture::new()?;
     let mut store = TestStore;
     let mut transaction = fixture.open(&mut store)?;
@@ -239,18 +241,22 @@ fn failed_release_retries_without_publishing_early() -> Result<(), Box<dyn std::
     let failure = transaction
         .release_admitted::<TestAdapter, _, _>(admitted, &mut catalog, &clock)
         .expect_err("catalog release failure must retain the token");
-    assert!(!transaction
-        .history(fixture.operation())?
-        .resources_released());
+    assert!(
+        !transaction
+            .history(fixture.operation())?
+            .resources_released()
+    );
     assert_eq!(failure.retained_resources().count(), 1);
 
     catalog.fail_release = false;
     failure
         .retry(&mut transaction, &mut catalog, &clock)
         .map_err(release_error)?;
-    assert!(transaction
-        .history(fixture.operation())?
-        .resources_released());
+    assert!(
+        transaction
+            .history(fixture.operation())?
+            .resources_released()
+    );
     assert_eq!(catalog.release_calls, 2);
     Ok(())
 }
@@ -292,9 +298,11 @@ fn partial_release_retries_only_the_handles_still_owned() -> Result<(), Box<dyn 
         failure.retained_resources().collect::<Vec<_>>(),
         [&lower_resource]
     );
-    assert!(!transaction
-        .history(fixture.operation())?
-        .resources_released());
+    assert!(
+        !transaction
+            .history(fixture.operation())?
+            .resources_released()
+    );
     assert_eq!(
         catalog.release_order,
         [higher_resource.clone(), lower_resource.clone()]
@@ -307,15 +315,17 @@ fn partial_release_retries_only_the_handles_still_owned() -> Result<(), Box<dyn 
         catalog.release_order,
         [higher_resource, lower_resource.clone(), lower_resource]
     );
-    assert!(transaction
-        .history(fixture.operation())?
-        .resources_released());
+    assert!(
+        transaction
+            .history(fixture.operation())?
+            .resources_released()
+    );
     Ok(())
 }
 
 #[test]
-fn scheduler_waits_for_data_and_resolves_the_durable_output(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn scheduler_waits_for_data_and_resolves_the_durable_output()
+-> Result<(), Box<dyn std::error::Error>> {
     let fixture = RuntimeFixture::with_plan(checked_dependent_plan())?;
     let mut store = TestStore;
     let mut transaction = fixture.open(&mut store)?;
@@ -338,8 +348,8 @@ fn scheduler_waits_for_data_and_resolves_the_durable_output(
 }
 
 #[test]
-fn settled_failure_propagates_to_a_required_dependent_and_survives_reopen(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn settled_failure_propagates_to_a_required_dependent_and_survives_reopen()
+-> Result<(), Box<dyn std::error::Error>> {
     let fixture = RuntimeFixture::with_plan(checked_dependent_plan())?;
     let mut store = TestStore;
     let mut transaction = fixture.open(&mut store)?;
@@ -357,10 +367,12 @@ fn settled_failure_propagates_to_a_required_dependent_and_survives_reopen(
 
     let summary = transaction.summary();
     assert_eq!(summary.terminal(), Some(TerminalResult::SettledFailure));
-    assert!(summary
-        .operations()
-        .iter()
-        .all(|operation| operation.status() == OperationStatus::SettledFailure));
+    assert!(
+        summary
+            .operations()
+            .iter()
+            .all(|operation| operation.status() == OperationStatus::SettledFailure)
+    );
     drop(transaction);
 
     let mut reopened = fixture.open(&mut store)?;
@@ -368,15 +380,17 @@ fn settled_failure_propagates_to_a_required_dependent_and_survives_reopen(
         reopened.summary().terminal(),
         Some(TerminalResult::SettledFailure)
     );
-    assert!(reopened
-        .schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?
-        .is_empty());
+    assert!(
+        reopened
+            .schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?
+            .is_empty()
+    );
     Ok(())
 }
 
 #[test]
-fn ordering_only_waits_for_propagated_failure_to_settle_then_runs(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn ordering_only_waits_for_propagated_failure_to_settle_then_runs()
+-> Result<(), Box<dyn std::error::Error>> {
     let fixture = RuntimeFixture::with_plan(checked_failure_then_ordering_plan())?;
     let mut store = TestStore;
     let mut transaction = fixture.open(&mut store)?;
@@ -399,8 +413,8 @@ fn ordering_only_waits_for_propagated_failure_to_settle_then_runs(
 }
 
 #[test]
-fn scheduler_persists_selection_and_excludes_the_unselected_operation(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn scheduler_persists_selection_and_excludes_the_unselected_operation()
+-> Result<(), Box<dyn std::error::Error>> {
     let fixture = RuntimeFixture::with_plan(checked_branch_plan())?;
     let mut store = TestStore;
     let mut transaction = fixture.open(&mut store)?;
@@ -423,8 +437,8 @@ fn scheduler_persists_selection_and_excludes_the_unselected_operation(
 }
 
 #[test]
-fn transaction_summary_preserves_mixed_terminal_outcomes(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn transaction_summary_preserves_mixed_terminal_outcomes() -> Result<(), Box<dyn std::error::Error>>
+{
     let fixture = RuntimeFixture::with_plan(checked_branch_plan())?;
     let mut store = TestStore;
     let mut transaction = fixture.open(&mut store)?;
@@ -454,8 +468,7 @@ fn transaction_summary_preserves_mixed_terminal_outcomes(
 }
 
 #[test]
-fn failed_selector_settles_both_unselected_branch_arms(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn failed_selector_settles_both_unselected_branch_arms() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = RuntimeFixture::with_plan(checked_failed_decision_ordering_plan())?;
     let mut store = TestStore;
     let mut transaction = fixture.open(&mut store)?;
@@ -463,12 +476,16 @@ fn failed_selector_settles_both_unselected_branch_arms(
     reject_and_settle(&mut transaction, &scoped("observe"))?;
     let blocked = transaction.schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?;
     assert_eq!(blocked.len(), 3);
-    assert!(blocked
-        .iter()
-        .any(|operation| operation.operation().key.as_str() == "after-decision"));
-    assert!(blocked
-        .iter()
-        .all(|operation| operation.action() == &RecoveryAction::SettleFailureBeforeEffect));
+    assert!(
+        blocked
+            .iter()
+            .any(|operation| operation.operation().key.as_str() == "after-decision")
+    );
+    assert!(
+        blocked
+            .iter()
+            .all(|operation| operation.action() == &RecoveryAction::SettleFailureBeforeEffect)
+    );
     for operation in blocked {
         transaction.settle_failure_before_effect(operation.operation(), ability(false))?;
     }
@@ -480,15 +497,17 @@ fn failed_selector_settles_both_unselected_branch_arms(
     drop(transaction);
 
     let mut reopened = fixture.open(&mut store)?;
-    assert!(reopened
-        .schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?
-        .is_empty());
+    assert!(
+        reopened
+            .schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?
+            .is_empty()
+    );
     Ok(())
 }
 
 #[test]
-fn deep_failure_propagation_is_iterative_and_work_bounded(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn deep_failure_propagation_is_iterative_and_work_bounded() -> Result<(), Box<dyn std::error::Error>>
+{
     let fixture = RuntimeFixture::with_plan(checked_deep_dependent_plan(4_096))?;
     let mut store = TestStore;
     let mut transaction = fixture.open(&mut store)?;
@@ -500,15 +519,17 @@ fn deep_failure_propagation_is_iterative_and_work_bounded(
     assert_eq!(blocked.len(), maximum_work.get());
     assert_eq!(blocked[0].operation().key.as_str(), "step-00001");
     assert_eq!(blocked[6].operation().key.as_str(), "step-00007");
-    assert!(blocked
-        .iter()
-        .all(|operation| operation.action() == &RecoveryAction::SettleFailureBeforeEffect));
+    assert!(
+        blocked
+            .iter()
+            .all(|operation| operation.action() == &RecoveryAction::SettleFailureBeforeEffect)
+    );
     Ok(())
 }
 
 #[test]
-fn scheduler_persists_selected_merge_output_for_downstream_inputs(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn scheduler_persists_selected_merge_output_for_downstream_inputs()
+-> Result<(), Box<dyn std::error::Error>> {
     let fixture = RuntimeFixture::with_plan(checked_merge_plan())?;
     let mut store = TestStore;
     let mut transaction = fixture.open(&mut store)?;
@@ -547,8 +568,8 @@ fn scheduler_persists_selected_merge_output_for_downstream_inputs(
 }
 
 #[test]
-fn planned_provider_chain_requires_each_durable_assignment_before_use(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn planned_provider_chain_requires_each_durable_assignment_before_use()
+-> Result<(), Box<dyn std::error::Error>> {
     let fixture = RuntimeFixture::with_plan(checked_planned_provider_chain())?;
     let mut store = TestStore;
     let mut transaction = fixture.open(&mut store)?;
@@ -583,15 +604,17 @@ fn planned_provider_chain_requires_each_durable_assignment_before_use(
         &assignment_c,
         assignment_value(&assignment_c)?,
     )?;
-    assert!(transaction
-        .schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?
-        .is_empty());
+    assert!(
+        transaction
+            .schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?
+            .is_empty()
+    );
     Ok(())
 }
 
 #[test]
-fn planned_provider_admission_rejects_missing_live_incarnation_before_effect(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn planned_provider_admission_rejects_missing_live_incarnation_before_effect()
+-> Result<(), Box<dyn std::error::Error>> {
     let fixture = RuntimeFixture::with_plan(checked_planned_provider_chain())?;
     let mut store = TestStore;
     let mut transaction = fixture.open(&mut store)?;
@@ -631,8 +654,8 @@ fn planned_provider_admission_rejects_missing_live_incarnation_before_effect(
 }
 
 #[test]
-fn reopened_indeterminate_effect_authorizes_only_reconciliation_and_preserves_budget(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn reopened_indeterminate_effect_authorizes_only_reconciliation_and_preserves_budget()
+-> Result<(), Box<dyn std::error::Error>> {
     let fixture = RuntimeFixture::with_plan(checked_recovery_plan())?;
     let mut store = TestStore;
     let clock = SettableClock::default();
