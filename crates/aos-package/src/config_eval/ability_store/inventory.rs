@@ -15,6 +15,7 @@
 //! prevents those handles from extending admission after session closure.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::fmt;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
@@ -47,6 +48,44 @@ const NATIVE_RESOURCE_STRING_MAX_BYTES: usize = 4 * 1024;
 static NATIVE_RESERVATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NATIVE_LEDGER_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// Requires host-native effects to share the machine-global collision domain.
+///
+/// The durable ledger prevents conflicting physical claims only when every
+/// host catalog uses the same profile and switch lock. Root redirection and
+/// test-specific transaction paths therefore cannot authorize live host
+/// effects.
+///
+/// # Errors
+///
+/// Returns an error when the process selects a redirected root, switch lock,
+/// or profile directory.
+pub(crate) fn require_machine_global_host_collision_domain() -> Result<(), io::Error> {
+    validate_machine_global_host_collision_domain(
+        std::env::var_os("AOS_ROOT").as_deref(),
+        std::env::var_os("AOS_SWITCH_LOCK_PATH").as_deref(),
+        std::env::var_os("AOS_PROFILE_ROOT").as_deref(),
+    )
+}
+
+fn validate_machine_global_host_collision_domain(
+    root: Option<&OsStr>,
+    switch_lock: Option<&OsStr>,
+    profile_root: Option<&OsStr>,
+) -> Result<(), io::Error> {
+    let rooted = root.is_some_and(|value| !value.is_empty());
+    let custom_lock = switch_lock.is_some_and(|value| !value.is_empty());
+    let custom_profile =
+        profile_root.is_some_and(|value| !value.is_empty() && value != "/var/lib/profiles");
+
+    if rooted || custom_lock || custom_profile {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "host-native abilities require the machine-global profile, ledger, and switch-lock domain",
+        ));
+    }
+    Ok(())
+}
+
 /// Identifies one qualified native object independently from logical providers.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -77,6 +116,57 @@ impl NativeQualifiedResource {
         Ok(Self { logical, physical })
     }
 
+    /// Qualifies one managed-configuration destination selected by its trusted catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `canonical_object` is not a canonical absolute
+    /// destination or does not fit the native resource ledger contract.
+    pub(crate) fn managed_configuration(
+        logical: ResourceId,
+        canonical_object: &str,
+    ) -> Result<Self, GenerationAbilityStoreError> {
+        Self::new(
+            logical,
+            "managed-configuration",
+            "configuration-generation",
+            canonical_object,
+        )
+    }
+
+    /// Qualifies one nginx generation-association record selected by its trusted catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `canonical_object` is not a canonical absolute
+    /// association path or does not fit the native resource ledger contract.
+    pub(crate) fn nginx_generation(
+        logical: ResourceId,
+        canonical_object: &str,
+    ) -> Result<Self, GenerationAbilityStoreError> {
+        Self::new(
+            logical,
+            "nginx-generation-association",
+            "nginx-runtime",
+            canonical_object,
+        )
+    }
+
+    fn new(
+        logical: ResourceId,
+        class: &str,
+        authority: &str,
+        object: &str,
+    ) -> Result<Self, GenerationAbilityStoreError> {
+        let physical = NativePhysicalResource {
+            class: class.to_string(),
+            authority: authority.to_string(),
+            object: object.to_string(),
+        };
+        physical.validate()?;
+        Ok(Self { logical, physical })
+    }
+
     /// Returns the checked logical resource qualified by the native catalog.
     #[must_use]
     pub const fn logical(&self) -> &ResourceId {
@@ -100,12 +190,25 @@ impl NativePhysicalResource {
                 )));
             }
         }
-        if self.class != "systemd-unit" || self.authority != "system-manager" {
-            return Err(GenerationAbilityStoreError::Conflict(
-                "native resource ledger contains an unsupported physical resource domain"
-                    .to_string(),
-            ));
+        match (self.class.as_str(), self.authority.as_str()) {
+            ("systemd-unit", "system-manager") => self.validate_systemd_unit()?,
+            ("managed-configuration", "configuration-generation") => {
+                validate_catalog_object(&self.object, "managed-configuration destination")?;
+            }
+            ("nginx-generation-association", "nginx-runtime") => {
+                validate_catalog_object(&self.object, "nginx generation association")?;
+            }
+            _ => {
+                return Err(GenerationAbilityStoreError::Conflict(
+                    "native resource ledger contains an unsupported physical resource domain"
+                        .to_string(),
+                ));
+            }
         }
+        Ok(())
+    }
+
+    fn validate_systemd_unit(&self) -> Result<(), GenerationAbilityStoreError> {
         let unit = self
             .object
             .strip_prefix("/org/freedesktop/systemd1/unit/")
@@ -116,15 +219,84 @@ impl NativePhysicalResource {
                         .to_string(),
                 )
             })?;
-        if !unit
+        if unit
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
         {
-            return Err(GenerationAbilityStoreError::Conflict(
+            Ok(())
+        } else {
+            Err(GenerationAbilityStoreError::Conflict(
                 "native systemd resource has an invalid canonical Unit object identity".to_string(),
-            ));
+            ))
         }
+    }
+}
+
+fn validate_catalog_object(object: &str, label: &str) -> Result<(), GenerationAbilityStoreError> {
+    let Some(relative) = object.strip_prefix('/') else {
+        return Err(GenerationAbilityStoreError::Conflict(format!(
+            "native {label} is not a canonical absolute path"
+        )));
+    };
+    if relative.is_empty()
+        || relative
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
+    {
+        Err(GenerationAbilityStoreError::Conflict(format!(
+            "native {label} is not a canonical absolute path"
+        )))
+    } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod physical_resource_tests {
+    use super::*;
+
+    #[test]
+    fn catalog_objects_reject_lexical_path_aliases() {
+        for alias in [
+            "//trusted/object",
+            "/trusted//object",
+            "/trusted/./object",
+            "/trusted/../object",
+        ] {
+            assert!(
+                validate_catalog_object(alias, "test object").is_err(),
+                "{alias}"
+            );
+        }
+        assert!(validate_catalog_object("/trusted/object", "test object").is_ok());
+    }
+
+    #[test]
+    fn host_native_effects_require_the_machine_global_collision_domain() {
+        let empty = OsStr::new("");
+        let default_profile = OsStr::new("/var/lib/profiles");
+
+        assert!(validate_machine_global_host_collision_domain(None, None, None).is_ok());
+        assert!(
+            validate_machine_global_host_collision_domain(Some(empty), Some(empty), Some(empty))
+                .is_ok()
+        );
+        assert!(
+            validate_machine_global_host_collision_domain(None, None, Some(default_profile))
+                .is_ok()
+        );
+
+        for (root, switch_lock, profile_root) in [
+            (Some(OsStr::new("/target")), None, None),
+            (None, Some(OsStr::new("/tmp/switch.lock")), None),
+            (None, None, Some(OsStr::new("/tmp/profiles"))),
+        ] {
+            let error =
+                validate_machine_global_host_collision_domain(root, switch_lock, profile_root)
+                    .expect_err("redirected authority must be execution-ineligible");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(error.to_string().contains("machine-global"));
+        }
     }
 }
 
