@@ -1291,7 +1291,9 @@ fn validate_production_resume_basis(
 }
 
 fn validate_production_post_selection(
+    // crucible-lint: allow host-nondeterminism-state -- this immutable initial configuration was authenticated from the exact checkpoint; host observations cannot alter it.
     initial: &Configuration,
+    // crucible-lint: allow host-nondeterminism-state -- this immutable selected configuration is compared structurally and never derived from host timing or randomness.
     selected: &Configuration,
 ) -> Result<(), ProductionAttemptCheckpointRestoreError> {
     let prefix = initial.schedule.decisions();

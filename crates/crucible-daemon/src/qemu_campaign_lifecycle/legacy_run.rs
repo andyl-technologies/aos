@@ -232,6 +232,7 @@ impl GuardedDefaultCampaignRunRequest {
     #[must_use]
     pub fn with_selection_free_resume_source(
         mut self,
+        // crucible-lint: allow host-nondeterminism-state -- the caller-supplied replay schedule is forwarded unchanged into exact source authentication.
         schedule: Schedule,
         closure: GuardedCampaignReplayClosure,
         checkpoint: Checkpoint,
