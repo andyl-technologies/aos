@@ -5,8 +5,9 @@ use std::io::{Read as _, Take};
 
 use anyhow::{Context as _, Result, bail};
 use aos_ability_inspect::{
-    INSPECTION_BUNDLE_MAX_BYTES, InspectionBundle, InspectionView, ProjectionKind, RenderFormat,
-    ViewAnchor, render, render_projection,
+    GraphQuery, INSPECTION_BUNDLE_MAX_BYTES, INSPECTION_QUERY_MAX_BYTES, InspectionBundle,
+    InspectionView, ProjectionKind, RenderFormat, ViewAnchor, render, render_projection,
+    render_slice,
 };
 use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
@@ -27,6 +28,7 @@ pub fn run(command: &AbilityCommand, printer: &Printer) -> Result<()> {
 }
 
 fn inspect(args: &AbilityInspectArgs, printer: &Printer) -> Result<()> {
+    let query = args.query.as_deref().map(read_bounded_query).transpose()?;
     let bytes = read_bounded_bundle(args)?;
     let expected_digest = args
         .expected_digest
@@ -48,15 +50,29 @@ fn inspect(args: &AbilityInspectArgs, printer: &Printer) -> Result<()> {
             RenderFormat::Text
         }
     });
-    let output = match args.projection {
-        Some(projection) => {
-            let projection = view
-                .project(projection.into())
-                .context("projecting semantic ability graph")?;
-            render_projection(&projection, format)
-                .context("rendering projected ability inspection view")?
+    let projection = args
+        .projection
+        .map(|kind| view.project(kind.into()))
+        .transpose()
+        .context("projecting semantic ability graph")?;
+    let output = match (projection.as_ref(), query.as_ref()) {
+        (Some(projection), Some(query)) => {
+            let slice = projection
+                .query(query)
+                .context("querying projected ability inspection view")?;
+            render_slice(&slice, format).context("rendering projected ability graph slice")?
         }
-        None => render(&view, format).context("rendering checked ability inspection view")?,
+        (Some(projection), None) => render_projection(projection, format)
+            .context("rendering projected ability inspection view")?,
+        (None, Some(query)) => {
+            let slice = view
+                .query(query)
+                .context("querying checked ability inspection view")?;
+            render_slice(&slice, format).context("rendering checked ability graph slice")?
+        }
+        (None, None) => {
+            render(&view, format).context("rendering checked ability inspection view")?
+        }
     };
     printer.raw(&output);
 
@@ -86,6 +102,27 @@ fn read_bounded_bundle(args: &AbilityInspectArgs) -> Result<Vec<u8>> {
         );
     }
     Ok(bytes)
+}
+
+fn read_bounded_query(path: &std::path::Path) -> Result<GraphQuery> {
+    let file =
+        File::open(path).with_context(|| format!("opening inspection query {}", path.display()))?;
+    let limit = u64::try_from(INSPECTION_QUERY_MAX_BYTES)
+        .context("inspection query byte limit does not fit this platform")?;
+    let mut reader: Take<File> = file.take(limit.saturating_add(1));
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("reading inspection query {}", path.display()))?;
+    if bytes.len() > INSPECTION_QUERY_MAX_BYTES {
+        bail!(
+            "inspection query {} exceeds the {} byte limit",
+            path.display(),
+            INSPECTION_QUERY_MAX_BYTES
+        );
+    }
+    GraphQuery::decode(&bytes)
+        .with_context(|| format!("decoding inspection query {}", path.display()))
 }
 
 impl From<AbilityRenderFormat> for RenderFormat {

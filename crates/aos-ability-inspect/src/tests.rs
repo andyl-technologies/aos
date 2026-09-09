@@ -17,9 +17,10 @@ use aos_ability_validate::test_support::{
 use aos_contract::Sha256Digest;
 
 use crate::{
-    Direction, GraphQuery, InspectionBundle, InspectionBundleError, InspectionDiff, InspectionEdge,
-    InspectionNode, InspectionRelation, InspectionView, NodeKey, ProjectionKind, RenderFormat,
-    ViewAnchor, render, render_projection, render_slice,
+    Direction, GraphQuery, INSPECTION_QUERY_MAX_DEPTH, INSPECTION_QUERY_MAX_NODES,
+    InspectionBundle, InspectionBundleError, InspectionDiff, InspectionEdge, InspectionNode,
+    InspectionRelation, InspectionView, NodeKey, ProjectionKind, RenderFormat, ViewAnchor, render,
+    render_projection, render_slice,
 };
 
 #[test]
@@ -390,6 +391,53 @@ fn composition_projection_queries_recursive_provider_selection()
         },
     ];
     assert!(chain.iter().all(|edge| slice.edges().contains(edge)));
+    Ok(())
+}
+
+#[test]
+fn query_documents_reject_noncanonical_and_unsupported_bounds()
+-> Result<(), Box<dyn std::error::Error>> {
+    let plan = checked_effect_plan();
+    let root = NodeKey::Binding(plan.binding_plan().bindings()[0].id.clone());
+    let query = GraphQuery::new([root], 2, 8);
+    let bytes = query.canonical_bytes()?;
+    assert_eq!(GraphQuery::decode(&bytes)?, query);
+
+    let mut noncanonical = b" \n".to_vec();
+    noncanonical.extend_from_slice(&bytes);
+    assert!(matches!(
+        GraphQuery::decode(&noncanonical),
+        Err(crate::GraphQueryError::NoncanonicalEncoding)
+    ));
+
+    for (field, value, expected) in [
+        (
+            "required_features",
+            serde_json::json!(["future-query-semantics"]),
+            crate::GraphQueryError::UnsupportedFeatures,
+        ),
+        (
+            "max_depth",
+            serde_json::json!(INSPECTION_QUERY_MAX_DEPTH + 1),
+            crate::GraphQueryError::DepthLimit {
+                actual: INSPECTION_QUERY_MAX_DEPTH + 1,
+                limit: INSPECTION_QUERY_MAX_DEPTH,
+            },
+        ),
+        (
+            "max_nodes",
+            serde_json::json!(INSPECTION_QUERY_MAX_NODES + 1),
+            crate::GraphQueryError::NodeLimit {
+                actual: INSPECTION_QUERY_MAX_NODES + 1,
+                limit: INSPECTION_QUERY_MAX_NODES,
+            },
+        ),
+    ] {
+        let mut value_document: serde_json::Value = serde_json::from_slice(&bytes)?;
+        value_document[field] = value;
+        let invalid = aos_contract::canonical::to_vec(&value_document)?;
+        assert_eq!(GraphQuery::decode(&invalid), Err(expected));
+    }
     Ok(())
 }
 
