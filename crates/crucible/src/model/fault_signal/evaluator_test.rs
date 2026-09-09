@@ -34,6 +34,71 @@ fn choice() -> SignalChoiceContext {
 }
 
 #[test]
+fn pulse_is_inactive_before_start_without_hiding_coordinate_identity_errors() {
+    let output = id("pulse");
+    let source_node = id("source-node");
+    let pulse = SignalNode {
+        id: output.clone(),
+        domain: SignalDomain::NodeCounter,
+        output: shape(SignalValueType::Bool, SignalUnit::Dimensionless),
+        inputs: Vec::new(),
+        kind: SignalNodeKind::Source(SignalSourceSpecification::Pulse {
+            start: SignalCoordinate::NodeCounter {
+                node: source_node.clone(),
+                retired_instructions: 10,
+            },
+            duration: 2,
+            inactive: SignalValue::Bool(false),
+            active: SignalValue::Bool(true),
+        }),
+    };
+    let program = SignalProgram::new(
+        vec![pulse],
+        vec![output.clone()],
+        SignalResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("pulse program: {error}"));
+    let store = MemoryDagStore::new();
+    let provider = DagSignalArtifactProvider::new(&store);
+    let mut evaluator = SignalEvaluator::new(
+        &program,
+        &provider,
+        SignalBoundarySnapshot::default(),
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("pulse evaluator: {error}"));
+
+    let evaluate = |evaluator: &mut SignalEvaluator<'_>, node, retired_instructions| {
+        evaluator.evaluate(&SignalEvaluationRequest {
+            output: output.clone(),
+            coordinate: SignalCoordinate::NodeCounter {
+                node,
+                retired_instructions,
+            },
+            same_coordinate_sequence: 0,
+            choice: choice(),
+        })
+    };
+
+    assert!(matches!(
+        evaluate(&mut evaluator, source_node.clone(), 9),
+        Ok(EvaluatedSignal::Value(SignalValue::Bool(false)))
+    ));
+    assert!(matches!(
+        evaluate(&mut evaluator, source_node.clone(), 10),
+        Ok(EvaluatedSignal::Value(SignalValue::Bool(true)))
+    ));
+    assert!(matches!(
+        evaluate(&mut evaluator, source_node, 12),
+        Ok(EvaluatedSignal::Value(SignalValue::Bool(false)))
+    ));
+    assert!(matches!(
+        evaluate(&mut evaluator, id("different-node"), 9),
+        Err(SignalEvaluationError::IncompatibleCoordinates)
+    ));
+}
+
+#[test]
 fn ramp_and_ratio_arithmetic_are_exact() {
     let value_shape = shape(SignalValueType::I64, SignalUnit::Dimensionless);
     let ramp = SignalNode {
