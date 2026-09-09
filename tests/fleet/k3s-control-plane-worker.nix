@@ -19,8 +19,10 @@
   dataUrl,
   mkSystem,
   pkgs,
+  lib,
   ...
 }: let
+  workloadImage = import ../../lib/testing/k3s-workload-image.nix {inherit pkgs lib;};
   controlPlaneSystem = mkSystem [
     ../../systems/server.nix
     {
@@ -66,10 +68,13 @@ in {
     worker = {
       system = workerSystem;
       packages = ["k3s-worker"];
+      extraClosures = [workloadImage];
     };
   };
 
   testScript = ''
+    ${builtins.readFile ../../lib/testing/k3s-lifecycle.py}
+
     import base64
     import shlex
 
@@ -251,31 +256,26 @@ in {
         )
         raise
 
-    # ── Worker registered + Ready ─────────────────────────────────
-    # With `--disable-agent`, the control-plane is invisible in
-    # `kubectl get nodes` — only the worker registers. Asserting
-    # the worker reaches Ready proves the full join round-trip:
-    # token verified, TLS verified against the server SAN list,
-    # agent pulled flannel config from the apiserver, kubelet
-    # started, configureNode wrote the Node object.
-    controlplane.wait_until_succeeds(
-        r"""${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml \
-            get node worker \
-            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' \
-            | grep -Fxq True""",
-        timeout=180,
-    )
+    assert_k3s_cluster(controlplane, "${pkgs.k3s}/bin/kubectl", ["worker"])
 
-    # ── Sanity: exactly one Node exists ───────────────────────────
-    # The bash-escape gymnastics around `\$(…)` are gone: Python
-    # strings are not subject to host-side shell expansion, so the
-    # command we write is the command the agent runs.
-    out = controlplane.succeed(
-        "${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get nodes --no-headers"
+    manifest_hash = worker.succeed(
+        "${pkgs.coreutils}/bin/sha256sum ${workloadImage}/manifest.json"
+    ).split()[0]
+    import_k3s_workload(
+        worker,
+        "${pkgs.k3s}/bin/ctr",
+        "${pkgs.k3s}/bin/crictl",
+        "${workloadImage}/image.oci.tar",
+        "aos.invalid/qualification@sha256:" + manifest_hash,
     )
-    assert len(out.splitlines()) == 1, (
-        f"expected exactly one node (control-plane is invisible by design),"
-        f" got {out!r}"
+    assert_k3s_workload(
+        controlplane,
+        "${pkgs.k3s}/bin/kubectl",
+        "aos.invalid/qualification@sha256:" + manifest_hash,
+        ["${pkgs.coreutils}/bin/printf", "k3s-workload-passed\n"],
+        "k3s-workload-passed\n",
+        "worker",
+        "qualification-workload",
     )
   '';
 }

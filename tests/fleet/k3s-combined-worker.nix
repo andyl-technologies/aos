@@ -12,8 +12,10 @@
   dataUrl,
   mkSystem,
   pkgs,
+  lib,
   ...
 }: let
+  workloadImage = import ../../lib/testing/k3s-workload-image.nix {inherit pkgs lib;};
   combinedSystem = mkSystem [
     ../../systems/server.nix
     {
@@ -49,15 +51,19 @@ in {
     combined = {
       system = combinedSystem;
       packages = ["k3s-combined"];
+      extraClosures = [workloadImage];
     };
 
     worker = {
       system = workerSystem;
       packages = ["k3s-worker"];
+      extraClosures = [workloadImage];
     };
   };
 
   testScript = ''
+    ${builtins.readFile ../../lib/testing/k3s-lifecycle.py}
+
     import base64
     import shlex
 
@@ -215,42 +221,27 @@ in {
     # ── Worker service active ───────────────────────────────────────
     wait_unit_active(worker, "k3s.service", timeout=240)
 
-    # ── Both nodes Ready ───────────────────────────────────────────
-    # `grep -Fxq True` (fixed-string, full-line, quiet) requires
-    # the kubectl jsonpath output to BE exactly `True`, not just
-    # contain it — guards against jsonpath ever expanding to e.g.
-    # `[True]` and matching loosely.
-    combined.wait_until_succeeds(
-        r"""${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml \
-            get node combined \
-            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' \
-            | grep -Fxq True""",
-        timeout=180,
-    )
-    combined.wait_until_succeeds(
-        r"""${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml \
-            get node worker \
-            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' \
-            | grep -Fxq True""",
-        timeout=180,
-    )
+    assert_k3s_cluster(combined, "${pkgs.k3s}/bin/kubectl", ["combined", "worker"], combined_node="combined")
 
-    # ── Combined node is schedulable ──────────────────────────────
-    # `k3s server` (without --disable-agent) does NOT add the
-    # control-plane:NoSchedule taint by default — the whole point
-    # of combined is co-locating workloads on the control-plane.
-    # kubectl prints the empty string when `.spec.taints` is unset.
-    taints = combined.succeed(
-        "${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get node combined -o jsonpath='{.spec.taints}'"
-    )
-    assert taints == "", f"combined node has unexpected taints: {taints!r}"
-
-    # ── Sanity: exactly two nodes ─────────────────────────────────
-    out = combined.succeed(
-        "${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get nodes --no-headers"
-    )
-    assert len(out.splitlines()) == 2, (
-        f"expected exactly two nodes, got {out!r}"
-    )
+    manifest_hash = worker.succeed(
+        "${pkgs.coreutils}/bin/sha256sum ${workloadImage}/manifest.json"
+    ).split()[0]
+    for node_name, machine in (("combined", combined), ("worker", worker)):
+        import_k3s_workload(
+            machine,
+            "${pkgs.k3s}/bin/ctr",
+            "${pkgs.k3s}/bin/crictl",
+            "${workloadImage}/image.oci.tar",
+            "aos.invalid/qualification@sha256:" + manifest_hash,
+        )
+        assert_k3s_workload(
+            combined,
+            "${pkgs.k3s}/bin/kubectl",
+            "aos.invalid/qualification@sha256:" + manifest_hash,
+            ["${pkgs.coreutils}/bin/printf", "k3s-workload-passed\n"],
+            "k3s-workload-passed\n",
+            node_name,
+            "qualification-workload-" + node_name,
+        )
   '';
 }

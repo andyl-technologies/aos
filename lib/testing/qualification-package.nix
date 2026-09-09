@@ -35,6 +35,11 @@
         $out/share/aos-release/qualification-package.py
     '';
   };
+  k3sBindings = pkgs.writeTextFile {
+    name = "${name}-k3s-bindings";
+    destination = "/qualification_k3s_bindings.py";
+    text = builtins.readFile ./qualification_k3s_bindings.py;
+  };
   runtimePath = lib.makeBinPath [
     pkgs.bash
     pkgs.coreutils
@@ -58,6 +63,7 @@
     export AOS_PROFILE_ROOT=$PWD/profiles
     export APM_SYSTEM_CONFIG_DIR=$PWD/empty-system-config
     export LC_ALL=C
+    export PYTHONPATH=${k3sBindings}
 
     export AOS_QUALIFICATION_PLATFORM=${lib.escapeShellArg pkgs.stdenv.hostPlatform.system}
     export AOS_QUALIFICATION_IDENTITY=${lib.escapeShellArg identity}

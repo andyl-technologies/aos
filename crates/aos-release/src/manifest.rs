@@ -32,6 +32,9 @@ pub const MANIFEST_ENVELOPE_V1: &str = "aos.release.manifest-envelope/v1";
 pub struct FinalArtifactSet {
     /// Stable logical ids resolved by the artifact inventory.
     pub artifact_ids: Vec<String>,
+    /// Configuration companions retained from the exact planned package cell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<crate::plan::PackageConfigurationBinding>,
 }
 
 /// Final package result across all four platforms.
@@ -412,6 +415,11 @@ fn validate_final_cells(
                     artifact: planned_set,
                 },
             ) => {
+                if final_set.configuration != planned_set.configuration
+                    || (image && final_set.configuration.is_some())
+                {
+                    bail!("final package configuration binding differs from the planned cell");
+                }
                 let planned_ids: Vec<_> = planned_set
                     .artifacts
                     .iter()

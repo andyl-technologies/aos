@@ -73,8 +73,17 @@
   excludedResources = discoverExcludedResources ../../pkgs "" false;
   publicationMatrix = support.publicationMatrix packageNames;
   releaseInventory = support.releaseInventory packageNames;
-  releaseDerivations =
-    support.releaseDerivations pkgs.stdenv.hostPlatform.system pkgs packageNames;
+  configurationBaseProbe = {
+    drvPath = "/nix/store/22222222222222222222222222222222-configuration-base.drv";
+    outPath = "/nix/store/22222222222222222222222222222222-configuration-base";
+    outputName = "out";
+  };
+  releaseDerivations = support.releaseDerivations {
+    system = pkgs.stdenv.hostPlatform.system;
+    packages = pkgs;
+    names = packageNames;
+    configurationBaseLib = configurationBaseProbe;
+  };
   x86Packages = publicationMatrix.x86_64-darwin;
   armPackages = publicationMatrix.aarch64-darwin;
   x86LinuxPackages = publicationMatrix.x86_64-linux;
@@ -121,8 +130,10 @@
     meta = {license = "probe";};
   };
   nestedSource = ../../qualification/modules;
-  derivationProbe = support.releaseDerivations "x86_64-linux" {
-    aos = {
+  derivationProbe = support.releaseDerivations {
+    system = "x86_64-linux";
+    names = ["aos"];
+    packages.aos = {
       type = "derivation";
       drvPath = "/nix/store/00000000000000000000000000000000-aos.drv";
       outPath = "/nix/store/00000000000000000000000000000000-aos";
@@ -142,7 +153,7 @@
         maintainers = ["AOS test"];
       };
     };
-  } ["aos"];
+  };
   sourceRoots = (builtins.head derivationProbe.packages).source_store_paths;
   nestedSourceRoot = builtins.unsafeDiscardStringContext (toString (builtins.path {
     path = nestedSource;
@@ -150,6 +161,9 @@
   }));
   releasePackageByName = name:
     builtins.head (builtins.filter (package: package.name == name) releaseDerivations.packages);
+  configuredPackage = releasePackageByName "k3s-worker";
+  configuredOutput = name:
+    builtins.head (builtins.filter (output: output.name == name) configuredPackage.outputs);
   releaseSourcesComplete =
     builtins.all (
       package:
@@ -188,6 +202,16 @@ in
     nestedSourceRoot
   ];
   assert releaseSourcesComplete;
+  assert configuredPackage.configuration.module_artifact
+  == "package/k3s-worker/${pkgs.stdenv.hostPlatform.system}/config";
+  assert configuredPackage.configuration.evaluation_base_artifact
+  == "package/k3s-worker/${pkgs.stdenv.hostPlatform.system}/configuration-base";
+  assert (configuredOutput "out").store_path == builtins.unsafeDiscardStringContext (toString pkgs.k3s-worker);
+  assert (configuredOutput "config").derivation == builtins.unsafeDiscardStringContext pkgs.k3s-worker.config.drvPath;
+  assert (configuredOutput "config").derivation != configuredPackage.derivation;
+  assert (configuredOutput "config").output == "config";
+  assert (configuredOutput "configuration-base").derivation == configurationBaseProbe.drvPath;
+  assert (configuredOutput "configuration-base").output == "out";
   assert builtins.length (releasePackageByName "aos").source_store_paths >= 2;
   assert builtins.length (releasePackageByName "docker-compose").source_store_paths >= 2;
   assert builtins.length (releasePackageByName "envoy").source_store_paths >= 2;

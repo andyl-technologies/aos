@@ -725,6 +725,7 @@ let
     "kernel/_source.nix" = "linux-only-source";
     "kubernetes/_k3s-common.nix" = "linux-only-build-helper";
     "kubernetes/_k3s-expose-package.nix" = "linux-only-build-helper";
+    "kubernetes/_k3s-pause-image.nix" = "linux-only-build-helper";
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
     "toolchain/_bazel.nix" = "native-build-helper";
@@ -736,6 +737,8 @@ let
     "toolchain/java/_darwin-mig.nix" = "linux-only-build-helper";
     "toolchain/java/_openjdk-bootstrap.nix" = "native-build-helper";
     "toolchain/llvm/_llvm.nix" = "cross-build-helper";
+    "toolchain/rust/_current.nix" = "mixed-source";
+    "toolchain/rust/_rust-linux-hosted.nix" = "cross-build-helper";
     "toolchain/rust/_rust-darwin-build-tool.nix" = "cross-build-helper";
     "toolchain/rust/_rust-darwin.nix" = "cross-build-helper";
     "toolchain/rust/_rust-bootstrap.nix" = "native-build-helper";
@@ -897,13 +900,21 @@ in rec {
       names;
   };
 
-  releaseDerivations = system: packages: names: {
+  releaseDerivations = {
+    system,
+    packages,
+    names,
+    configurationBaseLib ? null,
+    configurationSources ? [],
+  }: {
     schema_version = "aos.release.derivation-inventory/v1";
     platform = system;
     packages = map (
       name: let
         package = packages.${name};
         selectedOutput = package.outputName or "out";
+        hasConfiguration = selectedOutput == "out" && package ? config;
+        artifactPrefix = "package/${name}/${system}";
         publishedOutputs =
           if selectedOutput == "out"
           then package.outputs or ["out"]
@@ -941,7 +952,12 @@ in rec {
             source:
               builtins.unsafeDiscardStringContext (toString (normalizeSource source))
           )
-          declaredSources;
+          (declaredSources
+            ++ (
+              if hasConfiguration
+              then configurationSources
+              else []
+            ));
       in {
         inherit name;
         source_store_paths = builtins.attrNames (builtins.listToAttrs (
@@ -969,16 +985,48 @@ in rec {
             license_expression = licenseExpression;
           };
         derivation = builtins.unsafeDiscardStringContext package.drvPath;
-        outputs = map (output: {
-          # A public alias of one non-default derivation output is itself a
-          # single-output package root. Normalize that selected root to `out`
-          # so package qualification cannot silently exercise a sibling output.
-          name =
-            if selectedOutput == "out"
-            then output
-            else "out";
-          store_path = builtins.unsafeDiscardStringContext (toString package.${output});
-        }) publishedOutputs;
+        outputs =
+          (map (output: {
+              # A public alias of one non-default derivation output is itself a
+              # single-output package root. Normalize that selected root to `out`
+              # so package qualification cannot silently exercise a sibling output.
+              name =
+                if selectedOutput == "out"
+                then output
+                else "out";
+              store_path = builtins.unsafeDiscardStringContext (toString package.${output});
+            })
+            publishedOutputs)
+          ++ (
+            if hasConfiguration
+            then
+              assert configurationBaseLib != null; [
+                {
+                  name = "config";
+                  derivation = builtins.unsafeDiscardStringContext package.config.drvPath;
+                  output = package.config.outputName or "config";
+                  store_path = builtins.unsafeDiscardStringContext (toString package.config);
+                }
+                {
+                  name = "configuration-base";
+                  derivation = builtins.unsafeDiscardStringContext configurationBaseLib.drvPath;
+                  output = configurationBaseLib.outputName or "out";
+                  store_path = builtins.unsafeDiscardStringContext (toString configurationBaseLib);
+                }
+              ]
+            else []
+          );
+        configuration =
+          if hasConfiguration
+          then {
+            module_artifact = "${artifactPrefix}/config";
+            evaluation_base_artifact = "${artifactPrefix}/configuration-base";
+            dependency_outputs =
+              builtins.mapAttrs
+              (_: output: builtins.unsafeDiscardStringContext (toString output))
+              (package.configModuleDependencies or {});
+          }
+          else null;
       }
     ) (publicationEligibleNames system names);
   };

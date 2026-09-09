@@ -23,6 +23,8 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Any, BinaryIO
 
+from qualification_k3s_bindings import bind_k3s_fleet, configuration_output_names
+
 
 ROOT = pathlib.Path.cwd()
 REQUEST = ROOT / "request.json"
@@ -39,6 +41,7 @@ NIX_STORE = os.environ["AOS_QUALIFICATION_NIX_STORE"]
 ZSTD = os.environ["AOS_QUALIFICATION_ZSTD"]
 UNAME = os.environ["AOS_QUALIFICATION_UNAME"]
 BOUND_IMAGE_VARIANT = os.environ.get("AOS_QUALIFICATION_BOUND_IMAGE_VARIANT")
+BOUND_K3S_TOPOLOGY = os.environ.get("AOS_QUALIFICATION_BOUND_K3S_TOPOLOGY")
 
 EXPECTED_CHECKS = {
     "anonymous-download",
@@ -440,7 +443,12 @@ class PackageScenario:
         artifact_ids = decision["artifact"]["artifact_ids"]
         self.package_artifact_ids = list(artifact_ids)
         expected_subjects = list(artifact_ids)
-        if BOUND_IMAGE_VARIANT is not None:
+        if BOUND_K3S_TOPOLOGY is not None:
+            bindings = bind_k3s_fleet(
+                payload, PLATFORM, self.package, BOUND_IMAGE_VARIANT, BOUND_K3S_TOPOLOGY
+            )
+            expected_subjects = bindings.subjects
+        elif BOUND_IMAGE_VARIANT is not None:
             image = one(
                 [
                     entry
@@ -461,6 +469,9 @@ class PackageScenario:
         if expected_subjects != self.case["subjects"]:
             raise RuntimeError("package cell artifacts differ from the exact case subjects")
 
+        companion_names = configuration_output_names(
+            decision["artifact"].get("configuration"), artifact_ids, self.artifacts
+        )
         for artifact_id in artifact_ids:
             artifact = self.artifacts.get(artifact_id)
             if (
@@ -471,9 +482,10 @@ class PackageScenario:
                 or artifact.get("output") is None
             ):
                 raise RuntimeError("package subject lacks its exact Nix output identity")
-            if artifact["output"] in self.outputs:
+            output_name = companion_names.get(artifact_id, artifact["output"])
+            if output_name in self.outputs:
                 raise RuntimeError("package case repeats a named Nix output")
-            self.outputs[artifact["output"]] = artifact["store_path"]
+            self.outputs[output_name] = artifact["store_path"]
         if "out" not in self.outputs:
             raise RuntimeError("package case has no primary out output")
 
