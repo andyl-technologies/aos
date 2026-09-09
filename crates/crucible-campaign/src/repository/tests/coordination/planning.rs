@@ -33,7 +33,9 @@ fn beam_named_boundary_metric_selects_the_deeper_survivor_and_filters_missing_me
         base_policy.retention(),
         base_policy.admits_scenario_defaults(),
     )
-    .expect("Beam policy");
+    .expect("Beam policy")
+    .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
+    .expect("intervention-guided Beam policy");
     let name = "beam-boundary-metric";
     let genesis = repository
         .create_funded(name, &lineage, &policy, &BTreeMap::new())
@@ -368,6 +370,10 @@ fn beam_named_boundary_metric_selects_the_deeper_survivor_and_filters_missing_me
             .id()
             .expect("selected continuation id")
     );
+    assert_eq!(
+        output.proposal().explanation().terms_micros()["intervention-guidance-opt-in"],
+        1
+    );
 }
 
 #[test]
@@ -439,11 +445,22 @@ fn beam_projection_failure_discards_partial_cache_state() {
 #[test]
 fn beam_cohort_waits_for_out_of_order_streaming_and_strict_completions() {
     for mode in [CampaignMode::Streaming, CampaignMode::Strict] {
-        exercise_beam_out_of_order_completion(mode);
+        exercise_beam_out_of_order_completion(mode, InterventionLearningPolicy::IncludeInGuidance);
     }
 }
 
-fn exercise_beam_out_of_order_completion(mode: CampaignMode) {
+#[test]
+fn beam_reports_a_closed_cohort_excluded_from_adaptive_learning() {
+    exercise_beam_out_of_order_completion(
+        CampaignMode::Strict,
+        InterventionLearningPolicy::Exclude,
+    );
+}
+
+fn exercise_beam_out_of_order_completion(
+    mode: CampaignMode,
+    intervention_learning: InterventionLearningPolicy,
+) {
     let (repository, lineage, base_policy) = fixture();
     let policy = CampaignPolicy::new(
         base_policy.scenario(),
@@ -462,12 +479,22 @@ fn exercise_beam_out_of_order_completion(mode: CampaignMode) {
         base_policy.admits_scenario_defaults(),
     )
     .expect("Beam closure policy");
+    let policy = match intervention_learning {
+        InterventionLearningPolicy::Exclude => policy,
+        InterventionLearningPolicy::IncludeInGuidance => policy
+            .with_intervention_learning_policy(intervention_learning)
+            .expect("intervention-learning Beam closure policy"),
+    };
     let mode_name = match mode {
         CampaignMode::Strict => "strict",
         CampaignMode::Streaming => "streaming",
         CampaignMode::Statistical => panic!("test only covers deterministic completion modes"),
     };
-    let name = format!("beam-out-of-order-{mode_name}");
+    let learning_name = match intervention_learning {
+        InterventionLearningPolicy::Exclude => "excluded",
+        InterventionLearningPolicy::IncludeInGuidance => "included",
+    };
+    let name = format!("beam-out-of-order-{mode_name}-{learning_name}");
     let genesis = repository
         .create_funded(&name, &lineage, &policy, &BTreeMap::new())
         .expect("create Beam closure campaign");
@@ -692,9 +719,6 @@ fn exercise_beam_out_of_order_completion(mode: CampaignMode) {
         first_continuation.branch_point(),
         first_continuation.id().expect("first continuation ID"),
     );
-    let selection = projection.candidates[&first_position]
-        .selection()
-        .expect("settled selection");
     let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
     let restarted_snapshot = restarted
         .read_snapshot(settled_snapshot.content_id())
@@ -704,6 +728,57 @@ fn exercise_beam_out_of_order_completion(mode: CampaignMode) {
         .expect("cold replay closure cohort");
     assert_eq!(restarted_projection.candidates, projection.candidates);
     assert_eq!(restarted_projection.selections, projection.selections);
+
+    if intervention_learning == InterventionLearningPolicy::Exclude {
+        assert!(matches!(
+            projection.candidates[&first_position].cohort_state(),
+            crate::PlannerBeamCohortState::InterventionExcluded(2)
+        ));
+        assert!(projection.selections.is_empty());
+
+        let basis = repository
+            .publish_canonical_beam_planner_basis()
+            .expect("publish excluded-cohort Beam planner basis");
+        let invocation = repository
+            .prepare_planner_invocation(
+                &name,
+                settled_snapshot,
+                basis.engine(),
+                basis.artifact(),
+                basis.initial_state(),
+                None,
+                100,
+                PlanningBudget::new(4, 4, 100, 4 * 1024 * 1024, 10_000)
+                    .expect("excluded-cohort Beam planning budget"),
+            )
+            .expect("prepare excluded-cohort Beam invocation");
+        let request = repository
+            .build_planner_request(
+                settled_snapshot,
+                invocation.id().expect("excluded-cohort Beam invocation ID"),
+            )
+            .expect("build excluded-cohort Beam request");
+        let output = CanonicalBeamPlanner
+            .plan(&request)
+            .expect("plan excluded intervention cohort");
+        assert!(matches!(
+            output.proposal().disposition(),
+            PlannerProposalDisposition::NoWork
+        ));
+        assert_eq!(
+            output.proposal().explanation().terms_micros()["intervention-excluded-cohorts"],
+            1
+        );
+        assert_eq!(
+            output.proposal().explanation().terms_micros()["intervention-excluded-observations"],
+            2
+        );
+        return;
+    }
+
+    let selection = projection.candidates[&first_position]
+        .selection()
+        .expect("settled selection");
     assert_eq!(
         restarted_projection.candidates[&first_position].selection(),
         Some(selection)
@@ -1536,7 +1611,10 @@ fn canonical_frontier_planner_carries_the_first_ready_offer_across_pages() {
 
 #[test]
 fn canonical_puct_planner_ranks_every_ready_offer_and_replays_owner_guidance() {
-    let (repository, lineage, policy, blobs) = counted_fixture();
+    let (repository, lineage, base_policy, blobs) = counted_fixture();
+    let policy = base_policy
+        .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
+        .expect("intervention-guided PUCT policy");
     let genesis = repository
         .create_funded("canonical-puct", &lineage, &policy, &BTreeMap::new())
         .expect("create canonical PUCT campaign");
@@ -1709,6 +1787,10 @@ fn canonical_puct_planner_ranks_every_ready_offer_and_replays_owner_guidance() {
         1
     );
     assert!(output.proposal().explanation().terms_micros()["selected-total-micros"] > 0);
+    assert_eq!(
+        output.proposal().explanation().terms_micros()["intervention-guidance-opt-in"],
+        1
+    );
 
     let before_tamper = blobs.object_count().expect("objects before tamper");
     let tampered_objects = request

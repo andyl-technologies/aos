@@ -218,6 +218,7 @@ impl PurePlannerEngine for CanonicalBeamPlanner {
         let mut offered_on_page = 0_u64;
         let mut pending_cohorts = 0_u64;
         let mut filtered_on_page = 0_u64;
+        let mut intervention_exclusions = BTreeMap::new();
         for (position, input) in inputs {
             if input
                 .budget
@@ -237,6 +238,16 @@ impl PurePlannerEngine for CanonicalBeamPlanner {
             let (Some(offer), Some(beam)) = (input.offer, input.beam) else {
                 continue;
             };
+            let excluded = beam.cohort_state().intervention_exclusions();
+            if excluded != 0
+                && intervention_exclusions
+                    .insert(*beam.barrier(), excluded)
+                    .is_some_and(|current| current != excluded)
+            {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "Beam cohort repeats inconsistent intervention exclusions",
+                });
+            }
             let Some(selection_id) = beam.selection() else {
                 match beam.cohort_state() {
                     crate::PlannerBeamCohortState::CohortLimitExceeded(_) => {
@@ -249,7 +260,9 @@ impl PurePlannerEngine for CanonicalBeamPlanner {
                     | crate::PlannerBeamCohortState::AwaitingEvaluations(_) => {
                         pending_cohorts = checked_evidence_increment(pending_cohorts)?;
                     }
-                    crate::PlannerBeamCohortState::Settled(_) => {
+                    crate::PlannerBeamCohortState::InterventionExcluded(_) => {}
+                    crate::PlannerBeamCohortState::Settled(_)
+                    | crate::PlannerBeamCohortState::SettledWithInterventionExclusions { .. } => {
                         return Err(CampaignCodecError::InvalidValue {
                             reason: "settled Beam cohort omits its selection",
                         });
@@ -328,7 +341,7 @@ impl PurePlannerEngine for CanonicalBeamPlanner {
                 budget_blocked,
             },
         )?;
-        let explanation = GuidanceEvidence::new(BTreeMap::from([
+        let mut explanation_terms = BTreeMap::from([
             ("budget-blocked".to_owned(), i64::from(budget_blocked)),
             (
                 "filtered-on-page".to_owned(),
@@ -337,7 +350,35 @@ impl PurePlannerEngine for CanonicalBeamPlanner {
             ("offered-on-page".to_owned(), evidence_i64(offered_on_page)?),
             ("pending-cohorts".to_owned(), evidence_i64(pending_cohorts)?),
             ("selected".to_owned(), i64::from(next_best.is_some())),
-        ]))?;
+        ]);
+        if !intervention_exclusions.is_empty() {
+            let excluded_observations = intervention_exclusions
+                .values()
+                .try_fold(0_u64, |total, count| total.checked_add(*count))
+                .ok_or(CampaignCodecError::LimitExceeded {
+                    limit: "canonical-beam-planner-evidence",
+                })?;
+            let excluded_cohorts = u64::try_from(intervention_exclusions.len()).map_err(|_| {
+                CampaignCodecError::LimitExceeded {
+                    limit: "canonical-beam-planner-evidence",
+                }
+            })?;
+            explanation_terms.insert(
+                "intervention-excluded-cohorts".to_owned(),
+                evidence_i64(excluded_cohorts)?,
+            );
+            explanation_terms.insert(
+                "intervention-excluded-observations".to_owned(),
+                evidence_i64(excluded_observations)?,
+            );
+        }
+        if matches!(
+            request.policy().intervention_learning_policy(),
+            crate::InterventionLearningPolicy::IncludeInGuidance
+        ) {
+            explanation_terms.insert("intervention-guidance-opt-in".to_owned(), 1);
+        }
+        let explanation = GuidanceEvidence::new(explanation_terms)?;
         Ok(PlannerEngineOutput::new(PlannerStepProposal::new(
             invocation,
             next_state,

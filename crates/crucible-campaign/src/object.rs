@@ -226,6 +226,7 @@ impl CampaignRecordKind {
     #[must_use]
     pub const fn schema_version(self) -> u32 {
         match self {
+            Self::Policy => 2,
             Self::Snapshot => 3,
             Self::Fact => 13,
             Self::PlannerInvocation => 2,
@@ -243,6 +244,7 @@ impl CampaignRecordKind {
             Self::FindingCandidateBundle => RECORD_SCHEMA_VERSION,
             Self::ArchiveManifest | Self::ArchiveInventoryPage => RECORD_SCHEMA_VERSION,
             Self::PlannerCandidateGuidance | Self::PlannerCandidateBudget | Self::BudgetLedger => 2,
+            Self::PlannerBeamCandidate => 2,
             _ => RECORD_SCHEMA_VERSION,
         }
     }
@@ -487,8 +489,9 @@ impl ObjectEnvelope {
     ///
     /// Returns [`CampaignCodecError`] if the resulting object exceeds bounds.
     pub fn for_policy(value: &CampaignPolicy) -> Result<Self, CampaignCodecError> {
-        Self::new(
+        Self::new_versioned(
             CampaignRecordKind::Policy,
+            value.schema_version(),
             content_children(value.content_children())?,
             value.canonical_bytes(),
         )
@@ -518,6 +521,22 @@ impl ObjectEnvelope {
     ) -> Result<Self, CampaignCodecError> {
         Self::new_versioned(
             CampaignRecordKind::PlannerCandidateBudget,
+            value.schema_version(),
+            content_children(value.content_children())?,
+            value.canonical_bytes(),
+        )
+    }
+
+    /// Builds a Beam candidate envelope while preserving its schema version.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if canonical envelope construction fails.
+    pub(crate) fn for_beam_candidate(
+        value: &crate::PlannerBeamCandidate,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_versioned(
+            CampaignRecordKind::PlannerBeamCandidate,
             value.schema_version(),
             content_children(value.content_children())?,
             value.canonical_bytes(),
@@ -712,6 +731,7 @@ impl ObjectEnvelope {
             },
         )?;
         let version_supported = envelope.schema_version() == record_kind.schema_version()
+            || record_kind == CampaignRecordKind::Policy && envelope.schema_version() == 1
             || record_kind == CampaignRecordKind::Snapshot && envelope.schema_version() == 2
             || record_kind == CampaignRecordKind::Fact
                 && matches!(envelope.schema_version(), 2..=12)
@@ -724,6 +744,8 @@ impl ObjectEnvelope {
                 && envelope.schema_version() == 1
             || record_kind == CampaignRecordKind::Observation
                 && matches!(envelope.schema_version(), 1..=7)
+            || record_kind == CampaignRecordKind::PlannerBeamCandidate
+                && envelope.schema_version() == 1
             || matches!(
                 record_kind,
                 CampaignRecordKind::ObjectiveEvaluation | CampaignRecordKind::RankingExplanation
@@ -752,7 +774,8 @@ impl ObjectEnvelope {
     fn validate_record_body(&self) -> Result<(), CampaignCodecError> {
         if matches!(
             self.record_kind,
-            CampaignRecordKind::Fact
+            CampaignRecordKind::Policy
+                | CampaignRecordKind::Fact
                 | CampaignRecordKind::Snapshot
                 | CampaignRecordKind::BudgetLedger
                 | CampaignRecordKind::PlannerCandidateBudget
