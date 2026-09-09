@@ -64,6 +64,88 @@ retention edge with a running service or every build dependency with a runtime
 consumer. A preview is a plan with stated assumptions, not a guarantee that
 runtime conditions will remain unchanged.
 
+## Modeling and graph utilities
+
+The shared libraries provide typed graph construction, checked references,
+normalization, validation, and deterministic queries. Frontends consume these
+APIs instead of reconstructing edges from human output or scanning Nix text.
+Authoring fixtures can model an explicit environment and exercise an export's
+composition without acquiring live runtime resources.
+
+The baseline [AOS graph command](../../../crates/aos/src/commands/graph.rs)
+builds a package and renders Nix store dependencies as a tree or DOT. It is
+useful existing machinery, but it does not implement this RFC's ability,
+authority, or transition views. A new inspector should be able to read an
+existing checked contract without rebuilding its payload.
+
+Required query/view capabilities include:
+
+| Utility | Information returned |
+| --- | --- |
+| Inspect | Interface schemas, imports/exports, guarantees, result phases, provider state |
+| Trace consumption | Consumer request through provider composition to terminal operations |
+| Explain binding | Selected provider, constraints, grants, rejected candidates, and missing obligations |
+| Reverse use | Consumers affected by removal, replacement, or revocation |
+| Compare | Desired-state, binding, guarantee, effect, and observed-generation differences |
+| Export | Versioned JSON for tools, text for terminals, DOT/Mermaid for shareable graph views |
+| Validate | Structured errors and warnings tied to exact inputs and source/request provenance |
+
+These are functionality requirements; CLI verbs and flags must follow the
+existing AOS/APM command design before they become public API. Inspection of
+public reference data must not require runtime authority. Reading private
+deployment graphs follows the deployment's access policy.
+
+## Visualization
+
+Provide separate selectable projections for composition, binding/authority,
+activation dependencies, and retention. Preserve data, required-success,
+ordering, and communication edge types visibly; a single unlabeled arrow
+cannot stand for all of them. Communication cycles must not be displayed as
+invalid execution cycles.
+
+An interactive view should start at one instance or failing request, support
+expanding provider subgraphs, and show the chain back to declarations and
+policy. Group by environment, provider instance, and transaction. Keep stable
+node identities across layout changes and comparisons. Shared aggregate nodes
+remain shared; the visualization must not imply one reload per contributor.
+
+Display declared, planned, available, failed, stale, and unverified states with
+text/icons as well as color. Keep the desired graph distinct from observed
+execution state. Large graphs need bounded neighborhood queries and lazy
+expansion, not mandatory rendering of every package in a deployment.
+
+Static exports and the interactive UI use the same query/view model. Validate
+and escape labels and links; package-authored text must not become active
+markup. Public Hub views show reference contracts. Private live overlays need
+an authenticated deployment connection and clearly identified freshness.
+
+## Debugging and execution traces
+
+Retain a trace from original request through evaluated contributions, selected
+bindings, child-request expansion, planned operations, and execution attempts.
+A diagnostic should explain both the failed condition and the relevant input
+that introduced it. Resolution traces include rejected candidates and bounded
+iteration history; expansion errors include the cycle/depth trace.
+
+Runtime debugging exposes the operation timeline: pending dependencies,
+admission, start, attempt, completion evidence, timeout, cancellation,
+compensation, or an ambiguous outcome awaiting reconciliation. Correlate events
+with stable plan, transaction, operation, and resource identities. Redact
+secret-bearing parameters and private topology according to caller scope.
+
+An exportable diagnostic bundle can retain normalized inputs, exact artifact
+references, policy/environment revisions, and redacted execution records.
+Offline replay means rerunning pure validation and planning against captured
+inputs. It does not replay privileged effects or prove the environment is still
+current. Missing or redacted necessary inputs must yield an explicit limitation.
+
+Dry runs must remain free of activation effects. Simulated provider adapters
+support author tests and injected failures, with output clearly marked as
+simulation. Real enforcement and crash-recovery claims still require the
+runtime qualification described in the implementation chapter. Interactive
+stepping that pauses live privileged operations is not part of the initial
+debugger; it would need defined lease, timeout, and recovery semantics.
+
 ## AOS Hub and generated reference pages
 
 Generate interface, request, result, guarantee, and operation documentation
