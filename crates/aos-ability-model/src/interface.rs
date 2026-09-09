@@ -163,6 +163,8 @@ pub struct AggregationContract {
     pub scope: AggregationScope,
     /// Names the contribution-key convention.
     pub key: LocalKey,
+    /// Names the authenticated lifecycle-controller group for shared resources.
+    pub controller_group: LocalKey,
     /// Rejects two contributors claiming one exclusive slot.
     pub reject_slot_collisions: bool,
     /// Names an explicit field-level merge contract, when one is supported.

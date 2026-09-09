@@ -158,6 +158,10 @@
     inherit types;
     inherit (modules) mkOption;
   };
+  abilities = import ./abilities {
+    inherit types;
+    inherit (modules) mkOption;
+  };
   aosDoc = import ./documentation.nix;
 
   platformMod = import ./platform.nix;
@@ -180,6 +184,8 @@
     // {
       inherit types system;
       inherit serviceTypes;
+      inherit abilities;
+      effects = abilities.effects;
       inherit aosDoc;
       literalExpression = text: {
         _type = "literalExpression";

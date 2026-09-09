@@ -1,0 +1,360 @@
+##! lib/testing/abilities.nix - Pure ability authoring and wire fixtures.
+{
+  pkgs,
+  lib,
+}: let
+  fails = value: !(builtins.tryEval (builtins.deepSeq value true)).success;
+
+  interfaceDocument = import ../../tests/abilities/interface.nix {
+    inherit (lib) abilities;
+  };
+  canonicalInterface = builtins.toJSON interfaceDocument;
+  expectedInterface = builtins.readFile ../../tests/abilities/fixtures/interface.json;
+
+  invalidNestedSchema = builtins.tryEval (builtins.deepSeq (
+      lib.abilities.schemas.record {
+        fields.bad = {
+          kind = "string";
+          max_length = 10;
+          syntax = null;
+          unexpected = true;
+        };
+        optional = [];
+      }
+    )
+    true);
+
+  validOptionalRecord =
+    lib.abilities.schemas.checkValue
+    (lib.abilities.schemas.record {
+      fields = {
+        enabled = lib.abilities.schemas.boolean;
+        label = lib.abilities.schemas.string {
+          maxLength = 16;
+          syntax = null;
+        };
+      };
+      optional = ["label"];
+    })
+    {enabled = true;};
+
+  nestedSchema = count:
+    builtins.foldl'
+    (value: _: {
+      kind = "optional";
+      inherit value;
+    })
+    {kind = "boolean";}
+    (builtins.genList (_: null) count);
+  atLimitSchema = nestedSchema 63;
+  overLimitSchema = nestedSchema 64;
+
+  asciiControlMap =
+    lib.abilities.schemas.checkValue
+    (lib.abilities.schemas.map {
+      keyMaxLength = 16;
+      keySyntax = null;
+      maxEntries = 1;
+      value = lib.abilities.schemas.boolean;
+    })
+    (builtins.listToAttrs [
+      {
+        name = "\tkey";
+        value = true;
+      }
+    ]);
+
+  nonAsciiMap = builtins.listToAttrs [
+    {
+      name = "é";
+      value = true;
+    }
+  ];
+
+  testEnvironment = lib.abilities.environmentId {
+    authority = "deployment";
+    key = "test";
+    stage = "host";
+  };
+  testInstanceId = lib.abilities.instanceId {
+    environment = testEnvironment;
+    key = "provider";
+  };
+  testInterface = {
+    name = "aos.test.reference";
+    abi = 1;
+    descriptor = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+  };
+
+  guaranteeOrdering =
+    builtins.map
+    (value: "${value.name}:${builtins.toString value.version}")
+    (lib.abilities.define {
+      interface = "aos.test.ordering";
+      abi = 1;
+      requestSchema = lib.abilities.schemas.boolean;
+      outputs = {};
+      methods = {};
+      lifecycle = {
+        stableResourceIdentity = true;
+        releasesEphemeralOnDisable = true;
+        retainsPersistentByDefault = true;
+        persistentDeleteMethod = null;
+      };
+      guarantees = [
+        {
+          name = "aos.zz";
+          version = 1;
+          descriptor = "sha256:5555555555555555555555555555555555555555555555555555555555555555";
+        }
+        {
+          name = "aos.a.long";
+          version = 1;
+          descriptor = "sha256:4444444444444444444444444444444444444444444444444444444444444444";
+        }
+        {
+          name = "aos.a";
+          version = 10;
+          descriptor = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
+        }
+        {
+          name = "aos.a";
+          version = 2;
+          descriptor = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+        }
+      ];
+      aggregation = {
+        scope = "provider-instance";
+        key = "authorized-slot";
+        rejectSlotCollisions = true;
+        mergeContract = null;
+        controllerGroup = "ordering";
+      };
+      requires = {};
+      ownsResourceKinds = [];
+      handler = "ordering-handler";
+    }).guarantees;
+
+  composition = import ../../tests/abilities/composition.nix {
+    inherit (lib) abilities;
+  };
+  expansion = composition.expansion;
+  nodeIn = value: name:
+    builtins.head (builtins.filter (entry: entry.registry_key == name) value.nodes);
+  node = nodeIn expansion;
+  collision = builtins.tryEval (builtins.deepSeq composition.collision true);
+  duplicateProviderAlias = builtins.tryEval (builtins.deepSeq composition.duplicateProviderAlias true);
+  providerCycle = builtins.tryEval (builtins.deepSeq composition.providerCycle true);
+  badResult = builtins.tryEval (builtins.deepSeq composition.badResult true);
+  lateResult = builtins.tryEval (builtins.deepSeq composition.lateResult true);
+  exportDeclaration =
+    lib.abilities.normalizeExportDeclaration
+    "configuration"
+    "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    composition.configurationExport;
+  emptyEffects = lib.abilities.effects.normalize [] (
+    lib.abilities.effects.when false (lib.abilities.effects.graph {})
+  );
+  unsupportedEffects = builtins.tryEval (builtins.deepSeq (
+      lib.abilities.effects.graph {operation = {};}
+    )
+    true);
+  forgedEffects = {
+    _type = "aos-effect-graph";
+    operations = {};
+    decisions = {hidden = {};};
+  };
+in
+  assert canonicalInterface == expectedInterface;
+  assert interfaceDocument.schema == "aos.ability.interface/v1";
+  assert interfaceDocument.interface.name == "aos.test.echo";
+  assert interfaceDocument.interface.methods.observe.outputs.ready.phase == "observation";
+  assert validOptionalRecord == {enabled = true;};
+  assert lib.abilities.schemas.enum [""]
+  == {
+    kind = "string-enum";
+    values = [""];
+  };
+  assert builtins.attrValues asciiControlMap == [true];
+  assert fails (lib.abilities.schemas.checkValue (lib.abilities.schemas.map {
+      keyMaxLength = 16;
+      keySyntax = null;
+      maxEntries = 1;
+      value = lib.abilities.schemas.boolean;
+    })
+    nonAsciiMap);
+  assert fails (lib.abilities.schemas.integer {
+    minimum = -9007199254740992;
+    maximum = 0;
+  });
+  assert fails (lib.abilities.schemas.validateSchema "raw integer" {
+    kind = "integer";
+    minimum = 0;
+    maximum = 9007199254740992;
+  });
+  assert fails (lib.abilities.schemas.string {
+    maxLength = 1048577;
+    syntax = null;
+  });
+  assert fails (lib.abilities.schemas.validateSchema "raw string" {
+    kind = "string";
+    max_length = 1048577;
+    syntax = null;
+  });
+  assert fails (lib.abilities.schemas.list {
+    element = lib.abilities.schemas.boolean;
+    maxItems = 2000001;
+  });
+  assert fails (lib.abilities.schemas.validateSchema "raw map" {
+    kind = "map";
+    key = {
+      max_length = 16;
+      syntax = null;
+    };
+    max_entries = 2000001;
+    value = {kind = "boolean";};
+  });
+  assert lib.abilities.schemas.validateSchema "at-limit schema" atLimitSchema == atLimitSchema;
+  assert fails (lib.abilities.schemas.validateSchema "over-limit schema" overLimitSchema);
+  assert fails (lib.abilities.schemas.checkValue lib.abilities.schemas.resourceReference {
+    _type = "aos-resource-reference";
+    interface = {
+      name = "aos.test.invalid";
+      abi = 4294967296;
+      descriptor = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+    };
+    resource = {
+      provider = {
+        environment = {
+          authority = "deployment";
+          key = "test";
+          stage = "host";
+        };
+        key = "provider";
+      };
+      key = "resource";
+    };
+    operations = [];
+    lifetime = "instance";
+  });
+  assert fails (lib.abilities.schemas.checkValue lib.abilities.schemas.operationResultReference {
+    _type = "aos-operation-result-reference";
+    operation.key = "old-unscoped";
+    output = "value";
+  });
+  assert fails (lib.abilities.environmentId {
+    authority = "deployment";
+    key = "test";
+    stage = "invalid";
+  });
+  assert fails (lib.abilities.requestId {
+    consumer = testInstanceId;
+    scope = builtins.genList (_: "nested") 65;
+    key = "request";
+  });
+  assert fails (lib.abilities.resourceReference {
+    interface = testInterface;
+    resource = {
+      provider = testInstanceId;
+      key = "resource";
+    };
+    operations = ["invalid operation"];
+    lifetime = "instance";
+  });
+  assert fails (lib.abilities.resourceReference {
+    interface = testInterface;
+    resource = {
+      provider = testInstanceId;
+      key = "resource";
+    };
+    operations = [];
+    lifetime = "forever";
+  });
+  assert fails (lib.abilities.artifactReference {
+    content = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+    storePath = 42;
+    narHash = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+    closure = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
+  });
+  assert guaranteeOrdering == ["aos.a:2" "aos.a:10" "aos.a.long:1" "aos.zz:1"];
+  assert !invalidNestedSchema.success;
+  assert expansion == composition.reversed;
+  assert expansion.round == 3;
+  assert builtins.map (entry: entry.registry_key) expansion.nodes == ["managed" "nginx-edge" "nginx-internal" "systemd"];
+  assert (node "nginx-edge").outputs.count == 2;
+  assert (node "nginx-internal").outputs.count == 1;
+  assert builtins.map (entry: entry.slot) (node "managed").contributions
+  == [
+    "nginx-edge.configuration"
+    "nginx-edge.metadata"
+    "nginx-internal.configuration"
+    "nginx-internal.metadata"
+  ];
+  assert builtins.map (entry: entry.request.scope) (node "managed").contributions
+  == [
+    ["nginx-edge" "configuration"]
+    ["nginx-edge" "metadata"]
+    ["nginx-internal" "configuration"]
+    ["nginx-internal" "metadata"]
+  ];
+  assert builtins.map (entry: entry.grant) (node "managed").contributions
+  == [
+    "nginx-edge.configuration"
+    "nginx-edge.metadata"
+    "nginx-internal.configuration"
+    "nginx-internal.metadata"
+  ];
+  assert builtins.length (node "systemd").contributions == 2;
+  assert (builtins.head (node "systemd").contributions).value.configuration._type == "aos-resource-reference";
+  assert (nodeIn composition.emptyRoot "nginx-edge").contributions == [];
+  assert (nodeIn composition.emptyRoot "nginx-edge").outputs.count == 0;
+  assert (nodeIn composition.tlsOff "nginx-edge").conditional_requirements == [];
+  assert !(builtins.elem "credentials" (builtins.map (entry: entry.registry_key) composition.tlsOff.nodes));
+  assert (nodeIn composition.tlsOn "nginx-edge").conditional_requirements == ["credential"];
+  assert builtins.length (nodeIn composition.tlsOn "credentials").contributions == 1;
+  assert !collision.success;
+  assert !duplicateProviderAlias.success;
+  assert !providerCycle.success;
+  assert !badResult.success;
+  assert !lateResult.success;
+  assert exportDeclaration
+  == {
+    name = "configuration";
+    interface = {
+      name = "aos.managed-configuration";
+      abi = 1;
+      descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    };
+    aggregation = {
+      scope = "provider-instance";
+      key = "authorized-slot";
+      controller_group = "configuration";
+      reject_slot_collisions = true;
+      merge_contract = null;
+    };
+    implementation = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+  };
+  assert emptyEffects
+  == {
+    artifacts = [];
+    operations = [];
+    decisions = [];
+    merges = [];
+    edges = [];
+  };
+  assert !unsupportedEffects.success;
+  assert fails (lib.abilities.effects.normalize [] forgedEffects);
+    pkgs.mkDerivation {
+      pname = "aos-ability-authoring-checks";
+      version = "0";
+      src = null;
+      phases = [
+        {
+          name = "check";
+          script = ''
+            mkdir -p "$out"
+            echo PASS > "$out/result"
+          '';
+        }
+      ];
+    }
