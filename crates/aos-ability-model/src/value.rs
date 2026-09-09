@@ -14,7 +14,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::identity::{InterfaceKey, LocalKey, ResourceId, ScopedOperationKey};
+use crate::identity::{
+    IncarnationId, InstanceId, InterfaceKey, LocalKey, ResourceId, ScopedOperationKey,
+};
+use crate::interface::ProviderImplementationReference;
 use crate::limits::ABILITY_LIMITS_V1;
 
 /// Reports why a value cannot enter a canonical ability contract.
@@ -144,6 +147,20 @@ pub struct ResourceReference {
     pub operations: Vec<LocalKey>,
     /// States the expected lifetime of this reference.
     pub lifetime: ResourceLifetime,
+}
+
+/// Authenticates one live assignment of an exact provider implementation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderAssignment {
+    /// Identifies the assigned provider instance.
+    pub provider: InstanceId,
+    /// Identifies the exact public interface supplied by the assignment.
+    pub interface: InterfaceKey,
+    /// Pins the exact executable implementation assigned to the provider.
+    pub implementation: ProviderImplementationReference,
+    /// Identifies the fresh provider-assigned live generation.
+    pub incarnation: IncarnationId,
 }
 
 /// Names one typed result port produced inside the current effect plan.

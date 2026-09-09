@@ -245,7 +245,13 @@ let
       checked = exact ["value"];
     in
       checked // {value = validateSchemaAt (depth + 1) "${context}.value" checked.value;}
-    else if builtins.elem schema.kind ["artifact-reference" "resource-reference" "operation-result-reference"]
+    else if
+      builtins.elem schema.kind [
+        "artifact-reference"
+        "resource-reference"
+        "provider-assignment"
+        "operation-result-reference"
+      ]
     then exact []
     else fail "${context} has unsupported kind '${schema.kind}'";
 
@@ -370,7 +376,13 @@ let
       if value == null
       then null
       else checkValue schema.value value
-    else if builtins.elem schema.kind ["artifact-reference" "resource-reference" "operation-result-reference"]
+    else if
+      builtins.elem schema.kind [
+        "artifact-reference"
+        "resource-reference"
+        "provider-assignment"
+        "operation-result-reference"
+      ]
     then
       if schema.kind == "artifact-reference"
       then
@@ -397,6 +409,8 @@ let
           && builtins.elem value.lifetime ["attempt" "transaction" "instance" "persistent"]
         then value
         else invalid "a resource-reference"
+      else if schema.kind == "provider-assignment"
+      then fail "provider-assignment values are unavailable during pure authoring"
       else fail "operation-result-reference values are unavailable until scoped producer normalization is implemented"
     else fail "unsupported schema kind '${schema.kind}'";
 
@@ -516,6 +530,7 @@ in rec {
 
   artifactReference = {kind = "artifact-reference";};
   resourceReference = {kind = "resource-reference";};
+  providerAssignment = {kind = "provider-assignment";};
   operationResultReference = {kind = "operation-result-reference";};
 
   inherit checkValue validateSchema;

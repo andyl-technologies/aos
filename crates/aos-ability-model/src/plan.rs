@@ -557,6 +557,18 @@ pub struct DependencyEdge {
     pub kind: DependencyKind,
 }
 
+/// Ties a planned binding to the exact observation that establishes its live assignment.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderReadiness {
+    /// Identifies the exact planned binding whose provider becomes available.
+    pub binding: BindingId,
+    /// Identifies the observation operation producing assignment evidence.
+    pub producer: ScopedOperationKey,
+    /// Names the producer output containing a [`crate::ProviderAssignment`].
+    pub output: LocalKey,
+}
+
 /// Assigns exactly one lifecycle controller to a mutable resource.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
