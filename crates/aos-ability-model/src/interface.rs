@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::identity::{InterfaceKey, InterfaceName, LocalKey};
 use crate::plan::OperationFamily;
 use crate::schema::ValueSchema;
-use crate::value::{ArtifactReference, ResourceLifetime};
+use crate::value::{AbilityValue, ArtifactReference, ResourceLifetime};
 
 /// Identifies one exact immutable guarantee semantic.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -87,6 +87,8 @@ pub enum IndeterminateSemantics {
 pub struct OutcomeSemantics {
     /// Defines evidence returned after successful completion.
     pub completion_evidence: ValueSchema,
+    /// Defines evidence for rejection, uncertainty, and recovery observations.
+    pub observation_evidence: ValueSchema,
     /// States whether the provider can prove some rejections precede effects.
     pub supports_rejected_before_effect: bool,
     /// Defines the public handling promised after an ambiguous effect.
@@ -195,8 +197,16 @@ pub struct RequirementDeclaration {
     pub guarantees: Vec<GuaranteeKey>,
     /// Defines whether omission is allowed.
     pub strength: RequirementStrength,
-    /// Defines an explicit fallback result for an advisory requirement.
-    pub fallback: Option<ValueSchema>,
+    /// Defines exact literal outputs when an advisory requirement is omitted.
+    pub fallback: Option<RequirementFallback>,
+}
+
+/// Supplies the complete typed result of omitting one advisory requirement.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequirementFallback {
+    /// Maps every accepted interface output port to its exact literal value.
+    pub outputs: BTreeMap<LocalKey, AbilityValue>,
 }
 
 /// Identifies how a provider realizes one exported interface.

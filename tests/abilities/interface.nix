@@ -49,6 +49,7 @@
         guarantees = [guarantee];
         outcome = {
           completionEvidence = schemas.boolean;
+          observationEvidence = schemas.boolean;
           supportsRejectedBeforeEffect = true;
           indeterminate = "reconcile";
         };
