@@ -283,19 +283,21 @@ pub use control_responsiveness::{
     validate_daemon_control_responsiveness,
 };
 pub use crucible_artifact::{
-    CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2, CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V1,
-    CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V2, CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
-    CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1, CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V2,
-    CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3, CrucibleArtifactError, CrucibleCampaignArtifactStore,
-    CrucibleFindingReplayEvidence, CrucibleFindingReplayTranscript,
-    MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES, MAX_CRUCIBLE_FINDING_REPLAY_BYTES,
-    MAX_CRUCIBLE_FINDING_REPLAY_RECORDS, MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS,
-    MAX_PREPARED_SEMANTIC_RESULT_BYTES, PreparedCrucibleFindingCandidate,
-    PreparedSemanticAttemptResult, PreparedSemanticResultCodecError,
-    decode_crucible_configuration_artifact, decode_crucible_configuration_artifact_with_selections,
+    AutomaticFindingPreparationError, CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2,
+    CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V1, CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V2,
+    CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3, CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1,
+    CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V2, CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3,
+    CrucibleArtifactError, CrucibleCampaignArtifactStore, CrucibleFindingReplayEvidence,
+    CrucibleFindingReplayTranscript, MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES,
+    MAX_CRUCIBLE_FINDING_REPLAY_BYTES, MAX_CRUCIBLE_FINDING_REPLAY_RECORDS,
+    MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS, MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+    PreparedCrucibleFindingCandidate, PreparedSemanticAttemptResult,
+    PreparedSemanticResultCodecError, decode_crucible_configuration_artifact,
+    decode_crucible_configuration_artifact_with_selections,
     decode_crucible_configuration_artifact_with_signal_fault_replay,
     decode_crucible_scenario_artifact, encode_crucible_configuration_artifact,
-    encode_crucible_scenario_artifact, prepare_signature_preserving_minimized_finding_candidate,
+    encode_crucible_scenario_artifact, prepare_automatic_signature_preserving_finding,
+    prepare_signature_preserving_minimized_finding_candidate,
 };
 pub use crucible_execution::{
     CrucibleAttemptExecution, CrucibleExecutionModel, CrucibleExecutionModelError,
@@ -515,8 +517,10 @@ pub use paused_checkpoint_promotion::{
 };
 pub use pending_finding::{
     AcknowledgedFindingCandidate, FindingCandidateHandoffError, FindingCandidateHandoffResult,
-    FindingCandidateRetentionOutcome, PendingFindingAcknowledgementError, PendingFindingCandidate,
-    acknowledge_incorporated_finding_candidate, incorporate_and_acknowledge_finding_candidate,
+    FindingCandidateRestartError, FindingCandidateRestartSummary, FindingCandidateRetentionOutcome,
+    MAX_PENDING_FINDING_HANDOFFS_PER_PASS, PendingFindingAcknowledgementError,
+    PendingFindingCandidate, acknowledge_incorporated_finding_candidate,
+    incorporate_and_acknowledge_finding_candidate, reconcile_pending_finding_candidates,
 };
 pub use planner_loopback::{
     LoopbackPlannerProtocolError, LoopbackPlannerServerError, LoopbackPlannerService,

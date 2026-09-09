@@ -14,13 +14,16 @@
 use crucible_campaign::{
     AuthenticatedFindingCandidateIncorporation, CampaignName, CampaignRepository,
     CampaignRepositoryError, CampaignSnapshotId, ExecutionId, FindingCandidateBundleId, FindingId,
-    FindingPublicationResult, ObservationId,
+    FindingPublicationResult, ObservationDisposition, ObservationId,
 };
 
 use crate::{
-    AssignmentRetentionAdmin, AttemptExecutionKey, AttemptRuntimeState, AttemptStateCas,
-    CompletedFindingCandidate,
+    AssignmentLedger, AssignmentRetentionAdmin, AttemptExecutionKey, AttemptRuntimeState,
+    AttemptStateCas, CompletedFindingCandidate,
 };
+
+/// Maximum pending candidates reconciled for one campaign in a restart pass.
+pub const MAX_PENDING_FINDING_HANDOFFS_PER_PASS: usize = 4_096;
 
 /// One candidate bundle that remains an executor-owned operational GC root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,6 +151,247 @@ pub enum FindingCandidateRetentionOutcome {
     AlreadyReleased(AcknowledgedFindingCandidate),
     /// The named execution completion is no longer the current ledger state.
     NotCurrent,
+}
+
+/// Bounded result of rebuilding campaign finding ownership from the ledger.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FindingCandidateRestartSummary {
+    pending: usize,
+    remaining: usize,
+    released: usize,
+    replayed_publications: usize,
+    not_current: usize,
+}
+
+impl FindingCandidateRestartSummary {
+    /// Returns pending roots discovered for the campaign lineage.
+    #[must_use]
+    pub const fn pending(self) -> usize {
+        self.pending
+    }
+
+    /// Returns matching roots deferred to a later bounded pass.
+    #[must_use]
+    pub const fn remaining(self) -> usize {
+        self.remaining
+    }
+
+    /// Returns roots released after authenticated incorporation.
+    #[must_use]
+    pub const fn released(self) -> usize {
+        self.released
+    }
+
+    /// Returns incorporations that were already present in campaign history.
+    #[must_use]
+    pub const fn replayed_publications(self) -> usize {
+        self.replayed_publications
+    }
+
+    /// Returns roots whose exact completion changed before release.
+    #[must_use]
+    pub const fn not_current(self) -> usize {
+        self.not_current
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PendingFindingRestartWork {
+    key: AttemptExecutionKey,
+    execution: ExecutionId,
+    observation: ObservationId,
+    candidate: FindingCandidateBundleId,
+}
+
+#[derive(Default)]
+struct PendingFindingRestartInventory {
+    work: Vec<PendingFindingRestartWork>,
+    pending: usize,
+    overflow: bool,
+}
+
+impl PendingFindingRestartInventory {
+    fn retain(&mut self, item: PendingFindingRestartWork) {
+        let Some(pending) = self.pending.checked_add(1) else {
+            self.overflow = true;
+            return;
+        };
+        self.pending = pending;
+        if self.work.len() < MAX_PENDING_FINDING_HANDOFFS_PER_PASS {
+            self.work.push(item);
+        }
+    }
+
+    fn finish(
+        self,
+    ) -> Result<
+        (
+            Vec<PendingFindingRestartWork>,
+            FindingCandidateRestartSummary,
+        ),
+        FindingCandidateRestartInventoryError,
+    > {
+        if self.overflow {
+            return Err(FindingCandidateRestartInventoryError);
+        }
+        let summary = FindingCandidateRestartSummary {
+            pending: self.pending,
+            remaining: self.pending - self.work.len(),
+            ..FindingCandidateRestartSummary::default()
+        };
+        Ok((self.work, summary))
+    }
+}
+
+#[derive(Debug)]
+struct FindingCandidateRestartInventoryError;
+
+/// Rebuilds and completes pending finding handoffs after coordinator restart.
+///
+/// The scan accepts only completed pending roots in the named campaign's exact
+/// lineage and retains at most 4,096 work items. Additional matches are counted
+/// without allocation and reported through [`FindingCandidateRestartSummary::remaining`]
+/// so the caller can immediately run another pass. Each item reloads the
+/// current campaign head before incorporation because a preceding finding may
+/// have advanced it. Repository replay detection and the fenced ledger CAS make
+/// the operation safe to repeat after a crash between either durable transition.
+///
+/// # Errors
+///
+/// Returns [`FindingCandidateRestartError::Repository`] when the campaign head
+/// cannot be authenticated, [`FindingCandidateRestartError::Ledger`] when the
+/// durable inventory cannot be completed,
+/// [`FindingCandidateRestartError::InventoryOverflow`] when the number of
+/// matching roots cannot be represented, or
+/// [`FindingCandidateRestartError::Handoff`] when an exact incorporation and
+/// acknowledgement cannot be completed.
+pub fn reconcile_pending_finding_candidates<A>(
+    repository: &CampaignRepository,
+    ledger: &mut A,
+    campaign: &CampaignName,
+) -> Result<
+    FindingCandidateRestartSummary,
+    FindingCandidateRestartError<<A as AssignmentLedger>::Error>,
+>
+where
+    A: AssignmentLedger + AssignmentRetentionAdmin<Error = <A as AssignmentLedger>::Error>,
+{
+    let lineage = repository
+        .head(campaign.as_str())
+        .map_err(FindingCandidateRestartError::Repository)?
+        .snapshot()
+        .lineage();
+    let mut inventory = PendingFindingRestartInventory::default();
+    ledger
+        .visit_attempt_states(&mut |key, state| {
+            let AttemptRuntimeState::Completed {
+                execution,
+                observation,
+                finding_candidate: CompletedFindingCandidate::Pending(candidate),
+                ..
+            } = state
+            else {
+                return;
+            };
+            if key.lineage() != lineage {
+                return;
+            }
+
+            inventory.retain(PendingFindingRestartWork {
+                key,
+                execution,
+                observation,
+                candidate,
+            });
+        })
+        .map_err(FindingCandidateRestartError::Ledger)?;
+    let (work, mut summary) =
+        inventory
+            .finish()
+            .map_err(|FindingCandidateRestartInventoryError| {
+                FindingCandidateRestartError::InventoryOverflow
+            })?;
+    for pending in work {
+        let bundle = repository
+            .load_finding_candidate_bundle(pending.candidate)
+            .map_err(FindingCandidateRestartError::Repository)?;
+        let observation = repository
+            .load_observation(pending.observation)
+            .map_err(FindingCandidateRestartError::Repository)?;
+        if bundle.observation() != pending.observation
+            || observation.attempt() != pending.key.attempt()
+        {
+            return Err(FindingCandidateRestartError::CompletionMismatch);
+        }
+
+        let expected = repository
+            .head(campaign.as_str())
+            .map_err(FindingCandidateRestartError::Repository)?
+            .snapshot_id();
+        let observation_publication = repository
+            .publish_observation(campaign.as_str(), expected, &observation)
+            .map_err(FindingCandidateRestartError::Repository)?;
+        if !matches!(
+            observation_publication.disposition,
+            ObservationDisposition::Canonical
+        ) {
+            return Err(FindingCandidateRestartError::NonCanonicalObservation {
+                observation: pending.observation,
+            });
+        }
+
+        let expected = repository
+            .head(campaign.as_str())
+            .map_err(FindingCandidateRestartError::Repository)?
+            .snapshot_id();
+        let handoff = incorporate_and_acknowledge_finding_candidate(
+            repository,
+            ledger,
+            campaign,
+            expected,
+            pending.key,
+            pending.execution,
+            pending.observation,
+            pending.candidate,
+        )
+        .map_err(FindingCandidateRestartError::Handoff)?;
+        if handoff.publication().replayed {
+            summary.replayed_publications += 1;
+        }
+        match handoff.acknowledgement() {
+            FindingCandidateRetentionOutcome::Released(_)
+            | FindingCandidateRetentionOutcome::AlreadyReleased(_) => summary.released += 1,
+            FindingCandidateRetentionOutcome::NotCurrent => summary.not_current += 1,
+        }
+    }
+
+    Ok(summary)
+}
+
+/// Failure while rebuilding pending campaign finding ownership after restart.
+#[derive(Debug, thiserror::Error)]
+pub enum FindingCandidateRestartError<E> {
+    /// The named campaign head or successor could not be authenticated.
+    #[error("finding-candidate restart reconciliation failed in the campaign repository")]
+    Repository(#[source] CampaignRepositoryError),
+    /// The durable assignment inventory could not be read completely.
+    #[error("finding-candidate restart reconciliation failed in the assignment ledger")]
+    Ledger(#[source] E),
+    /// The matching durable inventory count cannot be represented by `usize`.
+    #[error("finding-candidate restart reconciliation inventory count overflowed")]
+    InventoryOverflow,
+    /// The pending candidate, observation, and attempt do not form one completion.
+    #[error("pending finding candidate does not match its completed observation and attempt")]
+    CompletionMismatch,
+    /// Another observation already won canonical completion for this attempt.
+    #[error("pending finding observation `{observation}` is not the canonical completion")]
+    NonCanonicalObservation {
+        /// Exact pending observation that lost deterministic canonicalization.
+        observation: ObservationId,
+    },
+    /// One exact repository-to-ledger handoff failed.
+    #[error("finding-candidate restart handoff failed")]
+    Handoff(#[source] FindingCandidateHandoffError<E>),
 }
 
 /// Incorporates a candidate and releases its matching executor retention root.
@@ -298,4 +542,67 @@ pub enum FindingCandidateHandoffError<E> {
     /// Authenticated evidence named a different bundle than the pending root.
     #[error(transparent)]
     Acknowledgement(#[from] PendingFindingAcknowledgementError),
+}
+
+#[cfg(test)]
+// crucible-lint: allow panic-shortcut -- exact fixture failures should stop these bound tests.
+#[allow(clippy::expect_used)]
+mod tests {
+    use crucible_campaign::{AttemptId, CampaignLineageId};
+    use crucible_cas::content_store::{ContentId, ObjectKind};
+
+    use super::*;
+
+    fn restart_work() -> PendingFindingRestartWork {
+        let typed_id = |tag: &str, byte: u8| {
+            format!("{tag}@campaign-fact.1.{}", format!("{byte:02x}").repeat(32))
+        };
+        let lineage = CampaignLineageId::parse(&typed_id("crucible.campaign.lineage", 0x71))
+            .expect("lineage");
+        let attempt =
+            AttemptId::parse(&typed_id("crucible.campaign.attempt", 0x72)).expect("attempt");
+        let observation_content = ContentId::for_bytes(
+            ObjectKind::Observation,
+            1,
+            b"bounded pending finding observation",
+        );
+        let observation = ObservationId::parse(&format!(
+            "crucible.campaign.observation@{observation_content}"
+        ))
+        .expect("observation");
+        let candidate_content =
+            ContentId::for_bytes(ObjectKind::Finding, 1, b"bounded pending finding candidate");
+        let candidate = FindingCandidateBundleId::parse(&format!(
+            "crucible.campaign.finding-candidate-bundle@{candidate_content}"
+        ))
+        .expect("candidate");
+
+        PendingFindingRestartWork {
+            key: AttemptExecutionKey::new(lineage, attempt),
+            execution: ExecutionId::from_bytes([0x73; 16]).expect("execution"),
+            observation,
+            candidate,
+        }
+    }
+
+    #[test]
+    fn restart_inventory_retains_one_fixed_batch_and_reports_repeatable_remainder() {
+        let mut first = PendingFindingRestartInventory::default();
+        for _ in 0..=MAX_PENDING_FINDING_HANDOFFS_PER_PASS {
+            first.retain(restart_work());
+        }
+        let (work, summary) = first.finish().expect("bounded first pass");
+        assert_eq!(work.len(), MAX_PENDING_FINDING_HANDOFFS_PER_PASS);
+        assert_eq!(summary.pending(), MAX_PENDING_FINDING_HANDOFFS_PER_PASS + 1);
+        assert_eq!(summary.remaining(), 1);
+
+        let mut second = PendingFindingRestartInventory::default();
+        for _ in 0..summary.remaining() {
+            second.retain(restart_work());
+        }
+        let (work, summary) = second.finish().expect("bounded second pass");
+        assert_eq!(work.len(), 1);
+        assert_eq!(summary.pending(), 1);
+        assert_eq!(summary.remaining(), 0);
+    }
 }

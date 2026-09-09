@@ -16,7 +16,7 @@
 //! Decoding re-derives both semantic identities before a live session or QEMU
 //! process can consume the values.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 mod finding_replay;
@@ -26,6 +26,7 @@ pub use finding_replay::{CrucibleFindingReplayEvidence, CrucibleFindingReplayTra
 use finding_replay::{
     PreparedFindingReplayRecords, RecordedFindingReplay, validate_recorded_replay_configuration,
 };
+use prepared_result::MAX_PREPARED_RESULT_RECORDS;
 pub(crate) use prepared_result::PreparedSemanticResultVersion;
 pub use prepared_result::{
     MAX_PREPARED_SEMANTIC_RESULT_BYTES, PreparedSemanticAttemptResult,
@@ -49,6 +50,7 @@ use crucible_campaign::{
     ScenarioArtifact, ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, Selection,
     SelectionId, SelectionOrigin,
 };
+use crucible_cas::content_store::ContentId;
 
 /// Payload schema for a compact canonical Crucible scenario definition.
 pub const CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1: u32 = 1;
@@ -398,6 +400,190 @@ pub fn prepare_signature_preserving_minimized_finding_candidate(
         verification_replays: verification_pass,
         bundle,
     })
+}
+
+/// Runs both minimization passes and attaches their finding to one observation.
+///
+/// The supplied prepared result is the exact semantic result that will enter
+/// the durable executor journal. The oracle returns both its typed finding
+/// replay and the raw measurement leaves needed to reauthenticate that replay
+/// after restart. Both passes use Crucible's fixed candidate and copy-work
+/// bounds, and no repository writes occur during this operation.
+///
+/// # Errors
+///
+/// Returns [`AutomaticFindingPreparationError::Artifact`] when either replay
+/// pass fails or does not preserve the target signature. Returns
+/// [`AutomaticFindingPreparationError::PreparedResult`] when the prepared
+/// finding does not belong to the observation or its combined raw measurement
+/// evidence is incomplete or inconsistent.
+// crucible-lint: allow rust-allow -- the finding basis remains explicit at the execution boundary.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_automatic_signature_preserving_finding<F>(
+    result: PreparedSemanticAttemptResult,
+    signature: FindingSignature,
+    finding: &FindingReproductionArtifact,
+    exact_pins: FindingExactPins,
+    seed: crucible::Seed,
+    mut signature_oracle: F,
+) -> Result<PreparedSemanticAttemptResult, AutomaticFindingPreparationError>
+where
+    F: FnMut(
+        &FindingReproductionArtifact,
+    ) -> Result<
+        (
+            CrucibleFindingReplayEvidence,
+            Vec<crate::CrucibleMeasurementReplayEvidence>,
+        ),
+        EngineError,
+    >,
+{
+    let observation = result
+        .observation()
+        .observation()
+        .id()
+        .map_err(CrucibleArtifactError::from)?;
+    let mut transcript = CrucibleFindingReplayTranscript::new();
+    let mut replay_measurements =
+        BoundedReplayMeasurementEvidence::new(result.measurement_replay_evidence())?;
+
+    for pass in [
+        FindingReplayPass::Minimization,
+        FindingReplayPass::Verification,
+    ] {
+        let mut accumulation_error = None;
+        let pass_result = minimize_signature_preserving_finding(
+            finding,
+            &signature,
+            seed,
+            pass,
+            &mut transcript,
+            |candidate| {
+                let (evidence, measurements) = signature_oracle(candidate)?;
+                if let Err(error) = replay_measurements.extend(measurements) {
+                    accumulation_error = Some(error);
+                    return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                        operation: "finding minimization replay retention",
+                        reason: "raw measurement evidence exceeded its prepared-result bound",
+                    });
+                }
+                Ok(evidence)
+            },
+        );
+        if let Some(error) = accumulation_error {
+            return Err(AutomaticFindingPreparationError::PreparedResult(error));
+        }
+        pass_result?;
+    }
+
+    let prepared = prepare_signature_preserving_minimized_finding_candidate(
+        signature,
+        observation,
+        finding,
+        exact_pins,
+        seed,
+        transcript,
+    )?;
+    let replay_measurements = replay_measurements.finish();
+    result
+        .attach_finding(prepared, replay_measurements)
+        .map_err(AutomaticFindingPreparationError::PreparedResult)
+}
+
+struct BoundedReplayMeasurementEvidence<'a> {
+    existing: BTreeMap<ContentId, &'a crate::CrucibleMeasurementReplayEvidence>,
+    additional: BTreeMap<ContentId, crate::CrucibleMeasurementReplayEvidence>,
+    records: usize,
+    canonical_bytes: usize,
+}
+
+impl<'a> BoundedReplayMeasurementEvidence<'a> {
+    fn new(
+        existing: &'a [crate::CrucibleMeasurementReplayEvidence],
+    ) -> Result<Self, PreparedSemanticResultCodecError> {
+        let mut accumulator = Self {
+            existing: BTreeMap::new(),
+            additional: BTreeMap::new(),
+            records: 0,
+            canonical_bytes: 0,
+        };
+        for leaf in existing {
+            let id = leaf.id()?;
+            if accumulator.existing.insert(id, leaf).is_some() {
+                return Err(PreparedSemanticResultCodecError::Inconsistent {
+                    component: "duplicate measurement replay evidence",
+                });
+            }
+            accumulator.charge(leaf)?;
+        }
+        Ok(accumulator)
+    }
+
+    fn extend(
+        &mut self,
+        evidence: Vec<crate::CrucibleMeasurementReplayEvidence>,
+    ) -> Result<(), PreparedSemanticResultCodecError> {
+        for leaf in evidence {
+            let id = leaf.id()?;
+            if let Some(existing) = self.existing.get(&id) {
+                if *existing != &leaf {
+                    return Err(PreparedSemanticResultCodecError::Inconsistent {
+                        component: "conflicting measurement replay evidence",
+                    });
+                }
+                continue;
+            }
+            if let Some(existing) = self.additional.get(&id) {
+                if existing != &leaf {
+                    return Err(PreparedSemanticResultCodecError::Inconsistent {
+                        component: "conflicting measurement replay evidence",
+                    });
+                }
+                continue;
+            }
+
+            self.charge(&leaf)?;
+            self.additional.insert(id, leaf);
+        }
+        Ok(())
+    }
+
+    fn charge(
+        &mut self,
+        evidence: &crate::CrucibleMeasurementReplayEvidence,
+    ) -> Result<(), PreparedSemanticResultCodecError> {
+        self.records = self
+            .records
+            .checked_add(1)
+            .ok_or(PreparedSemanticResultCodecError::LimitExceeded)?;
+        let encoded_bytes = evidence.canonical_bytes()?.len();
+        self.canonical_bytes = self
+            .canonical_bytes
+            .checked_add(encoded_bytes)
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<u32>()))
+            .ok_or(PreparedSemanticResultCodecError::LimitExceeded)?;
+        if self.records > MAX_PREPARED_RESULT_RECORDS
+            || self.canonical_bytes > MAX_PREPARED_SEMANTIC_RESULT_BYTES
+        {
+            return Err(PreparedSemanticResultCodecError::LimitExceeded);
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Vec<crate::CrucibleMeasurementReplayEvidence> {
+        self.additional.into_values().collect()
+    }
+}
+
+/// Failure to automatically prepare and bind one minimized finding.
+#[derive(Debug, thiserror::Error)]
+pub enum AutomaticFindingPreparationError {
+    /// Crucible replay, signature verification, or campaign artifact preparation failed.
+    #[error(transparent)]
+    Artifact(#[from] CrucibleArtifactError),
+    /// The finding or raw replay evidence did not match the prepared observation.
+    #[error(transparent)]
+    PreparedResult(#[from] PreparedSemanticResultCodecError),
 }
 
 impl CrucibleCampaignArtifactStore {

@@ -345,7 +345,7 @@ impl CampaignRepository {
         Ok(())
     }
 
-    fn validate_executor_finding_candidate(
+    pub(super) fn validate_executor_finding_candidate(
         &self,
         observation: ObservationId,
         finding_candidate: Option<FindingCandidateBundleId>,

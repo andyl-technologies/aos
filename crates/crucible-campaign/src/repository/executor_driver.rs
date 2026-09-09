@@ -107,6 +107,36 @@ impl<S> CampaignExecutorDriver<S> {
         })
     }
 
+    fn incorporate_completed_observation(
+        &self,
+        campaign: &str,
+        observation: ObservationId,
+        finding_candidate: Option<FindingCandidateBundleId>,
+    ) -> Result<CampaignCompletionResult, CampaignRepositoryError> {
+        self.repository
+            .validate_executor_finding_candidate(observation, finding_candidate)?;
+        let observation_record = self.repository.load_observation(observation)?;
+        let expected = self.repository.head(campaign)?.snapshot_id();
+        let observation =
+            self.repository
+                .publish_observation(campaign, expected, &observation_record)?;
+
+        let finding = if let Some(candidate) = finding_candidate {
+            let expected = self.repository.head(campaign)?.snapshot_id();
+            Some(
+                self.repository
+                    .incorporate_finding_candidate_bundle(campaign, expected, candidate)?,
+            )
+        } else {
+            None
+        };
+
+        Ok(CampaignCompletionResult {
+            observation,
+            finding,
+        })
+    }
+
     /// Advances one worker slot by at most one scan page and one executor call.
     ///
     /// New work is reserved only while the campaign is running. A reservation
@@ -342,11 +372,11 @@ impl<S> CampaignExecutorDriver<S> {
                 })
             }
             SubmitAttemptDisposition::AlreadyCompleted { observation } => {
-                let observation_record = self.repository.load_observation(observation)?;
-                let expected = self.repository.head(campaign)?.snapshot_id();
-                let result =
-                    self.repository
-                        .publish_observation(campaign, expected, &observation_record)?;
+                let result = self.incorporate_completed_observation(
+                    campaign,
+                    observation,
+                    response.finding_candidate(),
+                )?;
                 self.queue.release(reservation)?;
                 self.active_executions.remove(&worker_slot);
                 self.reset_scan();
@@ -841,11 +871,11 @@ impl<S> CampaignExecutorDriver<S> {
                 })
             }
             CancelAttemptExecutionDisposition::AlreadyCompleted { observation } => {
-                let observation_record = self.repository.load_observation(observation)?;
-                let expected = self.repository.head(campaign)?.snapshot_id();
-                let result =
-                    self.repository
-                        .publish_observation(campaign, expected, &observation_record)?;
+                let result = self.incorporate_completed_observation(
+                    campaign,
+                    observation,
+                    response.finding_candidate(),
+                )?;
                 self.queue.release(active.reservation)?;
                 self.active_executions.remove(&worker_slot);
                 self.reset_scan();
@@ -958,11 +988,11 @@ impl<S> CampaignExecutorDriver<S> {
                 })
             }
             CheckpointAttemptExecutionDisposition::AlreadyCompleted { observation } => {
-                let observation_record = self.repository.load_observation(observation)?;
-                let expected = self.repository.head(campaign)?.snapshot_id();
-                let result =
-                    self.repository
-                        .publish_observation(campaign, expected, &observation_record)?;
+                let result = self.incorporate_completed_observation(
+                    campaign,
+                    observation,
+                    response.finding_candidate(),
+                )?;
                 self.queue.release(active.reservation)?;
                 self.active_executions.remove(&worker_slot);
                 self.reset_scan();
@@ -1175,11 +1205,11 @@ impl<S> CampaignExecutorDriver<S> {
                 })
             }
             GetAttemptExecutionDisposition::Completed { observation } => {
-                let observation_record = self.repository.load_observation(observation)?;
-                let expected = self.repository.head(campaign)?.snapshot_id();
-                let result =
-                    self.repository
-                        .publish_observation(campaign, expected, &observation_record)?;
+                let result = self.incorporate_completed_observation(
+                    campaign,
+                    observation,
+                    response.finding_candidate(),
+                )?;
                 self.queue.release(active.reservation)?;
                 self.active_executions.remove(&worker_slot);
                 self.reset_scan();
@@ -1266,11 +1296,11 @@ impl<S> CampaignExecutorDriver<S> {
                 })
             }
             ResumeAttemptExecutionDisposition::AlreadyCompleted { observation } => {
-                let observation_record = self.repository.load_observation(observation)?;
-                let expected = self.repository.head(campaign)?.snapshot_id();
-                let result =
-                    self.repository
-                        .publish_observation(campaign, expected, &observation_record)?;
+                let result = self.incorporate_completed_observation(
+                    campaign,
+                    observation,
+                    response.finding_candidate(),
+                )?;
                 self.queue.release(reservation)?;
                 self.active_executions.remove(&worker_slot);
                 self.reset_scan();
@@ -1584,6 +1614,42 @@ fn resume_assignment_for_reservation(
     AssignmentId::from_bytes(bytes)
 }
 
+/// Complete campaign transition produced by one executor completion.
+///
+/// The observation publication may be followed by an atomic finding
+/// incorporation. [`Self::final_snapshot`] names the head after both durable
+/// transitions. Callers inspect the observation transition separately through
+/// [`Self::observation_result`] so an intermediate snapshot cannot be mistaken
+/// for the final completion head.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignCompletionResult {
+    observation: ObservationResult,
+    finding: Option<FindingPublicationResult>,
+}
+
+impl CampaignCompletionResult {
+    /// Returns the canonical observation publication result.
+    #[must_use]
+    pub const fn observation_result(&self) -> &ObservationResult {
+        &self.observation
+    }
+
+    /// Returns the finding publication that followed the observation, if any.
+    #[must_use]
+    pub const fn finding_publication(&self) -> Option<FindingPublicationResult> {
+        self.finding
+    }
+
+    /// Returns the exact campaign head after the complete executor handoff.
+    #[must_use]
+    pub fn final_snapshot(&self) -> CampaignSnapshotId {
+        self.finding
+            .map_or(self.observation.new_snapshot, |finding| {
+                finding.new_snapshot
+            })
+    }
+}
+
 /// One bounded coordinator/executor driver transition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CampaignExecutorStepOutcome {
@@ -1722,7 +1788,7 @@ pub enum CampaignExecutorStepOutcome {
         snapshot: CampaignSnapshotId,
     },
     /// A completed executor observation advanced campaign state.
-    Incorporated(ObservationResult),
+    Incorporated(CampaignCompletionResult),
     /// A stable non-modeled disposition closed the attempt ordinal.
     Closed(NonModeledAttemptResult),
 }
@@ -1808,7 +1874,7 @@ pub enum CampaignExecutorCheckpointOutcome {
         checkpoint: ExactCheckpointId,
     },
     /// Completion won and advanced authoritative campaign state.
-    Incorporated(ObservationResult),
+    Incorporated(CampaignCompletionResult),
     /// Cancellation or a stale execution requires a fresh assignment on resume.
     AssignmentRenewed {
         /// Immutable attempt that remains semantically claimable.
@@ -1893,7 +1959,7 @@ pub enum CampaignExecutorCancelOutcome {
         attempt: AttemptId,
     },
     /// Canonical completion won and advanced campaign state.
-    Incorporated(ObservationResult),
+    Incorporated(CampaignCompletionResult),
 }
 
 /// Invalid static configuration for a campaign executor driver.

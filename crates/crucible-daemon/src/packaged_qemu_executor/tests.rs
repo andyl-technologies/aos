@@ -17,11 +17,16 @@ use crucible::{
 };
 use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
 use crucible_campaign::{
-    AssignmentId, AttemptId, CampaignCommandId, CampaignLineage, CampaignLineageId, CampaignMode,
-    CampaignOperationalStatus, CampaignPolicy, CampaignSeed, CampaignWorldStatus, ConfigurationId,
+    AssignmentId, AttemptId, BudgetGrant, CampaignCommandId, CampaignControlAction,
+    CampaignLineage, CampaignLineageId, CampaignMode, CampaignOperationalStatus, CampaignPolicy,
+    CampaignSeed, CampaignWorldStatus, ConfigurationId, ControlRequest, CoverageProjection,
     ExactCheckpointId, ExactRational, ExecutionId, ExecutionRetentionIntent, ExecutorClient,
-    ExplorerPolicy, FairnessPolicy, PinChange, PinRequest, PinRetention, ProgressiveWideningPolicy,
-    PuctPolicy, RetentionPolicy, ScenarioDefId, SubmitAttemptRequest,
+    ExplorerPolicy, FairnessPolicy, FindingCandidateBundle, FindingCandidateBundleId,
+    FindingExactPins, FindingKind, FindingMinimizationEvidence, FindingSignature,
+    FindingSignatureMinimizationEvidence, FindingTarget, MeasurementSet, Observation,
+    ObservationCandidate, PinChange, PinRequest, PinRetention, ProgressiveWideningPolicy,
+    PropertyVerdictSet, PuctPolicy, RetentionPolicy, ScenarioDefId, StopOutcome,
+    SubmitAttemptRequest,
 };
 use crucible_cas::content_store::{
     BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, MemoryBlobBackend,
@@ -36,8 +41,9 @@ use crucible_qemu::{
 
 use super::*;
 use crate::{
-    AttemptExecutionContext, AttemptExecutionKey, AttemptExecutionRuntimeBasis, AttemptWorkResult,
-    AttemptWorkerFailure, DirectoryAssignmentLedger, DirectoryExactPinMaterializationStore,
+    AssignmentLedger, AttemptExecutionContext, AttemptExecutionKey, AttemptExecutionOrigin,
+    AttemptExecutionRuntimeBasis, AttemptStateCas, AttemptWorkResult, AttemptWorkerFailure,
+    CompletedFindingCandidate, DirectoryAssignmentLedger, DirectoryExactPinMaterializationStore,
     EXACT_PIN_MATERIALIZATION_DIRECTORY, ExactCheckpointStore, ExactPinMaterializationSelection,
     ExactPinRetentionAdmin, HotCheckpointResourceProfile, LocalAttemptWorker,
     LoopbackExecutorService, QemuAttemptCancellationSignal, QemuFreshAttemptLifecycleFactory,
@@ -250,6 +256,65 @@ fn packaged_executor_serves_the_exact_composed_description_and_joins() {
         .expect("join packaged executor");
     assert_eq!(report.pool().executions(), 0);
     assert_eq!(report.pool().active(), 0);
+}
+
+#[test]
+fn packaged_startup_completes_pending_observation_and_finding_handoff() {
+    let directory = tempfile::tempdir().expect("packaged restart directory");
+    let mut config = config(&directory, 1);
+    config.lifecycle = ProductionVmLifecycleConfig::new(
+        "qemu",
+        "plugin",
+        "kernel",
+        "root",
+        directory.path().join("run-state"),
+    );
+    let repository = repository_with_campaigns(&[("packaged", b"shared", "qemu-test")]);
+    let (key, candidate) = retain_packaged_pending_finding(&repository, config.ledger_root());
+
+    let service = compose_packaged_qemu_executor(
+        Arc::clone(&repository),
+        Arc::new(DirectoryBlobBackend::new(
+            "packaged-restart-checkpoints",
+            directory.path().join("checkpoints"),
+        )),
+        profile(),
+        scenario_artifact(),
+        config.clone(),
+        UnusedHostFactory,
+    )
+    .expect("packaged startup reconciles pending finding");
+    let executor = AttachedPackagedQemuExecutor::start(service).expect("start packaged executor");
+    executor
+        .shutdown_and_join()
+        .expect("join reconciled packaged executor");
+
+    let campaign = CampaignName::new("packaged").expect("campaign name");
+    let current = repository
+        .head(campaign.as_str())
+        .expect("reconciled packaged head")
+        .snapshot_id();
+    let publication = repository
+        .incorporate_finding_candidate_bundle(campaign.as_str(), current, candidate)
+        .expect("replay startup-incorporated finding");
+    assert!(publication.replayed);
+    repository
+        .authenticate_current_finding_candidate_incorporation(
+            &campaign,
+            publication.finding,
+            candidate,
+        )
+        .expect("startup finding remains authenticated");
+
+    let ledger = DirectoryAssignmentLedger::open(config.ledger_root())
+        .expect("reopen reconciled packaged ledger");
+    assert!(matches!(
+        ledger.load_attempt(key).expect("load packaged completion"),
+        Some(AttemptRuntimeState::Completed {
+            finding_candidate: CompletedFindingCandidate::Acknowledged(retained),
+            ..
+        }) if retained == candidate
+    ));
 }
 
 #[test]
@@ -478,6 +543,201 @@ fn packaged_policy(scenario: ScenarioDefId) -> CampaignPolicy {
         true,
     )
     .expect("campaign policy")
+}
+
+fn retain_packaged_pending_finding(
+    repository: &CampaignRepository,
+    ledger_root: &Path,
+) -> (AttemptExecutionKey, FindingCandidateBundleId) {
+    const CAMPAIGN: &str = "packaged";
+
+    let created = repository
+        .head(CAMPAIGN)
+        .expect("created packaged campaign");
+    let lineage = repository
+        .load_lineage(created.snapshot().lineage())
+        .expect("load packaged lineage");
+    let funded = repository
+        .apply_control(
+            CAMPAIGN,
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "crucible.test.packaged-pending-finding.command.v1",
+                    b"fund",
+                )),
+                expected_snapshot: created.snapshot_id(),
+                action: CampaignControlAction::GrantBudget(
+                    BudgetGrant::new(0, 1).expect("packaged attempt budget"),
+                ),
+            },
+        )
+        .expect("fund packaged campaign");
+    repository
+        .apply_control(
+            CAMPAIGN,
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "crucible.test.packaged-pending-finding.command.v1",
+                    b"resume",
+                )),
+                expected_snapshot: funded.new_snapshot,
+                action: CampaignControlAction::Resume,
+            },
+        )
+        .expect("resume packaged campaign");
+    let attempt = repository
+        .admit_initial_discovery_if_ready(CAMPAIGN)
+        .expect("admit packaged discovery")
+        .expect("packaged discovery attempt");
+    let attempt_record = repository
+        .load_attempt(attempt)
+        .expect("load packaged attempt");
+    let measurements = repository
+        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
+        .expect("publish measurements");
+    let properties = repository
+        .publish_property_verdict_set(
+            &PropertyVerdictSet::new(BTreeMap::new()).expect("properties"),
+        )
+        .expect("publish properties");
+    let coverage = repository
+        .publish_coverage_projection(
+            &CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage"),
+        )
+        .expect("publish coverage");
+    let observation_record = Observation::new(
+        attempt,
+        lineage.genesis(),
+        lineage.genesis_content(),
+        attempt_record.path(),
+        StopOutcome::TerminalSuccess,
+        measurements,
+        properties,
+        coverage,
+        BTreeSet::new(),
+    )
+    .expect("packaged pending observation");
+    let observation = observation_record
+        .id()
+        .expect("packaged pending observation identity");
+    let candidate = ObservationCandidate::new(
+        repository
+            .load_configuration_artifact(lineage.genesis_content())
+            .expect("load packaged genesis artifact"),
+        repository
+            .load_measurement_set(measurements)
+            .expect("load packaged measurements"),
+        repository
+            .load_property_verdict_set(properties)
+            .expect("load packaged properties"),
+        repository
+            .load_coverage_projection(coverage)
+            .expect("load packaged coverage"),
+        Vec::new(),
+        observation_record,
+    )
+    .expect("build packaged pending observation candidate");
+    assert_eq!(
+        repository
+            .publish_observation_candidate(&candidate)
+            .expect("store packaged pending observation body"),
+        observation
+    );
+
+    let fingerprint = CampaignHash::derive(
+        "crucible.test.packaged-pending-finding.fingerprint.v1",
+        b"finding",
+    );
+    let reproduction_payload = b"packaged pending finding reproduction".to_vec();
+    let original = repository
+        .publish_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            lineage.genesis(),
+            lineage.genesis_content(),
+            fingerprint,
+            1,
+            reproduction_payload.clone(),
+        )
+        .expect("publish packaged original reproduction");
+    let final_state =
+        CampaignHash::derive("crucible.test.packaged-pending-finding.state.v1", b"final");
+    let minimization = FindingMinimizationEvidence::new(
+        original,
+        1,
+        b"packaged-pending-finding-policy".to_vec(),
+        Vec::new(),
+        final_state,
+    )
+    .expect("packaged minimization evidence");
+    let minimized = repository
+        .publish_minimized_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            lineage.genesis(),
+            lineage.genesis_content(),
+            fingerprint,
+            1,
+            reproduction_payload,
+            minimization.clone(),
+        )
+        .expect("publish packaged minimized reproduction");
+    let signature = FindingSignature::new(
+        FindingKind::Divergence,
+        fingerprint,
+        None,
+        String::from("qemu.packaged-restart-divergence"),
+        Some(FindingTarget::Configuration(lineage.genesis_content())),
+        BTreeSet::new(),
+    )
+    .expect("packaged finding signature");
+    let signatures = FindingSignatureMinimizationEvidence::new(
+        &signature,
+        &minimization,
+        vec![Some(signature.clone())],
+        vec![Some(signature.clone())],
+    )
+    .expect("packaged signature minimization");
+    let bundle = FindingCandidateBundle::new(
+        observation,
+        signature,
+        original,
+        minimized,
+        signatures,
+        FindingExactPins::default(),
+    )
+    .expect("packaged finding candidate");
+    let candidate = repository
+        .publish_finding_candidate_bundle(&bundle)
+        .expect("publish packaged finding candidate");
+
+    let request = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x67; 16]).expect("assignment"),
+        DaemonEpoch::from_bytes([0x61; 16]).expect("daemon epoch"),
+        lineage.id().expect("packaged lineage identity"),
+        attempt,
+        resources(),
+        ExecutionRetentionIntent::RetainOnFailure,
+    )
+    .expect("packaged pending request");
+    let key = AttemptExecutionKey::for_request(&request);
+    let completed = AttemptRuntimeState::Completed {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution: ExecutionId::from_bytes([0x68; 16]).expect("execution"),
+        observation,
+        finding_candidate: CompletedFindingCandidate::Pending(candidate),
+    };
+    let mut ledger = DirectoryAssignmentLedger::open(ledger_root).expect("open packaged ledger");
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(key, None, Some(completed))
+            .expect("retain packaged pending finding"),
+        AttemptStateCas::Advanced
+    );
+
+    (key, candidate)
 }
 
 struct ExactPinMaterializerFixture {
