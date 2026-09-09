@@ -33,6 +33,11 @@ pub enum ResourceReleaseError {
 /// Retains an admitted token and any handles still owned after failed release.
 #[derive(Debug)]
 pub struct ResourceReleaseFailure<'plan, Request, Handle> {
+    state: Box<ResourceReleaseFailureState<'plan, Request, Handle>>,
+}
+
+#[derive(Debug)]
+struct ResourceReleaseFailureState<'plan, Request, Handle> {
     error: ResourceReleaseError,
     admitted: AdmittedOperation<'plan, Request, Handle>,
     released: BTreeSet<ResourceId>,
@@ -42,15 +47,15 @@ impl<'plan, Request, Handle> ResourceReleaseFailure<'plan, Request, Handle> {
     /// Returns the reason the release transition stopped.
     #[must_use]
     pub const fn error(&self) -> &ResourceReleaseError {
-        &self.error
+        &self.state.error
     }
 
     /// Returns logical resources whose process-scoped handles remain owned.
-    #[must_use]
     pub fn retained_resources(&self) -> impl Iterator<Item = &ResourceId> {
-        self.admitted
+        self.state
+            .admitted
             .resources()
-            .filter(|resource| !self.released.contains(*resource))
+            .filter(|resource| !self.state.released.contains(*resource))
     }
 
     /// Retries remaining catalog releases and the final durable release record.
@@ -69,7 +74,8 @@ impl<'plan, Request, Handle> ResourceReleaseFailure<'plan, Request, Handle> {
         Catalog: TrustedResourceCatalog<Handle = Handle>,
         Clock: MonotonicClock,
     {
-        release_resources(transaction, self.admitted, catalog, clock, self.released)
+        let state = *self.state;
+        release_resources(transaction, state.admitted, catalog, clock, state.released)
     }
 }
 
@@ -238,8 +244,10 @@ fn release_failure<'plan, Request, Handle>(
     released: BTreeSet<ResourceId>,
 ) -> ResourceReleaseFailure<'plan, Request, Handle> {
     ResourceReleaseFailure {
-        error,
-        admitted,
-        released,
+        state: Box::new(ResourceReleaseFailureState {
+            error,
+            admitted,
+            released,
+        }),
     }
 }
