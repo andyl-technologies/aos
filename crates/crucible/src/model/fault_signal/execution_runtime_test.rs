@@ -4,6 +4,52 @@ use super::test_support::*;
 use super::*;
 
 #[test]
+fn production_preview_treats_a_future_partition_pulse_as_inactive() {
+    let plan = future_pulse_plan();
+    let owner = OwnedFaultExecutionRuntime::new(
+        plan,
+        Arc::new(NoArtifacts),
+        SignalBoundarySnapshot::default(),
+        ContentHash::from_bytes(b"future-partition-pulse-preview"),
+        manifests(),
+    )
+    .unwrap_or_else(|error| panic!("future pulse owner: {error}"));
+    let initial_checkpoint = owner
+        .checkpoint()
+        .content_id()
+        .unwrap_or_else(|error| panic!("initial checkpoint: {error}"));
+
+    let before_start = owner
+        .preview_boundary(
+            FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            0,
+        )
+        .unwrap_or_else(|error| panic!("zero-time production preview: {error}"));
+    assert!(before_start.actions.is_empty());
+    assert_eq!(
+        owner
+            .checkpoint()
+            .content_id()
+            .unwrap_or_else(|error| panic!("checkpoint after preview: {error}")),
+        initial_checkpoint
+    );
+
+    let at_start = owner
+        .preview_boundary(
+            FaultCoordinate {
+                virtual_nanos: 8_000_000_000,
+                retired_instructions: None,
+            },
+            0,
+        )
+        .unwrap_or_else(|error| panic!("active production preview: {error}"));
+    assert_eq!(at_start.actions.len(), 1);
+}
+
+#[test]
 fn execution_checkpoint_restores_the_same_adapter_contributions() {
     let plan = test_plan();
     let seed = ContentHash::from_bytes(b"scenario-seed");

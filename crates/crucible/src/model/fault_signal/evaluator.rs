@@ -1355,7 +1355,15 @@ impl<'a> SignalEvaluator<'a> {
                 inactive,
                 active,
             } => {
-                let coordinate = coordinate_offset(start, &request.coordinate)?;
+                let coordinate = match coordinate_offset(start, &request.coordinate) {
+                    Ok(coordinate) => coordinate,
+                    // The inactive value covers both sides of the pulse. Keep
+                    // incompatible coordinate identities as typed errors.
+                    Err(SignalEvaluationError::CoordinateBeforeEpoch) => {
+                        return Ok(EvaluatedSignal::Value(inactive.clone()));
+                    }
+                    Err(error) => return Err(error),
+                };
                 Ok(EvaluatedSignal::Value(if coordinate < *duration {
                     active.clone()
                 } else {
