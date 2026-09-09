@@ -5546,6 +5546,50 @@ or orchestrate controller and Host consumption. Storage Apply remains
 unadvertised, and `SBX-STOR-01`, `SBX-P0-07`, `SBX-P0-08`, and `SBX-P0-10`
 remain open.
 
+### Verified Storage resolution and execution metadata (in progress)
+
+Commit `ac8196c5fa0aa107374131b9803bc14a9f5de565` adds the protected,
+pure-resolution foundation for a future production Prepare path. Catalog
+format 3 binds an opaque checked workspace-root policy, retained preparation
+format 2 binds that exact catalog format and policy digest, and physical-state
+format 2 authenticates the rich 136-byte snapshot-root record needed to
+preserve portable root attributes across Clone. Legacy catalog, preparation,
+physical-state, reservation, transition, and head encodings remain frozen.
+Recovery can migrate a verified legacy chain into physical-state format 2,
+refuses a legacy catalog-format-2 operation after an execution-format physical
+head, and never treats a legacy snapshot without rich metadata as Clone
+authority.
+
+The new resolver authenticates the complete physical chain and durable
+operation set in both directions before selecting one protected root and
+domain policy. It deterministically resolves CreateWorkspace, Snapshot,
+HoldSnapshot, ReleaseHold, Clone, SetQuota, DestroySnapshot, and DestroyDataset
+to a single successor catalog, with checked generation, quota, name, hold,
+root, domain, and source-metadata constraints. An opaque
+`AuthorizedStorageResolutionV1` is minted only by direct admission of the
+canonical signed Prepare body and preserves the full assignment plus operation,
+sandbox, inventory, expected-head, transport, plan, and lease bindings. Apply
+continues to require its separate signed grant and canonical manifest and
+specification.
+
+The pinned development-shell Storage library run executed 180 tests: 177
+passed, none failed, and the three installed-systemd fixtures were ignored.
+All Storage targets also compiled, formatting and cached-diff checks passed,
+and focused regressions cover legacy golden bytes, V1-to-V2 recovery, rich
+metadata tamper, capacity bounds, oversized version dispatch, global
+multi-root validation, reverse operation-set validation, all eight resolver
+actions, sibling Prepare-body substitution, assignment-incarnation and epoch
+substitution, and the independent Apply manifest and specification check.
+
+This is schema, protected projection, opaque authority, and pure resolution
+evidence only. The production service does not yet load a protected resolver
+policy and fresh journal snapshot for Prepare, retain that result through its
+RPC handler, or connect it to execution. New-dataset root initialization, the
+narrow capability and enforcing-MAC boundary, controller and Host
+orchestration, and an end-to-end production Prepare/Apply lifecycle remain
+open. Storage Apply stays unadvertised, and no `SBX-STOR-01`, `SBX-P0-07`,
+`SBX-P0-08`, or `SBX-P0-10` checkbox is closed.
+
 ### Set-ID creation guard source feasibility (design only)
 
 A read-only source audit bounded one possible BPF-LSM SetidGuard, but does not
