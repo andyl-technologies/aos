@@ -1846,6 +1846,9 @@ fn progressive_integer_generator_refines_only_after_exact_feedback() {
 #[test]
 fn feedback_progressive_integer_refines_the_highest_owner_scored_interval() {
     let (repository, lineage, policy, blobs) = counted_fixture();
+    let policy = policy
+        .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
+        .expect("intervention-guided feedback policy");
     let genesis = repository
         .create_funded(
             "generated-feedback-progressive",
@@ -2230,7 +2233,9 @@ fn measurement_progressive_integer_prioritizes_verified_objective_discontinuity(
         base_policy.retention(),
         base_policy.admits_scenario_defaults(),
     )
-    .expect("measurement-progressive policy");
+    .expect("measurement-progressive policy")
+    .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
+    .expect("intervention-guided measurement policy");
     let campaign = "generated-measurement-progressive";
     let genesis = repository
         .create_funded(campaign, &lineage, &policy, &BTreeMap::new())
@@ -2601,7 +2606,9 @@ fn finding_progressive_integer_prioritizes_verified_reward_discontinuity() {
         base_policy.retention(),
         base_policy.admits_scenario_defaults(),
     )
-    .expect("finding-progressive policy");
+    .expect("finding-progressive policy")
+    .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
+    .expect("intervention-guided finding policy");
     let campaign = "generated-finding-progressive";
     let genesis = repository
         .create_funded(campaign, &lineage, &policy, &BTreeMap::new())
@@ -2800,6 +2807,9 @@ fn finding_progressive_integer_prioritizes_verified_reward_discontinuity() {
 #[test]
 fn rarity_progressive_integer_prioritizes_inverse_frequency_discontinuity() {
     let (repository, lineage, policy, blobs) = counted_fixture();
+    let policy = policy
+        .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
+        .expect("intervention-guided rarity policy");
     let campaign = "generated-rarity-progressive";
     let genesis = repository
         .create_funded(campaign, &lineage, &policy, &BTreeMap::new())
