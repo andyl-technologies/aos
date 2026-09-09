@@ -5525,3 +5525,40 @@ authenticated Apply handler, controller dispatch and orchestration, guardian
 coupling, or full production lifecycle end-to-end test exists yet. Apply
 remains unadvertised, and `SBX-NET-01`, `SBX-NET-02`, `SBX-NET-03`, and
 `SBX-P0-06` remain open.
+
+### Kernel-matched SELinux policy artifact (offline qualification)
+
+Commit `1d2929acd` adds a separately selectable production refpolicy variant
+and an offline final-policy builder without changing the legacy `refpolicy`
+derivation. The unchanged legacy package still evaluates to
+`/nix/store/lcbmhc52nh7h23vjjbk1q56f934msnv5-refpolicy-2.20240916.drv`.
+The production variant patches the upstream class map for the pinned Linux
+6.18.33 source and sets reject-unknown before building the complete upstream
+module set. It does not link the legacy AOS `kernel_t`/`unlabeled` compatibility
+module.
+
+The final-policy derivation
+`/nix/store/07g2yzmviih7g2g07mf5yrpdjp7b7bhv-aos-selinux-production-policy-1.drv`
+passed at
+`/nix/store/zr1c2l77vy9xhygrwg17szvy94ciwc32-aos-selinux-production-policy-1`.
+It extracts 96 ordered kernel class rows directly from the pinned kernel source,
+decodes the linked policy binary, requires every complete kernel permission
+sequence as an ordered prefix, permits only trailing userspace extensions, and
+requires exactly `handleunknown reject`. The installed policy version 33 binary
+has SHA-256
+`9326fa5f862657abd0f73cdd9439114e3c1f5f3f4c3c481bce1fc0df8e6c5a93`.
+The same build compiles the aggregated upstream file contexts while validating
+every context against that binary policy.
+
+The negative gate removes the real `io_uring.allowed` pair from the decoded
+policy. The comparator rejects the deficient source for the exact ordered-
+permission reason; `secilc` produces a nonempty compiled binary policy, which
+`checkpolicy` decodes before the same comparator rejects it for the same reason.
+Comparator unit coverage passes five fail-closed cases. The supporting `secilc`
+package installs all three upstream binaries and all three validated and
+rendered manual pages from AOS-built source dependencies.
+
+This is an offline build and compatibility qualification only. No system selects
+the new artifact, loads it during boot, labels the initrd, composefs root, or
+writable state, enters an enforcing domain, or grants an inspector capability.
+`SBX-P0-10` remains open.
