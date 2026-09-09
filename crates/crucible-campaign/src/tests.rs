@@ -1808,6 +1808,12 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         request.stop().encode(&mut encoder);
         encoder.finish()
     };
+    assert!(matches!(
+        BranchRequest::from_canonical_bytes(&encode_request_body(7, request.source())),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported branch-request schema or source"
+        })
+    ));
     let legacy_body = encode_request_body(1, request.source());
     let legacy_request = BranchRequest::from_canonical_bytes(&legacy_body)
         .expect("selection-free branch-request v1 remains readable");

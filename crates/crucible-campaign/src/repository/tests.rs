@@ -925,5 +925,6 @@ mod planner_scan_index;
 mod request_budget_scale;
 mod savepoint;
 mod scenario_default;
+mod statistics;
 mod transfer;
 mod validation;

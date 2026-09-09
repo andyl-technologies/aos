@@ -11,8 +11,13 @@ use super::{
     ScenarioDefId,
 };
 
+mod statistical;
+
+pub use statistical::{StatisticalDistribution, StatisticalDrawPlan, StatisticalSamplingDesign};
+
 const LEGACY_CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 1;
-const CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 2;
+const INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 2;
+const CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 3;
 pub(crate) const MAX_POLICY_ENTRIES: usize = 4_096;
 const MAX_CAMPAIGN_POLICY_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_IDENTIFIER_BYTES: usize = 512;
@@ -1303,6 +1308,7 @@ pub struct CampaignPolicy {
     retention: RetentionPolicy,
     admit_scenario_defaults: bool,
     intervention_learning: InterventionLearningPolicy,
+    statistical_sampling: Option<StatisticalSamplingDesign>,
 }
 
 /// Controls whether intervention observations may guide adaptive exploration.
@@ -1375,10 +1381,11 @@ impl CampaignPolicy {
             retention,
             admit_scenario_defaults,
             InterventionLearningPolicy::Exclude,
+            None,
         )
     }
 
-    // crucible-lint: allow rust-allow -- one schema-gated constructor validates the complete v1/v2 policy contract.
+    // crucible-lint: allow rust-allow -- one schema-gated constructor validates the complete policy contract.
     #[allow(clippy::too_many_arguments)]
     fn new_for_schema(
         schema_version: u32,
@@ -1394,8 +1401,18 @@ impl CampaignPolicy {
         retention: RetentionPolicy,
         admit_scenario_defaults: bool,
         intervention_learning: InterventionLearningPolicy,
+        statistical_sampling: Option<StatisticalSamplingDesign>,
     ) -> Result<Self, CampaignCodecError> {
         explorer.validate()?;
+        if statistical_sampling.is_some()
+            && (schema_version != CAMPAIGN_POLICY_SCHEMA_VERSION
+                || mode != CampaignMode::Statistical
+                || !matches!(explorer, ExplorerPolicy::Exhaustive { .. }))
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "statistical sampling design disagrees with campaign policy",
+            });
+        }
         for length in [
             choice_policies.len(),
             objectives.len(),
@@ -1446,6 +1463,7 @@ impl CampaignPolicy {
             retention,
             admit_scenario_defaults,
             intervention_learning,
+            statistical_sampling,
         };
         codec::ensure_encoded_size(
             &policy,
@@ -1468,8 +1486,41 @@ impl CampaignPolicy {
         mut self,
         intervention_learning: InterventionLearningPolicy,
     ) -> Result<Self, CampaignCodecError> {
-        self.schema_version = CAMPAIGN_POLICY_SCHEMA_VERSION;
+        self.schema_version = self
+            .schema_version
+            .max(INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION);
         self.intervention_learning = intervention_learning;
+        codec::ensure_encoded_size(
+            &self,
+            MAX_CAMPAIGN_POLICY_BYTES,
+            "campaign-policy-encoded-bytes",
+        )?;
+        Ok(self)
+    }
+
+    /// Returns a version-three statistical policy with one pinned finite design.
+    ///
+    /// The initial implementation admits only the static exhaustive engine;
+    /// adaptive Beam and PUCT designs require separately declared resampling
+    /// rules before they can make statistical claims.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] unless this is a statistical policy using
+    /// the exhaustive engine, or when the representation exceeds its bound.
+    pub fn with_statistical_sampling_design(
+        mut self,
+        design: StatisticalSamplingDesign,
+    ) -> Result<Self, CampaignCodecError> {
+        if self.mode != CampaignMode::Statistical
+            || !matches!(self.explorer, ExplorerPolicy::Exhaustive { .. })
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "statistical sampling design requires static exhaustive policy",
+            });
+        }
+        self.schema_version = CAMPAIGN_POLICY_SCHEMA_VERSION;
+        self.statistical_sampling = Some(design);
         codec::ensure_encoded_size(
             &self,
             MAX_CAMPAIGN_POLICY_BYTES,
@@ -1560,12 +1611,19 @@ impl CampaignPolicy {
         self.intervention_learning
     }
 
+    /// Returns the finite sampling design pinned for statistical execution.
+    #[must_use]
+    pub const fn statistical_sampling_design(&self) -> Option<&StatisticalSamplingDesign> {
+        self.statistical_sampling.as_ref()
+    }
+
     pub(crate) const fn schema_version(&self) -> u32 {
         self.schema_version
     }
 
     pub(crate) fn content_children(&self) -> Vec<(String, ContentId)> {
-        self.choice_policies
+        let mut children = self
+            .choice_policies
             .values()
             .enumerate()
             .map(|(index, policy)| {
@@ -1574,7 +1632,20 @@ impl CampaignPolicy {
                     policy.generator().content_id(),
                 )
             })
-            .collect()
+            .collect::<Vec<_>>();
+        if let Some(design) = &self.statistical_sampling {
+            for (coordinate, draw) in design.draws() {
+                children.push((
+                    format!("statistical-opportunity.{coordinate:04x}"),
+                    draw.opportunity().content_id(),
+                ));
+                children.push((
+                    format!("statistical-domain.{coordinate:04x}"),
+                    draw.domain().content_id(),
+                ));
+            }
+        }
+        children
     }
 
     /// Returns the canonical binary representation.
@@ -1622,8 +1693,11 @@ impl Canonical for CampaignPolicy {
         self.fairness.encode(encoder);
         self.retention.encode(encoder);
         self.admit_scenario_defaults.encode(encoder);
-        if self.schema_version >= CAMPAIGN_POLICY_SCHEMA_VERSION {
+        if self.schema_version >= INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION {
             self.intervention_learning.encode(encoder);
+        }
+        if self.schema_version >= CAMPAIGN_POLICY_SCHEMA_VERSION {
+            self.statistical_sampling.encode(encoder);
         }
     }
 
@@ -1631,7 +1705,9 @@ impl Canonical for CampaignPolicy {
         let schema_version = u32::decode(decoder)?;
         if !matches!(
             schema_version,
-            LEGACY_CAMPAIGN_POLICY_SCHEMA_VERSION | CAMPAIGN_POLICY_SCHEMA_VERSION
+            LEGACY_CAMPAIGN_POLICY_SCHEMA_VERSION
+                | INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION
+                | CAMPAIGN_POLICY_SCHEMA_VERSION
         ) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported campaign-policy schema version",
@@ -1667,11 +1743,22 @@ impl Canonical for CampaignPolicy {
         let fairness = FairnessPolicy::decode(decoder)?;
         let retention = RetentionPolicy::decode(decoder)?;
         let admit_scenario_defaults = bool::decode(decoder)?;
-        let intervention_learning = if schema_version >= CAMPAIGN_POLICY_SCHEMA_VERSION {
+        let intervention_learning = if schema_version >= INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION
+        {
             InterventionLearningPolicy::decode(decoder)?
         } else {
             InterventionLearningPolicy::Exclude
         };
+        let statistical_sampling = if schema_version >= CAMPAIGN_POLICY_SCHEMA_VERSION {
+            Option::decode(decoder)?
+        } else {
+            None
+        };
+        if statistical_sampling.is_some() != (schema_version == CAMPAIGN_POLICY_SCHEMA_VERSION) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign-policy statistical design disagrees with schema",
+            });
+        }
         Self::new_for_schema(
             schema_version,
             scenario,
@@ -1686,6 +1773,7 @@ impl Canonical for CampaignPolicy {
             retention,
             admit_scenario_defaults,
             intervention_learning,
+            statistical_sampling,
         )
     }
 }

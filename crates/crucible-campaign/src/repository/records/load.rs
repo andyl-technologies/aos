@@ -271,7 +271,7 @@ impl CampaignRepository {
                 return Err(integrity("planner-invocation-planning-view-envelope-shape"));
             }
             self.validate_planner_page(&view, &invocation)?;
-            self.validate_planner_selected_source(&view, step.disposition())?;
+            self.validate_planner_selected_source(&view, step.disposition(), None)?;
 
             let parent = step
                 .parent()

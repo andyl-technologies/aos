@@ -153,6 +153,13 @@
       placeholder = false;
     }
     {
+      gate = "gate:campaign-statistics";
+      package = "crucible-campaign";
+      testTarget = "gate_campaign_statistics";
+      requiredFeatures = [];
+      placeholder = false;
+    }
+    {
       gate = "gate:scheduler-liveness";
       package = "crucible";
       testTarget = "gate_scheduler_liveness";
@@ -287,6 +294,7 @@
     "gate:single-vm-fingerprint"
     "gate:layer1-injection"
     "gate:content-address"
+    "gate:campaign-statistics"
     "gate:replay-oracle"
     "gate:divergence-bisect"
     "gate:scheduler-liveness"

@@ -240,6 +240,12 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         status: GateStatus::RedPlaceholder,
     },
     GateSpec {
+        name: "gate:campaign-statistics",
+        phase: GatePhase::Phase4,
+        owner: "crucible-campaign",
+        status: GateStatus::Implemented,
+    },
+    GateSpec {
         name: "gate:basic-block-coverage",
         phase: GatePhase::Phase6,
         owner: "crucible-qemu-plugin",

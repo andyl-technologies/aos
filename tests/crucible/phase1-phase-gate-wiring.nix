@@ -131,6 +131,11 @@
     }
     {
       phase = "phase4";
+      attr = "campaignStatistics";
+      gate = "gate:campaign-statistics";
+    }
+    {
+      phase = "phase4";
       attr = "e2eDeterminism";
       gate = "gate:e2e-determinism";
     }

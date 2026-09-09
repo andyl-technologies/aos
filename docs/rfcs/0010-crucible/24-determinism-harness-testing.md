@@ -59,6 +59,7 @@ invariants/requirements it enforces.
 | `gate:layer1-injection` | L1 co-sim transport (Contract B) | INV-3; HARN-5, HARN-8 | Cross-node injection icount is a pure function of virtual time. |
 | `gate:content-address` | L1/L3 content-addressed store | INV-6; HARN-11 | Equal content hashes equal; unequal content does not collide. |
 | `gate:campaign-model` | L3/L4 canonical campaign owner | RFC-0020 CMOD-1..30, CAPI-1..14 | Canonical campaign identities, linear owner transitions, derivation, restart projection, and stale/conflicting writes remain exact. |
+| `gate:campaign-statistics` | L3 finite statistical campaign owner | RFC-0020 GUIDE-15, GUIDE-23 | The implemented finite static design preserves exact `P`/`Q` support and path weights, reports only complete declared endpoints, and excludes intervention execution bases. Adaptive SMC, genealogy, and uncertainty claims remain outside this gate. |
 | `gate:replay-oracle` | L3 temporal graph | INV-1, INV-2; HARN-12, HARN-13 | Fat-checkpoint hash == thin (replay-from-ancestor) hash. |
 | `gate:divergence-bisect` | Cross-layer diagnostic | INV-10; HARN-9, HARN-10 | A seeded divergence is localized to its first differing step. |
 | `gate:scheduler-liveness` | L3 scheduler actor | INV-8; HARN-18 | The scheduler always reaches quiescence or its time limit; no deadlock/livelock. |
@@ -85,7 +86,7 @@ The first twelve names — `gate:layer0-determinism`, `gate:single-vm-fingerprin
 `gate:scheduler-liveness`, `gate:control-responsive`, `gate:harness-lint`, and
 `gate:e2e-determinism` — are the names the spine and other topic files already
 reference. `gate:abi-conformance`, `gate:patch-microtests`,
-`gate:typed-choice`, `gate:adversarial-determinism`, and `gate:perf-bench` (the last owned by
+`gate:typed-choice`, `gate:campaign-statistics`, `gate:adversarial-determinism`, and `gate:perf-bench` (the last owned by
 [`25-performance-targets.md`](25-performance-targets.md)) are added here and are
 equally canonical. `gate:basic-block-coverage` is the Phase-6 coverage boundary;
 it remains red until its loaded-QEMU proof is green. `gate:fleet-equivalence`
@@ -873,6 +874,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   phase3  gate:scheduler-liveness            (scheduler actor)
   phase3  gate:adversarial-determinism       (modeled hostile-condition matrix)
   phase4  gate:replay-oracle                 (full temporal graph)
+  phase4  gate:campaign-statistics           (finite static P/Q estimation)
   phase4  gate:e2e-determinism               (mock backend)
   phase5  gate:control-responsive            (control plane)
   phase6  gate:replay-oracle                 (active search)
