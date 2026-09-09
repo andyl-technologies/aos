@@ -5,10 +5,11 @@ use std::collections::BTreeMap;
 use aos_ability_model::document::{DesiredInstance, PackageSubject};
 use aos_ability_model::{
     AbilityActivationMode, AbilityValue, AccessMode, AggregationContract, AggregationScope,
-    AuthorityGrant, BindingRequest, DesiredStateDocument, ExportDeclaration, ImplementationKind,
-    InstanceId, LocalKey, PackageDocument, PackageImplementation, ProviderImplementation,
-    ProviderImplementationReference, RequestId, RequirementDeclaration, RequirementStrength,
-    ResourceLifetime, ResourcePermission, ScopePath, VersionedDocument,
+    AuthorityGrant, BindingRequest, DeploymentObligation, DesiredStateDocument, ExportDeclaration,
+    ImplementationKind, InstanceId, LocalKey, ObligationKind, PackageDocument,
+    PackageImplementation, ProviderImplementation, ProviderImplementationReference, RequestId,
+    RequirementDeclaration, RequirementStrength, ResourceLifetime, ResourcePermission, ScopePath,
+    VersionedDocument,
 };
 use aos_ability_validate::ValidationContext;
 use aos_contract::Sha256Digest;
@@ -140,6 +141,57 @@ impl CompositionEvaluator for EmptyEvaluator {
                 .map_err(|error| EvaluationError::new(error.to_string()))?,
         )
         .map_err(|error| EvaluationError::new(error.to_string()))
+    }
+}
+
+#[test]
+fn unresolved_request_retains_every_canonical_policy_obligation() {
+    let mut fixture = planner_fixture(1);
+    let request = fixture.desired.child_requests[0].id.clone();
+    fixture.policy.candidates.clear();
+    fixture.policy.obligations = two_obligations(&request);
+
+    let outcome = Resolver::new(&fixture.context)
+        .resolve(
+            &fixture.policy,
+            fixture.desired,
+            fixture.environment,
+            fixture.packages,
+        )
+        .expect("one unresolved request may retain multiple obligations");
+
+    assert!(outcome.decisions.is_empty());
+    assert!(outcome.checked.bindings().is_empty());
+    assert_eq!(
+        outcome.checked.document().obligations,
+        fixture.policy.obligations
+    );
+}
+
+#[test]
+fn obligation_groups_require_canonical_unique_request_and_key_pairs() {
+    let mutations: [fn(&mut Vec<DeploymentObligation>); 2] = [
+        |obligations: &mut Vec<DeploymentObligation>| obligations.reverse(),
+        |obligations: &mut Vec<DeploymentObligation>| {
+            obligations[1].key = obligations[0].key.clone();
+        },
+    ];
+    for mutate in mutations {
+        let mut fixture = planner_fixture(1);
+        let request = fixture.desired.child_requests[0].id.clone();
+        fixture.policy.candidates.clear();
+        fixture.policy.obligations = two_obligations(&request);
+        mutate(&mut fixture.policy.obligations);
+
+        assert!(matches!(
+            Resolver::new(&fixture.context).resolve(
+                &fixture.policy,
+                fixture.desired,
+                fixture.environment,
+                fixture.packages,
+            ),
+            Err(ResolutionError::InvalidPolicy(_))
+        ));
     }
 }
 
@@ -901,6 +953,25 @@ fn empty_grant(principal: InstanceId) -> AuthorityGrant {
         contributions: Vec::new(),
         resources: Vec::new(),
     }
+}
+
+fn two_obligations(request: &RequestId) -> Vec<DeploymentObligation> {
+    vec![
+        DeploymentObligation {
+            key: key("authorization"),
+            kind: ObligationKind::Authorization,
+            request: request.clone(),
+            resource: None,
+            description: "operator authorization is unavailable".to_string(),
+        },
+        DeploymentObligation {
+            key: key("provider"),
+            kind: ObligationKind::ExternalProvider,
+            request: request.clone(),
+            resource: None,
+            description: "external provider is unavailable".to_string(),
+        },
+    ]
 }
 
 fn key(value: &str) -> LocalKey {

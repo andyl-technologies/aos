@@ -7,10 +7,10 @@ use std::collections::BTreeMap;
 use aos_ability_model::document::PackageSubject;
 use aos_ability_model::{
     AbilityActivationMode, AbilityValue, AggregationContract, AggregationScope, BindingId,
-    ExportDeclaration, ImplementationKind, InstanceId, LocalKey, PackageDocument,
-    PackageImplementation, ProviderImplementation, ProviderImplementationReference,
-    ResourceLifetime, TeardownBindingAuthorization, TransitionAuthorizationDocument,
-    VersionedDocument,
+    DeploymentObligation, ExportDeclaration, ImplementationKind, InstanceId, LocalKey,
+    ObligationKind, PackageDocument, PackageImplementation, ProviderImplementation,
+    ProviderImplementationReference, ResourceLifetime, TeardownBindingAuthorization,
+    TransitionAuthorizationDocument, VersionedDocument,
 };
 use aos_ability_validate::{
     CheckedEffectPlan, CheckedTransitionAuthority, TransitionAuthorityInputs, ValidationContext,
@@ -39,6 +39,31 @@ pub fn verified_planning_effect_plan() -> (VerifiedPlanningSnapshot, CheckedEffe
     let (planning, transition) = verified_planning_transition_plan();
     let effect = transition.into_checked_effect();
     (planning, effect)
+}
+
+/// Builds verified planning provenance with two obligations for one request.
+///
+/// The fixture exercises the binding contract that an unresolved request may
+/// retain one or more independently classified missing inputs.
+///
+/// # Panics
+///
+/// Panics only when the statically constructed fixture stops satisfying a
+/// production planning, snapshot, or validation invariant.
+#[must_use]
+pub fn verified_planning_multiple_obligations() -> VerifiedPlanningSnapshot {
+    build_verified_planning_fixture(false, PlanningFixtureKind::MultipleObligations).1
+}
+
+/// Builds verified planning provenance with one retained candidate rejection.
+///
+/// # Panics
+///
+/// Panics only when the statically constructed fixture stops satisfying a
+/// production planning, snapshot, or validation invariant.
+#[must_use]
+pub fn verified_planning_with_rejection() -> VerifiedPlanningSnapshot {
+    build_verified_planning_fixture(false, PlanningFixtureKind::SelectedWithRejection).1
 }
 
 /// Builds sealed planning and transition provenance through production planners.
@@ -81,8 +106,8 @@ pub fn verified_planning_transition_with_distinct_current() -> (
     VerifiedPlanningSnapshot,
     VerifiedTransitionPlan,
 ) {
-    let (_, current) = build_verified_planning_fixture(true);
-    let (context, desired) = build_verified_planning_fixture(false);
+    let (_, current) = build_verified_planning_fixture(true, PlanningFixtureKind::Selected);
+    let (context, desired) = build_verified_planning_fixture(false, PlanningFixtureKind::Selected);
     let transition = TransitionPlanner::new(&context)
         .plan(
             &desired,
@@ -115,7 +140,7 @@ pub fn verified_planning_authorized_removal_fixture() -> (
     CheckedTransitionAuthority,
     VerifiedTransitionPlan,
 ) {
-    let (context, current) = build_verified_planning_fixture(false);
+    let (context, current) = build_verified_planning_fixture(false, PlanningFixtureKind::Selected);
     let environment = current.checked_binding().environment().clone();
     let environment_digest = environment
         .content_digest()
@@ -246,7 +271,7 @@ fn build_verified_planning_transition_fixture(
     VerifiedPlanningSnapshot,
     VerifiedTransitionPlan,
 ) {
-    let (context, verified) = build_verified_planning_fixture(false);
+    let (context, verified) = build_verified_planning_fixture(false, PlanningFixtureKind::Selected);
     let transition = TransitionPlanner::new(&context)
         .plan(
             &verified,
@@ -261,8 +286,16 @@ fn build_verified_planning_transition_fixture(
     (context, verified, transition)
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PlanningFixtureKind {
+    Selected,
+    SelectedWithRejection,
+    MultipleObligations,
+}
+
 fn build_verified_planning_fixture(
     include_discarded_policy: bool,
+    kind: PlanningFixtureKind,
 ) -> (ValidationContext, VerifiedPlanningSnapshot) {
     let source = aos_ability_validate::test_support::plan_fixture();
     let interface = source.binding_plan.bindings[0].interface.clone();
@@ -357,13 +390,30 @@ fn build_verified_planning_fixture(
     let source_binding = &source.binding_plan.bindings[0];
     let mut caller_grant = source_binding.caller_grant.clone();
     caller_grant.principal = consumer;
-    let policy = ResolutionPolicyDocument {
-        schema: ResolutionPolicyDocument::SCHEMA.to_string(),
-        required_features: Vec::new(),
-        desired_state: desired_state_digest,
-        environment: environment_digest,
-        policy_revision: environment.policy_revision,
-        candidates: vec![BindingCandidate {
+    let obligations = if kind == PlanningFixtureKind::MultipleObligations {
+        vec![
+            DeploymentObligation {
+                key: key("authorization"),
+                kind: ObligationKind::Authorization,
+                request: request.id.clone(),
+                resource: None,
+                description: "operator authorization is unavailable".to_string(),
+            },
+            DeploymentObligation {
+                key: key("provider"),
+                kind: ObligationKind::ExternalProvider,
+                request: request.id.clone(),
+                resource: None,
+                description: "external provider is unavailable".to_string(),
+            },
+        ]
+    } else {
+        Vec::new()
+    };
+    let mut candidates = if kind == PlanningFixtureKind::MultipleObligations {
+        Vec::new()
+    } else {
+        let selected = BindingCandidate {
             key: source_binding.id.0.clone(),
             request: request.id.clone(),
             interface,
@@ -377,12 +427,29 @@ fn build_verified_planning_fixture(
             lifetime: ResourceLifetime::Instance,
             mediation_allowed: false,
             exclusive_resources: Vec::new(),
-        }],
+        };
+        if kind == PlanningFixtureKind::SelectedWithRejection {
+            let mut rejected = selected.clone();
+            rejected.key = key("a-rejected-short-lifetime");
+            rejected.lifetime = ResourceLifetime::Attempt;
+            vec![rejected, selected]
+        } else {
+            vec![selected]
+        }
+    };
+    candidates.sort_by(|left, right| left.key.cmp(&right.key));
+    let policy = ResolutionPolicyDocument {
+        schema: ResolutionPolicyDocument::SCHEMA.to_string(),
+        required_features: Vec::new(),
+        desired_state: desired_state_digest,
+        environment: environment_digest,
+        policy_revision: environment.policy_revision,
+        candidates,
         explicit_bindings: Vec::new(),
         existing_pins: Vec::new(),
         operator_orders: Vec::new(),
         enabled_providers: Vec::new(),
-        obligations: Vec::new(),
+        obligations,
     };
     let mut policies = vec![policy];
     if include_discarded_policy {

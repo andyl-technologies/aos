@@ -381,11 +381,13 @@ impl<'a> Resolver<'a> {
             .iter()
             .map(|order| (order.request.clone(), order))
             .collect();
-        let obligations: BTreeMap<_, _> = policy
-            .obligations
-            .iter()
-            .map(|obligation| (obligation.request.clone(), obligation.clone()))
-            .collect();
+        let mut obligations: BTreeMap<_, Vec<_>> = BTreeMap::new();
+        for obligation in &policy.obligations {
+            obligations
+                .entry(obligation.request.clone())
+                .or_default()
+                .push(obligation.clone());
+        }
 
         let mut request_choices = Vec::new();
         let mut unresolved = Vec::new();
@@ -438,8 +440,8 @@ impl<'a> Resolver<'a> {
                 eligible
             };
             if choices.is_empty() {
-                if let Some(obligation) = obligations.get(&request.id) {
-                    unresolved.push(obligation.clone());
+                if let Some(request_obligations) = obligations.get(&request.id) {
+                    unresolved.extend(request_obligations.iter().cloned());
                     continue;
                 }
                 return Err(ResolutionError::NoCandidate);
@@ -794,7 +796,10 @@ fn validate_policy_shape(
     )?;
     check_strict_order_by(
         &policy.obligations,
-        |left, right| compare_request_ids(&left.request, &right.request),
+        |left, right| {
+            compare_request_ids(&left.request, &right.request)
+                .then_with(|| left.key.cmp(&right.key))
+        },
         "resolution obligations",
     )?;
 
@@ -803,6 +808,15 @@ fn validate_policy_shape(
         .iter()
         .map(|request| request.id.clone())
         .collect();
+    let mut obligation_keys = BTreeSet::new();
+    for obligation in &policy.obligations {
+        if !requests.contains(&obligation.request) || !obligation_keys.insert(&obligation.key) {
+            return Err(ResolutionError::InvalidPolicy(
+                "resolution obligation is duplicated or belongs to an unknown desired request"
+                    .to_string(),
+            ));
+        }
+    }
     let mut candidate_counts: BTreeMap<&RequestId, usize> = BTreeMap::new();
     for candidate in &policy.candidates {
         if !requests.contains(&candidate.request) {
