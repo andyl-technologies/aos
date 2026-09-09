@@ -27,6 +27,7 @@ path = "tests/support/release_fleet_fixture.rs"
 [dependencies]
 rustix = { workspace = true, features = ["process"] }
 aos-contract = { workspace = true }
+aos-ability-inspect = { workspace = true }
 aos-core = { workspace = true }
 aos-net = { workspace = true }
 aos-oci = { workspace = true }
@@ -81,6 +82,8 @@ ratatui = { workspace = true }
 crossterm = { workspace = true }
 
 [dev-dependencies]
+aos-ability-model = { workspace = true }
+aos-ability-validate = { workspace = true, features = ["test-support"] }
 aos-hub = { workspace = true }
 aos-hub-core = { workspace = true, features = ["test-fixtures"] }
 aos-registry-surface = { workspace = true }

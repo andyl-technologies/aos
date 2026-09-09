@@ -7,6 +7,7 @@
 //! the non-Nix commands (`serve`, `token`, `package`, `cache`,
 //! `completions`) take only what they need.
 
+pub mod ability;
 pub mod build;
 pub mod cache;
 pub mod completions;

@@ -154,6 +154,9 @@ version = "0.1.0"
 dependencies = [
  "alejandra",
  "anyhow",
+ "aos-ability-inspect",
+ "aos-ability-model",
+ "aos-ability-validate",
  "aos-cache",
  "aos-contract",
  "aos-core",
@@ -213,6 +216,19 @@ dependencies = [
  "uuid",
  "zeroize",
  "zstd",
+]
+
+[[package]]
+name = "aos-ability-inspect"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-ability-model",
+ "aos-ability-validate",
+ "aos-contract",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

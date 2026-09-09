@@ -14,6 +14,7 @@
 //! Command *implementations* live in the `commands` module, keyed by the
 //! same names.
 
+mod ability;
 mod build;
 mod cache;
 mod container;
@@ -31,6 +32,7 @@ mod server;
 mod test;
 mod vm;
 
+pub use ability::*;
 pub use cache::*;
 pub use container::*;
 pub use hub::*;
@@ -181,6 +183,11 @@ pub struct AprCli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Inspect checked ability plans from portable bundles
+    Ability {
+        #[command(subcommand)]
+        command: AbilityCommand,
+    },
     /// Build a package from source
     Build {
         /// Package name
