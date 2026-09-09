@@ -861,6 +861,11 @@
   color: var(--ink);
 }
 
+.plan-effect {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 48rem) {
   .gc-generation-status {
     flex-direction: column;

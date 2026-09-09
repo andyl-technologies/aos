@@ -48,7 +48,7 @@
       "web_method_exceptions": [
         {"method": "ListReleases", "reason": "Release discovery remains on the signed public catalog; management publication history uses PublishService."}
       ],
-      "methods": ["ListRegistries", "GetRegistry", "ListReleases", "PlanCreateRegistry", "CreateRegistry", "PlanUpdateRegistry", "UpdateRegistry", "PlanDeleteRegistry", "DeleteRegistry"]
+      "methods": ["ListRegistries", "GetRegistry", "GetRegistryMetadata", "PlanUpdateRegistryMetadata", "UpdateRegistryMetadata", "ListReleases", "PlanCreateRegistry", "CreateRegistry", "PlanUpdateRegistry", "UpdateRegistry", "PlanDeleteRegistry", "DeleteRegistry"]
     },
     {
       "service": "OrganizationService",
