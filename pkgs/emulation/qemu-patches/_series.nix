@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "5537b0ba3474854e7c388e66736b772c5a7e95ee4947dea31689777b689c555f";
+  patchBranchBundleSha256 = "faca2aafd692f13cdbb8a3936ceb64751b84c2669052c19335fa3039e95a9e47";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "d61a8b275a60cf2c601ceb14142f08588944dd28";
+  patchBranchHeadCommit = "7e5045b171441997fedb55c6b4a9e6b170f5c843";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -2295,6 +2295,26 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-22";
       capability = "the round-robin vCPU thread a hot-fork child restarts sets its thread-local current CPU to the CPU it restarted for before entering the steady-state loop, as the original thread leaves it set by its initial-wait work, so the loop's icount deadline handling passes its vCPU-thread assertion when the child guest is resumed; the live child execution flight lost the child to that assertion on its first resume before this change";
+    }
+    {
+      file = "0237-crucible-serialize-vmstop-resume-callback.patch";
+      branchSubject = "crucible: serialize VMStop resume callbacks on the RR thread";
+      branchCommit = "dfc68bf267516932b889252b3d90bd0ca8fa4550";
+      branchTree = "58f669a79137817126d1cbb1bf9311229068890a";
+      catalogName = "crucible-serialized-vmstop-resume-callback";
+      class = "F";
+      enforces = "PATCH-34,TIME-24,INV-8";
+      capability = "x86 OUT and the reserved AArch64 HINT doorbell end their translation block, so a selectable callback in precise single-threaded sim RR can force cpu_exec to return exactly after that doorbell and before the next guest instruction without changing the guest wire protocol; the native VMStop resume remains fenced until the RR vCPU thread consumes the edge and fires the vCPU resume callback before guest execution, so white-box replies are written from their serialized owner context";
+    }
+    {
+      file = "0238-crucible-defer-single-vcpu-state-free-host-kicks.patch";
+      branchSubject = "crucible: defer single-vCPU state-free host kicks";
+      branchCommit = "7e5045b171441997fedb55c6b4a9e6b170f5c843";
+      branchTree = "95b93173497a1e9230eed4d28624e9c729a2770b";
+      catalogName = "crucible-deferred-single-vcpu-state-free-host-kicks";
+      class = "D";
+      enforces = "DET-1,DET-29,QEMU-43";
+      capability = "single-vCPU precise sim mode gives state-free generic host kicks the same serialized idle/active/pending handshake as multi-vCPU mode: startup and idle claims wake the RR wait without selecting a guest endpoint, while active claims stay pending across partial TCG slices until the next canonical RR boundary; committed lifecycle, terminal, and interrupt transitions retain immediate cpu_exit";
     }
   ];
   catalogOnlyCapabilities = [

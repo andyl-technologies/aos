@@ -250,6 +250,8 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0234-crucible-forkable-template-ram.patch",
     "0235-crucible-release-stages-under-retained-template.patch",
     "0236-crucible-restarted-vcpu-thread-current-cpu.patch",
+    "0237-crucible-serialize-vmstop-resume-callback.patch",
+    "0238-crucible-defer-single-vcpu-state-free-host-kicks.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

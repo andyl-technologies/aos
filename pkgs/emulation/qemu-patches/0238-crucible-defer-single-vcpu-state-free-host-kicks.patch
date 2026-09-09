@@ -1,0 +1,320 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index 8043aa3fe..71ae29ce8 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -63,11 +63,90 @@ static GRand *rr_parked_thread_rand;
+ static G_NORETURN void rr_cpu_thread_loop(CPUState *cpu);
+ 
+ enum {
++    RR_TCG_EXEC_STARTING,
++    RR_TCG_EXEC_STARTING_WAKE_ARMING,
+     RR_TCG_EXEC_IDLE,
+     RR_TCG_EXEC_ACTIVE,
+-    RR_TCG_EXEC_WAKE_PENDING,
++    RR_TCG_EXEC_IDLE_WAKE_ARMING,
++    RR_TCG_EXEC_IDLE_WAKE_PENDING,
++    RR_TCG_EXEC_ACTIVE_WAKE_PENDING,
+ };
+ 
++static bool rr_crucible_sim_complete_wake_boundary(void)
++{
++    while (true) {
++        unsigned int completed_state;
++        unsigned int state = qatomic_read(&rr_tcg_exec_state);
++
++        if (state == RR_TCG_EXEC_STARTING_WAKE_ARMING ||
++            state == RR_TCG_EXEC_IDLE_WAKE_ARMING) {
++            cpu_relax();
++            continue;
++        }
++        completed_state =
++            state == RR_TCG_EXEC_STARTING ?
++                RR_TCG_EXEC_STARTING : RR_TCG_EXEC_IDLE;
++
++        if (qatomic_cmpxchg(&rr_tcg_exec_state, state,
++                            completed_state) == state) {
++            return state == RR_TCG_EXEC_IDLE_WAKE_PENDING ||
++                   state == RR_TCG_EXEC_ACTIVE_WAKE_PENDING;
++        }
++    }
++}
++
++static void rr_crucible_sim_complete_initial_wait(void)
++{
++    while (true) {
++        unsigned int state = qatomic_read(&rr_tcg_exec_state);
++
++        if (state == RR_TCG_EXEC_STARTING_WAKE_ARMING) {
++            cpu_relax();
++            continue;
++        }
++        if (state == RR_TCG_EXEC_STARTING &&
++            qatomic_cmpxchg(&rr_tcg_exec_state,
++                            RR_TCG_EXEC_STARTING,
++                            RR_TCG_EXEC_IDLE) == RR_TCG_EXEC_STARTING) {
++            return;
++        }
++    }
++}
++
++static bool rr_crucible_sim_prepare_tcg(void)
++{
++    while (true) {
++        unsigned int state = qatomic_read(&rr_tcg_exec_state);
++
++        if (state == RR_TCG_EXEC_IDLE) {
++            if (qatomic_cmpxchg(&rr_tcg_exec_state,
++                                RR_TCG_EXEC_IDLE,
++                                RR_TCG_EXEC_ACTIVE) != RR_TCG_EXEC_IDLE) {
++                continue;
++            }
++            return false;
++        }
++        if (state == RR_TCG_EXEC_ACTIVE) {
++            return false;
++        }
++        if (state == RR_TCG_EXEC_STARTING ||
++            state == RR_TCG_EXEC_STARTING_WAKE_ARMING ||
++            state == RR_TCG_EXEC_IDLE_WAKE_ARMING) {
++            cpu_relax();
++            continue;
++        }
++        /* Active wakes remain pending across every partial RR slice. */
++        if (state == RR_TCG_EXEC_ACTIVE_WAKE_PENDING &&
++            icount_crucible_rr_cursor_position() != 0) {
++            return false;
++        }
++        if (qatomic_cmpxchg(&rr_tcg_exec_state, state,
++                            RR_TCG_EXEC_IDLE) == state) {
++            return true;
++        }
++    }
++}
++
+ /* Kick all RR vCPUs */
+ void rr_kick_vcpu_thread(CPUState *unused)
+ {
+@@ -79,22 +158,21 @@ void rr_kick_vcpu_thread(CPUState *unused)
+         icount_crucible_rr_switch_quantum() != 0) {
+         /*
+          * Host work and main-loop notifications may request a generic vCPU
+-         * kick at host-dependent times.  In multi-vCPU mode, defer those
+-         * requests to the finite deterministic RR boundary.  Even a soft
++         * kick at host-dependent times.  Defer those requests to the finite
++         * deterministic RR boundary.  Even a soft
+          * exit_request issued between slices can race the next slice and make
+-         * its translation-block endpoint and subsequent RR allocation depend
+-         * on host arrival time.
+-         * Single-vCPU execution retains the soft between-block exit request:
+-         * there is no alternate RR allocation to perturb, and bounded
+-         * main-loop service is required for startup and device liveness.
++         * its translation-block endpoint, interrupt delivery, and subsequent
++         * RR allocation depend on host arrival time.  This applies with one
++         * vCPU too: an interrupt that becomes visible at the next block
++         * boundary can change the guest path even when there is no alternate
++         * RR owner.
+          *
+-         * Before the RR thread completes its initial stopped wait,
++         * Until the RR thread completes first-exit normalization,
+          * qemu_cpu_kick() has already broadcast the halt condition needed to
+-         * start it.  An additional exit request in that interval can survive
+-         * into first-exit normalization and strand startup.  Suppress only
+-         * the asynchronous decrementer side effect; no guest coordinate
+-         * exists yet.  The condition broadcast still starts the RR thread,
+-         * and the soft exit request is normalized before first execution.
++         * start it.  A startup arming state serializes each soft exit_request
++         * writer with the transition to steady execution.  This suppresses
++         * the asynchronous decrementer side effect before a guest coordinate
++         * exists while preserving the wait predicate startup needs.
+          *
+          * Stop, unplug, and halted transitions are different.  Their state is
+          * already committed before qemu_cpu_kick(), and a stopped or sleeping
+@@ -119,19 +197,10 @@ void rr_kick_vcpu_thread(CPUState *unused)
+              * target a non-current vCPU, so exit every CPUState exactly as
+              * upstream does to guarantee that the active TCG batch returns.
+              */
+-            qatomic_set(&rr_tcg_exec_state, RR_TCG_EXEC_IDLE);
++            rr_crucible_sim_complete_wake_boundary();
+             CPU_FOREACH(cpu) {
+                 cpu_exit(cpu);
+             }
+-        } else if (rr_crucible_sim_single_vcpu()) {
+-            /*
+-             * Preserve the between-slice wake request without setting
+-             * icount_decr.high.  An idle RR thread was already woken by
+-             * qemu_cpu_kick()'s condition broadcast.
+-             */
+-            CPU_FOREACH(cpu) {
+-                qatomic_set_mb(&cpu->exit_request, 1);
+-            }
+         } else {
+             /*
+              * Preserve the request without modifying any CPUState.  The RR
+@@ -142,29 +211,58 @@ void rr_kick_vcpu_thread(CPUState *unused)
+              * execution coordinate.
+              */
+             unsigned int state;
++            unsigned int pending_state;
++            bool starting_wake = false;
+             bool idle_wake = false;
+ 
+             do {
+                 state = qatomic_read(&rr_tcg_exec_state);
+-                if (state == RR_TCG_EXEC_WAKE_PENDING) {
++                if (state == RR_TCG_EXEC_STARTING_WAKE_ARMING ||
++                    state == RR_TCG_EXEC_IDLE_WAKE_ARMING ||
++                    state == RR_TCG_EXEC_IDLE_WAKE_PENDING ||
++                    state == RR_TCG_EXEC_ACTIVE_WAKE_PENDING) {
+                     break;
+                 }
++                if (state == RR_TCG_EXEC_STARTING) {
++                    pending_state = RR_TCG_EXEC_STARTING_WAKE_ARMING;
++                } else if (state == RR_TCG_EXEC_IDLE) {
++                    pending_state = RR_TCG_EXEC_IDLE_WAKE_ARMING;
++                } else {
++                    pending_state = RR_TCG_EXEC_ACTIVE_WAKE_PENDING;
++                }
++
+                 if (qatomic_cmpxchg(&rr_tcg_exec_state, state,
+-                                    RR_TCG_EXEC_WAKE_PENDING) == state) {
++                                    pending_state) == state) {
++                    starting_wake = state == RR_TCG_EXEC_STARTING;
+                     idle_wake = state == RR_TCG_EXEC_IDLE;
+                     break;
+                 }
+             } while (true);
+-            if (idle_wake) {
++            if (starting_wake) {
++                /*
++                 * Publish the soft first-exit predicate before releasing the
++                 * startup barrier.  The RR thread cannot enter steady-state
++                 * execution while a stale pre-start writer still owns it.
++                 */
++                CPU_FOREACH(cpu) {
++                    qatomic_set_mb(&cpu->exit_request, 1);
++                }
++                qatomic_cmpxchg(&rr_tcg_exec_state,
++                                RR_TCG_EXEC_STARTING_WAKE_ARMING,
++                                RR_TCG_EXEC_STARTING);
++            } else if (idle_wake) {
+                 /*
+-                 * The successful idle-to-pending transition prevents the RR
+-                 * thread from entering TCG.  Preserve an exit request as the
+-                 * wait predicate too, closing the broadcast-before-wait race
+-                 * without selecting a guest execution endpoint.
++                 * The arming state prevents the RR thread from entering TCG
++                 * until exit_request is a durable wait predicate, closing the
++                 * broadcast-before-wait race without allowing a delayed
++                 * cpu_exit() to interrupt later guest execution.
+                  */
+                 CPU_FOREACH(cpu) {
+                     cpu_exit(cpu);
+                 }
++                qatomic_cmpxchg(&rr_tcg_exec_state,
++                                RR_TCG_EXEC_IDLE_WAKE_ARMING,
++                                RR_TCG_EXEC_IDLE_WAKE_PENDING);
+             }
+         }
+         return;
+@@ -514,8 +612,7 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+ 
+         if (rr_crucible_sim_mode() &&
+             qemu_plugin_time_advance_is_pending()) {
+-            if (qatomic_xchg(&rr_tcg_exec_state, RR_TCG_EXEC_IDLE) ==
+-                RR_TCG_EXEC_WAKE_PENDING) {
++            if (rr_crucible_sim_complete_wake_boundary()) {
+                 return true;
+             }
+             qemu_cond_wait_bql(first_cpu->halt_cond);
+@@ -589,9 +686,7 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+                 }
+                 if (crucible_sim_shmem_dispatch_registered() &&
+                     (dispatch_due || !observer_due)) {
+-                    if (qatomic_xchg(&rr_tcg_exec_state,
+-                                     RR_TCG_EXEC_IDLE) ==
+-                        RR_TCG_EXEC_WAKE_PENDING) {
++                    if (rr_crucible_sim_complete_wake_boundary()) {
+                         return true;
+                     }
+                     qemu_cond_wait_bql(first_cpu->halt_cond);
+@@ -624,18 +719,8 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+         if (*cpu_budget == 0) {
+             return false;
+         }
+-        if (!rr_crucible_sim_single_vcpu()) {
+-            unsigned int state = qatomic_read(&rr_tcg_exec_state);
+-
+-            if (state == RR_TCG_EXEC_IDLE) {
+-                state = qatomic_cmpxchg(&rr_tcg_exec_state,
+-                                        RR_TCG_EXEC_IDLE,
+-                                        RR_TCG_EXEC_ACTIVE);
+-            }
+-            if (state == RR_TCG_EXEC_WAKE_PENDING) {
+-                qatomic_set(&rr_tcg_exec_state, RR_TCG_EXEC_IDLE);
+-                return true;
+-            }
++        if (rr_crucible_sim_mode() && rr_crucible_sim_prepare_tcg()) {
++            return true;
+         }
+         service_before = qemu_plugin_icount_raw();
+         bql_unlock();
+@@ -734,10 +819,9 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+             return true;
+         }
+ 
+-        if (!rr_crucible_sim_single_vcpu() &&
++        if (rr_crucible_sim_mode() &&
+             icount_crucible_rr_cursor_position() == 0 &&
+-            qatomic_xchg(&rr_tcg_exec_state, RR_TCG_EXEC_IDLE) ==
+-                RR_TCG_EXEC_WAKE_PENDING) {
++            rr_crucible_sim_complete_wake_boundary()) {
+             return true;
+         }
+ 
+@@ -826,8 +910,7 @@ static void rr_wait_io_event(void)
+     if (qemu_plugin_crucible_vmstop_pending()) {
+         return;
+     }
+-    if (qatomic_xchg(&rr_tcg_exec_state, RR_TCG_EXEC_IDLE) ==
+-        RR_TCG_EXEC_WAKE_PENDING) {
++    if (rr_crucible_sim_complete_wake_boundary()) {
+         return;
+     }
+ 
+@@ -838,8 +921,7 @@ static void rr_wait_io_event(void)
+               qemu_plugin_time_advance_is_pending())))) {
+ 
+         rr_stop_kick_timer();
+-        if (qatomic_xchg(&rr_tcg_exec_state, RR_TCG_EXEC_IDLE) ==
+-            RR_TCG_EXEC_WAKE_PENDING) {
++        if (rr_crucible_sim_complete_wake_boundary()) {
+             return;
+         }
+         if (qemu_plugin_time_advance_is_pending()) {
+@@ -1011,7 +1093,6 @@ static void *rr_cpu_thread_fn(void *arg)
+         }
+     }
+     qatomic_set_mb(&rr_initial_wait_complete, true);
+-    qatomic_set(&rr_tcg_exec_state, RR_TCG_EXEC_IDLE);
+ 
+     rr_start_kick_timer();
+ 
+@@ -1020,6 +1101,7 @@ static void *rr_cpu_thread_fn(void *arg)
+ 
+     /* process any pending work */
+     rr_crucible_sim_normalize_first_exit(cpu);
++    rr_crucible_sim_complete_initial_wait();
+ 
+     rr_cpu_thread_loop(cpu);
+ }
+@@ -1235,9 +1317,7 @@ static G_NORETURN void rr_cpu_thread_loop(CPUState *cpu)
+                     }
+                     if (crucible_sim_shmem_dispatch_registered() &&
+                         (dispatch_due || !observer_due)) {
+-                        if (qatomic_xchg(&rr_tcg_exec_state,
+-                                         RR_TCG_EXEC_IDLE) !=
+-                            RR_TCG_EXEC_WAKE_PENDING) {
++                        if (!rr_crucible_sim_complete_wake_boundary()) {
+                             qemu_cond_wait_bql(first_cpu->halt_cond);
+                         }
+                     }

@@ -394,6 +394,10 @@ fn test_live_state_with_teardown(
 
 extern "C" fn test_force_vcpu_exit() {}
 
+extern "C" fn test_force_vcpu_tb_exit() -> i32 {
+    0
+}
+
 extern "C" fn test_request_vmstop() -> std::os::raw::c_int {
     TEST_REQUEST_VMSTOP_CALLS.set(TEST_REQUEST_VMSTOP_CALLS.get() + 1);
     TEST_REQUEST_VMSTOP_STATUS.get()
@@ -756,7 +760,7 @@ fn selectable_stop_is_admitted_after_exact_sim_publication() {
             .unwrap_or_else(|error| panic!("live callback state should build: {error}")),
     );
     let handoff = state.selectable_vmstop_handoff();
-    assert!(handoff.defer(test_force_vcpu_exit));
+    assert_eq!(handoff.defer(test_force_vcpu_tb_exit), Ok(true));
     assert!(handoff.is_pending());
     assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 0);
 
@@ -779,7 +783,7 @@ fn rejected_exact_selectable_stop_restores_the_handoff() {
     let state = test_live_state(80, 1, 0, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     let handoff = state.selectable_vmstop_handoff();
-    assert!(handoff.defer(test_force_vcpu_exit));
+    assert_eq!(handoff.defer(test_force_vcpu_tb_exit), Ok(true));
 
     assert_eq!(
         state.request_selectable_vmstop_if_pending(0),

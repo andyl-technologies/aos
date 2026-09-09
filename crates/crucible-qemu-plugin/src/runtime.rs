@@ -838,7 +838,6 @@ impl OwnedCallbackRuntimeState {
         target_architecture: crate::abi::QemuPluginTargetArchitecture,
         vcpu_count: u32,
         request_shutdown: QemuRequestShutdownFn,
-        force_vcpu_exit: crate::QemuForceVcpuExitFn,
     ) -> Result<&mut live_whitebox::LiveWhiteboxState, live_whitebox::LiveWhiteboxError> {
         // SAFETY: assigning an independently heap-owned callback runtime does
         // not move the pinned parent or its setup mapping.
@@ -906,7 +905,6 @@ impl OwnedCallbackRuntimeState {
             vcpu_count,
             live_whitebox::LiveWhiteboxProcessControl::new(
                 request_shutdown,
-                force_vcpu_exit,
                 selectable_vmstop,
                 logical_icount_offset,
             ),

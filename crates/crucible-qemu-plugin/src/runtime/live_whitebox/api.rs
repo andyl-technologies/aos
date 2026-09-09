@@ -13,6 +13,7 @@ const TB_GET_INSN_SYMBOL_C: &[u8] = b"qemu_plugin_tb_get_insn\0";
 const INSN_DATA_SYMBOL_C: &[u8] = b"qemu_plugin_insn_data\0";
 const REGISTER_INSN_EXEC_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_vcpu_insn_exec_cb\0";
 const ICOUNT_AT_TB_ENTRY_SYMBOL_C: &[u8] = b"qemu_plugin_icount_at_tb_entry\0";
+const FORCE_VCPU_TB_EXIT_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_force_vcpu_tb_exit\0";
 const GET_REGISTERS_SYMBOL_C: &[u8] = b"qemu_plugin_get_registers\0";
 const READ_REGISTER_SYMBOL_C: &[u8] = b"qemu_plugin_read_register\0";
 const READ_MEMORY_VADDR_SYMBOL_C: &[u8] = b"qemu_plugin_read_memory_vaddr\0";
@@ -64,6 +65,7 @@ type QemuReadMemoryVaddrFn = extern "C" fn(u64, *mut GByteArray, usize) -> bool;
 type QemuWriteMemoryVaddrFn = extern "C" fn(u64, *const u8, usize) -> bool;
 type QemuWriteMemoryVaddrForVcpuFn = extern "C" fn(c_uint, u64, *const u8, usize) -> bool;
 type QemuFaultReadyMarkerFn = extern "C" fn(*const c_char, usize, u64) -> c_int;
+pub(in crate::runtime) type QemuForceVcpuTbExitFn = extern "C" fn() -> c_int;
 type GArrayFreeFn = extern "C" fn(*mut GArray, bool) -> *mut c_char;
 type GByteArrayNewFn = extern "C" fn() -> *mut GByteArray;
 type GByteArrayFreeFn = extern "C" fn(*mut GByteArray, bool) -> *mut u8;
@@ -78,6 +80,7 @@ pub(crate) struct LiveWhiteboxApis {
     pub(super) insn_data: QemuInsnDataFn,
     pub(super) register_insn_exec_cb: QemuRegisterInsnExecCbFn,
     pub(super) icount_at_tb_entry: QemuIcountAtTbEntryFn,
+    pub(super) force_vcpu_tb_exit: QemuForceVcpuTbExitFn,
     pub(super) get_registers: QemuGetRegistersFn,
     pub(super) read_register: QemuReadRegisterFn,
     pub(super) read_memory_vaddr: QemuReadMemoryVaddrFn,
@@ -116,6 +119,10 @@ impl LiveWhiteboxApis {
             icount_at_tb_entry: resolve_symbol(
                 ICOUNT_AT_TB_ENTRY_SYMBOL_C,
                 "qemu_plugin_icount_at_tb_entry",
+            )?,
+            force_vcpu_tb_exit: resolve_symbol(
+                FORCE_VCPU_TB_EXIT_SYMBOL_C,
+                "qemu_plugin_crucible_force_vcpu_tb_exit",
             )?,
             get_registers: resolve_symbol(GET_REGISTERS_SYMBOL_C, "qemu_plugin_get_registers")?,
             read_register: resolve_symbol(READ_REGISTER_SYMBOL_C, "qemu_plugin_read_register")?,

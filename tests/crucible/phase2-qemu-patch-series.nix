@@ -1651,6 +1651,20 @@
       enforces = "HFORK-4,HFORK-22";
       capability = "the round-robin vCPU thread a hot-fork child restarts sets its thread-local current CPU to the CPU it restarted for before entering the steady-state loop, as the original thread leaves it set by its initial-wait work, so the loop's icount deadline handling passes its vCPU-thread assertion when the child guest is resumed; the live child execution flight lost the child to that assertion on its first resume before this change";
     }
+    {
+      file = "0237-crucible-serialize-vmstop-resume-callback.patch";
+      catalogName = "crucible-serialized-vmstop-resume-callback";
+      class = "F";
+      enforces = "PATCH-34,TIME-24,INV-8";
+      capability = "x86 OUT and the reserved AArch64 HINT doorbell end their translation block, so a selectable callback in precise single-threaded sim RR can force cpu_exec to return exactly after that doorbell and before the next guest instruction without changing the guest wire protocol; the native VMStop resume remains fenced until the RR vCPU thread consumes the edge and fires the vCPU resume callback before guest execution, so white-box replies are written from their serialized owner context";
+    }
+    {
+      file = "0238-crucible-defer-single-vcpu-state-free-host-kicks.patch";
+      catalogName = "crucible-deferred-single-vcpu-state-free-host-kicks";
+      class = "D";
+      enforces = "DET-1,DET-29,QEMU-43";
+      capability = "single-vCPU precise sim mode gives state-free generic host kicks the same serialized idle/active/pending handshake as multi-vCPU mode: startup and idle claims wake the RR wait without selecting a guest endpoint, while active claims stay pending across partial TCG slices until the next canonical RR boundary; committed lifecycle, terminal, and interrupt transitions retain immediate cpu_exit";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

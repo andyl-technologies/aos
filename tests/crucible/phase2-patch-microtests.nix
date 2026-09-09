@@ -23,6 +23,50 @@
     inherit pkgs lib qemuPackage;
     attrPath = "checks.crucible.phase6.qemuHotForkReadiness";
   };
+  qemuSerializedVmstopResumeSourceCheck = pkgs.mkDerivation {
+    pname = "crucible-phase2-qemu-serialized-vmstop-resume-source-check";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.grep];
+    phases = [
+      {
+        name = "verify-serialized-vmstop-resume-callback";
+        script = ''
+          set -eu
+          mkdir -p "$out"
+
+          patch=${patchDir}/0237-crucible-serialize-vmstop-resume-callback.patch
+          test -x ${qemuPackage}/bin/qemu-system-x86_64
+          test -x ${qemuPackage}/bin/qemu-system-aarch64
+          grep -q '^+int qemu_plugin_crucible_force_vcpu_tb_exit(void)' "$patch"
+          grep -q '^+    if (!current_cpu || !current_cpu->running ||' "$patch"
+          grep -q '^+        icount_enabled() != ICOUNT_PRECISE ||' "$patch"
+          grep -q '^+        !qemu_plugin_crucible_single_threaded_rr()) {' "$patch"
+          grep -q '^+    cpu_exit(current_cpu);' "$patch"
+          grep -q '^+    QEMU_PLUGIN_CRUCIBLE_VMSTOP_RESUME_PENDING,' "$patch"
+          grep -q '^+bool qemu_plugin_crucible_vmstop_resume_consume(void)' "$patch"
+          grep -q '^+        if (qemu_plugin_crucible_vmstop_resume_consume()) {' "$patch"
+          grep -q '^+            qemu_plugin_maybe_fire_vcpu_resume_cb(' "$patch"
+          grep -q '^+    if (s->insn == 0xd503299f) {' "$patch"
+          grep -q '^+        translator_io_start(&s->base);' "$patch"
+
+          consume_line=$(grep -n '^+        if (qemu_plugin_crucible_vmstop_resume_consume()) {' \
+            "$patch" | cut -d: -f1)
+          callback_line=$(grep -n '^+            qemu_plugin_maybe_fire_vcpu_resume_cb(' \
+            "$patch" | cut -d: -f1)
+          test "$consume_line" -lt "$callback_line"
+
+          cat > "$out/result" <<'RESULT'
+          PASS
+          serialized_vmstop_fence_source_order_present=true
+          force_vcpu_tb_exit_guard_source_present=true
+          aarch64_doorbell_tb_boundary_source_present=true
+          qemu_system_targets_built_with_patch=true
+          RESULT
+        '';
+      }
+    ];
+  };
   qemuSignalSharedCause = import ./phase7-signal-shared-cause.nix {inherit pkgs lib;};
   qemuReadOnlyBlockSource = import ./phase6-qemu-read-only-block-source.nix {
     inherit pkgs qemuPackage;
@@ -335,6 +379,30 @@
             "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
           grep -q '^+.*qemu_cpu_kick(first_cpu);' \
             "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^-.*else if (rr_crucible_sim_single_vcpu())' \
+            "${patchDir}/0238-crucible-defer-single-vcpu-state-free-host-kicks.patch"
+          grep -q '^+    RR_TCG_EXEC_STARTING_WAKE_ARMING,' \
+            "${patchDir}/0238-crucible-defer-single-vcpu-state-free-host-kicks.patch"
+          grep -q '^+    RR_TCG_EXEC_IDLE_WAKE_ARMING,' \
+            "${patchDir}/0238-crucible-defer-single-vcpu-state-free-host-kicks.patch"
+          grep -q '^+    RR_TCG_EXEC_ACTIVE_WAKE_PENDING,' \
+            "${patchDir}/0238-crucible-defer-single-vcpu-state-free-host-kicks.patch"
+          grep -q '^+static void rr_crucible_sim_complete_initial_wait(void)' \
+            "${patchDir}/0238-crucible-defer-single-vcpu-state-free-host-kicks.patch"
+          grep -q '^+static bool rr_crucible_sim_prepare_tcg(void)' \
+            "${patchDir}/0238-crucible-defer-single-vcpu-state-free-host-kicks.patch"
+          grep -q '^+.*state == RR_TCG_EXEC_ACTIVE_WAKE_PENDING &&' \
+            "${patchDir}/0238-crucible-defer-single-vcpu-state-free-host-kicks.patch"
+          grep -q '^+.*icount_crucible_rr_cursor_position() != 0' \
+            "${patchDir}/0238-crucible-defer-single-vcpu-state-free-host-kicks.patch"
+          grep -q '^+.*rr_crucible_sim_complete_initial_wait();' \
+            "${patchDir}/0238-crucible-defer-single-vcpu-state-free-host-kicks.patch"
+          grep -q '^+.*rr_crucible_sim_mode() && rr_crucible_sim_prepare_tcg()' \
+            "${patchDir}/0238-crucible-defer-single-vcpu-state-free-host-kicks.patch"
+          grep -q '^+.*rr_crucible_sim_mode() &&' \
+            "${patchDir}/0238-crucible-defer-single-vcpu-state-free-host-kicks.patch"
+          grep -q '^ .*icount_crucible_rr_cursor_position() == 0 &&' \
+            "${patchDir}/0238-crucible-defer-single-vcpu-state-free-host-kicks.patch"
           grep -q '^+void icount_crucible_rr_initialize_genesis(CPUState \*cpu)' \
             "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
           grep -q '^+    g_assert(icount_get_raw() == 0);' \
@@ -442,7 +510,13 @@
           first_multivcpu_active_slice_host_exit_deferred_to_rr_boundary=true
           post_genesis_single_vcpu_boundary_determinism=true
           multivcpu_active_tcg_host_latency_exit_deferred=true
-          single_vcpu_active_tcg_soft_exit_preserved=true
+          single_vcpu_active_tcg_soft_exit_introduced_by_0106=true
+          single_vcpu_state_free_kick_deferred_by_0238=true
+          single_vcpu_startup_wake_serialized=true
+          single_vcpu_idle_wake_arming_serialized=true
+          single_vcpu_active_wake_pending_until_rr_boundary=true
+          interrupt_publication_uses_explicit_stateful_kick=true
+          masked_pending_interrupt_does_not_reclassify_generic_kick=true
           external_runstate_not_used_as_execution_proof=true
           idle_thread_condition_wake_preserved=true
           committed_control_and_interrupt_exit_preserved=true
@@ -1426,7 +1500,7 @@
         liveEvidence = ''
           grep -Fxq 'canonical_trace_byte_identical=true' "$live_result"
           grep -Fxq 'multivcpu_active_tcg_host_latency_exit_deferred=true' "$live_result"
-          grep -Fxq 'single_vcpu_active_tcg_soft_exit_preserved=true' "$live_result"
+          grep -Fxq 'single_vcpu_active_tcg_soft_exit_introduced_by_0106=true' "$live_result"
         '';
       };
     }
@@ -3780,6 +3854,36 @@
         liveEvidence = ''
           grep -Fxq 'patch=0236-crucible-restarted-vcpu-thread-current-cpu.patch' "$live_result"
           grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0237-crucible-serialize-vmstop-resume-callback.patch";
+      check = certifyExactPatch {
+        patchName = "0237-crucible-serialize-vmstop-resume-callback.patch";
+        liveCheck = qemuSerializedVmstopResumeSourceCheck;
+        evidenceName = "serialized-vmstop-resume-source";
+        liveEvidence = ''
+          grep -Fxq 'serialized_vmstop_fence_source_order_present=true' "$live_result"
+          grep -Fxq 'force_vcpu_tb_exit_guard_source_present=true' "$live_result"
+          grep -Fxq 'aarch64_doorbell_tb_boundary_source_present=true' "$live_result"
+          grep -Fxq 'qemu_system_targets_built_with_patch=true' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0238-crucible-defer-single-vcpu-state-free-host-kicks.patch";
+      check = certifyExactPatch {
+        patchName = "0238-crucible-defer-single-vcpu-state-free-host-kicks.patch";
+        liveCheck = qemuDeterministicHostKickBoundary;
+        evidenceName = "deferred-single-vcpu-state-free-host-kicks";
+        liveEvidence = ''
+          grep -Fxq 'canonical_trace_byte_identical=true' "$live_result"
+          grep -Fxq 'post_genesis_single_vcpu_boundary_determinism=true' "$live_result"
+          grep -Fxq 'single_vcpu_state_free_kick_deferred_by_0238=true' "$live_result"
+          grep -Fxq 'single_vcpu_startup_wake_serialized=true' "$live_result"
+          grep -Fxq 'single_vcpu_idle_wake_arming_serialized=true' "$live_result"
+          grep -Fxq 'single_vcpu_active_wake_pending_until_rr_boundary=true' "$live_result"
         '';
       };
     }
