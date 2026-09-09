@@ -187,6 +187,20 @@ impl RootedFile {
         }
     }
 
+    /// Opens the validated target read-only without releasing its parent anchor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the target is absent, is not a singly linked
+    /// regular file owned by the trusted identity, or cannot be opened without
+    /// following links.
+    pub(super) fn open_read_only(&self) -> Result<File, io::Error> {
+        let descriptor = fs::openat(&*self.directory, &self.name, read_flags(), Mode::empty())
+            .map_err(io::Error::from)?;
+        validate_regular(&descriptor, self.trusted_owner)?;
+        Ok(File::from(descriptor))
+    }
+
     /// Reads the bounded target when it exists.
     ///
     /// # Errors

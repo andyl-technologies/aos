@@ -8,6 +8,21 @@ use clap::{Args, Subcommand, ValueEnum};
 pub enum AbilityCommand {
     /// Revalidate and render a canonical portable inspection bundle
     Inspect(AbilityInspectArgs),
+    /// Export a checked retained execution timeline without mutating it
+    Diagnostic(AbilityDiagnosticArgs),
+}
+
+#[derive(Args)]
+pub struct AbilityDiagnosticArgs {
+    /// Select this exact retained system generation
+    pub generation: PathBuf,
+
+    /// Select this transaction within the generation
+    pub transaction: String,
+
+    /// Select which protected deployment details to disclose
+    #[arg(long, value_enum, default_value_t = AbilityDiagnosticAudience::Redacted)]
+    pub audience: AbilityDiagnosticAudience,
 }
 
 #[derive(Args)]
@@ -54,4 +69,13 @@ pub enum AbilityRenderFormat {
     Dot,
     /// Emit a Mermaid flowchart
     Mermaid,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum AbilityDiagnosticAudience {
+    /// Withhold normalized inputs, topology identities, and store paths
+    #[default]
+    Redacted,
+    /// Include replay inputs and deployment topology after filesystem access checks
+    Deployment,
 }

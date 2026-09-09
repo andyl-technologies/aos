@@ -502,7 +502,42 @@ impl ExecutionEventKind {
         }
     }
 
-    /// Returns the transaction-wide elapsed budget carried by this event.
+    /// Returns the primary operation attempt carried by this event, when present.
+    #[must_use]
+    pub const fn attempt(&self) -> Option<NonZeroU32> {
+        match self {
+            Self::OperationAdmitted { attempt, .. }
+            | Self::RetryBackoffScheduled { attempt, .. }
+            | Self::RetryBackoffElapsed { attempt, .. }
+            | Self::EffectIntent { attempt, .. }
+            | Self::EffectCompleted { attempt, .. }
+            | Self::EffectRejectedBeforeEffect { attempt, .. }
+            | Self::EffectDispatchAborted { attempt, .. }
+            | Self::EffectIndeterminate { attempt, .. }
+            | Self::ReconciliationIntent { attempt, .. }
+            | Self::ReconciliationObserved { attempt, .. }
+            | Self::CancellationRequested { attempt, .. }
+            | Self::CancellationObserved { attempt, .. } => Some(*attempt),
+            Self::OperationSettledFailure { attempt, .. } => *attempt,
+            Self::TransactionPlanned { .. }
+            | Self::CompensationRequested { .. }
+            | Self::CompensationAdmitted { .. }
+            | Self::CompensationIntent { .. }
+            | Self::CompensationCompleted { .. }
+            | Self::CompensationRejectedBeforeEffect { .. }
+            | Self::CompensationIndeterminate { .. }
+            | Self::CompensationReconciliationIntent { .. }
+            | Self::CompensationReconciliationObserved { .. }
+            | Self::CompensationInterventionRequired { .. }
+            | Self::BranchSelected { .. }
+            | Self::OperationSkipped { .. }
+            | Self::MergeCompleted { .. }
+            | Self::OwnershipTransferred { .. }
+            | Self::ResourcesReleased { .. } => None,
+        }
+    }
+
+    /// Returns the affected operation's persisted recovery time, when present.
     #[must_use]
     pub const fn elapsed_millis(&self) -> Option<u64> {
         match self {
@@ -593,12 +628,6 @@ impl JournalPayload for ExecutionEvent {
         }
 
         match &self.body {
-            ExecutionEventKind::TransactionPlanned {
-                total_recovery_millis,
-                ..
-            } if *total_recovery_millis == 0 => Err(JournalError::Limit(
-                "transaction recovery budget must be nonzero".to_string(),
-            )),
             ExecutionEventKind::EffectIntent {
                 attempt_timeout_millis,
                 ..

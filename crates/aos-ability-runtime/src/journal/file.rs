@@ -22,6 +22,44 @@ pub struct JournalOpenResult<T> {
     pub recovery: RecoveryReport<T>,
 }
 
+/// A read-only verified journal prefix and any incomplete final frame.
+///
+/// A corrupt complete frame is returned as [`JournalError::Corrupt`] instead
+/// of being represented here. The snapshot does not create, truncate,
+/// synchronize, or otherwise modify the journal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JournalSnapshot<T> {
+    records: Vec<JournalRecord<T>>,
+    verified_bytes: u64,
+    incomplete_tail_bytes: u64,
+}
+
+impl<T> JournalSnapshot<T> {
+    /// Returns the complete digest-verified record prefix.
+    #[must_use]
+    pub fn records(&self) -> &[JournalRecord<T>] {
+        &self.records
+    }
+
+    /// Consumes the snapshot and returns its complete verified record prefix.
+    #[must_use]
+    pub fn into_records(self) -> Vec<JournalRecord<T>> {
+        self.records
+    }
+
+    /// Returns the byte length of the complete verified prefix.
+    #[must_use]
+    pub const fn verified_bytes(&self) -> u64 {
+        self.verified_bytes
+    }
+
+    /// Returns bytes belonging to an incomplete final header or body.
+    #[must_use]
+    pub const fn incomplete_tail_bytes(&self) -> u64 {
+        self.incomplete_tail_bytes
+    }
+}
+
 /// A single-writer durable journal stored in one append-only file.
 ///
 /// Opening holds a nonblocking exclusive filesystem lock for this value's
@@ -59,6 +97,62 @@ impl<T> FileJournal<T>
 where
     T: JournalPayload,
 {
+    /// Reads a stable verified prefix without modifying the journal.
+    ///
+    /// The existing path is opened read-only with `NOFOLLOW` and a nonblocking
+    /// shared lock. An active writer's exclusive lock therefore makes the
+    /// snapshot unavailable instead of allowing a racing observation. A
+    /// partial final frame is reported through
+    /// [`JournalSnapshot::incomplete_tail_bytes`] and remains untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the path is absent, insecure, unavailable for a
+    /// shared lock, exceeds configured limits, or contains a corrupt complete
+    /// frame or invalid record body.
+    pub fn read_only_snapshot(
+        path: impl AsRef<Path>,
+        limits: JournalLimits,
+    ) -> Result<JournalSnapshot<T>, JournalError> {
+        let path = path.as_ref().to_path_buf();
+        let file = open_read_only(&path)?;
+        Self::read_only_snapshot_file(file, path, limits)
+    }
+
+    /// Reads a verified prefix from an already opened file without modifying it.
+    ///
+    /// This form lets a caller retain descriptor-anchored parent validation
+    /// across the snapshot. `path` is used only for diagnostics. The supplied
+    /// descriptor is checked as a private regular file and held under a
+    /// nonblocking shared lock while decoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the descriptor is insecure, unavailable for a
+    /// shared lock, exceeds configured limits, or contains a corrupt complete
+    /// frame or invalid record body.
+    pub fn read_only_snapshot_file(
+        mut file: File,
+        path: impl AsRef<Path>,
+        limits: JournalLimits,
+    ) -> Result<JournalSnapshot<T>, JournalError> {
+        let path = path.as_ref();
+        rustix::fs::flock(&file, FlockOperation::NonBlockingLockShared)
+            .map_err(|source| io_error("acquire shared lock", path, source.into()))?;
+        validate_private_regular_file(&file, path)?;
+
+        let RecoveryReport {
+            records,
+            valid_bytes,
+            discarded_torn_bytes,
+        } = recover::<T>(&mut file, path, limits)?;
+        Ok(JournalSnapshot {
+            records,
+            verified_bytes: valid_bytes,
+            incomplete_tail_bytes: discarded_torn_bytes,
+        })
+    }
+
     /// Opens a journal, verifies its complete prefix, and repairs a torn tail.
     ///
     /// A partial final frame is truncated only after every preceding frame has
@@ -355,6 +449,13 @@ fn open_private(path: &Path) -> Result<(File, bool), JournalError> {
     Ok((File::from(file), created))
 }
 
+fn open_read_only(path: &Path) -> Result<File, JournalError> {
+    let flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK;
+    let file = rustix::fs::open(path, flags, Mode::empty())
+        .map_err(|source| io_error("open read-only", path, source.into()))?;
+    Ok(File::from(file))
+}
+
 fn validate_private_regular_file(file: &File, path: &Path) -> Result<(), JournalError> {
     let metadata = file
         .metadata()
@@ -502,6 +603,69 @@ mod tests {
     }
 
     #[test]
+    fn read_only_snapshot_reports_a_torn_tail_without_repairing_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TempDir::new()?;
+        let path = directory.path().join("execution.journal");
+        let opened = FileJournal::<TestEvent>::open(&path, JournalLimits::default())?;
+        let mut journal = opened.journal;
+        journal.append(&event("intent", 1))?;
+        journal.append(&event("completed", 1))?;
+        drop(journal);
+
+        let complete_length = fs::metadata(&path)?.len();
+        let torn_length = complete_length - 7;
+        OpenOptions::new()
+            .write(true)
+            .open(&path)?
+            .set_len(torn_length)?;
+
+        let snapshot =
+            FileJournal::<TestEvent>::read_only_snapshot(&path, JournalLimits::default())?;
+        assert_eq!(snapshot.records().len(), 1);
+        assert_eq!(snapshot.records()[0].body(), &event("intent", 1));
+        assert!(snapshot.incomplete_tail_bytes() > 0);
+        assert_eq!(
+            snapshot.verified_bytes() + snapshot.incomplete_tail_bytes(),
+            torn_length
+        );
+        assert_eq!(fs::metadata(&path)?.len(), torn_length);
+        Ok(())
+    }
+
+    #[test]
+    fn read_only_snapshot_never_creates_a_missing_journal() {
+        let directory = TempDir::new().expect("temporary directory must exist");
+        let path = directory.path().join("missing.journal");
+
+        let error = FileJournal::<TestEvent>::read_only_snapshot(&path, JournalLimits::default())
+            .expect_err("inspection must require an existing journal");
+
+        assert!(matches!(
+            error,
+            JournalError::Io {
+                operation: "open read-only",
+                ..
+            }
+        ));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn read_only_snapshot_rejects_a_fifo_without_waiting_for_a_writer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TempDir::new()?;
+        let path = directory.path().join("execution.journal");
+        rustix::fs::mkfifoat(rustix::fs::CWD, &path, Mode::RUSR | Mode::WUSR)?;
+
+        let error = FileJournal::<TestEvent>::read_only_snapshot(&path, JournalLimits::default())
+            .expect_err("a FIFO must fail regular-file validation");
+
+        assert!(matches!(error, JournalError::Limit(_)));
+        Ok(())
+    }
+
+    #[test]
     fn recovery_preserves_a_complete_corrupt_frame() -> Result<(), Box<dyn std::error::Error>> {
         let directory = TempDir::new()?;
         let path = directory.path().join("execution.journal");
@@ -519,6 +683,12 @@ mod tests {
         file.write_all(&[final_byte[0] ^ 1])?;
         file.sync_all()?;
         drop(file);
+
+        let snapshot_error =
+            FileJournal::<TestEvent>::read_only_snapshot(&path, JournalLimits::default())
+                .expect_err("read-only inspection must report a corrupt complete frame");
+        assert!(matches!(snapshot_error, JournalError::Corrupt { .. }));
+        assert_eq!(fs::metadata(&path)?.len(), complete_length);
 
         let error = FileJournal::<TestEvent>::open(&path, JournalLimits::default())
             .expect_err("a complete frame with changed body bytes must be corruption");
@@ -565,6 +735,27 @@ mod tests {
         drop(first);
 
         assert!(FileJournal::<TestEvent>::open(&path, JournalLimits::default()).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn writer_lock_excludes_a_racing_read_only_snapshot() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = TempDir::new()?;
+        let path = directory.path().join("execution.journal");
+        let writer = FileJournal::<TestEvent>::open(&path, JournalLimits::default())?;
+
+        let error = FileJournal::<TestEvent>::read_only_snapshot(&path, JournalLimits::default())
+            .expect_err("inspection must not race an active writer");
+
+        assert!(matches!(
+            error,
+            JournalError::Io {
+                operation: "acquire shared lock",
+                ..
+            }
+        ));
+        drop(writer);
         Ok(())
     }
 

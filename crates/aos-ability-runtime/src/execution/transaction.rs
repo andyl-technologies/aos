@@ -1,6 +1,7 @@
 //! Owning transaction boundary for checked plans, journals, and replay state.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -20,7 +21,9 @@ use crate::execution::{
     CompensationInterventionReason, ExecutionEvent, ExecutionEventKind, OperationHistory,
     OperationState, StateError,
 };
-use crate::journal::{FileJournal, JournalError, JournalLimits, JournalOpenResult};
+use crate::journal::{
+    FileJournal, JournalError, JournalLimits, JournalOpenResult, JournalRecord, JournalSnapshot,
+};
 
 /// Reports why a checked execution transaction could not be opened or advanced.
 #[derive(Debug, Error)]
@@ -78,6 +81,149 @@ pub enum TransactionError {
     /// The process-local live-token registry was poisoned.
     #[error("live reservation registry is unavailable")]
     LiveRegistryPoisoned,
+}
+
+/// A read-only journal prefix checked against one exact effect plan.
+///
+/// This verifies local frame integrity, event ordering, transaction and plan
+/// membership, and the complete runtime replay state machine. It does not
+/// authenticate the journal path or prove that the retained prefix is current.
+#[derive(Clone, Debug)]
+pub struct CheckedExecutionJournalSnapshot {
+    transaction: TransactionId,
+    plan_bundle: Sha256Digest,
+    records: Vec<JournalRecord<ExecutionEvent>>,
+    verified_bytes: u64,
+    incomplete_tail_bytes: u64,
+}
+
+impl CheckedExecutionJournalSnapshot {
+    /// Reads a journal without mutation and checks its complete durable prefix.
+    ///
+    /// The existing journal is opened read-only under a nonblocking shared
+    /// lock. The first record supplies the transaction and retained plan-bundle
+    /// commitment; both are then held exact while every record is replayed
+    /// against `plan`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the journal is absent, insecure, locked, corrupt,
+    /// empty, incompatible with the plan, or violates the execution state
+    /// machine. An incomplete final frame is reported by the returned snapshot
+    /// and remains untouched.
+    pub fn read(
+        plan: &CheckedEffectPlan,
+        path: impl AsRef<Path>,
+        limits: JournalLimits,
+    ) -> Result<Self, TransactionError> {
+        let snapshot: JournalSnapshot<ExecutionEvent> =
+            FileJournal::read_only_snapshot(path, limits)?;
+        Self::from_snapshot(plan, snapshot)
+    }
+
+    /// Checks a journal opened through a descriptor-anchored parent boundary.
+    ///
+    /// `path` is used only for diagnostics. The descriptor is never written and
+    /// remains under a nonblocking shared lock through the complete bounded read.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::read`].
+    pub fn read_file(
+        plan: &CheckedEffectPlan,
+        file: File,
+        path: impl AsRef<Path>,
+        limits: JournalLimits,
+    ) -> Result<Self, TransactionError> {
+        let snapshot: JournalSnapshot<ExecutionEvent> =
+            FileJournal::read_only_snapshot_file(file, path, limits)?;
+        Self::from_snapshot(plan, snapshot)
+    }
+
+    fn from_snapshot(
+        plan: &CheckedEffectPlan,
+        snapshot: JournalSnapshot<ExecutionEvent>,
+    ) -> Result<Self, TransactionError> {
+        if !plan.is_executable() {
+            return Err(TransactionError::PlanNotExecutable);
+        }
+        let first = snapshot
+            .records()
+            .first()
+            .ok_or_else(|| invalid(1, "execution journal is empty"))?;
+        let ExecutionEventKind::TransactionPlanned {
+            transaction,
+            plan_bundle,
+            retained_roots: _,
+            total_recovery_millis: _,
+            ..
+        } = first.body().body()
+        else {
+            return Err(invalid(1, "first record is not the transaction plan root"));
+        };
+
+        let expected_budget = aggregate_recovery_budget(plan)?;
+        let expected_roots = retained_roots(&required_runtime_artifacts(plan));
+        let mut replay = ReplayState::new(
+            plan,
+            transaction.clone(),
+            *plan_bundle,
+            expected_roots,
+            expected_budget,
+        );
+        for record in snapshot.records() {
+            replay.apply(plan, record.sequence(), record.body().body())?;
+        }
+        let verified_bytes = snapshot.verified_bytes();
+        let incomplete_tail_bytes = snapshot.incomplete_tail_bytes();
+
+        Ok(Self {
+            transaction: transaction.clone(),
+            plan_bundle: *plan_bundle,
+            records: snapshot.into_records(),
+            verified_bytes,
+            incomplete_tail_bytes,
+        })
+    }
+
+    /// Returns the exact transaction identity rooted by the first record.
+    #[must_use]
+    pub const fn transaction(&self) -> &TransactionId {
+        &self.transaction
+    }
+
+    /// Returns the retained plan-bundle commitment rooted by the first record.
+    #[must_use]
+    pub const fn plan_bundle(&self) -> Sha256Digest {
+        self.plan_bundle
+    }
+
+    /// Returns the complete event records after checked replay.
+    #[must_use]
+    pub fn records(&self) -> &[JournalRecord<ExecutionEvent>] {
+        &self.records
+    }
+
+    /// Returns the digest committing the complete verified prefix.
+    #[must_use]
+    pub fn head_digest(&self) -> Sha256Digest {
+        self.records.last().map_or_else(
+            || Sha256Digest::from_bytes([0_u8; 32]),
+            JournalRecord::digest,
+        )
+    }
+
+    /// Returns the byte length of the complete verified prefix.
+    #[must_use]
+    pub const fn verified_bytes(&self) -> u64 {
+        self.verified_bytes
+    }
+
+    /// Returns bytes belonging to an incomplete final frame.
+    #[must_use]
+    pub const fn incomplete_tail_bytes(&self) -> u64 {
+        self.incomplete_tail_bytes
+    }
 }
 
 /// Owns the exact checked plan, protected journal, and its derived replay state.

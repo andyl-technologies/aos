@@ -27,4 +27,4 @@ pub use machine::{Boundary, ExecutionError, ExecutionStep};
 pub use scheduler::ReadyOperation;
 pub use state::{CompensationState, OperationHistory, OperationState, RecoveryAction, StateError};
 pub use summary::{OperationStatus, OperationSummary, TerminalResult, TransactionSummary};
-pub use transaction::{ExecutionTransaction, TransactionError};
+pub use transaction::{CheckedExecutionJournalSnapshot, ExecutionTransaction, TransactionError};

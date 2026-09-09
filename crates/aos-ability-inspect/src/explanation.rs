@@ -72,8 +72,8 @@ pub enum BindingExplanationAudience {
 }
 
 /// Carries either an exact deployment value or an explicit redaction marker.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(tag = "disclosure", rename_all = "kebab-case")]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "disclosure", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ProtectedValue<T> {
     /// Retains the exact value after the caller permits deployment disclosure.
     Disclosed {

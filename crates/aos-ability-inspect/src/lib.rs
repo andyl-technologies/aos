@@ -5,7 +5,7 @@
 //! projects that checked plan into stable heterogeneous nodes and typed edges.
 //! [`query`] performs bounded graph traversal, [`compare`] computes stable
 //! structural changes, [`projection`] selects one semantic edge family, and
-//! [`render`] presents a view, projection, or slice as text, canonical JSON,
+//! [`render()`] presents a view, projection, or slice as text, canonical JSON,
 //! DOT, or Mermaid.
 //!
 //! This crate deliberately has no dependency on the native runtime, filesystem,
@@ -17,6 +17,7 @@
 
 pub mod bundle;
 pub mod compare;
+pub mod diagnostic_bundle;
 pub mod explanation;
 pub mod projection;
 pub mod query;
@@ -28,6 +29,12 @@ pub use bundle::{
     InspectionBundle, InspectionBundleError,
 };
 pub use compare::{ChangedNode, INSPECTION_DIFF_SCHEMA, InspectionDiff};
+pub use diagnostic_bundle::{
+    DIAGNOSTIC_BUNDLE_MAX_BYTES, DIAGNOSTIC_BUNDLE_SCHEMA, DiagnosticArtifact, DiagnosticBundle,
+    DiagnosticBundleAudience, DiagnosticBundleError, DiagnosticLimitation, ExecutionTimeline,
+    PendingOperationInput, PendingOperationView, PendingStateAvailability, ReplayAvailability,
+    TimelineEvent, TimelineEventInput, TimelineEventKind, TimelineProvenance, TimelineTiming,
+};
 pub use explanation::{
     BINDING_EXPLANATION_MAX_BYTES, BINDING_EXPLANATION_SCHEMA, BindingExplanation,
     BindingExplanationAudience, BindingExplanationError, BindingExplanationOutcome,

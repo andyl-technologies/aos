@@ -156,6 +156,8 @@ dependencies = [
  "anyhow",
  "aos-ability-inspect",
  "aos-ability-model",
+ "aos-ability-plan",
+ "aos-ability-runtime",
  "aos-ability-validate",
  "aos-cache",
  "aos-contract",
