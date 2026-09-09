@@ -130,10 +130,21 @@
     export AOS_SEMODULE="${policycoreutils}/sbin/semodule"
     export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
   '';
+  abilityEvaluatorFixture = builtins.path {
+    path = ../../../tests/abilities/evaluator-provider;
+    name = "aos-ability-evaluator-fixture";
+  };
+  abilityEvaluatorIfdFixture = builtins.derivation {
+    name = "aos-ability-forbidden-ifd";
+    system = stdenv.buildPlatform.system;
+    builder = "${buildNix}/bin/nix-instantiate";
+  };
   src = import ./_workspace-source.nix {inherit lib;};
   applicationTestPackages = [
     "aos"
     "aos-ability-model"
+    "aos-ability-runtime"
+    "aos-ability-validate"
     "aos-cache"
     "aos-contract"
     "aos-core"
@@ -268,6 +279,16 @@ in
       export OPENSSL_STATIC=0
       export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
       export PROTOC="${buildProtobuf}/bin/protoc"
+      export AOS_NIX_INSTANTIATE="${buildNix}/bin/nix-instantiate"
+      export AOS_TEST_ABILITY_FIXTURE="${abilityEvaluatorFixture}"
+      export AOS_TEST_ABILITY_FIXTURE_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityEvaluatorFixture})"
+      export AOS_TEST_ABILITY_CACHE="$NIX_BUILD_TOP/ability-evaluator-cache"
+      export AOS_TEST_ABILITY_IFD_DERIVATION="${abilityEvaluatorIfdFixture.drvPath}"
+      export AOS_TEST_ABILITY_IFD_SYSTEM="${stdenv.buildPlatform.system}"
+      export AOS_ABILITY_EVALUATOR_SECRET="must-not-leak"
+      ${lib.optionalString isCross ''
+        export AOS_TEST_ABILITY_EVALUATOR_DISABLED=1
+      ''}
       export AOS_MCOPY="${mtools}/bin/mcopy"
       export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"

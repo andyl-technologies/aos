@@ -35,6 +35,7 @@
 //! clean no-op on the live system: no generation exists until a downstream
 //! service consumes a returned manifest.
 
+pub mod ability;
 pub mod activation;
 pub mod classify;
 pub mod diagnostics;

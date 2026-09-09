@@ -38,7 +38,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
@@ -487,16 +487,44 @@ pub(super) fn locked_store_input(path: &Path, expected_nar_hash: Option<&str>) -
     }
 }
 
-fn store_root_and_suffix(path: &Path) -> Result<(PathBuf, PathBuf)> {
+pub(super) fn store_root_and_suffix(path: &Path) -> Result<(PathBuf, PathBuf)> {
     let relative = path
         .strip_prefix("/nix/store")
         .with_context(|| format!("evaluator input {} is outside /nix/store", path.display()))?;
     let mut components = relative.components();
-    let root_name = components
-        .next()
-        .context("evaluator input has no store object component")?;
+    let Some(std::path::Component::Normal(root_name)) = components.next() else {
+        bail!("evaluator input has no valid store object component");
+    };
+    let root_name = root_name
+        .to_str()
+        .context("evaluator store object name is not UTF-8")?;
+    let (hash, name) = root_name
+        .split_at_checked(32)
+        .and_then(|(hash, suffix)| suffix.strip_prefix('-').map(|name| (hash, name)))
+        .context("evaluator input has a malformed store object name")?;
+    ensure!(
+        hash.bytes()
+            .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte)),
+        "evaluator input has an invalid Nix store hash"
+    );
+    ensure!(
+        !name.is_empty()
+            && name.len() <= 211
+            && name.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric()
+                    || matches!(byte, b'+' | b'-' | b'.' | b'_' | b'?' | b'=')
+            }),
+        "evaluator input has an invalid Nix store name"
+    );
+
     let root = Path::new("/nix/store").join(root_name);
-    let suffix = components.collect::<PathBuf>();
+    let mut suffix = PathBuf::new();
+    for component in components {
+        let std::path::Component::Normal(component) = component else {
+            bail!("evaluator input has a non-canonical store-path suffix");
+        };
+        suffix.push(component);
+    }
     Ok((root, suffix))
 }
 
@@ -510,7 +538,7 @@ fn sha256_sri(hash: &str) -> Result<String> {
 }
 
 /// Renders a Rust string as a quoted Nix string literal.
-fn nix_string(value: &str) -> String {
+pub(super) fn nix_string(value: &str) -> String {
     format!(
         "\"{}\"",
         value
@@ -1150,7 +1178,10 @@ mod tests {
 
     #[test]
     fn locked_entry_coerces_authenticated_config_roots_to_nix_paths() {
-        let mut web = member("web", Some("/nix/store/hash-web-config"));
+        let mut web = member(
+            "web",
+            Some("/nix/store/00000000000000000000000000000000-web-config"),
+        );
         web.config_output_nar_hash = Some(format!("sha256:{}", "00".repeat(32)));
         let working = vec![web];
         let text = render_package_module_list(&working, true).unwrap();
@@ -1166,7 +1197,10 @@ mod tests {
 
     #[test]
     fn locked_entry_admits_self_and_dependency_outputs() {
-        let mut web = member("web", Some("/nix/store/hash-web-config"));
+        let mut web = member(
+            "web",
+            Some("/nix/store/00000000000000000000000000000000-web-config"),
+        );
         web.config_output_nar_hash = Some(format!("sha256:{}", "00".repeat(32)));
         web.outputs.self_output = Some("/nix/store/hash-web-runtime".to_string());
         web.outputs.dependencies.insert(

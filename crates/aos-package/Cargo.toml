@@ -5,6 +5,8 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+aos-ability-model = { workspace = true }
+aos-contract = { workspace = true }
 aos-core = { workspace = true }
 aos-doc-model = { workspace = true }
 aos-cache = { workspace = true }
