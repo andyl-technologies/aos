@@ -5083,6 +5083,23 @@ guest groups also pass, including the existing cgroup membership, cross-UID
 pidfd, descriptor-subject, runtime-scope, local-session, provisioning,
 publisher-session, publisher-control, journal, peer, and service checks.
 
+The retained-population foundation is committed as `48705328b0`. Its exact
+isolated-candidate VM derivation
+`/nix/store/cy2h106saazdm7r0cnb0h26yjrwaanqa-aos-vm-test-sandbox-local-identity-0.drv`
+passes at
+`/nix/store/d16sxl8jd9sm9p00bpaxgxjl7033l4k2-aos-vm-test-sandbox-local-identity-0`.
+The focused kernel checks cover live-descendant population, exact pidfd death,
+retained retirement, and same-path recreation; the existing exact membership
+check and every selected guest group pass in the same run.
+
+Commit `a4a5ab1501e2b4cbc055c158359fb4e072dc9fd4` separately hardens the
+descriptor-subject channel foundation. Its isolated focused run passes all 14
+descriptor-subject tests, including invalid-capacity inertness, the full 4096
+byte bilateral transfer, idempotent close with retained peer identity and
+capacity rejection, and a delegated writer whose observed subject differs from
+the cached connector peer. This unit-level result does not qualify a full
+Network or Storage worker path.
+
 This is focused kernel lifecycle evidence, not a passing integrated Storage
 worker result. In the exact full worker derivation
 `/nix/store/p0r0fhmyz49aa7jdgmhc5x258k6pg0cx-aos-fleet-test-sandbox-zfs-worker-0.drv`
