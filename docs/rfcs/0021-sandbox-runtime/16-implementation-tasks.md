@@ -6193,6 +6193,27 @@ incremental compile. The VM has not run, so none of these kernel checks is yet
 qualified; protected labels, enforcing MAC, and every readiness claim remain
 pending.
 
+Commit `f998754df` adds the role-separated protected store mechanics for the
+namespace-inspector protocol. Global construction admits five caller-opened
+directory descriptors, requires separate expected-policy staging and final
+roles plus separate spent-nonce staging and final roles, and verifies that the
+broker and inspector expected-policy views name the same final directory. The
+broker can publish only canonical sealed expected attempts; the inspector can
+only look them up through its separately opened read-only view and publish a
+canonical spent record with no-replace rename. Spent publication binds the
+nonce, boot ID, and policy digest, classifies an exact existing record as
+replay, and rejects a mismatched or unreadable record without treating it as
+absence.
+
+In a frozen three-file snapshot, the Linux library check, all 24 focused
+namespace-inspector tests, and all 165 Network library tests passed. A
+crate-local Clippy run with dependency linting disabled and warnings denied
+also passed with the existing too-many-arguments lint explicitly allowed.
+These are source-level and in-memory regression results only. The protected
+store has not yet run on actual ext4/fs-verity directories, across a process
+restart, under protected labels or enforcing MAC, or through a production
+inspector runtime. No kernel, deployment, or readiness claim changes.
+
 The deployed positive handshake is currently blocked by an authorization
 conflict, not qualified. The worker calls `PR_SET_DUMPABLE(0)` before READY,
 while the capability-empty broker obtains the retained namespace through
