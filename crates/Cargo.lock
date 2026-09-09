@@ -922,6 +922,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-network-protected-store-fixture"
+version = "0.0.0"
+dependencies = [
+ "aos-sandbox-network",
+ "serde_json",
+]
+
+[[package]]
 name = "aos-sandbox-network-systemd-custody-fixture"
 version = "0.0.0"
 dependencies = [

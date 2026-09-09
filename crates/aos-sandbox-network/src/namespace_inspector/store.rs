@@ -40,6 +40,9 @@ use super::{
     MAXIMUM_REQUEST_BYTES, NetworkNamespaceInspectionRequestV1, NetworkNamespaceInspectorError,
 };
 
+#[cfg(feature = "kernel-tests")]
+pub(super) mod fixture;
+
 const RECORD_MAGIC: &[u8; 8] = b"AOSNPS01";
 const RECORD_VERSION: u16 = 1;
 const RECORD_HEADER_BYTES: usize = 16;

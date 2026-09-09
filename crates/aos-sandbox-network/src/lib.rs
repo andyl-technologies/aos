@@ -36,6 +36,11 @@ pub mod namespace_catalog;
     reason = "the namespace-inspector protocol is staged before privileged runtime provisioning"
 )]
 mod namespace_inspector;
+#[cfg(feature = "kernel-tests")]
+#[doc(hidden)]
+pub use namespace_inspector::{
+    PROTECTED_STORE_EXT4_CASES, run_namespace_inspector_protected_store_ext4_fixture,
+};
 pub mod namespace_observer;
 pub mod namespace_store;
 pub mod nftables_reader;

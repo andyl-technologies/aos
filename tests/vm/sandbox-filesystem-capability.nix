@@ -21,10 +21,29 @@
     buildDeps = [];
     runtimeDeps = [];
   };
+  protectedStoreProbe = pkgs.mkCargoPackage {
+    pname = "aos-sandbox-network-protected-store-fixture";
+    version = "0.0.0";
+    src = import ../../pkgs/tools/aos/_workspace-source.nix {inherit lib;};
+    cargoDeps = pkgs.aos.passthru.cargoDeps;
+    cargoRoot = "crates";
+    cargoFlags = "-p aos-sandbox-network-protected-store-fixture --bin aos-sandbox-network-protected-store-fixture";
+    # Runtime requires the real ext4/fs-verity and bind-mount topology below.
+    doCheck = false;
+    buildDeps = [];
+    runtimeDeps = [];
+  };
 in
   testing.mkVMTest {
     name = "sandbox-filesystem-kernel-capabilities";
-    rootfsDeps = [probeSource rustBackingProbe pkgs.linux-headers pkgs.e2fsprogs pkgs.jq];
+    rootfsDeps = [
+      probeSource
+      rustBackingProbe
+      protectedStoreProbe
+      pkgs.linux-headers
+      pkgs.e2fsprogs
+      pkgs.jq
+    ];
     memory = 256;
     testScript = ''
       test -c /dev/fuse
@@ -121,6 +140,75 @@ in
       ' materialize.json
       cat materialize.json
 
+      echo 'Qualifying namespace-inspector protected stores on ext4'
+      test -x ${protectedStoreProbe}/bin/aos-sandbox-network-protected-store-fixture
+      mkdir -p \
+        /tmp/ext4/inspector-store/expected-staging \
+        /tmp/ext4/inspector-store/expected-final \
+        /tmp/ext4/inspector-store/spent-staging \
+        /tmp/ext4/inspector-store/spent-final \
+        /tmp/ext4/inspector-store/ambiguous-spent-staging \
+        /tmp/ext4/inspector-store/ambiguous-spent-final \
+        /tmp/inspector-store-ambiguous-final
+      chmod 0700 \
+        /tmp/ext4/inspector-store/expected-staging \
+        /tmp/ext4/inspector-store/expected-final \
+        /tmp/ext4/inspector-store/spent-staging \
+        /tmp/ext4/inspector-store/spent-final \
+        /tmp/ext4/inspector-store/ambiguous-spent-staging \
+        /tmp/ext4/inspector-store/ambiguous-spent-final \
+        /tmp/inspector-store-ambiguous-final
+      mount --bind \
+        /tmp/ext4/inspector-store/ambiguous-spent-final \
+        /tmp/inspector-store-ambiguous-final
+      trap 'umount /tmp/inspector-store-ambiguous-final; umount /tmp/ext4' EXIT
+
+      ${protectedStoreProbe}/bin/aos-sandbox-network-protected-store-fixture \
+        --list > inspector-store-cases.json
+      ${pkgs.jq}/bin/jq -e '
+        length == 12 and . == [
+          "genuine-five-fd-topology",
+          "mismatched-expected-view-rejected",
+          "aliased-physical-role-rejected",
+          "expected-publish-exact-readback",
+          "all-roots-reopened-for-expected-lookup",
+          "exact-absence-after-reopen",
+          "spent-first-claim",
+          "all-roots-reopened-for-exact-replay",
+          "spent-attempt-mismatch-rejected",
+          "wrong-expected-record-role-rejected",
+          "wrong-spent-record-role-rejected",
+          "ambiguous-cross-mount-publish-rejected"
+        ]
+      ' inspector-store-cases.json
+
+      ${protectedStoreProbe}/bin/aos-sandbox-network-protected-store-fixture \
+        /tmp/ext4/inspector-store \
+        /tmp/inspector-store-ambiguous-final > inspector-store.json
+      ${pkgs.jq}/bin/jq -e '
+        . == {
+          schema_version: "aos.sandbox.namespace-inspector-protected-store-ext4-proof/v1",
+          success_marker: "AOS_NAMESPACE_INSPECTOR_PROTECTED_STORE_EXT4_OK",
+          policy_source: "internally-derived-synthetic-validated-ready-fixture",
+          reopen_boundary: "all-store-values-dropped-and-roots-reopened",
+          cases: [
+            "genuine-five-fd-topology",
+            "mismatched-expected-view-rejected",
+            "aliased-physical-role-rejected",
+            "expected-publish-exact-readback",
+            "all-roots-reopened-for-expected-lookup",
+            "exact-absence-after-reopen",
+            "spent-first-claim",
+            "all-roots-reopened-for-exact-replay",
+            "spent-attempt-mismatch-rejected",
+            "wrong-expected-record-role-rejected",
+            "wrong-spent-record-role-rejected",
+            "ambiguous-cross-mount-publish-rejected"
+          ]
+        }
+      ' inspector-store.json
+      cat inspector-store-cases.json inspector-store.json
+
       # This measured expectation is supplied by the trusted test coordinator;
       # it does not demonstrate a production publication-authorization catalog.
       # Run last because the owned-descriptor lifetime check unlinks payload.
@@ -142,6 +230,7 @@ in
         }
       ' backing.json
       cat backing.json
+      umount /tmp/inspector-store-ambiguous-final
       umount /tmp/ext4
       trap - EXIT
     '';

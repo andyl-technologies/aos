@@ -49,6 +49,11 @@ use crate::systemd_socket_instance::validate_systemd_socket_instance_fields;
 
 mod store;
 
+#[cfg(feature = "kernel-tests")]
+pub use store::fixture::{
+    PROTECTED_STORE_EXT4_CASES, run_namespace_inspector_protected_store_ext4_fixture,
+};
+
 const REQUEST_MAGIC: &[u8; 8] = b"AOSNIQ01";
 const RESPONSE_MAGIC: &[u8; 8] = b"AOSNIR01";
 const VERSION: u16 = 1;
