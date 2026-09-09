@@ -935,6 +935,17 @@ in
         "--cxxopt=-Wno-error"
       ];
     preBazelBuild = ''
+                # GCC 16 no longer supplies integer types through transitive headers.
+                yaml_emitter="$TMPDIR/repo-overrides/com_github_jbeder_yaml_cpp/src/emitterutils.cpp"
+                test -f "$yaml_emitter"
+                sed -i '1i#include <cstdint>' "$yaml_emitter"
+
+                for integer_header in envoy/common/random_generator.h \
+                    envoy/stream_info/stream_id_provider.h; do
+                  test -f "$integer_header"
+                  sed -i '/^#pragma once$/a\#include <cstdint>' "$integer_header"
+                done
+
                 # Restore Cargo.Bazel.lock if saved in FOD
                 if [ -f "$TMPDIR/output/external/Cargo.Bazel.lock" ]; then
                   cp "$TMPDIR/output/external/Cargo.Bazel.lock" \
