@@ -42,8 +42,11 @@ pub(super) fn guarded_campaign_resume_eligible(
         && evidence.schedule.decisions().iter().all(|decision| {
             matches!(
                 decision,
+                // crucible-lint: allow host-nondeterminism-state -- eligibility reads authenticated scheduler evidence only to choose the exact campaign resume route.
                 crucible::Decision::DeliveryOrder(_)
+                    // crucible-lint: allow host-nondeterminism-state -- eligibility reads authenticated scheduler evidence only to choose the exact campaign resume route.
                     | crucible::Decision::RngDraw(_)
+                    // crucible-lint: allow host-nondeterminism-state -- eligibility reads authenticated scheduler evidence only to choose the exact campaign resume route.
                     | crucible::Decision::Preemption(_)
             )
         })
@@ -346,12 +349,16 @@ fn campaign_save_workflow_report(
     })
 }
 
+// crucible-lint: allow host-nondeterminism-state -- validation reads the canonical campaign schedule only to fail closed before portable export.
 fn validate_portable_campaign_save_schedule(schedule: &Schedule) -> Result<(), CliError> {
     let supports_portable_resume = schedule.decisions().iter().all(|decision| {
         matches!(
             decision,
+            // crucible-lint: allow host-nondeterminism-state -- validation accepts only scheduler-authored decisions supported by portable replay.
             crucible::Decision::DeliveryOrder(_)
+                // crucible-lint: allow host-nondeterminism-state -- validation accepts only scheduler-authored decisions supported by portable replay.
                 | crucible::Decision::RngDraw(_)
+                // crucible-lint: allow host-nondeterminism-state -- validation accepts only scheduler-authored decisions supported by portable replay.
                 | crucible::Decision::Preemption(_)
         )
     });

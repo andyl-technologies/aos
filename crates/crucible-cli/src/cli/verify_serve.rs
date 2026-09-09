@@ -892,6 +892,7 @@ pub(super) fn prefixes_match(left: &[u8], right: &[u8], len: usize) -> bool {
 ///
 /// Returns [`CliError`] when component identity, decision payload, or canonical
 /// artifact encoding validation fails.
+// crucible-lint: allow host-nondeterminism-state -- this pure encoder exports canonical reproduction bytes without admitting host observations into scheduler state.
 pub(crate) fn reproduction_artifact_bytes_with_scenario_payload(
     seed: u64,
     backend: Option<&ResolvedLocalBackend>,
