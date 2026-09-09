@@ -7,11 +7,11 @@
 //! those bounded inputs in canonical order, carries the best offer in portable
 //! state across pages, and issues only after reaching EOF.
 //!
-//! Current portable state appends a blocked-offer bit so an empty final page
-//! does not erase an earlier budget blocker. Legacy engines retain v1 state.
+//! Current portable state also carries exact statistical proposal evidence.
+//! Legacy engines retain their exact v1 and v2 state representations.
 //!
 //! ```text
-//! canonical-frontier-planner@2: v2 | input_view? | best? | budget_blocked
+//! canonical-frontier-planner@3: v3 | input_view? | best? | budget_blocked
 //! canonical-frontier-puct-planner@2: v2 | input_view? | policy? | best? | budget_blocked
 //! ```
 
@@ -23,17 +23,17 @@ use std::{
 use super::*;
 use crate::{
     CampaignPolicyId, CampaignViewId, ChoiceDomainId, ChoiceValue, GuidanceEvidence,
-    PlannerEngineId,
+    PlannerEngineId, StatisticalProposalEvidence,
 };
 
 const ENGINE_NAME: &str = "crucible-canonical-frontier";
-const ENGINE_IMPLEMENTATION_VERSION: u32 = 5;
+const ENGINE_IMPLEMENTATION_VERSION: u32 = 7;
 const ENGINE_PROTOCOL_VERSION: u32 = 1;
 const STATE_FORMAT: &str = "canonical-frontier-planner";
-const STATE_FORMAT_VERSION: u32 = 2;
-const STATE_SCHEMA_VERSION: u32 = 2;
+const STATE_FORMAT_VERSION: u32 = 3;
+const STATE_SCHEMA_VERSION: u32 = 3;
 const POLICY_ARTIFACT_ABI_VERSION: u32 = 1;
-const POLICY_DEPENDENCY_LOCK_BYTES: &[u8] = b"crucible-canonical-frontier-planner.v5";
+const POLICY_DEPENDENCY_LOCK_BYTES: &[u8] = b"crucible-canonical-frontier-planner.v7";
 
 /// Complete deterministic repository basis for the built-in planner.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,8 +93,36 @@ impl CanonicalFrontierPlanner {
     /// Returns [`CampaignCodecError`] if a closed descriptor cannot be constructed.
     pub fn supports_descriptor(engine: &PlannerEngine) -> Result<bool, CampaignCodecError> {
         Ok(engine == &Self::descriptor()?
+            || engine == &Self::previous_statistical_descriptor()?
+            || engine == &Self::legacy_request_budget_descriptor()?
             || engine == &Self::descriptor_for_budget(true, false)?
             || engine == &Self::descriptor_for_budget(false, false)?)
+    }
+
+    fn previous_statistical_descriptor() -> Result<PlannerEngine, CampaignCodecError> {
+        PlannerEngine::new(
+            ENGINE_NAME,
+            6,
+            ENGINE_PROTOCOL_VERSION,
+            BTreeSet::from([
+                CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
+                CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
+                CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned(),
+            ]),
+        )
+    }
+
+    fn legacy_request_budget_descriptor() -> Result<PlannerEngine, CampaignCodecError> {
+        PlannerEngine::new(
+            ENGINE_NAME,
+            5,
+            ENGINE_PROTOCOL_VERSION,
+            BTreeSet::from([
+                CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
+                CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
+                CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned(),
+            ]),
+        )
     }
 
     fn descriptor_for_budget(
@@ -136,12 +164,7 @@ impl CanonicalFrontierPlanner {
         engine: &PlannerEngine,
     ) -> Result<PlannerState, CampaignCodecError> {
         let mut state = CanonicalFrontierPlannerState::empty();
-        if !engine
-            .capabilities()
-            .contains(CANONICAL_FRONTIER_BUDGET_CAPABILITY)
-        {
-            state.schema_version = 1;
-        }
+        state.schema_version = canonical_frontier_state_schema(engine);
         Self::encode_state(engine.id()?, &state)
     }
 
@@ -192,11 +215,7 @@ impl CanonicalFrontierPlanner {
         PlannerState::new(
             engine,
             STATE_FORMAT,
-            if state.schema_version >= 2 {
-                STATE_FORMAT_VERSION
-            } else {
-                1
-            },
+            state.schema_version,
             codec::encode(state),
         )
     }
@@ -205,32 +224,14 @@ impl CanonicalFrontierPlanner {
         request: &PlannerRequest,
     ) -> Result<CanonicalFrontierPlannerState, CampaignCodecError> {
         let state = request.planner_state();
-        let expected_format = if request
-            .engine()
-            .capabilities()
-            .contains(CANONICAL_FRONTIER_BUDGET_CAPABILITY)
-        {
-            STATE_FORMAT_VERSION
-        } else {
-            1
-        };
+        let expected_format = canonical_frontier_state_schema(request.engine());
         if state.state_format() != STATE_FORMAT || state.state_format_version() != expected_format {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "canonical frontier planner state format mismatch",
             });
         }
         let decoded: CanonicalFrontierPlannerState = codec::decode(state.bytes())?;
-        let budget_aware = request
-            .engine()
-            .capabilities()
-            .contains(CANONICAL_FRONTIER_BUDGET_CAPABILITY);
-        if decoded.schema_version
-            != if budget_aware {
-                STATE_SCHEMA_VERSION
-            } else {
-                1
-            }
-        {
+        if decoded.schema_version != expected_format {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "canonical frontier state schema disagrees with its engine",
             });
@@ -326,26 +327,45 @@ impl PurePlannerEngine for CanonicalFrontierPlanner {
         let input_objects = page.input_objects();
         let input_bytes = page.input_bytes();
         let invocation = request.invocation_id()?;
-        let (next_best, proposal_count, disposition) = if page.complete() {
-            match best {
-                Some(candidate) => {
-                    let proposal = candidate.to_proposal(request, invocation)?;
-                    let selected = candidate.position;
-                    (
-                        Some(candidate),
-                        1,
-                        PlannerProposalDisposition::Issue {
-                            selected,
-                            branch_requests: Vec::new(),
-                            proposals: vec![proposal],
-                        },
-                    )
-                }
-                None => (None, 0, PlannerProposalDisposition::NoWork),
+        let statistical_request = if page.complete() {
+            canonical_statistical_request(request, invocation)?
+        } else {
+            None
+        };
+        let (next_best, branch_request_count, proposal_count, disposition) = if page.complete() {
+            match statistical_request {
+                Some((selected, branch_request)) => (
+                    best,
+                    1,
+                    0,
+                    PlannerProposalDisposition::Issue {
+                        selected,
+                        branch_requests: vec![branch_request],
+                        proposals: Vec::new(),
+                    },
+                ),
+                None => match best {
+                    Some(candidate) => {
+                        let proposal = candidate.to_proposal(request, invocation)?;
+                        let selected = candidate.position;
+                        (
+                            Some(candidate),
+                            0,
+                            1,
+                            PlannerProposalDisposition::Issue {
+                                selected,
+                                branch_requests: Vec::new(),
+                                proposals: vec![proposal],
+                            },
+                        )
+                    }
+                    None => (None, 0, 0, PlannerProposalDisposition::NoWork),
+                },
             }
         } else {
             (
                 best,
+                0,
                 0,
                 PlannerProposalDisposition::ContinueScan {
                     cursor: crate::PlanningScanCursor::new(view, page.last()),
@@ -355,11 +375,7 @@ impl PurePlannerEngine for CanonicalFrontierPlanner {
         let next_state = Self::encode_state(
             expected_engine_id,
             &CanonicalFrontierPlannerState {
-                schema_version: if budget_aware {
-                    STATE_SCHEMA_VERSION
-                } else {
-                    1
-                },
+                schema_version: canonical_frontier_state_schema(request.engine()),
                 input_view: Some(view),
                 best: next_best.clone(),
                 budget_blocked,
@@ -377,9 +393,12 @@ impl PurePlannerEngine for CanonicalFrontierPlanner {
         if budget_aware {
             terms.insert("budget-blocked".to_owned(), i64::from(budget_blocked));
         }
+        if branch_request_count != 0 {
+            terms.insert("statistical-request".to_owned(), 1);
+        }
         let explanation = GuidanceEvidence::new(terms)?;
         let usage = PlanningUsage {
-            branch_requests: 0,
+            branch_requests: branch_request_count,
             proposals: proposal_count,
             input_objects,
             input_bytes,
@@ -393,6 +412,64 @@ impl PurePlannerEngine for CanonicalFrontierPlanner {
             disposition,
         )?))
     }
+}
+
+fn canonical_frontier_state_schema(engine: &PlannerEngine) -> u32 {
+    match engine.implementation_version() {
+        ENGINE_IMPLEMENTATION_VERSION | 6 => STATE_FORMAT_VERSION,
+        3 | 5 => 2,
+        _ => 1,
+    }
+}
+
+fn canonical_statistical_request(
+    request: &PlannerRequest,
+    invocation: crate::PlannerInvocationId,
+) -> Result<Option<(PlanningScanPosition, BranchRequest)>, CampaignCodecError> {
+    let Some(basis) = request.statistical_request_basis() else {
+        return Ok(None);
+    };
+    let design =
+        request
+            .policy()
+            .statistical_sampling_design()
+            .ok_or(CampaignCodecError::InvalidValue {
+                reason: "statistical planner basis has no sampling design",
+            })?;
+    let draw = design
+        .draw(basis.coordinate())
+        .ok_or(CampaignCodecError::InvalidValue {
+            reason: "statistical planner basis coordinate is not planned",
+        })?;
+    let distribution =
+        design
+            .distributions()
+            .get(&draw.model())
+            .ok_or(CampaignCodecError::InvalidValue {
+                reason: "statistical planner draw model is not planned",
+            })?;
+    let branch_point = crate::ChoiceOpportunity::branch_point_id_for_semantics(
+        basis.configuration(),
+        draw.opportunity_semantics(),
+    );
+    let source = crate::CandidateSource::statistical_finite(
+        basis.coordinate(),
+        draw.model(),
+        distribution.target_masses().clone(),
+        distribution.proposal_masses().clone(),
+    )?;
+    let branch_request = BranchRequest::new(
+        branch_point,
+        basis.parent(),
+        draw.opportunity(),
+        draw.domain(),
+        source,
+        crate::BranchRequestCause::Planner(invocation),
+        crate::BranchBudget::new(1, 1)?,
+        draw.stop().clone(),
+    )?;
+    let selected = PlanningScanPosition::new(branch_point, branch_request.id()?);
+    Ok(Some((selected, branch_request)))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -418,7 +495,9 @@ impl Canonical for CanonicalFrontierPlannerState {
     fn encode(&self, encoder: &mut Encoder) {
         self.schema_version.encode(encoder);
         self.input_view.encode(encoder);
-        self.best.encode(encoder);
+        encoder.option(self.best.as_ref(), |encoder, candidate| {
+            candidate.encode_for_schema(encoder, self.schema_version)
+        });
         if self.schema_version >= 2 {
             self.budget_blocked.encode(encoder);
         }
@@ -426,7 +505,7 @@ impl Canonical for CanonicalFrontierPlannerState {
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
-        if !matches!(schema_version, 1 | STATE_SCHEMA_VERSION) {
+        if !matches!(schema_version, 1..=STATE_SCHEMA_VERSION) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported canonical frontier planner state version",
             });
@@ -434,7 +513,8 @@ impl Canonical for CanonicalFrontierPlannerState {
         Ok(Self {
             schema_version,
             input_view: Option::decode(decoder)?,
-            best: Option::decode(decoder)?,
+            best: decoder
+                .option(|decoder| CarriedCandidate::decode_for_schema(decoder, schema_version))?,
             budget_blocked: schema_version >= 2 && bool::decode(decoder)?,
         })
     }
@@ -446,6 +526,7 @@ struct CarriedCandidate {
     domain: ChoiceDomainId,
     value: ChoiceValue,
     ordinal: u64,
+    statistical_evidence: Option<StatisticalProposalEvidence>,
 }
 
 impl CarriedCandidate {
@@ -455,6 +536,7 @@ impl CarriedCandidate {
             domain: offer.domain(),
             value: offer.value().clone(),
             ordinal: offer.ordinal(),
+            statistical_evidence: offer.statistical_evidence(),
         }
     }
 
@@ -463,33 +545,55 @@ impl CarriedCandidate {
         request: &PlannerRequest,
         invocation: crate::PlannerInvocationId,
     ) -> Result<Proposal, CampaignCodecError> {
-        Proposal::new(
-            self.position.branch_point(),
-            self.position.source(),
-            self.domain,
-            self.value.clone(),
-            request.invocation().policy(),
-            Some(invocation),
-            self.ordinal,
-            request.invocation().input_view(),
-        )
+        match self.statistical_evidence {
+            Some(evidence) => Proposal::new_with_statistical_evidence(
+                self.position.branch_point(),
+                self.position.source(),
+                self.domain,
+                self.value.clone(),
+                request.invocation().policy(),
+                Some(invocation),
+                self.ordinal,
+                request.invocation().input_view(),
+                evidence,
+            ),
+            None => Proposal::new(
+                self.position.branch_point(),
+                self.position.source(),
+                self.domain,
+                self.value.clone(),
+                request.invocation().policy(),
+                Some(invocation),
+                self.ordinal,
+                request.invocation().input_view(),
+            ),
+        }
     }
-}
 
-impl Canonical for CarriedCandidate {
-    fn encode(&self, encoder: &mut Encoder) {
+    fn encode_for_schema(&self, encoder: &mut Encoder, schema_version: u32) {
         self.position.encode(encoder);
         self.domain.encode(encoder);
         self.value.encode(encoder);
         self.ordinal.encode(encoder);
+        if schema_version >= 3 {
+            self.statistical_evidence.encode(encoder);
+        }
     }
 
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+    fn decode_for_schema(
+        decoder: &mut Decoder<'_>,
+        schema_version: u32,
+    ) -> Result<Self, CampaignCodecError> {
         let candidate = Self {
             position: PlanningScanPosition::decode(decoder)?,
             domain: ChoiceDomainId::decode(decoder)?,
             value: ChoiceValue::decode(decoder)?,
             ordinal: u64::decode(decoder)?,
+            statistical_evidence: if schema_version >= 3 {
+                Option::decode(decoder)?
+            } else {
+                None
+            },
         };
         if candidate.ordinal == 0 {
             return Err(CampaignCodecError::InvalidValue {
@@ -497,6 +601,16 @@ impl Canonical for CarriedCandidate {
             });
         }
         Ok(candidate)
+    }
+}
+
+impl Canonical for CarriedCandidate {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.encode_for_schema(encoder, STATE_SCHEMA_VERSION);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Self::decode_for_schema(decoder, STATE_SCHEMA_VERSION)
     }
 }
 

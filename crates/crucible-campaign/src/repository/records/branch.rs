@@ -1,6 +1,7 @@
 //! Branch requests, generators, proposals, and their campaign scope.
 
 use super::*;
+use crate::BranchBudget;
 
 impl CampaignRepository {
     pub(crate) fn read_branch_request(
@@ -271,6 +272,8 @@ impl CampaignRepository {
         parent: &ConfigurationArtifact,
     ) -> Result<(), CampaignRepositoryError> {
         let lineage = self.read_lineage(required_child(&snapshot.envelope, "lineage")?)?;
+        let active_policy = self.read_policy(snapshot.snapshot.active_policy().content_id())?;
+        self.validate_statistical_request_policy(snapshot, &lineage, &active_policy, request)?;
         if parent.scenario() != lineage.scenario() {
             return Err(integrity("branch-request-parent-scenario-mismatch"));
         }
@@ -388,13 +391,153 @@ impl CampaignRepository {
         {
             let opportunity = self.read_opportunity(request.opportunity().content_id())?;
             let declaration = self.read_selectable(opportunity.declaration().content_id())?;
-            let policy = self.read_policy(snapshot.snapshot.active_policy().content_id())?;
-            let selected = policy.choice_policies().get(declaration.name());
+            let selected = active_policy.choice_policies().get(declaration.name());
             if selected.map(crate::ChoicePolicy::generator) != Some(*generator) {
                 return Err(integrity(
                     "branch-request-generator-is-not-selected-by-active-policy",
                 ));
             }
+        }
+        Ok(())
+    }
+
+    pub(in crate::repository) fn validate_statistical_request_policy(
+        &self,
+        snapshot: &LoadedSnapshot,
+        lineage: &CampaignLineage,
+        policy: &CampaignPolicy,
+        request: &BranchRequest,
+    ) -> Result<(), CampaignRepositoryError> {
+        let source = match request.source() {
+            CandidateSource::StatisticalFinite(source) => source,
+            _ if policy.mode() == CampaignMode::Statistical => {
+                return Err(integrity("statistical-policy-requires-statistical-request"));
+            }
+            _ => return Ok(()),
+        };
+        if policy.mode() != CampaignMode::Statistical {
+            return Err(integrity("statistical-request-requires-statistical-policy"));
+        }
+        let design = policy
+            .statistical_sampling_design()
+            .ok_or_else(|| integrity("statistical-policy-lacks-sampling-design"))?;
+        let draw = design
+            .draw(source.coordinate())
+            .ok_or_else(|| integrity("statistical-request-coordinate-is-not-planned"))?;
+        let distribution = design
+            .distributions()
+            .get(&draw.model())
+            .ok_or_else(|| integrity("statistical-request-model-is-not-planned"))?;
+        let opportunity = self.read_opportunity(draw.opportunity().content_id())?;
+        let parent = self.read_configuration_artifact(request.parent().content_id())?;
+        let expected_branch_point = crate::ChoiceOpportunity::branch_point_id_for_semantics(
+            parent.configuration(),
+            draw.opportunity_semantics(),
+        );
+        if !matches!(request.cause(), BranchRequestCause::Planner(_))
+            || request.opportunity() != draw.opportunity()
+            || request.domain() != draw.domain()
+            || request.stop() != draw.stop()
+            || request.budget() != BranchBudget::new(1, 1)?
+            || request.branch_point() != expected_branch_point
+            || opportunity.id()? != draw.opportunity()
+            || opportunity.semantic_id() != draw.opportunity_semantics()
+            || opportunity.domain() != draw.domain()
+            || opportunity.model_prior() != Some(draw.model())
+            || self.merkle.get(
+                snapshot.snapshot.roots().graph,
+                branch_point_opportunity_key(expected_branch_point, draw.opportunity()),
+            )? != Some(draw.opportunity().content_id())
+            || source.model() != draw.model()
+            || source.target_masses() != distribution.target_masses()
+            || source.proposal_masses() != distribution.proposal_masses()
+        {
+            return Err(integrity("statistical-request-disagrees-with-pinned-draw"));
+        }
+
+        let Some(parent_coordinate) = draw.parent() else {
+            if request.parent() != lineage.genesis_content()
+                || parent.configuration() != lineage.genesis()
+            {
+                return Err(integrity("statistical-root-draw-parent-is-not-genesis"));
+            }
+            return Ok(());
+        };
+        let parent_proposal_content = self
+            .merkle
+            .get(
+                snapshot.snapshot.roots().accounting,
+                statistical_draw_proposal_key(parent_coordinate),
+            )?
+            .ok_or_else(|| integrity("statistical-parent-draw-is-not-admitted"))?;
+        let parent_proposal = self.read_proposal(parent_proposal_content)?;
+        let CandidateSource::StatisticalFinite(parent_source) = self
+            .read_branch_request(parent_proposal.request().content_id())?
+            .source()
+            .clone()
+        else {
+            return Err(integrity("statistical-parent-draw-source-mismatch"));
+        };
+        if parent_source.coordinate() != parent_coordinate {
+            return Err(integrity("statistical-parent-draw-coordinate-mismatch"));
+        }
+        let admission_content = self
+            .merkle
+            .get(
+                snapshot.snapshot.roots().accounting,
+                map_key_content("accounting.proposal-admission", parent_proposal_content),
+            )?
+            .ok_or_else(|| integrity("statistical-parent-draw-admission-is-missing"))?;
+        let admission = self.read_attempt_admission(admission_content)?;
+        let observation_content = self
+            .merkle
+            .get(
+                snapshot.snapshot.roots().observations,
+                map_key_content("observations.attempt", admission.attempt().content_id()),
+            )?
+            .ok_or_else(|| integrity("statistical-parent-draw-observation-is-missing"))?;
+        let observation = self.read_observation(observation_content)?;
+        if observation.attempt() != admission.attempt()
+            || observation.child_content() != request.parent()
+            || observation.child() != parent.configuration()
+        {
+            return Err(integrity("statistical-parent-draw-endpoint-mismatch"));
+        }
+        self.validate_statistical_attempt_basis(snapshot, admission.attempt())
+    }
+
+    pub(in crate::repository) fn validate_statistical_attempt_basis(
+        &self,
+        snapshot: &LoadedSnapshot,
+        attempt: AttemptId,
+    ) -> Result<(), CampaignRepositoryError> {
+        let basis_content = self
+            .merkle
+            .get(
+                snapshot.snapshot.roots().accounting,
+                map_key_content("accounting.attempt-execution-basis", attempt.content_id()),
+            )?
+            .ok_or_else(|| integrity("statistical-attempt-execution-basis-is-missing"))?;
+        let basis = self.read_attempt_admission(basis_content)?;
+        let AttemptAdmissionRole::ExecutionBasis {
+            proposal: Some(proposal),
+            cause: BranchRequestCause::Planner(_),
+            ..
+        } = basis.role()
+        else {
+            return Err(integrity(
+                "statistical-attempt-execution-basis-is-intervention",
+            ));
+        };
+        if basis.attempt() != attempt {
+            return Err(integrity("statistical-attempt-execution-basis-mismatch"));
+        }
+        let proposal = self.read_proposal(proposal.content_id())?;
+        let request = self.read_branch_request(proposal.request().content_id())?;
+        if !matches!(request.source(), CandidateSource::StatisticalFinite(_)) {
+            return Err(integrity(
+                "statistical-attempt-execution-basis-is-not-a-draw",
+            ));
         }
         Ok(())
     }

@@ -1199,6 +1199,21 @@ in rec {
         };
         dependencies = [phase3.gates.adversarialDeterminism];
       };
+      campaignStatistics = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase4.gates.campaignStatistics";
+        # lint needle: campaignStatistics = import ./phase4-campaign-statistics.nix
+        gate = import ./phase4-campaign-statistics.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase4.gates.campaignStatistics";
+          taskIds = ["T-CAM-3.4" "T-CAM-4.1" "T-CAM-4.2" "T-CAM-4.3"];
+          dependencies = [
+            replayOracle.rawGate
+            phase1.gates.campaignModel.rawGate
+            phase2.gates.typedChoice.rawGate
+          ];
+        };
+        dependencies = [replayOracle phase1.gates.campaignModel phase2.gates.typedChoice];
+      };
       e2eDeterminism = redBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.e2eDeterminism";
         # lint needle: e2eDeterminism = import ./phase4-e2e-determinism.nix

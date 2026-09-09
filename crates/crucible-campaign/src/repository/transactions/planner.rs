@@ -197,7 +197,14 @@ impl CampaignRepository {
         self.validate_planner_page(&current_view, &invocation)?;
         self.validate_planner_cursor(&current, &disposition)?;
         self.validate_planner_disposition_page(&invocation, &disposition)?;
-        self.validate_planner_selected_source(&current_view, &disposition)?;
+        let proposed_requests = match proposal.disposition() {
+            PlannerProposalDisposition::Issue {
+                branch_requests, ..
+            } => Some(branch_requests.as_slice()),
+            PlannerProposalDisposition::ContinueScan { .. }
+            | PlannerProposalDisposition::NoWork => None,
+        };
+        self.validate_planner_selected_source(&current_view, &disposition, proposed_requests)?;
         let parent = self.validate_planner_invocation_start(
             current.snapshot.roots().coordination,
             &invocation,
@@ -600,8 +607,9 @@ impl CampaignRepository {
                 push_retained_planner_input(
                     &mut retained,
                     &mut retained_bytes,
-                    ObjectEnvelope::for_record(
+                    ObjectEnvelope::for_record_versioned(
                         crate::CampaignRecordKind::Proposal,
+                        offer.schema_version(),
                         crate::object::content_children(offer.content_children())?,
                         offer.canonical_bytes(),
                     )?,
@@ -713,7 +721,15 @@ impl CampaignRepository {
             }
         }
 
-        let request = PlannerRequest::new(
+        let statistical_request_basis = self.statistical_request_basis(&snapshot, &policy)?;
+        if policy.statistical_sampling_design().is_some()
+            && engine != CanonicalFrontierPlanner::descriptor()?
+        {
+            return Err(integrity(
+                "statistical-design-requires-current-canonical-frontier-engine",
+            ));
+        }
+        let request = PlannerRequest::new_with_statistical_request_basis(
             expected_snapshot,
             invocation,
             engine,
@@ -721,6 +737,7 @@ impl CampaignRepository {
             policy,
             crate::codec::decode(state_envelope.body())?,
             crate::codec::decode(view_envelope.body())?,
+            statistical_request_basis,
             crate::CampaignPlanningBundle::new(retained)?,
         )?;
         request.id()?;
@@ -964,16 +981,38 @@ impl CampaignRepository {
         &self,
         view: &CampaignPlanningView,
         disposition: &PlannerDisposition,
+        proposed_requests: Option<&[BranchRequest]>,
     ) -> Result<(), CampaignRepositoryError> {
         let PlannerDisposition::Issue { selected, .. } = disposition else {
             return Ok(());
         };
         let content = selected.source().content_id();
-        if self.merkle.get(
+        let authoritative = self.merkle.get(
             view.exploration(),
             map_key_content("exploration.branch-request", content),
-        )? != Some(content)
-            || self.read_branch_request(content)?.branch_point() != selected.branch_point()
+        )? == Some(content);
+        let selected_request = if authoritative {
+            self.read_branch_request(content)?
+        } else if let Some(request) = proposed_requests.and_then(|requests| {
+            requests
+                .iter()
+                .find(|request| request.id().ok() == Some(selected.source()))
+        }) {
+            request.clone()
+        } else {
+            self.read_branch_request(content)?
+        };
+        let newly_issued_statistical = !authoritative
+            && disposition.issued_proposals().is_empty()
+            && disposition
+                .issued_branch_requests()
+                .contains(&selected.source())
+            && matches!(
+                selected_request.source(),
+                CandidateSource::StatisticalFinite(_)
+            );
+        if (!authoritative && !newly_issued_statistical)
+            || selected_request.branch_point() != selected.branch_point()
         {
             return Err(integrity(
                 "planner-step-selected-source-is-not-authoritative",

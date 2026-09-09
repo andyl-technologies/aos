@@ -554,9 +554,17 @@ impl ChoiceOpportunity {
     /// Derives the semantic branch point beneath `parent`.
     #[must_use]
     pub fn branch_point_id(&self, parent: ConfigurationId) -> BranchPointId {
+        Self::branch_point_id_for_semantics(parent, self.semantic_id())
+    }
+
+    /// Derives the branch point when only pinned opportunity semantics are available.
+    pub(crate) fn branch_point_id_for_semantics(
+        parent: ConfigurationId,
+        opportunity: ChoiceOpportunitySemanticId,
+    ) -> BranchPointId {
         let mut encoder = Encoder::new();
         parent.encode(&mut encoder);
-        self.semantic_id().encode(&mut encoder);
+        opportunity.encode(&mut encoder);
         BranchPointId::from_hash(CampaignHash::derive(
             "crucible.branch-point.v1",
             &encoder.finish(),

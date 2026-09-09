@@ -39,6 +39,7 @@ mod observation;
 mod planner_service;
 mod policy;
 mod repository;
+mod statistics;
 
 pub use model::{CampaignBudgetError, CampaignBudgetLedger};
 
@@ -129,7 +130,7 @@ pub use exploration::{
     PlannerCandidateGuidance, PlannerDisposition, PlannerProposalDisposition, PlannerStep,
     PlannerStepProposal, PlanningAccounting, PlanningScanCursor, PlanningScanPage,
     PlanningScanPosition, PlanningUsage, ProgressiveWideningDecision, Proposal, PuctEdgeStatistics,
-    PuctScore, StopCondition,
+    PuctScore, StatisticalFiniteCandidateSource, StatisticalProposalEvidence, StopCondition,
 };
 pub use finding::{
     Finding, FindingExactPins, FindingKind, FindingMinimizationAttempt,
@@ -193,7 +194,7 @@ pub use planner_service::{
     MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS, MAX_RETAINED_PLANNER_REQUEST_BYTES,
     PlannerCandidateRanking, PlannerClient, PlannerClientError, PlannerEngineOutput,
     PlannerExecutionSupervisor, PlannerRequest, PlannerResponse, PlannerService, PurePlannerEngine,
-    SupervisedPlannerExecution,
+    StatisticalRequestBasis, SupervisedPlannerExecution,
 };
 pub use policy::{
     BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, BOUNDARY_INTEGER_GENERATOR_MAX_LANDMARKS,
@@ -218,6 +219,7 @@ pub use policy::{
     RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, RetentionPolicy,
     STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
     STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, STRATIFIED_INTEGER_GENERATOR_MAX_STRATA,
+    StatisticalDistribution, StatisticalDrawPlan, StatisticalSamplingDesign,
     WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
     WEIGHTED_CATEGORICAL_GENERATOR_MAX_ALTERNATIVES, WeightedGenerator,
 };
@@ -243,6 +245,10 @@ pub use repository::{
     PendingSavepointCapturePage, PlannerStepResult, ProposalResult, ResolvedSelection,
     SavepointCaptureCursor, SavepointCaptureResolutionResult, SavepointCaptureResult,
     SavepointContinuationResult, SavepointContinuationSource, WorkerSlotId,
+};
+pub use statistics::{
+    StatisticalEndpointEstimate, StatisticalEstimateReport, StatisticalRational,
+    StatisticalWeightDiagnostics,
 };
 
 #[cfg(test)]

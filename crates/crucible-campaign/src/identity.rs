@@ -413,7 +413,7 @@ content_object_id!(
 content_object_id!(
     CampaignPolicyId,
     ObjectKind::Policy,
-    [1, 2],
+    [1, 2, 3],
     "crucible.campaign.policy",
     "Identifies one immutable campaign policy revision."
 );
@@ -541,9 +541,9 @@ semantic_id!(
 content_object_id!(
     BranchRequestId,
     ObjectKind::CampaignFact,
-    [1, 2, 3, 4, 5, 6],
+    [1, 2, 3, 4, 5, 6, 7],
     "crucible.campaign.branch-request",
-    "Identifies one bounded request for branch candidates; versions 1 through 5 remain decodable for history compatibility."
+    "Identifies one bounded request for branch candidates; versions 1 through 6 remain decodable for history compatibility."
 );
 content_object_id!(
     CandidateGeneratorSpecId,
@@ -554,6 +554,7 @@ content_object_id!(
 content_object_id!(
     ProposalId,
     ObjectKind::CampaignFact,
+    [1, 2],
     "crucible.campaign.proposal",
     "Identifies one proposed value and its campaign provenance."
 );

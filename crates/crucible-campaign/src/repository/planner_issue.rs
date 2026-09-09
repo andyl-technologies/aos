@@ -249,7 +249,33 @@ impl CampaignRepository {
         {
             return Err(integrity("planner-issue-invocation-is-not-current"));
         }
-        let selected_request = self.read_branch_request(selected.source().content_id())?;
+        let selected_request = branch_requests
+            .iter()
+            .find_map(|request| {
+                request
+                    .id()
+                    .ok()
+                    .filter(|request_id| *request_id == selected.source())
+                    .map(|_| request.clone())
+            })
+            .map(Ok)
+            .unwrap_or_else(|| self.read_branch_request(selected.source().content_id()))?;
+        let selected_is_new = branch_requests
+            .iter()
+            .map(BranchRequest::id)
+            .collect::<Result<BTreeSet<_>, _>>()?
+            .contains(&selected.source());
+        if selected_is_new
+            && (!proposals.is_empty()
+                || !matches!(
+                    selected_request.source(),
+                    CandidateSource::StatisticalFinite(_)
+                ))
+        {
+            return Err(integrity(
+                "planner-new-selected-request-is-not-statistical-request-only",
+            ));
+        }
         if selected_request.branch_point() != selected.branch_point() {
             return Err(integrity("planner-issue-selected-request-mismatch"));
         }
@@ -305,6 +331,24 @@ impl CampaignRepository {
                 request_content,
                 "planner-issue-reused-branch-request-slot",
             )?;
+            if let CandidateSource::StatisticalFinite(source) = request.source() {
+                let expected_coordinate = self.next_statistical_coordinate(
+                    snapshot,
+                    prior_exploration,
+                    &exploration_upserts,
+                    true,
+                )?;
+                if expected_coordinate != Some(source.coordinate()) {
+                    return Err(integrity("statistical-request-coordinate-is-not-next"));
+                }
+                self.insert_overlay_unique(
+                    prior_exploration,
+                    &mut exploration_upserts,
+                    statistical_draw_request_key(source.coordinate()),
+                    request_content,
+                    "statistical-request-coordinate-is-already-published",
+                )?;
+            }
             if let Some(frontier_index) = frontier_index
                 && self
                     .merkle
@@ -481,6 +525,24 @@ impl CampaignRepository {
                     "planner-issue-reused-admission-slot",
                 )?;
             }
+            if let CandidateSource::StatisticalFinite(source) = selected_request.source() {
+                let expected_coordinate = self.next_statistical_coordinate(
+                    snapshot,
+                    prior_accounting,
+                    &accounting_upserts,
+                    false,
+                )?;
+                if expected_coordinate != Some(source.coordinate()) {
+                    return Err(integrity("statistical-proposal-coordinate-is-not-next"));
+                }
+                self.insert_overlay_unique(
+                    prior_accounting,
+                    &mut accounting_upserts,
+                    statistical_draw_proposal_key(source.coordinate()),
+                    proposal_id.content_id(),
+                    "statistical-proposal-coordinate-is-already-admitted",
+                )?;
+            }
         }
 
         if let Some(frontier_index) = frontier_index {
@@ -635,10 +697,11 @@ impl CampaignRepository {
         {
             return Err(integrity("planner-issue-request-invocation-basis-mismatch"));
         }
+        let policy = self.read_policy(snapshot.snapshot.active_policy().content_id())?;
+        self.validate_statistical_request_policy(snapshot, lineage, &policy, request)?;
         if let CandidateSource::Generated(generator) = request.source() {
             let opportunity = self.read_opportunity(request.opportunity().content_id())?;
             let declaration = self.read_selectable(opportunity.declaration().content_id())?;
-            let policy = self.read_policy(snapshot.snapshot.active_policy().content_id())?;
             if policy
                 .choice_policies()
                 .get(declaration.name())
@@ -651,6 +714,30 @@ impl CampaignRepository {
             }
         }
         Ok(())
+    }
+
+    fn next_statistical_coordinate(
+        &self,
+        snapshot: &LoadedSnapshot,
+        prior: ContentId,
+        upserts: &BTreeMap<CampaignHash, ContentId>,
+        request: bool,
+    ) -> Result<Option<u64>, CampaignRepositoryError> {
+        let policy = self.read_policy(snapshot.snapshot.active_policy().content_id())?;
+        let Some(design) = policy.statistical_sampling_design() else {
+            return Ok(None);
+        };
+        for coordinate in design.draws().keys().copied() {
+            let key = if request {
+                statistical_draw_request_key(coordinate)
+            } else {
+                statistical_draw_proposal_key(coordinate)
+            };
+            if self.overlay_get(prior, upserts, key)?.is_none() {
+                return Ok(Some(coordinate));
+            }
+        }
+        Ok(None)
     }
 
     fn validate_planner_issue_proposal(

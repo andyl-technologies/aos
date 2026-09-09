@@ -190,7 +190,7 @@ impl CampaignRepository {
         let versions = self.merkle.scan(
             root,
             None,
-            crate::exploration::BRANCH_REQUEST_SCHEMA_VERSION as usize,
+            crate::exploration::STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION as usize,
         )?;
         if versions.entries().is_empty() || versions.next_after().is_some() {
             return Err(integrity("planner-scan-index-schema-set"));
@@ -239,7 +239,7 @@ fn schema_key(version: u32) -> CampaignHash {
 }
 
 fn schema_from_key(key: CampaignHash) -> Result<u32, CampaignRepositoryError> {
-    for version in 1..=crate::exploration::BRANCH_REQUEST_SCHEMA_VERSION {
+    for version in 1..=crate::exploration::STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION {
         if key == schema_key(version) {
             return Ok(version);
         }

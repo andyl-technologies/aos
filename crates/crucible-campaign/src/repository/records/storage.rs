@@ -66,8 +66,9 @@ impl CampaignRepository {
         &self,
         proposal: &Proposal,
     ) -> Result<ContentId, CampaignRepositoryError> {
-        self.put_envelope(ObjectEnvelope::for_record(
+        self.put_envelope(ObjectEnvelope::for_record_versioned(
             crate::CampaignRecordKind::Proposal,
+            proposal.schema_version(),
             crate::object::content_children(proposal.content_children())?,
             proposal.canonical_bytes(),
         )?)
@@ -491,8 +492,17 @@ impl CampaignRepository {
         if ObjectEnvelope::for_policy(&policy)? != envelope || policy.id()?.content_id() != id {
             return Err(integrity("policy-envelope-shape"));
         }
-        for (_, child) in policy.content_children() {
-            self.require_record_kind(child, crate::CampaignRecordKind::CandidateGeneratorSpec)?;
+        for (role, child) in policy.content_children() {
+            let kind = if role.starts_with("choice-generator.") {
+                crate::CampaignRecordKind::CandidateGeneratorSpec
+            } else if role.starts_with("statistical-opportunity.") {
+                crate::CampaignRecordKind::ChoiceOpportunity
+            } else if role.starts_with("statistical-domain.") {
+                crate::CampaignRecordKind::ChoiceDomain
+            } else {
+                return Err(integrity("policy-child-role-is-unknown"));
+            };
+            self.require_record_kind(child, kind)?;
         }
         Ok(policy)
     }
