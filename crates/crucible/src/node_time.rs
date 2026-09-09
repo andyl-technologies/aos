@@ -80,6 +80,41 @@ impl NodeTimeMapping {
         Ok(NodeCounter { ticks })
     }
 
+    /// Computes the greatest counter whose projection does not pass `target`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeConversionError`] when the projection scale, resulting
+    /// counter, or anchored logical time cannot be represented.
+    pub fn counter_for_logical_time_floor(
+        self,
+        target: SimInstant,
+        shift: Shift,
+    ) -> Result<NodeCounter, TimeConversionError> {
+        let scale = NodeCounter { ticks: 1 }.to_virtual(shift)?.nanos;
+        let ticks = if target >= self.anchor_time {
+            let delta = target.nanos - self.anchor_time.nanos;
+            self.anchor_counter.ticks.checked_add(delta / scale)
+        } else {
+            let delta = self.anchor_time.nanos - target.nanos;
+            self.anchor_counter.ticks.checked_sub(delta.div_ceil(scale))
+        }
+        .ok_or(TimeConversionError::VirtualTimeOverflow {
+            icount: crate::Icount {
+                retired: self.anchor_counter.ticks,
+            },
+            shift,
+        })?;
+
+        let counter = NodeCounter { ticks };
+        // A counter can fit even when its anchored logical-time projection
+        // falls before the virtual epoch. Validate that projection here so a
+        // caller never receives a counter outside this mapping's domain.
+        let _ = self.logical_time(counter, shift)?;
+
+        Ok(counter)
+    }
+
     /// Projects the current counter into a typed scheduler observation.
     ///
     /// # Errors

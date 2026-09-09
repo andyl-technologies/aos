@@ -135,7 +135,7 @@ fn single_scheduler_stops_at_future_cross_node_dependency_before_horizon() {
 }
 
 #[test]
-fn single_scheduler_rejects_unaligned_dependency_ceiling_overshoot() {
+fn single_scheduler_floors_unaligned_dependency_then_rejects_sub_tick_stall() {
     let consumer = scheduler_node("consumer");
     let producer = scheduler_node("producer");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
@@ -157,12 +157,26 @@ fn single_scheduler_rejects_unaligned_dependency_ceiling_overshoot() {
         control: Vec::new(),
     };
 
+    let first = scheduler
+        .drive_quantum(request.clone())
+        .expect("the scheduler should use the largest safe counter");
+
+    assert_eq!(first.frontier, VirtualTime { ticks: 4 });
+    assert!(first.resolved_events.is_empty());
+
     let error = scheduler
         .drive_quantum(request)
-        .expect_err("unaligned dependency cap must not be rounded past");
+        .expect_err("a sub-tick dependency gap cannot safely advance");
 
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
-    assert!(error.to_string().contains("icount ceiling overshoot"));
+    assert!(
+        error
+            .to_string()
+            .contains("cannot represent positive icount advance")
+    );
+    assert!(error.to_string().contains("target_at_ns=5"));
+    assert!(error.to_string().contains("source_logical_ns=4"));
+    assert!(error.to_string().contains("rounding=conservative_floor"));
 }
 
 #[test]

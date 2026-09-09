@@ -9,6 +9,7 @@
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
+  nodeTime = builtins.readFile ../../crates/crucible/src/node_time.rs;
   icountCeilingTest = builtins.readFile ../../crates/crucible/tests/scheduler_icount_ceiling.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -47,6 +48,10 @@
         needle = "horizon.to_icount_ceil(self.shift)";
       }
       {
+        label = "conservative helper uses floor map";
+        needle = "pub fn max_advance_icount_for_conservative_horizon";
+      }
+      {
         label = "horizon finite uses shared timeline";
         needle = "timeline.max_advance_icount_for_horizon(virtual_time)";
       }
@@ -63,8 +68,20 @@
         needle = "pub icount_shift: Shift";
       }
       {
+        label = "RUN conservative floor projection";
+        needle = "self.node_counter_for_time_floor(selected_runtime_node, candidate.target_time)";
+      }
+      {
         label = "strict conservative overshoot guard";
-        needle = "!candidate.allow_ceil_past_target && projected_target > candidate.target_time";
+        needle = "candidate.icount_rounding == SchedulerIcountRounding::ConservativeFloor\n            && projected_target > candidate.target_time";
+      }
+      {
+        label = "sub-tick no-progress guard";
+        needle = "target_counter == before";
+      }
+      {
+        label = "equal-target representable candidate filter";
+        needle = "candidate_has_representable_advance";
       }
       {
         label = "later network cap guard";
@@ -80,13 +97,43 @@
       }
       {
         label = "exact local ceil allowance";
-        needle = "horizon_source_allows_ceiling_past_target";
+        needle = "horizon_source_icount_rounding";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/node_time.rs" nodeTime [
+      {
+        label = "anchored conservative floor projection";
+        needle = "pub fn counter_for_logical_time_floor";
+      }
+      {
+        label = "anchored floor division";
+        needle = "self.anchor_counter.ticks.checked_add(delta / scale)";
+      }
+      {
+        label = "anchored floor validates representable projection";
+        needle = "self.logical_time(counter, shift)?";
       }
     ]
     ++ failuresFor "crates/crucible/tests/scheduler_icount_ceiling.rs" icountCeilingTest [
       {
         label = "shared timeline direct test";
         needle = "shared_timeline_converts_horizon_with_time4_ceil_map";
+      }
+      {
+        label = "anchored floor exact lower-bound test";
+        needle = "anchored_floor_projection_accepts_exact_lower_bound";
+      }
+      {
+        label = "anchored floor unrepresentable lower-bound test";
+        needle = "anchored_floor_projection_rejects_unrepresentable_lower_boundary";
+      }
+      {
+        label = "anchored floor counter overflow test";
+        needle = "anchored_floor_projection_rejects_counter_add_and_subtract_overflow";
+      }
+      {
+        label = "anchored floor invalid-shift test";
+        needle = "anchored_floor_projection_rejects_invalid_shift";
       }
       {
         label = "exact horizon ceil test";
@@ -97,12 +144,32 @@
         needle = "network_horizon_ceiling_uses_fixed_shift_not_raw_virtual_nanoseconds";
       }
       {
-        label = "unaligned conservative reject test";
-        needle = "unaligned_conservative_horizon_rejects_ceil_overshoot";
+        label = "unaligned conservative floor test";
+        needle = "unaligned_conservative_horizon_publishes_safe_floor_ceiling";
       }
       {
-        label = "equal exact and conservative cap reject test";
-        needle = "exact_horizon_equal_to_network_cap_rejects_conservative_overshoot";
+        label = "equal exact and conservative cap progress test";
+        needle = "exact_horizon_equal_to_network_cap_waits_for_a_safe_ceil_window";
+      }
+      {
+        label = "production shift-seven anchored regression";
+        needle = "production_shift_seven_network_ceiling_respects_nonzero_ready_anchor";
+      }
+      {
+        label = "sub-tick global minimum regression";
+        needle = "sub_tick_global_minimum_rejects_before_a_later_node_can_advance";
+      }
+      {
+        label = "earlier exact event before later sub-tick window";
+        needle = "later_sub_tick_window_does_not_block_an_earlier_exact_event";
+      }
+      {
+        label = "equal minimum representable peer regression";
+        needle = "equal_minimum_defers_sub_tick_candidate_for_advanceable_peer";
+      }
+      {
+        label = "concurrent equal minimum representable peer regression";
+        needle = "concurrent_equal_minimum_defers_sub_tick_candidate_for_advanceable_peer";
       }
       {
         label = "later network cap reject test";
@@ -137,16 +204,16 @@
         needle = "assert_eq!(publication.icount_shift, shift(2))";
       }
       {
-        label = "overshoot rejection assertion";
-        needle = "unaligned conservative horizon must not be rounded past";
+        label = "strict safe-floor assertion";
+        needle = "outcome.frontier.ticks <= publication.target_time.nanos";
       }
       {
         label = "dependency overshoot assertion";
-        needle = "dependency_at=7";
+        needle = "dependency_at_ns=7";
       }
       {
         label = "network overshoot assertion";
-        needle = "network_cap_at=7";
+        needle = "network_cap_at_ns=7";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -250,7 +317,7 @@ in
             component=crucible-scheduler
             horizon_arithmetic=virtual-time
             ceiling_units=icount
-            conversion=time4-ceil-fixed-shift
+            conversion=exact-ceil-conservative-floor-fixed-shift
             RESULT
           '';
         }

@@ -71,6 +71,25 @@ impl SingleScheduler {
         }
     }
 
+    pub(super) fn node_counter_for_time_floor(
+        &self,
+        node: &RuntimeSchedulerNode,
+        target_time: SimInstant,
+    ) -> Result<NodeCounter, SchedulerError> {
+        if node.id.kind == SchedulingNodeKind::Vm {
+            node.time_mapping
+                .counter_for_logical_time_floor(target_time, self.timeline.shift())
+                .map_err(SchedulerError::from)
+        } else {
+            Ok(NodeCounter {
+                ticks: self
+                    .timeline
+                    .max_advance_icount_for_conservative_horizon(target_time)?
+                    .retired,
+            })
+        }
+    }
+
     pub(super) fn node_timeline_key(
         &self,
         node: &RuntimeSchedulerNode,
@@ -519,7 +538,46 @@ impl SingleScheduler {
                 .then_with(|| left.index.cmp(&right.index))
         });
 
-        Ok(candidates)
+        let Some(minimum_target) = candidates.first().map(|candidate| candidate.target_time) else {
+            return Ok(candidates);
+        };
+        let mut minimum_advanceable = Vec::new();
+        let mut later = Vec::new();
+        for candidate in candidates.iter().cloned() {
+            if candidate.target_time == minimum_target {
+                if self.candidate_has_representable_advance(&candidate)? {
+                    minimum_advanceable.push(candidate);
+                }
+            } else {
+                later.push(candidate);
+            }
+        }
+        if minimum_advanceable.is_empty() {
+            // Retain the canonical first blocked candidate so RUN returns its
+            // complete conversion diagnostic. A later target cannot bypass an
+            // unrepresentable global minimum without violating PICK ordering.
+            return Ok(candidates);
+        }
+        minimum_advanceable.extend(later);
+
+        Ok(minimum_advanceable)
+    }
+
+    pub(super) fn candidate_has_representable_advance(
+        &self,
+        candidate: &AdvanceCandidate,
+    ) -> Result<bool, SchedulerError> {
+        let node = &self.nodes[candidate.index];
+        let target_counter = match candidate.icount_rounding {
+            SchedulerIcountRounding::ConservativeFloor => {
+                self.node_counter_for_time_floor(node, candidate.target_time)?
+            }
+            SchedulerIcountRounding::ExactCeil => {
+                self.node_counter_for_time_ceil(node, candidate.target_time)?
+            }
+        };
+
+        Ok(target_counter > node.counter)
     }
 
     pub(super) fn concurrent_run_set_from_candidates(
@@ -591,25 +649,50 @@ impl SingleScheduler {
         let selected_node = self.nodes[selected_index].id.clone();
         let before = self.nodes[selected_index].counter;
         let selected_runtime_node = &self.nodes[selected_index];
-        let target_counter = self
-            .node_counter_for_time_ceil(selected_runtime_node, candidate.target_time)?
-            .ticks;
-        let projected_target = self.node_time_for_counter(
-            selected_runtime_node,
-            NodeCounter {
-                ticks: target_counter,
-            },
-        )?;
-        if !candidate.allow_ceil_past_target && projected_target > candidate.target_time {
+        let target_counter = match candidate.icount_rounding {
+            SchedulerIcountRounding::ConservativeFloor => {
+                self.node_counter_for_time_floor(selected_runtime_node, candidate.target_time)?
+            }
+            SchedulerIcountRounding::ExactCeil => {
+                self.node_counter_for_time_ceil(selected_runtime_node, candidate.target_time)?
+            }
+        };
+        let current_time = self.node_time_for_counter(selected_runtime_node, before)?;
+        let projected_target = self.node_time_for_counter(selected_runtime_node, target_counter)?;
+        let nanos_per_counter_tick = NodeCounter { ticks: 1 }
+            .to_virtual(self.timeline.shift())?
+            .nanos;
+        let projection = SchedulerIcountProjection {
+            source_counter: before,
+            source_time: current_time,
+            target_counter,
+            target_time: candidate.target_time,
+            projected_target_time: projected_target,
+            time_mapping: selected_runtime_node.time_mapping,
+            shift: self.timeline.shift(),
+            nanos_per_counter_tick,
+            rounding: candidate.icount_rounding,
+        };
+        if candidate.icount_rounding == SchedulerIcountRounding::ConservativeFloor
+            && projected_target > candidate.target_time
+        {
             return Err(scheduler_ceiling_overshoot_error(
                 &selected_node,
                 "target_at",
                 candidate.target_time,
-                projected_target,
+                &projection,
+            ));
+        }
+        if candidate.icount_rounding == SchedulerIcountRounding::ConservativeFloor
+            && target_counter == before
+            && current_time < candidate.target_time
+        {
+            return Err(scheduler_unrepresentable_advance_error(
+                &selected_node,
+                &projection,
             ));
         }
         if projected_target > candidate.target_time {
-            let current_time = self.node_time_for_counter(selected_runtime_node, before)?;
             if let NetworkLookahead::Finite(duration) = selected_runtime_node.network_lookahead {
                 let network_target = current_time + duration;
                 if network_target > candidate.target_time && projected_target > network_target {
@@ -617,7 +700,7 @@ impl SingleScheduler {
                         &selected_node,
                         "network_cap_at",
                         network_target,
-                        projected_target,
+                        &projection,
                     ));
                 }
             }
@@ -626,7 +709,7 @@ impl SingleScheduler {
                     &selected_node,
                     "time_limit_at",
                     self.time_limit,
-                    projected_target,
+                    &projection,
                 ));
             }
             if let Some(cap) = self.shared_rendezvous_cap()?
@@ -637,7 +720,7 @@ impl SingleScheduler {
                     &selected_node,
                     "rendezvous_at",
                     cap,
-                    projected_target,
+                    &projection,
                 ));
             }
             if let Some(dependency) =
@@ -652,7 +735,7 @@ impl SingleScheduler {
                     &selected_node,
                     "dependency_at",
                     dependency.virtual_time,
-                    projected_target,
+                    &projection,
                 ));
             }
             for event in &self.pending_events {
@@ -665,7 +748,7 @@ impl SingleScheduler {
                             &selected_node,
                             "pending_event_at",
                             event_time,
-                            projected_target,
+                            &projection,
                         ));
                     }
                 }
@@ -677,7 +760,7 @@ impl SingleScheduler {
                 &selected_node,
                 "dependency_at",
                 dependency.virtual_time,
-                projected_target,
+                &projection,
             ));
         }
 
@@ -685,7 +768,7 @@ impl SingleScheduler {
             index: selected_index,
             node: selected_node,
             before,
-            target_counter,
+            target_counter: target_counter.ticks,
             projected_target_time: projected_target,
             quiescent_horizon: candidate.quiescent_horizon,
         })
@@ -703,7 +786,7 @@ impl SingleScheduler {
             target_time,
             quiescent_horizon,
             conservative_dependency,
-            allow_ceil_past_target,
+            icount_rounding,
         } = self.effective_horizon(node, current_time, rendezvous_cap, topology_activation_cap)?
         else {
             return Ok(None);
@@ -719,7 +802,7 @@ impl SingleScheduler {
             target_time,
             quiescent_horizon,
             conservative_dependency,
-            allow_ceil_past_target,
+            icount_rounding,
         }))
     }
 
@@ -742,7 +825,7 @@ impl SingleScheduler {
                     target_time: window.target_time,
                     quiescent_horizon: window.quiescent_horizon,
                     conservative_dependency: window.conservative_dependency,
-                    allow_ceil_past_target: window.allow_ceil_past_target,
+                    icount_rounding: window.icount_rounding,
                 })
             }
             SchedulerNodeActivity::Idle => {
@@ -770,7 +853,7 @@ impl SingleScheduler {
                         target_time,
                         quiescent_horizon: None,
                         conservative_dependency: None,
-                        allow_ceil_past_target: false,
+                        icount_rounding: SchedulerIcountRounding::ConservativeFloor,
                     });
                 }
             }
@@ -780,14 +863,14 @@ impl SingleScheduler {
             return Ok(EffectiveHorizonProjection::Infinite);
         };
         let mut wake_time = wake_target.wake_time;
-        let mut allow_ceil_past_target = wake_target.allow_ceil_past_target;
+        let mut icount_rounding = wake_target.icount_rounding;
         wake_time = min_instant(wake_time, self.time_limit);
         if self.time_limit <= wake_target.wake_time {
-            allow_ceil_past_target = false;
+            icount_rounding = SchedulerIcountRounding::ConservativeFloor;
         }
         if let Some(cap) = rendezvous_cap {
             if cap <= wake_time {
-                allow_ceil_past_target = false;
+                icount_rounding = SchedulerIcountRounding::ConservativeFloor;
             }
             wake_time = min_instant(wake_time, cap);
         }
@@ -796,7 +879,7 @@ impl SingleScheduler {
             target_time: wake_time,
             quiescent_horizon: Some(wake_time),
             conservative_dependency: None,
-            allow_ceil_past_target,
+            icount_rounding,
         })
     }
 
@@ -906,9 +989,9 @@ impl SingleScheduler {
             .virtual_time()
             .map(|wake_time| IdleWakeTarget {
                 wake_time,
-                allow_ceil_past_target: horizon_source_allows_ceiling_past_target(
-                    exact_local_event_horizon_source(&exact_local_event),
-                ),
+                icount_rounding: horizon_source_icount_rounding(exact_local_event_horizon_source(
+                    &exact_local_event,
+                )),
             });
 
         for event in &self.pending_events {
@@ -916,7 +999,11 @@ impl SingleScheduler {
                 let event_time = SimInstant {
                     nanos: event.key.virtual_time().ticks,
                 };
-                merge_idle_wake_target(&mut target, event_time, false);
+                merge_idle_wake_target(
+                    &mut target,
+                    event_time,
+                    SchedulerIcountRounding::ConservativeFloor,
+                );
             }
         }
 
@@ -945,22 +1032,24 @@ impl SingleScheduler {
             self.timeline.shift(),
         )?;
         let finite_horizon = horizon.virtual_time().unwrap_or(self.time_limit);
-        let mut allow_ceil_past_target = horizon
+        let mut icount_rounding = horizon
             .virtual_time()
-            .is_some_and(|_| horizon_source_allows_ceiling_past_target(horizon.source));
+            .map_or(SchedulerIcountRounding::ConservativeFloor, |_| {
+                horizon_source_icount_rounding(horizon.source)
+            });
         if let NetworkLookahead::Finite(duration) = node.network_lookahead {
             let network_target = current_time + duration;
             if network_target <= finite_horizon {
-                allow_ceil_past_target = false;
+                icount_rounding = SchedulerIcountRounding::ConservativeFloor;
             }
         }
         let mut requested_target = min_instant(finite_horizon, self.time_limit);
         if self.time_limit <= finite_horizon {
-            allow_ceil_past_target = false;
+            icount_rounding = SchedulerIcountRounding::ConservativeFloor;
         }
         if let Some(cap) = rendezvous_cap {
             if cap <= requested_target {
-                allow_ceil_past_target = false;
+                icount_rounding = SchedulerIcountRounding::ConservativeFloor;
             }
             requested_target = min_instant(requested_target, cap);
         }
@@ -973,7 +1062,7 @@ impl SingleScheduler {
         let mut target_time = authorization.authorized_target;
         let conservative_dependency = authorization.blocking_dependency;
         if conservative_dependency.is_some() {
-            allow_ceil_past_target = false;
+            icount_rounding = SchedulerIcountRounding::ConservativeFloor;
         }
 
         for event in &self.pending_events {
@@ -985,7 +1074,7 @@ impl SingleScheduler {
                     if event_time < target_time {
                         target_time = event_time;
                     }
-                    allow_ceil_past_target = false;
+                    icount_rounding = SchedulerIcountRounding::ConservativeFloor;
                 }
             }
         }
@@ -1001,7 +1090,7 @@ impl SingleScheduler {
         // whose vCPUs are all halted with no pending input, would never be re-PICKed
         // and the run would freeze. Only a genuine local stop (an exact-local timer
         // / I/O completion / fault, the same set that
-        // `horizon_source_allows_ceiling_past_target` admits) is a quiescence
+        // `horizon_source_icount_rounding` maps to exact-ceil) is a quiescence
         // point. A node held at the moving network cap keeps no `quiescent_horizon`,
         // so it stays `Runnable` and is re-PICKed for the next interval (iterative
         // conservative-PDES advance, [SCHED-5]).
@@ -1028,7 +1117,7 @@ impl SingleScheduler {
             target_time,
             quiescent_horizon,
             conservative_dependency,
-            allow_ceil_past_target,
+            icount_rounding,
         })
     }
 
