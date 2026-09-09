@@ -81,7 +81,10 @@ pub use lifecycle::{LocalRegistry, authoring_clone_precious, create, local_regis
 pub(crate) use metadata::record_named_output;
 pub(crate) use provenance::require_active_registry_key;
 pub use publish::publish;
-pub(crate) use publish::{publish_canonical_named_output, publish_canonical_release_entry};
+pub(crate) use publish::{
+    publish_canonical_ability_output, publish_canonical_named_output,
+    publish_canonical_release_entry,
+};
 pub use query::{packages, show, unpublish, verify};
 pub use release::{
     ContainerReleaseAttachment, ReleaseReport, ReleaseStorePublish, ReleaseTreeOptions,

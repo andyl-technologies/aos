@@ -1,7 +1,7 @@
 //! Tests for package catalog TOML construction and platform metadata recording.
 
 use super::{
-    build_package_toml, build_package_toml_with_documentation,
+    build_package_toml, build_package_toml_with_documentation, record_ability_output,
     record_config_module_platform_fields, record_named_output,
 };
 use crate::registry_ops::attestation::{package_nar_root_digest, publish_config_attestation_meta};
@@ -13,16 +13,115 @@ use crate::registry_ops::test_support::{
     rewrite_test_image_parent, verity_expose_manifest, write_direct_image_output,
 };
 use crate::types::{
-    AttestationMeta, DocumentationArtifactMeta, ExposeMeta, FEATURE_ATTESTATION_V1,
-    FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1,
-    FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
-    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PACKAGE_DOCUMENTATION_V1,
-    FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT,
-    PermissionsMeta, RecoveryUkiEntry, SbatEntry, UkiSlot,
+    AbilityPackageMeta, AttestationMeta, DocumentationArtifactMeta, ExposeMeta,
+    FEATURE_ABILITIES_V1, FEATURE_ATTESTATION_V1, FEATURE_CAPABILITY_ROUTES_V1,
+    FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1, FEATURE_EBPF_NET_POLICY_V1,
+    FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1, FEATURE_MAC_PROFILE_V1,
+    FEATURE_NETWORK_POLICY_V1, FEATURE_PACKAGE_DOCUMENTATION_V1, FEATURE_PERMISSIONS_V1,
+    FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT, PermissionsMeta, RecoveryUkiEntry,
+    SbatEntry, UkiSlot,
 };
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
+
+#[test]
+fn record_ability_preserves_stronger_format_and_feature_gates() {
+    let info = StorePathInfo {
+        path: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-demo-1".to_string(),
+        nar_hash: format!("sha256:{}", "1".repeat(64)),
+        nar_size: 1024,
+        references: Vec::new(),
+        closure_size: 1024,
+    };
+    let initial = build_package_toml(
+        "",
+        "demo",
+        "1",
+        "x86_64-linux",
+        &info,
+        Some("Demo"),
+        None,
+        Some("Apache-2.0"),
+        Some("Andyl, Inc."),
+        false,
+        None,
+        &[],
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("build package metadata");
+    let mut document: toml::Value = toml::from_str(&initial).expect("parse initial metadata");
+    let platform = document["versions"][0]["platforms"]["x86_64-linux"]
+        .as_table_mut()
+        .expect("platform table");
+    let stronger_format = PACKAGE_META_FORMAT + 7;
+    platform.insert(
+        "min-format".to_string(),
+        toml::Value::Integer(i64::from(stronger_format)),
+    );
+    platform.insert(
+        "requires-features".to_string(),
+        toml::Value::Array(vec![toml::Value::String("future-feature".to_string())]),
+    );
+    platform.insert(
+        "references".to_string(),
+        toml::Value::Table(toml::map::Map::from_iter([
+            ("hashes".to_string(), toml::Value::Array(Vec::new())),
+            (
+                "min-format".to_string(),
+                toml::Value::Integer(i64::from(stronger_format)),
+            ),
+            (
+                "requires-features".to_string(),
+                toml::Value::Array(vec![toml::Value::String("future-feature".to_string())]),
+            ),
+        ])),
+    );
+    let ability = AbilityPackageMeta {
+        store_path: "/nix/store/123456789abcdfghijklmnpqrsvwxyz0-demo-abilities".to_string(),
+        nar_hash: format!("sha256:{}", "2".repeat(64)),
+        nar_size: 512,
+        references: Vec::new(),
+        manifest_sha256: format!("sha256:{}", "3".repeat(64)),
+        manifest_size: 256,
+        package_digest: format!("sha256:{}", "4".repeat(64)),
+        activation_mode: "contracts-only".to_string(),
+        artifacts: Vec::new(),
+        provenance: "provenance/demo.ability.intoto.jsonl".to_string(),
+    };
+
+    let recorded = record_ability_output(
+        &toml::to_string(&document).expect("serialize initial metadata"),
+        "demo",
+        "1",
+        "x86_64-linux",
+        &ability,
+    )
+    .expect("record ability output");
+    let parsed = crate::registry::parse::parse_package_file(&recorded)
+        .expect("parse recorded package metadata");
+    let platform = &parsed.versions[0].platforms["x86_64-linux"];
+
+    assert_eq!(platform.min_format, Some(stronger_format));
+    assert_eq!(platform.references.min_format(), Some(stronger_format));
+    for features in [
+        platform.requires_features.as_slice(),
+        platform.references.requires_features(),
+    ] {
+        assert!(features.iter().any(|feature| feature == "future-feature"));
+        assert!(
+            features
+                .iter()
+                .any(|feature| feature == FEATURE_ABILITIES_V1)
+        );
+    }
+    assert_eq!(platform.ability.as_ref(), Some(&ability));
+}
 
 #[test]
 fn record_config_module_emits_table_and_feature() {

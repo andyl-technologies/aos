@@ -142,6 +142,10 @@
   # declared-interface manifest). A fixed companion derivation builds it so
   # package-authored phases cannot skip or mutate its validation boundary.
   configModuleRenderer = import ./build-support/_config-module-renderer.nix {inherit lib;};
+  abilityPackageRenderer = import ./build-support/_ability-package-renderer.nix {
+    inherit lib;
+    abilities = lib.abilities;
+  };
 
   # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH),
   # wrapped to inject nuke-references into every package's buildDeps so
@@ -200,6 +204,7 @@
         }
       else null;
     authoredConfigModule = args.configModule or null;
+    authoredAbilityPackage = args.abilityPackage or null;
     preparedAuthoredConfigModule =
       if authoredConfigModule != null
       then
@@ -391,7 +396,7 @@
     lowerArgs =
       # `configModule` is an mkDerivation-level arg consumed here, not passed
       # down to the raw builder (mirrors how `expose` is handled).
-      (builtins.removeAttrs args ["configModule"])
+      (builtins.removeAttrs args ["abilityPackage" "configModule"])
       // {
         meta =
           (args.meta or {})
@@ -415,6 +420,62 @@
       }
       // exposeAttrs;
     drv = rawMkDerivation lowerArgs;
+    preparedAbilityPackage =
+      if authoredAbilityPackage != null
+      then
+        abilityPackageRenderer.prepare {
+          inherit packageName;
+          version = args.version or "0";
+          payload = drv;
+          source =
+            if (args.src or null) != null
+            then args.src
+            else drv.drvPath;
+          abilityPackage = authoredAbilityPackage;
+        }
+      else null;
+    abilityArtifact =
+      if preparedAbilityPackage != null
+      then
+        lib.throwIfNot
+        (!(builtins.elem "abilities" existingOutputs) && !(builtins.elem "abilityPackage" existingOutputs))
+        "mkDerivation abilityPackage for package '${packageName}' reserves the 'abilities' and 'abilityPackage' output names"
+        (rawMkDerivation {
+          pname = "${packageName}-abilities";
+          version = args.version or "0";
+          src = null;
+          buildDeps = [resolvedBuildPackages.jq resolvedBuildPackages.nix];
+          exportReferencesGraph = preparedAbilityPackage.referenceGraph;
+          abilityTemplateJson = preparedAbilityPackage.templateJson;
+          abilityGraphSpecsJson = preparedAbilityPackage.graphSpecsJson;
+          abilityInterfacesJson = preparedAbilityPackage.interfacesJson;
+          dontNukeRefs = true;
+          phases = [
+            {
+              name = "install";
+              script = ''
+                ${stdenv.coreutils}/bin/env -i \
+                  HOME=/homeless-shelter \
+                  NIX_ATTRS_JSON_FILE="$NIX_ATTRS_JSON_FILE" \
+                  PATH="$PATH" \
+                  TMPDIR=/build \
+                  out="$out" \
+                  ${stdenv.bash}/bin/bash --noprofile --norc ${./build-support/_ability-package-builder.sh}
+              '';
+            }
+          ];
+          outputChecks.out.allowedReferences = preparedAbilityPackage.allPaths;
+          preferLocalBuild = true;
+          allowSubstitutes = false;
+        })
+      else null;
+    abilityPackageAttrs =
+      if abilityArtifact != null
+      then {
+        abilities = abilityArtifact;
+        abilityPackage = abilityArtifact;
+      }
+      else {};
     exposeCheck =
       if args ? expose
       then
@@ -445,11 +506,15 @@
       drv
       // secondaryOutputAttrs
       // configModuleAttrs
+      // abilityPackageAttrs
+      // lib.optionalAttrs (abilityArtifact != null) {
+        passthru = drv.passthru // abilityPackageAttrs;
+      }
       // (
         if args ? expose
         then {
           inherit exposeCheck;
-          passthru = drv.passthru // {inherit exposeCheck;};
+          passthru = drv.passthru // abilityPackageAttrs // {inherit exposeCheck;};
         }
         else {}
       );
@@ -1272,6 +1337,7 @@
       platformSupport.selectTargetPackages targetSystem self allPackageNames
     );
   localMaintenanceRoots = [
+    "ability-package-smoke"
     "aos"
     "aos-agent-rpc"
     "aos-boot-identity"

@@ -226,7 +226,21 @@
     operations = {};
     decisions = {hidden = {};};
   };
+  reservedAbilityOutputRejected = output:
+    !(builtins.tryEval ((pkgs.mkDerivation {
+        pname = "ability-output-collision";
+        version = "0";
+        src = null;
+        outputs = ["out" output];
+        phases = [];
+        abilityPackage = {};
+      })
+      .abilities
+      .outPath))
+    .success;
 in
+  assert reservedAbilityOutputRejected "abilities";
+  assert reservedAbilityOutputRejected "abilityPackage";
   assert canonicalInterface == expectedInterface;
   assert interfaceDocument.schema == "aos.ability.interface/v1";
   assert interfaceDocument.interface.name == "aos.test.echo";

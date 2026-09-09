@@ -1,8 +1,13 @@
 //! Package publication orchestration and its exclusive authoring-clone lock.
 
+use crate::ability_package::{
+    AbilityPackageCoordinate, ability_provenance_statement, ability_retention_digest,
+    activation_mode_name, canonical_nar_hash, collect_distinct_artifacts, decode_package_manifest,
+    read_package_manifest,
+};
 use crate::config::ApmConfig;
-use crate::provenance::ProvenanceSigner;
-use crate::registry::parse::ImageVerificationState;
+use crate::provenance::{ProvenanceSigner, sign_statement_dsse_jsonl_external};
+use crate::registry::parse::{ImageVerificationState, parse_package_file};
 use crate::registry::sb_certs::SbCertsToml;
 use crate::registry::{objectstore, sb_certs, store};
 use crate::registry_ops::attestation::{
@@ -24,7 +29,9 @@ use crate::registry_ops::images::{PublishedImage, inspect_published_image};
 use crate::registry_ops::mac::{
     infer_publish_expose_artifact, read_publish_expose_manifest, read_publish_manifest_digest,
 };
-use crate::registry_ops::metadata::{build_package_toml_with_documentation, record_named_output};
+use crate::registry_ops::metadata::{
+    build_package_toml_with_documentation, record_ability_output, record_named_output,
+};
 use crate::registry_ops::provenance::{
     append_package_provenance_transparency_log, bind_documentation_provenance,
     publish_config_provenance_artifact_with_documentation,
@@ -33,13 +40,19 @@ use crate::registry_ops::provenance::{
 };
 use crate::registry_ops::signing::resolve_producer_signing_key;
 use crate::registry_ops::store_paths::{
-    first_letter, introspect_deriver, introspect_store_path, parse_store_path,
-    resolve_publish_platform, validate_store_path_release_policy, write_store_files,
+    first_letter, introspect_closure_nars, introspect_deriver, introspect_direct_reference_hashes,
+    introspect_store_path, parse_store_path, resolve_publish_platform,
+    validate_store_path_release_policy, write_store_files,
 };
 use crate::registry_ops::uki::sb_db_cert_path;
 use crate::registry_ops::workflow::{current_git_branch, git_branch_entries};
-use crate::types::{validate_package_name, validate_registry_name};
+use crate::types::{
+    AbilityArtifactRetentionMeta, AbilityClosureMemberMeta, AbilityPackageMeta,
+    validate_package_name, validate_registry_name,
+};
 use anyhow::{Context, Result, bail};
+use aos_ability_model::VersionedDocument;
+use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
 use std::fs;
 use std::fs::OpenOptions;
@@ -869,6 +882,203 @@ pub(crate) fn publish_canonical_named_output(
     write_store_files(dir, &info.path, content_addressed, false, printer).with_context(|| {
         format!("writing store/ realisation graph for named output {store_path}")
     })?;
+    Ok(())
+}
+
+/// Publishes and signs the canonical RFC-0022 ability companion output.
+///
+/// The operation decodes `package.json` canonically, binds it to the exact
+/// primary package coordinate, inventories every distinct artifact's complete
+/// Nix closure, signs a dedicated provenance statement, and records both the
+/// named output and fail-closed feature gates.
+///
+/// # Errors
+///
+/// Returns an error when the primary coordinate is absent, any store or
+/// manifest identity disagrees, closure introspection is incomplete, signing
+/// fails, or registry metadata/store-graph authoring fails.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn publish_canonical_ability_output(
+    dir: &Path,
+    registry: &str,
+    store_path: &str,
+    package: &str,
+    version: &str,
+    platform: &str,
+    provenance_signer: &mut dyn ProvenanceSigner,
+    printer: &Printer,
+) -> Result<()> {
+    validate_registry_name(registry)?;
+    validate_package_name(package)?;
+    ensure_writable_registry_clone(registry, dir)?;
+
+    let companion = introspect_store_path(store_path)?;
+    validate_store_path_release_policy(&companion)?;
+    resolve_publish_platform(&companion.path, Some(platform))?;
+    let manifest_bytes = read_package_manifest(&companion.path)?;
+    let package_document = decode_package_manifest(&manifest_bytes)?;
+    if package_document.package.name.as_str() != package {
+        bail!(
+            "ability manifest package '{}' does not match release package '{package}'",
+            package_document.package.name.as_str()
+        );
+    }
+    if package_document.package.version != version {
+        bail!(
+            "ability manifest version '{}' does not match release version '{version}'",
+            package_document.package.version
+        );
+    }
+
+    let letter = first_letter(package);
+    let toml_path = dir
+        .join("packages")
+        .join(letter)
+        .join(format!("{package}.toml"));
+    let _publish_lock = RegistryPublishLock::acquire(dir)?;
+    let content = fs::read_to_string(&toml_path)
+        .with_context(|| format!("reading primary package entry {}", toml_path.display()))?;
+    let parsed = parse_package_file(&content)?;
+    let mut versions = parsed
+        .versions
+        .iter()
+        .filter(|candidate| candidate.version == version);
+    let version_entry = versions
+        .next()
+        .with_context(|| format!("package {package} is missing version {version}"))?;
+    if versions.next().is_some() {
+        bail!("package {package} repeats version {version}");
+    }
+    let primary_path = &version_entry
+        .platforms
+        .get(platform)
+        .with_context(|| format!("package {package} {version} is missing platform {platform}"))?
+        .store_path;
+    let primary = introspect_store_path(primary_path)?;
+    validate_store_path_release_policy(&primary)?;
+    let primary_nar_hash = canonical_nar_hash(&primary.nar_hash)?;
+    if package_document.package.payload.store_path != primary.path
+        || package_document.package.payload.nar_hash.to_string() != primary_nar_hash
+    {
+        bail!(
+            "ability manifest payload does not match primary package {}",
+            primary.path
+        );
+    }
+
+    let artifacts = collect_distinct_artifacts(&package_document)?;
+    let mut artifact_retention = Vec::with_capacity(artifacts.len());
+    for artifact in &artifacts {
+        let artifact_info = introspect_store_path(&artifact.store_path)
+            .with_context(|| format!("introspecting ability artifact {}", artifact.store_path))?;
+        validate_store_path_release_policy(&artifact_info)?;
+        let artifact_nar_hash = canonical_nar_hash(&artifact_info.nar_hash)?;
+        if artifact_nar_hash != artifact.nar_hash.to_string() {
+            bail!(
+                "ability artifact {} NAR identity differs from its package manifest",
+                artifact.store_path
+            );
+        }
+        let mut closure = introspect_closure_nars(&artifact.store_path)?
+            .into_iter()
+            .map(|member| {
+                let references = introspect_direct_reference_hashes(&member.path)?;
+                Ok(AbilityClosureMemberMeta {
+                    store_path: member.path,
+                    nar_hash: canonical_nar_hash(&member.nar_hash)?,
+                    nar_size: member.nar_size,
+                    references,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        closure.sort();
+        let closure_digest = Sha256Digest::of_canonical("aos.ability.closure/v1", &closure)?;
+        if closure_digest != artifact.closure {
+            bail!(
+                "ability artifact {} closure differs from its package manifest",
+                artifact.store_path
+            );
+        }
+        artifact_retention.push(AbilityArtifactRetentionMeta {
+            content: artifact.content.to_string(),
+            store_path: artifact.store_path.clone(),
+            nar_hash: artifact.nar_hash.to_string(),
+            nar_size: artifact_info.nar_size,
+            closure_digest: closure_digest.to_string(),
+            closure,
+        });
+    }
+
+    let manifest_sha256 = Sha256Digest::of_bytes(&manifest_bytes);
+    let package_digest = package_document.content_digest()?;
+    let mut references = companion.references.clone();
+    references.sort();
+    references.dedup();
+    let mut ability = AbilityPackageMeta {
+        store_path: companion.path.clone(),
+        nar_hash: canonical_nar_hash(&companion.nar_hash)?,
+        nar_size: companion.nar_size,
+        references,
+        manifest_sha256: manifest_sha256.to_string(),
+        manifest_size: manifest_bytes.len() as u64,
+        package_digest: package_digest.to_string(),
+        activation_mode: activation_mode_name(package_document.activation_mode).to_string(),
+        artifacts: artifact_retention,
+        provenance: "provenance/pending.ability.intoto.jsonl".to_string(),
+    };
+    let retention_digest = ability_retention_digest(&ability)?;
+    ability.provenance = format!(
+        "provenance/{}/{package}/{platform}/{}-{}.ability.intoto.jsonl",
+        first_letter(package),
+        package_digest.hex(),
+        retention_digest.hex()
+    );
+    crate::ability_package::validate_ability_package_meta(&ability)?;
+
+    let coordinate = AbilityPackageCoordinate {
+        name: package,
+        version,
+        platform,
+        store_path: &primary.path,
+        nar_hash: &primary_nar_hash,
+    };
+    let statement =
+        ability_provenance_statement(&coordinate, &ability, registry, provenance_signer.key_id())?;
+    let provenance_jsonl =
+        sign_statement_dsse_jsonl_external(&statement, provenance_signer).await?;
+    let new_content = record_ability_output(&content, package, version, platform, &ability)?;
+
+    fs::write(&toml_path, new_content)
+        .with_context(|| format!("writing ability output to {}", toml_path.display()))?;
+    let provenance_path = dir.join(&ability.provenance);
+    let provenance_parent = provenance_path.parent().with_context(|| {
+        format!(
+            "ability provenance path has no parent: {}",
+            provenance_path.display()
+        )
+    })?;
+    fs::create_dir_all(provenance_parent).with_context(|| {
+        format!(
+            "creating ability provenance directory {}",
+            provenance_parent.display()
+        )
+    })?;
+    fs::write(&provenance_path, provenance_jsonl)
+        .with_context(|| format!("writing ability provenance {}", provenance_path.display()))?;
+
+    let content_addressed = registry_content_addressed(dir);
+    write_store_files(dir, &companion.path, content_addressed, false, printer).with_context(
+        || format!("writing store/ realisation graph for ability output {store_path}"),
+    )?;
+    for artifact in &artifacts {
+        write_store_files(dir, &artifact.store_path, content_addressed, false, printer)
+            .with_context(|| {
+                format!(
+                    "writing store/ realisation graph for ability artifact {}",
+                    artifact.store_path
+                )
+            })?;
+    }
     Ok(())
 }
 

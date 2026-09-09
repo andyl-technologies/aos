@@ -427,6 +427,7 @@ let
   # but they do not represent a Darwin package root and must not be published
   # under a Darwin platform key.
   buildOnly = [
+    "ability-package-smoke"
     "aos-hub-dialect-tests"
     "aos-hub-e2e"
     "aos-hub-worker-do-e2e"
@@ -760,6 +761,7 @@ let
   # Source fragments kept below underscore-prefixed directories are also
   # excluded from discovery, but are consumed by package factories.
   resourceInventory = {
+    "tests/_ability-package-smoke/default.nix" = "linux-only-test-source";
     "containers/_containerd-config/module.nix" = "linux-only-config-source";
     "containers/_containerd-tests/contract.nix" = "linux-only-test-source";
     "containers/_containerd-tests/lifecycle.nix" = "linux-only-test-source";
@@ -971,16 +973,18 @@ in rec {
             license_expression = licenseExpression;
           };
         derivation = builtins.unsafeDiscardStringContext package.drvPath;
-        outputs = map (output: {
-          # A public alias of one non-default derivation output is itself a
-          # single-output package root. Normalize that selected root to `out`
-          # so package qualification cannot silently exercise a sibling output.
-          name =
-            if selectedOutput == "out"
-            then output
-            else "out";
-          store_path = builtins.unsafeDiscardStringContext (toString package.${output});
-        }) publishedOutputs;
+        outputs =
+          map (output: {
+            # A public alias of one non-default derivation output is itself a
+            # single-output package root. Normalize that selected root to `out`
+            # so package qualification cannot silently exercise a sibling output.
+            name =
+              if selectedOutput == "out"
+              then output
+              else "out";
+            store_path = builtins.unsafeDiscardStringContext (toString package.${output});
+          })
+          publishedOutputs;
       }
     ) (publicationEligibleNames system names);
   };

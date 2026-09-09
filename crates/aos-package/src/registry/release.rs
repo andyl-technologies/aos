@@ -105,6 +105,20 @@ impl RegistryEntryAuthor for CanonicalRegistryEntryAuthor<'_> {
         isolated_registry: &Path,
         entry: &RegistryReleaseEntry,
     ) -> Result<()> {
+        if entry.output == crate::types::ABILITY_MANIFEST_OUTPUT {
+            return crate::registry_ops::publish_canonical_ability_output(
+                isolated_registry,
+                self.registry,
+                &entry.store_path,
+                &entry.name,
+                &entry.version,
+                &entry.platform,
+                self.signer,
+                self.printer,
+            )
+            .await
+            .with_context(|| format!("authoring ability release entry '{}'", entry.id));
+        }
         if entry.output != "out" {
             return crate::registry_ops::publish_canonical_named_output(
                 isolated_registry,

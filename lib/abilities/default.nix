@@ -1131,6 +1131,11 @@ in rec {
     transition
     ;
 
+  normalizeRequirements = values:
+    builtins.map
+    (alias: normalizeRequirement alias values.${alias})
+    (builtins.attrNames values);
+
   guarantee = value:
     guaranteeKey "guarantee" value;
 
