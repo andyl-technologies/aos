@@ -536,6 +536,62 @@ serializes descriptor integers as reusable references. Extra, missing,
 duplicated, wrong-type, writable, or unexpectedly mounted descriptors are
 rejected.
 
+### Storage workspace root-pin repair
+
+Storage root-pin repair is a resource-targeted Storage 1.4 operation. Its
+public node-local request carries only the canonical repair request and the
+standard signed plan, plan signature, ownership lease, and lease signature.
+The caller does not supply a dataset name or GUID, creation catalog, attempt
+ordinal, mount observation, host scope, or root-pin proof. Those values come
+only from authenticated retained Storage state and freshly inspected
+descriptors. Exact replay of an already durable repair is observation-only and
+must be resolved before starting a new pre-admission observation.
+
+Before committing a new repair, the broker sends a distinct non-authorizing
+`AOSZRPA1` request to the fixed observer. It binds a fresh challenge, the
+prospective repair request identity and commitments, the exact latest Ensure
+attempt, creation publication, optional predecessor repair intent, canonical
+creation catalog, historical host scope, and a freshly descriptor-derived
+current host scope. The `AOSZRPS1` result must prove the exact retained dataset
+and an absent root pin. A validated payload is not admission authority: the
+broker may consume it only after it has authenticated the observer process,
+proved the child exited, and proved its complete service cgroup quiescent.
+
+The broker then reopens the raw request and signed artifacts under a fresh
+protected clock and rechecks the current fence, active creation, global latest
+attempt, exact retained record bytes, and fresh probe while holding the sole
+Storage journal lock. Admission atomically replaces the sandbox current fence
+and writes the Pending Effect, operation fence, immutable repair intent, and
+new Ambiguous Ensure attempt. Capacity for the later atomic completion must be
+reserved before this five-record transaction commits. Once committed, the
+repair authorization is consumed: a failure before immediate dispatch becomes
+observation-only recovery and cannot reissue the worker authority.
+
+The mutating worker accepts only the repair-specific `AOSZRPW1` envelope. It
+independently authenticates the Pending repair Effect, equal current and
+operation fences, repair intent, attempt receipt, creation publication, and
+canonical creation catalog. The attempt must be an ordinal-two-or-later
+Ensure for an existing workspace whose authenticated creation is either
+`CreateWorkspace` or `Clone`, and must prove the exact dataset with an absent
+pin before mutation. The worker checks the protected current fence and clock
+immediately before and after its durable exactly-once claim,
+materializes only the fixed handle-derived pin, and returns exact
+postcondition evidence.
+
+Successful completion is one two-record journal transaction: the attempt
+becomes Satisfied with its observed pin proof and the live Effect becomes
+Complete with a deterministic receipt bound to the attempt's stable authority
+digest. Exact transaction readback is mandatory. Reopen accepts only the phase
+pairs Ambiguous/Pending and Satisfied/Complete, and a Complete record must carry
+the exact deterministic receipt. A one-sided transition or an otherwise valid
+Complete Effect with an arbitrary receipt is corruption or authority failure.
+
+Post-commit recovery continues to use the non-authorizing
+`AOSZRPO1`/`AOSZRPR1` observer protocol. Exact presence may finish the same
+two-record completion; exact absence remains `AwaitFreshRepair` without a
+journal write. Recovery never converts that observer envelope into fresh
+mutation authority.
+
 Host- and mount-broker protocol 1.1 defines a generic request-envelope carrier
 for the exact canonical broker plan, detached plan signature, ownership lease,
 and detached lease signature. The carrier is negotiated with

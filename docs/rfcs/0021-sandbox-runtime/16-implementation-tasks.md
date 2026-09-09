@@ -5224,8 +5224,9 @@ realized
 This qualifies the fixture correction and the integrated branches covered by
 that exact fleet test while preserving the initial timeout as an unexplained
 boot-timing failure.
-Fresh repair admission and one-time new-dataset ownership initialization also
-remain unimplemented. Storage Apply stays unadvertised and `SBX-STOR-01`,
+Fresh repair admission is described in the following Storage sections.
+One-time new-dataset ownership initialization remains unimplemented. Storage
+Apply stays unadvertised and `SBX-STOR-01`,
 `SBX-P0-07`, `SBX-P0-08`, and `SBX-P0-10` remain open.
 
 ### Storage workspace root-pin repair recovery (in progress)
@@ -5299,6 +5300,90 @@ reused as pre-commit authority. Storage Apply remains unadvertised.
 New-dataset ownership initialization and its separate capability decision also
 remain open; no
 `SBX-STOR-01`, `SBX-P0-07`, `SBX-P0-08`, or `SBX-P0-10` checkbox is closed.
+
+### Fresh Storage workspace root-pin repair execution (in progress)
+
+Commit `23ee70104fd313ba3497a07a263fa3d2cec2d0af` implements the
+fresh admission and immediate one-shot execution path that follows the
+recovery foundation above. `StorageBrokerRuntime::repair_workspace_pin` accepts
+only the raw Storage 1.4 request, standard authorization artifacts, negotiated
+version, peer identity and policy, and a protected-clock provider. Callers
+cannot select an observation, catalog, dataset name or GUID, attempt ordinal,
+host scope, or pin proof. The method resolves an exact durable replay before
+probing; such a retry returns `ObservationRequired` and never reaches an
+observer or mutator.
+
+For a new operation, the broker derives the globally latest Ensure attempt and
+active creation from authenticated state. Both an ordinal-one creation Ensure
+and an ordinal-two-or-later repair Ensure may be predecessors, whether their
+phase is Ambiguous or Satisfied. A retired creation, `RemoveAndDestroy`
+predecessor, nonmatching repair chain, or exhausted four-attempt bound fails
+closed. The noncommitting `AOSZRPA1`/`AOSZRPS1` exchange carries a fresh
+challenge, prospective request commitments, exact current records, creation
+catalog, and historical and descriptor-derived current host scopes. Its fixed
+observer independently authenticates the records after entering the retained
+mount namespace and must return the exact dataset with an absent pin. Only the
+systemd client can wrap that result in the move-only fresh value, and only
+after exact child identity, natural exit, and whole-cgroup quiescence have been
+proved.
+
+The coordinator consumes that fresh value while the sole transaction-store
+lock remains held, resamples the protected clock, redecodes and reauthorizes the
+raw request, rereads the latest attempt and every linked raw record, rechecks
+the active creation and current fence, and performs the final before-effect
+check. It then atomically commits five records: the sandbox-keyed current
+fence, request-keyed Pending Effect, operation-keyed authority fence,
+location-authenticated repair intent, and adjacent Ambiguous Ensure attempt.
+The same preflight reserves the exact later two-record completion shape before
+any of those records become durable. Exact readback and post-commit fence,
+clock, receipt, catalog, publication, and repair-intent checks poison the
+in-memory authority source on any uncertainty.
+
+The distinct `AOSZRPW1` worker request encloses the existing framed pin
+transport plus the repair and creation-publication records. The privileged
+worker independently accepts only a move-only authenticated
+ordinal-two-or-later Ensure. It authenticates the original Pending repair
+Effect, equal current and operation fences, attempt receipt, repair intent,
+committed creation result, publication identity range, and canonical creation
+catalog, and revalidates its transferred host descriptors. It requires the
+exact dataset and absent pin before its durable replay claim, checks the
+protected current fence and clock on both sides of that claim, materializes the
+fixed handle-derived pin, and observes the exact postcondition. Ordinary
+creation semantics cannot authorize this envelope, and restart never
+redispatches it.
+
+Fresh execution and recovery completion now share a repair-specific durable
+finish. One journal transaction changes the exact attempt to Satisfied with
+the observed proof and the live Effect to Complete with a deterministic receipt
+bound to the attempt's stable authority digest. The store reads both records
+back exactly before updating its cache. Startup authentication permits only
+Ambiguous/Pending or Satisfied/Complete and independently reconstructs the
+completion receipt; Satisfied/Pending, Ambiguous/Complete, and an otherwise
+correctly sealed Complete Effect with an arbitrary receipt fail closed. An
+injected error returned after the atomic journal commit poisons the live cache,
+while protected reopen recovers and authenticates both completed records.
+
+The pinned realized development shell passes all 150 current
+`aos-sandbox-storage` library tests with no failure. Two installed-systemd tests
+remain ignored in that source-level run. Coverage includes the initial and
+repeat pre-admission shapes, exact dataset/Absent requirement, malformed local
+wire records, real-HMAC worker authentication and fence, predecessor, receipt,
+and publication substitutions, asymmetric completion rejection, atomic
+completion after an injected post-commit error, and completed reopen. The
+isolated ten-path implementation has tree
+`7fc14cbbbddb238cbaa19b74a084c924d995668e`, binary-diff SHA-256
+`79c1d727318a5affe569eacad851e577df75efd428a9237933183a4860530e00`,
+and adds 3,253 lines while removing 42.
+
+This is not yet production qualification. The existing installed-systemd
+Storage fleet test exercises creation and removal pin workers and the
+observation-only absence path, but it has not yet invoked the new public repair
+method through the fresh observer, atomic admission, repair-specific worker,
+completion, retry, and reopen sequence. Controller orchestration and the
+production RPC handler also remain absent. New-dataset ownership
+initialization and its separate capability decision remain open; Storage Apply
+stays unadvertised and no `SBX-STOR-01`, `SBX-P0-07`, `SBX-P0-08`, or
+`SBX-P0-10` checkbox is closed.
 
 ### Set-ID creation guard source feasibility (design only)
 
