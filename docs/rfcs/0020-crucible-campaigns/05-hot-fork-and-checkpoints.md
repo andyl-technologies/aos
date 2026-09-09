@@ -2051,18 +2051,29 @@ child generation to be the checked immediate successor of its source, and
 reauthenticates every process incarnation before publication. The continuation,
 rather than a new caller-supplied launch configuration, retains the source
 lifecycle configuration, immutable root identities, and resolved block/9p
-bindings; only a fresh durable run-state root is supplied at adoption. Any
-backing change or unconsumed child-world state fails closed. The daemon now
-invokes this constructor and transfers the aggregate attempt owner into
-the resulting lifecycle. The production runner executes the captured scheduler
-continuation and retains that lifecycle through durable result publication and
-disposition-ordered cleanup. Its packaged executor captures prepared worlds
-into the shared managed pool and routes compatible fresh work through this
-path. Scripted regressions cover successful multi-node publication and reuse,
-permanently failed nodes without QEMU children, a proven first-child rejection
-with exact source recovery, and failure cases that retain or quarantine
-ownership. The real-QEMU atomic-world matrix and explicit non-VM I/O-node clone
-semantics remain mandatory before T-CAM-7.4 is marked complete.
+bindings; only a fresh durable run-state root is supplied at adoption. It also
+retains a complete ordered inventory of the World's block and 9p nodes. Each
+entry binds the I/O-node and owner identities, device family, immutable
+artifact, owner service state, original execution binding, and canonical host
+checkpoint identity. Running and powered-off owners carry independently cloned
+host-I/O projections. Permanently failed owners carry the process-free host-I/O
+checkpoint transferred when failure committed, together with the authentic
+execution fingerprint sampled at that exact failure boundary. They have no QEMU
+child or live block-device alias. Construction verifies the active/failed owner
+partition and the complete World I/O inventory before adopting children, then
+rechecks every active projection against the adopted runtime before publication.
+Any backing change or unconsumed child-world state fails closed.
+
+The daemon now invokes this constructor and transfers the aggregate attempt
+owner into the resulting lifecycle. The production runner executes the captured
+scheduler continuation and retains that lifecycle through durable result
+publication and disposition-ordered cleanup. Its packaged executor captures
+prepared worlds into the shared managed pool and routes compatible fresh work
+through this path. Scripted regressions cover successful multi-node publication
+and reuse, exact failed-node fingerprint retention, process-free failed-node
+host I/O, a proven first-child rejection with exact source recovery, and failure
+cases that retain or quarantine ownership. The real-QEMU atomic-world matrix
+remains mandatory before T-CAM-7.4 is marked complete.
 
 - **[HFORK-13]** A campaign branch is a world, not a bag of independently
   visible node forks. No consumer may observe a partially forked world.
@@ -2087,11 +2098,11 @@ rather than falling back to work proportional to the virtual disk. The closure
 is durably published before transient QMP snapshots are deleted and only nodes
 that were running are resumed. No second full-file staging tree is created.
 
-Version-seven sparse artifacts carry a logical `length`, no dense `chunks`, and
-strictly ordered, nonoverlapping, nonadjacent extents. Each extent contains a
-`start_chunk` and one or more consecutive BLAKE3 chunk identities; chunks are
-4 MiB except for a final partial logical chunk. Omitted logical chunks are
-canonical zeroes. The sparse artifact identity is
+Version-seven and version-eight sparse artifacts carry a logical `length`, no
+dense `chunks`, and strictly ordered, nonoverlapping, nonadjacent extents. Each
+extent contains a `start_chunk` and one or more consecutive BLAKE3 chunk
+identities; chunks are 4 MiB except for a final partial logical chunk. Omitted
+logical chunks are canonical zeroes. The sparse artifact identity is
 `H("crucible.production-exact-sparse-artifact.v1",
 hex(canonical_cbor({length, extents})))`; stored chunk bytes independently
 authenticate against their named identities. This binds the exact logical byte
@@ -2168,10 +2179,10 @@ digest have all been observed. Sparse overlay restore authenticates the exact
 extent manifest and every named chunk before atomically exposing a file whose
 omitted ranges are zero holes.
 
-The complete multi-node production continuation uses version seven of the same
+The complete multi-node production continuation uses version eight of the same
 typed root rather than flattening a potentially large object set into one
 generic envelope. The registered leaves are the canonical
-`crucible.production-exact-closure@device-state.7` manifest and exact opaque
+`crucible.production-exact-closure@device-state.8` manifest and exact opaque
 production objects under
 `crucible.executor.production-checkpoint-object@device-state.5`. Every object
 retains its production BLAKE3 identity and declared length in a registered
@@ -2195,7 +2206,16 @@ they retain their original bytes and identities, while version-six and later
 targets make the backing proof. Version seven replaces each dense overlay chunk
 sequence with the canonical sparse extent representation above while retaining
 dense VMState chunks. Canonical version-six manifests remain readable and retain
-their original bytes and identities.
+their original bytes and identities. Version eight additionally retains one
+canonical process-free host-I/O checkpoint for every permanently failed VM. Its
+strictly node-ordered manifest record binds the owner's original execution
+binding, checkpoint object identity, fingerprint sample time, and execution
+fingerprint hash. Those records participate in the closure identity, object
+inventory, byte budgets, publication, and authentication. A permanently failed
+node without exactly one matching record is rejected. Versions four through
+seven remain readable with their original bytes and identities only when their
+service-state partition contains no permanently failed node; they cannot
+silently synthesize the missing execution authority.
 
 ```text
 "CRUCPIDX" || object_count:u32be
