@@ -535,8 +535,29 @@ scenario-declared property identity, terminal condition, and proof shape as one
 consistent boundary claim. The canonical trace emits the same information as a
 `save_boundary_proof` entry so an operator can audit why the save succeeded
 without interpreting generic command acknowledgements. Selector values in that
-space-delimited summary are percent-encoded. Readers continue to accept v2
-handles, which predate selector provenance, but new writes are v3.
+space-delimited summary are percent-encoded.
+
+A campaign-backed marker save stops directly on the campaign's authenticated
+named boundary rather than registering a session-actor breakpoint. It exports
+`crucible.savepoint-handle.v4` with a `campaign-marker-event` proof containing
+the retained scheduler event's sequence, content hash, source node, and retired
+icount plus the campaign frontier and quantum. These fields are sufficient to
+reconstruct the canonical `GuestMarker` event and recompute its content hash.
+Its canonical marker predicate remains content-addressed in
+`boundary-predicate`. At export, the campaign save owner takes these fields
+from the marker entry in the replay-authenticated execution evidence that
+reached the named stop. The line decoder reconstructs the event, verifies its
+content hash and marker predicate, and rejects breakpoint or coordinate claims
+under the v4 schema. Resume and fork admission additionally require its source
+node to be a white-box-enabled node in the embedded scenario. These checks
+establish the structural closure; the campaign's execution and capture replay
+establish that the event was actually observed. Session saves continue to write
+v3, and readers continue to accept v3 handles. Campaign-backed save export is
+currently limited to schedules containing delivery-order, random-draw, and
+preemption decisions. If a marker or virtual-time boundary follows a typed
+selection, historical override, or application-random decision, the command
+fails before writing a portable handle because that handle does not yet carry
+the authenticated records needed to replay it.
 
 When a property or marker selector reaches its quiescence guard without firing,
 the CLI returns the ordinary identity error and creates no handle. If `--trace`
