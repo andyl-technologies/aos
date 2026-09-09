@@ -5635,6 +5635,49 @@ the new artifact, loads it during boot, labels the initrd, composefs root, or
 writable state, enters an enforcing domain, or grants an inspector capability.
 `SBX-P0-10` remains open.
 
+### Immutable EROFS SELinux labels (offline qualification)
+
+Commit `7140224de` adds a deterministic SELinux context planner and exact image
+inspection gates for the two EROFS builders used by AOS. The planner walks the
+complete input tree, preserves inode kinds and hard-link identity, resolves
+symlink components within the image namespace, and consults the production
+policy's file contexts. It propagates specific labels through conventional
+aliases and uses bounded ELF classification only as a fallback for otherwise
+unmatched Nix-store regular files. It emits both an exact file-contexts input
+and a versioned path/kind/context map. The gate compiles that generated input
+against the production binary policy and requires persistent libselinux lookup
+of every planned entry before building an image.
+
+The immutable derivation
+`/nix/store/12r6khvaw31vqfjxmbhc2kvlax9w4x51-selinux-erofs-labels-check-0.drv`
+passed at
+`/nix/store/9xcayr2jkqw39jl30gdd9vmshhq5fqvl-selinux-erofs-labels-check-0`.
+It labels and verifies a 25-inode generic `mkfs.erofs` image containing actual
+AOS coreutils, glibc, and systemd executables, aliases, a hard-link pair, and
+paths containing spaces and tabs. A second round trip builds a different small
+fixture and context map under the same schema, feeds it through the optional
+composefs dump input, builds a real composefs EROFS image, and requires exact
+equality of the complete observed path, inode-kind, and `security.selinux` map.
+The gate retains the generic image, both context maps, and the composefs input
+and observed dumps. The package-platform inventory gate also passed at
+`/nix/store/b4vpz7sbzlya62vmbppqdn4say3i6kin-package-platform-support-check-0`.
+
+The verifiers deliberately preserve each pinned builder's byte convention.
+erofs-utils 1.8.10 writes `strlen(context)` bytes for `--file-contexts`, without
+a trailing NUL. The composefs 1.0.8 dump contract represents the conventional
+terminator as `\x00`, and `mkcomposefs` preserves that supplied length. Linux
+6.18.33 reads the stored xattr length and uses `kmemdup_nul()` before parsing,
+so it accepts either representation. The gates nevertheless require the exact
+producer-specific encoding instead of stripping or adding bytes during
+verification.
+
+This qualifies deterministic source planning and byte-exact offline image
+construction only. Production system and initrd builders do not yet consume the
+plan, and no boot path selects or loads the policy, labels writable state,
+enters enforcing service domains, or grants a narrowly authorized inspection
+component. It therefore does not qualify enforcing host MAC and closes no part
+of `SBX-P0-10`, which remains open.
+
 ### Per-assignment Guardian authority and timer foundation (partial)
 
 Commit `fefe8993f` records the first isolated Guardian foundation. The portable
