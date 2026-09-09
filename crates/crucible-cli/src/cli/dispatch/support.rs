@@ -220,7 +220,12 @@ pub(crate) fn export_savepoint_handle(
         .savepoint_oracle
         .as_ref()
         .ok_or_else(|| backend_error("save completed without replay-oracle proof"))?;
-    let store_report = persist_savepoint_closure_artifact(plan, savepoint, oracle)?;
+    let store_report = persist_savepoint_closure_artifact(
+        plan,
+        savepoint,
+        oracle,
+        outcome.savepoint_replay_closure.as_deref(),
+    )?;
     let checkpoint = format_content_hash_ref(savepoint);
     let handle = savepoint_handle_bytes(plan, &checkpoint, outcome, oracle);
     let handle_digest = content_address_bytes(&handle);
@@ -372,6 +377,7 @@ pub(crate) fn persist_savepoint_closure_artifact(
     plan: &SaveInvocationPlan,
     savepoint: crucible::ContentHash,
     oracle: &SavepointOracleProof,
+    replay_closure: Option<&[u8]>,
 ) -> Result<SavepointClosureStoreReport, CliError> {
     if oracle.configuration != savepoint || oracle.fat_checkpoint != savepoint {
         return Err(CliError::Identity(format!(
@@ -391,6 +397,7 @@ pub(crate) fn persist_savepoint_closure_artifact(
         &configuration,
         oracle.frontier,
         savepoint,
+        replay_closure,
     )
 }
 
@@ -407,6 +414,7 @@ pub(crate) fn persist_checkpoint_closure_artifact(
     configuration: &crucible::Configuration,
     frontier: crucible::VirtualTime,
     savepoint: crucible::ContentHash,
+    replay_closure: Option<&[u8]>,
 ) -> Result<SavepointClosureStoreReport, CliError> {
     if configuration.def.id() != scenario_form.scenario_def().id() {
         return Err(CliError::Identity(format!(
@@ -440,17 +448,58 @@ pub(crate) fn persist_checkpoint_closure_artifact(
             format_content_hash_ref(savepoint)
         )));
     }
+    let _replay_closure = authenticated_replay_closure(
+        scenario_form,
+        &configuration.schedule,
+        replay_closure,
+        "savepoint export",
+    )?;
     let store = crucible::LocalDagStore::new(store_root.to_path_buf());
     let artifact_key = store
         .put(&artifact.to_compact_binary())
         .map_err(CliError::Store)?;
-    let index_key = store
-        .write_checkpoint_closure_index(savepoint, artifact_key, frontier)
-        .map_err(CliError::Store)?;
+    let index_key = if let Some(replay_closure_bytes) = replay_closure {
+        let replay_closure_key = store.put(replay_closure_bytes).map_err(CliError::Store)?;
+        store
+            .write_checkpoint_closure_index_with_opaque_replay_artifact(
+                savepoint,
+                artifact_key,
+                replay_closure_key,
+                frontier,
+            )
+            .map_err(CliError::Store)?
+    } else {
+        store
+            .write_checkpoint_closure_index(savepoint, artifact_key, frontier)
+            .map_err(CliError::Store)?
+    };
     Ok(SavepointClosureStoreReport {
         artifact: artifact_key,
         index: index_key,
     })
+}
+
+pub(crate) fn authenticated_replay_closure(
+    scenario: &crucible::ScenarioDefForm,
+    // crucible-lint: allow host-nondeterminism-state -- this pure validator binds caller-supplied canonical schedule evidence to its replay closure before any execution.
+    schedule: &crucible::Schedule,
+    bytes: Option<&[u8]>,
+    context: &str,
+) -> Result<crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure, CliError> {
+    let Some(bytes) = bytes else {
+        return crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty_for_selection_free_schedule(schedule)
+            .map_err(|error| {
+                artifact_error(format!(
+                    "{context} is missing the replay closure required by its typed selection schedule: {error}"
+                ))
+            });
+    };
+    let closure = crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(bytes)
+        .map_err(|error| artifact_error(format!("{context} replay closure is malformed: {error}")))?;
+    closure
+        .validate_for_schedule(scenario, schedule)
+        .map_err(|error| artifact_error(format!("{context} replay closure is invalid: {error}")))?;
+    Ok(closure)
 }
 
 pub(crate) fn savepoint_handle_bytes(
@@ -469,7 +518,9 @@ pub(crate) fn savepoint_handle_bytes(
         .save_boundary_evidence
         .as_ref()
         .map(|evidence| &evidence.proof);
-    let schema = if matches!(
+    let schema = if outcome.savepoint_replay_closure.is_some() {
+        REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA
+    } else if matches!(
         boundary_proof,
         Some(SaveBoundaryProof::CampaignMarkerEvent { .. })
     ) {
@@ -488,6 +539,16 @@ pub(crate) fn savepoint_handle_bytes(
             &plan.run_plan.scenario.label(),
         ],
     );
+    if let Some(replay_closure) = &outcome.savepoint_replay_closure {
+        artifact_line(
+            &mut text,
+            &[
+                "campaign-replay-closure",
+                &content_address_bytes(replay_closure),
+                &hex_bytes(replay_closure),
+            ],
+        );
+    }
     artifact_line(
         &mut text,
         &[

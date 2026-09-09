@@ -23,6 +23,7 @@ pub(crate) struct BackendCommandOutcome {
     pub(crate) terminal_savepoint: Option<crucible::ContentHash>,
     pub(crate) savepoint_oracle: Option<SavepointOracleProof>,
     pub(crate) save_boundary_evidence: Option<SaveBoundaryEvidence>,
+    pub(crate) savepoint_replay_closure: Option<Vec<u8>>,
     pub(crate) reproduction_artifact: Option<Vec<u8>>,
     pub(crate) side_reproduction_artifacts: Vec<(String, Vec<u8>)>,
     pub(crate) host_scheduler_preemption: Vec<HostSchedulerPreemptionEvidence>,

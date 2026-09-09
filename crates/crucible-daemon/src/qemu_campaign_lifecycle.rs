@@ -392,7 +392,10 @@ pub use evidence::{
 
 mod legacy_run;
 #[cfg(any(test, feature = "test-support"))]
-pub use legacy_run::test_support::run_guarded_default_campaign_test_fixture;
+pub use legacy_run::test_support::{
+    GuardedDefaultCampaignTestTrace, run_guarded_default_campaign_test_fixture,
+    run_guarded_default_campaign_test_fixture_with_trace,
+};
 pub use legacy_run::{
     GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
     GuardedDefaultCampaignInvariantError, GuardedDefaultCampaignObservation,

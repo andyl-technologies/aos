@@ -395,15 +395,26 @@ pub(super) fn cow_delta_kind_label(kind: CowDeltaKind) -> &'static str {
 pub(super) fn checkpoint_closure_index_bytes(
     checkpoint: ContentHash,
     reproduction_artifact: ContentHash,
+    opaque_replay_artifact: Option<ContentHash>,
     frontier: VirtualTime,
 ) -> Vec<u8> {
-    format!(
-        "crucible.local-dag-store.checkpoint-closure-index.v2\ncheckpoint={}\nreproduction_artifact={}\nfrontier={}\n",
-        ContentAddressedBlobRef::from_hash(checkpoint).to_uri(),
-        ContentAddressedBlobRef::from_hash(reproduction_artifact).to_uri(),
-        frontier.ticks,
-    )
-    .into_bytes()
+    match opaque_replay_artifact {
+        Some(opaque_replay_artifact) => format!(
+            "crucible.local-dag-store.checkpoint-closure-index.v3\ncheckpoint={}\nreproduction_artifact={}\nopaque_replay_artifact={}\nfrontier={}\n",
+            ContentAddressedBlobRef::from_hash(checkpoint).to_uri(),
+            ContentAddressedBlobRef::from_hash(reproduction_artifact).to_uri(),
+            ContentAddressedBlobRef::from_hash(opaque_replay_artifact).to_uri(),
+            frontier.ticks,
+        )
+        .into_bytes(),
+        None => format!(
+            "crucible.local-dag-store.checkpoint-closure-index.v2\ncheckpoint={}\nreproduction_artifact={}\nfrontier={}\n",
+            ContentAddressedBlobRef::from_hash(checkpoint).to_uri(),
+            ContentAddressedBlobRef::from_hash(reproduction_artifact).to_uri(),
+            frontier.ticks,
+        )
+        .into_bytes(),
+    }
 }
 
 pub(super) fn parse_checkpoint_closure_index_sidecar(
@@ -433,8 +444,9 @@ pub(super) fn parse_checkpoint_closure_index_bytes(
         )
     })?;
     let mut lines = text.lines();
-    match lines.next() {
-        Some("crucible.local-dag-store.checkpoint-closure-index.v2") => {}
+    let has_opaque_replay_artifact = match lines.next() {
+        Some("crucible.local-dag-store.checkpoint-closure-index.v2") => false,
+        Some("crucible.local-dag-store.checkpoint-closure-index.v3") => true,
         Some(other) => {
             return Err(corrupt_checkpoint_index(
                 expected_checkpoint,
@@ -447,7 +459,7 @@ pub(super) fn parse_checkpoint_closure_index_bytes(
                 "index record is empty",
             ));
         }
-    }
+    };
     let checkpoint = parse_checkpoint_index_field(expected_checkpoint, lines.next(), "checkpoint")?;
     if checkpoint != expected_checkpoint {
         return Err(corrupt_checkpoint_index(
@@ -461,6 +473,15 @@ pub(super) fn parse_checkpoint_closure_index_bytes(
     }
     let reproduction_artifact =
         parse_checkpoint_index_field(expected_checkpoint, lines.next(), "reproduction_artifact")?;
+    let opaque_replay_artifact = has_opaque_replay_artifact
+        .then(|| {
+            parse_checkpoint_index_field(
+                expected_checkpoint,
+                lines.next(),
+                "opaque_replay_artifact",
+            )
+        })
+        .transpose()?;
     let frontier = parse_checkpoint_frontier_field(expected_checkpoint, lines.next())?;
     if let Some(extra) = lines.next() {
         return Err(corrupt_checkpoint_index(
@@ -471,6 +492,7 @@ pub(super) fn parse_checkpoint_closure_index_bytes(
     Ok(LocalCheckpointClosureIndex {
         checkpoint,
         reproduction_artifact,
+        opaque_replay_artifact,
         frontier,
     })
 }

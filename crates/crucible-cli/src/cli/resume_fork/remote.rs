@@ -217,6 +217,7 @@ pub(in super::super) fn finish_run_workflow_outcome(
                 ticks: report.final_frontier_ticks,
             },
             savepoint,
+            report.campaign_replay_closure.as_deref(),
         )?;
         outcome.terminal_savepoint = Some(savepoint);
         let savepoint = format_content_hash_ref(savepoint);
@@ -299,6 +300,7 @@ pub(in super::super) fn finish_save_workflow_outcome(
         oracle,
         boundary_evidence,
     } = report;
+    let savepoint_replay_closure = run.campaign_replay_closure.clone();
     let mut outcome = finish_run_workflow_outcome(
         thin_plan,
         backend_plan,
@@ -342,6 +344,7 @@ pub(in super::super) fn finish_save_workflow_outcome(
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
     outcome.savepoint_oracle = Some(oracle);
     outcome.save_boundary_evidence = Some(boundary_evidence);
+    outcome.savepoint_replay_closure = savepoint_replay_closure;
     Ok(outcome)
 }
 

@@ -18,6 +18,7 @@ pub(super) fn run_local_double_fork_workflow(
         ));
     }
     let evidence = fork_handle_evidence(fork_plan)?;
+    ensure_session_replay_evidence_supported("local test-double fork", &evidence)?;
     run_local_double_fork_workflow_with_driver(
         thin_plan,
         backend_plan,
@@ -39,6 +40,7 @@ pub(super) fn run_local_qemu_fork_workflow(
         .as_ref()
         .ok_or_else(|| backend_error("local QEMU fork requires a resolved backend"))?;
     let evidence = fork_handle_evidence(fork_plan)?;
+    ensure_session_replay_evidence_supported("local QEMU fork", &evidence)?;
     let mut config = production_qemu_lifecycle_config(backend)?;
     let override_decisions = fork_override_decisions(fork_plan);
     if let Some(seed) = fork_plan.fork_seed {
@@ -143,6 +145,7 @@ pub(super) fn run_local_double_fork_workflow_with_driver(
             "fork overrides require the production QEMU scheduler; the test double cannot prove exact choice consumption",
         ));
     }
+    ensure_session_replay_evidence_supported("local test-double fork", &evidence)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -233,6 +236,23 @@ pub(super) fn savepoint_evidence(
     }
 }
 
+pub(super) fn ensure_session_replay_evidence_supported(
+    context: &str,
+    evidence: &ResumeHandleEvidence,
+) -> Result<(), CliError> {
+    if evidence
+        .schedule
+        .decisions()
+        .iter()
+        .any(|decision| matches!(decision, crucible::Decision::Selection(_)))
+    {
+        return Err(backend_error(format!(
+            "{context} cannot consume a typed selection replay closure; use the standard local QEMU resume path"
+        )));
+    }
+    Ok(())
+}
+
 pub(super) fn savepoint_handle_evidence(
     command_name: &'static str,
     handle: &SavepointHandle,
@@ -272,6 +292,12 @@ pub(super) fn savepoint_handle_evidence(
     let schedule = Schedule::from_compact_binary(&handle.schedule_payload).map_err(|error| {
         artifact_error(format!("savepoint schedule payload is malformed: {error}"))
     })?;
+    let replay_closure = authenticated_replay_closure(
+        &scenario_form,
+        &schedule,
+        handle.replay_closure_payload.as_deref(),
+        "savepoint handle",
+    )?;
     let configuration = crucible::Configuration {
         def: scenario.clone(),
         schedule: schedule.clone(),
@@ -291,6 +317,7 @@ pub(super) fn savepoint_handle_evidence(
         schedule,
         configuration,
         checkpoint,
+        replay_closure,
     })
 }
 
@@ -342,6 +369,23 @@ pub(super) fn savepoint_store_evidence(
                 store.root().display()
             ))
         })?;
+    for referenced in index.referenced_objects() {
+        if !store.exists(&referenced).map_err(|error| {
+            artifact_error(format!(
+                "{command_name} checkpoint {} index traversal failed for retained object {} in DAG store {}: {error}",
+                format_content_hash_ref(checkpoint),
+                format_content_hash_ref(referenced),
+                store.root().display()
+            ))
+        })? {
+            return Err(artifact_error(format!(
+                "{command_name} checkpoint {} index traversal found missing retained object {} in DAG store {}",
+                format_content_hash_ref(checkpoint),
+                format_content_hash_ref(referenced),
+                store.root().display()
+            )));
+        }
+    }
     let artifact_bytes = store.get(&index.reproduction_artifact).map_err(|error| {
         artifact_error(format!(
             "{command_name} checkpoint {} index referenced missing artifact {} in DAG store {}: {error}",
@@ -376,6 +420,25 @@ pub(super) fn savepoint_store_evidence(
     let scenario_form = artifact.scenario_form().clone();
     let scenario = artifact.scenario_def();
     let schedule = artifact.schedule().clone();
+    let replay_closure_bytes = index
+        .opaque_replay_artifact
+        .map(|key| {
+            store.get(&key).map_err(|error| {
+                artifact_error(format!(
+                    "{command_name} checkpoint {} index referenced missing replay artifact {} in DAG store {}: {error}",
+                    format_content_hash_ref(checkpoint),
+                    format_content_hash_ref(key),
+                    store.root().display()
+                ))
+            })
+        })
+        .transpose()?;
+    let replay_closure = authenticated_replay_closure(
+        &scenario_form,
+        &schedule,
+        replay_closure_bytes.as_deref(),
+        "savepoint DAG-store index",
+    )?;
     let configuration = crucible::Configuration {
         def: scenario.clone(),
         schedule: schedule.clone(),
@@ -400,6 +463,7 @@ pub(super) fn savepoint_store_evidence(
         schedule,
         configuration,
         checkpoint,
+        replay_closure,
     })
 }
 
@@ -540,6 +604,7 @@ pub(super) async fn run_resumed_savepoint_actor_with_driver_async(
     evidence: ResumeHandleEvidence,
     interactive_driver: ResumeInteractiveCommandDriver<'_>,
 ) -> Result<ResumeWorkflowReport, CliError> {
+    ensure_session_replay_evidence_supported("session-owned resume", &evidence)?;
     let resumed_loop = resume_recording_loop_for_plan(plan, &evidence)?;
     let mut graph = save_validation_graph(&evidence.scenario)?;
     if !evidence.configuration.is_genesis() {
@@ -745,6 +810,7 @@ pub(super) async fn run_forked_savepoint_actor_with_driver_async(
     evidence: ResumeHandleEvidence,
     interactive_driver: ResumeInteractiveCommandDriver<'_>,
 ) -> Result<ForkWorkflowReport, CliError> {
+    ensure_session_replay_evidence_supported("session-owned fork", &evidence)?;
     let fork_decisions = fork_override_decisions(plan);
     let branch_frontier = fork_branch_frontier(&evidence);
     let child_loop = fork_recording_loop_for_plan(plan, &evidence, branch_frontier)?;
@@ -1789,6 +1855,7 @@ pub(super) fn fork_artifact_canonical_log(
     entries
 }
 
+// crucible-lint: allow host-nondeterminism-state -- this pure formatter labels scheduler-authored artifact evidence and cannot alter modeled state.
 pub(super) fn fork_artifact_decision_kind(decision: &crucible::Decision) -> &'static str {
     match decision {
         crucible::Decision::DeliveryOrder(_) => "delivery_order",

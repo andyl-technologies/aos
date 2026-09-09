@@ -2,6 +2,7 @@
 
 pub(super) const SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v3";
 pub(super) const CAMPAIGN_MARKER_SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v4";
+pub(super) const REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v5";
 pub(super) const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V1: &str =
     "crucible.failure-triage.findings-ledger.v1";
 pub(super) const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V2: &str =

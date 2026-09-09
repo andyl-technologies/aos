@@ -1,4 +1,4 @@
-//! Selection-free legacy checkpoint admission through campaign ownership.
+//! Legacy checkpoint admission through campaign ownership.
 //!
 //! This module authenticates a v3 logical checkpoint, retains the exact
 //! source observation and physical capture, and verifies the typed `Ready`
@@ -119,23 +119,40 @@ where
     {
         return Err(GuardedDefaultCampaignInvariantError::ResumeSourceCheckpointMismatch.into());
     }
+    let closure = request
+        .initial_replay_closure
+        .as_ref()
+        .ok_or(GuardedDefaultCampaignInvariantError::ResumeSourceCheckpointMismatch)?;
     if request.initial_schedule.decisions().iter().any(|decision| {
         !matches!(
             decision,
-            // crucible-lint: allow host-nondeterminism-state -- this authenticated replay decision is only checked against the selection-free taxonomy.
+            // crucible-lint: allow host-nondeterminism-state -- this authenticated replay decision is checked only against the supported portable-resume taxonomy.
             crucible::Decision::DeliveryOrder(_)
-                // crucible-lint: allow host-nondeterminism-state -- this authenticated replay decision is only checked against the selection-free taxonomy.
+                // crucible-lint: allow host-nondeterminism-state -- this authenticated replay decision is checked only against the supported portable-resume taxonomy.
                 | crucible::Decision::RngDraw(_)
-                // crucible-lint: allow host-nondeterminism-state -- this authenticated replay decision is only checked against the selection-free taxonomy.
+                // crucible-lint: allow host-nondeterminism-state -- this authenticated replay decision is checked only against the supported portable-resume taxonomy.
                 | crucible::Decision::Preemption(_)
+                // crucible-lint: allow host-nondeterminism-state -- this typed choice is authenticated by the exact replay closure below.
+                | crucible::Decision::Selection(_)
         )
     }) {
         return Err(GuardedDefaultCampaignInvariantError::ResumeSourceCheckpointMismatch.into());
     }
-    let empty_closure =
-        GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&request.initial_schedule)
-            .map_err(GuardedDefaultCampaignRunError::ReplayClosure)?;
-    if request.initial_replay_closure.as_ref() != Some(&empty_closure) {
+    closure
+        .validate_for_schedule(&request.scenario, &request.initial_schedule)
+        .map_err(GuardedDefaultCampaignRunError::ReplayClosure)?;
+    if request.initial_schedule.decisions().iter().any(|decision| {
+        // crucible-lint: allow host-nondeterminism-state -- this authenticated replay decision is inspected only to reject unsupported model-sampled selections before execution.
+        let crucible::Decision::Selection(decision) = decision else {
+            return false;
+        };
+        decision.selection().is_ok_and(|selection| {
+            matches!(
+                selection.origin(),
+                crucible_campaign::SelectionOrigin::ModelSample(_)
+            )
+        })
+    }) {
         return Err(GuardedDefaultCampaignInvariantError::ResumeSourceCheckpointMismatch.into());
     }
     if request

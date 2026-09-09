@@ -356,12 +356,19 @@ fn replay_branch_evidence(
 ) -> Result<ResumeHandleEvidence, CliError> {
     let frontier = validate_resume_handle_frontier(&configuration.schedule, frontier_ticks)?;
     let checkpoint = checkpoint_for_resume_configuration(&configuration, frontier)?;
+    let replay_closure = authenticated_replay_closure(
+        scenario_form,
+        &configuration.schedule,
+        None,
+        "session-owned replay branch",
+    )?;
     Ok(ResumeHandleEvidence {
         scenario_form: scenario_form.clone(),
         scenario: scenario_form.scenario_def(),
         schedule: configuration.schedule.clone(),
         configuration,
         checkpoint,
+        replay_closure,
     })
 }
 

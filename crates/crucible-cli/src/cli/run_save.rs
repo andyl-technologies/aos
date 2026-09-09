@@ -223,6 +223,8 @@ pub(super) struct ResumeHandleEvidence {
     pub(super) schedule: Schedule,
     pub(super) configuration: crucible::Configuration,
     pub(super) checkpoint: Checkpoint,
+    pub(super) replay_closure:
+        crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -418,6 +420,7 @@ pub(super) fn run_local_qemu_resume_workflow(
         );
         return Ok(outcome);
     }
+    ensure_session_replay_evidence_supported("local QEMU resume fallback", &evidence)?;
 
     let config = production_qemu_lifecycle_config(backend)?.with_logical_replay_boundary(
         evidence.configuration.clone(),
@@ -450,6 +453,7 @@ pub(super) fn run_local_resume_workflow_report_with_driver(
     interactive_driver: ResumeInteractiveCommandDriver<'_>,
 ) -> Result<(ResumeHandleEvidence, ResumeWorkflowReport), CliError> {
     let evidence = resume_handle_evidence(resume_plan)?;
+    ensure_session_replay_evidence_supported("local test-double resume", &evidence)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -553,6 +557,7 @@ pub(super) async fn run_remote_control_client_resume_from_evidence_with_driver_a
 where
     C: ControlClient + Sync,
 {
+    ensure_session_replay_evidence_supported("remote control-client resume", &evidence)?;
     let request = ResumeSessionRequest::new(
         evidence.scenario_form.clone(),
         evidence.schedule.clone(),
