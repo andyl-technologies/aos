@@ -58,11 +58,13 @@ where
 {
     type Error = ObjectivePublishingCampaignDriverError<D::Error>;
 
+    // crucible-lint: allow host-nondeterminism-state -- this owner advances only authenticated objective work before delegating the unchanged campaign step.
     fn step(&mut self) -> Result<CampaignRuntimeStepDisposition, Self::Error> {
         if publish_next_objective_evaluation(&self.repository, &self.campaign, &mut self.cursor)? {
             return Ok(CampaignRuntimeStepDisposition::Continue);
         }
         self.inner
+            // crucible-lint: allow host-nondeterminism-state -- the wrapped driver remains the sole authority for the delegated campaign transition.
             .step()
             .map_err(ObjectivePublishingCampaignDriverError::Inner)
     }

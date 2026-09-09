@@ -708,6 +708,8 @@ pub struct PlannerBeamCandidate {
 }
 
 impl PlannerBeamCandidate {
+    // crucible-lint: allow rust-allow -- the constructor binds one complete authenticated Beam candidate record.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         input_view: CampaignViewId,
         policy: CampaignPolicyId,
