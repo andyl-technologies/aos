@@ -6380,3 +6380,77 @@ enrollment, exported-store reproducibility, and the three-machine immutable
 SELinux admission gate therefore remain pending. This harness foundation alone
 qualifies no stage-0 boot or enforcing host-MAC behavior, and `SBX-P0-10`
 remains open.
+
+### Host manager-reference policy and enforcing-MAC gap (in progress)
+
+The systemd manager-reference hardening increment is still qualification
+evidence, not readiness. Its four-file boundary consists of the systemd package
+integration, the downstream patch that narrows unit-reference methods, the
+direct `sd-bus` policy probe, and its fleet VM. The probe exercises all 16
+subject/method combinations: UIDs 811 and 812 must both receive
+`AccessDenied` for manager `RefUnit`/`UnrefUnit`, unit `Ref`/`Unref`, and
+manager `StartUnit`, `RestartUnit`, `StopUnit`, and `StartTransientUnit`. A
+separate root-side positive verifies reference-held collection and release. No
+readiness checkbox is closed by this increment.
+
+The first approved x86_64 realization built the complete image, booted the
+guest, reached the agent and a running system, then failed before the first
+policy assertion. `setpriv` returned status 127 because the probe path
+`/nix/store/n73cl60ick714wmvd26kcrk6kbhi97xc-aos-systemd-unit-reference-policy-probe-1/bin/policy-probe`
+was absent from the guest root filesystem. The executable and its AOS glibc
+interpreter were valid on the build host; the fleet machine had omitted the
+probe from `extraClosures`. This result is a test-packaging failure and is not
+evidence for or against the D-Bus policy.
+
+The minimal fixture repair adds that exact probe closure and a preflight
+`test -x` assertion. A repaired immutable source was reconstructed from the
+successful packaged-workspace input
+`/nix/store/a0j5ps23j5yczcmg4s229ymwl8lz6fvn-aos-workspace-src`; after restoring
+only proven original inputs required to evaluate it, its filtered workspace
+`/nix/store/i3aich2j4rpmd1yhv65lh2312qz0dlml-aos-workspace-src` differs from the original in exactly
+the repaired fleet fixture and has an identical `crates/` tree. Both source
+captures converge on the already-valid native Rust artifact
+`/nix/store/aqalkni6jvavx7l0h4lc24mlc1x6qqgp-aos-native-release-and-test-artifacts-0.1.0`.
+The repaired rootfs derivation
+`/nix/store/867agw0z1fjr7mvha9bgk9x1758cj555-vm-disk-aos-disk-rootfs-0.drv`
+exports the exact probe as closure 6, and the generated test remains
+`/nix/store/792gxxj3g06khbb4csrcx3ykfj1i8sq1-aos-fleet-test-systemd-unit-reference-policy-test.py.drv`.
+The sole approved realization of repaired policy derivation
+`/nix/store/bf91rlvwsksiv7a7hirrf91z82v351y5-aos-fleet-test-systemd-unit-reference-policy-0.drv`
+is in progress with one build job and two cores. Until it terminates
+successfully, the four-file policy boundary remains uncommitted and every
+dependent readiness claim remains open.
+
+The separate production SELinux gap is also explicit. The immutable stage-0
+path is designed to admit policy and hand off to `init_t` inside its labeled
+EROFS, but deliberately holds before switch-root because the real root and
+writable mounts do not yet share a complete, verified label plan. The
+production policy contains upstream refpolicy modules only; it does not yet
+define the AOS Host, Network publisher, namespace inspector, or lifecycle-worker
+domains.
+
+Platform owns the remaining enforcing-MAC/bootstrap sequence. A focused AOS
+`.te`/`.fc` module must be linked into the offline policy before its final
+binary is built. Positive and negative checks must query the expanded effective
+policy, including attributes, conditionals, and permissive domains. The shared
+rootfs builder must then derive a deterministic, complete real-root inode
+inventory, emit exact SELinux xattrs, and verify the produced image against the
+same plan. `/run` and `/var` require post-mount `init_t` creation and verification
+on their actual tmpfs and persistent-filesystem ancestry; labels seeded in an
+image beneath a later mount do not count, and runtime relabel is not an
+acceptable bootstrap mechanism. The stage-0 hold may be removed only after an
+enforcing switch-root and service-transition VM proves those invariants.
+
+The publication policy must model the actual Linux rename gates. Publishing a
+nonexistent final name requires final-directory `search`, `write`, and
+`add_name`; replay erasure is prevented by withholding `remove_name` and by
+protecting the directory ancestry. A record born with its final inode type must
+remain writable by its publisher while the staging copy is created, because
+rename preserves that type. After sealing, fs-verity supplies content
+immutability, while MAC denies metadata mutation/relabel, grants the inspector
+read-only access to expected records, and denies record writes to other roles.
+The namespace inspector alone needs `CAP_SYS_PTRACE` plus the narrow SELinux
+access required by Linux 6.18's `PIDFD_GET_NET_NAMESPACE` path; brokers and
+lifecycle/effect workers retain empty ptrace capability and no general
+`process:ptrace` or `setns` grant. These are pending implementation and runtime
+proof, so `SBX-P0-10`, Network Apply, and end-to-end Host readiness remain open.
