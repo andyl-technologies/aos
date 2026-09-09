@@ -3747,12 +3747,19 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   the same continuation owner and projects its source and terminal proof through
   the fork contract. Its reproduction artifact retains the authenticated replay
   closure and rematerializes the full schedule through campaign replay.
-  Session-owned, remote, interactive, quiescence/property, reseeded, and
-  overridden fork fallbacks reject typed Selection evidence before launch.
+  Remote fat-checkpoint resume now carries a versioned replay-closure envelope
+  only for typed Selection schedules. The envelope identity binds the exact
+  scenario, configuration, checkpoint bytes, schema version, size, and
+  canonical closure. A newly started daemon reconstructs and authenticates the
+  closure after ordinary checkpoint validation and before backend or session
+  allocation, then retains the existing interactive, watch, stop, and cleanup
+  controls. Selection-free requests preserve their prior wire bytes. Local thin
+  replay and session-owned fork fallbacks still reject typed Selection evidence
+  before launch.
   Historical override/application-randomness resume schedules, divergent typed
   fork execution, property stops, quiescence and property saves, search, fuzz,
-  remaining replay producers, triage, and long-lived session migration remain
-  open.
+  remaining replay producers, triage, and broader long-lived session migration
+  remain open.
 - [x] **T-CAM-8.5** Publish user documentation and the worked network campaign
   as an executable fixture. The public Crucible guide now documents the
   shipped single-host campaign surface: strict offline import, managed daemon

@@ -420,6 +420,7 @@ pub use legacy_run::{
     GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError, GuardedDefaultCampaignRunRequest,
     GuardedDefaultCampaignSavepoint, GuardedDefaultCampaignSupervisorError,
     GuardedDefaultCampaignWatchFrame, run_guarded_default_campaign,
+    validate_remote_resume_replay_closure,
 };
 
 /// Narrow modeled-execution view of one guarded fresh QEMU lifecycle.
