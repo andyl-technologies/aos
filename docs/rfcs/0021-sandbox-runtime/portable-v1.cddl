@@ -306,20 +306,29 @@ broker-target-v1 =
   [kind: 2, previous: bytes .size 32, successor: bytes .size 32]
 
 broker-grant-v1 = [
-  verb: 1..28,
+  verb: (1..32) / 34,                ; 33 is reserved and must be rejected
   target: broker-target-v1,
   argument-commitment: digest,
   maximum-request-bytes: 1..16777216,
   maximum-descriptors: 0..16,
 ]
 
+broker-protocol-v1 = (
+  audience: 0, protocol: 0, protocol-major: 1, protocol-minor: 0..4
+) // (
+  audience: 1, protocol: 1, protocol-major: 1, protocol-minor: 0..5
+) // (
+  audience: 2, protocol: 2, protocol-major: 1, protocol-minor: 0..3
+) // (
+  audience: 3, protocol: 3, protocol-major: 1, protocol-minor: 0..2
+) // (
+  audience: 4, protocol: 4, protocol-major: 1, protocol-minor: 0
+)
+
 ; application/vnd.aos.sandbox.broker-authorization-plan.v1+cbor
 broker-authorization-plan-v1 = [
   version: 1,
-  audience: 0..3,                    ; host, mount, storage, network
-  protocol: 0..3,                    ; matching broker protocol; no publisher code
-  protocol-major: 1,
-  protocol-minor: 0..2,              ; 2 only for host; other brokers at most 1
+  broker-protocol-v1,                ; host, mount, storage, network, guardian
   assignment: broker-assignment-v1,
   node: id,
   ownership-authority: key-reference,
@@ -330,6 +339,18 @@ broker-authorization-plan-v1 = [
   expires-seconds: i64,
   required-features: [*64 feature],
 ]
+
+; Guardian protocol 1.0 admits exactly one assignment-target GuardianArm grant
+; (verb 34). Matching charges 160 request bytes and consumes zero descriptors;
+; the grant's request ceiling must therefore be at least 160. The current
+; verifier treats both size fields as ceilings rather than requiring exact
+; 160/zero values. Its argument-commitment input is this fixed binary sequence,
+; not CBOR:
+guardian-arm-binding-v1 = bytes .size 160
+; "AOSGAB1\0" || sandbox[16] || incarnation[16] || epoch:u64be ||
+; desired-generation:u64be || assignment-digest[32] || node[16] ||
+; host-boot-id[16] || ownership-lease-generation:u64be ||
+; ownership-lease-digest[32]
 
 ; Publisher plans deliberately contain no sandbox assignment or ownership lease.
 ; This schema commits static request/configuration facts, not online admission

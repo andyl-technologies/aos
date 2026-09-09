@@ -5562,3 +5562,56 @@ This is an offline build and compatibility qualification only. No system selects
 the new artifact, loads it during boot, labels the initrd, composefs root, or
 writable state, enters an enforcing domain, or grants an inspector capability.
 `SBX-P0-10` remains open.
+
+### Per-assignment Guardian authority and timer foundation (partial)
+
+Commit `fefe8993f` records the first isolated Guardian foundation. The portable
+registry now assigns Guardian audience and protocol code 4 and sparse
+`GuardianArm` verb 34 while continuing to reject reserved verb 33. The
+controller-signed plan must contain exactly one assignment-target arm grant.
+Its fixed 160-byte semantic commitment binds the complete assignment tuple,
+node, current host boot ID, and the exact authority-signed ownership-lease
+generation and digest. Generic publication and effect-ledger paths explicitly
+reject the Guardian audience rather than inventing a dispatch code or routing
+it through an existing privileged broker.
+
+The capability-empty per-assignment binary accepts four exact signed authority
+artifacts plus pinned trust-policy, public-key, revocation-scope, and node
+descriptors. It verifies both signatures and every plan/lease cross-link,
+enforces desired-state and lease high-water marks across boots, rejects
+same-generation equivocation, and derives the earliest exclusive deadline from
+the plan and lease using a paired wall-clock and `CLOCK_BOOTTIME` sample. A
+fresh current-boot plan may reuse the same exact still-current lease after
+reboot; persisted state alone is never authority.
+
+Before reporting READY, the process holds an exclusive nonblocking state lock
+and commits a fixed-width record by exclusive temporary creation, write, file
+`fsync`, rename, directory `fsync`, and exact readback with a predecessor
+digest check. Its type states prevent readiness before durable persistence.
+The runtime rechecks the committed record and current clock immediately before
+READY, then waits against the absolute boot-time deadline.
+
+The typed systemd adapter transfers exactly ten named read-only descriptors,
+uses one incarnation-derived 0700 `StateDirectory`, `DynamicUser`, empty
+capability sets, `Restart=no`, `AF_UNIX` only, and denies socket bind, listen,
+connect, and accept operations. The system bus is inaccessible and the public
+adapter exposes only Guardian start, not a general unit-management API. The
+test asserts the exact ordered D-Bus signature of every emitted transient
+property against systemd 259.8, including `StateDirectory` as `as`,
+`ProtectHome` as `s`, and `RestrictNamespaces` as a zero-valued `t` mask.
+
+One exact pinned-development-shell run of the nine affected packages passed
+after the final transient-property type corrections. It covers 188 core tests,
+three Guardian unit tests, nine Guardian integration tests, 359 sandbox tests,
+15 systemd unit tests, 25 systemd client tests, the broker, Host, Mount,
+Network, and Storage suites, and all selected doctests.
+
+This is an authority-verification, durable-deadline, and typed-unit foundation,
+not Guardian completion. The payload unit compiler already emits typed
+`BindsTo=`/`After=` properties naming its Guardian, but no production
+Host/controller path delivers the Guardian descriptor set, starts it before the
+payload, or exercises that dependency. Expiry has no production early-freeze
+request or Network default-drop coupling, renewal is not orchestrated, and no
+VM test proves expiry or Guardian death stops a payload. The early-freeze
+margin, hard-deadline path, and kernel lease gate remain separate dependencies.
+`SBX-GUARD-01`, the dependent runtime tasks, and end-to-end qualification all

@@ -153,7 +153,9 @@ signature purpose 0..6: policy, tree, snapshot, distribution,
   broker-authorization, ownership-lease, publisher-authorization
 key usage 0..6: policy, tree, snapshot, distribution, broker-authorization,
   ownership-lease, publisher-authorization
-broker audience/protocol 0..3: host, mount, storage, network
+broker audience/protocol 0..4: host, mount, storage, network, guardian
+broker protocol versions: host 1.4, mount 1.5, storage 1.3, network 1.2,
+  guardian 1.0
 broker verb 1..28: host-launch, host-stop, host-freeze, host-thaw,
   host-kill, host-observe, host-inventory, mount-create, mount-install,
   mount-replace, mount-detach, mount-release, mount-inventory-summary,
@@ -161,6 +163,11 @@ broker verb 1..28: host-launch, host-stop, host-freeze, host-thaw,
   storage-hold-snapshot, storage-release-hold, storage-clone, storage-set-quota,
   storage-destroy, storage-inventory, network-prepare, network-arm-lease,
   network-renew-lease, network-disarm, network-destroy, network-inventory
+broker verb 29..32: mount-materialize-destination-slot,
+  mount-reap-destination-slot, mount-rematerialize-destination-slot,
+  storage-prepare-catalog
+broker verb 33: reserved and rejected
+broker verb 34: guardian-arm
 broker target 0..2: assignment, resource, resource-pair
 ACL tag 0..5: user-object, named-user, group-object, named-group, mask, other
 ```
@@ -558,6 +565,52 @@ The canonical broker-plan golden fixture used by the core conformance test is:
 ```text
 8e01010101008550010101010101010101010101010101015002020202020202020202020202020202030458200505050505050505050505050505050505050505050505050505050505050505500a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a84696f776e657273686970015820090909090909090909090909090909090909090909090909090909090909090905818508810058200b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b191000005820070707070707070707070707070707070707070707070707070707070707070750080808080808080808080808080808080a1481837825616f732e73616e64626f782e656e666f7263656d656e742e62726f6b65722d6c65646765720100
 ```
+
+Guardian protocol 1.0 uses broker audience and protocol code `4`, and its sole
+plan verb is assignment-target `GuardianArm` code `34`. Code `33` remains
+reserved and is rejected. A Guardian plan contains exactly one such grant with
+an exact 160-byte semantic request and zero descriptors presented to the grant
+matcher. The grant's maximum request size is a ceiling and must be at least
+160; the current verifier does not require that ceiling to equal 160 or its
+descriptor ceiling to equal zero. Tightening those two plan-shape constraints
+requires a later implementation change. The argument-commitment preimage is
+the fixed binary sequence below; every integer is unsigned big-endian and
+bracketed numbers are exact byte widths:
+
+```text
+"AOSGAB1\0"[8] || sandbox[16] || incarnation[16] || epoch[8] ||
+desired-generation[8] || assignment-digest[32] || node[16] ||
+host-boot-id[16] || ownership-lease-generation[8] ||
+ownership-lease-digest[32]
+```
+
+The grant's argument commitment is SHA-256 over
+`aos-sandbox-broker-arguments-v1\0` followed by those 160 bytes. The canonical
+binding fixture uses sandbox bytes `01`, incarnation bytes `02`, epoch 3,
+desired generation 4, assignment-digest bytes `05`, node bytes `06`, host boot
+ID bytes `08`, lease generation 7, and lease-digest bytes `09`:
+
+```text
+414f5347414231000101010101010101010101010101010102020202020202020202020202020202000000000000000300000000000000040505050505050505050505050505050505050505050505050505050505050505060606060606060606060606060606060808080808080808080808080808080800000000000000070909090909090909090909090909090909090909090909090909090909090909
+```
+
+The core codec also pins a structural Guardian broker-plan fixture with
+audience and protocol code `4`, protocol version 1.0, and verb code `34`. It
+deliberately retains the generic fixture's argument commitment and 4096-byte
+request ceiling, so it proves registry encoding only and is not an admissible
+runtime Guardian plan. Its exact structural CBOR hex is:
+
+```text
+8e01040401008550010101010101010101010101010101015002020202020202020202020202020202030458200505050505050505050505050505050505050505050505050505050505050505500a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a84696f776e65727368697001582009090909090909090909090909090909090909090909090909090909090909090581851822810058200b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b191000005820070707070707070707070707070707070707070707070707070707070707070750080808080808080808080808080808080a1481837825616f732e73616e64626f782e656e666f7263656d656e742e62726f6b65722d6c65646765720100
+```
+
+The Guardian crate's separate fixed-binding fixture above proves the runtime
+commitment bytes, and its integration tests construct and sign admissible plans
+from that commitment. A real plan remains static controller authority only.
+The Guardian must still verify the separately signed exact current ownership
+lease, current node and boot, persist its accepted high-water state and
+effective `CLOCK_BOOTTIME` deadline, and recheck before readiness. Persisted
+state is never authority by itself.
 
 The canonical ownership-lease fixture uses sandbox bytes `01`, incarnation
 bytes `02`, epoch 3, assignment digest bytes `05`, node bytes `06`, lease
