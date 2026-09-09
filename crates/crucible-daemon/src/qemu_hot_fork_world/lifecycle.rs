@@ -322,10 +322,12 @@ where
     }
 
     fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        // crucible-lint: allow host-nondeterminism-state -- this forwards canonical QEMU fingerprint evidence; host sampling timing cannot select or mutate modeled execution.
         QuantumLoop::sample_fingerprint(&mut self.lifecycle, node)
     }
 
     fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        // crucible-lint: allow host-nondeterminism-state -- this copies the scheduler-retained RecomputedCause trace; the observation never feeds back into modeled execution.
         QuantumLoop::resolved_effect_trace(&self.lifecycle)
     }
 
