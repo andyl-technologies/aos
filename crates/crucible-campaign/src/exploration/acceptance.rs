@@ -167,9 +167,11 @@ impl BranchAcceptanceSummary {
 
     /// Returns the validated addressable source cardinality or its bounds.
     ///
-    /// This count precedes the separate proposal-window calculation. A
-    /// generator whose definition incorporates the request budget can still
-    /// have a budget-bounded exact source cardinality.
+    /// This count precedes the separate proposal-window calculation. For the
+    /// static `All` integer generator, it is the exact cardinality of the
+    /// request's proposal-bounded prefix, rather than proof that the complete
+    /// semantic domain is exhausted. Authenticated frontier state reports such
+    /// a truncated request as closed.
     #[must_use]
     pub const fn validated_cardinality(self) -> BranchAcceptanceCount {
         self.validated_cardinality

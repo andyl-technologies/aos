@@ -145,8 +145,7 @@ impl CampaignRepository {
             *remaining -= 1;
             let generator = self.read_generator(id.content_id())?;
             match generator.algorithm() {
-                CandidateGeneratorAlgorithm::All
-                    if matches!(domain, ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_)) => {}
+                CandidateGeneratorAlgorithm::All => {}
                 CandidateGeneratorAlgorithm::WeightedCategorical { weights } => {
                     let ChoiceDomain::Discrete(discrete) = domain else {
                         return Err(integrity("candidate-generator-domain-family-mismatch"));
