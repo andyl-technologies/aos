@@ -774,7 +774,13 @@ fn validate_provider_lineage(
         .cloned()
         .map(|instance| (instance, 0))
         .collect();
-    for binding in bindings {
+    for binding in bindings
+        .iter()
+        .filter(|binding| binding.implementation.handler.is_none())
+    {
+        // Terminal handlers end recursive composition. A provider may bind its
+        // own resource operations to a colocated terminal adapter without
+        // introducing a recursive provider dependency.
         let consumer = binding.request.consumer.clone();
         let provider = binding.provider.clone();
         if successors
@@ -914,4 +920,118 @@ fn index_packages(
         }
     }
     Ok(index)
+}
+
+#[cfg(test)]
+mod lineage_tests {
+    use std::num::NonZeroU32;
+
+    use aos_ability_model::{
+        ArtifactReference, AuthorityGrant, BindingId, BindingSource, EnvironmentId, ExecutionStage,
+        InterfaceName, ResourceLifetime, RevisionId,
+    };
+
+    use super::*;
+
+    #[test]
+    fn colocated_terminal_binding_ends_recursive_lineage() {
+        let provider = instance("provider");
+        let desired = empty_desired_state();
+        let binding = binding(provider.clone(), provider, Some(local_key("terminal")));
+
+        validate_provider_lineage(&desired, &[binding], 8)
+            .expect("a colocated terminal adapter must end recursive composition");
+    }
+
+    #[test]
+    fn colocated_pure_binding_remains_a_recursive_cycle() {
+        let provider = instance("provider");
+        let desired = empty_desired_state();
+        let binding = binding(provider.clone(), provider.clone(), None);
+
+        let error = validate_provider_lineage(&desired, &[binding], 8)
+            .expect_err("a self-referential pure provider must remain a cycle");
+        assert!(matches!(
+            error,
+            CompositionError::InvalidFragment {
+                provider: cycle_provider,
+                ref reason,
+            } if cycle_provider == provider
+                && reason == "provider dependency lineage contains a cycle"
+        ));
+    }
+
+    fn binding(consumer: InstanceId, provider: InstanceId, handler: Option<LocalKey>) -> Binding {
+        let digest = Sha256Digest::separated("aos.test.lineage/v1", b"fixture");
+        let interface = InterfaceKey {
+            name: InterfaceName::new("aos.test-lineage").expect("valid interface name"),
+            abi: NonZeroU32::new(1).expect("nonzero ABI"),
+            descriptor: digest,
+        };
+        let request = RequestId {
+            consumer: consumer.clone(),
+            scope: ScopePath::root(),
+            key: local_key("terminal"),
+        };
+        let grant = |principal| AuthorityGrant {
+            principal,
+            methods: Vec::new(),
+            contributions: Vec::new(),
+            resources: Vec::new(),
+        };
+
+        Binding {
+            id: BindingId(local_key("binding")),
+            request,
+            interface,
+            provider: provider.clone(),
+            provider_package: None,
+            implementation: ProviderImplementationReference {
+                descriptor: digest,
+                artifact: ArtifactReference {
+                    content: digest,
+                    store_path: "/nix/store/00000000000000000000000000000000-lineage".to_string(),
+                    nar_hash: digest,
+                    closure: digest,
+                },
+                handler,
+            },
+            source: BindingSource::Explicit,
+            caller_grant: grant(consumer),
+            provider_grant: grant(provider),
+            guarantees: Vec::new(),
+            policy_revision: RevisionId(digest),
+            lifetime: ResourceLifetime::Instance,
+            mediation_allowed: true,
+        }
+    }
+
+    fn empty_desired_state() -> DesiredStateDocument {
+        DesiredStateDocument {
+            schema: DesiredStateDocument::SCHEMA.to_string(),
+            required_features: Vec::new(),
+            environment: Sha256Digest::separated("aos.test.lineage/v1", b"environment"),
+            instances: Vec::new(),
+            contributions: Vec::new(),
+            child_requests: Vec::new(),
+            resources: Vec::new(),
+            outputs: Vec::new(),
+            controllers: Vec::new(),
+        }
+    }
+
+    fn instance(name: &str) -> InstanceId {
+        InstanceId {
+            environment: EnvironmentId {
+                authority: local_key("test"),
+                key: local_key("host"),
+                stage: ExecutionStage::Host,
+            },
+            key: local_key(name),
+        }
+    }
+
+    fn local_key(value: &str) -> LocalKey {
+        LocalKey::new(value).expect("valid local key")
+    }
 }

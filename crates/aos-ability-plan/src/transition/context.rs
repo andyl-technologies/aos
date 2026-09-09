@@ -156,7 +156,10 @@ pub struct TransitionContext {
     pub after: ScopedDesiredState,
     /// Carries current authenticated observations from the desired plan input.
     pub observations: ScopedObservations,
-    /// Lists exact current-to-desired resource changes owned by this provider.
+    /// Lists exact changes owned by this provider or exposed through binding grants.
+    ///
+    /// Outgoing caller grants and incoming provider grants expose lower-resource
+    /// changes so a recursive provider can coordinate lifecycle boundaries.
     pub changes: Vec<ResourceChange>,
     /// Lists current and desired lifecycle controller assignments in scope.
     pub controllers: Vec<ControllerAssignment>,
@@ -327,4 +330,307 @@ pub(super) fn controller_union(outcome: &CompositionOutcome) -> Vec<ControllerAs
             .map(|assignment| (assignment.resource.clone(), assignment.clone())),
     );
     controllers.into_values().collect()
+}
+
+pub(super) fn scoped_changes_and_controllers(
+    provider: &InstanceId,
+    changes: &[ResourceChange],
+    controllers: &[ControllerAssignment],
+    authorized_outgoing: &[AuthorizedTransitionBinding],
+    binding_plan: &[Binding],
+) -> (Vec<ResourceChange>, Vec<ControllerAssignment>) {
+    let outgoing_resources = authorized_outgoing.iter().filter(|authorized| {
+        authorized.binding.request.consumer == *provider
+            && authorized.binding.caller_grant.principal == *provider
+    });
+    let incoming_resources = binding_plan.iter().filter(|binding| {
+        binding.provider == *provider && binding.provider_grant.principal == *provider
+    });
+    let granted_resources = outgoing_resources
+        .flat_map(|authorized| &authorized.binding.caller_grant.resources)
+        .chain(incoming_resources.flat_map(|binding| &binding.provider_grant.resources))
+        .map(|permission| permission.resource.clone())
+        .collect::<BTreeSet<_>>();
+
+    let visible_changes = changes
+        .iter()
+        .filter(|change| {
+            change.resource.provider == *provider || granted_resources.contains(&change.resource)
+        })
+        .cloned()
+        .collect();
+    let visible_controllers = controllers
+        .iter()
+        .filter(|assignment| {
+            assignment.controller.provider == *provider
+                || granted_resources.contains(&assignment.resource)
+        })
+        .cloned()
+        .collect();
+
+    (visible_changes, visible_controllers)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU32;
+
+    use aos_ability_model::{
+        AccessMode, AggregateId, ArtifactReference, AuthorityGrant, BindingSource, ExecutionStage,
+        InterfaceKey, InterfaceName, LocalKey, ResourceId, ResourceLifetime, ResourcePermission,
+    };
+
+    use super::*;
+
+    #[test]
+    fn change_projection_includes_only_owned_and_exactly_granted_resources() {
+        let provider = instance("provider");
+        let lower = instance("lower");
+        let caller = instance("caller");
+        let unrelated = instance("unrelated");
+        let own = resource(&provider, "own");
+        let outgoing = resource(&lower, "outgoing");
+        let incoming = resource(&lower, "incoming");
+        let unrelated_binding = resource(&lower, "unrelated-binding");
+        let unrelated_principal = resource(&lower, "unrelated-principal");
+        let foreign = resource(&lower, "foreign");
+
+        let outgoing_binding = binding(
+            "outgoing",
+            &provider,
+            &lower,
+            grant(&provider, &[outgoing.clone()]),
+            grant(&lower, &[]),
+        );
+        let incoming_binding = binding(
+            "incoming",
+            &caller,
+            &provider,
+            grant(&caller, &[]),
+            grant(&provider, &[incoming.clone()]),
+        );
+        let foreign_binding = binding(
+            "foreign",
+            &unrelated,
+            &lower,
+            grant(&unrelated, &[unrelated_binding.clone()]),
+            grant(&lower, &[]),
+        );
+        let wrong_principal_binding = binding(
+            "wrong-principal",
+            &provider,
+            &lower,
+            grant(&unrelated, &[unrelated_principal.clone()]),
+            grant(&lower, &[]),
+        );
+        let authorized_outgoing = vec![
+            authorized(outgoing_binding.clone()),
+            authorized(foreign_binding.clone()),
+            authorized(wrong_principal_binding.clone()),
+        ];
+        let binding_plan = vec![
+            outgoing_binding,
+            incoming_binding,
+            foreign_binding,
+            wrong_principal_binding,
+        ];
+        let changes = [
+            own.clone(),
+            outgoing.clone(),
+            incoming.clone(),
+            unrelated_binding,
+            unrelated_principal,
+            foreign,
+        ]
+        .into_iter()
+        .map(change)
+        .collect::<Vec<_>>();
+        let controllers = changes
+            .iter()
+            .map(|change| {
+                let controller_provider = if change.resource == own {
+                    provider.clone()
+                } else {
+                    lower.clone()
+                };
+                controller(change.resource.clone(), controller_provider)
+            })
+            .collect::<Vec<_>>();
+
+        let (visible_changes, visible_controllers) = scoped_changes_and_controllers(
+            &provider,
+            &changes,
+            &controllers,
+            &authorized_outgoing,
+            &binding_plan,
+        );
+        let visible_resources = visible_changes
+            .iter()
+            .map(|change| change.resource.clone())
+            .collect::<BTreeSet<_>>();
+        let visible_controller_resources = visible_controllers
+            .iter()
+            .map(|assignment| assignment.resource.clone())
+            .collect::<BTreeSet<_>>();
+        let expected = BTreeSet::from([own, outgoing, incoming]);
+
+        assert_eq!(visible_resources, expected);
+        assert_eq!(visible_controller_resources, expected);
+    }
+
+    #[test]
+    fn teardown_projection_uses_only_fresh_remapped_outgoing_grants() {
+        let provider = instance("provider");
+        let lower = instance("lower");
+        let stale = resource(&lower, "stale");
+        let remapped = resource(&lower, "remapped");
+        let stale_binding = binding(
+            "stale",
+            &provider,
+            &lower,
+            grant(&provider, &[stale.clone()]),
+            grant(&lower, &[]),
+        );
+        let remapped_binding = binding(
+            "remapped",
+            &provider,
+            &lower,
+            grant(&provider, &[remapped.clone()]),
+            grant(&lower, &[]),
+        );
+        let authorized_outgoing = vec![AuthorizedTransitionBinding {
+            binding: remapped_binding.clone(),
+            authority: TransitionBindingAuthority::Teardown {
+                source_binding: stale_binding.id.clone(),
+                source_request: stale_binding.request.clone(),
+            },
+        }];
+        let binding_plan = vec![stale_binding, remapped_binding];
+        let changes = vec![change(stale), change(remapped.clone())];
+
+        let (visible_changes, _) = scoped_changes_and_controllers(
+            &provider,
+            &changes,
+            &[],
+            &authorized_outgoing,
+            &binding_plan,
+        );
+        let [visible] = visible_changes.as_slice() else {
+            panic!("only the freshly authorized remapped resource must be visible");
+        };
+
+        assert_eq!(visible.resource, remapped);
+    }
+
+    fn authorized(binding: Binding) -> AuthorizedTransitionBinding {
+        AuthorizedTransitionBinding {
+            binding,
+            authority: TransitionBindingAuthority::Desired,
+        }
+    }
+
+    fn binding(
+        name: &str,
+        consumer: &InstanceId,
+        provider: &InstanceId,
+        caller_grant: AuthorityGrant,
+        provider_grant: AuthorityGrant,
+    ) -> Binding {
+        let digest = Sha256Digest::separated("aos.test.transition-context/v1", name.as_bytes());
+        Binding {
+            id: BindingId(key(name)),
+            request: RequestId {
+                consumer: consumer.clone(),
+                scope: ScopePath::root(),
+                key: key(name),
+            },
+            interface: InterfaceKey {
+                name: InterfaceName::new("aos.test-transition-context")
+                    .expect("test interface name must be valid"),
+                abi: NonZeroU32::new(1).expect("test ABI must be nonzero"),
+                descriptor: digest,
+            },
+            provider: provider.clone(),
+            provider_package: None,
+            implementation: ProviderImplementationReference {
+                descriptor: digest,
+                artifact: ArtifactReference {
+                    content: digest,
+                    store_path: "/nix/store/00000000000000000000000000000000-transition-context"
+                        .to_string(),
+                    nar_hash: digest,
+                    closure: digest,
+                },
+                handler: None,
+            },
+            source: BindingSource::Explicit,
+            caller_grant,
+            provider_grant,
+            guarantees: Vec::new(),
+            policy_revision: RevisionId(digest),
+            lifetime: ResourceLifetime::Instance,
+            mediation_allowed: true,
+        }
+    }
+
+    fn grant(principal: &InstanceId, resources: &[ResourceId]) -> AuthorityGrant {
+        AuthorityGrant {
+            principal: principal.clone(),
+            methods: Vec::new(),
+            contributions: Vec::new(),
+            resources: resources
+                .iter()
+                .cloned()
+                .map(|resource| ResourcePermission {
+                    resource,
+                    access: AccessMode::Read,
+                    operations: vec![key("observe")],
+                })
+                .collect(),
+        }
+    }
+
+    fn change(resource: ResourceId) -> ResourceChange {
+        ResourceChange {
+            resource,
+            current: None,
+            desired: Some(RevisionId(Sha256Digest::separated(
+                "aos.test.transition-context/v1",
+                b"desired",
+            ))),
+            kind: ResourceChangeKind::Create,
+        }
+    }
+
+    fn controller(resource: ResourceId, provider: InstanceId) -> ControllerAssignment {
+        ControllerAssignment {
+            resource,
+            controller: AggregateId {
+                provider,
+                group: key("controller"),
+            },
+        }
+    }
+
+    fn resource(provider: &InstanceId, name: &str) -> ResourceId {
+        ResourceId {
+            provider: provider.clone(),
+            key: key(name),
+        }
+    }
+
+    fn instance(name: &str) -> InstanceId {
+        InstanceId {
+            environment: EnvironmentId {
+                authority: key("test"),
+                key: key("host"),
+                stage: ExecutionStage::Host,
+            },
+            key: key(name),
+        }
+    }
+
+    fn key(value: &str) -> LocalKey {
+        LocalKey::new(value).expect("test key must be valid")
+    }
 }

@@ -24,7 +24,7 @@ use crate::{CompositionEvaluator, VerifiedPlanningSnapshot};
 
 use context::{
     bounded_evaluation_message, controller_union, encode_ability_value, resource_changes,
-    scoped_desired_state, scoped_observations,
+    scoped_changes_and_controllers, scoped_desired_state, scoped_observations,
 };
 use graph::{
     AuthoredTransitionFragment, index_packages, merge_fragments, operation_scope,
@@ -303,16 +303,13 @@ impl<'a> TransitionPlanner<'a> {
                     })
                 })
                 .collect::<Result<Vec<_>, TransitionError>>()?;
-            let owned_changes: Vec<_> = changes
-                .iter()
-                .filter(|change| change.resource.provider == group.provider)
-                .cloned()
-                .collect();
-            let owned_controllers: Vec<_> = controllers
-                .iter()
-                .filter(|assignment| assignment.controller.provider == group.provider)
-                .cloned()
-                .collect();
+            let (visible_changes, visible_controllers) = scoped_changes_and_controllers(
+                &group.provider,
+                &changes,
+                &controllers,
+                &authorized_bindings,
+                binding_plan.bindings(),
+            );
             let before = inputs
                 .current
                 .map(|current| scoped_desired_state(current, &group.provider));
@@ -345,8 +342,8 @@ impl<'a> TransitionPlanner<'a> {
                 before,
                 after,
                 observations,
-                changes: owned_changes,
-                controllers: owned_controllers,
+                changes: visible_changes,
+                controllers: visible_controllers,
             };
             budget.preflight_context(&context, self.limits)?;
             let input = encode_ability_value(&context)?;

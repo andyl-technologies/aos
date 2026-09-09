@@ -61,5 +61,17 @@ let
   };
 in {
   inherit compose;
-  transition = _context: {};
+  transition = _context: {
+    schema = "aos.ability.transition-fragment/v1";
+    operations = [];
+    decisions = [];
+    merges = [];
+    edges = [];
+    exports = [];
+    imports = [];
+    links = [];
+    handoffs = [];
+    provider_readiness = [];
+    obligations = [];
+  };
 }
