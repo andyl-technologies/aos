@@ -1346,8 +1346,9 @@ pub use finding_candidate::AuthenticatedFindingCandidateIncorporation;
 
 pub use attempt_closure::NonModeledAttemptResult;
 pub use executor_driver::{
-    CampaignExecutorCancelOutcome, CampaignExecutorCheckpointOutcome, CampaignExecutorDriver,
-    CampaignExecutorDriverConfigError, CampaignExecutorDriverError, CampaignExecutorStepOutcome,
+    CampaignCompletionResult, CampaignExecutorCancelOutcome, CampaignExecutorCheckpointOutcome,
+    CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignExecutorDriverError,
+    CampaignExecutorStepOutcome,
 };
 pub use finding::FindingPublicationResult;
 pub use objective::{

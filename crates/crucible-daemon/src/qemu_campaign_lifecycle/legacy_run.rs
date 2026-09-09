@@ -1435,8 +1435,8 @@ where
         let CampaignExecutorStepOutcome::Incorporated(result) = outcome else {
             continue;
         };
-        let snapshot = result.new_snapshot;
-        let observation_id = result.observation;
+        let snapshot = result.final_snapshot();
+        let observation_id = result.observation_result().observation;
         let execution_boundary = context
             .execution_evidence
             .snapshot()

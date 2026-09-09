@@ -1736,7 +1736,7 @@ fn transient_capture_failure_cannot_starve_semantic_work_or_later_captures() {
     assert!(matches!(
         driver.step(CAMPAIGN, WorkerSlotId::new(0)),
         Ok(CampaignExecutorStepOutcome::Incorporated(ref result))
-            if result.observation == observation_id
+            if result.observation_result().observation == observation_id
     ));
     assert!(matches!(
         driver.step(CAMPAIGN, WorkerSlotId::new(0)),
