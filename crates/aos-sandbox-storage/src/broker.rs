@@ -2128,7 +2128,7 @@ impl StorageAdmissionCoordinator {
             .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
         let pin_proof = self
             .transactions
-            .require_satisfied_workspace_ensure_pin_effect(
+            .satisfied_workspace_ensure_pin_for_active_creation(
                 result.operation_id(),
                 workspace_handle,
             )?;
@@ -2194,13 +2194,13 @@ impl StorageAdmissionCoordinator {
                     // now-retired workspace still have a launchable Ensure.
                     creation: self.workspace_publication_from_committed(
                         creation,
-                        self.transactions.satisfied_workspace_pin_proof_for_effect(
-                            creation.operation_id(),
-                            creation
-                                .storage_handle()
-                                .ok_or(crate::StorageStateError::MissingAuthorityLink)?,
-                            WorkspacePinActionV1::Ensure,
-                        )?,
+                        self.transactions
+                            .satisfied_workspace_ensure_pin_for_creation_history(
+                                creation.operation_id(),
+                                creation
+                                    .storage_handle()
+                                    .ok_or(crate::StorageStateError::MissingAuthorityLink)?,
+                            )?,
                     )?,
                     retirement: self.workspace_retirement(retirement)?,
                 }),
@@ -3067,6 +3067,15 @@ mod tests {
         workspace_handle: [u8; 32],
         assignment_digest: ObjectDigest,
     ) -> Vec<u8> {
+        destroy_request_at_generation(operation, workspace_handle, 6, assignment_digest)
+    }
+
+    fn destroy_request_at_generation(
+        operation: u8,
+        workspace_handle: [u8; 32],
+        desired_generation: u64,
+        assignment_digest: ObjectDigest,
+    ) -> Vec<u8> {
         let mut value = ApplyStorageRequest::default();
         let header = value.header.get_or_insert_default();
         header.protocol_major = 1;
@@ -3079,7 +3088,7 @@ mod tests {
         fence.sandbox_id = vec![2; 16];
         fence.incarnation_id = vec![3; 16];
         fence.assignment_epoch = 4;
-        fence.desired_generation = 6;
+        fence.desired_generation = desired_generation;
         fence.assignment_digest = assignment_digest.as_bytes().to_vec();
         value.action = StorageAction::STORAGE_ACTION_DESTROY.into();
         value.operation_id = vec![operation; 16];
@@ -5992,6 +6001,10 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        assert!(matches!(
+            broker.workspace_projection().unwrap().as_slice(),
+            [StorageWorkspaceCatalogActionV1::Publish(_)]
+        ));
         let valid_completed_effect = broker
             .transactions
             .authority_record(
@@ -6005,6 +6018,104 @@ mod tests {
 
         let mut broker = coordinator(&directory, &fixture);
         broker.authenticate_workspace_pin_attempts().unwrap();
+        assert!(matches!(
+            broker.workspace_projection().unwrap().as_slice(),
+            [StorageWorkspaceCatalogActionV1::Publish(_)]
+        ));
+
+        // A repaired Ensure is historical creation evidence after retirement.
+        // Exercise the recovery projection both before and after journal reopen.
+        let retirement_directory = TempDir::new().unwrap();
+        fs::copy(
+            directory.path().join("storage-state.journal"),
+            retirement_directory.path().join("storage-state.journal"),
+        )
+        .unwrap();
+        let mut retired = coordinator(&retirement_directory, &fixture);
+        retired.authenticate_workspace_pin_attempts().unwrap();
+        let destroy_manifest = assignment_manifest_at(&sandbox_spec(72), 7);
+        let destroy_request =
+            destroy_request_at_generation(8, workspace_handle, 7, destroy_manifest.digest());
+        let destroy_catalog = destroy_catalog(workspace_handle, 11);
+        let expected_head = retired.transactions.catalog_head_binding().unwrap();
+        let destroy_artifacts =
+            fixture.artifacts_at_head(&destroy_request, &destroy_catalog, expected_head, 300);
+        prepare_for_apply(
+            &mut retired,
+            &destroy_request,
+            &destroy_artifacts,
+            &destroy_catalog,
+            &clock(),
+        );
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = retired
+            .admit_apply_intent(
+                &destroy_request,
+                &destroy_artifacts,
+                &destroy_catalog,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("repaired workspace destruction was not prepared")
+        };
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::new(Cell::new(0)),
+            },
+        );
+        let prepared = helper.preobserve(&retired.transactions, [8; 16]).unwrap();
+        assert_eq!(prepared.entry().mutation_digest(), mutation_digest);
+        let proof = workspace_pin_proof(workspace_handle, initial_attempt.dataset_name(), 11);
+        let AuthorizedWorkspaceRemoveAttemptV1::Dispatch(remove_dispatch) =
+            retired
+                .begin_workspace_pin_remove_and_destroy(prepared, host_scope, proof, &mut || {
+                    Ok(clock())
+                })
+                .unwrap()
+        else {
+            panic!("repaired workspace pin removal was not dispatched")
+        };
+        let (remove_attempt, prepared) = (*remove_dispatch).into_parts();
+        assert_eq!(remove_attempt.attempt_ordinal(), 3);
+        let _retirement = retired
+            .transactions
+            .commit_observed(
+                [8; 16],
+                prepared.entry().mutation_digest(),
+                &destroy_catalog,
+                &destroy_catalog.plan().postcondition(),
+                None,
+                ObjectDigest::from_bytes([0xd3; 32]),
+            )
+            .unwrap();
+        assert_eq!(
+            retired
+                .transactions
+                .complete_workspace_pin_attempt(
+                    remove_attempt.attempt_id(),
+                    &crate::workspace_pin::WorkspaceDatasetObservationV1::Absent,
+                    &crate::workspace_pin::WorkspacePinObservationV1::Absent,
+                )
+                .unwrap(),
+            WorkspacePinRecoveryDispositionV1::CompleteRetirement
+        );
+        assert!(matches!(
+            retired.workspace_projection().unwrap().as_slice(),
+            [StorageWorkspaceCatalogActionV1::Retire { .. }]
+        ));
+        drop(retired);
+
+        let retired = coordinator(&retirement_directory, &fixture);
+        retired.authenticate_workspace_pin_attempts().unwrap();
+        assert!(matches!(
+            retired.workspace_projection().unwrap().as_slice(),
+            [StorageWorkspaceCatalogActionV1::Retire { .. }]
+        ));
+
         broker
             .transactions
             .put_authority_record_with_transaction_for_test(

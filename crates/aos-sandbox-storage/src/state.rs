@@ -1410,40 +1410,85 @@ impl StorageTransactionStore {
         Ok(())
     }
 
-    pub(crate) fn require_satisfied_workspace_ensure_pin_effect(
+    // Publication follows the creation identity, while a repair has its own
+    // effect identity. Never fall back past a newer non-satisfied attempt.
+    pub(crate) fn satisfied_workspace_ensure_pin_for_active_creation(
         &self,
-        effect_operation_id: [u8; 16],
+        creation_operation_id: [u8; 16],
         workspace_handle: [u8; 32],
-    ) -> Result<WorkspaceRootPinProofV1, StorageStateError> {
-        self.require_satisfied_workspace_pin_effect(
-            effect_operation_id,
-            workspace_handle,
-            WorkspacePinActionV1::Ensure,
-        )?;
-        self.satisfied_workspace_pin_proof_for_effect(
-            effect_operation_id,
-            workspace_handle,
-            WorkspacePinActionV1::Ensure,
-        )
-    }
-
-    pub(crate) fn satisfied_workspace_pin_proof_for_effect(
-        &self,
-        effect_operation_id: [u8; 16],
-        workspace_handle: [u8; 32],
-        action: WorkspacePinActionV1,
     ) -> Result<WorkspaceRootPinProofV1, StorageStateError> {
         self.ensure_authority_readable()?;
-        self.pin_attempts
+        let latest = self
+            .pin_attempts
+            .values()
+            .filter(|attempt| attempt.workspace_handle() == workspace_handle)
+            .max_by_key(|attempt| attempt.attempt_ordinal())
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        self.satisfied_workspace_ensure_pin(&latest, creation_operation_id, workspace_handle)
+    }
+
+    /// Recovers the historical satisfied Ensure proof for a retired creation.
+    ///
+    /// RemoveAndDestroy may follow a newer non-satisfied Ensure while retaining
+    /// the most recent satisfied pin. This lookup is deliberately scoped to the
+    /// retired creation rather than the globally latest workspace attempt used
+    /// for active publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageStateError`] when authority state is unavailable, no
+    /// matching satisfied Ensure exists, or its creation or repair links do not
+    /// match the requested retired workspace.
+    pub(crate) fn satisfied_workspace_ensure_pin_for_creation_history(
+        &self,
+        creation_operation_id: [u8; 16],
+        workspace_handle: [u8; 32],
+    ) -> Result<WorkspaceRootPinProofV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        let latest = self
+            .pin_attempts
             .values()
             .filter(|attempt| {
-                attempt.effect_operation_id() == effect_operation_id
+                attempt.creation_operation_id() == creation_operation_id
                     && attempt.workspace_handle() == workspace_handle
-                    && attempt.action() == action
+                    && attempt.action() == WorkspacePinActionV1::Ensure
                     && attempt.phase() == WorkspacePinAttemptPhaseV1::Satisfied
             })
             .max_by_key(|attempt| attempt.attempt_ordinal())
-            .and_then(|attempt| attempt.satisfied_pin().cloned())
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        self.satisfied_workspace_ensure_pin(latest, creation_operation_id, workspace_handle)
+    }
+
+    fn satisfied_workspace_ensure_pin(
+        &self,
+        latest: &WorkspacePinAttemptV1,
+        creation_operation_id: [u8; 16],
+        workspace_handle: [u8; 32],
+    ) -> Result<WorkspaceRootPinProofV1, StorageStateError> {
+        if latest.creation_operation_id() != creation_operation_id
+            || latest.workspace_handle() != workspace_handle
+            || latest.action() != WorkspacePinActionV1::Ensure
+            || latest.phase() != WorkspacePinAttemptPhaseV1::Satisfied
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        if latest.effect_operation_id() != creation_operation_id {
+            let intent = self
+                .repair_intents
+                .get(&latest.effect_operation_id())
+                .ok_or(StorageStateError::MissingAuthorityLink)?;
+            if intent.repair_attempt_id() != latest.attempt_id()
+                || intent.repair_operation_id() != latest.effect_operation_id()
+                || intent.repair_attempt_ordinal() != latest.attempt_ordinal()
+                || intent.creation_operation_id() != creation_operation_id
+                || intent.workspace_handle() != workspace_handle
+            {
+                return Err(StorageStateError::AuthorityLinkMismatch);
+            }
+        }
+        latest
+            .satisfied_pin()
+            .cloned()
             .ok_or(StorageStateError::MissingAuthorityLink)
     }
 
@@ -1939,10 +1984,9 @@ impl StorageTransactionStore {
                         .storage_handle()
                         .ok_or(StorageStateError::MissingAuthorityLink)?;
                     if self
-                        .require_satisfied_workspace_pin_effect(
+                        .satisfied_workspace_ensure_pin_for_active_creation(
                             operation_id,
                             workspace_handle,
-                            WorkspacePinActionV1::Ensure,
                         )
                         .is_err()
                     {
@@ -4768,6 +4812,89 @@ mod tests {
             )
             .unwrap();
         assert!(store.workspace_projection().unwrap().is_empty());
+    }
+
+    #[test]
+    fn active_pin_selection_is_global_while_retirement_history_is_creation_scoped() {
+        let directory = TempDir::new().unwrap();
+        let mut store =
+            StorageTransactionStore::open_for_test(directory.path(), key(1), 0).unwrap();
+        let workspace_handle = [9; 32];
+        let creation_catalog = catalog(7, "tank/aos/project/work").binding();
+        let intended_creation = [61; 16];
+        let foreign_creation = [62; 16];
+        let proof = workspace_pin_proof(workspace_handle, "tank/aos/project/work", 101);
+        let attempt = |attempt_id, ordinal, creation_operation_id| {
+            WorkspacePinAttemptV1::new_ambiguous(
+                attempt_id,
+                ordinal,
+                WorkspacePinActionV1::Ensure,
+                creation_operation_id,
+                creation_operation_id,
+                digest(63),
+                digest(64),
+                digest(65),
+                creation_catalog,
+                digest(66),
+                workspace_handle,
+                [4; 16],
+                5,
+                6,
+                [10; 16],
+                1_000,
+                "tank/aos/project/work".to_owned(),
+                101,
+                65_536,
+                65_536,
+                None,
+            )
+            .unwrap()
+        };
+
+        let intended = attempt([67; 16], 1, intended_creation)
+            .satisfy(Some(proof.clone()))
+            .unwrap();
+        let foreign = attempt([68; 16], 2, foreign_creation)
+            .satisfy(Some(proof.clone()))
+            .unwrap();
+        store.pin_attempts.insert(intended.attempt_id(), intended);
+        store.pin_attempts.insert(foreign.attempt_id(), foreign);
+
+        assert!(matches!(
+            store.satisfied_workspace_ensure_pin_for_active_creation(
+                intended_creation,
+                workspace_handle,
+            ),
+            Err(StorageStateError::InvalidTransition)
+        ));
+        assert_eq!(
+            store
+                .satisfied_workspace_ensure_pin_for_creation_history(
+                    intended_creation,
+                    workspace_handle,
+                )
+                .unwrap(),
+            proof
+        );
+
+        let pending = attempt([69; 16], 3, intended_creation);
+        store.pin_attempts.insert(pending.attempt_id(), pending);
+        assert!(matches!(
+            store.satisfied_workspace_ensure_pin_for_active_creation(
+                intended_creation,
+                workspace_handle,
+            ),
+            Err(StorageStateError::InvalidTransition)
+        ));
+        assert_eq!(
+            store
+                .satisfied_workspace_ensure_pin_for_creation_history(
+                    intended_creation,
+                    workspace_handle,
+                )
+                .unwrap(),
+            proof
+        );
     }
 
     #[test]
