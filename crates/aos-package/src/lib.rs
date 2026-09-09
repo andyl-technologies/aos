@@ -41,6 +41,7 @@
 //! - `runtime_boundary` — fail-closed container and read-only command
 //!   admission before configuration, profile, or host-service access.
 
+pub mod ability_package;
 pub mod attestation;
 pub mod clean;
 pub mod config;
@@ -6939,6 +6940,7 @@ mod tests {
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {

@@ -545,6 +545,25 @@ pub(in crate::registry_ops) fn introspect_closure_nars(
         .collect())
 }
 
+/// Returns one store object's sorted direct reference hashes.
+///
+/// # Errors
+///
+/// Returns an error when Nix cannot query the object or emits a malformed
+/// store path.
+pub(in crate::registry_ops) fn introspect_direct_reference_hashes(
+    store_path: &str,
+) -> Result<Vec<String>> {
+    let mut references = nix_store_query("--references", &[store_path])?
+        .into_iter()
+        .filter(|reference| reference != store_path)
+        .map(|reference| extract_hash(&reference).to_string())
+        .collect::<Vec<_>>();
+    references.sort();
+    references.dedup();
+    Ok(references)
+}
+
 /// Run `nix store make-content-addressed --json` over a closure root and
 /// return the input-addressed → content-addressed store-path-hash map for
 /// every member it rewrites.

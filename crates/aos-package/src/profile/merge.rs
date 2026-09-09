@@ -368,6 +368,7 @@ mod tests {
                 expose_artifact: None,
                 config_module: None,
                 documentation: None,
+                ability: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),

@@ -575,7 +575,7 @@ fn find_orphans_from_meta(
         .collect()
 }
 
-/// Collect each entry's package, source, and documentation store-path hashes.
+/// Collect every store-path hash rooted on behalf of installed entries.
 ///
 /// Every returned hash names a GC root owned by the profile generation. Keeping
 /// these identities together ensures removal drops all artifacts belonging to
@@ -591,6 +591,15 @@ fn root_hashes_for_installed(installed: &[InstalledMeta]) -> HashSet<String> {
             if let Some(documentation) = &apm.documentation {
                 hashes.insert(store_path_hash(&documentation.store_path).to_string());
             }
+            if let Some(ability) = &apm.ability {
+                hashes.insert(store_path_hash(&ability.store_path).to_string());
+                hashes.extend(
+                    ability
+                        .artifacts
+                        .iter()
+                        .map(|artifact| store_path_hash(&artifact.store_path).to_string()),
+                );
+            }
         }
     }
     hashes
@@ -598,7 +607,7 @@ fn root_hashes_for_installed(installed: &[InstalledMeta]) -> HashSet<String> {
 
 /// Copy roots from one generation to another, EXCLUDING specific hashes.
 ///
-/// Copies `usr/`, `src/`, and `docs/` symlinks, skipping any entry whose
+/// Copies package, source, documentation, and ability symlinks, skipping entries whose
 /// name (hash) is in the `exclude` set.
 fn copy_roots_except(
     from: &super::profile::Generation,
@@ -607,7 +616,7 @@ fn copy_roots_except(
 ) -> Result<()> {
     use std::os::unix::fs::symlink;
 
-    for root_class in ["usr", "src", "docs"] {
+    for root_class in ["usr", "src", "docs", "abilities"] {
         let from_root = from.path.join(root_class);
         let to_root = to.path.join(root_class);
         std::fs::create_dir_all(&to_root)
@@ -725,6 +734,7 @@ mod tests {
                 expose_artifact: None,
                 config_module: None,
                 documentation: None,
+                ability: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),

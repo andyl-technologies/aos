@@ -487,7 +487,7 @@ pub(super) fn locked_store_input(path: &Path, expected_nar_hash: Option<&str>) -
     }
 }
 
-pub(super) fn store_root_and_suffix(path: &Path) -> Result<(PathBuf, PathBuf)> {
+pub(crate) fn store_root_and_suffix(path: &Path) -> Result<(PathBuf, PathBuf)> {
     let relative = path
         .strip_prefix("/nix/store")
         .with_context(|| format!("evaluator input {} is outside /nix/store", path.display()))?;
@@ -1107,6 +1107,7 @@ mod tests {
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),

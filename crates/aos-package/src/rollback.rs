@@ -22,7 +22,7 @@ use super::platform::native_platform;
 use super::profile::Profile;
 use super::profile::meta::{self, list_meta};
 use super::registry::RegistrySet;
-use super::types::{ConfigGeneration, ProfileScope, ReactivationPlan};
+use super::types::{AbilityPackageMeta, ConfigGeneration, ProfileScope, ReactivationPlan};
 use aos_core::output::{OutputMode, Printer};
 
 /// List user package profile generations.
@@ -231,6 +231,7 @@ pub async fn run(
 
     let profile = Profile::open(config.scope)?;
     let registries = load_registries(config)?;
+    verify_target_ability_packages(config, target, &registries)?;
 
     // Switch to the target generation.
     profile.switch_to(target)?;
@@ -262,6 +263,95 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+fn verify_target_ability_packages(
+    config: &ApmConfig,
+    target: &super::profile::Generation,
+    registries: &RegistrySet,
+) -> Result<()> {
+    let roots = target.roots()?;
+    let mut entries = Vec::new();
+    for (hash, store_path) in &roots {
+        let Some(snapshot) = meta::read_generation_meta(target, hash)? else {
+            continue;
+        };
+        let Some(installed) = snapshot.apm.as_ref() else {
+            continue;
+        };
+        let registry = registries
+            .registries()
+            .iter()
+            .find(|registry| registry.config.name == installed.registry);
+        let Some(registry) = registry else {
+            if installed.ability.is_none() {
+                continue;
+            }
+            bail!(
+                "rollback target {}@{} requires unavailable registry '{}' for ability verification",
+                installed.name,
+                installed.version,
+                installed.registry
+            );
+        };
+        let package = registry.get_by_hash(hash);
+        let Some(package) = package else {
+            if installed.ability.is_none() {
+                continue;
+            }
+            return Err(anyhow::anyhow!(
+                "rollback target {}@{} is absent from registry '{}'",
+                installed.name,
+                installed.version,
+                installed.registry
+            ));
+        };
+        let requires_verification = require_rollback_ability_metadata(
+            &installed.name,
+            &installed.version,
+            &installed.registry,
+            installed.ability.as_ref(),
+            package.ability.as_ref(),
+        )?;
+        if !requires_verification {
+            continue;
+        }
+        if package.name != installed.name
+            || package.version != installed.version
+            || store_path.to_str() != Some(package.store_path.as_str())
+        {
+            bail!(
+                "rollback target {}@{} ability metadata differs from registry '{}'",
+                installed.name,
+                installed.version,
+                installed.registry
+            );
+        }
+        entries.push((registry.config.name.as_str(), package));
+    }
+
+    super::install::verify_ability_packages_from_cache_with_store(config, entries)?;
+    Ok(())
+}
+
+/// Requires an exact retained ability seal before a rollback can reactivate it.
+fn require_rollback_ability_metadata(
+    name: &str,
+    version: &str,
+    registry: &str,
+    snapshot: Option<&AbilityPackageMeta>,
+    current: Option<&AbilityPackageMeta>,
+) -> Result<bool> {
+    match (snapshot, current) {
+        (None, None) => Ok(false),
+        (Some(snapshot), Some(current)) if snapshot == current => Ok(true),
+        (None, Some(_)) => bail!(
+            "rollback target {name}@{version} does not retain ability metadata now required by registry '{registry}'"
+        ),
+        _ => bail!(
+            "rollback target {name}@{version} ability metadata differs from registry '{registry}'"
+        ),
+    }
 }
 
 /// Build the JSON document emitted for `apm rollback` (planned or applied).
@@ -476,11 +566,83 @@ fn describe_root(registries: &RegistrySet, hash: &str, target: &std::path::Path)
 #[cfg(test)]
 mod tests {
     use crate::profile::Profile;
-    use crate::types::{ConfigGeneration, ProfileScope, ReactivationPlan};
+    use crate::types::{AbilityPackageMeta, ConfigGeneration, ProfileScope, ReactivationPlan};
     use tempfile::TempDir;
 
     fn test_profile(tmp: &TempDir) -> Profile {
         Profile::open_at(tmp.path().to_path_buf(), ProfileScope::User).unwrap()
+    }
+
+    fn ability_meta(store_path: &str) -> AbilityPackageMeta {
+        AbilityPackageMeta {
+            store_path: store_path.to_string(),
+            nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+            nar_size: 1,
+            references: Vec::new(),
+            manifest_sha256:
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string(),
+            manifest_size: 1,
+            package_digest:
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_string(),
+            activation_mode: "contracts-only".to_string(),
+            artifacts: Vec::new(),
+            provenance: "provenance/a/ability.intoto.jsonl".to_string(),
+        }
+    }
+
+    #[test]
+    fn legacy_snapshot_cannot_omit_new_registry_ability_metadata() {
+        let current = ability_meta("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-owner-abilities");
+
+        let error = super::require_rollback_ability_metadata(
+            "owner",
+            "1.0.0",
+            "test-reg",
+            None,
+            Some(&current),
+        )
+        .expect_err("rollback must not infer an ability seal absent from its snapshot");
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not retain ability metadata")
+        );
+    }
+
+    #[test]
+    fn rollback_rejects_changed_retained_ability_metadata() {
+        let snapshot = ability_meta("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-owner-abilities");
+        let current = ability_meta("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-owner-abilities");
+
+        let error = super::require_rollback_ability_metadata(
+            "owner",
+            "1.0.0",
+            "test-reg",
+            Some(&snapshot),
+            Some(&current),
+        )
+        .expect_err("changed retained metadata must fail closed");
+
+        assert!(error.to_string().contains("differs from registry"));
+    }
+
+    #[test]
+    fn rollback_accepts_exact_retained_ability_metadata() {
+        let snapshot = ability_meta("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-owner-abilities");
+
+        assert!(
+            super::require_rollback_ability_metadata(
+                "owner",
+                "1.0.0",
+                "test-reg",
+                Some(&snapshot),
+                Some(&snapshot),
+            )
+            .unwrap()
+        );
     }
 
     /// Builds a configuration-generation record with the supplied axis metadata.

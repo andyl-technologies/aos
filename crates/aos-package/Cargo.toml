@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 aos-ability-model = { workspace = true }
 aos-ability-plan = { workspace = true }
+aos-ability-validate = { workspace = true }
 aos-contract = { workspace = true }
 aos-core = { workspace = true }
 aos-doc-model = { workspace = true }

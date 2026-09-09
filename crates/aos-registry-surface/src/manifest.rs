@@ -184,6 +184,9 @@ pub struct PlatformEntry {
     /// Canonical RFC-0016 package documentation store object.
     #[serde(default)]
     pub documentation: Option<DocumentationArtifactMeta>,
+    /// Authenticated RFC-0022 ability package companion.
+    #[serde(default)]
+    pub ability: Option<AbilityPackageMeta>,
 }
 
 impl PlatformEntry {
@@ -2546,6 +2549,71 @@ pub struct DocumentationArtifactMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_module_nar_hash: Option<String>,
     /// Direct references. Version 1 requires this to be empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<String>,
+}
+
+/// Authenticated metadata for one RFC-0022 package ability manifest.
+///
+/// The companion output contains canonical `aos.ability.package/v1` JSON. The
+/// registry entry binds both its exact bytes and its semantic document digest,
+/// then retains a complete realization catalog for every artifact the manifest
+/// may execute or re-evaluate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AbilityPackageMeta {
+    /// Store path of the `abilities` companion output.
+    pub store_path: String,
+    /// Hash of the uncompressed companion-output NAR.
+    pub nar_hash: String,
+    /// Uncompressed companion-output NAR size in bytes.
+    pub nar_size: u64,
+    /// Direct store-path hash references of the companion output.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<String>,
+    /// SHA-256 digest of the exact canonical `package.json` bytes.
+    pub manifest_sha256: String,
+    /// Exact canonical `package.json` byte length.
+    pub manifest_size: u64,
+    /// Domain-separated `aos.ability.package/v1` semantic digest.
+    pub package_digest: String,
+    /// Declared activation ownership: `contracts-only` or `structured-effects`.
+    pub activation_mode: String,
+    /// Exact retained closure catalogs for every manifest artifact.
+    pub artifacts: Vec<AbilityArtifactRetentionMeta>,
+    /// Registry-relative dedicated DSSE statement for this companion.
+    pub provenance: String,
+}
+
+/// Retains one exact ability artifact and its complete authenticated closure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AbilityArtifactRetentionMeta {
+    /// Domain-specific content identity copied from the package manifest.
+    pub content: String,
+    /// Exact store path copied from the package manifest.
+    pub store_path: String,
+    /// Exact NAR identity copied from the package manifest.
+    pub nar_hash: String,
+    /// Uncompressed artifact NAR size in bytes.
+    pub nar_size: u64,
+    /// Domain-separated digest of the complete ordered closure catalog.
+    pub closure_digest: String,
+    /// Complete sorted closure, including the artifact root.
+    pub closure: Vec<AbilityClosureMemberMeta>,
+}
+
+/// Describes one exact realized member of an ability artifact closure.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AbilityClosureMemberMeta {
+    /// Exact realized Nix store path.
+    pub store_path: String,
+    /// Hash of the member's uncompressed NAR.
+    pub nar_hash: String,
+    /// Uncompressed member NAR size in bytes.
+    pub nar_size: u64,
+    /// Sorted direct references as exact 32-character Nix store hashes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<String>,
 }

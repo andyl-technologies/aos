@@ -84,6 +84,18 @@ pub const FEATURE_UKI_SLOTS_V1: &str = "uki-slots-v1";
 /// Registry feature flag for signed, slot-paired recovery UKI metadata.
 pub const FEATURE_RECOVERY_UKIS_V1: &str = "recovery-ukis-v1";
 
+/// Registry feature flag for an authenticated RFC-0022 ability manifest.
+pub const FEATURE_ABILITIES_V1: &str = "abilities-v1";
+
+/// Registry feature flag for RFC-0022 structured effect activation.
+///
+/// This client deliberately does not advertise this feature until structured
+/// activation owns the corresponding resources on every mutation path.
+pub const FEATURE_ABILITY_EFFECTS_V1: &str = "ability-effects-v1";
+
+/// Names the retained derivation output containing an ability manifest.
+pub const ABILITY_MANIFEST_OUTPUT: &str = "abilities";
+
 const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_EXPOSE_V1,
     FEATURE_EXPOSE_ARTIFACT_V1,
@@ -553,6 +565,9 @@ pub struct PackageMeta {
     /// Canonical package documentation selected for this version/platform.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documentation: Option<DocumentationArtifactMeta>,
+    /// Authenticated RFC-0022 ability package companion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ability: Option<AbilityPackageMeta>,
     /// Signed RFC-0001 permission manifest.
     #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
     pub permissions: PermissionsMeta,
@@ -583,6 +598,7 @@ pub use aos_registry_surface::manifest::{
 // schema (so the hub indexer and the Worker share them) and are re-exported
 // here so `aos_package::types::{ConfigModuleMeta, …}` paths are unchanged.
 pub use aos_registry_surface::manifest::{
+    AbilityArtifactRetentionMeta, AbilityClosureMemberMeta, AbilityPackageMeta,
     ConfigModuleArtifacts, ConfigModuleMeta, ConfigOptionDeclaration, ConfigOutputMeta,
     DocumentationArtifactMeta, ModuleAbiCompat, OwnedRoot, RootContribution,
 };
@@ -609,6 +625,7 @@ pub(crate) fn package_requires_provenance(meta: &PackageMeta) -> bool {
         meta.bpf_lsm.as_ref(),
     ) || meta.config_module.is_some()
         || meta.documentation.is_some()
+        || meta.ability.is_some()
 }
 
 /// Returns whether RFC-0001 metadata fields must be backed by DSSE provenance.
@@ -683,6 +700,8 @@ pub fn validate_supported_package_meta_with(
         }
     }
 
+    validate_ability_activation_ownership(meta)?;
+
     if meta.expose.is_some() {
         require_feature(meta, FEATURE_EXPOSE_V1)?;
         require_feature(meta, FEATURE_NETWORK_POLICY_V1)?;
@@ -719,6 +738,14 @@ pub fn validate_supported_package_meta_with(
             format!("invalid package-documentation metadata for '{}'", meta.name)
         })?;
     }
+    if let Some(ability) = &meta.ability {
+        require_feature(meta, FEATURE_ABILITIES_V1)?;
+        if ability.activation_mode == "structured-effects" {
+            require_feature(meta, FEATURE_ABILITY_EFFECTS_V1)?;
+        }
+        crate::ability_package::validate_ability_package_meta(ability)
+            .with_context(|| format!("invalid ability metadata for '{}'", meta.name))?;
+    }
     if meta.images.iter().any(|image| !image.ukis.is_empty()) {
         require_feature(meta, FEATURE_UKI_SLOTS_V1)?;
     }
@@ -738,6 +765,8 @@ pub fn validate_supported_package_meta_with(
             "uses config-module metadata"
         } else if meta.documentation.is_some() {
             "uses package-documentation metadata"
+        } else if meta.ability.is_some() {
+            "uses ability metadata"
         } else {
             "uses RFC-0001 exposed or permission metadata"
         };
@@ -789,6 +818,30 @@ pub fn validate_supported_package_meta_with(
 
     validate_permissions_meta(&meta.name, &meta.permissions)?;
 
+    Ok(())
+}
+
+/// Preserves one activation owner for packages using structured effects.
+fn validate_ability_activation_ownership(meta: &PackageMeta) -> Result<()> {
+    let Some(ability) = &meta.ability else {
+        return Ok(());
+    };
+    if ability.activation_mode != "structured-effects" {
+        return Ok(());
+    }
+
+    let carries_legacy_activation = rfc0001_metadata_requires_provenance(
+        meta.expose.as_ref(),
+        meta.expose_artifact.as_ref(),
+        &meta.permissions,
+        meta.bpf_lsm.as_ref(),
+    ) || meta.config_module.is_some();
+    if carries_legacy_activation {
+        bail!(
+            "package '{}' declares structured ability effects together with legacy activation metadata",
+            meta.name
+        );
+    }
     Ok(())
 }
 
@@ -2386,6 +2439,9 @@ pub struct ApmMeta {
     /// Canonical documentation artifact captured at install time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documentation: Option<DocumentationArtifactMeta>,
+    /// Authenticated ability companion captured at install time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ability: Option<AbilityPackageMeta>,
     /// RFC-0001 permission manifest captured at install time.
     #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
     pub permissions: PermissionsMeta,
@@ -4316,6 +4372,7 @@ last_update = "2026-02-13T10:30:00Z"
                 expose_artifact: None,
                 config_module: None,
                 documentation: None,
+                ability: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -4414,6 +4471,7 @@ last_update = "2026-02-13T10:30:00Z"
             }),
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta {
                 capabilities: vec!["CAP_NET_BIND_SERVICE".into()],
                 network: Some(NetworkPermission::PrivateOutbound),
@@ -4532,6 +4590,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta {
                 network: Some(NetworkPermission::Host),
                 ..PermissionsMeta::default()
@@ -4571,6 +4630,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta {
                 tcp_connect: vec![443],
                 ..PermissionsMeta::default()
@@ -4621,6 +4681,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4672,6 +4733,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4714,6 +4776,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta {
                 tcp_bind: vec![0],
                 ..PermissionsMeta::default()
@@ -4756,6 +4819,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta {
                 network: Some(NetworkPermission::Host),
                 confinement: Some(ConfinementMeta {
@@ -4830,6 +4894,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4907,6 +4972,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -5078,6 +5144,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -5133,6 +5200,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -5171,6 +5239,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: Some(BpfLsmPolicyMeta {
                 policies: vec![BpfLsmPolicyArtifactMeta {
@@ -5246,6 +5315,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {
@@ -5574,6 +5644,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -5630,6 +5701,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -6297,6 +6369,7 @@ provenance = "provenance/firewall.jsonl"
             expose_artifact: None,
             config_module: None,
             documentation: meta.documentation.clone(),
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: meta.attestation.clone(),
@@ -6317,6 +6390,52 @@ provenance = "provenance/firewall.jsonl"
         artifact.references.clear();
         artifact.document_size = aos_doc_model::MAX_DOCUMENT_BYTES as u64 + 1;
         assert!(validate_documentation_artifact_meta(&artifact).is_err());
+    }
+
+    #[test]
+    fn structured_ability_cannot_retain_legacy_activation_owner() {
+        let mut meta = sample_package_meta();
+        meta.requires_features = vec![
+            FEATURE_ABILITIES_V1.to_string(),
+            FEATURE_ABILITY_EFFECTS_V1.to_string(),
+            FEATURE_CONFIG_MODULE_V1.to_string(),
+        ];
+        meta.config_module = Some(sample_config_module());
+        meta.ability = Some(AbilityPackageMeta {
+            store_path: "/nix/store/0000000000000000000000000000000e-firewall-abilities"
+                .to_string(),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            nar_size: 1,
+            references: Vec::new(),
+            manifest_sha256:
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_string(),
+            manifest_size: 1,
+            package_digest:
+                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    .to_string(),
+            activation_mode: "structured-effects".to_string(),
+            artifacts: Vec::new(),
+            provenance: "provenance/firewall.ability.intoto.jsonl".to_string(),
+        });
+
+        let error = validate_supported_package_meta_with(
+            &meta,
+            PACKAGE_META_FORMAT,
+            &[
+                FEATURE_ABILITIES_V1,
+                FEATURE_ABILITY_EFFECTS_V1,
+                FEATURE_CONFIG_MODULE_V1,
+            ],
+        )
+        .expect_err("structured effects and legacy configuration activation need one owner");
+
+        assert!(
+            error
+                .to_string()
+                .contains("structured ability effects together with legacy activation metadata")
+        );
     }
 
     fn sample_package_meta() -> PackageMeta {
@@ -6344,6 +6463,7 @@ provenance = "provenance/firewall.jsonl"
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta::default(),

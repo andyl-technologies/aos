@@ -270,21 +270,27 @@ pub async fn filter_missing(store_paths: &[String]) -> Result<Vec<String>> {
 /// For packages with canonical documentation:
 ///   `gen_dir/docs/{documentation_hash}` -> `{documentation_store_path}`
 ///
+/// For packages with authenticated abilities:
+///   `gen_dir/abilities/{artifact_hash}` -> `{companion_or_artifact_store_path}`
+///
 /// Uses `std::os::unix::fs::symlink` for atomic symlink creation.
 ///
 /// # Errors
 ///
-/// Returns an error if the `usr/`/`src/`/`docs/` directories cannot be created or a
-/// symlink cannot be created or renamed into place.
+/// Returns an error if a root directory cannot be created or a symlink cannot
+/// be created or renamed into place.
 pub fn create_gc_roots(gen_dir: &Path, packages: &[PackageMeta]) -> Result<()> {
     let usr_dir = gen_dir.join("usr");
     let src_dir = gen_dir.join("src");
     let docs_dir = gen_dir.join("docs");
+    let abilities_dir = gen_dir.join("abilities");
 
     std::fs::create_dir_all(&usr_dir).with_context(|| format!("creating {}", usr_dir.display()))?;
     std::fs::create_dir_all(&src_dir).with_context(|| format!("creating {}", src_dir.display()))?;
     std::fs::create_dir_all(&docs_dir)
         .with_context(|| format!("creating {}", docs_dir.display()))?;
+    std::fs::create_dir_all(&abilities_dir)
+        .with_context(|| format!("creating {}", abilities_dir.display()))?;
 
     for meta in packages {
         // Create usr/{hash} -> store_path
@@ -321,6 +327,25 @@ pub fn create_gc_roots(gen_dir: &Path, packages: &[PackageMeta]) -> Result<()> {
                     documentation.store_path
                 )
             })?;
+        }
+
+        if let Some(ability) = &meta.ability {
+            for store_path in std::iter::once(&ability.store_path).chain(
+                ability
+                    .artifacts
+                    .iter()
+                    .map(|artifact| &artifact.store_path),
+            ) {
+                let artifact_hash = store_path_hash(store_path);
+                let artifact_link = abilities_dir.join(artifact_hash);
+                atomic_symlink(store_path, &artifact_link).with_context(|| {
+                    format!(
+                        "creating ability GC root {} -> {}",
+                        artifact_link.display(),
+                        store_path
+                    )
+                })?;
+            }
         }
     }
 
@@ -714,6 +739,7 @@ mod tests {
             expose_artifact: None,
             config_module: None,
             documentation: None,
+            ability: None,
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),

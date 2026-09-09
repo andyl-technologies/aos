@@ -332,6 +332,7 @@ fn package_metas_for_platform(
                 expose_artifact: plat.expose_artifact.clone(),
                 config_module: plat.config_module.clone(),
                 documentation: plat.documentation.clone(),
+                ability: plat.ability.clone(),
                 permissions: plat.permissions.clone(),
                 bpf_lsm: plat.bpf_lsm.clone(),
                 attestation,
@@ -343,6 +344,7 @@ fn package_metas_for_platform(
                     .bpf_lsm
                     .as_ref()
                     .is_some_and(|bpf_lsm| !bpf_lsm.is_empty())
+                || meta.ability.is_some()
                 || !meta.attestation.is_empty())
                 && !plat.references.is_gate()
             {
