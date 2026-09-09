@@ -1,8 +1,11 @@
-//! Pure admission model for privileged lifecycle-worker namespace inspection.
+//! Admission model and retained peer authentication for namespace inspection.
 //!
-//! This module defines the bounded request and response records for a future
-//! fixed namespace-inspector process. It deliberately does not launch that
-//! process, acquire a namespace, persist policy, or advertise effect readiness.
+//! This module defines the bounded request and response records for the fixed
+//! namespace-inspector process. Its [`runtime`] child authenticates retained
+//! pidfds against exact credentials, cgroups, executable inodes, and effective
+//! MAC domains. The adapter is not yet composed with a production executable or
+//! authenticated manager activation, so this module does not launch the
+//! process, acquire a namespace, or advertise effect readiness.
 //! In the eventual runtime, the authenticated broker is the sole writer of an
 //! immutable expected-attempt record after validating `READY`. The inspector
 //! receives only lookup access to those records and may mutate only a separate,
@@ -47,6 +50,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::systemd_socket_instance::validate_systemd_socket_instance_fields;
 
+mod runtime;
 mod store;
 
 #[cfg(feature = "kernel-tests")]
