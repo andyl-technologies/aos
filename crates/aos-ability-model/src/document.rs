@@ -29,7 +29,7 @@ use crate::interface::{
 };
 use crate::limits::{ABILITY_LIMITS_V1, LimitProfile};
 use crate::plan::{
-    Binding, BindingRequest, ControllerAssignment, DecisionNode, DependencyEdge,
+    Binding, BindingId, BindingRequest, ControllerAssignment, DecisionNode, DependencyEdge,
     DeploymentObligation, MergeNode, Operation, ResourceRevision,
 };
 use crate::value::{AbilityValue, ArtifactReference, ValueExpression};
@@ -333,6 +333,16 @@ impl InterfaceDocument {
     }
 }
 
+/// Selects whether a signed package may author structured activation effects.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AbilityActivationMode {
+    /// Publishes interfaces and pure planning contracts without resource effects.
+    ContractsOnly,
+    /// Authorizes declared resource ownership and structured effect construction.
+    StructuredEffects,
+}
+
 /// Wraps one authenticated package ability manifest.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -341,6 +351,8 @@ pub struct PackageDocument {
     pub schema: String,
     /// Names required semantics in canonical order.
     pub required_features: Vec<RequiredFeature>,
+    /// Selects the signed package activation and effect-authoring capability.
+    pub activation_mode: AbilityActivationMode,
     /// Identifies the package subject without referring to its enclosing signature.
     pub package: PackageSubject,
     /// Lists retained companion artifacts in canonical digest order.
@@ -477,10 +489,24 @@ pub struct Contribution {
     pub aggregate: AggregateId,
     /// Names the authorized contribution slot.
     pub slot: LocalKey,
-    /// Identifies the grant that admitted this contribution.
-    pub grant: LocalKey,
+    /// Identifies the exact binding whose caller grant admitted this contribution.
+    pub grant: BindingId,
     /// Carries the checked contribution value.
     pub value: AbilityValue,
+}
+
+/// Names one aggregate output without collapsing provider or interface identity.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AggregateOutput {
+    /// Identifies the provider-owned aggregate producing the value.
+    pub aggregate: AggregateId,
+    /// Identifies the exact public interface declaring the output port.
+    pub interface: InterfaceKey,
+    /// Names the interface-local output port.
+    pub port: LocalKey,
+    /// Carries the typed literal or symbolic desired value.
+    pub value: ValueExpression,
 }
 
 /// Wraps normalized desired state before transition planning.
@@ -501,8 +527,8 @@ pub struct DesiredStateDocument {
     pub child_requests: Vec<BindingRequest>,
     /// Lists desired logical resources in canonical resource order.
     pub resources: Vec<ResourceRevision>,
-    /// Maps typed aggregate outputs in canonical name order.
-    pub outputs: BTreeMap<LocalKey, ValueExpression>,
+    /// Lists provider-qualified typed aggregate outputs in canonical order.
+    pub outputs: Vec<AggregateOutput>,
     /// Assigns one controller to every desired mutable resource.
     pub controllers: Vec<ControllerAssignment>,
 }
@@ -769,8 +795,8 @@ impl VersionedDocument for DesiredStateDocument {
     }
 
     fn validate_structure(&self, limits: &LimitProfile) -> Result<(), DocumentError> {
-        for expression in self.outputs.values() {
-            ensure_expression_depth(expression, limits)?;
+        for output in &self.outputs {
+            ensure_expression_depth(&output.value, limits)?;
         }
         Ok(())
     }

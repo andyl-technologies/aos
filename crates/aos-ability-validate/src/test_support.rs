@@ -220,7 +220,7 @@ pub fn plan_fixture() -> PlanFixture {
         contributions: Vec::new(),
         child_requests: vec![request.clone()],
         resources: vec![resource_revision.clone()],
-        outputs: BTreeMap::new(),
+        outputs: Vec::new(),
         controllers: Vec::new(),
     };
     let permission = ResourcePermission {
@@ -233,16 +233,19 @@ pub fn plan_fixture() -> PlanFixture {
         request: request.id.clone(),
         interface: interface_key.clone(),
         provider: provider.clone(),
+        provider_package: None,
         implementation,
         source: BindingSource::ExistingPin,
         caller_grant: AuthorityGrant {
             principal: provider.clone(),
             methods: vec![key("observe")],
+            contributions: Vec::new(),
             resources: vec![permission],
         },
         provider_grant: AuthorityGrant {
             principal: provider,
             methods: Vec::new(),
+            contributions: Vec::new(),
             resources: Vec::new(),
         },
         guarantees: Vec::new(),

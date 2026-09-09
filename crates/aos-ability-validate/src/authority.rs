@@ -3,9 +3,9 @@
 use std::collections::BTreeMap;
 
 use aos_ability_model::{
-    compare_resource_ids, AbilityValue, AccessMode, ArtifactReference, AuthorityGrant,
-    AuthorityRole, Binding, CredentialAction, InterfaceDocument, InterfaceKey, MethodReference,
-    Operation, OperationFamily, ResourceId, ResourceLifetime, ResourceReference, ValueSchema,
+    AbilityValue, AccessMode, ArtifactReference, AuthorityGrant, AuthorityRole, Binding,
+    CredentialAction, InterfaceDocument, InterfaceKey, MethodReference, Operation, OperationFamily,
+    ResourceId, ResourceLifetime, ResourceReference, ValueSchema, compare_resource_ids,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -191,6 +191,7 @@ pub(crate) fn authorize_materialized_references(
     artifacts: &ArtifactIndex,
     resources: &std::collections::BTreeSet<ResourceId>,
     maximum_lifetime: ResourceLifetime,
+    required_lifetime: Option<ResourceLifetime>,
 ) -> Result<(), ValueAuthorizationError> {
     let mut stack = vec![(schema, value.as_json())];
     while let Some((schema, value)) = stack.pop() {
@@ -214,6 +215,7 @@ pub(crate) fn authorize_materialized_references(
                     &reference,
                     resources,
                     maximum_lifetime,
+                    required_lifetime,
                 )?;
             }
             (ValueSchema::List { element, .. }, Value::Array(items)) => {
@@ -255,6 +257,7 @@ fn authorize_resource_reference(
     reference: &ResourceReference,
     resources: &std::collections::BTreeSet<ResourceId>,
     maximum_lifetime: ResourceLifetime,
+    required_lifetime: Option<ResourceLifetime>,
 ) -> Result<(), ValueAuthorizationError> {
     if !interfaces.contains_key(&reference.interface) || !resources.contains(&reference.resource) {
         return Err(ValueAuthorizationError::UnknownResource);
@@ -262,6 +265,7 @@ fn authorize_resource_reference(
     if reference.resource.provider != binding.provider
         || reference.lifetime > binding.lifetime
         || reference.lifetime > maximum_lifetime
+        || required_lifetime.is_some_and(|required| reference.lifetime < required)
     {
         return Err(ValueAuthorizationError::ResourceScopeEscape);
     }
@@ -281,7 +285,7 @@ fn authorize_resource_reference(
     Ok(())
 }
 
-fn grant_permits(
+pub(crate) fn grant_permits(
     grant: &AuthorityGrant,
     resource: &aos_ability_model::ResourceId,
     access: aos_ability_model::AccessMode,

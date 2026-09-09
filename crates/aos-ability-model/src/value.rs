@@ -15,7 +15,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::identity::{
-    IncarnationId, InstanceId, InterfaceKey, LocalKey, ResourceId, ScopedOperationKey,
+    AggregateId, IncarnationId, InstanceId, InterfaceKey, LocalKey, ResourceId, ScopedOperationKey,
 };
 use crate::interface::ProviderImplementationReference;
 use crate::limits::ABILITY_LIMITS_V1;
@@ -71,6 +71,16 @@ impl AbilityValue {
     #[must_use]
     pub fn as_json(&self) -> &Value {
         &self.0
+    }
+
+    /// Returns the exact canonical encoded size after rechecking value bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an in-memory value exceeds the version-1 structural,
+    /// collection, string, or encoded-byte limits.
+    pub fn encoded_size(&self) -> Result<u64, ValueError> {
+        validate_value_limits(&self.0, &ABILITY_LIMITS_V1)
     }
 
     /// Consumes the wrapper and returns the underlying JSON value.
@@ -212,6 +222,18 @@ pub struct NamedValue {
     pub value: AbilityValue,
 }
 
+/// Refers to one provider-qualified aggregate output from pure composition.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AggregateOutputReference {
+    /// Identifies the exact provider aggregate producing the value.
+    pub aggregate: AggregateId,
+    /// Identifies the exact public interface declaring the output.
+    pub interface: InterfaceKey,
+    /// Names the interface-local output port.
+    pub port: LocalKey,
+}
+
 /// Describes a literal or symbolic value without shape-based interpretation.
 ///
 /// Composite expressions are needed only when a symbolic reference occurs
@@ -244,6 +266,11 @@ pub enum ValueExpression {
     ResourceReference {
         /// Identifies the resource and operation projection.
         reference: ResourceReference,
+    },
+    /// Supplies a typed output from a selected lower provider aggregate.
+    AggregateOutput {
+        /// Identifies the provider aggregate and exact interface-local port.
+        reference: AggregateOutputReference,
     },
     /// Supplies a future value from another operation's typed output port.
     OperationResult {
@@ -283,6 +310,7 @@ impl ValueExpression {
                 Self::Literal { .. }
                 | Self::ArtifactReference { .. }
                 | Self::ResourceReference { .. }
+                | Self::AggregateOutput { .. }
                 | Self::OperationResult { .. } => {}
             }
         }

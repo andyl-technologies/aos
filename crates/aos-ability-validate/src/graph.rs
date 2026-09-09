@@ -4,20 +4,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use aos_ability_model::{
-    encode_canonical, ArtifactReference, Binding, BindingId, BindingPlanDocument, DecisionNode,
-    DesiredStateDocument, Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase,
-    EffectPlanDocument, EnvironmentDocument, InterfaceDocument, InterfaceKey, MergeNode,
-    MethodReference, Operation, PackageDocument, PlanId, PlanNodeKey, ProviderReadiness,
-    RequiredFeature, ScopedOperationKey, VersionedDocument,
+    ArtifactReference, Binding, BindingId, BindingPlanDocument, DecisionNode, DesiredStateDocument,
+    Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase, EffectPlanDocument,
+    EnvironmentDocument, InterfaceDocument, InterfaceKey, MergeNode, MethodReference, Operation,
+    PackageDocument, PlanId, PlanNodeKey, ProviderReadiness, RequiredFeature, ScopedOperationKey,
+    VersionedDocument, encode_canonical,
 };
 use aos_contract::Sha256Digest;
 
-use crate::authority::{authorize_invocation, InvocationAuthorizationError};
-use crate::binding::validate_binding_document;
+use crate::ValidationErrors;
+use crate::authority::{InvocationAuthorizationError, authorize_invocation};
+use crate::binding::{prepare_binding_candidates, validate_binding_document};
 use crate::effect::validate_effect_document;
 use crate::error::push_diagnostic;
-use crate::schema::{validate_schema_definition, SchemaPath};
-use crate::ValidationErrors;
+use crate::schema::{SchemaPath, validate_schema_definition};
 
 /// Owns an exact validated interface catalog and supported format features.
 #[derive(Clone, Debug)]
@@ -146,6 +146,10 @@ impl ValidationContext {
         self.interfaces.get(key)
     }
 
+    pub(crate) fn interface_catalog(&self) -> &BTreeMap<InterfaceKey, InterfaceDocument> {
+        &self.interfaces
+    }
+
     pub(crate) fn interfaces(&self) -> &BTreeMap<InterfaceKey, InterfaceDocument> {
         &self.interfaces
     }
@@ -166,6 +170,62 @@ impl ValidationContext {
         inputs: BindingValidationInputs,
     ) -> Result<CheckedBindingPlan, ValidationErrors> {
         validate_binding_document(self, document, inputs)
+    }
+
+    /// Prevalidates and indexes exact inputs for bounded provider search.
+    ///
+    /// The returned snapshot applies the same per-binding checks as
+    /// [`Self::validate_binding_plan`] without accepting an incomplete plan.
+    /// It performs no provider acquisition or other external effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns structured diagnostics when an input document, package,
+    /// request, resource, controller, or commitment is invalid.
+    pub fn prepare_binding_candidates(
+        &self,
+        environment: &EnvironmentDocument,
+        desired_state: &DesiredStateDocument,
+        packages: &[PackageDocument],
+    ) -> Result<crate::PreparedBindingCandidates, ValidationErrors> {
+        prepare_binding_candidates(self, environment, desired_state, packages)
+    }
+
+    /// Validates one provider-qualified pure composition output and its references.
+    ///
+    /// The output schema comes from its exact interface port. Aggregate-output
+    /// references must route through a selected lower binding; artifact and
+    /// resource references must stay within the supplied retained catalog and
+    /// caller/provider grants.
+    ///
+    /// # Errors
+    ///
+    /// Returns structured diagnostics for an unknown output, schema or phase
+    /// mismatch, foreign aggregate projection, unretained artifact, or resource
+    /// reference outside selected binding authority.
+    pub fn validate_composed_output(
+        &self,
+        provider: &aos_ability_model::InstanceId,
+        output: &aos_ability_model::AggregateOutput,
+        outputs: &[aos_ability_model::AggregateOutput],
+        bindings: &[aos_ability_model::Binding],
+        resources: &[aos_ability_model::ResourceRevision],
+        artifacts: &[ArtifactReference],
+        root_authority: Option<(
+            &aos_ability_model::AuthorityGrant,
+            aos_ability_model::ResourceLifetime,
+        )>,
+    ) -> Result<(), ValidationErrors> {
+        crate::projection::validate_composed_output(
+            self,
+            provider,
+            output,
+            outputs,
+            bindings,
+            resources,
+            artifacts,
+            root_authority,
+        )
     }
 
     /// Validates a finite effect graph against one exact checked binding plan.
@@ -317,6 +377,12 @@ impl CheckedEffectPlan {
     #[must_use]
     pub const fn binding_plan(&self) -> &CheckedBindingPlan {
         &self.binding_plan
+    }
+
+    /// Returns the exact validated interface catalog used to check this plan.
+    #[must_use]
+    pub fn interfaces(&self) -> &BTreeMap<InterfaceKey, InterfaceDocument> {
+        &self.interfaces
     }
 
     /// Resolves an operation by scoped identity.

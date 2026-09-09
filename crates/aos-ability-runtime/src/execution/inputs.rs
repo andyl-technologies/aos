@@ -17,6 +17,9 @@ pub enum InputResolutionError {
     /// A symbolic producer has not durably completed with the named output.
     #[error("referenced operation or merge output is not durably available")]
     ResultUnavailable,
+    /// Pure aggregate references must be lowered before runtime admission.
+    #[error("aggregate output reference was not lowered during effect planning")]
+    UnresolvedAggregateOutput,
     /// A typed artifact or resource reference could not be encoded.
     #[error("typed input reference could not be encoded: {0}")]
     Encoding(#[source] serde_json::Error),
@@ -186,6 +189,9 @@ fn expression_footprint(
         ValueExpression::ResourceReference { reference } => {
             let value = serde_json::to_value(reference).map_err(InputResolutionError::Encoding)?;
             json_footprint(&value, depth, limits)
+        }
+        ValueExpression::AggregateOutput { .. } => {
+            Err(InputResolutionError::UnresolvedAggregateOutput)
         }
         ValueExpression::OperationResult { reference } => {
             let value = transaction.resolved_result(reference)?;
@@ -382,6 +388,9 @@ fn resolve_expression(
         }
         ValueExpression::ResourceReference { reference } => {
             serde_json::to_value(reference).map_err(InputResolutionError::Encoding)
+        }
+        ValueExpression::AggregateOutput { .. } => {
+            Err(InputResolutionError::UnresolvedAggregateOutput)
         }
         ValueExpression::OperationResult { reference } => {
             transaction.resolved_result(reference).cloned()

@@ -86,6 +86,31 @@ pub(super) fn validate_package_document(
     );
     check_strict_order(&package.ownership, &root.child("ownership"), diagnostics);
 
+    let declares_effects = !package.ownership.is_empty()
+        || !package.implementation.handlers.is_empty()
+        || package.implementation.providers.iter().any(|provider| {
+            !provider.owns_resource_kinds.is_empty()
+                || matches!(
+                    provider.implementation,
+                    aos_ability_model::ImplementationKind::TerminalHandler { .. }
+                )
+        });
+    if package.activation_mode == aos_ability_model::AbilityActivationMode::ContractsOnly
+        && declares_effects
+    {
+        push_diagnostic(
+            diagnostics,
+            diagnostic(
+                DiagnosticCode::ResourceScopeEscape,
+                DiagnosticClass::Unauthorized,
+                DiagnosticPhase::Binding,
+                root.child("activation_mode").components().to_vec(),
+                "contracts-only package declares resource ownership or terminal effect handlers"
+                    .to_string(),
+            ),
+        );
+    }
+
     let mut implementations = BTreeSet::new();
     for (provider_index, provider) in package.implementation.providers.iter().enumerate() {
         let provider_root = root
@@ -294,9 +319,7 @@ fn validate_requirement_fallback(
             let Some(descriptor) = interface.interface.outputs.get(output) else {
                 continue;
             };
-            if descriptor.visibility != aos_ability_model::ValueVisibility::Public
-                || schema_requires_authority(&descriptor.schema)
-            {
+            if descriptor.visibility != aos_ability_model::ValueVisibility::Public {
                 push_diagnostic(
                     diagnostics,
                     diagnostic(
@@ -308,7 +331,7 @@ fn validate_requirement_fallback(
                             .child(output.as_str())
                             .components()
                             .to_vec(),
-                        "literal advisory fallback cannot synthesize protected or authority-bearing output"
+                        "literal advisory fallback cannot synthesize a protected output"
                             .to_string(),
                     ),
                 );
@@ -330,30 +353,77 @@ fn validate_requirement_fallback(
                     item.phase = DiagnosticPhase::Binding;
                     push_diagnostic(diagnostics, item);
                 }
+                continue;
+            }
+            if value_requires_authority(&descriptor.schema, value.as_json()) {
+                push_diagnostic(
+                    diagnostics,
+                    diagnostic(
+                        DiagnosticCode::ResourceScopeEscape,
+                        DiagnosticClass::Unauthorized,
+                        DiagnosticPhase::Binding,
+                        path.child("fallback")
+                            .child("outputs")
+                            .child(output.as_str())
+                            .components()
+                            .to_vec(),
+                        "literal advisory fallback cannot synthesize an authority-bearing value"
+                            .to_string(),
+                    ),
+                );
             }
         }
     }
 }
 
-fn schema_requires_authority(schema: &aos_ability_model::ValueSchema) -> bool {
-    let mut stack = vec![schema];
-    while let Some(schema) = stack.pop() {
-        match schema {
-            aos_ability_model::ValueSchema::ArtifactReference
-            | aos_ability_model::ValueSchema::ResourceReference
-            | aos_ability_model::ValueSchema::ProviderAssignment
-            | aos_ability_model::ValueSchema::OperationResultReference => return true,
-            aos_ability_model::ValueSchema::List { element, .. }
-            | aos_ability_model::ValueSchema::Map { value: element, .. }
-            | aos_ability_model::ValueSchema::Optional { value: element } => stack.push(element),
-            aos_ability_model::ValueSchema::Record { fields, .. } => stack.extend(fields.values()),
-            aos_ability_model::ValueSchema::TaggedUnion { variants, .. } => {
-                stack.extend(variants.values())
+fn value_requires_authority(
+    schema: &aos_ability_model::ValueSchema,
+    value: &serde_json::Value,
+) -> bool {
+    let mut stack = vec![(schema, value)];
+    while let Some((schema, value)) = stack.pop() {
+        match (schema, value) {
+            (aos_ability_model::ValueSchema::Optional { .. }, serde_json::Value::Null) => {}
+            (aos_ability_model::ValueSchema::ArtifactReference, _)
+            | (aos_ability_model::ValueSchema::ResourceReference, _)
+            | (aos_ability_model::ValueSchema::ProviderAssignment, _)
+            | (aos_ability_model::ValueSchema::OperationResultReference, _) => return true,
+            (aos_ability_model::ValueSchema::Optional { value: nested }, nested_value) => {
+                stack.push((nested, nested_value))
             }
-            aos_ability_model::ValueSchema::Boolean
-            | aos_ability_model::ValueSchema::Integer { .. }
-            | aos_ability_model::ValueSchema::String { .. }
-            | aos_ability_model::ValueSchema::StringEnum { .. } => {}
+            (
+                aos_ability_model::ValueSchema::List { element, .. },
+                serde_json::Value::Array(items),
+            ) => stack.extend(items.iter().map(|item| (element.as_ref(), item))),
+            (
+                aos_ability_model::ValueSchema::Map { value: nested, .. },
+                serde_json::Value::Object(fields),
+            ) => stack.extend(fields.values().map(|field| (nested.as_ref(), field))),
+            (
+                aos_ability_model::ValueSchema::Record {
+                    fields: schemas, ..
+                },
+                serde_json::Value::Object(fields),
+            ) => {
+                for (name, field) in fields {
+                    if let Some(field_schema) = schemas.get(name.as_str()) {
+                        stack.push((field_schema, field));
+                    }
+                }
+            }
+            (
+                aos_ability_model::ValueSchema::TaggedUnion { tag, variants },
+                serde_json::Value::Object(fields),
+            ) => {
+                if let Some(variant) = fields
+                    .get(tag.as_str())
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|tag_value| variants.get(tag_value))
+                {
+                    stack.push((variant, value));
+                }
+            }
+            _ => {}
         }
     }
     false
