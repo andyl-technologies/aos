@@ -1981,8 +1981,12 @@ retaining the live object and shared physical pack. Wrapped
 compressed-directory read-through testing proves a reachable cache copy can be
 evicted while its independently authenticated directory source remains
 readable; same-path aliases and forged swapped-role journals fail before
-deletion. Broader tier policy and administrative surfaces remain open beyond
-this physical-leaf apply.
+deletion. A public-process flight composes profile validation, verification,
+kind routing, compressed-directory read-through caching, and durable compressed
+write-back staging; it proves cache eviction against the required directory
+copy, bounded maintenance transfer of a known object, exact pending-root
+removal, and restart at the unchanged campaign head. Broader tier policy and
+administrative surfaces remain open beyond this physical-leaf apply.
 
 The single-host daemon composes these sources into one logical root inventory:
 authoritative refs, current exact-pin selections, durable observation and
