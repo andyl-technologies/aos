@@ -27,7 +27,8 @@ pub use credential::SealedReadOnlyCredential;
 pub use publication::{
     AfterRenameFailure, AmbiguousNamedSealedFile, BeforeRenameFailure, DurablyNamedSealedFile,
     FsVerityPublicationRoot, InvalidPublicationName, MaterializationCallbacks,
-    MaterializationError, MaterializationFailure, NoReplacePublicationError, PublicationName,
+    MaterializationError, MaterializationFailure, NoReplacePublicationError,
+    ObserveSealedPublicationError, ObservedSealedPublicationFile, PublicationName,
     PublicationRootError, RenamedSealedFile, RetainedPrivateArtifact, RetainedPrivatePhase,
     SealedPrivateFile,
 };

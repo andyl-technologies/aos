@@ -10,11 +10,13 @@
 //! authorize cleanup of retained failures.
 
 mod naming;
+mod observation;
 
 pub use naming::{
     AfterRenameFailure, AmbiguousNamedSealedFile, BeforeRenameFailure, DurablyNamedSealedFile,
     NoReplacePublicationError, RenamedSealedFile,
 };
+pub use observation::{ObserveSealedPublicationError, ObservedSealedPublicationFile};
 
 use std::error::Error as StdError;
 use std::ffi::{CStr, CString, OsStr};
