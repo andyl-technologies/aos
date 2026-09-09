@@ -880,6 +880,12 @@ fn puct_explanation(
         ("offered-on-page".to_owned(), guidance_i64(offered_on_page)?),
         ("selected".to_owned(), i64::from(selected.is_some())),
     ]);
+    if matches!(
+        policy.intervention_learning_policy(),
+        crate::InterventionLearningPolicy::IncludeInGuidance
+    ) {
+        terms.insert("intervention-guidance-opt-in".to_owned(), 1);
+    }
     if let Some(selected) = selected {
         let statistics = selected.guidance.statistics();
         let score = selected.guidance.score_for_policy(policy, view)?;

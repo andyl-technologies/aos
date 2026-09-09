@@ -544,8 +544,17 @@ pub enum PlannerBeamCohortState {
     AwaitingEvaluations(u64),
     /// The closed cohort exceeds the exact ranking evidence bound.
     CohortLimitExceeded(u64),
+    /// Every modeled observation was intervention-derived and excluded.
+    InterventionExcluded(u64),
     /// The immutable cohort has one replayed survivor decision.
     Settled(SurvivorSelectionId),
+    /// The cohort settled after excluding intervention-derived observations.
+    SettledWithInterventionExclusions {
+        /// Replayed survivor decision over the eligible observations.
+        selection: SurvivorSelectionId,
+        /// Number of intervention-derived observations excluded from ranking.
+        excluded: u64,
+    },
 }
 
 impl PlannerBeamCohortState {
@@ -553,11 +562,27 @@ impl PlannerBeamCohortState {
     #[must_use]
     pub const fn selection(&self) -> Option<SurvivorSelectionId> {
         match self {
-            Self::Settled(selection) => Some(*selection),
+            Self::Settled(selection)
+            | Self::SettledWithInterventionExclusions { selection, .. } => Some(*selection),
             Self::AwaitingRequestClosure(_)
             | Self::AwaitingAttempts(_)
             | Self::AwaitingEvaluations(_)
-            | Self::CohortLimitExceeded(_) => None,
+            | Self::CohortLimitExceeded(_)
+            | Self::InterventionExcluded(_) => None,
+        }
+    }
+
+    /// Returns the number of intervention observations excluded from ranking.
+    #[must_use]
+    pub const fn intervention_exclusions(&self) -> u64 {
+        match self {
+            Self::InterventionExcluded(excluded)
+            | Self::SettledWithInterventionExclusions { excluded, .. } => *excluded,
+            Self::AwaitingRequestClosure(_)
+            | Self::AwaitingAttempts(_)
+            | Self::AwaitingEvaluations(_)
+            | Self::CohortLimitExceeded(_)
+            | Self::Settled(_) => 0,
         }
     }
 }
@@ -584,6 +609,18 @@ impl Canonical for PlannerBeamCohortState {
             Self::Settled(selection) => {
                 encoder.u8(4);
                 selection.encode(encoder);
+            }
+            Self::InterventionExcluded(count) => {
+                encoder.u8(5);
+                count.encode(encoder);
+            }
+            Self::SettledWithInterventionExclusions {
+                selection,
+                excluded,
+            } => {
+                encoder.u8(6);
+                selection.encode(encoder);
+                excluded.encode(encoder);
             }
         }
     }
@@ -621,6 +658,28 @@ impl Canonical for PlannerBeamCohortState {
                 Ok(Self::CohortLimitExceeded(count))
             }
             4 => Ok(Self::Settled(SurvivorSelectionId::decode(decoder)?)),
+            5 => {
+                let count = u64::decode(decoder)?;
+                if count == 0 {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "Beam intervention-exclusion count is zero",
+                    });
+                }
+                Ok(Self::InterventionExcluded(count))
+            }
+            6 => {
+                let selection = SurvivorSelectionId::decode(decoder)?;
+                let excluded = u64::decode(decoder)?;
+                if excluded == 0 {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "Beam intervention-exclusion count is zero",
+                    });
+                }
+                Ok(Self::SettledWithInterventionExclusions {
+                    selection,
+                    excluded,
+                })
+            }
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "planner-beam-cohort-state",
                 tag,
@@ -659,8 +718,13 @@ impl PlannerBeamCandidate {
         cohort_state: PlannerBeamCohortState,
         closed_attempts: PlannerBeamClosureSummary,
     ) -> Result<Self, CampaignCodecError> {
+        let schema_version = if cohort_state.intervention_exclusions() == 0 {
+            RECORD_SCHEMA_VERSION
+        } else {
+            2
+        };
         let value = Self {
-            schema_version: RECORD_SCHEMA_VERSION,
+            schema_version,
             input_view,
             policy,
             position,
@@ -759,12 +823,7 @@ impl PlannerBeamCandidate {
     /// Returns [`CampaignCodecError`] if strict envelope construction fails.
     pub fn id(&self) -> Result<PlannerBeamCandidateId, CampaignCodecError> {
         PlannerBeamCandidateId::from_content_id(
-            crate::ObjectEnvelope::for_record(
-                crate::CampaignRecordKind::PlannerBeamCandidate,
-                crate::object::content_children(self.content_children())?,
-                self.canonical_bytes(),
-            )?
-            .content_id(),
+            crate::ObjectEnvelope::for_beam_candidate(self)?.content_id(),
         )
     }
 
@@ -788,6 +847,10 @@ impl PlannerBeamCandidate {
         }
         children
     }
+
+    pub(crate) const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
 }
 
 impl Canonical for PlannerBeamCandidate {
@@ -804,8 +867,13 @@ impl Canonical for PlannerBeamCandidate {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_schema(u32::decode(decoder)?)?;
-        Self::new(
+        let schema_version = u32::decode(decoder)?;
+        if !matches!(schema_version, 1 | 2) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported planner-Beam-candidate schema version",
+            });
+        }
+        let value = Self::new(
             CampaignViewId::decode(decoder)?,
             CampaignPolicyId::decode(decoder)?,
             PlanningScanPosition::decode(decoder)?,
@@ -814,6 +882,12 @@ impl Canonical for PlannerBeamCandidate {
             PlannerBeamBarrier::decode(decoder)?,
             PlannerBeamCohortState::decode(decoder)?,
             PlannerBeamClosureSummary::decode(decoder)?,
-        )
+        )?;
+        if value.schema_version != schema_version {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "planner-Beam-candidate schema disagrees with cohort state",
+            });
+        }
+        Ok(value)
     }
 }

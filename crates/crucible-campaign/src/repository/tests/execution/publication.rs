@@ -250,7 +250,9 @@ fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
         base_policy.retention(),
         base_policy.admits_scenario_defaults(),
     )
-    .expect("finding-weighted policy");
+    .expect("finding-weighted policy")
+    .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
+    .expect("intervention-guided finding policy");
     let (_, admitted, observation) =
         admitted_observation_fixture(&repository, &lineage, &policy, "finding-publication");
     let observed = repository
