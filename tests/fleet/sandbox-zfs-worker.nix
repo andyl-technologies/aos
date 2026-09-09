@@ -96,6 +96,7 @@
           test "$#" -eq 3
           exec ${pkgs.coreutils}/bin/env \
             AOS_ZFS_EXECUTABLE=${zfsPackage}/sbin/zfs \
+            AOS_SYSTEMCTL_EXECUTABLE=${pkgs.systemd}/bin/systemctl \
             AOS_STORAGE_AUTHORITY_DIRECTORY=${authorityDirectory} \
             AOS_STORAGE_ROOT_GUID="$2" \
             AOS_STORAGE_ANCESTOR_GUID="$3" \
@@ -144,9 +145,10 @@
           RuntimeMaxSec = lib.mkForce "8s";
           ReadWritePaths = [faultStateDirectory];
           ExecStart = lib.mkForce ''
-            ${pkgs.aos-landlock}/bin/aos-landlock \
+              ${pkgs.aos-landlock}/bin/aos-landlock \
               --require-abi 4 \
               --fs-read / \
+              --fs-read /sys/fs/cgroup \
               --fs-ro /nix/store \
               --fs-rw ${faultStateDirectory} \
               -- \
@@ -164,6 +166,7 @@
               ${pkgs.aos-landlock}/bin/aos-landlock \
                 --require-abi 4 \
                 --fs-read / \
+                --fs-read /sys/fs/cgroup \
                 --fs-ro /nix/store \
                 --fs-rw /dev/zfs \
                 -- \
@@ -230,6 +233,8 @@ in {
   };
 
   testScript = ''
+    import re
+
     BOUNDARY_PROBE = "${boundaryProbe}/bin/storage-worker-boundary-probe"
     COREUTILS = "${pkgs.coreutils}/bin"
     FINDMNT = "${pkgs.util-linux}/bin/findmnt"
@@ -238,12 +243,14 @@ in {
     ZFS = "${pkgs.zfsForKernel (makeSystem false).config.system.build.kernel}/sbin/zfs"
     ZPOOL = "${pkgs.zfsForKernel (makeSystem false).config.system.build.kernel}/sbin/zpool"
 
-    def worker_units(machine):
+    def units_for_pattern(machine, pattern):
         output = machine.succeed(
-            "systemctl list-units --all 'aos-sandbox-zfs-worker@*.service' "
-            "--no-legend --plain"
+            f"systemctl list-units --all '{pattern}' --no-legend --plain"
         )
         return [line.split()[0] for line in output.splitlines() if line.strip()]
+
+    def worker_units(machine):
+        return units_for_pattern(machine, "aos-sandbox-zfs-worker@*.service")
 
     def active_worker(machine):
         units = worker_units(machine)
@@ -462,6 +469,7 @@ in {
                 "${pkgs.aos-landlock}/bin/aos-landlock",
                 "--require-abi", "4",
                 "--fs-read", "/",
+                "--fs-read", "/sys/fs/cgroup",
                 "--fs-ro", "/nix/store",
                 "--fs-rw", generic_writable_path,
                 "--",
@@ -472,6 +480,7 @@ in {
                 "${pkgs.aos-landlock}/bin/aos-landlock",
                 "--require-abi", "4",
                 "--fs-read", "/",
+                "--fs-read", "/sys/fs/cgroup",
                 "--fs-ro", "/nix/store",
                 "--fs-rw", "/dev/zfs",
                 "--",
@@ -616,8 +625,8 @@ in {
     real.fail(f"{ZFS} list -H aosproof/aos/project/workspace")
 
     # The installed storaged fixture mints real protected records, then drives
-    # the serialized static-identity worker and descriptor-backed root worker through
-    # one complete create, Ensure, ordinary-unmount, and destroy lifecycle.
+    # the serialized static-identity worker and descriptor-backed root worker
+    # through create, Ensure, repair, ordinary-unmount, and destroy lifecycles.
     real.succeed(
         f"{COREUTILS}/mkdir -p /run/aos/sandbox-pins/workspaces "
         "${authorityDirectory}"
@@ -703,7 +712,7 @@ in {
     )
     real.succeed(
         "test $(find /var/lib/aos-sandbox-workspace-pin-worker "
-        "-maxdepth 1 -name 'attempt-*' -type f | wc -l) -eq 2"
+        "-maxdepth 1 -name 'attempt-*' -type f | wc -l) -eq 3"
     )
     observer_unit = real.succeed(
         "systemctl cat aos-sandbox-workspace-pin-observer@.service"
@@ -729,6 +738,39 @@ in {
             "done",
             timeout=15,
         )
+        for unit in units_for_pattern(real, pattern):
+            cgroup = real.succeed(
+                f"systemctl show '{unit}' -p ControlGroup --value"
+            ).strip()
+            if cgroup:
+                real.wait_until_succeeds(
+                    f"test ! -e '/sys/fs/cgroup{cgroup}/cgroup.events' || "
+                    f"grep -qx 'populated 0' "
+                    f"'/sys/fs/cgroup{cgroup}/cgroup.events'",
+                    timeout=15,
+                )
+    real.succeed(
+        "for cgroup in "
+        "/sys/fs/cgroup/aos.slice/aos-control.slice/"
+        "aos-sandbox-workspace-pin-worker@*.service "
+        "/sys/fs/cgroup/aos.slice/aos-control.slice/"
+        "aos-sandbox-workspace-pin-observer@*.service; do "
+        "test ! -e \"$cgroup/cgroup.events\" || "
+        "grep -qx 'populated 0' \"$cgroup/cgroup.events\" || exit 1; "
+        "done"
+    )
+    repaired_pin = real.succeed(
+        f"{COREUTILS}/cat /run/aos/repaired-workspace-pin-path"
+    ).strip()
+    assert re.fullmatch(
+        r"/run/aos/sandbox-pins/workspaces/[0-9a-f]{64}", repaired_pin
+    ), repaired_pin
+    repaired_mounts = real.succeed(
+        f"{FINDMNT} --raw --noheadings --mountpoint '{repaired_pin}' "
+        "--output TARGET"
+    ).splitlines()
+    assert repaired_mounts == [repaired_pin], repaired_mounts
+    real.succeed(f"${pkgs.util-linux}/bin/umount -- '{repaired_pin}'")
     real.succeed(f"{ZFS} destroy aosproof/aos/project/observed-workspace")
     datasets_after_observer_cleanup = real.succeed(
         f"{ZFS} list -H -o name"

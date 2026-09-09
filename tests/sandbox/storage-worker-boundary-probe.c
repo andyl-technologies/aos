@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <linux/magic.h>
 #include <linux/nsfs.h>
+#include <linux/openat2.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,6 +21,8 @@
 #define DENIED_PATH "/run/aos-storage-worker-host-write-denied"
 #define SETID_PATH "/run/aos-storage-worker-setid-denied"
 #define DIRECT_SETID_PATH "/run/aos-storage-worker-direct-setid-denied"
+#define PROBE_CGROUP \
+    "/sys/fs/cgroup/system.slice/aos-sandbox-storage-worker-boundary-probe.service"
 
 #ifndef __NR_fchmodat2
 #error "missing fchmodat2 syscall number in Linux headers"
@@ -126,6 +129,54 @@ static int enter_host_mount_namespace(const struct stat *expected)
     return 0;
 }
 
+static int open_probe_cgroup(void)
+{
+    int descriptor = open(PROBE_CGROUP,
+        O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+
+    if (descriptor < 0)
+        perror("open retained probe cgroup");
+    return descriptor;
+}
+
+static int verify_post_setns_cgroup_boundary(int cgroup)
+{
+    const struct open_how read = {
+        .flags = O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY,
+        .resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS
+            | RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV,
+    };
+    const struct open_how write = {
+        .flags = O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK,
+        .resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS
+            | RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV,
+    };
+    int descriptor;
+
+    descriptor = syscall(SYS_openat2, cgroup, "cgroup.procs", &read,
+        sizeof(read));
+    if (descriptor < 0) {
+        perror("open retained cgroup.procs after setns");
+        return -1;
+    }
+    if (close(descriptor) != 0) {
+        perror("close retained cgroup.procs");
+        return -1;
+    }
+
+    errno = 0;
+    descriptor = syscall(SYS_openat2, cgroup, "cgroup.kill", &write,
+        sizeof(write));
+    if (descriptor >= 0 || !expected_denial(errno)) {
+        if (descriptor >= 0)
+            close(descriptor);
+        fprintf(stderr, "retained cgroup mutation was not denied: %s\n",
+            strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
 static int create_file(const char *path, mode_t mode)
 {
     int descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode);
@@ -139,6 +190,7 @@ static int create_file(const char *path, mode_t mode)
 int main(int argc, char **argv)
 {
     struct stat host_namespace_identity;
+    int cgroup;
     int descriptor;
 
     if (argc != 1) {
@@ -146,8 +198,13 @@ int main(int argc, char **argv)
         return 64;
     }
     (void)argv;
-    if (authenticate_passed_namespace(&host_namespace_identity) != 0
-        || enter_host_mount_namespace(&host_namespace_identity) != 0) {
+    if (authenticate_passed_namespace(&host_namespace_identity) != 0)
+        return 1;
+    cgroup = open_probe_cgroup();
+    if (cgroup < 0
+        || enter_host_mount_namespace(&host_namespace_identity) != 0
+        || verify_post_setns_cgroup_boundary(cgroup) != 0
+        || close(cgroup) != 0) {
         return 1;
     }
 

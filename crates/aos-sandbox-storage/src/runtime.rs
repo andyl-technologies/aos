@@ -242,6 +242,60 @@ impl StorageBrokerRuntime {
         Ok(runtime)
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_protected_components_for_test<F>(
+        coordinator: StorageAdmissionCoordinator,
+        open_workspaces: F,
+        pin_custody: WorkspacePinHostCustody,
+        pin_contract: ZfsHelperContract,
+        mut pin_executor: SystemdWorkspacePinExecutor,
+        pin_observer: SystemdWorkspacePinObserver,
+        helper: StorageMutationHelper<SystemdZfsProcessBackend>,
+    ) -> Result<Self, StorageRuntimeError>
+    where
+        F: FnOnce() -> Result<StorageWorkspaceCatalogV1, StorageRuntimeError>,
+    {
+        // Preserve the production construction order: prove the complete
+        // mutator cgroup empty, authenticate the transaction journal, and only
+        // then open the workspace journal under the already-held first lock.
+        pin_executor.recover_quiescence()?;
+        let workspaces = authenticate_before_workspace_inventory(
+            || authenticate_startup_authority(&coordinator),
+            open_workspaces,
+        )?;
+
+        let mut runtime = Self {
+            coordinator,
+            workspaces,
+            pin_custody,
+            pin_contract,
+            pin_executor,
+            pin_observer,
+            helper,
+            readiness: StorageRuntimeReadiness::IntegrationIncomplete,
+        };
+        runtime.readiness = runtime.reconcile_startup()?;
+
+        Ok(runtime)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn coordinator_for_test(&self) -> &StorageAdmissionCoordinator {
+        &self.coordinator
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn workspace_catalog_for_test(&self) -> &StorageWorkspaceCatalogV1 {
+        &self.workspaces
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_journals_for_test(
+        self,
+    ) -> (StorageAdmissionCoordinator, StorageWorkspaceCatalogV1) {
+        (self.coordinator, self.workspaces)
+    }
+
     /// Returns the fail-closed startup readiness classification.
     #[must_use]
     pub const fn readiness(&self) -> StorageRuntimeReadiness {

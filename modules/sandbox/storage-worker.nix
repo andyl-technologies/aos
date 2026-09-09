@@ -11,6 +11,9 @@
     "${pkgs.aos-landlock}/bin/aos-landlock"
     "--require-abi 4"
     "--fs-read /"
+    # Retain an explicit rule on the cgroup mount: after mount-namespace
+    # entry, the rule anchored at `/` no longer covers this detached mount.
+    "--fs-read /sys/fs/cgroup"
     "--fs-ro /nix/store"
     "--fs-rw /dev/zfs"
     "--"
