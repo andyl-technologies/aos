@@ -405,7 +405,11 @@ where
     }
     if let Some(fence) = write_back_fence.as_mut() {
         fence
-            .visit_roots(&mut |root| roots.insert(root.id()).map_err(|()| StoreError::Quota))
+            .visit_roots(&mut |root| {
+                roots
+                    .insert_direct(root.id())
+                    .map_err(|()| StoreError::Quota)
+            })
             .map_err(CampaignGcApplyError::WriteBack)?;
     }
     if let Some(fence) = transfer_fence.as_mut() {
