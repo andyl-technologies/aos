@@ -51,6 +51,10 @@ use crate::{
     evaluate_crucible_measurement_publication,
     evaluate_crucible_observation_measurement_publication,
 };
+use crate::qemu_campaign_lifecycle::{
+    GuardedCampaignFindingOracle, GuardedCampaignFindingOracleError,
+    GuardedCampaignFindingOracleEvaluation,
+};
 #[cfg(target_os = "linux")]
 use crate::{QemuHotForkAttemptDriver, QemuHotForkLiveExecution};
 
@@ -90,6 +94,9 @@ pub enum QemuFreshModeledDriverError {
     /// Prepared semantic result construction rejected the complete closure.
     #[error("fresh campaign prepared-result projection failed: {0}")]
     PreparedResult(#[source] PreparedSemanticResultCodecError),
+    /// A bound supplemental property oracle could not evaluate the child configuration.
+    #[error("fresh campaign supplemental property evaluation failed: {0}")]
+    SupplementalFinding(#[source] GuardedCampaignFindingOracleError),
     /// A guest measurement or semantic-marker message violated the scenario contract.
     #[error("fresh campaign guest measurement protocol failed at sequence {sequence}: {reason}")]
     GuestMeasurementProtocol {
@@ -194,6 +201,23 @@ impl From<PreparedSemanticResultCodecError> for QemuFreshModeledDriverError {
 /// Concrete bounded modeled driver for one fresh campaign QEMU lifecycle.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct QemuFreshModeledDriver;
+
+/// Fresh modeled driver with one immutable supplemental property oracle.
+pub(crate) struct QemuFreshSupplementalModeledDriver {
+    oracle: Option<Arc<dyn GuardedCampaignFindingOracle>>,
+    source: Option<ContentId>,
+}
+
+impl QemuFreshSupplementalModeledDriver {
+    /// Binds a supplemental property oracle to its exact retained trace leaf.
+    #[must_use]
+    pub(crate) fn new(oracle: Option<Arc<dyn GuardedCampaignFindingOracle>>) -> Self {
+        let source = oracle.as_ref().map(|oracle| {
+            oracle.source().content_id()
+        });
+        Self { oracle, source }
+    }
+}
 
 /// Concrete semantic driver for one already-materialized hot-fork child.
 ///
@@ -504,6 +528,7 @@ enum ModeledStop {
         proof: Box<ObservationStopProof>,
         evidence: CrucibleObservationBoundaryEvidence,
     },
+    ModeledTimeout(String),
     ReplayBoundary,
     TerminalPassed,
     TerminalFailed(Vec<String>),
@@ -743,6 +768,44 @@ impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
         )
         .map_err(AttemptWorkerFailure::Terminal)?;
         build_observation_candidate(pending).map_err(AttemptWorkerFailure::Terminal)
+    }
+}
+
+impl QemuFreshAttemptDriver for QemuFreshSupplementalModeledDriver {
+    type Pending = QemuFreshPendingObservation;
+    type Error = QemuFreshModeledDriverError;
+
+    fn drive(
+        &mut self,
+        lifecycle: &mut QemuFreshAttemptLifecycle<'_>,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        materialization: QemuFreshStartMaterialization,
+    ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>> {
+        drive_modeled_attempt(lifecycle, input, context, materialization)
+    }
+
+    fn seal(
+        &mut self,
+        mut pending: Self::Pending,
+        final_events: Vec<SchedulerEventLogEntry>,
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
+        append_event_entries(
+            &mut pending.event_log,
+            &mut pending.event_log_bytes,
+            final_events,
+        )
+        .map_err(AttemptWorkerFailure::Terminal)?;
+        match (self.oracle.as_deref(), self.source) {
+            (Some(oracle), Some(source)) => {
+                build_observation_candidate_with_supplemental(pending, oracle, source)
+            }
+            (None, None) => build_observation_candidate(pending),
+            (Some(_), None) | (None, Some(_)) => {
+                Err(QemuFreshModeledDriverError::ScenarioMismatch)
+            }
+        }
+        .map_err(AttemptWorkerFailure::Terminal)
     }
 }
 
@@ -1028,7 +1091,7 @@ fn drive_modeled_attempt_inner(
             },
         );
     }
-    if initial_requested_stop_reached(
+    if let Some(initial_stop) = initial_requested_stop(
         input.attempt().stop(),
         terminal_at,
         completed_quanta,
@@ -1046,7 +1109,7 @@ fn drive_modeled_attempt_inner(
             QemuFreshPendingObservation {
                 input: input.clone(),
                 configuration,
-                stop: ModeledStop::Reached(input.attempt().stop().clone()),
+                stop: initial_stop,
                 event_log,
                 event_log_bytes,
                 discoveries: discoveries.discoveries,
@@ -1097,7 +1160,7 @@ fn drive_modeled_attempt_inner(
             },
         );
     }
-    if input.attempt().stop() == &StopCondition::NextChoice
+    if input.attempt().stop().accepts_next_choice()
         && discoveries.discoveries.len() > initial_choice_count
     {
         require_settled_network(lifecycle)?;
@@ -1107,7 +1170,7 @@ fn drive_modeled_attempt_inner(
             QemuFreshPendingObservation {
                 input: input.clone(),
                 configuration,
-                stop: ModeledStop::Reached(StopCondition::NextChoice),
+                stop: ModeledStop::Reached(input.attempt().stop().clone()),
                 event_log,
                 event_log_bytes,
                 discoveries: discoveries.discoveries,
@@ -1285,7 +1348,7 @@ fn drive_modeled_attempt_inner(
             ))?;
         let retain_signal_fault_discoveries = matches!(
             stop.as_ref(),
-            Some(ModeledStop::Reached(StopCondition::NextChoice))
+            Some(ModeledStop::Reached(stop)) if stop.accepts_next_choice()
         );
         configuration = append_quantum(
             &mut event_log,
@@ -1362,6 +1425,7 @@ fn requested_attempt_stop_frontier(requested: &StopCondition) -> Option<VirtualT
             ticks: *virtual_time_nanoseconds,
         }),
         StopCondition::NextChoice
+        | StopCondition::NextChoiceOrExecutionQuanta { .. }
         | StopCondition::NamedBoundary(_)
         | StopCondition::EventCount(_)
         | StopCondition::Terminal
@@ -1458,7 +1522,7 @@ fn resolve_pending_guest_choices_at_configuration(
         discoveries
             .insert(discovery.clone())
             .map_err(AttemptWorkerFailure::Terminal)?;
-        if input.attempt().stop() != &StopCondition::NextChoice {
+        if !input.attempt().stop().accepts_next_choice() {
             let selection = Selection::new(
                 discovery.opportunity(),
                 discovery.domain(),
@@ -1764,6 +1828,13 @@ fn reached_requested_stop(
         StopCondition::NextChoice => {
             !discoveries.is_empty() || !outcome.discovered_choices.is_empty()
         }
+        StopCondition::NextChoiceOrExecutionQuanta { execution_quanta } => {
+            if !discoveries.is_empty() || !outcome.discovered_choices.is_empty() {
+                return Ok(Some(ModeledStop::Reached(requested.clone())));
+            }
+            return Ok((completed_quanta >= execution_quanta)
+                .then(|| ModeledStop::ModeledTimeout(String::from("execution-quanta"))));
+        }
         StopCondition::NamedBoundary(name) => outcome.event_log_entries.iter().any(|entry| {
             matches!(
                 entry.payload(),
@@ -1946,13 +2017,13 @@ fn assertion_is_declared(properties: &crucible::Properties, assertion: &str) -> 
         .any(|declaration| declaration.id.name == assertion)
 }
 
-fn initial_requested_stop_reached(
+fn initial_requested_stop(
     requested: &StopCondition,
     frontier: VirtualTime,
     completed_quanta: u64,
     observed_event_count: usize,
-) -> bool {
-    match requested {
+) -> Option<ModeledStop> {
+    let reached = match requested {
         StopCondition::VirtualTimeNanoseconds(deadline) => frontier.ticks >= *deadline,
         StopCondition::ExecutionQuanta(bound) => completed_quanta >= *bound,
         StopCondition::VirtualTimeOrExecutionQuanta {
@@ -1966,13 +2037,33 @@ fn initial_requested_stop_reached(
         | StopCondition::NamedBoundary(_)
         | StopCondition::Terminal
         | StopCondition::Observation(_) => false,
-    }
+        StopCondition::NextChoiceOrExecutionQuanta { execution_quanta } => {
+            return (completed_quanta >= *execution_quanta)
+                .then(|| ModeledStop::ModeledTimeout(String::from("execution-quanta")));
+        }
+    };
+    reached.then(|| ModeledStop::Reached(requested.clone()))
 }
 
 fn build_observation_candidate(
     pending: QemuFreshPendingObservation,
 ) -> Result<AttemptExecutionProduct, QemuFreshModeledDriverError> {
-    let projection = project_boundary(pending, true)?;
+    build_observation_candidate_inner(pending, None)
+}
+
+fn build_observation_candidate_with_supplemental(
+    pending: QemuFreshPendingObservation,
+    oracle: &dyn GuardedCampaignFindingOracle,
+    source: ContentId,
+) -> Result<AttemptExecutionProduct, QemuFreshModeledDriverError> {
+    build_observation_candidate_inner(pending, Some((oracle, source)))
+}
+
+fn build_observation_candidate_inner(
+    pending: QemuFreshPendingObservation,
+    supplemental_oracle: Option<(&dyn GuardedCampaignFindingOracle, ContentId)>,
+) -> Result<AttemptExecutionProduct, QemuFreshModeledDriverError> {
+    let projection = project_boundary(pending, true, supplemental_oracle)?;
     let observation = Observation::new(
         projection.input.attempt().id()?,
         projection.child.configuration(),
@@ -2019,6 +2110,7 @@ struct QemuBoundaryProjection {
 fn project_boundary(
     pending: QemuFreshPendingObservation,
     project_stop: bool,
+    supplemental_oracle: Option<(&dyn GuardedCampaignFindingOracle, ContentId)>,
 ) -> Result<QemuBoundaryProjection, QemuFreshModeledDriverError> {
     let assertion_count = pending
         .input
@@ -2044,7 +2136,24 @@ fn project_boundary(
         checker = checker.with_terminal_scheduler_quiescence(quiescence);
     }
     let report = checker.check_run(pending.input.scenario().properties(), &pending.event_log)?;
-    let properties = property_verdicts(&report)?;
+    let supplemental = supplemental_oracle
+        .map(|(oracle, source)| {
+            oracle
+                .evaluate(&pending.configuration)
+                .map(|evaluation| evaluation.map(|evaluation| (evaluation, source)))
+        })
+        .transpose()
+        .map_err(QemuFreshModeledDriverError::SupplementalFinding)?
+        .flatten();
+    if let Some((evaluation, _)) = &supplemental
+        && !report
+            .outcomes()
+            .iter()
+            .any(|outcome| outcome.assertion.name == evaluation.property())
+    {
+        return Err(QemuFreshModeledDriverError::ScenarioMismatch);
+    }
+    let properties = property_verdicts(&report, supplemental.as_ref())?;
 
     let scenario_artifact = encode_crucible_scenario_artifact(pending.input.scenario())?;
     if scenario_artifact.id()? != pending.input.lineage().scenario_content()
@@ -2058,9 +2167,15 @@ fn project_boundary(
     )?;
     let measurement_publication = campaign_measurements(&pending, child.configuration())?;
     let (measurement_evidence, _, measurements) = measurement_publication.into_parts();
-    let stop = project_stop
+    let mut stop = project_stop
         .then(|| stop_outcome(pending.stop, &report))
         .transpose()?;
+    if report.verdict().failures().is_empty()
+        && let Some((evaluation, _)) = &supplemental
+        && let Some(stop) = &mut stop
+    {
+        *stop = StopOutcome::AssertionFailure(evaluation.property().to_owned());
+    }
     let coverage = coverage_projection(&pending.event_log)?;
     let discovered_choices = pending.discoveries.into_values().collect::<Vec<_>>();
     let discovered_ids = discovered_choices
@@ -2107,7 +2222,7 @@ pub(crate) fn build_finding_candidate_boundary_evidence(
         &mut pending.event_log_bytes,
         final_events.clone(),
     )?;
-    let projection = project_boundary(pending, false)?;
+    let projection = project_boundary(pending, false, None)?;
     if projection.child != *candidate {
         return Err(QemuFreshModeledDriverError::Artifact(
             CrucibleArtifactError::SemanticIdentityMismatch {
@@ -2192,6 +2307,7 @@ fn campaign_measurements(
 
 fn property_verdicts(
     report: &crucible::HostAssertionReport,
+    supplemental: Option<&(GuardedCampaignFindingOracleEvaluation, ContentId)>,
 ) -> Result<PropertyVerdictSet, QemuFreshModeledDriverError> {
     let mut properties = BTreeMap::new();
     for outcome in report.outcomes() {
@@ -2217,6 +2333,12 @@ fn property_verdicts(
             });
         }
     }
+    if let Some((evaluation, source)) = supplemental {
+        properties.insert(
+            evaluation.property().to_owned(),
+            PropertyEvidence::new(PropertyVerdict::Failed, BTreeSet::from([*source]))?,
+        );
+    }
     PropertyVerdictSet::new(properties).map_err(Into::into)
 }
 
@@ -2235,6 +2357,7 @@ fn stop_outcome(
     Ok(match stop {
         ModeledStop::Reached(stop) => StopOutcome::Reached(stop),
         ModeledStop::ObservationReached { .. } => unreachable!("observation stop returned above"),
+        ModeledStop::ModeledTimeout(name) => StopOutcome::ModeledTimeout(name),
         ModeledStop::TerminalPassed => StopOutcome::TerminalSuccess,
         ModeledStop::TerminalFailed(reasons) => StopOutcome::ScenarioFailure(reasons),
         ModeledStop::ReplayBoundary => {

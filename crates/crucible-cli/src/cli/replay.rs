@@ -191,13 +191,13 @@ fn replay_live_qemu_evidence(
         contract.producer.as_str(),
         campaign_replay_closure_bytes,
     ) {
-        ("campaign-run" | "fork", Some(bytes)) => Some(
+        ("campaign-run" | "campaign-search" | "fork", Some(bytes)) => Some(
             crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(bytes)
                 .map_err(|error| artifact_error(format!("decode campaign replay closure: {error}")))?,
         ),
-        ("campaign-run", None) => {
+        ("campaign-run" | "campaign-search", None) => {
             return Err(artifact_error(
-                "campaign-run replay requires exactly one campaign replay closure component",
+                "campaign-owned replay requires exactly one campaign replay closure component",
             ));
         }
         (_, Some(_)) => {

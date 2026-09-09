@@ -37,6 +37,12 @@ fn push_retained_planner_input(
     retained_bytes: &mut usize,
     envelope: ObjectEnvelope,
 ) -> Result<(), CampaignRepositoryError> {
+    if retained
+        .iter()
+        .any(|existing| existing.content_id() == envelope.content_id())
+    {
+        return Ok(());
+    }
     if retained.len() >= crate::MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS {
         return Err(integrity("retained-planner-request-bundle-object-count"));
     }

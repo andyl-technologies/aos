@@ -231,10 +231,8 @@ impl CampaignRepository {
             }
         }
         self.validate_observation_produced_selections(observation, &child)?;
-        if matches!(
-            observation.stop(),
-            StopOutcome::Reached(StopCondition::NextChoice)
-        ) && observation.discovered_choices().is_empty()
+        if matches!(observation.stop(), StopOutcome::Reached(stop) if stop.accepts_next_choice())
+            && observation.discovered_choices().is_empty()
         {
             return Err(integrity("next-choice-observation-has-no-choice"));
         }

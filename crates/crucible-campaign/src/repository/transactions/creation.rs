@@ -81,6 +81,47 @@ impl CampaignRepository {
         Ok(basis)
     }
 
+    /// Publishes and authenticates one deterministic graph-search planner basis.
+    ///
+    /// Publication is idempotent and binds the strategy, including an exact
+    /// priority seed, into the policy artifact identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a codec, store, or integrity error if the closed basis cannot be
+    /// derived, placed, or authenticated as one complete repository closure.
+    pub fn publish_canonical_search_planner_basis(
+        &self,
+        strategy: crate::CanonicalSearchStrategy,
+    ) -> Result<crate::CanonicalSearchPlannerBasis, CampaignRepositoryError> {
+        let basis = crate::CanonicalSearchPlanner::basis(strategy)?;
+        let dependency = crate::CanonicalSearchPlanner::dependency_lock_id();
+        self.blobs.put_if_absent(
+            dependency,
+            &BlobHandle::from_bytes(
+                crate::CanonicalSearchPlanner::dependency_lock_bytes().to_vec(),
+            ),
+        )?;
+
+        let engine = self.put_planner_engine(basis.engine())?;
+        let artifact = self.put_policy_artifact(basis.artifact())?;
+        let state = self.put_planner_state(basis.initial_state())?;
+        if engine != basis.engine().id()?.content_id()
+            || artifact != basis.artifact().id()?.content_id()
+            || state != basis.initial_state().id()?.content_id()
+        {
+            return Err(integrity(
+                "canonical-search-planner-basis-publication-mismatch",
+            ));
+        }
+        self.verify_campaign_closures_anchored_cached(
+            [artifact, state],
+            &BTreeSet::new(),
+            &mut ChoiceValidationCache::default(),
+        )?;
+        Ok(basis)
+    }
+
     /// Publishes and authenticates the deterministic PUCT planner basis.
     ///
     /// The version-2 basis has distinct engine, state, artifact, and dependency

@@ -79,12 +79,16 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
         report.execution_owner,
         report.campaign_replay_closure.as_ref(),
     ) {
-        ("campaign-run" | "fork", RunExecutionOwner::Campaign, Some(closure)) => {
+        (
+            "campaign-run" | "campaign-search" | "fork",
+            RunExecutionOwner::Campaign,
+            Some(closure),
+        ) => {
             Some(closure.clone())
         }
-        ("campaign-run", _, _) => {
+        ("campaign-run" | "campaign-search", _, _) => {
             return Err(artifact_error(
-                "campaign-run artifact capture requires campaign-owned execution and its authenticated replay closure",
+                "campaign-owned artifact capture requires campaign execution and its authenticated replay closure",
             ));
         }
         ("fork", RunExecutionOwner::Campaign, None) => {

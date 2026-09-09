@@ -23,8 +23,8 @@ use crucible_campaign::{
 use super::executor::{LocalPlannerMeter, LocalPlannerMeterError};
 use super::{DEFAULT_RUN_PLANNER_SCAN, GuardedDefaultCampaignRunError};
 
-type AuthorizedFrontierPlanner =
-    AuthorizedPlannerService<crucible_campaign::CanonicalFrontierPlanner, LocalPlannerMeter>;
+type AuthorizedSearchPlanner =
+    AuthorizedPlannerService<crucible_campaign::CanonicalSearchPlanner, LocalPlannerMeter>;
 type AuthorizedPuctPlanner =
     AuthorizedPlannerService<crucible_campaign::CanonicalPuctPlanner, LocalPlannerMeter>;
 type AuthorizedBeamPlanner =
@@ -36,8 +36,15 @@ pub(super) type LocalCampaignPlannerServiceError =
 /// Search order implemented by the local campaign's canonical planner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GuardedCampaignExplorationStrategy {
-    /// Consumes the canonical frontier in deterministic order.
-    CanonicalFrontier,
+    /// Expands the shallowest pending path first.
+    BreadthFirst,
+    /// Expands the deepest pending path first.
+    DepthFirst,
+    /// Expands by the deterministic legacy depth score under an exact seed.
+    Priority {
+        /// Strategy-local seed used only to order the frontier.
+        seed: Seed,
+    },
     /// Ranks candidates with accepted campaign coverage guidance.
     CoverageGuided,
 }
@@ -49,6 +56,7 @@ pub struct GuardedCampaignExploration {
     maximum_depth: Option<u64>,
     stop_on_finding: bool,
     strategy: GuardedCampaignExplorationStrategy,
+    execution_quanta_timeout: Option<u64>,
 }
 
 impl GuardedCampaignExploration {
@@ -77,6 +85,7 @@ impl GuardedCampaignExploration {
             maximum_depth,
             stop_on_finding,
             strategy,
+            execution_quanta_timeout: None,
         })
     }
 
@@ -102,6 +111,39 @@ impl GuardedCampaignExploration {
     #[must_use]
     pub const fn strategy(self) -> GuardedCampaignExplorationStrategy {
         self.strategy
+    }
+
+    /// Adds an absolute scheduler-quantum timeout to every explored attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when `execution_quanta` is zero.
+    pub fn with_execution_quanta_timeout(
+        mut self,
+        execution_quanta: u64,
+    ) -> Result<Self, CampaignCodecError> {
+        if execution_quanta == 0 {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "guarded campaign exploration timeout is zero",
+            });
+        }
+        self.execution_quanta_timeout = Some(execution_quanta);
+        Ok(self)
+    }
+
+    /// Returns the authenticated attempt timeout, when configured.
+    #[must_use]
+    pub const fn execution_quanta_timeout(self) -> Option<u64> {
+        self.execution_quanta_timeout
+    }
+
+    pub(super) fn attempt_stop(self) -> StopCondition {
+        match self.execution_quanta_timeout {
+            Some(execution_quanta) => StopCondition::NextChoiceOrExecutionQuanta {
+                execution_quanta,
+            },
+            None => StopCondition::NextChoice,
+        }
     }
 }
 
@@ -175,7 +217,7 @@ pub enum GuardedCampaignExplorationCompletion {
 }
 
 pub(super) enum LocalCampaignPlannerService {
-    Frontier(AuthorizedFrontierPlanner),
+    Search(AuthorizedSearchPlanner),
     Puct(AuthorizedPuctPlanner),
     Beam(AuthorizedBeamPlanner),
 }
@@ -185,7 +227,7 @@ impl PlannerService for LocalCampaignPlannerService {
 
     fn plan(&mut self, request: &PlannerRequest) -> Result<PlannerResponse, Self::Error> {
         match (self, request.policy().explorer()) {
-            (Self::Frontier(service), ExplorerPolicy::Exhaustive { .. }) => service.plan(request),
+            (Self::Search(service), ExplorerPolicy::Exhaustive { .. }) => service.plan(request),
             (Self::Puct(service), ExplorerPolicy::TreeSearch { .. }) => service.plan(request),
             (Self::Beam(service), ExplorerPolicy::Beam { .. }) => service.plan(request),
             _ => Err(AuthorizedPlannerServiceError::InvalidOutput(
@@ -210,11 +252,12 @@ pub(super) fn local_campaign_policy<E>(
     seed: Seed,
     discovery_stop: &StopCondition,
     exploration: Option<GuardedCampaignExploration>,
+    supplemental_finding_source: Option<CampaignHash>,
 ) -> Result<CampaignPolicy, GuardedDefaultCampaignRunError<E>>
 where
     E: Error + 'static,
 {
-    let stop_conditions = match discovery_stop {
+    let mut stop_conditions = match discovery_stop {
         StopCondition::NamedBoundary(name) => BTreeSet::from([name.clone()]),
         StopCondition::NextChoice
         | StopCondition::VirtualTimeNanoseconds(_)
@@ -222,10 +265,18 @@ where
         | StopCondition::Terminal
         | StopCondition::ExecutionQuanta(_)
         | StopCondition::VirtualTimeOrExecutionQuanta { .. }
-        | StopCondition::Observation(_) => BTreeSet::new(),
+        | StopCondition::Observation(_)
+        | StopCondition::NextChoiceOrExecutionQuanta { .. } => BTreeSet::new(),
     };
+    if let Some(source) = supplemental_finding_source {
+        stop_conditions.insert(format!("supplemental-{}", source.to_hex()));
+    }
     let explorer = match exploration.map(GuardedCampaignExploration::strategy) {
-        Some(GuardedCampaignExplorationStrategy::CanonicalFrontier) => ExplorerPolicy::Exhaustive {
+        Some(
+            GuardedCampaignExplorationStrategy::BreadthFirst
+            | GuardedCampaignExplorationStrategy::DepthFirst
+            | GuardedCampaignExplorationStrategy::Priority { .. },
+        ) => ExplorerPolicy::Exhaustive {
             maximum_cardinality: u64::MAX,
         },
         Some(GuardedCampaignExplorationStrategy::CoverageGuided) => ExplorerPolicy::TreeSearch {
@@ -266,20 +317,36 @@ pub(super) fn local_campaign_planner<E>(
 where
     E: Error + 'static,
 {
-    let planning_budget = PlanningBudget::new(1, 1, 64, 1024 * 1024, 4096)
+    let planning_budget = PlanningBudget::new(1, 1, 16_384, 32 * 1024 * 1024, 4096)
         .map_err(GuardedDefaultCampaignRunError::Codec)?;
     let (engine, artifact, initial_state, service) =
         match exploration.map(GuardedCampaignExploration::strategy) {
-            Some(GuardedCampaignExplorationStrategy::CanonicalFrontier) => {
+            Some(strategy @ GuardedCampaignExplorationStrategy::BreadthFirst)
+            | Some(strategy @ GuardedCampaignExplorationStrategy::DepthFirst)
+            | Some(strategy @ GuardedCampaignExplorationStrategy::Priority { .. }) => {
+                let strategy = match strategy {
+                    GuardedCampaignExplorationStrategy::BreadthFirst => {
+                        crucible_campaign::CanonicalSearchStrategy::BreadthFirst
+                    }
+                    GuardedCampaignExplorationStrategy::DepthFirst => {
+                        crucible_campaign::CanonicalSearchStrategy::DepthFirst
+                    }
+                    GuardedCampaignExplorationStrategy::Priority { seed } => {
+                        crucible_campaign::CanonicalSearchStrategy::Priority {
+                            seed: seed.bytes(),
+                        }
+                    }
+                    GuardedCampaignExplorationStrategy::CoverageGuided => unreachable!(),
+                };
                 let basis = repository
-                    .publish_canonical_frontier_planner_basis()
+                    .publish_canonical_search_planner_basis(strategy)
                     .map_err(GuardedDefaultCampaignRunError::Repository)?;
                 (
                     basis.engine().clone(),
                     basis.artifact().clone(),
                     basis.initial_state().clone(),
-                    LocalCampaignPlannerService::Frontier(AuthorizedPlannerService::new(
-                        crucible_campaign::CanonicalFrontierPlanner,
+                    LocalCampaignPlannerService::Search(AuthorizedPlannerService::new(
+                        crucible_campaign::CanonicalSearchPlanner::new(strategy),
                         LocalPlannerMeter,
                         planner_authority.clone(),
                     )),
@@ -328,7 +395,11 @@ where
     .map_err(GuardedDefaultCampaignRunError::PlannerConfiguration)?;
     Ok(
         match exploration.map(GuardedCampaignExploration::strategy) {
-            Some(GuardedCampaignExplorationStrategy::CanonicalFrontier) => {
+            Some(
+                GuardedCampaignExplorationStrategy::BreadthFirst
+                | GuardedCampaignExplorationStrategy::DepthFirst
+                | GuardedCampaignExplorationStrategy::Priority { .. },
+            ) => {
                 planner.require_exhaustive_policy()
             }
             Some(GuardedCampaignExplorationStrategy::CoverageGuided) => {
@@ -404,7 +475,7 @@ where
         BranchRequestCause::Operator(command),
         BranchBudget::new(maximum_attempts, maximum_attempts)
             .map_err(GuardedDefaultCampaignRunError::Codec)?,
-        StopCondition::NextChoice,
+        exploration.attempt_stop(),
     )
     .map_err(GuardedDefaultCampaignRunError::Codec)?;
     Ok(ExplorationBranchDecision::Request {
@@ -431,5 +502,6 @@ where
             observation.stop(),
             crucible_campaign::StopOutcome::AssertionFailure(_)
                 | crucible_campaign::StopOutcome::ScenarioFailure(_)
+                | crucible_campaign::StopOutcome::ModeledTimeout(_)
         ))
 }

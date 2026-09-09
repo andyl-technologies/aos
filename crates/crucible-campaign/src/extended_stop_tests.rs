@@ -43,8 +43,17 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         StopCondition::ExecutionQuanta(7),
     )
     .expect("execution-quanta attempt");
+    let next_choice_or_timeout_attempt = Attempt::new(
+        AttemptStart::Discover { configuration },
+        path,
+        StopCondition::NextChoiceOrExecutionQuanta {
+            execution_quanta: 7,
+        },
+    )
+    .expect("next-choice-or-timeout attempt");
     assert_eq!(legacy_attempt.schema_version(), 1);
     assert_eq!(attempt.schema_version(), 2);
+    assert_eq!(next_choice_or_timeout_attempt.schema_version(), 2);
     assert_eq!(
         Attempt::from_canonical_bytes(&attempt.canonical_bytes()).expect("attempt round trip"),
         attempt
@@ -56,6 +65,11 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
             .content_id()
             .schema_version(),
         2
+    );
+    assert_eq!(
+        Attempt::from_canonical_bytes(&next_choice_or_timeout_attempt.canonical_bytes())
+            .expect("next-choice-or-timeout round trip"),
+        next_choice_or_timeout_attempt
     );
     let mut downgraded_attempt = attempt.canonical_bytes();
     downgraded_attempt[..4].copy_from_slice(&1_u32.to_be_bytes());
@@ -347,15 +361,18 @@ fn extended_stop_tags_reject_zero_bounds_and_unknown_values() {
             virtual_time_nanoseconds: 1,
             execution_quanta: 0,
         },
+        StopCondition::NextChoiceOrExecutionQuanta {
+            execution_quanta: 0,
+        },
     ] {
         assert!(Attempt::new(AttemptStart::Discover { configuration }, path, stop).is_err());
     }
 
     assert!(matches!(
-        decode::<StopCondition>(&[7]),
+        decode::<StopCondition>(&[9]),
         Err(CampaignCodecError::UnknownTag {
             kind: "stop-condition",
-            tag: 7,
+            tag: 9,
         })
     ));
 }

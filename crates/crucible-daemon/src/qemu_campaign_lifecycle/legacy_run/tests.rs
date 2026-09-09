@@ -37,7 +37,7 @@ use super::*;
 use crate::{
     AttemptExecutionContext, AttemptWorkerFailure, CapturedAttemptCheckpoint,
     DirectoryAssignmentLedger, DirectoryCampaignGcJournal, QemuFreshAttemptLifecycleFactory,
-    QemuFreshAttemptLifecycleOwner, apply_single_host_campaign_gc,
+    QemuFreshAttemptLifecycleOwner, QemuFreshModeledDriver, apply_single_host_campaign_gc,
     decode_crucible_scenario_artifact, plan_single_host_campaign_gc,
 };
 
@@ -49,6 +49,48 @@ type TestGuardedDefaultCampaignRunError = GuardedDefaultCampaignRunError<
         QemuFreshModeledDriverError,
     >,
 >;
+
+#[test]
+fn supplemental_finding_source_round_trips_and_reopens_by_exact_identity() {
+    let scenario = ScenarioDefId::from_hash(CampaignHash::derive(
+        "test.supplemental-finding-source",
+        b"scenario",
+    ));
+    let source = GuardedCampaignFindingOracleSource::new(
+        scenario,
+        "application/vnd.andyl.crucible.search-evidence.v1",
+        b"canonical supplemental oracle material".to_vec(),
+    )
+    .expect("supplemental source");
+    let decoded = GuardedCampaignFindingOracleSource::from_canonical_bytes(
+        &source.canonical_bytes(),
+    )
+    .expect("decode supplemental source");
+    assert_eq!(decoded, source);
+
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(crucible_cas::content_store::MemoryBlobBackend::new(
+            "supplemental-source-test",
+            1024 * 1024,
+        )),
+        Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
+    ));
+    let store = CampaignExecutorStore::new(repository);
+    let content = source.content_id();
+    store
+        .publish_executor_trace_leaf(
+            content,
+            SUPPLEMENTAL_FINDING_SOURCE_SCHEMA,
+            &source.canonical_bytes(),
+        )
+        .expect("publish supplemental source");
+
+    let reopened = GuardedCampaignFindingOracleSource::load(&store, content)
+        .expect("reopen supplemental source");
+    assert_eq!(reopened, source);
+    assert_eq!(reopened.content_id(), content);
+    assert_eq!(reopened.identity().as_bytes(), content.digest());
+}
 
 struct TerminalLifecycle {
     node: NodeId,
@@ -758,7 +800,7 @@ fn bounded_exploration_uses_accepted_branch_requests_and_observations() {
         3,
         None,
         false,
-        GuardedCampaignExplorationStrategy::CanonicalFrontier,
+        GuardedCampaignExplorationStrategy::BreadthFirst,
     )
     .expect("bounded exploration");
     let request = request.with_exploration(exploration).with_watch_frames();
@@ -830,7 +872,7 @@ fn bounded_exploration_lazily_admits_a_full_width_integer_domain() {
         4,
         None,
         false,
-        GuardedCampaignExplorationStrategy::CanonicalFrontier,
+        GuardedCampaignExplorationStrategy::BreadthFirst,
     )
     .expect("bounded exploration");
     let starts = Arc::new(AtomicUsize::new(0));
@@ -859,7 +901,7 @@ fn bounded_exploration_reports_a_pruned_depth_boundary() {
         3,
         Some(0),
         false,
-        GuardedCampaignExplorationStrategy::CanonicalFrontier,
+        GuardedCampaignExplorationStrategy::BreadthFirst,
     )
     .expect("depth-bounded exploration");
     let starts = Arc::new(AtomicUsize::new(0));
@@ -886,7 +928,7 @@ fn bounded_exploration_stops_on_an_accepted_scenario_finding() {
         3,
         None,
         true,
-        GuardedCampaignExplorationStrategy::CanonicalFrontier,
+        GuardedCampaignExplorationStrategy::BreadthFirst,
     )
     .expect("finding-bounded exploration");
     let starts = Arc::new(AtomicUsize::new(0));
@@ -934,7 +976,7 @@ fn bounded_exploration_stops_on_an_accepted_property_finding() {
         3,
         None,
         true,
-        GuardedCampaignExplorationStrategy::CanonicalFrontier,
+        GuardedCampaignExplorationStrategy::BreadthFirst,
     )
     .expect("finding-bounded exploration");
     let starts = Arc::new(AtomicUsize::new(0));

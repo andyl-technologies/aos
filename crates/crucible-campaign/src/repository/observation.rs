@@ -1055,10 +1055,7 @@ impl CampaignRepository {
             .copied()
             .collect::<Vec<_>>();
         if !selection_ids.is_empty()
-            && matches!(
-                observation.stop(),
-                StopOutcome::Reached(StopCondition::NextChoice)
-            )
+            && matches!(observation.stop(), StopOutcome::Reached(stop) if stop.accepts_next_choice())
         {
             return Err(integrity("next-choice-observation-has-produced-selection"));
         }
@@ -1179,10 +1176,8 @@ impl CampaignRepository {
         if produced_selection_ids != *observation.produced_selections() {
             return Err(integrity("observation-produced-selection-bundle-mismatch"));
         }
-        if matches!(
-            observation.stop(),
-            StopOutcome::Reached(StopCondition::NextChoice)
-        ) && observation.discovered_choices().is_empty()
+        if matches!(observation.stop(), StopOutcome::Reached(stop) if stop.accepts_next_choice())
+            && observation.discovered_choices().is_empty()
         {
             return Err(integrity("next-choice-observation-has-no-choice"));
         }

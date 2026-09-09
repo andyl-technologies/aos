@@ -19,8 +19,8 @@ use crucible::{Configuration, Decision, ScenarioDefForm, Schedule};
 use crucible_campaign::ChoiceValue;
 use crucible_campaign::{
     CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignRepository,
-    CampaignRepositoryError, ChoiceDomain, ChoiceOpportunity, SelectableDeclaration, Selection,
-    SelectionId, SelectionOrigin,
+    CampaignRepositoryError, ChoiceDomain, ChoiceOpportunity,
+    SelectableDeclaration, Selection, SelectionId, SelectionOrigin,
 };
 use thiserror::Error;
 

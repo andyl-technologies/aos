@@ -691,6 +691,12 @@ content_object_id!(
     "crucible.campaign.planner-beam-candidate",
     "Identifies one snapshot-bound Beam candidate and survivor-decision binding."
 );
+content_object_id!(
+    PlannerSearchCandidateId,
+    ObjectKind::Projection,
+    "crucible.campaign.planner-search-candidate",
+    "Identifies one snapshot-bound graph-search ordering projection."
+);
 semantic_id!(
     CreditId,
     "Identifies one idempotent observation-to-branch credit."

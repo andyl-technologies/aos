@@ -10,6 +10,13 @@ pub(super) use artifact_capture::*;
 mod packaged_executor;
 use packaged_executor::prepare_cli_packaged_executor;
 
+pub(crate) fn load_guarded_campaign_deployment(
+    explicit: Option<&Path>,
+) -> Result<packaged_executor::GuardedCampaignRunDeployment, CliError> {
+    let path = packaged_executor::resolve_guarded_campaign_deployment_path(explicit)?;
+    packaged_executor::load_guarded_campaign_run_deployment(&path)
+}
+
 #[path = "legacy_campaign.rs"]
 mod legacy_campaign;
 

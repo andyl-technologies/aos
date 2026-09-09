@@ -1611,6 +1611,186 @@ fn canonical_frontier_planner_carries_the_first_ready_offer_across_pages() {
 }
 
 #[test]
+fn canonical_search_request_rejects_forged_domain_semantics_and_parent_ancestry() {
+    let (repository, lineage, policy, _) = counted_fixture();
+    let name = "canonical-search-authentication";
+    let genesis = repository
+        .create_funded(name, &lineage, &policy, &BTreeMap::new())
+        .expect("create search campaign");
+    let branch = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "canonical-search-request",
+    );
+    let requested = repository
+        .submit_known_branch_request(name, genesis.snapshot_id(), &branch)
+        .expect("submit search request");
+    let basis = repository
+        .publish_canonical_search_planner_basis(crate::CanonicalSearchStrategy::BreadthFirst)
+        .expect("publish search basis");
+    let invocation = repository
+        .prepare_planner_invocation(
+            name,
+            requested.new_snapshot,
+            basis.engine(),
+            basis.artifact(),
+            basis.initial_state(),
+            None,
+            1,
+            PlanningBudget::new(1, 1, 16, 1_048_576, 100).expect("search budget"),
+        )
+        .expect("prepare search invocation");
+    let request = repository
+        .build_planner_request(
+            requested.new_snapshot,
+            invocation.id().expect("invocation id"),
+        )
+        .expect("build authenticated search request");
+    let input = request
+        .input_bundle()
+        .candidate_inputs(&request)
+        .expect("search candidate inputs")
+        .into_values()
+        .next()
+        .expect("search candidate input");
+    let offer = input.offer.expect("search offer");
+    let candidate = input.search.expect("search projection");
+
+    let tampered_request = |forged: &crate::PlannerSearchCandidate,
+                            removed: &BTreeSet<ContentId>,
+                            extras: Vec<ObjectEnvelope>| {
+        let mut objects = request
+            .input_bundle()
+            .object_ids()
+            .filter_map(|id| {
+                if removed.contains(&id) {
+                    return None;
+                }
+                let object = request
+                    .input_bundle()
+                    .object(id)
+                    .expect("decode input object")
+                    .expect("input object");
+                if object.record_kind() == crate::CampaignRecordKind::PlannerSearchCandidate {
+                    Some(ObjectEnvelope::for_record(
+                        crate::CampaignRecordKind::PlannerSearchCandidate,
+                        crate::object::content_children(forged.content_children())
+                            .expect("search candidate children"),
+                        forged.canonical_bytes(),
+                    )
+                    .expect("forged search candidate envelope"))
+                } else {
+                    Some(object)
+                }
+            })
+            .collect::<Vec<_>>();
+        objects.extend(extras);
+        PlannerRequest::new(
+            request.expected_snapshot(),
+            request.invocation().clone(),
+            request.engine().clone(),
+            request.policy_artifact().clone(),
+            request.policy().clone(),
+            request.planner_state().clone(),
+            *request.input_view(),
+            CampaignPlanningBundle::new(objects).expect("tampered search bundle"),
+        )
+    };
+
+    let wrong_semantics = crate::ChoiceDomainSemanticId::from_hash(CampaignHash::derive(
+        "test.canonical-search.wrong-domain-semantics",
+        b"wrong",
+    ));
+    let wrong_edge = Selection::campaign_edge_id(
+        candidate.position().branch_point(),
+        wrong_semantics,
+        candidate.value(),
+    );
+    let parent_path = crate::BranchPath::from_canonical_bytes(
+        request
+            .input_bundle()
+            .object(candidate.parent_path().content_id())
+            .expect("decode parent path envelope")
+            .expect("parent path envelope")
+            .body(),
+    )
+    .expect("parent path");
+    let mut wrong_segments = parent_path
+        .segments()
+        .expect("scoped parent path")
+        .to_vec();
+    wrong_segments.push(crate::BranchPathSegment::new(
+        candidate.position().branch_point(),
+        wrong_edge,
+    ));
+    let wrong_path = crate::BranchPath::new(wrong_segments).expect("wrong-semantics child path");
+    let forged_semantics = crate::PlannerSearchCandidate::new(
+        candidate.input_view(),
+        candidate.policy(),
+        candidate.position(),
+        candidate.domain(),
+        wrong_semantics,
+        candidate.value().clone(),
+        candidate.ordinal(),
+        wrong_edge,
+        candidate.parent_path(),
+        wrong_path.id().expect("wrong-semantics path id"),
+        candidate.depth(),
+    )
+    .expect("forge domain semantics");
+    assert_eq!(
+        tampered_request(
+            &forged_semantics,
+            &BTreeSet::from([candidate.path().content_id()]),
+            vec![ObjectEnvelope::for_branch_path(&wrong_path).expect("wrong path envelope")],
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason:
+                "planner search-order candidate value is outside its authenticated domain",
+        })
+    );
+
+    let unrelated_parent = crate::BranchPath::new(vec![crate::BranchPathSegment::new(
+        crate::BranchPointId::from_hash(CampaignHash::derive(
+            "test.canonical-search.unrelated-parent-point",
+            b"point",
+        )),
+        crate::BranchEdgeId::from_hash(CampaignHash::derive(
+            "test.canonical-search.unrelated-parent-edge",
+            b"edge",
+        )),
+    )])
+    .expect("unrelated parent path");
+    let forged_parent = crate::PlannerSearchCandidate::new(
+        candidate.input_view(),
+        candidate.policy(),
+        candidate.position(),
+        candidate.domain(),
+        candidate.domain_semantics(),
+        offer.value().clone(),
+        candidate.ordinal(),
+        candidate.edge(),
+        unrelated_parent.id().expect("unrelated parent id"),
+        candidate.path(),
+        candidate.depth(),
+    )
+    .expect("forge parent ancestry");
+    let forged_parent_request = tampered_request(
+        &forged_parent,
+        &BTreeSet::from([candidate.parent_path().content_id()]),
+        vec![ObjectEnvelope::for_branch_path(&unrelated_parent).expect("parent envelope")],
+    );
+    assert_eq!(
+        forged_parent_request,
+        Err(CampaignCodecError::InvalidValue {
+            reason: "planner search-order candidate path disagrees with its order key",
+        })
+    );
+}
+
+#[test]
 fn canonical_puct_planner_ranks_every_ready_offer_and_replays_owner_guidance() {
     let (repository, lineage, base_policy, blobs) = counted_fixture();
     let policy = base_policy
