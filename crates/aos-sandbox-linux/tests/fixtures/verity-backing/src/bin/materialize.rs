@@ -22,9 +22,10 @@ mod linux {
     use aos_sandbox_linux::immutable_file::{
         BeforeRenameFailure, FsVerityBacking, FsVerityDigest, FsVerityPublicationRoot,
         MaterializationCallbacks, MaterializationFailure, NoReplacePublicationError,
-        PublicationName, RetainedPrivatePhase,
+        ObserveSealedPublicationError, PublicationName, RetainedPrivatePhase,
     };
     use aos_sandbox_linux::path::BeneathRoot;
+    use rustix::mount::{UnmountFlags, mount_bind, unmount};
 
     const SUCCESS_NAME: &str = ".materialize-success";
     const FINAL_NAME: &str = "materialized-object";
@@ -39,6 +40,12 @@ mod linux {
     const CROSS_CONFLICT_PRIVATE_NAME: &str = ".cross-conflict-private";
     const CROSS_CONFLICT_FINAL_NAME: &str = "cross-conflict-final";
     const SAME_ROOT_PRIVATE_NAME: &str = ".same-root-private";
+    const OBSERVATION_MISSING_NAME: &str = "observation-missing";
+    const OBSERVATION_UNSEALED_NAME: &str = "observation-unsealed";
+    const OBSERVATION_WRONG_MODE_NAME: &str = "observation-wrong-mode";
+    const OBSERVATION_LINK_NAME: &str = "observation-extra-link";
+    const OBSERVATION_SYMLINK_NAME: &str = "observation-symlink";
+    const OBSERVATION_MOUNT_NAME: &str = "observation-bind-mount";
 
     #[derive(Debug)]
     enum CallbackError {
@@ -300,6 +307,96 @@ mod linux {
             && cross_reopened_identity.inode() == cross_identity.1
             && cross_reopened_identity.bytes() == expected.encoded_size();
 
+        let observed = cross_final
+            .open_named_sealed(
+                &publication_name(CROSS_FINAL_NAME)?,
+                expected.encoded_size(),
+            )?
+            .ok_or("sealed final name was reported absent")?;
+        let mut observed_bytes = Vec::new();
+        File::from(observed.as_fd().try_clone_to_owned()?).read_to_end(&mut observed_bytes)?;
+        let observed_sealed_positive = observed.name().as_os_str() == OsStr::new(CROSS_FINAL_NAME)
+            && observed.device() == cross_identity.0
+            && observed.inode() == cross_identity.1
+            && observed.bytes() == expected.encoded_size()
+            && observed.observed_verity_digest() == cross_measurement
+            && observed_bytes == bytes;
+        drop(observed);
+
+        let observed_oversize_rejected = matches!(
+            cross_final.open_named_sealed(
+                &publication_name(CROSS_FINAL_NAME)?,
+                expected.encoded_size() - 1,
+            ),
+            Err(ObserveSealedPublicationError::ByteLimitExceeded)
+        );
+        let observed_absence_exact = cross_final
+            .open_named_sealed(
+                &publication_name(OBSERVATION_MISSING_NAME)?,
+                expected.encoded_size(),
+            )?
+            .is_none();
+
+        let unsealed_path = cross_final_path.join(OBSERVATION_UNSEALED_NAME);
+        std::fs::write(&unsealed_path, b"unsealed")?;
+        std::fs::set_permissions(&unsealed_path, std::fs::Permissions::from_mode(0o600))?;
+        let observed_unsealed_rejected = matches!(
+            cross_final.open_named_sealed(
+                &publication_name(OBSERVATION_UNSEALED_NAME)?,
+                expected.encoded_size(),
+            ),
+            Err(ObserveSealedPublicationError::Linux(_))
+        );
+
+        let wrong_mode_path = cross_final_path.join(OBSERVATION_WRONG_MODE_NAME);
+        std::fs::write(&wrong_mode_path, b"wrong mode")?;
+        std::fs::set_permissions(&wrong_mode_path, std::fs::Permissions::from_mode(0o640))?;
+        let observed_wrong_mode_rejected = matches!(
+            cross_final.open_named_sealed(
+                &publication_name(OBSERVATION_WRONG_MODE_NAME)?,
+                expected.encoded_size(),
+            ),
+            Err(ObserveSealedPublicationError::InodeInvariant)
+        );
+
+        let extra_link_path = cross_final_path.join(OBSERVATION_LINK_NAME);
+        std::fs::hard_link(cross_final_path.join(CROSS_FINAL_NAME), &extra_link_path)?;
+        let observed_extra_link_rejected = matches!(
+            cross_final.open_named_sealed(
+                &publication_name(CROSS_FINAL_NAME)?,
+                expected.encoded_size(),
+            ),
+            Err(ObserveSealedPublicationError::InodeInvariant)
+        );
+        std::fs::remove_file(extra_link_path)?;
+
+        let symlink_path = cross_final_path.join(OBSERVATION_SYMLINK_NAME);
+        std::os::unix::fs::symlink(CROSS_FINAL_NAME, symlink_path)?;
+        let observed_symlink_rejected = matches!(
+            cross_final.open_named_sealed(
+                &publication_name(OBSERVATION_SYMLINK_NAME)?,
+                expected.encoded_size(),
+            ),
+            Err(ObserveSealedPublicationError::Linux(_))
+        );
+
+        let mount_path = cross_final_path.join(OBSERVATION_MOUNT_NAME);
+        std::fs::write(&mount_path, b"mount target")?;
+        std::fs::set_permissions(&mount_path, std::fs::Permissions::from_mode(0o600))?;
+        mount_bind(cross_final_path.join(CROSS_FINAL_NAME), &mount_path)?;
+        let mounted_observation = cross_final.open_named_sealed(
+            &publication_name(OBSERVATION_MOUNT_NAME)?,
+            expected.encoded_size(),
+        );
+        unmount(&mount_path, UnmountFlags::empty())?;
+        let observed_mount_crossing_rejected = matches!(
+            mounted_observation,
+            Err(ObserveSealedPublicationError::Linux(LinuxError::Syscall {
+                source,
+                ..
+            })) if source.raw_os_error() == Some(libc::EXDEV)
+        );
+
         let cross_conflict_path = cross_final_path.join(CROSS_CONFLICT_FINAL_NAME);
         std::fs::write(&cross_conflict_path, b"cross conflict")?;
         let cross_conflict_before = std::fs::metadata(&cross_conflict_path)?;
@@ -428,7 +525,11 @@ mod linux {
              \"existing_name_untouched\":{},\"callback_failure_retained\":{},\
              \"retained_unsealed_writable\":{},\
              \"cross_directory_durable\":{},\"cross_conflict_preserved\":{},\
-             \"same_root_rejected\":{}}}",
+             \"same_root_rejected\":{},\"observed_sealed_positive\":{},\
+             \"observed_oversize_rejected\":{},\"observed_absence_exact\":{},\
+             \"observed_unsealed_rejected\":{},\"observed_wrong_mode_rejected\":{},\
+             \"observed_extra_link_rejected\":{},\"observed_symlink_rejected\":{},\
+             \"observed_mount_crossing_rejected\":{}}}",
             exact.verifier.is_none(),
             fresh_inode,
             exact_size,
@@ -449,6 +550,14 @@ mod linux {
             cross_directory_durable,
             cross_conflict_preserved,
             same_root_rejected,
+            observed_sealed_positive,
+            observed_oversize_rejected,
+            observed_absence_exact,
+            observed_unsealed_rejected,
+            observed_wrong_mode_rejected,
+            observed_extra_link_rejected,
+            observed_symlink_rejected,
+            observed_mount_crossing_rejected,
         );
         Ok(())
     }

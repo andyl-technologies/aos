@@ -108,7 +108,15 @@ in
           retained_unsealed_writable: true,
           cross_directory_durable: true,
           cross_conflict_preserved: true,
-          same_root_rejected: true
+          same_root_rejected: true,
+          observed_sealed_positive: true,
+          observed_oversize_rejected: true,
+          observed_absence_exact: true,
+          observed_unsealed_rejected: true,
+          observed_wrong_mode_rejected: true,
+          observed_extra_link_rejected: true,
+          observed_symlink_rejected: true,
+          observed_mount_crossing_rejected: true
         }
       ' materialize.json
       cat materialize.json

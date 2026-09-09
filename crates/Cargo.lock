@@ -998,6 +998,7 @@ dependencies = [
  "aos-sandbox-core",
  "aos-sandbox-linux",
  "libc",
+ "rustix 1.1.4",
 ]
 
 [[package]]

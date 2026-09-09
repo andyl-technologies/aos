@@ -9,6 +9,7 @@ publish = false
 aos-sandbox-core.workspace = true
 aos-sandbox-linux.workspace = true
 libc.workspace = true
+rustix = { workspace = true, features = ["mount"] }
 
 [lints]
 workspace = true
