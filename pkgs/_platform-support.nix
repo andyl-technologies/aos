@@ -458,6 +458,7 @@ let
     "aos-sandbox-zfs-worker"
     "aos-service-root"
     "aos-selinux-production-policy"
+    "aos-storaged"
     "aos-selinux-run"
     "aos-var-policy-migrate"
     "aos-verity-root-guard"

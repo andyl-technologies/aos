@@ -28,6 +28,7 @@ in {
       brokers.hostBroker.enable
       || brokers.mountBroker.enable
       || brokers.networkBroker.enable
+      || brokers.storageBroker.enable
     ) {
       assertions = [
         {

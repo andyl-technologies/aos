@@ -2278,17 +2278,20 @@ fn fence_is_same_or_successor(
 
 /// Returns the closed method set safe for the incomplete storage service.
 ///
-/// Apply is intentionally absent until catalog publication, key provisioning,
-/// privileged observation, and helper readiness form one complete startup
-/// proof. Inventory is included only when a caller has a complete bounded
-/// catalog inventory implementation.
+/// Apply and catalog preparation remain absent. Authoritative inventory and
+/// the isolated repair method are advertised independently from their exact
+/// runtime readiness proofs.
 #[must_use]
-pub fn advertised_storage_methods(inventory_ready: bool) -> Vec<BrokerMethod> {
+pub fn advertised_storage_methods(inventory_ready: bool, repair_ready: bool) -> Vec<BrokerMethod> {
+    let mut methods = Vec::with_capacity(2);
     if inventory_ready {
-        vec![BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY]
-    } else {
-        Vec::new()
+        methods.push(BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES);
     }
+    if repair_ready {
+        methods.push(BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN);
+    }
+
+    methods
 }
 
 #[cfg(test)]
@@ -2302,10 +2305,14 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::rc::Rc;
+    use std::thread;
+    use std::time::Duration;
 
     use aos_proto::aos::sandbox::local::v1::{
-        ApplyStorageRequest, Audience, BrokerAuthorizationArtifactsV1, BrokerRequestEnvelope,
+        ApplyStorageRequest, Audience, BrokerAuthorizationArtifactsV1, BrokerClientHello,
+        BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope, Feature, InventoryStorageRequest,
         PrepareStorageCatalogRequest, RepairStorageWorkspacePinRequest, StorageAction,
+        StorageResult,
     };
     use aos_sandbox_core::format::{
         encode_broker_authorization_plan, encode_ownership_lease, encode_signature,
@@ -2326,8 +2333,9 @@ mod tests {
     };
     use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
     use aos_sandbox_protocol::{
-        MINIMUM_HOST_IDENTITY_RANGE, decode_request_envelope,
-        decode_storage_resource_inventory_response,
+        AuthorizationArtifactBytes, MINIMUM_HOST_IDENTITY_RANGE, decode_request_envelope,
+        decode_response_envelope, decode_server_hello, decode_storage_resource_inventory_response,
+        encode_authorized_request_envelope, encode_unauthed_request_envelope,
     };
     use buffa::Message as _;
     use ed25519_dalek::SigningKey;
@@ -2687,6 +2695,48 @@ mod tests {
             )
         }
 
+        fn repair_artifacts_for_rpc(
+            &self,
+            request: &[u8],
+            current_wall_seconds: i64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let semantics = CanonicalStorageRepairSemanticsV1::decode(
+                request,
+                rpc_peer(),
+                rpc_peer_policy(),
+                vm_clock().boottime_nanoseconds(),
+            )
+            .unwrap();
+            let fence = semantics.fence();
+            let assignment = BrokerAssignment::new(
+                SandboxId::from_bytes(*fence.sandbox_id()),
+                IncarnationId::from_bytes(*fence.incarnation_id()),
+                AssignmentEpoch::new(fence.assignment_epoch()),
+                DesiredGeneration::new(fence.desired_generation()),
+                ObjectDigest::from_bytes(*fence.assignment_digest()),
+            )
+            .unwrap();
+            let grant = BrokerGrant::new(
+                semantics.broker_verb(),
+                semantics.grant_target(),
+                semantics.argument_commitment(),
+                request.len() as u32,
+                0,
+            )
+            .unwrap();
+
+            self.signed_artifacts(
+                assignment,
+                vec![grant],
+                current_wall_seconds - 30,
+                current_wall_seconds + 600,
+                current_wall_seconds + 600,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+                ProtocolVersion::new(1, 4),
+            )
+        }
+
         fn repair_artifacts_between(
             &self,
             request: &[u8],
@@ -2907,6 +2957,20 @@ mod tests {
         PeerPolicy {
             uid: 100,
             gid: Some(200),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        }
+    }
+    fn rpc_peer() -> PeerCredentials {
+        PeerCredentials {
+            uid: 811,
+            gid: 811,
+            pid: Some(300),
+        }
+    }
+    fn rpc_peer_policy() -> PeerPolicy {
+        PeerPolicy {
+            uid: 811,
+            gid: Some(811),
             audience: Audience::AUDIENCE_NODE_CONTROLLER,
         }
     }
@@ -3812,7 +3876,6 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-
         let fixture = Fixture::new();
         fixture.provision_protected(&authority_directory);
         let state = TempDir::new().unwrap();
@@ -4892,6 +4955,493 @@ mod tests {
             format!("{}\n", observation_pin_path.display()),
         )
         .unwrap();
+    }
+
+    const STORAGE_RPC_SOCKET: &str = "/run/aos/sandbox-storage/control.sock";
+    const STORAGE_RPC_FIXTURE_DIRECTORY: &str = "/run/aos/storage-rpc-fixture";
+    const STORAGE_RPC_CONTROL_DIRECTORY: &str = "/run/storage-rpc-controller";
+    const STORAGE_RPC_RESPONSE_BYTES: u32 = 1_048_576;
+
+    #[test]
+    #[ignore = "requires the installed aos-storaged and systemd Storage workers"]
+    fn systemd_storage_rpc_vm_fixture() {
+        match std::env::var("AOS_STORAGE_RPC_ROLE").unwrap().as_str() {
+            "seed" => seed_storage_rpc_state(),
+            "controller" => storage_rpc_controller_loop(),
+            "decoy" => storage_rpc_decoy(),
+            role => panic!("unknown Storage RPC fixture role {role}"),
+        }
+    }
+
+    fn seed_storage_rpc_state() {
+        let fixture_directory = Path::new(STORAGE_RPC_FIXTURE_DIRECTORY);
+        let marker = fixture_directory.join("seeded");
+        if marker.exists() {
+            return;
+        }
+
+        let authority_directory = std::env::var_os("AOS_STORAGE_AUTHORITY_DIRECTORY")
+            .map(PathBuf::from)
+            .unwrap();
+        let bootstrap_directory = std::env::var_os("AOS_STORAGE_BOOTSTRAP_DIRECTORY")
+            .map(PathBuf::from)
+            .unwrap();
+        let state_directory = std::env::var_os("AOS_STORAGE_STATE_DIRECTORY")
+            .map(PathBuf::from)
+            .unwrap();
+        let root_guid = std::env::var("AOS_STORAGE_ROOT_GUID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let ancestor_guid = std::env::var("AOS_STORAGE_ANCESTOR_GUID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let dataset_guid = std::env::var("AOS_STORAGE_DATASET_GUID")
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        fs::create_dir_all(fixture_directory).unwrap();
+        fs::set_permissions(fixture_directory, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(&state_directory).unwrap();
+        fs::set_permissions(&state_directory, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let fixture = Fixture::new();
+        fixture.provision_protected(&authority_directory);
+        let catalog = vm_create_catalog(
+            root_guid,
+            ancestor_guid,
+            "aosproof/aos/project/rpc-workspace",
+        );
+        provision_storage_rpc_bootstrap(&bootstrap_directory, &catalog);
+
+        let identity_pool = crate::StorageIdentityPoolV1::new(
+            MINIMUM_HOST_IDENTITY_RANGE,
+            MINIMUM_HOST_IDENTITY_RANGE * 4,
+        )
+        .unwrap();
+        let configuration_binding = crate::runtime::runtime_configuration_binding(
+            fixture.protected_authority_binding(),
+            identity_pool,
+        );
+        let store = StorageTransactionStore::open_root_owned_runtime(
+            &state_directory,
+            StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+            catalog.generation() - 1,
+            configuration_binding,
+            catalog.generation() - 1,
+            std::slice::from_ref(&catalog),
+        )
+        .unwrap();
+        store
+            .validate_runtime_restart(
+                configuration_binding,
+                catalog.generation() - 1,
+                std::slice::from_ref(&catalog),
+            )
+            .unwrap();
+        let mut coordinator = StorageAdmissionCoordinator::new(fixture.authority(), store);
+
+        let specification = sandbox_spec(74);
+        let manifest = assignment_manifest(&specification);
+        let admission_clock = vm_clock();
+        let create_deadline = admission_clock
+            .boottime_nanoseconds()
+            .checked_add(600_000_000_000)
+            .unwrap();
+        let create_request = vm_create_request(manifest.digest(), create_deadline);
+        let create_artifacts = fixture.artifacts_for_kernel_clock(
+            &create_request,
+            &catalog,
+            admission_clock.wall_seconds(),
+        );
+        prepare_for_apply(
+            &mut coordinator,
+            &create_request,
+            &create_artifacts,
+            &catalog,
+            &admission_clock,
+        );
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = coordinator
+            .admit_workspace_apply_intent(
+                &create_request,
+                &create_artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 3),
+                peer(),
+                peer_policy(),
+                &admission_clock,
+                MINIMUM_HOST_IDENTITY_RANGE,
+                &manifest,
+                &specification,
+            )
+            .unwrap()
+        else {
+            panic!("Storage RPC seed create was not prepared")
+        };
+
+        coordinator
+            .transactions
+            .mark_mutation_ambiguous([7; 16], mutation_digest)
+            .unwrap();
+        let creation = coordinator
+            .transactions
+            .commit_observed(
+                [7; 16],
+                mutation_digest,
+                &catalog,
+                &catalog.plan().postcondition(),
+                Some(dataset_guid),
+                ObjectDigest::from_bytes([0xa1; 32]),
+            )
+            .unwrap();
+        let workspace_handle = creation.storage_handle().unwrap();
+        let custody = WorkspacePinHostCustody::retain_initial_root_owned().unwrap();
+        let AuthorizedWorkspacePinAttemptV1::Dispatch(initial_pin) = coordinator
+            .begin_workspace_pin_ensure(creation, custody.host_scope().unwrap(), &mut || {
+                Ok(vm_clock())
+            })
+            .unwrap()
+        else {
+            panic!("Storage RPC seed Ensure was not admitted")
+        };
+        assert_eq!(initial_pin.attempt().attempt_ordinal(), 1);
+        let pin_path = PathBuf::from(crate::workspace_pin::workspace_pin_path(&workspace_handle));
+        assert!(!pin_path.exists());
+        drop(coordinator);
+
+        let workspace_catalog =
+            crate::StorageWorkspaceCatalogV1::open_root_owned(&state_directory, identity_pool)
+                .unwrap();
+        assert!(
+            decode_storage_resource_inventory_response(
+                &workspace_catalog.inventory_resources().unwrap(),
+                STORAGE_RPC_RESPONSE_BYTES,
+            )
+            .unwrap()
+            .workspaces()
+            .is_empty()
+        );
+        drop(workspace_catalog);
+
+        let repair_clock = vm_clock();
+        let repair_manifest = assignment_manifest_at(&specification, 6);
+        let repair_request = vm_repair_request(
+            84,
+            85,
+            workspace_handle,
+            6,
+            repair_manifest.digest(),
+            repair_clock
+                .boottime_nanoseconds()
+                .checked_add(600_000_000_000)
+                .unwrap(),
+        );
+        let repair_artifacts =
+            fixture.repair_artifacts_for_rpc(&repair_request, repair_clock.wall_seconds());
+        let artifacts = BrokerAuthorizationArtifactsV1 {
+            broker_plan: repair_artifacts.broker_plan().to_vec(),
+            broker_plan_signature: repair_artifacts.broker_plan_signature().to_vec(),
+            ownership_lease: repair_artifacts.ownership_lease().to_vec(),
+            ownership_lease_signature: repair_artifacts.ownership_lease_signature().to_vec(),
+            ..Default::default()
+        };
+
+        write_public_fixture_file(
+            &fixture_directory.join("repair-request.pb"),
+            &repair_request,
+        );
+        write_public_fixture_file(
+            &fixture_directory.join("repair-artifacts.pb"),
+            &artifacts.encode_to_vec(),
+        );
+        write_public_fixture_file(
+            &fixture_directory.join("workspace-handle"),
+            &workspace_handle,
+        );
+        write_public_fixture_file(&marker, b"ready\n");
+    }
+
+    fn provision_storage_rpc_bootstrap(directory: &Path, catalog: &ResolvedCatalogCommitmentV1) {
+        fs::create_dir_all(directory).unwrap();
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let generation = catalog.generation() - 1;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"AOSSBT01");
+        bytes.extend_from_slice(&1_u16.to_be_bytes());
+        bytes.extend_from_slice(&[0; 2]);
+        bytes.extend_from_slice(&generation.to_be_bytes());
+        bytes.extend_from_slice(&1_u32.to_be_bytes());
+        bytes.extend_from_slice(&(catalog.canonical_bytes().len() as u32).to_be_bytes());
+        bytes.extend_from_slice(catalog.canonical_bytes());
+
+        let minimum = directory.join("storage-minimum-generation");
+        fs::write(&minimum, generation.to_be_bytes()).unwrap();
+        fs::set_permissions(&minimum, fs::Permissions::from_mode(0o600)).unwrap();
+        let genesis = directory.join("storage-genesis.catalog");
+        fs::write(&genesis, bytes).unwrap();
+        fs::set_permissions(&genesis, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    fn write_public_fixture_file(path: &Path, bytes: &[u8]) {
+        fs::write(path, bytes).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    fn storage_rpc_controller_loop() {
+        let command_path = Path::new(STORAGE_RPC_CONTROL_DIRECTORY).join("command");
+        let result_path = Path::new(STORAGE_RPC_CONTROL_DIRECTORY).join("result");
+        let mut previous = String::new();
+
+        loop {
+            let command = fs::read_to_string(&command_path).unwrap_or_default();
+            let command = command.trim();
+            if command.is_empty() || command == previous {
+                thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            previous = command.to_owned();
+            let (token, action) = command
+                .split_once(' ')
+                .unwrap_or_else(|| panic!("malformed Storage RPC command {command}"));
+            let detail = match action {
+                "inventory-empty" => {
+                    assert_eq!(storage_rpc_inventory(90), 0);
+                    "inventory-empty"
+                }
+                "missing-authority" => {
+                    storage_rpc_missing_authority();
+                    "missing-authority"
+                }
+                "repair" => {
+                    storage_rpc_repair(false);
+                    "repair"
+                }
+                "inventory-live" => {
+                    assert_eq!(storage_rpc_inventory(91), 1);
+                    "inventory-live"
+                }
+                "retry" => {
+                    storage_rpc_repair(true);
+                    "retry-conflict"
+                }
+                "exit" => {
+                    fs::write(&result_path, format!("{token} ok exit\n")).unwrap();
+                    return;
+                }
+                _ => panic!("unknown Storage RPC command {action}"),
+            };
+            fs::write(&result_path, format!("{token} ok {detail}\n")).unwrap();
+        }
+    }
+
+    fn storage_rpc_decoy() {
+        let mut socket =
+            aos_sandbox_linux::seqpacket::SeqpacketSocket::connect(Path::new(STORAGE_RPC_SOCKET))
+                .unwrap();
+        let deadline = crate::transport::boottime()
+            .unwrap()
+            .checked_add(crate::transport::EXCHANGE_NANOSECONDS)
+            .unwrap();
+        let hello =
+            storage_rpc_client_hello(BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES);
+
+        if crate::transport::send(&mut socket, &hello.encode_to_vec(), deadline).is_ok() {
+            assert!(
+                crate::transport::receive(
+                    &mut socket,
+                    aos_sandbox_protocol::MAXIMUM_HANDSHAKE_BYTES,
+                    deadline,
+                )
+                .is_err()
+            );
+        }
+    }
+
+    fn storage_rpc_missing_authority() {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN;
+        let (mut socket, _session, deadline) = storage_rpc_handshake(method);
+        let request =
+            fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("repair-request.pb")).unwrap();
+        let packet = BrokerRequestEnvelope {
+            method: method.into(),
+            body: request,
+            ..Default::default()
+        }
+        .encode_to_vec();
+
+        crate::transport::send(&mut socket, &packet, deadline).unwrap();
+        assert!(
+            crate::transport::receive(&mut socket, STORAGE_RPC_RESPONSE_BYTES as usize, deadline)
+                .is_err()
+        );
+    }
+
+    fn storage_rpc_repair(expect_conflict: bool) {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN;
+        let request =
+            fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("repair-request.pb")).unwrap();
+        let artifacts = BrokerAuthorizationArtifactsV1::decode_from_slice(
+            &fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("repair-artifacts.pb"))
+                .unwrap(),
+        )
+        .unwrap();
+        let packet = encode_authorized_request_envelope(
+            ProtocolId::StorageBroker,
+            method,
+            &request,
+            &[],
+            AuthorizationArtifactBytes {
+                broker_plan: &artifacts.broker_plan,
+                broker_plan_signature: &artifacts.broker_plan_signature,
+                ownership_lease: &artifacts.ownership_lease,
+                ownership_lease_signature: &artifacts.ownership_lease_signature,
+            },
+        )
+        .unwrap();
+        let request = RepairStorageWorkspacePinRequest::decode_from_slice(&request).unwrap();
+        let request_id: [u8; 16] = request
+            .header
+            .as_option()
+            .unwrap()
+            .request_id
+            .as_slice()
+            .try_into()
+            .unwrap();
+        let maximum_response_bytes = request.header.as_option().unwrap().maximum_response_bytes;
+        let (mut socket, session, deadline) = storage_rpc_handshake(method);
+        session.decode_request(&packet, 0).unwrap();
+        crate::transport::send(&mut socket, &packet, deadline).unwrap();
+        let response =
+            crate::transport::receive(&mut socket, maximum_response_bytes as usize, deadline)
+                .unwrap();
+        let response = decode_response_envelope(
+            response.payload(),
+            &request_id,
+            method,
+            &[],
+            0,
+            session.maximum_response_bytes(),
+            maximum_response_bytes,
+        )
+        .unwrap();
+
+        if expect_conflict {
+            let error = response.error().unwrap();
+            assert_eq!(error.code(), BrokerErrorCode::BROKER_ERROR_CODE_CONFLICT);
+            assert!(!error.retryable());
+            assert!(response.body().is_empty());
+        } else {
+            assert!(response.error().is_none());
+            let result = StorageResult::decode_from_slice(response.body()).unwrap();
+            let expected =
+                fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("workspace-handle"))
+                    .unwrap();
+            assert_eq!(result.storage_handle, expected);
+        }
+    }
+
+    fn storage_rpc_inventory(request_marker: u8) -> usize {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES;
+        let now = crate::transport::boottime().unwrap();
+        let mut request = InventoryStorageRequest::default();
+        let header = request.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.protocol_minor = 4;
+        header.request_id = vec![request_marker; 16];
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.deadline_boottime_nanoseconds = now.checked_add(30_000_000_000).unwrap();
+        header.maximum_response_bytes = STORAGE_RPC_RESPONSE_BYTES;
+        let packet = encode_unauthed_request_envelope(
+            ProtocolId::StorageBroker,
+            method,
+            &request.encode_to_vec(),
+        )
+        .unwrap();
+        let request_id = [request_marker; 16];
+        let (mut socket, session, deadline) = storage_rpc_handshake(method);
+        session.decode_request(&packet, 0).unwrap();
+        crate::transport::send(&mut socket, &packet, deadline).unwrap();
+        let response =
+            crate::transport::receive(&mut socket, STORAGE_RPC_RESPONSE_BYTES as usize, deadline)
+                .unwrap();
+        let response = decode_response_envelope(
+            response.payload(),
+            &request_id,
+            method,
+            &[],
+            0,
+            session.maximum_response_bytes(),
+            STORAGE_RPC_RESPONSE_BYTES,
+        )
+        .unwrap();
+        assert!(response.error().is_none());
+
+        decode_storage_resource_inventory_response(response.body(), STORAGE_RPC_RESPONSE_BYTES)
+            .unwrap()
+            .workspaces()
+            .len()
+    }
+
+    fn storage_rpc_handshake(
+        method: BrokerMethod,
+    ) -> (
+        aos_sandbox_linux::seqpacket::SeqpacketSocket,
+        aos_sandbox_protocol::NegotiatedBrokerSession,
+        u64,
+    ) {
+        let mut socket =
+            aos_sandbox_linux::seqpacket::SeqpacketSocket::connect(Path::new(STORAGE_RPC_SOCKET))
+                .unwrap();
+        let deadline = crate::transport::boottime()
+            .unwrap()
+            .checked_add(crate::transport::EXCHANGE_NANOSECONDS)
+            .unwrap();
+        let hello = storage_rpc_client_hello(method);
+        crate::transport::send(&mut socket, &hello.encode_to_vec(), deadline).unwrap();
+        let response = crate::transport::receive(
+            &mut socket,
+            aos_sandbox_protocol::MAXIMUM_HANDSHAKE_BYTES,
+            deadline,
+        )
+        .unwrap();
+        let feature = FeatureRef::new(
+            aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),
+            1,
+            0,
+        )
+        .unwrap();
+        let session = decode_server_hello(
+            response.payload(),
+            ProtocolId::StorageBroker,
+            Audience::AUDIENCE_NODE_CONTROLLER,
+            ProtocolVersion::new(1, 4),
+            &[feature],
+            &[method],
+            STORAGE_RPC_RESPONSE_BYTES,
+        )
+        .unwrap();
+
+        (socket, session, deadline)
+    }
+
+    fn storage_rpc_client_hello(method: BrokerMethod) -> BrokerClientHello {
+        BrokerClientHello {
+            protocol_major: 1,
+            protocol_minor: 4,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            required_features: vec![Feature {
+                namespace: aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE
+                    .to_owned(),
+                major: 1,
+                minor: 0,
+                ..Default::default()
+            }],
+            maximum_response_bytes: STORAGE_RPC_RESPONSE_BYTES,
+            required_methods: vec![method.into()],
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -7737,13 +8287,25 @@ mod tests {
 
     #[test]
     fn apply_is_never_advertised_without_complete_effect_readiness() {
-        assert!(advertised_storage_methods(false).is_empty());
+        assert!(advertised_storage_methods(false, false).is_empty());
         assert_eq!(
-            advertised_storage_methods(true),
-            [BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY]
+            advertised_storage_methods(true, false),
+            [BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES]
+        );
+        assert_eq!(
+            advertised_storage_methods(false, true),
+            [BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN]
+        );
+        assert_eq!(
+            advertised_storage_methods(true, true),
+            [
+                BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
+                BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN,
+            ]
         );
         assert!(
-            !advertised_storage_methods(true).contains(&BrokerMethod::BROKER_METHOD_STORAGE_APPLY)
+            !advertised_storage_methods(true, true)
+                .contains(&BrokerMethod::BROKER_METHOD_STORAGE_APPLY)
         );
     }
 }

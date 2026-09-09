@@ -1,4 +1,4 @@
-##! aos-sandbox-zfs-worker — typed cgroup-contained OpenZFS executor
+##! aos-storaged — authenticated Storage repair and inventory broker
 {
   lib,
   mkCargoPackage,
@@ -17,7 +17,7 @@
   src = import ./aos/_workspace-source.nix {inherit lib;};
   cargoDeps = fetchCargoVendor {
     inherit src;
-    name = "aos-sandbox-zfs-worker-vendor-${version}";
+    name = "aos-storaged-vendor-${version}";
     sourceRoot = "source/crates";
     hash = "sha256-+KiwQYF3bLrJwHf8X5PgT23l5+evxJdpbC935PnGNeI=";
   };
@@ -25,24 +25,22 @@
     PROTOC = "${buildProtobuf}/bin/protoc";
   };
   cargoArtifactContract = {
-    family = "aos-sandbox-zfs-worker-native";
+    family = "aos-storaged-native";
     checkType = "debug";
     nativeInputs = map toString [buildProtobuf];
   };
   cargoArtifacts = mkCargoArtifacts {
-    pname = "aos-sandbox-zfs-worker-artifacts";
+    pname = "aos-storaged-artifacts";
     inherit version cargoDeps cargoArtifactContract cargoEnv;
     src = mkCargoDummySource {
       srcRoot = ../../crates;
-      name = "aos-sandbox-zfs-worker-cargo-dummy-source";
+      name = "aos-storaged-cargo-dummy-source";
       cargoRoot = "crates";
     };
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage --bin aos-sandbox-zfs-worker"
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage --bin aos-sandbox-workspace-pin-worker"
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage --bin aos-sandbox-workspace-pin-observer"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage --bin aos-storaged"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage"
     ];
     buildDeps = [buildProtobuf];
@@ -50,10 +48,10 @@
   };
 in
   mkCargoPackage {
-    pname = "aos-sandbox-zfs-worker";
+    pname = "aos-storaged";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
-    cargoFlags = "-p aos-sandbox-storage";
+    cargoFlags = "-p aos-sandbox-storage --bin aos-storaged";
     cargoTestFlags = "-p aos-sandbox-storage";
     cargoNextest = true;
     doCheck = true;
@@ -61,9 +59,7 @@ in
     runtimeDeps = [];
 
     postInstall = ''
-      test -x "$out/bin/aos-sandbox-zfs-worker"
-      test -x "$out/bin/aos-sandbox-workspace-pin-worker"
-      test -x "$out/bin/aos-sandbox-workspace-pin-observer"
+      test -x "$out/bin/aos-storaged"
     '';
 
     passthru = {
@@ -71,7 +67,7 @@ in
     };
 
     meta = {
-      description = "Typed cgroup-contained OpenZFS transaction worker";
+      description = "Authenticated Storage repair and inventory broker";
       homepage = "https://github.com/andyl/andyl-os";
       license = "Apache-2.0";
       platforms = ["x86_64-linux" "aarch64-linux"];

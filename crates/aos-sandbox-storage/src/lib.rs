@@ -20,6 +20,7 @@
 //! [`process`] reaches ZFS only through a fixed, systemd-contained one-shot
 //! worker that recompiles typed catalog input.
 
+pub mod activation;
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
@@ -32,13 +33,16 @@ mod catalog_transition;
 )]
 mod helper;
 mod observation;
+pub mod peer;
 mod pin_observer;
 mod pin_worker;
 mod pin_worker_runtime;
 pub mod process;
 pub mod request;
 pub mod runtime;
+pub mod service;
 pub mod state;
+pub mod transport;
 pub mod workspace_catalog;
 mod workspace_pin;
 mod workspace_repair;
@@ -77,7 +81,10 @@ pub use request::{
 };
 pub use runtime::{
     StorageBrokerRuntime, StorageRuntimeError, StorageRuntimeMutationOutcome,
-    StorageRuntimeReadiness,
+    StorageRuntimeReadiness, WorkspacePinRepairExecutionOutcomeV1,
+};
+pub use service::{
+    StorageConnectionOutcome, StorageRpcRuntime, StorageService, StorageServiceError,
 };
 pub use state::{
     BeginStorageTransaction, CommittedStorageResultV1, DurableStoragePhase, StorageRecoveryEntry,

@@ -331,6 +331,35 @@ impl StorageBrokerRuntime {
         )
     }
 
+    /// Reports whether authenticated authoritative inventory may be exposed.
+    ///
+    /// Legacy state is retained only for non-dispatch recovery and cannot be
+    /// projected into a launch-resource inventory. Every current-format state
+    /// has already authenticated repair history before the workspace catalog
+    /// was opened.
+    #[must_use]
+    pub const fn is_inventory_ready(&self) -> bool {
+        !matches!(
+            self.readiness,
+            StorageRuntimeReadiness::LegacyRecoveryOnly { .. }
+        )
+    }
+
+    /// Encodes the current physically revalidated workspace inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageRuntimeError::Recovery`] for legacy-only state, or a
+    /// workspace-catalog error when a retained launch resource no longer
+    /// matches its protected physical identity.
+    pub fn inventory_resources(&self) -> Result<Vec<u8>, StorageRuntimeError> {
+        if !self.is_inventory_ready() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+
+        self.workspaces.inventory_resources().map_err(Into::into)
+    }
+
     /// Repairs one existing workspace root pin through fresh observation.
     ///
     /// The caller supplies only the raw Storage 1.4 request and standard

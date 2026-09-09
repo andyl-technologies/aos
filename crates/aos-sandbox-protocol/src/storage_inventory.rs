@@ -1,9 +1,10 @@
 //! Authoritative Storage workspace-inventory validation.
 //!
-//! Storage protocol 1.2 reports only current, launchable workspace roots. Each
-//! row binds an exact assignment and portable root image to a current-boot
-//! root pin, ZFS dataset GUID, subordinate identity range, and broker
-//! observation digest. Paths are derived locally from opaque handles:
+//! Storage protocol 1.2 and its compatible successors report only current,
+//! launchable workspace roots. Each row binds an exact assignment and portable
+//! root image to a current-boot root pin, ZFS dataset GUID, subordinate identity
+//! range, and broker observation digest. Paths are derived locally from opaque
+//! handles:
 //!
 //! ```text
 //! /run/aos/sandbox-pins/workspaces/<64 lowercase hexadecimal digits>
@@ -29,7 +30,7 @@ use crate::{
 
 /// Maximum current workspaces accepted in one complete Storage snapshot.
 pub const MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS: usize = 16_384;
-const STORAGE_RESOURCE_INVENTORY_VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);
+const MINIMUM_STORAGE_RESOURCE_INVENTORY_VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);
 
 /// Carries one complete validated Storage resource snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -157,13 +158,13 @@ impl ValidatedStorageWorkspace {
     }
 }
 
-/// Decodes a Storage 1.2 authoritative-inventory request.
+/// Decodes a compatible Storage authoritative-inventory request.
 ///
 /// # Errors
 ///
 /// Returns [`ProtocolValidationError`] for an oversized or malformed request,
-/// invalid peer/header semantics, unknown fields, or any version other than
-/// Storage 1.2.
+/// invalid peer/header semantics, unknown fields, a version older than Storage
+/// 1.2, or a version outside the shared supported Storage range.
 pub fn decode_storage_resource_inventory_request(
     bytes: &[u8],
     peer: PeerCredentials,
@@ -186,7 +187,9 @@ pub fn decode_storage_resource_inventory_request(
         ProtocolId::StorageBroker,
         now_boottime_nanoseconds,
     )?;
-    if header.protocol_version() != STORAGE_RESOURCE_INVENTORY_VERSION {
+    if header.protocol_version().major() != MINIMUM_STORAGE_RESOURCE_INVENTORY_VERSION.major()
+        || header.protocol_version().minor() < MINIMUM_STORAGE_RESOURCE_INVENTORY_VERSION.minor()
+    {
         return Err(ProtocolValidationError::MethodMismatch);
     }
 
@@ -431,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn request_requires_storage_one_two() {
+    fn request_accepts_supported_storage_inventory_versions() {
         let mut request = InventoryStorageRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
@@ -451,15 +454,48 @@ mod tests {
             audience: Audience::AUDIENCE_NODE_CONTROLLER,
         };
 
-        assert!(
-            decode_storage_resource_inventory_request(&request.encode_to_vec(), peer, policy, 1,)
-                .is_ok()
-        );
-        request.header.get_or_insert_default().protocol_minor = 1;
-        assert_eq!(
+        for minor in 2..=4 {
+            request.header.get_or_insert_default().protocol_minor = minor;
+            let decoded = decode_storage_resource_inventory_request(
+                &request.encode_to_vec(),
+                peer,
+                policy,
+                1,
+            )
+            .unwrap();
+
+            assert_eq!(
+                decoded.protocol_version(),
+                ProtocolVersion::new(1, minor as u16)
+            );
+        }
+
+        for minor in 0..=1 {
+            request.header.get_or_insert_default().protocol_minor = minor;
+            assert_eq!(
+                decode_storage_resource_inventory_request(
+                    &request.encode_to_vec(),
+                    peer,
+                    policy,
+                    1,
+                ),
+                Err(ProtocolValidationError::MethodMismatch)
+            );
+        }
+
+        request.header.get_or_insert_default().protocol_major = 2;
+        request.header.get_or_insert_default().protocol_minor = 0;
+        assert!(matches!(
             decode_storage_resource_inventory_request(&request.encode_to_vec(), peer, policy, 1),
-            Err(ProtocolValidationError::MethodMismatch)
-        );
+            Err(ProtocolValidationError::Protocol(_))
+        ));
+
+        request.header.get_or_insert_default().protocol_major = 1;
+        request.header.get_or_insert_default().protocol_minor = 5;
+        assert!(matches!(
+            decode_storage_resource_inventory_request(&request.encode_to_vec(), peer, policy, 1),
+            Err(ProtocolValidationError::Protocol(_))
+        ));
     }
 
     #[test]

@@ -16,6 +16,14 @@ path = "src/bin/aos-sandbox-workspace-pin-worker.rs"
 name = "aos-sandbox-workspace-pin-observer"
 path = "src/bin/aos-sandbox-workspace-pin-observer.rs"
 
+[[bin]]
+name = "aos-storaged"
+path = "src/bin/aos-storaged.rs"
+
+[features]
+default = []
+kernel-tests = ["aos-sandbox-linux/kernel-tests"]
+
 [dependencies]
 aos-proto.workspace = true
 aos-sandbox.workspace = true

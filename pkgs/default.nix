@@ -1207,6 +1207,7 @@
     "aos-sandbox-network-observer"
     "aos-sandbox-zfs-worker"
     "aos-hub"
+    "aos-storaged"
     "aos-hub-cloudflare"
     "aos-hub-console-dist"
     "aos-hub-dialect-tests"
