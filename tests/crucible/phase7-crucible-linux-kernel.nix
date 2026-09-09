@@ -309,7 +309,7 @@
     ++ failuresFor "pkgs/kernel/linux.nix" linuxNix [
       {
         label = "module build guarded by final config";
-        needle = "if gawk '/^CONFIG_MODULES=y$/ { found = 1 } END { exit found ? 0 : 1 }' .config; then\n            make -j$NIX_BUILD_CORES ARCH=" + "$" + "{kernelArch.karch} modules\n          fi";
+        needle = "if gawk '/^CONFIG_MODULES=y$/ { found = 1 } END { exit found ? 0 : 1 }' .config; then\n            make -j$NIX_BUILD_CORES " + "$" + "{kernelMakeFlags} modules\n          fi";
       }
       {
         label = "module install guarded by final config";
