@@ -2490,6 +2490,7 @@ fn planner_driver_resumes_a_retained_v1_request_with_v2_construction_after_resta
         current_request.planner_state().clone(),
         *current_request.input_view(),
         None,
+        None,
         current_request.input_bundle().clone(),
     )
     .expect("reconstruct retained v1 planner request");

@@ -722,24 +722,46 @@ impl CampaignRepository {
         }
 
         let statistical_request_basis = self.statistical_request_basis(&snapshot, &policy)?;
-        if policy.statistical_sampling_design().is_some()
-            && engine != CanonicalFrontierPlanner::descriptor()?
-        {
+        let smc_request_basis = self.smc_request_basis(&snapshot, &policy)?;
+        let requires_current_smc_engine = policy.sequential_monte_carlo_design().is_some()
+            && engine != CanonicalFrontierPlanner::descriptor()?;
+        let lacks_finite_statistical_engine = policy.statistical_sampling_design().is_some()
+            && (engine.implementation_version() < 7
+                || !CanonicalFrontierPlanner::supports_descriptor(&engine)?);
+        if requires_current_smc_engine || lacks_finite_statistical_engine {
             return Err(integrity(
                 "statistical-design-requires-current-canonical-frontier-engine",
             ));
         }
-        let request = PlannerRequest::new_with_statistical_request_basis(
-            expected_snapshot,
-            invocation,
-            engine,
-            crate::codec::decode(artifact_envelope.body())?,
-            policy,
-            crate::codec::decode(state_envelope.body())?,
-            crate::codec::decode(view_envelope.body())?,
-            statistical_request_basis,
-            crate::CampaignPlanningBundle::new(retained)?,
-        )?;
+        let artifact = crate::codec::decode(artifact_envelope.body())?;
+        let state = crate::codec::decode(state_envelope.body())?;
+        let view = crate::codec::decode(view_envelope.body())?;
+        let bundle = crate::CampaignPlanningBundle::new(retained)?;
+        let request = if smc_request_basis.is_some() {
+            PlannerRequest::new_with_smc_request_basis(
+                expected_snapshot,
+                invocation,
+                engine,
+                artifact,
+                policy,
+                state,
+                view,
+                smc_request_basis,
+                bundle,
+            )?
+        } else {
+            PlannerRequest::new_with_statistical_request_basis(
+                expected_snapshot,
+                invocation,
+                engine,
+                artifact,
+                policy,
+                state,
+                view,
+                statistical_request_basis,
+                bundle,
+            )?
+        };
         request.id()?;
         Ok(request)
     }
@@ -1009,7 +1031,7 @@ impl CampaignRepository {
                 .contains(&selected.source())
             && matches!(
                 selected_request.source(),
-                CandidateSource::StatisticalFinite(_)
+                CandidateSource::StatisticalFinite(_) | CandidateSource::StatisticalSmc(_)
             );
         if (!authoritative && !newly_issued_statistical)
             || selected_request.branch_point() != selected.branch_point()

@@ -575,7 +575,10 @@ impl CampaignRepository {
         request: &BranchRequest,
         domain: &ChoiceDomain,
     ) -> Result<Option<u64>, CampaignRepositoryError> {
-        if matches!(request.source(), CandidateSource::StatisticalFinite(_)) {
+        if matches!(
+            request.source(),
+            CandidateSource::StatisticalFinite(_) | CandidateSource::StatisticalSmc(_)
+        ) {
             return Ok(Some(1));
         }
         if let Some(values) = request.source().finite_values() {
@@ -739,6 +742,48 @@ impl CampaignRepository {
             }
             return Err(integrity("statistical-proposal-draw-is-out-of-range"));
         }
+        if let CandidateSource::StatisticalSmc(source) = request.source() {
+            if ordinal != 1 {
+                return Err(integrity("proposal-ordinal-exceeds-source-cardinality"));
+            }
+            let BranchRequestCause::Planner(invocation_id) = request.cause() else {
+                return Err(integrity("SMC request cause is not a planner"));
+            };
+            let invocation = self.load_planner_invocation(invocation_id)?;
+            let policy = self.read_policy(invocation.policy().content_id())?;
+            let design = policy
+                .sequential_monte_carlo_design()
+                .ok_or_else(|| integrity("SMC policy lacks a design"))?;
+            let stage = design
+                .stage(source.stage())
+                .ok_or_else(|| integrity("SMC request stage is not planned"))?;
+            let distribution = design
+                .distributions()
+                .get(&stage.selector().model())
+                .ok_or_else(|| integrity("SMC request model is not planned"))?;
+            if source.model() != stage.selector().model()
+                || source.target_masses() != distribution.target_masses()
+                || source.proposal_masses() != distribution.proposal_masses()
+            {
+                return Err(integrity("SMC request distribution mismatch"));
+            }
+            let draw = smc_weighted_categorical_draw(
+                invocation.policy().content_id().digest(),
+                source.stage(),
+                source.slot(),
+                u128::from(source.proposal_total()),
+            )?;
+            let mut cumulative = 0_u128;
+            for (value, mass) in source.proposal_masses() {
+                cumulative = cumulative
+                    .checked_add(u128::from(*mass))
+                    .ok_or_else(|| integrity("SMC proposal mass sum overflow"))?;
+                if draw < cumulative {
+                    return Ok(Some(value.clone()));
+                }
+            }
+            return Err(integrity("SMC proposal draw is out of range"));
+        }
         if let Some(values) = request.source().finite_values() {
             return values
                 .iter()
@@ -884,7 +929,10 @@ impl CampaignRepository {
     ) -> Result<Vec<ChoiceValue>, CampaignRepositoryError> {
         let limit = usize::try_from(limit)
             .map_err(|_| integrity("static-candidate-prefix-limit-overflow"))?;
-        if matches!(request.source(), CandidateSource::StatisticalFinite(_)) {
+        if matches!(
+            request.source(),
+            CandidateSource::StatisticalFinite(_) | CandidateSource::StatisticalSmc(_)
+        ) {
             return if limit == 0 {
                 Ok(Vec::new())
             } else {

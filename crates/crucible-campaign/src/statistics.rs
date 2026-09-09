@@ -18,7 +18,11 @@ use super::{
 
 mod smc;
 
-pub use smc::{StatisticalGeneration, StatisticalParticleSlot};
+pub use smc::{
+    SequentialMonteCarloEstimateReport, SmcEstimateLabel, SmcSupportValidation,
+    SmcUncertaintyStatement, StatisticalGeneration, StatisticalParticleOutcome,
+    StatisticalParticleSlot,
+};
 
 /// A reduced nonnegative rational represented with bounded exact integers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,6 +157,7 @@ pub struct StatisticalEndpointEstimate {
 }
 
 impl StatisticalEndpointEstimate {
+    // crucible-lint: allow rust-allow -- an endpoint retains every provenance identity and exact probability component.
     #[allow(clippy::too_many_arguments)]
     pub(crate) const fn new(
         coordinate: u64,

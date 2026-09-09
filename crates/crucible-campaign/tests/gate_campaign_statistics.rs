@@ -1,9 +1,10 @@
-//! Implements the finite static subset of `gate:campaign-statistics`.
+//! Implements the public finite statistical slice of `gate:campaign-statistics`.
 //!
 //! The gate drives a policy-declared unequal `P`/`Q` draw through the public
 //! repository and planner surfaces, then rebuilds the exact report after a
-//! repository restart. Adaptive resampling and sequential Monte Carlo remain
-//! outside this first executable contract.
+//! repository restart. Focused owner-level regressions cover version-four SMC
+//! stage execution, exact systematic resampling, genealogy, multiplicity,
+//! estimator labels, stage barriers, rejection cases, and cold restart.
 
 #![forbid(unsafe_code)]
 

@@ -741,7 +741,7 @@ impl ObjectEnvelope {
             || record_kind == CampaignRecordKind::BranchRequest
                 && matches!(
                     envelope.schema_version(),
-                    1..=crate::exploration::STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION
+                    1..=crate::exploration::SMC_BRANCH_REQUEST_SCHEMA_VERSION
                 )
             || record_kind == CampaignRecordKind::Proposal
                 && matches!(envelope.schema_version(), 1..=2)

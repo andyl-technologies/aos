@@ -1,7 +1,7 @@
 //! Statistical campaign policy and estimator regressions.
 
 use super::*;
-use crate::repository::projection::weighted_categorical_draw;
+use crate::repository::projection::{smc_weighted_categorical_draw, weighted_categorical_draw};
 use std::sync::Arc;
 
 mod smc;
@@ -36,6 +36,16 @@ fn statistical_planner_driver(
         .publish_canonical_frontier_planner_basis()
         .expect("publish statistical planner basis");
     let (engine, artifact, initial_state) = basis.into_parts();
+    statistical_planner_driver_with_basis(repository, authority, engine, artifact, initial_state)
+}
+
+fn statistical_planner_driver_with_basis(
+    repository: Arc<CampaignRepository>,
+    authority: PlannerAuthorityKey,
+    engine: PlannerEngine,
+    artifact: PolicyArtifact,
+    initial_state: PlannerState,
+) -> crate::CampaignPlannerDriver<StatisticalPlannerService> {
     let planner = crate::PlannerClient::new(
         crate::AuthorizedPlannerService::new(
             CanonicalFrontierPlanner,
@@ -255,6 +265,32 @@ fn publish_observation_for_attempt(
     attempt: &Attempt,
     label: &str,
 ) -> (ObservationResult, ConfigurationArtifactId, ConfigurationId) {
+    publish_observation_for_attempt_with(
+        repository,
+        lineage,
+        campaign,
+        snapshot,
+        path,
+        attempt,
+        label,
+        StopOutcome::Reached(StopCondition::NextChoice),
+        BTreeSet::from([request.opportunity()]),
+    )
+}
+
+// crucible-lint: allow rust-allow -- the test helper keeps the full observation basis explicit.
+#[allow(clippy::too_many_arguments)]
+fn publish_observation_for_attempt_with(
+    repository: &CampaignRepository,
+    lineage: &CampaignLineage,
+    campaign: &str,
+    snapshot: CampaignSnapshotId,
+    path: &BranchPath,
+    attempt: &Attempt,
+    label: &str,
+    stop: StopOutcome,
+    discovered_choices: BTreeSet<ChoiceOpportunityId>,
+) -> (ObservationResult, ConfigurationArtifactId, ConfigurationId) {
     let child = ConfigurationId::from_hash(CampaignHash::derive(
         "test.statistical-child",
         label.as_bytes(),
@@ -286,11 +322,11 @@ fn publish_observation_for_attempt(
         child,
         child_content,
         path.id().expect("statistical path ID"),
-        StopOutcome::Reached(StopCondition::NextChoice),
+        stop,
         measurements,
         properties,
         coverage,
-        BTreeSet::from([request.opportunity()]),
+        discovered_choices,
     )
     .expect("statistical observation");
     let result = repository

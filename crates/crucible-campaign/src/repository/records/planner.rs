@@ -162,6 +162,13 @@ impl CampaignRepository {
         {
             return Err(integrity("planner-request-statistical-basis-mismatch"));
         }
+        if self
+            .smc_request_basis(&snapshot, request.policy())?
+            .as_ref()
+            != request.smc_request_basis()
+        {
+            return Err(integrity("planner-request-SMC-basis-mismatch"));
+        }
         let beam_projection = request
             .engine()
             .capabilities()

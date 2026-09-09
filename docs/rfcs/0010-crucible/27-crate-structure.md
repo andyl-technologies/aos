@@ -607,7 +607,7 @@ enters a release build.
 | `gate:layer1-injection` | `crucible-device` + `crucible-protocol` `tests/` | injection-icount purity |
 | `gate:abi-conformance` | `crucible-harness` golden vectors over `crucible-shmem`/`crucible-protocol`/`crucible-api` plus `crucible-qemu-plugin`/`crucible-guest` ABI tests | frozen golden vectors |
 | `gate:typed-choice` | `crucible-campaign` `tests/gate_typed_choice.rs` plus the Phase-2 guest/protocol selectable suites | canonical typed domains, exact branch selection, and negative replay checks |
-| `gate:campaign-statistics` | `crucible-campaign` `tests/gate_campaign_statistics.rs` plus focused owner-level repository regressions | finite static `P`/`Q` support, full path importance weights, multiplicity, restart, and intervention exclusion; adaptive SMC remains open |
+| `gate:campaign-statistics` | `crucible-campaign` `tests/gate_campaign_statistics.rs` plus focused owner-level repository regressions | finite static and version-four SMC `P`/`Q` support, full path weights, exact resampling, genealogy, multiplicity, restart, and intervention exclusion |
 | `gate:license-boundary` | `crucible-harness` dependency/license/protocol/package checks | Always; every boundary change and release construction |
 | `gate:replay-oracle` | `crucible` `tests/` (`--features test-double`) | fat-hash == thin-hash |
 | `gate:content-address` | `crucible` + `crucible-sim` `tests/` | hash equality/collision |

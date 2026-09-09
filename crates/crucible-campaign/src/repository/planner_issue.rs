@@ -1,7 +1,7 @@
 //! Atomic owner projection for planner-issued requests, proposals, and admissions.
 
 use super::*;
-use crate::ProbabilityModelId;
+use crate::{BranchBudget, ProbabilityModelId};
 
 #[derive(Clone, Debug)]
 pub(super) struct PlannerIssueProjection {
@@ -269,7 +269,7 @@ impl CampaignRepository {
             && (!proposals.is_empty()
                 || !matches!(
                     selected_request.source(),
-                    CandidateSource::StatisticalFinite(_)
+                    CandidateSource::StatisticalFinite(_) | CandidateSource::StatisticalSmc(_)
                 ))
         {
             return Err(integrity(
@@ -347,6 +347,15 @@ impl CampaignRepository {
                     statistical_draw_request_key(source.coordinate()),
                     request_content,
                     "statistical-request-coordinate-is-already-published",
+                )?;
+            }
+            if let CandidateSource::StatisticalSmc(source) = request.source() {
+                self.insert_overlay_unique(
+                    prior_exploration,
+                    &mut exploration_upserts,
+                    smc_transition_request_key(source.stage(), source.slot()),
+                    request_content,
+                    "SMC request coordinate is already published",
                 )?;
             }
             if let Some(frontier_index) = frontier_index
@@ -543,6 +552,15 @@ impl CampaignRepository {
                     "statistical-proposal-coordinate-is-already-admitted",
                 )?;
             }
+            if let CandidateSource::StatisticalSmc(source) = selected_request.source() {
+                self.insert_overlay_unique(
+                    prior_accounting,
+                    &mut accounting_upserts,
+                    smc_transition_proposal_key(source.stage(), source.slot()),
+                    proposal_id.content_id(),
+                    "SMC proposal coordinate is already admitted",
+                )?;
+            }
         }
 
         if let Some(frontier_index) = frontier_index {
@@ -699,6 +717,47 @@ impl CampaignRepository {
         }
         let policy = self.read_policy(snapshot.snapshot.active_policy().content_id())?;
         self.validate_statistical_request_policy(snapshot, lineage, &policy, request)?;
+        if let CandidateSource::StatisticalSmc(source) = request.source() {
+            let basis = self
+                .smc_request_basis(snapshot, &policy)?
+                .ok_or_else(|| integrity("SMC request has no owner-recomputed basis"))?;
+            let design = policy
+                .sequential_monte_carlo_design()
+                .ok_or_else(|| integrity("SMC request requires an SMC design"))?;
+            let stage = design
+                .stage(basis.particle().generation())
+                .ok_or_else(|| integrity("SMC request stage is not planned"))?;
+            let distribution = design
+                .distributions()
+                .get(&stage.selector().model())
+                .ok_or_else(|| integrity("SMC request model is not planned"))?;
+            let expected = BranchRequest::new(
+                basis.opportunity().branch_point_id(basis.configuration()),
+                basis.parent(),
+                basis.opportunity().id()?,
+                basis.domain().id()?,
+                CandidateSource::statistical_smc(
+                    basis.generation(),
+                    basis.particle().id(),
+                    basis.particle().generation(),
+                    basis.particle().slot(),
+                    stage.selector().model(),
+                    distribution.target_masses().clone(),
+                    distribution.proposal_masses().clone(),
+                )?,
+                BranchRequestCause::Planner(invocation_id),
+                BranchBudget::new(1, 1)?,
+                stage.selector().stop().clone(),
+            )?;
+            if &expected != request
+                || source.generation() != basis.generation()
+                || source.input_particle() != basis.particle().id()
+            {
+                return Err(integrity(
+                    "SMC request disagrees with owner-recomputed basis",
+                ));
+            }
+        }
         if let CandidateSource::Generated(generator) = request.source() {
             let opportunity = self.read_opportunity(request.opportunity().content_id())?;
             let declaration = self.read_selectable(opportunity.declaration().content_id())?;

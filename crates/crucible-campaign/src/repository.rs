@@ -1539,6 +1539,20 @@ fn statistical_draw_proposal_key(coordinate: u64) -> CampaignHash {
     )
 }
 
+fn smc_transition_request_key(stage: u32, slot: u32) -> CampaignHash {
+    let mut coordinate = [0_u8; 8];
+    coordinate[..4].copy_from_slice(&stage.to_be_bytes());
+    coordinate[4..].copy_from_slice(&slot.to_be_bytes());
+    CampaignHash::derive("crucible.campaign.smc-transition-request.v1", &coordinate)
+}
+
+fn smc_transition_proposal_key(stage: u32, slot: u32) -> CampaignHash {
+    let mut coordinate = [0_u8; 8];
+    coordinate[..4].copy_from_slice(&stage.to_be_bytes());
+    coordinate[4..].copy_from_slice(&slot.to_be_bytes());
+    CampaignHash::derive("crucible.campaign.smc-transition-proposal.v1", &coordinate)
+}
+
 fn mutation_result_hash_key(namespace: &str, id: CampaignHash) -> CampaignHash {
     map_key_hash(&format!("coordination.result.{namespace}"), id)
 }

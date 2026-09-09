@@ -1252,15 +1252,17 @@ generators in §03. The extension boundary is a bounded pure transition:
 
 ```rust,illustrative
 pub struct PlannerRequest {
-    pub policy: CampaignPolicyId,
-    pub policy_artifact: PolicyArtifactId,
-    pub invocation: PlannerInvocationId,
-    pub planner_state: PlannerStateId,
-    pub input_view: CampaignViewId,
+    pub schema_version: u32,
+    pub expected_snapshot: CampaignSnapshotId,
+    pub invocation: PlannerInvocation,
+    pub engine: PlannerEngine,
+    pub policy_artifact: PolicyArtifact,
+    pub policy: CampaignPolicy,
+    pub planner_state: PlannerState,
+    pub input_view: CampaignPlanningView,
+    pub statistical_request_basis: Option<StatisticalRequestBasis>,
+    pub smc_request_basis: Option<SmcRequestBasis>,
     pub input_bundle: CampaignPlanningBundle,
-    pub scan_page: PlanningScanPage,
-    pub budget: PlanningBudget,
-    pub engine: PlannerEngineId,
 }
 
 pub struct PlannerStepProposal {
@@ -1289,12 +1291,19 @@ carrying every direct invocation object by value:
 PlannerRequestV1 = version | expected_snapshot | invocation | engine |
                    policy_artifact | policy | planner_state | input_view |
                    input_bundle
+PlannerRequestV2 = version | expected_snapshot | invocation | engine |
+                   policy_artifact | policy | planner_state | input_view |
+                   optional_statistical_request_basis | input_bundle
+PlannerRequestV3 = version | expected_snapshot | invocation | engine |
+                   policy_artifact | policy | planner_state | input_view |
+                   optional_statistical_request_basis |
+                   optional_smc_request_basis | input_bundle
 input_bundle = sorted(ContentId, canonical ObjectEnvelope bytes)
 
 PlannerResponseV1 = version | request_digest | PlannerSubmissionV1 |
                     response_authentication_tag
 request_digest = H("crucible.campaign.planner-request-digest.v1",
-                   canonical PlannerRequestV1 bytes)
+                   canonical versioned PlannerRequest bytes)
 
 PlannerLoopbackFrameV1 = magic[8] | kind:u8 | reserved[3] |
                          body_length:u32be | canonical_body[body_length]
@@ -1310,6 +1319,15 @@ recomputes the sum of those canonical request-body bytes and requires it to
 equal `PlanningScanPage.input_bytes`. Direct engine dependencies reachable from
 the by-value engine, artifact, policy, state, view, or served requests may be
 included once.
+
+Schema v2 adds the owner-derived coordinate and parent basis needed to author a
+version-three finite statistical draw after its predeclared parent completes.
+Schema v3 adds the complete SMC generation, particle, parent, selected
+opportunity, and domain basis. Only canonical frontier implementation version 8
+may receive a nonempty SMC basis, and the pure planner validates it against the
+version-four policy before emitting a schema-v8 branch request. Older request
+schemas remain byte-readable under their original field layouts and cannot
+carry the later basis fields.
 
 Planner engines advertising `canonical-frontier-offers-v1` additionally
 require, for every served position, the exact `ContinuationProjectionV1`

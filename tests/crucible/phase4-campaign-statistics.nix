@@ -71,6 +71,10 @@ in
             duplicate_draws_reuse_one_observation_without_losing_sampling_multiplicity \
             -- --test-threads=1
           cargo test --frozen --offline --manifest-path crates/Cargo.toml \
+            --target-dir "$target" -p crucible-campaign --lib \
+            repository::tests::statistics::smc \
+            -- --test-threads=1
+          cargo test --frozen --offline --manifest-path crates/Cargo.toml \
             --target-dir "$target" -p crucible-campaign \
             --test gate_campaign_statistics -- --test-threads=1
         '';
@@ -84,8 +88,8 @@ in
             printf 'gate=gate:campaign-statistics\n'
             printf 'attr_path=%s\n' "$ATTR_PATH"
             printf 'task_ids=%s\n' "$TASK_IDS"
-            printf 'scope=finite-static-p-q,importance-weighting,support,intervention-exclusion,restart\n'
-            printf 'open_scope=adaptive-resampling,sequential-monte-carlo\n'
+            printf 'scope=finite-static-p-q,bounded-smc,importance-weighting,systematic-resampling,genealogy,support,intervention-exclusion,stage-barriers,restart\n'
+            printf 'open_scope=checked-statistical-service,operator-porcelain\n'
           } > "$out/result"
         '';
       }

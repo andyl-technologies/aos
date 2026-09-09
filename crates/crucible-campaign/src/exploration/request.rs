@@ -172,6 +172,8 @@ pub enum CandidateSource {
     ModeledFinite(ModeledFiniteCandidateSource),
     /// One categorical statistical draw with exact target and proposal masses.
     StatisticalFinite(StatisticalFiniteCandidateSource),
+    /// One categorical SMC transition for an authenticated generation slot.
+    StatisticalSmc(StatisticalSmcCandidateSource),
     /// A deterministic generator resolved from one non-finite opportunity model.
     ModeledGenerated(ModeledGeneratedCandidateSource),
     /// Versioned deterministic generator interpreted from campaign facts.
@@ -203,6 +205,28 @@ pub struct StatisticalFiniteCandidateSource {
     proposal_masses: BTreeMap<ChoiceValue, u64>,
     target_total: u64,
     proposal_total: u64,
+}
+
+/// Bounded finite support for one exact SMC particle transition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatisticalSmcCandidateSource {
+    generation: StatisticalGenerationId,
+    input_particle: StatisticalParticleId,
+    stage: u32,
+    slot: u32,
+    model: ProbabilityModelId,
+    values: BTreeSet<ChoiceValue>,
+    target_masses: BTreeMap<ChoiceValue, u64>,
+    proposal_masses: BTreeMap<ChoiceValue, u64>,
+    target_total: u64,
+    proposal_total: u64,
+}
+
+pub(crate) struct StatisticalDistributionRef<'a> {
+    pub(crate) target_masses: &'a BTreeMap<ChoiceValue, u64>,
+    pub(crate) proposal_masses: &'a BTreeMap<ChoiceValue, u64>,
+    pub(crate) target_total: u64,
+    pub(crate) proposal_total: u64,
 }
 
 /// One portable non-finite model resolution and its deterministic generator.
@@ -278,6 +302,62 @@ impl StatisticalFiniteCandidateSource {
     }
 }
 
+impl StatisticalSmcCandidateSource {
+    /// Returns the owner-recomputed generation supplying this transition.
+    #[must_use]
+    pub const fn generation(&self) -> StatisticalGenerationId {
+        self.generation
+    }
+
+    /// Returns the exact input particle selected for this slot.
+    #[must_use]
+    pub const fn input_particle(&self) -> StatisticalParticleId {
+        self.input_particle
+    }
+
+    /// Returns the one-based transition stage.
+    #[must_use]
+    pub const fn stage(&self) -> u32 {
+        self.stage
+    }
+
+    /// Returns the zero-based particle slot within the stage.
+    #[must_use]
+    pub const fn slot(&self) -> u32 {
+        self.slot
+    }
+
+    /// Returns the exact modeled target distribution.
+    #[must_use]
+    pub const fn model(&self) -> ProbabilityModelId {
+        self.model
+    }
+
+    /// Returns every supported value and its positive target mass.
+    #[must_use]
+    pub const fn target_masses(&self) -> &BTreeMap<ChoiceValue, u64> {
+        &self.target_masses
+    }
+
+    /// Returns every supported value and its positive proposal mass.
+    #[must_use]
+    pub const fn proposal_masses(&self) -> &BTreeMap<ChoiceValue, u64> {
+        &self.proposal_masses
+    }
+
+    /// Returns the exact sum of all target masses.
+    #[must_use]
+    pub const fn target_total(&self) -> u64 {
+        self.target_total
+    }
+
+    /// Returns the exact sum of all proposal masses.
+    #[must_use]
+    pub const fn proposal_total(&self) -> u64 {
+        self.proposal_total
+    }
+}
+
 impl FiniteCandidateSource {
     /// Returns finite values in canonical order.
     #[must_use]
@@ -296,6 +376,27 @@ impl FiniteCandidateSource {
 }
 
 impl CandidateSource {
+    pub(crate) fn statistical_distribution(&self) -> Option<StatisticalDistributionRef<'_>> {
+        match self {
+            Self::StatisticalFinite(source) => Some(StatisticalDistributionRef {
+                target_masses: source.target_masses(),
+                proposal_masses: source.proposal_masses(),
+                target_total: source.target_total(),
+                proposal_total: source.proposal_total(),
+            }),
+            Self::StatisticalSmc(source) => Some(StatisticalDistributionRef {
+                target_masses: source.target_masses(),
+                proposal_masses: source.proposal_masses(),
+                target_total: source.target_total(),
+                proposal_total: source.proposal_total(),
+            }),
+            Self::Finite(_)
+            | Self::ModeledFinite(_)
+            | Self::ModeledGenerated(_)
+            | Self::Generated(_) => None,
+        }
+    }
+
     /// Builds a nonempty bounded finite source.
     ///
     /// # Errors
@@ -412,6 +513,50 @@ impl CandidateSource {
         }))
     }
 
+    /// Builds one bounded SMC target and proposal distribution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the stage or support is invalid or
+    /// either exact mass sum exceeds `u64`.
+    // crucible-lint: allow rust-allow -- the SMC source constructor retains every canonical distribution and genealogy field explicitly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn statistical_smc(
+        generation: StatisticalGenerationId,
+        input_particle: StatisticalParticleId,
+        stage: u32,
+        slot: u32,
+        model: ProbabilityModelId,
+        target_masses: BTreeMap<ChoiceValue, u64>,
+        proposal_masses: BTreeMap<ChoiceValue, u64>,
+    ) -> Result<Self, CampaignCodecError> {
+        if stage == 0
+            || target_masses.is_empty()
+            || target_masses.len() > MAX_FINITE_VALUES
+            || target_masses.keys().ne(proposal_masses.keys())
+            || target_masses.values().any(|mass| *mass == 0)
+            || proposal_masses.values().any(|mass| *mass == 0)
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "statistical SMC source has invalid stage or support",
+            });
+        }
+        let target_total = statistical_mass_total(&target_masses)?;
+        let proposal_total = statistical_mass_total(&proposal_masses)?;
+        Ok(Self::StatisticalSmc(StatisticalSmcCandidateSource {
+            generation,
+            input_particle,
+            stage,
+            slot,
+            model,
+            values: target_masses.keys().cloned().collect(),
+            target_masses,
+            proposal_masses,
+            target_total,
+            proposal_total,
+        }))
+    }
+
     /// Builds a generated candidate source.
     #[must_use]
     pub const fn generated(generator: CandidateGeneratorSpecId) -> Self {
@@ -434,6 +579,7 @@ impl CandidateSource {
             Self::Finite(source) => Some(source.values()),
             Self::ModeledFinite(source) => Some(&source.values),
             Self::StatisticalFinite(source) => Some(&source.values),
+            Self::StatisticalSmc(source) => Some(&source.values),
             Self::ModeledGenerated(_) | Self::Generated(_) => None,
         }
     }
@@ -442,7 +588,10 @@ impl CandidateSource {
     #[must_use]
     pub const fn generator(&self) -> Option<CandidateGeneratorSpecId> {
         match self {
-            Self::Finite(_) | Self::ModeledFinite(_) | Self::StatisticalFinite(_) => None,
+            Self::Finite(_)
+            | Self::ModeledFinite(_)
+            | Self::StatisticalFinite(_)
+            | Self::StatisticalSmc(_) => None,
             Self::ModeledGenerated(source) => Some(source.generator),
             Self::Generated(generator) => Some(*generator),
         }
@@ -461,6 +610,7 @@ impl CandidateSource {
             ),
             Self::ModeledFinite(source) => source.prior_weights.get(value).copied(),
             Self::StatisticalFinite(source) => source.target_masses.get(value).copied(),
+            Self::StatisticalSmc(source) => source.target_masses.get(value).copied(),
             Self::ModeledGenerated(_) | Self::Generated(_) => Some(1),
         }
     }
@@ -471,6 +621,7 @@ impl CandidateSource {
         match self {
             Self::ModeledFinite(source) => Some(source.model),
             Self::StatisticalFinite(source) => Some(source.model),
+            Self::StatisticalSmc(source) => Some(source.model),
             Self::ModeledGenerated(source) => Some(source.model),
             Self::Finite(_) | Self::Generated(_) => None,
         }
@@ -511,6 +662,16 @@ impl Canonical for CandidateSource {
                 source.target_masses.encode(encoder);
                 source.proposal_masses.encode(encoder);
             }
+            Self::StatisticalSmc(source) => {
+                encoder.u8(6);
+                source.generation.encode(encoder);
+                source.input_particle.encode(encoder);
+                source.stage.encode(encoder);
+                source.slot.encode(encoder);
+                source.model.encode(encoder);
+                source.target_masses.encode(encoder);
+                source.proposal_masses.encode(encoder);
+            }
         }
     }
 
@@ -536,6 +697,15 @@ impl Canonical for CandidateSource {
                 ProbabilityModelId::decode(decoder)?,
                 decoder.map_bounded(MAX_FINITE_VALUES, "statistical-target-value-count")?,
                 decoder.map_bounded(MAX_FINITE_VALUES, "statistical-proposal-value-count")?,
+            ),
+            6 => Self::statistical_smc(
+                StatisticalGenerationId::decode(decoder)?,
+                StatisticalParticleId::decode(decoder)?,
+                u32::decode(decoder)?,
+                u32::decode(decoder)?,
+                ProbabilityModelId::decode(decoder)?,
+                decoder.map_bounded(MAX_FINITE_VALUES, "SMC-target-value-count")?,
+                decoder.map_bounded(MAX_FINITE_VALUES, "SMC-proposal-value-count")?,
             ),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "candidate-source",
@@ -643,6 +813,7 @@ impl BranchRequest {
         stop: StopCondition,
     ) -> Result<Self, CampaignCodecError> {
         let schema_version = match (&cause, &source) {
+            (_, CandidateSource::StatisticalSmc(_)) => SMC_BRANCH_REQUEST_SCHEMA_VERSION,
             (_, CandidateSource::StatisticalFinite(_)) => STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION,
             _ if stop.uses_extended_wire_schema() => BRANCH_REQUEST_SCHEMA_VERSION,
             (BranchRequestCause::ScenarioDefault(_), _) => {
@@ -691,6 +862,9 @@ impl BranchRequest {
             (CandidateSource::StatisticalFinite(_), version) => {
                 version != STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION
             }
+            (CandidateSource::StatisticalSmc(_), version) => {
+                version != SMC_BRANCH_REQUEST_SCHEMA_VERSION
+            }
             (CandidateSource::Finite(_) | CandidateSource::Generated(_), _) => false,
         };
         let incompatible_cause = match cause {
@@ -706,14 +880,15 @@ impl BranchRequest {
             }
         };
         let extended_stop_schema = schema_version == BRANCH_REQUEST_SCHEMA_VERSION
-            || schema_version == STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION;
-        if !matches!(
-            schema_version,
-            1..=STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION
-        ) || incompatible_source
+            || schema_version == STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION
+            || schema_version == SMC_BRANCH_REQUEST_SCHEMA_VERSION;
+        if !matches!(schema_version, 1..=SMC_BRANCH_REQUEST_SCHEMA_VERSION)
+            || incompatible_source
             || incompatible_cause
             || (schema_version == STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION
                 && !matches!(source, CandidateSource::StatisticalFinite(_)))
+            || (schema_version == SMC_BRANCH_REQUEST_SCHEMA_VERSION
+                && !matches!(source, CandidateSource::StatisticalSmc(_)))
             || (stop.uses_extended_wire_schema() && !extended_stop_schema)
             || (!stop.uses_extended_wire_schema()
                 && schema_version == BRANCH_REQUEST_SCHEMA_VERSION)
@@ -723,13 +898,15 @@ impl BranchRequest {
             });
         }
         stop.validate()?;
-        if matches!(source, CandidateSource::StatisticalFinite(_))
-            && (!matches!(cause, BranchRequestCause::Planner(_))
-                || budget.maximum_proposals() != 1
-                || budget.maximum_attempts() != 1)
+        if matches!(
+            source,
+            CandidateSource::StatisticalFinite(_) | CandidateSource::StatisticalSmc(_)
+        ) && (!matches!(cause, BranchRequestCause::Planner(_))
+            || budget.maximum_proposals() != 1
+            || budget.maximum_attempts() != 1)
         {
             return Err(CampaignCodecError::InvalidValue {
-                reason: "statistical finite source requires one planner draw",
+                reason: "statistical source requires one planner draw",
             });
         }
         let request = Self {
@@ -901,6 +1078,7 @@ impl BranchRequest {
             CandidateSource::Finite(_)
             | CandidateSource::ModeledFinite(_)
             | CandidateSource::StatisticalFinite(_) => {}
+            CandidateSource::StatisticalSmc(_) => {}
         }
         match self.cause {
             BranchRequestCause::Planner(invocation) => {

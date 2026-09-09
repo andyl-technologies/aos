@@ -58,7 +58,7 @@ closure before policy or campaign-ref publication.
 
 ### Candidate sources and explicit branches
 
-Every `BranchRequest` supplies one of four source forms:
+Every `BranchRequest` supplies one of six source forms:
 
 ```rust,illustrative
 pub enum CandidateSource {
@@ -75,6 +75,21 @@ pub enum CandidateSource {
         generator: CandidateGeneratorSpecId,
     },
     Generated { generator: CandidateGeneratorSpecId },
+    StatisticalFinite {
+        coordinate: u64,
+        model: ProbabilityModelId,
+        target_masses: CanonicalMap<ChoiceValue, u64>,
+        proposal_masses: CanonicalMap<ChoiceValue, u64>,
+    },
+    StatisticalSmc {
+        generation: StatisticalGenerationId,
+        input_particle: StatisticalParticleId,
+        stage: u32,
+        slot: u32,
+        model: ProbabilityModelId,
+        target_masses: CanonicalMap<ChoiceValue, u64>,
+        proposal_masses: CanonicalMap<ChoiceValue, u64>,
+    },
 }
 ```
 
@@ -115,6 +130,10 @@ Generator draws are keyed by `BranchRequestId`, so a newly authored v2
 generated request intentionally owns a distinct stream from an otherwise equal
 v1 request; replay of the retained v1 body continues to use its original ID and
 stream.
+Statistical finite and SMC sources retain complete positive target and proposal
+mass maps plus their checked totals. They are emitted only by schema-v7 and
+schema-v8 branch requests respectively; candidate-source tags 5 and 6 preserve
+the distinct wire meanings.
 
 ## 03.2 Built-in generators
 
@@ -993,11 +1012,34 @@ offset, parent multiplicities, and normalization factor record that separate
 ancestor-selection step. Without resampling, the generation carries each
 incoming weight and a unit normalization factor.
 
-This first version-four implementation projects only the owner-authenticated
-generation after the complete stage-zero flight. It does not yet execute later
-stages or issue an SMC probability estimate. Public statistical reports reject
-version-four policies until the planner and estimator validate every declared
-generation and support condition.
+The version-four implementation executes every declared transition stage. The
+owner issues exactly one schema-v8 branch request and proposal for each particle
+slot, waits for all observations in a stage before deriving the next generation,
+and replays each request, proposal, admission, attempt, selection, path, and
+observation from authenticated snapshot roots. Every initial transition and
+every nonfinal later transition must reach its exact declared stop. A later-stage
+selector must match exactly one discovered opportunity, and that opportunity's
+authoritative domain must equal the complete positive support of the pinned
+model. Duplicate ancestry retains particle-slot multiplicity while semantic
+attempt and observation records remain deduplicated.
+
+The pure planner receives schema-v3 `PlannerRequest` messages for SMC work. Each
+message retains the derived generation identity, complete particle slot,
+authenticated parent configuration, selected opportunity, and domain by value.
+Canonical frontier implementation version 8 validates that basis and emits a
+schema-v8 `BranchRequest` with `CandidateSource::StatisticalSmc` (candidate-source
+tag 6); the stage-zero finite flight continues to use schema-v7 branch requests
+and `CandidateSource::StatisticalFinite` (tag 5). Older planner-request and
+branch-request schemas remain readable only under their original meanings and
+cannot carry an SMC transition basis.
+
+A complete SMC report leaves the final population unresampled, preserves slot
+multiplicity, and multiplies every prefinal resampling normalization factor into
+the ordinary fixed-denominator importance estimate. It also exposes the
+realized-weight self-normalized estimate with an explicit finite-sample-bias
+label. Exact effective sample size and maximum-weight concentration are
+descriptive diagnostics; shared genealogy precludes an IID uncertainty
+interval.
 
 Once activated, the exact statistical policy identity is immutable for that
 campaign lineage. A derived statistical campaign inherits the same active

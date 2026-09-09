@@ -27,13 +27,13 @@ use crate::{
 };
 
 const ENGINE_NAME: &str = "crucible-canonical-frontier";
-const ENGINE_IMPLEMENTATION_VERSION: u32 = 7;
+const ENGINE_IMPLEMENTATION_VERSION: u32 = 8;
 const ENGINE_PROTOCOL_VERSION: u32 = 1;
 const STATE_FORMAT: &str = "canonical-frontier-planner";
 const STATE_FORMAT_VERSION: u32 = 3;
 const STATE_SCHEMA_VERSION: u32 = 3;
 const POLICY_ARTIFACT_ABI_VERSION: u32 = 1;
-const POLICY_DEPENDENCY_LOCK_BYTES: &[u8] = b"crucible-canonical-frontier-planner.v7";
+const POLICY_DEPENDENCY_LOCK_BYTES: &[u8] = b"crucible-canonical-frontier-planner.v8";
 
 /// Complete deterministic repository basis for the built-in planner.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,10 +93,24 @@ impl CanonicalFrontierPlanner {
     /// Returns [`CampaignCodecError`] if a closed descriptor cannot be constructed.
     pub fn supports_descriptor(engine: &PlannerEngine) -> Result<bool, CampaignCodecError> {
         Ok(engine == &Self::descriptor()?
+            || engine == &Self::previous_finite_statistical_descriptor()?
             || engine == &Self::previous_statistical_descriptor()?
             || engine == &Self::legacy_request_budget_descriptor()?
             || engine == &Self::descriptor_for_budget(true, false)?
             || engine == &Self::descriptor_for_budget(false, false)?)
+    }
+
+    fn previous_finite_statistical_descriptor() -> Result<PlannerEngine, CampaignCodecError> {
+        PlannerEngine::new(
+            ENGINE_NAME,
+            7,
+            ENGINE_PROTOCOL_VERSION,
+            BTreeSet::from([
+                CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
+                CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
+                CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned(),
+            ]),
+        )
     }
 
     fn previous_statistical_descriptor() -> Result<PlannerEngine, CampaignCodecError> {
@@ -416,7 +430,7 @@ impl PurePlannerEngine for CanonicalFrontierPlanner {
 
 fn canonical_frontier_state_schema(engine: &PlannerEngine) -> u32 {
     match engine.implementation_version() {
-        ENGINE_IMPLEMENTATION_VERSION | 6 => STATE_FORMAT_VERSION,
+        ENGINE_IMPLEMENTATION_VERSION | 6 | 7 => STATE_FORMAT_VERSION,
         3 | 5 => 2,
         _ => 1,
     }
@@ -426,9 +440,20 @@ fn canonical_statistical_request(
     request: &PlannerRequest,
     invocation: crate::PlannerInvocationId,
 ) -> Result<Option<(PlanningScanPosition, BranchRequest)>, CampaignCodecError> {
-    let Some(basis) = request.statistical_request_basis() else {
+    if let Some(basis) = request.statistical_request_basis() {
+        return canonical_finite_statistical_request(request, invocation, basis).map(Some);
+    }
+    let Some(basis) = request.smc_request_basis() else {
         return Ok(None);
     };
+    canonical_smc_request(request, invocation, basis).map(Some)
+}
+
+fn canonical_finite_statistical_request(
+    request: &PlannerRequest,
+    invocation: crate::PlannerInvocationId,
+    basis: StatisticalRequestBasis,
+) -> Result<(PlanningScanPosition, BranchRequest), CampaignCodecError> {
     let design =
         request
             .policy()
@@ -469,7 +494,73 @@ fn canonical_statistical_request(
         draw.stop().clone(),
     )?;
     let selected = PlanningScanPosition::new(branch_point, branch_request.id()?);
-    Ok(Some((selected, branch_request)))
+    Ok((selected, branch_request))
+}
+
+fn canonical_smc_request(
+    request: &PlannerRequest,
+    invocation: crate::PlannerInvocationId,
+    basis: &SmcRequestBasis,
+) -> Result<(PlanningScanPosition, BranchRequest), CampaignCodecError> {
+    let design = request.policy().sequential_monte_carlo_design().ok_or(
+        CampaignCodecError::InvalidValue {
+            reason: "SMC planner basis has no SMC design",
+        },
+    )?;
+    let particle = basis.particle();
+    let stage = design
+        .stage(particle.generation())
+        .ok_or(CampaignCodecError::InvalidValue {
+            reason: "SMC planner basis stage is not planned",
+        })?;
+    let selector = stage.selector();
+    let opportunity = basis.opportunity();
+    let domain = basis.domain();
+    let distribution =
+        design
+            .distributions()
+            .get(&selector.model())
+            .ok_or(CampaignCodecError::InvalidValue {
+                reason: "SMC planner basis model is not planned",
+            })?;
+    if particle.slot() >= design.particle_count()
+        || opportunity.declaration_semantics() != selector.declaration()
+        || opportunity.domain_semantics() != selector.domain()
+        || opportunity.instance() != selector.instance()
+        || opportunity.model_prior() != Some(selector.model())
+        || opportunity.domain() != domain.id()?
+        || domain.cardinality() != distribution.target_masses().len() as u128
+        || distribution
+            .target_masses()
+            .keys()
+            .any(|value| !domain.contains(value))
+    {
+        return Err(CampaignCodecError::InvalidValue {
+            reason: "SMC planner basis disagrees with its selector or support",
+        });
+    }
+    let branch_point = opportunity.branch_point_id(basis.configuration());
+    let source = crate::CandidateSource::statistical_smc(
+        basis.generation(),
+        particle.id(),
+        particle.generation(),
+        particle.slot(),
+        selector.model(),
+        distribution.target_masses().clone(),
+        distribution.proposal_masses().clone(),
+    )?;
+    let branch_request = BranchRequest::new(
+        branch_point,
+        basis.parent(),
+        opportunity.id()?,
+        domain.id()?,
+        source,
+        crate::BranchRequestCause::Planner(invocation),
+        crate::BranchBudget::new(1, 1)?,
+        selector.stop().clone(),
+    )?;
+    let selected = PlanningScanPosition::new(branch_point, branch_request.id()?);
+    Ok((selected, branch_request))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

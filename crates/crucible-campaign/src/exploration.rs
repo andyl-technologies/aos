@@ -19,7 +19,7 @@ use crate::{
     DebugSessionId, ExpansionStateId, FindingKind, ObservationId, PlannerBeamCandidateId,
     PlannerCandidateGuidanceId, PlannerEngineId, PlannerInvocationId, PlannerState, PlannerStateId,
     PlannerStepId, PolicyArtifactId, ProbabilityModelId, ProposalId, RetainedPlannerRequestId,
-    SelectionId, SurvivorSelectionId,
+    SelectionId, StatisticalGenerationId, StatisticalParticleId, SurvivorSelectionId,
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
@@ -28,6 +28,7 @@ const AFTER_ATTEMPT_SCHEMA_VERSION: u32 = 3;
 pub(crate) const SCENARIO_DEFAULT_BRANCH_REQUEST_SCHEMA_VERSION: u32 = 5;
 pub(crate) const BRANCH_REQUEST_SCHEMA_VERSION: u32 = 6;
 pub(crate) const STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION: u32 = 7;
+pub(crate) const SMC_BRANCH_REQUEST_SCHEMA_VERSION: u32 = 8;
 const PROPOSAL_SCHEMA_VERSION: u32 = 2;
 const BRANCH_PATH_SCHEMA_VERSION: u32 = 2;
 const ATTEMPT_ADMISSION_SCHEMA_VERSION: u32 = 2;

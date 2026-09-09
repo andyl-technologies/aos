@@ -3,7 +3,7 @@
 // crucible-lint: allow panic-shortcut -- canonical fixtures use panic shortcuts for failure localization.
 #![allow(clippy::expect_used)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crucible_cas::content_store::{ContentId, ObjectKind};
 
@@ -121,6 +121,57 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
     let mut downgraded_branch = branch.canonical_bytes();
     downgraded_branch[..4].copy_from_slice(&5_u32.to_be_bytes());
     assert!(BranchRequest::from_canonical_bytes(&downgraded_branch).is_err());
+
+    let invocation = stored_id!(
+        PlannerInvocationId,
+        ObjectKind::Policy,
+        2,
+        "extended-stop-planner-invocation"
+    );
+    let value = ChoiceValue::Boolean(false);
+    let smc_branch = BranchRequest::new(
+        branch_point,
+        configuration,
+        opportunity,
+        domain,
+        CandidateSource::statistical_smc(
+            StatisticalGenerationId::from_hash(CampaignHash::derive(
+                "extended-stop-test",
+                b"SMC generation",
+            )),
+            StatisticalParticleId::from_hash(CampaignHash::derive(
+                "extended-stop-test",
+                b"SMC particle",
+            )),
+            1,
+            0,
+            ProbabilityModelId::from_hash(CampaignHash::derive("extended-stop-test", b"SMC model")),
+            BTreeMap::from([(value.clone(), 1)]),
+            BTreeMap::from([(value, 1)]),
+        )
+        .expect("SMC source"),
+        BranchRequestCause::Planner(invocation),
+        BranchBudget::new(1, 1).expect("SMC branch budget"),
+        StopCondition::VirtualTimeOrExecutionQuanta {
+            virtual_time_nanoseconds: 11,
+            execution_quanta: 7,
+        },
+    )
+    .expect("combined-stop SMC branch request");
+    assert_eq!(smc_branch.schema_version(), 8);
+    assert_eq!(
+        BranchRequest::from_canonical_bytes(&smc_branch.canonical_bytes())
+            .expect("SMC branch round trip"),
+        smc_branch
+    );
+    assert_eq!(
+        smc_branch
+            .id()
+            .expect("SMC branch ID")
+            .content_id()
+            .schema_version(),
+        8
+    );
 
     let measurements = stored_id!(
         MeasurementSetId,
