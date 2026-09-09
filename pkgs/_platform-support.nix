@@ -705,6 +705,7 @@ let
 
   helperInventory = {
     "_platform-support.nix" = "platform-policy";
+    "build-support/_ability-package-renderer.nix" = "native-build-helper";
     "build-support/_cargo-artifacts.nix" = "native-build-helper";
     "build-support/_config-module-renderer.nix" = "native-build-helper";
     "build-support/_expose-module.nix" = "target-independent-source";
