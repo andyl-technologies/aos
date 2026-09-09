@@ -9,20 +9,403 @@
 //! evidence, not the marginal or joint proposal law of the resampled genealogy;
 //! multiplying them into the reset estimator weight would count ancestral
 //! importance twice.
+//!
+//! Repository execution issues exactly one request and proposal per particle
+//! slot, waits for every observation in a stage, and derives the next generation
+//! by replaying authenticated requests, proposals, attempts, observations, and
+//! paths. Every nonfinal particle must reach its declared stop and expose one
+//! selector-matching opportunity. A completed report retains slot multiplicity,
+//! includes each prefinal resampling normalization factor, and leaves the final
+//! population unresampled. It provides both the ordinary fixed-denominator
+//! importance estimate and an explicitly finite-sample-biased self-normalized
+//! estimate; genealogical dependence precludes an IID uncertainty interval.
 
 use crate::codec::{self, Canonical, Decoder, Encoder};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     AttemptId, BranchPathId, CampaignCodecError, CampaignHash, CampaignPolicyId, CampaignSeed,
-    ObservationId, ProposalId, SequentialMonteCarloDesign, SmcOpportunitySelector,
-    StatisticalEstimateReport, StatisticalGenerationId, StatisticalParticleId, StatisticalRational,
+    CampaignSnapshotId, ObservationId, ProposalId, SequentialMonteCarloDesign,
+    SmcOpportunitySelector, SmcResamplingAlgorithm, StatisticalEstimateReport,
+    StatisticalGenerationId, StatisticalParticleId, StatisticalRational,
+    StatisticalWeightDiagnostics,
 };
 
 const SMC_GENERATION_SCHEMA_VERSION: u32 = 1;
 const MAX_SMC_PARTICLES: usize = 4_096;
 const MAX_SMC_GENERATION_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SYSTEMATIC_OFFSET_REJECTION_DRAWS: u64 = 256;
+
+/// One owner-authenticated completed SMC particle transition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatisticalParticleOutcome {
+    stage: u32,
+    slot: u32,
+    input_particle: StatisticalParticleId,
+    source_coordinate: u64,
+    proposal: ProposalId,
+    attempt: AttemptId,
+    observation: ObservationId,
+    path: BranchPathId,
+    cumulative_target_probability: StatisticalRational,
+    cumulative_proposal_probability: StatisticalRational,
+    estimator_weight: StatisticalRational,
+}
+
+impl StatisticalParticleOutcome {
+    // crucible-lint: allow rust-allow -- completed-particle construction keeps every audited identity and exact weight explicit.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        stage: u32,
+        slot: u32,
+        input_particle: StatisticalParticleId,
+        source_coordinate: u64,
+        proposal: ProposalId,
+        attempt: AttemptId,
+        observation: ObservationId,
+        path: BranchPathId,
+        cumulative_target_probability: StatisticalRational,
+        cumulative_proposal_probability: StatisticalRational,
+        estimator_weight: StatisticalRational,
+    ) -> Result<Self, CampaignCodecError> {
+        if stage == 0
+            || usize::try_from(slot).map_or(true, |slot| slot >= MAX_SMC_PARTICLES)
+            || cumulative_target_probability.numerator() == 0
+            || cumulative_target_probability.numerator()
+                > cumulative_target_probability.denominator()
+            || cumulative_proposal_probability.numerator() == 0
+            || cumulative_proposal_probability.numerator()
+                > cumulative_proposal_probability.denominator()
+            || estimator_weight.numerator() == 0
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "SMC particle outcome has an invalid bound or weight",
+            });
+        }
+        Ok(Self {
+            stage,
+            slot,
+            input_particle,
+            source_coordinate,
+            proposal,
+            attempt,
+            observation,
+            path,
+            cumulative_target_probability,
+            cumulative_proposal_probability,
+            estimator_weight,
+        })
+    }
+
+    /// Returns the completed transition stage.
+    #[must_use]
+    pub const fn stage(&self) -> u32 {
+        self.stage
+    }
+
+    /// Returns the stable particle slot within the completed stage.
+    #[must_use]
+    pub const fn slot(&self) -> u32 {
+        self.slot
+    }
+
+    /// Returns the exact input particle consumed by this transition.
+    #[must_use]
+    pub const fn input_particle(&self) -> StatisticalParticleId {
+        self.input_particle
+    }
+
+    /// Returns the initial finite-flight coordinate retained through ancestry.
+    #[must_use]
+    pub const fn source_coordinate(&self) -> u64 {
+        self.source_coordinate
+    }
+
+    /// Returns the selected proposal.
+    #[must_use]
+    pub const fn proposal(&self) -> ProposalId {
+        self.proposal
+    }
+
+    /// Returns the semantic attempt, which can be shared by duplicate slots.
+    #[must_use]
+    pub const fn attempt(&self) -> AttemptId {
+        self.attempt
+    }
+
+    /// Returns the canonical observation, which can be shared by duplicate slots.
+    #[must_use]
+    pub const fn observation(&self) -> ObservationId {
+        self.observation
+    }
+
+    /// Returns the authenticated path for the transition.
+    #[must_use]
+    pub const fn path(&self) -> BranchPathId {
+        self.path
+    }
+
+    /// Returns the audited product of target branch probabilities along ancestry.
+    #[must_use]
+    pub const fn cumulative_target_probability(&self) -> StatisticalRational {
+        self.cumulative_target_probability
+    }
+
+    /// Returns the audited product of proposal branch probabilities along ancestry.
+    #[must_use]
+    pub const fn cumulative_proposal_probability(&self) -> StatisticalRational {
+        self.cumulative_proposal_probability
+    }
+
+    /// Returns the exact estimator weight after this transition.
+    #[must_use]
+    pub const fn estimator_weight(&self) -> StatisticalRational {
+        self.estimator_weight
+    }
+
+    /// Returns the semantic identity of this completed transition.
+    #[must_use]
+    pub fn id(&self) -> StatisticalParticleId {
+        StatisticalParticleId::from_hash(CampaignHash::derive(
+            "crucible.campaign.smc-particle-outcome.v1",
+            &codec::encode(self),
+        ))
+    }
+}
+
+impl Canonical for StatisticalParticleOutcome {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.stage.encode(encoder);
+        self.slot.encode(encoder);
+        self.input_particle.encode(encoder);
+        self.source_coordinate.encode(encoder);
+        self.proposal.encode(encoder);
+        self.attempt.encode(encoder);
+        self.observation.encode(encoder);
+        self.path.encode(encoder);
+        self.cumulative_target_probability.encode(encoder);
+        self.cumulative_proposal_probability.encode(encoder);
+        self.estimator_weight.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Self::new(
+            u32::decode(decoder)?,
+            u32::decode(decoder)?,
+            StatisticalParticleId::decode(decoder)?,
+            u64::decode(decoder)?,
+            ProposalId::decode(decoder)?,
+            AttemptId::decode(decoder)?,
+            ObservationId::decode(decoder)?,
+            BranchPathId::decode(decoder)?,
+            StatisticalRational::decode(decoder)?,
+            StatisticalRational::decode(decoder)?,
+            StatisticalRational::decode(decoder)?,
+        )
+    }
+}
+
+/// Proven support contract for a completed SMC report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SmcSupportValidation {
+    /// Every runtime domain exactly matched one finite, positive policy support.
+    ExactFinitePositive,
+}
+
+/// Statistical interpretation attached to one SMC point-estimate method.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SmcEstimateLabel {
+    /// Unnormalized importance estimate with fixed particle-count denominator.
+    UnbiasedImportanceSampling,
+    /// Realized-weight normalization with finite-sample bias.
+    SelfNormalizedFiniteSampleBiased,
+}
+
+/// Dependence statement for one realized resampled genealogy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SmcUncertaintyStatement {
+    /// Particles share ancestry, so this report does not claim an IID interval.
+    GenealogicallyCorrelatedNoIidInterval,
+}
+
+/// Complete owner-replayed estimate after every predeclared SMC stage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SequentialMonteCarloEstimateReport {
+    snapshot: CampaignSnapshotId,
+    policy: CampaignPolicyId,
+    resampling_algorithm: SmcResamplingAlgorithm,
+    generations: Vec<StatisticalGeneration>,
+    normalization_product: StatisticalRational,
+    final_particles: Vec<StatisticalParticleOutcome>,
+    diagnostics: StatisticalWeightDiagnostics,
+}
+
+impl SequentialMonteCarloEstimateReport {
+    pub(crate) fn new(
+        snapshot: CampaignSnapshotId,
+        policy: CampaignPolicyId,
+        resampling_algorithm: SmcResamplingAlgorithm,
+        generations: Vec<StatisticalGeneration>,
+        normalization_product: StatisticalRational,
+        final_particles: Vec<StatisticalParticleOutcome>,
+        diagnostics: StatisticalWeightDiagnostics,
+    ) -> Result<Self, CampaignCodecError> {
+        if generations.is_empty()
+            || final_particles.is_empty()
+            || final_particles.iter().enumerate().any(|(slot, particle)| {
+                usize::try_from(particle.slot()).ok() != Some(slot)
+                    || particle.stage()
+                        != generations
+                            .last()
+                            .map_or(0, StatisticalGeneration::next_stage)
+            })
+            || normalization_product.numerator() == 0
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "SMC estimate report is incomplete or inconsistent",
+            });
+        }
+        Ok(Self {
+            snapshot,
+            policy,
+            resampling_algorithm,
+            generations,
+            normalization_product,
+            final_particles,
+            diagnostics,
+        })
+    }
+
+    /// Returns the exact complete snapshot used by owner replay.
+    #[must_use]
+    pub const fn snapshot(&self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the policy that predeclared the complete SMC design.
+    #[must_use]
+    pub const fn policy(&self) -> CampaignPolicyId {
+        self.policy
+    }
+
+    /// Returns the versioned deterministic resampling algorithm.
+    #[must_use]
+    pub const fn resampling_algorithm(&self) -> SmcResamplingAlgorithm {
+        self.resampling_algorithm
+    }
+
+    /// Returns the validated runtime-support contract.
+    #[must_use]
+    pub const fn support_validation(&self) -> SmcSupportValidation {
+        SmcSupportValidation::ExactFinitePositive
+    }
+
+    /// Returns every generation that supplied a post-initial transition.
+    #[must_use]
+    pub fn generations(&self) -> &[StatisticalGeneration] {
+        &self.generations
+    }
+
+    /// Returns the product of mean-weight factors recorded before resampling.
+    #[must_use]
+    pub const fn normalization_product(&self) -> StatisticalRational {
+        self.normalization_product
+    }
+
+    /// Returns every final particle in slot order, preserving duplicate ancestry.
+    #[must_use]
+    pub fn final_particles(&self) -> &[StatisticalParticleOutcome] {
+        &self.final_particles
+    }
+
+    /// Returns descriptive concentration and effective sample size.
+    #[must_use]
+    pub const fn diagnostics(&self) -> StatisticalWeightDiagnostics {
+        self.diagnostics
+    }
+
+    /// Returns the dependence statement governing uncertainty interpretation.
+    #[must_use]
+    pub const fn uncertainty(&self) -> SmcUncertaintyStatement {
+        SmcUncertaintyStatement::GenealogicallyCorrelatedNoIidInterval
+    }
+
+    /// Returns the label for [`Self::estimate_event`].
+    #[must_use]
+    pub const fn ordinary_estimate_label(&self) -> SmcEstimateLabel {
+        SmcEstimateLabel::UnbiasedImportanceSampling
+    }
+
+    /// Returns the label for [`Self::estimate_event_self_normalized`].
+    #[must_use]
+    pub const fn self_normalized_estimate_label(&self) -> SmcEstimateLabel {
+        SmcEstimateLabel::SelfNormalizedFiniteSampleBiased
+    }
+
+    /// Returns the ordinary fixed-denominator SMC importance estimate.
+    ///
+    /// Each slot contributes once, including when its proposal, attempt, or
+    /// observation was deduplicated with another slot. The result is not clamped
+    /// and can exceed one for a realized finite population.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for an unknown observation or bounded
+    /// rational arithmetic overflow.
+    pub fn estimate_event(
+        &self,
+        event: &BTreeSet<ObservationId>,
+    ) -> Result<StatisticalRational, CampaignCodecError> {
+        self.validate_event(event)?;
+        let mut selected = StatisticalRational::new(0, 1)?;
+        for particle in &self.final_particles {
+            if event.contains(&particle.observation()) {
+                selected = selected.checked_add(particle.estimator_weight())?;
+            }
+        }
+        let mean = selected.checked_divide(StatisticalRational::new(
+            self.final_particles.len() as u128,
+            1,
+        )?)?;
+        self.normalization_product.checked_multiply(mean)
+    }
+
+    /// Returns the realized-weight self-normalized SMC estimate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for an unknown observation or bounded
+    /// rational arithmetic overflow.
+    pub fn estimate_event_self_normalized(
+        &self,
+        event: &BTreeSet<ObservationId>,
+    ) -> Result<StatisticalRational, CampaignCodecError> {
+        self.validate_event(event)?;
+        let mut selected = StatisticalRational::new(0, 1)?;
+        let mut all = StatisticalRational::new(0, 1)?;
+        for particle in &self.final_particles {
+            all = all.checked_add(particle.estimator_weight())?;
+            if event.contains(&particle.observation()) {
+                selected = selected.checked_add(particle.estimator_weight())?;
+            }
+        }
+        selected.checked_divide(all)
+    }
+
+    fn validate_event(&self, event: &BTreeSet<ObservationId>) -> Result<(), CampaignCodecError> {
+        if event.iter().any(|observation| {
+            !self
+                .final_particles
+                .iter()
+                .any(|particle| particle.observation() == *observation)
+        }) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "SMC event contains an unknown observation",
+            });
+        }
+        Ok(())
+    }
+}
 
 /// One next-generation SMC slot with its exact source and genealogy.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,6 +425,7 @@ pub struct StatisticalParticleSlot {
 }
 
 impl StatisticalParticleSlot {
+    // crucible-lint: allow rust-allow -- a generation slot retains its complete genealogy and resampling state.
     #[allow(clippy::too_many_arguments)]
     fn new(
         generation: u32,
@@ -339,6 +723,123 @@ impl StatisticalGeneration {
         )
     }
 
+    pub(crate) fn from_completed_stage(
+        policy: CampaignPolicyId,
+        campaign_seed: CampaignSeed,
+        design: &SequentialMonteCarloDesign,
+        completed_stage: u32,
+        outcomes: &[StatisticalParticleOutcome],
+    ) -> Result<Self, CampaignCodecError> {
+        let next_stage =
+            completed_stage
+                .checked_add(1)
+                .ok_or(CampaignCodecError::InvalidValue {
+                    reason: "SMC generation stage overflows",
+                })?;
+        let stage = design
+            .stage(next_stage)
+            .ok_or(CampaignCodecError::InvalidValue {
+                reason: "SMC next transition is not planned",
+            })?;
+        if outcomes.len()
+            != usize::try_from(design.particle_count()).map_err(|_| {
+                CampaignCodecError::InvalidValue {
+                    reason: "SMC particle count cannot be represented",
+                }
+            })?
+            || outcomes.iter().enumerate().any(|(slot, outcome)| {
+                outcome.stage() != completed_stage
+                    || usize::try_from(outcome.slot()).ok() != Some(slot)
+            })
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "SMC completed stage disagrees with its design",
+            });
+        }
+
+        let effective_sample_size = effective_sample_size(
+            outcomes
+                .iter()
+                .map(StatisticalParticleOutcome::estimator_weight),
+        )?;
+        let particle_count = u128::from(design.particle_count());
+        let threshold = design.resampling().effective_sample_size_threshold();
+        let threshold_count = StatisticalRational::new(
+            particle_count
+                .checked_mul(u128::from(threshold.numerator()))
+                .ok_or(CampaignCodecError::InvalidValue {
+                    reason: "SMC effective-sample-size threshold overflows",
+                })?,
+            u128::from(threshold.denominator()),
+        )?;
+        let resampled = effective_sample_size.checked_cmp(threshold_count)?.is_le();
+        let (source_indexes, systematic_offset) = if resampled {
+            let selection = systematic_ancestor_indexes(
+                campaign_seed,
+                next_stage,
+                outcomes
+                    .iter()
+                    .map(StatisticalParticleOutcome::estimator_weight),
+            )?;
+            (selection.ancestors, Some(selection.offset))
+        } else {
+            ((0..outcomes.len()).collect(), None)
+        };
+        let mut multiplicities = vec![0_u32; outcomes.len()];
+        for source_index in &source_indexes {
+            multiplicities[*source_index] = multiplicities[*source_index].checked_add(1).ok_or(
+                CampaignCodecError::InvalidValue {
+                    reason: "SMC resampling multiplicity overflows",
+                },
+            )?;
+        }
+        let normalization_factor = if resampled {
+            average_weight(
+                outcomes
+                    .iter()
+                    .map(StatisticalParticleOutcome::estimator_weight),
+                outcomes.len(),
+            )?
+        } else {
+            StatisticalRational::one()
+        };
+        let mut slots = Vec::with_capacity(source_indexes.len());
+        for (slot, source_index) in source_indexes.into_iter().enumerate() {
+            let outcome = &outcomes[source_index];
+            slots.push(StatisticalParticleSlot::new(
+                next_stage,
+                u32::try_from(slot).map_err(|_| CampaignCodecError::InvalidValue {
+                    reason: "SMC particle slot cannot be represented",
+                })?,
+                outcome.id(),
+                outcome.source_coordinate(),
+                outcome.proposal(),
+                outcome.attempt(),
+                outcome.observation(),
+                outcome.path(),
+                outcome.cumulative_target_probability(),
+                outcome.cumulative_proposal_probability(),
+                if resampled {
+                    StatisticalRational::one()
+                } else {
+                    outcome.estimator_weight()
+                },
+                multiplicities[source_index],
+            )?);
+        }
+        Self::new(
+            policy,
+            completed_stage,
+            next_stage,
+            stage.selector().clone(),
+            resampled,
+            systematic_offset,
+            normalization_factor,
+            slots,
+        )
+    }
+
+    // crucible-lint: allow rust-allow -- generation decoding and derivation share one complete invariant-checking constructor.
     #[allow(clippy::too_many_arguments)]
     fn new(
         policy: CampaignPolicyId,
@@ -567,6 +1068,18 @@ fn average_weight(
         sum = sum.checked_add(weight)?;
     }
     sum.checked_divide(StatisticalRational::new(count as u128, 1)?)
+}
+
+fn effective_sample_size(
+    weights: impl Iterator<Item = StatisticalRational>,
+) -> Result<StatisticalRational, CampaignCodecError> {
+    let mut sum = StatisticalRational::new(0, 1)?;
+    let mut sum_squares = StatisticalRational::new(0, 1)?;
+    for weight in weights {
+        sum = sum.checked_add(weight)?;
+        sum_squares = sum_squares.checked_add(weight.checked_multiply(weight)?)?;
+    }
+    sum.checked_multiply(sum)?.checked_divide(sum_squares)
 }
 
 struct SystematicSelection {
@@ -1064,6 +1577,97 @@ mod tests {
                 .into_iter(),
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn estimate_counts_duplicate_slots_and_keeps_the_ordinary_result_unclamped() {
+        let policy = policy_id("duplicate-estimate-policy");
+        let generation = StatisticalGeneration::from_initial_report(
+            policy,
+            CampaignSeed::from_bytes([11; 32]),
+            &design(1, 2),
+            &report(
+                policy,
+                ["duplicate-source-a", "duplicate-source-b"],
+                [StatisticalRational::one(), StatisticalRational::one()],
+                StatisticalRational::new(2, 1).expect("ESS"),
+            ),
+        )
+        .expect("input generation");
+        let proposal =
+            ProposalId::from_content_id(content_id(ObjectKind::CampaignFact, 2, "shared-proposal"))
+                .expect("shared proposal ID");
+        let attempt =
+            AttemptId::from_content_id(content_id(ObjectKind::CampaignFact, 3, "shared-attempt"))
+                .expect("shared attempt ID");
+        let observation = ObservationId::from_content_id(content_id(
+            ObjectKind::Observation,
+            8,
+            "shared-observation",
+        ))
+        .expect("shared observation ID");
+        let path =
+            BranchPathId::from_content_id(content_id(ObjectKind::CampaignFact, 2, "shared-path"))
+                .expect("shared path ID");
+        let weights = [
+            StatisticalRational::new(2, 1).expect("first weight"),
+            StatisticalRational::new(4, 1).expect("second weight"),
+        ];
+        let outcomes = generation
+            .slots()
+            .iter()
+            .zip(weights)
+            .map(|(input, weight)| {
+                StatisticalParticleOutcome::new(
+                    1,
+                    input.slot(),
+                    input.id(),
+                    input.source_coordinate(),
+                    proposal,
+                    attempt,
+                    observation,
+                    path,
+                    StatisticalRational::new(1, 2).expect("target probability"),
+                    StatisticalRational::new(1, 2).expect("proposal probability"),
+                    weight,
+                )
+                .expect("particle outcome")
+            })
+            .collect::<Vec<_>>();
+        let estimate = SequentialMonteCarloEstimateReport::new(
+            snapshot_id("duplicate-estimate-snapshot"),
+            policy,
+            SmcResamplingAlgorithm::SystematicV1,
+            vec![generation],
+            StatisticalRational::new(3, 2).expect("normalization product"),
+            outcomes,
+            StatisticalWeightDiagnostics::new(
+                StatisticalRational::new(2, 3).expect("concentration"),
+                StatisticalRational::new(9, 5).expect("ESS"),
+            ),
+        )
+        .expect("SMC estimate report");
+        let event = BTreeSet::from([observation]);
+
+        assert_eq!(
+            estimate.estimate_event(&event).expect("ordinary estimate"),
+            StatisticalRational::new(9, 2).expect("unclamped estimate")
+        );
+        assert_eq!(
+            estimate
+                .estimate_event_self_normalized(&event)
+                .expect("self-normalized estimate"),
+            StatisticalRational::one()
+        );
+        assert_eq!(
+            estimate.estimate_event(&BTreeSet::from([ObservationId::from_content_id(
+                content_id(ObjectKind::Observation, 8, "unknown-observation",)
+            )
+            .expect("unknown observation ID")])),
+            Err(CampaignCodecError::InvalidValue {
+                reason: "SMC event contains an unknown observation"
+            })
         );
     }
 }

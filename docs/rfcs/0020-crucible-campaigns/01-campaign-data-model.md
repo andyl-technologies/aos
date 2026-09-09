@@ -624,7 +624,7 @@ pub struct BranchPoint {
 }
 
 pub struct BranchRequest {
-    pub schema_version: u32, // v2 explicit/uniform, v3 modeled finite, v4 modeled generated, v5 scenario default, v6 extended stop
+    pub schema_version: u32, // v2 explicit/uniform, v3 modeled finite, v4 modeled generated, v5 scenario default, v6 extended stop, v7 finite statistical, v8 SMC
     pub branch_point: BranchPointId,
     pub parent: ConfigurationArtifactId,
     pub opportunity: ChoiceOpportunityId,
@@ -640,6 +640,8 @@ pub enum CandidateSource {
     ModeledFinite(ModeledFiniteCandidateSource),
     ModeledGenerated(ModeledGeneratedCandidateSource),
     Generated(CandidateGeneratorSpecId),
+    StatisticalFinite(StatisticalFiniteCandidateSource),
+    StatisticalSmc(StatisticalSmcCandidateSource),
 }
 
 pub struct FiniteCandidateSource {
@@ -661,6 +663,29 @@ pub struct ModeledGeneratedCandidateSource {
     model: ProbabilityModelId,
     // Exact portable generator resolved by the execution-model adapter.
     generator: CandidateGeneratorSpecId,
+}
+
+pub struct StatisticalFiniteCandidateSource {
+    pub coordinate: u64,
+    pub model: ProbabilityModelId,
+    pub values: CanonicalSet<ChoiceValue>,
+    pub target_masses: CanonicalMap<ChoiceValue, u64>,
+    pub proposal_masses: CanonicalMap<ChoiceValue, u64>,
+    pub target_total: u64,
+    pub proposal_total: u64,
+}
+
+pub struct StatisticalSmcCandidateSource {
+    pub generation: StatisticalGenerationId,
+    pub input_particle: StatisticalParticleId,
+    pub stage: u32,
+    pub slot: u32,
+    pub model: ProbabilityModelId,
+    pub values: CanonicalSet<ChoiceValue>,
+    pub target_masses: CanonicalMap<ChoiceValue, u64>,
+    pub proposal_masses: CanonicalMap<ChoiceValue, u64>,
+    pub target_total: u64,
+    pub proposal_total: u64,
 }
 
 pub struct BranchBudget {

@@ -148,6 +148,35 @@ pub(in crate::repository) fn weighted_categorical_draw(
     Err(integrity("weighted-generator-rejection-limit"))
 }
 
+pub(in crate::repository) fn smc_weighted_categorical_draw(
+    policy_digest: [u8; 32],
+    stage: u32,
+    slot: u32,
+    total_weight: u128,
+) -> Result<u128, CampaignRepositoryError> {
+    if stage == 0 || total_weight == 0 {
+        return Err(integrity(
+            "SMC proposal draw has an invalid stage or weight sum",
+        ));
+    }
+    let rejection_threshold = 0_u128.wrapping_sub(total_weight) % total_weight;
+    for nonce in 0..MAX_WEIGHTED_CATEGORICAL_REJECTION_DRAWS {
+        let mut basis = [0_u8; 48];
+        basis[..32].copy_from_slice(&policy_digest);
+        basis[32..36].copy_from_slice(&stage.to_be_bytes());
+        basis[36..40].copy_from_slice(&slot.to_be_bytes());
+        basis[40..].copy_from_slice(&nonce.to_be_bytes());
+        let hash = CampaignHash::derive("crucible.campaign.smc-proposal-draw.v1", &basis);
+        let mut sample_bytes = [0_u8; 16];
+        sample_bytes.copy_from_slice(&hash.as_bytes()[..16]);
+        let sample = u128::from_be_bytes(sample_bytes);
+        if sample >= rejection_threshold {
+            return Ok(sample % total_weight);
+        }
+    }
+    Err(integrity("SMC proposal rejection limit"))
+}
+
 pub(in crate::repository) fn push_static_integer_candidate(
     values: &mut Vec<IntegerValue>,
     seen: &mut BTreeSet<IntegerValue>,

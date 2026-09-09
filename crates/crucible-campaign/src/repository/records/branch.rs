@@ -410,6 +410,12 @@ impl CampaignRepository {
     ) -> Result<(), CampaignRepositoryError> {
         let source = match request.source() {
             CandidateSource::StatisticalFinite(source) => source,
+            CandidateSource::StatisticalSmc(_)
+                if policy.mode() == CampaignMode::Statistical
+                    && policy.sequential_monte_carlo_design().is_some() =>
+            {
+                return Ok(());
+            }
             _ if policy.mode() == CampaignMode::Statistical => {
                 return Err(integrity("statistical-policy-requires-statistical-request"));
             }
@@ -506,6 +512,64 @@ impl CampaignRepository {
         self.validate_statistical_attempt_basis(snapshot, admission.attempt())
     }
 
+    pub(in crate::repository) fn validate_smc_request_policy(
+        &self,
+        snapshot: &LoadedSnapshot,
+        policy: &CampaignPolicy,
+        generation: &crate::StatisticalGeneration,
+        particle: &crate::StatisticalParticleSlot,
+        request: &BranchRequest,
+    ) -> Result<(), CampaignRepositoryError> {
+        let CandidateSource::StatisticalSmc(source) = request.source() else {
+            return Err(integrity("SMC policy requires an SMC transition request"));
+        };
+        if policy.mode() != CampaignMode::Statistical
+            || generation.policy() != snapshot.snapshot.active_policy()
+            || source.generation() != generation.id()
+            || source.input_particle() != particle.id()
+            || source.stage() != generation.next_stage()
+            || source.slot() != particle.slot()
+        {
+            return Err(integrity("SMC request generation basis mismatch"));
+        }
+        let design = policy
+            .sequential_monte_carlo_design()
+            .ok_or_else(|| integrity("SMC request requires an SMC design"))?;
+        let stage = design
+            .stage(source.stage())
+            .ok_or_else(|| integrity("SMC request stage is not planned"))?;
+        let distribution = design
+            .distributions()
+            .get(&stage.selector().model())
+            .ok_or_else(|| integrity("SMC request model is not planned"))?;
+        let basis = self.resolve_smc_request_basis(snapshot, policy, generation, particle)?;
+        let BranchRequestCause::Planner(invocation) = request.cause() else {
+            return Err(integrity("SMC request cause is not a planner"));
+        };
+        let expected = BranchRequest::new(
+            basis.opportunity().branch_point_id(basis.configuration()),
+            basis.parent(),
+            basis.opportunity().id()?,
+            basis.domain().id()?,
+            CandidateSource::statistical_smc(
+                generation.id(),
+                particle.id(),
+                source.stage(),
+                source.slot(),
+                stage.selector().model(),
+                distribution.target_masses().clone(),
+                distribution.proposal_masses().clone(),
+            )?,
+            BranchRequestCause::Planner(invocation),
+            BranchBudget::new(1, 1)?,
+            stage.selector().stop().clone(),
+        )?;
+        if &expected != request {
+            return Err(integrity("SMC request disagrees with owner replay"));
+        }
+        Ok(())
+    }
+
     pub(in crate::repository) fn validate_statistical_attempt_basis(
         &self,
         snapshot: &LoadedSnapshot,
@@ -534,7 +598,10 @@ impl CampaignRepository {
         }
         let proposal = self.read_proposal(proposal.content_id())?;
         let request = self.read_branch_request(proposal.request().content_id())?;
-        if !matches!(request.source(), CandidateSource::StatisticalFinite(_)) {
+        if !matches!(
+            request.source(),
+            CandidateSource::StatisticalFinite(_) | CandidateSource::StatisticalSmc(_)
+        ) {
             return Err(integrity(
                 "statistical-attempt-execution-basis-is-not-a-draw",
             ));
