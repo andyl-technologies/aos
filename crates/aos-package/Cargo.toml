@@ -52,7 +52,7 @@ ssh-key = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 rayon = { workspace = true }
-rustix = { workspace = true }
+rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
 aos-ability-plan = { workspace = true, features = ["test-support"] }

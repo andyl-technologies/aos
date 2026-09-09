@@ -13,8 +13,10 @@ use aos_ability_model::{
     ResourceAccess, ResourceId, ResourcePermission, ResultProducerKey, RetryPolicy, RevisionId,
     ScopedOperationKey, TransactionId, ValueExpression, compare_edges, compare_operation_keys,
 };
+use aos_ability_plan::test_support::verified_planning_effect_plan;
 use aos_ability_validate::test_support::{
-    checked_effect_plan, checked_planned_provider_chain, plan_fixture,
+    checked_effect_plan, checked_planned_provider_chain, checked_systemd_manager_effect_plan,
+    plan_fixture,
 };
 use aos_contract::Sha256Digest;
 use tempfile::TempDir;
@@ -27,11 +29,116 @@ use crate::adapter::{
     TrustedRootStore,
 };
 use crate::execution::{
-    AdmissionError, ExecutionError, ExecutionEvent, ExecutionEventKind, ExecutionStep,
-    ExecutionTransaction, OperationState, OperationStatus, RecoveryAction, ResourceReleaseError,
-    TerminalResult, TrustedAdmissionPolicy,
+    AdmissionError, CheckedExecutionJournalSnapshot, ExecutionError, ExecutionEvent,
+    ExecutionEventKind, ExecutionStep, ExecutionTransaction, OperationState, OperationStatus,
+    RecoveryAction, ResourceReleaseError, TerminalResult, TrustedAdmissionPolicy,
 };
 use crate::journal::{FileJournal, JournalLimits};
+
+#[test]
+fn executable_no_op_transaction_creates_and_replays_a_zero_budget_journal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_, plan) = verified_planning_effect_plan();
+    assert!(plan.is_executable());
+    assert!(plan.operations().is_empty());
+    let fixture = RuntimeFixture::with_plan(plan)?;
+    let mut store = TestStore;
+
+    let transaction = fixture.open(&mut store)?;
+    assert_eq!(transaction.total_recovery_millis(), 0);
+    drop(transaction);
+
+    let snapshot = CheckedExecutionJournalSnapshot::read(
+        &fixture.plan,
+        fixture.journal_path(),
+        JournalLimits::default(),
+    )?;
+    assert_eq!(snapshot.records().len(), 1);
+    assert!(matches!(
+        snapshot.records()[0].body().body(),
+        ExecutionEventKind::TransactionPlanned {
+            total_recovery_millis: 0,
+            ..
+        }
+    ));
+    Ok(())
+}
+
+#[test]
+fn zero_budget_journal_is_rejected_for_a_nonempty_checked_plan()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::new()?;
+    let retained_roots = fixture
+        .plan
+        .required_runtime_artifacts()
+        .iter()
+        .map(|artifact| artifact.closure)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut journal =
+        FileJournal::<ExecutionEvent>::open(fixture.journal_path(), JournalLimits::default())?
+            .journal;
+    journal.append(&ExecutionEvent::new(
+        ExecutionEventKind::TransactionPlanned {
+            transaction: fixture.transaction.clone(),
+            plan: fixture.plan.id(),
+            plan_bundle: Sha256Digest::of_bytes("test-plan-bundle"),
+            retained_roots,
+            total_recovery_millis: 0,
+        },
+    ))?;
+    drop(journal);
+
+    let error = CheckedExecutionJournalSnapshot::read(
+        &fixture.plan,
+        fixture.journal_path(),
+        JournalLimits::default(),
+    )
+    .expect_err("zero recovery budget must not match a plan with work");
+    assert!(matches!(
+        error,
+        crate::execution::TransactionError::InvalidHistory { .. }
+    ));
+    Ok(())
+}
+
+#[test]
+fn read_only_execution_snapshot_replays_exact_plan_membership_without_mutation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::new()?;
+    let mut store = TestStore;
+    let transaction = fixture.open(&mut store)?;
+    drop(transaction);
+    let length_before = std::fs::metadata(fixture.journal_path())?.len();
+
+    let snapshot = CheckedExecutionJournalSnapshot::read(
+        &fixture.plan,
+        fixture.journal_path(),
+        JournalLimits::default(),
+    )?;
+
+    assert_eq!(snapshot.transaction(), &fixture.transaction);
+    assert_eq!(snapshot.records().len(), 1);
+    assert_eq!(snapshot.head_digest(), snapshot.records()[0].digest());
+    assert_eq!(snapshot.incomplete_tail_bytes(), 0);
+    assert_eq!(
+        std::fs::metadata(fixture.journal_path())?.len(),
+        length_before
+    );
+
+    let wrong_plan = checked_systemd_manager_effect_plan();
+    let mismatch = CheckedExecutionJournalSnapshot::read(
+        &wrong_plan,
+        fixture.journal_path(),
+        JournalLimits::default(),
+    );
+    assert!(matches!(
+        mismatch,
+        Err(crate::execution::TransactionError::InvalidHistory { .. })
+    ));
+    Ok(())
+}
 
 #[test]
 fn public_controller_completes_and_releases_a_checked_operation()

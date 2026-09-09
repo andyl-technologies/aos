@@ -13,6 +13,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::num::NonZeroUsize;
 use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,6 +38,7 @@ use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
 use super::activation::{SwitchLockGuard, acquire_switch_lock_pub, default_switch_lock_path};
+use super::native_ability_fs::RootedDirectory;
 pub use crate::ability_package::NativeAbilityRetentionVerifier;
 use crate::ability_package::VerifiedAbilityPackageSet;
 use crate::store::create_config_gc_roots;
@@ -215,6 +217,163 @@ struct NativeSessionPaths {
     generation: PathBuf,
     journal: PathBuf,
     switch_lock: PathBuf,
+}
+
+/// Holds a revalidated retained plan and its protected execution journal path.
+///
+/// Construction accepts only a named generation under the configured system
+/// profile and a private transaction directory owned by the effective user.
+/// The plan bundle is decoded and replayed before this value is returned. The
+/// journal descriptor remains bound to the protected directory walk so the
+/// runtime's read-only snapshot boundary can acquire a stable shared lock.
+#[derive(Debug)]
+pub struct RetainedAbilityDiagnosticSource {
+    plan: CheckedEffectPlan,
+    plan_bundle: Sha256Digest,
+    journal: File,
+    journal_path: PathBuf,
+}
+
+impl RetainedAbilityDiagnosticSource {
+    /// Resolves one retained generation and transaction for read-only diagnostics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the generation is outside the configured system
+    /// profile, a path component is malformed or insufficiently protected, or
+    /// the retained plan bundle is absent, noncanonical, or fails replay.
+    pub fn load(
+        generation: impl Into<PathBuf>,
+        transaction: &TransactionId,
+        supported_features: BTreeSet<RequiredFeature>,
+    ) -> Result<Self, GenerationAbilityStoreError> {
+        let generation = generation.into();
+        let expected_profile = ProfileScope::System.profile_path();
+        if generation.parent() != Some(expected_profile.as_path()) {
+            return Err(GenerationAbilityStoreError::Conflict(format!(
+                "ability diagnostic generation {} is outside the canonical system profile {}",
+                generation.display(),
+                expected_profile.display()
+            )));
+        }
+        let generation_name = generation
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                GenerationAbilityStoreError::Conflict(format!(
+                    "ability diagnostic generation {} has no UTF-8 name",
+                    generation.display()
+                ))
+            })?;
+        validate_generation_name(generation_name).map_err(|source| {
+            GenerationAbilityStoreError::Conflict(format!(
+                "invalid ability diagnostic generation {}: {source}",
+                generation.display()
+            ))
+        })?;
+        let trusted_owner = rustix::process::geteuid().as_raw();
+        let generation_root =
+            RootedDirectory::open(&generation, trusted_owner, "ability diagnostic generation")
+                .map_err(|source| {
+                    io_error("opening protected ability generation", &generation, source)
+                })?;
+        let transaction_root =
+            generation_root
+                .child_directory(TRANSACTION_ROOT)
+                .map_err(|source| {
+                    io_error(
+                        "opening protected ability transaction root",
+                        &generation.join(TRANSACTION_ROOT),
+                        source,
+                    )
+                })?;
+        let transaction_directory = transaction_root
+            .child_directory(transaction.0.as_str())
+            .map_err(|source| {
+                io_error(
+                    "opening protected ability transaction",
+                    &generation
+                        .join(TRANSACTION_ROOT)
+                        .join(transaction.0.as_str()),
+                    source,
+                )
+            })?;
+
+        let bundle_file = transaction_directory
+            .resolve(Path::new(PLAN_BUNDLE_FILE))
+            .map_err(|source| {
+                io_error(
+                    "resolving retained plan bundle",
+                    &generation
+                        .join(TRANSACTION_ROOT)
+                        .join(transaction.0.as_str())
+                        .join(PLAN_BUNDLE_FILE),
+                    source,
+                )
+            })?;
+        let bytes = bundle_file
+            .read(PLAN_BUNDLE_MAX_BYTES as u64)
+            .map_err(|source| {
+                io_error(
+                    "reading retained plan bundle",
+                    bundle_file.display(),
+                    source,
+                )
+            })?;
+        let journal_file = transaction_directory
+            .resolve(Path::new(EXECUTION_JOURNAL_FILE))
+            .map_err(|source| {
+                io_error(
+                    "resolving execution journal",
+                    &generation
+                        .join(TRANSACTION_ROOT)
+                        .join(transaction.0.as_str())
+                        .join(EXECUTION_JOURNAL_FILE),
+                    source,
+                )
+            })?;
+        let journal_path = journal_file.display().to_path_buf();
+        let journal = journal_file
+            .open_read_only()
+            .map_err(|source| io_error("opening execution journal", &journal_path, source))?;
+        let bundle =
+            ReloadablePlanBundle::decode(&bytes).map_err(GenerationAbilityStoreError::Bundle)?;
+        let plan_bundle = bundle
+            .digest()
+            .map_err(GenerationAbilityStoreError::Bundle)?;
+        let plan = bundle
+            .revalidate(supported_features)
+            .map_err(GenerationAbilityStoreError::Bundle)?;
+
+        Ok(Self {
+            plan,
+            plan_bundle,
+            journal,
+            journal_path,
+        })
+    }
+
+    /// Returns the freshly replayed exact checked plan.
+    #[must_use]
+    pub const fn plan(&self) -> &CheckedEffectPlan {
+        &self.plan
+    }
+
+    /// Returns the digest of the retained plan bundle in this transaction directory.
+    #[must_use]
+    pub const fn plan_bundle(&self) -> Sha256Digest {
+        self.plan_bundle
+    }
+
+    /// Consumes the source into its checked plan, bundle identity, and journal.
+    ///
+    /// The open file descriptor remains bound to the regular file selected
+    /// through the protected generation directory walk. The path is diagnostic
+    /// text only after this boundary.
+    #[must_use]
+    pub fn into_parts(self) -> (CheckedEffectPlan, Sha256Digest, File, PathBuf) {
+        (self.plan, self.plan_bundle, self.journal, self.journal_path)
+    }
 }
 
 impl<'plan> NativeAbilitySession<'plan> {
@@ -936,7 +1095,6 @@ fn create_private_directory(path: &Path) -> Result<(), GenerationAbilityStoreErr
     let mut permissions = std::fs::metadata(path)
         .map_err(|source| io_error("reading ability transaction directory", path, source))?
         .permissions();
-    use std::os::unix::fs::PermissionsExt as _;
     permissions.set_mode(0o700);
     std::fs::set_permissions(path, permissions)
         .map_err(|source| io_error("protecting ability transaction directory", path, source))?;

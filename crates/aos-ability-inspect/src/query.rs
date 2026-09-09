@@ -1,4 +1,4 @@
-//! Bounded deterministic traversal over an [`InspectionView`](crate::InspectionView).
+//! Bounded deterministic traversal over an [`InspectionView`].
 //!
 //! Query documents are canonical portable JSON so a terminal, editor, or web
 //! frontend can request the same finite neighborhood:
