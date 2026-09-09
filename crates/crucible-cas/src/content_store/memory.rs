@@ -6,6 +6,7 @@ use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use super::admin::{
     InventoryCounter, persistent_inventory_generation, persistent_ref_inventory_generation,
+    physical_storage_identity,
 };
 use super::*;
 
@@ -177,7 +178,10 @@ impl BlobInventoryFence for MemoryBlobInventoryFence<'_> {
     ) -> Result<BlobInventorySummary, StoreError> {
         let generation =
             persistent_inventory_generation(self.backend, self.instance, self.state.generation)?;
-        let mut inventory = InventoryCounter::new(generation);
+        let mut inventory = InventoryCounter::new(
+            physical_storage_identity(self.instance),
+            generation,
+        );
         for (id, bytes) in &self.state.objects {
             let logical_length = u64::try_from(bytes.len()).map_err(|_| StoreError::Quota)?;
             let record = BlobInventoryRecord::new(*id, logical_length);

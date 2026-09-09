@@ -1909,7 +1909,17 @@ debris, and proves the retained scenario and exact running head survive service
 restart. Automatic deployment discovery and the representative-product outage,
 credential, transfer, repack, and operator flights remain open under Phase 5
 and T-CAM-5.8.
-Broader layered transforms remain open;
+Policy-aware GC v2 now derives per-kind `Required` and `ReadThroughCache` roles
+through transparent wrappers, binds each physical basis to a persisted storage
+identity, and evicts a reachable read-through placement only when a unique,
+independent required placement authenticates to EOF between matching inventory
+generations. Apply recomputes reachability and graph roles, authenticates the
+required source again, acquires paired physical fences in identity order, and
+advances a rolling post-delete cache basis while retaining all root fences.
+The v1 plan and candidate encodings remain byte-stable and unreachable-only;
+v2 journals require matching plan/manifest versions. Wrapped-cache, same-path
+alias, strict codec, and forged swapped-role regressions cover the new boundary.
+Broader layered transforms and tier-specific policies remain open;
 therefore T-CAM-5.5 is not checked by this checkpoint.
 
 The packed leaf now provides immutable bounded multi-object pack files, a
@@ -3690,8 +3700,11 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   materialization selection is now
   restart-safe, exact-configuration/fact-bound, and consumed by both planning
   and apply; stale records cease to root checkpoint closures after unpin.
-  Broader-transform administration, policy-aware reachable-cache eviction, and
-  full operator-flight tests remain open. Implement
+  Policy-aware v2 planning and apply now evict reachable read-through cache
+  placements only across unique, physically independent cache/source
+  identities with graph-derived roles, EOF-authenticated required bytes, and
+  paired exact-generation fences. Broader transform-specific administration
+  and full operator-flight tests remain open. Implement
   replay/debug, export/import, push/pull/sync, and plan/apply GC.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage
   through common branch-request and campaign primitives and remove parallel

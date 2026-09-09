@@ -1848,6 +1848,62 @@ strictly ordered. Any incomplete visitor prefix is discarded. Because apply
 later revalidates every generation, mutations between these non-destructive
 phases only make the plan stale; they cannot authorize deletion.
 
+Policy-aware planning uses additive v2 encodings; the v1 bytes, hash domains,
+decoder, and unreachable-only semantics remain frozen. The v2 candidate
+manifest is identical through `logical_length`, followed by an explicit reason:
+
+```text
+"crucible.campaign.gc-candidate-manifest.v2\0"
+candidate_count:u64be
+repeated candidate_count times:
+    backend_length:u16be || backend_utf8
+    content_id_length:u16be || canonical_content_id_utf8
+    logical_length:u64be
+    reason:u8  # 0 unreachable, 1 reachable read-through cache
+    if reason == 1:
+        required_backend_length:u16be || required_backend_utf8
+```
+
+Its hash uses the v2 magic and
+`crucible.campaign.gc-candidate-manifest.v2` domain. The v2 plan retains the v1
+field order and bounds, changes the magic and identity domain to
+`crucible.campaign.gc-plan.v2`, and inserts
+`physical_storage_identity[32]` immediately before each physical inventory
+generation. Journal admission requires the plan and candidate-manifest versions
+to match exactly.
+
+```text
+"crucible.campaign.gc-plan.v2\0"
+store_graph_hash[32]
+root_set_manifest_hash[32]
+ref_generation[32] || ref_count:u64be
+ledger_generation[32] || attempt_count:u64be
+    || observation_root_count:u64be || checkpoint_root_count:u64be
+candidate_manifest_hash[32] || candidate_count:u64be || candidate_bytes:u64be
+physical_inventory_count:u16be
+repeated physical_inventory_count times:
+    backend_length:u16be || backend_utf8[backend_length]
+    || physical_storage_identity[32] || blob_generation[32]
+    || object_count:u64be || logical_bytes:u64be
+```
+
+Every physical leaf derives its storage identity from its inventory instance
+(persisted for durable leaves and process-local for memory) using
+`BLAKE3("crucible.content-store.physical-storage-identity.v1" || instance[32])`.
+Transform and quota administration preserve that child identity. Thus graph
+node names cannot make two views of one namespace appear independent, and a
+copied instance is conservatively treated as an alias.
+
+The graph derives a retention role for each physical boundary and admitted
+object kind. Transparent wrappers preserve the incoming role. A read-through
+cache edge marks its cache subtree `ReadThroughCache` and preserves the source
+subtree's incoming role; any independently required path dominates a cache
+role. A reachable cache placement becomes a v2 candidate only when its physical
+identity occurs once, a matching required placement has a different identity
+that also occurs once, and the required placement authenticates to EOF between
+matching complete inventory generations. Ambiguous aliases and missing,
+changed, or unauthenticated required copies are retained.
+
 The daemon now persists the exact header and both streamed manifests in an
 external directory journal that is not part of any inventoried blob leaf. The
 directory also contains an exclusively locked operational `lock` file and the
@@ -1899,14 +1955,30 @@ misconfigured alias from deadlocking on the same physical lock. A complete
 journal replays idempotently. Any failure after `Applying`, including an
 indeterminate durable delete or final state write, retains the journal in the
 recovery-required phase and never authorizes reuse of its generations.
+
+For v2, apply additionally recomputes logical reachability and the current
+graph-derived role of every cache and required-source boundary before publishing
+`Applying`. It rejects swapped roles, an unreachable cache-policy candidate,
+non-unique identities, or an aliased cache/source pair. Each required source is
+then authenticated to EOF and its generation is reproduced again. During
+deletion, apply acquires the cache and source fences in physical-identity order,
+checks both exact bases and placements, removes only the cache placement, and
+uses the post-delete cache inventory as the basis for the next candidate on
+that boundary. All root fences remain held throughout. Reports separate
+unreachable deletions from reachable read-through cache evictions and record
+the required-copy backend, identity, generation, and logical length.
+
 Construction-time graph administration now supplies the exact memory,
 directory, compressed-directory, encrypted-directory,
 compressed-encrypted-directory, and packed leaf capabilities without granting
 them to the campaign repository. Restart testing proves that two logical objects may share one pack,
 planning selects only the unreachable entry, and apply removes that entry while
-retaining the live object and shared physical pack. S3 leaf administration,
-broader transform composition, and policy-aware eviction of extra reachable
-cache copies remain open beyond this physical-leaf apply.
+retaining the live object and shared physical pack. Wrapped
+compressed-directory read-through testing proves a reachable cache copy can be
+evicted while its independently authenticated directory source remains
+readable; same-path aliases and forged swapped-role journals fail before
+deletion. Broader tier policy and administrative surfaces remain open beyond
+this physical-leaf apply.
 
 The single-host daemon composes these sources into one logical root inventory:
 authoritative refs, current exact-pin selections, durable observation and
@@ -1982,8 +2054,10 @@ the S3 integration regression persists and reopens the journal and graph,
 revalidates its remote monotonic generation, deletes only the unreachable
 committed object, and reauthenticates the retained object. A publication after
 planning changes that generation and prevents every deletion. Composed broader
-transform tiers and policy-aware reachable-cache eviction still require their
-additional administration before global deletion.
+transform tiers still require their additional policy-specific administration
+before global deletion. Read-through cache eviction is implemented for unique,
+physically independent cache and required-source placements under the v2
+policy-aware plan.
 
 - **[CSTORE-19]** GC MUST derive liveness from authenticated refs, pins, and
   child references, never access time, cache temperature, or backend listing

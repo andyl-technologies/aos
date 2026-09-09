@@ -4,8 +4,9 @@
 //! physical-candidate manifests, the non-destructive single-host planner that
 //! binds them to every administrative generation, the durable external apply
 //! journal, and exact-generation physical-leaf logical deletion under
-//! publication/root fences. Policy-aware cache eviction and broader transform
-//! administration remain higher-level owner responsibilities.
+//! publication/root fences. Version 2 adds graph-derived read-through cache
+//! eviction backed by an independently authenticated required placement;
+//! broader transform administration remains a higher-level owner responsibility.
 //!
 //! The v1 body is:
 //!
@@ -21,6 +22,9 @@
 //!   backend_length:u16be | backend UTF-8
 //!   blob_generation[32] | objects:u64be | logical_bytes:u64be
 //! ```
+//!
+//! Version 2 uses a distinct magic and identity domain and inserts a 32-byte
+//! physical storage identity before each blob generation.
 
 mod apply;
 mod journal;
@@ -41,8 +45,9 @@ pub use journal::{
     CampaignGcJournalTransition, DirectoryCampaignGcJournal,
 };
 pub use manifest::{
-    CampaignGcCandidate, CampaignGcCandidateManifest, CampaignGcManifestError,
-    CampaignGcRootManifest, MAX_CAMPAIGN_GC_MANIFEST_ENTRIES,
+    CampaignGcCandidate, CampaignGcCandidateManifest, CampaignGcCandidateManifestVersion,
+    CampaignGcCandidateReason, CampaignGcManifestError, CampaignGcRootManifest,
+    MAX_CAMPAIGN_GC_MANIFEST_ENTRIES,
 };
 #[cfg(target_os = "linux")]
 pub use planner::plan_single_host_campaign_gc_with_hot_checkpoints;
@@ -57,7 +62,8 @@ pub use planner::{
 
 use crucible_campaign::CampaignHash;
 use crucible_cas::content_store::{
-    BlobInventorySummary, InventoryGeneration, RefInventoryGeneration, RefInventorySummary,
+    BlobInventorySummary, InventoryGeneration, PhysicalStorageIdentity, RefInventoryGeneration,
+    RefInventorySummary,
 };
 use thiserror::Error;
 
@@ -67,8 +73,19 @@ use crate::{AssignmentRetentionGeneration, AssignmentRetentionSummary, ExactPinR
 
 const GC_PLAN_MAGIC: &[u8] = b"crucible.campaign.gc-plan.v1\0";
 const GC_PLAN_ID_DOMAIN: &str = "crucible.campaign.gc-plan.v1";
+const GC_PLAN_V2_MAGIC: &[u8] = b"crucible.campaign.gc-plan.v2\0";
+const GC_PLAN_V2_ID_DOMAIN: &str = "crucible.campaign.gc-plan.v2";
 
-/// Maximum canonical byte length of one v1 GC plan header.
+/// Canonical campaign GC plan schema version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CampaignGcPlanVersion {
+    /// Frozen plan whose candidates are all logically unreachable.
+    V1,
+    /// Policy-aware plan with physical identities and explicit reasons.
+    V2,
+}
+
+/// Maximum canonical byte length of one GC plan header.
 pub const MAX_CAMPAIGN_GC_PLAN_BYTES: usize = 64 * 1024;
 /// Maximum number of physical blob inventories bound by one plan.
 pub const MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES: usize = 256;
@@ -288,6 +305,7 @@ impl CampaignGcCandidateSetSummary {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CampaignGcBlobInventoryBasis {
     backend: String,
+    storage_identity: Option<PhysicalStorageIdentity>,
     generation: InventoryGeneration,
     objects: u64,
     logical_bytes: u64,
@@ -315,6 +333,7 @@ impl CampaignGcBlobInventoryBasis {
         }
         Ok(Self {
             backend,
+            storage_identity: None,
             generation,
             objects,
             logical_bytes,
@@ -338,10 +357,30 @@ impl CampaignGcBlobInventoryBasis {
         )
     }
 
+    /// Converts an inventory summary into a policy-aware physical basis.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignGcPlanError`] under the same conditions as
+    /// [`Self::from_summary`].
+    pub fn from_policy_aware_summary(
+        summary: &BlobInventorySummary,
+    ) -> Result<Self, CampaignGcPlanError> {
+        let mut basis = Self::from_summary(summary)?;
+        basis.storage_identity = Some(summary.storage_identity());
+        Ok(basis)
+    }
+
     /// Returns the exact physical backend identifier.
     #[must_use]
     pub fn backend(&self) -> &str {
         &self.backend
+    }
+
+    /// Returns the v2 physical namespace identity, if this is a v2 basis.
+    #[must_use]
+    pub const fn storage_identity(&self) -> Option<PhysicalStorageIdentity> {
+        self.storage_identity
     }
 
     /// Returns the fenced physical inventory generation.
@@ -366,6 +405,7 @@ impl CampaignGcBlobInventoryBasis {
 /// Small canonical header for one generation-bound physical GC plan.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CampaignGcPlan {
+    version: CampaignGcPlanVersion,
     store_graph: CampaignHash,
     root_set: CampaignGcRootSetId,
     ref_generation: RefInventoryGeneration,
@@ -397,7 +437,56 @@ impl CampaignGcPlan {
         candidates: CampaignGcCandidateSetSummary,
         physical: Vec<CampaignGcBlobInventoryBasis>,
     ) -> Result<Self, CampaignGcPlanError> {
-        validate_physical(&physical)?;
+        Self::new_with_version(
+            CampaignGcPlanVersion::V1,
+            store_graph,
+            root_set,
+            refs,
+            ledger,
+            candidates,
+            physical,
+        )
+    }
+
+    /// Builds a canonical policy-aware v2 plan.
+    ///
+    /// Every physical basis must contain its persisted storage identity. The
+    /// candidate summary must name a v2 candidate manifest; journal admission
+    /// enforces that cross-file version binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignGcPlanError`] for the same ordering, count, and size
+    /// failures as [`Self::new`], or when a physical identity is absent.
+    pub fn new_policy_aware(
+        store_graph: CampaignHash,
+        root_set: CampaignGcRootSetId,
+        refs: RefInventorySummary,
+        ledger: AssignmentRetentionSummary,
+        candidates: CampaignGcCandidateSetSummary,
+        physical: Vec<CampaignGcBlobInventoryBasis>,
+    ) -> Result<Self, CampaignGcPlanError> {
+        Self::new_with_version(
+            CampaignGcPlanVersion::V2,
+            store_graph,
+            root_set,
+            refs,
+            ledger,
+            candidates,
+            physical,
+        )
+    }
+
+    fn new_with_version(
+        version: CampaignGcPlanVersion,
+        store_graph: CampaignHash,
+        root_set: CampaignGcRootSetId,
+        refs: RefInventorySummary,
+        ledger: AssignmentRetentionSummary,
+        candidates: CampaignGcCandidateSetSummary,
+        physical: Vec<CampaignGcBlobInventoryBasis>,
+    ) -> Result<Self, CampaignGcPlanError> {
+        validate_physical(version, &physical)?;
         let root_count = ledger
             .observation_roots()
             .checked_add(ledger.checkpoint_roots())
@@ -426,6 +515,7 @@ impl CampaignGcPlan {
         }
 
         let plan = Self {
+            version,
             store_graph,
             root_set,
             ref_generation: refs.generation(),
@@ -443,7 +533,7 @@ impl CampaignGcPlan {
         Ok(plan)
     }
 
-    /// Strictly decodes one canonical v1 plan header.
+    /// Strictly decodes one supported canonical plan header.
     ///
     /// # Errors
     ///
@@ -454,7 +544,7 @@ impl CampaignGcPlan {
             return Err(CampaignGcPlanError::PlanTooLarge);
         }
         let mut cursor = PlanCursor::new(bytes);
-        cursor.require(GC_PLAN_MAGIC)?;
+        let version = cursor.plan_version()?;
         let store_graph = CampaignHash::from_bytes(cursor.fixed()?);
         let root_set = CampaignGcRootSetId::from_hash(CampaignHash::from_bytes(cursor.fixed()?));
         let ref_generation = RefInventoryGeneration::from_bytes(cursor.fixed()?);
@@ -477,16 +567,25 @@ impl CampaignGcPlan {
             let backend = std::str::from_utf8(cursor.take(backend_length)?)
                 .map_err(|_| CampaignGcPlanError::InvalidBackendId)?
                 .to_owned();
-            physical.push(CampaignGcBlobInventoryBasis::new(
+            let storage_identity = match version {
+                CampaignGcPlanVersion::V1 => None,
+                CampaignGcPlanVersion::V2 => {
+                    Some(PhysicalStorageIdentity::from_bytes(cursor.fixed()?))
+                }
+            };
+            let mut basis = CampaignGcBlobInventoryBasis::new(
                 backend,
                 InventoryGeneration::from_bytes(cursor.fixed()?),
                 cursor.u64()?,
                 cursor.u64()?,
-            )?);
+            )?;
+            basis.storage_identity = storage_identity;
+            physical.push(basis);
         }
         cursor.finish()?;
 
-        let plan = Self::new(
+        let plan = Self::new_with_version(
+            version,
             store_graph,
             root_set,
             RefInventorySummary::from_parts(ref_generation, refs),
@@ -506,7 +605,7 @@ impl CampaignGcPlan {
         Ok(plan)
     }
 
-    /// Encodes the exact canonical v1 plan header.
+    /// Encodes this plan's exact canonical header.
     ///
     /// # Errors
     ///
@@ -523,10 +622,20 @@ impl CampaignGcPlan {
     /// Returns [`CampaignGcPlanError::PlanTooLarge`] if encoding unexpectedly
     /// exceeds the frozen v1 bounds.
     pub fn id(&self) -> Result<CampaignGcPlanId, CampaignGcPlanError> {
+        let domain = match self.version {
+            CampaignGcPlanVersion::V1 => GC_PLAN_ID_DOMAIN,
+            CampaignGcPlanVersion::V2 => GC_PLAN_V2_ID_DOMAIN,
+        };
         Ok(CampaignGcPlanId(CampaignHash::derive(
-            GC_PLAN_ID_DOMAIN,
+            domain,
             &self.canonical_bytes()?,
         )))
+    }
+
+    /// Returns the exact canonical plan schema.
+    #[must_use]
+    pub const fn version(&self) -> CampaignGcPlanVersion {
+        self.version
     }
 
     /// Returns the exact admitted store-graph configuration hash.
@@ -591,7 +700,10 @@ impl CampaignGcPlan {
 
     fn canonical_bytes_unchecked(&self) -> Result<Vec<u8>, CampaignGcPlanError> {
         let mut bytes = Vec::with_capacity(MAX_CAMPAIGN_GC_PLAN_BYTES.min(1024));
-        bytes.extend_from_slice(GC_PLAN_MAGIC);
+        bytes.extend_from_slice(match self.version {
+            CampaignGcPlanVersion::V1 => GC_PLAN_MAGIC,
+            CampaignGcPlanVersion::V2 => GC_PLAN_V2_MAGIC,
+        });
         bytes.extend_from_slice(&self.store_graph.as_bytes());
         bytes.extend_from_slice(&self.root_set.as_hash().as_bytes());
         bytes.extend_from_slice(&self.ref_generation.as_bytes());
@@ -611,6 +723,9 @@ impl CampaignGcPlan {
                 .map_err(|_| CampaignGcPlanError::PlanTooLarge)?;
             bytes.extend_from_slice(&backend_length.to_be_bytes());
             bytes.extend_from_slice(basis.backend().as_bytes());
+            if let Some(storage_identity) = basis.storage_identity() {
+                bytes.extend_from_slice(&storage_identity.as_bytes());
+            }
             bytes.extend_from_slice(&basis.generation().as_bytes());
             bytes.extend_from_slice(&basis.objects().to_be_bytes());
             bytes.extend_from_slice(&basis.logical_bytes().to_be_bytes());
@@ -667,14 +782,20 @@ fn validate_backend_id(value: &str) -> Result<(), CampaignGcPlanError> {
     }
 }
 
-fn validate_physical(physical: &[CampaignGcBlobInventoryBasis]) -> Result<(), CampaignGcPlanError> {
+fn validate_physical(
+    version: CampaignGcPlanVersion,
+    physical: &[CampaignGcBlobInventoryBasis],
+) -> Result<(), CampaignGcPlanError> {
     if physical.is_empty() || physical.len() > MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES {
         return Err(CampaignGcPlanError::InvalidPhysicalInventoryCount);
     }
     let ordered = physical
         .windows(2)
         .all(|pair| pair[0].backend() < pair[1].backend());
-    if ordered {
+    let identities_match_version = physical
+        .iter()
+        .all(|basis| basis.storage_identity().is_some() == (version == CampaignGcPlanVersion::V2));
+    if ordered && identities_match_version {
         Ok(())
     } else {
         Err(CampaignGcPlanError::InvalidPhysicalInventoryCount)
@@ -713,9 +834,12 @@ impl<'a> PlanCursor<'a> {
         Ok(u64::from_be_bytes(self.fixed()?))
     }
 
-    fn require(&mut self, expected: &[u8]) -> Result<(), CampaignGcPlanError> {
-        if self.take(expected.len())? == expected {
-            Ok(())
+    fn plan_version(&mut self) -> Result<CampaignGcPlanVersion, CampaignGcPlanError> {
+        let magic = self.take(GC_PLAN_MAGIC.len())?;
+        if magic == GC_PLAN_MAGIC {
+            Ok(CampaignGcPlanVersion::V1)
+        } else if magic == GC_PLAN_V2_MAGIC {
+            Ok(CampaignGcPlanVersion::V2)
         } else {
             Err(CampaignGcPlanError::UnsupportedSchema)
         }

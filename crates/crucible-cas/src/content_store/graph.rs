@@ -479,6 +479,16 @@ pub struct StoreGraphAdmin {
 struct StoreGraphPhysicalAuthority {
     backend: Arc<dyn ImmutableBlobBackend>,
     admin: Arc<dyn BlobStoreAdmin>,
+    retention: BTreeMap<ObjectKind, StoreGraphPhysicalRetention>,
+}
+
+/// Graph-derived retention role for one physical boundary and object kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum StoreGraphPhysicalRetention {
+    /// The boundary is reachable only through a read-through cache edge.
+    ReadThroughCache,
+    /// At least one independently authoritative graph path reaches the boundary.
+    Required,
 }
 
 impl StoreGraphAdmin {
@@ -497,6 +507,7 @@ impl StoreGraphAdmin {
                 node,
                 backend: authority.backend.as_ref(),
                 admin: authority.admin.as_ref(),
+                retention: &authority.retention,
             })
             .collect()
     }
@@ -523,6 +534,7 @@ pub struct StoreGraphPhysicalAdmin<'a> {
     node: &'a StoreNodeId,
     backend: &'a dyn ImmutableBlobBackend,
     admin: &'a dyn BlobStoreAdmin,
+    retention: &'a BTreeMap<ObjectKind, StoreGraphPhysicalRetention>,
 }
 
 impl<'a> StoreGraphPhysicalAdmin<'a> {
@@ -552,6 +564,17 @@ impl<'a> StoreGraphPhysicalAdmin<'a> {
     #[must_use]
     pub const fn admin(self) -> &'a dyn BlobStoreAdmin {
         self.admin
+    }
+
+    /// Returns this boundary's graph-derived role for one admitted object kind.
+    ///
+    /// Transparent wrappers preserve their incoming role. A read-through cache
+    /// edge changes a required path to cache-only, while its source preserves
+    /// the incoming role. If another path independently reaches the same node,
+    /// [`StoreGraphPhysicalRetention::Required`] dominates.
+    #[must_use]
+    pub fn retention(self, kind: ObjectKind) -> Option<StoreGraphPhysicalRetention> {
+        self.retention.get(&kind).copied()
     }
 }
 
@@ -849,6 +872,7 @@ impl StoreGraph {
     ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         validate_structure(&config)?;
         validate_demands(&config)?;
+        let physical_retention = derive_physical_retention(&config)?;
         let configuration = StoreGraphConfigurationId::for_config(&config)?;
         let namespace_authorizer = config
             .nodes
@@ -906,6 +930,7 @@ impl StoreGraph {
                     StoreGraphPhysicalAuthority {
                         backend,
                         admin: Arc::clone(admin),
+                        retention: physical_retention.get(id).cloned().unwrap_or_default(),
                     },
                 ))
             })
@@ -1402,6 +1427,89 @@ fn validate_local_shape(id: &StoreNodeId, node: &StoreNodeSpec) -> Result<(), St
         .map_err(|_| invalid_graph(id.as_str(), GraphViolation::InvalidS3Configuration)),
         _ => Ok(()),
     }
+}
+
+fn derive_physical_retention(
+    config: &StoreGraphConfig,
+) -> Result<BTreeMap<StoreNodeId, BTreeMap<ObjectKind, StoreGraphPhysicalRetention>>, StoreError> {
+    let mut roles = BTreeMap::<(StoreNodeId, ObjectKind), StoreGraphPhysicalRetention>::new();
+    let mut queue = VecDeque::new();
+    for kind in &config.admitted_kinds {
+        queue.push_back((
+            config.root.clone(),
+            *kind,
+            StoreGraphPhysicalRetention::Required,
+        ));
+    }
+
+    while let Some((id, kind, role)) = queue.pop_front() {
+        let key = (id.clone(), kind);
+        if roles.get(&key).is_some_and(|existing| *existing >= role) {
+            continue;
+        }
+        roles.insert(key, role);
+
+        let node = config
+            .nodes
+            .get(&id)
+            .ok_or_else(|| invalid_graph(id.as_str(), GraphViolation::MissingNode))?;
+        let mut push = |child: &StoreNodeId, child_role| {
+            queue.push_back((child.clone(), kind, child_role));
+        };
+        match node {
+            StoreNodeSpec::Memory { .. }
+            | StoreNodeSpec::Directory { .. }
+            | StoreNodeSpec::CompressedDirectory { .. }
+            | StoreNodeSpec::EncryptedDirectory { .. }
+            | StoreNodeSpec::CompressedEncryptedDirectory { .. }
+            | StoreNodeSpec::Packed { .. }
+            | StoreNodeSpec::S3 { .. } => {}
+            StoreNodeSpec::Verified { child }
+            | StoreNodeSpec::DurabilityPolicy { child, .. }
+            | StoreNodeSpec::LogicalQuota { child, .. }
+            | StoreNodeSpec::PhysicalQuota { child, .. }
+            | StoreNodeSpec::Metrics { child }
+            | StoreNodeSpec::Namespaced { child, .. }
+            | StoreNodeSpec::ProfileValidated { child, .. } => push(child, role),
+            StoreNodeSpec::Routed { routes } => {
+                let child = routes
+                    .get(&kind)
+                    .ok_or_else(|| invalid_graph(id.as_str(), GraphViolation::RouteCoverage))?;
+                push(child, role);
+            }
+            StoreNodeSpec::Tiered { tiers, .. } => {
+                for child in tiers {
+                    push(child, role);
+                }
+            }
+            StoreNodeSpec::ReadThrough { cache, source } => {
+                push(cache, StoreGraphPhysicalRetention::ReadThroughCache);
+                push(source, role);
+            }
+            StoreNodeSpec::WriteThrough { children } => {
+                for child in children {
+                    push(child, role);
+                }
+            }
+            StoreNodeSpec::WriteBack {
+                staging,
+                destination,
+                ..
+            } => {
+                push(staging, role);
+                push(destination, role);
+            }
+        }
+    }
+
+    let mut by_node = BTreeMap::<
+        StoreNodeId,
+        BTreeMap<ObjectKind, StoreGraphPhysicalRetention>,
+    >::new();
+    for ((node, kind), role) in roles {
+        by_node.entry(node).or_default().insert(kind, role);
+    }
+    Ok(by_node)
 }
 
 fn validate_demands(config: &StoreGraphConfig) -> Result<(), StoreError> {

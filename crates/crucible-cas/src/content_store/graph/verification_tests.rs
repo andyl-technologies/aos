@@ -188,6 +188,7 @@ impl BlobInventoryFence for ScriptedFence {
             .clone();
         Ok(BlobInventorySummary::new(
             backend,
+            PhysicalStorageIdentity::from_bytes([7; 32]),
             self.state.generation(),
             count,
             logical_bytes,
@@ -239,7 +240,14 @@ fn verification_admin(
                 state: Arc::clone(&state),
             });
             let admin: Arc<dyn BlobStoreAdmin> = Arc::new(ScriptedAdmin { state });
-            (node, StoreGraphPhysicalAuthority { backend, admin })
+            (
+                node,
+                StoreGraphPhysicalAuthority {
+                    backend,
+                    admin,
+                    retention: BTreeMap::new(),
+                },
+            )
         })
         .collect();
     StoreGraphAdmin {

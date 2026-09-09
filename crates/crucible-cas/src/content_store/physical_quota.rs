@@ -239,6 +239,7 @@ impl BlobInventoryFence for PhysicalQuotaInventoryFence<'_> {
         }
         Ok(BlobInventorySummary::new(
             self.store.name.clone(),
+            summary.storage_identity(),
             summary.generation(),
             summary.objects(),
             summary.logical_bytes(),

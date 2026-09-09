@@ -9,7 +9,9 @@ use std::sync::{
 };
 
 use super::*;
-use crate::content_store::admin::{InventoryCounter, persistent_inventory_generation};
+use crate::content_store::admin::{
+    InventoryCounter, persistent_inventory_generation, physical_storage_identity,
+};
 use crate::content_store::{
     BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
     MAX_S3_OBJECT_LIST_ITEMS, PlannedDeleteDisposition, StoreS3ConditionalWriteOutcome,
@@ -360,7 +362,10 @@ impl S3BlobInventoryFence<'_> {
             self.inventory.instance,
             self.inventory.generation,
         )?;
-        let mut counter = InventoryCounter::new(generation);
+        let mut counter = InventoryCounter::new(
+            physical_storage_identity(self.inventory.instance),
+            generation,
+        );
         let mut visited = 0_u64;
         let mut pages = 0_u64;
         let mut prior_key = None;

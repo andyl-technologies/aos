@@ -1,13 +1,14 @@
 //! Exact-generation destructive apply for one journaled single-host GC plan.
 
 use std::error::Error as StdError;
+use std::io;
 
 use crucible_campaign::{
     CampaignFactId, CampaignName, CampaignRepository, CampaignRepositoryError, ConfigurationId,
 };
 use crucible_cas::content_store::{
     BlobInventoryFence, ContentId, PlannedDeleteDisposition, RefStoreAdmin, StoreError,
-    StoreGraphAdmin, WriteBackRetentionAdmin,
+    StoreGraphAdmin, StoreGraphPhysicalRetention, WriteBackRetentionAdmin,
 };
 use thiserror::Error;
 
@@ -23,8 +24,9 @@ use crate::{HotCheckpointFallbackRetentionAdmin, HotCheckpointFallbackRetentionE
 use super::CampaignGcHotCheckpointRoots;
 use super::roots::{CampaignGcRootInventoryError, RootAccumulator, inventory_authoritative_refs};
 use super::{
-    CampaignGcBlobInventoryBasis, CampaignGcCandidateManifest, CampaignGcJournalError,
-    CampaignGcJournalPhase, CampaignGcManifestError, CampaignGcPhysicalStore, CampaignGcPlanError,
+    CampaignGcBlobInventoryBasis, CampaignGcCandidateManifest, CampaignGcCandidateReason,
+    CampaignGcJournalError, CampaignGcJournalPhase, CampaignGcManifestError,
+    CampaignGcPhysicalStore, CampaignGcPlanError, CampaignGcPlanVersion,
     CampaignGcRetentionSources, CampaignGcRootManifest, DirectoryCampaignGcJournal,
     MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
 };
@@ -43,6 +45,8 @@ pub enum CampaignGcApplyStatus {
 pub struct CampaignGcApplyReport {
     status: CampaignGcApplyStatus,
     candidates: u64,
+    unreachable_candidates: u64,
+    reachable_cache_candidates: u64,
     logical_bytes: u64,
 }
 
@@ -57,6 +61,18 @@ impl CampaignGcApplyReport {
     #[must_use]
     pub const fn candidates(self) -> u64 {
         self.candidates
+    }
+
+    /// Returns completed unreachable-placement deletions.
+    #[must_use]
+    pub const fn unreachable_candidates(self) -> u64 {
+        self.unreachable_candidates
+    }
+
+    /// Returns completed reachable read-through cache deletions.
+    #[must_use]
+    pub const fn reachable_cache_candidates(self) -> u64 {
+        self.reachable_cache_candidates
     }
 
     /// Returns the exact planned logical bytes across those placements.
@@ -74,10 +90,11 @@ impl CampaignGcApplyReport {
 /// leaves in canonical backend order. It reproduces the exact ref, current
 /// exact-pin roots, ledger, root-manifest, and every
 /// physical-inventory basis before durably entering `Applying`. Root fences
-/// remain held throughout. Each physical leaf is then reacquired, revalidated
-/// against the same plan, and retained through its candidate deletions. This
-/// sequential second pass avoids deadlock if a misconfigured store graph aliases
-/// one physical lock.
+/// remain held throughout. Version 1 reacquires each physical leaf and retains
+/// its fence through that leaf's unreachable deletions. Version 2 reacquires
+/// paired cache/source fences in physical-identity order, revalidates both exact
+/// placements, and advances the cache's rolling post-delete basis. Aliased v2
+/// identities fail closed before deletion.
 /// The construction-time `store_graph` capability supplies both the graph
 /// identity and every physical leaf; independently supplied graph hashes or
 /// deletion capabilities are not accepted by this public boundary.
@@ -298,13 +315,11 @@ where
         retention,
     } = sources;
     let exact_pins = retention.exact_pins;
-    let summary = journal.plan().candidates();
     if journal.phase() == CampaignGcJournalPhase::Complete {
-        return Ok(CampaignGcApplyReport {
-            status: CampaignGcApplyStatus::AlreadyComplete,
-            candidates: summary.candidates(),
-            logical_bytes: summary.logical_bytes(),
-        });
+        return Ok(apply_report(
+            journal,
+            CampaignGcApplyStatus::AlreadyComplete,
+        ));
     }
     if journal.phase() == CampaignGcJournalPhase::Applying {
         return Err(CampaignGcApplyError::InterruptedJournal);
@@ -414,11 +429,10 @@ where
         .authenticated_closure_ids(roots.ordinary.iter().copied())
         .map_err(CampaignGcApplyError::Campaign)?;
     current_reachable.extend(roots.direct.iter().copied());
-    if let Some(candidate) = journal
-        .candidates()
-        .iter()
-        .find(|candidate| current_reachable.contains(&candidate.id()))
-    {
+    if let Some(candidate) = journal.candidates().iter().find(|candidate| {
+        matches!(candidate.reason(), CampaignGcCandidateReason::Unreachable)
+            && current_reachable.contains(&candidate.id())
+    }) {
         return Err(CampaignGcApplyError::CandidateBecameReachable { id: candidate.id() });
     }
 
@@ -432,37 +446,430 @@ where
         validate_physical_inventory(target, planned, journal.candidates(), fence.as_mut())?;
     }
 
+    if journal.plan().version() == CampaignGcPlanVersion::V2 {
+        authenticate_policy_sources(journal, physical, &current_reachable)?;
+    }
+
     journal.begin_apply()?;
+    match journal.plan().version() {
+        CampaignGcPlanVersion::V1 => apply_v1_candidates(journal, physical)?,
+        CampaignGcPlanVersion::V2 => apply_v2_candidates(journal, physical)?,
+    }
+    journal.mark_complete()?;
+    Ok(apply_report(journal, CampaignGcApplyStatus::Applied))
+}
+
+fn apply_report(
+    journal: &DirectoryCampaignGcJournal,
+    status: CampaignGcApplyStatus,
+) -> CampaignGcApplyReport {
+    CampaignGcApplyReport {
+        status,
+        candidates: journal.plan().candidates().candidates(),
+        unreachable_candidates: journal.candidates().unreachable_candidates(),
+        reachable_cache_candidates: journal.candidates().reachable_cache_candidates(),
+        logical_bytes: journal.plan().candidates().logical_bytes(),
+    }
+}
+
+fn apply_v1_candidates<E>(
+    journal: &DirectoryCampaignGcJournal,
+    physical: &[CampaignGcPhysicalStore<'_>],
+) -> Result<(), CampaignGcApplyError<E>>
+where
+    E: StdError + 'static,
+{
     for (target, planned) in physical.iter().zip(journal.plan().physical()) {
-        let mut fence = target.admin().acquire_inventory_fence().map_err(|source| {
-            CampaignGcApplyError::Blob {
-                backend: target.backend().to_owned(),
-                source,
-            }
-        })?;
+        let mut fence = acquire_physical_fence(*target)?;
         validate_physical_inventory(target, planned, journal.candidates(), fence.as_mut())?;
         for candidate in journal.candidates().for_backend(target.backend()) {
-            match fence.delete_candidate(candidate.id()).map_err(|source| {
-                CampaignGcApplyError::Blob {
-                    backend: target.backend().to_owned(),
-                    source,
-                }
-            })? {
-                PlannedDeleteDisposition::Deleted => {}
-                PlannedDeleteDisposition::AlreadyAbsent => {
-                    return Err(CampaignGcApplyError::CandidateSetChanged {
-                        backend: target.backend().to_owned(),
+            delete_exact_candidate(*target, fence.as_mut(), candidate.id())?;
+        }
+    }
+    Ok(())
+}
+
+fn authenticate_policy_sources<E>(
+    journal: &DirectoryCampaignGcJournal,
+    physical: &[CampaignGcPhysicalStore<'_>],
+    current_reachable: &std::collections::BTreeSet<ContentId>,
+) -> Result<(), CampaignGcApplyError<E>>
+where
+    E: StdError + 'static,
+{
+    let mut authenticated = std::collections::BTreeSet::new();
+    for candidate in journal.candidates().iter() {
+        let CampaignGcCandidateReason::ReachableReadThroughCache { required_backend } =
+            candidate.reason()
+        else {
+            continue;
+        };
+        let cache_index = physical_index(physical, candidate.backend())?;
+        let source_index = physical_index(physical, required_backend)?;
+        let kind = candidate.id().kind();
+        let cache_role = physical[cache_index]
+            .graph()
+            .and_then(|graph| graph.retention(kind));
+        let source_role = physical[source_index]
+            .graph()
+            .and_then(|graph| graph.retention(kind));
+        if !current_reachable.contains(&candidate.id())
+            || candidate.backend() == required_backend
+            || cache_role != Some(StoreGraphPhysicalRetention::ReadThroughCache)
+            || source_role != Some(StoreGraphPhysicalRetention::Required)
+        {
+            return Err(CampaignGcApplyError::CandidatePolicyChanged {
+                backend: candidate.backend().to_owned(),
+                id: candidate.id(),
+            });
+        }
+
+        let cache_identity = validate_unique_policy_identity(
+            journal,
+            &journal.plan().physical()[cache_index],
+            candidate.backend(),
+        )?;
+        let source_identity = validate_unique_policy_identity(
+            journal,
+            &journal.plan().physical()[source_index],
+            required_backend,
+        )?;
+        if cache_identity == source_identity {
+            return Err(CampaignGcApplyError::AliasedRequiredCopy {
+                backend: candidate.backend().to_owned(),
+                required_backend: required_backend.clone(),
+            });
+        }
+
+        if !authenticated.insert((required_backend.as_str(), candidate.id())) {
+            continue;
+        }
+        let source = physical[source_index];
+        let expected = &journal.plan().physical()[source_index];
+        validate_required_copy_fence(source, expected, candidate.id(), candidate.logical_length())?;
+
+        let graph = source
+            .graph()
+            .ok_or(CampaignGcApplyError::PhysicalInputsChanged)?;
+        let handle =
+            graph
+                .read(candidate.id())
+                .map_err(|source_error| CampaignGcApplyError::Blob {
+                    backend: source.backend().to_owned(),
+                    source: source_error,
+                })?;
+        if handle.logical_length() != candidate.logical_length() {
+            return Err(CampaignGcApplyError::RequiredCopyChanged {
+                backend: source.backend().to_owned(),
+                id: candidate.id(),
+            });
+        }
+        handle
+            .copy_to(&mut io::sink())
+            .map_err(|source_error| CampaignGcApplyError::Blob {
+                backend: source.backend().to_owned(),
+                source: source_error,
+            })?;
+        // EOF authentication precedes the second generation validation. The
+        // matching terminal basis makes those exact bytes authoritative for
+        // the later paired-fence check.
+        validate_required_copy_fence(source, expected, candidate.id(), candidate.logical_length())?;
+    }
+    Ok(())
+}
+
+fn apply_v2_candidates<E>(
+    journal: &DirectoryCampaignGcJournal,
+    physical: &[CampaignGcPhysicalStore<'_>],
+) -> Result<(), CampaignGcApplyError<E>>
+where
+    E: StdError + 'static,
+{
+    let mut rolling = journal.plan().physical().to_vec();
+    for candidate in journal.candidates().iter() {
+        let cache_index = physical_index(physical, candidate.backend())?;
+        match candidate.reason() {
+            CampaignGcCandidateReason::Unreachable => {
+                let updated = delete_v2_single(
+                    physical[cache_index],
+                    &rolling[cache_index],
+                    candidate.id(),
+                    candidate.logical_length(),
+                )?;
+                rolling[cache_index] = updated;
+            }
+            CampaignGcCandidateReason::ReachableReadThroughCache { required_backend } => {
+                let source_index = physical_index(physical, required_backend)?;
+                let cache_identity = validate_unique_policy_identity(
+                    journal,
+                    &rolling[cache_index],
+                    candidate.backend(),
+                )?;
+                let source_identity = validate_unique_policy_identity(
+                    journal,
+                    &rolling[source_index],
+                    required_backend,
+                )?;
+                if cache_identity == source_identity {
+                    return Err(CampaignGcApplyError::AliasedRequiredCopy {
+                        backend: candidate.backend().to_owned(),
+                        required_backend: required_backend.clone(),
                     });
                 }
+                let updated = delete_v2_paired(
+                    physical[cache_index],
+                    &rolling[cache_index],
+                    physical[source_index],
+                    &rolling[source_index],
+                    candidate.id(),
+                    candidate.logical_length(),
+                    cache_identity < source_identity,
+                )?;
+                rolling[cache_index] = updated;
             }
         }
     }
-    journal.mark_complete()?;
-    Ok(CampaignGcApplyReport {
-        status: CampaignGcApplyStatus::Applied,
-        candidates: summary.candidates(),
-        logical_bytes: summary.logical_bytes(),
-    })
+    Ok(())
+}
+
+fn delete_v2_single<E>(
+    target: CampaignGcPhysicalStore<'_>,
+    expected: &CampaignGcBlobInventoryBasis,
+    id: ContentId,
+    logical_length: u64,
+) -> Result<CampaignGcBlobInventoryBasis, CampaignGcApplyError<E>>
+where
+    E: StdError + 'static,
+{
+    let mut fence = acquire_physical_fence(target)?;
+    validate_fenced_placement(target, expected, id, logical_length, fence.as_mut())?;
+    delete_exact_candidate(target, fence.as_mut(), id)?;
+    refreshed_basis_after_delete(target, expected, id, logical_length, fence.as_mut())
+}
+
+fn delete_v2_paired<E>(
+    cache: CampaignGcPhysicalStore<'_>,
+    cache_expected: &CampaignGcBlobInventoryBasis,
+    source: CampaignGcPhysicalStore<'_>,
+    source_expected: &CampaignGcBlobInventoryBasis,
+    id: ContentId,
+    logical_length: u64,
+    cache_first: bool,
+) -> Result<CampaignGcBlobInventoryBasis, CampaignGcApplyError<E>>
+where
+    E: StdError + 'static,
+{
+    if cache_first {
+        let mut cache_fence = acquire_physical_fence(cache)?;
+        let mut source_fence = acquire_physical_fence(source)?;
+        delete_with_paired_fences(
+            cache,
+            cache_expected,
+            cache_fence.as_mut(),
+            source,
+            source_expected,
+            source_fence.as_mut(),
+            id,
+            logical_length,
+        )
+    } else {
+        let mut source_fence = acquire_physical_fence(source)?;
+        let mut cache_fence = acquire_physical_fence(cache)?;
+        delete_with_paired_fences(
+            cache,
+            cache_expected,
+            cache_fence.as_mut(),
+            source,
+            source_expected,
+            source_fence.as_mut(),
+            id,
+            logical_length,
+        )
+    }
+}
+
+// crucible-lint: allow rust-allow -- The two exact fenced bases are the deletion safety boundary.
+#[allow(clippy::too_many_arguments)]
+fn delete_with_paired_fences<E>(
+    cache: CampaignGcPhysicalStore<'_>,
+    cache_expected: &CampaignGcBlobInventoryBasis,
+    cache_fence: &mut dyn BlobInventoryFence,
+    source: CampaignGcPhysicalStore<'_>,
+    source_expected: &CampaignGcBlobInventoryBasis,
+    source_fence: &mut dyn BlobInventoryFence,
+    id: ContentId,
+    logical_length: u64,
+) -> Result<CampaignGcBlobInventoryBasis, CampaignGcApplyError<E>>
+where
+    E: StdError + 'static,
+{
+    validate_fenced_placement(cache, cache_expected, id, logical_length, cache_fence)?;
+    validate_fenced_placement::<E>(source, source_expected, id, logical_length, source_fence)
+        .map_err(|_| CampaignGcApplyError::RequiredCopyChanged {
+            backend: source.backend().to_owned(),
+            id,
+        })?;
+    delete_exact_candidate(cache, cache_fence, id)?;
+    refreshed_basis_after_delete(cache, cache_expected, id, logical_length, cache_fence)
+}
+
+fn validate_required_copy_fence<E>(
+    source: CampaignGcPhysicalStore<'_>,
+    expected: &CampaignGcBlobInventoryBasis,
+    id: ContentId,
+    logical_length: u64,
+) -> Result<(), CampaignGcApplyError<E>>
+where
+    E: StdError + 'static,
+{
+    let mut fence = acquire_physical_fence(source)?;
+    validate_fenced_placement::<E>(source, expected, id, logical_length, fence.as_mut()).map_err(
+        |_| CampaignGcApplyError::RequiredCopyChanged {
+            backend: source.backend().to_owned(),
+            id,
+        },
+    )
+}
+
+fn validate_fenced_placement<E>(
+    target: CampaignGcPhysicalStore<'_>,
+    expected: &CampaignGcBlobInventoryBasis,
+    id: ContentId,
+    logical_length: u64,
+    fence: &mut dyn BlobInventoryFence,
+) -> Result<(), CampaignGcApplyError<E>>
+where
+    E: StdError + 'static,
+{
+    let mut found = false;
+    let summary = fence
+        .visit_inventory(&mut |record| {
+            if record.id() == id && record.logical_length() == logical_length {
+                found = true;
+            }
+            Ok(())
+        })
+        .map_err(|source| CampaignGcApplyError::Blob {
+            backend: target.backend().to_owned(),
+            source,
+        })?;
+    let current = CampaignGcBlobInventoryBasis::from_policy_aware_summary(&summary)?;
+    if !found || current != *expected {
+        return Err(CampaignGcApplyError::CandidateSetChanged {
+            backend: target.backend().to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn refreshed_basis_after_delete<E>(
+    target: CampaignGcPhysicalStore<'_>,
+    prior: &CampaignGcBlobInventoryBasis,
+    deleted: ContentId,
+    logical_length: u64,
+    fence: &mut dyn BlobInventoryFence,
+) -> Result<CampaignGcBlobInventoryBasis, CampaignGcApplyError<E>>
+where
+    E: StdError + 'static,
+{
+    let mut still_present = false;
+    let summary = fence
+        .visit_inventory(&mut |record| {
+            still_present |= record.id() == deleted;
+            Ok(())
+        })
+        .map_err(|source| CampaignGcApplyError::Blob {
+            backend: target.backend().to_owned(),
+            source,
+        })?;
+    let current = CampaignGcBlobInventoryBasis::from_policy_aware_summary(&summary)?;
+    let expected_objects = prior.objects().checked_sub(1);
+    let expected_bytes = prior.logical_bytes().checked_sub(logical_length);
+    if still_present
+        || current.storage_identity() != prior.storage_identity()
+        || Some(current.objects()) != expected_objects
+        || Some(current.logical_bytes()) != expected_bytes
+        || current.generation() == prior.generation()
+    {
+        return Err(CampaignGcApplyError::CandidateSetChanged {
+            backend: target.backend().to_owned(),
+        });
+    }
+    Ok(current)
+}
+
+fn delete_exact_candidate<E>(
+    target: CampaignGcPhysicalStore<'_>,
+    fence: &mut dyn BlobInventoryFence,
+    id: ContentId,
+) -> Result<(), CampaignGcApplyError<E>>
+where
+    E: StdError + 'static,
+{
+    match fence
+        .delete_candidate(id)
+        .map_err(|source| CampaignGcApplyError::Blob {
+            backend: target.backend().to_owned(),
+            source,
+        })? {
+        PlannedDeleteDisposition::Deleted => Ok(()),
+        PlannedDeleteDisposition::AlreadyAbsent => Err(CampaignGcApplyError::CandidateSetChanged {
+            backend: target.backend().to_owned(),
+        }),
+    }
+}
+
+fn acquire_physical_fence<'a, E>(
+    target: CampaignGcPhysicalStore<'a>,
+) -> Result<Box<dyn BlobInventoryFence + 'a>, CampaignGcApplyError<E>>
+where
+    E: StdError + 'static,
+{
+    target
+        .admin()
+        .acquire_inventory_fence()
+        .map_err(|source| CampaignGcApplyError::Blob {
+            backend: target.backend().to_owned(),
+            source,
+        })
+}
+
+fn physical_index<E>(
+    physical: &[CampaignGcPhysicalStore<'_>],
+    backend: &str,
+) -> Result<usize, CampaignGcApplyError<E>>
+where
+    E: StdError + 'static,
+{
+    physical
+        .binary_search_by_key(&backend, |target| target.backend())
+        .map_err(|_| CampaignGcApplyError::PhysicalInputsChanged)
+}
+
+fn validate_unique_policy_identity<E>(
+    journal: &DirectoryCampaignGcJournal,
+    basis: &CampaignGcBlobInventoryBasis,
+    backend: &str,
+) -> Result<crucible_cas::content_store::PhysicalStorageIdentity, CampaignGcApplyError<E>>
+where
+    E: StdError + 'static,
+{
+    let identity = basis
+        .storage_identity()
+        .ok_or(CampaignGcApplyError::PhysicalInputsChanged)?;
+    if journal
+        .plan()
+        .physical()
+        .iter()
+        .filter(|candidate| candidate.storage_identity() == Some(identity))
+        .count()
+        != 1
+    {
+        return Err(CampaignGcApplyError::AliasedPhysicalBoundary {
+            backend: backend.to_owned(),
+        });
+    }
+    Ok(identity)
 }
 
 /// Failure to revalidate or apply one exact journaled campaign GC plan.
@@ -542,6 +949,36 @@ where
     #[error("campaign GC candidate {id} became reachable after planning")]
     CandidateBecameReachable {
         /// Newly reachable planned candidate.
+        id: ContentId,
+    },
+    /// A v2 candidate no longer has its planned graph-derived retention roles.
+    #[error("campaign GC candidate {id} on backend {backend} no longer satisfies cache policy")]
+    CandidatePolicyChanged {
+        /// Physical backend selected for cache eviction.
+        backend: String,
+        /// Reachable logical object whose placement policy changed.
+        id: ContentId,
+    },
+    /// A v2 cache candidate shares its physical namespace with its source.
+    #[error("campaign GC cache backend {backend} aliases required backend {required_backend}")]
+    AliasedRequiredCopy {
+        /// Cache backend selected for deletion.
+        backend: String,
+        /// Required backend that must be physically independent.
+        required_backend: String,
+    },
+    /// A v2 cache or source identity is represented by several graph nodes.
+    #[error("campaign GC physical identity for backend {backend} is aliased")]
+    AliasedPhysicalBoundary {
+        /// Backend whose physical identity is not unique in the plan.
+        backend: String,
+    },
+    /// An authenticated required copy changed before paired deletion.
+    #[error("campaign GC required copy {id} changed on backend {backend}")]
+    RequiredCopyChanged {
+        /// Required physical backend.
+        backend: String,
+        /// Reachable logical object requiring an independent placement.
         id: ContentId,
     },
     /// A current exact semantic pin has no matching selected checkpoint.
@@ -662,7 +1099,7 @@ where
             backend: target.backend().to_owned(),
             source,
         })?;
-    let current = CampaignGcBlobInventoryBasis::from_summary(&inventory)?;
+    let current = basis_for_planned_summary(planned, &inventory)?;
     if current != *planned {
         return Err(CampaignGcApplyError::PhysicalBasisChanged {
             backend: target.backend().to_owned(),
@@ -674,4 +1111,15 @@ where
         });
     }
     Ok(())
+}
+
+fn basis_for_planned_summary(
+    planned: &CampaignGcBlobInventoryBasis,
+    summary: &crucible_cas::content_store::BlobInventorySummary,
+) -> Result<CampaignGcBlobInventoryBasis, CampaignGcPlanError> {
+    if planned.storage_identity().is_some() {
+        CampaignGcBlobInventoryBasis::from_policy_aware_summary(summary)
+    } else {
+        CampaignGcBlobInventoryBasis::from_summary(summary)
+    }
 }
