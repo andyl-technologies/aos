@@ -38,10 +38,10 @@ use crucible_campaign::{
     ExecutorControlService, ExecutorDescription, ExecutorMaterializationCapability,
     ExecutorRejection, ExecutorResumeService, ExecutorService, ExecutorStatusService,
     ExplorerPolicy, FairnessPolicy, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
-    GetAttemptExecutionResponse, MeasurementSet, Objective, ObjectiveGoal, Observation,
-    ObservationCandidate, ObservationId, PlannerProposalDisposition, PlanningBudget,
-    PlanningScanPosition, ProgressiveWideningPolicy, PropertyVerdictSet, Proposal, PuctPolicy,
-    PurePlannerEngine, ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse,
+    GetAttemptExecutionResponse, InterventionLearningPolicy, MeasurementSet, Objective,
+    ObjectiveGoal, Observation, ObservationCandidate, ObservationId, PlannerProposalDisposition,
+    PlanningBudget, PlanningScanPosition, ProgressiveWideningPolicy, PropertyVerdictSet, Proposal,
+    PuctPolicy, PurePlannerEngine, ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse,
     RetentionPolicy, SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
     SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse, WorkerSlotId,
 };
@@ -1656,6 +1656,7 @@ fn retained_measurement_trace_publishes_the_named_beam_objective() {
             metric.to_owned(),
             Objective::new(metric, ObjectiveGoal::Minimize, 1_000_000).expect("Beam objective"),
         )]),
+        InterventionLearningPolicy::IncludeInGuidance,
         BranchBudget::new(1, 1).expect("single Beam candidate"),
     );
     let node = scenario
@@ -3202,6 +3203,7 @@ fn campaign_attempt_fixture(
             puct: PuctPolicy::new(1_000_000, 1, 0),
         },
         BTreeMap::new(),
+        InterventionLearningPolicy::Exclude,
         BranchBudget::new(2, 2).expect("branch budget"),
     )
 }
@@ -3212,6 +3214,7 @@ fn campaign_attempt_fixture_with_policy(
     scenario_form: ScenarioDefForm,
     explorer: ExplorerPolicy,
     objectives: BTreeMap<String, Objective>,
+    intervention_learning: InterventionLearningPolicy,
     branch_budget: BranchBudget,
 ) -> (
     CampaignLineage,
@@ -3270,6 +3273,12 @@ fn campaign_attempt_fixture_with_policy(
         true,
     )
     .expect("policy");
+    let policy = match intervention_learning {
+        InterventionLearningPolicy::Exclude => policy,
+        InterventionLearningPolicy::IncludeInGuidance => policy
+            .with_intervention_learning_policy(intervention_learning)
+            .expect("intervention-guided fixture policy"),
+    };
     let created = repository
         .create(name, &lineage, &policy, &BTreeMap::new())
         .expect("create campaign");

@@ -896,6 +896,13 @@ where
         RetentionPolicy::new(true, 1, true, true),
         true,
     )
+    .and_then(|policy| {
+        // The caller-owned root discovery is the standalone cohort that opens
+        // the scenario-default path, so this pinned policy admits its guidance.
+        policy.with_intervention_learning_policy(
+            crucible_campaign::InterventionLearningPolicy::IncludeInGuidance,
+        )
+    })
     .map_err(GuardedDefaultCampaignRunError::Codec)
 }
 
