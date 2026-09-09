@@ -67,7 +67,7 @@ in
               configure
             sed -i \
               -e 's|sed |${sed}/bin/sed |g' \
-              -e 's|kill |${coreutils}/bin/kill |g' \
+              -e 's|kill |builtin kill |g' \
               -e 's|/bin/ls|${coreutils}/bin/ls|g' \
               -e 's|cut |${coreutils}/bin/cut |g' \
               scripts/fakeroot.in
@@ -84,7 +84,7 @@ in
             }
             sed -i \
               -e 's|sed |${sed}/bin/sed |g' \
-              -e 's|kill |${coreutils}/bin/kill |g' \
+              -e 's|kill |builtin kill |g' \
               -e 's|/bin/ls|${coreutils}/bin/ls|g' \
               -e 's|cut |${coreutils}/bin/cut |g' \
               scripts/fakeroot.in
@@ -109,7 +109,10 @@ in
         name = "install";
         script = ''
           make install
+          # Bash supplies kill; AOS coreutils does not install that optional
+          # utility. Keep daemon cleanup and the default shell on AOS tools.
           sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/fakeroot"
+          sed -i 's|/bin/sh|${bash}/bin/bash|g' "$out/bin/fakeroot"
         '';
       }
     ];
