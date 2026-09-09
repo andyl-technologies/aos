@@ -31,6 +31,11 @@ pub mod kernel_observation;
 pub mod kernel_plan;
 pub mod kernel_reader;
 pub mod namespace_catalog;
+#[allow(
+    dead_code,
+    reason = "the namespace-inspector protocol is staged before privileged runtime provisioning"
+)]
+mod namespace_inspector;
 pub mod namespace_observer;
 pub mod namespace_store;
 pub mod nftables_reader;
@@ -39,6 +44,7 @@ pub mod preparation_catalog;
 pub mod rtnetlink_reader;
 pub mod service;
 pub mod state;
+mod systemd_socket_instance;
 pub mod worker_protocol;
 pub mod worker_replay;
 
