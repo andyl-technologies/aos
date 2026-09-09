@@ -213,6 +213,7 @@ pub(super) fn validate_operation(
             .child("inputs"),
         diagnostics,
         Some(&result_validator),
+        None,
     );
     validate_nested_authority(
         context,

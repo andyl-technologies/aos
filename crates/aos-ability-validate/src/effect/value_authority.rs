@@ -48,6 +48,7 @@ pub(super) fn validate_nested_authority(
             resources,
             diagnostics,
         ),
+        ValueExpression::AggregateOutput { .. } => {}
         ValueExpression::OperationResult { .. } => {}
         ValueExpression::List { items } => {
             if let ValueSchema::List { element, .. } = schema {

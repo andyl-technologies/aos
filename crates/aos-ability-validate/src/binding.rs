@@ -4,27 +4,29 @@ mod package;
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{self, Write};
 
 use aos_ability_model::document::ProviderState;
 use aos_ability_model::identity::{compare_instance_ids, compare_request_ids};
 use aos_ability_model::{
-    compare_resource_ids, AuthorityGrant, Binding, BindingPlanDocument, Diagnostic,
-    DiagnosticClass, DiagnosticCode, DiagnosticPhase, ImplementationKind, InstanceId, InterfaceKey,
-    PackageDocument, PlanId, RequestId, RequirementDeclaration, RequirementStrength,
-    ResourceLifetime, VersionedDocument,
+    AuthorityGrant, Binding, BindingPlanDocument, Diagnostic, DiagnosticClass, DiagnosticCode,
+    DiagnosticPhase, ImplementationKind, InstanceId, InterfaceKey, PackageDocument, PlanId,
+    RequestId, RequirementDeclaration, RequirementStrength, ResourceLifetime, ValueExpression,
+    VersionedDocument, compare_resource_ids,
 };
 use aos_contract::Sha256Digest;
 
+use crate::ValidationErrors;
+use crate::authority::{ArtifactIndex, authorize_materialized_references};
 use crate::error::push_diagnostic;
 use crate::graph::{
-    check_strict_order, diagnostic, BindingProviderState, BindingValidationInputs,
-    CheckedBindingPlan, ValidationContext,
+    BindingProviderState, BindingValidationInputs, CheckedBindingPlan, ValidationContext,
+    check_strict_order, diagnostic,
 };
-use crate::schema::SchemaPath;
-use crate::ValidationErrors;
+use crate::schema::{SchemaPath, validate_value};
 use package::{validate_declared_root_requests, validate_package_document};
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 struct BindingInputIndex {
     packages: BTreeMap<Sha256Digest, usize>,
     package_catalogs: Vec<PackageProviderIndex>,
@@ -34,10 +36,315 @@ struct BindingInputIndex {
     requests: BTreeMap<RequestId, usize>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 struct PackageProviderIndex {
     providers: BTreeMap<(InterfaceKey, Sha256Digest), usize>,
     exports: BTreeSet<(InterfaceKey, Sha256Digest)>,
+}
+
+/// Retains validated binding inputs and indexes for deterministic candidate search.
+#[derive(Clone, Debug)]
+pub struct PreparedBindingCandidates {
+    context: ValidationContext,
+    plan: BindingPlanDocument,
+    inputs: BindingValidationInputs,
+    input_index: BindingInputIndex,
+    resources: BTreeSet<aos_ability_model::ResourceId>,
+    requests: BTreeMap<RequestId, usize>,
+}
+
+impl PreparedBindingCandidates {
+    /// Applies the common semantic binding checks to one candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns structured diagnostics when the request is unknown or the
+    /// candidate violates interface, provider-evidence, authority, guarantee,
+    /// lifetime, ordering, resource-scope, or mediation constraints.
+    pub fn validate(&self, binding: &Binding) -> Result<(), ValidationErrors> {
+        if let Err(error) = preflight_candidate_binding(binding) {
+            return Err(ValidationErrors::new(vec![binding_diagnostic(
+                DiagnosticCode::LimitExceeded,
+                DiagnosticClass::InvalidContract,
+                0,
+                error.to_string(),
+                binding,
+            )]));
+        }
+        let Some(request_index) = self.requests.get(&binding.request) else {
+            return Err(ValidationErrors::new(vec![binding_diagnostic(
+                DiagnosticCode::MissingReference,
+                DiagnosticClass::InvalidContract,
+                0,
+                "binding references an unknown request".to_string(),
+                binding,
+            )]));
+        };
+        let mut diagnostics = Vec::new();
+        validate_binding(
+            &self.context,
+            &self.plan,
+            &self.inputs,
+            &self.input_index,
+            binding,
+            &self.plan.requests[*request_index],
+            &self.resources,
+            0,
+            &mut diagnostics,
+        );
+
+        if diagnostics.is_empty() {
+            Ok(())
+        } else {
+            Err(ValidationErrors::new(diagnostics))
+        }
+    }
+}
+
+fn preflight_candidate_binding(binding: &Binding) -> Result<(), String> {
+    let limits = aos_ability_model::ABILITY_LIMITS_V1;
+    let mut items = binding.guarantees.len();
+    for grant in [&binding.caller_grant, &binding.provider_grant] {
+        items = items
+            .saturating_add(grant.methods.len())
+            .saturating_add(grant.contributions.len())
+            .saturating_add(grant.resources.len());
+        for permission in &grant.resources {
+            items = items.saturating_add(permission.operations.len());
+        }
+    }
+    if items as u64 > limits.max_collection_items {
+        return Err("binding candidate exceeds the version-1 collection item limit".to_string());
+    }
+    if binding.implementation.artifact.store_path.len() as u64 > limits.max_string_bytes {
+        return Err("binding candidate exceeds the version-1 string limit".to_string());
+    }
+    let mut writer = CandidateSizeWriter::new(limits.max_document_bytes);
+    serde_json::to_writer(&mut writer, binding).map_err(|error| {
+        if writer.exceeded {
+            "binding candidate exceeds the version-1 encoded byte limit".to_string()
+        } else {
+            error.to_string()
+        }
+    })
+}
+
+struct CandidateSizeWriter {
+    remaining: u64,
+    exceeded: bool,
+}
+
+impl CandidateSizeWriter {
+    const fn new(limit: u64) -> Self {
+        Self {
+            remaining: limit,
+            exceeded: false,
+        }
+    }
+}
+
+impl Write for CandidateSizeWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() as u64 > self.remaining {
+            self.exceeded = true;
+            return Err(io::Error::other(
+                "binding candidate exceeds its encoded byte limit",
+            ));
+        }
+        self.remaining -= bytes.len() as u64;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(crate) fn prepare_binding_candidates(
+    context: &ValidationContext,
+    environment_document: &aos_ability_model::EnvironmentDocument,
+    desired_state_document: &aos_ability_model::DesiredStateDocument,
+    packages: &[PackageDocument],
+) -> Result<PreparedBindingCandidates, ValidationErrors> {
+    let mut preflight_diagnostics = Vec::new();
+    preflight_candidate_inputs(
+        environment_document,
+        desired_state_document,
+        packages,
+        &mut preflight_diagnostics,
+    );
+    if !preflight_diagnostics.is_empty() {
+        return Err(ValidationErrors::new(preflight_diagnostics));
+    }
+
+    let inputs = BindingValidationInputs {
+        environment: environment_document.clone(),
+        desired_state: desired_state_document.clone(),
+        packages: packages.to_vec(),
+    };
+    let mut diagnostics = Vec::new();
+    let desired_state = match inputs.desired_state.content_digest() {
+        Ok(digest) => digest,
+        Err(error) => {
+            push_diagnostic(
+                &mut diagnostics,
+                diagnostic(
+                    DiagnosticCode::UnsupportedSchema,
+                    DiagnosticClass::InvalidContract,
+                    DiagnosticPhase::Binding,
+                    vec!["desired_state".to_string()],
+                    error.to_string(),
+                ),
+            );
+            return Err(ValidationErrors::new(diagnostics));
+        }
+    };
+    let environment = match inputs.environment.content_digest() {
+        Ok(digest) => digest,
+        Err(error) => {
+            push_diagnostic(
+                &mut diagnostics,
+                diagnostic(
+                    DiagnosticCode::UnsupportedSchema,
+                    DiagnosticClass::InvalidContract,
+                    DiagnosticPhase::Binding,
+                    vec!["environment".to_string()],
+                    error.to_string(),
+                ),
+            );
+            return Err(ValidationErrors::new(diagnostics));
+        }
+    };
+    let resources = merged_resource_revisions(
+        &inputs.environment.resources,
+        &inputs.desired_state.resources,
+    );
+    let required_features = inputs
+        .environment
+        .required_features
+        .iter()
+        .chain(&inputs.desired_state.required_features)
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let plan = BindingPlanDocument {
+        schema: BindingPlanDocument::SCHEMA.to_string(),
+        required_features,
+        desired_state,
+        environment,
+        policy_revision: inputs.environment.policy_revision,
+        requests: inputs.desired_state.child_requests.clone(),
+        bindings: Vec::new(),
+        resources,
+        obligations: Vec::new(),
+    };
+    let Some(input_index) = validate_binding_inputs(context, &plan, &inputs, &mut diagnostics)
+    else {
+        return Err(ValidationErrors::new(diagnostics));
+    };
+    for (index, request) in plan.requests.iter().enumerate() {
+        validate_request(
+            request,
+            index,
+            context,
+            &input_index.in_scope_instances,
+            &mut diagnostics,
+        );
+    }
+    if !diagnostics.is_empty() {
+        return Err(ValidationErrors::new(diagnostics));
+    }
+
+    let requests = plan
+        .requests
+        .iter()
+        .enumerate()
+        .map(|(index, request)| (request.id.clone(), index))
+        .collect();
+    let resources = plan
+        .resources
+        .iter()
+        .map(|revision| revision.resource.clone())
+        .collect();
+    Ok(PreparedBindingCandidates {
+        context: context.clone(),
+        plan,
+        inputs,
+        input_index,
+        resources,
+        requests,
+    })
+}
+
+fn preflight_candidate_inputs(
+    environment: &aos_ability_model::EnvironmentDocument,
+    desired_state: &aos_ability_model::DesiredStateDocument,
+    packages: &[PackageDocument],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for (name, result) in [
+        ("environment", environment.content_digest()),
+        ("desired_state", desired_state.content_digest()),
+    ] {
+        if let Err(error) = result {
+            push_diagnostic(
+                diagnostics,
+                diagnostic(
+                    DiagnosticCode::UnsupportedSchema,
+                    DiagnosticClass::InvalidContract,
+                    DiagnosticPhase::Binding,
+                    vec![name.to_string()],
+                    error.to_string(),
+                ),
+            );
+        }
+    }
+
+    let limits = aos_ability_model::ABILITY_LIMITS_V1;
+    if packages.len() > limits.max_graph_nodes as usize {
+        push_diagnostic(
+            diagnostics,
+            diagnostic(
+                DiagnosticCode::LimitExceeded,
+                DiagnosticClass::InvalidContract,
+                DiagnosticPhase::Binding,
+                vec!["packages".to_string()],
+                "package input catalog exceeds the version-1 entry limit".to_string(),
+            ),
+        );
+        return;
+    }
+
+    let mut aggregate_bytes = 0_u64;
+    for (index, package) in packages.iter().enumerate() {
+        match aos_ability_model::encode_canonical(package) {
+            Ok(bytes) => aggregate_bytes = aggregate_bytes.saturating_add(bytes.len() as u64),
+            Err(error) => push_diagnostic(
+                diagnostics,
+                diagnostic(
+                    DiagnosticCode::UnsupportedSchema,
+                    DiagnosticClass::InvalidContract,
+                    DiagnosticPhase::Binding,
+                    vec!["packages".to_string(), index.to_string()],
+                    error.to_string(),
+                ),
+            ),
+        }
+        if aggregate_bytes > limits.max_document_bytes {
+            push_diagnostic(
+                diagnostics,
+                diagnostic(
+                    DiagnosticCode::LimitExceeded,
+                    DiagnosticClass::InvalidContract,
+                    DiagnosticPhase::Binding,
+                    vec!["packages".to_string()],
+                    "package input catalog exceeds the version-1 aggregate byte limit".to_string(),
+                ),
+            );
+            break;
+        }
+    }
 }
 
 pub(crate) fn validate_binding_document(
@@ -187,6 +494,16 @@ pub(crate) fn validate_binding_document(
             planned_providers.insert(binding.provider.clone());
         }
     }
+
+    validate_contributions(
+        context,
+        &document,
+        &inputs,
+        &input_index,
+        &binding_indices,
+        &resources,
+        &mut diagnostics,
+    );
 
     for (index, obligation) in document.obligations.iter().enumerate() {
         *request_obligations
@@ -556,6 +873,17 @@ fn validate_binding_inputs(
         diagnostics,
     );
     check_order_by(
+        &inputs.desired_state.outputs,
+        |left, right| {
+            left.aggregate
+                .cmp(&right.aggregate)
+                .then_with(|| left.interface.cmp(&right.interface))
+                .then_with(|| left.port.cmp(&right.port))
+        },
+        "desired_state.outputs",
+        diagnostics,
+    );
+    check_order_by(
         &inputs.desired_state.controllers,
         |left, right| compare_resource_ids(&left.resource, &right.resource),
         "desired_state.controllers",
@@ -845,6 +1173,7 @@ fn validate_binding(
 
     let planned_provider =
         validate_provider_evidence(binding, inputs, input_index, index, diagnostics);
+    let aggregation = binding_aggregation(inputs, input_index, binding);
 
     if binding.policy_revision != plan.policy_revision {
         push_diagnostic(
@@ -959,6 +1288,7 @@ fn validate_binding(
     );
     if !binding.mediation_allowed
         && (!binding.provider_grant.methods.is_empty()
+            || !binding.provider_grant.contributions.is_empty()
             || !binding.provider_grant.resources.is_empty())
     {
         push_diagnostic(
@@ -978,6 +1308,7 @@ fn validate_binding(
         &binding.caller_grant,
         binding,
         resources,
+        aggregation,
         index,
         "caller_grant",
         diagnostics,
@@ -986,6 +1317,7 @@ fn validate_binding(
         &binding.provider_grant,
         binding,
         resources,
+        aggregation,
         index,
         "provider_grant",
         diagnostics,
@@ -1002,6 +1334,44 @@ fn validate_provider_evidence(
 ) -> BindingProviderState {
     let mut exact_provider_found = false;
     let mut provider_state = BindingProviderState::Unavailable;
+    let pinned_package_kind = binding.provider_package.and_then(|digest| {
+        input_index.packages.get(&digest).and_then(|package_index| {
+            package_supplies_binding(
+                &inputs.packages[*package_index],
+                &input_index.package_catalogs[*package_index],
+                binding,
+            )
+        })
+    });
+    if binding.provider_package.is_some() && pinned_package_kind.is_none() {
+        push_diagnostic(
+            diagnostics,
+            binding_diagnostic(
+                DiagnosticCode::MissingReference,
+                DiagnosticClass::UnavailableProvider,
+                index,
+                "binding's exact provider package does not supply its implementation and export"
+                    .to_string(),
+                binding,
+            ),
+        );
+    }
+    if pinned_package_kind == Some(PackageProviderKind::PureComposition) {
+        exact_provider_found = true;
+        provider_state = BindingProviderState::PureComposition;
+    }
+    if binding.provider_package.is_none() && binding.implementation.handler.is_none() {
+        push_diagnostic(
+            diagnostics,
+            binding_diagnostic(
+                DiagnosticCode::MissingReference,
+                DiagnosticClass::UnavailableProvider,
+                index,
+                "pure composition binding requires an exact provider package pin".to_string(),
+                binding,
+            ),
+        );
+    }
 
     for inventory_index in input_index
         .inventory_by_instance
@@ -1016,7 +1386,11 @@ fn validate_provider_evidence(
             inventory.state,
             ProviderState::Planned | ProviderState::Available
         );
-        if !reference_matches || !state_is_usable {
+        let package_evidence_valid = match binding.provider_package {
+            Some(_) => pinned_package_kind.is_some(),
+            None => binding.implementation.handler.is_some(),
+        };
+        if !reference_matches || !state_is_usable || !package_evidence_valid {
             continue;
         }
 
@@ -1041,30 +1415,6 @@ fn validate_provider_evidence(
                         binding,
                     ),
                 );
-            }
-        }
-    }
-
-    for desired_index in input_index
-        .enabled_desired_by_instance
-        .get(&binding.provider)
-        .into_iter()
-        .flatten()
-    {
-        let desired = &inputs.desired_state.instances[*desired_index];
-        let Some(package_index) = input_index.packages.get(&desired.package) else {
-            continue;
-        };
-        let package = &inputs.packages[*package_index];
-        if package_supplies_binding(
-            package,
-            &input_index.package_catalogs[*package_index],
-            binding,
-        ) == Some(PackageProviderKind::PureComposition)
-        {
-            exact_provider_found = true;
-            if provider_state == BindingProviderState::Unavailable {
-                provider_state = BindingProviderState::PureComposition;
             }
         }
     }
@@ -1163,6 +1513,7 @@ fn validate_grant(
     grant: &AuthorityGrant,
     binding: &Binding,
     resources: &BTreeSet<aos_ability_model::ResourceId>,
+    aggregation: Option<&aos_ability_model::AggregationContract>,
     index: usize,
     field: &str,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1172,6 +1523,34 @@ fn validate_grant(
         .child(index.to_string())
         .child(field.to_string());
     check_strict_order(&grant.methods, &root.child("methods"), diagnostics);
+    check_order_by(
+        &grant.contributions,
+        |left, right| {
+            left.aggregate
+                .cmp(&right.aggregate)
+                .then_with(|| left.slot.cmp(&right.slot))
+        },
+        "contributions",
+        diagnostics,
+    );
+    for permission in &grant.contributions {
+        if permission.aggregate.provider != binding.provider
+            || aggregation
+                .is_none_or(|contract| contract.controller_group != permission.aggregate.group)
+        {
+            push_diagnostic(
+                diagnostics,
+                binding_diagnostic(
+                    DiagnosticCode::ResourceScopeEscape,
+                    DiagnosticClass::Unauthorized,
+                    index,
+                    "contribution permission differs from the selected provider's authenticated aggregate"
+                        .to_string(),
+                    binding,
+                ),
+            );
+        }
+    }
     check_order_by(
         &grant.resources,
         |left, right| compare_resource_ids(&left.resource, &right.resource),
@@ -1202,6 +1581,160 @@ fn validate_grant(
             push_diagnostic(diagnostics, item);
         }
     }
+}
+
+fn validate_contributions(
+    context: &ValidationContext,
+    document: &BindingPlanDocument,
+    inputs: &BindingValidationInputs,
+    input_index: &BindingInputIndex,
+    binding_indices: &BTreeMap<aos_ability_model::BindingId, usize>,
+    resources: &BTreeSet<aos_ability_model::ResourceId>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut occupied_slots = BTreeSet::new();
+    let artifacts = retained_contribution_artifacts(inputs);
+    for (index, contribution) in inputs.desired_state.contributions.iter().enumerate() {
+        let path = SchemaPath::root()
+            .child("desired_state")
+            .child("contributions")
+            .child(index.to_string());
+        let Some(binding_index) = binding_indices.get(&contribution.grant) else {
+            let mut item = diagnostic(
+                DiagnosticCode::MissingReference,
+                DiagnosticClass::Unauthorized,
+                DiagnosticPhase::Binding,
+                path.child("grant").components().to_vec(),
+                "contribution references no selected binding caller grant".to_string(),
+            );
+            item.request = Some(contribution.request.clone());
+            push_diagnostic(diagnostics, item);
+            continue;
+        };
+        let binding = &document.bindings[*binding_index];
+        let aggregation = binding_aggregation(inputs, input_index, binding);
+        let authorized = binding.caller_grant.contributions.iter().any(|permission| {
+            permission.aggregate == contribution.aggregate && permission.slot == contribution.slot
+        });
+        if binding.request != contribution.request
+            || contribution.aggregate.provider != binding.provider
+            || aggregation
+                .is_none_or(|contract| contract.controller_group != contribution.aggregate.group)
+            || !authorized
+        {
+            let mut item = binding_diagnostic(
+                DiagnosticCode::ResourceScopeEscape,
+                DiagnosticClass::Unauthorized,
+                *binding_index,
+                "contribution request, aggregate, or slot exceeds its selected caller grant"
+                    .to_string(),
+                binding,
+            );
+            item.path = path.components().to_vec();
+            push_diagnostic(diagnostics, item);
+        }
+        if !occupied_slots.insert((contribution.aggregate.clone(), contribution.slot.clone()))
+            && aggregation.is_none_or(|contract| contract.reject_slot_collisions)
+        {
+            let mut item = diagnostic(
+                DiagnosticCode::DuplicateIdentity,
+                DiagnosticClass::ResourceConflict,
+                DiagnosticPhase::Binding,
+                path.child("slot").components().to_vec(),
+                "multiple contributions claim one exact aggregate slot".to_string(),
+            );
+            item.request = Some(contribution.request.clone());
+            push_diagnostic(diagnostics, item);
+        }
+        let Some(interface) = context.interface(&binding.interface) else {
+            continue;
+        };
+        let expression = ValueExpression::Literal {
+            value: contribution.value.clone(),
+        };
+        if let Err(errors) = validate_value(&interface.interface.request, &expression) {
+            for mut item in errors.into_diagnostics() {
+                let mut prefixed = path.child("value").components().to_vec();
+                prefixed.extend(item.path);
+                item.path = prefixed;
+                item.phase = DiagnosticPhase::Binding;
+                item.request = Some(contribution.request.clone());
+                push_diagnostic(diagnostics, item);
+            }
+            continue;
+        }
+
+        if let Err(error) = authorize_materialized_references(
+            context.interface_catalog(),
+            binding,
+            &binding.caller_grant,
+            &interface.interface.request,
+            &contribution.value,
+            &artifacts,
+            resources,
+            binding.lifetime,
+            None,
+        ) {
+            let mut item = binding_diagnostic(
+                DiagnosticCode::ResourceScopeEscape,
+                DiagnosticClass::Unauthorized,
+                *binding_index,
+                format!("contribution value exceeds retained caller authority: {error}"),
+                binding,
+            );
+            item.path = path.child("value").components().to_vec();
+            push_diagnostic(diagnostics, item);
+        }
+    }
+}
+
+fn retained_contribution_artifacts(inputs: &BindingValidationInputs) -> ArtifactIndex {
+    let mut artifacts = ArtifactIndex::new();
+    for inventory in &inputs.environment.providers {
+        insert_artifact(&mut artifacts, &inventory.implementation.artifact);
+    }
+    for package in &inputs.packages {
+        insert_artifact(&mut artifacts, &package.package.payload);
+        insert_artifact(&mut artifacts, &package.package.source);
+        for artifact in &package.artifacts {
+            insert_artifact(&mut artifacts, artifact);
+        }
+        for artifact in package.module_entry_points.values() {
+            insert_artifact(&mut artifacts, artifact);
+        }
+        for provider in &package.implementation.providers {
+            insert_artifact(&mut artifacts, &provider.artifact);
+        }
+        for handler in package.implementation.handlers.values() {
+            insert_artifact(&mut artifacts, &handler.artifact);
+        }
+    }
+    artifacts
+}
+
+fn insert_artifact(index: &mut ArtifactIndex, artifact: &aos_ability_model::ArtifactReference) {
+    index
+        .entry(artifact.content)
+        .or_insert_with(|| artifact.clone());
+}
+
+fn binding_aggregation<'a>(
+    inputs: &'a BindingValidationInputs,
+    input_index: &BindingInputIndex,
+    binding: &Binding,
+) -> Option<&'a aos_ability_model::AggregationContract> {
+    let package = binding
+        .provider_package
+        .and_then(|digest| input_index.packages.get(&digest))
+        .map(|index| &inputs.packages[*index])?;
+    package
+        .exports
+        .iter()
+        .find(|export| {
+            export.interface == binding.interface
+                && export.implementation == binding.implementation.descriptor
+        })
+        .and_then(|export| export.aggregation.as_ref())
 }
 
 fn check_order_by<T>(

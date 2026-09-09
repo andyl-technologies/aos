@@ -1,14 +1,20 @@
 //! Cross-stage semantic regression tests built from the shared checked-plan fixture.
 
-use aos_ability_model::document::ProviderState;
+use std::collections::BTreeMap;
+
+use aos_ability_model::document::{Contribution, PackageSubject, ProviderState};
 use aos_ability_model::{
-    AbilityValue, AccessMode, AggregateId, BindingId, BranchMembership, ControllerAssignment,
-    DecisionAlternative, DecisionNode, DecisionPredicate, DecisionSelector, DependencyEdge,
-    DependencyKind, DiagnosticCode, IncarnationId, LocalKey, MergeNode, MergedOutput,
-    MethodReference, OperationFamily, OperationResultReference, OutputDescriptor, PlanNodeKey,
-    ProviderAssignment, ResourceId, ResourceLifetime, ResourcePermission, ResourceReference,
-    ResourceRevision, ResultProducerKey, RevisionId, ScopePath, ScopedOperationKey, ServiceAction,
-    ValueExpression, ValuePhase, ValueSchema, ValueVisibility, compare_edges,
+    AbilityActivationMode, AbilityValue, AccessMode, AggregateId, AggregateOutput,
+    AggregateOutputReference, AggregationContract, AggregationScope, BindingId, BranchMembership,
+    ContributionPermission, ControllerAssignment, DecisionAlternative, DecisionNode,
+    DecisionPredicate, DecisionSelector, DependencyEdge, DependencyKind, DiagnosticCode,
+    ExportDeclaration, HandlerDescriptor, ImplementationKind, IncarnationId, LocalKey, MergeNode,
+    MergedOutput, MethodReference, OperationFamily, OperationResultReference, OutputDescriptor,
+    PackageDocument, PackageImplementation, PlanNodeKey, ProviderAssignment,
+    ProviderImplementation, RequirementDeclaration, RequirementFallback, RequirementStrength,
+    ResourceId, ResourceLifetime, ResourcePermission, ResourceReference, ResourceRevision,
+    ResultProducerKey, RevisionId, ScopePath, ScopedOperationKey, ServiceAction, ValueExpression,
+    ValuePhase, ValueSchema, ValueVisibility, VersionedDocument, compare_edges,
     compare_operation_keys, compare_resource_ids,
 };
 use aos_contract::Sha256Digest;
@@ -131,13 +137,467 @@ fn read_only_primary_cannot_authorize_write_recovery() {
 #[test]
 fn final_effect_leaf_requires_a_terminal_handler() {
     let mut fixture = plan_fixture();
-    fixture.binding_inputs.environment.providers[0]
-        .implementation
-        .handler = None;
-    fixture.binding_plan.bindings[0].implementation.handler = None;
-    fixture.refresh_commitments();
+    pin_primary_binding_to_pure_package(&mut fixture);
 
     assert_diagnostic(fixture, DiagnosticCode::UnresolvedObligation);
+}
+
+#[test]
+fn exact_pure_provider_package_is_required() {
+    let mut fixture = plan_fixture();
+    pin_primary_binding_to_pure_package(&mut fixture);
+    fixture.binding_plan.bindings[0].provider_package = Some(digest('f'));
+
+    assert_diagnostic(fixture, DiagnosticCode::MissingReference);
+}
+
+#[test]
+fn contracts_only_package_cannot_claim_resource_ownership() {
+    let mut fixture = plan_fixture();
+    pin_primary_binding_to_pure_package(&mut fixture);
+    fixture.binding_inputs.packages[0]
+        .ownership
+        .push(ScopePath::root());
+
+    assert_diagnostic(fixture, DiagnosticCode::ResourceScopeEscape);
+}
+
+#[test]
+fn contracts_only_package_cannot_catalog_a_terminal_handler() {
+    let mut fixture = plan_fixture();
+    pin_primary_binding_to_pure_package(&mut fixture);
+    let package = &mut fixture.binding_inputs.packages[0];
+    let artifact = package.implementation.providers[0].artifact.clone();
+    let handler = key("terminal");
+    package.implementation.providers[0].implementation = ImplementationKind::TerminalHandler {
+        handler: handler.clone(),
+    };
+    package.implementation.handlers.insert(
+        handler,
+        HandlerDescriptor {
+            artifact,
+            entry_point: "bin/terminal".to_string(),
+            arguments: ValueSchema::Boolean,
+            result: ValueSchema::Boolean,
+        },
+    );
+
+    assert_diagnostic(fixture, DiagnosticCode::ResourceScopeEscape);
+}
+
+#[test]
+fn advisory_null_fallback_does_not_synthesize_authority() {
+    let mut fixture = plan_fixture();
+    install_optional_resource_output(&mut fixture);
+    fixture.refresh_interface();
+    pin_primary_binding_to_pure_package(&mut fixture);
+    fixture.binding_inputs.packages[0].requirements = vec![advisory_requirement(
+        &fixture.binding_plan.bindings[0].interface,
+        AbilityValue::new(serde_json::Value::Null).expect("null is a bounded value"),
+    )];
+
+    fixture
+        .context
+        .prepare_binding_candidates(
+            &fixture.binding_inputs.environment,
+            &fixture.binding_inputs.desired_state,
+            &fixture.binding_inputs.packages,
+        )
+        .expect("an absent optional resource carries no authority");
+}
+
+#[test]
+fn advisory_resource_fallback_cannot_synthesize_authority() {
+    let mut fixture = plan_fixture();
+    install_optional_resource_output(&mut fixture);
+    fixture.refresh_interface();
+    pin_primary_binding_to_pure_package(&mut fixture);
+    let reference = fixture.effect_plan.operations[0].target.clone();
+    fixture.binding_inputs.packages[0].requirements = vec![advisory_requirement(
+        &fixture.binding_plan.bindings[0].interface,
+        AbilityValue::new(
+            serde_json::to_value(reference).expect("resource reference must serialize"),
+        )
+        .expect("resource reference is a bounded value"),
+    )];
+
+    let errors = fixture
+        .context
+        .prepare_binding_candidates(
+            &fixture.binding_inputs.environment,
+            &fixture.binding_inputs.desired_state,
+            &fixture.binding_inputs.packages,
+        )
+        .expect_err("literal fallback must not create resource authority");
+    assert!(
+        errors
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::ResourceScopeEscape)
+    );
+}
+
+#[test]
+fn aggregate_output_projection_cycle_is_rejected() {
+    let mut fixture = plan_fixture();
+    install_projection_ports(
+        &mut fixture,
+        ValueSchema::Boolean,
+        ResourceLifetime::Instance,
+    );
+    let provider = fixture.binding_plan.bindings[0].provider.clone();
+    let aggregate = AggregateId {
+        provider: provider.clone(),
+        group: key("projection"),
+    };
+    let first = aggregate_projection(&aggregate, &fixture, "first", "second");
+    let second = aggregate_projection(&aggregate, &fixture, "second", "first");
+    let outputs = vec![first.clone(), second];
+
+    assert!(
+        fixture
+            .context
+            .validate_composed_output(
+                &provider,
+                &first,
+                &outputs,
+                &fixture.binding_plan.bindings,
+                &fixture.binding_plan.resources,
+                &fixture.effect_plan.artifacts,
+                None,
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn transitive_aggregate_projection_rechecks_resource_authority() {
+    let mut fixture = plan_fixture();
+    let ungranted = add_ungranted_resource(&mut fixture);
+    install_projection_ports(
+        &mut fixture,
+        ValueSchema::ResourceReference,
+        ResourceLifetime::Attempt,
+    );
+    let provider = fixture.binding_plan.bindings[0].provider.clone();
+    let aggregate = AggregateId {
+        provider: provider.clone(),
+        group: key("projection"),
+    };
+    let first = aggregate_projection(&aggregate, &fixture, "first", "second");
+    let second = aggregate_projection(&aggregate, &fixture, "second", "third");
+    let third = AggregateOutput {
+        aggregate: aggregate.clone(),
+        interface: fixture.binding_plan.bindings[0].interface.clone(),
+        port: key("third"),
+        value: ValueExpression::ResourceReference {
+            reference: ResourceReference {
+                interface: fixture.binding_plan.bindings[0].interface.clone(),
+                resource: ungranted,
+                operations: vec![key("observe")],
+                lifetime: ResourceLifetime::Instance,
+            },
+        },
+    };
+    let outputs = vec![first.clone(), second, third];
+
+    assert!(
+        fixture
+            .context
+            .validate_composed_output(
+                &provider,
+                &first,
+                &outputs,
+                &fixture.binding_plan.bindings,
+                &fixture.binding_plan.resources,
+                &fixture.effect_plan.artifacts,
+                None,
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn aggregate_projection_rejects_unretained_artifact() {
+    let mut fixture = plan_fixture();
+    install_projection_ports(
+        &mut fixture,
+        ValueSchema::ArtifactReference,
+        ResourceLifetime::Instance,
+    );
+    let provider = fixture.binding_plan.bindings[0].provider.clone();
+    let aggregate = AggregateId {
+        provider: provider.clone(),
+        group: key("projection"),
+    };
+    let mut artifact = fixture.effect_plan.artifacts[0].clone();
+    artifact.content = digest('e');
+    let output = AggregateOutput {
+        aggregate,
+        interface: fixture.binding_plan.bindings[0].interface.clone(),
+        port: key("first"),
+        value: ValueExpression::ArtifactReference {
+            reference: artifact,
+        },
+    };
+
+    assert!(
+        fixture
+            .context
+            .validate_composed_output(
+                &provider,
+                &output,
+                std::slice::from_ref(&output),
+                &fixture.binding_plan.bindings,
+                &fixture.binding_plan.resources,
+                &fixture.effect_plan.artifacts,
+                None,
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn aggregate_projection_allows_lifetime_attenuation() {
+    let mut fixture = plan_fixture();
+    install_projection_ports(
+        &mut fixture,
+        ValueSchema::Boolean,
+        ResourceLifetime::Attempt,
+    );
+    fixture.interfaces[0]
+        .interface
+        .outputs
+        .get_mut(&key("second"))
+        .expect("projection port exists")
+        .lifetime = ResourceLifetime::Instance;
+    fixture.refresh_interface();
+    let provider = fixture.binding_plan.bindings[0].provider.clone();
+    let aggregate = AggregateId {
+        provider: provider.clone(),
+        group: key("projection"),
+    };
+    let first = aggregate_projection(&aggregate, &fixture, "first", "second");
+    let second = AggregateOutput {
+        aggregate,
+        interface: fixture.binding_plan.bindings[0].interface.clone(),
+        port: key("second"),
+        value: ValueExpression::Literal {
+            value: AbilityValue::new(serde_json::Value::Bool(true))
+                .expect("boolean is a bounded value"),
+        },
+    };
+    let outputs = vec![first.clone(), second];
+
+    fixture
+        .context
+        .validate_composed_output(
+            &provider,
+            &first,
+            &outputs,
+            &fixture.binding_plan.bindings,
+            &fixture.binding_plan.resources,
+            &fixture.effect_plan.artifacts,
+            None,
+        )
+        .expect("longer-lived source may be exposed through a shorter-lived output");
+}
+
+#[test]
+fn aggregate_projection_requires_the_exact_root_value() {
+    let mut fixture = plan_fixture();
+    install_projection_ports(
+        &mut fixture,
+        ValueSchema::Boolean,
+        ResourceLifetime::Instance,
+    );
+    let provider = fixture.binding_plan.bindings[0].provider.clone();
+    let aggregate = AggregateId {
+        provider: provider.clone(),
+        group: key("projection"),
+    };
+    let retained = AggregateOutput {
+        aggregate: aggregate.clone(),
+        interface: fixture.binding_plan.bindings[0].interface.clone(),
+        port: key("first"),
+        value: ValueExpression::Literal {
+            value: AbilityValue::new(serde_json::Value::Bool(true))
+                .expect("boolean is a bounded value"),
+        },
+    };
+    let forged = AggregateOutput {
+        value: ValueExpression::Literal {
+            value: AbilityValue::new(serde_json::Value::Bool(false))
+                .expect("boolean is a bounded value"),
+        },
+        ..retained.clone()
+    };
+
+    assert!(
+        fixture
+            .context
+            .validate_composed_output(
+                &provider,
+                &forged,
+                &[retained],
+                &fixture.binding_plan.bindings,
+                &fixture.binding_plan.resources,
+                &fixture.effect_plan.artifacts,
+                None,
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn aggregate_projection_rejects_deep_programmatic_input_before_recursive_equality() {
+    let mut fixture = plan_fixture();
+    install_projection_ports(
+        &mut fixture,
+        ValueSchema::Boolean,
+        ResourceLifetime::Instance,
+    );
+    let provider = fixture.binding_plan.bindings[0].provider.clone();
+    let mut value = ValueExpression::Literal {
+        value: AbilityValue::new(serde_json::Value::Bool(true))
+            .expect("boolean is a bounded value"),
+    };
+    for _ in 0..aos_ability_model::ABILITY_LIMITS_V1.max_structural_depth {
+        value = ValueExpression::List { items: vec![value] };
+    }
+    let output = AggregateOutput {
+        aggregate: AggregateId {
+            provider: provider.clone(),
+            group: key("projection"),
+        },
+        interface: fixture.binding_plan.bindings[0].interface.clone(),
+        port: key("first"),
+        value,
+    };
+    let outputs = vec![output.clone()];
+    let errors = fixture
+        .context
+        .validate_composed_output(
+            &provider,
+            &output,
+            &outputs,
+            &fixture.binding_plan.bindings,
+            &fixture.binding_plan.resources,
+            &fixture.effect_plan.artifacts,
+            None,
+        )
+        .expect_err("deep programmatic projection must fail bounded preflight");
+
+    assert!(
+        errors
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::LimitExceeded)
+    );
+}
+
+#[test]
+fn aggregate_resource_reference_cannot_exceed_binding_lifetime() {
+    let mut fixture = plan_fixture();
+    install_projection_ports(
+        &mut fixture,
+        ValueSchema::ResourceReference,
+        ResourceLifetime::Attempt,
+    );
+    fixture.binding_plan.bindings[0].lifetime = ResourceLifetime::Attempt;
+    let provider = fixture.binding_plan.bindings[0].provider.clone();
+    let output = AggregateOutput {
+        aggregate: AggregateId {
+            provider: provider.clone(),
+            group: key("projection"),
+        },
+        interface: fixture.binding_plan.bindings[0].interface.clone(),
+        port: key("first"),
+        value: ValueExpression::ResourceReference {
+            reference: ResourceReference {
+                interface: fixture.binding_plan.bindings[0].interface.clone(),
+                resource: fixture.binding_plan.resources[0].resource.clone(),
+                operations: vec![key("observe")],
+                lifetime: ResourceLifetime::Persistent,
+            },
+        },
+    };
+
+    assert!(
+        fixture
+            .context
+            .validate_composed_output(
+                &provider,
+                &output,
+                std::slice::from_ref(&output),
+                &fixture.binding_plan.bindings,
+                &fixture.binding_plan.resources,
+                &fixture.effect_plan.artifacts,
+                None,
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn contribution_rejects_forged_provider_assignment() {
+    let mut fixture = contribution_fixture(ValueSchema::ProviderAssignment);
+    let inventory = &fixture.binding_inputs.environment.providers[0];
+    let assignment = ProviderAssignment {
+        provider: inventory.provider.clone(),
+        interface: inventory.interface.clone(),
+        implementation: inventory.implementation.clone(),
+        incarnation: inventory
+            .incarnation
+            .clone()
+            .expect("fixture provider is available"),
+    };
+    install_contribution_value(
+        &mut fixture,
+        AbilityValue::new(
+            serde_json::to_value(assignment).expect("provider assignment must serialize"),
+        )
+        .expect("provider assignment is bounded"),
+    );
+
+    assert_diagnostic(fixture, DiagnosticCode::MissingReference);
+}
+
+#[test]
+fn contribution_rechecks_nested_resource_authority() {
+    let mut fixture = contribution_fixture(ValueSchema::ResourceReference);
+    let resource = add_ungranted_resource(&mut fixture);
+    let reference = ResourceReference {
+        interface: fixture.binding_plan.bindings[0].interface.clone(),
+        resource,
+        operations: vec![key("observe")],
+        lifetime: ResourceLifetime::Instance,
+    };
+    install_contribution_value(
+        &mut fixture,
+        AbilityValue::new(
+            serde_json::to_value(reference).expect("resource reference must serialize"),
+        )
+        .expect("resource reference is bounded"),
+    );
+
+    assert_diagnostic(fixture, DiagnosticCode::ResourceScopeEscape);
+}
+
+#[test]
+fn contribution_rejects_foreign_artifact() {
+    let mut fixture = contribution_fixture(ValueSchema::ArtifactReference);
+    let mut artifact = fixture.effect_plan.artifacts[0].clone();
+    artifact.content = digest('e');
+    install_contribution_value(
+        &mut fixture,
+        AbilityValue::new(
+            serde_json::to_value(artifact).expect("artifact reference must serialize"),
+        )
+        .expect("artifact reference is bounded"),
+    );
+
+    assert_diagnostic(fixture, DiagnosticCode::ResourceScopeEscape);
 }
 
 #[test]
@@ -260,6 +720,78 @@ fn materialized_input_rechecks_empty_resource_projection_baseline() {
 }
 
 #[test]
+fn runtime_output_rejects_reference_shorter_than_declared_output() {
+    let mut fixture = plan_fixture();
+    let ready = fixture.interfaces[0]
+        .interface
+        .methods
+        .get_mut(&key("observe"))
+        .expect("fixture observe method")
+        .outputs
+        .get_mut(&key("ready"))
+        .expect("fixture ready output");
+    ready.schema = ValueSchema::ResourceReference;
+    ready.lifetime = ResourceLifetime::Instance;
+    fixture.refresh_interface();
+    let plan = fixture
+        .validate()
+        .expect("resource-output fixture must validate");
+    let operation = &plan.operations()[0];
+    let short_lived = ResourceReference {
+        interface: operation.interface.clone(),
+        resource: operation.target.resource.clone(),
+        operations: vec![key("observe")],
+        lifetime: ResourceLifetime::Attempt,
+    };
+    let value = AbilityValue::new(
+        serde_json::to_value(short_lived).expect("resource reference must serialize"),
+    )
+    .expect("resource reference must be a bounded canonical value");
+
+    assert!(matches!(
+        plan.validate_operation_output(operation, &key("ready"), &value),
+        Err(crate::OutputValidationError::UnauthorizedReference(
+            crate::ValueAuthorizationError::ResourceScopeEscape
+        ))
+    ));
+}
+
+#[test]
+fn runtime_output_allows_lifetime_attenuation() {
+    let mut fixture = plan_fixture();
+    let ready = fixture.interfaces[0]
+        .interface
+        .methods
+        .get_mut(&key("observe"))
+        .expect("fixture observe method")
+        .outputs
+        .get_mut(&key("ready"))
+        .expect("fixture ready output");
+    ready.schema = ValueSchema::ResourceReference;
+    ready.lifetime = ResourceLifetime::Attempt;
+    fixture.refresh_interface();
+    let plan = fixture
+        .validate()
+        .expect("resource-output fixture must validate");
+    let operation = &plan.operations()[0];
+    let longer_lived = ResourceReference {
+        interface: operation.interface.clone(),
+        resource: operation.target.resource.clone(),
+        operations: vec![key("observe")],
+        lifetime: ResourceLifetime::Instance,
+    };
+    let value = AbilityValue::new(
+        serde_json::to_value(longer_lived).expect("resource reference must serialize"),
+    )
+    .expect("resource reference must be a bounded canonical value");
+
+    assert!(
+        plan.validate_operation_output(operation, &key("ready"), &value)
+            .is_ok()
+    );
+}
+
+#[test]
 fn runtime_output_rechecks_nested_resource_authority() {
     let mut fixture = plan_fixture();
     let ready = fixture.interfaces[0]
@@ -283,7 +815,7 @@ fn runtime_output_rechecks_nested_resource_authority() {
         interface: operation.interface.clone(),
         resource: ungranted,
         operations: Vec::new(),
-        lifetime: ResourceLifetime::Attempt,
+        lifetime: ResourceLifetime::Instance,
     };
     let value = AbilityValue::new(
         serde_json::to_value(malicious).expect("resource reference must serialize"),
@@ -536,6 +1068,183 @@ fn add_ungranted_resource(fixture: &mut PlanFixture) -> ResourceId {
         .desired_revisions
         .sort_by(|left, right| compare_resource_ids(&left.resource, &right.resource));
     resource
+}
+
+fn pin_primary_binding_to_pure_package(fixture: &mut PlanFixture) {
+    let binding = &mut fixture.binding_plan.bindings[0];
+    let artifact = binding.implementation.artifact.clone();
+    let compose_entry = key("compose");
+    let transition_entry = key("transition");
+    let implementation = ProviderImplementation {
+        interface: binding.interface.clone(),
+        artifact: artifact.clone(),
+        requirements: Vec::new(),
+        implementation: ImplementationKind::PureComposition {
+            compose_entry: compose_entry.clone(),
+            transition_entry: transition_entry.clone(),
+        },
+        owns_resource_kinds: Vec::new(),
+    };
+    let descriptor = implementation
+        .descriptor_digest()
+        .expect("static pure implementation must have a descriptor");
+    binding.implementation.descriptor = descriptor;
+    binding.implementation.handler = None;
+    fixture.binding_inputs.environment.providers[0].implementation = binding.implementation.clone();
+
+    let package = PackageDocument {
+        schema: PackageDocument::SCHEMA.to_string(),
+        required_features: Vec::new(),
+        activation_mode: AbilityActivationMode::ContractsOnly,
+        package: PackageSubject {
+            name: key("pure-provider"),
+            version: "1.0.0".to_string(),
+            payload: artifact.clone(),
+            source: artifact.clone(),
+        },
+        artifacts: vec![artifact.clone()],
+        exports: vec![ExportDeclaration {
+            name: key("provider"),
+            interface: binding.interface.clone(),
+            aggregation: None,
+            implementation: descriptor,
+        }],
+        requirements: Vec::new(),
+        module_entry_points: BTreeMap::from([
+            (compose_entry, artifact.clone()),
+            (transition_entry, artifact),
+        ]),
+        implementation: PackageImplementation {
+            providers: vec![implementation],
+            handlers: BTreeMap::new(),
+        },
+        ownership: Vec::new(),
+    };
+    binding.provider_package = Some(
+        package
+            .content_digest()
+            .expect("static pure package must have a content digest"),
+    );
+    fixture.binding_inputs.packages = vec![package];
+    fixture.refresh_commitments();
+}
+
+fn contribution_fixture(schema: ValueSchema) -> PlanFixture {
+    let mut fixture = plan_fixture();
+    fixture.interfaces[0].interface.request = schema;
+    fixture.refresh_interface();
+    pin_primary_binding_to_pure_package(&mut fixture);
+
+    let provider = fixture.binding_plan.bindings[0].provider.clone();
+    let aggregate = AggregateId {
+        provider,
+        group: key("aggregate"),
+    };
+    fixture.binding_inputs.packages[0].exports[0].aggregation = Some(AggregationContract {
+        scope: AggregationScope::ProviderInstance,
+        key: key("slot"),
+        controller_group: aggregate.group.clone(),
+        reject_slot_collisions: true,
+        merge_contract: None,
+    });
+    fixture.binding_plan.bindings[0].caller_grant.contributions = vec![ContributionPermission {
+        aggregate,
+        slot: key("primary"),
+    }];
+    refresh_provider_package_pin(&mut fixture);
+    fixture
+}
+
+fn install_contribution_value(fixture: &mut PlanFixture, value: AbilityValue) {
+    let binding = &fixture.binding_plan.bindings[0];
+    let permission = &binding.caller_grant.contributions[0];
+    fixture.binding_inputs.desired_state.contributions = vec![Contribution {
+        request: binding.request.clone(),
+        aggregate: permission.aggregate.clone(),
+        slot: permission.slot.clone(),
+        grant: binding.id.clone(),
+        value,
+    }];
+    fixture.refresh_commitments();
+}
+
+fn refresh_provider_package_pin(fixture: &mut PlanFixture) {
+    fixture.binding_plan.bindings[0].provider_package = Some(
+        fixture.binding_inputs.packages[0]
+            .content_digest()
+            .expect("static provider package must have a content digest"),
+    );
+    fixture.refresh_commitments();
+}
+
+fn advisory_requirement(
+    interface: &aos_ability_model::InterfaceKey,
+    fallback: AbilityValue,
+) -> RequirementDeclaration {
+    RequirementDeclaration {
+        alias: key("advisory"),
+        accepted_interfaces: vec![interface.clone()],
+        methods: vec![key("observe")],
+        guarantees: Vec::new(),
+        strength: RequirementStrength::Advisory,
+        fallback: Some(RequirementFallback {
+            outputs: BTreeMap::from([(key("ready"), fallback)]),
+        }),
+    }
+}
+
+fn install_optional_resource_output(fixture: &mut PlanFixture) {
+    fixture.interfaces[0].interface.outputs.insert(
+        key("ready"),
+        OutputDescriptor {
+            schema: ValueSchema::Optional {
+                value: Box::new(ValueSchema::ResourceReference),
+            },
+            phase: ValuePhase::Planning,
+            visibility: ValueVisibility::Public,
+            lifetime: ResourceLifetime::Instance,
+        },
+    );
+}
+
+fn install_projection_ports(
+    fixture: &mut PlanFixture,
+    schema: ValueSchema,
+    lifetime: ResourceLifetime,
+) {
+    let descriptor = OutputDescriptor {
+        schema,
+        phase: ValuePhase::Planning,
+        visibility: ValueVisibility::Public,
+        lifetime,
+    };
+    fixture.interfaces[0].interface.outputs = BTreeMap::from([
+        (key("first"), descriptor.clone()),
+        (key("second"), descriptor.clone()),
+        (key("third"), descriptor),
+    ]);
+    fixture.refresh_interface();
+}
+
+fn aggregate_projection(
+    aggregate: &AggregateId,
+    fixture: &PlanFixture,
+    port: &str,
+    target: &str,
+) -> AggregateOutput {
+    let interface = fixture.binding_plan.bindings[0].interface.clone();
+    AggregateOutput {
+        aggregate: aggregate.clone(),
+        interface: interface.clone(),
+        port: key(port),
+        value: ValueExpression::AggregateOutput {
+            reference: AggregateOutputReference {
+                aggregate: aggregate.clone(),
+                interface,
+                port: key(target),
+            },
+        },
+    }
 }
 
 fn operation_result(producer: &str, output: &str) -> OperationResultReference {

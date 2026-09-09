@@ -5,15 +5,15 @@ use std::fmt;
 use std::io::{self, Write};
 
 use aos_ability_model::{
-    ArtifactReference, Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase, InterfaceName,
-    LocalKey, OperationResultReference, ProviderAssignment, ResourceReference, StringSyntax,
-    ValueExpression, ValueSchema, ABILITY_LIMITS_V1,
+    ABILITY_LIMITS_V1, ArtifactReference, Diagnostic, DiagnosticClass, DiagnosticCode,
+    DiagnosticPhase, InterfaceName, LocalKey, OperationResultReference, ProviderAssignment,
+    ResourceReference, StringSyntax, ValueExpression, ValueSchema,
 };
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::error::push_diagnostic;
 use crate::ValidationErrors;
+use crate::error::push_diagnostic;
 
 /// Identifies one position inside a method parameter or output schema.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -68,7 +68,7 @@ pub fn validate_value(
     schema: &ValueSchema,
     expression: &ValueExpression,
 ) -> Result<(), ValidationErrors> {
-    validate_value_with_literal_source(schema, expression, LiteralSource::Authored)
+    validate_value_with_literal_source(schema, expression, LiteralSource::Authored, None)
 }
 
 pub(crate) fn validate_materialized_value(
@@ -81,6 +81,20 @@ pub(crate) fn validate_materialized_value(
             value: value.clone(),
         },
         LiteralSource::Materialized,
+        None,
+    )
+}
+
+pub(crate) fn validate_composition_value(
+    schema: &ValueSchema,
+    expression: &ValueExpression,
+    aggregate_validator: &AggregateReferenceValidator<'_>,
+) -> Result<(), ValidationErrors> {
+    validate_value_with_literal_source(
+        schema,
+        expression,
+        LiteralSource::Authored,
+        Some(aggregate_validator),
     )
 }
 
@@ -88,6 +102,7 @@ fn validate_value_with_literal_source(
     schema: &ValueSchema,
     expression: &ValueExpression,
     literal_source: LiteralSource,
+    aggregate_validator: Option<&AggregateReferenceValidator<'_>>,
 ) -> Result<(), ValidationErrors> {
     let mut diagnostics = Vec::new();
     if !schema.is_within_limits(
@@ -141,6 +156,7 @@ fn validate_value_with_literal_source(
         &SchemaPath::root(),
         &mut diagnostics,
         None,
+        aggregate_validator,
         literal_source,
     );
     if diagnostics.is_empty() {
@@ -354,12 +370,20 @@ pub(crate) type ResultReferenceValidator<'a> = dyn Fn(
         &mut Vec<Diagnostic>,
     ) + 'a;
 
+pub(crate) type AggregateReferenceValidator<'a> = dyn Fn(
+        &ValueSchema,
+        &aos_ability_model::AggregateOutputReference,
+        &SchemaPath,
+        &mut Vec<Diagnostic>,
+    ) + 'a;
+
 pub(crate) fn validate_expression(
     schema: &ValueSchema,
     expression: &ValueExpression,
     path: &SchemaPath,
     diagnostics: &mut Vec<Diagnostic>,
     result_validator: Option<&ResultReferenceValidator<'_>>,
+    aggregate_validator: Option<&AggregateReferenceValidator<'_>>,
 ) {
     validate_expression_with_literal_source(
         schema,
@@ -367,6 +391,7 @@ pub(crate) fn validate_expression(
         path,
         diagnostics,
         result_validator,
+        aggregate_validator,
         LiteralSource::Authored,
     );
 }
@@ -377,6 +402,7 @@ fn validate_expression_with_literal_source(
     path: &SchemaPath,
     diagnostics: &mut Vec<Diagnostic>,
     result_validator: Option<&ResultReferenceValidator<'_>>,
+    aggregate_validator: Option<&AggregateReferenceValidator<'_>>,
     literal_source: LiteralSource,
 ) {
     if let ValueExpression::OperationResult { reference } = expression {
@@ -394,6 +420,21 @@ fn validate_expression_with_literal_source(
         }
         return;
     }
+    if let ValueExpression::AggregateOutput { reference } = expression {
+        if let Some(validate_aggregate) = aggregate_validator {
+            validate_aggregate(schema, reference, path, diagnostics);
+        } else {
+            push_diagnostic(
+                diagnostics,
+                schema_diagnostic(
+                    DiagnosticCode::MissingReference,
+                    path,
+                    "aggregate output requires a composition validation context".to_string(),
+                ),
+            );
+        }
+        return;
+    }
 
     if let ValueSchema::Optional { value } = schema {
         if matches!(expression, ValueExpression::Literal { value } if value.as_json().is_null()) {
@@ -405,6 +446,7 @@ fn validate_expression_with_literal_source(
             path,
             diagnostics,
             result_validator,
+            aggregate_validator,
             literal_source,
         );
         return;
@@ -436,6 +478,7 @@ fn validate_expression_with_literal_source(
                     &path.child(index.to_string()),
                     diagnostics,
                     result_validator,
+                    aggregate_validator,
                     literal_source,
                 );
             }
@@ -447,6 +490,7 @@ fn validate_expression_with_literal_source(
                 path,
                 diagnostics,
                 result_validator,
+                aggregate_validator,
                 literal_source,
             );
         }
@@ -461,6 +505,7 @@ fn validate_expression_with_literal_source(
             }
             check_sorted_unique(&reference.operations, path, diagnostics);
         }
+        ValueExpression::AggregateOutput { .. } => {}
         ValueExpression::OperationResult { .. } => {}
     }
 }
@@ -671,6 +716,7 @@ fn validate_standalone_size_and_strings(
             }
             ValueExpression::Literal { .. }
             | ValueExpression::ResourceReference { .. }
+            | ValueExpression::AggregateOutput { .. }
             | ValueExpression::OperationResult { .. } => {}
         }
     }
@@ -736,6 +782,7 @@ fn validate_expression_object(
     path: &SchemaPath,
     diagnostics: &mut Vec<Diagnostic>,
     result_validator: Option<&ResultReferenceValidator<'_>>,
+    aggregate_validator: Option<&AggregateReferenceValidator<'_>>,
     literal_source: LiteralSource,
 ) {
     match schema {
@@ -773,6 +820,7 @@ fn validate_expression_object(
                     &path.child(name),
                     diagnostics,
                     result_validator,
+                    aggregate_validator,
                     literal_source,
                 );
             }
@@ -788,6 +836,7 @@ fn validate_expression_object(
                 path,
                 diagnostics,
                 result_validator,
+                aggregate_validator,
                 literal_source,
             );
         }
@@ -829,6 +878,7 @@ fn validate_expression_object(
                 path,
                 diagnostics,
                 result_validator,
+                aggregate_validator,
                 literal_source,
             );
         }
@@ -843,6 +893,7 @@ fn validate_expression_record(
     path: &SchemaPath,
     diagnostics: &mut Vec<Diagnostic>,
     result_validator: Option<&ResultReferenceValidator<'_>>,
+    aggregate_validator: Option<&AggregateReferenceValidator<'_>>,
     literal_source: LiteralSource,
 ) {
     let optional: BTreeSet<&str> = optional_fields.iter().map(LocalKey::as_str).collect();
@@ -857,6 +908,7 @@ fn validate_expression_record(
                 &path.child(name.as_str()),
                 diagnostics,
                 result_validator,
+                aggregate_validator,
                 literal_source,
             );
         } else if !optional.contains(name.as_str()) {
@@ -1314,10 +1366,12 @@ mod tests {
 
         let errors = validate_value(&ValueSchema::ResourceReference, &value)
             .expect_err("unsorted typed reference operations must fail");
-        assert!(errors
-            .diagnostics()
-            .iter()
-            .any(|diagnostic| diagnostic.code == DiagnosticCode::NonCanonicalOrder));
+        assert!(
+            errors
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::NonCanonicalOrder)
+        );
     }
 
     #[test]
@@ -1356,10 +1410,12 @@ mod tests {
 
         let errors = validate_value(&ValueSchema::ProviderAssignment, &authored)
             .expect_err("authored assignment evidence must be rejected");
-        assert!(errors
-            .diagnostics()
-            .iter()
-            .any(|diagnostic| diagnostic.code == DiagnosticCode::MissingReference));
+        assert!(
+            errors
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::MissingReference)
+        );
         assert!(validate_materialized_value(&ValueSchema::ProviderAssignment, &assignment).is_ok());
     }
 }

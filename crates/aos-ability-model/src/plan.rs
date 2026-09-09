@@ -80,6 +80,16 @@ pub struct ResourcePermission {
     pub operations: Vec<LocalKey>,
 }
 
+/// Authorizes one principal to populate an exact provider aggregate slot.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContributionPermission {
+    /// Identifies the exact provider aggregate receiving the contribution.
+    pub aggregate: AggregateId,
+    /// Names the exclusive contribution slot inside that aggregate.
+    pub slot: LocalKey,
+}
+
 /// Defines one side of an authorized provider binding.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -88,6 +98,8 @@ pub struct AuthorityGrant {
     pub principal: InstanceId,
     /// Names callable interface methods in canonical order.
     pub methods: Vec<LocalKey>,
+    /// Lists exact provider aggregate slots this principal may populate.
+    pub contributions: Vec<ContributionPermission>,
     /// Lists exact resource permissions in canonical resource order.
     pub resources: Vec<ResourcePermission>,
 }
@@ -120,6 +132,8 @@ pub struct Binding {
     pub interface: InterfaceKey,
     /// Identifies the selected provider instance.
     pub provider: InstanceId,
+    /// Pins the exact provider package manifest when selection is package-backed.
+    pub provider_package: Option<Sha256Digest>,
     /// Pins the selected provider implementation and executable artifact.
     pub implementation: ProviderImplementationReference,
     /// Records the deterministic selection source.

@@ -8,7 +8,7 @@ use aos_ability_model::{
 use thiserror::Error;
 
 use crate::authority::{
-    authorize_materialized_references, selected_grant, ValueAuthorizationError,
+    ValueAuthorizationError, authorize_materialized_references, selected_grant,
 };
 use crate::schema::validate_materialized_value;
 use crate::{CheckedEffectPlan, ValidationErrors};
@@ -149,6 +149,7 @@ impl CheckedEffectPlan {
             &self.artifact_index,
             &resources,
             binding.lifetime,
+            None,
         )
         .map_err(InputValidationError::UnauthorizedReference)
     }
@@ -207,7 +208,7 @@ impl CheckedEffectPlan {
             operation,
             &method.outcome.completion_evidence,
             evidence,
-            self.binding_lifetime(operation)?,
+            None,
         )
     }
 
@@ -228,7 +229,7 @@ impl CheckedEffectPlan {
             operation,
             &method.outcome.observation_evidence,
             evidence,
-            self.binding_lifetime(operation)?,
+            None,
         )
     }
 
@@ -260,7 +261,7 @@ impl CheckedEffectPlan {
                 operation,
                 &descriptor.schema,
                 value,
-                descriptor.lifetime,
+                Some(descriptor.lifetime),
             )?;
         }
         Ok(())
@@ -283,7 +284,12 @@ impl CheckedEffectPlan {
             .outputs
             .get(output)
             .ok_or(OutputValidationError::MissingOutput)?;
-        self.validate_operation_value(operation, &descriptor.schema, value, descriptor.lifetime)
+        self.validate_operation_value(
+            operation,
+            &descriptor.schema,
+            value,
+            Some(descriptor.lifetime),
+        )
     }
 
     /// Validates one completed merge output against its common all-branch port.
@@ -357,22 +363,12 @@ impl CheckedEffectPlan {
             .ok_or(OutputValidationError::MissingMethod)
     }
 
-    fn binding_lifetime(
-        &self,
-        operation: &Operation,
-    ) -> Result<aos_ability_model::ResourceLifetime, OutputValidationError> {
-        self.binding_plan()
-            .binding(&operation.binding)
-            .map(|binding| binding.lifetime)
-            .ok_or(OutputValidationError::MissingBinding)
-    }
-
     fn validate_operation_value(
         &self,
         operation: &Operation,
         schema: &aos_ability_model::ValueSchema,
         value: &AbilityValue,
-        maximum_lifetime: aos_ability_model::ResourceLifetime,
+        required_lifetime: Option<aos_ability_model::ResourceLifetime>,
     ) -> Result<(), OutputValidationError> {
         validate_ability_value(schema, value)?;
         let binding = self
@@ -394,7 +390,8 @@ impl CheckedEffectPlan {
             value,
             &self.artifact_index,
             &resources,
-            maximum_lifetime,
+            binding.lifetime,
+            required_lifetime,
         )
         .map_err(OutputValidationError::UnauthorizedReference)
     }

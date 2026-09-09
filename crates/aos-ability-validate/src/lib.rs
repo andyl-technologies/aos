@@ -12,6 +12,7 @@ mod effect;
 mod error;
 mod graph;
 mod output;
+mod projection;
 mod schema;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -21,6 +22,7 @@ pub mod test_support;
 mod regression_tests;
 
 pub use authority::{InvocationAuthorizationError, ValueAuthorizationError};
+pub use binding::PreparedBindingCandidates;
 pub use error::ValidationErrors;
 pub use graph::{
     BindingValidationInputs, CheckedBindingPlan, CheckedEffectPlan, ValidationContext,
