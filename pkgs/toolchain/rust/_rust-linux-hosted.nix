@@ -218,6 +218,16 @@ in
                     's/CrateType::ProcMacro => return false,/CrateType::ProcMacro => continue,/' \
                     "$compiler_session"
                 ''
+                else if version == "1.77.2"
+                then ''
+                  # This release fixes the empty registry mapping, but still
+                  # bypasses explicit source remapping for procedural macros.
+                  compiler_session=compiler/rustc_session/src/session.rs
+                  test "$(grep -Fc 'CrateType::ProcMacro => return false,' "$compiler_session")" -eq 1
+                  sed -i \
+                    's/CrateType::ProcMacro => return false,/CrateType::ProcMacro => continue,/' \
+                    "$compiler_session"
+                ''
                 else ""
               }
 
