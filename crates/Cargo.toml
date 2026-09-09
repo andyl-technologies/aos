@@ -7,6 +7,7 @@ members = [
     "aos-contract",
     "aos-ability-model",
     "aos-ability-validate",
+    "aos-ability-plan",
     "aos-ability-runtime",
     "aos-maintain",
     "aos-core",
@@ -206,6 +207,7 @@ rcgen = "0.14"
 aos-contract = { path = "aos-contract" }
 aos-ability-model = { path = "aos-ability-model" }
 aos-ability-validate = { path = "aos-ability-validate" }
+aos-ability-plan = { path = "aos-ability-plan" }
 aos-ability-runtime = { path = "aos-ability-runtime" }
 aos-maintain = { path = "aos-maintain" }
 crucible-cas = { path = "crucible-cas" }

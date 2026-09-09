@@ -1,0 +1,20 @@
+[package]
+name = "aos-ability-plan"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+aos-ability-model.workspace = true
+aos-ability-validate.workspace = true
+aos-contract.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+aos-ability-validate = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true
