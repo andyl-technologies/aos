@@ -14,7 +14,7 @@ mod manager_proxy;
 
 pub use client::{
     FailedUnit, FailedUnitsReport, JobOutcome, JobResult, ManagerIncarnation, PinnedSystemdManager,
-    RestartPolicy, SettleOutcome, SystemdClient, SystemdManagerConnection,
+    RestartPolicy, SettleOutcome, SystemdClient, SystemdManagerConnection, UnitActiveState,
 };
 pub use error::{Error, Result};
 pub use manager_proxy::ListUnitsEntry;

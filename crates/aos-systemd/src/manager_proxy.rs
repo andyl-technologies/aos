@@ -96,6 +96,18 @@ pub trait Manager {
     default_service = "org.freedesktop.systemd1"
 )]
 pub trait Unit {
+    /// Enqueues a start job for this exact unit object.
+    fn start(&self, mode: &str) -> zbus::Result<OwnedObjectPath>;
+    /// Enqueues a stop job for this exact unit object.
+    fn stop(&self, mode: &str) -> zbus::Result<OwnedObjectPath>;
+    /// Enqueues a restart job for this exact unit object.
+    fn restart(&self, mode: &str) -> zbus::Result<OwnedObjectPath>;
+    /// Enqueues a reload job for this exact unit object.
+    fn reload(&self, mode: &str) -> zbus::Result<OwnedObjectPath>;
+
+    /// Canonical unit name, including its type suffix.
+    #[zbus(property)]
+    fn id(&self) -> zbus::Result<String>;
     /// High-level activation state (`"active"`, `"failed"`, ...).
     #[zbus(property)]
     fn active_state(&self) -> zbus::Result<String>;

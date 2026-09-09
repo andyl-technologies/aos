@@ -36,6 +36,7 @@
 //! service consumes a returned manifest.
 
 pub mod ability;
+pub mod ability_store;
 pub mod activation;
 pub mod classify;
 pub mod diagnostics;
@@ -45,6 +46,7 @@ pub mod runtime;
 pub mod runtime_modules;
 pub mod stock;
 pub mod system_roots;
+pub mod systemd_ability;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

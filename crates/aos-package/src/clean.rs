@@ -252,11 +252,17 @@ where
             .map(|generation| generation.number)
             .collect::<Vec<_>>();
         let cutoff = generations.len().saturating_sub(keep as usize);
-        let removed = generations[..cutoff]
-            .iter()
-            .filter(|generation| generation.number != state.current)
-            .map(|generation| generation.number)
-            .collect::<Vec<_>>();
+        let mut removed = Vec::new();
+        for generation in &generations[..cutoff] {
+            if generation.number == state.current {
+                continue;
+            }
+            let generation_path = profile.join(format!("gen-{}", generation.number));
+            if crate::config_eval::ability_store::generation_must_be_retained(&generation_path)? {
+                continue;
+            }
+            removed.push(generation.number);
+        }
         if removed.is_empty() {
             return Ok(ConfigGenerationPruneResult {
                 current: state.current,
@@ -320,6 +326,14 @@ where
             .any(|generation| generation.number == journal.state_after.current)
     {
         bail!("config prune journal would remove the current generation");
+    }
+    for generation in &journal.removed {
+        let path = profile.join(format!("gen-{generation}"));
+        if crate::config_eval::ability_store::generation_must_be_retained(&path)? {
+            bail!(
+                "configuration generation {generation} contains unfinished ability recovery work"
+            );
+        }
     }
     crate::sysroot::save_generation_state_pub(profile, &journal.state_after)?;
     for generation in &journal.removed {
@@ -986,6 +1000,31 @@ mod tests {
             PathBuf::from("gen-2")
         );
         assert!(!profile.join(CONFIG_PRUNE_JOURNAL).exists());
+    }
+
+    #[test]
+    fn config_prune_retains_generation_with_unfinished_ability_transaction() {
+        let tmp = TempDir::new().unwrap();
+        let profile = tmp.path().join("profiles/system");
+        let run_etc = tmp.path().join("run/etc");
+        let state = config_state(5);
+        write_config_profile(&profile, &state);
+        std::fs::create_dir_all(profile.join("gen-1/ability-transactions/configure-nginx"))
+            .unwrap();
+
+        let result = prune_config_generations_with(
+            &profile,
+            &run_etc,
+            state,
+            2,
+            |_| Ok(()),
+            remove_config_generation_dir,
+        )
+        .unwrap();
+
+        assert_eq!(result.removed, vec![2, 3]);
+        assert_eq!(result.after, vec![1, 4, 5]);
+        assert!(profile.join("gen-1/ability-transactions").is_dir());
     }
 
     #[test]

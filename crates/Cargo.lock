@@ -634,6 +634,7 @@ dependencies = [
  "anyhow",
  "aos-ability-model",
  "aos-ability-plan",
+ "aos-ability-runtime",
  "aos-ability-validate",
  "aos-boot-identity",
  "aos-cache",
@@ -678,6 +679,7 @@ dependencies = [
  "tokio-stream",
  "toml 0.8.23",
  "url",
+ "zbus",
  "zstd",
 ]
 
