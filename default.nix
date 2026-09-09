@@ -1318,6 +1318,7 @@ in {
       inherit pkgs lib mkSystem packagesWithExpose;
       system = serverSystem;
     };
+    abilities = import ./lib/testing/abilities.nix {inherit pkgs lib;};
     package-maintenance = import ./lib/testing/package-maintenance.nix {inherit pkgs lib;};
     # Pure evaluation and focused all-variant output contracts are one gate.
     # Rendered store paths remain contextual Nix references rather than
@@ -1327,6 +1328,7 @@ in {
       version = "0";
       src = null;
       buildDeps = [
+        abilities
         eval-standalone
         system-structure
         config-eval

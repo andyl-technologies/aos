@@ -133,6 +133,7 @@
   src = import ./_workspace-source.nix {inherit lib;};
   applicationTestPackages = [
     "aos"
+    "aos-ability-model"
     "aos-cache"
     "aos-contract"
     "aos-core"
