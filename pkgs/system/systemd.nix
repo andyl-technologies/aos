@@ -45,7 +45,6 @@
 
   systemdRuntimeDeps = [
     bash
-    python3
     util-linux
     kmod
     zlib
@@ -74,10 +73,9 @@ in
     pname = "systemd";
     inherit version;
 
-    # Split ukify into a `tools` output so the python3-pefile and
-    # python3-pyelftools site-packages stay out of PID-1 systemd's
-    # runtime closure. aos-uki (the only consumer of ukify) pulls
-    # systemd.tools explicitly.
+    # Keep UKI construction and kernel installation in `tools`, including
+    # kernel-install's Python hook. PID 1 and boot-time generators do not need
+    # that interpreter. Image builders select systemd.tools explicitly.
     outputs = ["out" "tools"];
 
     # The package performs ELF path cleanup below, then retains its declared
@@ -158,6 +156,13 @@ in
         name = "patch-source";
         script = ''
           nativePython=$(command -v python3)
+
+          # kernel-install and its complete plugin set live with ukify in the
+          # tools output. Preserve administrator overrides in /etc/kernel.
+          test "$(grep -Fc '"/usr/lib/kernel/install.d"' src/kernel-install/kernel-install.c)" -eq 1
+          sed -i \
+            "s|\"/usr/lib/kernel/install.d\"|\"$tools/lib/kernel/install.d\"|" \
+            src/kernel-install/kernel-install.c
 
           # libseccomp is loaded on demand, so DT_NEEDED-based RPATH shrinking
           # cannot retain its search directory. Bind the loader to the AOS
@@ -491,6 +496,23 @@ in
           EOF
             chmod +x "$tools/bin/ukify"
           fi
+
+          mkdir -p "$tools/lib/kernel"
+          mv "$out/bin/kernel-install" "$tools/bin/kernel-install"
+          mv "$out/lib/kernel/install.d" "$tools/lib/kernel/install.d"
+
+          # The Python plugin imports ukify as a module, so point it at the
+          # unwrapped source instead of the public shell launcher. Both tools
+          # receive the same pefile and pyelftools module search path.
+          ukify_hook="$tools/lib/kernel/install.d/60-ukify.install"
+          mv "$ukify_hook" "$ukify_hook.unwrapped"
+          cat > "$ukify_hook" << EOF
+          #!${bash}/bin/bash
+          export PYTHONPATH="${ukifyPythonPath}\''${PYTHONPATH:+:\$PYTHONPATH}"
+          export KERNEL_INSTALL_UKIFY="\''${KERNEL_INSTALL_UKIFY:-$tools/bin/.ukify-unwrapped}"
+          exec "${python3}/bin/python3" "$ukify_hook.unwrapped" "\$@"
+          EOF
+          chmod +x "$ukify_hook"
         '';
       }
     ];

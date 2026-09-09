@@ -17,6 +17,8 @@ in
   mkDerivation {
     pname = "libcap-ng";
     inherit version;
+    # Preserve the bindings separately from the library used by boot tools.
+    outputs = ["out" "python"];
     src = fetchurl {
       urls = ["https://github.com/stevegrubb/libcap-ng/archive/refs/tags/v${version}.tar.gz"];
       hash = "sha256-orQhH1myMdYHxh6ioT6eyzj0Rv52m0ThLak51a9tl4o=";
@@ -93,7 +95,12 @@ in
         name = "install";
         script = ''
           make install
-          python_path=$(find "$out/lib" -type d -name site-packages -print -quit)
+          mkdir -p "$python/lib"
+          for bindings in "$out"/lib/python*; do
+            test -d "$bindings"
+            mv "$bindings" "$python/lib/"
+          done
+          python_path=$(find "$python/lib" -type d -name site-packages -print -quit)
           test -n "$python_path"
           PYTHONPATH="$python_path" ${python3}/bin/python3 -c 'import capng'
         '';
