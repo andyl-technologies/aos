@@ -5383,23 +5383,40 @@ library tests: 151 passed, none failed, and the two installed-systemd tests were
 ignored. The added regressions cover foreign and pending latest attempts,
 repaired active publication, repaired retirement, and authenticated reopen.
 
-This is not yet production qualification. One immutable fleet attempt stopped
-at the non-test Storage build because `repair_intent_record` was imported only
-under `cfg(test)`; commit `6384e28d8240ee33f38ffe38e99bb30b5e81fb18`
-fixed that production import. The next immutable attempt,
+One immutable fleet attempt stopped at the non-test Storage build because
+`repair_intent_record` was imported only under `cfg(test)`; commit
+`6384e28d8240ee33f38ffe38e99bb30b5e81fb18` fixed that production import. The
+next immutable attempt,
 `/nix/store/aih2zmfgni1w27mw31xi863qjq7yrs0n-aos-fleet-test-sandbox-zfs-worker-0.drv`,
 built and booted both guests and invoked the public repair path through fresh
 observation, atomic admission, the repair worker, and durable completion. It
 then failed the repaired catalog assertion with zero workspaces instead of one.
 Its guest log also recorded post-acknowledgement observer failure when an exact
-cgroup membership read was denied after mount-namespace entry. These are
-diagnostic failures, not passing evidence: neither attempt qualifies the repair
-path, and an immutable successor must still pass repair, retry, reopen, and
-teardown under the installed systemd units. Controller orchestration and the
-production RPC handler also remain absent. New-dataset ownership initialization
-and its separate capability decision remain open; Storage Apply stays
-unadvertised and no `SBX-STOR-01`, `SBX-P0-07`, `SBX-P0-08`, or `SBX-P0-10`
-checkbox is closed.
+cgroup membership read was denied after mount-namespace entry. These remain
+diagnostic failures rather than passing evidence.
+
+The immutable successor
+`/nix/store/xl529aw58l7287pycn62ijdy6jn4jhml-aos-fleet-test-sandbox-zfs-worker-0.drv`
+captures the active-publication correction plus an explicit Landlock read rule
+for the detached cgroup mount. Its boundary probe retains its own cgroup
+descriptor before mount-namespace entry, then proves that `cgroup.procs`
+remains readable while `cgroup.kill` remains non-writable through constrained
+`openat2`. The first realization stopped before VM launch when the native
+artifacts derivation aborted with `SIGABRT` and a `stack smashing detected`
+report while compiling vendored `worker` 0.8.5. One bounded retry of that exact
+captured derivation, without recapture or source changes, did not reproduce the
+failure. The native artifacts and downstream AOS checks completed, and both
+installed-systemd guests booted. The full fleet body passed repair, exact retry
+without another worker activation, authenticated journal and catalog reopen,
+and teardown with the repaired bind unmounted, dataset destroyed, and worker
+cgroups unpopulated. The final realized output is
+`/nix/store/p4pbsi6zpwmzya824s90psq6xmprawd2-aos-fleet-test-sandbox-zfs-worker-0`.
+
+This qualifies that installed-unit repair lifecycle, but not a post-admission
+crash-injection path. Controller orchestration and the production RPC handler
+also remain absent. New-dataset ownership initialization and its separate
+capability decision remain open; Storage Apply stays unadvertised and no
+`SBX-STOR-01`, `SBX-P0-07`, `SBX-P0-08`, or `SBX-P0-10` checkbox is closed.
 
 ### Set-ID creation guard source feasibility (design only)
 
