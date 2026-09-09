@@ -5516,13 +5516,29 @@ The captured source and failed output carry the current exact lock digest
 Both contain the same 642 registry archives, every archive matches its locked
 checksum, and their only staging-content difference is 41 lines of local
 workspace package metadata in the lockfile. The commit updates both
-`aos-storaged` and `aos-sandbox-zfs-worker` to the corrected hash. The corrected
-capture is
+`aos-storaged` and `aos-sandbox-zfs-worker` to the corrected hash. The first
+corrected capture was
 `/nix/store/m30m5af3qzbjibyqysv2q5bhjwp7h4yw-aos-fleet-test-sandbox-storage-rpc-0.drv`
 with source
 `/nix/store/961076fgrwks9q0kiw3nblj855r7fifm-aos-workspace-src`.
-A vendor-only realization is still building its updated Rust 1.93.1
-prerequisite; the corrected fleet derivation has not been realized.
+A vendor-only realization then passed for both
+`/nix/store/9hs5w88z3x5ahgkvz806mxzw10q4584c-aos-storaged-vendor-0.1.0-staging`
+and
+`/nix/store/kry2h1m9pz00i4vagqrsyn8z4x6wzx3g-aos-sandbox-zfs-worker-vendor-0.1.0-staging`.
+Both outputs have the corrected NAR hash and current lockfile digest.
+
+After admitted dependency changes, the final exact capture was
+`/nix/store/1s6bxrhvmmmpsb4nq8z6n6ir28rpricm-aos-fleet-test-sandbox-storage-rpc-0.drv`
+with source
+`/nix/store/20shn7cqpigzwiyahyb4h6a8gwy2l8hw-aos-workspace-src`. Its one realization
+built the complete root filesystem, booted the guest agent and reached a
+running system, then failed in the seed fixture before starting the production
+daemon or exercising RPC. The fixture requested a preparation expiry nearly
+600 seconds after admission, beyond the signed authority's 285-second local
+lease fail-stop, and received the expected fail-closed
+`Preparation(ResolutionMismatch)`. Follow-up commit `1b34d1f21` bounds that
+fixture deadline to 240 seconds and adds a focused fractional-clock regression;
+the corrected source has not been recaptured or retried.
 
 This checkpoint does not expose Prepare or Apply, initialize new-dataset root
 ownership, provide the required narrow capability and enforcing-MAC boundary,
