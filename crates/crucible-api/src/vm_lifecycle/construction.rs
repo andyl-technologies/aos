@@ -458,25 +458,27 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             })?;
             launch = launch.with_network_tx_next_sequence(next_sequence);
         }
-        if restored_service_state != Some(ProductionNodeServiceState::PermanentlyFailed) {
-            let block = if let Some(restore) = hot_fork_restore.as_mut() {
-                restore.block_bindings.remove(&vm.id)
-            } else {
-                block_binding_for_vm(source.world(), &vm.id, config.world_artifacts.as_ref())?
-            };
-            if let Some(block) = block {
+        let block = if let Some(restore) = hot_fork_restore.as_mut() {
+            restore.block_bindings.remove(&vm.id)
+        } else {
+            block_binding_for_vm(source.world(), &vm.id, config.world_artifacts.as_ref())?
+        };
+        if let Some(block) = block {
+            if restored_service_state != Some(ProductionNodeServiceState::PermanentlyFailed) {
                 launch = launch.with_shmem_block(block.base.clone(), block.durability.clone());
-                block_bindings.insert(vm.id.clone(), block);
             }
-            let ninep = if let Some(restore) = hot_fork_restore.as_mut() {
-                restore.ninep_bindings.remove(&vm.id)
-            } else {
-                ninep_binding_for_vm(source.world(), &vm.id, config.world_artifacts.as_ref())?
-            };
-            if let Some(ninep) = ninep {
+            block_bindings.insert(vm.id.clone(), block);
+        }
+        let ninep = if let Some(restore) = hot_fork_restore.as_mut() {
+            restore.ninep_bindings.remove(&vm.id)
+        } else {
+            ninep_binding_for_vm(source.world(), &vm.id, config.world_artifacts.as_ref())?
+        };
+        if let Some(ninep) = ninep {
+            if restored_service_state != Some(ProductionNodeServiceState::PermanentlyFailed) {
                 launch = launch.with_shmem_ninep(ninep.tree.clone(), ninep.latency);
-                ninep_bindings.insert(vm.id.clone(), ninep);
             }
+            ninep_bindings.insert(vm.id.clone(), ninep);
         }
         if vm.initrd.is_some() && config.initrd.is_none() {
             return Err(loop_factory_error(format!(
@@ -885,6 +887,38 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 ))
             })?;
     }
+    if let Some(restore) = hot_fork_restore.as_mut() {
+        let scheduler_checkpoint = scheduler.checkpoint().map_err(|error| {
+            loop_factory_error(format!(
+                "capture adopted hot-fork scheduler continuation: {error}"
+            ))
+        })?;
+        let scheduler_identity = scheduler_checkpoint
+            .canonical_bytes()
+            .map(|bytes| ContentHash::from_bytes(&bytes))
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "authenticate adopted hot-fork scheduler continuation: {error}"
+                ))
+            })?;
+        let expected_host_io = std::mem::take(&mut restore.active_host_io);
+        for (node, expected) in expected_host_io {
+            let observed = backends
+                .checkpoint_host_io_projection(&node, scheduler_identity)
+                .map_err(|error| {
+                    loop_factory_error(format!(
+                        "capture adopted host-I/O projection for `{}`: {error}",
+                        node.name
+                    ))
+                })?;
+            if observed != expected {
+                return Err(loop_factory_error(format!(
+                    "adopted host-I/O continuation differs for `{}`",
+                    node.name
+                )));
+            }
+        }
+    }
     let trigger_graph = source
         .plan()
         .lower_to_event_graph_for_world(source.world())
@@ -1018,6 +1052,9 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         .has_search_overrides();
     let mut block_device_map = BTreeMap::new();
     for (node, block) in &block_bindings {
+        if node_service_states.get(node) == Some(&ProductionNodeServiceState::PermanentlyFailed) {
+            continue;
+        }
         let handle = backends.shared_block_device(node).map_err(|error| {
             loop_factory_error(format!(
                 "locate authoritative block device for `{}`: {error}",
@@ -1036,6 +1073,9 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     }
     let block_devices = Arc::new(std::sync::Mutex::new(block_device_map));
     for (node, block) in &block_bindings {
+        if node_service_states.get(node) == Some(&ProductionNodeServiceState::PermanentlyFailed) {
+            continue;
+        }
         backends
             .install_block_fault_coordinator(
                 node,
@@ -1059,6 +1099,9 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             })?;
     }
     for (node, ninep) in &ninep_bindings {
+        if node_service_states.get(node) == Some(&ProductionNodeServiceState::PermanentlyFailed) {
+            continue;
+        }
         backends
             .install_ninep_fault_coordinator(
                 node,
@@ -1109,6 +1152,11 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             network_interceptor,
         )
     };
+    let failed_host_io = restore_checkpoint
+        .as_ref()
+        .map_or_else(BTreeMap::new, |checkpoint| {
+            checkpoint.failed_host_io.clone()
+        });
     let mut lifecycle = ProductionVmLifecycleLoop {
         inner,
         trigger_graph,
@@ -1138,6 +1186,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         block_bindings,
         ninep_bindings,
         block_devices,
+        failed_host_io,
         storage_fault_observations,
         fault_runtime,
         fault_replay_installed,

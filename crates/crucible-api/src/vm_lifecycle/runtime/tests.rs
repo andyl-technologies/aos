@@ -871,6 +871,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         block_bindings: BTreeMap::new(),
         ninep_bindings: BTreeMap::new(),
         block_devices: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+        failed_host_io: BTreeMap::new(),
         storage_fault_observations,
         fault_runtime,
         fault_evaluation_cursor,

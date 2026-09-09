@@ -125,6 +125,27 @@ pub fn prepared_multi_node_hot_fork_source_world_for_scenario_for_test(
         lifecycle
             .node_service_states
             .insert(vm.id.clone(), ProductionNodeServiceState::PermanentlyFailed);
+        lifecycle.failed_host_io.insert(
+            vm.id.clone(),
+            ProductionFailedNodeState::new(
+                &vm.id,
+                QemuHostIoCheckpoint::without_devices(ContentHash::from_canonical_material(
+                    "crucible.test.failed-host-io-binding.v1",
+                    &vm.id.name,
+                )),
+                FingerprintSample {
+                    node: vm.id.clone(),
+                    at: VirtualTime::default(),
+                    fingerprint: ExecutionFingerprint {
+                        hash: ContentHash::from_canonical_material(
+                            "crucible.test.failed-node-fingerprint.v1",
+                            &vm.id.name,
+                        ),
+                    },
+                },
+            )
+            .map_err(|error| test_support_error("construct failed-node fixture", error))?,
+        );
         lifecycle
             .inner
             .loop_impl_mut()
@@ -172,6 +193,7 @@ pub fn prepared_multi_node_hot_fork_source_world_for_scenario_for_test(
         lifecycle
             .node_service_states
             .insert(retained_node.clone(), ProductionNodeServiceState::Running);
+        lifecycle.failed_host_io.remove(&retained_node);
         lifecycle
             .inner
             .loop_impl_mut()
@@ -295,6 +317,7 @@ fn lifecycle_without_backends(
         block_bindings: BTreeMap::new(),
         ninep_bindings: BTreeMap::new(),
         block_devices: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+        failed_host_io: BTreeMap::new(),
         storage_fault_observations,
         fault_runtime,
         fault_evaluation_cursor,

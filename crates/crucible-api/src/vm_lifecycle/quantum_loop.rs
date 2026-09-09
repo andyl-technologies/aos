@@ -736,6 +736,21 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
     }
 
     fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        if self.node_service_states.get(&node)
+            == Some(&ProductionNodeServiceState::PermanentlyFailed)
+        {
+            return self
+                .failed_host_io
+                .get(&node)
+                .map(|failed| failed.fingerprint.clone())
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "permanently failed node `{}` has no retained fingerprint authority",
+                        node.name
+                    ),
+                });
+        }
+
         self.inner.sample_fingerprint(node)
     }
 
@@ -1353,6 +1368,34 @@ impl ProductionVmLifecycleLoop {
                 terminal.iter().map(|item| &item.decision.node),
                 &lifecycle_precommit.checkpoint,
             )?;
+        let mut terminal_fingerprints = BTreeMap::new();
+        for item in &terminal {
+            let node = &item.decision.node;
+            if item.decision.effective_transition
+                != crucible::model::NodeLifecycleTransition::PermanentFailure
+            {
+                continue;
+            }
+
+            let sample = self.inner.backend_mut().fingerprint(node.clone())?;
+            let observed_time = self.inner.backend().node_now(node)?;
+            if sample.node != *node || sample.at != observed_time {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal fingerprint for `{}` differs from its live node boundary",
+                        node.name
+                    ),
+                });
+            }
+            if terminal_fingerprints.insert(node.clone(), sample).is_some() {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal lifecycle batch repeats permanently failed node `{}`",
+                        node.name
+                    ),
+                });
+            }
+        }
         let mut prepared = std::mem::take(&mut lifecycle_precommit.prepared_replacements);
         debug_assert!(prepared.capacity() >= terminal.len());
         for terminal in terminal {
@@ -1385,6 +1428,7 @@ impl ProductionVmLifecycleLoop {
                     ),
                 });
             }
+            let terminal_fingerprint = terminal_fingerprints.remove(&decision.node);
             let snapshot = self
                 .inner
                 .backend_mut()
@@ -1392,6 +1436,9 @@ impl ProductionVmLifecycleLoop {
                     &decision.node,
                     Arc::clone(&lifecycle_precommit.checkpoint),
                 )?;
+            debug_assert!(terminal_fingerprint.as_ref().is_none_or(|sample| {
+                sample.at == snapshot.node_continuation().last_observed_time()
+            }));
             let ownership = process_owner.terminal_ownership.take().ok_or_else(|| {
                 SchedulerError::BoundaryViolation {
                     message: format!(
@@ -1456,6 +1503,7 @@ impl ProductionVmLifecycleLoop {
                 debug_backend_path: selected.debug_backend_path,
                 decision,
                 snapshot,
+                terminal_fingerprint,
                 source_run_directory,
                 run_directory,
                 launch,
@@ -1469,6 +1517,7 @@ impl ProductionVmLifecycleLoop {
                 process_owner: Some(process_owner),
             });
         }
+        debug_assert!(terminal_fingerprints.is_empty());
         for replacement in &mut prepared {
             if let Err(error) = self.stage_terminal_replacement(replacement) {
                 let containment = Self::abort_staged_terminal_replacements(&mut prepared);
@@ -1637,6 +1686,8 @@ impl ProductionVmLifecycleLoop {
         }
         let mut block_handles = std::mem::take(&mut lifecycle_precommit.block_handles);
         debug_assert!(block_handles.capacity() >= prepared.len());
+        let mut committed_failed_host_io = self.failed_host_io.clone();
+        let mut failed_block_devices = Vec::new();
         for item in prepared.iter() {
             self.inner
                 .loop_impl()
@@ -1653,6 +1704,34 @@ impl ProductionVmLifecycleLoop {
                     }
                 })?;
                 block_handles.push((binding.device_hash(), handle));
+            }
+            if item.service_state == ProductionNodeServiceState::PermanentlyFailed {
+                let failed = ProductionFailedNodeState::new(
+                    &item.decision.node,
+                    item.snapshot.host_io().clone(),
+                    item.terminal_fingerprint.clone().ok_or_else(|| {
+                        SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "permanently failed node `{}` lost its terminal fingerprint",
+                                item.decision.node.name
+                            ),
+                        }
+                    })?,
+                )?;
+                if committed_failed_host_io
+                    .insert(item.decision.node.clone(), failed)
+                    .is_some()
+                {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "permanently failed node `{}` already owns retained host I/O",
+                            item.decision.node.name
+                        ),
+                    });
+                }
+                if let Some(binding) = self.block_bindings.get(&item.decision.node) {
+                    failed_block_devices.push(binding.device_hash());
+                }
             }
             if !self.node_service_states.contains_key(&item.decision.node)
                 || !self.node_run_directories.contains_key(&item.decision.node)
@@ -1695,6 +1774,9 @@ impl ProductionVmLifecycleLoop {
         if block_handles
             .iter()
             .any(|(device, _handle)| block_devices.get(device).is_none())
+            || failed_block_devices
+                .iter()
+                .any(|device| block_devices.get(device).is_none())
         {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("terminal replacement lost a prevalidated block owner"),
@@ -1725,6 +1807,7 @@ impl ProductionVmLifecycleLoop {
             .inner
             .backend_mut()
             .commit_terminal_replacements(plan, replacement_values);
+        self.failed_host_io = committed_failed_host_io;
         // Backend ownership changes atomically, but the exact generation
         // leases still have to move into the active map. Keep aggregate
         // authority quarantined if any invariant fails during that handoff.
@@ -1739,6 +1822,10 @@ impl ProductionVmLifecycleLoop {
                 }
             })?;
             *slot = handle;
+        }
+        for device in failed_block_devices {
+            let removed = block_devices.remove(&device);
+            debug_assert!(removed.is_some());
         }
         drop(block_devices);
 
@@ -2212,6 +2299,14 @@ impl ProductionVmLifecycleLoop {
                 );
             }
 
+            validate_failed_host_io_topology(
+                &self.source,
+                &node_service_states,
+                &self.failed_host_io,
+            )
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("validate failed-node host I/O: {error}"),
+            })?;
             let mut checkpoint_set = ProductionVmExactCheckpointSet {
                 identity: ContentHash::default(),
                 configuration: configuration.clone(),
@@ -2228,6 +2323,7 @@ impl ProductionVmLifecycleLoop {
                 selectable_catalog_plans: self.inner.backend_mut().selectable_catalog_plans(),
                 fault_checkpoint: Some(fault_checkpoint),
                 targets,
+                failed_host_io: self.failed_host_io.clone(),
                 node_generations,
                 node_service_states,
             };
