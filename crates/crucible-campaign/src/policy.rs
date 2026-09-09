@@ -11,13 +11,19 @@ use super::{
     ScenarioDefId,
 };
 
+mod smc;
 mod statistical;
 
+pub use smc::{
+    MAX_SMC_TOTAL_PARTICLE_TRANSITIONS, SequentialMonteCarloDesign, SmcOpportunitySelector,
+    SmcResamplingAlgorithm, SmcResamplingPolicy, SmcStagePlan,
+};
 pub use statistical::{StatisticalDistribution, StatisticalDrawPlan, StatisticalSamplingDesign};
 
 const LEGACY_CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 1;
 const INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 2;
-const CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 3;
+const FINITE_STATISTICAL_CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 3;
+const CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 4;
 pub(crate) const MAX_POLICY_ENTRIES: usize = 4_096;
 const MAX_CAMPAIGN_POLICY_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_IDENTIFIER_BYTES: usize = 512;
@@ -1309,6 +1315,7 @@ pub struct CampaignPolicy {
     admit_scenario_defaults: bool,
     intervention_learning: InterventionLearningPolicy,
     statistical_sampling: Option<StatisticalSamplingDesign>,
+    sequential_monte_carlo: Option<SequentialMonteCarloDesign>,
 }
 
 /// Controls whether intervention observations may guide adaptive exploration.
@@ -1382,6 +1389,7 @@ impl CampaignPolicy {
             admit_scenario_defaults,
             InterventionLearningPolicy::Exclude,
             None,
+            None,
         )
     }
 
@@ -1402,16 +1410,52 @@ impl CampaignPolicy {
         admit_scenario_defaults: bool,
         intervention_learning: InterventionLearningPolicy,
         statistical_sampling: Option<StatisticalSamplingDesign>,
+        sequential_monte_carlo: Option<SequentialMonteCarloDesign>,
     ) -> Result<Self, CampaignCodecError> {
         explorer.validate()?;
-        if statistical_sampling.is_some()
-            && (schema_version != CAMPAIGN_POLICY_SCHEMA_VERSION
-                || mode != CampaignMode::Statistical
-                || !matches!(explorer, ExplorerPolicy::Exhaustive { .. }))
-        {
+        let statistical_shape_is_valid = match schema_version {
+            LEGACY_CAMPAIGN_POLICY_SCHEMA_VERSION | INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION => {
+                statistical_sampling.is_none() && sequential_monte_carlo.is_none()
+            }
+            FINITE_STATISTICAL_CAMPAIGN_POLICY_SCHEMA_VERSION => {
+                statistical_sampling.is_some()
+                    && sequential_monte_carlo.is_none()
+                    && mode == CampaignMode::Statistical
+                    && matches!(explorer, ExplorerPolicy::Exhaustive { .. })
+            }
+            CAMPAIGN_POLICY_SCHEMA_VERSION => {
+                statistical_sampling.is_some()
+                    && sequential_monte_carlo.is_some()
+                    && mode == CampaignMode::Statistical
+            }
+            _ => false,
+        };
+        if !statistical_shape_is_valid {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "statistical sampling design disagrees with campaign policy",
             });
+        }
+        if let (Some(initial), Some(sequential)) = (&statistical_sampling, &sequential_monte_carlo)
+        {
+            let particle_count = usize::try_from(sequential.particle_count()).map_err(|_| {
+                CampaignCodecError::InvalidValue {
+                    reason: "SMC particle count cannot be represented",
+                }
+            })?;
+            if initial.estimand_endpoints().len() != particle_count
+                || initial.distributions().iter().any(|(model, distribution)| {
+                    sequential
+                        .distributions()
+                        .get(model)
+                        .is_some_and(|sequential_distribution| {
+                            sequential_distribution != distribution
+                        })
+                })
+            {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "SMC design disagrees with initial statistical flight",
+                });
+            }
         }
         for length in [
             choice_policies.len(),
@@ -1464,6 +1508,7 @@ impl CampaignPolicy {
             admit_scenario_defaults,
             intervention_learning,
             statistical_sampling,
+            sequential_monte_carlo,
         };
         codec::ensure_encoded_size(
             &policy,
@@ -1514,12 +1559,13 @@ impl CampaignPolicy {
     ) -> Result<Self, CampaignCodecError> {
         if self.mode != CampaignMode::Statistical
             || !matches!(self.explorer, ExplorerPolicy::Exhaustive { .. })
+            || self.sequential_monte_carlo.is_some()
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "statistical sampling design requires static exhaustive policy",
             });
         }
-        self.schema_version = CAMPAIGN_POLICY_SCHEMA_VERSION;
+        self.schema_version = FINITE_STATISTICAL_CAMPAIGN_POLICY_SCHEMA_VERSION;
         self.statistical_sampling = Some(design);
         codec::ensure_encoded_size(
             &self,
@@ -1527,6 +1573,46 @@ impl CampaignPolicy {
             "campaign-policy-encoded-bytes",
         )?;
         Ok(self)
+    }
+
+    /// Returns a version-four policy with a bounded SMC extension.
+    ///
+    /// The finite design supplies the complete stage-zero particle flight. The
+    /// SMC design predeclares all later selector/model contexts and deterministic
+    /// resampling policy. Probability reports remain unavailable until the full
+    /// SMC planner and estimator validate every generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if this is not a statistical policy, the
+    /// initial endpoint count differs from the fixed particle count, a reused
+    /// model ID names conflicting distributions, or the encoded policy exceeds
+    /// its size bound.
+    pub fn with_sequential_monte_carlo_design(
+        mut self,
+        initial_sampling: StatisticalSamplingDesign,
+        sequential_monte_carlo: SequentialMonteCarloDesign,
+    ) -> Result<Self, CampaignCodecError> {
+        self.schema_version = CAMPAIGN_POLICY_SCHEMA_VERSION;
+        self.statistical_sampling = Some(initial_sampling);
+        self.sequential_monte_carlo = Some(sequential_monte_carlo);
+        Self::new_for_schema(
+            self.schema_version,
+            self.scenario,
+            self.campaign_seed,
+            self.mode,
+            self.explorer,
+            self.choice_policies,
+            self.objectives,
+            self.guidance,
+            self.stop_conditions,
+            self.fairness,
+            self.retention,
+            self.admit_scenario_defaults,
+            self.intervention_learning,
+            self.statistical_sampling,
+            self.sequential_monte_carlo,
+        )
     }
 
     /// Returns the referenced immutable scenario.
@@ -1617,6 +1703,12 @@ impl CampaignPolicy {
         self.statistical_sampling.as_ref()
     }
 
+    /// Returns the sequential Monte Carlo extension pinned for this policy.
+    #[must_use]
+    pub const fn sequential_monte_carlo_design(&self) -> Option<&SequentialMonteCarloDesign> {
+        self.sequential_monte_carlo.as_ref()
+    }
+
     pub(crate) const fn schema_version(&self) -> u32 {
         self.schema_version
     }
@@ -1696,8 +1788,11 @@ impl Canonical for CampaignPolicy {
         if self.schema_version >= INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION {
             self.intervention_learning.encode(encoder);
         }
-        if self.schema_version >= CAMPAIGN_POLICY_SCHEMA_VERSION {
+        if self.schema_version >= FINITE_STATISTICAL_CAMPAIGN_POLICY_SCHEMA_VERSION {
             self.statistical_sampling.encode(encoder);
+        }
+        if self.schema_version >= CAMPAIGN_POLICY_SCHEMA_VERSION {
+            self.sequential_monte_carlo.encode(encoder);
         }
     }
 
@@ -1707,6 +1802,7 @@ impl Canonical for CampaignPolicy {
             schema_version,
             LEGACY_CAMPAIGN_POLICY_SCHEMA_VERSION
                 | INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION
+                | FINITE_STATISTICAL_CAMPAIGN_POLICY_SCHEMA_VERSION
                 | CAMPAIGN_POLICY_SCHEMA_VERSION
         ) {
             return Err(CampaignCodecError::InvalidValue {
@@ -1749,12 +1845,25 @@ impl Canonical for CampaignPolicy {
         } else {
             InterventionLearningPolicy::Exclude
         };
-        let statistical_sampling = if schema_version >= CAMPAIGN_POLICY_SCHEMA_VERSION {
+        let statistical_sampling =
+            if schema_version >= FINITE_STATISTICAL_CAMPAIGN_POLICY_SCHEMA_VERSION {
+                Option::decode(decoder)?
+            } else {
+                None
+            };
+        let sequential_monte_carlo = if schema_version >= CAMPAIGN_POLICY_SCHEMA_VERSION {
             Option::decode(decoder)?
         } else {
             None
         };
-        if statistical_sampling.is_some() != (schema_version == CAMPAIGN_POLICY_SCHEMA_VERSION) {
+        if statistical_sampling.is_some()
+            != matches!(
+                schema_version,
+                FINITE_STATISTICAL_CAMPAIGN_POLICY_SCHEMA_VERSION | CAMPAIGN_POLICY_SCHEMA_VERSION
+            )
+            || sequential_monte_carlo.is_some()
+                != (schema_version == CAMPAIGN_POLICY_SCHEMA_VERSION)
+        {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "campaign-policy statistical design disagrees with schema",
             });
@@ -1774,6 +1883,7 @@ impl Canonical for CampaignPolicy {
             admit_scenario_defaults,
             intervention_learning,
             statistical_sampling,
+            sequential_monte_carlo,
         )
     }
 }
