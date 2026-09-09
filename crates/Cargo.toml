@@ -5,6 +5,7 @@ members = [
     "aos-oci",
     "aos-oci-types",
     "aos-contract",
+    "aos-ability-model",
     "aos-maintain",
     "aos-core",
     "aos-boot-identity",
@@ -201,6 +202,7 @@ rcgen = "0.14"
 
 # Internal crates
 aos-contract = { path = "aos-contract" }
+aos-ability-model = { path = "aos-ability-model" }
 aos-maintain = { path = "aos-maintain" }
 crucible-cas = { path = "crucible-cas" }
 aos-core = { path = "aos-core" }

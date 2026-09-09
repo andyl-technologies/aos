@@ -216,6 +216,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-ability-model"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-contract",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "aos-boot-identity"
 version = "0.1.0"
 
