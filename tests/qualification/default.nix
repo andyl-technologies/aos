@@ -39,13 +39,15 @@
   imageRecovery = builtins.head (
     builtins.filter (requirement: requirement.id == "image-update-recovery") contract.requirements
   );
+  k3sBindings = import ./k3s-bindings.nix {inherit pkgs;};
 in
   assert builtins.elem "checks.fleet.measured-boot" imageRecovery.regressions;
   assert (resolve "checks.fleet.measured-boot").drvPath == fleet.measured-boot.drvPath;
   groups
   // {
     policy = import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;};
-    all = aggregate "all-regressions" ([(import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;})] ++ builtins.attrValues groups);
+    k3s-bindings = k3sBindings;
+    all = aggregate "all-regressions" ([(import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;}) k3sBindings] ++ builtins.attrValues groups);
     # Evaluating this inventory resolves every reference, including sparse
     # groups, before an expensive VM campaign starts.
     inventory = builtins.listToAttrs (map (requirement: {

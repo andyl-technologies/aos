@@ -45,8 +45,9 @@ in {
     inherit_dependency_obligations = (option lib.types.bool "Preserves obligations inherited through runtime dependencies.") // {default = true;};
     execution =
       (option (lib.types.nullOr (closed {
-        kind = option (lib.types.enum ["recovery-image"]) "Special execution environment required by this package.";
+        kind = option (lib.types.enum ["recovery-image" "k3s-fleet"]) "Special execution environment required by this package.";
         system_variant = text "System image variant carrying the package.";
+        topology = (option (lib.types.nullOr (lib.types.enum ["combined-worker" "control-plane-worker"])) "K3s roles whose exact packages and workload container enter the case subjects.") // {default = null;};
       })) "Image execution required to prove this package's behavior.")
       // {default = null;};
   };

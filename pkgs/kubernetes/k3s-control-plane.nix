@@ -1,5 +1,6 @@
 {
   lib,
+  callPackage,
   mkDerivation,
   k3s,
   containerd,
@@ -18,6 +19,7 @@
   writeShellScriptBin,
 }: let
   mkK3sExposePackage = import ./_k3s-expose-package.nix {
+    pause = callPackage ./_k3s-pause-image.nix {};
     inherit
       lib
       mkDerivation
@@ -43,7 +45,9 @@ in
     pname = "k3s-control-plane";
     role = "control-plane";
     description = "Lightweight Kubernetes (control plane, no agent)";
-    command = "server --disable-agent";
+    # Agentless servers need the worker tunnels to reach aggregated APIs and
+    # admission webhooks; they have no local flannel or kube-proxy routes.
+    command = "server --disable-agent --egress-selector-mode=cluster";
     requiredEnv = [];
     evidenceSources = [./k3s-control-plane.nix];
     stateDirectories = ["rancher/k3s"];

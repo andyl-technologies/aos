@@ -3,7 +3,7 @@
 //! A plan closes package eligibility across all four targets and closes image
 //! intent across both Linux targets. There is no implicit missing cell.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context as _, Result, bail};
 use semver::Version;
@@ -77,6 +77,33 @@ pub struct PlatformCell<T> {
 pub struct PlannedArtifactSet {
     /// Exact planned artifacts the final manifest must resolve.
     pub artifacts: Vec<PlannedArtifact>,
+    /// Package configuration companions and their runtime dependency bindings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<PackageConfigurationBinding>,
+}
+
+/// Associates a package's configuration source with its publication evaluator.
+///
+/// Both artifact ids refer to independently built outputs in the same package
+/// platform cell. Dependency paths name exact members of the runtime closure;
+/// registry authoring checks that closure before evaluating the module.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageConfigurationBinding {
+    /// Artifact containing the package-owned configuration module source.
+    pub module_artifact: String,
+    /// Artifact containing the immutable base library used for publication.
+    pub evaluation_base_artifact: String,
+    /// Named runtime outputs supplied to the configuration evaluator.
+    pub dependency_outputs: BTreeMap<String, String>,
+}
+
+impl PackageConfigurationBinding {
+    /// Returns whether an artifact supplies configuration publication inputs.
+    #[must_use]
+    pub fn is_companion(&self, id: &str) -> bool {
+        self.module_artifact == id || self.evaluation_base_artifact == id
+    }
 }
 
 /// Frozen Nix identity for one planned output or non-Nix final artifact.
@@ -96,7 +123,14 @@ pub struct PlannedArtifact {
 }
 
 impl PlannedArtifactSet {
-    fn validate(&self) -> Result<()> {
+    /// Validates artifact identities and configuration companion relationships.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for missing, duplicate, or malformed Nix identities,
+    /// invalid source paths, or configuration bindings that omit a distinct
+    /// module, evaluation base, or primary runtime output.
+    pub(crate) fn validate(&self) -> Result<()> {
         if self.artifacts.is_empty() {
             bail!("planned artifact set cannot be empty");
         }
@@ -130,6 +164,46 @@ impl PlannedArtifactSet {
                 require_store_path(source, false)?;
             }
         }
+
+        if let Some(configuration) = &self.configuration {
+            let module = self
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.id == configuration.module_artifact)
+                .context("package configuration module artifact is absent")?;
+            let base = self
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.id == configuration.evaluation_base_artifact)
+                .context("package configuration evaluation base artifact is absent")?;
+            if module.id == base.id
+                || module.output.as_deref() != Some("config")
+                || base.output.as_deref() != Some("out")
+                || module.derivation.is_none()
+                || base.derivation.is_none()
+                || module.source_store_paths.is_empty()
+                || base.source_store_paths.is_empty()
+            {
+                bail!("package configuration companions lack distinct complete Nix identities");
+            }
+            if self
+                .artifacts
+                .iter()
+                .filter(|artifact| {
+                    !configuration.is_companion(&artifact.id)
+                        && artifact.output.as_deref() == Some("out")
+                })
+                .count()
+                != 1
+            {
+                bail!("configured package must retain exactly one primary runtime output");
+            }
+            for (name, path) in &configuration.dependency_outputs {
+                require_identifier(name, "configuration dependency name")?;
+                require_store_path(path, false)?;
+            }
+        }
+
         require_unique_by(
             &self.artifacts,
             |artifact| &artifact.id,
@@ -586,6 +660,9 @@ fn validate_cells(
         cell.decision.validate()?;
         if let MatrixCell::Artifact { artifact } = &cell.decision {
             artifact.validate()?;
+            if image && artifact.configuration.is_some() {
+                bail!("image artifacts cannot declare package configuration companions");
+            }
         }
         if release_class.requires_complete_matrix() && cell.decision.is_blocked() {
             bail!("stable or emergency release contains a blocked matrix cell");

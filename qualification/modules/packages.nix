@@ -21,7 +21,7 @@ in {
     };
     workloadPackages = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = ["nginx" "containerd" "runc"];
+      default = ["nginx" "containerd" "runc" "k3s" "k3s-combined" "k3s-control-plane" "k3s-worker"];
       description = "Roots requiring the full declared workload lifecycle.";
     };
   };
@@ -39,23 +39,44 @@ in {
     };
     packageRules = builtins.listToAttrs (map (name: {
         inherit name;
-        value = {
-          role = lib.mkDefault (
-            if builtins.elem name cfg.integrityPackages
-            then "system-integrity"
-            else if builtins.elem name cfg.workloadPackages
-            then "qualified-workload"
-            else "general-catalog"
-          );
-        } // lib.optionalAttrs (name == "aos-recovery") {
-          execution = {
-            kind = "recovery-image";
-            system_variant = "server";
+        value =
+          {
+            role = lib.mkDefault (
+              if builtins.elem name cfg.integrityPackages
+              then "system-integrity"
+              else if builtins.elem name cfg.workloadPackages
+              then "qualified-workload"
+              else "general-catalog"
+            );
+          }
+          // lib.optionalAttrs (name == "aos-recovery") {
+            execution = {
+              kind = "recovery-image";
+              system_variant = "server";
+            };
+          }
+          // lib.optionalAttrs (builtins.elem name ["k3s" "k3s-combined" "k3s-control-plane" "k3s-worker"]) {
+            execution = {
+              kind = "k3s-fleet";
+              system_variant = "server";
+              topology =
+                if builtins.elem name ["k3s-control-plane" "k3s-worker"]
+                then "control-plane-worker"
+                else "combined-worker";
+            };
           };
-        };
       })
       packageNames);
     assertions = [
+      {
+        assertion = builtins.all (
+          rule:
+            rule.execution
+            == null
+            || ((rule.execution.kind == "k3s-fleet") == (rule.execution.topology != null))
+        ) (builtins.attrValues cfg.packageRules);
+        message = "K3s package execution requires a topology; recovery execution does not accept one.";
+      }
       {
         assertion =
           builtins.attrNames cfg.packageRules

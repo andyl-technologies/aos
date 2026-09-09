@@ -782,9 +782,19 @@ pub(crate) async fn publish_canonical_release_entry(
     homepage: Option<&str>,
     license: &str,
     maintainer: &str,
+    configuration: Option<&crate::registry::release::RegistryReleaseConfiguration>,
     provenance_signer: &mut dyn ProvenanceSigner,
     printer: &Printer,
 ) -> Result<()> {
+    let config_dependencies = configuration
+        .map(|configuration| {
+            configuration
+                .dependency_outputs
+                .iter()
+                .map(|(name, path)| format!("{name}={path}"))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     publish_to_registry_directory(
         config,
         dir,
@@ -806,10 +816,10 @@ pub(crate) async fn publish_canonical_release_entry(
         &[],
         &[],
         None,
+        configuration.map(|configuration| configuration.module_store_path.as_str()),
+        configuration.map(|configuration| configuration.evaluation_base_store_path.as_str()),
         None,
-        None,
-        None,
-        &[],
+        &config_dependencies,
         false,
         false,
         true,

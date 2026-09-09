@@ -32,6 +32,10 @@ use crate::qualification::{
     QualificationRequirement, QualificationScope, QualificationTarget, TargetKind,
 };
 
+#[cfg(test)]
+#[path = "qualification_k3s_tests.rs"]
+mod k3s_tests;
+
 /// A prior accepted snapshot selected before qualification begins.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -283,8 +287,9 @@ pub fn cases(
                             .iter()
                             .any(|id| id == "image-update-recovery")
                 })
-                || package_rule.is_some_and(|rule| rule.execution.is_some())
-            {
+                || package_rule.is_some_and(|rule| {
+                    matches!(rule.execution, Some(PackageExecution::RecoveryImage { .. }))
+                }) {
                 Some(plan.qualification_predecessor.clone().ok_or_else(|| {
                     anyhow::anyhow!("qualification execution requires a frozen predecessor")
                 })?)
@@ -384,16 +389,15 @@ pub fn cases(
                                     anyhow::anyhow!("package lacks its criticality classification")
                                 })?;
                             let mut subjects = artifact.artifact_ids.clone();
-                            if let Some(PackageExecution::RecoveryImage { system_variant }) =
-                                &rule.execution
-                            {
+                            if let Some(execution) = &rule.execution {
+                                let system_variant = execution.system_variant();
                                 let image = manifest
                                     .images
                                     .iter()
-                                    .find(|image| image.system_variant == *system_variant)
+                                    .find(|image| image.system_variant == system_variant)
                                     .ok_or_else(|| {
                                         anyhow::anyhow!(
-                                            "package {} requires absent recovery image variant {}",
+                                            "package {} requires absent execution image variant {}",
                                             package.name,
                                             system_variant
                                         )
@@ -404,7 +408,7 @@ pub fn cases(
                                     .find(|image_cell| image_cell.platform == cell.platform)
                                     .ok_or_else(|| {
                                         anyhow::anyhow!(
-                                            "package {} recovery image lacks platform {}",
+                                            "package {} execution image lacks platform {}",
                                             package.name,
                                             cell.platform
                                         )
@@ -414,11 +418,18 @@ pub fn cases(
                                 } = &image_cell.decision
                                 else {
                                     bail!(
-                                        "package {} recovery image platform is not an artifact",
+                                        "package {} execution image platform is not an artifact",
                                         package.name
                                     );
                                 };
                                 subjects.extend(image_artifact.artifact_ids.iter().cloned());
+                                if let PackageExecution::K3sFleet { topology, .. } = execution {
+                                    subjects.extend(k3s_fleet_subjects(
+                                        manifest,
+                                        cell.platform,
+                                        *topology,
+                                    )?);
+                                }
                             }
                             add(
                                 format!("{}/{}", package.name, cell.platform),
@@ -507,6 +518,85 @@ pub fn cases(
     }
     result.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(result)
+}
+
+/// Binds every service package and the published workload used by a K3s fleet.
+fn k3s_fleet_subjects(
+    manifest: &ReleaseManifestV1,
+    platform: Platform,
+    topology: crate::qualification::K3sTopology,
+) -> Result<Vec<String>> {
+    if !platform.supports_images() {
+        bail!("K3s fleet qualification requires a Linux platform");
+    }
+
+    let mut subjects = Vec::new();
+    for name in topology.packages() {
+        let package = manifest
+            .packages
+            .iter()
+            .find(|package| package.name == name)
+            .ok_or_else(|| anyhow::anyhow!("K3s fleet lacks package {name}"))?;
+        let cell = package
+            .platforms
+            .iter()
+            .find(|cell| cell.platform == platform)
+            .ok_or_else(|| anyhow::anyhow!("K3s fleet package {name} lacks platform {platform}"))?;
+        let MatrixCell::Artifact { artifact } = &cell.decision else {
+            bail!("K3s fleet package {name}/{platform} is not an artifact");
+        };
+        if name != "k3s" {
+            let configuration = artifact.configuration.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("K3s fleet {name} lacks its configuration binding")
+            })?;
+            for (id, output) in [
+                (&configuration.module_artifact, "config"),
+                (&configuration.evaluation_base_artifact, "out"),
+            ] {
+                if !artifact.artifact_ids.contains(id)
+                    || !manifest.artifacts.iter().any(|record| {
+                        record.id == *id
+                            && record.kind == ArtifactKind::PackageNar
+                            && record.platform == Some(platform)
+                            && record.output.as_deref() == Some(output)
+                    })
+                {
+                    bail!("K3s fleet {name} lacks its exact configuration companion {id}");
+                }
+            }
+        }
+        subjects.extend(artifact.artifact_ids.iter().cloned());
+    }
+
+    // The release manifest currently carries one published OCI index. Reject
+    // ambiguity instead of selecting a workload by ordering or a mutable tag.
+    let indexes: Vec<_> = manifest
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == ArtifactKind::OciIndex)
+        .collect();
+    let manifests: Vec<_> = manifest
+        .artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact.kind == ArtifactKind::OciManifest && artifact.platform == Some(platform)
+        })
+        .collect();
+    if indexes.len() != 1 || manifests.len() != 1 {
+        bail!("K3s fleet requires one published OCI index and platform manifest");
+    }
+    subjects.extend(indexes.into_iter().map(|artifact| artifact.id.clone()));
+    subjects.extend(manifests.into_iter().map(|artifact| artifact.id.clone()));
+    subjects.extend(
+        manifest
+            .artifacts
+            .iter()
+            .filter(|artifact| {
+                artifact.kind == ArtifactKind::OciBlob && artifact.platform == Some(platform)
+            })
+            .map(|artifact| artifact.id.clone()),
+    );
+    Ok(subjects)
 }
 
 fn inherited_package_roles(

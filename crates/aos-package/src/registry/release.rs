@@ -49,6 +49,21 @@ pub struct RegistryReleaseEntry {
     pub output: String,
     /// Exact realized store output expected in the catalog or named-output map.
     pub store_path: String,
+    /// Exact configuration publication inputs for the primary runtime output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<RegistryReleaseConfiguration>,
+}
+
+/// Frozen companion paths used to author a package's configuration interface.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryReleaseConfiguration {
+    /// Independently built package configuration module source.
+    pub module_store_path: String,
+    /// Immutable base library used for options and documentation evaluation.
+    pub evaluation_base_store_path: String,
+    /// Exact named outputs that must belong to the package runtime closure.
+    pub dependency_outputs: BTreeMap<String, String>,
 }
 
 fn default_output_name() -> String {
@@ -136,6 +151,7 @@ impl RegistryEntryAuthor for CanonicalRegistryEntryAuthor<'_> {
             publication.homepage.as_deref(),
             &publication.license_expression,
             &maintainer,
+            entry.configuration.as_ref(),
             self.signer,
             self.printer,
         )
@@ -736,6 +752,33 @@ fn validate_release_identity_and_entries(
         if !entry.store_path.starts_with("/nix/store/") {
             bail!("entry '{}' has invalid store path", entry.id);
         }
+        if let Some(configuration) = &entry.configuration {
+            if entry.output != "out"
+                || configuration.module_store_path == configuration.evaluation_base_store_path
+                || configuration.module_store_path == entry.store_path
+                || configuration.evaluation_base_store_path == entry.store_path
+            {
+                bail!("configuration companions require a distinct primary runtime output");
+            }
+            for path in [
+                &configuration.module_store_path,
+                &configuration.evaluation_base_store_path,
+            ]
+            .into_iter()
+            .chain(configuration.dependency_outputs.values())
+            {
+                if !path.starts_with("/nix/store/")
+                    || path["/nix/store/".len()..].contains('/')
+                    || path.ends_with(".drv")
+                {
+                    bail!("configuration publication requires exact store output roots");
+                }
+                aos_registry_surface::store::store_path_hash(path)?;
+            }
+            for name in configuration.dependency_outputs.keys() {
+                validate_package_name(name)?;
+            }
+        }
         if entry.output.is_empty()
             || entry.output.len() > 256
             || !entry.output.bytes().all(is_output_name_byte)
@@ -1161,6 +1204,21 @@ fn validate_materialized_entries(directory: &Path, entries: &[RegistryReleaseEnt
             bail!("prepared registry is missing exact entry '{}'", entry.id);
         }
         if entry.output == "out" {
+            match (&entry.configuration, &platform.config_module) {
+                (None, None) => {}
+                (Some(expected), Some(actual))
+                    if actual.config_output.store_path == expected.module_store_path
+                        && actual
+                            .evaluation_base_lib
+                            .as_ref()
+                            .map(|base| &base.store_path)
+                            == Some(&expected.evaluation_base_store_path)
+                        && actual.dependency_outputs == expected.dependency_outputs => {}
+                _ => bail!(
+                    "prepared registry configuration differs for entry '{}'",
+                    entry.id
+                ),
+            }
             let expected_named_outputs = entries
                 .iter()
                 .filter(|candidate| {
@@ -1542,6 +1600,7 @@ mod tests {
 
     fn transaction(base_commit: String) -> RegistryReleaseTransaction {
         let entry = |id: &str, name: &str| RegistryReleaseEntry {
+            configuration: None,
             id: id.to_string(),
             name: name.to_string(),
             version: "1.0.0".to_string(),
@@ -1888,6 +1947,55 @@ mod tests {
         .expect("decode archived release entry");
 
         assert_eq!(entry.output, "out");
+        assert!(entry.configuration.is_none());
+    }
+
+    #[test]
+    fn configuration_inputs_are_frozen_on_the_primary_entry() -> Result<()> {
+        let mut transaction = transaction("0".repeat(64));
+        let configuration = RegistryReleaseConfiguration {
+            module_store_path: "/nix/store/11111111111111111111111111111111-module".into(),
+            evaluation_base_store_path: "/nix/store/22222222222222222222222222222222-base".into(),
+            dependency_outputs: BTreeMap::from([(
+                "bash".into(),
+                "/nix/store/33333333333333333333333333333333-bash".into(),
+            )]),
+        };
+        transaction.entries[0].configuration = Some(configuration.clone());
+        transaction.validate()?;
+        let encoded = serde_json::to_vec(&transaction)?;
+        let decoded: RegistryReleaseTransaction = serde_json::from_slice(&encoded)?;
+        assert_eq!(
+            decoded.entries[0].configuration.as_ref(),
+            Some(&configuration)
+        );
+
+        let mut non_primary = transaction.clone();
+        non_primary.entries[0].output = "dev".into();
+        assert!(non_primary.validate().is_err());
+
+        let mut same_output = transaction.clone();
+        same_output.entries[0]
+            .configuration
+            .as_mut()
+            .unwrap()
+            .module_store_path = same_output.entries[0].store_path.clone();
+        assert!(same_output.validate().is_err());
+
+        for path in [
+            "/tmp/module",
+            "/nix/store/11111111111111111111111111111111-module/child",
+            "/nix/store/11111111111111111111111111111111-module.drv",
+        ] {
+            let mut malformed = transaction.clone();
+            malformed.entries[0]
+                .configuration
+                .as_mut()
+                .unwrap()
+                .module_store_path = path.into();
+            assert!(malformed.validate().is_err());
+        }
+        Ok(())
     }
 
     #[tokio::test]
@@ -1899,6 +2007,7 @@ mod tests {
         let mut transaction = transaction(base.clone());
         transaction.entries = vec![
             RegistryReleaseEntry {
+                configuration: None,
                 id: "package/alpha/x86_64-linux/dev".to_string(),
                 name: "alpha".to_string(),
                 version: "1.0.0".to_string(),
@@ -1908,6 +2017,7 @@ mod tests {
                     .to_string(),
             },
             RegistryReleaseEntry {
+                configuration: None,
                 id: "package/alpha/x86_64-linux/out".to_string(),
                 name: "alpha".to_string(),
                 version: "1.0.0".to_string(),
@@ -1939,6 +2049,16 @@ mod tests {
             .prepare(&source, &output, &mut WritesPackageEntry)
             .await?;
         verify_release_entries(&output, &transaction.entries)?;
+
+        let mut configured_entries = transaction.entries.clone();
+        configured_entries[1].configuration = Some(RegistryReleaseConfiguration {
+            module_store_path: "/nix/store/33333333333333333333333333333333-alpha-config".into(),
+            evaluation_base_store_path: "/nix/store/44444444444444444444444444444444-base".into(),
+            dependency_outputs: BTreeMap::new(),
+        });
+        let error = verify_release_entries(&output, &configured_entries)
+            .expect_err("authoring must not omit requested configuration companions");
+        assert!(format!("{error:#}").contains("configuration differs"));
 
         let package_path = output.join("packages/a/alpha.toml");
         let content = fs::read_to_string(&package_path)?.replace(

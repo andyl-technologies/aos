@@ -311,8 +311,19 @@ in
   assert builtins.match ".*/aos-qualification-x86_64-linux-package-function" releaseExecutor.passthru.qualification.scenarios.package-function != null;
   assert builtins.match ".*/aos-qualification-x86_64-linux-container-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-container-x86_64-linux-functional != null;
   assert builtins.match ".*/aos-qualification-x86_64-linux-image-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-disk-x86_64-linux-functional != null;
-  assert builtins.attrNames releaseExecutor.passthru.qualification.caseScenarios == ["package-function/aos-recovery/x86_64-linux"];
+  assert builtins.attrNames releaseExecutor.passthru.qualification.caseScenarios
+  == [
+    "package-function/aos-recovery/x86_64-linux"
+    "package-function/k3s-combined/x86_64-linux"
+    "package-function/k3s-control-plane/x86_64-linux"
+    "package-function/k3s-worker/x86_64-linux"
+    "package-function/k3s/x86_64-linux"
+  ];
   assert builtins.match ".*/aos-qualification-x86_64-linux-aos-recovery" releaseExecutor.passthru.qualification.caseScenarios."package-function/aos-recovery/x86_64-linux" != null;
+  assert builtins.all (name:
+    builtins.match ".*/aos-qualification-x86_64-linux-${name}-fleet"
+    releaseExecutor.passthru.qualification.caseScenarios."package-function/${name}/x86_64-linux"
+    != null) ["k3s" "k3s-combined" "k3s-control-plane" "k3s-worker"];
   assert builtins.length contract.claims == 8;
   assert contract.support.default
   == {

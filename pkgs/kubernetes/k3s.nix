@@ -85,6 +85,9 @@ in
           export GOPATH="${goModules}"
           export GOCACHE=$TMPDIR/go-cache
           export CGO_ENABLED=1
+          # Kine queries SQLite's dbstat virtual table for datastore status.
+          # Match the feature flags in K3s's source build script.
+          export CGO_CFLAGS="''${CGO_CFLAGS:--O2 -g} -DSQLITE_ENABLE_DBSTAT_VTAB=1 -DSQLITE_USE_ALLOCA=1"
           export GOPROXY=off
           export GOFLAGS="-mod=readonly"
           if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then

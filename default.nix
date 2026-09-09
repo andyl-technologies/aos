@@ -403,6 +403,23 @@
         systemVariant = "server";
       }
     else null;
+  k3sPackageScenarios = lib.optionalAttrs hostPlatform.isLinux (
+    builtins.listToAttrs (map (rule: let
+        name = "aos-qualification-${hostPlatform.system}-${rule.name}-fleet";
+        scenario = testing.mkQualificationK3sPackageScenario {
+          inherit name;
+          identity = qualificationExecutorIdentity;
+          packageExecutable = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";
+          systemVariant = rule.execution.system_variant;
+          topology = rule.execution.topology;
+        };
+      in {
+        name = "package-function/${rule.name}/${hostPlatform.system}";
+        value = "${scenario}/bin/${name}";
+      }) (builtins.filter (rule:
+        rule ? execution && rule.execution.kind == "k3s-fleet")
+      releaseQualification.package_rules))
+  );
   qualificationTargetIds = map (target: target.id) (
     builtins.filter (target: target.platform == hostPlatform.system) releaseQualification.targets
   );
@@ -450,9 +467,11 @@
         operator-recovery = "${operatorRecoveryScenario}/bin/aos-qualification-operator-recovery";
         production-recovery = "${productionRecoveryScenario}/bin/aos-qualification-production-recovery";
       };
-    caseScenarios = lib.optionalAttrs hostPlatform.isLinux {
-      "package-function/aos-recovery/${hostPlatform.system}" = "${recoveryPackageScenario}/bin/aos-qualification-${hostPlatform.system}-aos-recovery";
-    };
+    caseScenarios =
+      k3sPackageScenarios
+      // lib.optionalAttrs hostPlatform.isLinux {
+        "package-function/aos-recovery/${hostPlatform.system}" = "${recoveryPackageScenario}/bin/aos-qualification-${hostPlatform.system}-aos-recovery";
+      };
     workRoot = "/var/lib/aos-release/qualification/${hostPlatform.system}";
     timeoutSeconds = 21600;
   };
@@ -1285,11 +1304,13 @@ in {
   # this value with strict JSON evaluation before resolving any derivation.
   releasePackageInventory = pkgs.platformSupport.releaseInventory pkgs.allPackageNames;
   inherit releaseQualification;
-  releasePackageDerivations =
-    pkgs.platformSupport.releaseDerivations
-    hostPlatform.system
-    pkgs
-    pkgs.allPackageNames;
+  releasePackageDerivations = pkgs.platformSupport.releaseDerivations {
+    system = hostPlatform.system;
+    packages = pkgs;
+    names = pkgs.allPackageNames;
+    configurationBaseLib = discoverSystems.server.config.aos.config.evalAtBoot.baseLib;
+    configurationSources = [./lib ./modules ./systems/server.nix];
+  };
 
   # Pure package-maintenance content. Git and local-clone identities are added
   # only by the local controller after strict canonical evaluation.

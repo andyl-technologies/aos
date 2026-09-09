@@ -12,8 +12,8 @@ use aos_package::config::ApmConfig;
 use aos_package::registry::release::{
     CanonicalRegistryEntryAuthor, INTENT_SCHEMA, RegistryCommitIdentity, RegistryGitObjectKind,
     RegistryGitSignature, RegistryGitSigningRequest, RegistryObjectSigner,
-    RegistryPackagePublication, RegistryReleaseEntry, RegistryReleaseIntent,
-    RegistryReleaseTransaction, require_active_signing_key,
+    RegistryPackagePublication, RegistryReleaseIntent, RegistryReleaseTransaction,
+    require_active_signing_key,
 };
 use aos_package::registry::support::SupportSectionWrite;
 use aos_package::registry_ops::{ContainerReleaseAttachment, load_container_release_attachment};
@@ -208,19 +208,7 @@ fn registry_intent(
         .map(|policy| SupportSectionWrite::from_policy(&plan.version, policy))
         .transpose()?
         .flatten();
-    let mut entries = report
-        .outputs
-        .iter()
-        .map(|output| RegistryReleaseEntry {
-            id: output.id.clone(),
-            name: output.package.clone(),
-            version: output.version.clone(),
-            platform: output.platform.to_string(),
-            output: output.output.clone(),
-            store_path: output.store_path.clone(),
-        })
-        .collect::<Vec<_>>();
-    entries.sort_by(|left, right| left.id.cmp(&right.id));
+    let entries = super::registry_entries::from_build(&plan.packages, &report.outputs)?;
 
     Ok(RegistryReleaseIntent {
         schema: INTENT_SCHEMA.to_string(),
@@ -324,32 +312,9 @@ fn validate_transaction_binding(
     if transaction.support != planned_support {
         bail!("registry transaction support tables differ from the release plan's contract");
     }
-    let outputs = report
-        .outputs
-        .iter()
-        .map(|output| (output.id.as_str(), output))
-        .collect::<BTreeMap<_, _>>();
-    if transaction.entries.len() != outputs.len() {
-        bail!("registry transaction must contain every and only built package output");
-    }
-    for entry in &transaction.entries {
-        let output = outputs.get(entry.id.as_str()).with_context(|| {
-            format!(
-                "transaction entry {} is absent from the build report",
-                entry.id
-            )
-        })?;
-        if entry.name != output.package
-            || entry.version != output.version
-            || entry.platform != output.platform.as_str()
-            || entry.output != output.output
-            || entry.store_path != output.store_path
-        {
-            bail!(
-                "registry transaction entry {} differs from its built output",
-                entry.id
-            );
-        }
+    if transaction.entries != super::registry_entries::from_build(&plan.packages, &report.outputs)?
+    {
+        bail!("registry transaction differs from the built package and configuration inputs");
     }
     Ok(())
 }

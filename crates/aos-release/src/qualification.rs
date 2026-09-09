@@ -113,7 +113,7 @@ pub enum PackageRole {
     SystemIntegrity,
 }
 
-/// Image execution required to prove a package's functional behavior.
+/// Booted execution required to prove a package's functional behavior.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum PackageExecution {
@@ -122,6 +122,44 @@ pub enum PackageExecution {
         /// Exact system image variant carrying the package.
         system_variant: String,
     },
+    /// Exercises authenticated K3s packages and the published OCI workload in a fleet.
+    K3sFleet {
+        /// Exact system image variant booted by both fleet members.
+        system_variant: String,
+        /// Server and worker roles whose package artifacts enter the case subjects.
+        topology: K3sTopology,
+    },
+}
+
+/// Supported K3s service arrangements for staged package qualification.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum K3sTopology {
+    /// Schedules workloads on a combined server and its separate worker.
+    CombinedWorker,
+    /// Runs an agentless control plane and schedules workloads on its worker.
+    ControlPlaneWorker,
+}
+
+impl K3sTopology {
+    /// Returns the complete package population exercised by this topology.
+    pub fn packages(self) -> [&'static str; 3] {
+        match self {
+            Self::CombinedWorker => ["k3s", "k3s-combined", "k3s-worker"],
+            Self::ControlPlaneWorker => ["k3s", "k3s-control-plane", "k3s-worker"],
+        }
+    }
+}
+
+impl PackageExecution {
+    /// Returns the system image variant required by this execution environment.
+    pub fn system_variant(&self) -> &str {
+        match self {
+            Self::RecoveryImage { system_variant } | Self::K3sFleet { system_variant, .. } => {
+                system_variant
+            }
+        }
+    }
 }
 
 /// Classification for one package in the complete discovered inventory.
@@ -267,11 +305,24 @@ impl QualificationContract {
             bail!("qualification must classify packages and inherit dependency obligations");
         }
         for rule in &self.package_rules {
-            if let Some(PackageExecution::RecoveryImage { system_variant }) = &rule.execution {
+            if let Some(execution) = &rule.execution {
                 if !current {
                     bail!("archival contracts cannot select package execution environments");
                 }
-                require_identifier(system_variant, "package recovery image variant")?;
+                require_identifier(
+                    execution.system_variant(),
+                    "package execution image variant",
+                )?;
+                if let PackageExecution::K3sFleet { topology, .. } = execution {
+                    if !topology.packages().contains(&rule.name.as_str()) {
+                        bail!("K3s fleet topology does not exercise package {}", rule.name);
+                    }
+                    for package in topology.packages() {
+                        if !self.package_rules.iter().any(|rule| rule.name == package) {
+                            bail!("K3s fleet lacks its companion package rule {package}");
+                        }
+                    }
+                }
             }
         }
         for target in &self.targets {

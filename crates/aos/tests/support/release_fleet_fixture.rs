@@ -114,6 +114,7 @@ fn prepare(arguments: &[String]) -> Result<()> {
             platform: *platform,
             decision: MatrixCell::Artifact {
                 artifact: PlannedArtifactSet {
+                    configuration: None,
                     artifacts: vec![PlannedArtifact {
                         id: package_id(*platform),
                         derivation: None,
@@ -240,6 +241,7 @@ fn prepare(arguments: &[String]) -> Result<()> {
                     platform: cell.platform,
                     decision: MatrixCell::Artifact {
                         artifact: FinalArtifactSet {
+                            configuration: None,
                             artifact_ids: vec![package_id(cell.platform)],
                         },
                     },
@@ -254,6 +256,7 @@ fn prepare(arguments: &[String]) -> Result<()> {
                     platform,
                     decision: MatrixCell::Artifact {
                         artifact: FinalArtifactSet {
+                            configuration: None,
                             artifact_ids: vec![
                                 format!("image/server/{platform}"),
                                 format!("image/server/{platform}/metadata"),
@@ -434,6 +437,7 @@ fn release_plan(
                 platform,
                 decision: MatrixCell::Artifact {
                     artifact: PlannedArtifactSet {
+                        configuration: None,
                         artifacts: [
                             format!("image/server/{platform}"),
                             format!("image/server/{platform}/metadata"),

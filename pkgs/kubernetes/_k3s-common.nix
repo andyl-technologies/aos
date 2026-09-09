@@ -1,6 +1,7 @@
 {
   lib,
   pkgs,
+  pause,
 }: let
   k3sModprobe = pkgs.writeShellScriptBin "modprobe" ''
     set -eu
@@ -129,6 +130,30 @@ in {
 
       export K3S_TOKEN_FILE="$token_file"
 
+      runtime_arguments=()
+      ${lib.optionalString (role != "k3s-control-plane") ''
+        # Import the source-built sandbox before kubelet starts creating pods.
+        # K3s's air-gap importer creates the repository@digest alias; selecting
+        # that alias prevents a mutable registry tag from supplying the sandbox.
+        pause_digest=$(${pkgs.coreutils}/bin/sha256sum ${pause.image}/manifest.json)
+        pause_digest=''${pause_digest%% *}
+        images=/var/lib/rancher/k3s/agent/images
+        image_link="$images/aos-pause-$pause_digest.tar"
+        ${pkgs.coreutils}/bin/mkdir -p "$images"
+        ${pkgs.coreutils}/bin/ln -s \
+          ${pause.image}/image.oci.tar "$image_link.$$.tmp"
+        ${pkgs.coreutils}/bin/mv -Tf "$image_link.$$.tmp" "$image_link"
+
+        # The digest in the managed filename invalidates K3s's import cache on
+        # upgrades. Retire only our older symlinks, preserving operator images.
+        for previous_image in "$images"/aos-pause-*.tar; do
+          if [ "$previous_image" != "$image_link" ] && [ -L "$previous_image" ]; then
+            ${pkgs.coreutils}/bin/rm -- "$previous_image"
+          fi
+        done
+        runtime_arguments+=(--pause-image "${pause.reference}@sha256:$pause_digest")
+      ''}
+
       case ${lib.escapeShellArg command} in
       server*)
         addons=/etc/aos/packages/${role}/addons.json
@@ -145,6 +170,6 @@ in {
         ;;
       esac
 
-      exec ${pkgs.k3s}/bin/k3s ${command} "$@"
+      exec ${pkgs.k3s}/bin/k3s ${command} "''${runtime_arguments[@]}" "$@"
     '';
 }
