@@ -6259,6 +6259,71 @@ not exercise protected labels, enforcing MAC, role-separated production
 processes, or the proposed `CAP_SYS_PTRACE`-only inspector. No production
 readiness or task checkbox changes.
 
+Commit `6231bcc9f` corrects the pure model for systemd socket activation without
+putting one execution's PID or cgroup inode into static deployment policy.
+Provisioning now names fixed Broker and Inspector roles and their root
+credentials. Inspector-side request admission requires both the connected peer
+and record subject to be independently authenticated as the Broker role and to
+name the same exact process. Broker-side completion treats the connected peer
+as the retained boot-local PID 1 manager, while the record subject must be the
+Inspector role.
+
+Completion additionally consumes a move-only authenticated activation token.
+The future transport adapter must mint that token from the retained activation
+socket, an authenticated manager observation, and the exact retained inspector
+pidfd. The token binds that exact dynamic inspector subject and the complete
+expected-attempt record. Completion requires the deployment, socket, and token
+manager identities to agree; requires the token and record subjects to agree;
+recomputes the expected-policy digest; and requires full expected-attempt
+equality. Tests reject a substituted inspector execution, either manager
+substitution, malformed activation digest, swapped pending activation, stale
+boot or deadline, and reuse after a terminal failure. Role authentication does
+not replace per-activation identity correlation.
+
+The same commit adds role-local protected-root constructors without weakening
+the existing five-descriptor global constructor. The Broker admits only its
+distinct same-filesystem expected staging and final roots. The Inspector admits
+only its three mutually distinct expected-final, spent-staging, and spent-final
+roots and requires the spent rename pair to share a filesystem. Neither local
+constructor claims that separately opened Broker and Inspector expected-final
+descriptors name the same directory. That cross-process fact still requires
+fixed protected ancestry and enforcing MAC; the global test constructor retains
+its explicit same-directory check.
+
+Qualification used a clean snapshot of `69bcbe7bad0a3b76741a90afbc688eb0104f669d`
+plus exactly the two inspector source files from the commit. Their SHA-256
+digests were respectively
+`efc17d294989a1bd4be16a1a3923107c4c8172de30d7000af18a18ee99f50985`
+and `afe5b5a9098b241a0c22e96a5313c035bffd278ca2847dff53e716393a6ff1cd`.
+The pinned realized AOS development environment passed the Network package
+format check and all 169 library tests. The first test pass compiled into an
+empty, separately named target directory and finished in 2 minutes 36 seconds;
+the retained no-rebuild rerun also passed all 169 tests. These results qualify
+only the pure role, activation-correlation, protocol, and local root-topology
+invariants.
+
+The next increment is an authenticated runtime adapter, not another caller-data
+constructor. It must authenticate the direct `/run/systemd/private` manager
+connection as retained PID 1/root authority, verify manager identity and
+liveness around the exact socket-activated instance-property query, and derive
+the Inspector role only after exact executable, cgroup, credentials, and
+effective-MAC checks on a retained pidfd. On the same exchange it must bind the
+manager-owned activation, connected socket, `SCM_CREDENTIALS` record subject,
+and pending request before minting the move-only activation token. The Ready
+and response adapters must likewise retain and reobserve the exact worker
+leader, type-check the sole transferred namespace descriptor, and never accept
+numeric process or namespace fields as authority. Only after those adapters are
+tested should the binary, socket/service units, root provisioning, narrow
+`CAP_SYS_PTRACE` policy, lifecycle-worker wiring, and enforcing-VM handshake be
+integrated.
+
+No production constructor currently mints the authenticated identities or
+activation token. No live socket, manager property, pidfd, executable, cgroup,
+MAC, or namespace transfer was exercised by this source qualification. The VM
+proof above still uses the five-descriptor fixture, so it is not deployment
+proof for the new role-local constructors. Network Apply remains unadvertised
+and no readiness or task checkbox changes.
+
 The deployed positive handshake is currently blocked by an authorization
 conflict, not qualified. The worker calls `PR_SET_DUMPABLE(0)` before READY,
 while the capability-empty broker obtains the retained namespace through
