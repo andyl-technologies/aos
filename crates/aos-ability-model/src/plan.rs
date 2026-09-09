@@ -493,7 +493,7 @@ pub struct Operation {
 }
 
 /// Distinguishes graph relationships with different scheduling semantics.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DependencyKind {
     /// Requires successful production of a typed result.

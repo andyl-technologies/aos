@@ -1,0 +1,29 @@
+//! Pure semantic validation for AOS ability contracts.
+//!
+//! Validation turns unchecked portable documents into checked values without
+//! acquiring runtime resources or performing effects. The checked wrappers
+//! retain the exact canonical documents that were validated.
+
+#![forbid(unsafe_code)]
+
+mod authority;
+mod binding;
+mod effect;
+mod error;
+mod graph;
+mod output;
+mod schema;
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
+#[cfg(test)]
+mod regression_tests;
+
+pub use authority::{InvocationAuthorizationError, ValueAuthorizationError};
+pub use error::ValidationErrors;
+pub use graph::{
+    BindingValidationInputs, CheckedBindingPlan, CheckedEffectPlan, ValidationContext,
+};
+pub use output::{InputValidationError, OutputValidationError, ProviderReadinessError};
+pub use schema::{SchemaPath, validate_value};

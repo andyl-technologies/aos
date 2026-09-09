@@ -149,7 +149,10 @@ pub struct ResourceReference {
     pub lifetime: ResourceLifetime,
 }
 
-/// Authenticates one live assignment of an exact provider implementation.
+/// Records one live assignment of an exact provider implementation.
+///
+/// The record becomes trusted evidence only after a checked readiness producer
+/// returns it and fresh runtime policy accepts its exact subject and incarnation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderAssignment {

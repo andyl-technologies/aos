@@ -1,0 +1,18 @@
+[package]
+name = "aos-ability-validate"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[features]
+test-support = []
+
+[dependencies]
+aos-ability-model = { workspace = true }
+aos-contract = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
