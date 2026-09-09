@@ -281,8 +281,9 @@ impl SandboxResources {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidSandboxUnit`] for a zero duration, a duration
-    /// above one second, or a value that cannot be represented in microseconds.
+    /// Returns [`Error::InvalidSandboxUnit`] for a duration below one
+    /// microsecond, a duration above one second, or a value that cannot be
+    /// represented in microseconds.
     pub fn with_cpu_quota(mut self, quota: Duration) -> Result<Self> {
         let micros = duration_micros(quota, "CPU quota")?;
         if micros > USEC_PER_SECOND {
@@ -558,7 +559,7 @@ impl SandboxUnitSpec {
     ///
     /// Returns [`Error::InvalidSandboxUnit`] when the command incarnation does
     /// not match the unit, the fixed argv exceeds a transport bound, or either
-    /// timeout is zero or unrepresentable in microseconds.
+    /// timeout is below one microsecond or unrepresentable in microseconds.
     pub fn new_nspawn(
         name: SandboxUnitName,
         command: SandboxNspawnCommand,
@@ -1017,11 +1018,12 @@ fn validate_arguments(arguments: &[String]) -> Result<()> {
 }
 
 fn duration_micros(duration: Duration, label: &str) -> Result<u64> {
-    if duration.is_zero() {
-        return Err(invalid(format!("{label} must be non-zero")));
+    let micros = u64::try_from(duration.as_micros())
+        .map_err(|_| invalid(format!("{label} does not fit systemd's microsecond field")))?;
+    if micros == 0 {
+        return Err(invalid(format!("{label} must be at least one microsecond")));
     }
-    u64::try_from(duration.as_micros())
-        .map_err(|_| invalid(format!("{label} does not fit systemd's microsecond field")))
+    Ok(micros)
 }
 
 fn string_property(name: &str, value: impl AsRef<str>) -> TransientProperty {
@@ -1169,6 +1171,92 @@ mod tests {
         assert!(SandboxResources::new(1, 1, 0, 100).is_err());
         assert!(SandboxResources::new(1, 1, 1, 0).is_err());
         assert!(SandboxResources::new(1, 1, 1, 10_001).is_err());
+    }
+
+    #[test]
+    fn submicrosecond_durations_fail_closed() {
+        assert!(
+            SandboxResources::new(1, 1, 1, 1)
+                .and_then(|resources| resources.with_cpu_quota(Duration::from_micros(1)))
+                .is_ok()
+        );
+
+        let quota_error = SandboxResources::new(1, 1, 1, 1)
+            .and_then(|resources| resources.with_cpu_quota(Duration::from_nanos(1)))
+            .unwrap_err();
+        assert!(
+            quota_error
+                .to_string()
+                .contains("CPU quota must be at least one microsecond")
+        );
+
+        for (timeout_start, timeout_stop, label) in [
+            (
+                Duration::from_nanos(1),
+                Duration::from_secs(1),
+                "start timeout",
+            ),
+            (
+                Duration::from_secs(1),
+                Duration::from_nanos(1),
+                "stop timeout",
+            ),
+        ] {
+            let error = SandboxUnitSpec::new_nspawn(
+                SandboxUnitName::from_incarnation([1; 16]),
+                command([1; 16]),
+                paths(),
+                SandboxResources::new(1, 1, 1, 1).unwrap(),
+                timeout_start,
+                timeout_stop,
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("{label} must be at least one microsecond")),
+                "{error}"
+            );
+        }
+
+        assert!(
+            SandboxUnitSpec::new_nspawn(
+                SandboxUnitName::from_incarnation([1; 16]),
+                command([1; 16]),
+                paths(),
+                SandboxResources::new(1, 1, 1, 1).unwrap(),
+                Duration::from_micros(1),
+                Duration::from_micros(1),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn unrepresentable_durations_fail_closed_without_saturation() {
+        assert!(
+            SandboxResources::new(1, 1, 1, 1)
+                .and_then(|resources| resources.with_cpu_quota(Duration::MAX))
+                .unwrap_err()
+                .to_string()
+                .contains("does not fit systemd's microsecond field")
+        );
+
+        let error = SandboxUnitSpec::new_nspawn(
+            SandboxUnitName::from_incarnation([1; 16]),
+            command([1; 16]),
+            paths(),
+            SandboxResources::new(1, 1, 1, 1).unwrap(),
+            Duration::MAX,
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("start timeout does not fit systemd's microsecond field"),
+            "{error}"
+        );
     }
 
     #[test]
