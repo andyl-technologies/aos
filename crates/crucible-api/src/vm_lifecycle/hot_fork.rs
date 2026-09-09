@@ -549,6 +549,71 @@ impl ProductionVmHotForkNodeBoundary {
     }
 }
 
+/// Device family of one explicit host-I/O continuation boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProductionVmHotForkIoNodeKind {
+    /// A block device whose immutable base image remains shared.
+    Block,
+    /// A 9p device whose immutable filesystem tree remains shared.
+    NineP,
+}
+
+/// Exact host continuation identity for one first-class World I/O node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProductionVmHotForkIoNodeBoundary {
+    node: NodeId,
+    owner: NodeId,
+    kind: ProductionVmHotForkIoNodeKind,
+    immutable_artifact: ContentHash,
+    owner_service_state: ProductionVmHotForkNodeServiceState,
+    owner_checkpoint_binding: ContentHash,
+    owner_checkpoint_identity: ContentHash,
+}
+
+impl ProductionVmHotForkIoNodeBoundary {
+    /// Returns the canonical World I/O node identity.
+    #[must_use]
+    pub const fn node(&self) -> &NodeId {
+        &self.node
+    }
+
+    /// Returns the VM node that owns this I/O continuation.
+    #[must_use]
+    pub const fn owner(&self) -> &NodeId {
+        &self.owner
+    }
+
+    /// Returns the declared I/O device family.
+    #[must_use]
+    pub const fn kind(&self) -> ProductionVmHotForkIoNodeKind {
+        self.kind
+    }
+
+    /// Returns the immutable base-image or filesystem-tree identity.
+    #[must_use]
+    pub const fn immutable_artifact(&self) -> ContentHash {
+        self.immutable_artifact
+    }
+
+    /// Returns the owner VM's service state at the captured world boundary.
+    #[must_use]
+    pub const fn owner_service_state(&self) -> ProductionVmHotForkNodeServiceState {
+        self.owner_service_state
+    }
+
+    /// Returns the original execution binding carried by the owner checkpoint.
+    #[must_use]
+    pub const fn owner_checkpoint_binding(&self) -> ContentHash {
+        self.owner_checkpoint_binding
+    }
+
+    /// Returns the canonical identity of the complete owner host checkpoint.
+    #[must_use]
+    pub const fn owner_checkpoint_identity(&self) -> ContentHash {
+        self.owner_checkpoint_identity
+    }
+}
+
 /// Complete process-neutral host continuation captured for one world hot fork.
 ///
 /// The token intentionally retains the same scheduler, network/fault,
@@ -578,7 +643,10 @@ pub struct ProductionVmHotForkWorldContinuation {
     immutable_root_images: BTreeMap<NodeId, ContentHash>,
     block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
     ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
+    active_host_io: BTreeMap<NodeId, QemuHostIoCheckpoint>,
+    failed_host_io: BTreeMap<NodeId, ProductionFailedNodeState>,
     nodes: Vec<ProductionVmHotForkNodeBoundary>,
+    io_nodes: Vec<ProductionVmHotForkIoNodeBoundary>,
 }
 
 impl ProductionVmHotForkWorldContinuation {
@@ -607,7 +675,10 @@ impl ProductionVmHotForkWorldContinuation {
             immutable_root_images: self.immutable_root_images.clone(),
             block_bindings: self.block_bindings.clone(),
             ninep_bindings: self.ninep_bindings.clone(),
+            active_host_io: self.active_host_io.clone(),
+            failed_host_io: self.failed_host_io.clone(),
             nodes: self.nodes.clone(),
+            io_nodes: self.io_nodes.clone(),
         })
     }
 
@@ -633,6 +704,12 @@ impl ProductionVmHotForkWorldContinuation {
     #[must_use]
     pub fn nodes(&self) -> &[ProductionVmHotForkNodeBoundary] {
         &self.nodes
+    }
+
+    /// Returns the ordered complete World I/O-node continuation inventory.
+    #[must_use]
+    pub fn io_nodes(&self) -> &[ProductionVmHotForkIoNodeBoundary] {
+        &self.io_nodes
     }
 
     /// Returns the fault/network continuation identity paired with the scheduler.
@@ -708,6 +785,62 @@ impl ProductionVmHotForkWorldContinuation {
                 message: String::from("hot-fork node continuation is incomplete"),
             });
         }
+        let active_nodes = self
+            .node_service_states
+            .iter()
+            .filter_map(|(node, state)| {
+                (*state != ProductionNodeServiceState::PermanentlyFailed).then_some(node)
+            })
+            .collect::<BTreeSet<_>>();
+        let failed_nodes = self
+            .node_service_states
+            .iter()
+            .filter_map(|(node, state)| {
+                (*state == ProductionNodeServiceState::PermanentlyFailed).then_some(node)
+            })
+            .collect::<BTreeSet<_>>();
+        if self.active_host_io.keys().collect::<BTreeSet<_>>() != active_nodes
+            || self.failed_host_io.keys().collect::<BTreeSet<_>>() != failed_nodes
+            || self
+                .failed_host_io
+                .iter()
+                .any(|(node, failed)| failed.fingerprint.node != *node)
+        {
+            return Err(hot_fork_boundary_error(
+                "hot-fork host-I/O owner partition is incomplete",
+            ));
+        }
+        let mut io_nodes = BTreeSet::new();
+        for boundary in &self.io_nodes {
+            let service_state = self
+                .node_service_states
+                .get(&boundary.owner)
+                .copied()
+                .ok_or_else(|| hot_fork_boundary_error("hot-fork I/O owner is unknown"))?;
+            let checkpoint = match service_state {
+                ProductionNodeServiceState::Running | ProductionNodeServiceState::PoweredOff => {
+                    self.active_host_io.get(&boundary.owner)
+                }
+                ProductionNodeServiceState::PermanentlyFailed => self
+                    .failed_host_io
+                    .get(&boundary.owner)
+                    .map(|failed| &failed.host_io),
+            }
+            .ok_or_else(|| hot_fork_boundary_error("hot-fork I/O owner checkpoint disappeared"))?;
+            let identity = checkpoint.canonical_identity().map_err(|error| {
+                hot_fork_boundary_error(format!("authenticate hot-fork host I/O: {error}"))
+            })?;
+            if !io_nodes.insert(&boundary.node)
+                || boundary.owner_service_state
+                    != ProductionVmHotForkNodeServiceState::from(service_state)
+                || boundary.owner_checkpoint_binding != checkpoint.execution_binding()
+                || boundary.owner_checkpoint_identity != identity
+            {
+                return Err(hot_fork_boundary_error(
+                    "hot-fork I/O boundary disagrees with its owner checkpoint",
+                ));
+            }
+        }
         for boundary in &self.nodes {
             let generation = self
                 .node_generations
@@ -755,6 +888,21 @@ impl ProductionVmHotForkWorldContinuation {
         Ok(())
     }
 
+    pub(super) fn validate_world_io(&self, world: &World) -> Result<(), SchedulerError> {
+        let expected = hot_fork_io_node_boundaries(
+            world,
+            &self.node_service_states,
+            &self.active_host_io,
+            &self.failed_host_io,
+        )?;
+        if expected != self.io_nodes {
+            return Err(hot_fork_boundary_error(
+                "hot-fork I/O-node inventory differs from the scenario World",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn into_restore_parts(
         self,
         node_generations: BTreeMap<NodeId, u64>,
@@ -777,6 +925,7 @@ impl ProductionVmHotForkWorldContinuation {
             selectable_catalog_plans: self.selectable_catalog_plans,
             fault_checkpoint: Some(self.fault_checkpoint),
             targets: BTreeMap::new(),
+            failed_host_io: self.failed_host_io,
             node_generations,
             node_service_states: self.node_service_states,
         };
@@ -786,8 +935,139 @@ impl ProductionVmHotForkWorldContinuation {
             immutable_root_images: self.immutable_root_images,
             block_bindings: self.block_bindings,
             ninep_bindings: self.ninep_bindings,
+            active_host_io: self.active_host_io,
         }
     }
+}
+
+fn scheduler_checkpoint_identity(
+    scheduler: &SingleSchedulerCheckpoint,
+) -> Result<ContentHash, SchedulerError> {
+    scheduler
+        .canonical_bytes()
+        .map(|bytes| ContentHash::from_bytes(&bytes))
+        .map_err(|error| {
+            hot_fork_boundary_error(format!(
+                "encode hot-fork scheduler continuation identity: {error}"
+            ))
+        })
+}
+
+fn hot_fork_io_node_boundaries(
+    world: &World,
+    node_service_states: &BTreeMap<NodeId, ProductionNodeServiceState>,
+    active_host_io: &BTreeMap<NodeId, QemuHostIoCheckpoint>,
+    failed_host_io: &BTreeMap<NodeId, ProductionFailedNodeState>,
+) -> Result<Vec<ProductionVmHotForkIoNodeBoundary>, SchedulerError> {
+    let mut boundaries = Vec::new();
+    boundaries
+        .try_reserve_exact(world.io_nodes().count())
+        .map_err(|_| hot_fork_boundary_error("reserve hot-fork I/O-node inventory"))?;
+
+    for (owner, service_state) in node_service_states {
+        let checkpoint = match service_state {
+            ProductionNodeServiceState::Running | ProductionNodeServiceState::PoweredOff => {
+                active_host_io.get(owner)
+            }
+            ProductionNodeServiceState::PermanentlyFailed => {
+                failed_host_io.get(owner).map(|failed| &failed.host_io)
+            }
+        }
+        .ok_or_else(|| {
+            hot_fork_boundary_error(format!(
+                "hot-fork host-I/O owner `{}` has no checkpoint",
+                owner.name
+            ))
+        })?;
+        let expected_block = world
+            .io_nodes()
+            .any(|node| node.owner == *owner && matches!(node.kind, WorldIoNodeKind::Block { .. }));
+        let expected_ninep = world
+            .io_nodes()
+            .any(|node| node.owner == *owner && matches!(node.kind, WorldIoNodeKind::NineP { .. }));
+        if checkpoint.block().is_some() != expected_block
+            || checkpoint.ninep().is_some() != expected_ninep
+        {
+            return Err(hot_fork_boundary_error(format!(
+                "hot-fork host-I/O topology differs for `{}`",
+                owner.name
+            )));
+        }
+    }
+
+    for node in world.io_nodes() {
+        let service_state = node_service_states
+            .get(&node.owner)
+            .copied()
+            .ok_or_else(|| {
+                hot_fork_boundary_error(format!(
+                    "hot-fork I/O node `{}` has no owner service state",
+                    node.id.name
+                ))
+            })?;
+        let checkpoint = match service_state {
+            ProductionNodeServiceState::Running | ProductionNodeServiceState::PoweredOff => {
+                active_host_io.get(&node.owner)
+            }
+            ProductionNodeServiceState::PermanentlyFailed => failed_host_io
+                .get(&node.owner)
+                .map(|failed| &failed.host_io),
+        }
+        .ok_or_else(|| hot_fork_boundary_error("hot-fork I/O owner checkpoint disappeared"))?;
+        let (kind, immutable_artifact) = match &node.kind {
+            WorldIoNodeKind::Block {
+                base_image,
+                base_length,
+                ..
+            } => {
+                let block = checkpoint.block().ok_or_else(|| {
+                    hot_fork_boundary_error(format!(
+                        "hot-fork block node `{}` has no block continuation",
+                        node.id.name
+                    ))
+                })?;
+                if block.base_image() != base_image.hash() || block.device_length() != *base_length
+                {
+                    return Err(hot_fork_boundary_error(format!(
+                        "hot-fork block continuation differs for `{}`",
+                        node.id.name
+                    )));
+                }
+                (ProductionVmHotForkIoNodeKind::Block, base_image.hash())
+            }
+            WorldIoNodeKind::NineP { tree, .. } => {
+                let ninep = checkpoint.ninep().ok_or_else(|| {
+                    hot_fork_boundary_error(format!(
+                        "hot-fork 9p node `{}` has no 9p continuation",
+                        node.id.name
+                    ))
+                })?;
+                if ninep.tree() != tree.hash() {
+                    return Err(hot_fork_boundary_error(format!(
+                        "hot-fork 9p continuation differs for `{}`",
+                        node.id.name
+                    )));
+                }
+                (ProductionVmHotForkIoNodeKind::NineP, tree.hash())
+            }
+        };
+        let owner_checkpoint_identity = checkpoint.canonical_identity().map_err(|error| {
+            hot_fork_boundary_error(format!(
+                "authenticate host-I/O checkpoint for `{}`: {error}",
+                node.owner.name
+            ))
+        })?;
+        boundaries.push(ProductionVmHotForkIoNodeBoundary {
+            node: node.id.clone(),
+            owner: node.owner.clone(),
+            kind,
+            immutable_artifact,
+            owner_service_state: service_state.into(),
+            owner_checkpoint_binding: checkpoint.execution_binding(),
+            owner_checkpoint_identity,
+        });
+    }
+    Ok(boundaries)
 }
 
 impl ProductionVmLifecycleLoop {
@@ -1054,6 +1334,30 @@ impl ProductionVmLifecycleLoop {
         let scheduler = self.inner.loop_impl().checkpoint().map_err(|error| {
             hot_fork_boundary_error(format!("capture scheduler continuation: {error}"))
         })?;
+        let scheduler_identity = scheduler_checkpoint_identity(&scheduler)?;
+        let mut active_host_io = BTreeMap::new();
+        for (node, service_state) in &self.node_service_states {
+            if *service_state == ProductionNodeServiceState::PermanentlyFailed {
+                continue;
+            }
+            let checkpoint = self
+                .inner
+                .backend_mut()
+                .checkpoint_host_io_projection(node, scheduler_identity)
+                .map_err(|error| {
+                    hot_fork_boundary_error(format!(
+                        "capture host-I/O projection for `{}`: {error}",
+                        node.name
+                    ))
+                })?;
+            active_host_io.insert(node.clone(), checkpoint);
+        }
+        let io_nodes = hot_fork_io_node_boundaries(
+            self.source.world(),
+            &self.node_service_states,
+            &active_host_io,
+            &self.failed_host_io,
+        )?;
         let event_log_objects = self
             .inner
             .loop_impl()
@@ -1089,25 +1393,12 @@ impl ProductionVmLifecycleLoop {
             node_generations: self.node_generations.clone(),
             node_service_states: self.node_service_states.clone(),
             immutable_root_images: self.immutable_root_images.clone(),
-            block_bindings: self
-                .block_bindings
-                .iter()
-                .filter(|(node, _binding)| {
-                    self.node_service_states.get(*node)
-                        != Some(&ProductionNodeServiceState::PermanentlyFailed)
-                })
-                .map(|(node, binding)| (node.clone(), binding.clone()))
-                .collect(),
-            ninep_bindings: self
-                .ninep_bindings
-                .iter()
-                .filter(|(node, _binding)| {
-                    self.node_service_states.get(*node)
-                        != Some(&ProductionNodeServiceState::PermanentlyFailed)
-                })
-                .map(|(node, binding)| (node.clone(), binding.clone()))
-                .collect(),
+            block_bindings: self.block_bindings.clone(),
+            ninep_bindings: self.ninep_bindings.clone(),
+            active_host_io,
+            failed_host_io: self.failed_host_io.clone(),
             nodes: before,
+            io_nodes,
         };
         continuation.validate_complete_internal_state()?;
         Ok(continuation)

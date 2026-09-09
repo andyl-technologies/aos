@@ -138,6 +138,8 @@ pub(super) fn decode_manifest_with_limits(
         (OLDER_MANIFEST_VERSION, payload)
     } else if let Some(payload) = bytes.strip_prefix(LEGACY_MANIFEST_MAGIC) {
         (LEGACY_MANIFEST_VERSION, payload)
+    } else if let Some(payload) = bytes.strip_prefix(OLDEST_MANIFEST_MAGIC) {
+        (OLDEST_MANIFEST_VERSION, payload)
     } else {
         return Err(loop_factory_error("unsupported closure manifest version"));
     };
@@ -585,6 +587,7 @@ mod tests {
             lifecycle_state: ContentHash::default(),
             fault_checkpoint: ContentHash::default(),
             targets: Vec::new(),
+            failed_host_io: Vec::new(),
             node_generations: Vec::new(),
             node_service_states: Vec::new(),
             identity: ContentHash::default(),

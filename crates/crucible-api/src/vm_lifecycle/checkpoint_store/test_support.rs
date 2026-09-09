@@ -232,6 +232,7 @@ fn build_production_checkpoint_codec_fixture(
                 manifest_identity,
             },
         )]),
+        failed_host_io: BTreeMap::new(),
         node_generations: BTreeMap::from([(node.clone(), 1)]),
         node_service_states: BTreeMap::from([(node, ProductionNodeServiceState::Running)]),
     };

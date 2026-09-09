@@ -27,6 +27,7 @@ fn manifest() -> ClosureManifest {
         lifecycle_state: ContentHash::default(),
         fault_checkpoint: ContentHash::default(),
         targets: Vec::new(),
+        failed_host_io: Vec::new(),
         node_generations: Vec::new(),
         node_service_states: Vec::new(),
         identity: ContentHash::default(),
@@ -63,6 +64,25 @@ fn target(node: &str) -> TargetManifest {
         overlay,
         vmstate,
         manifest_identity: ContentHash::default(),
+    }
+}
+
+fn failed_host_io(node: &str) -> FailedHostIoManifest {
+    FailedHostIoManifest {
+        node: wire_string(node),
+        execution_binding: ContentHash::from_canonical_material(
+            "crucible.test.failed-host-io-binding.v1",
+            node,
+        ),
+        checkpoint: ContentHash::from_canonical_material(
+            "crucible.test.failed-host-io-checkpoint.v1",
+            node,
+        ),
+        fingerprint_at: 41,
+        fingerprint: ContentHash::from_canonical_material(
+            "crucible.test.failed-node-fingerprint.v1",
+            node,
+        ),
     }
 }
 
@@ -410,6 +430,7 @@ fn build_one_node_raw_checkpoint(
                 manifest_identity,
             },
         )]),
+        failed_host_io: BTreeMap::new(),
         node_generations: BTreeMap::from([(node.clone(), 1)]),
         node_service_states: BTreeMap::from([(node.clone(), ProductionNodeServiceState::Running)]),
     };
@@ -608,12 +629,230 @@ fn closure_manifest_round_trip_is_canonical() {
 }
 
 #[test]
+fn failed_node_fingerprint_fields_bind_the_v8_closure_identity() {
+    let mut original = manifest();
+    original.failed_host_io.push(failed_host_io("vm-a"));
+    let identity = closure_identity(&original).expect("derive failed-node closure identity");
+
+    let mut changed_time = original.clone();
+    changed_time.failed_host_io[0].fingerprint_at += 1;
+    assert_ne!(
+        closure_identity(&changed_time).expect("derive changed-time closure identity"),
+        identity
+    );
+
+    let mut changed_fingerprint = original;
+    changed_fingerprint.failed_host_io[0].fingerprint =
+        ContentHash::from_bytes(b"changed terminal fingerprint");
+    assert_ne!(
+        closure_identity(&changed_fingerprint)
+            .expect("derive changed-fingerprint closure identity"),
+        identity
+    );
+}
+
+#[test]
+fn legacy_manifests_reject_failed_node_authority() {
+    let mut previous = manifest();
+    previous.format_version = PREVIOUS_MANIFEST_VERSION;
+    previous.failed_host_io.push(failed_host_io("vm-a"));
+    let bytes = encode_manifest(&previous).expect("encode invalid legacy failed-node manifest");
+
+    let error = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
+        .err()
+        .unwrap_or_else(|| panic!("v7 cannot represent exact failed-node authority"));
+    assert!(error.to_string().contains("failed-node host I/O"));
+}
+
+#[test]
+fn manifest_rejects_duplicate_failed_node_owners() {
+    let failed = failed_host_io("vm-a");
+    let mut duplicate = manifest();
+    duplicate.failed_host_io = vec![failed.clone(), failed];
+    let bytes = encode_manifest(&duplicate).expect("encode duplicate failed-node manifest");
+
+    assert!(decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err());
+}
+
+#[test]
+fn checkpoint_set_rejects_missing_failed_node_authority() {
+    let root = tempfile::tempdir().expect("create failed-node checkpoint fixture root");
+    let (source, mut checkpoint, node, _) = build_one_node_raw_checkpoint(root.path(), None);
+    checkpoint
+        .node_service_states
+        .insert(node, ProductionNodeServiceState::PermanentlyFailed);
+
+    let error = validate_checkpoint_set(source.scenario_def().id(), &checkpoint)
+        .expect_err("failed node without retained authority must fail closed");
+    assert!(error.to_string().contains("owner partition is incomplete"));
+}
+
+#[test]
+fn checkpoint_set_rejects_wrong_failed_node_fingerprint_owner() {
+    let root = tempfile::tempdir().expect("create failed-node checkpoint fixture root");
+    let (source, mut checkpoint, node, _) = build_one_node_raw_checkpoint(root.path(), None);
+    checkpoint.targets.remove(&node);
+    checkpoint
+        .node_service_states
+        .insert(node.clone(), ProductionNodeServiceState::PermanentlyFailed);
+    checkpoint.failed_host_io.insert(
+        node,
+        ProductionFailedNodeState {
+            host_io: QemuHostIoCheckpoint::without_devices(ContentHash::from_bytes(
+                b"wrong-owner failed-node host binding",
+            )),
+            fingerprint: FingerprintSample {
+                node: NodeId {
+                    name: String::from("foreign-node"),
+                },
+                at: VirtualTime { ticks: 73 },
+                fingerprint: ExecutionFingerprint {
+                    hash: ContentHash::from_bytes(b"wrong-owner failed-node fingerprint"),
+                },
+            },
+        },
+    );
+
+    let error = validate_checkpoint_set(source.scenario_def().id(), &checkpoint)
+        .expect_err("a retained fingerprint must name its failed-node owner");
+    assert!(
+        error
+            .to_string()
+            .contains("fingerprint owner is inconsistent")
+    );
+}
+
+#[test]
+fn failed_node_authority_round_trips_through_the_v8_closure() {
+    let root = tempfile::tempdir().expect("create failed-node checkpoint store");
+    let (source, mut checkpoint, node, _) = build_one_node_raw_checkpoint(root.path(), None);
+    checkpoint.targets.remove(&node);
+    checkpoint
+        .node_service_states
+        .insert(node.clone(), ProductionNodeServiceState::PermanentlyFailed);
+    let expected = ProductionFailedNodeState::new(
+        &node,
+        QemuHostIoCheckpoint::without_devices(ContentHash::from_bytes(
+            b"durable failed-node host binding",
+        )),
+        FingerprintSample {
+            node: node.clone(),
+            at: VirtualTime { ticks: 73 },
+            fingerprint: ExecutionFingerprint {
+                hash: ContentHash::from_bytes(b"durable failed-node fingerprint"),
+            },
+        },
+    )
+    .expect("construct failed-node authority");
+    checkpoint
+        .failed_host_io
+        .insert(node.clone(), expected.clone());
+    let fault_runtime = ProductionFaultRuntime::new(
+        source.plan().fault_signals().clone(),
+        None,
+        SignalBoundarySnapshot::default(),
+        source.scenario_def().id(),
+        super::super::fault_implementation::test_host_manifests(),
+        &ProductionNodeSet::new(),
+    )
+    .expect("build failed-node fault runtime");
+    checkpoint.fault_checkpoint = Some(
+        fault_runtime
+            .checkpoint(&mut ProductionNodeSet::new())
+            .expect("checkpoint failed-node fault runtime"),
+    );
+
+    let prepared = prepare_exact_checkpoint_set(
+        root.path(),
+        source.scenario_def().id(),
+        source.plan().fault_signals().resource_limits(),
+        &mut checkpoint,
+    )
+    .expect("prepare failed-node checkpoint");
+    let identity = prepared.identity();
+    prepared.publish().expect("publish failed-node checkpoint");
+    let restored =
+        load_exact_checkpoint_set(root.path(), &source.scenario_def(), &source, identity)
+            .expect("load failed-node checkpoint");
+
+    assert_eq!(restored.failed_host_io.get(&node), Some(&expected));
+    assert!(restored.targets.is_empty());
+}
+
+#[test]
+fn legacy_v7_checkpoint_rejects_a_permanently_failed_service_state() {
+    let store = tempfile::tempdir().expect("create legacy failed-node checkpoint store");
+    let (source, current_identity, node, _) = publish_one_node_raw_checkpoint(store.path());
+    let current_path = closure_parent(store.path(), source.scenario_def().id())
+        .join(current_identity.to_hex())
+        .join(MANIFEST_FILE);
+    let current_bytes = fs::read(&current_path).expect("read current checkpoint manifest");
+    let mut legacy = decode::decode_manifest_with_limits(
+        &current_bytes,
+        source.plan().fault_signals().resource_limits(),
+    )
+    .expect("decode current checkpoint manifest");
+    legacy.format_version = PREVIOUS_MANIFEST_VERSION;
+    legacy.targets.clear();
+    legacy.node_service_states = vec![(decode::FallibleString::new(node.name), 3)];
+    legacy.identity = closure_identity(&legacy).expect("derive legacy failed-node identity");
+    let publication =
+        closure_parent(store.path(), source.scenario_def().id()).join(legacy.identity.to_hex());
+    fs::create_dir_all(&publication).expect("create legacy checkpoint publication");
+    fs::write(
+        publication.join(MANIFEST_FILE),
+        encode_manifest(&legacy).expect("encode legacy checkpoint manifest"),
+    )
+    .expect("write legacy checkpoint manifest");
+
+    let error = load_exact_checkpoint_set(
+        store.path(),
+        &source.scenario_def(),
+        &source,
+        legacy.identity,
+    )
+    .expect_err("v7 cannot restore a process-free failed-node authority");
+    assert!(
+        error
+            .to_string()
+            .contains("v4-v7 exact checkpoint cannot restore permanently failed host I/O exactly")
+    );
+}
+
+#[test]
+fn v4_through_v7_empty_failed_partition_preserves_canonical_identity() {
+    for version in [
+        OLDEST_MANIFEST_VERSION,
+        LEGACY_MANIFEST_VERSION,
+        OLDER_MANIFEST_VERSION,
+        PREVIOUS_MANIFEST_VERSION,
+    ] {
+        let mut original = manifest();
+        original.format_version = version;
+        original.identity = closure_identity(&original).expect("derive legacy closure identity");
+        let bytes = encode_manifest(&original).expect("encode legacy closure manifest");
+        let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
+            .expect("decode legacy closure manifest");
+
+        assert!(decoded == original);
+        assert_eq!(
+            closure_identity(&decoded).expect("derive decoded legacy closure identity"),
+            original.identity
+        );
+        assert_eq!(
+            encode_manifest(&decoded).expect("re-encode legacy closure manifest"),
+            bytes
+        );
+    }
+}
+
+#[test]
 fn legacy_v4_closure_manifest_retains_its_identity_and_canonical_bytes() {
     let mut legacy = manifest();
-    legacy.format_version = LEGACY_MANIFEST_VERSION;
+    legacy.format_version = OLDEST_MANIFEST_VERSION;
     legacy.identity = closure_identity(&legacy).expect("derive legacy identity");
     let bytes = encode_manifest(&legacy).expect("encode legacy manifest");
-    assert!(bytes.starts_with(LEGACY_MANIFEST_MAGIC));
+    assert!(bytes.starts_with(OLDEST_MANIFEST_MAGIC));
 
     let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
         .expect("decode legacy manifest");
@@ -631,10 +870,10 @@ fn legacy_v4_closure_manifest_retains_its_identity_and_canonical_bytes() {
 #[test]
 fn previous_v6_closure_manifest_retains_its_identity_and_canonical_bytes() {
     let mut previous = manifest();
-    previous.format_version = PREVIOUS_MANIFEST_VERSION;
+    previous.format_version = OLDER_MANIFEST_VERSION;
     previous.identity = closure_identity(&previous).expect("derive previous identity");
     let bytes = encode_manifest(&previous).expect("encode previous manifest");
-    assert!(bytes.starts_with(PREVIOUS_MANIFEST_MAGIC));
+    assert!(bytes.starts_with(OLDER_MANIFEST_MAGIC));
 
     let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
         .expect("decode previous manifest");
@@ -660,7 +899,7 @@ fn previous_v6_dense_target_retains_its_identity_and_canonical_bytes() {
         extents: Vec::new(),
     };
     let mut previous = manifest();
-    previous.format_version = PREVIOUS_MANIFEST_VERSION;
+    previous.format_version = OLDER_MANIFEST_VERSION;
     let mut prior_target = target("a");
     prior_target.overlay = dense.clone();
     prior_target.vmstate = dense;
@@ -682,10 +921,10 @@ fn previous_v6_dense_target_retains_its_identity_and_canonical_bytes() {
 #[test]
 fn older_v5_closure_manifest_retains_its_identity_and_canonical_bytes() {
     let mut older = manifest();
-    older.format_version = OLDER_MANIFEST_VERSION;
+    older.format_version = LEGACY_MANIFEST_VERSION;
     older.identity = closure_identity(&older).expect("derive older identity");
     let bytes = encode_manifest(&older).expect("encode older manifest");
-    assert!(bytes.starts_with(OLDER_MANIFEST_MAGIC));
+    assert!(bytes.starts_with(LEGACY_MANIFEST_MAGIC));
 
     let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
         .expect("decode older manifest");
@@ -806,7 +1045,7 @@ fn closure_manifest_versions_enforce_backing_field_ownership() {
     assert!(decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err());
 
     let mut older_with_backing = manifest();
-    older_with_backing.format_version = OLDER_MANIFEST_VERSION;
+    older_with_backing.format_version = LEGACY_MANIFEST_VERSION;
     let mut older_target = target("a");
     older_target.overlay = older_target.vmstate.clone();
     older_with_backing.targets.push(older_target);

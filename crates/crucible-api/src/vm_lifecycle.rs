@@ -22,22 +22,22 @@ use crucible::{
     CheckpointTerminalCause, ConditionEvaluationPass, ConditionLeaf, Configuration, ContentHash,
     ControlOperation, DagStore, DebugGdbEndpoint, DebugRetiredWorldCleanup,
     DebugRuntimeRepositionReport, DebugRuntimeRepositionRequest, Decision, EventFirings,
-    EventGraph, EventGraphState, EventLogOffset, FingerprintSample, GdbAttachInfo, GdbListen,
-    HostAssertionEvaluator, HostAssertionEvaluatorCheckpoint, HostAssertionOutcome,
-    HostAssertionOutcomeKind, Icount, NodeId, NodeLifecycle, ObservableEvent, QuantumLoop,
-    QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RuntimeState, ScenarioDef,
+    EventGraph, EventGraphState, EventLogOffset, ExecutionFingerprint, FingerprintSample,
+    GdbAttachInfo, GdbListen, HostAssertionEvaluator, HostAssertionEvaluatorCheckpoint,
+    HostAssertionOutcome, HostAssertionOutcomeKind, Icount, NodeId, NodeLifecycle, ObservableEvent,
+    QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RuntimeState, ScenarioDef,
     ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogAppend, SchedulerEventLogEntry,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerQuiescence, SchedulerState,
     SearchFrontierChoices, Seed, SelectionDecision, Shift, SignalFaultCampaignReplayPlan,
     SimDuration, SimInstant, SimulationBackend, SingleScheduler, SingleSchedulerCheckpoint,
-    VirtualTime, VmArchitecture, World,
+    VirtualTime, VmArchitecture, World, WorldIoNodeKind,
 };
 pub use crucible_qemu::{
     BoundedSchedulerPreemptionEvidence, BoundedSchedulerPreemptionEvidenceSnapshot,
 };
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
-    QemuLaunchResourceRequirements, QemuNode, QemuNodeLifecycleDecision,
+    QemuHostIoCheckpoint, QemuLaunchResourceRequirements, QemuNode, QemuNodeLifecycleDecision,
     QemuNodeLifecycleIntent as LifecycleMutationIntent, QemuProcessIdentity, QemuReplayOracleCheck,
     QemuReplayOracleValidation, QemuSharedBlockDevice, QemuVmSnapshot as ExactSnapshotHandle,
     linux_process_identity, quarantine_orphaned_qemu_process,
@@ -92,6 +92,7 @@ pub use fault_implementation::{
 mod hot_fork;
 #[cfg(target_os = "linux")]
 pub use hot_fork::{
+    ProductionVmHotForkIoNodeBoundary, ProductionVmHotForkIoNodeKind,
     ProductionVmHotForkNodeBoundary, ProductionVmHotForkNodeServiceState,
     ProductionVmHotForkSourceWorld, ProductionVmHotForkSourceWorldPreparationFailure,
     ProductionVmHotForkSourceWorldResourceUsage, ProductionVmHotForkWorldContinuation,
@@ -388,8 +389,38 @@ struct ProductionVmExactCheckpointSet {
         BTreeMap<NodeId, crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan>,
     fault_checkpoint: Option<ProductionFaultRuntimeCheckpoint>,
     targets: BTreeMap<NodeId, ProductionVmExactCheckpointTarget>,
+    failed_host_io: BTreeMap<NodeId, ProductionFailedNodeState>,
     node_generations: BTreeMap<NodeId, u64>,
     node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
+}
+
+/// Process-free authority retained after a node commits permanent failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProductionFailedNodeState {
+    host_io: QemuHostIoCheckpoint,
+    fingerprint: FingerprintSample,
+}
+
+impl ProductionFailedNodeState {
+    fn new(
+        node: &NodeId,
+        host_io: QemuHostIoCheckpoint,
+        fingerprint: FingerprintSample,
+    ) -> Result<Self, SchedulerError> {
+        if fingerprint.node != *node {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "failed-node fingerprint for `{}` names `{}`",
+                    node.name, fingerprint.node.name
+                ),
+            });
+        }
+
+        Ok(Self {
+            host_io,
+            fingerprint,
+        })
+    }
 }
 
 struct ProductionVmHotForkRestore {
@@ -398,6 +429,7 @@ struct ProductionVmHotForkRestore {
     immutable_root_images: BTreeMap<NodeId, ContentHash>,
     block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
     ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
+    active_host_io: BTreeMap<NodeId, QemuHostIoCheckpoint>,
 }
 
 struct ProductionVmHotForkRestoreParts {
@@ -406,11 +438,82 @@ struct ProductionVmHotForkRestoreParts {
     immutable_root_images: BTreeMap<NodeId, ContentHash>,
     block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
     ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
+    active_host_io: BTreeMap<NodeId, QemuHostIoCheckpoint>,
 }
 
 struct HotForkAdoptionInventory {
     expected_times: BTreeMap<NodeId, VirtualTime>,
     node_generations: BTreeMap<NodeId, u64>,
+}
+
+fn validate_failed_host_io_topology(
+    source: &ScenarioDefForm,
+    service_states: &BTreeMap<NodeId, ProductionNodeServiceState>,
+    failed_host_io: &BTreeMap<NodeId, ProductionFailedNodeState>,
+) -> Result<(), LifecycleApiError> {
+    let expected_failed = service_states
+        .iter()
+        .filter_map(|(node, state)| {
+            (*state == ProductionNodeServiceState::PermanentlyFailed).then_some(node)
+        })
+        .collect::<BTreeSet<_>>();
+    if failed_host_io.keys().collect::<BTreeSet<_>>() != expected_failed {
+        return Err(loop_factory_error(
+            "failed-node host-I/O owner partition is incomplete",
+        ));
+    }
+
+    for (owner, failed) in failed_host_io {
+        if failed.fingerprint.node != *owner {
+            return Err(loop_factory_error(format!(
+                "failed-node fingerprint for `{}` names `{}`",
+                owner.name, failed.fingerprint.node.name
+            )));
+        }
+        let checkpoint = &failed.host_io;
+        let block_node = source.world().io_nodes().find(|node| {
+            node.owner == *owner && matches!(node.kind, WorldIoNodeKind::Block { .. })
+        });
+        let ninep_node = source.world().io_nodes().find(|node| {
+            node.owner == *owner && matches!(node.kind, WorldIoNodeKind::NineP { .. })
+        });
+        if checkpoint.block().is_some() != block_node.is_some()
+            || checkpoint.ninep().is_some() != ninep_node.is_some()
+        {
+            return Err(loop_factory_error(format!(
+                "failed-node host-I/O topology differs for `{}`",
+                owner.name
+            )));
+        }
+        if let (Some(block), Some(node)) = (checkpoint.block(), block_node) {
+            let WorldIoNodeKind::Block {
+                base_image,
+                base_length,
+                ..
+            } = &node.kind
+            else {
+                return Err(loop_factory_error("failed block node changed kind"));
+            };
+            if block.base_image() != base_image.hash() || block.device_length() != *base_length {
+                return Err(loop_factory_error(format!(
+                    "failed block continuation differs for `{}`",
+                    node.id.name
+                )));
+            }
+        }
+        if let (Some(ninep), Some(node)) = (checkpoint.ninep(), ninep_node) {
+            let WorldIoNodeKind::NineP { tree, .. } = &node.kind else {
+                return Err(loop_factory_error("failed 9p node changed kind"));
+            };
+            if ninep.tree() != tree.hash() {
+                return Err(loop_factory_error(format!(
+                    "failed 9p continuation differs for `{}`",
+                    node.id.name
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_exact_checkpoint_artifact(
@@ -620,6 +723,7 @@ pub struct ProductionVmLifecycleLoop {
     block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
     ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
     block_devices: storage_faults::ProductionBlockDevices,
+    failed_host_io: BTreeMap<NodeId, ProductionFailedNodeState>,
     storage_fault_observations: storage_faults::ProductionStorageObservations,
     fault_runtime: Arc<std::sync::Mutex<ProductionFaultRuntime>>,
     fault_replay_installed: bool,
@@ -1955,6 +2059,9 @@ where
     continuation
         .validate_complete_internal_state()
         .map_err(|error| loop_factory_error(format!("validate hot-fork continuation: {error}")))?;
+    continuation
+        .validate_world_io(source.world())
+        .map_err(|error| loop_factory_error(format!("validate hot-fork World I/O: {error}")))?;
 
     let source_nodes = source
         .world()
@@ -2003,6 +2110,7 @@ where
         immutable_root_images,
         block_bindings,
         ninep_bindings,
+        active_host_io,
     } = continuation.into_restore_parts(node_generations, run_state_root);
     build_production_vm_lifecycle_loop_with_restore(
         scenario,
@@ -2016,6 +2124,7 @@ where
             immutable_root_images,
             block_bindings,
             ninep_bindings,
+            active_host_io,
         }),
     )
 }

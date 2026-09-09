@@ -17,6 +17,27 @@ impl ProductionVmNodeLease for RetainedOwnershipLease {
     }
 }
 
+fn failed_node_state(node: &NodeId) -> ProductionFailedNodeState {
+    ProductionFailedNodeState::new(
+        node,
+        QemuHostIoCheckpoint::without_devices(ContentHash::from_canonical_material(
+            "crucible.test.failed-host-io-binding.v1",
+            &node.name,
+        )),
+        FingerprintSample {
+            node: node.clone(),
+            at: VirtualTime::default(),
+            fingerprint: ExecutionFingerprint {
+                hash: ContentHash::from_canonical_material(
+                    "crucible.test.failed-node-fingerprint.v1",
+                    &node.name,
+                ),
+            },
+        },
+    )
+    .unwrap_or_else(|error| panic!("failed-node fixture should validate: {error}"))
+}
+
 fn permanently_failed_loop() -> (ScenarioDefForm, ProductionVmLifecycleLoop) {
     let source = super::super::runtime::tests::nonterminal_signal_replay_scenario();
     let mut lifecycle = super::super::runtime::tests::production_loop_without_backends(&source);
@@ -25,6 +46,9 @@ fn permanently_failed_loop() -> (ScenarioDefForm, ProductionVmLifecycleLoop) {
         lifecycle
             .node_service_states
             .insert(vm.id.clone(), ProductionNodeServiceState::PermanentlyFailed);
+        lifecycle
+            .failed_host_io
+            .insert(vm.id.clone(), failed_node_state(&vm.id));
         lifecycle.immutable_root_images.insert(
             vm.id.clone(),
             ContentHash::from_bytes(vm.id.name.as_bytes()),
@@ -39,6 +63,50 @@ fn permanently_failed_continuation() -> (ScenarioDefForm, ProductionVmHotForkWor
         .capture_hot_fork_world_continuation()
         .unwrap_or_else(|error| panic!("process-neutral continuation should capture: {error}"));
     (source, continuation)
+}
+
+#[test]
+fn failed_node_sampling_uses_the_original_terminal_boundary() {
+    let (_source, mut lifecycle) = permanently_failed_loop();
+    let node = lifecycle
+        .failed_host_io
+        .keys()
+        .next()
+        .cloned()
+        .unwrap_or_else(|| panic!("fixture should contain a failed node"));
+    let failed = lifecycle
+        .failed_host_io
+        .get_mut(&node)
+        .unwrap_or_else(|| panic!("fixture should retain failed-node authority"));
+    failed.fingerprint.at = VirtualTime { ticks: 41 };
+    let expected = failed.fingerprint.clone();
+
+    let sampled = QuantumLoop::sample_fingerprint(&mut lifecycle, node).unwrap_or_else(|error| {
+        panic!("failed-node fingerprint should remain sampleable: {error}")
+    });
+
+    assert_eq!(sampled, expected);
+}
+
+#[test]
+fn hot_fork_preserves_failed_node_fingerprint_authority() {
+    let (_source, continuation) = permanently_failed_continuation();
+    let expected = continuation
+        .failed_host_io
+        .iter()
+        .map(|(node, failed)| (node.clone(), failed.fingerprint.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let generations = continuation.node_generations.clone();
+
+    let restore = continuation.into_restore_parts(generations, "child-run-state");
+    let observed = restore
+        .checkpoint
+        .failed_host_io
+        .iter()
+        .map(|(node, failed)| (node.clone(), failed.fingerprint.clone()))
+        .collect::<BTreeMap<_, _>>();
+
+    assert_eq!(observed, expected);
 }
 
 #[test]
@@ -423,7 +491,12 @@ fn powered_off_continuation_requires_the_retained_process_boundary() {
     boundary.service_state = ProductionVmHotForkNodeServiceState::PoweredOff;
     continuation
         .node_service_states
-        .insert(node, ProductionNodeServiceState::PoweredOff);
+        .insert(node.clone(), ProductionNodeServiceState::PoweredOff);
+    let failed = continuation
+        .failed_host_io
+        .remove(&node)
+        .unwrap_or_else(|| panic!("fixture should retain failed-node state"));
+    continuation.active_host_io.insert(node, failed.host_io);
 
     assert!(continuation.validate_complete_internal_state().is_err());
     continuation.nodes[0].physical_time = Some(VirtualTime { ticks: 41 });
@@ -487,6 +560,7 @@ fn hot_fork_restore_replaces_only_the_durable_run_root() {
         immutable_root_images: roots,
         block_bindings: blocks,
         ninep_bindings: ninep,
+        active_host_io,
     } = continuation.into_restore_parts(generations.clone(), "child-run-state");
 
     assert_eq!(config.run_state_root(), Path::new("child-run-state"));
@@ -494,4 +568,5 @@ fn hot_fork_restore_replaces_only_the_durable_run_root() {
     assert_eq!(roots, expected_roots);
     assert!(blocks.is_empty());
     assert!(ninep.is_empty());
+    assert!(active_host_io.is_empty());
 }
