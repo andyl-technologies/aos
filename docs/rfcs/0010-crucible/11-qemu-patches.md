@@ -390,6 +390,8 @@ HOT FORK AND RETAINED TEMPLATES (RFC-0020 05)          class  enforces
   crucible-forkable-template-ram .. make guest RAM forkable while a template is retained  F    HFORK-4, HFORK-22
   crucible-stage-release-under-retained-template .. admit child stage release while a template is retained  F    HFORK-4, HFORK-22
   crucible-restarted-vcpu-thread-current-cpu .. name the current CPU on the restarted vCPU thread  F    HFORK-4, HFORK-22
+  crucible-serialized-vmstop-resume-callback .. serialize guest reply handoff on the RR thread  F    PATCH-34, TIME-24, INV-8
+  crucible-deferred-single-vcpu-state-free-host-kicks .. defer single-vCPU host wakes to RR boundaries  D    DET-1, DET-29, QEMU-43
 
 EXACT RESTORE, CURSORS, AND FINGERPRINT STATE          class  enforces
   crucible-serialized-rr-cursor .. restore the exact multi-vCPU continuation  D    DET-29, QEMU-34, QEMU-43, QFP-STATE-2
@@ -1596,18 +1598,19 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   safely publish `exit_request` because the atomic claim prevents TCG from
   starting; this closes the condition broadcast-before-wait race without
   selecting a guest execution endpoint.
-  Single-vCPU mode retains the soft between-block
-  request because it has no alternate RR allocation to perturb and requires
-  bounded main-loop service. Terminal pause publishes its
-  pending state and explicitly kicks the vCPU; committed terminal, lifecycle,
-  and interrupt state retains immediate `cpu_exit()`.
+  Patch 0238 subsequently applies the same handshake to single-vCPU mode,
+  because an asynchronous soft exit can still choose an interrupt-visible
+  translation-block endpoint without an alternate RR owner. Terminal pause
+  publishes its pending state and explicitly kicks the vCPU; committed terminal,
+  lifecycle, and interrupt state retains immediate `cpu_exit()`.
 - **Micro-test:** the production four-vCPU fingerprint compares complete
   canonical streams with bounded scheduler preemption applied only after the
   second run's first positive trace coordinate. S1 and
   live-network gates prove startup, between-slice, terminal-pause, and device
-  wake liveness. Structural checks require the single-vCPU liveness exception,
-  the idle/active/pending handshake and its canonical service points, plus cleanup on
-  idle, boot, and stateful paths; they forbid a multi-vCPU soft exit.
+  wake liveness. Structural checks record the historical single-vCPU liveness
+  exception introduced here, require the idle/active/pending handshake and its
+  canonical service points, plus cleanup on idle, boot, and stateful paths, and
+  require patch 0238 to remove the exception from the final stack.
 - **Inertness:** [PATCH-3](a), [PATCH-3](c) — the new admission guard is inside
   precise sim mode with a nonzero pinned RR quantum. Other accelerators and
   icount configurations retain upstream behavior.
@@ -4542,6 +4545,47 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Inertness:** the original thread function is unchanged; the parent
   never restarts a vCPU thread.
 - **Risk:** F.
+
+### crucible-serialized-vmstop-resume-callback — serialize guest reply handoff on the RR thread
+
+- **Patch:** `0237-crucible-serialize-vmstop-resume-callback.patch`.
+- **Enforces:** [PATCH-34], [TIME-24], [INV-8].
+- **Mechanism:** x86 `OUT` and the reserved AArch64 Crucible `HINT` end their
+  translation block. A selectable callback in precise single-threaded sim RR
+  can therefore request a vCPU exit at the exact post-doorbell coordinate.
+  Native VMStop resume remains fenced until the RR vCPU thread consumes the
+  edge and invokes the resume callback before the next guest instruction.
+- **Source and build check:** the patch gate requires the guarded TB-exit export,
+  resume-fence consumption before callback dispatch, and the AArch64 doorbell
+  TB boundary, then builds both system targets with the patch. Native callback
+  ordering remains part of the packaged guest-choice acceptance flight.
+- **Inertness:** the translation barriers apply only to the existing port-I/O
+  instruction and one reserved AArch64 hint. The force-exit export rejects
+  calls outside precise single-threaded sim RR and otherwise only requests the
+  current vCPU to leave its translation block.
+- **Risk:** F.
+
+### crucible-deferred-single-vcpu-state-free-host-kicks — defer single-vCPU host wakes to RR boundaries
+
+- **Patch:** `0238-crucible-defer-single-vcpu-state-free-host-kicks.patch`.
+- **Enforces:** [DET-1], [DET-29], [QEMU-43].
+- **Mechanism:** precise single-vCPU sim execution now uses the serialized
+  startup/idle/active/pending wake state machine that already protected
+  multi-vCPU execution. Startup and idle writers publish their wait predicate
+  before releasing the arming state. An active state-free host wake remains
+  pending across partial TCG slices and is consumed only at cursor position
+  zero or another existing canonical wait boundary. Committed lifecycle,
+  terminal, and interrupt transitions continue to call `cpu_exit()`.
+- **Micro-test:** the production S1 fingerprint gate compares complete
+  single-vCPU traces across bounded host scheduler preemption. Structural
+  checks require startup and idle arming, active-pending retention, the
+  cursor-zero consumer, and removal of patch 0106's single-vCPU soft-exit
+  exception. The packaged guest-choice campaign provides the exact native
+  callback continuation that depends on this boundary.
+- **Inertness:** the state machine is reached only in precise sim mode with a
+  nonzero pinned RR quantum. Other accelerators and icount configurations keep
+  the upstream kick path.
+- **Risk:** D.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 

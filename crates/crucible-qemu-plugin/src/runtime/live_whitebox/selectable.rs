@@ -23,6 +23,8 @@ use crate::{
     WhiteboxGuestInputWriter, handle_whitebox_selectable_callback,
 };
 
+const SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS: u64 = 1;
+
 /// Returns whether bytes claim the standalone selectable-v1 namespace.
 pub(super) fn is_message(payload: &[u8]) -> bool {
     payload
@@ -35,7 +37,7 @@ pub(super) struct LiveSelectableState {
     capability: WhiteboxGuestInputCapability,
     catalog: SelectableCatalog,
     restore_catalog: Option<SelectableCatalog>,
-    force_vcpu_exit: crate::QemuForceVcpuExitFn,
+    force_vcpu_tb_exit: super::api::QemuForceVcpuTbExitFn,
     vmstop_handoff: Arc<super::super::live_callbacks::SelectableVmstopHandoff>,
     reply_input: LiveSelectableReplyShmemConsumer,
     catalog_events_enabled: bool,
@@ -91,9 +93,13 @@ impl WhiteboxGuestInputWriter for LiveSelectableGuestMemoryWriter {
             payload.as_ptr(),
             payload.len(),
         ) {
-            return Err(crate::WhiteboxGuestInputWriteError::new(
-                "qemu_plugin_crucible_write_memory_vaddr_for_vcpu failed",
-            ));
+            return Err(crate::WhiteboxGuestInputWriteError::new(format!(
+                "qemu_plugin_crucible_write_memory_vaddr_for_vcpu failed for vCPU {} at guest virtual address {:#x} with {} bytes at resume icount {}",
+                self.vcpu_index,
+                range.guest_address(),
+                payload.len(),
+                self.current_icount,
+            )));
         }
         Ok(())
     }
@@ -149,7 +155,7 @@ impl LiveSelectableState {
     pub(super) fn new(
         plan: &SelectableCatalogPlan,
         capability: WhiteboxGuestInputCapability,
-        force_vcpu_exit: crate::QemuForceVcpuExitFn,
+        force_vcpu_tb_exit: super::api::QemuForceVcpuTbExitFn,
         vmstop_handoff: Arc<super::super::live_callbacks::SelectableVmstopHandoff>,
         reply_input: LiveSelectableReplyShmemConsumer,
     ) -> Result<Self, SelectableCatalogError> {
@@ -158,7 +164,7 @@ impl LiveSelectableState {
             capability,
             catalog,
             restore_catalog: Some(restore_catalog),
-            force_vcpu_exit,
+            force_vcpu_tb_exit,
             vmstop_handoff,
             reply_input,
             catalog_events_enabled: plan.continuation().phase()
@@ -191,33 +197,29 @@ impl LiveSelectableState {
                 callback_error("selectable reply arrived without a pending request")
             })?;
         let trap_coordinate = pending.coordinate();
+        // The host binds its reply to the stopped request boundary. QEMU's
+        // resume callback may report a later raw reservation boundary even
+        // though no subsequent guest TB has executed, so the memory write can
+        // occur later while the authenticated catalog token remains sealed at
+        // the stop coordinate.
+        if entry.current_icount() != trap_coordinate.icount()
+            || entry.vcpu_index() != trap_coordinate.vcpu_index()
+        {
+            return Err(callback_error(format!(
+                "selectable reply coordinate ({}, {}) differs from pending request boundary ({}, {})",
+                entry.current_icount(),
+                entry.vcpu_index(),
+                trap_coordinate.icount(),
+                trap_coordinate.vcpu_index()
+            )));
+        }
         if vcpu_index != trap_coordinate.vcpu_index() {
             return Ok(None);
         }
-        let coordinate = SelectableCallbackCoordinate::new(current_icount, vcpu_index);
-        let pending = self
-            .catalog
-            .rebind_pending_boundary(coordinate)
-            .map_err(callback_error)?;
-        let coordinate = pending.coordinate();
-        if entry.current_icount() != coordinate.icount()
-            || entry.vcpu_index() != coordinate.vcpu_index()
-        {
+        if current_icount < trap_coordinate.icount() {
             return Err(callback_error(format!(
-                "selectable reply coordinate ({}, {}) differs from pending ({}, {})",
-                entry.current_icount(),
-                entry.vcpu_index(),
-                coordinate.icount(),
-                coordinate.vcpu_index()
-            )));
-        }
-        if vcpu_index != coordinate.vcpu_index() {
-            return Ok(None);
-        }
-        if current_icount != coordinate.icount() {
-            return Err(callback_error(format!(
-                "selectable reply icount {} differs from target vCPU resume {current_icount}",
-                coordinate.icount()
+                "selectable reply resume icount {current_icount} precedes stopped request boundary {}",
+                trap_coordinate.icount()
             )));
         }
         let consumed = self.reply_input.dequeue()?.ok_or_else(|| {
@@ -247,7 +249,13 @@ impl LiveSelectableState {
         bytes.resize(pending.reply_range().len(), 0);
         writer
             .write_whitebox_input(current_icount, pending.reply_range(), &bytes)
-            .map_err(callback_error)?;
+            .map_err(|error| {
+                callback_error(format!(
+                    "selectable guest reply write failed at retained coordinate ({}, {}) during resume ({current_icount}, {vcpu_index}): {error}",
+                    trap_coordinate.icount(),
+                    trap_coordinate.vcpu_index(),
+                ))
+            })?;
         self.catalog
             .complete_request(&pending, &reply)
             .map_err(callback_error)?;
@@ -285,6 +293,32 @@ impl LiveSelectableState {
         self.catalog = restored;
         self.catalog_events_enabled = true;
         Ok(())
+    }
+
+    /// Rebinds the in-TB request coordinate to the deferred stop boundary.
+    pub(super) fn rebind_pending_boundary(
+        &mut self,
+        current_icount: u64,
+    ) -> Result<(), LiveWhiteboxError> {
+        let pending = self
+            .catalog
+            .pending_request()
+            .ok_or_else(|| callback_error("selectable VM stop has no pending request"))?;
+        let request_icount = pending.coordinate().icount();
+        let expected_stop_icount = request_icount
+            .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
+            .ok_or_else(|| callback_error("selectable native handoff icount overflowed"))?;
+        if current_icount != expected_stop_icount {
+            return Err(callback_error(format!(
+                "selectable request at icount {request_icount} stopped at {current_icount}, expected exactly {expected_stop_icount} after the doorbell instruction boundary"
+            )));
+        }
+        let coordinate =
+            SelectableCallbackCoordinate::new(current_icount, pending.coordinate().vcpu_index());
+        self.catalog
+            .rebind_pending_boundary(coordinate)
+            .map(|_pending| ())
+            .map_err(callback_error)
     }
 
     /// Returns whether catalog deltas belong to the authoritative generation.
@@ -343,10 +377,18 @@ impl SelectableReplyService for LiveSelectableState {
         self.catalog
             .begin_request(request, coordinate, reply_range)
             .map_err(service_error)?;
-        if !self.vmstop_handoff.defer(self.force_vcpu_exit) {
-            return Err(SelectableDoorbellServiceError::new(
-                "another selectable VMStop handoff is already pending".to_owned(),
-            ));
+        match self.vmstop_handoff.defer(self.force_vcpu_tb_exit) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(SelectableDoorbellServiceError::new(
+                    "another selectable VMStop handoff is already pending".to_owned(),
+                ));
+            }
+            Err(status) => {
+                return Err(SelectableDoorbellServiceError::new(format!(
+                    "QEMU rejected selectable translated-block exit with status {status}"
+                )));
+            }
         }
         Ok(SelectableReplyDisposition::Pending)
     }

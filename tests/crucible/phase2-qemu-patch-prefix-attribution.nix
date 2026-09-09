@@ -1019,6 +1019,14 @@
       kind = "recorded";
       symbols = [];
     };
+    "0237-crucible-serialize-vmstop-resume-callback.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_crucible_force_vcpu_tb_exit"];
+    };
+    "0238-crucible-defer-single-vcpu-state-free-host-kicks.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

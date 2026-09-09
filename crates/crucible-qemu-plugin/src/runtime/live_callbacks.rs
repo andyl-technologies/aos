@@ -47,7 +47,7 @@ use super::{
     callback_quiescence::{LiveCallbackInFlight, LiveCallbackQuiescence},
     live_whitebox::{
         LiveWhiteboxApis, crucible_qemu_plugin_live_whitebox_vcpu_init_cb,
-        deliver_selectable_reply_on_vcpu_resume,
+        deliver_selectable_reply_on_vcpu_resume, rebind_selectable_pending_boundary,
     },
     worker_quiescence::LiveWorkerQuiescence,
 };
@@ -109,16 +109,23 @@ impl SelectableVmstopHandoff {
     }
 
     /// Reserves the sole deferred stop and forces the current TB to finish.
-    pub(crate) fn defer(&self, force_vcpu_exit: QemuForceVcpuExitFn) -> bool {
+    pub(crate) fn defer(
+        &self,
+        force_vcpu_tb_exit: super::live_whitebox::QemuForceVcpuTbExitFn,
+    ) -> Result<bool, i32> {
         if self
             .pending
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            return false;
+            return Ok(false);
         }
-        force_vcpu_exit();
-        true
+        let status = force_vcpu_tb_exit();
+        if status != 0 {
+            self.pending.store(false, Ordering::Release);
+            return Err(status);
+        }
+        Ok(true)
     }
 
     fn claim(&self) -> bool {
@@ -406,7 +413,6 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                     self.target_architecture,
                     self.execution_model.smp_vcpus(),
                     capabilities.request_shutdown,
-                    capabilities.force_vcpu_exit,
                 )
                 .map_err(|source| {
                     live_callback_registration_error(LiveVcpuTimeCallbackError::WhiteboxCallback {
@@ -1577,6 +1583,11 @@ impl LiveVcpuTimeCallbackState {
                     ceiling_icount,
                 });
             }
+            rebind_selectable_pending_boundary(current_icount).map_err(|source| {
+                LiveVcpuTimeCallbackError::WhiteboxCallback {
+                    message: source.to_string(),
+                }
+            })?;
             PluginShmemOrdering::publish_pause_quiesced(
                 self.slot.get(),
                 current_icount,
