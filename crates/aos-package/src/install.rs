@@ -1162,7 +1162,7 @@ fn enforce_root_owner_signer(
     Ok(())
 }
 
-fn read_provenance_artifact(
+pub(crate) fn read_provenance_artifact(
     registry_cache_root: &Path,
     registry_name: &str,
     provenance_ref: &str,
@@ -1176,7 +1176,7 @@ fn read_provenance_artifact(
     )
 }
 
-fn read_registry_provenance_trusted_keys(
+pub(crate) fn read_registry_provenance_trusted_keys(
     registry_cache_root: &Path,
     registry_name: &str,
 ) -> Result<Vec<provenance::TrustedProvenanceKey>> {

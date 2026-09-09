@@ -16,7 +16,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::registry::{RegistrySet, store_path_hash};
-use crate::types::{ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta};
+use crate::types::{AbilityPackageMeta, ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta};
 
 /// An exact image-bundled package available from the active system profile.
 #[derive(Debug, Clone)]
@@ -31,6 +31,8 @@ pub struct LocalRuntimePackage {
     pub expose_artifact: Option<ExposeArtifactMeta>,
     /// Config-only companion retained in the image seed.
     pub config_module: Option<crate::types::ConfigModuleMeta>,
+    /// Authenticated ability companion retained in the image seed.
+    pub ability: Option<AbilityPackageMeta>,
     /// Lazily verified closure reused across outer fixpoint iterations.
     pub(super) closure: RefCell<Option<Vec<RuntimeClosurePin>>>,
 }
@@ -60,6 +62,12 @@ pub struct RuntimePackagePin {
     pub origin: RuntimePackageOrigin,
     /// Exact runtime output store path.
     pub store_path: String,
+    /// Exact selected runtime output NAR identity.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub nar_hash: String,
+    /// Exact selected runtime output uncompressed NAR size.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub nar_size: u64,
     /// Config-module dependency outputs authenticated by package metadata.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_dependency_outputs: BTreeMap<String, String>,
@@ -75,11 +83,18 @@ pub struct RuntimePackagePin {
     /// config companion. Absent for legacy flat-render packages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_projection: Option<RuntimeExposeConfigPin>,
+    /// Exact authenticated ability companion selected with this package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ability: Option<AbilityPackageMeta>,
     /// Registry-authenticated flat expose config for a package that has not
     /// migrated to a config-module projection. This keeps `render-one` from
     /// consulting mutable profile or registry metadata after evaluation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy_config: Option<ExposeConfigMeta>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// Trust origin for an exact runtime package pin.
@@ -388,6 +403,12 @@ pub fn resolve_runtime_with_local(
                 registry: closure.registry_name.clone(),
                 origin: RuntimePackageOrigin::Registry,
                 store_path: closure.root.store_path.clone(),
+                nar_hash: crate::registry::store::NarBytes::from_hash(
+                    &closure.root.nar_hash,
+                    closure.root.nar_size,
+                )?
+                .nar_hash(),
+                nar_size: closure.root.nar_size,
                 config_dependency_outputs: closure
                     .root
                     .config_module
@@ -398,6 +419,7 @@ pub fn resolve_runtime_with_local(
                 expose: closure.root.expose.clone(),
                 expose_artifact: closure.root.expose_artifact.clone(),
                 config_projection,
+                ability: closure.root.ability.clone(),
                 legacy_config,
             },
         );
@@ -478,6 +500,12 @@ pub fn resolve_runtime_with_local(
         } else {
             None
         };
+        let root_hash = store_path_hash(&package.store_path);
+        let root_realization = closure
+            .iter()
+            .find(|member| member.store_path_hash == root_hash)
+            .and_then(|member| member.realisations.first())
+            .context("image-local closure omitted its runtime output NAR identity")?;
         packages.insert(
             name,
             RuntimePackagePin {
@@ -486,6 +514,8 @@ pub fn resolve_runtime_with_local(
                 registry: "image".to_string(),
                 origin: RuntimePackageOrigin::Image,
                 store_path: package.store_path.clone(),
+                nar_hash: root_realization.nar_hash.clone(),
+                nar_size: root_realization.nar_size,
                 config_dependency_outputs: package
                     .config_module
                     .as_ref()
@@ -495,6 +525,7 @@ pub fn resolve_runtime_with_local(
                 expose: package.expose.clone(),
                 expose_artifact,
                 config_projection,
+                ability: package.ability.clone(),
                 legacy_config,
             },
         );

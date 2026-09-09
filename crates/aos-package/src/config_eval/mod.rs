@@ -36,6 +36,7 @@
 //! service consumes a returned manifest.
 
 pub mod ability;
+pub mod ability_activation;
 pub mod ability_policy;
 pub mod ability_store;
 pub mod activation;
@@ -1679,8 +1680,16 @@ fn enrich_manifest(
     let object = raw
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("evaluated config manifest is not an object"))?;
+    let ability_activation = object
+        .get_mut("inputs")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|inputs| inputs.remove("ability_activation"));
 
     enrich_runtime_projection(object, runtime)?;
+    let ability_activation = enrich_ability_activation(ability_activation, runtime)?;
+    if let Some(activation) = &ability_activation {
+        retain_ability_sidecar_roots(object, activation)?;
+    }
 
     let host_bytes = std::fs::read(&cmd.host_nix)
         .with_context(|| format!("reading host input {}", cmd.host_nix.display()))?;
@@ -1800,7 +1809,12 @@ fn enrich_manifest(
         )
     };
 
-    if runtime_modules.is_some() {
+    if ability_activation.is_some() {
+        object.insert(
+            "schema".into(),
+            serde_json::Value::String(materialize::ConfigManifest::SCHEMA_V3.to_string()),
+        );
+    } else if runtime_modules.is_some() {
         object.insert(
             "schema".into(),
             serde_json::Value::String(materialize::ConfigManifest::SCHEMA_V2.to_string()),
@@ -1839,8 +1853,16 @@ fn enrich_manifest(
             .as_object_mut()
             .context("manifest inputs did not serialize as an object")?
             .insert("runtime_modules".into(), runtime_modules);
+    }
+    if let Some(ability_activation) = ability_activation {
+        inputs
+            .as_object_mut()
+            .context("manifest inputs did not serialize as an object")?
+            .insert("ability_activation".into(), ability_activation);
+    }
+    if inputs.get("runtime_modules").is_some() || inputs.get("ability_activation").is_some() {
         let expected = cmd.expected_current_generation.context(
-            "runtime-module evaluation requires a caller-supplied active generation snapshot",
+            "transactional evaluation requires a caller-supplied active generation snapshot",
         )?;
         inputs
             .as_object_mut()
@@ -1855,6 +1877,95 @@ fn enrich_manifest(
         serde_json::from_value(raw).context("validating config manifest structure")?;
     manifest.validate()?;
     Ok(manifest)
+}
+
+fn enrich_ability_activation(
+    input: Option<serde_json::Value>,
+    runtime: &runtime::RuntimeResolution,
+) -> Result<Option<serde_json::Value>> {
+    let structured_packages = runtime
+        .packages
+        .values()
+        .filter_map(|package| package.ability.as_ref())
+        .any(|ability| ability.activation_mode == "structured-effects");
+    if structured_packages && input.is_none() {
+        anyhow::bail!("structured-effects package selection requires an ability_activation input");
+    }
+    let Some(mut input) = input else {
+        return Ok(None);
+    };
+    let object = input
+        .as_object_mut()
+        .context("manifest inputs.ability_activation must be an object")?;
+    let packages = runtime
+        .packages
+        .iter()
+        .filter_map(|(name, package)| {
+            package.ability.as_ref().map(|ability| {
+                serde_json::json!({
+                    "name": name,
+                    "version": package.version,
+                    "platform": package.platform,
+                    "registry": package.registry,
+                    "runtime_store_path": package.store_path,
+                    "runtime_nar_hash": package.nar_hash,
+                    "runtime_nar_size": package.nar_size,
+                    "ability_store_path": ability.store_path,
+                    "ability_nar_hash": ability.nar_hash,
+                    "manifest_sha256": ability.manifest_sha256,
+                    "package_digest": ability.package_digest,
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    object.insert("packages".to_string(), serde_json::Value::Array(packages));
+    Ok(Some(input))
+}
+
+fn retain_ability_sidecar_roots(
+    manifest: &mut serde_json::Map<String, serde_json::Value>,
+    activation: &serde_json::Value,
+) -> Result<()> {
+    let sidecar_paths = ["desired_state", "authenticated_policy_set"]
+        .into_iter()
+        .map(|field| {
+            activation
+                .get(field)
+                .and_then(|sidecar| sidecar.get("store_path"))
+                .and_then(serde_json::Value::as_str)
+                .with_context(|| format!("ability_activation.{field}.store_path is missing"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let store_paths = manifest
+        .get_mut("storePaths")
+        .and_then(serde_json::Value::as_array_mut)
+        .context("evaluated manifest storePaths is not an array")?;
+    for path in &sidecar_paths {
+        store_paths.push(serde_json::Value::String((*path).to_string()));
+    }
+    store_paths.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
+    store_paths.dedup();
+
+    let owners = manifest
+        .get_mut("ownership")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|ownership| ownership.get_mut("storePaths"))
+        .and_then(serde_json::Value::as_object_mut)
+        .context("evaluated manifest ownership.storePaths is not an object")?;
+    for path in sidecar_paths {
+        match owners.get(path).and_then(serde_json::Value::as_str) {
+            Some("@host") | None => {
+                owners.insert(
+                    path.to_string(),
+                    serde_json::Value::String("@host".to_string()),
+                );
+            }
+            Some(owner) => anyhow::bail!(
+                "ability activation sidecar {path} conflicts with store owner {owner:?}"
+            ),
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn current_config_generation_number(state_path: &Path) -> Result<u32> {
@@ -2523,13 +2634,18 @@ pub fn reeval_cross_abi(
     inputs.base_lib.abi_hash = read_base_lib_abi_hash(running_base_lib, retained.to_module_abi)?;
     inputs.evaluator.store_path = evaluator_store_path.to_string_lossy().into_owned();
     inputs.evaluator.store_hash = evaluator_store_hash(&evaluator_path)?;
-    if inputs.runtime_modules.is_some() {
+    if inputs.runtime_modules.is_some() || inputs.ability_activation.is_some() {
         inputs.expected_current_generation = Some(
             expected_current_generation
-                .context("runtime-module re-evaluation requires the active generation snapshot")?,
+                .context("transactional re-evaluation requires the active generation snapshot")?,
         );
     }
-    if inputs.runtime_modules.is_some() {
+    if inputs.ability_activation.is_some() {
+        object.insert(
+            "schema".into(),
+            serde_json::Value::String(materialize::ConfigManifest::SCHEMA_V3.to_string()),
+        );
+    } else if inputs.runtime_modules.is_some() {
         object.insert(
             "schema".into(),
             serde_json::Value::String(materialize::ConfigManifest::SCHEMA_V2.to_string()),

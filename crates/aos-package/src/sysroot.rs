@@ -962,6 +962,7 @@ fn validate_direct_reactivation(
     }
     let manifest: crate::config_eval::materialize::ConfigManifest =
         serde_json::from_slice(&std::fs::read(manifest_path)?)?;
+    crate::config_eval::activation::reject_structured_activation_on_legacy_path(&manifest)?;
     if manifest.module_abi != running.module_abi
         || target.base_lib_ref != manifest.inputs.base_lib.store_path
     {

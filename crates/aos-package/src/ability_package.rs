@@ -446,6 +446,34 @@ pub(crate) fn verify_ability_package(
         .ability
         .as_ref()
         .context("package does not declare ability metadata")?;
+    let coordinate = AbilityPackageCoordinate {
+        name: &package_meta.name,
+        version: &package_meta.version,
+        platform: &package_meta.platform,
+        store_path: &package_meta.store_path,
+        nar_hash: &package_meta.nar_hash,
+    };
+    verify_pinned_ability_package(
+        coordinate,
+        ability,
+        manifest_bytes,
+        provenance_jsonl,
+        registry_name,
+        trusted_keys,
+        retention_verifier,
+    )
+}
+
+/// Verifies one manifest from an exact generation-pinned registry coordinate.
+pub(crate) fn verify_pinned_ability_package(
+    coordinate: AbilityPackageCoordinate<'_>,
+    ability: &AbilityPackageMeta,
+    manifest_bytes: &[u8],
+    provenance_jsonl: &str,
+    registry_name: &str,
+    trusted_keys: &[crate::provenance::TrustedProvenanceKey],
+    retention_verifier: &impl AbilityRetentionVerifier,
+) -> Result<VerifiedAbilityPackage> {
     validate_ability_package_meta(ability)?;
 
     if manifest_bytes.len() as u64 != ability.manifest_size {
@@ -463,27 +491,27 @@ pub(crate) fn verify_ability_package(
     }
 
     let package = decode_package_manifest(manifest_bytes)?;
-    if package.package.name.as_str() != package_meta.name {
+    if package.package.name.as_str() != coordinate.name {
         bail!(
             "ability manifest package '{}' does not match registry package '{}'",
             package.package.name.as_str(),
-            package_meta.name
+            coordinate.name
         );
     }
-    if package.package.version != package_meta.version {
+    if package.package.version != coordinate.version {
         bail!(
             "ability manifest version '{}' does not match registry version '{}'",
             package.package.version,
-            package_meta.version
+            coordinate.version
         );
     }
-    let primary_nar_hash = canonical_nar_hash(&package_meta.nar_hash)?;
-    if package.package.payload.store_path != package_meta.store_path
+    let primary_nar_hash = canonical_nar_hash(coordinate.nar_hash)?;
+    if package.package.payload.store_path != coordinate.store_path
         || package.package.payload.nar_hash.to_string() != primary_nar_hash
     {
         bail!(
             "ability manifest payload does not match primary package {}",
-            package_meta.store_path
+            coordinate.store_path
         );
     }
     let package_digest = package
@@ -500,8 +528,8 @@ pub(crate) fn verify_ability_package(
 
     let artifacts = collect_distinct_artifacts(&package)?;
     verify_artifact_catalog(&artifacts, &ability.artifacts)?;
-    verify_ability_provenance(
-        package_meta,
+    verify_ability_provenance_coordinate(
+        &coordinate,
         ability,
         provenance_jsonl,
         registry_name,
@@ -525,9 +553,9 @@ pub(crate) fn verify_ability_package(
         package,
         manifest_sha256,
         package_digest,
-        package_name: package_meta.name.clone(),
-        package_version: package_meta.version.clone(),
-        platform: package_meta.platform.clone(),
+        package_name: coordinate.name.to_string(),
+        package_version: coordinate.version.to_string(),
+        platform: coordinate.platform.to_string(),
         activation_mode,
         artifacts,
         retention,
@@ -800,6 +828,29 @@ pub(crate) fn verify_ability_provenance(
     registry_name: &str,
     trusted_keys: &[crate::provenance::TrustedProvenanceKey],
 ) -> Result<String> {
+    let coordinate = AbilityPackageCoordinate {
+        name: &package_meta.name,
+        version: &package_meta.version,
+        platform: &package_meta.platform,
+        store_path: &package_meta.store_path,
+        nar_hash: &package_meta.nar_hash,
+    };
+    verify_ability_provenance_coordinate(
+        &coordinate,
+        ability,
+        provenance_jsonl,
+        registry_name,
+        trusted_keys,
+    )
+}
+
+fn verify_ability_provenance_coordinate(
+    coordinate: &AbilityPackageCoordinate<'_>,
+    ability: &AbilityPackageMeta,
+    provenance_jsonl: &str,
+    registry_name: &str,
+    trusted_keys: &[crate::provenance::TrustedProvenanceKey],
+) -> Result<String> {
     let (statement, key_id) =
         crate::provenance::verify_statement_dsse_jsonl(provenance_jsonl, trusted_keys)
             .context("verifying ability provenance DSSE")?;
@@ -811,14 +862,7 @@ pub(crate) fn verify_ability_provenance(
             "ability provenance key '{key_id}' is retired; dedicated ability statements require an active key"
         );
     }
-    let coordinate = AbilityPackageCoordinate {
-        name: &package_meta.name,
-        version: &package_meta.version,
-        platform: &package_meta.platform,
-        store_path: &package_meta.store_path,
-        nar_hash: &package_meta.nar_hash,
-    };
-    let expected = ability_provenance_statement(&coordinate, ability, registry_name, &key_id)?;
+    let expected = ability_provenance_statement(coordinate, ability, registry_name, &key_id)?;
     if statement != expected {
         bail!("ability provenance statement does not exactly match registry metadata");
     }
