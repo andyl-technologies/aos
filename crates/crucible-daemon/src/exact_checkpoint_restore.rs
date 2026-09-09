@@ -18,6 +18,7 @@ use crucible::{
 use crucible_api::{
     LifecycleApiError, ProductionExactCheckpointClosure, ProductionExactCheckpointResumeBasis,
     authenticate_portable_exact_checkpoint_replay_oracle_promotion_with_boundary,
+    authenticate_portable_exact_checkpoint_resume_basis_with_boundary,
     install_exact_checkpoint_closure_with_boundary_and_admission,
 };
 use crucible_cas::content_store::{BlobHandle, BlobSource, StoreError};
@@ -589,6 +590,70 @@ pub fn install_attempt_production_resume_checkpoint(
         cancellation,
         true,
     )
+}
+
+/// Authenticates one resume-eligible production checkpoint without installation.
+///
+/// This performs the same scenario, effective attempt-start, exact-prefix, and
+/// replay-oracle admission as [`install_attempt_production_resume_checkpoint`],
+/// but it does not populate a native run-state catalog. Restart recovery uses
+/// this boundary to distinguish a legacy completed promotion from a raw root
+/// before deciding whether any guarded QEMU comparison remains necessary.
+///
+/// # Errors
+///
+/// Returns [`ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady`]
+/// for a raw or partially promoted closure, or any error documented by
+/// [`install_attempt_production_exact_checkpoint`].
+pub(crate) fn authenticate_attempt_production_resume_checkpoint(
+    checkpoints: &ExactCheckpointStore,
+    checkpoint: ExactCheckpointId,
+    source: &ScenarioDefForm,
+    initial: &Configuration,
+    post_selection: Option<&Configuration>,
+    cancellation: &ExecutionCancellation,
+) -> Result<(), ProductionAttemptCheckpointRestoreError> {
+    check_production_cancellation(cancellation)?;
+    let effective_start = post_selection.unwrap_or(initial);
+    let scenario = source.scenario_def();
+    if initial.def != scenario || post_selection.is_some_and(|selected| selected.def != scenario) {
+        return Err(ProductionAttemptCheckpointRestoreError::AttemptScenarioMismatch);
+    }
+    if let Some(selected) = post_selection {
+        validate_production_post_selection(initial, selected)?;
+    }
+
+    let loaded = checkpoints
+        .load_production_closure_with_cancellation(checkpoint, cancellation)
+        .map_err(map_production_store_error)?;
+    if loaded.scenario() != scenario.id() {
+        return Err(
+            ProductionAttemptCheckpointRestoreError::CheckpointScenarioMismatch {
+                checkpoint,
+                scenario: loaded.scenario(),
+            },
+        );
+    }
+
+    let mut boundary = || production_restore_boundary(cancellation);
+    let basis = authenticate_portable_exact_checkpoint_resume_basis_with_boundary(
+        source,
+        &loaded,
+        &mut boundary,
+    )
+    .map_err(map_production_lifecycle_error)?;
+    validate_production_resume_basis(
+        &basis,
+        loaded.production_identity(),
+        loaded.configuration(),
+        effective_start,
+        checkpoint,
+    )?;
+    if !basis.replay_oracle_ready() {
+        return Err(ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady { checkpoint });
+    }
+
+    Ok(())
 }
 
 // The final boolean is deliberately private type state: public callers choose
@@ -1314,7 +1379,8 @@ fn check_resume_boundary(
 mod captured_source_tests {
     use super::*;
     use crucible::{RngDecision, RngStreamId, Schedule};
-    use crucible_cas::content_store::{ContentId, ObjectKind};
+    use crucible_api::build_authenticated_production_checkpoint_codec_fixture;
+    use crucible_cas::content_store::{ContentId, DirectoryBlobBackend, ObjectKind};
 
     #[test]
     fn captured_vmstate_blob_reopens_after_the_named_file_is_removed()
@@ -1389,5 +1455,42 @@ mod captured_source_tests {
             validate_production_post_selection(&start, &restored),
             Err(ProductionAttemptCheckpointRestoreError::AttemptSelectionMismatch)
         ));
+    }
+
+    #[test]
+    fn replay_ready_production_root_authenticates_without_native_installation() {
+        let temporary = tempfile::tempdir()
+            .unwrap_or_else(|error| panic!("create production fixture root: {error}"));
+        let production = build_authenticated_production_checkpoint_codec_fixture(
+            &temporary.path().join("native-checkpoint"),
+        )
+        .unwrap_or_else(|error| panic!("build production checkpoint fixture: {error}"));
+        let checkpoints = ExactCheckpointStore::new(
+            Arc::new(DirectoryBlobBackend::new(
+                "resume-authentication",
+                temporary.path().join("checkpoint-objects"),
+            )),
+            64 * 1024 * 1024,
+        )
+        .unwrap_or_else(|error| panic!("create exact checkpoint store: {error}"));
+        let prepared = checkpoints
+            .prepare_production_closure(production.closure().clone())
+            .unwrap_or_else(|error| panic!("prepare production checkpoint: {error}"));
+        let checkpoint = checkpoints
+            .publish_production_closure(&prepared)
+            .unwrap_or_else(|error| panic!("publish production checkpoint: {error}"))
+            .root();
+
+        authenticate_attempt_production_resume_checkpoint(
+            &checkpoints,
+            checkpoint,
+            production.source(),
+            production.configuration(),
+            None,
+            &ExecutionCancellation::default(),
+        )
+        .unwrap_or_else(|error| {
+            panic!("authenticate promoted checkpoint without install: {error}")
+        });
     }
 }

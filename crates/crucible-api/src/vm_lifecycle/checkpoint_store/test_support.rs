@@ -48,6 +48,41 @@ impl AuthenticatedProductionCheckpointCodecFixture {
 pub fn build_authenticated_production_checkpoint_codec_fixture(
     run_state_root: &Path,
 ) -> Result<AuthenticatedProductionCheckpointCodecFixture, LifecycleApiError> {
+    build_production_checkpoint_codec_fixture(
+        run_state_root,
+        QemuReplayOracleValidation::Match {
+            runtime_hash: ContentHash::from_bytes(b"matching integration runtime"),
+        },
+        true,
+    )
+}
+
+/// Builds a one-node raw production checkpoint codec fixture at scheduler genesis.
+///
+/// The fixture has the same authenticated closure shape as
+/// [`build_authenticated_production_checkpoint_codec_fixture`], but its live
+/// snapshot deliberately carries `NotRun` replay evidence. It is available
+/// only through the `test-support` feature.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError`] when fixture construction or durable closure
+/// publication under `run_state_root` fails.
+pub fn build_raw_production_checkpoint_codec_fixture(
+    run_state_root: &Path,
+) -> Result<AuthenticatedProductionCheckpointCodecFixture, LifecycleApiError> {
+    build_production_checkpoint_codec_fixture(
+        run_state_root,
+        QemuReplayOracleValidation::NotRun,
+        false,
+    )
+}
+
+fn build_production_checkpoint_codec_fixture(
+    run_state_root: &Path,
+    replay_validation: QemuReplayOracleValidation,
+    expected_replay_oracle_ready: bool,
+) -> Result<AuthenticatedProductionCheckpointCodecFixture, LifecycleApiError> {
     let node = NodeId {
         name: String::from("vm-a"),
     };
@@ -126,12 +161,8 @@ pub fn build_authenticated_production_checkpoint_codec_fixture(
         BTreeMap::new(),
     )
     .map_err(|error| fixture_error("build modeled checkpoint", error))?;
-    let runtime_hash = ContentHash::from_bytes(b"matching integration runtime");
-    let snapshot = ExactSnapshotHandle::diskless(
-        modeled_checkpoint,
-        QemuReplayOracleValidation::Match { runtime_hash },
-    )
-    .map_err(|error| fixture_error("build exact snapshot", error))?;
+    let snapshot = ExactSnapshotHandle::diskless(modeled_checkpoint, replay_validation)
+        .map_err(|error| fixture_error("build exact snapshot", error))?;
 
     fs::create_dir_all(run_state_root)
         .map_err(|error| loop_factory_error(format!("create checkpoint fixture root: {error}")))?;
@@ -218,9 +249,9 @@ pub fn build_authenticated_production_checkpoint_codec_fixture(
         .map_err(|error| fixture_error("publish fixture checkpoint", error))?;
     let closure = open_exact_checkpoint_closure(run_state_root, &source, identity)?;
     let basis = authenticate_portable_exact_checkpoint_resume_basis(&source, &closure)?;
-    if !basis.replay_oracle_ready() {
+    if basis.replay_oracle_ready() != expected_replay_oracle_ready {
         return Err(loop_factory_error(
-            "fixture production checkpoint metadata is not replay-oracle ready",
+            "fixture production checkpoint metadata has the wrong replay-oracle readiness",
         ));
     }
 

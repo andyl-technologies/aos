@@ -471,12 +471,62 @@ fn process_promotion_work<L, V, W>(
             }
         };
         match prepared {
+            PreparedPausedCheckpointPromotionRestart::AlreadyValidated(authenticated) => {
+                reconcile_already_validated(shared, authenticated);
+                return;
+            }
             PreparedPausedCheckpointPromotionRestart::Stage(prepared) => {
                 process_prepared(shared, *prepared, &cancellation);
                 return;
             }
             PreparedPausedCheckpointPromotionRestart::Reconcile(published) => {
                 reconcile_published(shared, *published);
+                return;
+            }
+        }
+    }
+}
+
+fn reconcile_already_validated<L, V>(
+    shared: &SharedExecutor<L, V>,
+    authenticated: crate::AuthenticatedPausedCheckpointPromotion,
+) where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    loop {
+        if shared.state.load(std::sync::atomic::Ordering::Acquire) != POOL_RUNNING {
+            return;
+        }
+        let mut executor = match shared.executor.lock() {
+            Ok(executor) => executor,
+            Err(poisoned) => {
+                drop(poisoned.into_inner());
+                shared.fail_closed();
+                return;
+            }
+        };
+        match executor
+            .supervisor_mut()
+            .complete_validated_checkpoint_promotion(authenticated.recovery())
+        {
+            Ok(CheckpointPromotionCompletionOutcome::Promoted)
+            | Ok(CheckpointPromotionCompletionOutcome::AlreadyPromoted) => {
+                increment(&shared.counters.promotions_reconciled);
+                return;
+            }
+            Ok(CheckpointPromotionCompletionOutcome::NotCurrent)
+            | Ok(CheckpointPromotionCompletionOutcome::Reverted) => {
+                increment(&shared.counters.promotions_discarded);
+                return;
+            }
+            Err(error) if supervisor_error_is_retryable(&error) => {
+                increment(&shared.counters.promotion_retries);
+                drop(executor);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(_) => {
+                increment(&shared.counters.promotion_failures);
                 return;
             }
         }

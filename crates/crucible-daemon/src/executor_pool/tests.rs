@@ -23,6 +23,11 @@ use crucible::{
     ScenarioDef, ScenarioDefForm, SchedulerLivenessScenario, Seed, Shift, SimInstant,
     SingleScheduler, SingleSchedulerCheckpoint, VirtualTime, World,
 };
+use crucible_api::{
+    AuthenticatedProductionCheckpointCodecFixture,
+    build_authenticated_production_checkpoint_codec_fixture,
+    build_raw_production_checkpoint_codec_fixture,
+};
 use crucible_campaign::{
     AssignmentId, Attempt, AttemptId, AttemptResourceLimits, AttemptStart, BooleanDomain,
     BranchBudget, BranchPath, BranchPathSegment, BranchRequest, BranchRequestCause,
@@ -65,10 +70,13 @@ use crate::{
     LoopbackExecutorService, MemoryAssignmentLedger,
     PausedCheckpointPromotionRecoveryResolutionError, PausedCheckpointPromotionStageOutcome,
     PreparedPausedCheckpointPromotion, PreparedPausedCheckpointPromotionRestart,
-    PreparedSemanticAttemptResult, RepositoryAttemptAdmission, RepositoryAttemptWorker,
+    PreparedSemanticAttemptResult, ProductionBakedGenesisReplayLauncher,
+    ProductionBakedGenesisReplayStore, ProductionPausedCheckpointReplayFactory,
+    ProductionPausedCheckpointReplaySession, RepositoryAttemptAdmission, RepositoryAttemptWorker,
     RepositoryAttemptWorkerError, UnixPeerExecutorIdentity, encode_crucible_configuration_artifact,
     encode_crucible_scenario_artifact, evaluate_crucible_measurement_publication,
-    publish_next_objective_evaluation, recover_published_paused_checkpoint_promotion,
+    prepare_production_paused_checkpoint_promotion_restart, publish_next_objective_evaluation,
+    recover_published_paused_checkpoint_promotion,
     resolve_production_paused_checkpoint_promotion_recovery,
     stage_prepared_paused_checkpoint_promotion,
 };
@@ -248,6 +256,107 @@ struct ExactStorePromotionWorker {
 struct BlockingCheckpointPromotionWorker {
     entered: Arc<AtomicUsize>,
     canceled: Arc<AtomicUsize>,
+}
+
+struct CountingProductionReplayFactory {
+    calls: Arc<AtomicUsize>,
+}
+
+struct UnusedPromotionGuard {
+    cancellation: ExecutionCancellation,
+    resources: AttemptResourceLimits,
+}
+
+impl crate::QemuAttemptOperationalBoundary for UnusedPromotionGuard {
+    fn resource_limits(&self) -> AttemptResourceLimits {
+        self.resources
+    }
+
+    fn cancellation(&self) -> &ExecutionCancellation {
+        &self.cancellation
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), crucible_qemu::QemuVmRealizationError> {
+        Ok(())
+    }
+
+    fn charge_execution_quantum(&mut self) -> Result<(), crucible_qemu::QemuVmRealizationError> {
+        Ok(())
+    }
+}
+
+impl crate::QemuAttemptResourceGuard for UnusedPromotionGuard {
+    fn finish(&mut self) -> Result<(), crucible_qemu::QemuVmRealizationError> {
+        Ok(())
+    }
+
+    fn quarantine(&mut self) {}
+}
+
+impl crate::QemuAttemptProcessResourceGuard for UnusedPromotionGuard {
+    fn child_process_contract(
+        &self,
+    ) -> Result<&crucible_qemu::QemuChildProcessContract, crucible_qemu::QemuVmRealizationError>
+    {
+        Err(crucible_qemu::QemuVmRealizationError::Executor {
+            operation: "use unreachable promotion guard",
+            message: String::from("test factory never admits a QEMU target"),
+        })
+    }
+
+    fn prepare_generation_run_directory(
+        &mut self,
+        _requirements: crucible_qemu::QemuLaunchResourceRequirements,
+    ) -> Result<crucible_qemu::QemuPreparedRunDirectory, crucible_qemu::QemuVmRealizationError>
+    {
+        Err(crucible_qemu::QemuVmRealizationError::Executor {
+            operation: "use unreachable promotion guard",
+            message: String::from("test factory never admits a QEMU target"),
+        })
+    }
+
+    fn retain_failed_launch_child(&mut self, _child: crucible_qemu::QemuNodeChild) {
+        panic!("unreachable promotion guard cannot retain a child")
+    }
+}
+
+impl ProductionPausedCheckpointReplayFactory for CountingProductionReplayFactory {
+    type Store = ProductionBakedGenesisReplayStore;
+    type Launcher = ProductionBakedGenesisReplayLauncher;
+    type Guard = UnusedPromotionGuard;
+
+    fn begin_target(
+        &mut self,
+        _exact_root: ExactCheckpointId,
+        _world: &World,
+        _configuration: &Configuration,
+        _target: &crucible_api::ProductionExactCheckpointReplayTarget,
+        _cancellation: &ExecutionCancellation,
+        _resources: AttemptResourceLimits,
+    ) -> Result<
+        ProductionPausedCheckpointReplaySession<Self::Store, Self::Launcher, Self::Guard>,
+        crucible_qemu::QemuVmRealizationError,
+    > {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        Err(crucible_qemu::QemuVmRealizationError::Executor {
+            operation: "enter counted production replay target",
+            message: String::from("counted test factory stops before QEMU launch"),
+        })
+    }
+
+    fn replay_savepoint_capture(
+        &mut self,
+        _attempt: &crate::CrucibleAttemptExecution,
+        _run_state_root: &std::path::Path,
+        _cancellation: &ExecutionCancellation,
+        _resources: AttemptResourceLimits,
+    ) -> Result<crate::QemuSavepointReplayProof, crucible_qemu::QemuVmRealizationError> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        Err(crucible_qemu::QemuVmRealizationError::Executor {
+            operation: "enter counted production attempt replay",
+            message: String::from("counted test factory stops before QEMU launch"),
+        })
+    }
 }
 
 impl LocalCheckpointPromotionWorker for ExactStorePromotionWorker {
@@ -2620,6 +2729,165 @@ fn raw_pause_restart_rejects_an_inconsistent_execution_basis_before_repository_r
 }
 
 #[test]
+fn production_restart_dispatch_authenticates_legacy_ready_and_replays_only_raw_roots() {
+    let temporary = tempfile::tempdir().expect("production promotion fixture root");
+    let ready_fixture = build_authenticated_production_checkpoint_codec_fixture(
+        &temporary.path().join("ready-native"),
+    )
+    .expect("build replay-ready production fixture");
+    let raw_fixture =
+        build_raw_production_checkpoint_codec_fixture(&temporary.path().join("raw-native"))
+            .expect("build raw production fixture");
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "production-restart-dispatch",
+            128 * 1024 * 1024,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let (lineage, attempt) = production_discovery_attempt_fixture(
+        &repository,
+        "production-restart-dispatch",
+        &ready_fixture,
+    );
+    let epoch = DaemonEpoch::from_bytes([0xc1; 16]).expect("daemon epoch");
+    let request = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0xc2; 16]).expect("assignment"),
+        epoch,
+        lineage.id().expect("lineage id"),
+        attempt,
+        AttemptResourceLimits::new(1, 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 10_000)
+            .expect("resources"),
+        ExecutionRetentionIntent::RetainOnFailure,
+    )
+    .expect("submit request");
+    let checkpoints = checkpoint_store();
+    let ready = checkpoints
+        .prepare_production_closure(ready_fixture.closure().clone())
+        .and_then(|prepared| checkpoints.publish_production_closure(&prepared))
+        .expect("publish replay-ready production checkpoint")
+        .root();
+    let raw = checkpoints
+        .prepare_production_closure(raw_fixture.closure().clone())
+        .and_then(|prepared| checkpoints.publish_production_closure(&prepared))
+        .expect("publish raw production checkpoint")
+        .root();
+    let store = CampaignExecutorStore::new(repository);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut factory = CountingProductionReplayFactory {
+        calls: Arc::clone(&calls),
+    };
+    let run_state_root = temporary.path().join("promotion-runs");
+
+    let ready_recovery = paused_recovery_for_checkpoint(
+        &request,
+        ExecutionId::from_bytes([0xc3; 16]).expect("ready execution"),
+        ready,
+    );
+    let ready_result = prepare_production_paused_checkpoint_promotion_restart(
+        &store,
+        &checkpoints,
+        CheckpointPromotionRestartWork::Paused(ready_recovery),
+        &run_state_root,
+        ExecutionCancellation::default(),
+        &mut factory,
+    )
+    .expect("authenticate legacy completed promotion");
+    assert!(matches!(
+        ready_result,
+        PreparedPausedCheckpointPromotionRestart::AlreadyValidated(authenticated)
+            if authenticated.recovery() == ready_recovery
+    ));
+    assert_eq!(calls.load(Ordering::Acquire), 0);
+
+    let raw_recovery = paused_recovery_for_checkpoint(
+        &request,
+        ExecutionId::from_bytes([0xc4; 16]).expect("raw execution"),
+        raw,
+    );
+    assert!(matches!(
+        prepare_production_paused_checkpoint_promotion_restart(
+            &store,
+            &checkpoints,
+            CheckpointPromotionRestartWork::Paused(raw_recovery),
+            &run_state_root,
+            ExecutionCancellation::default(),
+            &mut factory,
+        ),
+        Err(crate::PausedCheckpointPromotionRestartPreparationError::Preparation(error))
+            if matches!(
+                *error,
+                crate::PausedCheckpointPromotionPreparationError::Realization(
+                    crucible_qemu::QemuVmRealizationError::Executor {
+                        operation: "enter counted production replay target",
+                        ..
+                    }
+                )
+            )
+    ));
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+
+    let missing = ExactCheckpointId::parse(&format!(
+        "crucible.executor.exact-checkpoint-root@exact-manifest.4.{}",
+        "c5".repeat(32)
+    ))
+    .expect("missing checkpoint");
+    let missing_recovery = paused_recovery_for_checkpoint(
+        &request,
+        ExecutionId::from_bytes([0xc6; 16]).expect("missing execution"),
+        missing,
+    );
+    assert!(
+        prepare_production_paused_checkpoint_promotion_restart(
+            &store,
+            &checkpoints,
+            CheckpointPromotionRestartWork::Paused(missing_recovery),
+            &run_state_root,
+            ExecutionCancellation::default(),
+            &mut factory,
+        )
+        .is_err()
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+
+    let foreign_repository = Arc::new(CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "foreign-production-restart",
+            64 * 1024 * 1024,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let (foreign_lineage, foreign_attempt, _) =
+        crucible_discovery_attempt_fixture(&foreign_repository, "foreign-production-restart");
+    let foreign_request = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0xc7; 16]).expect("foreign assignment"),
+        epoch,
+        foreign_lineage.id().expect("foreign lineage"),
+        foreign_attempt,
+        request.resources(),
+        request.retention(),
+    )
+    .expect("foreign request");
+    let foreign_recovery = paused_recovery_for_checkpoint(
+        &foreign_request,
+        ExecutionId::from_bytes([0xc8; 16]).expect("foreign execution"),
+        ready,
+    );
+    assert!(
+        prepare_production_paused_checkpoint_promotion_restart(
+            &CampaignExecutorStore::new(foreign_repository),
+            &checkpoints,
+            CheckpointPromotionRestartWork::Paused(foreign_recovery),
+            &run_state_root,
+            ExecutionCancellation::default(),
+            &mut factory,
+        )
+        .is_err()
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+}
+
+#[test]
 fn fixed_promotion_worker_promotes_raw_restart_work_without_semantic_execution() {
     let checkpoints = checkpoint_store();
     let raw = checkpoints
@@ -2716,10 +2984,7 @@ fn fixed_promotion_worker_promotes_raw_restart_work_without_semantic_execution()
             daemon_epoch: epoch,
             execution,
             checkpoint: expected,
-            promotion_basis: Some(CheckpointPromotionExecutionBasis::new(
-                request.resources(),
-                request.retention(),
-            )),
+            promotion_basis: None,
         })
     );
     drop(executor);
@@ -3125,6 +3390,139 @@ fn crucible_discovery_attempt_fixture(
         .expect("initial discovery attempt");
 
     (lineage, attempt, configuration_content)
+}
+
+fn production_discovery_attempt_fixture(
+    repository: &CampaignRepository,
+    name: &str,
+    production: &AuthenticatedProductionCheckpointCodecFixture,
+) -> (CampaignLineage, AttemptId) {
+    let scenario_artifact =
+        encode_crucible_scenario_artifact(production.source()).expect("scenario artifact");
+    let scenario_content = repository
+        .publish_scenario_artifact(
+            scenario_artifact.scenario(),
+            scenario_artifact.payload_schema(),
+            scenario_artifact.payload().to_vec(),
+        )
+        .expect("publish scenario artifact");
+    let configuration_artifact = encode_crucible_configuration_artifact(
+        &scenario_artifact,
+        &production.configuration().schedule,
+    )
+    .expect("configuration artifact");
+    let configuration_content = repository
+        .publish_configuration_artifact(
+            configuration_artifact.scenario(),
+            scenario_content,
+            configuration_artifact.configuration(),
+            configuration_artifact.payload_schema(),
+            configuration_artifact.payload().to_vec(),
+        )
+        .expect("publish configuration artifact");
+    let lineage = CampaignLineage::new(
+        scenario_artifact.scenario(),
+        scenario_content,
+        configuration_artifact.configuration(),
+        configuration_content,
+        "crucible-test",
+        "qemu-test",
+        BTreeMap::from([(String::from("control"), 1)]),
+        scenario_artifact.payload_schema(),
+        4,
+    )
+    .expect("lineage");
+    let policy = CampaignPolicy::new(
+        scenario_artifact.scenario(),
+        CampaignSeed::from_bytes([7; 32]),
+        CampaignMode::Strict,
+        ExplorerPolicy::Exhaustive {
+            maximum_cardinality: 1,
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeSet::new(),
+        FairnessPolicy::new(0, 0).expect("fairness"),
+        RetentionPolicy::new(true, 1, true, true),
+        true,
+    )
+    .expect("policy");
+    let created = repository
+        .create(name, &lineage, &policy, &BTreeMap::new())
+        .expect("create campaign");
+    let granted = repository
+        .apply_control(
+            name,
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "crucible.test.production-promotion-budget.v1",
+                    name.as_bytes(),
+                )),
+                expected_snapshot: created.snapshot_id(),
+                action: CampaignControlAction::GrantBudget(
+                    crucible_campaign::BudgetGrant::new(0, 1).expect("attempt grant"),
+                ),
+            },
+        )
+        .expect("grant campaign budget");
+    repository
+        .apply_control(
+            name,
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "crucible.test.production-promotion-resume.v1",
+                    name.as_bytes(),
+                )),
+                expected_snapshot: granted.new_snapshot,
+                action: CampaignControlAction::Resume,
+            },
+        )
+        .expect("resume campaign");
+    let attempt = repository
+        .admit_initial_discovery_if_ready(name)
+        .expect("initial discovery admission")
+        .expect("initial discovery attempt");
+
+    (lineage, attempt)
+}
+
+fn paused_recovery_for_checkpoint(
+    request: &SubmitAttemptRequest,
+    execution: ExecutionId,
+    checkpoint: ExactCheckpointId,
+) -> crate::PausedCheckpointPromotionRecovery {
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let state = AttemptRuntimeState::Paused {
+        execution_basis: request.execution_basis_digest(),
+        origin: crate::AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution,
+        checkpoint,
+        promotion_basis: Some(CheckpointPromotionExecutionBasis::new_for_start_mode(
+            request.resources(),
+            request.retention(),
+            request.start_mode(),
+        )),
+    };
+    let mut ledger = MemoryAssignmentLedger::default();
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(key, None, Some(state))
+            .expect("seed paused promotion"),
+        AttemptStateCas::Advanced
+    );
+    let supervisor = LocalExecutorSupervisor::new(
+        ledger,
+        AllowAllAttemptAdmission,
+        request.daemon_epoch(),
+        ExecutorCapacity::new(1, 1, 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 10_000)
+            .expect("capacity"),
+    );
+    supervisor
+        .paused_checkpoint_promotion_recovery(key)
+        .expect("load paused recovery")
+        .expect("paused recovery")
 }
 
 fn raw_pause_recovery_for_request(
