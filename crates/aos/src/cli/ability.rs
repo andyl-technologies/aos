@@ -26,6 +26,10 @@ pub struct AbilityInspectArgs {
     /// Restrict output to one semantic graph projection
     #[arg(long, value_enum)]
     pub projection: Option<AbilityProjection>,
+
+    /// Apply a bounded canonical inspection-query document
+    #[arg(long, value_name = "FILE")]
+    pub query: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

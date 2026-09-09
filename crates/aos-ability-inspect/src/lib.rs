@@ -31,8 +31,9 @@ pub use projection::{
     INSPECTION_PROJECTION_SCHEMA, InspectionProjection, InspectionProjectionError, ProjectionKind,
 };
 pub use query::{
-    Direction, GraphQuery, GraphQueryError, GraphSlice, INSPECTION_QUERY_SCHEMA,
-    INSPECTION_SLICE_SCHEMA,
+    Direction, GraphQuery, GraphQueryError, GraphSlice, INSPECTION_QUERY_MAX_BYTES,
+    INSPECTION_QUERY_MAX_DEPTH, INSPECTION_QUERY_MAX_NODES, INSPECTION_QUERY_MAX_ROOTS,
+    INSPECTION_QUERY_SCHEMA, INSPECTION_SLICE_SCHEMA,
 };
 pub use render::{RenderError, RenderFormat, render, render_projection, render_slice};
 pub use view::{

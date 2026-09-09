@@ -3,7 +3,10 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-use aos_ability_inspect::{InspectionBundle, InspectionView, RenderFormat, render};
+use aos_ability_inspect::{
+    GraphQuery, INSPECTION_QUERY_MAX_DEPTH, InspectionBundle, InspectionView, NodeKey,
+    RenderFormat, render,
+};
 use aos_ability_model::{DeploymentObligation, ObligationKind};
 use aos_ability_validate::CheckedEffectPlan;
 use aos_ability_validate::test_support::{checked_effect_plan, plan_fixture};
@@ -111,6 +114,113 @@ fn projection_flag_emits_the_named_portable_projection() -> Result<(), Box<dyn s
             .any(|node| node["kind"] == serde_json::Value::String("artifact".to_string()))
     }));
     assert!(output.stderr.is_empty());
+    Ok(())
+}
+
+#[test]
+fn canonical_query_file_bounds_a_named_projection() -> Result<(), Box<dyn std::error::Error>> {
+    let workspace = tempfile::tempdir()?;
+    let bundle_path = workspace.path().join("inspection.json");
+    let query_path = workspace.path().join("query.json");
+    let plan = checked_effect_plan();
+    let binding = plan.binding_plan().bindings()[0].id.clone();
+    write_bundle(&bundle_path, &plan)?;
+    let query = GraphQuery::new([NodeKey::Binding(binding)], 1, 2);
+    std::fs::write(&query_path, query.canonical_bytes()?)?;
+
+    let output = run(
+        workspace.path(),
+        &[
+            "--json",
+            "ability",
+            "inspect",
+            path_text(&bundle_path)?,
+            "--projection",
+            "retention",
+            "--query",
+            path_text(&query_path)?,
+        ],
+    )?;
+    assert!(output.status.success(), "{}", stderr(&output)?);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(
+        value["schema"],
+        serde_json::Value::String("aos.ability.inspection-slice/v1".to_string())
+    );
+    assert_eq!(
+        value["projection"],
+        serde_json::Value::String("retention".to_string())
+    );
+    assert_eq!(value["max_depth"], serde_json::Value::from(1));
+    assert_eq!(value["max_nodes"], serde_json::Value::from(2));
+    assert!(
+        value["nodes"]
+            .as_array()
+            .is_some_and(|nodes| nodes.len() == 2)
+    );
+    assert!(output.stderr.is_empty());
+    Ok(())
+}
+
+#[test]
+fn query_flag_rejects_noncanonical_input() -> Result<(), Box<dyn std::error::Error>> {
+    let workspace = tempfile::tempdir()?;
+    let bundle_path = workspace.path().join("inspection.json");
+    let query_path = workspace.path().join("query.json");
+    let plan = checked_effect_plan();
+    let binding = plan.binding_plan().bindings()[0].id.clone();
+    write_bundle(&bundle_path, &plan)?;
+    let mut query = b" \n".to_vec();
+    query.extend_from_slice(&GraphQuery::new([NodeKey::Binding(binding)], 1, 2).canonical_bytes()?);
+    std::fs::write(&query_path, query)?;
+
+    let output = run(
+        workspace.path(),
+        &[
+            "ability",
+            "inspect",
+            path_text(&bundle_path)?,
+            "--query",
+            path_text(&query_path)?,
+        ],
+    )?;
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(stderr(&output)?.contains("not canonically encoded"));
+    Ok(())
+}
+
+#[test]
+fn query_limits_fail_before_the_bundle_graph_is_loaded() -> Result<(), Box<dyn std::error::Error>> {
+    let workspace = tempfile::tempdir()?;
+    let missing_bundle = workspace.path().join("missing-inspection.json");
+    let query_path = workspace.path().join("query.json");
+    let plan = checked_effect_plan();
+    let binding = plan.binding_plan().bindings()[0].id.clone();
+    let query = GraphQuery::new([NodeKey::Binding(binding)], 1, 2);
+    let mut value: serde_json::Value = serde_json::from_slice(&query.canonical_bytes()?)?;
+    value["max_depth"] = serde_json::Value::from(INSPECTION_QUERY_MAX_DEPTH + 1);
+    std::fs::write(&query_path, aos_contract::canonical::to_vec(&value)?)?;
+
+    let output = run(
+        workspace.path(),
+        &[
+            "ability",
+            "inspect",
+            path_text(&missing_bundle)?,
+            "--query",
+            path_text(&query_path)?,
+        ],
+    )?;
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let error = stderr(&output)?;
+    assert!(error.contains(&format!(
+        "depth {} exceeds its limit {}",
+        INSPECTION_QUERY_MAX_DEPTH + 1,
+        INSPECTION_QUERY_MAX_DEPTH
+    )));
+    assert!(!error.contains("opening inspection bundle"));
     Ok(())
 }
 

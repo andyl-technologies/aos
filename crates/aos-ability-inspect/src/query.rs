@@ -1,8 +1,24 @@
 //! Bounded deterministic traversal over an [`InspectionView`](crate::InspectionView).
+//!
+//! Query documents are canonical portable JSON so a terminal, editor, or web
+//! frontend can request the same finite neighborhood:
+//!
+//! ```json
+//! {
+//!   "schema": "aos.ability.inspection-query/v1",
+//!   "required_features": [],
+//!   "roots": [{ "kind": "package", "identity": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }],
+//!   "direction": "outgoing",
+//!   "max_depth": 4,
+//!   "max_nodes": 256
+//! }
+//! ```
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{self, Write};
 
-use aos_ability_model::{PlanId, RequiredFeature};
+use aos_ability_model::{ABILITY_LIMITS_V1, PlanId, RequiredFeature};
+use aos_contract::limits::JsonLimits;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -13,6 +29,18 @@ use crate::{
 
 /// Exact schema discriminator for a portable inspection graph query.
 pub const INSPECTION_QUERY_SCHEMA: &str = "aos.ability.inspection-query/v1";
+
+/// Maximum canonical bytes accepted for one portable graph query.
+pub const INSPECTION_QUERY_MAX_BYTES: usize = ABILITY_LIMITS_V1.max_document_bytes as usize;
+
+/// Maximum roots accepted for one portable graph query.
+pub const INSPECTION_QUERY_MAX_ROOTS: usize = ABILITY_LIMITS_V1.max_graph_nodes as usize;
+
+/// Maximum edge distance accepted for one portable graph query.
+pub const INSPECTION_QUERY_MAX_DEPTH: usize = ABILITY_LIMITS_V1.max_structural_depth as usize;
+
+/// Maximum retained nodes accepted for one portable graph query.
+pub const INSPECTION_QUERY_MAX_NODES: usize = ABILITY_LIMITS_V1.max_graph_nodes as usize;
 
 /// Exact schema discriminator for a portable inspection graph slice.
 pub const INSPECTION_SLICE_SCHEMA: &str = "aos.ability.inspection-slice/v1";
@@ -66,12 +94,48 @@ pub struct GraphSlice {
 /// Reports why a bounded graph query could not be evaluated.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum GraphQueryError {
+    /// Bounded strict JSON decoding failed.
+    #[error("inspection graph query decoding failed: {0}")]
+    Decode(String),
+    /// Canonical JSON encoding failed.
+    #[error("inspection graph query encoding failed: {0}")]
+    Encode(String),
+    /// The encoded query exceeds the version-1 byte bound.
+    #[error("inspection graph query exceeds its encoded byte limit")]
+    EncodedSizeLimit,
+    /// The bytes are valid JSON but are not their canonical representation.
+    #[error("inspection graph query is not canonically encoded")]
+    NoncanonicalEncoding,
     /// No traversal root was supplied.
     #[error("an inspection graph query requires at least one root")]
     EmptyRoots,
+    /// The number of roots exceeds the version-1 graph bound.
+    #[error("an inspection graph query has {actual} roots but permits only {limit}")]
+    RootLimit {
+        /// Counts supplied roots before graph allocation.
+        actual: usize,
+        /// Carries the version-1 root limit.
+        limit: usize,
+    },
     /// The node bound cannot retain even one root.
     #[error("an inspection graph query requires a positive node bound")]
     ZeroNodeLimit,
+    /// The traversal depth exceeds the version-1 structural bound.
+    #[error("an inspection graph query depth {actual} exceeds its limit {limit}")]
+    DepthLimit {
+        /// Carries the requested edge depth.
+        actual: usize,
+        /// Carries the version-1 depth limit.
+        limit: usize,
+    },
+    /// The retained-node budget exceeds the version-1 graph bound.
+    #[error("an inspection graph query node budget {actual} exceeds its limit {limit}")]
+    NodeLimit {
+        /// Carries the requested node budget.
+        actual: usize,
+        /// Carries the version-1 node limit.
+        limit: usize,
+    },
     /// More distinct roots were supplied than the node bound permits.
     #[error("the inspection graph query has {roots} roots but permits only {limit} nodes")]
     RootsExceedNodeLimit {
@@ -124,6 +188,51 @@ impl GraphQuery {
         self
     }
 
+    /// Decodes one strictly bounded canonical query document.
+    ///
+    /// Structural JSON limits are checked before deserialization allocates the
+    /// typed root collection. Semantic bounds are checked before any source
+    /// graph index is built.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for oversized, malformed, noncanonical, unsupported,
+    /// empty, unordered, or version-limit-exceeding input.
+    pub fn decode(bytes: &[u8]) -> Result<Self, GraphQueryError> {
+        if bytes.len() > INSPECTION_QUERY_MAX_BYTES {
+            return Err(GraphQueryError::EncodedSizeLimit);
+        }
+        let query = query_limits()
+            .decode::<Self>(bytes, INSPECTION_QUERY_SCHEMA)
+            .map_err(|error| GraphQueryError::Decode(error.to_string()))?;
+        query.validate_structure()?;
+        if query.canonical_bytes()? != bytes {
+            return Err(GraphQueryError::NoncanonicalEncoding);
+        }
+        Ok(query)
+    }
+
+    /// Encodes this query as bounded canonical JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the query is invalid, exceeds a version-1 bound,
+    /// or cannot be encoded in the canonical AOS JSON dialect.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, GraphQueryError> {
+        self.validate_structure()?;
+
+        let mut writer = QueryBoundedWriter::new(INSPECTION_QUERY_MAX_BYTES);
+        serde_json::to_writer(&mut writer, self).map_err(|error| {
+            if writer.exceeded {
+                GraphQueryError::EncodedSizeLimit
+            } else {
+                GraphQueryError::Encode(error.to_string())
+            }
+        })?;
+        aos_contract::canonical::to_vec(self)
+            .map_err(|error| GraphQueryError::Encode(error.to_string()))
+    }
+
     /// Returns the exact traversal roots.
     #[must_use]
     pub fn roots(&self) -> &[NodeKey] {
@@ -146,6 +255,49 @@ impl GraphQuery {
     #[must_use]
     pub const fn max_nodes(&self) -> usize {
         self.max_nodes
+    }
+
+    fn validate_structure(&self) -> Result<(), GraphQueryError> {
+        if self.schema != INSPECTION_QUERY_SCHEMA {
+            return Err(GraphQueryError::UnsupportedSchema);
+        }
+        if !self.required_features.is_empty() {
+            return Err(GraphQueryError::UnsupportedFeatures);
+        }
+        if self.roots.is_empty() {
+            return Err(GraphQueryError::EmptyRoots);
+        }
+        if self.roots.len() > INSPECTION_QUERY_MAX_ROOTS {
+            return Err(GraphQueryError::RootLimit {
+                actual: self.roots.len(),
+                limit: INSPECTION_QUERY_MAX_ROOTS,
+            });
+        }
+        if self.roots.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(GraphQueryError::NoncanonicalRoots);
+        }
+        if self.max_depth > INSPECTION_QUERY_MAX_DEPTH {
+            return Err(GraphQueryError::DepthLimit {
+                actual: self.max_depth,
+                limit: INSPECTION_QUERY_MAX_DEPTH,
+            });
+        }
+        if self.max_nodes == 0 {
+            return Err(GraphQueryError::ZeroNodeLimit);
+        }
+        if self.max_nodes > INSPECTION_QUERY_MAX_NODES {
+            return Err(GraphQueryError::NodeLimit {
+                actual: self.max_nodes,
+                limit: INSPECTION_QUERY_MAX_NODES,
+            });
+        }
+        if self.roots.len() > self.max_nodes {
+            return Err(GraphQueryError::RootsExceedNodeLimit {
+                roots: self.roots.len(),
+                limit: self.max_nodes,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -267,9 +419,10 @@ fn evaluate_query(
     source: QuerySource<'_>,
     query: &GraphQuery,
 ) -> Result<GraphSlice, GraphQueryError> {
-    let node_index: BTreeMap<_, _> = source.nodes.iter().map(|node| (node.key(), node)).collect();
+    query.validate_structure()?;
     let roots: BTreeSet<_> = query.roots.iter().cloned().collect();
-    validate_query(query, &roots, &node_index)?;
+    let node_index: BTreeMap<_, _> = source.nodes.iter().map(|node| (node.key(), node)).collect();
+    validate_roots(&roots, &node_index)?;
 
     let mut selected = roots.clone();
     let mut frontier = roots;
@@ -328,36 +481,82 @@ fn evaluate_query(
     })
 }
 
-fn validate_query(
-    query: &GraphQuery,
+fn validate_roots(
     roots: &BTreeSet<NodeKey>,
     nodes: &BTreeMap<NodeKey, &InspectionNode>,
 ) -> Result<(), GraphQueryError> {
-    if query.schema != INSPECTION_QUERY_SCHEMA {
-        return Err(GraphQueryError::UnsupportedSchema);
-    }
-    if !query.required_features.is_empty() {
-        return Err(GraphQueryError::UnsupportedFeatures);
-    }
-    if roots.is_empty() {
-        return Err(GraphQueryError::EmptyRoots);
-    }
-    if query.roots.windows(2).any(|pair| pair[0] >= pair[1]) {
-        return Err(GraphQueryError::NoncanonicalRoots);
-    }
-    if query.max_nodes == 0 {
-        return Err(GraphQueryError::ZeroNodeLimit);
-    }
-    if roots.len() > query.max_nodes {
-        return Err(GraphQueryError::RootsExceedNodeLimit {
-            roots: roots.len(),
-            limit: query.max_nodes,
-        });
-    }
     if let Some(root) = roots.iter().find(|root| !nodes.contains_key(*root)) {
         return Err(GraphQueryError::UnknownRoot(Box::new(root.clone())));
     }
     Ok(())
+}
+
+struct QueryBoundedWriter {
+    remaining: usize,
+    exceeded: bool,
+}
+
+impl QueryBoundedWriter {
+    const fn new(limit: usize) -> Self {
+        Self {
+            remaining: limit,
+            exceeded: false,
+        }
+    }
+}
+
+impl Write for QueryBoundedWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.remaining {
+            self.exceeded = true;
+            return Err(io::Error::other(
+                "serialized inspection graph query exceeds its byte limit",
+            ));
+        }
+        self.remaining -= bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn query_limits() -> JsonLimits {
+    JsonLimits {
+        max_bytes: INSPECTION_QUERY_MAX_BYTES,
+        max_depth: ABILITY_LIMITS_V1.max_structural_depth as usize,
+        max_items: ABILITY_LIMITS_V1.max_collection_items as usize,
+        max_string_bytes: ABILITY_LIMITS_V1.max_string_bytes as usize,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_contract::Sha256Digest;
+
+    use super::*;
+
+    #[test]
+    fn root_limit_precedes_root_index_allocation() {
+        let root = NodeKey::Package(Sha256Digest::of_bytes("query root"));
+        let query = GraphQuery {
+            schema: INSPECTION_QUERY_SCHEMA.to_string(),
+            required_features: Vec::new(),
+            roots: vec![root; INSPECTION_QUERY_MAX_ROOTS + 1],
+            direction: Direction::Outgoing,
+            max_depth: 1,
+            max_nodes: INSPECTION_QUERY_MAX_NODES,
+        };
+
+        assert!(matches!(
+            query.validate_structure(),
+            Err(GraphQueryError::RootLimit {
+                actual,
+                limit: INSPECTION_QUERY_MAX_ROOTS,
+            }) if actual == INSPECTION_QUERY_MAX_ROOTS + 1
+        ));
+    }
 }
 
 fn neighbors(
