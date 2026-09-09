@@ -482,10 +482,14 @@ exactly. This section is the full algorithm.
 ### 8.9.1 PICK
 
 - **[SCHED-25]** **PICK** MUST select the node with the **global-minimum
-  horizon**, breaking ties by ascending `node_id` (a stable, content-addressed
-  identity), so PICK is a total, deterministic order over nodes. The selected
-  node is the one that can advance furthest-soonest without crossing any
-  unresolved cross-node dependency. *Gate:* `gate:scheduler-liveness`,
+  horizon** that has a positive representable counter advance, breaking ties by
+  ascending `node_id` (a stable, content-addressed identity), so PICK is a total,
+  deterministic order over executable RUNs. An unrepresentable sub-tick candidate
+  may be deferred behind a representable candidate at the same horizon because it
+  has no RUN to order. It MUST NOT be bypassed for a later horizon; if every
+  candidate at the global minimum is unrepresentable, the scheduler fails loudly.
+  The selected node is the one that can advance furthest-soonest without crossing
+  any unresolved cross-node dependency. *Gate:* `gate:scheduler-liveness`,
   `gate:layer1-injection`. *Spec:* §8.9.1; routes [INV-3], [INV-8].
 
 - **[SCHED-44]** PICK's global-minimum-horizon argmin MUST be taken over a single
@@ -679,10 +683,12 @@ is illustrative ([CONV-1], 00).
 - **[SCHED-34]** The scheduler MUST treat each node's clock as icount-derived
   per [`09-virtual-time-icount.md`](09-virtual-time-icount.md): it converts a
   horizon virtual time to a per-node icount via the fixed shift (`ns = icount <<
-  shift`, using the [TIME-4] ceil map — a node must never stop before a deadline)
-  and publishes *that icount* as the node's max-advance ceiling. All
-  horizon arithmetic is in virtual time; all per-node ceilings are in icount; the
-  conversion is the fixed shift and nothing else. *Gate:*
+  shift`). An exact local deadline uses the [TIME-4] ceil map because a node must
+  not stop before that deadline. A conservative upper bound uses the floor map
+  because a node must not cross that bound. The scheduler publishes the selected
+  counter as the node's max-advance ceiling. All horizon arithmetic is in virtual
+  time; all per-node ceilings are in icount; the conversion is the fixed shift and
+  the horizon's exact-versus-conservative role, and nothing else. *Gate:*
   `gate:layer0-determinism`, `gate:single-vm-fingerprint`. *Spec:* §8.10;
   forward-ref [`09-virtual-time-icount.md`](09-virtual-time-icount.md); routes
   [INV-4], [DET-8].
@@ -691,9 +697,12 @@ is illustrative ([CONV-1], 00).
   shared-memory **per-node max-advance ceiling + futex wake** mechanism of
   [`13-shmem-abi.md`](13-shmem-abi.md): it writes the ceiling, the node runs to it
   and blocks, and the scheduler wakes the node (futex) when a new ceiling or a
-  due input warrants. The scheduler MUST publish a ceiling that lets a node run to
-  its full horizon — never an artificially small slice — so idle and predictable
-  spans are crossed in one RUN, not many. *Gate:* `gate:single-vm-fingerprint`,
+  due input warrants. The scheduler MUST publish a ceiling that lets a node use
+  its full representable safe range: an aligned or exact horizon is crossed in one
+  RUN, while an unaligned conservative horizon stops at the greatest counter that
+  does not pass the bound. It MUST fail loudly instead of publishing a zero-progress
+  RUN when a positive conservative interval contains no counter boundary and no
+  equal-horizon peer has a representable advance. *Gate:* `gate:single-vm-fingerprint`,
   `gate:scheduler-liveness`. *Spec:* §8.10; forward-ref
   [`13-shmem-abi.md`](13-shmem-abi.md); routes [INV-4], [DET-13].
 
@@ -973,12 +982,12 @@ application of explorer-supplied preemption decisions
   now extracts unresolved cross-node `BackendInput` dependencies, authorizes each
   requested advance through a conservative-PDES guard, rejects rollback requests,
   clamps the authorized target to the earliest future cross-node dependency, and
-  fails loudly if icount-ceiling conversion would round a dependency cap past the
-  conservative boundary. The focused tests cover safe targets before a dependency,
+  floors an unaligned dependency cap to the greatest representable counter that
+  does not cross the conservative boundary. The focused tests cover safe targets before a dependency,
   dependency clamping, rollback rejection, cross-node-only dependency extraction,
-  the live `SingleScheduler` stop-at-dependency path, an unaligned nonzero-shift
-  ceiling-overshoot regression, and the current fail-loud behavior for already-due
-  unresolved dependencies. Full horizon composition remains T-SCHED-5, and
+  the live `SingleScheduler` stop-at-dependency path, unaligned nonzero-shift safe
+  progress followed by fail-loud sub-tick exhaustion, and the current fail-loud
+  behavior for already-due unresolved dependencies. Full horizon composition remains T-SCHED-5, and
   already-due RESOLVE delivery / late-delivery localization remains T-SCHED-16 and
   T-SCHED-18.
 - [x] **T-SCHED-4** Implement and test the liveness guarantee: the
@@ -1213,16 +1222,20 @@ application of explorer-supplied preemption decisions
   via the fixed shift and integrate with the virtual-time/icount module. —
   satisfies [SCHED-34]; spec §8.10.
   Completed by `checks.crucible.phase3.schedulerIcountCeiling`.
-  `SharedTimeline::max_advance_icount_for_horizon` now owns the SCHED-34/TIME-4
-  boundary: scheduler horizon arithmetic remains in virtual time, while RUN
-  publications convert the selected horizon through the fixed-shift ceil map into
-  the shmem ABI `max_advance_icount`. Conservative virtual-time caps still reject
-  a ceil projection that would cross the cap, while exact local wake/deadline
-  horizons may command the first instruction boundary at or after the deadline.
+  `SharedTimeline::{max_advance_icount_for_horizon,
+  max_advance_icount_for_conservative_horizon}` and the matching anchored node-time
+  projections own the SCHED-34/TIME-4 boundary: scheduler horizon arithmetic remains
+  in virtual time, while RUN publications convert exact local wake/deadline horizons
+  with ceil and conservative upper bounds with floor into the shmem ABI
+  `max_advance_icount`. The latter is the greatest representable counter that does
+  not cross the cap; a positive interval smaller than one counter tick fails loudly
+  before RUN instead of fabricating progress. Equal-target selection defers a
+  sub-tick candidate behind a representable peer while preserving the global
+  minimum; it never skips the minimum for a later horizon.
   `SchedulerRunCeilingPublication` records the fixed shift used for the
-  conversion. Focused regressions cover exact-local, aligned network-lookahead,
-  unaligned conservative rejection, and idle-wake horizons with nonzero shifts so
-  floor rounding or raw-virtual-time ceilings fail loudly.
+  conversion. Focused regressions cover exact-local and aligned network-lookahead
+  conversion, anchored shift-seven unaligned conservative progress, exact deadlines
+  constrained by conservative caps, and fail-loud sub-tick windows.
 - [x] **T-SCHED-21** Implement the ceiling-write + futex-wake ordering so a woken
   plugin observes a consistent `(ceiling, pending-inputs)` snapshot (wake after
   inbox write). — satisfies [SCHED-35], [SCHED-36]; spec §8.10.

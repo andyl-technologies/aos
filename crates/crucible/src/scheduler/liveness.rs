@@ -216,7 +216,7 @@ pub(super) struct AdvanceCandidate {
     pub(super) target_time: SimInstant,
     pub(super) quiescent_horizon: Option<SimInstant>,
     pub(super) conservative_dependency: Option<UnresolvedCrossNodeDependency>,
-    pub(super) allow_ceil_past_target: bool,
+    pub(super) icount_rounding: SchedulerIcountRounding,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -226,7 +226,7 @@ pub(super) enum EffectiveHorizonProjection {
         target_time: SimInstant,
         quiescent_horizon: Option<SimInstant>,
         conservative_dependency: Option<UnresolvedCrossNodeDependency>,
-        allow_ceil_past_target: bool,
+        icount_rounding: SchedulerIcountRounding,
     },
 }
 
@@ -235,29 +235,65 @@ pub(super) struct AdvanceWindow {
     pub(super) target_time: SimInstant,
     pub(super) quiescent_horizon: Option<SimInstant>,
     pub(super) conservative_dependency: Option<UnresolvedCrossNodeDependency>,
-    pub(super) allow_ceil_past_target: bool,
+    pub(super) icount_rounding: SchedulerIcountRounding,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SchedulerIcountRounding {
+    ConservativeFloor,
+    ExactCeil,
+}
+
+impl SchedulerIcountRounding {
+    pub(super) const fn restricted_with(self, other: Self) -> Self {
+        if matches!((self, other), (Self::ExactCeil, Self::ExactCeil)) {
+            Self::ExactCeil
+        } else {
+            Self::ConservativeFloor
+        }
+    }
+
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::ConservativeFloor => "conservative_floor",
+            Self::ExactCeil => "exact_ceil",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct SchedulerIcountProjection {
+    pub(super) source_counter: NodeCounter,
+    pub(super) source_time: SimInstant,
+    pub(super) target_counter: NodeCounter,
+    pub(super) target_time: SimInstant,
+    pub(super) projected_target_time: SimInstant,
+    pub(super) time_mapping: NodeTimeMapping,
+    pub(super) shift: Shift,
+    pub(super) nanos_per_counter_tick: u64,
+    pub(super) rounding: SchedulerIcountRounding,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct IdleWakeTarget {
     pub(super) wake_time: SimInstant,
-    pub(super) allow_ceil_past_target: bool,
+    pub(super) icount_rounding: SchedulerIcountRounding,
 }
 
 pub(super) fn merge_idle_wake_target(
     target: &mut Option<IdleWakeTarget>,
     wake_time: SimInstant,
-    allow_ceil_past_target: bool,
+    icount_rounding: SchedulerIcountRounding,
 ) {
     match target {
         Some(current) if current.wake_time < wake_time => {}
         Some(current) if current.wake_time == wake_time => {
-            current.allow_ceil_past_target &= allow_ceil_past_target;
+            current.icount_rounding = current.icount_rounding.restricted_with(icount_rounding);
         }
         _ => {
             *target = Some(IdleWakeTarget {
                 wake_time,
-                allow_ceil_past_target,
+                icount_rounding,
             });
         }
     }

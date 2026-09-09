@@ -110,7 +110,7 @@
       }
       {
         label = "unaligned dependency cap test";
-        needle = "single_scheduler_rejects_unaligned_dependency_ceiling_overshoot";
+        needle = "single_scheduler_floors_unaligned_dependency_then_rejects_sub_tick_stall";
       }
       {
         label = "due dependency integration test";
