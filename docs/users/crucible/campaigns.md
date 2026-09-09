@@ -48,17 +48,21 @@ cgroup, project-quota, and resource-limit checks described below. If no
 capability is available, the command fails before launching QEMU and names all
 three configuration methods. Standard local production-QEMU
 `save --at virtual-time --max-virtual-time DURATION` commands use the same
-resolution order and campaign owner. Quiescence, property, marker, interactive,
-resume, and fork workflows remain on their compatible session paths.
+resolution order and campaign owner. Marker saves, standard unattended resume,
+and unchanged forks targeting virtual time or stopped completion also use
+campaign ownership. Quiescence and property saves, interactive control,
+quiescence/property forks, and divergent fork recipes remain on their compatible
+session paths.
 
 A campaign-backed virtual-time save executes the semantic attempt and then
 replays that attempt once to capture and authenticate the exact reached
 boundary. Its temporary physical checkpoint closure is removed before the CLI
-reports success. The durable output remains the existing version-3 savepoint
-handle and logical `LocalDagStore` closure, so current `resume` and `fork`
-commands consume it unchanged through logical replay. The extra capture replay
-has real QEMU execution and I/O cost, and the emitted handle does not provide
-native exact-resume acceleration.
+reports success. The durable output is a version-5 savepoint handle and a
+version-3 logical `LocalDagStore` closure index. Both retain the authenticated
+campaign replay closure needed by standard resume and unchanged fork, including
+typed guest selections. The extra capture replay has real QEMU execution and
+I/O cost, and the emitted handle does not provide native exact-resume
+acceleration.
 
 A failure artifact produced by this path records `campaign-run` as its typed
 producer. Replaying that artifact resolves the deployment capability again and
@@ -69,8 +73,10 @@ coverage, and its schedule contains only delivery-order, RNG-draw, and
 preemption decisions. This exact subset needs no separate choice records, so
 replay synthesizes the canonical empty choice closure. Older `run` contracts
 with session-specific controls, property or coverage semantics, overrides,
-legacy application randomness, or typed selections retain session replay, as
-do `verify`, `search`, `fuzz`, and `fork` artifacts.
+legacy application randomness, or typed selections retain session replay, as do
+`verify`, `search`, and `fuzz` artifacts. An unchanged `fork` artifact carrying
+an authenticated campaign closure replays through the campaign owner; legacy,
+reseeded, and overridden fork artifacts keep their session replay semantics.
 
 ## Build and validate inputs
 
