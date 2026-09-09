@@ -154,6 +154,14 @@ in
         script = ''
           nativePython=$(command -v python3)
 
+          # libseccomp is loaded on demand, so DT_NEEDED-based RPATH shrinking
+          # cannot retain its search directory. Bind the loader to the AOS
+          # library explicitly so syscall filters work without host libraries.
+          test "$(grep -Fc '"libseccomp.so.2"' src/shared/seccomp-util.c)" -eq 1
+          sed -i \
+            's|"libseccomp.so.2"|"${libseccomp}/lib/libseccomp.so.2"|' \
+            src/shared/seccomp-util.c
+
           # Fix shebangs: /usr/bin/env and /bin/bash don't exist in the sandbox
           for f in $(find . -type f \( -name '*.sh' -o -name '*.py' \)); do
             if head -1 "$f" | grep -q '^#!'; then
