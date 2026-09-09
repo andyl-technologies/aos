@@ -6122,6 +6122,24 @@ or replay storage, authenticated transport, live systemd-property proof,
 typed-FD retention, an inspector binary, capability or MAC confinement, or any
 production readiness evidence.
 
+Commit `6535ab0cb` adds the shared read-only Linux observation boundary needed
+for restart lookup of those future immutable records. Beneath one retained
+fs-verity publication root it admits only an exact regular, owner-mode-0600,
+single-link, read-only-opened final name below a caller size ceiling; observes
+the actual SHA-256 fs-verity measurement; and rechecks the name-to-inode
+binding, retained root, pinned identity, and measurement. Only initial
+`ENOENT`, followed by an exact root recheck, returns momentary absence. The
+returned measurement is explicitly non-authorizing: protected-directory MAC
+provenance and canonical Network record validation remain higher-layer duties.
+
+All 21 focused publication helper/unit tests and the complete Linux library
+suite passed, with 127 tests successful and two isolated fixtures intentionally
+ignored; both isolated child invocations passed. Strict crate-local library
+Clippy with dependency linting disabled also passed with warnings denied. This
+does not yet qualify the public API against a real sealed ext4 inode, an actual
+mount crossing, protected labels, or enforcing MAC. Those kernel and deployment
+tests remain pending, and no readiness claim changes.
+
 The deployed positive handshake is currently blocked by an authorization
 conflict, not qualified. The worker calls `PR_SET_DUMPABLE(0)` before READY,
 while the capability-empty broker obtains the retained namespace through
