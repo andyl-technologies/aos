@@ -8,6 +8,8 @@
 use super::*;
 use std::os::unix::fs::MetadataExt as _;
 
+use crate::seqpacket::process_tests::{finish_connector, spawn_connector};
+
 fn pair() -> (DescriptorSubjectSocket, OwnedFd) {
     let (receiver, sender) = uapi::seqpacket_pair().expect("socket pair");
     (
@@ -105,6 +107,79 @@ fn production_sender_transfers_only_bounded_exact_tables() {
             .payload(),
         b"still-open"
     );
+}
+
+#[test]
+fn packet_capacity_rejects_invalid_bounds_without_closing() {
+    let (socket, _sender) = pair();
+
+    for maximum in [0, MAXIMUM_PACKET_BYTES + 1] {
+        assert!(matches!(
+            socket.provision_packet_capacity(maximum),
+            Err(SeqpacketError::InvalidMaximum)
+        ));
+    }
+    assert!(socket.as_fd().is_ok());
+}
+
+#[test]
+fn small_provisioned_packet_transfers_exactly() {
+    let (left, right) = uapi::seqpacket_pair().expect("socket pair");
+    let mut left = DescriptorSubjectSocket::from_owned(left).expect("configured left");
+    let mut right = DescriptorSubjectSocket::from_owned(right).expect("configured right");
+    let payload = vec![0xa5; 4096];
+
+    left.provision_packet_capacity(4096)
+        .expect("provision left packet capacity");
+    right
+        .provision_packet_capacity(4096)
+        .expect("provision right packet capacity");
+
+    left.send(&payload).expect("send bounded packet");
+    assert_eq!(
+        right
+            .receive(4096, 0)
+            .expect("receive bounded packet")
+            .payload(),
+        payload
+    );
+}
+
+#[test]
+fn close_is_idempotent_and_rejects_later_capacity_changes() {
+    let (mut socket, _sender) = pair();
+    let peer_pid = socket.peer().initial_info().pid();
+
+    socket.close();
+    socket.close();
+
+    assert!(matches!(socket.as_fd(), Err(SeqpacketError::Closed)));
+    assert!(matches!(
+        socket.provision_packet_capacity(4096),
+        Err(SeqpacketError::Closed)
+    ));
+    assert_eq!(socket.peer().initial_info().pid(), peer_pid);
+}
+
+#[test]
+fn cached_peer_remains_distinct_from_a_delegated_response_subject() {
+    let listener = uapi::seqpacket_listener().expect("create listener");
+    let (mut connector, control, delegated) = spawn_connector(listener.as_fd());
+    let connector_pid = connector.pid();
+    let accepted = uapi::accept_record_subject_socket(listener.as_fd()).expect("accept connector");
+    let mut receiver =
+        DescriptorSubjectSocket::from_owned(accepted).expect("configure accepted channel");
+
+    assert_eq!(receiver.peer().initial_info().pid(), connector_pid);
+    uapi::send_seqpacket(delegated.as_fd(), b"delegated writer")
+        .expect("send from delegated writer");
+    let record = receiver.receive(64, 0).expect("receive delegated record");
+    assert_eq!(record.payload(), b"delegated writer");
+    assert_eq!(record.subject().initial_info().pid(), std::process::id());
+    assert_ne!(record.subject().initial_info().pid(), connector_pid);
+    assert_eq!(receiver.peer().initial_info().pid(), connector_pid);
+
+    finish_connector(&mut connector, control.as_fd());
 }
 
 #[test]

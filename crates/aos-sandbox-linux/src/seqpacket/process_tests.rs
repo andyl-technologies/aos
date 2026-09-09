@@ -24,9 +24,13 @@ use crate::uapi::{self, RawAncillary};
 const FIXTURE_ENV: &str = "AOS_SEQPACKET_CONNECTOR_FIXTURE_V1";
 const WAIT_LIMIT: Duration = Duration::from_secs(10);
 
-struct Connector(Child);
+pub(super) struct Connector(Child);
 
 impl Connector {
+    pub(super) fn pid(&self) -> u32 {
+        self.0.id()
+    }
+
     fn wait_success(&mut self) {
         let deadline = Instant::now() + WAIT_LIMIT;
         loop {
@@ -71,7 +75,7 @@ fn receive_control(fd: BorrowedFd<'_>) -> (Vec<u8>, Vec<RawAncillary>) {
     }
 }
 
-fn spawn_connector(listener: BorrowedFd<'_>) -> (Connector, OwnedFd, OwnedFd) {
+pub(super) fn spawn_connector(listener: BorrowedFd<'_>) -> (Connector, OwnedFd, OwnedFd) {
     let (parent_control, child_control) = uapi::seqpacket_pair().expect("create control pair");
     let child = Command::new(std::env::current_exe().expect("test executable"))
         .args([
@@ -108,7 +112,7 @@ fn spawn_connector(listener: BorrowedFd<'_>) -> (Connector, OwnedFd, OwnedFd) {
     (connector, parent_control, delegated)
 }
 
-fn finish_connector(connector: &mut Connector, control: BorrowedFd<'_>) {
+pub(super) fn finish_connector(connector: &mut Connector, control: BorrowedFd<'_>) {
     uapi::send_seqpacket(control, b"finish").expect("release connector");
     connector.wait_success();
 }

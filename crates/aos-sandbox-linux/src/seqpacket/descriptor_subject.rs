@@ -20,7 +20,8 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path};
 
 use super::{
-    KernelAuthorizedRecordSubject, SeqpacketError, map_kernel_error, validate_record_subject,
+    ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketError, map_kernel_error,
+    validate_record_subject,
 };
 use crate::Error;
 use crate::uapi::{self, RawAncillary};
@@ -36,6 +37,7 @@ const MAXIMUM_TRANSFERRED_DESCRIPTORS: usize = 2;
 #[derive(Debug)]
 pub struct DescriptorSubjectSocket {
     fd: Option<OwnedFd>,
+    peer: ConnectionPeerIdentity,
 }
 
 impl DescriptorSubjectSocket {
@@ -78,12 +80,23 @@ impl DescriptorSubjectSocket {
     ///
     /// # Errors
     ///
-    /// Rejects an incorrect socket type or connection state, or failure to set
-    /// close-on-exec, nonblocking, credential, or pidfd-reporting options.
+    /// Rejects an incorrect socket type or connection state, failure to query
+    /// and pin the connection peer, or failure to set close-on-exec,
+    /// nonblocking, credential, or pidfd-reporting options.
     pub fn from_owned(fd: OwnedFd) -> Result<Self, SeqpacketError> {
         uapi::prepare_seqpacket(fd.as_fd())?;
+        let peer = ConnectionPeerIdentity::from_socket(fd.as_fd())?;
         uapi::enable_seqpacket_identity(fd.as_fd())?;
-        Ok(Self { fd: Some(fd) })
+        Ok(Self { fd: Some(fd), peer })
+    }
+
+    /// Returns the process that established this connected channel.
+    ///
+    /// Socket activation commonly makes this PID 1, so callers must still
+    /// authenticate every response writer through its record subject.
+    #[must_use]
+    pub const fn peer(&self) -> &ConnectionPeerIdentity {
+        &self.peer
     }
 
     /// Borrows the channel for readiness polling, not competing packet consumption.
@@ -96,6 +109,82 @@ impl DescriptorSubjectSocket {
             .as_ref()
             .map(AsFd::as_fd)
             .ok_or(SeqpacketError::Closed)
+    }
+
+    /// Irrevocably closes this one-shot channel.
+    ///
+    /// Higher-level multi-record protocols use this after any partial-transfer
+    /// failure so hostile bytes cannot be followed by a fresh parser on the
+    /// same stream.
+    pub fn close(&mut self) {
+        self.fd.take();
+    }
+
+    /// Provisions and verifies capacity for one bounded application packet.
+    ///
+    /// Linux doubles ordinary `SO_SNDBUF` and `SO_RCVBUF` requests and clamps
+    /// them to node-wide maxima. This method deliberately does not use the
+    /// privileged `SO_*BUFFORCE` variants. Protocols with large logical
+    /// messages should select a small frame size that fits the kernel minimum,
+    /// then use this check to make the dependency explicit on both endpoints.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a zero or above-16-MiB packet size, a closed channel, socket
+    /// option failure, or an effective buffer smaller than the requested
+    /// packet. The send-side check includes Linux's Unix-socket 32-byte
+    /// sequenced-packet reservation.
+    pub fn provision_packet_capacity(
+        &self,
+        maximum_packet_bytes: usize,
+    ) -> Result<(), SeqpacketError> {
+        const UNIX_SEQPACKET_SEND_RESERVATION_BYTES: usize = 32;
+
+        if maximum_packet_bytes == 0 || maximum_packet_bytes > MAXIMUM_PACKET_BYTES {
+            return Err(SeqpacketError::InvalidMaximum);
+        }
+        let required_send_buffer = maximum_packet_bytes
+            .checked_add(UNIX_SEQPACKET_SEND_RESERVATION_BYTES)
+            .ok_or(SeqpacketError::InvalidMaximum)?;
+        let fd = self.as_fd()?;
+
+        rustix::net::sockopt::set_socket_send_buffer_size(fd, required_send_buffer).map_err(
+            |source| {
+                SeqpacketError::Kernel(Error::Syscall {
+                    operation: "setsockopt(SO_SNDBUF)",
+                    source: source.into(),
+                })
+            },
+        )?;
+        rustix::net::sockopt::set_socket_recv_buffer_size(fd, maximum_packet_bytes).map_err(
+            |source| {
+                SeqpacketError::Kernel(Error::Syscall {
+                    operation: "setsockopt(SO_RCVBUF)",
+                    source: source.into(),
+                })
+            },
+        )?;
+
+        let actual_send = rustix::net::sockopt::socket_send_buffer_size(fd).map_err(|source| {
+            SeqpacketError::Kernel(Error::Syscall {
+                operation: "getsockopt(SO_SNDBUF)",
+                source: source.into(),
+            })
+        })?;
+        let actual_receive =
+            rustix::net::sockopt::socket_recv_buffer_size(fd).map_err(|source| {
+                SeqpacketError::Kernel(Error::Syscall {
+                    operation: "getsockopt(SO_RCVBUF)",
+                    source: source.into(),
+                })
+            })?;
+        if actual_send < required_send_buffer || actual_receive < maximum_packet_bytes {
+            return Err(SeqpacketError::Kernel(Error::invalid(
+                "descriptor-subject packet capacity",
+                "effective socket buffers are below the bounded packet requirement",
+            )));
+        }
+        Ok(())
     }
 
     /// Sends one bounded packet without any transferred descriptors.
