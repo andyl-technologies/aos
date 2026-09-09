@@ -323,7 +323,7 @@ fn beam_named_boundary_metric_selects_the_deeper_survivor_and_filters_missing_me
             request.policy_artifact().clone(),
             request.policy().clone(),
             request.planner_state().clone(),
-            request.input_view().clone(),
+            *request.input_view(),
             bundle,
         )
     };

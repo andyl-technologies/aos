@@ -254,8 +254,7 @@ impl CampaignRepository {
         let remaining = limit - visited_ordinals;
         let page_end = cursor
             .after_ordinal
-            .checked_add(u64::from(remaining))
-            .unwrap_or(u64::MAX)
+            .saturating_add(u64::from(remaining))
             .min(admitted);
 
         for ordinal in (cursor.after_ordinal + 1)..=page_end {
@@ -734,6 +733,9 @@ impl CampaignRepository {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- these focused owner tests use panics to identify invalid synthetic fixtures.
+    #![allow(clippy::expect_used)]
+
     use std::collections::BTreeSet;
     use std::sync::Arc;
 

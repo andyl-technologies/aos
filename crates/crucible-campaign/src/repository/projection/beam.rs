@@ -947,6 +947,9 @@ fn charge_beam_target_proposal_visit(visited: &mut usize) -> Result<(), Campaign
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- these focused pure-projection tests use panics to identify invalid fixtures.
+    #![allow(clippy::expect_used)]
+
     use super::*;
     use crate::{
         CampaignCommandId, CampaignMode, CampaignSeed, DebugSessionId, ExplorerPolicy,
