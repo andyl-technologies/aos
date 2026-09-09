@@ -5412,8 +5412,43 @@ and teardown with the repaired bind unmounted, dataset destroyed, and worker
 cgroups unpopulated. The final realized output is
 `/nix/store/p4pbsi6zpwmzya824s90psq6xmprawd2-aos-fleet-test-sandbox-zfs-worker-0`.
 
-This qualifies that installed-unit repair lifecycle, but not a post-admission
-crash-injection path. Controller orchestration and the production RPC handler
+Follow-up commit `487997afc` adds a test-only failure seam at the exact repair
+admission boundary. The installed test makes the one five-record admission
+transaction durable, then injects the error before the coordinator updates its
+materialized cache or constructs the worker dispatch. The journal snapshot
+sequence advances by seven frames -- transaction begin, five semantic records,
+and transaction commit -- and the runtime returns
+`StorageRuntimeError::Recovery`. The fresh admission observer is activated
+once, while the worker acceptance count, durable replay-claim count, and pin
+remain unchanged.
+
+A full runtime reopen from the same protected transaction and workspace-catalog
+paths authenticates the ordinal-two `Ambiguous` attempt, `Pending` Effect,
+repair-intent links, and equal decoded current and operation fences. Startup
+activates only the repair observer, retains
+`StorageRuntimeReadiness::RecoveryPending`, and converges to an empty workspace
+inventory without changing the journal, worker count, or claim count. An exact
+retry returns `WorkspacePinRepairExecutionOutcomeV1::ObservationRequired` with
+zero observer, worker, claim, and journal deltas. A separately authorized
+generation-eight repair then advances to ordinal three, activates the observer
+and worker once each, creates exactly one replay claim, and reaches a
+`Satisfied` attempt with a `Complete` Effect and an active catalog row. The
+final authenticated journal and catalog reopen preserves both the interrupted
+and successful repair histories.
+
+The pinned development-shell library run compiled 153 Storage tests: 151
+passed, none failed, and the two installed-systemd tests were ignored. The
+immutable fleet derivation
+`/nix/store/xd434nanxn33jppnr504ybsw9qyd37ig-aos-fleet-test-sandbox-zfs-worker-0.drv`
+captured those exact sources and then ran both ignored paths against the
+installed units. Both guests booted and the complete fleet body passed,
+including the expected three replay claims, drained worker and observer units
+and cgroups, the repaired mount check, and final unmount and dataset cleanup.
+The realized output is
+`/nix/store/d8916bb66gmp7gla38k4i41v43s82xcy-aos-fleet-test-sandbox-zfs-worker-0`.
+
+This qualifies post-commit injected-failure and restart evidence, not literal
+process-kill proof. Controller orchestration and the production RPC handler
 also remain absent. New-dataset ownership initialization and its separate
 capability decision remain open; Storage Apply stays unadvertised and no
 `SBX-STOR-01`, `SBX-P0-07`, `SBX-P0-08`, or `SBX-P0-10` checkbox is closed.
