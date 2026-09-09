@@ -3,60 +3,72 @@
   pkgs,
   lib,
 }: let
-  source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  source = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
+  controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
+  cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;
+  controllerArtifactContract = controllerArtifacts.passthru.cargoArtifactContract;
+  campaignFlightBuildCommand = "test --frozen --offline --release --no-run -j$NIX_BUILD_CORES -p crucible-cli --bin crucible --test campaign_store_process --test legacy_campaign_process";
+  campaignFlightArtifacts = pkgs.mkCargoArtifacts {
+    pname = "crucible-packaged-campaign-flight-artifacts";
+    version = "0";
+    src = pkgs.mkCargoDummySource {
+      srcRoot = ../../crates;
+      name = "crucible-packaged-campaign-flight-dummy-source";
+      cargoRoot = "crates";
+    };
+
+    inherit cargoDeps;
+    cargoArtifacts = controllerArtifacts;
+    cargoArtifactContract = controllerArtifactContract;
+    cargoEnv = controllerArtifactContract.cargoEnv;
+    cargoRoot = "crates";
+    cargoBuildCommands = [campaignFlightBuildCommand];
+
+    buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf];
+    runtimeDeps = [pkgs.openssl];
+  };
   gateway = pkgs.crucible.passthru.debugGateway;
-  flight = pkgs.mkDerivation {
+  flight = pkgs.mkCargoPackage {
     pname = "crucible-packaged-campaign-flight";
     version = "0";
     src = source;
-    buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed pkgs.jq pkgs.pkg-config pkgs.protobuf];
+
+    inherit cargoDeps;
+    cargoArtifacts = campaignFlightArtifacts;
+    cargoArtifactContract = controllerArtifactContract;
+    cargoEnv = controllerArtifactContract.cargoEnv;
+    cargoRoot = "crates";
+    cargoBuildCommands = [campaignFlightBuildCommand];
+    installBins = false;
+    doCheck = false;
+
+    buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf];
     runtimeDeps = [pkgs.openssl];
-    OPENSSL_DIR = "${pkgs.openssl}";
-    OPENSSL_NO_VENDOR = "1";
-    OPENSSL_STATIC = "0";
-    PROTOC = "${pkgs.protobuf}/bin/protoc";
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-          if ! cargo test --frozen --offline --release --no-run --message-format=json \
-            --manifest-path crates/Cargo.toml --target-dir "$TMPDIR/target" \
-            -p crucible-cli --bin crucible \
-            --test campaign_store_process --test legacy_campaign_process \
-            > "$TMPDIR/artifacts.jsonl"; then
-            jq -r 'select(.reason == "compiler-message") | .message.rendered // empty' "$TMPDIR/artifacts.jsonl"
-            exit 1
-          fi
-          test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "campaign_store_process" and .executable != null) | .executable' "$TMPDIR/artifacts.jsonl")
-          legacy_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "legacy_campaign_process" and .executable != null) | .executable' "$TMPDIR/artifacts.jsonl")
-          unit_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "crucible" and .target.kind == ["bin"] and .profile.test == true and .executable != null) | .executable' "$TMPDIR/artifacts.jsonl")
-          test -f "$test_binary"
-          test -f "$legacy_test_binary"
-          test -f "$unit_test_binary"
-          mkdir -p "$out/bin"
-          cp "$test_binary" "$out/bin/campaign-process-flight"
-          cp "$legacy_test_binary" "$out/bin/legacy-campaign-process-flight"
-          cp "$unit_test_binary" "$out/bin/crucible-unit-flight"
-          cp "$TMPDIR/target/release/crucible" "$out/bin/crucible"
-          # Genesis is captured before execution; the immutable blank disk still
-          # follows the production store-path contract for guest assets.
-          truncate -s 1M "$out/root.raw"
-        '';
-      }
-    ];
+
+    postInstall = ''
+      artifacts="$NIX_BUILD_TOP/cargo-build-messages.jsonl"
+      test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "campaign_store_process" and .executable != null) | .executable' "$artifacts")
+      legacy_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "legacy_campaign_process" and .executable != null) | .executable' "$artifacts")
+      unit_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "crucible" and .target.kind == ["bin"] and .profile.test == true and .executable != null) | .executable' "$artifacts")
+      test -f "$test_binary"
+      test -f "$legacy_test_binary"
+      test -f "$unit_test_binary"
+
+      mkdir -p "$out/bin"
+      cp "$test_binary" "$out/bin/campaign-process-flight"
+      cp "$legacy_test_binary" "$out/bin/legacy-campaign-process-flight"
+      cp "$unit_test_binary" "$out/bin/crucible-unit-flight"
+      cp target/release/crucible "$out/bin/crucible"
+
+      # Genesis is captured before execution; the immutable blank disk still
+      # follows the production store-path contract for guest assets.
+      truncate -s 1M "$out/root.raw"
+    '';
+
+    passthru = {
+      cargoArtifacts = campaignFlightArtifacts;
+      cargoArtifactContract = controllerArtifactContract;
+    };
   };
   deployment = builtins.toFile "campaign-executor.toml" ''
     schema = "crucible.campaign-packaged-executor"
@@ -82,8 +94,7 @@
     qemu_profile = "deterministic-tcg-v1"
   '';
   testing = import ../../lib/testing {inherit pkgs lib;};
-in
-  testing.mkVMTest {
+  vmTest = testing.mkVMTest {
     name = "crucible-packaged-campaign";
     memory = 2048;
     rootfsDeps = [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep];
@@ -216,4 +227,13 @@ in
       ${pkgs.util-linux}/bin/umount /tmp/attempts
       trap - EXIT HUP INT TERM
     '';
+  };
+in
+  vmTest
+  // {
+    passthru =
+      (vmTest.passthru or {})
+      // {
+        campaignFlight = flight;
+      };
   }
