@@ -278,6 +278,12 @@ in
   });
   assert lib.abilities.schemas.validateSchema "at-limit schema" atLimitSchema == atLimitSchema;
   assert fails (lib.abilities.schemas.validateSchema "over-limit schema" overLimitSchema);
+  assert lib.abilities.schemas.validateSchema "provider assignment" lib.abilities.schemas.providerAssignment
+  == {kind = "provider-assignment";};
+  assert fails (lib.abilities.schemas.validateSchema "provider assignment" {
+    kind = "provider-assignment";
+    unexpected = true;
+  });
   assert fails (lib.abilities.schemas.checkValue lib.abilities.schemas.resourceReference {
     _type = "aos-resource-reference";
     interface = {
@@ -413,6 +419,7 @@ in
     decisions = [];
     merges = [];
     edges = [];
+    provider_readiness = [];
   };
   assert !unsupportedEffects.success;
   assert fails (lib.abilities.effects.normalize [] forgedEffects);
@@ -474,12 +481,47 @@ in
   assert (builtins.head effectPlan.merges).outputs.ready.descriptor.schema == lib.abilities.schemas.boolean;
   assert builtins.elem "branch-guard" (builtins.map (edge: edge.kind) effectPlan.edges);
   assert builtins.elem "branch-merge" (builtins.map (edge: edge.kind) effectPlan.edges);
+  assert effectFixture.bootstrap.provider_readiness
+  == [
+    {
+      binding = "nginx.configuration";
+      producer = {
+        scope = ["bootstrap"];
+        key = "bootstrap";
+      };
+      output = "assignment";
+    }
+  ];
+  assert builtins.elem {
+    from = {
+      kind = "operation";
+      key = {
+        scope = ["bootstrap"];
+        key = "bootstrap";
+      };
+    };
+    to = {
+      kind = "operation";
+      key = {
+        scope = ["bootstrap"];
+        key = "consumer";
+      };
+    };
+    kind = "readiness";
+  }
+  effectFixture.bootstrap.edges;
   assert effectFixture.omitted == emptyEffects;
   assert fails (lib.abilities.effects.normalize [] effectFixture.missingReference);
   assert fails (lib.abilities.effects.normalize [] effectFixture.cycle);
   assert fails (lib.abilities.effects.normalize [] effectFixture.incompleteBoolean);
   assert fails (lib.abilities.effects.normalize ["nginx"] effectFixture.escapingReference);
   assert fails (lib.abilities.effects.normalize ["nginx"] effectFixture.externalMergeProducer);
+  assert fails (lib.abilities.effects.normalize ["bootstrap"] effectFixture.duplicateProviderReadiness);
+  assert fails (lib.abilities.effects.normalize ["bootstrap"] effectFixture.mergedProviderReadiness);
+  assert fails (lib.abilities.effects.normalize ["bootstrap"] effectFixture.escapingProviderReadiness);
+  assert fails (lib.abilities.effects.normalize ["bootstrap"] effectFixture.missingReadinessProducer);
+  assert fails (lib.abilities.effects.normalize ["bootstrap"] effectFixture.unusedProviderReadiness);
+  assert fails (lib.abilities.effects.normalize ["bootstrap"] effectFixture.oversizedProviderReadiness);
   assert fails (lib.abilities.effects.normalize ["chain"] effectFixture.analysisHeavyChain);
   assert fails (lib.abilities.effects.normalize ["nginx"] effectFixture.oversizedDocument);
     pkgs.mkDerivation {

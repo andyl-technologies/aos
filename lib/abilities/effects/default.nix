@@ -268,6 +268,11 @@ let
   take = count: values:
     builtins.genList (index: builtins.elemAt values index) count;
 
+  scopeIsPrefix = prefix: scope:
+    builtins.length prefix
+    <= builtins.length scope
+    && take (builtins.length prefix) scope == prefix;
+
   deduplicateSorted = values: let
     state =
       builtins.foldl' (
@@ -306,6 +311,32 @@ let
           else if accumulated.previous == value
           then accumulated
           else fail "artifact content '${value.content}' has conflicting reference metadata"
+      ) {
+        previous = null;
+        reversed = [];
+      }
+      sorted;
+  in
+    reverseList state.reversed;
+
+  readinessLessThan = left: right:
+    if left.binding != right.binding
+    then left.binding < right.binding
+    else if left.producer != right.producer
+    then scopedKeyLessThan left.producer right.producer
+    else left.output < right.output;
+
+  canonicalProviderReadiness = values: let
+    sorted = builtins.sort readinessLessThan values;
+    state =
+      builtins.foldl' (
+        accumulated: value:
+          if accumulated.previous != null && accumulated.previous.binding == value.binding
+          then fail "binding '${value.binding}' has more than one provider-readiness declaration"
+          else {
+            previous = value;
+            reversed = [value] ++ accumulated.reversed;
+          }
       ) {
         previous = null;
         reversed = [];
@@ -685,6 +716,20 @@ let
 
   producerNode = reference: planNode reference.producer.kind reference.producer.key;
 
+  normalizeProviderReadiness = rootDepth: scope: value: let
+    checked = requireAttrs "provider-readiness declaration" ["binding" "producer"] value;
+    binding = normalizeBindingReference "provider-readiness binding" checked.binding;
+    producer = normalizeResultReference rootDepth scope checked.producer;
+  in
+    if producer.producer.kind != "operation"
+    then fail "provider-readiness evidence must be produced by an operation"
+    else {
+      inherit (binding) binding;
+      producer = producer.producer.key;
+      inherit (producer) output;
+      consumer_scope = scope;
+    };
+
   normalizeExpression = rootDepth: scope: depth: value:
     if depth > profile.max_depth
     then fail "effect input exceeds ${builtins.toString profile.max_depth} structural levels"
@@ -806,9 +851,13 @@ let
     value;
 
   requireGraph = context: value: let
-    checked = requireAttrs context ["_type" "nodes"] value;
+    checked = requireAttrs context ["_type" "nodes" "providerReadiness"] value;
   in
-    if checked._type != "aos-effect-graph" || !builtins.isAttrs checked.nodes
+    if
+      checked._type
+      != "aos-effect-graph"
+      || !builtins.isAttrs checked.nodes
+      || !builtins.isList checked.providerReadiness
     then fail "${context} must be a closed graph constructed by lib.effects.graph"
     else checked;
 
@@ -884,6 +933,7 @@ let
       decisions = [];
       merges = [];
       edges = resultEdges ++ dependencyEdges ++ guardEdges branchContext node;
+      providerReadiness = [];
     };
 
   normalizeMergedOutput = rootDepth: scope: mergeName: branchScopes: alternativeNames: name: value: let
@@ -923,6 +973,7 @@ let
     decisions = [];
     merges = [];
     edges = [];
+    providerReadiness = [];
   };
 
   combineFragments = fragments: {
@@ -931,6 +982,7 @@ let
     decisions = builtins.concatLists (builtins.map (fragment: fragment.decisions) fragments);
     merges = builtins.concatLists (builtins.map (fragment: fragment.merges) fragments);
     edges = builtins.concatLists (builtins.map (fragment: fragment.edges) fragments);
+    providerReadiness = builtins.concatLists (builtins.map (fragment: fragment.providerReadiness) fragments);
   };
 
   normalizeConditional = rootDepth: scope: branchContext: name: authored: let
@@ -1034,6 +1086,7 @@ let
           then mergeEdges
           else []
         );
+      providerReadiness = branches.providerReadiness;
     };
 
   normalizeNode = rootDepth: scope: branchContext: name: value:
@@ -1048,6 +1101,8 @@ let
   normalizeGraph = rootDepth: scope: branchContext: value: let
     checked = requireGraph "effect graph" value;
     names = builtins.attrNames checked.nodes;
+    nodes = combineFragments (builtins.map (name: normalizeNode rootDepth scope branchContext name checked.nodes.${name}) names);
+    providerReadiness = builtins.map (normalizeProviderReadiness rootDepth scope) checked.providerReadiness;
   in
     if builtins.length scope > profile.max_depth
     then fail "effect graph scope exceeds ${builtins.toString profile.max_depth} components"
@@ -1055,7 +1110,11 @@ let
     then fail "effect branch nesting exceeds ${builtins.toString profile.max_depth} levels"
     else if builtins.length names > profile.max_nodes
     then fail "effect graph exceeds ${builtins.toString profile.max_nodes} local nodes"
-    else combineFragments (builtins.map (name: normalizeNode rootDepth scope branchContext name checked.nodes.${name}) names);
+    else
+      nodes
+      // {
+        providerReadiness = nodes.providerReadiness ++ providerReadiness;
+      };
 
   allNodes = fragment:
     (builtins.map (operation: planNode "operation" operation.key) fragment.operations)
@@ -1165,11 +1224,26 @@ in rec {
     value = {
       _type = "aos-effect-graph";
       inherit nodes;
+      providerReadiness = [];
     };
   in
     builtins.deepSeq (requireGraph "graph" value) value;
 
   empty = graph {};
+
+  withProviderReadiness = args: effectGraph: let
+    checked = requireAttrs "withProviderReadiness" ["binding" "producer"] args;
+    checkedGraph = requireGraph "withProviderReadiness graph" effectGraph;
+    declaration = {
+      inherit (checked) binding producer;
+    };
+  in
+    assert builtins.deepSeq (normalizeBindingReference "provider-readiness binding" checked.binding) true;
+    assert builtins.deepSeq (requireResultReference "provider-readiness producer" checked.producer) true;
+      checkedGraph
+      // {
+        providerReadiness = checkedGraph.providerReadiness ++ [declaration];
+      };
 
   invoke = args: let
     checked =
@@ -1278,23 +1352,63 @@ in rec {
       else fail "normalization scope must be a bounded path of local keys";
     authored = normalizeGraph (builtins.length checkedScope) checkedScope [] effectGraph;
     nodeCount = builtins.length authored.operations + builtins.length authored.decisions + builtins.length authored.merges;
-    edgeCount = builtins.length authored.edges;
     artifactCount = builtins.length authored.artifacts;
+    readinessCount = builtins.length authored.providerReadiness;
+    operationIdentities = builtins.listToAttrs (builtins.map (operation: {
+        name = builtins.toJSON operation.key;
+        value = true;
+      })
+      authored.operations);
+    operationsByBinding = builtins.groupBy (operation: operation.binding) authored.operations;
+    readinessConsumers = readiness:
+      builtins.filter
+      (operation: scopeIsPrefix readiness.consumer_scope operation.key.scope)
+      (operationsByBinding.${readiness.binding} or []);
+    internalProviderReadiness = builtins.map (readiness:
+      if !(builtins.hasAttr (builtins.toJSON readiness.producer) operationIdentities)
+      then fail "provider-readiness declaration names a missing producer operation"
+      else if readinessConsumers readiness == []
+      then fail "provider-readiness declaration names a binding unused in its graph"
+      else readiness)
+    (canonicalProviderReadiness authored.providerReadiness);
+    readinessEdgeCount =
+      builtins.foldl'
+      (count: readiness: boundedAdd profile.max_edges count (builtins.length (readinessConsumers readiness)))
+      0
+      internalProviderReadiness;
+    edgeCount = boundedAdd profile.max_edges (builtins.length authored.edges) readinessEdgeCount;
   in
     assert builtins.deepSeq checkedScope true;
       if nodeCount > profile.max_nodes
       then fail "effect graph exceeds ${builtins.toString profile.max_nodes} nodes"
-      else if edgeCount > profile.max_edges
+      else if builtins.length authored.edges > profile.max_edges
       then fail "effect graph exceeds ${builtins.toString profile.max_edges} edges"
       else if artifactCount > profile.max_collection_items
       then fail "effect graph exceeds the artifact collection limit"
+      else if readinessCount > profile.max_collection_items
+      then fail "effect graph exceeds the provider-readiness collection limit"
+      else if edgeCount > profile.max_edges
+      then fail "effect graph exceeds ${builtins.toString profile.max_edges} edges"
       else let
+        providerReadiness =
+          builtins.map (readiness: {
+            inherit (readiness) binding producer output;
+          })
+          internalProviderReadiness;
+        readinessEdges = builtins.concatLists (builtins.map (readiness:
+          builtins.map (operation: {
+            from = planNode "operation" readiness.producer;
+            to = planNode "operation" operation.key;
+            kind = "readiness";
+          }) (readinessConsumers readiness))
+        internalProviderReadiness);
         normalized = {
           artifacts = canonicalArtifacts authored.artifacts;
           operations = builtins.sort (left: right: scopedKeyLessThan left.key right.key) authored.operations;
           decisions = builtins.sort (left: right: scopedKeyLessThan left.key right.key) authored.decisions;
           merges = builtins.sort (left: right: scopedKeyLessThan left.key right.key) authored.merges;
-          edges = deduplicateSorted (builtins.sort edgeLessThan authored.edges);
+          edges = deduplicateSorted (builtins.sort edgeLessThan (authored.edges ++ readinessEdges));
+          provider_readiness = providerReadiness;
         };
         documentStats = canonicalDocumentStats 0 normalized;
       in

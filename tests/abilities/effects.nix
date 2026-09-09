@@ -43,6 +43,12 @@
     "service"
     "systemd"
     serviceInterface;
+  unusedConfigurationBinding =
+    binding
+    "nginx.unused-configuration"
+    "unused-configuration"
+    "managed"
+    configurationInterface;
 
   resource = provider: interface: key: operations:
     abilities.resourceReference {
@@ -257,6 +263,81 @@
     };
   };
 
+  bootstrapGraph = effects.graph {
+    bootstrap = invoke {
+      target = service "observe";
+      through = serviceBinding;
+      method = "observe";
+      family = {kind = "observe-readiness";};
+      inputs = {};
+      group = "services";
+    };
+
+    consumer = invoke {
+      target = configuration "prepare";
+      through = configurationBinding;
+      method = "prepare";
+      family = {kind = "prepare-managed-configuration";};
+      inputs.source = sourceArtifact;
+      phase = "preparing";
+      inputPhase = "artifact";
+      mode = "exclusive-write";
+      group = "configuration";
+    };
+  };
+
+  providerBootstrap =
+    effects.withProviderReadiness {
+      binding = configurationBinding;
+      producer = effects.result "bootstrap" "assignment";
+    }
+    bootstrapGraph;
+
+  duplicateProviderReadiness =
+    effects.withProviderReadiness {
+      binding = configurationBinding;
+      producer = effects.result "bootstrap" "assignment";
+    }
+    (effects.withProviderReadiness {
+        binding = configurationBinding;
+        producer = effects.result "consumer" "assignment";
+      }
+      bootstrapGraph);
+
+  mergedProviderReadiness =
+    effects.withProviderReadiness {
+      binding = configurationBinding;
+      producer = effects.mergedResult "choice" "assignment";
+    }
+    bootstrapGraph;
+
+  escapingProviderReadiness =
+    effects.withProviderReadiness {
+      binding = configurationBinding;
+      producer = effects.ancestorResult 1 "bootstrap" "assignment";
+    }
+    bootstrapGraph;
+
+  missingReadinessProducer =
+    effects.withProviderReadiness {
+      binding = configurationBinding;
+      producer = effects.result "absent" "assignment";
+    }
+    bootstrapGraph;
+
+  unusedProviderReadiness =
+    effects.withProviderReadiness {
+      binding = unusedConfigurationBinding;
+      producer = effects.result "bootstrap" "assignment";
+    }
+    bootstrapGraph;
+
+  oversizedProviderReadiness =
+    bootstrapGraph
+    // {
+      providerReadiness = builtins.genList (_: {}) 2000001;
+    };
+
   missingReference = effects.graph {
     consumer = invoke {
       target = service "observe";
@@ -374,6 +455,7 @@ in {
   });
   omitted = effects.normalize [] (effects.when false transition);
   longChain = effects.normalize ["chain"] (effects.graph chainNodes);
+  bootstrap = effects.normalize ["bootstrap"] providerBootstrap;
   inherit
     missingReference
     cycle
@@ -383,5 +465,11 @@ in {
     analysisHeavyChain
     oversizedValue
     oversizedDocument
+    duplicateProviderReadiness
+    mergedProviderReadiness
+    escapingProviderReadiness
+    missingReadinessProducer
+    unusedProviderReadiness
+    oversizedProviderReadiness
     ;
 }

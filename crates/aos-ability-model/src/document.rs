@@ -557,6 +557,8 @@ pub struct EffectPlanDocument {
     pub merges: Vec<MergeNode>,
     /// Lists typed graph edges in canonical endpoint and kind order.
     pub edges: Vec<DependencyEdge>,
+    /// Declares exact assignment evidence for every planned provider binding.
+    pub provider_readiness: Vec<crate::plan::ProviderReadiness>,
     /// Assigns one lifecycle controller to each mutable resource.
     pub controllers: Vec<ControllerAssignment>,
     /// Carries unresolved deployment inputs that prohibit execution.

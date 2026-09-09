@@ -100,6 +100,8 @@ pub enum ValueSchema {
     ArtifactReference,
     /// Accepts a scoped [`crate::ResourceReference`].
     ResourceReference,
+    /// Accepts an authenticated [`crate::ProviderAssignment`].
+    ProviderAssignment,
     /// Accepts a typed [`crate::OperationResultReference`].
     OperationResultReference,
 }
@@ -145,6 +147,7 @@ impl ValueSchema {
                 | Self::String { .. }
                 | Self::ArtifactReference
                 | Self::ResourceReference
+                | Self::ProviderAssignment
                 | Self::OperationResultReference => {}
                 Self::StringEnum { values } => {
                     item_count = item_count.saturating_add(values.len() as u64);
