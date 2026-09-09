@@ -75,7 +75,10 @@ struct ScriptedWorldGuard {
     process_contract: QemuChildProcessContract,
     run_root: tempfile::TempDir,
     finishes: Arc<AtomicUsize>,
+    finish_failures_remaining: Arc<AtomicUsize>,
+    prepare_rejections_remaining: Arc<AtomicUsize>,
     quarantines: Arc<AtomicUsize>,
+    prepared_run_directories: Arc<Mutex<Vec<PathBuf>>>,
     retained_child_processes: Arc<Mutex<Vec<u32>>>,
     _liveness: Arc<()>,
     terminal: bool,
@@ -105,6 +108,15 @@ impl QemuAttemptResourceGuard for ScriptedWorldGuard {
             self.finishes.fetch_add(1, Ordering::SeqCst);
             self.terminal = true;
         }
+        if self
+            .finish_failures_remaining
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(test_realization_error("scripted target cleanup failure"));
+        }
         Ok(())
     }
 
@@ -125,6 +137,18 @@ impl QemuAttemptProcessResourceGuard for ScriptedWorldGuard {
         &mut self,
         requirements: QemuLaunchResourceRequirements,
     ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        if self
+            .prepare_rejections_remaining
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(test_realization_error(
+                "scripted target run-directory rejection",
+            ));
+        }
+
         let index = self
             .run_root
             .path()
@@ -139,12 +163,17 @@ impl QemuAttemptProcessResourceGuard for ScriptedWorldGuard {
             File::create(generation.join(crucible_qemu::DEFAULT_ROOT_OVERLAY_FILE_NAME))
                 .map_err(test_realization_error)?;
         }
-        QemuPreparedRunDirectory::open_for_test_requirements(
+        let prepared = QemuPreparedRunDirectory::open_for_test_requirements(
             requirements,
-            generation,
+            generation.clone(),
             &self.process_contract,
         )
-        .map_err(test_realization_error)
+        .map_err(test_realization_error)?;
+        self.prepared_run_directories
+            .lock()
+            .map_err(|_error| test_realization_error("prepared directory registry is poisoned"))?
+            .push(generation);
+        Ok(prepared)
     }
 
     fn retain_failed_launch_child(&mut self, _child: crucible_qemu::QemuNodeChild) {}
@@ -201,7 +230,10 @@ struct ScriptedWorldGuardFactory {
 #[derive(Clone)]
 struct ScriptedWorldObservations {
     finishes: Arc<AtomicUsize>,
+    finish_failures_remaining: Arc<AtomicUsize>,
+    prepare_rejections_remaining: Arc<AtomicUsize>,
     quarantines: Arc<AtomicUsize>,
+    prepared_run_directories: Arc<Mutex<Vec<PathBuf>>>,
     retained_child_processes: Arc<Mutex<Vec<u32>>>,
     guard_liveness: Arc<Mutex<Option<Weak<()>>>>,
 }
@@ -210,7 +242,10 @@ impl ScriptedWorldObservations {
     fn new() -> Self {
         Self {
             finishes: Arc::new(AtomicUsize::new(0)),
+            finish_failures_remaining: Arc::new(AtomicUsize::new(0)),
+            prepare_rejections_remaining: Arc::new(AtomicUsize::new(0)),
             quarantines: Arc::new(AtomicUsize::new(0)),
+            prepared_run_directories: Arc::new(Mutex::new(Vec::new())),
             retained_child_processes: Arc::new(Mutex::new(Vec::new())),
             guard_liveness: Arc::new(Mutex::new(None)),
         }
@@ -263,7 +298,12 @@ impl QemuAttemptResourceGuardFactory for ScriptedWorldGuardFactory {
             process_contract,
             run_root: tempfile::tempdir().map_err(test_realization_error)?,
             finishes: Arc::clone(&self.observations.finishes),
+            finish_failures_remaining: Arc::clone(&self.observations.finish_failures_remaining),
+            prepare_rejections_remaining: Arc::clone(
+                &self.observations.prepare_rejections_remaining,
+            ),
             quarantines: Arc::clone(&self.observations.quarantines),
+            prepared_run_directories: Arc::clone(&self.observations.prepared_run_directories),
             retained_child_processes: Arc::clone(&self.observations.retained_child_processes),
             _liveness: liveness,
             terminal: false,
@@ -849,6 +889,41 @@ impl QemuHotForkSourceWorldProvider for FailingSourceWorldProvider {
     }
 
     fn abandon(&mut self) {}
+}
+
+struct CleanupOrderedSourceWorldProvider {
+    inner: QemuSingleHotForkSourceWorldProvider,
+    finishes: Arc<AtomicUsize>,
+    finish_count_at_restore: Arc<AtomicUsize>,
+}
+
+impl CleanupOrderedSourceWorldProvider {
+    fn available(&self) -> bool {
+        self.inner.available()
+    }
+}
+
+impl super::source_world_provider_sealed::Sealed for CleanupOrderedSourceWorldProvider {}
+
+impl QemuHotForkSourceWorldProvider for CleanupOrderedSourceWorldProvider {
+    type Error = Infallible;
+
+    fn checkout(
+        &mut self,
+        key: &QemuHotForkSourceWorldKey,
+    ) -> Result<Option<ProductionVmHotForkSourceWorld>, Self::Error> {
+        self.inner.checkout(key)
+    }
+
+    fn restore(&mut self, source: ProductionVmHotForkSourceWorld) {
+        self.finish_count_at_restore
+            .store(self.finishes.load(Ordering::SeqCst), Ordering::SeqCst);
+        self.inner.restore(source);
+    }
+
+    fn abandon(&mut self) {
+        self.inner.abandon();
+    }
 }
 
 #[test]
@@ -1657,6 +1732,10 @@ fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
         prepared_multi_node_hot_fork_source_world_for_test(vec![first, second])
             .expect("prepared source world");
     assert_eq!(nodes.len(), 2);
+    assert!(source_world.continuation().nodes().iter().any(|boundary| {
+        boundary.service_state() == ProductionVmHotForkNodeServiceState::PermanentlyFailed
+            && boundary.process().is_none()
+    }));
 
     let input = execution_input();
     let context = execution_context(&input, 0x79);
@@ -1709,6 +1788,177 @@ fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
     assert!(factory.sources().available());
     assert_eq!(observations.finishes.load(Ordering::SeqCst), 2);
     assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn proven_first_child_rejection_restores_the_exact_source_world_for_retry() {
+    let source =
+        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::RejectedOnce).expect("source");
+    let source_process = source.process_id();
+    let (_nodes, source_world) = prepared_multi_node_hot_fork_source_world_for_test(vec![source])
+        .expect("prepared source world");
+    let checkout_nodes = source_world.continuation().nodes().to_vec();
+    let input = execution_input();
+    let observations = ScriptedWorldObservations::new();
+    let source_key = QemuHotForkSourceWorldKey::new(
+        input.lineage().id().expect("lineage id"),
+        source_world.continuation().configuration().def.id(),
+        source_world.continuation().configuration().id(),
+        ExecutorCompatibilityProfile::from_lineage(input.lineage()),
+    );
+    let finish_count_at_restore = Arc::new(AtomicUsize::new(usize::MAX));
+    let provider = CleanupOrderedSourceWorldProvider {
+        inner: QemuSingleHotForkSourceWorldProvider::new(source_key, source_world),
+        finishes: Arc::clone(&observations.finishes),
+        finish_count_at_restore: Arc::clone(&finish_count_at_restore),
+    };
+    let run_state = tempfile::tempdir().expect("run state");
+    let mut factory = QemuProductionHotForkWorldLifecycleFactory::new(
+        provider,
+        ScriptedWorldGuardFactory {
+            observations: observations.clone(),
+        },
+        run_state.path(),
+        QemuShutdownPolicy::fast_test(),
+        QemuAsyncDriverPolicy::fast_test(),
+    );
+
+    let first_context = execution_context(&input, 0x79);
+    assert!(matches!(
+        factory.try_start(&input, &first_context),
+        Err(AttemptWorkerFailure::Retryable(
+            QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
+        ))
+    ));
+    assert!(factory.sources().available());
+    assert_eq!(finish_count_at_restore.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        factory
+            .sources()
+            .inner
+            .source
+            .as_ref()
+            .expect("restored source world")
+            .continuation()
+            .nodes(),
+        checkout_nodes
+    );
+    assert!(linux_process_identity(source_process).is_ok_and(|identity| identity.is_some()));
+    assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
+    let prepared_directories = observations
+        .prepared_run_directories
+        .lock()
+        .expect("prepared directory registry");
+    assert_eq!(prepared_directories.len(), 1);
+    assert!(!prepared_directories[0].exists());
+    drop(prepared_directories);
+    assert!(
+        observations
+            .retained_child_processes
+            .lock()
+            .expect("retained child registry")
+            .is_empty()
+    );
+
+    let second_context = execution_context(&input, 0x7a);
+    let mut lifecycle = match factory
+        .try_start(&input, &second_context)
+        .expect("retry exact source world")
+    {
+        QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
+        QemuHotForkWorldLifecycleStart::Declined => panic!("restored source world declined"),
+    };
+    QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle).expect("shutdown retried world");
+    reconcile_canceled_world(&mut lifecycle);
+    assert!(factory.recover(lifecycle).is_ok());
+
+    assert!(factory.sources().available());
+    assert_eq!(observations.finishes.load(Ordering::SeqCst), 2);
+    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn target_directory_rejection_restores_the_source_without_invoking_qemu() {
+    let source = scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source");
+    let (_nodes, source_world) = prepared_multi_node_hot_fork_source_world_for_test(vec![source])
+        .expect("prepared source world");
+    let input = execution_input();
+    let observations = ScriptedWorldObservations::new();
+    observations
+        .prepare_rejections_remaining
+        .store(1, Ordering::SeqCst);
+    let run_state = tempfile::tempdir().expect("run state");
+    let mut factory = factory(
+        source_world,
+        input.lineage(),
+        run_state.path().to_path_buf(),
+        observations.clone(),
+    );
+
+    assert!(matches!(
+        factory.try_start(&input, &execution_context(&input, 0x79)),
+        Err(AttemptWorkerFailure::Retryable(
+            QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
+        ))
+    ));
+    assert!(factory.sources().available());
+    assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
+    assert!(
+        observations
+            .prepared_run_directories
+            .lock()
+            .expect("prepared directory registry")
+            .is_empty()
+    );
+    assert!(
+        observations
+            .retained_child_processes
+            .lock()
+            .expect("retained child registry")
+            .is_empty()
+    );
+}
+
+#[test]
+fn failed_target_cleanup_after_first_child_rejection_keeps_the_source_unavailable() {
+    let source = scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source");
+    let source_process = source.process_id();
+    let (_nodes, source_world) = prepared_multi_node_hot_fork_source_world_for_test(vec![source])
+        .expect("prepared source world");
+    let input = execution_input();
+    let observations = ScriptedWorldObservations::new();
+    observations
+        .prepare_rejections_remaining
+        .store(1, Ordering::SeqCst);
+    observations
+        .finish_failures_remaining
+        .store(1, Ordering::SeqCst);
+    let run_state = tempfile::tempdir().expect("run state");
+    let mut factory = factory(
+        source_world,
+        input.lineage(),
+        run_state.path().to_path_buf(),
+        observations.clone(),
+    );
+
+    assert!(matches!(
+        factory.try_start(&input, &execution_context(&input, 0x79)),
+        Err(AttemptWorkerFailure::Retryable(
+            QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
+        ))
+    ));
+    assert!(!factory.sources().available());
+    assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
+    assert!(linux_process_identity(source_process).is_ok_and(|identity| identity.is_some()));
+    let guard = observations
+        .guard_liveness
+        .lock()
+        .expect("guard liveness registry")
+        .as_ref()
+        .and_then(Weak::upgrade);
+    assert!(guard.is_some());
 }
 
 #[test]
