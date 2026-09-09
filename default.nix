@@ -306,21 +306,24 @@
   );
   qualificationPackageNames =
     pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
-  unknownQualificationPackageProbes = builtins.filter (
-    name: !(builtins.elem name pkgs.allPackageNames)
-  )
-  (builtins.attrNames qualificationPackageProbes);
+  unknownQualificationPackageProbes =
+    builtins.filter (
+      name: !(builtins.elem name pkgs.allPackageNames)
+    )
+    (builtins.attrNames qualificationPackageProbes);
   qualificationPackageProbesFor = packageNames:
     lib.filterAttrs (name: _: builtins.elem name packageNames) qualificationPackageProbes;
   qualificationPackageCoverageFor = packageNames: let
-    implementedPackages = builtins.filter (
-      name: builtins.hasAttr name qualificationPackageProbes
-    )
-    packageNames;
-    missingPackages = builtins.filter (
-      name: !(builtins.hasAttr name qualificationPackageProbes)
-    )
-    packageNames;
+    implementedPackages =
+      builtins.filter (
+        name: builtins.hasAttr name qualificationPackageProbes
+      )
+      packageNames;
+    missingPackages =
+      builtins.filter (
+        name: !(builtins.hasAttr name qualificationPackageProbes)
+      )
+      packageNames;
   in {
     complete = missingPackages == [];
     implemented = builtins.length implementedPackages;
@@ -333,18 +336,18 @@
       _: names: qualificationPackageCoverageFor names
     )
     qualificationPackageNamesByPlatform;
-  neverPublicationEligiblePackageNames = builtins.filter (
-    name: !(builtins.elem name qualificationPackageNames)
-  )
-  pkgs.allPackageNames;
-  qualificationPackageCoverageReport =
-    assert unknownQualificationPackageProbes == [];
-      qualificationPackageCoverage
-      // {
-        schema_version = "aos.release.package-probe-coverage/v1";
-        platforms = qualificationPackageCoverageByPlatform;
-        neverPublicationEligiblePackages = neverPublicationEligiblePackageNames;
-      };
+  neverPublicationEligiblePackageNames =
+    builtins.filter (
+      name: !(builtins.elem name qualificationPackageNames)
+    )
+    pkgs.allPackageNames;
+  qualificationPackageCoverageReport = assert unknownQualificationPackageProbes == [];
+    qualificationPackageCoverage
+    // {
+      schema_version = "aos.release.package-probe-coverage/v1";
+      platforms = qualificationPackageCoverageByPlatform;
+      neverPublicationEligiblePackages = neverPublicationEligiblePackageNames;
+    };
   releaseQualification = import ./qualification {
     inherit lib;
     packageNames = qualificationPackageNames;
