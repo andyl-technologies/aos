@@ -7,7 +7,8 @@
   system, systemd integration, boot and image construction, sandbox runtimes,
   security policy, AOS Hub, and documentation tooling.
 - **Baseline:** repository commit `10432f8cca97a169754759e42c19cff08fa0a946`.
-  Code links describe that baseline; canonical user documentation remains the
+  Baseline claims were checked against that revision. Relative code links are
+  navigation aids and may evolve; canonical user documentation remains the
   authority for current behavior.
 - **Builds on:** [RFC-0001](../0001-package-sandboxing/README.md),
   [RFC-0005](../0005-ca-trust-map.md),
@@ -51,9 +52,11 @@ interface. Unsupported unit semantics or required security guarantees cannot
 be discarded to make a deployment appear compatible.
 
 Activation becomes a planned transition from observed and retained state to
-desired state. Providers propose typed effects; a validator checks authority,
-dependencies, conflicts, and recovery rules; existing executors such as systemd
-and Kubernetes perform the operations. A durable transaction record supports
+desired state. Provider authors explicitly compose lower abilities and their
+transition operations. Nix produces pure descriptions; a Rust planner and
+validator check bindings, dependencies, conflicts, and recovery rules. A Rust
+executor dispatches through trusted implementations, including systemd and
+Kubernetes. A durable transaction record supports
 crash recovery, rollout, compensation, and checked activation of older
 generations. Scripts may implement individual operations, but do not hide the
 transaction's ordering or failure semantics.
@@ -65,8 +68,9 @@ transaction's ordering or failure semantics.
 2. Record dependency consumption explicitly, including mechanism, phase,
    interface compatibility, authority, and lifetime. Preserve separate build,
    configuration, activation, communication, authority, and retention graphs.
-3. Permit recursive provider composition, grounded in explicitly granted
-   primitive resources and a valid bootstrap path.
+3. Make recursive implementation part of ability authorship: exports declare
+   lower requirements, typed child requests/results, aggregation, and
+   transitions grounded in authorized operations and a valid bootstrap path.
 4. Retain the Nix language and extend AOS libraries/modules. Do not require an
    evaluator fork, language-level effect inference, or a new service DSL.
 5. Preserve systemd declarations and package configuration ownership. Translate
@@ -77,8 +81,9 @@ transaction's ordering or failure semantics.
    Availability never grants authority; missing enforcement prevents activation.
 8. Keep installation, workload preparation, activation, and observation
    distinguishable even when one high-level command performs several steps.
-9. Derive executable effect graphs from state transitions. The package
-   dependency graph alone does not determine which operations must run.
+9. Make runtime transitions first-class. Derive finite executable effect
+   graphs from current and desired state; use a versioned operation language
+   represented as data and executed in Rust.
 10. Preserve independent package, configuration, and image generations, linked
     by transaction and binding records. Rollback is a newly validated
     transition, not unconditional reversal of past effects.
@@ -89,11 +94,40 @@ transaction's ordering or failure semantics.
 
 ## Reading guide
 
-- [Current model, problem, and goals](00-current-model-and-goals.md).
-- [Abilities, handles, and typed dependency consumption](01-abilities-and-consumption.md).
-- [Nix authoring and authenticated contracts](02-nix-authoring-and-contracts.md).
-- [Static matching and registry-driven late binding](03-resolution-and-binding.md).
-- [Structured activation, rollout, and rollback](05-structured-activation.md).
+| Chapter | Purpose |
+| --- | --- |
+| [00 — Current model and goals](00-current-model-and-goals.md) | Establish the baseline and problem |
+| [01 — Abilities and consumption](01-abilities-and-consumption.md) | Define terms, graph meanings, authority, and invariants |
+| [02 — Nix and contracts](02-nix-authoring-and-contracts.md) | Describe pure authoring, ownership, publication, and validation |
+| [03 — Recursive composition](03-recursive-composition.md) | Work through provider authorship, child requests, results, and transitions |
+| [04 — Resolution and binding](04-resolution-and-binding.md) | Unify static matching and bounded registry resolution |
+| [05 — Platform integration](05-platform-and-package-integration.md) | Apply the model to services, boot, policies, images, and libraries |
+| [06 — Structured activation](06-structured-activation.md) | Specify execution, recovery, rollout, and rollback |
+| [07 — Documentation and operations](07-documentation-and-operations.md) | Explain CLI, Hub, editor, generation, and retention behavior |
+| [08 — Security and compatibility](08-security-and-compatibility.md) | Preserve authority and fail-closed version boundaries |
+| [09 — Implementation and validation](09-implementation-and-validation.md) | Define staged delivery and qualification gates |
+| [10 — Alternatives and open questions](10-alternatives-and-open-questions.md) | Record choices, prior art, and details requiring prototypes |
+
+## Architecture
+
+```text
+Nix-authored package interfaces and recursive implementations
+  + desired configuration and target environment contract
+  + explicit bindings or bounded APM provider resolution
+  -> normalized desired resources and authorized consumption graph
+
+Desired resources + current state + provider transition definitions
+  -> finite typed effect plan
+  -> runtime admission and scoped resource acquisition
+  -> Rust execution through trusted providers
+  -> durable outcomes and observed consumer state
+```
+
+Evaluation and artifact construction remain pure/hermetic. Activation carries
+out runtime transitions; a static dependency graph alone does not determine
+them. The broader consumption model also describes build-time uses such as
+tool execution and linking. It does not turn build operations into host
+activation or require Nix evaluation for every runtime operation.
 
 ## Intended outcome
 
