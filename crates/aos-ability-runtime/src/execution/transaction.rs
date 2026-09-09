@@ -5,8 +5,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use aos_ability_model::{
-    compare_resource_ids, DecisionNode, DecisionPredicate, DependencyKind, LocalKey, MergeRecord,
-    OperationId, PlanNodeKey, ResultProducerKey, RetryPolicy, ScopedOperationKey, TransactionId,
+    DecisionNode, DecisionPredicate, DependencyKind, LocalKey, MergeRecord, OperationId,
+    PlanNodeKey, ResultProducerKey, RetryPolicy, ScopedOperationKey, TransactionId,
+    compare_resource_ids,
 };
 use aos_ability_validate::CheckedEffectPlan;
 use aos_contract::Sha256Digest;
@@ -276,8 +277,7 @@ impl<'plan> ExecutionTransaction<'plan> {
             &checked.recovery.retry,
             checked.deadline.total_recovery_millis.get(),
         );
-        if action == crate::execution::RecoveryAction::Admit && blocked.contains(operation)
-        {
+        if action == crate::execution::RecoveryAction::Admit && blocked.contains(operation) {
             return Ok(crate::execution::RecoveryAction::SettleFailureBeforeEffect);
         }
         if matches!(
@@ -1156,17 +1156,12 @@ fn durably_blocked_operations(
             .map(|index| &plan.edges()[*index]);
         let blocked_by_predecessor = incoming.clone().any(|edge| {
             (success_is_required(edge.kind) && cannot_succeed.contains(&edge.from))
-                || (edge.kind == DependencyKind::OrderingOnly
-                    && cannot_settle.contains(&edge.from))
+                || (edge.kind == DependencyKind::OrderingOnly && cannot_settle.contains(&edge.from))
         });
         let (success_is_impossible, settlement_is_impossible) = match node {
-            PlanNodeKey::Operation { key } => operation_blockage(
-                plan,
-                replay,
-                key,
-                blocked_by_predecessor,
-                &cannot_settle,
-            ),
+            PlanNodeKey::Operation { key } => {
+                operation_blockage(plan, replay, key, blocked_by_predecessor, &cannot_settle)
+            }
             PlanNodeKey::Decision { key } => {
                 let blocked = !replay.selections.contains_key(key) && blocked_by_predecessor;
                 (blocked, blocked)
