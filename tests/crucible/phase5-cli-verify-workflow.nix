@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliVerifyWorkflow",
-  taskIds ? ["T-CLI-7"],
-  openTaskIds ? [],
+  taskIds ? [],
+  openTaskIds ? ["T-CLI-7"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -19,14 +19,14 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-7 completion note";
-        needle = "Completed by `checks.crucible.phase5.cliVerifyWorkflow`";
+        label = "T-CLI-7 open acceptance note";
+        needle = "T-CLI-7 remains open";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 T-CLI-7 completion note";
-        needle = "`T-CLI-7` is green through `checks.crucible.phase5.cliVerifyWorkflow`";
+        label = "phase5 T-CLI-7 open acceptance note";
+        needle = "`T-CLI-7` remains open";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -63,20 +63,20 @@
         needle = "writes_side_artifacts_on_divergence: bool";
       }
       {
-        label = "hostile condition flag";
-        needle = "applies_hostile_condition_matrix: bool";
+        label = "observer perturbation flag";
+        needle = "applies_observer_perturbation_matrix: bool";
       }
       {
-        label = "randomized host scheduler profile";
-        needle = "randomized-host-scheduler";
+        label = "state-first extra-yield observer profile";
+        needle = "state-first-extra-yields";
       }
       {
-        label = "wall clock jitter profile";
-        needle = "wall-clock-jitter";
+        label = "event-first varied-timeout observer profile";
+        needle = "event-first-varied-timeouts";
       }
       {
-        label = "varied core count profile";
-        needle = "varied-core-count";
+        label = "state-first pre-poll-yield observer profile";
+        needle = "state-first-prepoll-yields";
       }
       {
         label = "live verify workflow";
@@ -223,10 +223,10 @@ in
             check=$ATTR_PATH
             tasks=$TASK_IDS
             open_tasks=$OPEN_TASK_IDS
-            status=complete
+            status=partial
             evidence_scope=verify-live-qemu-model-and-production-api
             component=crucible-cli
-            contract=verify-workflow-complete
+            contract=verify-workflow-observer-perturbation-only
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';

@@ -354,11 +354,11 @@ pub(in super::super) fn finish_verify_workflow_outcome(
 ) -> Result<BackendCommandOutcome, CliError> {
     let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
     outcome.stdout.push(format!(
-        "verify-plan\tmode={}\truns={}\treductions={}\tadversarial={}\tbisect={}",
+        "verify-plan\tmode={}\truns={}\treductions={}\tobserver_perturbations={}\tbisect={}",
         verify_plan.mode.label(),
         verify_plan.requested_runs,
         report.witnesses.len(),
-        verify_plan.applies_hostile_condition_matrix,
+        verify_plan.applies_observer_perturbation_matrix,
         verify_plan.bisection_on_divergence
     ));
     for witness in &report.witnesses {

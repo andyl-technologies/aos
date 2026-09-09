@@ -558,7 +558,7 @@ pub(crate) struct VerifyInvocationPlan {
     pub(crate) bisection_on_divergence: bool,
     pub(crate) print_bisection_state_dump: bool,
     pub(crate) writes_side_artifacts_on_divergence: bool,
-    pub(crate) applies_hostile_condition_matrix: bool,
+    pub(crate) applies_observer_perturbation_matrix: bool,
     pub(crate) outcome_exit_codes: Vec<(BackendCommandStatus, i32)>,
 }
 
@@ -574,8 +574,8 @@ impl VerifyInvocationPlan {
         let expected_reductions = match &self.mode {
             VerifyMode::RunScenario { .. } => {
                 self.requested_runs
-                    .saturating_mul(if self.applies_hostile_condition_matrix {
-                        VERIFY_HOSTILE_PROFILES.len()
+                    .saturating_mul(if self.applies_observer_perturbation_matrix {
+                        VERIFY_OBSERVER_PROFILES.len()
                     } else {
                         1
                     })
@@ -588,7 +588,7 @@ impl VerifyInvocationPlan {
             && self.compare_fingerprint_streams
             && self.pairwise_byte_identity
             && self.writes_side_artifacts_on_divergence
-            && (!self.applies_hostile_condition_matrix
+            && (!self.applies_observer_perturbation_matrix
                 || self
                     .reductions
                     .iter()
@@ -662,9 +662,9 @@ pub(crate) const VERIFY_BASELINE_PROFILE: VerifyHostProfile = VerifyHostProfile 
     pre_poll_yields: 0,
     post_poll_yields: 1,
 };
-pub(crate) const VERIFY_HOSTILE_PROFILES: &[VerifyHostProfile] = &[
+pub(crate) const VERIFY_OBSERVER_PROFILES: &[VerifyHostProfile] = &[
     VerifyHostProfile {
-        label: "randomized-host-scheduler",
+        label: "state-first-extra-yields",
         poll_order: VerifyPollOrder::StateThenEvent,
         event_timeout_ms: 1,
         state_timeout_ms: 10,
@@ -672,7 +672,7 @@ pub(crate) const VERIFY_HOSTILE_PROFILES: &[VerifyHostProfile] = &[
         post_poll_yields: 3,
     },
     VerifyHostProfile {
-        label: "wall-clock-jitter",
+        label: "event-first-varied-timeouts",
         poll_order: VerifyPollOrder::EventThenState,
         event_timeout_ms: 3,
         state_timeout_ms: 7,
@@ -680,7 +680,7 @@ pub(crate) const VERIFY_HOSTILE_PROFILES: &[VerifyHostProfile] = &[
         post_poll_yields: 2,
     },
     VerifyHostProfile {
-        label: "varied-core-count",
+        label: "state-first-prepoll-yields",
         poll_order: VerifyPollOrder::StateThenEvent,
         event_timeout_ms: 2,
         state_timeout_ms: 5,
