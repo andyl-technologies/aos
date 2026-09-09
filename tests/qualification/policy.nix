@@ -170,19 +170,21 @@
   coveredAndMissingPackageNames = builtins.sort builtins.lessThan (
     packageCoverage.implementedPackages ++ packageCoverage.missingPackages
   );
-  coveragePartitions = builtins.all (
-    platform: let
-      coverage = packageCoverage.platforms.${platform};
-      eligible = pkgs.platformSupport.publicationEligibleNames platform pkgs.allPackageNames;
-      coveredAndMissing = builtins.sort builtins.lessThan (
-        coverage.implementedPackages ++ coverage.missingPackages
-      );
-    in
-      coverage.total == builtins.length eligible
-      && coverage.total == coverage.implemented + builtins.length coverage.missingPackages
-      && coveredAndMissing == eligible
-  )
-  pkgs.platformSupport.canonicalSystems;
+  coveragePartitions =
+    builtins.all (
+      platform: let
+        coverage = packageCoverage.platforms.${platform};
+        eligible = pkgs.platformSupport.publicationEligibleNames platform pkgs.allPackageNames;
+        coveredAndMissing = builtins.sort builtins.lessThan (
+          coverage.implementedPackages ++ coverage.missingPackages
+        );
+      in
+        coverage.total
+        == builtins.length eligible
+        && coverage.total == coverage.implemented + builtins.length coverage.missingPackages
+        && coveredAndMissing == eligible
+    )
+    pkgs.platformSupport.canonicalSystems;
   composed = import ../../qualification/_eval.nix {
     inherit lib;
     packageNames = ["aos" "fixture"];
@@ -262,7 +264,8 @@ in
   packageCoverage.neverPublicationEligiblePackages;
   assert builtins.all (rule: rule.inherit_dependency_obligations) contract.package_rules;
   assert recoveryPackage.role == "system-integrity";
-  assert recoveryPackage.execution == {
+  assert recoveryPackage.execution
+  == {
     kind = "recovery-image";
     system_variant = "server";
   };
