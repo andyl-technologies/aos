@@ -12,6 +12,10 @@ use std::rc::Rc;
 use crate::uapi::{self, NamespaceIoctl};
 use crate::{Error, Result};
 
+mod identity;
+
+pub use identity::PidFdProcessIdentity;
+
 const LIVENESS_POLL_INTERRUPT_LIMIT: usize = 8;
 
 /// A process pinned against PID reuse by an owned pidfd.
