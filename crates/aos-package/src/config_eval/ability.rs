@@ -258,7 +258,7 @@ impl RestrictedAbilityEvaluator {
         }
         std::fs::write(
             &environment.config_file,
-            b"plugin-files =\nallow-unsafe-native-code-during-evaluation = false\n",
+            b"plugin-files =\nallow-unsafe-native-code-during-evaluation = false\nsubstituters =\n",
         )
         .with_context(|| {
             format!(
@@ -287,6 +287,7 @@ impl RestrictedAbilityEvaluator {
                 "false",
             ])
             .args(["--option", "plugin-files", ""])
+            .args(["--option", "substituters", ""])
             .args(["--option", "allowed-uris"])
             .arg(allowed_uri)
             .env_clear()
@@ -774,6 +775,11 @@ mod tests {
             arguments
                 .windows(3)
                 .any(|values| values == ["--option", "plugin-files", ""])
+        );
+        assert!(
+            arguments
+                .windows(3)
+                .any(|values| values == ["--option", "substituters", ""])
         );
         assert!(
             arguments
