@@ -134,9 +134,12 @@ Pure state-machine/model tests explore small generated operation graphs and
 failure schedules. They should assert invariants such as no effect before
 authorization, no publication before required validation, and no loss of an
 active consumer's retained artifacts. Seeded schedules aid reproduction but do
-not imply exhaustive real-world concurrency coverage. Where supported,
-Crucible can add deterministic guest fault/replay coverage through its existing
-protocols; it does not replace actual provider/backend qualification or alter
+not imply exhaustive real-world concurrency coverage.
+[AOS-side Crucible integration](11-crucible-integration.md) can add deterministic
+guest fault/replay coverage through generic guest interfaces. Crucible remains
+guest-agnostic; it acquires no ability-specific engine or assertion semantics.
+The integration chapter identifies features dependent on pending PR #194.
+Crucible runs do not replace actual provider/backend qualification or alter
 the Crucible/QEMU process boundary.
 
 ## Release qualification uses the existing contract

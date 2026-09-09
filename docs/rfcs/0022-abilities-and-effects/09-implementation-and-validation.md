@@ -27,6 +27,7 @@ required responsibilities; crate names are proposed rather than existing APIs:
 | Bounded provider resolution and transition planning over explicit inputs | `aos-ability-plan` | AOS/APM workflows and offline previews |
 | Graph queries, explanations, diffs, redacted view/export models | `aos-ability-inspect` | CLI, documentation, Hub, editor/debugging tools |
 | Admission, scoped provider adapters, journaling, execution and recovery | `aos-ability-runtime` | Authorized native runtime controllers |
+| Optional guest assertions, markers, and choices through generic Crucible interfaces | `aos-ability-crucible` | AOS executor/test profiles running inside Crucible |
 
 The [existing contract crate](../../../crates/aos-contract/src/lib.rs) already
 owns pure canonical encoding, typed digests, and bounded decoding. Reuse those
@@ -141,6 +142,13 @@ consumer observations cannot contradict the recorded outcome.
 Expose the operation timeline and a redacted diagnostic bundle alongside the
 journal. Recovery failures must be explainable through the same inspection
 model used for successful plans.
+
+The optional [Crucible guest integration](11-crucible-integration.md) uses
+these same AOS execution hooks. Its basic assertion/probe flight can proceed
+against supported baseline interfaces. Typed choice campaigns, structured
+measurements, and hot-fork acceleration follow the separate PR #194 dependency
+and acceptance gates listed there; they are not prerequisites for ordinary
+production activation or VM/fleet testing.
 
 ## Phase 5: ecosystem and operator workflows
 

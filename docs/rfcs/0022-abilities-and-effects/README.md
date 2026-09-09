@@ -19,6 +19,10 @@
   [PR #232](https://github.com/andyl-technologies/aos/pull/232). Its authority,
   resource identity, and execution machinery are integration surfaces, not
   facilities this RFC independently replaces.
+- **Optional testing dependency:** pending [Crucible campaign PR #194](https://github.com/andyl-technologies/aos/pull/194)
+  supplies features used by advanced AOS guest instrumentation. The
+  [integration chapter](11-crucible-integration.md) pins the reviewed revision
+  and separates those dependencies from supported baseline guest interfaces.
 - **Number allocation:** RFC-0022 is reserved for this design. Related
   in-progress proposals are referenced by PR while their numbering settles.
 
@@ -92,6 +96,9 @@ transaction's ordering or failure semantics.
 13. Exercise production ability implementations in VM/fleet scenarios and
     extend existing release qualification with independent behavior checks,
     semantic fault injection, and evidence bound to exact tested subjects.
+14. Keep Crucible guest-agnostic. Configure an optional AOS-owned executor
+    integration to emit generic assertions, markers, measurements, and choices
+    inside Crucible; introduce no AOS-specific Crucible engine behavior.
 
 ## Reading guide
 
@@ -108,7 +115,8 @@ transaction's ordering or failure semantics.
 | [08 — Security and compatibility](08-security-and-compatibility.md) | Preserve authority and fail-closed version boundaries |
 | [09 — Implementation and validation](09-implementation-and-validation.md) | Define staged delivery and qualification gates |
 | [10 — Testing and qualification](10-testing-and-qualification.md) | Define production-path tests, independent observations, fault injection, and release evidence |
-| [11 — Alternatives and open questions](11-alternatives-and-open-questions.md) | Record choices, prior art, and details requiring prototypes |
+| [11 — Crucible guest integration](11-crucible-integration.md) | Keep integration AOS-owned and identify pending PR #194 dependencies |
+| [12 — Alternatives and open questions](12-alternatives-and-open-questions.md) | Record choices, prior art, and details requiring prototypes |
 
 ## Architecture
 

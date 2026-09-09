@@ -15,6 +15,7 @@
 | Privileged containers as automatic compatibility repair | Reject; the selected environment must satisfy explicit authorized requirements |
 | Rebind arbitrary existing shared libraries at deployment | Defer; exact linked artifacts and closure retention remain authoritative |
 | Reverse the operation graph for rollback | Replan under current authority and state; use only explicitly supported compensation |
+| Add AOS ability semantics to Crucible | Keep Crucible guest-agnostic; an optional AOS-side adapter uses its generic guest interfaces |
 
 ## Prior art and limits of the comparison
 
