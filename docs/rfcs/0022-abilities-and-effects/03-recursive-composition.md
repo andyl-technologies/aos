@@ -83,7 +83,7 @@ binding and transition operations follow below.
 abilities.exports.virtualHosts = lib.abilities.define {
   interface = "nginx.virtual-host";
   abi = 1;
-  requestType = virtualHostType;
+  requestType = virtualHostContributionType;
   resultType = virtualHostResultsType;
 
   aggregation = {
@@ -140,6 +140,15 @@ the small parameter set above is not a replacement workload schema. The
 renderer must preserve store-reference provenance in artifact outputs.
 `instance` and `bindings` are checked context supplied by the composition
 engine, never package-authored evidence of authority.
+
+`virtualHostContributionType` reuses native nginx field types with the
+restrictions required by the caller's contribution contract. It is not an
+alias granting the caller every native configuration escape hatch. For example,
+syntax confinement of `extraConfig` does not prove that arbitrary contained
+directives respect resource grants. Endpoint, path, and raw-directive uses need
+explicit authorization or rejection at this interface boundary. `nginx` in
+the example denotes the authenticated payload output allowed by the restricted
+module environment.
 
 The aggregate result above is projected back to individual callers according
 to their authorized slots and the public result schema. Contributing one

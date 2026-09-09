@@ -109,6 +109,7 @@ whether a retained target is currently activatable.
 | Two applications contribute nginx virtual hosts | One authorized aggregate; independent provenance |
 | Two instances produce identical bytes | Separate identities and resource scopes |
 | Caller supplies foreign result name or file destination | Rejected without provider-authority escalation |
+| Contribution uses a raw directive to exceed its granted scope | Rejected or separately authorized; syntax validity is insufficient |
 | Runtime address used by a pure Nix renderer | Rejected phase mismatch or explicit deferred materialization |
 | Recursive implementation has no terminal provider | Bounded failure with expansion trace |
 | Provider selection oscillates after configuration evaluation | Bounded diagnostic, no partial activation |

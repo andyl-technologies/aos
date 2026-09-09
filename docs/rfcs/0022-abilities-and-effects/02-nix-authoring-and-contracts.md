@@ -8,9 +8,10 @@ lowering into configuration. This proposal requires no new syntax or evaluator
 fork. It extends AOS libraries and package construction.
 
 The existing option interfaces remain useful. A virtual-host request should
-reuse nginx's option schema. A systemd service request should reuse the typed
-systemd service vocabulary. There is no requirement to replace these with a
-lowest-common-denominator workload schema.
+reuse nginx's types within an explicitly authorized contribution surface.
+A systemd service request should reuse the typed systemd service vocabulary.
+There is no requirement to replace these with a lowest-common-denominator
+workload schema.
 
 The module fixed point composes already-admitted definitions. The outer APM
 resolver discovers and selects provider modules. Imports MUST NOT depend on
@@ -62,6 +63,13 @@ slots fail validation. Shared aggregate interfaces must define their merge
 semantics rather than depend on incidental import ordering. Enablement and
 global service policy remain operator/owner decisions unless explicitly
 delegated.
+
+Structural option ownership is necessary but not sufficient for safe
+delegation. Raw configuration fragments, filesystem paths, endpoints, and
+privileged object fields can change behavior outside the apparent named slot.
+The exported contribution interface must restrict or separately authorize
+those uses. The owner's full native configuration interface remains available
+under its own authority; a narrower caller grant does not inherit it.
 
 Returned values may feed other configuration: an application supplies a
 backend endpoint, nginx derives a public endpoint, and another module consumes
