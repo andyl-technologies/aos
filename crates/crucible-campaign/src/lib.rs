@@ -195,7 +195,7 @@ pub use planner_service::{
     MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS, MAX_RETAINED_PLANNER_REQUEST_BYTES,
     PlannerCandidateRanking, PlannerClient, PlannerClientError, PlannerEngineOutput,
     PlannerExecutionSupervisor, PlannerRequest, PlannerResponse, PlannerService, PurePlannerEngine,
-    StatisticalRequestBasis, SupervisedPlannerExecution,
+    SmcRequestBasis, StatisticalRequestBasis, SupervisedPlannerExecution,
 };
 pub use policy::{
     BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, BOUNDARY_INTEGER_GENERATOR_MAX_LANDMARKS,
@@ -250,8 +250,10 @@ pub use repository::{
     SavepointContinuationResult, SavepointContinuationSource, WorkerSlotId,
 };
 pub use statistics::{
-    StatisticalEndpointEstimate, StatisticalEstimateReport, StatisticalGeneration,
-    StatisticalParticleSlot, StatisticalRational, StatisticalWeightDiagnostics,
+    SequentialMonteCarloEstimateReport, SmcEstimateLabel, SmcSupportValidation,
+    SmcUncertaintyStatement, StatisticalEndpointEstimate, StatisticalEstimateReport,
+    StatisticalGeneration, StatisticalParticleOutcome, StatisticalParticleSlot,
+    StatisticalRational, StatisticalWeightDiagnostics,
 };
 
 #[cfg(test)]

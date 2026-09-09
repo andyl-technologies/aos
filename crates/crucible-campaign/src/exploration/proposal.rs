@@ -175,14 +175,16 @@ impl Proposal {
             ordinal,
             guidance_basis,
         )?;
-        if let CandidateSource::StatisticalFinite(source) = request.source() {
-            let target_mass = source.target_masses().get(&proposal.value).copied().ok_or(
-                CampaignCodecError::InvalidValue {
+        if let Some(distribution) = request.source().statistical_distribution() {
+            let target_mass = distribution
+                .target_masses
+                .get(&proposal.value)
+                .copied()
+                .ok_or(CampaignCodecError::InvalidValue {
                     reason: "statistical proposal value is outside request support",
-                },
-            )?;
-            let proposal_mass = source
-                .proposal_masses()
+                })?;
+            let proposal_mass = distribution
+                .proposal_masses
                 .get(&proposal.value)
                 .copied()
                 .ok_or(CampaignCodecError::InvalidValue {
@@ -191,9 +193,9 @@ impl Proposal {
             proposal.schema_version = PROPOSAL_SCHEMA_VERSION;
             proposal.statistical_evidence = Some(StatisticalProposalEvidence::new(
                 target_mass,
-                source.target_total(),
+                distribution.target_total,
                 proposal_mass,
-                source.proposal_total(),
+                distribution.proposal_total,
             )?);
         }
         Ok(proposal)
@@ -245,17 +247,17 @@ impl Proposal {
         request: &BranchRequest,
         domain: &ChoiceDomain,
     ) -> Result<(), CampaignCodecError> {
-        let expected_statistical_evidence = match request.source() {
-            CandidateSource::StatisticalFinite(source) => {
-                let target_mass = source.target_masses().get(&self.value).copied();
-                let proposal_mass = source.proposal_masses().get(&self.value).copied();
+        let expected_statistical_evidence = match request.source().statistical_distribution() {
+            Some(distribution) => {
+                let target_mass = distribution.target_masses.get(&self.value).copied();
+                let proposal_mass = distribution.proposal_masses.get(&self.value).copied();
                 match (target_mass, proposal_mass) {
                     (Some(target_mass), Some(proposal_mass)) => {
                         Some(StatisticalProposalEvidence::new(
                             target_mass,
-                            source.target_total(),
+                            distribution.target_total,
                             proposal_mass,
-                            source.proposal_total(),
+                            distribution.proposal_total,
                         )?)
                     }
                     _ => None,

@@ -16,10 +16,11 @@ use crucible_cas::content_store::ContentId;
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::{
     BranchRequest, CampaignCodecError, CampaignHash, CampaignPlanningView, CampaignPolicy,
-    CampaignSnapshotId, ConfigurationArtifactId, ConfigurationId, ContinuationProjection,
-    ContinuationState, ObjectEnvelope, PlannerAuthorityKey, PlannerEngine, PlannerInvocation,
-    PlannerProposalDisposition, PlannerState, PlannerStepProposal, PlannerSubmission,
-    PlanningScanPosition, PlanningUsage, PolicyArtifact, Proposal, RetainedPlannerRequestId,
+    CampaignSnapshotId, ChoiceDomain, ChoiceOpportunity, ConfigurationArtifactId, ConfigurationId,
+    ContinuationProjection, ContinuationState, ObjectEnvelope, PlannerAuthorityKey, PlannerEngine,
+    PlannerInvocation, PlannerProposalDisposition, PlannerState, PlannerStepProposal,
+    PlannerSubmission, PlanningScanPosition, PlanningUsage, PolicyArtifact, Proposal,
+    RetainedPlannerRequestId, StatisticalGenerationId, StatisticalParticleSlot,
 };
 
 mod beam;
@@ -29,6 +30,7 @@ pub use closed::*;
 
 const LEGACY_PLANNER_REQUEST_SCHEMA_VERSION: u32 = 1;
 const PLANNER_REQUEST_SCHEMA_VERSION: u32 = 2;
+const SMC_PLANNER_REQUEST_SCHEMA_VERSION: u32 = 3;
 const PLANNER_RESPONSE_SCHEMA_VERSION: u32 = 1;
 /// Maximum canonical request or response size at the planner wire boundary.
 pub const MAX_PLANNER_COMPONENT_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
@@ -128,6 +130,112 @@ impl Canonical for StatisticalRequestBasis {
             ConfigurationArtifactId::decode(decoder)?,
             ConfigurationId::decode(decoder)?,
         ))
+    }
+}
+
+/// Owner-derived dynamic basis for one SMC particle transition.
+///
+/// The generation and particle are semantic derived state. The exact parent,
+/// opportunity, and domain are retained by value so the pure planner can bind
+/// its output without repository access. The repository recomputes all of this
+/// state before a request is written and again before any returned request is
+/// admitted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SmcRequestBasis {
+    generation: StatisticalGenerationId,
+    particle: StatisticalParticleSlot,
+    parent: ConfigurationArtifactId,
+    configuration: ConfigurationId,
+    opportunity: ChoiceOpportunity,
+    domain: ChoiceDomain,
+}
+
+impl SmcRequestBasis {
+    /// Builds one structurally bound SMC planning basis.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the particle is not a post-initial
+    /// transition or the opportunity and domain identities disagree.
+    pub fn new(
+        generation: StatisticalGenerationId,
+        particle: StatisticalParticleSlot,
+        parent: ConfigurationArtifactId,
+        configuration: ConfigurationId,
+        opportunity: ChoiceOpportunity,
+        domain: ChoiceDomain,
+    ) -> Result<Self, CampaignCodecError> {
+        if particle.generation() == 0 || opportunity.domain() != domain.id()? {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "SMC planner basis is structurally inconsistent",
+            });
+        }
+        Ok(Self {
+            generation,
+            particle,
+            parent,
+            configuration,
+            opportunity,
+            domain,
+        })
+    }
+
+    /// Returns the owner-recomputed input generation identity.
+    #[must_use]
+    pub const fn generation(&self) -> StatisticalGenerationId {
+        self.generation
+    }
+
+    /// Returns the exact particle slot selected for this transition.
+    #[must_use]
+    pub const fn particle(&self) -> &StatisticalParticleSlot {
+        &self.particle
+    }
+
+    /// Returns the authenticated parent configuration artifact.
+    #[must_use]
+    pub const fn parent(&self) -> ConfigurationArtifactId {
+        self.parent
+    }
+
+    /// Returns the semantic parent configuration identity.
+    #[must_use]
+    pub const fn configuration(&self) -> ConfigurationId {
+        self.configuration
+    }
+
+    /// Returns the runtime opportunity selected beneath the particle parent.
+    #[must_use]
+    pub const fn opportunity(&self) -> &ChoiceOpportunity {
+        &self.opportunity
+    }
+
+    /// Returns the exact finite runtime domain.
+    #[must_use]
+    pub const fn domain(&self) -> &ChoiceDomain {
+        &self.domain
+    }
+}
+
+impl Canonical for SmcRequestBasis {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.generation.encode(encoder);
+        self.particle.encode(encoder);
+        self.parent.encode(encoder);
+        self.configuration.encode(encoder);
+        self.opportunity.encode(encoder);
+        self.domain.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Self::new(
+            StatisticalGenerationId::decode(decoder)?,
+            StatisticalParticleSlot::decode(decoder)?,
+            ConfigurationArtifactId::decode(decoder)?,
+            ConfigurationId::decode(decoder)?,
+            ChoiceOpportunity::decode(decoder)?,
+            ChoiceDomain::decode(decoder)?,
+        )
     }
 }
 
@@ -903,6 +1011,7 @@ pub struct PlannerRequest {
     planner_state: PlannerState,
     input_view: CampaignPlanningView,
     statistical_request_basis: Option<StatisticalRequestBasis>,
+    smc_request_basis: Option<SmcRequestBasis>,
     input_bundle: CampaignPlanningBundle,
 }
 
@@ -936,10 +1045,12 @@ impl PlannerRequest {
             planner_state,
             input_view,
             None,
+            None,
             input_bundle,
         )
     }
 
+    // crucible-lint: allow rust-allow -- this constructor preserves the complete finite statistical planning basis.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_with_statistical_request_basis(
         expected_snapshot: CampaignSnapshotId,
@@ -962,10 +1073,40 @@ impl PlannerRequest {
             planner_state,
             input_view,
             statistical_request_basis,
+            None,
             input_bundle,
         )
     }
 
+    // crucible-lint: allow rust-allow -- this constructor preserves the complete SMC planning basis.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_smc_request_basis(
+        expected_snapshot: CampaignSnapshotId,
+        invocation: PlannerInvocation,
+        engine: PlannerEngine,
+        policy_artifact: PolicyArtifact,
+        policy: CampaignPolicy,
+        planner_state: PlannerState,
+        input_view: CampaignPlanningView,
+        smc_request_basis: Option<SmcRequestBasis>,
+        input_bundle: CampaignPlanningBundle,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_for_schema(
+            SMC_PLANNER_REQUEST_SCHEMA_VERSION,
+            expected_snapshot,
+            invocation,
+            engine,
+            policy_artifact,
+            policy,
+            planner_state,
+            input_view,
+            None,
+            smc_request_basis,
+            input_bundle,
+        )
+    }
+
+    // crucible-lint: allow rust-allow -- one schema-gated constructor validates every versioned planner-request field.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_for_schema(
         schema_version: u32,
@@ -977,13 +1118,19 @@ impl PlannerRequest {
         planner_state: PlannerState,
         input_view: CampaignPlanningView,
         statistical_request_basis: Option<StatisticalRequestBasis>,
+        smc_request_basis: Option<SmcRequestBasis>,
         input_bundle: CampaignPlanningBundle,
     ) -> Result<Self, CampaignCodecError> {
         if !matches!(
             schema_version,
-            LEGACY_PLANNER_REQUEST_SCHEMA_VERSION | PLANNER_REQUEST_SCHEMA_VERSION
+            LEGACY_PLANNER_REQUEST_SCHEMA_VERSION
+                | PLANNER_REQUEST_SCHEMA_VERSION
+                | SMC_PLANNER_REQUEST_SCHEMA_VERSION
         ) || (schema_version == LEGACY_PLANNER_REQUEST_SCHEMA_VERSION
-            && statistical_request_basis.is_some())
+            && (statistical_request_basis.is_some() || smc_request_basis.is_some()))
+            || (schema_version < SMC_PLANNER_REQUEST_SCHEMA_VERSION && smc_request_basis.is_some())
+            || (statistical_request_basis.is_some() && smc_request_basis.is_some())
+            || (smc_request_basis.is_some() && engine.implementation_version() < 8)
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "planner request schema disagrees with statistical basis",
@@ -1011,6 +1158,7 @@ impl PlannerRequest {
             planner_state,
             input_view,
             statistical_request_basis,
+            smc_request_basis,
             input_bundle,
         };
         request.input_bundle.validate_for(&request)?;
@@ -1078,6 +1226,12 @@ impl PlannerRequest {
     #[must_use]
     pub const fn statistical_request_basis(&self) -> Option<StatisticalRequestBasis> {
         self.statistical_request_basis
+    }
+
+    /// Returns the owner-derived basis for the next SMC particle transition.
+    #[must_use]
+    pub const fn smc_request_basis(&self) -> Option<&SmcRequestBasis> {
+        self.smc_request_basis.as_ref()
     }
 
     /// Returns served request objects and their interpretation dependencies.
@@ -1190,6 +1344,14 @@ impl PlannerRequest {
         if let Some(basis) = self.statistical_request_basis {
             children.push(("statistical-parent".to_owned(), basis.parent().content_id()));
         }
+        if let Some(basis) = &self.smc_request_basis {
+            children.push(("SMC-parent".to_owned(), basis.parent().content_id()));
+            children.push((
+                "SMC-opportunity".to_owned(),
+                basis.opportunity().id()?.content_id(),
+            ));
+            children.push(("SMC-domain".to_owned(), basis.domain().id()?.content_id()));
+        }
         Ok(children)
     }
 
@@ -1250,6 +1412,9 @@ impl Canonical for PlannerRequest {
         if self.schema_version >= PLANNER_REQUEST_SCHEMA_VERSION {
             self.statistical_request_basis.encode(encoder);
         }
+        if self.schema_version >= SMC_PLANNER_REQUEST_SCHEMA_VERSION {
+            self.smc_request_basis.encode(encoder);
+        }
         self.input_bundle.encode(encoder);
     }
 
@@ -1257,7 +1422,9 @@ impl Canonical for PlannerRequest {
         let schema_version = u32::decode(decoder)?;
         if !matches!(
             schema_version,
-            LEGACY_PLANNER_REQUEST_SCHEMA_VERSION | PLANNER_REQUEST_SCHEMA_VERSION
+            LEGACY_PLANNER_REQUEST_SCHEMA_VERSION
+                | PLANNER_REQUEST_SCHEMA_VERSION
+                | SMC_PLANNER_REQUEST_SCHEMA_VERSION
         ) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported planner request schema version",
@@ -1273,6 +1440,11 @@ impl Canonical for PlannerRequest {
             PlannerState::decode(decoder)?,
             CampaignPlanningView::decode(decoder)?,
             if schema_version >= PLANNER_REQUEST_SCHEMA_VERSION {
+                Option::decode(decoder)?
+            } else {
+                None
+            },
+            if schema_version >= SMC_PLANNER_REQUEST_SCHEMA_VERSION {
                 Option::decode(decoder)?
             } else {
                 None
@@ -1884,7 +2056,7 @@ mod tests {
         );
 
         let mut wrong_version = bytes.clone();
-        wrong_version[..4].copy_from_slice(&3_u32.to_be_bytes());
+        wrong_version[..4].copy_from_slice(&4_u32.to_be_bytes());
         assert_eq!(
             PlannerRequest::from_canonical_bytes(&wrong_version),
             Err(CampaignCodecError::InvalidValue {
@@ -1912,6 +2084,7 @@ mod tests {
             current.planner_state.clone(),
             current.input_view,
             None,
+            None,
             current.input_bundle.clone(),
         )
         .expect("legacy planner request");
@@ -1931,7 +2104,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_frontier_keeps_the_version_six_descriptor_replayable() {
+    fn canonical_frontier_keeps_version_six_and_seven_descriptors_replayable() {
         let version_six = PlannerEngine::new(
             "crucible-canonical-frontier",
             6,
@@ -1947,11 +2120,26 @@ mod tests {
             CanonicalFrontierPlanner::supports_descriptor(&version_six)
                 .expect("check version-six support")
         );
+        let version_seven = PlannerEngine::new(
+            "crucible-canonical-frontier",
+            7,
+            1,
+            BTreeSet::from([
+                CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
+                CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
+                CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned(),
+            ]),
+        )
+        .expect("version-seven canonical frontier descriptor");
+        assert!(
+            CanonicalFrontierPlanner::supports_descriptor(&version_seven)
+                .expect("check version-seven support")
+        );
         assert_eq!(
             CanonicalFrontierPlanner::descriptor()
                 .expect("current canonical frontier descriptor")
                 .implementation_version(),
-            7
+            8
         );
     }
 

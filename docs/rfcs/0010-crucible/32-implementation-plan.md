@@ -218,8 +218,8 @@ guest↔host channel (black-box default + optional white-box).
 - Patterns realized here: `T-PAT-4, T-PAT-7` ([`29`](29-patterns-and-sketches.md)).
 
 **Exit gates.** `gate:replay-oracle` (full, fat checkpoints over real backends),
-`gate:campaign-statistics` (the finite static `P`/`Q` subset; adaptive SMC,
-genealogy, and uncertainty claims remain open), and `gate:e2e-determinism`
+`gate:campaign-statistics` (finite static `P`/`Q` and bounded version-four SMC,
+including exact resampling, genealogy, and labeled estimator semantics), and `gate:e2e-determinism`
 (against the mock/double backend end to end).
 
 ---
