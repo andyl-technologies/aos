@@ -336,6 +336,11 @@ impl StorageAdmissionCoordinator {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn fail_after_next_journal_commit_for_test(&mut self) {
+        self.transactions.fail_after_next_journal_commit_for_test();
+    }
+
     /// Resolves and durably retains one independently authorized catalog preparation.
     ///
     /// The returned receipt is authenticated replay evidence only. It cannot
@@ -3852,7 +3857,7 @@ mod tests {
             panic!("installed-worker create was not prepared")
         };
 
-        let contract = ZfsHelperContract::new(executable).unwrap();
+        let contract = ZfsHelperContract::new(executable.clone()).unwrap();
         let generic_executor = crate::SystemdZfsExecutor::new(
             PathBuf::from("/run/aos/sandbox-zfs-worker/control.sock"),
             crate::process::open_cgroup_root().unwrap(),
@@ -4377,24 +4382,36 @@ mod tests {
         );
         let repair_artifacts =
             fixture.repair_artifacts_for_kernel_clock(&repair_request, repair_clock.wall_seconds());
+        let repair_semantics = CanonicalStorageRepairSemanticsV1::decode(
+            &repair_request,
+            peer(),
+            peer_policy(),
+            vm_clock().boottime_nanoseconds(),
+        )
+        .unwrap();
+        let journal_before_repair = runtime
+            .coordinator_for_test()
+            .transactions
+            .journal_sequence_for_test();
         let observer_before_repair = systemd_socket_sample(observer_socket);
         let worker_before_repair = systemd_socket_sample(worker_socket);
         let claims_before_repair = workspace_pin_replay_claim_count();
 
-        assert_eq!(
-            runtime
-                .repair_workspace_pin(
-                    &repair_request,
-                    &repair_artifacts,
-                    ProtocolVersion::new(1, 4),
-                    peer(),
-                    peer_policy(),
-                    &mut || Ok(vm_clock()),
-                )
-                .unwrap(),
-            crate::runtime::WorkspacePinRepairExecutionOutcomeV1::Satisfied
-        );
-        assert!(observation_pin_path.is_dir());
+        // Model a process failure after the repair admission transaction is
+        // durable but before its worker dispatch can be constructed.
+        runtime.fail_after_next_transaction_journal_commit_for_test();
+        assert!(matches!(
+            runtime.repair_workspace_pin(
+                &repair_request,
+                &repair_artifacts,
+                ProtocolVersion::new(1, 4),
+                peer(),
+                peer_policy(),
+                &mut || Ok(vm_clock()),
+            ),
+            Err(crate::StorageRuntimeError::Recovery)
+        ));
+        assert!(!observation_pin_path.exists());
 
         let observer_after_repair = systemd_socket_sample(observer_socket);
         let worker_after_repair = systemd_socket_sample(worker_socket);
@@ -4404,43 +4421,131 @@ mod tests {
             observer_after_repair.accepted,
             observer_before_repair.accepted + 1
         );
+        assert_eq!(worker_after_repair.accepted, worker_before_repair.accepted);
+        assert_eq!(workspace_pin_replay_claim_count(), claims_before_repair);
+        let admitted_sequence = journal_before_repair.checked_add(7).unwrap();
         assert_eq!(
-            worker_after_repair.accepted,
-            worker_before_repair.accepted + 1
+            runtime
+                .coordinator_for_test()
+                .transactions
+                .journal_sequence_for_test(),
+            admitted_sequence
         );
-        let claims_after_repair = workspace_pin_replay_claim_count();
-        assert_eq!(claims_after_repair, claims_before_repair + 1);
 
-        let repair_attempt = runtime
+        drop(runtime);
+
+        // Protected reopen replays the durable transaction into authenticated
+        // state, then uses only the observer to classify the absent pin.
+        let observer_before_restart = systemd_socket_sample(observer_socket);
+        let worker_before_restart = systemd_socket_sample(worker_socket);
+        let claims_before_restart = workspace_pin_replay_claim_count();
+        let restart_coordinator =
+            runtime_coordinator(&observation_state, &fixture, &observation_catalog).unwrap();
+        let restart_custody = WorkspacePinHostCustody::retain_initial_root_owned().unwrap();
+        let restart_contract = ZfsHelperContract::new(executable.clone()).unwrap();
+        let restart_pin_executor = SystemdWorkspacePinExecutor::new(
+            PathBuf::from("/run/aos/sandbox-workspace-pin-worker/control.sock"),
+            crate::process::open_cgroup_root().unwrap(),
+        )
+        .unwrap();
+        let restart_pin_observer = crate::pin_worker_runtime::SystemdWorkspacePinObserver::new(
+            PathBuf::from("/run/aos/sandbox-workspace-pin-observer/control.sock"),
+            crate::process::open_cgroup_root().unwrap(),
+        )
+        .unwrap();
+        let restart_generic_executor = crate::SystemdZfsExecutor::new(
+            PathBuf::from("/run/aos/sandbox-zfs-worker/control.sock"),
+            crate::process::open_cgroup_root().unwrap(),
+        )
+        .unwrap();
+        let restart_helper = StorageMutationHelper::new(
+            restart_contract.clone(),
+            SystemdZfsProcessBackend::new(restart_generic_executor),
+        );
+        let mut runtime = crate::StorageBrokerRuntime::from_protected_components_for_test(
+            restart_coordinator,
+            || {
+                crate::StorageWorkspaceCatalogV1::open_root_owned(
+                    &repair_catalog_path,
+                    identity_pool,
+                )
+                .map_err(Into::into)
+            },
+            restart_custody,
+            restart_contract,
+            restart_pin_executor,
+            restart_pin_observer,
+            restart_helper,
+        )
+        .unwrap();
+        assert!(matches!(
+            runtime.readiness(),
+            crate::StorageRuntimeReadiness::RecoveryPending { operations }
+                if operations > 0
+        ));
+        assert!(!observation_pin_path.exists());
+        assert_eq!(
+            runtime
+                .coordinator_for_test()
+                .transactions
+                .journal_sequence_for_test(),
+            admitted_sequence
+        );
+        let observer_after_restart = systemd_socket_sample(observer_socket);
+        let worker_after_restart = systemd_socket_sample(worker_socket);
+        assert_same_socket_invocation(&observer_before_restart, &observer_after_restart);
+        assert_same_socket_invocation(&worker_before_restart, &worker_after_restart);
+        assert_eq!(
+            observer_after_restart.accepted,
+            observer_before_restart.accepted + 1
+        );
+        assert_eq!(
+            worker_after_restart.accepted,
+            worker_before_restart.accepted
+        );
+        assert_eq!(workspace_pin_replay_claim_count(), claims_before_restart);
+
+        let interrupted_attempt = runtime
             .coordinator_for_test()
             .transactions
             .latest_workspace_pin_attempt(observation_creation.operation_id())
             .unwrap()
             .unwrap();
-        assert_eq!(repair_attempt.attempt_ordinal(), 2);
-        assert_eq!(repair_attempt.action(), WorkspacePinActionV1::Ensure);
+        assert_eq!(interrupted_attempt.attempt_ordinal(), 2);
+        assert_eq!(interrupted_attempt.action(), WorkspacePinActionV1::Ensure);
         assert_eq!(
-            repair_attempt.phase(),
-            WorkspacePinAttemptPhaseV1::Satisfied
+            interrupted_attempt.phase(),
+            WorkspacePinAttemptPhaseV1::Ambiguous
         );
-        assert_eq!(repair_attempt.effect_operation_id(), [85; 16]);
+        assert_eq!(interrupted_attempt.effect_operation_id(), [85; 16]);
         runtime
             .coordinator_for_test()
             .authenticate_workspace_pin_attempts()
             .unwrap();
         runtime
             .coordinator_for_test()
-            .authenticate_workspace_pin_repair(&repair_attempt)
+            .authenticate_workspace_pin_repair(&interrupted_attempt)
             .unwrap();
-
-        let repair_semantics = CanonicalStorageRepairSemanticsV1::decode(
-            &repair_request,
-            peer(),
-            peer_policy(),
-            vm_clock().boottime_nanoseconds(),
-        )
-        .unwrap();
-        let completed_effect = runtime
+        let interrupted_intent = runtime
+            .coordinator_for_test()
+            .transactions
+            .workspace_pin_repair_intent(repair_semantics.operation_id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            interrupted_intent.repair_attempt_id(),
+            interrupted_attempt.attempt_id()
+        );
+        assert_eq!(
+            interrupted_intent.repair_attempt_ordinal(),
+            interrupted_attempt.attempt_ordinal()
+        );
+        assert_eq!(
+            interrupted_intent.creation_operation_id(),
+            observation_creation.operation_id()
+        );
+        assert_eq!(interrupted_intent.workspace_handle(), observation_handle);
+        let pending_effect = runtime
             .coordinator_for_test()
             .transactions
             .authority_record(
@@ -4453,10 +4558,41 @@ mod tests {
             runtime
                 .coordinator_for_test()
                 .authority
-                .open_admission_intent(repair_semantics.header().request_id(), completed_effect)
+                .open_admission_intent(repair_semantics.header().request_id(), pending_effect)
                 .unwrap()
                 .status(),
-            BrokerEffectStatusV2::Complete
+            BrokerEffectStatusV2::Pending
+        );
+        assert_eq!(interrupted_intent.admitted_effect_record(), pending_effect);
+        let current_fence = runtime
+            .coordinator_for_test()
+            .transactions
+            .authority_record(
+                RecordNamespace::DesiredState,
+                repair_semantics.fence().sandbox_id(),
+            )
+            .unwrap()
+            .unwrap();
+        let operation_fence = runtime
+            .coordinator_for_test()
+            .transactions
+            .authority_record(
+                RecordNamespace::AuthorityPublication,
+                &repair_semantics.operation_id(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            runtime
+                .coordinator_for_test()
+                .authority
+                .open_fence(repair_semantics.fence().sandbox_id(), current_fence)
+                .unwrap(),
+            runtime
+                .coordinator_for_test()
+                .authority
+                .open_operation_fence(&repair_semantics.operation_id(), operation_fence)
+                .unwrap()
         );
         let repair_inventory = decode_storage_resource_inventory_response(
             &runtime
@@ -4466,13 +4602,10 @@ mod tests {
             1_048_576,
         )
         .unwrap();
-        assert_eq!(repair_inventory.workspaces().len(), 1);
-        assert_eq!(
-            repair_inventory.workspaces()[0].workspace_handle(),
-            &observation_handle
-        );
+        assert!(repair_inventory.workspaces().is_empty());
 
-        // Exact replay is resolved before a new observer or mutator activation.
+        // Exact replay of the interrupted effect is resolved before a new
+        // observer or mutator activation and cannot alter its durable history.
         let replay_sequence = runtime
             .coordinator_for_test()
             .transactions
@@ -4503,16 +4636,159 @@ mod tests {
                 .journal_sequence_for_test(),
             replay_sequence
         );
-        assert_eq!(workspace_pin_replay_claim_count(), claims_after_repair);
+        assert_eq!(workspace_pin_replay_claim_count(), claims_before_restart);
 
-        // A distinct current request must observe the already-present pin, then
-        // fail without admitting an effect or reaching the mutator.
-        let present_manifest = assignment_manifest_at(&observation_spec, 8);
-        let present_request = vm_repair_request(
+        // A distinct next-generation repair may advance from the retained
+        // ambiguous attempt after making its own fresh absence observation.
+        let resumed_manifest = assignment_manifest_at(&observation_spec, 8);
+        let resumed_request = vm_repair_request(
             86,
             87,
             observation_handle,
             8,
+            resumed_manifest.digest(),
+            repair_deadline,
+        );
+        let resumed_artifacts = fixture
+            .repair_artifacts_for_kernel_clock(&resumed_request, repair_clock.wall_seconds());
+        let observer_before_resumed = systemd_socket_sample(observer_socket);
+        let worker_before_resumed = systemd_socket_sample(worker_socket);
+        let claims_before_resumed = workspace_pin_replay_claim_count();
+        assert_eq!(
+            runtime
+                .repair_workspace_pin(
+                    &resumed_request,
+                    &resumed_artifacts,
+                    ProtocolVersion::new(1, 4),
+                    peer(),
+                    peer_policy(),
+                    &mut || Ok(vm_clock()),
+                )
+                .unwrap(),
+            crate::runtime::WorkspacePinRepairExecutionOutcomeV1::Satisfied
+        );
+        assert!(observation_pin_path.is_dir());
+        let observer_after_resumed = systemd_socket_sample(observer_socket);
+        let worker_after_resumed = systemd_socket_sample(worker_socket);
+        assert_same_socket_invocation(&observer_before_resumed, &observer_after_resumed);
+        assert_same_socket_invocation(&worker_before_resumed, &worker_after_resumed);
+        assert_eq!(
+            observer_after_resumed.accepted,
+            observer_before_resumed.accepted + 1
+        );
+        assert_eq!(
+            worker_after_resumed.accepted,
+            worker_before_resumed.accepted + 1
+        );
+        let claims_after_repair = workspace_pin_replay_claim_count();
+        assert_eq!(claims_after_repair, claims_before_resumed + 1);
+
+        let repair_attempt = runtime
+            .coordinator_for_test()
+            .transactions
+            .latest_workspace_pin_attempt(observation_creation.operation_id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(repair_attempt.attempt_ordinal(), 3);
+        assert_eq!(repair_attempt.action(), WorkspacePinActionV1::Ensure);
+        assert_eq!(
+            repair_attempt.phase(),
+            WorkspacePinAttemptPhaseV1::Satisfied
+        );
+        assert_eq!(repair_attempt.effect_operation_id(), [87; 16]);
+        runtime
+            .coordinator_for_test()
+            .authenticate_workspace_pin_attempts()
+            .unwrap();
+        runtime
+            .coordinator_for_test()
+            .authenticate_workspace_pin_repair(&interrupted_attempt)
+            .unwrap();
+        runtime
+            .coordinator_for_test()
+            .authenticate_workspace_pin_repair(&repair_attempt)
+            .unwrap();
+
+        let resumed_semantics = CanonicalStorageRepairSemanticsV1::decode(
+            &resumed_request,
+            peer(),
+            peer_policy(),
+            vm_clock().boottime_nanoseconds(),
+        )
+        .unwrap();
+        let completed_effect = runtime
+            .coordinator_for_test()
+            .transactions
+            .authority_record(
+                RecordNamespace::Effect,
+                resumed_semantics.header().request_id(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            runtime
+                .coordinator_for_test()
+                .authority
+                .open_admission_intent(resumed_semantics.header().request_id(), completed_effect)
+                .unwrap()
+                .status(),
+            BrokerEffectStatusV2::Complete
+        );
+        let repair_inventory = decode_storage_resource_inventory_response(
+            &runtime
+                .workspace_catalog_for_test()
+                .inventory_resources()
+                .unwrap(),
+            1_048_576,
+        )
+        .unwrap();
+        assert_eq!(repair_inventory.workspaces().len(), 1);
+        assert_eq!(
+            repair_inventory.workspaces()[0].workspace_handle(),
+            &observation_handle
+        );
+
+        // Exact replay of the completed successor is also side-effect free.
+        let replay_sequence = runtime
+            .coordinator_for_test()
+            .transactions
+            .journal_sequence_for_test();
+        let observer_before_retry = systemd_socket_sample(observer_socket);
+        let worker_before_retry = systemd_socket_sample(worker_socket);
+        assert_eq!(
+            runtime
+                .repair_workspace_pin(
+                    &resumed_request,
+                    &resumed_artifacts,
+                    ProtocolVersion::new(1, 4),
+                    peer(),
+                    peer_policy(),
+                    &mut || Ok(vm_clock()),
+                )
+                .unwrap(),
+            crate::runtime::WorkspacePinRepairExecutionOutcomeV1::ObservationRequired
+        );
+        let observer_after_retry = systemd_socket_sample(observer_socket);
+        let worker_after_retry = systemd_socket_sample(worker_socket);
+        assert_eq!(observer_after_retry, observer_before_retry);
+        assert_eq!(worker_after_retry, worker_before_retry);
+        assert_eq!(
+            runtime
+                .coordinator_for_test()
+                .transactions
+                .journal_sequence_for_test(),
+            replay_sequence
+        );
+        assert_eq!(workspace_pin_replay_claim_count(), claims_after_repair);
+
+        // A distinct current request must observe the already-present pin, then
+        // fail without admitting an effect or reaching the mutator.
+        let present_manifest = assignment_manifest_at(&observation_spec, 9);
+        let present_request = vm_repair_request(
+            88,
+            89,
+            observation_handle,
+            9,
             present_manifest.digest(),
             repair_deadline,
         );
@@ -4584,6 +4860,17 @@ mod tests {
         assert_eq!(reopened_attempt, repair_attempt);
         reopened
             .authenticate_workspace_pin_repair(&reopened_attempt)
+            .unwrap();
+        let reopened_interrupted = reopened
+            .transactions
+            .workspace_pin_attempts()
+            .unwrap()
+            .into_iter()
+            .find(|attempt| attempt.attempt_id() == interrupted_attempt.attempt_id())
+            .unwrap();
+        assert_eq!(reopened_interrupted, interrupted_attempt);
+        reopened
+            .authenticate_workspace_pin_repair(&reopened_interrupted)
             .unwrap();
         drop(reopened);
 

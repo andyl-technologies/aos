@@ -285,6 +285,11 @@ impl StorageBrokerRuntime {
     }
 
     #[cfg(test)]
+    pub(crate) fn fail_after_next_transaction_journal_commit_for_test(&mut self) {
+        self.coordinator.fail_after_next_journal_commit_for_test();
+    }
+
+    #[cfg(test)]
     pub(crate) const fn workspace_catalog_for_test(&self) -> &StorageWorkspaceCatalogV1 {
         &self.workspaces
     }
