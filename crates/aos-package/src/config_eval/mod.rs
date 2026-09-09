@@ -36,6 +36,7 @@
 //! service consumes a returned manifest.
 
 pub mod ability;
+pub mod ability_policy;
 pub mod ability_store;
 pub mod activation;
 pub mod classify;
