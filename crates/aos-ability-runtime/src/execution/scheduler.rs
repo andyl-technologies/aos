@@ -52,6 +52,7 @@ impl ExecutionTransaction<'_> {
         maximum_work: NonZeroUsize,
     ) -> Result<Vec<ReadyOperation>, TransactionError> {
         let dispatch_order = self.plan().dispatch_order().to_vec();
+        let blocked_operations = self.durably_blocked_operations();
         let mut ready = Vec::with_capacity(maximum_work.get().min(dispatch_order.len()));
 
         for node in dispatch_order {
@@ -67,10 +68,12 @@ impl ExecutionTransaction<'_> {
                         .plan()
                         .operation(key)
                         .ok_or(TransactionError::OperationMissing)?;
-                    if !self.branch_is_active(&operation.branch_context) {
+                    let action = self.next_action_with_blocked(key, &blocked_operations)?;
+                    if !self.branch_is_active(&operation.branch_context)
+                        && action != RecoveryAction::SettleFailureBeforeEffect
+                    {
                         continue;
                     }
-                    let action = self.next_action(key)?;
                     let is_initial_admission = action == RecoveryAction::Admit;
                     if action == RecoveryAction::None
                         || (is_initial_admission && self.check_operation_ready(key).is_err())
