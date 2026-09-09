@@ -448,6 +448,8 @@ in {
       ++ [
         "--enable-no-install-program=stdbuf"
         "--enable-single-binary=symlinks"
+        # Coreutils 9.10 made these previously shipped commands opt-in.
+        "--enable-install-program=kill,uptime"
       ];
     meta = gnuMeta "GNU core utilities 9.11 (ls, cat, cp, mv, etc.)" "https://www.gnu.org/software/coreutils/" "GPL-3.0-or-later";
   };
