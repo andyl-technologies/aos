@@ -139,6 +139,9 @@
     system = stdenv.buildPlatform.system;
     builder = "${buildNix}/bin/nix-instantiate";
   };
+  # Retain the .drv for the denial test without realizing its intentionally forbidden output.
+  abilityEvaluatorIfdDrvPath =
+    builtins.unsafeDiscardOutputDependency abilityEvaluatorIfdFixture.drvPath;
   src = import ./_workspace-source.nix {inherit lib;};
   applicationTestPackages = [
     "aos"
@@ -283,7 +286,7 @@ in
       export AOS_TEST_ABILITY_FIXTURE="${abilityEvaluatorFixture}"
       export AOS_TEST_ABILITY_FIXTURE_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityEvaluatorFixture})"
       export AOS_TEST_ABILITY_CACHE="$NIX_BUILD_TOP/ability-evaluator-cache"
-      export AOS_TEST_ABILITY_IFD_DERIVATION="${abilityEvaluatorIfdFixture.drvPath}"
+      export AOS_TEST_ABILITY_IFD_DERIVATION="${abilityEvaluatorIfdDrvPath}"
       export AOS_TEST_ABILITY_IFD_SYSTEM="${stdenv.buildPlatform.system}"
       export AOS_ABILITY_EVALUATOR_SECRET="must-not-leak"
       ${lib.optionalString isCross ''
