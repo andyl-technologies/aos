@@ -15,10 +15,11 @@ use std::sync::Arc;
 use crucible_campaign::{CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignObjectProfiler};
 use crucible_daemon::LinuxProjectQuotaBinder;
 use crucible_daemon::campaign_store_composition::{
-    BlobInventoryRecord, ContentId, DirectoryRefBackend, DurabilityRequirement, ObjectKind,
-    S3RefBackend, StoreEncryptionKey, StoreEncryptionKeyId, StoreError, StoreGraph,
-    StoreGraphAdmin, StoreGraphConfig, StoreGraphKeyring, StoreGraphNamespaceAuthorizers,
-    StoreGraphObjectProfilers, StoreGraphPhysicalQuotaBinders, StoreNamespaceAuthorizer,
+    ContentId, DirectoryRefBackend, DurabilityRequirement, MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES,
+    MAX_STORE_GRAPH_VERIFY_PLACEMENTS, ObjectKind, S3RefBackend, StoreEncryptionKey,
+    StoreEncryptionKeyId, StoreError, StoreGraph, StoreGraphAdmin, StoreGraphConfig,
+    StoreGraphKeyring, StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers,
+    StoreGraphPhysicalQuotaBinders, StoreGraphVerificationLimits, StoreNamespaceAuthorizer,
     StoreNamespaceId, StoreNamespaceOperation, StoreNodeId, StoreNodeSpec,
     StoreObjectProfilePolicyId, StorePhysicalQuotaPolicyId, StoreS3EndpointId,
 };
@@ -41,8 +42,8 @@ const CAMPAIGN_STORE_VERSION_1: u32 = 1;
 const CAMPAIGN_STORE_VERSION_2: u32 = 2;
 const MAX_CAMPAIGN_STORE_DEPLOYMENT_BYTES: usize = 256 * 1024;
 const MAX_CAMPAIGN_STORE_KEY_BYTES: usize = 32;
-pub(super) const MAX_STORE_VERIFY_PLACEMENTS: u64 = 65_536;
-pub(super) const MAX_STORE_VERIFY_LOGICAL_BYTES: u64 = 128 * 1024 * 1024 * 1024;
+pub(super) const MAX_STORE_VERIFY_PLACEMENTS: u64 = MAX_STORE_GRAPH_VERIFY_PLACEMENTS;
+pub(super) const MAX_STORE_VERIFY_LOGICAL_BYTES: u64 = MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES;
 const CAMPAIGN_STORE_OBJECT_KINDS: [ObjectKind; 14] = [
     ObjectKind::CampaignFact,
     ObjectKind::CampaignSnapshot,
@@ -260,19 +261,6 @@ pub(super) struct VerifiedCampaignStorePhysicalInventory {
     pub(super) logical_bytes: u64,
 }
 
-#[derive(Clone, Copy)]
-struct StoreVerifyLimits {
-    placements: u64,
-    logical_bytes: u64,
-}
-
-impl StoreVerifyLimits {
-    const PRODUCTION: Self = Self {
-        placements: MAX_STORE_VERIFY_PLACEMENTS,
-        logical_bytes: MAX_STORE_VERIFY_LOGICAL_BYTES,
-    };
-}
-
 impl LoadedCampaignRepositoryStore {
     fn into_store(self) -> Result<crucible_daemon::CampaignLocalRepositoryStore, CliError> {
         let result = match self.refs {
@@ -313,139 +301,34 @@ pub(super) fn verify_campaign_store_inventory(
     deployment_path: &Path,
 ) -> Result<VerifiedCampaignStoreInventory, CliError> {
     let loaded = load_campaign_repository_graph(deployment_path)?;
-    verify_loaded_campaign_store_inventory(
-        loaded,
-        StoreVerifyLimits::PRODUCTION,
-        &mut |_graph, _node| Ok(()),
-    )
+    verify_loaded_campaign_store_inventory(loaded, StoreGraphVerificationLimits::PRODUCTION)
 }
 
 fn verify_loaded_campaign_store_inventory(
     loaded: LoadedCampaignRepositoryStore,
-    limits: StoreVerifyLimits,
-    after_reads: &mut dyn FnMut(&StoreGraph, StoreNodeId) -> Result<(), CliError>,
+    limits: StoreGraphVerificationLimits,
 ) -> Result<VerifiedCampaignStoreInventory, CliError> {
-    let mut placements = 0_u64;
-    let mut logical_bytes = 0_u64;
-    let mut physical = Vec::new();
-    for leaf in loaded.maintenance.physical() {
-        let mut records = Vec::new();
-        let mut exceeded = false;
-        let first = {
-            let mut fence = leaf.admin().acquire_inventory_fence().map_err(|error| {
-                campaign_store_error(format!(
-                    "cannot fence physical node {}: {error}",
-                    leaf.node().as_str()
-                ))
-            })?;
-            fence
-                .visit_inventory(&mut |record: BlobInventoryRecord| {
-                    placements = placements.checked_add(1).ok_or_else(|| {
-                        exceeded = true;
-                        StoreError::Quota
-                    })?;
-                    logical_bytes = logical_bytes
-                        .checked_add(record.logical_length())
-                        .ok_or_else(|| {
-                            exceeded = true;
-                            StoreError::Quota
-                        })?;
-                    if placements > limits.placements || logical_bytes > limits.logical_bytes {
-                        exceeded = true;
-                        return Err(StoreError::Quota);
-                    }
-                    records.push(record);
-                    Ok(())
-                })
-                .map_err(|error| {
-                    if exceeded {
-                        campaign_store_error(
-                            "physical inventory exceeds the fixed verification bound",
-                        )
-                    } else {
-                        campaign_store_error(format!(
-                            "cannot inventory physical node {}: {error}",
-                            leaf.node().as_str()
-                        ))
-                    }
-                })?
-        };
+    let verified = loaded
+        .maintenance
+        .verify_physical_inventory(limits)
+        .map_err(|error| {
+            campaign_store_error(format!("physical store verification failed: {error}"))
+        })?;
+    let physical = verified
+        .physical()
+        .iter()
+        .map(|entry| VerifiedCampaignStorePhysicalInventory {
+            backend: entry.backend().to_owned(),
+            generation: entry.generation().to_hex(),
+            placements: entry.placements(),
+            logical_bytes: entry.logical_bytes(),
+        })
+        .collect();
 
-        for record in &records {
-            let handle = leaf.read(record.id()).map_err(|error| {
-                campaign_store_error(format!(
-                    "cannot read physical node {} object {}: {error}",
-                    leaf.node().as_str(),
-                    record.id().encode()
-                ))
-            })?;
-            if handle.logical_length() != record.logical_length() {
-                return Err(campaign_store_error(format!(
-                    "physical node {} object {} changed logical length",
-                    leaf.node().as_str(),
-                    record.id().encode()
-                )));
-            }
-            handle.copy_to(&mut std::io::sink()).map_err(|error| {
-                campaign_store_error(format!(
-                    "cannot authenticate physical node {} object {}: {error}",
-                    leaf.node().as_str(),
-                    record.id().encode()
-                ))
-            })?;
-        }
-
-        after_reads(loaded.graph.as_ref(), leaf.node().clone())?;
-
-        let second = {
-            let mut fence = leaf.admin().acquire_inventory_fence().map_err(|error| {
-                campaign_store_error(format!(
-                    "cannot reacquire the physical node {} inventory fence: {error}",
-                    leaf.node().as_str()
-                ))
-            })?;
-            let mut rechecked = 0_u64;
-            let mut changed = false;
-            fence
-                .visit_inventory(&mut |_record| {
-                    rechecked = rechecked.checked_add(1).ok_or(StoreError::Quota)?;
-                    if rechecked > first.objects() {
-                        changed = true;
-                        return Err(StoreError::Quota);
-                    }
-                    Ok(())
-                })
-                .map_err(|error| {
-                    if changed {
-                        campaign_store_error(format!(
-                            "physical node {} changed while it was verified",
-                            leaf.node().as_str()
-                        ))
-                    } else {
-                        campaign_store_error(format!(
-                            "cannot reproduce physical node {} inventory: {error}",
-                            leaf.node().as_str()
-                        ))
-                    }
-                })?
-        };
-        if second != first {
-            return Err(campaign_store_error(format!(
-                "physical node {} changed while it was verified",
-                leaf.node().as_str()
-            )));
-        }
-        physical.push(VerifiedCampaignStorePhysicalInventory {
-            backend: first.backend().to_owned(),
-            generation: first.generation().to_hex(),
-            placements: first.objects(),
-            logical_bytes: first.logical_bytes(),
-        });
-    }
     Ok(VerifiedCampaignStoreInventory {
-        configuration: loaded.graph.configuration_id().as_bytes(),
-        placements,
-        logical_bytes,
+        configuration: verified.configuration().as_bytes(),
+        placements: verified.placements(),
+        logical_bytes: verified.logical_bytes(),
         physical,
     })
 }
@@ -1122,7 +1005,7 @@ mod tests {
     }
 
     #[test]
-    fn physical_verification_is_bounded_and_rejects_a_generation_race() {
+    fn physical_verification_preserves_public_aggregate_bounds() {
         let fixture = StoreDeploymentFixture::new();
         let deployment = fixture.write_deployment("");
         let loaded =
@@ -1136,11 +1019,8 @@ mod tests {
 
         let Err(error) = verify_loaded_campaign_store_inventory(
             loaded,
-            StoreVerifyLimits {
-                placements: 0,
-                logical_bytes: u64::MAX,
-            },
-            &mut |_graph, _node| Ok(()),
+            StoreGraphVerificationLimits::new(0, MAX_STORE_VERIFY_LOGICAL_BYTES)
+                .expect("test verification bounds are valid"),
         ) else {
             panic!("placement-count bound must fail during the first inventory");
         };
@@ -1149,42 +1029,12 @@ mod tests {
         let loaded = load_campaign_repository_graph(&deployment).expect("reload byte-bound graph");
         let Err(error) = verify_loaded_campaign_store_inventory(
             loaded,
-            StoreVerifyLimits {
-                placements: 1,
-                logical_bytes: first_bytes.len() as u64 - 1,
-            },
-            &mut |_graph, _node| Ok(()),
+            StoreGraphVerificationLimits::new(1, first_bytes.len() as u64 - 1)
+                .expect("test verification bounds are valid"),
         ) else {
             panic!("logical-byte bound must fail during the first inventory");
         };
         assert!(error.to_string().contains("fixed verification bound"));
-
-        let loaded =
-            load_campaign_repository_graph(&deployment).expect("reload race verification graph");
-        let second_bytes = b"second physical placement";
-        let second_id = ContentId::for_bytes(ObjectKind::Trace, 1, second_bytes);
-        let mut injected = false;
-        let Err(error) = verify_loaded_campaign_store_inventory(
-            loaded,
-            StoreVerifyLimits::PRODUCTION,
-            &mut |graph, _node| {
-                if !injected {
-                    graph
-                        .put_if_absent(second_id, &BlobHandle::from_bytes(second_bytes.to_vec()))
-                        .map_err(|error| {
-                            campaign_store_error(format!(
-                                "cannot inject verification race: {error}"
-                            ))
-                        })?;
-                    injected = true;
-                }
-                Ok(())
-            },
-        ) else {
-            panic!("generation change must fail the closing inventory fence");
-        };
-        assert!(injected);
-        assert!(error.to_string().contains("changed while it was verified"));
     }
 
     #[test]
