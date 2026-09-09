@@ -2,6 +2,7 @@
 {
   pkgs,
   llvmVersion ? null,
+  rustPackage ? null,
 }: let
   buildSystem = pkgs.stdenv.buildPlatform.system;
   targetSystem = "aarch64-linux";
@@ -14,8 +15,25 @@
     if llvmVersion == null
     then null
     else targetPackages."llvm-${llvmVersion}";
+  rust =
+    if rustPackage == null
+    then null
+    else targetPackages.${rustPackage};
+  rustScript =
+    if rust == null
+    then ""
+    else
+      import ./_linux-hosted-rust-script.nix {
+        inherit rust;
+        llvm =
+          if rust ? dev
+          then targetPackages.llvm
+          else null;
+      };
   testName =
-    if llvmVersion == null
+    if rustPackage != null
+    then "linux-hosted-${rustPackage}-vm"
+    else if llvmVersion == null
     then "linux-hosted-toolchain-vm"
     else "linux-hosted-llvm-${llvmVersion}-vm";
   llvmScript =
@@ -55,6 +73,11 @@
         if llvm == null
         then []
         else [llvm targetPackages.glibc.dev targetPackages.glibc.static]
+      )
+      ++ (
+        if rust == null
+        then []
+        else [rust] ++ pkgs.lib.optional (rust ? dev) rust.dev
       );
     symlinkFarmPkgs = [];
     postPopulate = ''
@@ -130,6 +153,7 @@
       test -s /tmp/invalid.stderr
 
       ${llvmScript}
+      ${rustScript}
 
       echo AOS_HOSTED_TOOLCHAIN_VM_PASS
       sync

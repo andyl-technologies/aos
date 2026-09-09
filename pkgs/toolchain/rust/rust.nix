@@ -11,6 +11,7 @@
   which,
   llvm,
   rust-1_97,
+  curl,
   openssl,
   zlib,
   stdenv,
@@ -66,6 +67,23 @@ in
         disableLld = true;
         description = "Rust ${version} — Darwin-hosted compiler, Cargo, tools, and standard library";
         inherit buildTool;
+      }
+    else if stdenv.hostPlatform.isLinux
+    then
+      import ./_rust-linux-hosted.nix {
+        inherit mkDerivation version src buildPackages stdenv curl openssl zlib;
+        pname = "rust";
+        inherit changeId configFileName buildTool;
+        nativeRust = buildPackages.rust-1_97;
+        nativeLlvm = buildPackages.llvm;
+        targetLlvm = llvm;
+        additionalTargets = ["wasm32-unknown-unknown"];
+        tools = ["cargo" "rustdoc" "clippy" "rustfmt" "rust-analyzer" "src"];
+        outputs = ["out" "dev"];
+        profiler = true;
+        needsDownloadRustc = true;
+        disableLld = true;
+        description = "Rust ${version} — Linux-hosted compiler, Cargo, tools, and standard library";
       }
     else
       buildTool
