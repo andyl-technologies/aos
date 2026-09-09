@@ -4,6 +4,7 @@
   testing,
   pkgs,
 }: let
+  buildProtobuf = pkgs.buildPackages.protobuf;
   probeSource = builtins.path {
     path = ../sandbox/filesystem-capability-probe.c;
     name = "aos-sandbox-filesystem-capability-probe.c";
@@ -30,8 +31,9 @@
     cargoFlags = "-p aos-sandbox-network-protected-store-fixture --bin aos-sandbox-network-protected-store-fixture";
     # Runtime requires the real ext4/fs-verity and bind-mount topology below.
     doCheck = false;
-    buildDeps = [];
+    buildDeps = [buildProtobuf];
     runtimeDeps = [];
+    cargoEnv.PROTOC = "${buildProtobuf}/bin/protoc";
   };
 in
   testing.mkVMTest {
