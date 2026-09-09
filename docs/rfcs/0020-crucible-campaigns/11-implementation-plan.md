@@ -3698,23 +3698,29 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   legacy handle and logical DAG closure, so existing resume and fork readers
   consume the result without native exact-resume acceleration. Campaign-backed
   marker saves now use the same exact-capture owner with a named-boundary stop.
-  They export a version-4 campaign-marker-event proof containing the retained,
-  canonically recomputable scheduler event and preserve version-3 reads and
-  writes for session-owned saves. Selection-free marker and virtual-time saves
-  remain portable; a boundary after a typed selection, historical override, or
-  application-random decision fails before export until the handle carries the
-  authenticated replay records. Resume
-  and fork validate the v4 event hash, marker predicate, source node policy,
-  frontier, and proof shape before using the embedded logical checkpoint.
-  Standard non-interactive, selection-free
-  local-QEMU resume now uses the campaign owner for version-3 and version-4
-  handles: it authenticates the logical source as a campaign observation,
-  captures and restores the exact source, continues to quiescence,
-  virtual-time, or terminal completion, and replay-validates the descendant
-  checkpoint. Typed-selection and historical override/application-randomness
-  resume schedules, property stops, interactive resume, fork execution,
-  quiescence and property saves, search, fuzz, remaining replay producers,
-  triage, and long-lived session migration remain open.
+  They export a version-5 handle with a campaign-marker-event proof containing
+  the retained, canonically recomputable scheduler event and a required,
+  digest-bound campaign replay closure. Campaign virtual-time saves use the same
+  v5 closure contract. Export authenticates the canonical closure against the
+  exact schedule before durable writes, stores it as a content-addressed object,
+  and retains it through the opaque reference in local checkpoint closure-index
+  v3. Readers preserve version-3 session handles, selection-free version-4
+  marker handles, and closure-index v2 compatibility. Typed schedules missing a
+  closure, tampered closure bytes, and missing referenced objects fail before
+  execution.
+
+  Standard non-interactive local-QEMU resume now uses the campaign owner for
+  version-3, version-4, and version-5 handles and bare checkpoint hashes backed
+  by closure-index v2 or v3. Delivery-order, random-draw, preemption, and typed
+  guest Selection schedules authenticate the logical source and replay closure,
+  capture and restore the exact source, continue to quiescence, virtual-time, or
+  terminal completion, apply replayed guest replies through the live selectable
+  boundary, and replay-validate the descendant checkpoint. Session-owned,
+  remote, interactive, and fork fallbacks reject typed Selection evidence before
+  launch. Historical override/application-randomness resume schedules, typed
+  fork execution, property stops, quiescence and property saves, search, fuzz,
+  remaining replay producers, triage, and long-lived session migration remain
+  open.
 - [x] **T-CAM-8.5** Publish user documentation and the worked network campaign
   as an executable fixture. The public Crucible guide now documents the
   shipped single-host campaign surface: strict offline import, managed daemon

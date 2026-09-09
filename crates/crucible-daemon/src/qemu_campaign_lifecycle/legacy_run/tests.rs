@@ -820,7 +820,7 @@ fn selection_free_resume_authenticates_the_exact_source_before_continuing() {
     let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
         .expect("selection-free replay closure");
     let request = request
-        .with_selection_free_resume_source(
+        .with_resume_source(
             schedule,
             closure,
             checkpoint.clone(),
@@ -906,7 +906,7 @@ fn selection_free_resume_terminal_at_source_needs_no_continuation() {
     let checkpoint = legacy_resume_checkpoint(&request, &schedule, source_frontier);
     let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
         .expect("selection-free replay closure");
-    let request = request.with_selection_free_resume_source(
+    let request = request.with_resume_source(
         schedule,
         closure,
         checkpoint,
@@ -946,7 +946,7 @@ fn selection_free_resume_rejects_terminal_before_the_source_boundary() {
     let checkpoint = legacy_resume_checkpoint(&request, &schedule, source_frontier);
     let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
         .expect("selection-free replay closure");
-    let request = request.with_selection_free_resume_source(
+    let request = request.with_resume_source(
         schedule,
         closure,
         checkpoint,
@@ -990,7 +990,7 @@ fn selection_free_resume_rejects_a_checkpoint_for_another_configuration() {
     )]);
     let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
         .expect("selection-free replay closure");
-    let request = request.with_selection_free_resume_source(
+    let request = request.with_resume_source(
         schedule,
         closure,
         checkpoint,
@@ -1023,6 +1023,65 @@ fn selection_free_resume_rejects_a_checkpoint_for_another_configuration() {
 }
 
 #[test]
+fn portable_resume_rejects_override_and_app_random_before_execution() {
+    let schedules = [
+        Schedule::from_decisions([crucible::Decision::Override(crucible::OverrideDecision {
+            point: crucible::SchedulingPoint {
+                key: String::from("portable-resume/override"),
+            },
+            choice: crucible::ChoiceTag {
+                name: String::from("alternate"),
+            },
+        })]),
+        Schedule::from_decisions([crucible::Decision::AppRandom(crucible::AppRandomDecision {
+            node: NodeId {
+                name: String::from("portable-resume-node"),
+            },
+            stream: crucible::RngStreamId::from_name("portable-resume-app-random"),
+            request_id: 1,
+            width: 8,
+            value: 3,
+        })]),
+    ];
+
+    for schedule in schedules {
+        let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
+        let checkpoints = exact_checkpoint_store(&checkpoint_directory);
+        let (request, node) = request();
+        let checkpoint = legacy_resume_checkpoint(&request, &schedule, VirtualTime::default());
+        let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
+            .expect("non-selection decisions require no separate choice records");
+        let request = request.with_resume_source(
+            schedule,
+            closure,
+            checkpoint,
+            StopCondition::Terminal,
+            checkpoints,
+        );
+        let starts = Arc::new(AtomicUsize::new(0));
+        let (factory, evidence) =
+            QemuObservedFreshAttemptLifecycleFactory::with_evidence(ResumeLifecycleFactory {
+                node,
+                starts: Arc::clone(&starts),
+                mode: TerminalLifecycleMode::Terminal,
+                offer_continuation_choice: false,
+            });
+        let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+
+        let error = run_guarded_default_campaign_with_runner(request, runner, evidence)
+            .expect_err("unsupported portable decision must fail before execution");
+
+        assert_eq!(starts.load(Ordering::Relaxed), 0);
+        assert!(matches!(
+            error,
+            GuardedDefaultCampaignRunError::Invariant(
+                GuardedDefaultCampaignInvariantError::ResumeSourceCheckpointMismatch
+            )
+        ));
+    }
+}
+
+#[test]
 fn selection_free_resume_applies_an_earlier_final_stop_after_source_admission() {
     let source_frontier = VirtualTime { ticks: 5 };
     let final_stop = StopCondition::VirtualTimeNanoseconds(3);
@@ -1033,7 +1092,7 @@ fn selection_free_resume_applies_an_earlier_final_stop_after_source_admission() 
     let checkpoint = legacy_resume_checkpoint(&request, &schedule, source_frontier);
     let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
         .expect("selection-free replay closure");
-    let request = request.with_selection_free_resume_source(
+    let request = request.with_resume_source(
         schedule,
         closure,
         checkpoint,
@@ -1082,7 +1141,7 @@ fn selection_free_resume_completes_at_the_requested_next_choice() {
     let checkpoint = legacy_resume_checkpoint(&request, &schedule, source_frontier);
     let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
         .expect("selection-free replay closure");
-    let request = request.with_selection_free_resume_source(
+    let request = request.with_resume_source(
         schedule,
         closure,
         checkpoint,

@@ -450,6 +450,7 @@ pub(super) fn canonical_run_log_entries(
         terminal_savepoint: None,
         savepoint_oracle: None,
         save_boundary_evidence: None,
+        savepoint_replay_closure: None,
         reproduction_artifact: None,
         side_reproduction_artifacts: Vec::new(),
         host_scheduler_preemption: Vec::new(),

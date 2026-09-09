@@ -61,6 +61,7 @@ pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, C
     let mut scenario = None;
     let mut scenario_payload = None;
     let mut schedule_payload = None;
+    let mut replay_closure_payload = None;
     let mut frontier_ticks = None;
     let mut at = None;
     let mut selector = None;
@@ -111,6 +112,11 @@ pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, C
                 require_field_count(line_index, tag, &fields, 3)?;
                 let payload = parse_hex_payload_line(line_index, tag, &fields[1], &fields[2])?;
                 set_once(&mut schedule_payload, line_index, tag, payload)?;
+            }
+            "campaign-replay-closure" => {
+                require_field_count(line_index, tag, &fields, 3)?;
+                let payload = parse_hex_payload_line(line_index, tag, &fields[1], &fields[2])?;
+                set_once(&mut replay_closure_payload, line_index, tag, payload)?;
             }
             "frontier" => {
                 require_field_count(line_index, tag, &fields, 2)?;
@@ -272,7 +278,10 @@ pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, C
     }
 
     let schema = schema.ok_or_else(|| missing_line("schema"))?;
-    if schema != SAVEPOINT_HANDLE_SCHEMA && schema != CAMPAIGN_MARKER_SAVEPOINT_HANDLE_SCHEMA {
+    if schema != SAVEPOINT_HANDLE_SCHEMA
+        && schema != CAMPAIGN_MARKER_SAVEPOINT_HANDLE_SCHEMA
+        && schema != REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA
+    {
         return Err(artifact_error(format!(
             "unsupported savepoint handle schema `{schema}`"
         )));
@@ -286,6 +295,14 @@ pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, C
     let boundary_proof = boundary_proof.ok_or_else(|| missing_line("boundary-proof"))?;
     let boundary_predicate =
         boundary_predicate.ok_or_else(|| missing_line("boundary-predicate"))?;
+    if schema == REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA && replay_closure_payload.is_none() {
+        return Err(missing_line("campaign-replay-closure"));
+    }
+    if schema != REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA && replay_closure_payload.is_some() {
+        return Err(artifact_error(format!(
+            "savepoint handle schema `{schema}` does not admit a campaign replay closure"
+        )));
+    }
     validate_savepoint_boundary_proof(
         &schema,
         at,
@@ -302,6 +319,7 @@ pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, C
         scenario_label,
         scenario_payload: scenario_payload.ok_or_else(|| missing_line("scenario-payload"))?,
         schedule_payload: schedule_payload.ok_or_else(|| missing_line("schedule-payload"))?,
+        replay_closure_payload,
         frontier_ticks,
         at,
         selector,
@@ -421,6 +439,18 @@ fn validate_savepoint_boundary_proof(
             SavepointBoundaryProof::Breakpoint { .. }
         ) | (
             CAMPAIGN_MARKER_SAVEPOINT_HANDLE_SCHEMA,
+            SaveAtArg::Marker,
+            SavepointBoundaryProof::CampaignMarkerEvent { .. }
+        ) | (
+            REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA,
+            SaveAtArg::VirtualTime,
+            SavepointBoundaryProof::Coordinate { .. }
+        ) | (
+            REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA,
+            SaveAtArg::Quiescence | SaveAtArg::Property | SaveAtArg::Marker,
+            SavepointBoundaryProof::Breakpoint { .. }
+        ) | (
+            REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA,
             SaveAtArg::Marker,
             SavepointBoundaryProof::CampaignMarkerEvent { .. }
         )
