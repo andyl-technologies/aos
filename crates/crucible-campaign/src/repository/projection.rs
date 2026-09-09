@@ -49,6 +49,7 @@ struct BranchCoverageGuidance {
 struct AttemptProposalPrior {
     admission_ordinal: AdmissionOrdinal,
     raw_weight: u64,
+    cause: BranchRequestCause,
 }
 
 #[derive(Default)]
@@ -68,6 +69,19 @@ struct BranchEdgeProjectionWork {
     prior_cache: BTreeMap<AttemptId, AttemptProposalPrior>,
     prior_request_cache: BTreeMap<BranchRequestId, Arc<BranchRequest>>,
     charged_prior_records: BTreeSet<ContentId>,
+}
+
+fn execution_basis_is_guidance_eligible(
+    policy: &crate::CampaignPolicy,
+    cause: BranchRequestCause,
+) -> bool {
+    !matches!(
+        cause,
+        BranchRequestCause::Operator(_) | BranchRequestCause::Debugger(_)
+    ) || matches!(
+        policy.intervention_learning_policy(),
+        crate::InterventionLearningPolicy::IncludeInGuidance
+    )
 }
 
 type BranchFindingEvents = BTreeMap<crate::BranchEdgeId, BTreeMap<crate::FindingKind, u64>>;

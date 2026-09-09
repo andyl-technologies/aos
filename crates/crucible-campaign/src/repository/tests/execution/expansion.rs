@@ -3,6 +3,243 @@
 use super::*;
 
 #[test]
+fn puct_guidance_uses_execution_basis_for_intervention_eligibility() {
+    exercise_intervention_guidance_ordering(
+        "operator-basis-planner-cause",
+        true,
+        InterventionLearningPolicy::Exclude,
+        0,
+    );
+    exercise_intervention_guidance_ordering(
+        "planner-basis-operator-cause",
+        false,
+        InterventionLearningPolicy::Exclude,
+        1,
+    );
+    exercise_intervention_guidance_ordering(
+        "operator-basis-opted-in",
+        true,
+        InterventionLearningPolicy::IncludeInGuidance,
+        1,
+    );
+}
+
+fn exercise_intervention_guidance_ordering(
+    name: &str,
+    operator_is_basis: bool,
+    intervention_learning: InterventionLearningPolicy,
+    expected_guidance_visits: u64,
+) {
+    let (repository, lineage, base_policy) = fixture();
+    let policy = match intervention_learning {
+        InterventionLearningPolicy::Exclude => base_policy,
+        InterventionLearningPolicy::IncludeInGuidance => base_policy
+            .with_intervention_learning_policy(intervention_learning)
+            .expect("intervention-learning policy"),
+    };
+    let genesis = repository
+        .create_funded(name, &lineage, &policy, &BTreeMap::new())
+        .expect("create intervention-guidance campaign");
+    let operator_request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        name,
+    );
+    let operator_requested = repository
+        .submit_known_branch_request(name, genesis.snapshot_id(), &operator_request)
+        .expect("submit operator request");
+
+    let (basis, basis_path, additional) = if operator_is_basis {
+        let (basis, path) = admit_guidance_attempt(
+            &repository,
+            name,
+            &policy,
+            operator_requested.new_snapshot,
+            &operator_request,
+        );
+        let planner_request =
+            planner_duplicate_request(&repository, name, basis.new_snapshot, &operator_request);
+        let planner_requested = repository
+            .submit_known_branch_request(name, basis.new_snapshot, &planner_request)
+            .expect("submit planner additional-cause request");
+        let (additional, _) = admit_guidance_attempt(
+            &repository,
+            name,
+            &policy,
+            planner_requested.new_snapshot,
+            &planner_request,
+        );
+        (basis, path, additional)
+    } else {
+        let planner_request = planner_duplicate_request(
+            &repository,
+            name,
+            operator_requested.new_snapshot,
+            &operator_request,
+        );
+        let planner_requested = repository
+            .submit_known_branch_request(name, operator_requested.new_snapshot, &planner_request)
+            .expect("submit planner execution-basis request");
+        let (basis, path) = admit_guidance_attempt(
+            &repository,
+            name,
+            &policy,
+            planner_requested.new_snapshot,
+            &planner_request,
+        );
+        let (additional, _) = admit_guidance_attempt(
+            &repository,
+            name,
+            &policy,
+            basis.new_snapshot,
+            &operator_request,
+        );
+        (basis, path, additional)
+    };
+    assert_eq!(basis.attempt, additional.attempt);
+    let basis_role = repository
+        .load_attempt_admission(basis.admission)
+        .expect("load execution-basis admission")
+        .role();
+    assert!(if operator_is_basis {
+        matches!(
+            basis_role,
+            AttemptAdmissionRole::ExecutionBasis {
+                cause: BranchRequestCause::Operator(_),
+                ..
+            }
+        )
+    } else {
+        matches!(
+            basis_role,
+            AttemptAdmissionRole::ExecutionBasis {
+                cause: BranchRequestCause::Planner(_),
+                ..
+            }
+        )
+    });
+    assert!(matches!(
+        repository
+            .load_attempt_admission(additional.admission)
+            .expect("load deduplicated admission")
+            .role(),
+        AttemptAdmissionRole::AdditionalCause { .. }
+    ));
+
+    let child = ConfigurationId::from_hash(CampaignHash::derive(
+        "test.intervention-guidance-child",
+        name.as_bytes(),
+    ));
+    let child_content = repository
+        .publish_configuration_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            child,
+            1,
+            name.as_bytes().to_vec(),
+        )
+        .expect("publish intervention-guidance child");
+    let measurements = repository
+        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
+        .expect("publish measurements");
+    let properties = repository
+        .publish_property_verdict_set(
+            &PropertyVerdictSet::new(BTreeMap::new()).expect("properties"),
+        )
+        .expect("publish properties");
+    let coverage = repository
+        .publish_coverage_projection(
+            &CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage"),
+        )
+        .expect("publish coverage");
+    let observation = Observation::new(
+        basis.attempt,
+        child,
+        child_content,
+        basis_path.id().expect("basis path ID"),
+        StopOutcome::Reached(StopCondition::NextChoice),
+        measurements,
+        properties,
+        coverage,
+        BTreeSet::from([operator_request.opportunity()]),
+    )
+    .expect("intervention-guidance observation");
+    let observed = repository
+        .publish_observation(name, additional.new_snapshot, &observation)
+        .expect("publish intervention-guidance observation");
+
+    let raw = repository
+        .project_branch_edge_visits(observed.new_snapshot, operator_request.branch_point())
+        .expect("project retained raw visit");
+    assert_eq!(raw.parent_visits(), 1);
+    let guidance = repository
+        .project_branch_puct(observed.new_snapshot, operator_request.branch_point())
+        .expect("project intervention-filtered PUCT guidance");
+    assert_eq!(guidance.parent_visits(), expected_guidance_visits);
+}
+
+fn planner_duplicate_request(
+    repository: &CampaignRepository,
+    name: &str,
+    snapshot: CampaignSnapshotId,
+    source: &BranchRequest,
+) -> BranchRequest {
+    let engine = PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
+    let state = PlannerState::new(
+        engine.id().expect("planner engine ID"),
+        "closed-rust-state",
+        1,
+        vec![0],
+    )
+    .expect("planner state");
+    let (_, _, invocation) = planner_basis(repository, name, snapshot, state);
+    BranchRequest::new(
+        source.branch_point(),
+        source.parent(),
+        source.opportunity(),
+        source.domain(),
+        source.source().clone(),
+        BranchRequestCause::Planner(invocation.id().expect("planner invocation ID")),
+        source.budget(),
+        source.stop().clone(),
+    )
+    .expect("planner duplicate request")
+}
+
+fn admit_guidance_attempt(
+    repository: &CampaignRepository,
+    name: &str,
+    policy: &CampaignPolicy,
+    snapshot: CampaignSnapshotId,
+    request: &BranchRequest,
+) -> (AttemptAdmissionResult, BranchPath) {
+    let proposal = finite_proposal(
+        request,
+        policy,
+        &repository.head(name).expect("proposal head"),
+        ChoiceValue::Boolean(false),
+        1,
+    );
+    let proposed = repository
+        .issue_proposal(name, snapshot, &proposal)
+        .expect("issue guidance proposal");
+    let (selection, path, attempt) = branch_attempt(repository, request, &proposal);
+    let admitted = repository
+        .admit_proposal(
+            name,
+            proposed.new_snapshot,
+            proposed.proposal,
+            &selection,
+            &path,
+            &attempt,
+        )
+        .expect("admit guidance proposal");
+    (admitted, path)
+}
+
+#[test]
 fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomputed() {
     let (repository, lineage, base_policy) = fixture();
     let objective_name = "recovery.score";
@@ -22,7 +259,9 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         base_policy.retention(),
         base_policy.admits_scenario_defaults(),
     )
-    .expect("objective-guided finite-expansion policy");
+    .expect("objective-guided finite-expansion policy")
+    .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
+    .expect("intervention-guided finite-expansion policy");
     let genesis = repository
         .create_funded("finite-expansion", &lineage, &policy, &BTreeMap::new())
         .expect("create");

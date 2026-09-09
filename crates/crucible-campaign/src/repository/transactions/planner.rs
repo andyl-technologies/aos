@@ -322,11 +322,7 @@ impl CampaignRepository {
                 }
             }
             if let Some(beam) = input.beam {
-                let content = self.put_envelope(ObjectEnvelope::for_record(
-                    crate::CampaignRecordKind::PlannerBeamCandidate,
-                    crate::object::content_children(beam.content_children())?,
-                    beam.canonical_bytes(),
-                )?)?;
+                let content = self.put_envelope(ObjectEnvelope::for_beam_candidate(&beam)?)?;
                 if content != beam.id()?.content_id() {
                     return Err(integrity("planner-Beam-candidate-publication-id-mismatch"));
                 }
@@ -711,11 +707,7 @@ impl CampaignRepository {
                     push_retained_planner_input(
                         &mut retained,
                         &mut retained_bytes,
-                        ObjectEnvelope::for_record(
-                            crate::CampaignRecordKind::PlannerBeamCandidate,
-                            crate::object::content_children(candidate.content_children())?,
-                            candidate.canonical_bytes(),
-                        )?,
+                        ObjectEnvelope::for_beam_candidate(candidate)?,
                     )?;
                 }
             }

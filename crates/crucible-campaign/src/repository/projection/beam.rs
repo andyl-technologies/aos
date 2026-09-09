@@ -51,6 +51,7 @@ struct BeamObservation {
     observation: Observation,
     ordinal: AdmissionOrdinal,
     barrier: crate::PlannerBeamBarrier,
+    cause: BranchRequestCause,
 }
 
 #[derive(Clone, Default)]
@@ -384,15 +385,32 @@ impl CampaignRepository {
         selections: &mut BTreeMap<SurvivorSelectionId, SurvivorSelectionBundle>,
         work: &mut BeamProjectionWork,
     ) -> Result<crate::PlannerBeamCohortState, CampaignRepositoryError> {
+        if candidates.is_empty() {
+            return Err(integrity("beam-frontier-cohort-has-no-modeled-observation"));
+        }
+        let mut intervention_exclusions = 0_u64;
+        let mut eligible_candidates = Vec::with_capacity(candidates.len());
+        for observation in candidates {
+            if execution_basis_is_guidance_eligible(policy, observation.cause) {
+                eligible_candidates.push(observation);
+            } else {
+                intervention_exclusions = intervention_exclusions
+                    .checked_add(1)
+                    .ok_or_else(|| integrity("beam-intervention-exclusion-count-overflow"))?;
+            }
+        }
+        let candidates = eligible_candidates;
+        if candidates.is_empty() {
+            return Ok(crate::PlannerBeamCohortState::InterventionExcluded(
+                intervention_exclusions,
+            ));
+        }
         let candidate_count = u64::try_from(candidates.len())
             .map_err(|_| integrity("beam-cohort-candidate-count-overflow"))?;
         if candidates.len() > crate::MAX_SURVIVOR_CANDIDATES {
             return Ok(crate::PlannerBeamCohortState::CohortLimitExceeded(
                 candidate_count,
             ));
-        }
-        if candidates.is_empty() {
-            return Err(integrity("beam-frontier-cohort-has-no-modeled-observation"));
         }
 
         let mut missing = 0_u64;
@@ -470,7 +488,16 @@ impl CampaignRepository {
         let bundle = crate::rank_survivors(policy, rule, ranking)?;
         let selection_id = bundle.selection().id()?;
         selections.insert(selection_id, bundle);
-        Ok(crate::PlannerBeamCohortState::Settled(selection_id))
+        if intervention_exclusions == 0 {
+            Ok(crate::PlannerBeamCohortState::Settled(selection_id))
+        } else {
+            Ok(
+                crate::PlannerBeamCohortState::SettledWithInterventionExclusions {
+                    selection: selection_id,
+                    excluded: intervention_exclusions,
+                },
+            )
+        }
     }
 
     fn beam_frontier_positions(
@@ -614,11 +641,12 @@ impl CampaignRepository {
         }
         let (_, ordinal) =
             self.observation_execution_basis(snapshot.snapshot.roots().accounting, &observation)?;
-        let barrier = self.beam_observation_barrier(snapshot, &observation)?;
+        let (barrier, cause) = self.beam_observation_barrier(snapshot, &observation)?;
         Ok(Some(BeamObservation {
             observation,
             ordinal,
             barrier,
+            cause,
         }))
     }
 
@@ -626,7 +654,7 @@ impl CampaignRepository {
         &self,
         snapshot: &LoadedSnapshot,
         observation: &Observation,
-    ) -> Result<crate::PlannerBeamBarrier, CampaignRepositoryError> {
+    ) -> Result<(crate::PlannerBeamBarrier, BranchRequestCause), CampaignRepositoryError> {
         let basis_content = self
             .merkle
             .get(
@@ -638,17 +666,26 @@ impl CampaignRepository {
             )?
             .ok_or_else(|| integrity("beam-observation-execution-basis-is-missing"))?;
         let admission = self.read_attempt_admission(basis_content)?;
-        let AttemptAdmissionRole::ExecutionBasis { proposal, .. } = admission.role() else {
+        let AttemptAdmissionRole::ExecutionBasis {
+            proposal, cause, ..
+        } = admission.role()
+        else {
             return Err(integrity("beam-observation-execution-basis-role"));
         };
         if admission.attempt() != observation.attempt() {
             return Err(integrity("beam-observation-execution-basis-mismatch"));
         }
         match proposal {
-            Some(proposal) => Ok(crate::PlannerBeamBarrier::request(
-                self.read_proposal(proposal.content_id())?.request(),
+            Some(proposal) => Ok((
+                crate::PlannerBeamBarrier::request(
+                    self.read_proposal(proposal.content_id())?.request(),
+                ),
+                cause,
             )),
-            None => Ok(crate::PlannerBeamBarrier::standalone(observation.attempt())),
+            None => Ok((
+                crate::PlannerBeamBarrier::standalone(observation.attempt()),
+                cause,
+            )),
         }
     }
 
@@ -912,9 +949,9 @@ fn charge_beam_target_proposal_visit(visited: &mut usize) -> Result<(), Campaign
 mod tests {
     use super::*;
     use crate::{
-        CampaignMode, CampaignSeed, ExplorerPolicy, FairnessPolicy, MeasurementSet, MetricValue,
-        Objective, ObjectiveGoal, ObjectiveValue, PropertyVerdictSet, RankingDisposition,
-        RetentionPolicy, StopOutcome,
+        CampaignCommandId, CampaignMode, CampaignSeed, DebugSessionId, ExplorerPolicy,
+        FairnessPolicy, MeasurementSet, MetricValue, Objective, ObjectiveGoal, ObjectiveValue,
+        PropertyVerdictSet, RankingDisposition, RetentionPolicy, StopOutcome,
     };
     use crucible_cas::content_store::{ContentId, ObjectKind};
 
@@ -1004,6 +1041,20 @@ mod tests {
             false,
         )
         .expect("Beam policy");
+        assert!(!execution_basis_is_guidance_eligible(
+            &policy,
+            BranchRequestCause::Operator(CampaignCommandId::from_hash(CampaignHash::derive(
+                "beam-test",
+                b"operator",
+            ))),
+        ));
+        assert!(!execution_basis_is_guidance_eligible(
+            &policy,
+            BranchRequestCause::Debugger(DebugSessionId::from_hash(CampaignHash::derive(
+                "beam-test",
+                b"debugger",
+            ))),
+        ));
         let candidates = [(first, 1_u64), (second, 2), (third, 100)]
             .into_iter()
             .map(|(configuration, latency)| {

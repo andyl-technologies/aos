@@ -7,8 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crucible::ScenarioDefForm;
 use crucible_campaign::{
     CampaignHash, CampaignMode, CampaignSeed, ChoiceClassContext, ChoicePolicy, ExactRational,
-    ExplorerPolicy, FairnessPolicy, GuidanceWeight, Objective, ObjectiveGoal,
-    ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy, ScenarioDefId, SelectableId,
+    ExplorerPolicy, FairnessPolicy, GuidanceWeight, InterventionLearningPolicy, Objective,
+    ObjectiveGoal, ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy, ScenarioDefId,
+    SelectableId,
 };
 use crucible_daemon::MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES;
 use serde::{Deserialize, Serialize};
@@ -51,6 +52,8 @@ struct AuthoredCampaignPolicy {
     retention: AuthoredRetentionPolicy,
     #[serde(default)]
     admit_scenario_defaults: bool,
+    #[serde(default)]
+    intervention_learning: AuthoredInterventionLearningPolicy,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -59,6 +62,14 @@ enum AuthoredCampaignMode {
     Strict,
     Streaming,
     Statistical,
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum AuthoredInterventionLearningPolicy {
+    #[default]
+    Exclude,
+    IncludeInGuidance,
 }
 
 #[derive(Deserialize)]
@@ -260,7 +271,7 @@ impl AuthoredCampaignPolicy {
             self.retention.exact_findings,
             self.retention.exact_user_pins,
         );
-        CampaignPolicy::new(
+        let policy = CampaignPolicy::new(
             scenario,
             campaign_seed,
             match self.mode {
@@ -277,7 +288,13 @@ impl AuthoredCampaignPolicy {
             retention,
             self.admit_scenario_defaults,
         )
-        .map_err(|error| usage_error(format!("invalid authored campaign policy: {error}")))
+        .map_err(|error| usage_error(format!("invalid authored campaign policy: {error}")))?;
+        match self.intervention_learning {
+            AuthoredInterventionLearningPolicy::Exclude => Ok(policy),
+            AuthoredInterventionLearningPolicy::IncludeInGuidance => policy
+                .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
+                .map_err(|error| usage_error(format!("invalid authored campaign policy: {error}"))),
+        }
     }
 }
 
@@ -633,6 +650,39 @@ exact_user_pins = true
         assert_eq!(report.encoded_bytes, bytes.len());
         assert!(policy.choice_policies().contains_key("network.latency"));
         assert!(policy.objectives().contains_key("recovery-time"));
+        assert_eq!(
+            policy.intervention_learning_policy(),
+            InterventionLearningPolicy::Exclude
+        );
+    }
+
+    #[test]
+    fn manifest_can_explicitly_include_interventions_in_guidance() {
+        let temporary = tempdir().expect("temporary directory");
+        let input = temporary.path().join("policy.toml");
+        let output = temporary.path().join("policy.bin");
+        let manifest = manifest().replace(
+            "mode = \"strict\"",
+            "mode = \"strict\"\nintervention_learning = \"include-in-guidance\"",
+        );
+        std::fs::write(&input, manifest).expect("write opt-in manifest");
+
+        compile_campaign_policy(&input, None, &output).expect("compile opt-in policy");
+        let bytes = std::fs::read(output).expect("read opt-in policy");
+        let policy = CampaignPolicy::from_canonical_bytes(&bytes).expect("decode opt-in policy");
+
+        assert_eq!(
+            policy.intervention_learning_policy(),
+            InterventionLearningPolicy::IncludeInGuidance
+        );
+        assert_eq!(
+            policy
+                .id()
+                .expect("opt-in policy ID")
+                .content_id()
+                .schema_version(),
+            2
+        );
     }
 
     #[test]

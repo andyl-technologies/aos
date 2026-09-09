@@ -413,6 +413,7 @@ content_object_id!(
 content_object_id!(
     CampaignPolicyId,
     ObjectKind::Policy,
+    [1, 2],
     "crucible.campaign.policy",
     "Identifies one immutable campaign policy revision."
 );
@@ -677,6 +678,7 @@ content_object_id!(
 content_object_id!(
     PlannerBeamCandidateId,
     ObjectKind::Projection,
+    [1, 2],
     "crucible.campaign.planner-beam-candidate",
     "Identifies one snapshot-bound Beam candidate and survivor-decision binding."
 );

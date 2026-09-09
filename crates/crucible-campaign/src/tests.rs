@@ -741,6 +741,10 @@ fn campaign_policy_identity_is_order_independent_and_strictly_decoded() {
         false,
     )
     .expect("campaign policy");
+    assert_eq!(
+        policy.intervention_learning_policy(),
+        InterventionLearningPolicy::Exclude
+    );
 
     let bytes = policy.canonical_bytes();
     assert_eq!(
@@ -755,6 +759,7 @@ fn campaign_policy_identity_is_order_independent_and_strictly_decoded() {
     );
     let policy_id = policy.id().expect("policy id");
     assert_eq!(policy_id.content_id().kind(), ObjectKind::Policy);
+    assert_eq!(policy_id.content_id().schema_version(), 1);
     assert_eq!(
         CampaignPolicyId::parse(&policy_id.to_text()).expect("parse policy id"),
         policy_id
@@ -776,6 +781,28 @@ fn campaign_policy_identity_is_order_independent_and_strictly_decoded() {
     assert_eq!(profile.sensitivity(), SensitivityClass::Metadata);
     assert_eq!(profile.reconstructibility(), Reconstructibility::Canonical);
     assert_eq!(profile.retention_role(), RetentionRole::CampaignMetadata);
+
+    let opted_in = policy
+        .clone()
+        .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
+        .expect("opt-in campaign policy");
+    assert_eq!(
+        CampaignPolicy::from_canonical_bytes(&opted_in.canonical_bytes())
+            .expect("version-two campaign policy"),
+        opted_in
+    );
+    assert_eq!(
+        opted_in.intervention_learning_policy(),
+        InterventionLearningPolicy::IncludeInGuidance
+    );
+    assert_eq!(
+        opted_in
+            .id()
+            .expect("version-two policy ID")
+            .content_id()
+            .schema_version(),
+        2
+    );
 
     let mut malformed = envelope.canonical_bytes();
     malformed.push(0);

@@ -273,6 +273,7 @@ campaign_seed = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1
 mode = "strict"
 stop_conditions = ["scenario-complete"]
 admit_scenario_defaults = false
+intervention_learning = "exclude"
 
 [explorer]
 kind = "tree-search"
@@ -313,6 +314,13 @@ survivor_limit = 32
 exact_findings = true
 exact_user_pins = true
 ```
+
+`intervention_learning` defaults to `exclude`, which retains operator- and
+debugger-derived observations while keeping them out of adaptive guidance and
+Beam survivor ranking. Set it to `include-in-guidance` only when that feedback
+is intended; the opt-in is recorded in the version-two policy identity and in
+planner proposal explanations. The opt-in does not make interventions eligible
+for statistical estimators.
 
 A choice `selector` may remain a plain stable declaration name, which preserves
 the original offline format and needs no scenario file. With `--scenario`, it

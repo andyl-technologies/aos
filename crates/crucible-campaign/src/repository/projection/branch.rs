@@ -207,7 +207,7 @@ impl CampaignRepository {
     ) -> Result<crate::BranchEdgeVisitStatistics, CampaignRepositoryError> {
         self.validate_complete_head(snapshot.content_id())?;
         let loaded = self.read_snapshot(snapshot.content_id())?;
-        self.project_branch_edge_visit_evidence(&loaded, branch_point)
+        self.project_branch_edge_visit_evidence(&loaded, branch_point, None)
             .map(|evidence| evidence.statistics)
     }
 
@@ -246,7 +246,8 @@ impl CampaignRepository {
                 "branch-puct-projection-requires-tree-search-policy",
             ));
         };
-        let evidence = self.project_branch_edge_visit_evidence(loaded, branch_point)?;
+        let evidence =
+            self.project_branch_edge_visit_evidence(loaded, branch_point, Some(&policy))?;
         let coverage = self.project_branch_coverage_guidance(loaded, &evidence)?;
         let finding_weights = [
             crate::FindingKind::PropertyViolation,
@@ -299,7 +300,8 @@ impl CampaignRepository {
             ));
         };
         let branch_points = branch_points.into_iter().collect::<BTreeSet<_>>();
-        let evidence = self.project_branch_edge_visit_evidence_batch(loaded, &branch_points)?;
+        let evidence =
+            self.project_branch_edge_visit_evidence_batch(loaded, &branch_points, &policy)?;
         let mut coverage = self.project_branch_coverage_guidance_batch(loaded, &evidence)?;
         let finding_weights = [
             crate::FindingKind::PropertyViolation,
@@ -424,10 +426,12 @@ impl CampaignRepository {
         &self,
         loaded: &LoadedSnapshot,
         branch_point: crate::BranchPointId,
+        guidance_policy: Option<&CampaignPolicy>,
     ) -> Result<BranchEdgeVisitEvidence, CampaignRepositoryError> {
         self.project_branch_edge_visit_evidence_bounded(
             loaded,
             branch_point,
+            guidance_policy,
             &mut BranchEdgeProjectionWork::default(),
         )
     }
@@ -436,14 +440,20 @@ impl CampaignRepository {
         &self,
         loaded: &LoadedSnapshot,
         branch_points: &BTreeSet<crate::BranchPointId>,
+        guidance_policy: &CampaignPolicy,
     ) -> Result<BTreeMap<crate::BranchPointId, BranchEdgeVisitEvidence>, CampaignRepositoryError>
     {
         let mut work = BranchEdgeProjectionWork::default();
         branch_points
             .iter()
             .map(|branch_point| {
-                self.project_branch_edge_visit_evidence_bounded(loaded, *branch_point, &mut work)
-                    .map(|evidence| (*branch_point, evidence))
+                self.project_branch_edge_visit_evidence_bounded(
+                    loaded,
+                    *branch_point,
+                    Some(guidance_policy),
+                    &mut work,
+                )
+                .map(|evidence| (*branch_point, evidence))
             })
             .collect()
     }
@@ -452,6 +462,7 @@ impl CampaignRepository {
         &self,
         loaded: &LoadedSnapshot,
         branch_point: crate::BranchPointId,
+        guidance_policy: Option<&CampaignPolicy>,
         work: &mut BranchEdgeProjectionWork,
     ) -> Result<BranchEdgeVisitEvidence, CampaignRepositoryError> {
         let Some(index) = self.merkle.get(
@@ -469,8 +480,8 @@ impl CampaignRepository {
                 observations: Vec::new(),
             });
         };
-        let parent_visits = self.merkle.inspect_shallow(index)?.entry_count();
-        work.total_credits = charge_branch_edge_visit_credits(work.total_credits, parent_visits)?;
+        let indexed_visits = self.merkle.inspect_shallow(index)?.entry_count();
+        work.total_credits = charge_branch_edge_visit_credits(work.total_credits, indexed_visits)?;
 
         let mut after = None;
         let mut edge_visits = BTreeMap::<crate::BranchEdgeId, u64>::new();
@@ -478,11 +489,12 @@ impl CampaignRepository {
         let mut observations = Vec::new();
         observations
             .try_reserve_exact(
-                usize::try_from(parent_visits)
+                usize::try_from(indexed_visits)
                     .map_err(|_| integrity("branch-edge-visit-projection-count"))?,
             )
             .map_err(|_| integrity("branch-edge-visit-projection-count"))?;
-        let mut visited = 0_u64;
+        let mut scanned = 0_u64;
+        let mut eligible_visits = 0_u64;
         loop {
             let page = self.merkle.scan(index, after, PROJECTION_SCAN_PAGE_ITEMS)?;
             for (key, content) in page.entries() {
@@ -533,6 +545,14 @@ impl CampaignRepository {
                     &mut work.prior_request_cache,
                     &mut work.charged_prior_records,
                 )?;
+                scanned = scanned
+                    .checked_add(1)
+                    .ok_or_else(|| integrity("branch-edge-visit-count-overflow"))?;
+                if guidance_policy.is_some_and(|policy| {
+                    !execution_basis_is_guidance_eligible(policy, prior.cause)
+                }) {
+                    continue;
+                }
                 match edge_prior_basis.entry(edge) {
                     std::collections::btree_map::Entry::Vacant(entry) => {
                         entry.insert(prior);
@@ -557,7 +577,7 @@ impl CampaignRepository {
                     edge,
                     coverage: observation.coverage(),
                 });
-                visited = visited
+                eligible_visits = eligible_visits
                     .checked_add(1)
                     .ok_or_else(|| integrity("branch-edge-visit-count-overflow"))?;
             }
@@ -566,7 +586,7 @@ impl CampaignRepository {
             };
             after = Some(next);
         }
-        if visited != parent_visits {
+        if scanned != indexed_visits {
             return Err(integrity("branch-edge-visit-credit-scan-mismatch"));
         }
         let prior_weights = edge_prior_basis
@@ -579,7 +599,7 @@ impl CampaignRepository {
         Ok(BranchEdgeVisitEvidence {
             statistics: crate::BranchEdgeVisitStatistics::new(
                 branch_point,
-                parent_visits,
+                eligible_visits,
                 edge_visits,
             )?,
             prior_weights,
@@ -660,6 +680,7 @@ impl CampaignRepository {
         let prior = AttemptProposalPrior {
             admission_ordinal,
             raw_weight,
+            cause,
         };
         cache.insert(attempt, prior);
         Ok(prior)

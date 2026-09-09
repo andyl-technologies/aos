@@ -11,7 +11,8 @@ use super::{
     ScenarioDefId,
 };
 
-const CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 1;
+const LEGACY_CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 1;
+const CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 2;
 pub(crate) const MAX_POLICY_ENTRIES: usize = 4_096;
 const MAX_CAMPAIGN_POLICY_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_IDENTIFIER_BYTES: usize = 512;
@@ -1301,10 +1302,45 @@ pub struct CampaignPolicy {
     fairness: FairnessPolicy,
     retention: RetentionPolicy,
     admit_scenario_defaults: bool,
+    intervention_learning: InterventionLearningPolicy,
+}
+
+/// Controls whether intervention observations may guide adaptive exploration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InterventionLearningPolicy {
+    /// Retains intervention observations without feeding them into guidance.
+    #[default]
+    Exclude,
+    /// Allows operator and debugger execution bases to influence guidance.
+    IncludeInGuidance,
+}
+
+impl Canonical for InterventionLearningPolicy {
+    fn encode(&self, encoder: &mut Encoder) {
+        encoder.u8(match self {
+            Self::Exclude => 0,
+            Self::IncludeInGuidance => 1,
+        });
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::Exclude),
+            1 => Ok(Self::IncludeInGuidance),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "intervention-learning-policy",
+                tag,
+            }),
+        }
+    }
 }
 
 impl CampaignPolicy {
     /// Builds a validated version-one policy with canonical map/set ordering.
+    ///
+    /// Operator- and debugger-initiated attempts are retained but excluded
+    /// from adaptive guidance unless [`Self::with_intervention_learning_policy`]
+    /// explicitly opts in.
     ///
     /// # Errors
     ///
@@ -1324,6 +1360,40 @@ impl CampaignPolicy {
         fairness: FairnessPolicy,
         retention: RetentionPolicy,
         admit_scenario_defaults: bool,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_for_schema(
+            LEGACY_CAMPAIGN_POLICY_SCHEMA_VERSION,
+            scenario,
+            campaign_seed,
+            mode,
+            explorer,
+            choice_policies,
+            objectives,
+            guidance,
+            stop_conditions,
+            fairness,
+            retention,
+            admit_scenario_defaults,
+            InterventionLearningPolicy::Exclude,
+        )
+    }
+
+    // crucible-lint: allow rust-allow -- one schema-gated constructor validates the complete v1/v2 policy contract.
+    #[allow(clippy::too_many_arguments)]
+    fn new_for_schema(
+        schema_version: u32,
+        scenario: ScenarioDefId,
+        campaign_seed: CampaignSeed,
+        mode: CampaignMode,
+        explorer: ExplorerPolicy,
+        choice_policies: BTreeMap<String, ChoicePolicy>,
+        objectives: BTreeMap<String, Objective>,
+        guidance: BTreeMap<String, GuidanceWeight>,
+        stop_conditions: BTreeSet<String>,
+        fairness: FairnessPolicy,
+        retention: RetentionPolicy,
+        admit_scenario_defaults: bool,
+        intervention_learning: InterventionLearningPolicy,
     ) -> Result<Self, CampaignCodecError> {
         explorer.validate()?;
         for length in [
@@ -1363,7 +1433,7 @@ impl CampaignPolicy {
             validate_identifier(stop, "stop-condition identifier is invalid")?;
         }
         let policy = Self {
-            schema_version: CAMPAIGN_POLICY_SCHEMA_VERSION,
+            schema_version,
             scenario,
             campaign_seed,
             mode,
@@ -1375,6 +1445,7 @@ impl CampaignPolicy {
             fairness,
             retention,
             admit_scenario_defaults,
+            intervention_learning,
         };
         codec::ensure_encoded_size(
             &policy,
@@ -1382,6 +1453,29 @@ impl CampaignPolicy {
             "campaign-policy-encoded-bytes",
         )?;
         Ok(policy)
+    }
+
+    /// Returns a version-two policy with an explicit intervention-learning rule.
+    ///
+    /// This setting affects adaptive guidance only. It does not make
+    /// intervention observations eligible for statistical estimators.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError::LimitExceeded`] if the version-two
+    /// representation exceeds the campaign-policy size bound.
+    pub fn with_intervention_learning_policy(
+        mut self,
+        intervention_learning: InterventionLearningPolicy,
+    ) -> Result<Self, CampaignCodecError> {
+        self.schema_version = CAMPAIGN_POLICY_SCHEMA_VERSION;
+        self.intervention_learning = intervention_learning;
+        codec::ensure_encoded_size(
+            &self,
+            MAX_CAMPAIGN_POLICY_BYTES,
+            "campaign-policy-encoded-bytes",
+        )?;
+        Ok(self)
     }
 
     /// Returns the referenced immutable scenario.
@@ -1460,6 +1554,16 @@ impl CampaignPolicy {
         self.admit_scenario_defaults
     }
 
+    /// Returns the rule for using intervention observations in guidance.
+    #[must_use]
+    pub const fn intervention_learning_policy(&self) -> InterventionLearningPolicy {
+        self.intervention_learning
+    }
+
+    pub(crate) const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
     pub(crate) fn content_children(&self) -> Vec<(String, ContentId)> {
         self.choice_policies
             .values()
@@ -1518,48 +1622,70 @@ impl Canonical for CampaignPolicy {
         self.fairness.encode(encoder);
         self.retention.encode(encoder);
         self.admit_scenario_defaults.encode(encoder);
+        if self.schema_version >= CAMPAIGN_POLICY_SCHEMA_VERSION {
+            self.intervention_learning.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
-        if schema_version != CAMPAIGN_POLICY_SCHEMA_VERSION {
+        if !matches!(
+            schema_version,
+            LEGACY_CAMPAIGN_POLICY_SCHEMA_VERSION | CAMPAIGN_POLICY_SCHEMA_VERSION
+        ) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported campaign-policy schema version",
             });
         }
-        Self::new(
-            ScenarioDefId::decode(decoder)?,
-            CampaignSeed::decode(decoder)?,
-            CampaignMode::decode(decoder)?,
-            ExplorerPolicy::decode(decoder)?,
-            decoder.map_bounded_by(
-                MAX_POLICY_ENTRIES,
-                "campaign-choice-policy-count",
-                |decoder| {
-                    decoder.string_bounded(MAX_IDENTIFIER_BYTES, "choice-policy-map-key-bytes")
-                },
-                ChoicePolicy::decode,
-            )?,
-            decoder.map_bounded_by(
-                MAX_POLICY_ENTRIES,
-                "campaign-objective-count",
-                |decoder| decoder.string_bounded(MAX_IDENTIFIER_BYTES, "objective-map-key-bytes"),
-                Objective::decode,
-            )?,
-            decoder.map_bounded_by(
-                MAX_POLICY_ENTRIES,
-                "campaign-guidance-count",
-                |decoder| decoder.string_bounded(MAX_IDENTIFIER_BYTES, "guidance-map-key-bytes"),
-                GuidanceWeight::decode,
-            )?,
-            decoder.set_bounded_by(
-                MAX_POLICY_ENTRIES,
-                "campaign-stop-condition-count",
-                |decoder| decoder.string_bounded(MAX_IDENTIFIER_BYTES, "stop-condition-name-bytes"),
-            )?,
-            FairnessPolicy::decode(decoder)?,
-            RetentionPolicy::decode(decoder)?,
-            bool::decode(decoder)?,
+        let scenario = ScenarioDefId::decode(decoder)?;
+        let campaign_seed = CampaignSeed::decode(decoder)?;
+        let mode = CampaignMode::decode(decoder)?;
+        let explorer = ExplorerPolicy::decode(decoder)?;
+        let choice_policies = decoder.map_bounded_by(
+            MAX_POLICY_ENTRIES,
+            "campaign-choice-policy-count",
+            |decoder| decoder.string_bounded(MAX_IDENTIFIER_BYTES, "choice-policy-map-key-bytes"),
+            ChoicePolicy::decode,
+        )?;
+        let objectives = decoder.map_bounded_by(
+            MAX_POLICY_ENTRIES,
+            "campaign-objective-count",
+            |decoder| decoder.string_bounded(MAX_IDENTIFIER_BYTES, "objective-map-key-bytes"),
+            Objective::decode,
+        )?;
+        let guidance = decoder.map_bounded_by(
+            MAX_POLICY_ENTRIES,
+            "campaign-guidance-count",
+            |decoder| decoder.string_bounded(MAX_IDENTIFIER_BYTES, "guidance-map-key-bytes"),
+            GuidanceWeight::decode,
+        )?;
+        let stop_conditions = decoder.set_bounded_by(
+            MAX_POLICY_ENTRIES,
+            "campaign-stop-condition-count",
+            |decoder| decoder.string_bounded(MAX_IDENTIFIER_BYTES, "stop-condition-name-bytes"),
+        )?;
+        let fairness = FairnessPolicy::decode(decoder)?;
+        let retention = RetentionPolicy::decode(decoder)?;
+        let admit_scenario_defaults = bool::decode(decoder)?;
+        let intervention_learning = if schema_version >= CAMPAIGN_POLICY_SCHEMA_VERSION {
+            InterventionLearningPolicy::decode(decoder)?
+        } else {
+            InterventionLearningPolicy::Exclude
+        };
+        Self::new_for_schema(
+            schema_version,
+            scenario,
+            campaign_seed,
+            mode,
+            explorer,
+            choice_policies,
+            objectives,
+            guidance,
+            stop_conditions,
+            fairness,
+            retention,
+            admit_scenario_defaults,
+            intervention_learning,
         )
     }
 }
