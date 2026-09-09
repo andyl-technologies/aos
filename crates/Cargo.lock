@@ -618,8 +618,10 @@ name = "aos-package"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-ability-model",
  "aos-boot-identity",
  "aos-cache",
+ "aos-contract",
  "aos-core",
  "aos-doc-model",
  "aos-net",
