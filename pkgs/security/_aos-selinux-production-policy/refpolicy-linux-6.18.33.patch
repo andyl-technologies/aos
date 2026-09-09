@@ -1,0 +1,64 @@
+diff --git a/policy/flask/access_vectors b/policy/flask/access_vectors
+index a2fb737a..10373498 100644
+--- a/policy/flask/access_vectors
++++ b/policy/flask/access_vectors
+@@ -29,6 +29,7 @@ common file
+ 	watch_sb
+ 	watch_with_perm
+ 	watch_reads
++	watch_mountns
+ }
+ 
+ 
+@@ -362,6 +363,11 @@ class system
+ 	syslog_console
+ 	module_request
+ 	module_load
++	firmware_load
++	kexec_image_load
++	kexec_initramfs_load
++	policy_load
++	x509_certificate_load
+ 
+ 	# these are overloaded userspace
+ 	# permissions from systemd
+@@ -507,6 +513,7 @@ inherits socket
+ {
+ 	nlmsg_read
+ 	nlmsg_write
++	nlmsg
+ }
+ 
+ class obsolete_netlink_firewall_socket
+@@ -520,6 +527,7 @@ inherits socket
+ {
+ 	nlmsg_read
+ 	nlmsg_write
++	nlmsg
+ }
+ 
+ class netlink_nflog_socket
+@@ -530,6 +538,7 @@ inherits socket
+ {
+ 	nlmsg_read
+ 	nlmsg_write
++	nlmsg
+ }
+ 
+ class netlink_selinux_socket
+@@ -543,6 +552,7 @@ inherits socket
+ 	nlmsg_relay
+ 	nlmsg_readpriv
+ 	nlmsg_tty_audit
++	nlmsg
+ }
+ 
+ class obsolete_netlink_ip6fw_socket
+@@ -1053,6 +1063,7 @@ class io_uring
+ 	override_creds
+ 	sqpoll
+ 	cmd
++	allowed
+ }
+ 
+ class user_namespace

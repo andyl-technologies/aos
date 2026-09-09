@@ -457,6 +457,7 @@ let
     "aos-sandbox-network-observer"
     "aos-sandbox-zfs-worker"
     "aos-service-root"
+    "aos-selinux-production-policy"
     "aos-selinux-run"
     "aos-var-policy-migrate"
     "aos-verity-root-guard"
@@ -559,9 +560,11 @@ let
     "qemu-crucible-reference"
     "qemu-crucible-source"
     "refpolicy"
+    "refpolicy-production"
     "ripgrep"
     "rootlesskit"
     "runc"
+    "secilc"
     "semodule-utils"
     "setools"
     "slirp4netns"
@@ -770,6 +773,10 @@ let
     "networking/_envoy-config/types.nix" = "linux-only-config-source";
     "networking/_nginx-config/module.nix" = "linux-only-config-source";
     "networking/_openldap-config/module.nix" = "linux-only-config-source";
+    "security/_aos-selinux-production-policy/coverage.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/coverage_test.py" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/kernel-classmap.c" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/refpolicy-linux-6.18.33.patch" = "linux-only-build-source";
     "security/_krb5-kdc-config/module.nix" = "linux-only-config-source";
     "storage/_garage-config/module.nix" = "linux-only-config-source";
     "storage/_garage-tests/lifecycle.nix" = "linux-only-test-source";
