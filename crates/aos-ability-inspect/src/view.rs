@@ -20,10 +20,11 @@ use std::io::{self, Write};
 
 use aos_ability_model::document::ProviderState;
 use aos_ability_model::{
-    AbilityActivationMode, AccessMode, AggregateId, AuthorityRole, BindingId, BindingSource,
-    DependencyKind, InstanceId, InterfaceDescriptor, InterfaceKey, LocalKey, OperationFamily,
-    OperationPhase, PlanId, PlanNodeKey, RecoveryContract, RequestId, RequiredFeature, ResourceId,
-    ResourceLifetime, RevisionId, ScopedOperationKey, VersionedDocument,
+    AbilityActivationMode, AccessMode, AggregateId, ArtifactReference, AuthorityRole, BindingId,
+    BindingSource, DependencyKind, InstanceId, InterfaceDescriptor, InterfaceKey, LocalKey,
+    OperationFamily, OperationPhase, PlanId, PlanNodeKey, RecoveryContract, RequestId,
+    RequiredFeature, ResourceId, ResourceLifetime, RevisionId, ScopedOperationKey, ValueExpression,
+    ValueSchema, VersionedDocument,
 };
 use aos_ability_validate::CheckedEffectPlan;
 use aos_contract::Sha256Digest;
@@ -65,6 +66,15 @@ pub enum InspectionViewError {
     /// Version 1 does not support optional feature semantics.
     #[error("inspection view requires unsupported feature semantics")]
     UnsupportedFeatures,
+    /// A checked operation no longer resolves to its declared method schema.
+    #[error("checked operation is missing its validated input schema")]
+    MissingOperationInputSchema,
+    /// A checked aggregate output no longer resolves to its declared output schema.
+    #[error("checked aggregate output is missing its validated value schema")]
+    MissingAggregateOutputSchema,
+    /// A schema-typed literal artifact reference could not be decoded.
+    #[error("checked literal artifact reference is invalid: {0}")]
+    InvalidArtifactReference(#[source] serde_json::Error),
 }
 
 /// States what established the plan semantics and exact input identity.
@@ -107,6 +117,8 @@ pub enum NodeKey {
     Decision(ScopedOperationKey),
     /// Names one conditional merge.
     Merge(ScopedOperationKey),
+    /// Names one exact immutable artifact and authenticated closure association.
+    Artifact(Sha256Digest),
     /// Names one logical resource.
     Resource(ResourceId),
     /// Names one unresolved obligation within the plan.
@@ -244,6 +256,13 @@ pub enum InspectionNode {
         /// Commits to the complete typed merge definition.
         semantic_digest: Sha256Digest,
     },
+    /// Describes one exact immutable artifact without embedding its contents.
+    Artifact {
+        /// Commits to the complete artifact reference, including its store identity.
+        id: Sha256Digest,
+        /// Retains the exact content, NAR, closure, and store-path reference.
+        reference: ArtifactReference,
+    },
     /// Describes one logical resource and checked desired/current revisions.
     Resource {
         /// Identifies the provider-owned logical resource.
@@ -284,6 +303,7 @@ impl InspectionNode {
             Self::Operation { key, .. } => NodeKey::Operation(key.clone()),
             Self::Decision { key, .. } => NodeKey::Decision(key.clone()),
             Self::Merge { key, .. } => NodeKey::Merge(key.clone()),
+            Self::Artifact { id, .. } => NodeKey::Artifact(*id),
             Self::Resource { id, .. } => NodeKey::Resource(id.clone()),
             Self::Obligation { key, .. } => NodeKey::Obligation(key.clone()),
         }
@@ -306,6 +326,18 @@ pub enum InspectionRelation {
     SuppliesInterface,
     /// A provider selection is backed by an exact package manifest.
     BackedByPackage,
+    /// A desired deployment instance runs one exact package manifest.
+    RunsPackage,
+    /// An authenticated package manifest exports one exact public interface.
+    ExportsInterface,
+    /// An authenticated package requirement accepts one exact public interface.
+    RequiresInterface,
+    /// An authenticated package manifest retains an exact artifact.
+    AuthenticatesArtifact,
+    /// A selected provider or binding uses an exact implementation artifact.
+    UsesImplementationArtifact,
+    /// A value expression or aggregate output retains an exact artifact.
+    RetainsArtifact,
     /// A request contributed one authorized aggregate slot.
     ContributesToAggregate,
     /// A provider owns one shared aggregate.
@@ -502,6 +534,36 @@ fn build_view(
                 activation_mode: package.activation_mode,
             },
         );
+        for export in &package.exports {
+            insert_edge(
+                &mut edges,
+                NodeKey::Package(digest),
+                NodeKey::Interface(export.interface.clone()),
+                InspectionRelation::ExportsInterface,
+            );
+        }
+        for interface in package
+            .requirements
+            .iter()
+            .flat_map(|requirement| &requirement.accepted_interfaces)
+        {
+            insert_edge(
+                &mut edges,
+                NodeKey::Package(digest),
+                NodeKey::Interface(interface.clone()),
+                InspectionRelation::RequiresInterface,
+            );
+        }
+        insert_package_artifacts(&mut nodes, &mut edges, package, digest)?;
+    }
+    for instance in &binding_plan.desired_state().instances {
+        insert_provider(&mut nodes, plan, &instance.instance);
+        insert_edge(
+            &mut edges,
+            NodeKey::Provider(instance.instance.clone()),
+            NodeKey::Package(instance.package),
+            InspectionRelation::RunsPackage,
+        );
     }
     for request in &binding_plan.document().requests {
         insert_provider(&mut nodes, plan, &request.id.consumer);
@@ -574,6 +636,23 @@ fn build_view(
                 InspectionRelation::BackedByPackage,
             );
         }
+        let artifact = insert_artifact(&mut nodes, &binding.implementation.artifact)?;
+        insert_edge(
+            &mut edges,
+            NodeKey::Binding(binding.id.clone()),
+            artifact,
+            InspectionRelation::UsesImplementationArtifact,
+        );
+    }
+    for provider in &binding_plan.environment().providers {
+        insert_provider(&mut nodes, plan, &provider.provider);
+        let artifact = insert_artifact(&mut nodes, &provider.implementation.artifact)?;
+        insert_edge(
+            &mut edges,
+            NodeKey::Provider(provider.provider.clone()),
+            artifact,
+            InspectionRelation::UsesImplementationArtifact,
+        );
     }
     for contribution in &binding_plan.desired_state().contributions {
         insert_provider(&mut nodes, plan, &contribution.aggregate.provider);
@@ -599,6 +678,31 @@ fn build_view(
 
     insert_plan_nodes(plan, &mut nodes, &mut edges)?;
     insert_resource_nodes(plan, &mut nodes, &mut edges);
+    for artifact in &plan.document().artifacts {
+        insert_artifact(&mut nodes, artifact)?;
+    }
+    for output in &binding_plan.desired_state().outputs {
+        let schema = plan
+            .interfaces()
+            .get(&output.interface)
+            .and_then(|interface| interface.interface.outputs.get(&output.port))
+            .map(|output| &output.schema)
+            .ok_or(InspectionViewError::MissingAggregateOutputSchema)?;
+        insert_provider(&mut nodes, plan, &output.aggregate.provider);
+        insert_node(
+            &mut nodes,
+            InspectionNode::Aggregate {
+                id: output.aggregate.clone(),
+            },
+        );
+        insert_expression_artifacts(
+            &mut nodes,
+            &mut edges,
+            NodeKey::Aggregate(output.aggregate.clone()),
+            schema,
+            &output.value,
+        )?;
+    }
 
     for obligation in binding_plan
         .document()
@@ -644,6 +748,12 @@ fn insert_plan_nodes(
     edges: &mut BTreeSet<InspectionEdge>,
 ) -> Result<(), InspectionViewError> {
     for operation in plan.operations() {
+        let input_schema = plan
+            .interfaces()
+            .get(&operation.interface)
+            .and_then(|interface| interface.interface.methods.get(&operation.method))
+            .map(|method| &method.parameters)
+            .ok_or(InspectionViewError::MissingOperationInputSchema)?;
         insert_node(
             nodes,
             InspectionNode::Operation {
@@ -677,6 +787,13 @@ fn insert_plan_nodes(
                 access_relation(access.mode),
             );
         }
+        insert_expression_artifacts(
+            nodes,
+            edges,
+            NodeKey::Operation(operation.key.clone()),
+            input_schema,
+            &operation.inputs,
+        )?;
     }
     for decision in plan.decisions() {
         insert_node(
@@ -720,6 +837,213 @@ fn insert_plan_nodes(
         );
     }
     Ok(())
+}
+
+fn insert_package_artifacts(
+    nodes: &mut BTreeMap<NodeKey, InspectionNode>,
+    edges: &mut BTreeSet<InspectionEdge>,
+    package: &aos_ability_model::PackageDocument,
+    package_digest: Sha256Digest,
+) -> Result<(), InspectionViewError> {
+    let artifacts = std::iter::once(&package.package.payload)
+        .chain(std::iter::once(&package.package.source))
+        .chain(package.artifacts.iter())
+        .chain(package.module_entry_points.values())
+        .chain(
+            package
+                .implementation
+                .providers
+                .iter()
+                .map(|provider| &provider.artifact),
+        )
+        .chain(
+            package
+                .implementation
+                .handlers
+                .values()
+                .map(|handler| &handler.artifact),
+        );
+
+    for artifact in artifacts {
+        let artifact = insert_artifact(nodes, artifact)?;
+        insert_edge(
+            edges,
+            NodeKey::Package(package_digest),
+            artifact,
+            InspectionRelation::AuthenticatesArtifact,
+        );
+    }
+    Ok(())
+}
+
+fn insert_expression_artifacts(
+    nodes: &mut BTreeMap<NodeKey, InspectionNode>,
+    edges: &mut BTreeSet<InspectionEdge>,
+    owner: NodeKey,
+    schema: &ValueSchema,
+    expression: &ValueExpression,
+) -> Result<(), InspectionViewError> {
+    let schema = unwrap_optional_schema(schema, expression);
+    match expression {
+        ValueExpression::Literal { value } => {
+            insert_literal_artifacts(nodes, edges, &owner, schema, value.as_json())?;
+        }
+        ValueExpression::ArtifactReference { reference } => {
+            insert_artifact_retention(nodes, edges, &owner, reference)?;
+        }
+        ValueExpression::List { items } => {
+            if let ValueSchema::List { element, .. } = schema {
+                for item in items {
+                    insert_expression_artifacts(nodes, edges, owner.clone(), element, item)?;
+                }
+            }
+        }
+        ValueExpression::Object { fields } => match schema {
+            ValueSchema::Map { value, .. } => {
+                for field in fields.values() {
+                    insert_expression_artifacts(nodes, edges, owner.clone(), value, field)?;
+                }
+            }
+            ValueSchema::Record {
+                fields: schemas, ..
+            } => {
+                for (name, field) in fields {
+                    if let Some(field_schema) = schemas.get(name.as_str()) {
+                        insert_expression_artifacts(
+                            nodes,
+                            edges,
+                            owner.clone(),
+                            field_schema,
+                            field,
+                        )?;
+                    }
+                }
+            }
+            ValueSchema::TaggedUnion { tag, variants } => {
+                let selected = fields
+                    .get(tag.as_str())
+                    .and_then(|value| match value {
+                        ValueExpression::Literal { value } => value.as_json().as_str(),
+                        _ => None,
+                    })
+                    .and_then(|tag_value| {
+                        variants
+                            .iter()
+                            .find(|(name, _)| name.as_str() == tag_value)
+                            .map(|(_, schema)| schema)
+                    });
+                if let Some(selected) = selected {
+                    insert_expression_artifacts(nodes, edges, owner, selected, expression)?;
+                }
+            }
+            _ => {}
+        },
+        ValueExpression::ResourceReference { .. }
+        | ValueExpression::AggregateOutput { .. }
+        | ValueExpression::OperationResult { .. } => {}
+    }
+    Ok(())
+}
+
+fn insert_literal_artifacts(
+    nodes: &mut BTreeMap<NodeKey, InspectionNode>,
+    edges: &mut BTreeSet<InspectionEdge>,
+    owner: &NodeKey,
+    schema: &ValueSchema,
+    value: &serde_json::Value,
+) -> Result<(), InspectionViewError> {
+    match (schema, value) {
+        (ValueSchema::Optional { .. }, serde_json::Value::Null) => {}
+        (ValueSchema::Optional { value: nested }, value) => {
+            insert_literal_artifacts(nodes, edges, owner, nested, value)?;
+        }
+        (ValueSchema::ArtifactReference, value) => {
+            let reference = serde_json::from_value::<ArtifactReference>(value.clone())
+                .map_err(InspectionViewError::InvalidArtifactReference)?;
+            insert_artifact_retention(nodes, edges, owner, &reference)?;
+        }
+        (ValueSchema::List { element, .. }, serde_json::Value::Array(items)) => {
+            for item in items {
+                insert_literal_artifacts(nodes, edges, owner, element, item)?;
+            }
+        }
+        (ValueSchema::Map { value: nested, .. }, serde_json::Value::Object(fields)) => {
+            for value in fields.values() {
+                insert_literal_artifacts(nodes, edges, owner, nested, value)?;
+            }
+        }
+        (
+            ValueSchema::Record {
+                fields: schemas, ..
+            },
+            serde_json::Value::Object(fields),
+        ) => {
+            for (name, value) in fields {
+                if let Some(field_schema) = schemas.get(name.as_str()) {
+                    insert_literal_artifacts(nodes, edges, owner, field_schema, value)?;
+                }
+            }
+        }
+        (ValueSchema::TaggedUnion { tag, variants }, serde_json::Value::Object(fields)) => {
+            if let Some(variant) = fields
+                .get(tag.as_str())
+                .and_then(serde_json::Value::as_str)
+                .and_then(|tag_value| {
+                    variants
+                        .iter()
+                        .find(|(name, _)| name.as_str() == tag_value)
+                        .map(|(_, schema)| schema)
+                })
+            {
+                insert_literal_artifacts(nodes, edges, owner, variant, value)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn insert_artifact_retention(
+    nodes: &mut BTreeMap<NodeKey, InspectionNode>,
+    edges: &mut BTreeSet<InspectionEdge>,
+    owner: &NodeKey,
+    reference: &ArtifactReference,
+) -> Result<(), InspectionViewError> {
+    let artifact = insert_artifact(nodes, reference)?;
+    insert_edge(
+        edges,
+        owner.clone(),
+        artifact,
+        InspectionRelation::RetainsArtifact,
+    );
+    Ok(())
+}
+
+fn unwrap_optional_schema<'a>(
+    mut schema: &'a ValueSchema,
+    expression: &ValueExpression,
+) -> &'a ValueSchema {
+    while let ValueSchema::Optional { value } = schema {
+        if matches!(expression, ValueExpression::Literal { value } if value.as_json().is_null()) {
+            break;
+        }
+        schema = value;
+    }
+    schema
+}
+
+fn insert_artifact(
+    nodes: &mut BTreeMap<NodeKey, InspectionNode>,
+    reference: &ArtifactReference,
+) -> Result<NodeKey, InspectionViewError> {
+    let id = semantic_digest("artifact", reference)?;
+    let node = InspectionNode::Artifact {
+        id,
+        reference: reference.clone(),
+    };
+    let key = node.key();
+    insert_node(nodes, node);
+    Ok(key)
 }
 
 fn insert_resource_nodes(

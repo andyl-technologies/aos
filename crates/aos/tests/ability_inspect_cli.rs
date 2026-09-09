@@ -78,6 +78,42 @@ fn unresolved_obligations_are_rendered_as_non_executable() -> Result<(), Box<dyn
     Ok(())
 }
 
+#[test]
+fn projection_flag_emits_the_named_portable_projection() -> Result<(), Box<dyn std::error::Error>> {
+    let workspace = tempfile::tempdir()?;
+    let bundle_path = workspace.path().join("inspection.json");
+    write_bundle(&bundle_path, &checked_effect_plan())?;
+
+    let output = run(
+        workspace.path(),
+        &[
+            "--json",
+            "ability",
+            "inspect",
+            path_text(&bundle_path)?,
+            "--projection",
+            "retention",
+        ],
+    )?;
+    assert!(output.status.success(), "{}", stderr(&output)?);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(
+        value["schema"],
+        serde_json::Value::String("aos.ability.inspection-projection/v1".to_string())
+    );
+    assert_eq!(
+        value["kind"],
+        serde_json::Value::String("retention".to_string())
+    );
+    assert!(value["nodes"].as_array().is_some_and(|nodes| {
+        nodes
+            .iter()
+            .any(|node| node["kind"] == serde_json::Value::String("artifact".to_string()))
+    }));
+    assert!(output.stderr.is_empty());
+    Ok(())
+}
+
 fn write_bundle(
     path: &Path,
     plan: &CheckedEffectPlan,

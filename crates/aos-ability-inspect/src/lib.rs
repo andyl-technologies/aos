@@ -4,8 +4,9 @@
 //! effect plan without evaluating Nix or acquiring live resources. [`view`]
 //! projects that checked plan into stable heterogeneous nodes and typed edges.
 //! [`query`] performs bounded graph traversal, [`compare`] computes stable
-//! structural changes, and [`render`] presents a view or slice as text,
-//! canonical JSON, DOT, or Mermaid.
+//! structural changes, [`projection`] selects one semantic edge family, and
+//! [`render`] presents a view, projection, or slice as text, canonical JSON,
+//! DOT, or Mermaid.
 //!
 //! This crate deliberately has no dependency on the native runtime, filesystem,
 //! CLI parsing, registry transport, or privileged provider adapters. Native
@@ -16,6 +17,7 @@
 
 pub mod bundle;
 pub mod compare;
+pub mod projection;
 pub mod query;
 pub mod render;
 pub mod view;
@@ -25,11 +27,14 @@ pub use bundle::{
     InspectionBundle, InspectionBundleError,
 };
 pub use compare::{ChangedNode, INSPECTION_DIFF_SCHEMA, InspectionDiff};
+pub use projection::{
+    INSPECTION_PROJECTION_SCHEMA, InspectionProjection, InspectionProjectionError, ProjectionKind,
+};
 pub use query::{
     Direction, GraphQuery, GraphQueryError, GraphSlice, INSPECTION_QUERY_SCHEMA,
     INSPECTION_SLICE_SCHEMA,
 };
-pub use render::{RenderError, RenderFormat, render, render_slice};
+pub use render::{RenderError, RenderFormat, render, render_projection, render_slice};
 pub use view::{
     INSPECTION_VIEW_MAX_BYTES, INSPECTION_VIEW_MAX_ITEMS, INSPECTION_VIEW_SCHEMA, InspectionEdge,
     InspectionNode, InspectionRelation, InspectionView, InspectionViewError, NodeKey, ViewAnchor,

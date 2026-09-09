@@ -5,12 +5,13 @@ use std::io::{Read as _, Take};
 
 use anyhow::{Context as _, Result, bail};
 use aos_ability_inspect::{
-    INSPECTION_BUNDLE_MAX_BYTES, InspectionBundle, InspectionView, RenderFormat, ViewAnchor, render,
+    INSPECTION_BUNDLE_MAX_BYTES, InspectionBundle, InspectionView, ProjectionKind, RenderFormat,
+    ViewAnchor, render, render_projection,
 };
 use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
 
-use crate::cli::{AbilityCommand, AbilityInspectArgs, AbilityRenderFormat};
+use crate::cli::{AbilityCommand, AbilityInspectArgs, AbilityProjection, AbilityRenderFormat};
 
 /// Runs one offline ability inspection command.
 ///
@@ -47,7 +48,16 @@ fn inspect(args: &AbilityInspectArgs, printer: &Printer) -> Result<()> {
             RenderFormat::Text
         }
     });
-    let output = render(&view, format).context("rendering checked ability inspection view")?;
+    let output = match args.projection {
+        Some(projection) => {
+            let projection = view
+                .project(projection.into())
+                .context("projecting semantic ability graph")?;
+            render_projection(&projection, format)
+                .context("rendering projected ability inspection view")?
+        }
+        None => render(&view, format).context("rendering checked ability inspection view")?,
+    };
     printer.raw(&output);
 
     if matches!(view.anchor(), ViewAnchor::UnanchoredBundle { .. }) {
@@ -85,6 +95,17 @@ impl From<AbilityRenderFormat> for RenderFormat {
             AbilityRenderFormat::Json => Self::Json,
             AbilityRenderFormat::Dot => Self::Dot,
             AbilityRenderFormat::Mermaid => Self::Mermaid,
+        }
+    }
+}
+
+impl From<AbilityProjection> for ProjectionKind {
+    fn from(value: AbilityProjection) -> Self {
+        match value {
+            AbilityProjection::Composition => Self::Composition,
+            AbilityProjection::BindingAuthority => Self::BindingAuthority,
+            AbilityProjection::Activation => Self::Activation,
+            AbilityProjection::Retention => Self::Retention,
         }
     }
 }
