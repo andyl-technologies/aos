@@ -9,10 +9,16 @@
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
+use crate::codec::Canonical;
+
 use super::{
     AttemptId, BranchPathId, CampaignCodecError, CampaignPolicyId, CampaignSnapshotId,
     ObservationId, ProposalId,
 };
+
+mod smc;
+
+pub use smc::{StatisticalGeneration, StatisticalParticleSlot};
 
 /// A reduced nonnegative rational represented with bounded exact integers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +125,17 @@ impl StatisticalRational {
     #[must_use]
     pub const fn denominator(self) -> u128 {
         self.denominator
+    }
+}
+
+impl Canonical for StatisticalRational {
+    fn encode(&self, encoder: &mut crate::codec::Encoder) {
+        self.numerator.encode(encoder);
+        self.denominator.encode(encoder);
+    }
+
+    fn decode(decoder: &mut crate::codec::Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Self::new(u128::decode(decoder)?, u128::decode(decoder)?)
     }
 }
 

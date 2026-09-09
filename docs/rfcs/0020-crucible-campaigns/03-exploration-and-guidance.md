@@ -969,6 +969,36 @@ whose identity depends on a prior runtime outcome, Beam, PUCT, adaptive
 resampling, and post-hoc opportunity substitution require a later versioned
 selector or sequential-design protocol and fail closed in this version.
 
+Version four establishes the bounded sequential Monte Carlo state protocol. It
+retains a complete version-three finite flight as stage zero, fixes one particle
+count, and predeclares a contiguous linear stage map plus the distribution and
+selector context for every later transition. A selector binds the semantic
+declaration, offered domain, producer instance, probability model, and stop
+condition before the parent observation exists; it does not guess a concrete
+runtime opportunity identity. The initial endpoint count must equal the
+particle count, reused model IDs must name identical distributions, and the
+product of stage and particle counts is capped.
+
+The version-one systematic resampler uses one rejection-sampled exact offset
+derived from the campaign seed, next-stage coordinate, and nonce. Observation
+content never enters that random source. When exact effective sample size is at
+or below the declared threshold, owner recomputation records the average
+incoming weight as the generation normalization factor, records each selected
+parent's multiplicity, and resets every carried estimator weight to one.
+Cumulative `P(path)` and `Q(path)` remain products of branch-transition
+probabilities along the selected ancestry. They are genealogy audit evidence,
+not the marginal or joint proposal law induced by resampling, and are not
+multiplied into that reset weight a second time. The pinned resampling law,
+offset, parent multiplicities, and normalization factor record that separate
+ancestor-selection step. Without resampling, the generation carries each
+incoming weight and a unit normalization factor.
+
+This first version-four implementation projects only the owner-authenticated
+generation after the complete stage-zero flight. It does not yet execute later
+stages or issue an SMC probability estimate. Public statistical reports reject
+version-four policies until the planner and estimator validate every declared
+generation and support condition.
+
 Once activated, the exact statistical policy identity is immutable for that
 campaign lineage. A derived statistical campaign inherits the same active
 policy revision; changing the design or any other policy field requires a new

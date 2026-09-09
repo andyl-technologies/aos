@@ -4,6 +4,8 @@ use super::*;
 use crate::repository::projection::weighted_categorical_draw;
 use std::sync::Arc;
 
+mod smc;
+
 #[derive(Clone, Copy)]
 struct StatisticalPlannerSupervisor;
 

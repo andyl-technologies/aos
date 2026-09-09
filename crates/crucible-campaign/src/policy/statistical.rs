@@ -345,7 +345,12 @@ mod tests {
     use crucible_cas::content_store::{ContentId, ObjectKind};
 
     use super::*;
-    use crate::CampaignHash;
+    use crate::{
+        CampaignHash, CampaignMode, CampaignPolicy, CampaignSeed, ChoiceDomainSemanticId,
+        ExactRational, ExplorerPolicy, FairnessPolicy, RetentionPolicy, ScenarioDefId,
+        SelectableSemanticId, SequentialMonteCarloDesign, SmcOpportunitySelector,
+        SmcResamplingAlgorithm, SmcResamplingPolicy, SmcStagePlan,
+    };
 
     fn model(label: &str) -> ProbabilityModelId {
         ProbabilityModelId::from_hash(CampaignHash::derive(
@@ -489,6 +494,192 @@ mod tests {
             ),
             Err(CampaignCodecError::InvalidValue {
                 reason: "statistical estimand mixes endpoint depths"
+            })
+        ));
+    }
+
+    fn smc_design(
+        particle_count: u32,
+        model: ProbabilityModelId,
+        distribution: StatisticalDistribution,
+    ) -> SequentialMonteCarloDesign {
+        let selector = SmcOpportunitySelector::new(
+            SelectableSemanticId::from_hash(CampaignHash::derive(
+                "test.smc-declaration",
+                b"declaration",
+            )),
+            ChoiceDomainSemanticId::from_hash(CampaignHash::derive("test.smc-domain", b"domain")),
+            "next-choice",
+            model,
+            StopCondition::NextChoice,
+        )
+        .expect("SMC selector");
+        let resampling = SmcResamplingPolicy::new(
+            SmcResamplingAlgorithm::SystematicV1,
+            ExactRational::new(1, 2).expect("ESS threshold"),
+        )
+        .expect("resampling policy");
+        SequentialMonteCarloDesign::new(
+            particle_count,
+            BTreeMap::from([(model, distribution)]),
+            BTreeMap::from([(1, SmcStagePlan::new(0, selector))]),
+            resampling,
+        )
+        .expect("SMC design")
+    }
+
+    fn statistical_policy() -> CampaignPolicy {
+        CampaignPolicy::new(
+            ScenarioDefId::from_hash(CampaignHash::derive("test.scenario", b"scenario")),
+            CampaignSeed::from_bytes([0x31; 32]),
+            CampaignMode::Statistical,
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality: 16,
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness policy"),
+            RetentionPolicy::new(false, 2, false, false),
+            false,
+        )
+        .expect("statistical policy")
+    }
+
+    #[test]
+    fn smc_policy_binds_initial_particles_and_shared_model_distributions() {
+        let shared_model = model("shared");
+        let shared_distribution = distribution();
+        let initial = StatisticalSamplingDesign::new(
+            BTreeMap::from([(shared_model, shared_distribution.clone())]),
+            BTreeMap::from([
+                (0, draw(None, shared_model, "initial-a")),
+                (1, draw(None, shared_model, "initial-b")),
+            ]),
+            BTreeSet::from([0, 1]),
+        )
+        .expect("initial design");
+
+        assert!(matches!(
+            statistical_policy().with_sequential_monte_carlo_design(
+                initial.clone(),
+                smc_design(1, shared_model, shared_distribution.clone()),
+            ),
+            Err(CampaignCodecError::InvalidValue {
+                reason: "SMC design disagrees with initial statistical flight"
+            })
+        ));
+
+        let conflicting_distribution = StatisticalDistribution::new(
+            BTreeMap::from([
+                (ChoiceValue::Boolean(false), 1),
+                (ChoiceValue::Boolean(true), 3),
+            ]),
+            BTreeMap::from([
+                (ChoiceValue::Boolean(false), 1),
+                (ChoiceValue::Boolean(true), 1),
+            ]),
+        )
+        .expect("conflicting distribution");
+        assert!(matches!(
+            statistical_policy().with_sequential_monte_carlo_design(
+                initial.clone(),
+                smc_design(2, shared_model, conflicting_distribution),
+            ),
+            Err(CampaignCodecError::InvalidValue {
+                reason: "SMC design disagrees with initial statistical flight"
+            })
+        ));
+
+        let policy = statistical_policy()
+            .with_sequential_monte_carlo_design(
+                initial.clone(),
+                smc_design(2, shared_model, shared_distribution),
+            )
+            .expect("SMC policy");
+        assert_eq!(policy.schema_version(), 4);
+        assert_eq!(
+            CampaignPolicy::from_canonical_bytes(&policy.canonical_bytes())
+                .expect("canonical SMC policy"),
+            policy
+        );
+        assert!(
+            policy
+                .clone()
+                .with_statistical_sampling_design(initial)
+                .is_err()
+        );
+        assert_eq!(
+            policy
+                .id()
+                .expect("SMC policy ID")
+                .content_id()
+                .schema_version(),
+            4
+        );
+    }
+
+    #[test]
+    fn smc_policy_decode_rechecks_initial_particle_and_distribution_contracts() {
+        let shared_model = model("decode-shared");
+        let shared_distribution = distribution();
+        let initial = StatisticalSamplingDesign::new(
+            BTreeMap::from([(shared_model, shared_distribution.clone())]),
+            BTreeMap::from([
+                (0, draw(None, shared_model, "decode-a")),
+                (1, draw(None, shared_model, "decode-b")),
+            ]),
+            BTreeSet::from([0, 1]),
+        )
+        .expect("initial design");
+        let policy = statistical_policy()
+            .with_sequential_monte_carlo_design(
+                initial.clone(),
+                smc_design(2, shared_model, shared_distribution),
+            )
+            .expect("SMC policy");
+
+        let mut mismatched_count = policy.clone();
+        mismatched_count.statistical_sampling = Some(
+            StatisticalSamplingDesign::new(
+                initial.distributions().clone(),
+                BTreeMap::from([(0, initial.draw(0).expect("first initial draw").clone())]),
+                BTreeSet::from([0]),
+            )
+            .expect("one-particle initial design"),
+        );
+        assert!(matches!(
+            CampaignPolicy::from_canonical_bytes(&crate::codec::encode(&mismatched_count)),
+            Err(CampaignCodecError::InvalidValue {
+                reason: "SMC design disagrees with initial statistical flight"
+            })
+        ));
+
+        let conflicting_distribution = StatisticalDistribution::new(
+            BTreeMap::from([
+                (ChoiceValue::Boolean(false), 3),
+                (ChoiceValue::Boolean(true), 1),
+            ]),
+            BTreeMap::from([
+                (ChoiceValue::Boolean(false), 1),
+                (ChoiceValue::Boolean(true), 1),
+            ]),
+        )
+        .expect("conflicting distribution");
+        let mut conflicting_model = policy;
+        conflicting_model.statistical_sampling = Some(
+            StatisticalSamplingDesign::new(
+                BTreeMap::from([(shared_model, conflicting_distribution)]),
+                initial.draws().clone(),
+                initial.estimand_endpoints().clone(),
+            )
+            .expect("conflicting initial design"),
+        );
+        assert!(matches!(
+            CampaignPolicy::from_canonical_bytes(&crate::codec::encode(&conflicting_model)),
+            Err(CampaignCodecError::InvalidValue {
+                reason: "SMC design disagrees with initial statistical flight"
             })
         ));
     }

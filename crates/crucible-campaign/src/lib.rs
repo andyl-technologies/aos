@@ -157,7 +157,8 @@ pub use identity::{
     PlannerEngineId, PlannerInvocationId, PlannerStateId, PlannerStepId, PolicyArtifactId,
     ProbabilityModelId, PropertyVerdictSetId, ProposalId, RankingExplanationId,
     ReproductionArtifactId, RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId,
-    SelectableId, SelectableSemanticId, SelectionId, SurvivorSelectionId,
+    SelectableId, SelectableSemanticId, SelectionId, StatisticalGenerationId,
+    StatisticalParticleId, SurvivorSelectionId,
 };
 pub use merkle::{
     CampaignStoreError, MAX_PROVEN_PAGE_ITEMS, MerkleMap, MerkleMapLookupProof, MerkleMapPage,
@@ -207,6 +208,7 @@ pub use policy::{
     FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, FairnessPolicy, GuidanceWeight,
     InterventionLearningPolicy, LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
     LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, LOG_INTEGER_GENERATOR_MAX_CANDIDATES,
+    MAX_SMC_TOTAL_PARTICLE_TRANSITIONS,
     MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
     MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
     ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION, ORDERED_MIXTURE_GENERATOR_MAX_CANDIDATES,
@@ -219,8 +221,9 @@ pub use policy::{
     RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, RetentionPolicy,
     STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
     STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, STRATIFIED_INTEGER_GENERATOR_MAX_STRATA,
-    StatisticalDistribution, StatisticalDrawPlan, StatisticalSamplingDesign,
-    WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+    SequentialMonteCarloDesign, SmcOpportunitySelector, SmcResamplingAlgorithm,
+    SmcResamplingPolicy, SmcStagePlan, StatisticalDistribution, StatisticalDrawPlan,
+    StatisticalSamplingDesign, WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
     WEIGHTED_CATEGORICAL_GENERATOR_MAX_ALTERNATIVES, WeightedGenerator,
 };
 pub use repository::{
@@ -247,8 +250,8 @@ pub use repository::{
     SavepointContinuationResult, SavepointContinuationSource, WorkerSlotId,
 };
 pub use statistics::{
-    StatisticalEndpointEstimate, StatisticalEstimateReport, StatisticalRational,
-    StatisticalWeightDiagnostics,
+    StatisticalEndpointEstimate, StatisticalEstimateReport, StatisticalGeneration,
+    StatisticalParticleSlot, StatisticalRational, StatisticalWeightDiagnostics,
 };
 
 #[cfg(test)]
