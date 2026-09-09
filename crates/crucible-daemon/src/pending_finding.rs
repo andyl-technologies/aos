@@ -169,6 +169,7 @@ pub enum FindingCandidateRetentionOutcome {
 /// reauthentication fails, a ledger error when the fenced state cannot be read
 /// or updated durably, or a typed mismatch when authenticated evidence names a
 /// different bundle.
+// crucible-lint: allow rust-allow -- incorporation keeps repository, ledger, and evidence authorities explicit.
 #[allow(clippy::too_many_arguments)]
 pub fn incorporate_and_acknowledge_finding_candidate<A>(
     repository: &CampaignRepository,
@@ -210,6 +211,7 @@ where
 /// Returns a repository error when the exact finding is not retained by the
 /// named current head, a ledger error when fenced state access fails, or a
 /// typed mismatch when the repository proof names another bundle.
+// crucible-lint: allow rust-allow -- acknowledgement keeps repository, ledger, and proof bindings explicit.
 #[allow(clippy::too_many_arguments)]
 pub fn acknowledge_incorporated_finding_candidate<A>(
     repository: &CampaignRepository,

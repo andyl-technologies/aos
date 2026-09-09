@@ -209,6 +209,7 @@ impl CrucibleFindingReplayEvidence {
 }
 
 // Preflight before ChoiceDiscovery dependencies are cloned into normalized vectors.
+// crucible-lint: allow rust-allow -- replay preflight checks each independently bound finding component.
 #[allow(clippy::too_many_arguments)]
 fn preflight_single_replay(
     signature: Option<&FindingSignature>,

@@ -296,7 +296,7 @@ impl fmt::Write for BoundedAttemptFailureDiagnostic {
 // crucible-lint: allow erased-error -- diagnostic formatting follows Error::source while preserving the typed worker failure.
 pub(super) fn packaged_attempt_failure_diagnostic(
     execution: ExecutionId,
-    failure: &(dyn Error + 'static),
+    failure: &(impl Error + 'static),
 ) -> String {
     let mut diagnostic = BoundedAttemptFailureDiagnostic::new();
     let _ = write!(diagnostic, "packaged campaign execution ");

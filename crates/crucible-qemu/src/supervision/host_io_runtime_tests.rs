@@ -619,9 +619,12 @@ fn hot_fork_clone_does_not_fall_back_to_uncoordinated_ninep_service()
     )?;
     let snapshot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM).snapshot();
 
-    let error = child
-        .service_ninep_io_for_test(&snapshot)
-        .expect_err("a hot-fork child must require a fresh 9p coordinator");
+    let error = match child.service_ninep_io_for_test(&snapshot) {
+        Ok(serviced) => {
+            panic!("a hot-fork child must require a fresh 9p coordinator, serviced={serviced}")
+        }
+        Err(error) => error,
+    };
     assert!(
         error
             .to_string()

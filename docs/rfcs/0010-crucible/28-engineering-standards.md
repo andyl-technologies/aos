@@ -379,15 +379,33 @@ layer's gate and MUST NOT be "covered" from a higher layer ([HARN-3]).
 
 ## 5. File, module, and commit hygiene
 
-- **[STD-27]** **File and module size.** A source file SHOULD stay under **~600
-  lines** and MUST stay under **1000**; a file that exceeds the soft limit MUST
-  be split along a module boundary, not left as a monolith. Every `.rs` file is a
-  module with a `//!` header ([STD-1]); a module owns one coherent concern (one
-  ABI format, one scheduler concern, one fault family). A function on a
-  determinism-significant path (the quantum loop, the ordering comparator, the
-  codec) SHOULD be small enough to review for nondeterminism in one sitting;
-  where it cannot be, it MUST be decomposed so each ordering decision is
-  individually reviewable against the §6 checklist. *Spec:* §5.
+- **[STD-27]** **File and module size.** Authors MUST reconsider a hand-written
+  module's responsibilities as either its implementation or test section grows
+  beyond **1000 lines**. Beyond **1500 lines**, that section MUST have a clear
+  cohesion argument explaining why its responsibilities belong together.
+  `#[cfg(test)]` modules are counted separately from the implementation, and a
+  test-only source is counted wholly as tests. These are review boundaries:
+  exactly 1000 lines does not require a responsibility review, and exactly 1500
+  lines does not require the additional cohesion argument.
+
+  `checks.crucible.phase1.engineeringHygiene` records every new or grown section
+  above the review boundary in `engineering-hygiene-baseline.txt`. A
+  `shape-review` record binds
+  the repository path, responsibility role, reviewed section count, concise
+  responsibility description, and cohesion disposition to the SHA-256 digest
+  of the whole source file. A later source change invalidates that review. The
+  older `shape-line` rows remain frozen inventory from the superseded 600/1000
+  policy: a file at or below its frozen old cap remains grandfathered, but growth
+  above that cap requires a content-bound review and the cap itself is never
+  raised. A record becomes stale when its reviewed section returns to 1000 lines
+  or fewer.
+
+  Every `.rs` file is a module with a `//!` header ([STD-1]); a module owns one
+  coherent concern (one ABI format, one scheduler concern, one fault family).
+  A function on a determinism-significant path (the quantum loop, the ordering
+  comparator, the codec) SHOULD be small enough to review for nondeterminism in
+  one sitting; where it cannot be, it MUST be decomposed so each ordering
+  decision is individually reviewable against the §6 checklist. *Spec:* §5.
 
 - **[STD-28]** **Module boundaries follow the layer map.** A crate MUST NOT
   depend on a higher layer or sideways across a peer boundary that

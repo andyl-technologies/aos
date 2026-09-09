@@ -103,6 +103,7 @@ pub struct BoundedSchedulerPreemptionEvidenceClaim {
 
 /// Immutable snapshot of bounded scheduler-preemption evidence.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+// crucible-lint: allow host-nondeterminism-state -- immutable host-only evidence never enters canonical guest state.
 pub struct BoundedSchedulerPreemptionEvidenceSnapshot {
     /// Whether a complete bounded perturbation sequence was applied.
     pub applied: bool,
@@ -207,6 +208,7 @@ impl Drop for BoundedSchedulerPreemptionEvidenceClaim {
 
 /// Failure while applying the bounded host-scheduling adversary.
 #[derive(Debug, Error)]
+// crucible-lint: allow host-nondeterminism-state -- typed operational failures cross only the lifecycle supervision boundary.
 pub enum BoundedSchedulerPreemptionError {
     /// The target process ID could not be represented by the kernel PID API.
     #[error("bounded scheduler preemption received invalid QEMU pid {pid}")]
@@ -314,6 +316,7 @@ pub enum BoundedSchedulerPreemptionError {
 /// one short-lived thread while the caller executes the workload being tested.
 /// Dropping it publishes cancellation and synchronously joins the controller,
 /// so early-return and error paths cannot leave QEMU stopped.
+// crucible-lint: allow host-nondeterminism-state -- crate-visible ownership remains inside QEMU supervision.
 pub(crate) struct BoundedSchedulerPreemption {
     cancel: Arc<AtomicBool>,
     start: Option<mpsc::Sender<()>>,
@@ -514,6 +517,7 @@ impl BoundedSchedulerPreemption {
     ///
     /// Returns the controller's typed signaling/watchdog error, or reports that
     /// the controller panicked.
+    // crucible-lint: allow host-nondeterminism-state -- the report is consumed by the owning supervision path.
     pub(crate) fn finish(
         mut self,
     ) -> Result<BoundedSchedulerPreemptionReport, BoundedSchedulerPreemptionError> {
@@ -540,6 +544,7 @@ impl BoundedSchedulerPreemption {
     ///
     /// Returns the same typed failures as [`Self::finish`] for a present
     /// controller.
+    // crucible-lint: allow host-nondeterminism-state -- optional cleanup remains inside the owning supervision path.
     pub(crate) fn finish_if_present(
         adversary: &mut Option<Self>,
     ) -> Result<Option<BoundedSchedulerPreemptionReport>, BoundedSchedulerPreemptionError> {
@@ -564,6 +569,7 @@ fn completed_quantum_at_first_stop(
 /// Dropping the observation releases the controller, so an inspection error
 /// cannot strand QEMU stopped. Certification succeeds only when the caller
 /// explicitly confirms that its published quantum remained incomplete.
+// crucible-lint: allow host-nondeterminism-state -- this crate-visible guard cannot escape QEMU supervision.
 pub(crate) struct PendingQuantumStopObservation {
     release: Option<mpsc::Sender<()>>,
 }
@@ -575,6 +581,7 @@ impl PendingQuantumStopObservation {
     ///
     /// Returns [`BoundedSchedulerPreemptionError::QuantumCompletedBeforeFirstStop`]
     /// when QEMU had already completed the published work before inspection.
+    // crucible-lint: allow host-nondeterminism-state -- certification is consumed before deterministic state advances.
     pub(crate) fn confirm_pending(
         mut self,
         pending: bool,

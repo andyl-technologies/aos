@@ -13,9 +13,17 @@ use std::io::{Error as IoError, ErrorKind};
 use std::path::{Path, PathBuf};
 
 use crucible_harness::spec_index::crate_spec_index;
+use sha2::{Digest, Sha256};
 
-const SOFT_LINE_LIMIT: usize = 600;
-const HARD_LINE_LIMIT: usize = 1_000;
+#[path = "support/source_sections.rs"]
+mod source_sections;
+
+use source_sections::*;
+
+const RESPONSIBILITY_REVIEW_LINE_THRESHOLD: usize = 1_000;
+const COHESION_REVIEW_LINE_THRESHOLD: usize = 1_500;
+const LEGACY_SHAPE_LINE_STALE_THRESHOLD: usize = 600;
+const COHESION_NOT_REQUIRED: &str = "threshold-not-reached";
 const QEMU_BOUNDARY_PACKAGES: &[&str] = &[
     "crucible-debug-gateway",
     "crucible-daemon",
@@ -43,9 +51,48 @@ struct CommitHygieneRule {
 #[derive(Clone, Debug, Default)]
 struct HygieneBaseline {
     line_limit_debt: BTreeMap<String, usize>,
+    source_reviews: BTreeMap<(String, SourceRole), SourceReview>,
     missing_header_debt: BTreeSet<String>,
     qemu_token_debt: BTreeSet<(String, String, String)>,
     qemu_manifest_debt: BTreeSet<(String, String, String, String)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SourceRole {
+    Implementation,
+    Tests,
+}
+
+impl SourceRole {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "implementation" => Some(Self::Implementation),
+            "tests" => Some(Self::Tests),
+            _ => None,
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Implementation => "implementation",
+            Self::Tests => "tests",
+        }
+    }
+
+    const fn lines(self, counts: SourceRoleLineCounts) -> usize {
+        match self {
+            Self::Implementation => counts.implementation,
+            Self::Tests => counts.tests,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SourceReview {
+    digest: String,
+    lines: usize,
+    responsibilities: String,
+    cohesion: String,
 }
 
 const COMMIT_HYGIENE_RULES: &[CommitHygieneRule] = &[
@@ -80,8 +127,9 @@ fn crucible_source_modules_follow_size_and_header_limits() -> Result<(), Box<dyn
             failures.extend(
                 source_shape_failures(&source, &content)
                     .into_iter()
-                    .filter(|finding| !baseline.allows_source_shape(&source, &content, finding)),
+                    .filter(|finding| !baseline.allows_missing_header(&source, finding)),
             );
+            failures.extend(baseline.source_review_failures(&package_dir, &source, &content));
         }
     }
     failures.extend(baseline.stale_source_shape_failures(&root)?);
@@ -172,14 +220,20 @@ fn engineering_hygiene_policy_is_wired_and_documented() -> Result<(), Box<dyn Er
     );
     require_contains(
         &hygiene_nix,
-        "file_soft_limit=600",
-        "phase1 engineering hygiene check must publish the soft line limit",
+        "responsibility_review_threshold=1000",
+        "phase1 engineering hygiene check must publish the responsibility-review threshold",
         &mut failures,
     );
     require_contains(
         &hygiene_nix,
-        "file_hard_limit=1000",
-        "phase1 engineering hygiene check must publish the hard line limit",
+        "cohesion_review_threshold=1500",
+        "phase1 engineering hygiene check must publish the cohesion-review threshold",
+        &mut failures,
+    );
+    require_contains(
+        &hygiene_nix,
+        "shape-review",
+        "phase1 engineering hygiene check must consume content-bound source reviews",
         &mut failures,
     );
 
@@ -198,43 +252,103 @@ fn engineering_hygiene_rules_reject_shape_and_boundary_drift() {
         source_shape_failures(Path::new("synthetic.rs"), "pub fn missing_header() {}\n");
     assert_contains(&no_header, "missing `//!` module header");
 
-    let exact_soft = format!(
+    let exact_review = format!(
         "//! synthetic\n{}",
-        "fn line() {}\n".repeat(SOFT_LINE_LIMIT - 1)
+        "fn line() {}\n".repeat(RESPONSIBILITY_REVIEW_LINE_THRESHOLD - 1)
     );
-    let exact_soft_findings = source_shape_failures(Path::new("synthetic.rs"), &exact_soft);
+    let exact_review_findings = HygieneBaseline::default().source_review_failures(
+        Path::new("crucible-example"),
+        Path::new("crucible-example/src/synthetic.rs"),
+        &exact_review,
+    );
     assert!(
-        !exact_soft_findings
-            .iter()
-            .any(|finding| finding.contains("line limit")),
-        "{exact_soft_findings:?}"
+        exact_review_findings.is_empty(),
+        "{exact_review_findings:?}"
     );
 
-    let soft_limit = format!(
-        "//! synthetic\n{}",
-        "fn line() {}\n".repeat(SOFT_LINE_LIMIT)
+    let over_review = format!("{exact_review}fn line() {{}}\n");
+    let over_review_findings = HygieneBaseline::default().source_review_failures(
+        Path::new("crucible-example"),
+        Path::new("crucible-example/src/synthetic.rs"),
+        &over_review,
     );
-    let soft_findings = source_shape_failures(Path::new("synthetic.rs"), &soft_limit);
-    assert_contains(&soft_findings, "exceeds soft line limit");
+    assert_contains(&over_review_findings, "responsibility review above 1000");
 
-    let exact_hard = format!(
-        "//! synthetic\n{}",
-        "fn line() {}\n".repeat(HARD_LINE_LIMIT - 1)
+    let mixed = format!(
+        "//! synthetic\n{}#[cfg(test)]\nmod tests {{\n{}}}\n",
+        "fn implementation() {}\n".repeat(499),
+        "fn test_case() {}\n".repeat(1_197),
     );
-    let exact_hard_findings = source_shape_failures(Path::new("synthetic.rs"), &exact_hard);
-    assert!(
-        !exact_hard_findings
-            .iter()
-            .any(|finding| finding.contains("hard line limit")),
-        "{exact_hard_findings:?}"
+    let counts = source_role_line_counts(
+        Path::new("crucible-example"),
+        Path::new("crucible-example/src/synthetic.rs"),
+        &mixed,
     );
+    assert_eq!(counts.implementation, 500);
+    assert_eq!(counts.tests, 1_200);
+    let mixed_findings = HygieneBaseline::default().source_review_failures(
+        Path::new("crucible-example"),
+        Path::new("crucible-example/src/synthetic.rs"),
+        &mixed,
+    );
+    assert_eq!(mixed_findings.len(), 1, "{mixed_findings:?}");
+    assert_contains(&mixed_findings, "tests section");
 
-    let hard_limit = format!(
-        "//! synthetic\n{}",
-        "fn line() {}\n".repeat(HARD_LINE_LIMIT)
+    let test_support_counts = source_role_line_counts(
+        Path::new("crucible-example"),
+        Path::new("crucible-example/src/node/test_support/large.rs"),
+        &"fn support() {}\n".repeat(1_200),
     );
-    let hard_findings = source_shape_failures(Path::new("synthetic.rs"), &hard_limit);
-    assert_contains(&hard_findings, "exceeds hard line limit");
+    assert_eq!(test_support_counts.implementation, 0);
+    assert_eq!(test_support_counts.tests, 1_200);
+
+    let test_support_module_counts = source_role_line_counts(
+        Path::new("crucible-example"),
+        Path::new("crucible-example/src/test_support.rs"),
+        &"fn support() {}\n".repeat(1_200),
+    );
+    assert_eq!(test_support_module_counts.implementation, 0);
+    assert_eq!(test_support_module_counts.tests, 1_200);
+
+    let stacked_attribute = "//! synthetic\n#[cfg(test)]\n#[allow(dead_code, unused_variables)]\nfn gated(value: (u8, u8)) {\n    let _ = value;\n}\nfn production() {}\n";
+    let stacked_counts = source_role_line_counts(
+        Path::new("crucible-example"),
+        Path::new("crucible-example/src/stacked.rs"),
+        stacked_attribute,
+    );
+    assert_eq!(stacked_counts.implementation, 2);
+    assert_eq!(stacked_counts.tests, 5);
+
+    let cfg_field = "//! synthetic\nstruct Example {\n    #[cfg(test)]\n    #[allow(dead_code)]\n    gated: Option<(u8, u8)>,\n    production: u8,\n}\n";
+    let cfg_field_counts = source_role_line_counts(
+        Path::new("crucible-example"),
+        Path::new("crucible-example/src/field.rs"),
+        cfg_field,
+    );
+    assert_eq!(cfg_field_counts.implementation, 4);
+    assert_eq!(cfg_field_counts.tests, 3);
+
+    let cfg_expression = "//! synthetic\n#[cfg(test)]\nlet outcome = if condition {\n    1\n} else {\n    2\n};\nfn production() {}\n";
+    let cfg_expression_counts = source_role_line_counts(
+        Path::new("crucible-example"),
+        Path::new("crucible-example/src/expression.rs"),
+        cfg_expression,
+    );
+    assert_eq!(cfg_expression_counts.implementation, 2);
+    assert_eq!(cfg_expression_counts.tests, 6);
+
+    let fake_crate_cfg = "//! synthetic\nconst TEXT: &str = r###\"\n#![cfg(test)]\n\"quoted raw content\"\n\"###;\n/* #![cfg(test)] */\nfn production() {}\n";
+    assert!(!is_test_support_only_source(fake_crate_cfg));
+
+    let real_crate_cfg =
+        "#![cfg(any(test, feature = \"test-support\"))]\n//! synthetic\nfn support() {}\n";
+    assert!(is_test_support_only_source(real_crate_cfg));
+
+    let platform_or_test = "#![cfg(any(test, unix))]\n//! synthetic\nfn production() {}\n";
+    assert!(!is_test_support_only_source(platform_or_test));
+
+    let nested_crate_cfg = "//! synthetic\nmod support {\n    #![cfg(test)]\n    fn nested() {}\n}\nfn production() {}\n";
+    assert!(!is_test_support_only_source(nested_crate_cfg));
 
     let forbidden = qemu_specific_boundary_failures(
         "crucible",
@@ -312,9 +426,60 @@ impl HygieneBaseline {
                             ),
                         )
                     })?;
-                    baseline
+                    if baseline
                         .line_limit_debt
-                        .insert((*path).to_string(), max_lines);
+                        .insert((*path).to_string(), max_lines)
+                        .is_some()
+                    {
+                        return Err(invalid_baseline_entry(
+                            line_index,
+                            "duplicate shape-line path",
+                        ));
+                    }
+                }
+                [
+                    "shape-review",
+                    path,
+                    digest,
+                    role,
+                    lines,
+                    responsibilities,
+                    cohesion,
+                ] => {
+                    let role = SourceRole::parse(role).ok_or_else(|| {
+                        invalid_baseline_entry(line_index, "invalid source-review role")
+                    })?;
+                    let lines = lines.parse::<usize>().map_err(|source| {
+                        invalid_baseline_entry(
+                            line_index,
+                            &format!("invalid source-review line count: {source}"),
+                        )
+                    })?;
+                    if !valid_sha256_digest(digest) {
+                        return Err(invalid_baseline_entry(
+                            line_index,
+                            "invalid source-review SHA-256 digest",
+                        ));
+                    }
+                    if responsibilities.trim().is_empty() || cohesion.trim().is_empty() {
+                        return Err(invalid_baseline_entry(
+                            line_index,
+                            "source-review rationale fields must be nonempty",
+                        ));
+                    }
+                    let key = ((*path).to_string(), role);
+                    let review = SourceReview {
+                        digest: (*digest).to_string(),
+                        lines,
+                        responsibilities: (*responsibilities).to_string(),
+                        cohesion: (*cohesion).to_string(),
+                    };
+                    if baseline.source_reviews.insert(key, review).is_some() {
+                        return Err(invalid_baseline_entry(
+                            line_index,
+                            "duplicate source-review path and role",
+                        ));
+                    }
                 }
                 ["shape-header", path] => {
                     baseline.missing_header_debt.insert((*path).to_string());
@@ -347,20 +512,108 @@ impl HygieneBaseline {
             }
         }
 
+        baseline.validate_unique_review_rationales()?;
+
         Ok(baseline)
     }
 
-    fn allows_source_shape(&self, path: &Path, content: &str, finding: &str) -> bool {
+    fn allows_missing_header(&self, path: &Path, finding: &str) -> bool {
         let relative = display_repo_path(path);
-        if finding.contains("line limit") {
-            return self
-                .line_limit_debt
-                .get(&relative)
-                .is_some_and(|max_lines| source_line_count(content) <= *max_lines);
-        }
-
         finding.contains("missing `//!` module header")
             && self.missing_header_debt.contains(&relative)
+    }
+
+    fn source_review_failures(
+        &self,
+        package_dir: &Path,
+        path: &Path,
+        content: &str,
+    ) -> Vec<String> {
+        let relative = display_repo_path(path);
+        let counts = source_role_line_counts(package_dir, path, content);
+        let grandfathered = self
+            .line_limit_debt
+            .get(&relative)
+            .is_some_and(|limit| source_line_count(content) <= *limit);
+        let digest = source_digest(content);
+        let mut failures = Vec::new();
+
+        for role in [SourceRole::Implementation, SourceRole::Tests] {
+            let lines = role.lines(counts);
+            let key = (relative.clone(), role);
+            let review = self.source_reviews.get(&key);
+
+            if lines <= RESPONSIBILITY_REVIEW_LINE_THRESHOLD {
+                if review.is_some() {
+                    failures.push(format!(
+                        "{relative}: stale {} source review at {lines} lines",
+                        role.name()
+                    ));
+                }
+                continue;
+            }
+            if grandfathered && review.is_none() {
+                continue;
+            }
+            let Some(review) = review else {
+                failures.push(format!(
+                    "{relative}: {} section has {lines} lines and requires a content-bound responsibility review above {RESPONSIBILITY_REVIEW_LINE_THRESHOLD}",
+                    role.name()
+                ));
+                continue;
+            };
+
+            if review.digest != digest {
+                failures.push(format!(
+                    "{relative}: {} source-review digest is stale",
+                    role.name()
+                ));
+            }
+            if review.lines != lines {
+                failures.push(format!(
+                    "{relative}: {} source-review line count {} does not match {lines}",
+                    role.name(),
+                    review.lines
+                ));
+            }
+            if lines > COHESION_REVIEW_LINE_THRESHOLD {
+                if review.cohesion == COHESION_NOT_REQUIRED {
+                    failures.push(format!(
+                        "{relative}: {} section has {lines} lines and requires a cohesion rationale above {COHESION_REVIEW_LINE_THRESHOLD}",
+                        role.name()
+                    ));
+                }
+            } else if review.cohesion != COHESION_NOT_REQUIRED {
+                failures.push(format!(
+                    "{relative}: {} source review must use `{COHESION_NOT_REQUIRED}` at {lines} lines",
+                    role.name()
+                ));
+            }
+        }
+
+        failures
+    }
+
+    fn validate_unique_review_rationales(&self) -> Result<(), Box<dyn Error>> {
+        let mut responsibilities = BTreeSet::new();
+        let mut cohesion = BTreeSet::new();
+        for review in self.source_reviews.values() {
+            if !responsibilities.insert(review.responsibilities.as_str()) {
+                return Err(invalid_baseline_entry(
+                    0,
+                    "source-review responsibilities must be file-specific",
+                ));
+            }
+            if review.cohesion != COHESION_NOT_REQUIRED
+                && !cohesion.insert(review.cohesion.as_str())
+            {
+                return Err(invalid_baseline_entry(
+                    0,
+                    "source-review cohesion rationales must be file-specific",
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn allows_qemu_token(&self, package: &str, path: &Path, finding: &str) -> bool {
@@ -396,17 +649,40 @@ impl HygieneBaseline {
 
         for (relative, max_lines) in &self.line_limit_debt {
             let path = root.join(relative);
+            if !path.is_file() {
+                failures.push(format!(
+                    "tests/crucible/engineering-hygiene-baseline.txt: shape-line path `{relative}` does not exist"
+                ));
+                continue;
+            }
+
             let content = fs::read_to_string(&path)?;
             let line_count = source_line_count(&content);
-            if line_count <= SOFT_LINE_LIMIT {
+            if line_count <= LEGACY_SHAPE_LINE_STALE_THRESHOLD {
                 failures.push(format!(
                     "tests/crucible/engineering-hygiene-baseline.txt: stale shape-line baseline `{relative}` cap {max_lines} observed {line_count}"
                 ));
             }
         }
 
+        for (relative, role) in self.source_reviews.keys() {
+            if !root.join(relative).is_file() {
+                failures.push(format!(
+                    "tests/crucible/engineering-hygiene-baseline.txt: source-review path `{relative}` for {} does not exist",
+                    role.name()
+                ));
+            }
+        }
+
         for relative in &self.missing_header_debt {
             let path = root.join(relative);
+            if !path.is_file() {
+                failures.push(format!(
+                    "tests/crucible/engineering-hygiene-baseline.txt: shape-header path `{relative}` does not exist"
+                ));
+                continue;
+            }
+
             let content = fs::read_to_string(&path)?;
             if content.starts_with("//!") {
                 failures.push(format!(
@@ -464,19 +740,6 @@ impl HygieneBaseline {
 
 fn source_shape_failures(path: &Path, content: &str) -> Vec<String> {
     let mut failures = Vec::new();
-    let line_count = source_line_count(content);
-
-    if line_count > HARD_LINE_LIMIT {
-        failures.push(format!(
-            "{}: {line_count} lines exceeds hard line limit {HARD_LINE_LIMIT}",
-            display_repo_path(path)
-        ));
-    } else if line_count > SOFT_LINE_LIMIT {
-        failures.push(format!(
-            "{}: {line_count} lines exceeds soft line limit {SOFT_LINE_LIMIT}",
-            display_repo_path(path)
-        ));
-    }
 
     if !content.starts_with("//!") {
         failures.push(format!(
@@ -490,6 +753,32 @@ fn source_shape_failures(path: &Path, content: &str) -> Vec<String> {
 
 fn source_line_count(content: &str) -> usize {
     content.lines().count()
+}
+
+fn source_digest(content: &str) -> String {
+    format!("sha256:{:x}", Sha256::digest(content.as_bytes()))
+}
+
+fn valid_sha256_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    })
+}
+
+fn invalid_baseline_entry(line_index: usize, reason: &str) -> Box<dyn Error> {
+    let location = if line_index == 0 {
+        String::from("global validation")
+    } else {
+        format!("line {}", line_index + 1)
+    };
+    IoError::new(
+        ErrorKind::InvalidData,
+        format!("invalid engineering hygiene baseline entry at {location}: {reason}"),
+    )
+    .into()
 }
 
 fn qemu_specific_boundary_failures(package: &str, path: &Path, content: &str) -> Vec<String> {

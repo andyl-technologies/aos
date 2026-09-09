@@ -4,7 +4,7 @@
 //! generations. Counts describe the captured sources, not current permissions
 //! or a child-private graph installation:
 //!
-//! ```json
+//! ```text
 //! {"schema-version":1,"frozen":true,"root-count":2,"node-count":4,
 //!  "originally-writable-root-count":2,"originally-writable-backend-count":1}
 //! ```

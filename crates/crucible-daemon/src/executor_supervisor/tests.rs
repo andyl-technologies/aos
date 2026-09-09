@@ -2333,6 +2333,7 @@ fn savepoint_capture_request(
     .expect("savepoint capture request")
 }
 
+// crucible-lint: allow rust-allow -- the fixture exposes every selected-savepoint identity independently.
 #[allow(clippy::too_many_arguments)]
 fn selected_savepoint_request(
     assignment_byte: u8,

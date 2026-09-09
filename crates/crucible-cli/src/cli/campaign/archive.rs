@@ -4,7 +4,7 @@
 //! completion record on stdout. Physical bytes remain `null` when the composed
 //! store does not expose per-object packed, compressed, or deduplicated size:
 //!
-//! ```json
+//! ```text
 //! {"schema":"crucible.cli.campaign-archive-plan.v1","phase":"pre-transfer","classes":[{"class":"exact-ram","logical_bytes":4096,"logical_replication_obligation_bytes":8192,"physical_bytes":null,"sensitive":true}],"sensitive_classes":["exact-ram"]}
 //! ```
 

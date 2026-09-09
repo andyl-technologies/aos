@@ -18,12 +18,15 @@ mod error_logging;
 mod lex;
 #[path = "support/harness_lint/scan.rs"]
 mod scan;
+#[path = "support/source_sections.rs"]
+mod source_sections;
 
 use allow::*;
 use common::*;
 use error_logging::*;
 use lex::*;
 use scan::*;
+use source_sections::*;
 
 #[test]
 fn harness_lint_recognizes_split_test_modules() {
@@ -49,6 +52,42 @@ fn harness_lint_recognizes_split_test_modules() {
         package,
         Path::new("crucible-example/src/protocol.rs")
     ));
+}
+
+#[test]
+fn harness_lint_classifies_cfg_test_sections_without_literal_false_positives() {
+    let package = Path::new("crucible-example");
+    let source = Path::new("crucible-example/src/synthetic.rs");
+    let stacked_attribute = "//! synthetic\n#[cfg(test)]\n#[allow(dead_code, unused_variables)]\nfn gated(value: (u8, u8)) {\n    let _ = value;\n}\nfn production() {}\n";
+    let stacked_counts = source_role_line_counts(package, source, stacked_attribute);
+
+    assert_eq!(stacked_counts.implementation, 2);
+    assert_eq!(stacked_counts.tests, 5);
+
+    let cfg_field = "//! synthetic\nstruct Example {\n    #[cfg(test)]\n    #[allow(dead_code)]\n    gated: Option<(u8, u8)>,\n    production: u8,\n}\n";
+    let field_counts = source_role_line_counts(package, source, cfg_field);
+
+    assert_eq!(field_counts.implementation, 4);
+    assert_eq!(field_counts.tests, 3);
+
+    let cfg_expression = "//! synthetic\n#[cfg(test)]\nlet outcome = if condition {\n    1\n} else {\n    2\n};\nfn production() {}\n";
+    let expression_counts = source_role_line_counts(package, source, cfg_expression);
+
+    assert_eq!(expression_counts.implementation, 2);
+    assert_eq!(expression_counts.tests, 6);
+
+    let fake_crate_cfg = "//! synthetic\nconst TEXT: &str = r###\"\n#![cfg(test)]\n\"quoted raw content\"\n\"###;\n/* #![cfg(test)] */\nfn production() {}\n";
+    assert!(!is_test_support_only_source(fake_crate_cfg));
+
+    let real_crate_cfg =
+        "#![cfg(any(test, feature = \"test-support\"))]\n//! synthetic\nfn support() {}\n";
+    assert!(is_test_support_only_source(real_crate_cfg));
+
+    let platform_or_test = "#![cfg(any(test, unix))]\n//! synthetic\nfn production() {}\n";
+    assert!(!is_test_support_only_source(platform_or_test));
+
+    let nested_crate_cfg = "//! synthetic\nmod support {\n    #![cfg(test)]\n    fn nested() {}\n}\nfn production() {}\n";
+    assert!(!is_test_support_only_source(nested_crate_cfg));
 }
 
 #[test]

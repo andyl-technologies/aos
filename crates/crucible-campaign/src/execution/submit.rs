@@ -113,6 +113,7 @@ impl SubmitAttemptRequest {
     ///
     /// Returns an error if the resulting component message exceeds its strict
     /// encoded bound.
+    // crucible-lint: allow rust-allow -- the constructor keeps every authenticated savepoint binding explicit.
     #[allow(clippy::too_many_arguments)]
     pub fn new_savepoint_capture(
         assignment: AssignmentId,
@@ -156,6 +157,7 @@ impl SubmitAttemptRequest {
     ///
     /// Returns an error if the resulting component message exceeds its strict
     /// encoded bound.
+    // crucible-lint: allow rust-allow -- the constructor keeps every selected-savepoint binding explicit.
     #[allow(clippy::too_many_arguments)]
     pub fn new_selected_savepoint(
         assignment: AssignmentId,

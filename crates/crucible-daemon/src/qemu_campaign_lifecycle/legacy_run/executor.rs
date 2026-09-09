@@ -828,6 +828,7 @@ where
 
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- this regression deliberately poisons the owner lock.
+// crucible-lint: allow rust-allow -- the same poison regression uses Rust's explicit panic lint allowance.
 #[allow(clippy::expect_used, clippy::panic)]
 mod lock_tests {
     use super::*;

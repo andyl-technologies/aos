@@ -667,8 +667,8 @@ fn decode_state<'a>(
     }
 
     let mut decoder = JournalStateDecoder::new(body);
-    decoder.expect(version.magic())?;
-    decoder.expect(key.storage_digest().as_bytes().as_slice())?;
+    decoder.expect_exact(version.magic())?;
+    decoder.expect_exact(key.storage_digest().as_bytes().as_slice())?;
     decoder.expect_bytes(key.lineage().content_id().encode().as_bytes())?;
     decoder.expect_bytes(key.attempt().content_id().encode().as_bytes())?;
     decoder.expect_bytes(&key.scope().canonical_bytes())?;
@@ -814,7 +814,7 @@ impl<'a> JournalStateDecoder<'a> {
         }
     }
 
-    fn expect(&mut self, expected: &[u8]) -> Result<(), PreparedResultJournalError> {
+    fn expect_exact(&mut self, expected: &[u8]) -> Result<(), PreparedResultJournalError> {
         if self.take(expected.len())? == expected {
             Ok(())
         } else {
@@ -1100,6 +1100,7 @@ fn hex(bytes: [u8; 32]) -> String {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- journal tests use panic shortcuts for precise fixture failures.
     #![allow(clippy::expect_used)]
 
     use std::collections::{BTreeMap, BTreeSet};

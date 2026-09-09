@@ -138,7 +138,10 @@ impl ProductionVmLifecycleConfig {
 
     pub(super) fn claim_bounded_scheduler_preemption(
         &self,
-    ) -> Result<Option<crucible_qemu::BoundedSchedulerPreemptionEvidenceClaim>, String> {
+    ) -> Result<
+        Option<crucible_qemu::BoundedSchedulerPreemptionEvidenceClaim>,
+        BoundedSchedulerPreemptionFlightError,
+    > {
         self.bounded_scheduler_preemption
             .as_ref()
             .map(BoundedSchedulerPreemptionFlights::claim_next)

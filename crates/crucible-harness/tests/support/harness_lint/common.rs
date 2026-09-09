@@ -179,53 +179,6 @@ pub(super) fn is_binary_boundary_source(package: &str, package_dir: &Path, sourc
     )
 }
 
-pub(super) fn is_test_only_source(package_dir: &Path, source: &Path) -> bool {
-    source.strip_prefix(package_dir).is_ok_and(|relative| {
-        relative
-            .components()
-            .any(|component| component.as_os_str() == "tests")
-            || relative.file_name().is_some_and(|name| {
-                name == "tests.rs"
-                    || name.to_str().is_some_and(|name| {
-                        name.ends_with("_test.rs")
-                            || name.ends_with("_tests.rs")
-                            || name.contains("_test_")
-                    })
-            })
-    })
-}
-
-pub(super) fn is_test_support_only_source(content: &str) -> bool {
-    content.lines().any(|line| {
-        matches!(
-            line.trim(),
-            "#![cfg(test)]" | "#![cfg(any(test, feature = \"test-support\"))]"
-        )
-    })
-}
-
-pub(super) fn cfg_test_line_ranges(content: &str) -> Vec<std::ops::RangeInclusive<usize>> {
-    let scrubbed = scrub_comments_and_strings(content);
-    let lines = scrubbed.lines().collect::<Vec<_>>();
-    let mut ranges = Vec::new();
-
-    for index in 0..lines.len() {
-        if !line_is_cfg_test(lines[index]) {
-            continue;
-        }
-
-        if let Some(range) = braced_item_line_range_after(&lines, index + 1) {
-            ranges.push(range);
-        }
-    }
-
-    ranges
-}
-
-pub(super) fn line_in_ranges(line: usize, ranges: &[std::ops::RangeInclusive<usize>]) -> bool {
-    ranges.iter().any(|range| range.contains(&line))
-}
-
 pub(super) fn filter_cfg_test_findings(content: &str, findings: Vec<String>) -> Vec<String> {
     let ranges = cfg_test_line_ranges(content);
     if ranges.is_empty() {
@@ -242,48 +195,6 @@ pub(super) fn finding_line(finding: &str) -> Option<usize> {
     let (prefix, _) = finding.split_once(": banned ")?;
     let (_, line) = prefix.rsplit_once(':')?;
     line.parse().ok()
-}
-
-fn line_is_cfg_test(line: &str) -> bool {
-    let normalized = line
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
-        .collect::<String>();
-    normalized == "#[cfg(test)]"
-        || normalized
-            .strip_prefix("#[cfg(all(")
-            .and_then(|cfg| cfg.strip_suffix("))]"))
-            .is_some_and(|cfg| cfg.split(',').any(|predicate| predicate == "test"))
-}
-
-fn braced_item_line_range_after(
-    lines: &[&str],
-    start: usize,
-) -> Option<std::ops::RangeInclusive<usize>> {
-    let mut depth = 0usize;
-    let mut first_brace_line = None;
-
-    for (index, line) in lines.iter().enumerate().skip(start) {
-        for ch in line.chars() {
-            match ch {
-                '{' => {
-                    if depth == 0 {
-                        first_brace_line = Some(index + 1);
-                    }
-                    depth += 1;
-                }
-                '}' if depth > 0 => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return first_brace_line.map(|line| line..=index + 1);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    None
 }
 
 pub(super) fn has_adjacent_safety_comment(content: &str, line: usize) -> bool {

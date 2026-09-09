@@ -176,6 +176,16 @@ struct BoundedSchedulerPreemptionFlights {
     pending: Arc<Mutex<VecDeque<crucible_qemu::BoundedSchedulerPreemptionEvidence>>>,
 }
 
+#[derive(Debug, thiserror::Error)]
+enum BoundedSchedulerPreemptionFlightError {
+    #[error("bounded preemption flight queue was poisoned")]
+    QueuePoisoned,
+    #[error("bounded preemption flight queue was exhausted")]
+    QueueExhausted,
+    #[error("claim bounded preemption flight: {0}")]
+    Evidence(#[from] crucible_qemu::BoundedSchedulerPreemptionEvidenceError),
+}
+
 impl BoundedSchedulerPreemptionFlights {
     fn new(evidence: Vec<crucible_qemu::BoundedSchedulerPreemptionEvidence>) -> Self {
         Self {
@@ -183,16 +193,19 @@ impl BoundedSchedulerPreemptionFlights {
         }
     }
 
-    fn claim_next(&self) -> Result<crucible_qemu::BoundedSchedulerPreemptionEvidenceClaim, String> {
+    fn claim_next(
+        &self,
+    ) -> Result<
+        crucible_qemu::BoundedSchedulerPreemptionEvidenceClaim,
+        BoundedSchedulerPreemptionFlightError,
+    > {
         let evidence = self
             .pending
             .lock()
-            .map_err(|_poisoned| String::from("bounded preemption flight queue was poisoned"))?
+            .map_err(|_poisoned| BoundedSchedulerPreemptionFlightError::QueuePoisoned)?
             .pop_front()
-            .ok_or_else(|| String::from("bounded preemption flight queue was exhausted"))?;
-        evidence
-            .claim()
-            .map_err(|error| format!("claim bounded preemption flight: {error}"))
+            .ok_or(BoundedSchedulerPreemptionFlightError::QueueExhausted)?;
+        evidence.claim().map_err(Into::into)
     }
 }
 

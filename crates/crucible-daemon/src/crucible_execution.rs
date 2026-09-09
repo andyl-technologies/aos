@@ -935,6 +935,7 @@ fn map_runner_failure<E>(
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- this test module uses exact fixture failures for localization.
 #[allow(clippy::expect_used)]
 mod tests {
     use crucible::{Decision, DeliveryOrderDecision, Schedule, VirtualTime};

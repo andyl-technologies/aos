@@ -68,6 +68,7 @@ pub trait QemuProductionExactResumeLifecycleFactory {
     /// # Errors
     ///
     /// Returns a classified source, integrity, cancellation, or compatibility failure.
+    // crucible-lint: allow rust-allow -- the trait contract exposes every resume authority and binding explicitly.
     #[allow(clippy::too_many_arguments)]
     fn authenticate_resume_boundary(
         &mut self,
