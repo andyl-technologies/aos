@@ -69,6 +69,16 @@ in
       targetLlvm = llvm;
       description = "Rust ${version} — Darwin-hosted bootstrap chain intermediate";
     }
+  else if stdenv.isCross && stdenv.hostPlatform.isLinux
+  then
+    import ./_rust-linux-hosted.nix {
+      inherit mkDerivation pname version src changeId configFileName;
+      inherit buildPackages stdenv curl openssl zlib needsDownloadRustc disableLld;
+      nativeRust = buildPackages.${prevRust.pname};
+      nativeLlvm = buildPackages.${"llvm-${llvmMajor}"};
+      targetLlvm = llvm;
+      description = "Rust ${version} — Linux-hosted bootstrap chain intermediate";
+    }
   else
     mkDerivation {
       inherit pname version src;
