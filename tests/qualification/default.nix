@@ -47,7 +47,8 @@ in
     // {
       policy = import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;};
       k3s-bindings = k3sBindings;
-      all = aggregate "all-regressions" ([(import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;}) k3sBindings] ++ builtins.attrValues groups);
+      toolchain-hermeticity = aggregate "toolchain-hermeticity" [build.toolchain-boundaries.all build.native-sandbox-boundary];
+      all = aggregate "all-regressions" ([(import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;}) k3sBindings build.toolchain-boundaries.all build.native-sandbox-boundary] ++ builtins.attrValues groups);
       # Evaluating this inventory resolves every reference, including sparse
       # groups, before an expensive VM campaign starts.
       inventory = builtins.listToAttrs (map (requirement: {
