@@ -29,8 +29,307 @@ thread_local! {
 static TEST_RX_INJECT_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEST_RX_LAST_LEN: AtomicU64 = AtomicU64::new(0);
 static TEST_RX_INJECT_STATUS: AtomicU64 = AtomicU64::new(0);
+static TEST_FINGERPRINT_CAPTURE_COUNT: AtomicU64 = AtomicU64::new(0);
+static TEST_FINGERPRINT_CAPTURE_SEED: AtomicU64 = AtomicU64::new(0x10);
 static TEST_REENTRANT_RX_STATE: AtomicPtr<LiveVcpuTimeCallbackState> =
     AtomicPtr::new(std::ptr::null_mut());
+
+#[test]
+fn on_demand_mode_skips_only_automatic_exact_ceiling_samples() {
+    assert!(exact_ceiling_fingerprint_is_due(
+        Some(crate::PluginFingerprintSamplingMode::EveryQuantum),
+        true,
+        7,
+        7,
+    ));
+    assert!(!exact_ceiling_fingerprint_is_due(
+        Some(crate::PluginFingerprintSamplingMode::OnDemand),
+        true,
+        7,
+        7,
+    ));
+    assert!(!exact_ceiling_fingerprint_is_due(
+        Some(crate::PluginFingerprintSamplingMode::EveryQuantum),
+        false,
+        7,
+        7,
+    ));
+    assert!(!control_boundary_fingerprint_is_due(
+        crate::PluginFingerprintSamplingMode::OnDemand,
+        false,
+    ));
+    assert!(control_boundary_fingerprint_is_due(
+        crate::PluginFingerprintSamplingMode::OnDemand,
+        true,
+    ));
+    assert!(control_boundary_fingerprint_is_due(
+        crate::PluginFingerprintSamplingMode::EveryQuantum,
+        false,
+    ));
+    assert!(paused_boundary_fingerprint_is_due(
+        crate::PluginFingerprintSamplingMode::OnDemand,
+        false,
+        true,
+    ));
+    assert!(!paused_boundary_fingerprint_is_due(
+        crate::PluginFingerprintSamplingMode::OnDemand,
+        true,
+        false,
+    ));
+}
+
+extern "C" fn test_fingerprint_read_vcpu_regs(
+    _vcpu_id: u32,
+    register_bytes: *mut u8,
+    capacity: usize,
+    register_len: *mut usize,
+    retired_icount: *mut u64,
+) -> std::os::raw::c_int {
+    if register_bytes.is_null()
+        || capacity == 0
+        || register_len.is_null()
+        || retired_icount.is_null()
+    {
+        return 1;
+    }
+
+    // SAFETY: the callback contract supplies writable output storage checked above.
+    unsafe {
+        register_bytes.write(0xA5);
+        register_len.write(1);
+        retired_icount.write(7);
+    }
+    0
+}
+
+extern "C" fn test_fingerprint_read_rr_cursor(
+    cursor: *mut crate::QemuRoundRobinCursor,
+) -> std::os::raw::c_int {
+    if cursor.is_null() {
+        return 1;
+    }
+
+    // SAFETY: the callback contract supplies one writable cursor checked above.
+    unsafe {
+        cursor.write(crate::QemuRoundRobinCursor {
+            current_vcpu: 0,
+            cursor_position: 7,
+            rr_switch_quantum: 4_096,
+        });
+    }
+    0
+}
+
+extern "C" fn test_fingerprint_digest(out: *mut u8, count: *mut u64) -> std::os::raw::c_int {
+    if out.is_null() || count.is_null() {
+        return 1;
+    }
+
+    // SAFETY: the digest ABI supplies a writable 32-byte output and one count.
+    unsafe {
+        for index in 0..crucible_shmem::FINGERPRINT_DIGEST_BYTES {
+            out.add(index).write(0xC0_u8.wrapping_add(index as u8));
+        }
+        count.write(1);
+    }
+    0
+}
+
+extern "C" fn test_fingerprint_capture(
+    ram_data: *mut *mut u8,
+    ram_material_len: *mut u64,
+    ram_bytes: *mut u64,
+    device_data: *mut *mut u8,
+    device_material_len: *mut u64,
+    device_bytes: *mut u64,
+) -> std::os::raw::c_int {
+    if ram_data.is_null()
+        || ram_material_len.is_null()
+        || ram_bytes.is_null()
+        || device_data.is_null()
+        || device_material_len.is_null()
+        || device_bytes.is_null()
+    {
+        return 1;
+    }
+
+    // SAFETY: these allocations are transferred to the paired free callback.
+    let ram = unsafe { libc::malloc(1) }.cast::<u8>();
+    // SAFETY: these allocations are transferred to the paired free callback.
+    let device = unsafe { libc::malloc(1) }.cast::<u8>();
+    if ram.is_null() || device.is_null() {
+        // SAFETY: libc accepts null and owns any non-null allocations above.
+        unsafe {
+            libc::free(ram.cast());
+            libc::free(device.cast());
+        }
+        return 1;
+    }
+
+    let seed = TEST_FINGERPRINT_CAPTURE_SEED.load(Ordering::Acquire) as u8;
+    TEST_FINGERPRINT_CAPTURE_COUNT.fetch_add(1, Ordering::AcqRel);
+    // SAFETY: all outputs were checked and both one-byte allocations succeeded.
+    unsafe {
+        ram.write(seed);
+        device.write(seed.wrapping_add(1));
+        ram_data.write(ram);
+        ram_material_len.write(1);
+        ram_bytes.write(1);
+        device_data.write(device);
+        device_material_len.write(1);
+        device_bytes.write(1);
+    }
+    0
+}
+
+extern "C" fn test_fingerprint_sha256_bytes(
+    data: *const u8,
+    length: u64,
+    out: *mut u8,
+) -> std::os::raw::c_int {
+    if data.is_null() || length != 1 || out.is_null() {
+        return 1;
+    }
+
+    // SAFETY: the capture callback returns one readable byte and the digest ABI
+    // supplies a writable 32-byte output.
+    unsafe {
+        let seed = data.read();
+        for index in 0..crucible_shmem::FINGERPRINT_DIGEST_BYTES {
+            out.add(index).write(seed.wrapping_add(index as u8));
+        }
+    }
+    0
+}
+
+extern "C" fn test_fingerprint_capture_free(data: *mut std::os::raw::c_void) {
+    // SAFETY: the capture callback allocated this pointer with libc::malloc.
+    unsafe { libc::free(data) };
+}
+
+#[test]
+fn on_demand_control_callback_captures_and_acknowledges_each_exact_request() {
+    let node_slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 7, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    node_slot
+        .publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let fingerprint_slot = FingerprintSampleSlot::new();
+    let introspector = crate::PluginVcpuIntrospector::require(
+        Some(test_fingerprint_read_vcpu_regs),
+        Some(test_fingerprint_read_rr_cursor),
+    )
+    .unwrap_or_else(|error| panic!("test introspector should bind: {error}"));
+    let sampling = crate::PluginFingerprintSampling::from_test_exports(
+        introspector,
+        crate::PluginFingerprintDigester::new(
+            test_fingerprint_digest,
+            test_fingerprint_digest,
+            test_fingerprint_digest,
+        ),
+        test_fingerprint_capture,
+        test_fingerprint_sha256_bytes,
+        test_fingerprint_capture_free,
+    );
+    let state = test_live_state(80, 1, 0, 0, &node_slot)
+        .and_then(|state| {
+            state.attach_fingerprint(
+                sampling,
+                &fingerprint_slot,
+                crate::PluginFingerprintSamplingMode::OnDemand,
+                false,
+                LiveWorkerQuiescence::new(crate::runtime::worker_quiescence::WORKER_ALL),
+            )
+        })
+        .unwrap_or_else(|error| panic!("live fingerprint state should build: {error}"));
+
+    TEST_FINGERPRINT_CAPTURE_COUNT.store(0, Ordering::Release);
+    TEST_FINGERPRINT_CAPTURE_SEED.store(0x10, Ordering::Release);
+    state
+        .publish_current_icount(7)
+        .unwrap_or_else(|error| panic!("exact quantum should publish: {error}"));
+    assert_eq!(fingerprint_slot.snapshot(), None);
+
+    let ordinary_control_request = node_slot
+        .request_control_boundary()
+        .unwrap_or_else(|error| panic!("ordinary control request should publish: {error}"));
+    state
+        .on_control_boundary(7)
+        .unwrap_or_else(|error| panic!("ordinary control request should complete: {error}"));
+    assert_eq!(TEST_FINGERPRINT_CAPTURE_COUNT.load(Ordering::Acquire), 0);
+    assert_eq!(fingerprint_slot.snapshot(), None);
+    assert_eq!(
+        node_slot.snapshot().control_boundary_ack,
+        ordinary_control_request.wrapping_add(1)
+    );
+
+    TEST_REQUEST_VMSTOP_CALLS.set(0);
+    TEST_REQUEST_VMSTOP_STATUS.set(0);
+    state
+        .header
+        .get()
+        .request_pause([&node_slot])
+        .unwrap_or_else(|error| panic!("pause should publish: {error}"));
+    let pause_control_request = node_slot
+        .request_control_boundary()
+        .unwrap_or_else(|error| panic!("pause control request should publish: {error}"));
+    state
+        .on_control_boundary(7)
+        .unwrap_or_else(|error| panic!("pause control request should complete: {error}"));
+    assert_eq!(TEST_FINGERPRINT_CAPTURE_COUNT.load(Ordering::Acquire), 0);
+    assert_eq!(fingerprint_slot.snapshot(), None);
+    assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
+    assert_eq!(
+        node_slot.snapshot().control_boundary_ack,
+        pause_control_request.wrapping_add(1)
+    );
+    state.header.get().clear_pause();
+
+    let first_capture_request = fingerprint_slot.request_capture_v1();
+    let first_control_request = node_slot
+        .request_control_boundary()
+        .unwrap_or_else(|error| panic!("first control request should publish: {error}"));
+    state
+        .on_control_boundary(7)
+        .unwrap_or_else(|error| panic!("first capture request should complete: {error}"));
+    let first_sample = fingerprint_slot
+        .snapshot()
+        .unwrap_or_else(|| panic!("first exact sample should publish"));
+    assert_eq!(first_sample.sample_icount, 7);
+    assert_eq!(
+        fingerprint_slot.capture_request_generation(),
+        first_capture_request.wrapping_add(1)
+    );
+    assert_eq!(
+        node_slot.snapshot().control_boundary_ack,
+        first_control_request.wrapping_add(1)
+    );
+
+    TEST_FINGERPRINT_CAPTURE_SEED.store(0x40, Ordering::Release);
+    let second_capture_request = fingerprint_slot.request_capture_v1();
+    let second_control_request = node_slot
+        .request_control_boundary()
+        .unwrap_or_else(|error| panic!("second control request should publish: {error}"));
+    state
+        .on_control_boundary(7)
+        .unwrap_or_else(|error| panic!("same-icount recapture should complete: {error}"));
+    let second_sample = fingerprint_slot
+        .snapshot()
+        .unwrap_or_else(|| panic!("second exact sample should publish"));
+
+    assert_eq!(TEST_FINGERPRINT_CAPTURE_COUNT.load(Ordering::Acquire), 2);
+    assert_eq!(second_sample.sample_icount, first_sample.sample_icount);
+    assert_ne!(second_sample.ram_digest, first_sample.ram_digest);
+    assert_eq!(
+        fingerprint_slot.capture_request_generation(),
+        second_capture_request.wrapping_add(1)
+    );
+    assert_eq!(
+        node_slot.snapshot().control_boundary_ack,
+        second_control_request.wrapping_add(1)
+    );
+}
 
 extern "C" fn test_clock_deadline_ns() -> i64 {
     TEST_CLOCK_DEADLINE_NS.get()

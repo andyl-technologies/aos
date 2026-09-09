@@ -3,6 +3,45 @@
 use super::*;
 
 #[test]
+fn fingerprint_capture_mode_preserves_eager_default_argv() {
+    let eager = QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0)
+        .with_fingerprint(QemuLaunchPluginSwitch::On);
+    let on_demand = eager
+        .clone()
+        .with_fingerprint_mode(QemuFingerprintSamplingMode::OnDemand);
+
+    assert_eq!(
+        eager.fingerprint_mode(),
+        QemuFingerprintSamplingMode::EveryQuantum
+    );
+    assert!(!eager.plugin_args_raw().contains("fingerprint_mode="));
+    assert!(
+        on_demand
+            .plugin_args_raw()
+            .contains("fingerprint_mode=on-demand-v1")
+    );
+    assert_eq!(on_demand.validate(), Ok(()));
+}
+
+#[test]
+fn on_demand_fingerprint_mode_rejects_disabled_sampling_and_state_dump() {
+    let disabled = QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0)
+        .with_fingerprint_mode(QemuFingerprintSamplingMode::OnDemand);
+    assert_eq!(
+        disabled.validate(),
+        Err(QemuLaunchCommandError::FingerprintModeWithoutFingerprint)
+    );
+
+    let state_dump = disabled
+        .with_fingerprint(QemuLaunchPluginSwitch::On)
+        .with_terminal_state_dump(1, "/tmp/dump.bin");
+    assert_eq!(
+        state_dump.validate(),
+        Err(QemuLaunchCommandError::InvalidStateDumpConfiguration)
+    );
+}
+
+#[test]
 fn complete_scenario_seed_controls_the_plugin_decision_root() {
     let mut first = [0_u8; 32];
     first[..8].copy_from_slice(&11_u64.to_le_bytes());

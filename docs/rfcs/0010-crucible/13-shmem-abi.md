@@ -693,6 +693,16 @@ the host reads it only while the VM is quiescent. The section begins at the
 coverage-data end rounded up to 128 bytes; its VM count and fixed stride
 determine the following marker-ring offset.
 
+The optional `fingerprint_mode=on-demand-v1` launch capability assigns the
+slot's former reserved word to an atomic capture request generation without
+changing the ABI-v6 layout. The host publishes an odd generation before the
+generic control-boundary request. The plugin snapshots that exact odd value,
+publishes the synchronous exact-boundary sample, then compare-exchanges only
+that value to its even successor before acknowledging the control boundary.
+Repeated host requests coalesce while the odd generation is pending; a timeout
+leaves it pending for a later retry. Launches without the versioned capability
+leave the word zero and retain eager boundary sampling.
+
 ### 13.3.7 Plugin-to-host white-box marker rings
 
 ABI v6 retains the ABI-v4 SPSC marker ring per logical VM after the fingerprint sample
@@ -906,7 +916,7 @@ CoverageEntry (size 64, align 64)
 
 FingerprintSampleSlot (size 640, align 128)
   @  0  sample_gen         u32
-  @  4  _reserved          u32
+  @  4  capture_request    atomic u32 (on-demand-v1; formerly reserved)
   @  8  words[68]          u64
 
 WhiteboxMarkerEntry (size 4672, align 64)

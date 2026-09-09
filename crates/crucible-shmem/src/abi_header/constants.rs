@@ -334,6 +334,10 @@ pub(super) fn emit_constants(out: &mut String) {
         FINGERPRINT_SAMPLE_SLOT_ALIGN,
         &[
             ("GEN", FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET),
+            (
+                "CAPTURE_REQUEST",
+                FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET,
+            ),
             ("RESERVED", FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET),
             ("WORDS", FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET),
         ],

@@ -1991,6 +1991,34 @@ pub(super) fn cli_help_surface_rejects_unimplemented_future_flags() {
 }
 
 #[test]
+pub(super) fn trusted_serve_debugging_does_not_enable_campaign_worker_gdbstubs() {
+    let cli = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+    ]);
+    let Commands::Serve(args) = &cli.command else {
+        panic!("expected serve command");
+    };
+    let authorization = debug_authorization_policy(args)
+        .unwrap_or_else(|error| panic!("trusted serve authorization should parse: {error}"));
+    let campaign_config = crucible_api::ProductionVmLifecycleConfig::new(
+        "/aos/bin/qemu-system-x86_64",
+        "/aos/lib/crucible-plugin.so",
+        "/aos/kernel",
+        "/aos/root.raw",
+        "/run/crucible",
+    );
+    let session_config =
+        production_session_lifecycle_config(campaign_config.clone(), &authorization);
+
+    assert!(!campaign_config.debug_gdbstubs_enabled());
+    assert!(session_config.debug_gdbstubs_enabled());
+}
+
+#[test]
 pub(super) fn cli_serve_shutdown_and_bind_errors_follow_exit_contract() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
