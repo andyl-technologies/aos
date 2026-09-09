@@ -43,21 +43,21 @@
 in
   assert builtins.elem "checks.fleet.measured-boot" imageRecovery.regressions;
   assert (resolve "checks.fleet.measured-boot").drvPath == fleet.measured-boot.drvPath;
-  groups
-  // {
-    policy = import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;};
-    k3s-bindings = k3sBindings;
-    all = aggregate "all-regressions" ([(import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;}) k3sBindings] ++ builtins.attrValues groups);
-    # Evaluating this inventory resolves every reference, including sparse
-    # groups, before an expensive VM campaign starts.
-    inventory = builtins.listToAttrs (map (requirement: {
-        name = requirement.id;
-        value =
-          map (path: {
-            inherit path;
-            derivation = (resolve path).drvPath;
-          })
-          requirement.regressions;
-      })
-      contract.requirements);
-  }
+    groups
+    // {
+      policy = import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;};
+      k3s-bindings = k3sBindings;
+      all = aggregate "all-regressions" ([(import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;}) k3sBindings] ++ builtins.attrValues groups);
+      # Evaluating this inventory resolves every reference, including sparse
+      # groups, before an expensive VM campaign starts.
+      inventory = builtins.listToAttrs (map (requirement: {
+          name = requirement.id;
+          value =
+            map (path: {
+              inherit path;
+              derivation = (resolve path).drvPath;
+            })
+            requirement.regressions;
+        })
+        contract.requirements);
+    }
