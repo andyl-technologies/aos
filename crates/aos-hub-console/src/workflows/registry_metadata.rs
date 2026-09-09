@@ -171,17 +171,17 @@ fn MetadataEditor(
                 <div class="editor-form">
                     <label><span>"Name"</span><input required maxlength="256"
                         prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/>
-                        <span class="field-note">"Changing this name does not change the registry URL."</span>
+                        <small class="field-note">"Changing this name does not change the registry URL."</small>
                     </label>
                     <label><span>"Description"</span><input maxlength="4096"
                         prop:value=move || description.get() on:input=move |event| description.set(event_target_value(&event))/></label>
                     <label class="full-field"><span>"Homepage introduction"</span><textarea rows="6"
                         prop:value=move || readme.get() on:input=move |event| readme.set(event_target_value(&event))/>
-                        <span class="field-note">"Optional preamble shown on the registry homepage."</span>
+                        <small class="field-note">"Optional preamble shown on the registry homepage."</small>
                     </label>
                     <label><span>"Default browser release"</span><input placeholder="Automatic"
                         prop:value=move || default_release.get() on:input=move |event| default_release.set(event_target_value(&event))/>
-                        <span class="field-note">"An exact release version. Leave blank for automatic selection. Package-manager tracking is unchanged."</span>
+                        <small class="field-note">"An exact release version. Leave blank for automatic selection. Package-manager tracking is unchanged."</small>
                     </label>
                     <details class="full-field advanced-controls"><summary>"Release support policy"</summary>
                         <label><span>"Support policy (TOML)"</span><textarea rows="10" spellcheck="false"
