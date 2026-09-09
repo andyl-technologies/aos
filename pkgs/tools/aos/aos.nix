@@ -67,6 +67,10 @@
     if isCross
     then buildPackages.nix
     else nix;
+  mkReferenceGraph = import ../../../lib/build/reference-graph.nix {
+    inherit lib;
+    inherit (buildPackages) mkDerivation coreutils jq;
+  };
   buildOpenSsh =
     if isCross
     then buildPackages.openssh
@@ -143,6 +147,10 @@
   abilityReferenceNginxFixture = builtins.path {
     path = ../../../tests/abilities/reference-nginx/providers/nginx;
     name = "aos-ability-reference-nginx";
+  };
+  abilityReferenceNginxGraph = mkReferenceGraph {
+    rootPaths = [abilityReferenceNginxFixture];
+    pname = "aos-ability-reference-nginx-graph";
   };
   abilityReferenceManagedConfigurationFixture = builtins.path {
     path = ../../../tests/abilities/reference-nginx/providers/managed-configuration;
@@ -398,6 +406,32 @@ in
       export AOS_TEST_ABILITY_REFERENCE_SYSTEMD_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceSystemdFixture})"
       export AOS_TEST_ABILITY_PACKAGE_SMOKE="${ability-package-smoke.abilities}"
       export AOS_TEST_ABILITY_CACHE="$NIX_BUILD_TOP/ability-evaluator-cache"
+      ${lib.optionalString (!isCross) ''
+        ability_nix_root="$NIX_BUILD_TOP/ability-retention-nix"
+        ability_nix_state="$ability_nix_root/state"
+        ability_nix_log="$ability_nix_root/log"
+        mkdir -p \
+          "$ability_nix_state/db" \
+          "$ability_nix_state/gcroots" \
+          "$ability_nix_state/profiles" \
+          "$ability_nix_log"
+
+        NIX_STORE_DIR=/nix/store \
+        NIX_STATE_DIR="$ability_nix_state" \
+        NIX_LOG_DIR="$ability_nix_log" \
+        NIX_REMOTE=local \
+          ${buildNix}/bin/nix-store --init
+        NIX_STORE_DIR=/nix/store \
+        NIX_STATE_DIR="$ability_nix_state" \
+        NIX_LOG_DIR="$ability_nix_log" \
+        NIX_REMOTE=local \
+          ${buildNix}/bin/nix-store --load-db < ${abilityReferenceNginxGraph}/registration
+
+        export AOS_TEST_ABILITY_NIX_STORE_DIR=/nix/store
+        export AOS_TEST_ABILITY_NIX_STATE_DIR="$ability_nix_state"
+        export AOS_TEST_ABILITY_NIX_LOG_DIR="$ability_nix_log"
+        export AOS_TEST_ABILITY_NIX_REMOTE=local
+      ''}
       export AOS_TEST_ABILITY_IFD_DERIVATION="${abilityEvaluatorIfdDrvPath}"
       export AOS_TEST_ABILITY_IFD_SYSTEM="${stdenv.buildPlatform.system}"
       export AOS_ABILITY_EVALUATOR_SECRET="must-not-leak"
