@@ -7,8 +7,8 @@ use std::num::NonZeroU32;
 
 use anyhow::{Context, Result};
 use aos_ability_model::document::{
-    Contribution, DesiredInstance, FreshnessCondition, PackageSubject, PlatformIdentity,
-    ProviderInventory, ProviderState,
+    Contribution, DesiredInstance, FreshnessCondition, PlatformIdentity, ProviderInventory,
+    ProviderState,
 };
 use aos_ability_model::*;
 use aos_ability_plan::{
@@ -23,7 +23,11 @@ use aos_contract::Sha256Digest;
 
 use super::{AbilityEvaluationLimits, RestrictedAbilityEvaluator};
 
-const REFERENCE_ENVIRONMENT: [&str; 11] = [
+mod registry;
+
+use registry::ReferencePackageCatalog;
+
+const REFERENCE_ENVIRONMENT: [&str; 12] = [
     "AOS_NIX_INSTANTIATE",
     "AOS_PRLIMIT",
     "AOS_TEST_ABILITY_CACHE",
@@ -35,12 +39,14 @@ const REFERENCE_ENVIRONMENT: [&str; 11] = [
     "AOS_TEST_ABILITY_REFERENCE_CREDENTIAL_NAR_HASH",
     "AOS_TEST_ABILITY_REFERENCE_SYSTEMD",
     "AOS_TEST_ABILITY_REFERENCE_SYSTEMD_NAR_HASH",
+    "AOS_TEST_ABILITY_REFERENCE_PACKAGES",
 ];
 
 struct ReferenceFixture {
     context: ValidationContext,
     environment: EnvironmentDocument,
     packages: Vec<PackageDocument>,
+    consumer_package: Sha256Digest,
     nginx_package: Sha256Digest,
     lower_packages: BTreeMap<String, Sha256Digest>,
     terminal_packages: BTreeMap<String, Sha256Digest>,
@@ -49,12 +55,22 @@ struct ReferenceFixture {
     interfaces: BTreeMap<String, InterfaceKey>,
     policy_revision: RevisionId,
     evaluator: RestrictedAbilityEvaluator,
+    registry: ReferencePackageCatalog,
 }
 
 struct Deployment<'a> {
     fixture: &'a mut ReferenceFixture,
     nginx_instances: Vec<InstanceId>,
-    app_routes: Vec<(&'static str, &'static str, &'static str, bool)>,
+    app_routes: Vec<AppRoute>,
+}
+
+#[derive(Clone, Copy)]
+struct AppRoute {
+    application: &'static str,
+    nginx: &'static str,
+    host: &'static str,
+    tls: bool,
+    response: &'static str,
 }
 
 struct ComposedDeployment {
@@ -85,6 +101,8 @@ impl ReferenceFixture {
             AbilityEvaluationLimits::default(),
         )?;
 
+        let registry = ReferencePackageCatalog::from_environment()?;
+        let packages = registry.source_packages().to_vec();
         let interface_documents = interface_documents();
         let interfaces = interface_documents
             .iter()
@@ -95,171 +113,44 @@ impl ReferenceFixture {
                 ))
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
-        let context = ValidationContext::new(BTreeSet::new(), interface_documents)
+        let supported_features = BTreeSet::from([RequiredFeature::new("abilities-v1")?]);
+        let context = ValidationContext::new(supported_features, interface_documents)
             .context("validating reference interface catalog")?;
 
-        let artifacts = BTreeMap::from([
-            (
-                "aos.nginx".to_string(),
-                artifact_from_environment(
-                    "AOS_TEST_ABILITY_REFERENCE_NGINX",
-                    "AOS_TEST_ABILITY_REFERENCE_NGINX_NAR_HASH",
-                    1,
-                )?,
-            ),
-            (
-                "aos.managed-configuration".to_string(),
-                artifact_from_environment(
-                    "AOS_TEST_ABILITY_REFERENCE_MANAGED_CONFIGURATION",
-                    "AOS_TEST_ABILITY_REFERENCE_MANAGED_CONFIGURATION_NAR_HASH",
-                    2,
-                )?,
-            ),
-            (
-                "aos.credential-delivery".to_string(),
-                artifact_from_environment(
-                    "AOS_TEST_ABILITY_REFERENCE_CREDENTIAL",
-                    "AOS_TEST_ABILITY_REFERENCE_CREDENTIAL_NAR_HASH",
-                    3,
-                )?,
-            ),
-            (
-                "aos.systemd-service".to_string(),
-                artifact_from_environment(
-                    "AOS_TEST_ABILITY_REFERENCE_SYSTEMD",
-                    "AOS_TEST_ABILITY_REFERENCE_SYSTEMD_NAR_HASH",
-                    4,
-                )?,
-            ),
-        ]);
-
-        let nginx_requirements = vec![
-            requirement(
-                "configuration",
-                &interfaces["aos.managed-configuration"],
-                RequirementStrength::Required,
-                None,
-            ),
-            requirement(
-                "credential",
-                &interfaces["aos.credential-delivery"],
-                RequirementStrength::Advisory,
-                Some(RequirementFallback {
-                    outputs: BTreeMap::from([(
-                        key("credential-views"),
-                        value(serde_json::json!({})),
-                    )]),
-                }),
-            ),
-            requirement(
-                "service",
-                &interfaces["aos.systemd-service"],
-                RequirementStrength::Required,
-                None,
-            ),
-            method_requirement(
-                "service-terminal",
-                &interfaces["aos.systemd-service-effects"],
-                &["observe", "reload", "start", "stop"],
-            ),
-            method_requirement(
-                "validation-terminal",
-                &interfaces["aos.nginx-validation"],
-                &["record", "release", "validate"],
-            ),
-        ];
-        let mut packages = Vec::new();
+        let mut nginx_package = None;
+        let mut consumer_package = None;
         let mut lower_packages = BTreeMap::new();
         let mut terminal_packages = BTreeMap::new();
         let mut implementations = BTreeMap::new();
         let mut terminal_implementations = BTreeMap::new();
-
-        let nginx = provider_package(
-            "reference-nginx",
-            &interfaces["aos.nginx"],
-            &artifacts["aos.nginx"],
-            nginx_requirements,
-            "nginx",
-        );
-        let nginx_package = nginx.content_digest()?;
-        implementations.insert("aos.nginx".to_string(), provider_reference(&nginx));
-        packages.push(nginx);
-
-        for (name, terminal_name, group, terminal_methods) in [
-            (
-                "aos.managed-configuration",
-                "aos.managed-configuration-effects",
-                "configuration",
-                &["prepare", "publish", "release"][..],
-            ),
-            ("aos.credential-delivery", "", "credentials", &[][..]),
-            (
-                "aos.systemd-service",
-                "aos.systemd-service-effects",
-                "services",
-                &["observe", "reload", "start", "stop"][..],
-            ),
-        ] {
-            let requirements = if terminal_methods.is_empty() || name == "aos.systemd-service" {
-                Vec::new()
-            } else {
-                vec![method_requirement(
-                    "effects",
-                    &interfaces[terminal_name],
-                    terminal_methods,
-                )]
-            };
-            let package = provider_package(
-                &format!("reference-{}", name.rsplit('.').next().unwrap()),
-                &interfaces[name],
-                &artifacts[name],
-                requirements,
-                group,
-            );
-            lower_packages.insert(name.to_string(), package.content_digest()?);
-            implementations.insert(name.to_string(), provider_reference(&package));
-            packages.push(package);
-
-            if !terminal_methods.is_empty() {
-                let terminal = terminal_package(
-                    &format!("reference-{}-terminal", name.rsplit('.').next().unwrap()),
-                    &interfaces[terminal_name],
-                    &artifacts[name],
-                );
-                terminal_packages.insert(terminal_name.to_string(), terminal.content_digest()?);
-                terminal_implementations
-                    .insert(terminal_name.to_string(), provider_reference(&terminal));
-                packages.push(terminal);
+        for package in &packages {
+            let package_digest = package.content_digest()?;
+            if package.package.name.as_str() == "ability-reference-nginx-consumer" {
+                consumer_package = Some(package_digest);
+            }
+            for provider in &package.implementation.providers {
+                let name = provider.interface.name.as_str();
+                ensure_interface_matches(&interfaces, &provider.interface)?;
+                let reference = provider_reference(provider);
+                match provider.implementation {
+                    ImplementationKind::PureComposition { .. } => {
+                        implementations.insert(name.to_string(), reference);
+                        if name == "aos.nginx" {
+                            nginx_package = Some(package_digest);
+                        } else {
+                            lower_packages.insert(name.to_string(), package_digest);
+                        }
+                    }
+                    ImplementationKind::TerminalHandler { .. } => {
+                        terminal_packages.insert(name.to_string(), package_digest);
+                        terminal_implementations.insert(name.to_string(), reference);
+                    }
+                }
             }
         }
-
-        let nginx_terminal = terminal_package(
-            "reference-nginx-terminal",
-            &interfaces["aos.nginx-validation"],
-            &artifacts["aos.nginx"],
-        );
-        terminal_packages.insert(
-            "aos.nginx-validation".to_string(),
-            nginx_terminal.content_digest()?,
-        );
-        terminal_implementations.insert(
-            "aos.nginx-validation".to_string(),
-            provider_reference(&nginx_terminal),
-        );
-        packages.push(nginx_terminal);
-
-        let app_artifact = artifacts["aos.nginx"].clone();
-        packages.push(consumer_package(
-            "reference-app-a",
-            &app_artifact,
-            &interfaces["aos.nginx"],
-        ));
-        packages.push(consumer_package(
-            "reference-app-b",
-            &app_artifact,
-            &interfaces["aos.nginx"],
-        ));
-        packages.sort_by_key(|package| package.content_digest().unwrap());
+        let consumer_package =
+            consumer_package.context("reference companion omits nginx consumer")?;
+        let nginx_package = nginx_package.context("reference companion omits aos.nginx")?;
 
         let environment_id = EnvironmentId {
             authority: key("reference"),
@@ -324,6 +215,7 @@ impl ReferenceFixture {
             context,
             environment,
             packages,
+            consumer_package,
             nginx_package,
             lower_packages,
             terminal_packages,
@@ -332,16 +224,8 @@ impl ReferenceFixture {
             interfaces,
             policy_revision,
             evaluator,
+            registry,
         }))
-    }
-
-    fn package_digest(&self, name: &str) -> Sha256Digest {
-        self.packages
-            .iter()
-            .find(|package| package.package.name.as_str() == name)
-            .unwrap()
-            .content_digest()
-            .unwrap()
     }
 
     fn observe_applied_state(&mut self, state: &DesiredStateDocument) {
@@ -381,9 +265,9 @@ impl Deployment<'_> {
         let mut requests = Vec::new();
         let mut contributions = Vec::new();
 
-        for (app, nginx, host, tls) in &self.app_routes {
-            let app_instance = instance(&self.fixture.environment.environment, app);
-            let nginx_instance = instance(&self.fixture.environment.environment, nginx);
+        for route in &self.app_routes {
+            let app_instance = instance(&self.fixture.environment.environment, route.application);
+            let nginx_instance = instance(&self.fixture.environment.environment, route.nginx);
             let request = RequestId {
                 consumer: app_instance.clone(),
                 scope: ScopePath::root(),
@@ -392,7 +276,7 @@ impl Deployment<'_> {
             let candidate = binding_key(&request);
             instances.push(DesiredInstance {
                 instance: app_instance.clone(),
-                package: self.fixture.package_digest(&format!("reference-{app}")),
+                package: self.fixture.consumer_package,
                 enabled: true,
             });
             requests.push(BindingRequest {
@@ -410,7 +294,12 @@ impl Deployment<'_> {
                 },
                 slot: app_instance.key.clone(),
                 grant: BindingId(candidate),
-                value: value(serde_json::json!({"host": host, "tls": tls})),
+                value: value(serde_json::json!({
+                    "host": route.host,
+                    "response_content": route.response,
+                    "response_identity": route.application,
+                    "tls": route.tls,
+                })),
             });
         }
         for nginx in &self.nginx_instances {
@@ -570,9 +459,9 @@ impl Deployment<'_> {
             let route = self
                 .app_routes
                 .iter()
-                .find(|(app, _, _, _)| *app == request.id.consumer.key.as_str())
+                .find(|route| route.application == request.id.consumer.key.as_str())
                 .unwrap();
-            let provider = instance(&self.fixture.environment.environment, route.1);
+            let provider = instance(&self.fixture.environment.environment, route.nginx);
             let contributions = vec![ContributionPermission {
                 aggregate: AggregateId {
                     provider: provider.clone(),
@@ -677,8 +566,8 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
         fixture: &mut fixture,
         nginx_instances: vec![nginx_main.clone()],
         app_routes: vec![
-            ("app-a", "nginx-main", "alpha.example", false),
-            ("app-b", "nginx-main", "beta.example", false),
+            app_route("app-a", "nginx-main", "alpha.example", false, "alpha-v1"),
+            app_route("app-b", "nginx-main", "beta.example", false, "beta-v1"),
         ],
     };
     let seed = both.seed(true);
@@ -733,6 +622,8 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
     let rendered = rendered_configuration(&composed.outcome.desired_state, &nginx_main);
     assert!(rendered.contains("server_name alpha.example;"));
     assert!(rendered.contains("server_name beta.example;"));
+    assert!(rendered.contains("return 200 \"app-a:alpha-v1\\n\";"));
+    assert!(rendered.contains("return 200 \"app-b:beta-v1\\n\";"));
     assert_eq!(rendered.matches("listen 443 ssl;").count(), 0);
     assert!(matches!(
         &nginx_output(
@@ -751,8 +642,8 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
         fixture: both.fixture,
         nginx_instances: vec![nginx_main.clone()],
         app_routes: vec![
-            ("app-a", "nginx-main", "gamma.example", false),
-            ("app-b", "nginx-main", "beta.example", false),
+            app_route("app-a", "nginx-main", "alpha.example", false, "alpha-v2"),
+            app_route("app-b", "nginx-main", "beta.example", false, "beta-v1"),
         ],
     };
     let seed = updated.seed(true);
@@ -761,9 +652,11 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
     assert_update_pipeline(updated.fixture, &planning, &updated_planning);
     let updated_state = updated_composed.outcome.desired_state.clone();
     let rendered = rendered_configuration(&updated_state, &nginx_main);
-    assert!(!rendered.contains("alpha.example"));
-    assert!(rendered.contains("gamma.example"));
+    assert!(rendered.contains("alpha.example"));
     assert!(rendered.contains("beta.example"));
+    assert!(!rendered.contains("app-a:alpha-v1"));
+    assert!(rendered.contains("return 200 \"app-a:alpha-v2\\n\";"));
+    assert!(rendered.contains("return 200 \"app-b:beta-v1\\n\";"));
 
     updated.fixture.observe_applied_state(&updated_state);
     let seed = updated.seed(true);
@@ -825,8 +718,8 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
         fixture: empty.fixture,
         nginx_instances: vec![nginx_one.clone(), nginx_two.clone()],
         app_routes: vec![
-            ("app-a", "nginx-one", "one.example", false),
-            ("app-b", "nginx-two", "two.example", true),
+            app_route("app-a", "nginx-one", "one.example", false, "one-v1"),
+            app_route("app-b", "nginx-two", "two.example", true, "two-v1"),
         ],
     };
     let seed = isolated.seed(true);
@@ -845,6 +738,128 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
 }
 
 #[test]
+fn authenticated_registry_and_source_paths_produce_identical_plans() {
+    let Some(mut fixture) = ReferenceFixture::from_environment().unwrap() else {
+        return;
+    };
+    assert_fixture_interface_hashes(&fixture);
+
+    let environment = fixture.environment.environment.clone();
+    let nginx = instance(&environment, "nginx-main");
+    let mut deployment = Deployment {
+        fixture: &mut fixture,
+        nginx_instances: vec![nginx.clone()],
+        app_routes: vec![
+            app_route("app-a", "nginx-main", "alpha.example", false, "alpha-v1"),
+            app_route("app-b", "nginx-main", "beta.example", false, "beta-v1"),
+        ],
+    };
+    let seed = deployment.seed(true);
+    let source = deployment.compose(seed.clone());
+
+    let verified_packages = deployment.fixture.registry.verified_packages();
+    let catalog = verified_packages.planning_catalog().unwrap();
+    let authenticated_artifacts = verified_packages
+        .iter()
+        .flat_map(|package| package.artifacts().iter().cloned())
+        .collect::<Vec<_>>();
+    verified_packages
+        .verify_plan_inputs(
+            &deployment.fixture.environment.platform,
+            catalog.packages(),
+            &authenticated_artifacts,
+        )
+        .unwrap();
+
+    let registry = catalog
+        .composer()
+        .compose(
+            &source.policies,
+            seed.clone(),
+            deployment.fixture.environment.clone(),
+            catalog.packages().to_vec(),
+            &mut deployment.fixture.evaluator,
+        )
+        .unwrap();
+
+    assert_eq!(
+        source.outcome.desired_state.contributions,
+        registry.desired_state.contributions
+    );
+    assert_eq!(
+        source.outcome.resolution.decisions,
+        registry.resolution.decisions
+    );
+    assert_eq!(
+        source.outcome.desired_state.resources,
+        registry.desired_state.resources
+    );
+    assert_eq!(
+        rendered_configuration(&source.outcome.desired_state, &nginx),
+        rendered_configuration(&registry.desired_state, &nginx)
+    );
+
+    let source_snapshot = PlanningSnapshot::from_outcome(&source.outcome).unwrap();
+    let registry_snapshot = PlanningSnapshot::from_outcome(&registry).unwrap();
+    assert_eq!(
+        source_snapshot.canonical_bytes().unwrap(),
+        registry_snapshot.canonical_bytes().unwrap()
+    );
+    let mut authenticated_policies = source.policies.clone();
+    authenticated_policies.sort_by_key(|policy| policy.desired_state);
+
+    let source_verified = source_snapshot
+        .verify_structure(
+            &RecursiveComposer::new(&deployment.fixture.context),
+            PlanningReplayInputs {
+                expected_digest: source_snapshot.digest().unwrap(),
+                authenticated_policies: &authenticated_policies,
+                seed: seed.clone(),
+                environment: deployment.fixture.environment.clone(),
+                packages: deployment.fixture.packages.clone(),
+            },
+        )
+        .unwrap();
+    let registry_verified = registry_snapshot
+        .verify_structure(
+            &catalog.composer(),
+            PlanningReplayInputs {
+                expected_digest: registry_snapshot.digest().unwrap(),
+                authenticated_policies: &authenticated_policies,
+                seed,
+                environment: deployment.fixture.environment.clone(),
+                packages: catalog.packages().to_vec(),
+            },
+        )
+        .unwrap();
+
+    let source_transition = TransitionPlanner::new(&deployment.fixture.context)
+        .plan(
+            &source_verified,
+            TransitionInputs {
+                current: None,
+                authority: None,
+            },
+            &mut deployment.fixture.evaluator,
+        )
+        .unwrap();
+    let registry_transition = TransitionPlanner::new(catalog.validation_context())
+        .plan(
+            &registry_verified,
+            TransitionInputs {
+                current: None,
+                authority: None,
+            },
+            &mut deployment.fixture.evaluator,
+        )
+        .unwrap();
+    assert_eq!(
+        source_transition.checked_effect().document(),
+        registry_transition.checked_effect().document()
+    );
+}
+
+#[test]
 fn checked_reference_source_rejects_directive_injection_before_effect_planning() {
     let Some(mut fixture) = ReferenceFixture::from_environment().unwrap() else {
         return;
@@ -856,7 +871,13 @@ fn checked_reference_source_rejects_directive_injection_before_effect_planning()
         let mut deployment = Deployment {
             fixture: &mut fixture,
             nginx_instances: vec![nginx.clone()],
-            app_routes: vec![("app-a", "nginx-main", hostile_host, false)],
+            app_routes: vec![app_route(
+                "app-a",
+                "nginx-main",
+                hostile_host,
+                false,
+                "safe-response",
+            )],
         };
         let seed = deployment.seed(true);
         let error = match deployment.try_compose(seed) {
@@ -872,6 +893,81 @@ fn checked_reference_source_rejects_directive_injection_before_effect_planning()
 }
 
 #[test]
+fn checked_reference_source_rejects_unsafe_response_content_before_effect_planning() {
+    let Some(mut fixture) = ReferenceFixture::from_environment().unwrap() else {
+        return;
+    };
+    let environment = fixture.environment.environment.clone();
+    let nginx = instance(&environment, "nginx-main");
+
+    for hostile_response in [
+        "bad\nresponse",
+        "bad\"; return 500",
+        "bad${nginx_version}",
+        "bad\\response",
+    ] {
+        let mut deployment = Deployment {
+            fixture: &mut fixture,
+            nginx_instances: vec![nginx.clone()],
+            app_routes: vec![app_route(
+                "app-a",
+                "nginx-main",
+                "safe.example",
+                false,
+                hostile_response,
+            )],
+        };
+        let seed = deployment.seed(true);
+        let error = match deployment.try_compose(seed) {
+            Ok(_) => panic!("hostile nginx response reached a planning snapshot"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            CompositionError::Evaluation { ref source, .. }
+                if source.to_string().contains("response content is invalid")
+        ));
+    }
+}
+
+#[test]
+fn checked_reference_source_rejects_response_identity_outside_its_slot() {
+    let Some(mut fixture) = ReferenceFixture::from_environment().unwrap() else {
+        return;
+    };
+    let environment = fixture.environment.environment.clone();
+    let nginx = instance(&environment, "nginx-main");
+    let mut deployment = Deployment {
+        fixture: &mut fixture,
+        nginx_instances: vec![nginx],
+        app_routes: vec![app_route(
+            "app-a",
+            "nginx-main",
+            "safe.example",
+            false,
+            "safe-response",
+        )],
+    };
+    let mut seed = deployment.seed(true);
+    seed.contributions[0].value = value(serde_json::json!({
+        "host": "safe.example",
+        "response_content": "safe-response",
+        "response_identity": "app-b",
+        "tls": false,
+    }));
+
+    let error = match deployment.try_compose(seed) {
+        Ok(_) => panic!("a response identity outside its slot reached a planning snapshot"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        CompositionError::Evaluation { ref source, .. }
+            if source.to_string().contains("does not match its authorized slot")
+    ));
+}
+
+#[test]
 fn checked_reference_source_rejects_duplicate_server_names_per_nginx_instance() {
     let Some(mut fixture) = ReferenceFixture::from_environment().unwrap() else {
         return;
@@ -882,8 +978,8 @@ fn checked_reference_source_rejects_duplicate_server_names_per_nginx_instance() 
         fixture: &mut fixture,
         nginx_instances: vec![nginx],
         app_routes: vec![
-            ("app-a", "nginx-main", "shared.example", false),
-            ("app-b", "nginx-main", "shared.example", false),
+            app_route("app-a", "nginx-main", "shared.example", false, "a-v1"),
+            app_route("app-b", "nginx-main", "shared.example", false, "b-v1"),
         ],
     };
     let seed = deployment.seed(true);
@@ -910,8 +1006,8 @@ fn checked_reference_source_allows_same_server_name_in_distinct_nginx_instances(
         fixture: &mut fixture,
         nginx_instances: vec![nginx_one.clone(), nginx_two.clone()],
         app_routes: vec![
-            ("app-a", "nginx-one", "shared.example", false),
-            ("app-b", "nginx-two", "shared.example", false),
+            app_route("app-a", "nginx-one", "shared.example", false, "a-v1"),
+            app_route("app-b", "nginx-two", "shared.example", false, "b-v1"),
         ],
     };
 
@@ -935,8 +1031,8 @@ fn checked_reference_source_rejects_case_variant_server_name_collisions() {
         fixture: &mut fixture,
         nginx_instances: vec![nginx],
         app_routes: vec![
-            ("app-a", "nginx-main", "shared.example", false),
-            ("app-b", "nginx-main", "Shared.Example", false),
+            app_route("app-a", "nginx-main", "shared.example", false, "a-v1"),
+            app_route("app-b", "nginx-main", "Shared.Example", false, "b-v1"),
         ],
     };
     let seed = deployment.seed(true);
@@ -1356,6 +1452,20 @@ fn interface_documents() -> Vec<InterfaceDocument> {
     let nginx_request = ValueSchema::Record {
         fields: BTreeMap::from([
             (key("host"), string_schema()),
+            (
+                key("response_content"),
+                ValueSchema::String {
+                    max_length: 256,
+                    syntax: None,
+                },
+            ),
+            (
+                key("response_identity"),
+                ValueSchema::String {
+                    max_length: 128,
+                    syntax: Some(StringSyntax::LocalKeyV1),
+                },
+            ),
             (key("tls"), ValueSchema::Boolean),
         ]),
         optional_fields: Vec::new(),
@@ -1581,178 +1691,7 @@ fn reference_method_families(name: &str) -> Vec<(&'static str, OperationFamily)>
     }
 }
 
-fn requirement(
-    alias: &str,
-    interface: &InterfaceKey,
-    strength: RequirementStrength,
-    fallback: Option<RequirementFallback>,
-) -> RequirementDeclaration {
-    RequirementDeclaration {
-        alias: key(alias),
-        accepted_interfaces: vec![interface.clone()],
-        methods: Vec::new(),
-        guarantees: Vec::new(),
-        strength,
-        fallback,
-    }
-}
-
-fn method_requirement(
-    alias: &str,
-    interface: &InterfaceKey,
-    methods: &[&str],
-) -> RequirementDeclaration {
-    RequirementDeclaration {
-        alias: key(alias),
-        accepted_interfaces: vec![interface.clone()],
-        methods: methods.iter().map(|method| key(method)).collect(),
-        guarantees: Vec::new(),
-        strength: RequirementStrength::Required,
-        fallback: None,
-    }
-}
-
-fn provider_package(
-    name: &str,
-    interface: &InterfaceKey,
-    artifact: &ArtifactReference,
-    requirements: Vec<RequirementDeclaration>,
-    group: &str,
-) -> PackageDocument {
-    let implementation = ProviderImplementation {
-        interface: interface.clone(),
-        artifact: artifact.clone(),
-        requirements,
-        implementation: ImplementationKind::PureComposition {
-            compose_entry: key("compose"),
-            transition_entry: key("transition"),
-        },
-        owns_resource_kinds: vec![interface.name.clone()],
-    };
-    let descriptor = implementation.descriptor_digest().unwrap();
-
-    PackageDocument {
-        schema: PackageDocument::SCHEMA.to_string(),
-        required_features: Vec::new(),
-        activation_mode: AbilityActivationMode::StructuredEffects,
-        package: PackageSubject {
-            name: key(name),
-            version: "1.0.0".to_string(),
-            payload: artifact.clone(),
-            source: artifact.clone(),
-        },
-        artifacts: vec![artifact.clone()],
-        exports: vec![ExportDeclaration {
-            name: key("default"),
-            interface: interface.clone(),
-            aggregation: Some(AggregationContract {
-                scope: AggregationScope::ProviderInstance,
-                key: key("slot"),
-                controller_group: key(group),
-                reject_slot_collisions: true,
-                merge_contract: None,
-            }),
-            implementation: descriptor,
-        }],
-        requirements: Vec::new(),
-        module_entry_points: BTreeMap::from([
-            (key("compose"), artifact.clone()),
-            (key("transition"), artifact.clone()),
-        ]),
-        implementation: PackageImplementation {
-            providers: vec![implementation],
-            handlers: BTreeMap::new(),
-        },
-        ownership: vec![ScopePath::root()],
-    }
-}
-
-fn terminal_package(
-    name: &str,
-    interface: &InterfaceKey,
-    artifact: &ArtifactReference,
-) -> PackageDocument {
-    let handler = key("terminal");
-    let implementation = ProviderImplementation {
-        interface: interface.clone(),
-        artifact: artifact.clone(),
-        requirements: Vec::new(),
-        implementation: ImplementationKind::TerminalHandler {
-            handler: handler.clone(),
-        },
-        owns_resource_kinds: vec![interface.name.clone()],
-    };
-    let descriptor = implementation.descriptor_digest().unwrap();
-
-    PackageDocument {
-        schema: PackageDocument::SCHEMA.to_string(),
-        required_features: Vec::new(),
-        activation_mode: AbilityActivationMode::StructuredEffects,
-        package: PackageSubject {
-            name: key(name),
-            version: "1.0.0".to_string(),
-            payload: artifact.clone(),
-            source: artifact.clone(),
-        },
-        artifacts: vec![artifact.clone()],
-        exports: vec![ExportDeclaration {
-            name: key("default"),
-            interface: interface.clone(),
-            aggregation: None,
-            implementation: descriptor,
-        }],
-        requirements: Vec::new(),
-        module_entry_points: BTreeMap::new(),
-        implementation: PackageImplementation {
-            providers: vec![implementation],
-            handlers: BTreeMap::from([(
-                handler,
-                HandlerDescriptor {
-                    artifact: artifact.clone(),
-                    entry_point: "libexec/reference-terminal".to_string(),
-                    arguments: ValueSchema::Boolean,
-                    result: ValueSchema::Boolean,
-                },
-            )]),
-        },
-        ownership: vec![ScopePath::root()],
-    }
-}
-
-fn consumer_package(
-    name: &str,
-    artifact: &ArtifactReference,
-    nginx: &InterfaceKey,
-) -> PackageDocument {
-    PackageDocument {
-        schema: PackageDocument::SCHEMA.to_string(),
-        required_features: Vec::new(),
-        activation_mode: AbilityActivationMode::ContractsOnly,
-        package: PackageSubject {
-            name: key(name),
-            version: "1.0.0".to_string(),
-            payload: artifact.clone(),
-            source: artifact.clone(),
-        },
-        artifacts: Vec::new(),
-        exports: Vec::new(),
-        requirements: vec![requirement(
-            "nginx",
-            nginx,
-            RequirementStrength::Required,
-            None,
-        )],
-        module_entry_points: BTreeMap::new(),
-        implementation: PackageImplementation {
-            providers: Vec::new(),
-            handlers: BTreeMap::new(),
-        },
-        ownership: Vec::new(),
-    }
-}
-
-fn provider_reference(package: &PackageDocument) -> ProviderImplementationReference {
-    let implementation = &package.implementation.providers[0];
+fn provider_reference(implementation: &ProviderImplementation) -> ProviderImplementationReference {
     let handler = match &implementation.implementation {
         ImplementationKind::PureComposition { .. } => None,
         ImplementationKind::TerminalHandler { handler } => Some(handler.clone()),
@@ -1765,21 +1704,32 @@ fn provider_reference(package: &PackageDocument) -> ProviderImplementationRefere
     }
 }
 
-fn artifact_from_environment(path: &str, nar_hash: &str, tag: u8) -> Result<ArtifactReference> {
-    Ok(ArtifactReference {
-        content: digest(tag),
-        store_path: std::env::var(path).with_context(|| format!("reading {path}"))?,
-        nar_hash: Sha256Digest::parse(
-            &std::env::var(nar_hash).with_context(|| format!("reading {nar_hash}"))?,
-        )?,
-        closure: digest(tag.saturating_add(10)),
-    })
+fn ensure_interface_matches(
+    expected: &BTreeMap<String, InterfaceKey>,
+    actual: &InterfaceKey,
+) -> Result<()> {
+    let expected = expected.get(actual.name.as_str()).with_context(|| {
+        format!(
+            "production companion exports unknown interface {}",
+            actual.name
+        )
+    })?;
+    anyhow::ensure!(
+        actual == expected,
+        "production companion interface {} differs from the source contract",
+        actual.name
+    );
+    Ok(())
 }
 
 fn assert_fixture_interface_hashes(fixture: &ReferenceFixture) {
     assert_eq!(
+        fixture.interfaces["aos.nginx"].descriptor,
+        digest_from_hex("0eb9b90f9f0fd0f744b13281c98bd37c0782ae74e2b85cc89c3cfef1b4cc1312")
+    );
+    assert_eq!(
         fixture.interfaces["aos.managed-configuration"].descriptor,
-        digest_from_hex("41dd1b3848c02d69542c61cdb871d588979139b321afff0edd3942c9d008fa3a")
+        digest_from_hex("6c813d376a0141954cdf320c4fa422330b42c4d88bec0d67dcfff4b78cdd234a")
     );
     assert_eq!(
         fixture.interfaces["aos.credential-delivery"].descriptor,
@@ -1941,6 +1891,22 @@ fn map_key_constraint() -> StringConstraint {
 
 fn lower_provider(environment: &EnvironmentId, suffix: &str) -> InstanceId {
     instance(environment, &format!("shared-{suffix}"))
+}
+
+fn app_route(
+    application: &'static str,
+    nginx: &'static str,
+    host: &'static str,
+    tls: bool,
+    response: &'static str,
+) -> AppRoute {
+    AppRoute {
+        application,
+        nginx,
+        host,
+        tls,
+        response,
+    }
 }
 
 fn instance(environment: &EnvironmentId, name: &str) -> InstanceId {

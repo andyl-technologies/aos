@@ -13,6 +13,7 @@ let
       provider = context.provider;
       key = "${contribution.slot}-configuration";
     };
+    quote = value: ''"${builtins.replaceStrings ["\\" "\"" "$" "\n" "\r"] ["\\\\" "\\\"" "\\$" "\\n" ""] value}"'';
     render = contribution:
       builtins.concatStringsSep "\n" (
         builtins.map
@@ -25,6 +26,9 @@ let
             else ""
           }
             server_name ${virtualHost.host};
+            location = / {
+              return 200 ${quote "${virtualHost.response_identity}:${virtualHost.response_content}\n"};
+            }
           }
         '')
         contribution.value.virtualHosts

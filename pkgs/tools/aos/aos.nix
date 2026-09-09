@@ -148,10 +148,6 @@
     path = ../../../tests/abilities/reference-nginx/providers/nginx;
     name = "aos-ability-reference-nginx";
   };
-  abilityReferenceNginxGraph = mkReferenceGraph {
-    rootPaths = [abilityReferenceNginxFixture];
-    pname = "aos-ability-reference-nginx-graph";
-  };
   abilityReferenceManagedConfigurationFixture = builtins.path {
     path = ../../../tests/abilities/reference-nginx/providers/managed-configuration;
     name = "aos-ability-reference-managed-configuration";
@@ -163,6 +159,16 @@
   abilityReferenceSystemdFixture = builtins.path {
     path = ../../../tests/abilities/reference-nginx/providers/systemd;
     name = "aos-ability-reference-systemd";
+  };
+  abilityReferenceRegistryPackages = import ../../../tests/abilities/reference-nginx/package.nix {
+    inherit lib;
+    inherit (buildPackages) mkDerivation;
+  };
+  abilityReferenceNginxGraph = mkReferenceGraph {
+    rootPaths =
+      [abilityReferenceNginxFixture]
+      ++ builtins.map (package: package.abilities) (builtins.attrValues abilityReferenceRegistryPackages);
+    pname = "aos-ability-reference-nginx-graph";
   };
   abilityEvaluatorIfdFixture = builtins.derivation {
     name = "aos-ability-forbidden-ifd";
@@ -415,6 +421,11 @@ in
       export AOS_TEST_ABILITY_REFERENCE_CREDENTIAL_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceCredentialFixture})"
       export AOS_TEST_ABILITY_REFERENCE_SYSTEMD="${abilityReferenceSystemdFixture}"
       export AOS_TEST_ABILITY_REFERENCE_SYSTEMD_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceSystemdFixture})"
+      export AOS_TEST_ABILITY_REFERENCE_PACKAGES="${
+        lib.concatStringsSep ":" (
+          builtins.map (package: "${package.abilities}") (builtins.attrValues abilityReferenceRegistryPackages)
+        )
+      }"
       export AOS_TEST_ABILITY_PACKAGE_SMOKE="${ability-package-smoke.abilities}"
       export AOS_TEST_ABILITY_CACHE="$NIX_BUILD_TOP/ability-evaluator-cache"
       ${lib.optionalString (!isCross) ''

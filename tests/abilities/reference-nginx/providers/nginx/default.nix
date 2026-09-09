@@ -8,7 +8,7 @@ let
   managedConfiguration =
     interface
     "aos.managed-configuration"
-    "sha256:41dd1b3848c02d69542c61cdb871d588979139b321afff0edd3942c9d008fa3a";
+    "sha256:6c813d376a0141954cdf320c4fa422330b42c4d88bec0d67dcfff4b78cdd234a";
   credentialDelivery =
     interface
     "aos.credential-delivery"
@@ -106,10 +106,29 @@ let
     host
     != null;
 
-  validateVirtualHost = virtualHost:
-    if validServerName virtualHost.host
-    then virtualHost
-    else throw "nginx contribution host is not a valid DNS server name";
+  validResponseIdentity = identity:
+    builtins.isString identity
+    && builtins.stringLength identity <= 128
+    && builtins.match "[A-Za-z0-9._-]+" identity != null;
+
+  validResponseContent = content:
+    builtins.isString content
+    && builtins.stringLength content > 0
+    && builtins.stringLength content <= 256
+    && builtins.match "[-A-Za-z0-9._:/ ]+" content != null;
+
+  validateVirtualHost = contribution: let
+    virtualHost = contribution.value;
+  in
+    if !validServerName virtualHost.host
+    then throw "nginx contribution host is not a valid DNS server name"
+    else if !validResponseIdentity virtualHost.response_identity
+    then throw "nginx contribution response identity is invalid"
+    else if virtualHost.response_identity != contribution.slot
+    then throw "nginx contribution response identity does not match its authorized slot"
+    else if !validResponseContent virtualHost.response_content
+    then throw "nginx contribution response content is invalid"
+    else virtualHost;
 
   compose = context: let
     nginx = context.interface;
@@ -117,7 +136,7 @@ let
     validated =
       builtins.foldl'
       (state: contribution: let
-        virtualHost = validateVirtualHost contribution.value;
+        virtualHost = validateVirtualHost contribution;
       in
         if builtins.hasAttr virtualHost.host state.claimedHosts
         then throw "nginx contributions contain a duplicate server name"
