@@ -15,6 +15,8 @@ use crucible::{
 };
 use crucible_campaign::StopCondition;
 use crucible_cas::content_store::BlobHandle;
+use crucible_protocol::SelectionRequest;
+use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
 use crucible_qemu::{QemuReplayOracleValidation, QemuVmSnapshot};
 
 use super::{
@@ -31,8 +33,11 @@ const TEST_EFFECT_TRACE: &[u8] = b"guarded-default-run-test-support-effect-trace
 
 struct TestLifecycle {
     node: NodeId,
+    marker: MarkerId,
     event_log: EventLog,
     replay_target: Schedule,
+    offer_choice: bool,
+    selection_received: bool,
     quantum_nanoseconds: u64,
     frontier: VirtualTime,
     completed_quanta: u64,
@@ -52,6 +57,11 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         self.completed_quanta = self.completed_quanta.saturating_add(1);
         self.frontier.ticks = self.frontier.ticks.saturating_add(self.quantum_nanoseconds);
+        let marker = if self.offer_choice && !self.selection_received {
+            MarkerId::from_name("campaign-save-fixture-before-choice")
+        } else {
+            self.marker.clone()
+        };
         let append = self
             .event_log
             .append_observable_events([ObservableEvent::guest_marker(
@@ -59,7 +69,7 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
                     retired: self.frontier.ticks,
                 },
                 self.node.clone(),
-                MarkerId::from_name("guarded-campaign-save-fixture-quantum"),
+                marker,
             )])?;
         let mut configuration = request.configuration;
         if configuration.schedule.len() < self.replay_target.len() {
@@ -103,17 +113,28 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
     fn drain_pending_selectable_requests(
         &mut self,
     ) -> Result<Vec<crucible_qemu::QemuNodeSelectablePendingRequest>, SchedulerError> {
-        Ok(Vec::new())
+        if !self.offer_choice {
+            return Ok(Vec::new());
+        }
+        self.offer_choice = false;
+        pending_guest_request(self.node.clone()).map(|request| vec![request])
     }
 
     fn apply_selectable_reply(
         &mut self,
         _parent: &Configuration,
         _decision: crucible::SelectionDecision,
-        _selected: &Configuration,
+        selected: &Configuration,
         _pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
-        _reply: &crucible_protocol::SelectionReply,
+        reply: &crucible_protocol::SelectionReply,
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        if reply.selected_value().is_none() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("campaign save fixture received an empty selection"),
+            });
+        }
+        self.selection_received = true;
+        self.configuration = Some(selected.clone());
         Ok(Vec::new())
     }
 
@@ -195,6 +216,8 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
 
 struct TestLifecycleFactory {
     node: NodeId,
+    marker: MarkerId,
+    offer_choice: bool,
     quantum_nanoseconds: u64,
 }
 
@@ -212,8 +235,11 @@ impl QemuFreshAttemptLifecycleFactory for TestLifecycleFactory {
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
         Ok(TestLifecycle {
             node: self.node.clone(),
+            marker: self.marker.clone(),
             event_log: EventLog::new(),
             replay_target: start.schedule.clone(),
+            offer_choice: self.offer_choice,
+            selection_received: false,
             quantum_nanoseconds: self.quantum_nanoseconds,
             frontier: VirtualTime::default(),
             completed_quanta: 0,
@@ -224,23 +250,28 @@ impl QemuFreshAttemptLifecycleFactory for TestLifecycleFactory {
 
 /// Runs a deterministic modeled lifecycle through the campaign capture owner.
 ///
-/// The request must name a virtual-time discovery stop and a scenario with one
-/// or more VM nodes. The fixture uses the requested deadline as one quantum so
-/// the accepted attempt and its capture replay produce identical evidence.
+/// The request must name a virtual-time or marker discovery stop and a scenario
+/// with one or more VM nodes. The fixture reaches that boundary deterministically
+/// so the accepted attempt and its capture replay produce identical evidence.
 ///
 /// # Errors
 ///
-/// Returns an error when the request is not a virtual-time save fixture or the
-/// guarded campaign cannot complete and authenticate its exact checkpoint.
+/// Returns an error when the request does not name a supported save boundary or
+/// the guarded campaign cannot complete and authenticate its exact checkpoint.
 pub fn run_guarded_default_campaign_test_fixture(
     request: GuardedDefaultCampaignRunRequest,
 ) -> Result<GuardedDefaultCampaignRun, Box<dyn Error + Send + Sync>> {
-    let quantum_nanoseconds = match request.discovery_stop {
-        StopCondition::VirtualTimeNanoseconds(deadline) if deadline > 0 => deadline,
+    let offer_choice = !request.scenario.selectables().is_empty();
+    let (quantum_nanoseconds, marker) = match &request.discovery_stop {
+        StopCondition::VirtualTimeNanoseconds(deadline) if *deadline > 0 => (
+            *deadline,
+            MarkerId::from_name("guarded-campaign-save-fixture-quantum"),
+        ),
+        StopCondition::NamedBoundary(name) => (1, MarkerId::from_name(name)),
         _ => {
             return Err(Box::new(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "the guarded campaign fixture requires a nonzero virtual-time stop",
+                "the guarded campaign fixture requires a nonzero virtual-time or marker stop",
             )));
         }
     };
@@ -259,10 +290,33 @@ pub fn run_guarded_default_campaign_test_fixture(
     let (factory, evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(TestLifecycleFactory {
             node,
+            marker,
+            offer_choice,
             quantum_nanoseconds,
         });
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
 
     run_guarded_default_campaign_with_runner(request, runner, evidence)
         .map_err(|error| Box::new(error) as Box<dyn Error + Send + Sync>)
+}
+
+fn pending_guest_request(
+    node: NodeId,
+) -> Result<crucible_qemu::QemuNodeSelectablePendingRequest, SchedulerError> {
+    let request = SelectionRequest::new(
+        1,
+        "campaign.save.fixture-choice",
+        "campaign-save-boundary",
+        None,
+        256,
+    )
+    .map_err(|error| SchedulerError::BoundaryViolation {
+        message: error.to_string(),
+    })?;
+    Ok(
+        crucible_qemu::QemuNodeSelectablePendingRequest::from_test_parts(
+            node,
+            SelectablePlanPendingRequest::new(request, 1, 0, 0x1000),
+        ),
+    )
 }

@@ -915,7 +915,7 @@ pub(super) fn cli_save_selector_proof_rejects_invalid_breakpoint_evidence()
         }),
         frontier_ticks: 2,
         quanta: 2,
-        breakpoint_firing: Some(valid_firing),
+        proof: SaveBoundaryProof::Breakpoint(valid_firing),
     }
     .canonical_summary();
     assert!(summary.contains("property-violation:check~frontier%3D999%3Aforged"));

@@ -465,7 +465,19 @@ pub(crate) fn savepoint_handle_bytes(
     let schedule_payload = oracle.schedule.to_compact_binary();
     let frontier_ticks = oracle.frontier.ticks;
     let schedule_payload_digest = content_address_bytes(&schedule_payload);
-    artifact_line(&mut text, &["schema", SAVEPOINT_HANDLE_SCHEMA]);
+    let boundary_proof = outcome
+        .save_boundary_evidence
+        .as_ref()
+        .map(|evidence| &evidence.proof);
+    let schema = if matches!(
+        boundary_proof,
+        Some(SaveBoundaryProof::CampaignMarkerEvent { .. })
+    ) {
+        CAMPAIGN_MARKER_SAVEPOINT_HANDLE_SCHEMA
+    } else {
+        SAVEPOINT_HANDLE_SCHEMA
+    };
+    artifact_line(&mut text, &["schema", schema]);
     artifact_line(&mut text, &["label", &plan.label]);
     artifact_line(&mut text, &["checkpoint", checkpoint]);
     artifact_line(
@@ -503,46 +515,80 @@ pub(crate) fn savepoint_handle_bytes(
         }
         None => artifact_line(&mut text, &["selector", "none"]),
     }
-    if let Some(firing) = outcome
-        .save_boundary_evidence
-        .as_ref()
-        .and_then(|evidence| evidence.breakpoint_firing.as_ref())
-    {
-        artifact_line(
-            &mut text,
-            &[
-                "boundary-proof",
-                "breakpoint",
-                &firing.id.to_string(),
-                "suspend",
-                &firing.frontier.ticks.to_string(),
-                &firing.quanta.to_string(),
-            ],
-        );
-        let predicate_payload = firing.predicate.to_compact_binary();
-        artifact_line(
-            &mut text,
-            &[
-                "boundary-predicate",
-                &content_address_bytes(&predicate_payload),
-                &hex_bytes(&predicate_payload),
-            ],
-        );
-    } else {
-        let quanta = outcome
-            .save_boundary_evidence
-            .as_ref()
-            .map_or(0, |evidence| evidence.quanta);
-        artifact_line(
-            &mut text,
-            &[
-                "boundary-proof",
-                "coordinate",
-                &frontier_ticks.to_string(),
-                &quanta.to_string(),
-            ],
-        );
-        artifact_line(&mut text, &["boundary-predicate", "none"]);
+    match boundary_proof {
+        Some(SaveBoundaryProof::Breakpoint(firing)) => {
+            artifact_line(
+                &mut text,
+                &[
+                    "boundary-proof",
+                    "breakpoint",
+                    &firing.id.to_string(),
+                    "suspend",
+                    &firing.frontier.ticks.to_string(),
+                    &firing.quanta.to_string(),
+                ],
+            );
+            let predicate_payload = firing.predicate.to_compact_binary();
+            artifact_line(
+                &mut text,
+                &[
+                    "boundary-predicate",
+                    &content_address_bytes(&predicate_payload),
+                    &hex_bytes(&predicate_payload),
+                ],
+            );
+        }
+        Some(SaveBoundaryProof::CampaignMarkerEvent {
+            sequence,
+            content_hash,
+            node,
+            retired_icount,
+            marker,
+        }) => {
+            artifact_line(
+                &mut text,
+                &[
+                    "boundary-proof",
+                    "campaign-marker-event",
+                    &sequence.to_string(),
+                    &format_content_hash_ref(*content_hash),
+                    &node.name,
+                    &retired_icount.to_string(),
+                    &frontier_ticks.to_string(),
+                    &outcome
+                        .save_boundary_evidence
+                        .as_ref()
+                        .map_or(0, |evidence| evidence.quanta)
+                        .to_string(),
+                ],
+            );
+            let predicate_payload =
+                crucible::Predicate::guest_marker(marker.clone()).to_compact_binary();
+            artifact_line(
+                &mut text,
+                &[
+                    "boundary-predicate",
+                    &content_address_bytes(&predicate_payload),
+                    &hex_bytes(&predicate_payload),
+                ],
+            );
+        }
+        Some(SaveBoundaryProof::Coordinate) | None => {
+            let quanta = outcome
+                .save_boundary_evidence
+                .as_ref()
+                .map_or(0, |evidence| evidence.quanta);
+            artifact_line(
+                &mut text,
+                &[
+                    "boundary-proof",
+                    "coordinate",
+                    &frontier_ticks.to_string(),
+                    &quanta.to_string(),
+                ],
+            );
+            artifact_line(&mut text, &["boundary-predicate", "none"]);
+        }
     }
     artifact_line(
         &mut text,

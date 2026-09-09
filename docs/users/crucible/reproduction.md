@@ -200,8 +200,24 @@ frontier, and quantum with `boundary-predicate none`. The canonical trace
 contains a matching `save_boundary_proof` entry; selector names there are
 percent-encoded so spaces and punctuation cannot resemble additional fields.
 This lets an agent audit which selector fired and where, instead of inferring it
-from generic `set-breakpoint` acknowledgements. Crucible still reads v2 handles
-created by older builds; those handles do not contain selector provenance.
+from generic `set-breakpoint` acknowledgements.
+
+Campaign-backed marker saves use schema `crucible.savepoint-handle.v4` because
+their campaign owner stops on an authenticated named boundary without creating
+a session breakpoint. Their `boundary-proof` uses positional fields
+`campaign-marker-event`, retained event sequence, event content hash, source
+node, retired icount, frontier, and quantum. The predicate line binds the
+event to the selected guest marker. The reader reconstructs the canonical event,
+checks its content hash, and verifies that the embedded scenario enables the
+source node's white-box channel. The campaign owner authenticates actual event
+observation while capturing the save; later reads verify the self-contained
+event record and its scenario relationship. Crucible continues to read v3
+handles, and session-owned saves continue to write v3. A campaign-backed save
+currently exports only when its schedule contains delivery-order, random-draw,
+and preemption decisions. A boundary after a typed selection, historical
+override, or application-random decision fails before handle or closure storage
+is written because the portable format does not yet include the authenticated
+records needed to replay it.
 
 If a selector does not fire before quiescence, Crucible creates no handle and
 returns exit 3. With `--trace <path>`, it still writes the commands and state

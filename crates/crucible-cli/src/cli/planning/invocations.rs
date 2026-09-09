@@ -470,6 +470,14 @@ pub(crate) enum SavepointBoundaryProof {
         frontier_ticks: u64,
         quanta: u64,
     },
+    CampaignMarkerEvent {
+        event_sequence: u64,
+        event_content_hash: crucible::ContentHash,
+        node: crucible::NodeId,
+        retired_icount: u64,
+        frontier_ticks: u64,
+        quanta: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

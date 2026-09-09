@@ -1180,6 +1180,22 @@ fn savepoint_capture_rejects_mismatched_replay_evidence() {
 }
 
 #[test]
+fn savepoint_default_choice_preserves_the_requested_continuation_stop() {
+    let marker = StopCondition::NamedBoundary(String::from("checkpoint-ready"));
+    assert_eq!(default_choice_continuation_stop(true, &marker), marker);
+
+    let virtual_time = StopCondition::VirtualTimeNanoseconds(2_000_000);
+    assert_eq!(
+        default_choice_continuation_stop(true, &virtual_time),
+        virtual_time
+    );
+    assert_eq!(
+        default_choice_continuation_stop(false, &StopCondition::Terminal),
+        StopCondition::NextChoice
+    );
+}
+
+#[test]
 fn explicit_execution_quanta_discovery_stops_at_the_absolute_coordinate() {
     let execution_quanta = 3;
     let quantum_nanoseconds = 11;

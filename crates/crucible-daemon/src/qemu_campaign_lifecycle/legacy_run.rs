@@ -1409,6 +1409,17 @@ where
                 .repository
                 .load_choice_opportunity(opportunity_id)
                 .map_err(GuardedDefaultCampaignRunError::Repository)?;
+            let continuation_stop = resume_source
+                .filter(|_| {
+                    matches!(
+                        resume_progress,
+                        Some(DefaultRunResumeProgress::Continuing(_))
+                    )
+                })
+                .map(|source| source.final_stop.clone())
+                .unwrap_or_else(|| {
+                    default_choice_continuation_stop(capture_reached_stop, context.discovery_stop)
+                });
             let branch = BranchRequest::new(
                 opportunity.branch_point_id(observation.child()),
                 observation.child_content(),
@@ -1418,16 +1429,7 @@ where
                     .map_err(GuardedDefaultCampaignRunError::Codec)?,
                 BranchRequestCause::ScenarioDefault(context.policy),
                 BranchBudget::new(1, 1).map_err(GuardedDefaultCampaignRunError::Codec)?,
-                resume_source
-                    .filter(|_| {
-                        matches!(
-                            resume_progress,
-                            Some(DefaultRunResumeProgress::Continuing(_))
-                        )
-                    })
-                    .map_or(StopCondition::NextChoice, |source| {
-                        source.final_stop.clone()
-                    }),
+                continuation_stop,
             )
             .map_err(GuardedDefaultCampaignRunError::Codec)?;
             let submission = SubmitCampaignBranchRequest::new(
@@ -1501,6 +1503,17 @@ where
         });
     }
     Err(GuardedDefaultCampaignInvariantError::SupervisorStepLimit.into())
+}
+
+fn default_choice_continuation_stop(
+    capture_reached_stop: bool,
+    discovery_stop: &StopCondition,
+) -> StopCondition {
+    if capture_reached_stop {
+        discovery_stop.clone()
+    } else {
+        StopCondition::NextChoice
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
