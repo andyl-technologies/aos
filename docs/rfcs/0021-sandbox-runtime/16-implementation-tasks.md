@@ -6214,6 +6214,25 @@ store has not yet run on actual ext4/fs-verity directories, across a process
 restart, under protected labels or enforcing MAC, or through a production
 inspector runtime. No kernel, deployment, or readiness claim changes.
 
+Commit `c3b097c74` adds a dedicated protected-store fixture and wires it into
+the existing AOS ext4/fs-verity VM test. The runner enumerates exactly 12
+cases before execution. Its intended checks use five caller-opened root
+descriptors, drop and reopen every store value for lookup and replay, reject
+sealed records under the wrong expected or spent role, and require an actual
+cross-mount `renameat2` `EXDEV` with absent destination and unchanged pinned
+private-inode evidence. Expected policy is derived internally from synthetic
+validated-Ready fixture fields; no caller-supplied digest is accepted.
+
+An isolated snapshot based on the commit's exact parent plus only the nine
+fixture and wiring files passed the dedicated package check, the Network
+library Clippy run with kernel-test support and dependency linting disabled,
+and all 24 focused namespace-inspector tests. The fixture executable and VM
+have not run, so none of the intended ext4, fs-verity, bind-mount, or kernel
+outcomes is qualified. Dropping and reopening the in-process store values is
+not a process-restart test. Actual peer and worker-Ready authentication,
+protected labels, enforcing MAC, production runtime integration, and every
+readiness checkbox remain pending.
+
 The deployed positive handshake is currently blocked by an authorization
 conflict, not qualified. The worker calls `PR_SET_DUMPABLE(0)` before READY,
 while the capability-empty broker obtains the retained namespace through
