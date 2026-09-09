@@ -5363,27 +5363,43 @@ correctly sealed Complete Effect with an arbitrary receipt fail closed. An
 injected error returned after the atomic journal commit poisons the live cache,
 while protected reopen recovers and authenticates both completed records.
 
-The pinned realized development shell passes all 150 current
-`aos-sandbox-storage` library tests with no failure. Two installed-systemd tests
-remain ignored in that source-level run. Coverage includes the initial and
-repeat pre-admission shapes, exact dataset/Absent requirement, malformed local
-wire records, real-HMAC worker authentication and fence, predecessor, receipt,
-and publication substitutions, asymmetric completion rejection, atomic
-completion after an injected post-commit error, and completed reopen. The
-isolated ten-path implementation has tree
+At the isolated ten-path implementation checkpoint, the pinned realized
+development shell passed all 150 then-current `aos-sandbox-storage` library
+tests with no failure. Two installed-systemd tests remained ignored in that
+source-level run. Coverage included the initial and repeat pre-admission shapes,
+exact dataset/Absent requirement, malformed local wire records, real-HMAC
+worker authentication and fence, predecessor, receipt, and publication
+substitutions, asymmetric completion rejection, atomic completion after an
+injected post-commit error, and completed reopen. That implementation has tree
 `7fc14cbbbddb238cbaa19b74a084c924d995668e`, binary-diff SHA-256
 `79c1d727318a5affe569eacad851e577df75efd428a9237933183a4860530e00`,
 and adds 3,253 lines while removing 42.
 
-This is not yet production qualification. The existing installed-systemd
-Storage fleet test exercises creation and removal pin workers and the
-observation-only absence path, but it has not yet invoked the new public repair
-method through the fresh observer, atomic admission, repair-specific worker,
-completion, retry, and reopen sequence. Controller orchestration and the
-production RPC handler also remain absent. New-dataset ownership
-initialization and its separate capability decision remain open; Storage Apply
-stays unadvertised and no `SBX-STOR-01`, `SBX-P0-07`, `SBX-P0-08`, or
-`SBX-P0-10` checkbox is closed.
+Successor commit `d4effbf1b525a4c94fc2a1dfaae8eee67b420917` makes active
+publication follow the globally latest workspace pin attempt while recovering
+a retired creation from its latest satisfied Ensure, including an authenticated
+repair effect. The pinned realized development shell then ran 153 Storage
+library tests: 151 passed, none failed, and the two installed-systemd tests were
+ignored. The added regressions cover foreign and pending latest attempts,
+repaired active publication, repaired retirement, and authenticated reopen.
+
+This is not yet production qualification. One immutable fleet attempt stopped
+at the non-test Storage build because `repair_intent_record` was imported only
+under `cfg(test)`; commit `6384e28d8240ee33f38ffe38e99bb30b5e81fb18`
+fixed that production import. The next immutable attempt,
+`/nix/store/aih2zmfgni1w27mw31xi863qjq7yrs0n-aos-fleet-test-sandbox-zfs-worker-0.drv`,
+built and booted both guests and invoked the public repair path through fresh
+observation, atomic admission, the repair worker, and durable completion. It
+then failed the repaired catalog assertion with zero workspaces instead of one.
+Its guest log also recorded post-acknowledgement observer failure when an exact
+cgroup membership read was denied after mount-namespace entry. These are
+diagnostic failures, not passing evidence: neither attempt qualifies the repair
+path, and an immutable successor must still pass repair, retry, reopen, and
+teardown under the installed systemd units. Controller orchestration and the
+production RPC handler also remain absent. New-dataset ownership initialization
+and its separate capability decision remain open; Storage Apply stays
+unadvertised and no `SBX-STOR-01`, `SBX-P0-07`, `SBX-P0-08`, or `SBX-P0-10`
+checkbox is closed.
 
 ### Set-ID creation guard source feasibility (design only)
 
