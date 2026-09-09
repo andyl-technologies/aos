@@ -135,7 +135,7 @@ fn selection_free_v2_plan_remains_readable_but_pending_v2_fails_closed()
 fn pending_trap_must_represent_the_following_native_stop_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
     let request = SelectionRequest::new(9, "network.policy", "epoch/overflow", None, 128)?;
-    let error = SelectablePlanContinuation::new(
+    let result = SelectablePlanContinuation::new(
         SelectablePlanPhase::Frozen,
         BTreeSet::from([String::from("network.policy")]),
         Some(1),
@@ -147,8 +147,11 @@ fn pending_trap_must_represent_the_following_native_stop_boundary()
             0,
             0x8000,
         )),
-    )
-    .expect_err("a maximum trap coordinate cannot encode its following stop");
+    );
+    let error = match result {
+        Ok(_) => return Err("a maximum trap coordinate encoded its following stop".into()),
+        Err(error) => error,
+    };
 
     assert_eq!(
         error,

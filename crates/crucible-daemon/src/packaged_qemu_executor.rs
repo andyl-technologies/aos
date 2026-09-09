@@ -43,6 +43,7 @@ use crate::executor_pool::{
 };
 #[cfg(test)]
 use crate::executor_supervisor::LocalExecutionActivity;
+use crate::guest_selectable::GuestSelectableBoundaryDiagnosticRecorder;
 use crate::qemu_hot_fork_world_factory::AttemptWorkerFailureExt;
 use crate::{
     AssignmentLedgerError, AttemptAdmissionValidator, AttemptExecutionContext,
@@ -54,10 +55,11 @@ use crate::{
     ExecutionCancellation, ExecutionCheckpointRequest, ExecutorCapacity, ExecutorLocalService,
     ExecutorLocalServiceError, ExecutorLocalServiceReport, ExecutorLocalServiceShutdown,
     ExecutorLoopbackEndpointConfig, ExecutorLoopbackEndpointError, ExecutorLoopbackListenerError,
-    ExecutorLoopbackServerConfig, HotCheckpointFallback, HotCheckpointFallbackRetentionError,
-    HotCheckpointHotnessSignals, HotCheckpointLimits, LinuxQemuAttemptHostResourceFactory,
-    LocalCheckpointPromotionWorker, LocalExecutorCapabilityService, LocalExecutorPoolConfigError,
-    LocalExecutorSupervisor, LocalExecutorWorkerPool, MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+    ExecutorLoopbackServerConfig, GuestSelectableBoundaryDiagnosticConfig, HotCheckpointFallback,
+    HotCheckpointFallbackRetentionError, HotCheckpointHotnessSignals, HotCheckpointLimits,
+    LinuxQemuAttemptHostResourceFactory, LocalCheckpointPromotionWorker,
+    LocalExecutorCapabilityService, LocalExecutorPoolConfigError, LocalExecutorSupervisor,
+    LocalExecutorWorkerPool, MAX_PREPARED_SEMANTIC_RESULT_BYTES,
     ManagedQemuHotForkAuthenticatedAdmissionError, ManagedQemuHotForkAuthenticatedAdmissionFailure,
     ManagedQemuHotForkSourceWorldAdmissionError, ManagedQemuHotForkSourceWorldPool,
     ManagedQemuHotForkSourceWorldPoolConstructionError, ProductionBakedGenesisCaptureError,
@@ -263,6 +265,7 @@ pub struct PackagedQemuExecutorConfig {
     lifecycle: ProductionVmLifecycleConfig,
     host: LinuxQemuAttemptHostConfig,
     hot_fork: Option<PackagedQemuHotForkConfig>,
+    guest_selectable_boundary_diagnostics: Option<GuestSelectableBoundaryDiagnosticConfig>,
 }
 
 impl PackagedQemuExecutorConfig {
@@ -323,6 +326,7 @@ impl PackagedQemuExecutorConfig {
             lifecycle,
             host,
             hot_fork: None,
+            guest_selectable_boundary_diagnostics: None,
         })
     }
 
@@ -330,6 +334,16 @@ impl PackagedQemuExecutorConfig {
     #[must_use]
     pub fn with_hot_fork_sources(mut self, hot_fork: PackagedQemuHotForkConfig) -> Self {
         self.hot_fork = Some(hot_fork);
+        self
+    }
+
+    /// Enables bounded diagnostics shared by every worker in this executor pool.
+    #[must_use]
+    pub fn with_guest_selectable_boundary_diagnostics(
+        mut self,
+        diagnostics: GuestSelectableBoundaryDiagnosticConfig,
+    ) -> Self {
+        self.guest_selectable_boundary_diagnostics = Some(diagnostics);
         self
     }
 
@@ -372,6 +386,14 @@ impl PackagedQemuExecutorConfig {
     #[must_use]
     pub const fn hot_fork(&self) -> Option<&PackagedQemuHotForkConfig> {
         self.hot_fork.as_ref()
+    }
+
+    /// Returns the boundary-diagnostic policy when operational emission is enabled.
+    #[must_use]
+    pub const fn guest_selectable_boundary_diagnostics(
+        &self,
+    ) -> Option<GuestSelectableBoundaryDiagnosticConfig> {
+        self.guest_selectable_boundary_diagnostics
     }
 }
 
@@ -1147,6 +1169,10 @@ where
     let supervisor =
         LocalExecutorSupervisor::new(ledger, admission, config.daemon_epoch, config.capacity);
     let executor = LocalExecutorCapabilityService::new(supervisor, description)?;
+    let guest_selectable_diagnostics = config
+        .guest_selectable_boundary_diagnostics
+        .map(GuestSelectableBoundaryDiagnosticRecorder::stderr)
+        .unwrap_or_default();
     let workers = initial_runner_build
         .runners
         .into_iter()
@@ -1171,7 +1197,10 @@ where
             let runner = QemuAttemptExecutionRouter::new(fresh, resume);
             let model = CrucibleExecutionModel::new(store.clone(), runner);
             PackagedStatusAttemptWorker {
-                inner: RepositoryAttemptWorker::new(store.clone(), model),
+                inner: RepositoryAttemptWorker::new(store.clone(), model)
+                    .with_guest_selectable_boundary_diagnostics(
+                        guest_selectable_diagnostics.clone(),
+                    ),
                 lifecycles: lifecycles.clone(),
             }
         })

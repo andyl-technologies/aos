@@ -36,7 +36,8 @@ use thiserror::Error;
 #[cfg(test)]
 use crate::CrucibleResolvedAttemptStart;
 use crate::guest_selectable::{
-    GuestSelectableError, resolve_guest_selectable, selected_guest_reply,
+    GuestSelectableBoundaryDiagnosticStage, GuestSelectableError,
+    record_guest_selectable_boundary_diagnostic, resolve_guest_selectable, selected_guest_reply,
 };
 use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure, CrucibleArtifactError,
@@ -969,6 +970,7 @@ fn drive_modeled_attempt_inner(
     let initial_reply_entries = resolve_pending_guest_choices_at_configuration(
         lifecycle,
         input,
+        context,
         &mut configuration,
         &mut discoveries,
     )?;
@@ -1137,7 +1139,13 @@ fn drive_modeled_attempt_inner(
             );
         }
         if terminal_stop.is_none() {
-            resolve_pending_guest_choices(lifecycle, input, &mut outcome, &mut discoveries)?;
+            resolve_pending_guest_choices(
+                lifecycle,
+                input,
+                context,
+                &mut outcome,
+                &mut discoveries,
+            )?;
         }
         let stop = terminal_stop.or_else(|| {
             reached_requested_stop(
@@ -1280,12 +1288,14 @@ fn modeled_stop_outcome(
 fn resolve_pending_guest_choices(
     lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
     input: &CrucibleAttemptExecution,
+    context: &AttemptExecutionContext,
     outcome: &mut QuantumOutcome,
     discoveries: &mut RetainedChoiceDiscoveries,
 ) -> Result<(), AttemptWorkerFailure<QemuFreshModeledDriverError>> {
     let entries = resolve_pending_guest_choices_at_configuration(
         lifecycle,
         input,
+        context,
         &mut outcome.configuration,
         discoveries,
     )?;
@@ -1296,6 +1306,7 @@ fn resolve_pending_guest_choices(
 fn resolve_pending_guest_choices_at_configuration(
     lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
     input: &CrucibleAttemptExecution,
+    context: &AttemptExecutionContext,
     configuration: &mut Configuration,
     discoveries: &mut RetainedChoiceDiscoveries,
 ) -> Result<Vec<SchedulerEventLogEntry>, AttemptWorkerFailure<QemuFreshModeledDriverError>> {
@@ -1313,6 +1324,16 @@ fn resolve_pending_guest_choices_at_configuration(
         .map_err(|error| {
             AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::GuestSelectable(error))
         })?;
+        record_guest_selectable_boundary_diagnostic(
+            context,
+            input.attempt(),
+            GuestSelectableBoundaryDiagnosticStage::SourceDiscovery,
+            configuration.schedule.len(),
+            pending.node(),
+            pending.pending(),
+            &discovery,
+            None,
+        );
         discoveries
             .insert(discovery.clone())
             .map_err(AttemptWorkerFailure::Terminal)?;
