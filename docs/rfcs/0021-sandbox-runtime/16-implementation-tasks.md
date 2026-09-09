@@ -6629,25 +6629,75 @@ all tests passed and the derivation exited zero at
 This qualifies that exact x86_64 D-Bus policy boundary; every broader Host,
 enforcing-MAC, and cross-architecture readiness claim remains open.
 
-The separate production SELinux gap is also explicit. The immutable stage-0
-path is designed to admit policy and hand off to `init_t` inside its labeled
-EROFS, but deliberately holds before switch-root because the real root and
-writable mounts do not yet share a complete, verified label plan. The
-production policy contains upstream refpolicy modules only; it does not yet
-define the AOS Host, Network publisher, namespace inspector, or lifecycle-worker
-domains.
+Commit `1f2849976` links the focused AOS sandbox module into the
+kernel-matched offline production policy. It defines separate Host, Network
+publisher, namespace-inspector, and lifecycle-worker domains and fixed
+executable transitions from `init_t`. It models staging-to-final publication
+with distinct directory and record types: the owning role may remove the
+staging name and add the final name, none of the four runtime roles receives
+final-directory `remove_name`, the inspector reads expected records and alone
+publishes spent records, and metadata mutation is denied on the modeled store
+parent and four publication roots. Only the inspector receives self
+`capability:sys_ptrace` and exact lifecycle-worker task-SID
+`file { read ioctl }`; the four roles have no general `process:ptrace` or
+`sys_admin` grant. Runtime namespace-entry authority remains unchanged and
+unqualified.
 
-Platform owns the remaining enforcing-MAC/bootstrap sequence. A focused AOS
-`.te`/`.fc` module must be linked into the offline policy before its final
-binary is built. Positive and negative checks must query the expanded effective
-policy, including attributes, conditionals, and permissive domains. The shared
-rootfs builder must then derive a deterministic, complete real-root inode
-inventory, emit exact SELinux xattrs, and verify the produced image against the
-same plan. `/run` and `/var` require post-mount `init_t` creation and verification
-on their actual tmpfs and persistent-filesystem ancestry; labels seeded in an
-image beneath a later mount do not count, and runtime relabel is not an
-acceptable bootstrap mechanism. The stage-0 hold may be removed only after an
-enforcing switch-root and service-transition VM proves those invariants.
+The immutable support source
+`/nix/store/mrjx28iqlwv1898pnf4lp4vwh11kbs99-_aos-selinux-production-policy`
+produced
+`/nix/store/bhnqr0rlvrc4a6g3sd1gaa2x58jivjf7-aos-selinux-production-policy-1.drv`.
+Its sole approved realization exited zero at
+`/nix/store/yskz5mpry5m5lzdsb7w4mkmfnd9zgsc3-aos-selinux-production-policy-1`.
+The production module linked and expanded with neverallow checking enabled;
+all seven effective-policy unit tests and five class-map coverage tests passed;
+the installed 330-row effective-policy inventory and compiled file contexts
+were retained; and both deficient `io_uring.allowed` source and binary
+negatives passed. The final `policy.33` SHA-256 is
+`d44d49a6d5453e64a3d8bde4f5b0bd8b32d53d3d46c895862666d16364e99672`.
+
+The first approved attempt,
+`/nix/store/1ifdsxmla51sgfczp9j4sm2npw9wy62p-aos-selinux-production-policy-1.drv`,
+failed with `Tried to link in an MLS module with a non-MLS base`: its two new
+modules had used `checkmodule -M -m`, while the installed refpolicy declares
+the standard non-MLS policy type. After correcting both compile commands, the
+second approved attempt,
+`/nix/store/fkx8wlxdqbrw4394p9nybvp2m6kwjzmp-aos-selinux-production-policy-1.drv`,
+linked and checked the valid production policy, then failed while constructing
+the synthetic negative: its deliberately forbidden attribute rule triggered
+806 upstream neverallow failures before SETools could inspect it. The passing
+successor leaves production expansion unchanged and uses `semodule_expand -a`
+only for that never-installed negative fixture. SETools then rejects the
+expanded `allow domain aos_sandbox_negative_target:process ptrace` for the
+exact forbidden-allow diagnostic. Both independently deficient class-map
+attempts likewise fail with the exact ordered-permissions-differ-for-io_uring
+diagnostic, including after the deficient binary compiles and is decoded.
+
+This remains offline source and artifact qualification. No enforcing VM or
+runtime has qualified this new policy artifact; no runtime inode or process
+has entered these contexts; and no protected writable ancestry, capability,
+ptrace path, rename, fs-verity, or service transition has been exercised under
+this policy. The existing stage-0 hold is unchanged. `SBX-P0-10`, Network
+Apply, Host readiness, and every other readiness checkbox remain open.
+
+The earlier production artifact contained upstream refpolicy modules only and
+did not define the AOS Host, Network publisher, namespace inspector, or
+lifecycle-worker domains. Commit `1f2849976` resolves that source-artifact gap
+offline. The remaining production SELinux gap is runtime: the immutable
+stage-0 path is designed to admit policy and hand off to `init_t` inside its
+labeled EROFS, but deliberately holds before switch-root because the real root
+and writable mounts do not yet share a complete, verified label plan.
+
+Commit `1f2849976` completes the focused AOS `.te`/`.fc` link and expanded
+effective-policy positive and negative checks offline. Platform owns the
+remaining enforcing-MAC/bootstrap sequence. The shared rootfs builder must
+derive a deterministic, complete real-root inode inventory, emit exact SELinux
+xattrs, and verify the produced image against the same plan. `/run` and `/var`
+require post-mount `init_t` creation and verification on their actual tmpfs and
+persistent-filesystem ancestry; labels seeded in an image beneath a later mount
+do not count, and runtime relabel is not an acceptable bootstrap mechanism. The
+stage-0 hold may be removed only after an enforcing switch-root and
+service-transition VM proves those invariants.
 
 The publication policy must model the actual Linux rename gates. Publishing a
 nonexistent final name requires final-directory `search`, `write`, and
