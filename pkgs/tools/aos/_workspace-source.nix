@@ -34,6 +34,7 @@ in
         || lib.hasPrefix "${repoRootString}/stdenv" pathString
         || lib.hasPrefix "${repoRootString}/systems" pathString
         || pathString == "${repoRootString}/tests"
+        || lib.hasPrefix "${repoRootString}/tests/abilities" pathString
         || lib.hasPrefix "${repoRootString}/tests/fleet" pathString
         || lib.hasPrefix "${repoRootString}/tests/qualification" pathString
         || lib.hasPrefix "${repoRootString}/tests/vm" pathString
