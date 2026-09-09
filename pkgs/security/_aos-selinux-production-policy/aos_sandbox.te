@@ -1,0 +1,116 @@
+module aos_sandbox 1.0;
+
+require {
+    role system_r;
+
+    attribute domain;
+    attribute file_type;
+
+    type init_t;
+
+    class capability { sys_admin sys_ptrace };
+    class dir { add_name getattr open read remove_name search write };
+    class file { append create entrypoint execute getattr ioctl link map open read relabelfrom relabelto rename setattr unlink write };
+    class process { ptrace transition };
+}
+
+# AOS privileged processes use distinct domains. The Network publisher is the
+# long-lived aos-netd broker; the namespace inspector and lifecycle worker are
+# separate fixed executables even though they ship in the same package.
+type aos_sandbox_host_t;
+typeattribute aos_sandbox_host_t domain;
+role system_r types aos_sandbox_host_t;
+
+type aos_sandbox_network_publisher_t;
+typeattribute aos_sandbox_network_publisher_t domain;
+role system_r types aos_sandbox_network_publisher_t;
+
+type aos_sandbox_namespace_inspector_t;
+typeattribute aos_sandbox_namespace_inspector_t domain;
+role system_r types aos_sandbox_namespace_inspector_t;
+
+type aos_sandbox_network_lifecycle_worker_t;
+typeattribute aos_sandbox_network_lifecycle_worker_t domain;
+role system_r types aos_sandbox_network_lifecycle_worker_t;
+
+type aos_sandbox_host_exec_t;
+typeattribute aos_sandbox_host_exec_t file_type;
+type aos_sandbox_network_publisher_exec_t;
+typeattribute aos_sandbox_network_publisher_exec_t file_type;
+type aos_sandbox_namespace_inspector_exec_t;
+typeattribute aos_sandbox_namespace_inspector_exec_t file_type;
+type aos_sandbox_network_lifecycle_worker_exec_t;
+typeattribute aos_sandbox_network_lifecycle_worker_exec_t file_type;
+
+# PID 1 alone enters each fixed domain through its labeled executable.
+allow init_t aos_sandbox_host_exec_t:file { execute getattr map open read };
+allow init_t aos_sandbox_host_t:process transition;
+allow aos_sandbox_host_t aos_sandbox_host_exec_t:file entrypoint;
+type_transition init_t aos_sandbox_host_exec_t:process aos_sandbox_host_t;
+
+allow init_t aos_sandbox_network_publisher_exec_t:file { execute getattr map open read };
+allow init_t aos_sandbox_network_publisher_t:process transition;
+allow aos_sandbox_network_publisher_t aos_sandbox_network_publisher_exec_t:file entrypoint;
+type_transition init_t aos_sandbox_network_publisher_exec_t:process aos_sandbox_network_publisher_t;
+
+allow init_t aos_sandbox_namespace_inspector_exec_t:file { execute getattr map open read };
+allow init_t aos_sandbox_namespace_inspector_t:process transition;
+allow aos_sandbox_namespace_inspector_t aos_sandbox_namespace_inspector_exec_t:file entrypoint;
+type_transition init_t aos_sandbox_namespace_inspector_exec_t:process aos_sandbox_namespace_inspector_t;
+
+allow init_t aos_sandbox_network_lifecycle_worker_exec_t:file { execute getattr map open read };
+allow init_t aos_sandbox_network_lifecycle_worker_t:process transition;
+allow aos_sandbox_network_lifecycle_worker_t aos_sandbox_network_lifecycle_worker_exec_t:file entrypoint;
+type_transition init_t aos_sandbox_network_lifecycle_worker_exec_t:process aos_sandbox_network_lifecycle_worker_t;
+
+# The protected inspector store has four non-aliasing directory roles. A record
+# is born with its final role type in staging because rename preserves the inode
+# type. fs-verity, not a post-rename type change, rejects later content writes.
+type aos_sandbox_network_expected_staging_t;
+typeattribute aos_sandbox_network_expected_staging_t file_type;
+type aos_sandbox_network_expected_final_t;
+typeattribute aos_sandbox_network_expected_final_t file_type;
+type aos_sandbox_network_expected_record_t;
+typeattribute aos_sandbox_network_expected_record_t file_type;
+
+type aos_sandbox_network_spent_staging_t;
+typeattribute aos_sandbox_network_spent_staging_t file_type;
+type aos_sandbox_network_spent_final_t;
+typeattribute aos_sandbox_network_spent_final_t file_type;
+type aos_sandbox_network_spent_record_t;
+typeattribute aos_sandbox_network_spent_record_t file_type;
+
+type aos_sandbox_network_store_t;
+typeattribute aos_sandbox_network_store_t file_type;
+
+# Neither runtime role can rename or remove the four protected roots. They get
+# traversal only on the dedicated parent; init_t owns post-mount provisioning.
+allow aos_sandbox_network_publisher_t aos_sandbox_network_store_t:dir { getattr open search };
+allow aos_sandbox_namespace_inspector_t aos_sandbox_network_store_t:dir { getattr open search };
+
+# O_CREAT in a staging directory produces the final record type before any
+# bytes are written. That type is intentionally preserved by renameat2.
+type_transition aos_sandbox_network_publisher_t aos_sandbox_network_expected_staging_t:file aos_sandbox_network_expected_record_t;
+type_transition aos_sandbox_namespace_inspector_t aos_sandbox_network_spent_staging_t:file aos_sandbox_network_spent_record_t;
+
+# Expected-policy publication: staging-name removal and final-name addition are
+# the distinct Linux rename gates. No rule grants final-directory remove_name.
+allow aos_sandbox_network_publisher_t aos_sandbox_network_expected_staging_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_network_publisher_t aos_sandbox_network_expected_final_t:dir { add_name getattr open read search write };
+allow aos_sandbox_network_publisher_t aos_sandbox_network_expected_record_t:file { create getattr ioctl open read rename write };
+
+# The inspector can only read sealed expected records. Its separate spent
+# ledger repeats the append-only staging-to-final publication contract.
+allow aos_sandbox_namespace_inspector_t aos_sandbox_network_expected_final_t:dir { getattr open read search };
+allow aos_sandbox_namespace_inspector_t aos_sandbox_network_expected_record_t:file { getattr ioctl open read };
+
+allow aos_sandbox_namespace_inspector_t aos_sandbox_network_spent_staging_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_namespace_inspector_t aos_sandbox_network_spent_final_t:dir { add_name getattr open read search write };
+allow aos_sandbox_namespace_inspector_t aos_sandbox_network_spent_record_t:file { create getattr ioctl open read rename write };
+
+# Linux 6.18 PIDFD_GET_NET_NAMESPACE performs PTRACE_MODE_READ_FSCREDS through
+# selinux_ptrace_access_check(), which checks file:read, followed by file:ioctl.
+# pidfs assigns the task SID to its pidfd inode, so both accesses are confined
+# to this exact inspector-to-lifecycle-worker pair without process:ptrace.
+allow aos_sandbox_namespace_inspector_t self:capability sys_ptrace;
+allow aos_sandbox_namespace_inspector_t aos_sandbox_network_lifecycle_worker_t:file { ioctl read };

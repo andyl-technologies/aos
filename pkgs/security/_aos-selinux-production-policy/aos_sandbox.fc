@@ -1,0 +1,15 @@
+/(nix|nix\.lower)/store/[a-z0-9]{32}-aos-sandbox-hostd-[^/]+/bin/aos-sandbox-hostd -- system_u:object_r:aos_sandbox_host_exec_t
+/(nix|nix\.lower)/store/[a-z0-9]{32}-aos-netd-[^/]+/bin/aos-netd -- system_u:object_r:aos_sandbox_network_publisher_exec_t
+/(nix|nix\.lower)/store/[a-z0-9]{32}-aos-netd-[^/]+/bin/aos-sandbox-network-namespace-inspector -- system_u:object_r:aos_sandbox_namespace_inspector_exec_t
+/(nix|nix\.lower)/store/[a-z0-9]{32}-aos-netd-[^/]+/bin/aos-sandbox-network-lifecycle-worker -- system_u:object_r:aos_sandbox_network_lifecycle_worker_exec_t
+
+/var/lib/aos/sandbox-network/namespace-inspector -d system_u:object_r:aos_sandbox_network_store_t
+/var/lib/aos/sandbox-network/namespace-inspector/expected-staging -d system_u:object_r:aos_sandbox_network_expected_staging_t
+/var/lib/aos/sandbox-network/namespace-inspector/expected-staging/\.aosni-expected-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_expected_record_t
+/var/lib/aos/sandbox-network/namespace-inspector/expected-final -d system_u:object_r:aos_sandbox_network_expected_final_t
+/var/lib/aos/sandbox-network/namespace-inspector/expected-final/aosni-expected-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_expected_record_t
+
+/var/lib/aos/sandbox-network/namespace-inspector/spent-staging -d system_u:object_r:aos_sandbox_network_spent_staging_t
+/var/lib/aos/sandbox-network/namespace-inspector/spent-staging/\.aosni-spent-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_spent_record_t
+/var/lib/aos/sandbox-network/namespace-inspector/spent-final -d system_u:object_r:aos_sandbox_network_spent_final_t
+/var/lib/aos/sandbox-network/namespace-inspector/spent-final/aosni-spent-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_spent_record_t

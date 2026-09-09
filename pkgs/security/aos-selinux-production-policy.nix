@@ -7,6 +7,7 @@
   semodule-utils,
   libselinux,
   secilc,
+  setools,
   python3,
 }: let
   policyVersion = "33";
@@ -21,6 +22,7 @@ in
       semodule-utils
       libselinux
       secilc
+      setools
       python3
     ];
     runtimeDeps = [];
@@ -32,6 +34,25 @@ in
         script = ''
           module_dir=${refpolicy-production}/usr/share/selinux/refpolicy
           base_package="$module_dir/base.pp"
+          aos_module=aos_sandbox
+          attribute_negative_module=aos_sandbox_attribute_negative
+          export PYTHONPATH=${setools}/lib/python3/site-packages
+
+          ${python3}/bin/python3 ${policySupport}/effective_policy_test.py
+          ${checkpolicy}/bin/checkmodule -m \
+            -o "$aos_module.mod" ${policySupport}/aos_sandbox.te
+          ${semodule-utils}/bin/semodule_package \
+            -o "$aos_module.pp" \
+            -m "$aos_module.mod" \
+            -f ${policySupport}/aos_sandbox.fc
+          test -s "$aos_module.pp"
+          ${checkpolicy}/bin/checkmodule -m \
+            -o "$attribute_negative_module.mod" \
+            ${policySupport}/aos_sandbox_attribute_negative.te
+          ${semodule-utils}/bin/semodule_package \
+            -o "$attribute_negative_module.pp" \
+            -m "$attribute_negative_module.mod"
+          test -s "$attribute_negative_module.pp"
 
           test -f "$base_package"
           set -- "$base_package"
@@ -40,10 +61,11 @@ in
               set -- "$@" "$module_package"
             fi
           done
+          set -- "$@" "$aos_module.pp"
 
           # The production variant's base package carries reject-unknown and
-          # its Linux 6.18 class map. Legacy AOS compatibility modules are not
-          # inputs to this offline link.
+          # its Linux 6.18 class map. The focused AOS sandbox module is linked
+          # here; legacy mutable-store compatibility modules are not inputs.
           ${semodule-utils}/bin/semodule_link -o linked-policy.mod "$@"
           ${semodule-utils}/bin/semodule_expand \
             -c ${policyVersion} \
@@ -51,6 +73,35 @@ in
 
           ${checkpolicy}/bin/checkpolicy -b -C \
             -o final-policy.cil final-policy.${policyVersion}
+          ${python3}/bin/python3 ${policySupport}/effective_policy.py \
+            final-policy.${policyVersion} > effective-policy.tsv
+          test -s effective-policy.tsv
+
+          # Link a deliberately forbidden attribute-based process:ptrace rule
+          # into a second loadable binary. This proves the production checker
+          # uses SETools' indirect source expansion and unbounded target scan.
+          ${semodule-utils}/bin/semodule_link \
+            -o attribute-negative-linked-policy.mod \
+            "$@" "$attribute_negative_module.pp"
+          # Production expansion above keeps neverallow checking enabled. Only
+          # this deliberately forbidden, never-installed fixture bypasses the
+          # base policy assertions so the SETools gate can reject it itself.
+          ${semodule-utils}/bin/semodule_expand \
+            -a \
+            -c ${policyVersion} \
+            attribute-negative-linked-policy.mod \
+            attribute-negative-policy.${policyVersion}
+          if ${python3}/bin/python3 ${policySupport}/effective_policy.py \
+            attribute-negative-policy.${policyVersion} \
+            > attribute-negative-effective-policy.tsv \
+            2> attribute-negative-diagnostic
+          then
+            echo "attribute-expanded forbidden rule unexpectedly passed" >&2
+            exit 1
+          fi
+          grep -F "forbidden allow exists" attribute-negative-diagnostic
+          grep -F "process" attribute-negative-diagnostic
+          grep -F "ptrace" attribute-negative-diagnostic
 
           mkdir kernel-source
           tar xf ${linux.src} -C kernel-source --strip-components=1
@@ -118,6 +169,9 @@ in
             fi
           done
 
+          cat ${policySupport}/aos_sandbox.fc >> file_contexts
+          printf '\n' >> file_contexts
+
           test -s file_contexts
           ${libselinux}/sbin/sefcontext_compile \
             -p final-policy.${policyVersion} \
@@ -144,6 +198,13 @@ in
             kernel-classmap.tsv \
             observed-policy-classmap.tsv \
             final-policy.cil \
+            effective-policy.tsv \
+            "$aos_module.mod" \
+            "$aos_module.pp" \
+            ${policySupport}/aos_sandbox.te \
+            ${policySupport}/aos_sandbox.fc \
+            ${policySupport}/aos_sandbox_attribute_negative.te \
+            attribute-negative-diagnostic \
             deficient-source-diagnostic \
             deficient-binary-diagnostic \
             "$evidence_root/"
@@ -155,6 +216,9 @@ in
           deficient_source_coverage=rejected
           deficient_binary_compilation=pass
           deficient_binary_decoded_coverage=rejected
+          aos_sandbox_module_linked=pass
+          aos_sandbox_effective_policy=pass
+          aos_sandbox_attribute_expansion_negative=rejected
           EOF
         '';
       }
