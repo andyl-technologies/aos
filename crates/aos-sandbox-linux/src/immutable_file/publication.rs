@@ -403,6 +403,61 @@ impl FsVerityPublicationRoot {
         maximum_bytes: u64,
         callbacks: &mut C,
     ) -> Result<SealedPrivateFile<'root>, MaterializationError<C::Error>> {
+        self.materialize_and_seal_with_mode_policy(
+            source,
+            private_name,
+            maximum_bytes,
+            callbacks,
+            PrivateModePolicy::CorrectWithSetattr,
+        )
+    }
+
+    /// Copies and seals a fresh inode only when creation produced exact mode 0600.
+    ///
+    /// This append-only-publication variant never calls a mode, ownership, ACL,
+    /// or label setter. It requests mode 0600 at `openat2` creation and rejects
+    /// any owner, mode, link-count, or empty-size mismatch before copying the
+    /// first byte. It still enables fs-verity with the documented sealing ioctl.
+    /// A restrictive process umask therefore fails closed rather than being
+    /// repaired. Callers must provision the intended umask independently; this
+    /// method neither reads nor mutates the process-global umask.
+    ///
+    /// Exact mode bits do not prove the absence of ACL xattrs or establish the
+    /// publisher's MAC authority. The deployment must separately confine the
+    /// staging and final directories and deny metadata mutation of published
+    /// records.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures and retained-artifact evidence as
+    /// [`Self::materialize_and_seal`], and rejects a newly created inode whose
+    /// mode is not exactly 0600 before invoking a byte-verification or finish
+    /// callback. The initial cancellation checkpoint still runs before inode
+    /// creation.
+    pub fn materialize_and_seal_exact_mode<'root, C: MaterializationCallbacks>(
+        &'root self,
+        source: OwnedFd,
+        private_name: PublicationName,
+        maximum_bytes: u64,
+        callbacks: &mut C,
+    ) -> Result<SealedPrivateFile<'root>, MaterializationError<C::Error>> {
+        self.materialize_and_seal_with_mode_policy(
+            source,
+            private_name,
+            maximum_bytes,
+            callbacks,
+            PrivateModePolicy::RequireExact,
+        )
+    }
+
+    fn materialize_and_seal_with_mode_policy<'root, C: MaterializationCallbacks>(
+        &'root self,
+        source: OwnedFd,
+        private_name: PublicationName,
+        maximum_bytes: u64,
+        callbacks: &mut C,
+        mode_policy: PrivateModePolicy,
+    ) -> Result<SealedPrivateFile<'root>, MaterializationError<C::Error>> {
         let source = File::from(source);
         if let Err(cause) = inspect_source(source.as_fd(), maximum_bytes) {
             return Err(MaterializationError {
@@ -450,15 +505,7 @@ impl FsVerityPublicationRoot {
         };
         retained.device = Some(identity.device);
         retained.inode = Some(identity.inode);
-        if let Err(source) = writer.set_permissions(
-            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
-        ) {
-            return Err(MaterializationError {
-                cause: MaterializationFailure::Linux(io_error("fchmod private inode", source)),
-                retained: Some(retained),
-            });
-        }
-        if let Err(cause) = inspect_private(writer.as_fd()) {
+        if let Err(cause) = enforce_private_mode(&writer, mode_policy) {
             return Err(MaterializationError {
                 cause,
                 retained: Some(retained),
@@ -616,6 +663,28 @@ impl FsVerityPublicationRoot {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PrivateModePolicy {
+    CorrectWithSetattr,
+    RequireExact,
+}
+
+fn enforce_private_mode<E: StdError + 'static>(
+    writer: &File,
+    mode_policy: PrivateModePolicy,
+) -> Result<(), MaterializationFailure<E>> {
+    if mode_policy == PrivateModePolicy::CorrectWithSetattr {
+        writer
+            .set_permissions(
+                <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+            )
+            .map_err(|source| {
+                MaterializationFailure::Linux(io_error("fchmod private inode", source))
+            })?;
+    }
+    inspect_private(writer.as_fd()).map(|_| ())
 }
 
 fn strict_resolution() -> u64 {
@@ -826,7 +895,7 @@ impl fmt::Display for PublicationName {
 #[cfg(test)]
 mod tests {
     use std::io;
-    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 
     use super::*;
 
@@ -1015,6 +1084,42 @@ mod tests {
             inspect_source::<Stopped>(readable.as_fd(), 4),
             Err(MaterializationFailure::ByteLimitExceeded)
         ));
+    }
+
+    #[test]
+    fn exact_mode_helper_rejects_missing_owner_write_before_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("private");
+        let writer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o400)
+            .open(&path)
+            .unwrap();
+
+        assert!(matches!(
+            enforce_private_mode::<Stopped>(&writer, PrivateModePolicy::RequireExact),
+            Err(MaterializationFailure::PrivateInodeInvariant)
+        ));
+        assert_eq!(std::fs::metadata(path).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn compatibility_mode_admission_still_repairs_private_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("private");
+        let writer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o400)
+            .open(&path)
+            .unwrap();
+
+        enforce_private_mode::<Stopped>(&writer, PrivateModePolicy::CorrectWithSetattr).unwrap();
+        let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]

@@ -105,7 +105,10 @@ in
           quota_rejected_before_create: true,
           existing_name_untouched: true,
           callback_failure_retained: true,
-          retained_unsealed_writable: true
+          retained_unsealed_writable: true,
+          cross_directory_durable: true,
+          cross_conflict_preserved: true,
+          same_root_rejected: true
         }
       ' materialize.json
       cat materialize.json

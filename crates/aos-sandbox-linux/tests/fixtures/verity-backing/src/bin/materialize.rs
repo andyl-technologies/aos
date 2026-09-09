@@ -11,7 +11,7 @@ mod linux {
     use std::fs::{File, OpenOptions};
     use std::io::{Read as _, Seek as _, SeekFrom};
     use std::os::fd::{AsFd as _, OwnedFd};
-    use std::os::unix::fs::MetadataExt as _;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
     use std::path::{Path, PathBuf};
 
     use aos_sandbox_core::{
@@ -32,6 +32,13 @@ mod linux {
     const OVER_LIMIT_NAME: &str = ".materialize-over-limit";
     const EXISTING_NAME: &str = ".materialize-existing";
     const REJECTED_NAME: &str = ".materialize-rejected";
+    const CROSS_STAGING_DIRECTORY: &str = "append-staging";
+    const CROSS_FINAL_DIRECTORY: &str = "append-final";
+    const CROSS_PRIVATE_NAME: &str = ".cross-private";
+    const CROSS_FINAL_NAME: &str = "cross-final";
+    const CROSS_CONFLICT_PRIVATE_NAME: &str = ".cross-conflict-private";
+    const CROSS_CONFLICT_FINAL_NAME: &str = "cross-conflict-final";
+    const SAME_ROOT_PRIVATE_NAME: &str = ".same-root-private";
 
     #[derive(Debug)]
     enum CallbackError {
@@ -241,6 +248,102 @@ mod linux {
             Err(ref error) if error.raw_os_error() == Some(libc::EPERM)
         );
 
+        let cross_staging_path = root_path.join(CROSS_STAGING_DIRECTORY);
+        let cross_final_path = root_path.join(CROSS_FINAL_DIRECTORY);
+        for directory in [&cross_staging_path, &cross_final_path] {
+            std::fs::create_dir(directory)?;
+            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))?;
+        }
+        let cross_staging =
+            FsVerityPublicationRoot::from_owned(File::open(&cross_staging_path)?.into())?;
+        let cross_final =
+            FsVerityPublicationRoot::from_owned(File::open(&cross_final_path)?.into())?;
+
+        let mut cross_callbacks = ExactCallbacks {
+            verifier: Some(ObjectDescriptorVerifier::new(expected.clone())),
+        };
+        let cross_sealed = cross_staging.materialize_and_seal_exact_mode(
+            File::open(&source_path)?.into(),
+            publication_name(CROSS_PRIVATE_NAME)?,
+            expected.encoded_size(),
+            &mut cross_callbacks,
+        )?;
+        let cross_identity = (cross_sealed.device(), cross_sealed.inode());
+        let cross_measurement = cross_sealed.verity_digest();
+        let cross_named = match cross_sealed
+            .publish_noreplace_into(&cross_final, publication_name(CROSS_FINAL_NAME)?)
+        {
+            Ok(named) => named,
+            Err(_) => return Err("cross-directory publication failed".into()),
+        };
+        let cross_final_metadata = std::fs::metadata(cross_final_path.join(CROSS_FINAL_NAME))?;
+        let cross_source_absent = matches!(
+            std::fs::symlink_metadata(cross_staging_path.join(CROSS_PRIVATE_NAME)),
+            Err(ref error) if error.raw_os_error() == Some(libc::ENOENT)
+        );
+        let cross_reopen_root = BeneathRoot::from_owned(File::open(&cross_final_path)?.into())?;
+        let cross_reopened = FsVerityBacking::open_beneath(
+            &cross_reopen_root,
+            Path::new(CROSS_FINAL_NAME),
+            cross_measurement,
+            expected.encoded_size(),
+            expected.encoded_size(),
+        )?;
+        let cross_reopened_identity = cross_reopened.identity();
+        let cross_directory_durable = cross_source_absent
+            && cross_named.final_name().as_os_str() == OsStr::new(CROSS_FINAL_NAME)
+            && cross_named.device() == cross_identity.0
+            && cross_named.inode() == cross_identity.1
+            && cross_final_metadata.dev() == cross_identity.0
+            && cross_final_metadata.ino() == cross_identity.1
+            && cross_reopened_identity.device() == cross_identity.0
+            && cross_reopened_identity.inode() == cross_identity.1
+            && cross_reopened_identity.bytes() == expected.encoded_size();
+
+        let cross_conflict_path = cross_final_path.join(CROSS_CONFLICT_FINAL_NAME);
+        std::fs::write(&cross_conflict_path, b"cross conflict")?;
+        let cross_conflict_before = std::fs::metadata(&cross_conflict_path)?;
+        let mut cross_conflict_callbacks = ExactCallbacks {
+            verifier: Some(ObjectDescriptorVerifier::new(expected.clone())),
+        };
+        let cross_conflict_sealed = cross_staging.materialize_and_seal_exact_mode(
+            File::open(&source_path)?.into(),
+            publication_name(CROSS_CONFLICT_PRIVATE_NAME)?,
+            expected.encoded_size(),
+            &mut cross_conflict_callbacks,
+        )?;
+        let cross_conflict_preserved = matches!(
+            cross_conflict_sealed.publish_noreplace_into(
+                &cross_final,
+                publication_name(CROSS_CONFLICT_FINAL_NAME)?,
+            ),
+            Err(NoReplacePublicationError::BeforeRename {
+                failure: BeforeRenameFailure::DestinationExists,
+                ..
+            })
+        ) && std::fs::read(&cross_conflict_path)? == b"cross conflict"
+            && std::fs::metadata(&cross_conflict_path)?.dev() == cross_conflict_before.dev()
+            && std::fs::metadata(&cross_conflict_path)?.ino() == cross_conflict_before.ino()
+            && cross_staging_path.join(CROSS_CONFLICT_PRIVATE_NAME).exists();
+
+        let mut same_root_callbacks = ExactCallbacks {
+            verifier: Some(ObjectDescriptorVerifier::new(expected.clone())),
+        };
+        let same_root_sealed = cross_staging.materialize_and_seal_exact_mode(
+            File::open(&source_path)?.into(),
+            publication_name(SAME_ROOT_PRIVATE_NAME)?,
+            expected.encoded_size(),
+            &mut same_root_callbacks,
+        )?;
+        let same_root_rejected = matches!(
+            same_root_sealed
+                .publish_noreplace_into(&cross_staging, publication_name(CROSS_FINAL_NAME)?,),
+            Err(NoReplacePublicationError::BeforeRename {
+                failure: BeforeRenameFailure::SameRoot,
+                ..
+            })
+        ) && cross_staging_path.join(SAME_ROOT_PRIVATE_NAME).exists();
+
         let before_over_limit = directory_entries(&root_path)?;
         let over_limit_source: OwnedFd = File::open(&source_path)?.into();
         let mut over_limit_callbacks = ExactCallbacks {
@@ -323,7 +426,9 @@ mod linux {
              \"old_private_absent\":{},\"conflict_retry_succeeded\":{},\
              \"quota_rejected_before_create\":{},\
              \"existing_name_untouched\":{},\"callback_failure_retained\":{},\
-             \"retained_unsealed_writable\":{}}}",
+             \"retained_unsealed_writable\":{},\
+             \"cross_directory_durable\":{},\"cross_conflict_preserved\":{},\
+             \"same_root_rejected\":{}}}",
             exact.verifier.is_none(),
             fresh_inode,
             exact_size,
@@ -341,6 +446,9 @@ mod linux {
             existing_name_untouched,
             callback_failure_retained,
             retained_unsealed_writable,
+            cross_directory_durable,
+            cross_conflict_preserved,
+            same_root_rejected,
         );
         Ok(())
     }

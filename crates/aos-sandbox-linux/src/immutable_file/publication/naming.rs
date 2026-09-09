@@ -1,8 +1,12 @@
-//! Same-directory no-replace naming of a sealed private inode.
+//! Durable no-replace naming of a sealed private inode.
 //!
 //! This module advances one lifetime-bound private inode through the Linux
-//! rename and parent-fsync boundary. It owns no catalog, reservation, content,
-//! placement, disclosure, adoption, or cleanup authority.
+//! rename and directory-fsync boundary. Publication may remain within one
+//! directory or move from distinct staging into an append-only final directory.
+//! The cross-directory path prechecks equal device identities, while the rename
+//! syscall remains authoritative about mount compatibility. It owns no catalog,
+//! reservation, content, placement, disclosure, adoption, cleanup, or MAC
+//! authority.
 
 use std::convert::Infallible;
 use std::fs::File;
@@ -21,6 +25,12 @@ pub enum BeforeRenameFailure {
     /// Private and final names are identical.
     #[error("private and final publication names are identical")]
     SameName,
+    /// Cross-directory publication named the staging directory as its final directory.
+    #[error("cross-directory publication requires distinct staging and final roots")]
+    SameRoot,
+    /// The staging and final directories have different filesystem device identities.
+    #[error("staging and final publication roots have different device identities")]
+    DifferentDevice,
     /// The retained publication root changed after admission.
     #[error("publication root changed before rename")]
     RootChanged,
@@ -47,6 +57,12 @@ pub enum AfterRenameFailure {
     /// Synchronizing the final parent directory failed.
     #[error("final publication parent synchronization failed: {0}")]
     DirectorySync(#[source] Error),
+    /// Synchronizing the distinct final directory failed.
+    #[error("cross-directory final publication root synchronization failed: {0}")]
+    FinalDirectorySync(#[source] Error),
+    /// Synchronizing the distinct staging directory failed.
+    #[error("cross-directory staging publication root synchronization failed: {0}")]
+    StagingDirectorySync(#[source] Error),
     /// A Linux observation failed after rename.
     #[error("post-rename Linux observation failed: {0}")]
     Linux(#[source] Error),
@@ -67,7 +83,8 @@ pub enum AfterRenameFailure {
 #[derive(Debug)]
 pub struct AmbiguousNamedSealedFile<'root> {
     file: OwnedFd,
-    _root: &'root FsVerityPublicationRoot,
+    _staging_root: &'root FsVerityPublicationRoot,
+    _final_root: &'root FsVerityPublicationRoot,
     private_name: PublicationName,
     final_name: PublicationName,
     identity: PrivateIdentity,
@@ -121,7 +138,8 @@ impl AsFd for AmbiguousNamedSealedFile<'_> {
 #[derive(Debug)]
 pub struct RenamedSealedFile<'root> {
     file: OwnedFd,
-    root: &'root FsVerityPublicationRoot,
+    staging_root: &'root FsVerityPublicationRoot,
+    final_root: &'root FsVerityPublicationRoot,
     private_name: PublicationName,
     final_name: PublicationName,
     identity: PrivateIdentity,
@@ -175,7 +193,8 @@ impl AsFd for RenamedSealedFile<'_> {
 #[derive(Debug)]
 pub struct DurablyNamedSealedFile<'root> {
     file: OwnedFd,
-    _root: &'root FsVerityPublicationRoot,
+    _staging_root: &'root FsVerityPublicationRoot,
+    _final_root: &'root FsVerityPublicationRoot,
     final_name: PublicationName,
     identity: PrivateIdentity,
     verity: super::FsVerityDigest,
@@ -278,56 +297,129 @@ impl<'root> SealedPrivateFile<'root> {
         self,
         final_name: PublicationName,
     ) -> Result<DurablyNamedSealedFile<'root>, NoReplacePublicationError<'root>> {
-        if self.name == final_name {
-            return Err(before(BeforeRenameFailure::SameName, self));
-        }
-        if let Err(failure) = validate_private(&self) {
-            return Err(before(map_before(failure), self));
-        }
+        let root = self.root;
+        publish_noreplace(self, root, final_name, PublicationLayout::SameDirectory)
+    }
 
-        match uapi::renameat2(
-            self.root.directory.as_fd(),
-            self.name.as_c_str(),
-            self.root.directory.as_fd(),
-            final_name.as_c_str(),
-            uapi::RENAME_NOREPLACE,
-        ) {
-            Ok(()) => (),
-            Err(source) if syscall_errno(&source) == Some(libc::EEXIST) => {
-                if let Err(failure) = validate_private(&self) {
-                    return Err(before(map_before(failure), self));
-                }
-                return Err(before(BeforeRenameFailure::DestinationExists, self));
-            }
-            Err(source) => {
-                return Err(NoReplacePublicationError::RenameOutcomeAmbiguous {
-                    source,
-                    artifact: Box::new(AmbiguousNamedSealedFile::from_private(self, final_name)),
-                });
-            }
-        }
-
-        let renamed = RenamedSealedFile::from_private(self, final_name);
-        if let Err((step, failure)) = run_after_rename(
-            || validate_renamed(&renamed),
-            || uapi::fsync(renamed.root.directory.as_fd()).map_err(MechanicsFailure::Linux),
-            || validate_renamed(&renamed),
-        ) {
-            return Err(NoReplacePublicationError::AfterRename {
-                failure: map_after(step, failure),
-                renamed: Box::new(renamed),
-            });
-        }
-
-        Ok(renamed.into_durable())
+    /// Moves this sealed staging inode into a distinct final directory without replacement.
+    ///
+    /// The final root must be a different admitted directory with the same
+    /// filesystem device identity as the staging root. Equal device numbers do
+    /// not prove that two paths share a mount; `renameat2` remains the definitive
+    /// check and any `EXDEV` result is retained conservatively as indeterminate.
+    /// This separation lets an external access-control policy grant source-name
+    /// removal only in staging and the final-directory search, write, and
+    /// add-name permissions required for creation without granting remove-name
+    /// in that append-only directory. This API validates those mechanical
+    /// preconditions but does not prove that a MAC policy is installed or
+    /// enforcing.
+    ///
+    /// The method validates the final name and source absence after rename,
+    /// synchronizes the final and staging directories in that order, and repeats
+    /// the validation. Existing final names are never opened or adopted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NoReplacePublicationError::BeforeRename`] when the roots are
+    /// equal, have different device identities, or fail validation; when the
+    /// sealed staging inode changed; or when the final name exists. Other rename
+    /// failures are indeterminate. Validation or either directory-sync failure
+    /// after rename returns [`NoReplacePublicationError::AfterRename`].
+    pub fn publish_noreplace_into(
+        self,
+        final_root: &'root FsVerityPublicationRoot,
+        final_name: PublicationName,
+    ) -> Result<DurablyNamedSealedFile<'root>, NoReplacePublicationError<'root>> {
+        publish_noreplace(
+            self,
+            final_root,
+            final_name,
+            PublicationLayout::DistinctDirectories,
+        )
     }
 }
 
+fn publish_noreplace<'root>(
+    private: SealedPrivateFile<'root>,
+    final_root: &'root FsVerityPublicationRoot,
+    final_name: PublicationName,
+    layout: PublicationLayout,
+) -> Result<DurablyNamedSealedFile<'root>, NoReplacePublicationError<'root>> {
+    let staging_root = private.root;
+    if private.name == final_name && layout == PublicationLayout::SameDirectory {
+        return Err(before(BeforeRenameFailure::SameName, private));
+    }
+    if let Err(failure) = validate_publication_roots(staging_root, final_root, layout) {
+        return Err(before(failure, private));
+    }
+    if let Err(failure) = validate_private(&private) {
+        return Err(before(map_before(failure), private));
+    }
+
+    match uapi::renameat2(
+        staging_root.directory.as_fd(),
+        private.name.as_c_str(),
+        final_root.directory.as_fd(),
+        final_name.as_c_str(),
+        uapi::RENAME_NOREPLACE,
+    ) {
+        Ok(()) => (),
+        Err(source) if syscall_errno(&source) == Some(libc::EEXIST) => {
+            if let Err(failure) = validate_private(&private) {
+                return Err(before(map_before(failure), private));
+            }
+            return Err(before(BeforeRenameFailure::DestinationExists, private));
+        }
+        Err(source) => {
+            return Err(NoReplacePublicationError::RenameOutcomeAmbiguous {
+                source,
+                artifact: Box::new(AmbiguousNamedSealedFile::from_private(
+                    private, final_root, final_name,
+                )),
+            });
+        }
+    }
+
+    let renamed = RenamedSealedFile::from_private(private, final_root, final_name);
+    let after_rename = match layout {
+        PublicationLayout::SameDirectory => run_after_rename(
+            || validate_renamed(&renamed),
+            || uapi::fsync(renamed.final_root.directory.as_fd()).map_err(MechanicsFailure::Linux),
+            || validate_renamed(&renamed),
+        ),
+        PublicationLayout::DistinctDirectories => run_after_cross_directory_rename(
+            || validate_renamed(&renamed),
+            || uapi::fsync(renamed.final_root.directory.as_fd()).map_err(MechanicsFailure::Linux),
+            || uapi::fsync(renamed.staging_root.directory.as_fd()).map_err(MechanicsFailure::Linux),
+            || validate_renamed(&renamed),
+        ),
+    };
+    if let Err((step, failure)) = after_rename {
+        return Err(NoReplacePublicationError::AfterRename {
+            failure: map_after(step, failure),
+            renamed: Box::new(renamed),
+        });
+    }
+
+    Ok(renamed.into_durable())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublicationLayout {
+    SameDirectory,
+    DistinctDirectories,
+}
+
 impl<'root> AmbiguousNamedSealedFile<'root> {
-    fn from_private(private: SealedPrivateFile<'root>, final_name: PublicationName) -> Self {
+    fn from_private(
+        private: SealedPrivateFile<'root>,
+        final_root: &'root FsVerityPublicationRoot,
+        final_name: PublicationName,
+    ) -> Self {
         Self {
             file: private.file,
-            _root: private.root,
+            _staging_root: private.root,
+            _final_root: final_root,
             private_name: private.name,
             final_name,
             identity: private.identity,
@@ -337,10 +429,15 @@ impl<'root> AmbiguousNamedSealedFile<'root> {
 }
 
 impl<'root> RenamedSealedFile<'root> {
-    fn from_private(private: SealedPrivateFile<'root>, final_name: PublicationName) -> Self {
+    fn from_private(
+        private: SealedPrivateFile<'root>,
+        final_root: &'root FsVerityPublicationRoot,
+        final_name: PublicationName,
+    ) -> Self {
         Self {
             file: private.file,
-            root: private.root,
+            staging_root: private.root,
+            final_root,
             private_name: private.name,
             final_name,
             identity: private.identity,
@@ -351,7 +448,8 @@ impl<'root> RenamedSealedFile<'root> {
     fn into_durable(self) -> DurablyNamedSealedFile<'root> {
         DurablyNamedSealedFile {
             file: self.file,
-            _root: self.root,
+            _staging_root: self.staging_root,
+            _final_root: self.final_root,
             final_name: self.final_name,
             identity: self.identity,
             verity: self.verity,
@@ -381,15 +479,47 @@ fn validate_private(private: &SealedPrivateFile<'_>) -> Result<(), MechanicsFail
 }
 
 fn validate_renamed(renamed: &RenamedSealedFile<'_>) -> Result<(), MechanicsFailure> {
-    validate_root(renamed.root)?;
+    validate_root(renamed.staging_root)?;
+    validate_root(renamed.final_root)?;
     validate_pinned(renamed.file.as_fd(), renamed.identity, renamed.verity)?;
     validate_named(
-        renamed.root,
+        renamed.final_root,
         &renamed.final_name,
         renamed.identity,
         renamed.verity,
     )?;
-    require_absent(renamed.root, &renamed.private_name)
+    require_absent(renamed.staging_root, &renamed.private_name)
+}
+
+fn validate_publication_roots(
+    staging_root: &FsVerityPublicationRoot,
+    final_root: &FsVerityPublicationRoot,
+    layout: PublicationLayout,
+) -> Result<(), BeforeRenameFailure> {
+    validate_root(staging_root).map_err(map_before)?;
+    validate_root(final_root).map_err(map_before)?;
+    validate_root_layout(staging_root.identity, final_root.identity, layout)
+}
+
+fn validate_root_layout(
+    staging: super::RootIdentity,
+    final_root: super::RootIdentity,
+    layout: PublicationLayout,
+) -> Result<(), BeforeRenameFailure> {
+    let same_root = staging == final_root;
+    match layout {
+        PublicationLayout::SameDirectory if !same_root => {
+            return Err(BeforeRenameFailure::RootChanged);
+        }
+        PublicationLayout::DistinctDirectories if same_root => {
+            return Err(BeforeRenameFailure::SameRoot);
+        }
+        _ => {}
+    }
+    if staging.device != final_root.device {
+        return Err(BeforeRenameFailure::DifferentDevice);
+    }
+    Ok(())
 }
 
 fn validate_root(root: &FsVerityPublicationRoot) -> Result<(), MechanicsFailure> {
@@ -507,6 +637,12 @@ fn map_after(step: AfterRenameStep, failure: MechanicsFailure) -> AfterRenameFai
         (AfterRenameStep::DirectorySync, MechanicsFailure::Linux(error)) => {
             AfterRenameFailure::DirectorySync(error)
         }
+        (AfterRenameStep::FinalDirectorySync, MechanicsFailure::Linux(error)) => {
+            AfterRenameFailure::FinalDirectorySync(error)
+        }
+        (AfterRenameStep::StagingDirectorySync, MechanicsFailure::Linux(error)) => {
+            AfterRenameFailure::StagingDirectorySync(error)
+        }
         (_, MechanicsFailure::RootChanged) => AfterRenameFailure::RootChanged,
         (_, MechanicsFailure::InodeInvariant) => AfterRenameFailure::FinalInvariant,
         (_, MechanicsFailure::Linux(error)) => AfterRenameFailure::Linux(error),
@@ -523,6 +659,18 @@ fn run_after_rename<E>(
     validate_after_sync().map_err(|error| (AfterRenameStep::FinalValidation, error))
 }
 
+fn run_after_cross_directory_rename<E>(
+    validate_before_sync: impl FnOnce() -> Result<(), E>,
+    synchronize_final: impl FnOnce() -> Result<(), E>,
+    synchronize_staging: impl FnOnce() -> Result<(), E>,
+    validate_after_sync: impl FnOnce() -> Result<(), E>,
+) -> Result<(), (AfterRenameStep, E)> {
+    validate_before_sync().map_err(|error| (AfterRenameStep::InitialValidation, error))?;
+    synchronize_final().map_err(|error| (AfterRenameStep::FinalDirectorySync, error))?;
+    synchronize_staging().map_err(|error| (AfterRenameStep::StagingDirectorySync, error))?;
+    validate_after_sync().map_err(|error| (AfterRenameStep::FinalValidation, error))
+}
+
 #[derive(Debug)]
 enum MechanicsFailure {
     RootChanged,
@@ -534,6 +682,8 @@ enum MechanicsFailure {
 enum AfterRenameStep {
     InitialValidation,
     DirectorySync,
+    FinalDirectorySync,
+    StagingDirectorySync,
     FinalValidation,
 }
 
@@ -542,6 +692,48 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
+
+    fn root(device: u64, inode: u64) -> super::super::RootIdentity {
+        super::super::RootIdentity {
+            device,
+            inode,
+            uid: 0,
+            mode: 0o700,
+        }
+    }
+
+    #[test]
+    fn layout_requires_distinct_roots_with_equal_device_identity() {
+        let staging = root(7, 11);
+        let final_root = root(7, 12);
+
+        assert!(
+            validate_root_layout(staging, final_root, PublicationLayout::DistinctDirectories,)
+                .is_ok()
+        );
+        assert!(matches!(
+            validate_root_layout(staging, staging, PublicationLayout::DistinctDirectories,),
+            Err(BeforeRenameFailure::SameRoot)
+        ));
+        assert!(matches!(
+            validate_root_layout(staging, root(8, 12), PublicationLayout::DistinctDirectories,),
+            Err(BeforeRenameFailure::DifferentDevice)
+        ));
+    }
+
+    #[test]
+    fn same_directory_layout_remains_exactly_same_root_only() {
+        let root = root(7, 11);
+        assert!(validate_root_layout(root, root, PublicationLayout::SameDirectory).is_ok());
+        assert!(matches!(
+            validate_root_layout(
+                root,
+                super::super::RootIdentity { inode: 12, ..root },
+                PublicationLayout::SameDirectory
+            ),
+            Err(BeforeRenameFailure::RootChanged)
+        ));
+    }
 
     #[test]
     fn post_rename_order_is_validate_sync_validate() {
@@ -585,6 +777,63 @@ mod tests {
                 }
             };
             let result = run_after_rename(invoke, invoke, invoke);
+            assert_eq!(result, Err((failure, "injected")));
+            assert_eq!(*calls.borrow(), expected_calls);
+        }
+    }
+
+    #[test]
+    fn cross_directory_post_rename_orders_both_directory_syncs() {
+        let calls = RefCell::new(Vec::new());
+        let result = run_after_cross_directory_rename(
+            || {
+                calls.borrow_mut().push("validate-before");
+                Ok::<_, ()>(())
+            },
+            || {
+                calls.borrow_mut().push("sync-final");
+                Ok::<_, ()>(())
+            },
+            || {
+                calls.borrow_mut().push("sync-staging");
+                Ok::<_, ()>(())
+            },
+            || {
+                calls.borrow_mut().push("validate-after");
+                Ok::<_, ()>(())
+            },
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            calls.into_inner(),
+            [
+                "validate-before",
+                "sync-final",
+                "sync-staging",
+                "validate-after"
+            ]
+        );
+    }
+
+    #[test]
+    fn cross_directory_post_rename_reports_each_sync_boundary() {
+        for (failure, expected_calls) in [
+            (AfterRenameStep::InitialValidation, 1),
+            (AfterRenameStep::FinalDirectorySync, 2),
+            (AfterRenameStep::StagingDirectorySync, 3),
+            (AfterRenameStep::FinalValidation, 4),
+        ] {
+            let calls = RefCell::new(0_usize);
+            let invoke = || {
+                *calls.borrow_mut() += 1;
+                if *calls.borrow() == expected_calls {
+                    Err("injected")
+                } else {
+                    Ok(())
+                }
+            };
+            let result = run_after_cross_directory_rename(invoke, invoke, invoke, invoke);
             assert_eq!(result, Err((failure, "injected")));
             assert_eq!(*calls.borrow(), expected_calls);
         }
