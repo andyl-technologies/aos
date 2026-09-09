@@ -5228,6 +5228,78 @@ Fresh repair admission and one-time new-dataset ownership initialization also
 remain unimplemented. Storage Apply stays unadvertised and `SBX-STOR-01`,
 `SBX-P0-07`, `SBX-P0-08`, and `SBX-P0-10` remain open.
 
+### Storage workspace root-pin repair recovery (in progress)
+
+Storage protocol 1.4 reserves controller method 21 for
+`RepairWorkspacePin`. The method requires the standard authorization carrier,
+accepts no descriptors, and carries only the request header, assignment fence,
+nonzero 16-byte repair operation ID, and exact 32-byte workspace handle.
+Dataset names, GUIDs, mount points, observations, and attempt ordinals remain
+protected broker facts. The portable authorization registry assigns the
+resource-targeted `StorageRepairWorkspacePin` verb global code 33; the
+Storage-local authenticated Effect codec assigns it append-only code 9.
+Peers below Storage 1.4 cannot negotiate the method or decode its canonical
+semantics.
+
+The repair compiler produces one fixed 183-byte, nine-TLV canonical semantic
+record. Its domain-separated golden commitment is
+`bc961c0e3b743447891a8997ee6fcd57359ef7e90722454bd9f8dacd61ddf5c2`.
+Every assignment-fence field, operation ID, and workspace handle changes that
+commitment; zero or wrong-width identities, unknown fields at either protobuf
+level, action-field smuggling, older protocol versions, and noncanonical bytes
+fail closed.
+
+Durable repair history uses append-only journal namespace 35. Its
+location-authenticated intent retains the exact original Pending Effect bytes
+and digest, operation fence, repair and creation identities, committed creation
+result and publication record digests, workspace handle, predecessor Ensure
+attempt and phase, and the new adjacent attempt identity and ordinal. Recovery
+authenticates every retained repair intent, including satisfied and retired
+history, before ordinary Effect or workspace-inventory access. It requires
+contiguous ordinals and exact predecessor and reverse one-to-one joins. A
+superseded attempt cannot complete late, and an admitted repair is always
+observation-only after restart; its historical authority is never
+redispatched.
+
+The dedicated `AOSZRPO1`/`AOSZRPR1` recovery exchange contains no effect grant.
+It binds a kernel-generated challenge, independently authenticated repair,
+attempt and publication records, the canonical creation catalog, the
+historical attempt scope, and a freshly descriptor-derived boot and
+mount-namespace scope. The fixed
+single-threaded observer independently opens the authenticated records after
+entering the retained namespace, performs bounded ZFS and exact mount
+inventory, and returns the probe digest with typed evidence. Broker completion
+rechecks the latest attempt, active workspace projection, and raw record
+digests. Exact absence remains `AwaitFreshRepair` without a journal write;
+same-scope exact presence may satisfy the retained attempt; cross-boot presence,
+stale probes, changed history, mismatch, and copied-journal substitution fail
+closed. The ordinary observer selects only the latest attempt and excludes
+repair Ensure attempts, while still recovering a latest
+`RemoveAndDestroy` attempt.
+
+Commit `5c0be1b2217f37b3c49e2cc7fc7fad74b083cb46` records this protocol and
+recovery slice. Its isolated 19-path candidate was based on
+`c67406e76c5189987edfb4d0fea0d4960cc53281`, had binary-diff SHA-256
+`2e8efe35b18f51573e6d4c2e8bc35a80d83020f17c79a853d7f628233ed063ec`
+and tree `241c98d2f9a790c67d228d57c68e0268b613a0a2`, and passed 824 library
+tests across `aos-sandbox`, broker, core, protocol, and Storage. No test failed;
+the only two ignored tests require the installed real-systemd Storage workers.
+That run includes the append-only namespace-35 journal check, fixed protocol
+golden, session negotiation and carrier boundaries, authenticated repair codec
+and bit-flip rejection, repair-history reopen and substitution checks, startup
+authority ordering, latest-attempt selection, and same- and cross-scope
+observer completion cases.
+
+This slice does not implement fresh repair admission, the pre-admission
+descriptor-backed observation contract, atomic fence/Effect/intent/attempt
+commit, immediate mutating-worker dispatch, controller orchestration, or a
+production RPC handler. The new method remains unadvertised, no dedicated
+repair recovery VM has run, and a post-commit recovery envelope must not be
+reused as pre-commit authority. Storage Apply remains unadvertised.
+New-dataset ownership initialization and its separate capability decision also
+remain open; no
+`SBX-STOR-01`, `SBX-P0-07`, `SBX-P0-08`, or `SBX-P0-10` checkbox is closed.
+
 ### Set-ID creation guard source feasibility (design only)
 
 A read-only source audit bounded one possible BPF-LSM SetidGuard, but does not
@@ -5566,8 +5638,9 @@ writable state, enters an enforcing domain, or grants an inspector capability.
 ### Per-assignment Guardian authority and timer foundation (partial)
 
 Commit `fefe8993f` records the first isolated Guardian foundation. The portable
-registry now assigns Guardian audience and protocol code 4 and sparse
-`GuardianArm` verb 34 while continuing to reject reserved verb 33. The
+registry assigns Guardian audience and protocol code 4 and sparse
+`GuardianArm` verb 34; Storage now independently assigns verb 33 to its
+resource-targeted root-pin repair operation. The
 controller-signed plan must contain exactly one assignment-target arm grant.
 Its fixed 160-byte semantic commitment binds the complete assignment tuple,
 node, current host boot ID, and the exact authority-signed ownership-lease
@@ -5615,3 +5688,4 @@ request or Network default-drop coupling, renewal is not orchestrated, and no
 VM test proves expiry or Guardian death stops a payload. The early-freeze
 margin, hard-deadline path, and kernel lease gate remain separate dependencies.
 `SBX-GUARD-01`, the dependent runtime tasks, and end-to-end qualification all
+remain open.

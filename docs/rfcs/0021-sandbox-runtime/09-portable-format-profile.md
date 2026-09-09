@@ -154,7 +154,7 @@ signature purpose 0..6: policy, tree, snapshot, distribution,
 key usage 0..6: policy, tree, snapshot, distribution, broker-authorization,
   ownership-lease, publisher-authorization
 broker audience/protocol 0..4: host, mount, storage, network, guardian
-broker protocol versions: host 1.4, mount 1.5, storage 1.3, network 1.2,
+broker protocol versions: host 1.4, mount 1.5, storage 1.4, network 1.2,
   guardian 1.0
 broker verb 1..28: host-launch, host-stop, host-freeze, host-thaw,
   host-kill, host-observe, host-inventory, mount-create, mount-install,
@@ -166,11 +166,16 @@ broker verb 1..28: host-launch, host-stop, host-freeze, host-thaw,
 broker verb 29..32: mount-materialize-destination-slot,
   mount-reap-destination-slot, mount-rematerialize-destination-slot,
   storage-prepare-catalog
-broker verb 33: reserved and rejected
+broker verb 33: storage-repair-workspace-pin
 broker verb 34: guardian-arm
 broker target 0..2: assignment, resource, resource-pair
 ACL tag 0..5: user-object, named-user, group-object, named-group, mask, other
 ```
+
+Storage repair verb 33 requires a resource target naming the exact workspace
+handle. Its argument commitment covers the fixed 183-byte, nine-TLV canonical
+repair semantics; it cannot be authorized with an assignment or resource-pair
+target.
 
 Limit dimensions `0..15` are initially assigned to bytes, inodes, processes,
 memory, CPU weight, CPU quota, I/O weight, I/O bandwidth, mount count, open
@@ -567,8 +572,9 @@ The canonical broker-plan golden fixture used by the core conformance test is:
 ```
 
 Guardian protocol 1.0 uses broker audience and protocol code `4`, and its sole
-plan verb is assignment-target `GuardianArm` code `34`. Code `33` remains
-reserved and is rejected. A Guardian plan contains exactly one such grant with
+plan verb is assignment-target `GuardianArm` code `34`. Code `33` is the
+Storage resource-targeted root-pin repair verb and is not accepted by Guardian.
+A Guardian plan contains exactly one such grant with
 an exact 160-byte semantic request and zero descriptors presented to the grant
 matcher. The grant's maximum request size is a ceiling and must be at least
 160; the current verifier does not require that ceiling to equal 160 or its
