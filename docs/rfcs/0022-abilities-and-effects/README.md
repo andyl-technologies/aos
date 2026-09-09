@@ -91,6 +91,9 @@ transaction's ordering or failure semantics.
 
 - [Current model, problem, and goals](00-current-model-and-goals.md).
 - [Abilities, handles, and typed dependency consumption](01-abilities-and-consumption.md).
+- [Nix authoring and authenticated contracts](02-nix-authoring-and-contracts.md).
+- [Static matching and registry-driven late binding](03-resolution-and-binding.md).
+- [Structured activation, rollout, and rollback](05-structured-activation.md).
 
 ## Intended outcome
 
