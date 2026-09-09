@@ -1218,7 +1218,7 @@ struct VerifyArgs {
     /// Number of runs to compare. Default: 2.
     #[arg(long, value_name = "n", default_value_t = 2)]
     runs: usize,
-    /// Run under the hostile host-condition matrix (24 §7).
+    /// Perturb observer polling order, yields, and timeouts.
     #[arg(long, action = ArgAction::SetTrue)]
     adversarial: bool,
     /// On divergence, run divergence-bisection (24 §5) and print the report.

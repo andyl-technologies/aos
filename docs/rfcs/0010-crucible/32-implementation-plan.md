@@ -446,17 +446,19 @@ long-held locks.
   savepoint handles for `--save-on`, incremental stdin acknowledgements for
   interactive commands, and non-passing outcome exit propagation with a
   reproduction artifact.
-  `T-CLI-7` is green through `checks.crucible.phase5.cliVerifyWorkflow`, which
+  `T-CLI-7` remains open. `checks.crucible.phase5.cliVerifyWorkflow` currently
   covers fresh local-double, local-QEMU, and remote-daemon verify reductions,
   canonical-log byte comparison, execution-fingerprint stream comparison,
-  adversarial hostile profiles, divergence localization with first
-  decision/sample/byte reporting, both-side reproduction artifacts,
+  observer polling-order/yield/timeout profiles, divergence localization with
+  first decision/sample/byte reporting, both-side reproduction artifacts,
   `verify --compare <a> <b>`, exit 0/1 deterministic/divergent outcomes, and
   local-QEMU verify output pinned to the resolved QEMU/plugin build identity.
   Artifact comparison validates the two embedded producer identities against
   each other and does not substitute an auto-discovered local backend identity.
   Each local-QEMU reduction also performs an independent production plugin boot
-  and rejects non-identical live reports.
+  and rejects non-identical live reports. The remaining work is the real 24 §7
+  randomized-worker, wall-clock, varied-core, and host-I/O-stall matrix behind
+  `--adversarial`; observer perturbations alone do not satisfy it.
   `T-CLI-16` is green through `checks.crucible.phase5.cliCompletionsHelp`, which
   covers Bash, Elvish, Fish, PowerShell, and Zsh completion generation, exact
   long/short `--version`, normalized exact §6–§14 subcommand usage/help

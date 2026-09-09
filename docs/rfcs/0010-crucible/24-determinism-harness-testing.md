@@ -1075,19 +1075,20 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
     management, transfer, and restore compatibility. Only unordered QMP
     collections and QMP transport metadata are normalized; a marker-projection
     negative control proves raw serial comparison remains authoritative.
-- [x] **T-HARN-22** Implement the adversarial host-condition harness (randomized
-  host scheduling, wall-clock jitter, varied core counts, induced I/O stalls) and
-  `gate:adversarial-determinism` (byte-identical canonical logs/fingerprints). —
-  satisfies [HARN-11]; spec §7.
-  Completed by `checks.crucible.phase3.gates.adversarialDeterminism`: the gate
-  runs a fixed adversarial scenario corpus through the shared
+- [x] **T-HARN-22** Implement the modeled adversarial host-condition harness
+  component and `gate:adversarial-determinism` (byte-identical canonical
+  logs/fingerprints). — provides model-level evidence toward [HARN-11]; spec §7.
+  Completed at modeled scope by
+  `checks.crucible.phase3.gates.adversarialDeterminism`: the gate runs a fixed
+  adversarial scenario corpus through the shared
   `canonical_host_adversary_matrix`, covering randomized task order, logical
   affinity, load/yield jitter, varied worker counts, producer/consumer skew, and
   modeled host I/O stalls while asserting byte-identical canonical logs and final
   fingerprints. It also carries negative controls for profile-dependent logs,
   fingerprints, observer output, and empty evidence; shared artifact
-  machine-profile reproduction is completed by T-HARN-25. This hostile-profile
-  proof is complemented by the live-QEMU production fleet run in
+  machine-profile reproduction is completed by T-HARN-25. This modeled proof
+  does not claim that the native executor satisfies [HARN-11]. It is
+  complemented by the live-QEMU production fleet run in
   `checks.fleet.crucible-e2e-determinism`, which executes each independent
   reduction through the packaged QEMU/plugin lifecycle before comparing live
   event and execution-fingerprint streams. Its adversarial profiles perturb
@@ -1097,12 +1098,15 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   reproduce-from-artifact). — satisfies [HARN-22], [HARN-23]; spec §11.
   T-HARN-23 remains open. The phase-4 and phase-7 `.rawGate` checks are
   component checks over the scheduler and shared mock artifact. The fleet slice
-  runs every reduction with `--backend qemu`, launches the closure-owned patched QEMU and
-  plugin under TCG against the AOS-built kernel/root fixture, requires non-empty
-  live fingerprints, and compares live event and fingerprint streams across
-  observer scheduling perturbations. It does not replay the emitted artifact
-  under a different effective CPU-affinity and scheduler-preemption profile,
-  so it cannot discharge [HARN-23].
+  runs every reduction with `--backend qemu`, launches the closure-owned patched
+  QEMU and plugin under TCG against the AOS-built kernel/root fixture, requires
+  non-empty live fingerprints, and compares live event and fingerprint streams
+  across observer scheduling perturbations. Its representative three-VM flight
+  is configured to replay an emitted artifact from a one-CPU producer profile
+  under a two-CPU profile with bounded scheduler preemption. The result records
+  [HARN-23] only after that live replay passes. T-HARN-23 remains open because
+  the native run does not yet apply the full randomized worker, wall-clock,
+  varied-core, and host-I/O-stall matrix required by [HARN-22].
 - [x] **T-HARN-24** Implement the reproduction-artifact format `(seed,
   ScenarioDef, Schedule)` with pinned engine/ABI/QEMU identities and
   content-addressed component references, plus produce/reproduce wiring into

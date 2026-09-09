@@ -1,0 +1,669 @@
+schema = "crucible.scenario.v7"
+
+[scenario]
+id = "blake3:0c02b73f03b4705aec03a2989bfeb13dc7be67730f7c79994dd44a2b6265da69"
+seed = "0x2e0e000000000000000000000000000000000000000000000000000000000000"
+app_random_draw_cap = 0
+selectable_declarations_per_node = 4096
+selectable_declarations_per_world = 65536
+selectable_requests_per_selectable = 1000000
+selectable_requests_per_node = 1000000
+
+[world]
+id = "blake3:cb637fc90c30ad86d73e506ce3bd8596be8087c90f5cad8d03223ae6414096c6"
+
+[[world.node]]
+id = "curl"
+arch = "x86_64"
+memory_mib = 256
+cmdline = "console=ttyS0 address=10.0.0.3 target=10.0.0.2:8080 count=1 continue=1 probe-block=1 crucible.workload=httpget"
+smp_vcpus = 1
+icount_shift = 7
+kernel = "blake3:a4194441ab98bbe9a34b7ac6ff4d31f8e6351bad1553371ebccfa3f15e951148"
+root_image = "blake3:149d73e22b5d2ccde85ab13fa448b295711d2fc6e88f9c3117e481c2c08a3fed"
+white_box = "enabled"
+
+[world.node.ready_point]
+kind = "fixed_icount"
+retired = 0
+
+[[world.node]]
+id = "io-probe"
+arch = "x86_64"
+memory_mib = 256
+cmdline = "console=ttyS0 role=io-probe crucible.workload=bench"
+smp_vcpus = 1
+icount_shift = 7
+kernel = "blake3:a4194441ab98bbe9a34b7ac6ff4d31f8e6351bad1553371ebccfa3f15e951148"
+root_image = "blake3:149d73e22b5d2ccde85ab13fa448b295711d2fc6e88f9c3117e481c2c08a3fed"
+white_box = "enabled"
+
+[world.node.ready_point]
+kind = "fixed_icount"
+retired = 0
+
+[[world.node]]
+id = "nginx"
+arch = "x86_64"
+memory_mib = 256
+cmdline = "console=ttyS0 address=10.0.0.2 port=8080 crucible.workload=httpd"
+smp_vcpus = 1
+icount_shift = 7
+kernel = "blake3:a4194441ab98bbe9a34b7ac6ff4d31f8e6351bad1553371ebccfa3f15e951148"
+root_image = "blake3:149d73e22b5d2ccde85ab13fa448b295711d2fc6e88f9c3117e481c2c08a3fed"
+white_box = "disabled"
+
+[world.node.ready_point]
+kind = "fixed_icount"
+retired = 0
+
+[[world.node]]
+kind = "block"
+id = "probe-block"
+owner = "curl"
+shift_bits = 0
+artifact = "blake3:7618354beb657652448e6644705e89290ea606e4715f13bb4524a8ed9625bdac"
+artifact_length = 1048576
+read_base_ns = 1000
+write_base_ns = 1000
+flush_ns = 1000
+get_length_ns = 1000
+per_byte_ns = 1
+
+[[world.node]]
+kind = "nine_p"
+id = "probe-ninep"
+owner = "io-probe"
+shift_bits = 0
+artifact = "blake3:5681a2f1204454505d5af315e12001c0f1620e27bc594a51e100727397c7e335"
+control_ns = 1000
+data_ns = 1000
+per_byte_ns = 1
+
+[[world.link]]
+endpoint_a = "curl"
+endpoint_b = "io-probe"
+latency_nanos = 5000000
+jitter_nanos = 500000
+loss_millionths = 0
+bandwidth_bps = 1000000000
+
+[[world.link]]
+endpoint_a = "curl"
+endpoint_b = "nginx"
+latency_nanos = 5000000
+jitter_nanos = 500000
+loss_millionths = 0
+bandwidth_bps = 1000000000
+
+[[world.link]]
+endpoint_a = "io-probe"
+endpoint_b = "nginx"
+latency_nanos = 5000000
+jitter_nanos = 500000
+loss_millionths = 0
+bandwidth_bps = 1000000000
+
+[[world.network_interface]]
+id = "curl-if"
+endpoint = "curl"
+technology = "ethernet"
+addresses = []
+fault_domains = []
+
+[[world.network_interface]]
+id = "io-probe-if"
+endpoint = "io-probe"
+technology = "ethernet"
+addresses = []
+fault_domains = []
+
+[[world.network_interface]]
+id = "nginx-if"
+endpoint = "nginx"
+technology = "ethernet"
+addresses = []
+fault_domains = []
+
+[[world.network_segment]]
+id = "curl-nginx-segment"
+kind = "ethernet"
+interface_a = "curl-if"
+interface_b = "nginx-if"
+minimum_latency_nanos = 1
+mtu_bytes = 1514
+forwarders = []
+fault_domains = []
+
+[[world.network_segment]]
+id = "curl-probe-segment"
+kind = "ethernet"
+interface_a = "curl-if"
+interface_b = "io-probe-if"
+minimum_latency_nanos = 1
+mtu_bytes = 1514
+forwarders = []
+fault_domains = []
+
+[[world.network_segment]]
+id = "probe-nginx-segment"
+kind = "ethernet"
+interface_a = "io-probe-if"
+interface_b = "nginx-if"
+minimum_latency_nanos = 1
+mtu_bytes = 1514
+forwarders = []
+fault_domains = []
+
+[[world.network_path]]
+id = "direct-path-00a1f5a12b0aa1f7eab917eb25494f65e2d6f3fbfbe0023dea6bdae697a8fdc1"
+direction = "a_to_b"
+mtu_bytes = 1514
+
+[[world.network_path.hops]]
+kind = "segment"
+segment = "curl-probe-segment"
+direction = "a_to_b"
+
+[[world.network_path]]
+id = "direct-path-07dbe33a6fc5a941cb1d98c579dd8e20c5dfc1d23016eaf110186fe47b68d256"
+direction = "b_to_a"
+mtu_bytes = 1514
+
+[[world.network_path.hops]]
+kind = "segment"
+segment = "probe-nginx-segment"
+direction = "b_to_a"
+
+[[world.network_path]]
+id = "direct-path-197b926d86ee10ccf9a10baff299885cfc04d37a7340878b9f5a3b0aa54bc167"
+direction = "b_to_a"
+mtu_bytes = 1514
+
+[[world.network_path.hops]]
+kind = "segment"
+segment = "curl-probe-segment"
+direction = "b_to_a"
+
+[[world.network_path]]
+id = "direct-path-8c22d3a1ad66ffe495e3a5836ee73691f87e1478ca88733c3d4badec222cb865"
+direction = "a_to_b"
+mtu_bytes = 1514
+
+[[world.network_path.hops]]
+kind = "segment"
+segment = "curl-nginx-segment"
+direction = "a_to_b"
+
+[[world.network_path]]
+id = "direct-path-acc4fbdc8118c25e9f0497429bf449a6b7f8ea3f1ffed5939c1252b2f06516ce"
+direction = "b_to_a"
+mtu_bytes = 1514
+
+[[world.network_path.hops]]
+kind = "segment"
+segment = "curl-nginx-segment"
+direction = "b_to_a"
+
+[[world.network_path]]
+id = "direct-path-b691a72ae2fbc50621af6a94d6cd62498e5da9e3b5f01111a9e7b5e0cc104cab"
+direction = "a_to_b"
+mtu_bytes = 1514
+
+[[world.network_path.hops]]
+kind = "segment"
+segment = "probe-nginx-segment"
+direction = "a_to_b"
+
+[[world.storage_device]]
+id = "probe-block-contract"
+device = "probe-block"
+kind = "block"
+fault_domains = []
+
+[world.storage_device.persistence]
+logical_block_bytes = 512
+physical_sector_bytes = 4096
+atomic_write_bytes = 512
+length_bytes = 1048576
+discard_granularity_bytes = 4096
+maximum_request_bytes = 65536
+volatile_cache_bytes = 1048576
+controller_buffer_bytes = 0
+flush_semantics = "writeback_barrier"
+discard_semantics = "deterministic_zero"
+completion_durability = "volatile_cache_accepted"
+cache_entries = 4096
+controller_entries = 0
+persistence_dependencies = 4096
+retained_versions_per_interval = 16
+
+[world.storage_device.media]
+kind = "ram"
+page_bytes = 4096
+
+[plan]
+id = "blake3:48aeef322a6d502664934bf2a2ebf1948b0dca27fefc1e20bb6ac1212dd21420"
+fault_model = "signal_bindings_v2"
+fault_signal_semantic_version = 2
+
+[[plan.signal]]
+active = true
+domain = "virtual_time"
+duration = 2000000000
+exported = true
+id = "latency-window"
+inactive = false
+kind = "pulse"
+scale_decimal_exponent = 0
+unit = "dimensionless"
+value_type = "bool"
+
+[plan.signal.start]
+nanos = 10000000000
+
+[[plan.signal]]
+active = 1000000
+domain = "virtual_time"
+duration = 2000000000
+exported = true
+id = "loss-window"
+inactive = 0
+kind = "pulse"
+scale_decimal_exponent = 0
+unit = "probability_millionths"
+value_type = "probability_millionths"
+
+[plan.signal.start]
+nanos = 12000000000
+
+[[plan.signal]]
+active = true
+domain = "virtual_time"
+duration = 2000000000
+exported = true
+id = "partition-window"
+inactive = false
+kind = "pulse"
+scale_decimal_exponent = 0
+unit = "dimensionless"
+value_type = "bool"
+
+[plan.signal.start]
+nanos = 8000000000
+
+[[plan.signal]]
+domain = "event"
+exported = true
+id = "probe-crash"
+kind = "event_sequence"
+scale_decimal_exponent = 0
+unit = "dimensionless"
+value_type = "event:probe-crash-v1"
+
+[[plan.signal.events]]
+payload = "726573746172742d696f2d70726f6265"
+sequence = 0
+
+[plan.signal.events.coordinate]
+sequence = 0
+
+[plan.signal.events.coordinate.parent]
+kind = "virtual_time"
+
+[plan.signal.events.coordinate.parent.parameters]
+nanos = 9000000000
+
+[[plan.fault_binding]]
+id = "crash-io-probe"
+phases = ["boundary"]
+sampling = "at_event"
+search = "fixed"
+signals = ["probe-crash"]
+
+[plan.fault_binding.effect]
+device_state_policy = "clear"
+downtime_nanos = 100000000
+kind = "node.lifecycle"
+lifetime = "impulse"
+semantic_version = 1
+transition = "crash"
+volatile_state_policy = "preserve"
+
+[plan.fault_binding.effect.boot_policy]
+kind = "immediate"
+
+[plan.fault_binding.event_parent]
+kind = "virtual_time"
+
+[plan.fault_binding.mapping]
+kind = "impulse_on_event"
+
+[plan.fault_binding.observability]
+record_inactive_opportunities = false
+retain_mapped_values = true
+samples = "changes_and_effects"
+
+[plan.fault_binding.selector]
+kind = "node"
+node = "io-probe"
+
+[[plan.fault_binding]]
+id = "latency-curl-to-nginx"
+phases = ["resolve"]
+sampling = "at_boundary"
+search = "fixed"
+signals = ["latency-window"]
+
+[plan.fault_binding.effect]
+delay_nanos = 200000000
+kind = "network.propagation_delay"
+lifetime = "persistent"
+semantic_version = 1
+
+[plan.fault_binding.mapping]
+invert = false
+kind = "active_when_true"
+
+[plan.fault_binding.observability]
+record_inactive_opportunities = false
+retain_mapped_values = true
+samples = "changes_and_effects"
+
+[plan.fault_binding.selector]
+direction = "a_to_b"
+kind = "network_segment"
+segment = "curl-nginx-segment"
+
+[[plan.fault_binding]]
+id = "loss-curl-to-nginx"
+phases = ["resolve"]
+sampling = "at_opportunity"
+search = "fixed"
+signals = ["loss-window"]
+
+[plan.fault_binding.effect]
+kind = "network.frame_loss"
+lifetime = "opportunity"
+probability = 1000000
+semantic_version = 1
+
+[plan.fault_binding.mapping]
+kind = "hazard"
+
+[plan.fault_binding.observability]
+record_inactive_opportunities = false
+retain_mapped_values = true
+samples = "changes_and_effects"
+
+[plan.fault_binding.opportunity_filter]
+adapter = "network"
+operations = ["network_traverse"]
+phases = ["resolve"]
+target_kinds = ["network_segment"]
+
+[plan.fault_binding.selector]
+direction = "a_to_b"
+kind = "network_segment"
+segment = "curl-nginx-segment"
+
+[[plan.fault_binding]]
+id = "partition-curl-to-nginx"
+phases = ["admit"]
+sampling = "at_boundary"
+search = "fixed"
+signals = ["partition-window"]
+
+[plan.fault_binding.effect]
+in_flight_policy = "drop"
+kind = "network.availability"
+lifetime = "persistent"
+queued_policy = "drop"
+semantic_version = 1
+state = "down"
+
+[plan.fault_binding.mapping]
+invert = false
+kind = "active_when_true"
+
+[plan.fault_binding.observability]
+record_inactive_opportunities = false
+retain_mapped_values = true
+samples = "changes_and_effects"
+
+[plan.fault_binding.selector]
+direction = "a_to_b"
+kind = "network_segment"
+segment = "curl-nginx-segment"
+
+[plan.resource_limits]
+signal_nodes = 16384
+signal_edges = 65536
+signal_inputs_per_node = 64
+signal_state_bytes = 67108864
+state_machine_states_per_node = 4096
+state_machine_transitions_per_node = 16384
+lookup_points_per_node = 65536
+bindings = 32768
+signals_per_binding = 32
+resolved_targets_per_binding = 65536
+active_contributions_per_target = 1024
+effect_payload_bytes = 1048576
+events_emitted_per_signal_transition = 256
+trace_artifacts = 1024
+trace_channels_total = 16384
+trace_channels_per_artifact = 4096
+trace_entries_per_chunk = 4096
+trace_chunks_total = 4194304
+trace_entries_total = 4294967296
+trace_normalized_bytes_total = 274877906944
+trace_single_payload_bytes = 16777216
+trace_manifest_bytes = 67108864
+spatial_grid_cells_total = 268435456
+spatial_zone_vertices_total = 16777216
+network_interfaces = 16384
+network_segments = 65536
+network_forwarders = 8192
+network_media = 4096
+network_queues = 65536
+network_paths = 65536
+network_path_hops = 256
+network_medium_participants = 4096
+network_resources_per_medium = 4096
+network_pending_frames = 1048576
+network_frame_bytes = 16777216
+network_queue_frames = 262144
+network_queue_bytes = 1073741824
+network_forwarding_entries = 1048576
+network_connection_entries = 1048576
+network_contact_entries = 4194304
+network_custody_bundles = 1048576
+network_loop_hops = 256
+network_retries_per_frame_per_hop = 64
+network_duplicates_per_frame_per_hop = 16
+storage_devices = 4096
+storage_pending_operations = 1048576
+storage_request_bytes = 16777216
+storage_queue_operations = 262144
+storage_cache_bytes_per_device = 17179869184
+storage_cache_entries_per_device = 1048576
+storage_persistence_dependencies = 4194304
+storage_media_intervals_per_device = 1048576
+storage_retained_versions_per_interval = 64
+storage_flash_blocks_per_device = 16777216
+storage_array_members = 256
+storage_retries_per_operation = 64
+storage_completed_history_epochs = 1048576
+storage_completed_history_gaps = 1048576
+ninep_sessions_per_device = 65536
+ninep_fids_per_session = 65536
+ninep_object_versions = 1048576
+nodes = 4096
+vcpus_per_node = 256
+node_mutations_pending = 65536
+memory_mutation_bytes_per_effect = 1048576
+memory_fault_intervals_per_node = 1048576
+memory_access_counters_per_node = 1048576
+instruction_fault_rules_per_node = 65536
+interrupt_fault_rules_per_node = 65536
+interrupt_events_pending_per_node = 262144
+clock_fault_rules_per_node = 4096
+accelerators_per_node = 256
+accelerator_jobs_pending = 262144
+instruction_replay_count = 16
+interrupt_storm_events = 1048576
+event_records = 268435456
+event_log_bytes = 68719476736
+event_inline_payload_bytes = 65536
+checkpoint_count = 65536
+fat_checkpoint_bytes = 17179869184
+thin_replay_events = 268435456
+resolved_effect_records = 268435456
+replay_first_mismatch_context_bytes = 16777216
+search_states = 1048576
+search_depth = 65536
+search_candidates_per_choice = 256
+search_choices_per_state = 65536
+trace_mutation_windows = 65536
+mapping_mutation_points = 65536
+minimization_attempts = 1048576
+
+[[plan.event]]
+id = "pass-on-workload-and-io"
+policy = "once"
+
+[plan.event.trigger]
+kind = "all_of"
+
+[[plan.event.trigger.predicates]]
+kind = "assertion_state"
+name = "curl-receives-http-200"
+state = "satisfied"
+
+[[plan.event.trigger.predicates]]
+kind = "assertion_state"
+name = "io-probe-eventually-restarts"
+state = "satisfied"
+
+[[plan.event.trigger.predicates]]
+kind = "assertion_state"
+name = "io-probe-complete"
+state = "satisfied"
+
+[[plan.event.trigger.predicates]]
+kind = "assertion_state"
+name = "curl-block-read-complete"
+state = "satisfied"
+
+[[plan.event.trigger.predicates]]
+kind = "once"
+
+[plan.event.trigger.predicates.predicate]
+kind = "io_pattern"
+node = "curl"
+io_kind = "any"
+
+[[plan.event.trigger.predicates]]
+kind = "once"
+
+[plan.event.trigger.predicates.predicate]
+kind = "io_pattern"
+node = "io-probe"
+io_kind = "nine_p"
+
+[[plan.event.trigger.predicates]]
+kind = "once"
+
+[plan.event.trigger.predicates.predicate]
+kind = "node_state"
+node = "io-probe"
+state = "crashed"
+
+[[plan.event.trigger.predicates]]
+kind = "node_state"
+node = "io-probe"
+state = "started"
+
+[[plan.event.trigger.predicates]]
+kind = "at"
+at_ticks = 15000000000
+
+[plan.event.action]
+kind = "pass"
+
+[properties]
+id = "blake3:41b7829c514d2d30dcf3d5f1d71309c9cb77509cdeb6bc02aa9593b26d1aad9b"
+
+[[properties.assertion]]
+id = "curl-block-read-complete"
+message = "Curl reports a successful read from its block sub-node"
+
+[properties.assertion.property]
+kind = "sometimes"
+
+[properties.assertion.property.predicate]
+kind = "guest_marker"
+marker = "curl-block-read-complete"
+
+[[properties.assertion]]
+id = "curl-receives-http-200"
+message = "Curl receives an HTTP 200 response during the fault campaign"
+
+[properties.assertion.property]
+kind = "sometimes"
+
+[properties.assertion.property.predicate]
+kind = "guest_marker"
+marker = "curl-receives-http-200"
+
+[[properties.assertion]]
+id = "io-probe-complete"
+message = "The I/O probe reports a successful read from its 9p sub-node"
+
+[properties.assertion.property]
+kind = "sometimes"
+
+[properties.assertion.property.predicate]
+kind = "guest_marker"
+marker = "io-probe-complete"
+
+[[properties.assertion]]
+id = "io-probe-eventually-restarts"
+message = "After the I/O probe crashes, it eventually restarts"
+
+[properties.assertion.property]
+kind = "eventually"
+deadline_ticks = 40000000000
+
+[properties.assertion.property.trigger]
+kind = "node_state"
+node = "io-probe"
+state = "crashed"
+
+[properties.assertion.property.property]
+kind = "node_state"
+node = "io-probe"
+state = "started"
+
+[[properties.assertion]]
+id = "service-guests-do-not-crash"
+message = "Nginx and Curl remain running throughout the fault campaign"
+
+[properties.assertion.property]
+kind = "always"
+
+[properties.assertion.property.predicate]
+kind = "not"
+
+[properties.assertion.property.predicate.predicate]
+kind = "any_of"
+
+[[properties.assertion.property.predicate.predicate.predicates]]
+kind = "node_state"
+node = "curl"
+state = "crashed"
+
+[[properties.assertion.property.predicate.predicate.predicates]]
+kind = "node_state"
+node = "nginx"
+state = "crashed"

@@ -404,7 +404,7 @@ own scenario.
 
   FLAGS
     --runs <n>            Number of runs to compare. Default: 2.
-    --adversarial         Run under the hostile host-condition matrix (24 §7).
+    --adversarial         Perturb observer polling order, yields, and timeouts.
     --bisect              On divergence, run divergence-bisection (24 §5) and print the report.
     --compare <a> <b>     Diff two existing reproduction artifacts instead of running.
 ```
@@ -413,8 +413,10 @@ own scenario.
 their canonical logs and fingerprint streams pairwise, and — if any pair differs
 — invokes the divergence-bisection tool (24 §5) to report the *first* differing
 decision/instruction and node, with a both-sides state dump. `--adversarial`
-runs them under randomized host scheduling, wall-clock jitter, and varied core
-counts (24 §7) so the comparison actively *tries* to break determinism.
+currently expands each run across observer polling orders, timeout values, and
+yield counts. It does not yet vary executor worker counts, wall-clock readings,
+host core affinity, or host-side I/O stalls, so the full hostile-condition
+matrix required by 24 §7 remains open.
 `--compare` consumes the identities recorded by its two artifacts and MUST NOT
 draw or report a fresh run seed.
 
@@ -1171,15 +1173,16 @@ branch on the verdict without parsing output:
   snapshot through the existing query-result envelope, allowing immediate
   registry cleanup without losing final evidence or waiting for another input
   line.
-- [x] **T-CLI-7** Implement `verify` (N independent reductions, canonical-log +
+- [ ] **T-CLI-7** Implement `verify` (N independent reductions, canonical-log +
   fingerprint byte-identity compare, `--adversarial`, on-divergence bisection). —
   satisfies [CLI-17]; spec §7.
-  Completed by `checks.crucible.phase5.cliVerifyWorkflow`: the CLI plans and
+  T-CLI-7 remains open. `checks.crucible.phase5.cliVerifyWorkflow` proves that
+  the CLI plans and
   executes fresh local-double, local-QEMU, and remote-daemon verify reductions,
-  compares canonical log bytes and execution-fingerprint streams, applies the
-  hostile-profile matrix for `--adversarial`, localizes the first differing
-  decision/sample/byte with a bisection report, emits both-side reproduction
-  artifacts on divergence, supports `verify --compare <a> <b>`, maps
+  compares canonical log bytes and execution-fingerprint streams, expands
+  `--adversarial` into observer polling profiles, localizes the first differing
+  decision/sample/byte with a bisection report, emits both-side reproduction artifacts
+  on divergence, supports `verify --compare <a> <b>`, maps
   deterministic/divergent outcomes to exit 0/1, and records the resolved
   QEMU/plugin build identity for local-QEMU verify runs. Compare mode validates
   the artifacts' embedded producer identities against each other without
@@ -1191,6 +1194,8 @@ branch on the verdict without parsing output:
   reduction independently boots the packaged live backend and the command fails
   if any observed plugin-install report differs; the fleet gate supplies the
   AOS kernel/root closure and exercises this path under TCG.
+  Completion still requires the CLI flag to apply the 24 §7 randomized worker,
+  wall-clock, varied-core, and host-I/O-stall matrix to each native scenario.
 - [x] **T-CLI-8** Implement `selftest` (run a selected gate subset of the canonical
   catalog, production real-QEMU under `--with-qemu`, optional feature-gated test
   corpus, per-gate pass/fail table). — satisfies [CLI-18]; spec §8.
