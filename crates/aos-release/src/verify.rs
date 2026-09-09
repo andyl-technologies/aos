@@ -976,7 +976,7 @@ pub(crate) mod tests {
                 execution: None,
             },
         ];
-        plan.gates = policy.gates(plan.release_class)?;
+        plan.gates = policy.gates(&plan.registry, plan.release_class)?;
         plan.public_evidence_policy_digest = policy.digest()?;
 
         let cases =
@@ -1039,7 +1039,7 @@ pub(crate) mod tests {
             .execution = Some(PackageExecution::RecoveryImage {
             system_variant: "server".into(),
         });
-        plan.gates = policy.gates(plan.release_class)?;
+        plan.gates = policy.gates(&plan.registry, plan.release_class)?;
         plan.public_evidence_policy_digest = policy.digest()?;
 
         let cases =
