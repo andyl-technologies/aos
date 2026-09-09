@@ -57,8 +57,13 @@
   cargoDepsHash = import ./_cargo-deps-hash.nix;
   liveDebuggerMatrixScript = ./live-debugger-matrix.sh;
   src = import ./_source.nix {inherit lib;};
+  cargoDependencySource = mkCargoDummySource {
+    srcRoot = ../../../crates;
+    name = "crucible-apache-host-dummy-source";
+    cargoRoot = "crates";
+  };
   cargoDeps = fetchCargoVendor {
-    inherit src;
+    src = cargoDependencySource;
     name = "crucible-vendor-${version}";
     sourceRoot = "source/crates";
     hash = cargoDepsHash;
@@ -135,11 +140,7 @@
     inherit version cargoDeps;
     cargoEnv = controllerCargoEnv;
     cargoArtifactContract = controllerArtifactContract;
-    src = mkCargoDummySource {
-      srcRoot = ../../../crates;
-      name = "crucible-apache-host-dummy-source";
-      cargoRoot = "crates";
-    };
+    src = cargoDependencySource;
     cargoRoot = "crates";
     cargoBuildCommands = [
       "build --release --frozen --offline -j$NIX_BUILD_CORES ${workspaceCargoFlags}"
