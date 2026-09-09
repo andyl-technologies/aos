@@ -321,6 +321,80 @@ exact_findings = true
 exact_user_pins = true
 ```
 
+Version two adds finite statistical sampling and optional sequential Monte
+Carlo stages. The ordinary policy fields remain required; statistical policies
+normally use an exhaustive explorer whose cardinality covers the declared
+support. This excerpt shows the added fields:
+
+```toml
+schema_version = 2
+mode = "statistical"
+
+[statistical_sampling]
+estimand_endpoints = [0]
+
+[[statistical_sampling.distributions]]
+model = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+target = [
+  { mass = 1, value = { kind = "boolean", value = false } },
+  { mass = 3, value = { kind = "boolean", value = true } },
+]
+proposal = [
+  { mass = 1, value = { kind = "boolean", value = false } },
+  { mass = 1, value = { kind = "boolean", value = true } },
+]
+
+[[statistical_sampling.draws]]
+coordinate = 0
+opportunity = "crucible.campaign.choice-opportunity@campaign-fact-v1-CONTENT_HASH"
+opportunity_semantics = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+domain = "crucible.campaign.choice-domain@campaign-fact-v1-CONTENT_HASH"
+model = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+stop = "next-choice"
+
+[sequential_monte_carlo]
+particle_count = 1
+
+[[sequential_monte_carlo.distributions]]
+model = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+target = [
+  { mass = 1, value = { kind = "unsigned", value = 0 } },
+  { mass = 1, value = { kind = "unsigned", value = "18446744073709551615" } },
+]
+proposal = [
+  { mass = 1, value = { kind = "unsigned", value = 0 } },
+  { mass = 1, value = { kind = "unsigned", value = "18446744073709551615" } },
+]
+
+[[sequential_monte_carlo.stages]]
+stage = 1
+parent_stage = 0
+declaration = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+domain = "234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1"
+instance = "after-initial-choice"
+model = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+stop = "terminal"
+
+[sequential_monte_carlo.resampling]
+algorithm = "systematic-v1"
+effective_sample_size_threshold = { numerator = 1, denominator = 2 }
+```
+
+Finite draw declarations carry both the exact opportunity and domain artifact
+IDs and the opportunity's semantic ID. The repository authenticates all three
+against each selected proposal before admitting it to an estimate. An SMC
+stage instead names semantic selectable and domain IDs plus an instance label,
+because its exact opportunity is discovered from the parent particle at
+runtime. Distribution model IDs are semantic hashes shared by the declaration
+and its pinned target and proposal masses.
+
+Statistical fields represented by unsigned 64-bit integers accept ordinary
+TOML integers. To author a value above TOML's signed 64-bit integer ceiling,
+use an unpadded quoted decimal string as shown above. This form applies to
+unsigned choice values, masses, draw coordinates and parents, estimand
+endpoints, and exact-rational numerators and denominators. Schema version one
+rejects either statistical section.
+
 `intervention_learning` defaults to `exclude`, which retains operator- and
 debugger-derived observations while keeping them out of adaptive guidance and
 Beam survivor ranking. Set it to `include-in-guidance` only when that feedback
