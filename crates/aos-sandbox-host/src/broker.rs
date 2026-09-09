@@ -26,7 +26,9 @@ use crate::authorization::HostAuthorityV1;
 use crate::authorization::semantics_v1::runtime_handle_v1;
 use crate::plan::{HostCatalog, NspawnConfig, ResolvedLaunchResources};
 use crate::recovery::{HostRuntimeRecoveryReport, reconcile};
-use crate::state::{Admission, HostState, HostStateStore, RuntimeEffectQuery};
+use crate::state::{
+    Admission, HostAction, HostState, HostStateStore, RuntimeEffectQuery, signed_authority_version,
+};
 use crate::worker::{
     HostRuntimeIdentity, HostWorker, ObservedRuntimeState, PinnedLeader, PinnedPayloadLeader,
     WorkerObservation, WorkerOperation,
@@ -35,8 +37,6 @@ use crate::{HostError, Result};
 
 const MAXIMUM_INVENTORY_RUNTIMES: usize = 1_024;
 const MAXIMUM_SCOPE_HANDLE_ATTEMPTS: usize = 16;
-const HOST_APPLY_AUTHORIZATION_VERSION: ProtocolVersion = ProtocolVersion::new(1, 1);
-
 pub(crate) struct RuntimeEffectQueryContext<'a> {
     pub(crate) original_request_bytes: &'a [u8],
     pub(crate) request_id: [u8; 16],
@@ -190,6 +190,11 @@ where
             admission_clock.boottime_nanoseconds(),
         )?;
         let action = action_code(request.action());
+        let authority_version = signed_authority_version(
+            protocol_version,
+            HostAction::from_code(action).ok_or_else(request_mismatch)?,
+        )
+        .ok_or_else(request_mismatch)?;
 
         let operation = self.compile_operation(&request)?;
         let prior_fence_bytes = if existing_effect.is_some() {
@@ -213,7 +218,7 @@ where
             artifacts,
             &request,
             request_bytes,
-            HOST_APPLY_AUTHORIZATION_VERSION,
+            authority_version,
             &admission_clock,
             prior_fence_bytes,
         )?;
@@ -236,6 +241,7 @@ where
             request.fence(),
             request_id,
             request_digest,
+            protocol_version,
             action,
             sealed_fence,
             sealed_effect,
@@ -335,6 +341,11 @@ where
             policy,
             verification_clock.boottime_nanoseconds(),
         )?;
+        let action =
+            HostAction::from_code(action_code(request.action())).ok_or_else(request_mismatch)?;
+        let authority_version =
+            signed_authority_version(request.header().protocol_version(), action)
+                .ok_or_else(request_mismatch)?;
         let prior_fence = existing_effect.as_ref().map_or_else(
             || self.state.prior_authorization(request.fence().sandbox_id()),
             |_| self.state.request_authorization(&query_request_id),
@@ -343,7 +354,7 @@ where
             artifacts,
             &request,
             original_request_bytes,
-            HOST_APPLY_AUTHORIZATION_VERSION,
+            authority_version,
             &verification_clock,
             prior_fence,
         )?;
@@ -715,6 +726,10 @@ fn historical_clock(effect: &BrokerEffectIntentV2) -> Result<RawPairedClockSampl
 
 fn host_apply_carrier_version(version: ProtocolVersion) -> bool {
     matches!(version.minor(), 1..=4) && version.major() == 1
+}
+
+fn request_mismatch() -> HostError {
+    HostError::Authority(aos_sandbox_broker::BrokerAdmissionError::RequestMismatch)
 }
 
 fn encode_observation(
@@ -2771,6 +2786,72 @@ mod tests {
             HostBroker::open(
                 FixedCatalog,
                 store,
+                FakeWorker::default(),
+                Some(nspawn()),
+                fixture.authority(),
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_future_execution_variants_fail_closed_on_restart() {
+        let fixture = AuthorityFixture::new();
+
+        let guardian_store = MemoryStore::default();
+        let guardian_worker = FakeWorker::default();
+        guardian_worker.fail_next.store(true, Ordering::SeqCst);
+        let mut guardian_broker = HostBroker::open(
+            FixedCatalog,
+            guardian_store.clone(),
+            guardian_worker,
+            Some(nspawn()),
+            fixture.authority(),
+        )
+        .unwrap();
+        assert!(
+            apply(&mut guardian_broker, &fixture, &request(1, 1, 4))
+                .await
+                .is_err()
+        );
+        guardian_store
+            .0
+            .lock()
+            .unwrap()
+            .tamper_execution_to_guardian(&[1; 16]);
+        assert!(
+            HostBroker::open(
+                FixedCatalog,
+                guardian_store,
+                FakeWorker::default(),
+                Some(nspawn()),
+                fixture.authority(),
+            )
+            .is_err()
+        );
+
+        let stop_store = MemoryStore::default();
+        let stop_worker = FakeWorker::default();
+        stop_worker.fail_next.store(true, Ordering::SeqCst);
+        let mut stop_broker = HostBroker::open(
+            FixedCatalog,
+            stop_store.clone(),
+            stop_worker,
+            Some(nspawn()),
+            fixture.authority(),
+        )
+        .unwrap();
+        let stop = request_with_action(2, 1, 5, RuntimeAction::RUNTIME_ACTION_STOP);
+        assert!(apply(&mut stop_broker, &fixture, &stop).await.is_err());
+        stop_store
+            .0
+            .lock()
+            .unwrap()
+            .tamper_execution_to_composite_stop(&[2; 16]);
+        assert!(
+            HostBroker::open(
+                FixedCatalog,
+                stop_store,
                 FakeWorker::default(),
                 Some(nspawn()),
                 fixture.authority(),

@@ -6,7 +6,10 @@
 //! magic[8] | version:u32-le | body-length:u64-le | sha256[32] | body
 //! ```
 //!
-//! Version 3 binds every current fence to its latest admitting request. Prior
+//! Version 4 additionally records the request carrier and a closed execution
+//! kind. Guardian-launch and composite-Stop variants have strict evidence and
+//! phase codecs, but remain unreachable from live effects until their separate
+//! integration gate opens. Prior
 //! versions may be upgraded only when their fence and request tables are empty;
 //! live authority is rejected rather than silently migrated. Terminal
 //! observation counters survive that upgrade.
@@ -20,6 +23,7 @@ use std::io::{ErrorKind, Read as _, Write as _};
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::PathBuf;
 
+use aos_sandbox_core::ProtocolVersion;
 use aos_sandbox_protocol::ValidatedAssignmentFence;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -32,8 +36,13 @@ use crate::recovery::{
 use crate::worker::HostRuntimeIdentity;
 use crate::{HostError, Result};
 
+mod transition;
+
+use transition::{DurableExecution, ExecutionContext};
+pub(crate) use transition::{HostAction, signed_authority_version};
+
 const MAGIC: &[u8; 8] = b"AOSHOST\0";
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 const HEADER_BYTES: usize = 8 + 4 + 8 + 32;
 const MAXIMUM_STATE_BYTES: usize = 16 * 1024 * 1024;
 const MAXIMUM_REQUESTS: usize = 16_384;
@@ -91,8 +100,11 @@ struct DurableFence {
 struct RequestRecord {
     request_id: [u8; 16],
     request_digest: [u8; 32],
+    carrier_major: u16,
+    carrier_minor: u16,
     fence: DurableFence,
     action: u8,
+    execution: DurableExecution,
     effect: Vec<u8>,
     receipt: Option<Vec<u8>>,
 }
@@ -129,6 +141,17 @@ impl HostState {
     /// newer fence exists replay of that older Apply is stale and rejected.
     pub(crate) fn validate_authenticated(&self, authority: &HostAuthorityV1) -> Result<()> {
         self.validate_unique_retained_incarnations()?;
+        if self
+            .requests
+            .values()
+            .any(|request| !matches!(request.execution, DurableExecution::Legacy))
+        {
+            return Err(HostError::State(
+                "future host execution state is not authenticated by the current authority"
+                    .to_owned(),
+            ));
+        }
+        self.validate_execution_links()?;
 
         for (sandbox_id, durable) in &self.fences {
             let opened = authority.open_fence(sandbox_id, &durable.authorization)?;
@@ -203,6 +226,7 @@ impl HostState {
         fence: &ValidatedAssignmentFence,
         request_id: [u8; 16],
         request_digest: [u8; 32],
+        carrier: ProtocolVersion,
         action: u8,
         sealed_fence: Vec<u8>,
         sealed_effect: Vec<u8>,
@@ -218,7 +242,10 @@ impl HostState {
         }
         self.ensure_incarnation_available(fence.sandbox_id(), fence.incarnation_id())?;
         if let Some(record) = self.requests.get_mut(&request_id) {
-            if record.request_digest != request_digest {
+            if record.request_digest != request_digest
+                || record.carrier_major != carrier.major()
+                || record.carrier_minor != carrier.minor()
+            {
                 return Err(HostError::Fence(
                     "request ID was reused with different bytes",
                 ));
@@ -237,6 +264,15 @@ impl HostState {
             }
             return Ok(result);
         }
+
+        let host_action = HostAction::from_code(action)
+            .ok_or_else(|| HostError::State("durable host action is invalid".to_owned()))?;
+        let execution =
+            DurableExecution::current_legacy(carrier, host_action).ok_or_else(|| {
+                HostError::State(
+                    "current carrier cannot create a legacy execution record".to_owned(),
+                )
+            })?;
         if self.requests.len() >= MAXIMUM_REQUESTS {
             return Err(HostError::State(
                 "durable host request table reached its fixed bound".to_owned(),
@@ -260,8 +296,11 @@ impl HostState {
             RequestRecord {
                 request_id,
                 request_digest,
+                carrier_major: carrier.major(),
+                carrier_minor: carrier.minor(),
                 fence: proposed,
                 action,
+                execution,
                 effect: sealed_effect,
                 receipt: None,
             },
@@ -307,6 +346,36 @@ impl HostState {
                     "distinct sandboxes retain the same current or historical runtime incarnation"
                         .to_owned(),
                 ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_execution_links(&self) -> Result<()> {
+        for request in self.requests.values() {
+            let Some(source) = request.execution.stop_source() else {
+                continue;
+            };
+            let launch = self.requests.get(&source.request_id).ok_or_else(|| {
+                HostError::State("composite Stop lost its retained launch source".to_owned())
+            })?;
+            if launch.action != 1
+                || launch.fence.sandbox_id != request.fence.sandbox_id
+                || launch.fence.incarnation_id != source.incarnation_id
+                || request.fence.incarnation_id != source.incarnation_id
+            {
+                return Err(HostError::State(
+                    "composite Stop source contradicts its retained assignment".to_owned(),
+                ));
+            }
+            match source.guardian_binding {
+                Some(binding) if launch.execution.guardian_binding() == Some(binding) => {}
+                None if matches!(launch.execution, DurableExecution::Legacy) => {}
+                Some(_) | None => {
+                    return Err(HostError::State(
+                        "composite Stop source has the wrong launch execution kind".to_owned(),
+                    ));
+                }
             }
         }
         Ok(())
@@ -466,6 +535,32 @@ impl HostState {
     }
 
     #[cfg(test)]
+    pub(crate) fn tamper_execution_to_guardian(&mut self, request_id: &[u8; 16]) {
+        if let Some(request) = self.requests.get_mut(request_id) {
+            request.carrier_minor = 5;
+            request.execution = DurableExecution::guardian_fixture(ExecutionContext {
+                carrier: ProtocolVersion::new(request.carrier_major, request.carrier_minor),
+                action: HostAction::Launch,
+                request_id: request.request_id,
+                request_digest: request.request_digest,
+                sandbox_id: request.fence.sandbox_id,
+                incarnation_id: request.fence.incarnation_id,
+                assignment_epoch: request.fence.assignment_epoch,
+                desired_generation: request.fence.desired_generation,
+                assignment_digest: request.fence.assignment_digest,
+                receipt_present: request.receipt.is_some(),
+            });
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_execution_to_composite_stop(&mut self, request_id: &[u8; 16]) {
+        if let Some(request) = self.requests.get_mut(request_id) {
+            request.execution = DurableExecution::composite_stop_fixture();
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn corrupt_receipt(&mut self, request_id: &[u8; 16]) {
         if let Some(byte) = self
             .requests
@@ -598,6 +693,7 @@ impl HostState {
                 ));
             }
         }
+        state.validate_execution_links()?;
         Ok(state)
     }
 
@@ -752,9 +848,14 @@ fn validate_fence(fence: &DurableFence) -> Result<()> {
 
 fn validate_request(request: &RequestRecord) -> Result<()> {
     validate_fence(&request.fence)?;
+    let carrier = ProtocolVersion::new(request.carrier_major, request.carrier_minor);
+    let Some(action) = HostAction::from_code(request.action) else {
+        return Err(HostError::State(
+            "durable host request action is invalid".to_owned(),
+        ));
+    };
     if request.request_id == [0; 16]
         || request.request_digest == [0; 32]
-        || request.action == 0
         || request.effect.is_empty()
         || request.effect.len() > MAXIMUM_STATE_BYTES
         || request
@@ -764,6 +865,22 @@ fn validate_request(request: &RequestRecord) -> Result<()> {
     {
         return Err(HostError::State(
             "durable host request record is invalid".to_owned(),
+        ));
+    }
+    if !request.execution.validate(ExecutionContext {
+        carrier,
+        action,
+        request_id: request.request_id,
+        request_digest: request.request_digest,
+        sandbox_id: request.fence.sandbox_id,
+        incarnation_id: request.fence.incarnation_id,
+        assignment_epoch: request.fence.assignment_epoch,
+        desired_generation: request.fence.desired_generation,
+        assignment_digest: request.fence.assignment_digest,
+        receipt_present: request.receipt.is_some(),
+    }) {
+        return Err(HostError::State(
+            "durable host execution kind contradicts its request".to_owned(),
         ));
     }
     Ok(())
@@ -902,7 +1019,7 @@ fn decode_envelope(bytes: &[u8]) -> Result<HostState> {
             .try_into()
             .map_err(|_| HostError::State("host state version field is truncated".to_owned()))?,
     );
-    if version != 1 && version != 2 && version != VERSION {
+    if version != 1 && version != 2 && version != 3 && version != VERSION {
         return Err(HostError::State(
             "host state version is unsupported".to_owned(),
         ));
@@ -925,7 +1042,7 @@ fn decode_envelope(bytes: &[u8]) -> Result<HostState> {
         return Err(HostError::State("host state checksum mismatch".to_owned()));
     }
     match version {
-        1 | 2 => HostState::decode_prior(body, version),
+        1 | 2 | 3 => HostState::decode_prior(body, version),
         VERSION => HostState::decode(body),
         _ => Err(HostError::State(
             "host state version is unsupported".to_owned(),
@@ -975,6 +1092,9 @@ mod tests {
         let migrated_v2 =
             decode_envelope(&prior_envelope(2, &serde_json::to_vec(&terminal).unwrap())).unwrap();
         assert_eq!(migrated_v2.observation_sequences.get(&[7; 16]), Some(&9));
+        let migrated_v3 =
+            decode_envelope(&prior_envelope(3, &serde_json::to_vec(&terminal).unwrap())).unwrap();
+        assert_eq!(migrated_v3.observation_sequences.get(&[7; 16]), Some(&9));
 
         let live = serde_json::json!({
             "fences": [{"legacy": true}],
@@ -983,6 +1103,20 @@ mod tests {
         });
         assert!(decode_envelope(&legacy_envelope(&serde_json::to_vec(&live).unwrap())).is_err());
         assert!(decode_envelope(&prior_envelope(2, &serde_json::to_vec(&live).unwrap())).is_err());
+        assert!(decode_envelope(&prior_envelope(3, &serde_json::to_vec(&live).unwrap())).is_err());
+
+        let completed_v3 = serde_json::json!({
+            "fences": [],
+            "requests": [{"receipt": [1]}],
+            "observation_sequences": []
+        });
+        assert!(
+            decode_envelope(&prior_envelope(
+                3,
+                &serde_json::to_vec(&completed_v3).unwrap()
+            ))
+            .is_err()
+        );
     }
 
     #[test]
@@ -995,6 +1129,8 @@ mod tests {
             RequestRecord {
                 request_id,
                 request_digest,
+                carrier_major: 1,
+                carrier_minor: 1,
                 fence: DurableFence {
                     witness_request_id: request_id,
                     sandbox_id: [3; 16],
@@ -1005,6 +1141,7 @@ mod tests {
                     authorization: vec![8],
                 },
                 action: 1,
+                execution: DurableExecution::Legacy,
                 effect: vec![9],
                 receipt: None,
             },
