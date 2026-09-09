@@ -1,4 +1,4 @@
-# Alternatives, prior art, and open questions
+# Alternatives, prior art, and implementation decisions
 
 ## Architectural choices
 
@@ -93,25 +93,44 @@ Sources: [systemd container interface](https://systemd.io/CONTAINER_INTERFACE/),
 [OCI Linux runtime configuration](https://github.com/opencontainers/runtime-spec/blob/main/config-linux.md),
 [GNU libc dynamic linker](https://www.sourceware.org/glibc/manual/latest/html_node/Dynamic-Linker-Hardening.html).
 
-## Questions to resolve during implementation
+## Resolved implementation questions
 
-The architecture above is the proposed decision. The following details remain
-open, with a concrete qualification point; they are not permission to weaken
-the stated invariants.
+The following questions have normative answers in the detailed contracts.
+They are not left to independent interpretation by each adapter or frontend.
 
-| Question | Required resolution |
+| Question | Specified decision |
 | --- | --- |
-| Exact Nix helper signatures and namespaces | Prototype one recursively composed export before freezing the library API |
-| Nix/Rust schema agreement and symbolic result encoding | Shared semantic fixtures, checked phases, versioned canonical contract |
-| Existing single-root configuration to multiple instances | Define instance ownership and migration without ambiguous global writes |
-| Conditional discovery completeness | Specify supported declaration forms and bounded resolve/evaluate behavior |
-| Initial operation set and handler extension protocol | Implement the nginx vertical slice with qualified recovery and authority checks |
-| Guarantee equivalence across executors | Approve explicit semantic mappings backed by enforcement tests |
-| Provider selection policy | Define deterministic operator-controlled preference and ambiguity handling |
-| Runtime revocation and identity freshness | Specify per-provider guarantees, fencing, and consumer-stop requirements |
-| Boot and executor-upgrade journal compatibility | Demonstrate recovery across supported version/stage transitions |
-| Required-feature rejection by legacy clients | Establish a publication boundary old clients already enforce |
-| Plan/observation retention and privacy | Specify active-consumer roots, bounded journals, access controls, and redaction |
+| Nix authorship and symbolic results | Pure composition and transition constructors; versioned closed schemas; typed scoped ports with checked phases; no serialized closures |
+| Existing single-root configuration to multiple instances | Stable `default` mapping; additional instances require isolated unit, directory, credential, endpoint, and ownership rendering |
+| Conditional discovery | Authenticated bounded alias vocabulary; deterministic outer evaluation/selection loop; no arbitrary solver predicates |
+| Parent/child scheduling | One controller per mutable resource; child method composition does not independently reconcile the same resource |
+| Initial operations and handler extension | Ten semantic families; trusted compiled adapters, existing protocols, or constrained cataloged helpers; no privileged package-loaded plugin |
+| Guarantee equivalence | Exact admitted semantics in version 1; new equivalence requires an explicit tested adapter |
+| Provider selection | Explicit binding, existing pin, then operator-ordered bounded search; invalid pins fail and unordered ambiguity rejects |
+| Runtime revocation | Provider-specific enforcement contract and fresh assignments; stop/restart when needed, reject unsupported revocation guarantees |
+| Boot and executor upgrades | Grounded staged admission and explicit ownership handoff; retained recovery artifacts; unknown journal/method versions prohibit resume |
+| Legacy clients | Existing `requires-features` gate with `abilities-v1` and `ability-effects-v1`; qualify all supported entry paths |
+| Partial publication | Independent generation axes with actual receipts; post-publication failure retains the commit and reports failed/uncertain consumers |
+| Retention and privacy | Root plans before effects and retain active/recovery inputs; protected execution evidence separate from public redacted views |
+
+See the [implementation contract](implementation-contract.md),
+[execution contract](execution-contract.md), and
+[completion map](implementation-completeness.md) for their full requirements.
+
+## API qualification and future extensions
+
+Exact helper signatures, Rust names, serialized field spellings, and UI layout
+are implementation choices within the specified semantics. Publish their
+versioned definitions and shared fixtures before freezing the API. The complete
+reference fixture, not syntax sketches alone, establishes that independently
+authored providers can compose without hidden central special cases.
+
+Future providers must specify their own concrete guarantees, observation,
+revocation, and state-migration contracts. Supporting a new runtime is a tested
+extension, not an assumption that an existing interface name implies semantic
+equivalence. General Nix effect inference, unrestricted runtime languages, and
+deployment-time substitution of arbitrary linked libraries remain outside the
+accepted scope; they require separate designs.
 
 The first stable API should be smaller than the full ecosystem vocabulary.
 It must nevertheless preserve the ability to compose independently authored

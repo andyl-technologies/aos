@@ -116,12 +116,13 @@ transaction's ordering or failure semantics.
 | [09 — Implementation and validation](09-implementation-and-validation.md) | Define staged delivery and qualification gates |
 | [10 — Testing and qualification](10-testing-and-qualification.md) | Define production-path tests, independent observations, fault injection, and release evidence |
 | [11 — Crucible guest integration](11-crucible-integration.md) | Keep integration AOS-owned and identify pending PR #194 dependencies |
-| [12 — Alternatives and open questions](12-alternatives-and-open-questions.md) | Record choices, prior art, and details requiring prototypes |
+| [12 — Alternatives and implementation decisions](12-alternatives-and-open-questions.md) | Record prior art, resolved questions, and extension boundaries |
 
 Implementors should also read the detailed contracts before designing APIs:
 
 - [Data, composition, identity, binding, and compatibility](implementation-contract.md).
 - [Operation lifecycle, publication, scheduling, and recovery](execution-contract.md).
+- [Complete feature coverage and end-to-end acceptance fixture](implementation-completeness.md).
 
 These contracts fix semantics abbreviated by the examples. Internal code
 organization and frontend wording remain implementation choices; changes to

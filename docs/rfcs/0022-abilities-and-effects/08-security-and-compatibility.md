@@ -73,17 +73,23 @@ encoding, and journal format separately. Define canonical data, digest domains,
 bounds, stable identities, and feature negotiation before publication.
 Bounded parsing precedes expensive evaluation or graph expansion.
 
-Unknown optional descriptive fields may be ignored only under an explicit
+Version-1 semantic records are closed and reject unknown fields. Descriptive
+annotations are separate; a future optional extension requires an explicit
 schema rule. Unknown required guarantees, operation kinds, authority fields,
-or execution features MUST fail closed. An old client must not activate a
-new contract by treating its unrecognized requirements as absent.
+or execution features MUST fail closed. An old client must not activate a new
+contract by treating its unrecognized requirements as absent.
 
 Legacy packages keep their existing execution path until a qualified adapter
 exists. The adapter records what is known and what remains opaque; it cannot
-claim newly proven guarantees. New releases that require ability-aware
-activation must declare that requirement in a place old clients already
-enforce, or use a publication/compatibility boundary that prevents those
-clients from selecting them. Merely adding an unfamiliar field is insufficient.
+claim newly proven guarantees. New releases use the existing enforced
+`requires-features` package metadata with `abilities-v1` and, when needed,
+`ability-effects-v1`, as specified in the
+[compatibility contract](implementation-contract.md#required-compatibility-path).
+Publication binds the new artifacts into provenance and rejects missing gates.
+Supported old clients reject unknown required features; clients predating that
+gate are outside the supported delivery path. Merely adding an unfamiliar
+manifest field is insufficient. The legacy adapter and structured executor
+must never both own activation of the same resource.
 
 Persisted plans never embed Nix closures, Rust-native enum layouts, raw handles,
 or secrets. Retain exact authenticated source/modules and artifacts where

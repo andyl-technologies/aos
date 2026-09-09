@@ -133,6 +133,61 @@ It uses a registered renderer and explicit inputs; it does not rerun arbitrary
 Nix with ambient host access. A runtime result that changes provider selection
 requires another admitted planning transaction.
 
+The source-build product is a checked desired-state contract, exact provider
+implementations, and deployment obligations. It may also contain a transition
+for an explicitly specified starting state. It must not embed the build host's
+observations as the deployment's current state. At launch or upgrade, the
+native orchestrator specializes a transition against the actual admitted
+snapshot using those retained implementations. A precomputed transition is
+usable only while its starting-state preconditions still hold.
+
+## Interface methods and graph constructors
+
+Every bound method supplies the following contract, through its public
+interface descriptor and exact selected implementation. The public descriptor
+fixes caller-visible parameters, outputs, permitted operations, and promised
+outcome/lifetime semantics. The package implementation adds its lower grants,
+accesses, constructors/adapters, and concrete recovery mechanism. Provider
+implementation details do not become part of the shared public interface
+identity. No omitted value means unrestricted authority, unlimited retry, or
+unconditional completion.
+
+| Field | Required contract |
+| --- | --- |
+| Identity and inputs | Interface descriptor, local method key, closed parameter schema, target resource type |
+| Outputs | Named closed schemas, availability phase, visibility, and resource lifetime |
+| Authority | Caller operations/scope, mediation permission, provider implementation grants |
+| Accesses | Read, exclusive-write, or explicitly supported shared access to typed resource identities |
+| Preconditions | Expected revisions/assignments and named checks supplied by the selected implementation |
+| Implementation | Pure finite subgraph constructor or exact registered terminal adapter |
+| Outcome | Completion evidence, rejected-before-effect conditions, indeterminate-effect handling |
+| Recovery | Observation/reconciliation method, explicit retry policy, cancellation, deadlines, compensation or its absence |
+| Visibility | Publication/linearization boundary and durability guarantee, or explicit nonpublication |
+
+Composition refines a method contract rather than replacing it. Child accesses
+and authority must fit the declared implementation grants and resource scope.
+The parent completes only after its required child outcomes and postcondition
+are established. A failed or indeterminate required child cannot be hidden by
+returning a successful parent result. An optional failed child may use only
+its declared, authorized fallback. Sharing a child invocation requires explicit
+equivalent inputs, ownership, lifetime, and completion semantics.
+
+The graph vocabulary is invocation, scoped subgraph, typed result projection,
+dependency edge, and finite conditional selection. `when` on a planning-time
+Boolean either emits or omits its subgraph during construction. Runtime
+selection accepts only a typed Boolean or exhaustive tagged-union result from
+an admitted operation. All alternatives are bounded and validated before
+execution, including their possible authority and resource accesses. Only the
+selected alternative runs; its selection is journaled for recovery.
+
+A skipped branch supplies no ordinary result and counts as neither success
+nor failure. A branch merge must expose a common typed output on every selected
+path, or an explicit optional/tagged result that downstream code handles.
+Reject an unconditional dependency on a result available only in another
+branch. There is no runtime expression interpreter, dynamic graph generation,
+or loop construct; bounded provider retry/observation follows the execution
+contract. New runtime facts requiring an undeclared branch cause replanning.
+
 ## One owner schedules each transition
 
 Desired resources do not automatically execute themselves. The normalized
@@ -235,6 +290,29 @@ obligations, or structured failure. Only the first can proceed to runtime
 admission, and it still needs fresh provider/resource checks. A package may be
 stored without an activatable workload, but installation must not report that
 workload ready. Required failed checks remain failures rather than warnings.
+
+Admission is staged for planned providers. Whole-plan validation first proves
+that every required facility is currently available or has a valid bootstrap
+path in the plan. An operation that establishes a provider acquires only its
+own already-available prerequisites. Dependent operations then wait for that
+provider's declared readiness and acquire fresh handles before their effects.
+Whole-plan admission does not fabricate handles for future instances. External
+deployment obligations must be discharged before execution. A facility created
+by an admitted operation is a planned-provider dependency, not an unresolved
+external obligation. Waiting for its readiness follows the recorded bounded
+deadline.
+
+The trusted root inventory is an authenticated environment-adapter snapshot,
+not a registry package's assertion. It identifies the existing executor,
+manager/broker connections, stage, policy authority, and accessible durable
+storage that ground expansion. Version 1 bootstraps from those existing AOS
+facilities; it does not recursively implement the executor through itself.
+At stage handoff, journal ownership and a durable checkpoint transfer before
+the next controller admits conflicting work. The receiving controller
+revalidates identities, grants, and continuation formats. An initrd without
+accessible durable storage can execute only operations whose explicit reboot
+recovery contract handles that limitation; it cannot claim durable intent
+logging in ephemeral memory.
 
 ## Initial bounded profile
 

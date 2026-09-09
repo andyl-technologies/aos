@@ -53,7 +53,8 @@ platform, phase, environment, operations, guarantees, sharing/exclusivity, and
 authorized resource scopes. Arbitrary Nix functions are not solver predicates.
 
 Explicit bindings take precedence over search. A previously pinned binding is
-preserved unless the requested transition changes it or makes it invalid.
+preserved unless the requested transition explicitly changes it. An invalid
+pin fails the plan and requires an explicit rebind/update request.
 Ambiguous eligible providers require explicit selection or a documented
 operator selection policy; registry order and newest-version preference are
 not implicit authority decisions.
