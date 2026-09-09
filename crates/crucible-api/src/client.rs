@@ -1521,6 +1521,28 @@ fn encode_resume_session_request(request: &ResumeSessionRequest) -> Vec<u8> {
         "checkpoint",
         &hex_encode(&request.checkpoint.to_compact_binary()),
     );
+    if let Some(closure) = &request.replay_closure {
+        push_line(
+            &mut output,
+            "campaign-replay-closure-version",
+            &closure.schema_version().to_string(),
+        );
+        push_line(
+            &mut output,
+            "campaign-replay-closure-identity",
+            &closure.identity().to_hex(),
+        );
+        push_line(
+            &mut output,
+            "campaign-replay-closure-size",
+            &closure.payload_len().to_string(),
+        );
+        push_line(
+            &mut output,
+            "campaign-replay-closure-payload",
+            &hex_encode(closure.payload()),
+        );
+    }
     output.into_bytes()
 }
 
@@ -1820,9 +1842,29 @@ fn decode_error_response(body: &[u8]) -> Result<ControlClientError, ControlClien
         "scenario-not-found" => decode_scenario_not_found(status, lines),
         "lifecycle-session-not-found" => decode_lifecycle_session_not_found(status, lines),
         "streaming-session-not-found" => decode_streaming_session_not_found(status, lines),
+        "resume-replay-closure" => decode_resume_replay_closure_error(status, lines),
         "resource-limit" => resource_limit::decode_lifecycle_resource_limit(status, lines),
         reason => decode_generic_rpc_status(status, reason, lines),
     }
+}
+
+fn decode_resume_replay_closure_error<'a, I>(
+    status: RpcStatusCode,
+    mut lines: I,
+) -> Result<ControlClientError, ControlClientError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    require_rpc_error_status(
+        status,
+        RpcStatusCode::InvalidArgument,
+        "resume-replay-closure",
+    )?;
+    let message = parse_hex_string_line(lines.next(), "message=")?;
+    reject_trailing(lines.next())?;
+    Ok(ControlClientError::Lifecycle {
+        source: LifecycleApiError::ResumeReplayClosure { message },
+    })
 }
 
 fn decode_lifecycle_epoch_mismatch<'a, I>(

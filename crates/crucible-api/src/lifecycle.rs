@@ -52,6 +52,9 @@ pub const LIFECYCLE_SESSION_MAILBOX_CAPACITY: usize = 16;
 /// Default actor-yield budget for lifecycle startup commands.
 pub const LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS: u64 = 128;
 
+/// Maximum canonical campaign replay-closure bytes accepted by one resume request.
+pub const RESUME_REPLAY_CLOSURE_MAX_BYTES: usize = 128 * 1024 * 1024;
+
 #[path = "lifecycle/debug_dispatch.rs"]
 mod debug_dispatch;
 
@@ -472,6 +475,8 @@ pub struct ResumeSessionRequest {
     pub checkpoint: Checkpoint,
     /// Seed recorded in the returned [`SessionRef`].
     pub seed: Seed,
+    /// Authenticated campaign choice records required by a typed selection schedule.
+    pub replay_closure: Option<ResumeReplayClosure>,
 }
 
 impl ResumeSessionRequest {
@@ -488,8 +493,117 @@ impl ResumeSessionRequest {
             schedule,
             checkpoint,
             seed,
+            replay_closure: None,
         }
     }
+
+    /// Returns this request with a versioned campaign replay closure.
+    #[must_use]
+    pub fn with_replay_closure(mut self, replay_closure: ResumeReplayClosure) -> Self {
+        self.replay_closure = Some(replay_closure);
+        self
+    }
+}
+
+/// Versioned, content-bound campaign choice evidence supplied to `ResumeSession`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResumeReplayClosure {
+    schema_version: u32,
+    identity: ContentHash,
+    payload: Vec<u8>,
+}
+
+impl ResumeReplayClosure {
+    /// Binds a schema version and exact payload to one resume source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError::ResumeReplayClosure`] before hashing when
+    /// `payload` exceeds [`RESUME_REPLAY_CLOSURE_MAX_BYTES`].
+    pub fn new(
+        scenario: &ScenarioDefForm,
+        schedule: &Schedule,
+        checkpoint: &Checkpoint,
+        schema_version: u32,
+        payload: Vec<u8>,
+    ) -> Result<Self, LifecycleApiError> {
+        if payload.len() > RESUME_REPLAY_CLOSURE_MAX_BYTES {
+            return Err(LifecycleApiError::ResumeReplayClosure {
+                message: format!(
+                    "campaign replay closure has {} bytes, maximum is {RESUME_REPLAY_CLOSURE_MAX_BYTES}",
+                    payload.len()
+                ),
+            });
+        }
+        let identity = resume_replay_closure_identity(
+            scenario,
+            schedule,
+            checkpoint,
+            schema_version,
+            &payload,
+        );
+        Ok(Self {
+            schema_version,
+            identity,
+            payload,
+        })
+    }
+
+    /// Returns the replay-closure schema version.
+    #[must_use]
+    pub const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    /// Returns the identity binding the resume source, schema, length, and payload.
+    #[must_use]
+    pub const fn identity(&self) -> ContentHash {
+        self.identity
+    }
+
+    /// Returns the exact canonical replay-closure payload.
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    /// Returns the bound payload length.
+    #[must_use]
+    pub const fn payload_len(&self) -> usize {
+        self.payload.len()
+    }
+}
+
+fn resume_replay_closure_identity(
+    scenario: &ScenarioDefForm,
+    schedule: &Schedule,
+    checkpoint: &Checkpoint,
+    schema_version: u32,
+    payload: &[u8],
+) -> ContentHash {
+    const DOMAIN: &[u8] = b"crucible.resume-replay-closure.v1\0";
+
+    let configuration = Configuration {
+        def: scenario.scenario_def(),
+        schedule: schedule.clone(),
+    };
+    let checkpoint_material = ContentHash::from_bytes(&checkpoint.to_compact_binary());
+    let payload_len = u64::try_from(payload.len()).unwrap_or(u64::MAX);
+    let mut material = Vec::with_capacity(
+        DOMAIN
+            .len()
+            .saturating_add(32 * 3)
+            .saturating_add(4 + 8)
+            .saturating_add(payload.len()),
+    );
+    material.extend_from_slice(DOMAIN);
+    material.extend_from_slice(&scenario.id().bytes);
+    material.extend_from_slice(&configuration.id().bytes);
+    material.extend_from_slice(&checkpoint_material.bytes);
+    material.extend_from_slice(&schema_version.to_be_bytes());
+    material.extend_from_slice(&payload_len.to_be_bytes());
+    material.extend_from_slice(payload);
+    ContentHash::from_bytes(&material)
 }
 
 /// Response returned by `ResumeSession`.
@@ -829,6 +943,12 @@ pub enum LifecycleApiError {
         /// Deterministic resume-checkpoint validation error.
         message: String,
     },
+    /// Campaign replay evidence was missing, unsupported, or failed authentication.
+    #[error("resume campaign replay closure is invalid: {message}")]
+    ResumeReplayClosure {
+        /// Deterministic replay-closure validation error.
+        message: String,
+    },
     /// A command could not be sent to a session actor.
     #[error("session command channel closed for session {session_id:?}")]
     CommandChannelClosed {
@@ -926,6 +1046,18 @@ pub type LifecycleResumeLoopFactory<L> = Box<
         + Sync,
 >;
 
+/// Callback that authenticates campaign replay evidence for one exact resume source.
+pub type ResumeReplayClosureValidator = Box<
+    dyn Fn(
+            &ScenarioDefForm,
+            &Configuration,
+            &Checkpoint,
+            &ResumeReplayClosure,
+        ) -> Result<(), String>
+        + Send
+        + Sync,
+>;
+
 /// Callback type used to derive node white-box policies for a scenario.
 pub type WhiteBoxPolicyProvider =
     Box<dyn Fn(&ScenarioDef) -> BTreeMap<NodeId, WhiteBoxPolicy> + Send + Sync>;
@@ -939,6 +1071,7 @@ pub struct LifecycleControlPlane<L, F> {
     next_epoch: u64,
     loop_factory: F,
     resume_loop_factory: Option<LifecycleResumeLoopFactory<L>>,
+    resume_replay_closure_validator: Option<ResumeReplayClosureValidator>,
     white_box_policy_provider: WhiteBoxPolicyProvider,
     mailbox_capacity: usize,
     startup_max_actor_yields: u64,
@@ -965,6 +1098,28 @@ where
         provider: impl Fn(&ScenarioDef) -> BTreeMap<NodeId, WhiteBoxPolicy> + Send + Sync + 'static,
     ) -> Self {
         self.white_box_policy_provider = Box::new(provider);
+        self
+    }
+
+    /// Installs the authority that authenticates campaign choice evidence on resume.
+    ///
+    /// The validator receives the scenario, exact recorded configuration, and
+    /// checkpoint only after their ordinary identity checks pass. It runs before
+    /// backend construction or session allocation.
+    #[must_use]
+    pub fn with_resume_replay_closure_validator(
+        mut self,
+        validator: impl Fn(
+            &ScenarioDefForm,
+            &Configuration,
+            &Checkpoint,
+            &ResumeReplayClosure,
+        ) -> Result<(), String>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.resume_replay_closure_validator = Some(Box::new(validator));
         self
     }
 
@@ -1139,7 +1294,8 @@ where
     /// [`LifecycleApiError::GenesisGraph`] when the genesis temporal graph
     /// cannot be built, or [`LifecycleApiError::ResumeCheckpoint`] when the
     /// supplied scenario, schedule, and checkpoint do not describe one loadable
-    /// recorded configuration.
+    /// recorded configuration, or [`LifecycleApiError::ResumeReplayClosure`]
+    /// when typed campaign replay evidence is missing or invalid.
     pub async fn resume_session(
         &mut self,
         request: ResumeSessionRequest,
@@ -1156,6 +1312,11 @@ where
             });
         }
         if self.resume_via_thin_replay {
+            validate_resume_replay_closure_presence(
+                &request.schedule,
+                request.replay_closure.as_ref(),
+                false,
+            )?;
             return self.resume_session_via_thin_replay(request).await;
         }
 
@@ -1169,6 +1330,24 @@ where
             &request.checkpoint,
             ResumeCheckpointValidation::DirectLoad,
         )?;
+        validate_resume_replay_closure_presence(
+            &request.schedule,
+            request.replay_closure.as_ref(),
+            self.resume_replay_closure_validator.is_some(),
+        )?;
+        validate_resume_replay_closure_binding(&request)?;
+        if let (Some(closure), Some(validator)) = (
+            request.replay_closure.as_ref(),
+            self.resume_replay_closure_validator.as_deref(),
+        ) {
+            validator(
+                &request.scenario,
+                &configuration,
+                &request.checkpoint,
+                closure,
+            )
+            .map_err(|message| LifecycleApiError::ResumeReplayClosure { message })?;
+        }
 
         let mut graph = graph_with_baked_genesis(&scenario)?;
         if !configuration.is_genesis() {
@@ -1751,6 +1930,67 @@ where
         let _ = runtime.sender.send(actor_shutdown_command()).await;
         join_actor(runtime.actor_task).await.map_err(Into::into)
     }
+}
+
+fn validate_resume_replay_closure_binding(
+    request: &ResumeSessionRequest,
+) -> Result<(), LifecycleApiError> {
+    let Some(closure) = request.replay_closure.as_ref() else {
+        return Ok(());
+    };
+    let expected = resume_replay_closure_identity(
+        &request.scenario,
+        &request.schedule,
+        &request.checkpoint,
+        closure.schema_version(),
+        closure.payload(),
+    );
+    if closure.identity() != expected {
+        return Err(LifecycleApiError::ResumeReplayClosure {
+            message: String::from(
+                "campaign replay closure identity does not bind the exact resume source",
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_resume_replay_closure_presence(
+    schedule: &Schedule,
+    closure: Option<&ResumeReplayClosure>,
+    has_validator: bool,
+) -> Result<(), LifecycleApiError> {
+    let requires_closure = schedule
+        .decisions()
+        .iter()
+        .any(|decision| matches!(decision, Decision::Selection(_)));
+    let Some(closure) = closure else {
+        return if requires_closure {
+            Err(LifecycleApiError::ResumeReplayClosure {
+                message: String::from(
+                    "typed selection resume requires authenticated campaign replay evidence",
+                ),
+            })
+        } else {
+            Ok(())
+        };
+    };
+    if closure.payload_len() > RESUME_REPLAY_CLOSURE_MAX_BYTES {
+        return Err(LifecycleApiError::ResumeReplayClosure {
+            message: format!(
+                "campaign replay closure has {} bytes, maximum is {RESUME_REPLAY_CLOSURE_MAX_BYTES}",
+                closure.payload_len()
+            ),
+        });
+    }
+    if !has_validator {
+        return Err(LifecycleApiError::ResumeReplayClosure {
+            message: String::from(
+                "this session owner cannot authenticate campaign replay evidence",
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// In-process [`ControlClient`] implementation for unary lifecycle methods.

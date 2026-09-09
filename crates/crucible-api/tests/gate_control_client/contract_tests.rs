@@ -395,7 +395,16 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     assert_eq!(inline_sessions.sessions[0].session, inline_created.session);
     assert_eq!(inline_sessions.sessions[0].state, LiveStateKind::Paused);
 
-    let resume_request = resume_session_request(79);
+    let mut resume_request = resume_session_request(79);
+    let replay_closure = ResumeReplayClosure::new(
+        &resume_request.scenario,
+        &resume_request.schedule,
+        &resume_request.checkpoint,
+        7,
+        b"rpc-replay-closure".to_vec(),
+    )
+    .expect("bounded RPC replay closure should build");
+    resume_request = resume_request.with_replay_closure(replay_closure);
     let expected_resume_checkpoint = resume_request.checkpoint.id;
     let expected_resume_scenario = resume_request.scenario.scenario_def();
     let expected_resume_configuration = Configuration {
@@ -1452,6 +1461,54 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
         resume_request,
     );
     assert_rpc_snapshot("resume-session-request", &resume_wire, &resume_wire);
+
+    let replay_payload = b"snapshot-replay-closure".to_vec();
+    let replay_closure = ResumeReplayClosure::new(
+        &resume_request.scenario,
+        &resume_request.schedule,
+        &resume_request.checkpoint,
+        7,
+        replay_payload.clone(),
+    )
+    .expect("bounded snapshot replay closure should build");
+    let resume_with_closure = resume_request
+        .clone()
+        .with_replay_closure(replay_closure.clone());
+    let resume_closure_wire = format!(
+        "{resume_wire}campaign-replay-closure-version={}\ncampaign-replay-closure-identity={}\ncampaign-replay-closure-size={}\ncampaign-replay-closure-payload={}\n",
+        replay_closure.schema_version(),
+        replay_closure.identity().to_hex(),
+        replay_closure.payload_len(),
+        hex_encode(&replay_payload),
+    );
+    assert_eq!(
+        parse_resume_session_request(resume_closure_wire.as_bytes())
+            .unwrap_or_else(|error| panic!("resume closure request should parse: {error}")),
+        resume_with_closure,
+    );
+    assert_rpc_snapshot(
+        "resume-session-replay-closure-request",
+        &resume_closure_wire,
+        &resume_closure_wire,
+    );
+    let wrong_size = resume_closure_wire.replace(
+        &format!(
+            "campaign-replay-closure-size={}\n",
+            replay_closure.payload_len()
+        ),
+        &format!(
+            "campaign-replay-closure-size={}\n",
+            replay_closure.payload_len().saturating_add(1)
+        ),
+    );
+    assert!(parse_resume_session_request(wrong_size.as_bytes()).is_err());
+    let wrong_identity = resume_closure_wire.replace(
+        &replay_closure.identity().to_hex(),
+        &ContentHash::default().to_hex(),
+    );
+    assert!(parse_resume_session_request(wrong_identity.as_bytes()).is_err());
+    let extra_field = format!("{resume_closure_wire}unexpected=field\n");
+    assert!(parse_resume_session_request(extra_field.as_bytes()).is_err());
 
     assert_rpc_snapshot(
         "list-sessions-request",

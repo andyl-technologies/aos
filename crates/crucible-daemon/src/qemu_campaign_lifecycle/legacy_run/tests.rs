@@ -1803,6 +1803,95 @@ fn replay_closure_rejects_missing_extra_duplicate_and_tampered_records_before_st
 }
 
 #[test]
+fn remote_resume_validator_reconstructs_exact_closure_and_rejects_bad_envelopes() {
+    let (request, node) = selectable_request();
+    let scenario = request.scenario.clone();
+    let completed = run_selectable_campaign(request, node, Arc::new(AtomicUsize::new(0)));
+    let configuration = completed.terminal_configuration().clone();
+    let checkpoint = legacy_resume_checkpoint(
+        &selectable_request().0,
+        &configuration.schedule,
+        VirtualTime { ticks: 7 },
+    );
+    let closure_bytes = completed
+        .replay_closure()
+        .to_canonical_bytes()
+        .expect("selected replay closure");
+    let envelope = crucible_api::ResumeReplayClosure::new(
+        &scenario,
+        &configuration.schedule,
+        &checkpoint,
+        GuardedCampaignReplayClosure::SCHEMA_VERSION,
+        closure_bytes.clone(),
+    )
+    .expect("bounded remote replay envelope");
+
+    validate_remote_resume_replay_closure(&scenario, &configuration, &checkpoint, &envelope)
+        .expect("fresh daemon should reconstruct authenticated replay closure");
+    validate_remote_resume_replay_closure(&scenario, &configuration, &checkpoint, &envelope)
+        .expect("retry should reconstruct the same authenticated replay closure");
+
+    let unknown_schema = crucible_api::ResumeReplayClosure::new(
+        &scenario,
+        &configuration.schedule,
+        &checkpoint,
+        99,
+        closure_bytes.clone(),
+    )
+    .expect("bounded unknown-schema envelope");
+    assert!(matches!(
+        validate_remote_resume_replay_closure(
+            &scenario,
+            &configuration,
+            &checkpoint,
+            &unknown_schema,
+        ),
+        Err(GuardedCampaignReplayClosureError::UnsupportedSchema { .. })
+    ));
+
+    let mut tampered_bytes = closure_bytes.clone();
+    if let Some(last) = tampered_bytes.last_mut() {
+        *last ^= 1;
+    }
+    let tampered = crucible_api::ResumeReplayClosure::new(
+        &scenario,
+        &configuration.schedule,
+        &checkpoint,
+        GuardedCampaignReplayClosure::SCHEMA_VERSION,
+        tampered_bytes,
+    )
+    .expect("bounded tampered envelope");
+    assert!(
+        validate_remote_resume_replay_closure(&scenario, &configuration, &checkpoint, &tampered,)
+            .is_err()
+    );
+
+    let empty_configuration = Configuration::genesis(scenario.scenario_def());
+    let empty_checkpoint = legacy_resume_checkpoint(
+        &selectable_request().0,
+        &Schedule::empty(),
+        VirtualTime::default(),
+    );
+    let extra = crucible_api::ResumeReplayClosure::new(
+        &scenario,
+        &Schedule::empty(),
+        &empty_checkpoint,
+        GuardedCampaignReplayClosure::SCHEMA_VERSION,
+        closure_bytes,
+    )
+    .expect("bounded extra-record envelope");
+    assert!(
+        validate_remote_resume_replay_closure(
+            &scenario,
+            &empty_configuration,
+            &empty_checkpoint,
+            &extra,
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn shared_owner_preserves_the_terminal_lifecycle_error_source() {
     let (request, node) = request();
     let (factory, evidence) =

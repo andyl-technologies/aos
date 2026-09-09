@@ -1085,6 +1085,22 @@ pub(super) fn scenario_identity_bytes(scenario: &crucible::ScenarioDef) -> Vec<u
     .into_bytes()
 }
 
+// crucible-lint: allow host-nondeterminism-state -- this pure admission check authenticates the exact campaign replay closure before the resumed backend is allocated.
+fn validate_remote_resume_replay_closure(
+    scenario: &crucible::ScenarioDefForm,
+    configuration: &crucible::Configuration,
+    checkpoint: &crucible::Checkpoint,
+    envelope: &crucible_api::ResumeReplayClosure,
+) -> Result<(), String> {
+    crucible_daemon::qemu_campaign_lifecycle::validate_remote_resume_replay_closure(
+        scenario,
+        configuration,
+        checkpoint,
+        envelope,
+    )
+    .map_err(|error| error.to_string())
+}
+
 #[cfg(any(test, feature = "test-double"))]
 pub(super) async fn run_local_double_workflow_async(
     run_plan: &RunInvocationPlan,
@@ -1217,7 +1233,8 @@ where
                 &resume_config,
                 checkpoint,
             )
-        });
+        })
+        .with_resume_replay_closure_validator(validate_remote_resume_replay_closure);
         if let Some(max_sessions) = args.max_sessions {
             control_plane = control_plane.with_max_sessions(max_sessions);
         }
@@ -1236,7 +1253,8 @@ where
         "crucible-cli-daemon",
         Vec::new(),
         |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
-    );
+    )
+    .with_resume_replay_closure_validator(validate_remote_resume_replay_closure);
     if let Some(max_sessions) = args.max_sessions {
         control_plane = control_plane.with_max_sessions(max_sessions);
     }

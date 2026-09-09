@@ -14,8 +14,8 @@ use crucible_api::{
     DebugControllerAcquisition, DestroySessionRequest, HelloRequest, InProcessLifecycleClient,
     LIFECYCLE_SESSION_MAILBOX_CAPACITY, LifecycleApiError, LifecycleControlPlane,
     LifecycleLoopFactory, LifecycleServerMode, ListScenariosResponse, QuiescentLifecycleLoop,
-    RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, ResumeSessionRequest, RpcControlClient,
-    RpcEndpoint, ScenarioCatalogEntry, SendRequest,
+    RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, ResumeReplayClosure, ResumeSessionRequest,
+    RpcControlClient, RpcEndpoint, ScenarioCatalogEntry, SendRequest,
     serve_lifecycle_http2_with_debug_policy_until_shutdown,
 };
 use crucible_session::{
@@ -23,6 +23,7 @@ use crucible_session::{
     SessionCommand,
 };
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[test]
@@ -579,6 +580,163 @@ async fn resume_session_rejects_mismatched_checkpoint_closure_without_side_effec
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn typed_resume_requires_authenticated_replay_closure_before_allocation() {
+    let allocations = Arc::new(AtomicUsize::new(0));
+    let allocations_for_factory = Arc::clone(&allocations);
+    let mut control_plane = LifecycleControlPlane::new(
+        "crucible-typed-resume-missing-closure-test",
+        Vec::new(),
+        move |_scenario: &ScenarioDef, _seed| {
+            allocations_for_factory.fetch_add(1, Ordering::SeqCst);
+            NoopLoop
+        },
+    )
+    .with_resume_replay_closure_validator(|_, _, _, _| Ok(()));
+
+    let error = control_plane
+        .resume_session(selected_resume_request(130))
+        .await
+        .expect_err("typed resume without replay evidence must reject");
+
+    assert!(matches!(
+        error,
+        LifecycleApiError::ResumeReplayClosure { .. }
+    ));
+    assert!(error.to_string().contains("requires authenticated"));
+    assert_eq!(allocations.load(Ordering::SeqCst), 0);
+    assert_eq!(control_plane.session_count(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn typed_resume_rejects_unknown_closure_version_before_allocation() {
+    let allocations = Arc::new(AtomicUsize::new(0));
+    let allocations_for_factory = Arc::clone(&allocations);
+    let mut control_plane = LifecycleControlPlane::new(
+        "crucible-typed-resume-version-test",
+        Vec::new(),
+        move |_scenario: &ScenarioDef, _seed| {
+            allocations_for_factory.fetch_add(1, Ordering::SeqCst);
+            NoopLoop
+        },
+    )
+    .with_resume_replay_closure_validator(|_, _, _, closure| {
+        if closure.schema_version() == 1 {
+            Ok(())
+        } else {
+            Err(format!(
+                "unsupported campaign replay closure schema version {}",
+                closure.schema_version()
+            ))
+        }
+    });
+    let mut request = selected_resume_request(131);
+    let closure = ResumeReplayClosure::new(
+        &request.scenario,
+        &request.schedule,
+        &request.checkpoint,
+        99,
+        b"canonical-replay-closure".to_vec(),
+    )
+    .expect("bounded unknown-version closure should build");
+    request = request.with_replay_closure(closure);
+
+    let error = control_plane
+        .resume_session(request)
+        .await
+        .expect_err("unknown replay schema must reject");
+
+    assert!(matches!(
+        error,
+        LifecycleApiError::ResumeReplayClosure { .. }
+    ));
+    assert!(error.to_string().contains("unsupported"));
+    assert_eq!(allocations.load(Ordering::SeqCst), 0);
+    assert_eq!(control_plane.session_count(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn typed_resume_closure_is_bound_to_exact_checkpoint_material() {
+    let mut source = selected_resume_request(132);
+    let closure = ResumeReplayClosure::new(
+        &source.scenario,
+        &source.schedule,
+        &source.checkpoint,
+        1,
+        b"canonical-replay-closure".to_vec(),
+    )
+    .expect("bounded source closure should build");
+    source = source.with_replay_closure(closure);
+
+    let mut target = source;
+    target.checkpoint.virtual_time = VirtualTime { ticks: 2 };
+    let mut control_plane = LifecycleControlPlane::new(
+        "crucible-typed-resume-checkpoint-binding-test",
+        Vec::new(),
+        |_scenario: &ScenarioDef, _seed| NoopLoop,
+    )
+    .with_resume_replay_closure_validator(|_, _, _, _| Ok(()));
+
+    let error = control_plane
+        .resume_session(target)
+        .await
+        .expect_err("closure from another checkpoint must reject");
+
+    assert!(matches!(
+        error,
+        LifecycleApiError::ResumeReplayClosure { .. }
+    ));
+    assert!(error.to_string().contains("exact resume source"));
+    assert_eq!(control_plane.session_count(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn typed_resume_accepts_validated_closure_and_preserves_paused_session_controls() {
+    let validations = Arc::new(AtomicUsize::new(0));
+    let validations_for_callback = Arc::clone(&validations);
+    let mut control_plane = LifecycleControlPlane::new(
+        "crucible-typed-resume-accepted-test",
+        Vec::new(),
+        |_scenario: &ScenarioDef, _seed| NoopLoop,
+    )
+    .with_resume_replay_closure_validator(
+        move |scenario, configuration, checkpoint, closure| {
+            assert_eq!(scenario.scenario_def(), configuration.def);
+            assert_eq!(checkpoint.configuration, configuration.id());
+            assert_eq!(closure.payload(), b"canonical-replay-closure");
+            validations_for_callback.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        },
+    );
+    let mut request = selected_resume_request(133);
+    let expected_checkpoint = request.checkpoint.id;
+    let closure = ResumeReplayClosure::new(
+        &request.scenario,
+        &request.schedule,
+        &request.checkpoint,
+        1,
+        b"canonical-replay-closure".to_vec(),
+    )
+    .expect("bounded authenticated closure should build");
+    request = request.with_replay_closure(closure);
+
+    let resumed = control_plane
+        .resume_session(request)
+        .await
+        .expect("authenticated typed resume should start");
+
+    assert_eq!(validations.load(Ordering::SeqCst), 1);
+    assert_eq!(resumed.checkpoint, expected_checkpoint);
+    assert_eq!(resumed.state, LiveStateKind::Paused);
+    assert_eq!(control_plane.list_sessions().sessions.len(), 1);
+
+    let destroyed = control_plane
+        .destroy_session(DestroySessionRequest::new(resumed.session))
+        .await
+        .expect("resumed typed session should retain lifecycle controls");
+    assert!(destroyed.stopped);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn direct_resume_accepts_authenticated_runtime_genesis_checkpoint_material() {
     let mut control_plane = lifecycle_control_plane();
     let scenario = crucible::happy_path_scenario()
@@ -728,6 +886,8 @@ async fn thin_replay_resume_rejects_runtime_only_frontier_overshoot() {
 
 #[path = "gate_lifecycle_unary/debugger_access.rs"]
 mod debugger_access;
+#[path = "gate_lifecycle_unary/replay_closure_rpc.rs"]
+mod replay_closure_rpc;
 #[path = "gate_lifecycle_unary/support.rs"]
 mod support;
 

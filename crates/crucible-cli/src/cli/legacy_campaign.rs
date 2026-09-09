@@ -2481,37 +2481,51 @@ mod tests {
             );
             let lifecycle_starts = Arc::new(AtomicUsize::new(0));
             let counted_starts = Arc::clone(&lifecycle_starts);
+            let source_frontier = handle_evidence.checkpoint.virtual_time;
             let control_plane = LifecycleControlPlane::new(
-                "typed-selection-session-refusal",
+                "typed-selection-remote-resume",
                 Vec::new(),
                 move |_scenario: &crucible::ScenarioDef, _seed| {
                     counted_starts.fetch_add(1, Ordering::Relaxed);
-                    QuiescentLifecycleLoop::new()
+                    ResumeRecordingLifecycleLoop::new(source_frontier)
+                },
+            )
+            .with_resume_replay_closure_validator(
+                |scenario, configuration, checkpoint, envelope| {
+                    crucible_daemon::qemu_campaign_lifecycle::validate_remote_resume_replay_closure(
+                        scenario,
+                        configuration,
+                        checkpoint,
+                        envelope,
+                    )
+                    .map_err(|error| error.to_string())
                 },
             );
             let client = InProcessLifecycleClient::new(control_plane);
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .expect("typed fallback test runtime");
-            let error = runtime
+                .expect("typed remote resume test runtime");
+            let mut remote_plan = handle_resume_plan.clone();
+            let remote_target = source_frontier.ticks.saturating_add(1);
+            remote_plan.terminal_condition = RunTerminalCondition::VirtualTime;
+            remote_plan.max_virtual_time = Some(format!("{remote_target}ticks"));
+            remote_plan.max_virtual_time_ticks = Some(remote_target);
+            let report = runtime
                 .block_on(
                     run_remote_control_client_resume_from_evidence_with_driver_async(
                         &client,
-                        &handle_resume_plan,
+                        &remote_plan,
                         handle_evidence.clone(),
                         ResumeInteractiveCommandDriver::Preparsed(&[]),
                         false,
                     ),
                 )
-                .expect_err("remote session path must reject typed evidence before resume");
-            assert!(
-                error
-                    .to_string()
-                    .contains("cannot consume a typed selection")
-            );
+                .expect("remote session path should consume authenticated typed evidence");
+            assert_eq!(report.source_checkpoint, checkpoint);
+            assert_eq!(report.run.final_frontier_ticks, remote_target);
             assert_eq!(runtime.block_on(client.session_count()), 0);
-            assert_eq!(lifecycle_starts.load(Ordering::Relaxed), 0);
+            assert_eq!(lifecycle_starts.load(Ordering::Relaxed), 1);
 
             for (reader, mut plan, mut fork_plan, evidence) in [
                 (

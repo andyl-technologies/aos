@@ -76,9 +76,11 @@ pub use lifecycle::{
     InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY,
     LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS, LifecycleApiError, LifecycleControlPlane,
     LifecycleLoopFactory, LifecycleResourceLimit, ListScenariosResponse, ListSessionsResponse,
-    QuiescentLifecycleLoop, ReproductionCommandPayload, ReproductionCommandRecord,
-    ReproductionCommandResult, ResumeSessionRequest, ResumeSessionResponse, ScenarioCatalogEntry,
-    ScenarioCatalogSource, ScenarioSummary, SessionId, SessionRef, SessionSummary,
+    QuiescentLifecycleLoop, RESUME_REPLAY_CLOSURE_MAX_BYTES, ReproductionCommandPayload,
+    ReproductionCommandRecord, ReproductionCommandResult, ResumeReplayClosure,
+    ResumeReplayClosureValidator, ResumeSessionRequest, ResumeSessionResponse,
+    ScenarioCatalogEntry, ScenarioCatalogSource, ScenarioSummary, SessionId, SessionRef,
+    SessionSummary,
 };
 pub use open_set::{
     OPEN_SET_BREAKPOINT_KIND_PREFIX, OPEN_SET_CAPABILITY_CATEGORIES, OPEN_SET_COMMAND_KIND_PREFIX,
