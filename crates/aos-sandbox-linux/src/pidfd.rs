@@ -67,29 +67,18 @@ impl PidFd {
         self.fd.as_fd()
     }
 
-    /// Reads the process identity and cgroup ID atomically from pidfs.
+    /// Reads process identity, credentials, and cgroup ID with one pidfs ioctl.
     ///
-    /// The information was correct for the pinned process when the ioctl ran,
-    /// but the process may exit immediately afterward. Retain this `PidFd` and
-    /// call [`PidFd::is_alive`] after related observations.
+    /// The fields are one observation of the pinned process, not a globally
+    /// atomic process snapshot. The process may exit immediately afterward.
+    /// Retain this `PidFd` and call [`PidFd::is_alive`] after related
+    /// observations.
     ///
     /// # Errors
     ///
     /// Returns an error if `PIDFD_GET_INFO` fails or omits mandatory PID data.
     pub fn info(&self) -> Result<PidFdInfo> {
-        let raw = uapi::pidfd_info(self.fd.as_fd())?;
-        if raw.mask & PidFdInfo::PID_PRESENT == 0 {
-            return Err(Error::MalformedKernelResponse {
-                object: "pidfd info",
-                message: "kernel omitted mandatory PID information".to_string(),
-            });
-        }
-        Ok(PidFdInfo {
-            pid: raw.pid,
-            thread_group_id: raw.tgid,
-            parent_pid: raw.ppid,
-            cgroup_id: (raw.mask & PidFdInfo::CGROUP_PRESENT != 0).then_some(raw.cgroup_id),
-        })
+        decode_pidfd_info(uapi::pidfd_info(self.fd.as_fd())?)
     }
 
     /// Tests whether the pinned process has not exited without sending a signal.
@@ -194,17 +183,25 @@ impl PidFd {
     }
 }
 
-/// Atomic information returned by `PIDFD_GET_INFO`.
+/// Information returned by one `PIDFD_GET_INFO` ioctl observation.
+///
+/// Credentials, cgroup membership, and process identifiers are read separately
+/// during the ioctl. This value does not assert that they form a globally
+/// atomic snapshot or that any mutable field remains current afterward. Callers
+/// making an authorization decision must retain the pidfd and repeat the
+/// observations required at their effect boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PidFdInfo {
     pid: u32,
     thread_group_id: u32,
     parent_pid: u32,
+    credentials: Option<PidFdCredentials>,
     cgroup_id: Option<u64>,
 }
 
 impl PidFdInfo {
     const PID_PRESENT: u64 = 1 << 0;
+    const CREDENTIALS_PRESENT: u64 = 1 << 1;
     const CGROUP_PRESENT: u64 = 1 << 2;
 
     /// Returns the process ID in the caller's PID namespace.
@@ -225,11 +222,114 @@ impl PidFdInfo {
         self.parent_pid
     }
 
+    /// Returns the task credentials when the kernel supplied them.
+    #[must_use]
+    pub const fn credentials(self) -> Option<PidFdCredentials> {
+        self.credentials
+    }
+
     /// Returns the cgroup-v2 kernfs ID when the kernel supplied it.
     #[must_use]
     pub const fn cgroup_id(self) -> Option<u64> {
         self.cgroup_id
     }
+}
+
+/// Credentials captured from one coherent task credential snapshot.
+///
+/// The kernel maps these IDs into the caller's current user namespace. Real,
+/// effective, saved-set, and filesystem IDs are distinct mutable process
+/// attributes. This value reports all eight fields from the same credential
+/// object but makes no freshness claim after the ioctl returns.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PidFdCredentials {
+    real_user_id: u32,
+    real_group_id: u32,
+    effective_user_id: u32,
+    effective_group_id: u32,
+    saved_user_id: u32,
+    saved_group_id: u32,
+    filesystem_user_id: u32,
+    filesystem_group_id: u32,
+}
+
+impl PidFdCredentials {
+    /// Returns the real user ID.
+    #[must_use]
+    pub const fn real_user_id(self) -> u32 {
+        self.real_user_id
+    }
+
+    /// Returns the real group ID.
+    #[must_use]
+    pub const fn real_group_id(self) -> u32 {
+        self.real_group_id
+    }
+
+    /// Returns the effective user ID.
+    #[must_use]
+    pub const fn effective_user_id(self) -> u32 {
+        self.effective_user_id
+    }
+
+    /// Returns the effective group ID.
+    #[must_use]
+    pub const fn effective_group_id(self) -> u32 {
+        self.effective_group_id
+    }
+
+    /// Returns the saved-set user ID.
+    #[must_use]
+    pub const fn saved_user_id(self) -> u32 {
+        self.saved_user_id
+    }
+
+    /// Returns the saved-set group ID.
+    #[must_use]
+    pub const fn saved_group_id(self) -> u32 {
+        self.saved_group_id
+    }
+
+    /// Returns the filesystem user ID used for filesystem access checks.
+    #[must_use]
+    pub const fn filesystem_user_id(self) -> u32 {
+        self.filesystem_user_id
+    }
+
+    /// Returns the filesystem group ID used for filesystem access checks.
+    #[must_use]
+    pub const fn filesystem_group_id(self) -> u32 {
+        self.filesystem_group_id
+    }
+}
+
+fn decode_pidfd_info(raw: uapi::RawPidfdInfo) -> Result<PidFdInfo> {
+    if raw.mask & PidFdInfo::PID_PRESENT == 0 {
+        return Err(Error::MalformedKernelResponse {
+            object: "pidfd info",
+            message: "kernel omitted mandatory PID information".to_string(),
+        });
+    }
+
+    let credentials =
+        (raw.mask & PidFdInfo::CREDENTIALS_PRESENT != 0).then_some(PidFdCredentials {
+            real_user_id: raw.ruid,
+            real_group_id: raw.rgid,
+            effective_user_id: raw.euid,
+            effective_group_id: raw.egid,
+            saved_user_id: raw.suid,
+            saved_group_id: raw.sgid,
+            filesystem_user_id: raw.fsuid,
+            filesystem_group_id: raw.fsgid,
+        });
+
+    Ok(PidFdInfo {
+        pid: raw.pid,
+        thread_group_id: raw.tgid,
+        parent_pid: raw.ppid,
+        credentials,
+        cgroup_id: (raw.mask & PidFdInfo::CGROUP_PRESENT != 0).then_some(raw.cgroup_id),
+    })
 }
 
 /// Namespace kinds exposed by the sandbox Linux boundary.
@@ -517,6 +617,52 @@ mod tests {
     }
 
     #[test]
+    fn pidfd_info_maps_all_credential_fields_and_mask_omission() {
+        let raw = uapi::RawPidfdInfo {
+            mask: PidFdInfo::PID_PRESENT
+                | PidFdInfo::CREDENTIALS_PRESENT
+                | PidFdInfo::CGROUP_PRESENT,
+            cgroup_id: 19,
+            pid: 11,
+            tgid: 12,
+            ppid: 13,
+            ruid: 21,
+            rgid: 22,
+            euid: 23,
+            egid: 24,
+            suid: 25,
+            sgid: 26,
+            fsuid: 27,
+            fsgid: 28,
+            ..uapi::RawPidfdInfo::default()
+        };
+        let info = decode_pidfd_info(raw).unwrap();
+        let credentials = info.credentials().unwrap();
+
+        assert_eq!(info.pid(), 11);
+        assert_eq!(info.thread_group_id(), 12);
+        assert_eq!(info.parent_pid(), 13);
+        assert_eq!(info.cgroup_id(), Some(19));
+        assert_eq!(credentials.real_user_id(), 21);
+        assert_eq!(credentials.real_group_id(), 22);
+        assert_eq!(credentials.effective_user_id(), 23);
+        assert_eq!(credentials.effective_group_id(), 24);
+        assert_eq!(credentials.saved_user_id(), 25);
+        assert_eq!(credentials.saved_group_id(), 26);
+        assert_eq!(credentials.filesystem_user_id(), 27);
+        assert_eq!(credentials.filesystem_group_id(), 28);
+
+        let without_credentials = decode_pidfd_info(uapi::RawPidfdInfo {
+            mask: PidFdInfo::PID_PRESENT,
+            pid: 11,
+            ..raw
+        })
+        .unwrap();
+        assert_eq!(without_credentials.credentials(), None);
+        assert_eq!(without_credentials.cgroup_id(), None);
+    }
+
+    #[test]
     fn current_process_pidfd_is_pinned_when_kernel_supports_info() {
         let pid = NonZeroU32::new(std::process::id()).unwrap();
         match PidFd::open(pid) {
@@ -538,6 +684,27 @@ mod tests {
             Err(Error::WrongDescriptorType { .. }) => {}
             Err(error) => panic!("unexpected pidfd failure: {error}"),
         }
+    }
+
+    #[cfg(feature = "kernel-tests")]
+    #[test]
+    fn current_process_pidfd_reports_effective_credentials() {
+        let pid = NonZeroU32::new(std::process::id()).unwrap();
+        let credentials = PidFd::open(pid)
+            .unwrap()
+            .info()
+            .unwrap()
+            .credentials()
+            .expect("Linux 6.18 PIDFD_GET_INFO must return requested credentials");
+
+        assert_eq!(
+            credentials.effective_user_id(),
+            rustix::process::geteuid().as_raw()
+        );
+        assert_eq!(
+            credentials.effective_group_id(),
+            rustix::process::getegid().as_raw()
+        );
     }
 
     #[test]
