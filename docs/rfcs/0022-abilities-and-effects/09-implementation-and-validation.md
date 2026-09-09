@@ -13,6 +13,48 @@ acquisition and execution. Existing libraries and binary entry points remain
 the integration boundaries; crate names and placement are implementation
 choices, not a mandate to put every responsibility in `aos-package`.
 
+## Shared Rust libraries and dependency boundaries
+
+Ability support is a library subsystem, not logic owned by one CLI binary.
+Use cohesive modules with explicit public contracts and split crates where
+reuse, portability, or authority boundaries justify it. The following are
+required responsibilities; crate names are proposed rather than existing APIs:
+
+| Library responsibility | Proposed home | Dependents |
+| --- | --- | --- |
+| Interface/graph types, typed identities, bounded encoding, structured diagnostics | `aos-ability-model` using existing `aos-contract` primitives | All ability consumers |
+| Pure schema and graph validation, compatibility, binding checks | `aos-ability-validate` | Build checks, APM, publication checks, planner, inspectors |
+| Bounded provider resolution and transition planning over explicit inputs | `aos-ability-plan` | AOS/APM workflows and offline previews |
+| Graph queries, explanations, diffs, redacted view/export models | `aos-ability-inspect` | CLI, documentation, Hub, editor/debugging tools |
+| Admission, scoped provider adapters, journaling, execution and recovery | `aos-ability-runtime` | Authorized native runtime controllers |
+
+The [existing contract crate](../../../crates/aos-contract/src/lib.rs) already
+owns pure canonical encoding, typed digests, and bounded decoding. Reuse those
+primitives rather than adding another canonical-JSON implementation. The
+[documentation model](../../../crates/aos-doc-model/src/lib.rs) is a precedent
+for sharing pure data semantics across APM, native Hub, and Worker consumers.
+Keep package documentation's format separate from live ability-state formats.
+
+The dependency direction is from frontends/adapters toward the shared model
+and pure libraries. The model must not depend on `aos-package`, CLI parsing,
+systemd connections, registry transport, a Nix subprocess runner, or credential
+access. The runtime consumes validated contracts and existing broker/systemd
+adapters; importing a model or visualization library must not import a
+privileged executor.
+
+Pure planning takes explicit snapshots and authenticated candidate descriptors.
+Native orchestration adapters perform Nix evaluation, downloads, clock reads,
+and resource discovery around that computation. Every external input becomes
+an explicit recorded planning input. This keeps deterministic tests and offline
+inspection possible without pretending that the outer workflow performs no I/O.
+
+Shared model/inspection code must remain usable by native and web consumers.
+Hub may render checked public contracts without a native Nix evaluator or
+Linux runtime dependencies. Client-side validation improves feedback; it never
+replaces authoritative checks on the execution side. The final number of crates
+may be smaller initially, but these dependency and authority boundaries must
+remain visible and must be exercised by more than one consumer.
+
 ## Phase 1: inventory and semantic contracts
 
 Inventory current expose/configuration metadata, dependency consumers, graph
@@ -29,6 +71,12 @@ binding and execution records.
 Exit criteria: representative contracts validate through the same AOS-built
 library in source checks and APM; malformed, oversized, unknown-critical, and
 unauthorized inputs fail predictably. Existing package behavior is unchanged.
+
+Publish shared positive/negative conformance fixtures for Nix normalization and
+Rust validation. Test model and inspection libraries independently of runtime
+dependencies, and require native/Worker consumers to agree on the same public
+view data. CLI tests verify orchestration and presentation, not a duplicate
+implementation of the semantic rules.
 
 ## Phase 2: Nix authorship and recursive composition
 
@@ -47,6 +95,11 @@ Exit criteria: there is no hard-coded nginx interpretation in the central
 planner; all concrete requests terminate in recognized implementations or
 explicit deployment obligations; expansion is bounded; source evaluation and
 registry evaluation produce equivalent normalized contracts from equal inputs.
+
+Deliver text/JSON inspection and expandable composition traces in this phase,
+so provider authors can diagnose their declarations before runtime execution
+exists. Ability tooling is part of the vertical implementation, not deferred
+entirely to final UI work.
 
 ## Phase 3: matching, resolution, and environment admission
 
@@ -84,6 +137,10 @@ recovery path; ambiguous external outcomes remain visible; an unchanged plan
 does not spuriously reload; failed required enforcement never produces an
 unconfined successful activation. Generation/profile publication and actual
 consumer observations cannot contradict the recorded outcome.
+
+Expose the operation timeline and a redacted diagnostic bundle alongside the
+journal. Recovery failures must be explainable through the same inspection
+model used for successful plans.
 
 ## Phase 5: ecosystem and operator workflows
 
@@ -124,6 +181,9 @@ whether a retained target is currently activatable.
 | GC during preparation or partial activation | Candidate, recovery, and active-consumer inputs retained |
 | Library metadata disagrees with actual ELF dependencies | Artifact audit fails; exact store closure preserved |
 | Documentation prose changes alone | No runtime identity or restart change |
+| CLI, Hub, and editor inspect the same checked graph | Same identities, edge meanings, and structured diagnostic codes |
+| Source output omits its required contract check | Supported build/publication gate rejects the output |
+| Redacted snapshot is missing a required planning input | Debugger reports the limitation; it does not invent a successful replay |
 | Old client encounters required new execution semantics | Selection/activation fails through a qualified compatibility boundary |
 
 Testing must include actual runtime enforcement and fault injection where

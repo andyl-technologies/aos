@@ -156,6 +156,58 @@ plans. A source build uses an AOS-built validator as a required check
 derivation; Nix assertions provide earlier errors. This does not require
 import-from-derivation or a new build-host tool dependency.
 
+## Validation from Nix source to runtime admission
+
+The semantic implementation belongs to shared Rust libraries. CLI commands,
+build-check executables, registry publication checks, and runtime controllers
+call those libraries; they do not maintain separate interpretations of the
+ability contract. Validation proceeds through distinct boundaries:
+
+| Boundary | Checks | Result and limit |
+| --- | --- | --- |
+| Nix authoring/evaluation | Option types, required fields, supported declarations, merge rules, local assertions | Concrete normalized declarations; no proof about arbitrary function behavior or a future host |
+| Rust contract validation | Bounded decoding, schema/version agreement, unique identities, reference existence, request/result types and phases, composition bounds | Structurally and semantically checked graph |
+| Rust binding/planning | Provider compatibility, authenticated provenance, authorized scopes, guarantees, ownership conflicts, bootstrap, effect dependencies and recovery contracts | Plan checked against explicit policy/environment inputs, with unresolved obligations identified |
+| Runtime admission/execution | Actual provider identity, resource assignment, current policy, freshness, preconditions, completion evidence | Scoped admitted operations and observed outcomes; checks remain necessary when state changes |
+
+The Nix adapter evaluates authenticated modules through the restricted
+evaluation path and forces the exported data needed for validation. It emits
+versioned data rather than closures or an arbitrary source-code AST. Parse-only
+checks cannot establish that configuration-dependent requests are valid; the
+concrete configuration must be evaluated. Nontermination and evaluation
+resource limits remain explicit error conditions.
+
+Each interface's serializable request/result description is the common schema
+contract. Nix option helpers, Rust structural validation, and generated editor
+documentation must use that description or demonstrate agreement against it.
+Native Nix predicates that cannot be represented in the supported schema remain
+additional evaluation checks; they cannot masquerade as portable Rust solver
+constraints. Cross-resource semantics and authorization require dedicated
+validator logic beyond structural schema validation.
+
+Keep unchecked decoded data distinct from checked graphs and plans in the Rust
+API. Only validation constructs a checked value for a specified input identity
+and context. Deserializing a record labelled `validated` does not bypass the
+checks, and a checked plan is not a permanent runtime grant. This makes the
+library API reusable without relying on callers to remember an informal
+sequence of CLI commands.
+
+For source builds, evaluation produces the contract and an AOS-built check
+derivation validates it. Supported image/package outputs and publication gates
+must depend on or require that successful check; an optional flake check users
+can skip is insufficient. The validator is built from lower-level AOS inputs
+so this does not create a dependency on the image or suite being validated.
+APM feeds equivalent normalized input directly to the same Rust library before
+live activation. Registry checks can establish package-level validity but
+cannot certify an unknown future deployment's grants.
+
+Diagnostics retain exact artifact/package identity, instance, request name,
+option path, and composition ancestry. Include source file/line locations when
+available, but do not promise that arbitrary Nix transformations preserve a
+complete source map. The trusted adapter authenticates artifact identity;
+package-supplied location text is descriptive and never authorization evidence.
+The library returns structured diagnostics for CLI, editor, and Hub rendering.
+
 ## What the module library does not prove
 
 It does not infer every effect in arbitrary shell or native code, prove ABI
