@@ -609,6 +609,20 @@ impl SavepointCaptureRequest {
             &codec::encode(self),
         )
     }
+
+    /// Returns the exact semantic-retention change implied by this capture.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if the retained reason no longer meets
+    /// the canonical pin-change bounds.
+    pub fn pin_change(&self) -> Result<PinChange, CampaignCodecError> {
+        PinChange::new(
+            self.semantic_configuration,
+            Some(PinRetention::Exact),
+            self.reason.clone(),
+        )
+    }
 }
 
 impl Canonical for SavepointCaptureRequest {
