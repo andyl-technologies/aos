@@ -5968,6 +5968,174 @@ boot path loads the policy, proves enforcing mode before mutable startup, enters
 service domains, or grants the proposed narrow inspection authority.
 `SBX-P0-10` and end-to-end enforcing-host-MAC qualification remain open.
 
+### Network worker bpffs boundary qualification (in progress)
+
+The production Network worker now receives one authenticated descriptor-bearing
+request through the root-owned systemd socket, runs each request in a fresh
+service process, and confines BPF mutation to the plan-derived child beneath
+the host-visible `/sys/fs/bpf/aos/sandbox-network` pin parent. The mount unit
+validates an exact root-owned mode-1700 `bpffs` root with `nosuid`, `nodev`,
+and `noexec`, an exact root-owned mode-0700 pin parent, and root-owned mode-0700
+plan children. The
+worker receives read-only `/sys` plus a single writable pin-parent exception;
+the fixed loader independently rejects a writable substitute parent and a
+same-shaped directory on the wrong filesystem.
+
+The immutable fleet derivation
+`/nix/store/fhzy14l07sgh8sg7l2xn5vj78dkdksjf-aos-fleet-test-sandbox-network-worker-bpffs-0.drv`
+passed at
+`/nix/store/gwkzr06vhnxvwbm08yp2575y14xwirdk-aos-fleet-test-sandbox-network-worker-bpffs-0`.
+The guest proved the underlying unmounted sysfs mount point is root-owned mode
+0555, then restarted the mount unit and recovered `bpffs` magic `0xcafe4a11`
+with mode 1700. The mode-0700 pin-parent directory had device and inode identity
+`27:18986` from both the worker and host views, while the worker mount namespace
+`4026532433` remained distinct from host namespace `4026531832`. The worker
+also created a real BPF pin which the host independently opened and inspected
+through the probe. The same gate covers worker hardening, read-only sysfs,
+negative parent and filesystem substitutions, clean unmount, and restart.
+
+This gate qualifies the bpffs publication and confinement boundary only. It
+does not yet qualify a complete production Apply transaction from controller
+dispatch through namespace mutation, observation, publication, lease arming,
+or rollback. Apply remains unadvertised and the Network closure tasks remain
+open.
+
+### Network cross-journal lifecycle and exact-plan proof (in progress)
+
+Current Network source now serializes creation and existing-resource admission
+against the unique latest authenticated assignment fence from both protected
+journals. Incomparable heads fail closed. A committed Destroy prevents stale
+creation replay from resurrecting the old incarnation, while a strictly newer
+assignment may prepare a distinct handle. Existing-handle admission retains the
+exact creation-time canonical kernel-plan digest and compares it before both
+fresh admission and exact replay.
+
+The creation operation schema is format 4, with format 3 custody and format 2
+committed rows still readable but lacking an exact plan proof. Namespace catalog
+format 3 uses a distinct resource-digest domain; canonical format 1 and 2 rows
+remain inventory-readable under their original domains and exact encodings but
+cannot authorize a new lifecycle effect. Lifecycle operation format 2 binds the
+same plan digest into its effect identity; format 1 remains recoverable but
+cannot cross the effect boundary. Publication requires the plan digest to agree
+through custody, committed result, retained namespace row, authenticated
+preparation, and caller-supplied canonical plan.
+
+Recovery now treats both ambiguous custody and legacy committed results as
+physical namespace ownership. Authenticated resealed tests reject a custody
+plan/result digest mismatch, a custody collision with another retained result,
+and two independently Ambiguous custody rows with no committed results that
+claim the same physical namespace. Exact replay with a substituted plan is
+rejected before it can reuse a Prepared or Committed outcome.
+
+Existing-resource admission can now consume only the move-only value produced
+by its exact `Prepared -> Ambiguous` transition into a canonical authenticated
+lifecycle-worker record. The record binds the raw request, complete kernel plan,
+protected preparation and seal, namespace identity and prior resource/state,
+desired state and lease high-water mark, action, current and operation fences,
+pending effect, closed Mutation and TargetNamespace roles, and a local dispatch
+MAC. Independently valid request, allocation-generation, IPv6-pool, route,
+catalog, context, fence, effect, and dispatch substitutions fail closed.
+
+The pure execution protocol reloads a trusted protected current-fence provider
+and trusted paired clock before and after its exactly-once claim and around each
+ordered step. A step is marked pending before its token is returned and advances
+only through explicit successful completion; failure or drop poisons the
+attempt, while forgetting a token leaves a non-advancing pending step. Renew
+cannot replace an already-expired prior gate. Disarm restores and verifies the
+exact planned address, route, and permanent-neighbor configuration after links
+are lowered and default-drop is restored. Destroy exposes only kernel cleanup
+and absence-verification steps: systemd custody and fixed-pin teardown remain
+broker-owned and require later trusted absence observation while the retained
+namespace descriptor stays live.
+
+The realized AOS development shell passed all 173 current
+`aos-sandbox-network` library tests and all-target compilation of the Network
+crate and real-systemd custody fixture after the schema, resealed-recovery, and
+pure lifecycle-protocol changes. The lifecycle-focused selection passed all 20
+tests, the genuine
+two-Ambiguous/no-result collision passed its focused run, and the focused
+namespace-catalog compatibility suite previously passed all 15 tests. These are
+source-level regression results, not a production Apply qualification.
+
+Actual lifecycle descriptor/process/cgroup admission, fixed worker integration,
+kernel effects, trusted post-effect observation, broker-owned teardown,
+controller orchestration, and end-to-end Apply remain incomplete.
+In the current fleet fixture, `aos-netd` exits while opening its protected
+preparation catalog before the Network worker accepts a request. The worker
+unit itself currently uses `RestrictSUIDSGID=false`; the observed systemd 259.8
+failure must not be attributed to that worker setting. A production design
+still requires an enforcing policy that denies set-ID creation and modification
+without preventing the broker's fixed protected-state `openat2` use; substituting
+only `nosuid` and `NoNewPrivileges` is not accepted. Apply remains unadvertised
+and no Network task checkbox is closed.
+
+### Network lifecycle-worker admission boundary (in progress)
+
+The newer admission-only source routes an authenticated lifecycle record through
+the concrete systemd worker exchange. Before accepting target descriptors, the
+broker authenticates the worker process and cgroup, correlates the challenge and
+READY frame, retypes and retains the worker's initial network namespace, and
+fails permanently after any pre-retention error. The worker starts single
+threaded, rejects every unexpected inherited descriptor, disables core dumps,
+and receives no authority directory, protected state, mutation helper, or
+namespace-entry permission. The only successful continuation reaches descriptor
+admission; it cannot authorize or execute a lifecycle effect.
+
+In the pinned realized development shell, all 183 Network library tests pass,
+the exact-binary inherited-descriptor startup test passes, and all-target checks
+pass for both `aos-sandbox-network` and the real-systemd custody fixture. The
+fixture check used source based on commit
+`7c7a6eb2c5510c3a0f82a707043625b270b5eb14` with fixture-only diff digest
+`4ef630119acadf7517e7a30fd8dd0459e346f479128515c69966ec358f60739b`.
+These are source-level and compile results; the newer lifecycle fleet path has
+not run in a guest and supersedes none of the earlier fleet observations above.
+
+Commit `3c9d416d8` adds the pure namespace-inspector protocol and admission
+model without wiring a privileged runtime. Its canonical bounded request has
+the closed `WorkerLeaderPidfd` descriptor role and binds a nonzero one-shot
+nonce, current boot and monotonic validity interval, request/effect/dispatch
+digests, exact worker PID/TGID/PPID and cgroup identity, exact lifecycle unit
+and cgroup names, the protected launch-contract digest, and protected host and
+target namespace anchors. The response has the sole
+`WorkerBootstrapNetworkNamespace` role and binds the inspector-observed
+namespace identity to the same attempt and process. Worker `READY` namespace
+numbers supply no authority. The inspector instead must authenticate the exact
+PID 1 manager and live admission-only unit contract, obtain the namespace from
+the broker-retained worker-leader pidfd, and reject both protected forbidden
+anchors. Only broker completion over a fixed authenticated inspector may create
+the opaque proof, and that completion consumes the pending attempt.
+
+The pure ownership model separates the authenticated broker's immutable
+expected-attempt writer from the inspector's read-only policy lookup and its
+separately protected atomic spent-nonce claim. It rechecks trusted boot time
+before and after claim, when producing the response, and at broker completion;
+all malformed, stale, replayed, wrong-role, multi-descriptor, ancillary,
+launch-contract, unit, cgroup, process, namespace, and peer substitutions fail
+closed. In an index-only snapshot containing only the three-file commit, all 15
+inspector tests and both shared systemd connection-instance parser tests passed.
+The complete snapshot library run passed 155 of 156 tests; the unrelated
+`broker::tests::relocated_operation_fence_fails_recovery` test failed once with
+`AlreadyLocked` and passed its immediate isolated rerun. The then-current full
+Network working tree passed all 200 library tests. These results qualify only
+the pure protocol and admission invariants. They do not provide durable policy
+or replay storage, authenticated transport, live systemd-property proof,
+typed-FD retention, an inspector binary, capability or MAC confinement, or any
+production readiness evidence.
+
+The deployed positive handshake is currently blocked by an authorization
+conflict, not qualified. The worker calls `PR_SET_DUMPABLE(0)` before READY,
+while the capability-empty broker obtains the retained namespace through
+`PIDFD_GET_NET_NAMESPACE`. Linux 6.18.33 routes that ioctl through
+`ptrace_may_access(..., PTRACE_MODE_READ_FSCREDS)`; a nondumpable target requires
+the caller to hold `CAP_SYS_PTRACE` in the target's user namespace. Landlock and
+the stacked LSM hooks can further deny that access but cannot grant it past the
+earlier dumpability check. Both deployed services deliberately have empty
+capability sets, so the attempted retention is expected to fail with `EACCES`.
+No dumpable bootstrap interval, worker-supplied namespace substitution, or broad
+broker capability has been accepted. The narrow independently authenticated
+inspection runtime and its enforcing MAC policy remain unimplemented. Apply
+remains unadvertised and no Network task checkbox is closed.
+
 ### Per-assignment Guardian authority and timer foundation (partial)
 
 Commit `fefe8993f` records the first isolated Guardian foundation. The portable
