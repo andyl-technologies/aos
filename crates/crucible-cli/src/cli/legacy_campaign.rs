@@ -39,35 +39,57 @@ pub(super) fn guarded_campaign_resume_eligible(
         )
         && (plan.terminal_condition != RunTerminalCondition::VirtualTime
             || plan.max_virtual_time_ticks.is_some())
-        && evidence.schedule.decisions().iter().all(|decision| {
-            matches!(
-                decision,
+        && campaign_resume_evidence_supported(evidence)
+}
+
+/// Returns whether the shared campaign owner can execute an unchanged fork exactly.
+pub(super) fn guarded_campaign_fork_eligible(
+    plan: &ForkInvocationPlan,
+    evidence: &ResumeHandleEvidence,
+) -> bool {
+    plan.fork_seed.is_none()
+        && plan.decision_overrides.is_empty()
+        && plan.execution_mode == RunExecutionMode::ToCompletion
+        && plan.startup_commands == [SessionCommandKind::Fork, SessionCommandKind::Continue]
+        && plan.initial_control_commands == [SessionCommandKind::Query]
+        && plan.accepted_interactive_commands.is_empty()
+        && matches!(
+            plan.terminal_condition,
+            RunTerminalCondition::VirtualTime | RunTerminalCondition::Stopped
+        )
+        && (plan.terminal_condition != RunTerminalCondition::VirtualTime
+            || plan.max_virtual_time_ticks.is_some())
+        && campaign_resume_evidence_supported(evidence)
+}
+
+fn campaign_resume_evidence_supported(evidence: &ResumeHandleEvidence) -> bool {
+    evidence.schedule.decisions().iter().all(|decision| {
+        matches!(
+            decision,
+            // crucible-lint: allow host-nondeterminism-state -- eligibility reads authenticated scheduler evidence only to choose the exact campaign resume route.
+            crucible::Decision::DeliveryOrder(_)
                 // crucible-lint: allow host-nondeterminism-state -- eligibility reads authenticated scheduler evidence only to choose the exact campaign resume route.
-                crucible::Decision::DeliveryOrder(_)
-                    // crucible-lint: allow host-nondeterminism-state -- eligibility reads authenticated scheduler evidence only to choose the exact campaign resume route.
-                    | crucible::Decision::RngDraw(_)
-                    // crucible-lint: allow host-nondeterminism-state -- eligibility reads authenticated scheduler evidence only to choose the exact campaign resume route.
-                    | crucible::Decision::Preemption(_)
-                    // crucible-lint: allow host-nondeterminism-state -- eligibility reads an authenticated typed choice whose exact closure is carried by the savepoint.
-                    | crucible::Decision::Selection(_)
+                | crucible::Decision::RngDraw(_)
+                // crucible-lint: allow host-nondeterminism-state -- eligibility reads authenticated scheduler evidence only to choose the exact campaign resume route.
+                | crucible::Decision::Preemption(_)
+                // crucible-lint: allow host-nondeterminism-state -- eligibility reads an authenticated typed choice whose exact closure is carried by the savepoint.
+                | crucible::Decision::Selection(_)
+        )
+    }) && evidence.schedule.decisions().iter().all(|decision| {
+        // crucible-lint: allow host-nondeterminism-state -- eligibility inspects authenticated scheduler evidence only to reject unsupported model-sampled selections before routing.
+        let crucible::Decision::Selection(decision) = decision else {
+            return true;
+        };
+        decision.selection().is_ok_and(|selection| {
+            !matches!(
+                selection.origin(),
+                crucible_campaign::SelectionOrigin::ModelSample(_)
             )
         })
-        && evidence.schedule.decisions().iter().all(|decision| {
-            // crucible-lint: allow host-nondeterminism-state -- eligibility inspects authenticated scheduler evidence only to reject unsupported model-sampled selections before routing.
-            let crucible::Decision::Selection(decision) = decision else {
-                return true;
-            };
-            decision.selection().is_ok_and(|selection| {
-                !matches!(
-                    selection.origin(),
-                    crucible_campaign::SelectionOrigin::ModelSample(_)
-                )
-            })
-        })
-        && evidence
-            .replay_closure
-            .validate_for_schedule(&evidence.scenario_form, &evidence.schedule)
-            .is_ok()
+    }) && evidence
+        .replay_closure
+        .validate_for_schedule(&evidence.scenario_form, &evidence.schedule)
+        .is_ok()
 }
 
 /// Resumes one local-QEMU checkpoint through campaign ownership.
@@ -139,6 +161,53 @@ pub(super) fn run_local_qemu_campaign_resume_workflow(
         &checkpoint_root,
         result,
     )
+}
+
+/// Forks one local-QEMU checkpoint without changing its replay decisions.
+pub(super) fn run_local_qemu_campaign_fork_workflow(
+    backend: &ResolvedLocalBackend,
+    fork_plan: &ForkInvocationPlan,
+    evidence: &ResumeHandleEvidence,
+) -> Result<ForkWorkflowReport, CliError> {
+    if !guarded_campaign_fork_eligible(fork_plan, evidence) {
+        return Err(backend_error(
+            "the requested checkpoint, fork recipe, stop, or control mode does not have an exact campaign-backed QEMU fork adapter",
+        ));
+    }
+
+    let resume_plan = ResumeInvocationPlan {
+        savepoint: fork_plan.source.clone(),
+        store_root: fork_plan.store_root.clone(),
+        terminal_condition: fork_plan.terminal_condition,
+        max_virtual_time: fork_plan.max_virtual_time.clone(),
+        max_virtual_time_ticks: fork_plan.max_virtual_time_ticks,
+        execution_mode: fork_plan.execution_mode,
+        watch_streams_live_status: fork_plan.watch_streams_live_status,
+        startup_commands: vec![SessionCommandKind::Start, SessionCommandKind::Continue],
+        initial_control_commands: fork_plan.initial_control_commands.clone(),
+        accepted_interactive_commands: Vec::new(),
+    };
+    let resumed = run_local_qemu_campaign_resume_workflow(backend, &resume_plan, evidence)?;
+
+    Ok(campaign_fork_workflow_report(fork_plan, evidence, resumed))
+}
+
+fn campaign_fork_workflow_report(
+    fork_plan: &ForkInvocationPlan,
+    evidence: &ResumeHandleEvidence,
+    resumed: ResumeWorkflowReport,
+) -> ForkWorkflowReport {
+    ForkWorkflowReport {
+        run: resumed.run,
+        source_checkpoint: resumed.source_checkpoint,
+        branch_checkpoint: evidence.checkpoint.id,
+        branch_configuration: resumed.resumed_configuration,
+        terminal_configuration: resumed.terminal_configuration,
+        scenario_form: evidence.scenario_form.clone(),
+        scenario_label: fork_plan.source.label(),
+        label: fork_plan.label.clone(),
+        terminal_oracle: resumed.terminal_oracle,
+    }
 }
 
 fn guarded_resume_stop(plan: &ResumeInvocationPlan) -> Result<StopCondition, CliError> {
@@ -1087,6 +1156,25 @@ mod tests {
         }
     }
 
+    fn default_fork_plan(evidence: &ResumeHandleEvidence, store: &Path) -> ForkInvocationPlan {
+        ForkInvocationPlan {
+            source: ResumeSavepointRef::CheckpointHash(evidence.checkpoint.id),
+            label: String::from("campaign-unchanged-fork"),
+            artifact_dir: store.join("artifacts"),
+            store_root: store.to_path_buf(),
+            decision_overrides: Vec::new(),
+            fork_seed: None,
+            terminal_condition: RunTerminalCondition::Stopped,
+            max_virtual_time: None,
+            max_virtual_time_ticks: None,
+            execution_mode: RunExecutionMode::ToCompletion,
+            watch_streams_live_status: false,
+            startup_commands: vec![SessionCommandKind::Fork, SessionCommandKind::Continue],
+            initial_control_commands: vec![SessionCommandKind::Query],
+            accepted_interactive_commands: Vec::new(),
+        }
+    }
+
     fn typed_selection_schedule(scenario: &crucible::ScenarioDef) -> Schedule {
         let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("Boolean domain"));
         let declaration = SelectableDeclaration::new(
@@ -1273,6 +1361,138 @@ mod tests {
             &changed_controls,
             &evidence
         ));
+    }
+
+    #[test]
+    fn campaign_fork_route_accepts_only_unchanged_standard_workflows() {
+        let temporary = TempDir::new().expect("fork route workspace");
+        let evidence = resume_evidence(Schedule::empty(), VirtualTime { ticks: 5 });
+        let default = default_fork_plan(&evidence, temporary.path());
+        assert!(guarded_campaign_fork_eligible(&default, &evidence));
+
+        let mut virtual_time = default.clone();
+        virtual_time.terminal_condition = RunTerminalCondition::VirtualTime;
+        virtual_time.max_virtual_time = Some(String::from("10ticks"));
+        virtual_time.max_virtual_time_ticks = Some(10);
+        assert!(guarded_campaign_fork_eligible(&virtual_time, &evidence));
+
+        let mut reseeded = default.clone();
+        reseeded.fork_seed = Some(7);
+        assert!(!guarded_campaign_fork_eligible(&reseeded, &evidence));
+
+        let mut overridden = default.clone();
+        overridden.decision_overrides = vec![ForkDecisionOverride {
+            decision: String::from("network:delivery"),
+            value: String::from("alternate"),
+        }];
+        assert!(!guarded_campaign_fork_eligible(&overridden, &evidence));
+
+        let mut property = default.clone();
+        property.terminal_condition = RunTerminalCondition::Property;
+        assert!(!guarded_campaign_fork_eligible(&property, &evidence));
+
+        let mut quiescence = default.clone();
+        quiescence.terminal_condition = RunTerminalCondition::Quiescence;
+        assert!(!guarded_campaign_fork_eligible(&quiescence, &evidence));
+
+        let mut interactive = default.clone();
+        interactive.execution_mode = RunExecutionMode::Interactive;
+        interactive.startup_commands = vec![SessionCommandKind::Fork];
+        interactive.accepted_interactive_commands = run_interactive_session_command_set();
+        assert!(!guarded_campaign_fork_eligible(&interactive, &evidence));
+
+        let mut changed_controls = default;
+        changed_controls.initial_control_commands.clear();
+        assert!(!guarded_campaign_fork_eligible(
+            &changed_controls,
+            &evidence
+        ));
+    }
+
+    #[test]
+    fn campaign_unchanged_fork_projects_resume_with_campaign_ownership() {
+        let temporary = TempDir::new().expect("fork projection workspace");
+        let source_frontier = VirtualTime { ticks: 5 };
+        let evidence = resume_evidence(Schedule::empty(), source_frontier);
+        let mut fork_plan = default_fork_plan(&evidence, temporary.path());
+        fork_plan.terminal_condition = RunTerminalCondition::VirtualTime;
+        fork_plan.max_virtual_time = Some(String::from("10ticks"));
+        fork_plan.max_virtual_time_ticks = Some(10);
+        fork_plan.watch_streams_live_status = true;
+        let mut resume_plan = default_resume_plan(&evidence, temporary.path());
+        resume_plan.terminal_condition = fork_plan.terminal_condition;
+        resume_plan.max_virtual_time = fork_plan.max_virtual_time.clone();
+        resume_plan.max_virtual_time_ticks = fork_plan.max_virtual_time_ticks;
+        resume_plan.watch_streams_live_status = true;
+        let ResumeCampaignFixture {
+            campaign,
+            trace: _,
+            checkpoints,
+            checkpoint_directory,
+            checkpoint_root,
+        } = resume_campaign_fixture(
+            &temporary,
+            &evidence,
+            StopCondition::VirtualTimeNanoseconds(10),
+            true,
+        );
+
+        let resumed = campaign_resume_workflow_report(&resume_plan, &evidence, &campaign)
+            .expect("project campaign resume");
+        let report = campaign_fork_workflow_report(&fork_plan, &evidence, resumed);
+        let live_artifact = live_qemu_artifact_evidence_from_run(
+            LiveQemuArtifactRecipe {
+                producer: "fork",
+                terminal_condition: fork_plan.terminal_condition,
+                max_virtual_time_ticks: fork_plan.max_virtual_time_ticks,
+                max_quanta: None,
+                coverage: false,
+                execution_mode: fork_plan.execution_mode,
+                startup_commands: &fork_plan.startup_commands,
+                initial_control_commands: &fork_plan.initial_control_commands,
+                branch: LiveQemuReplayBranch::Resume {
+                    base_decisions: evidence.schedule.len() as u64,
+                    frontier_ticks: source_frontier.ticks,
+                },
+            },
+            &evidence.scenario_form,
+            &report.run,
+        )
+        .expect("campaign-owned fork has replay-complete artifact evidence");
+        drop(campaign);
+        complete_transient_checkpoint_workflow(
+            checkpoints,
+            checkpoint_directory,
+            &checkpoint_root,
+            Ok(()),
+        )
+        .expect("clean transient fork checkpoints");
+
+        assert_eq!(report.run.execution_owner, RunExecutionOwner::Campaign);
+        assert!(report.run.campaign_replay_closure.is_some());
+        assert_eq!(
+            live_artifact.campaign_replay_closure,
+            report.run.campaign_replay_closure
+        );
+        assert_eq!(live_artifact.contract.producer, "fork");
+        assert_eq!(report.source_checkpoint, evidence.checkpoint.id);
+        assert_eq!(report.branch_checkpoint, evidence.checkpoint.id);
+        assert_eq!(report.branch_configuration, evidence.configuration.id());
+        assert_eq!(
+            report.terminal_oracle.configuration,
+            report.terminal_configuration.id()
+        );
+        assert_eq!(report.scenario_form, evidence.scenario_form);
+        assert_eq!(report.scenario_label, fork_plan.source.label());
+        assert_eq!(report.label, fork_plan.label);
+        assert!(
+            report
+                .run
+                .watch_statuses
+                .iter()
+                .all(|status| { status.contains("owner=campaign") })
+        );
+        assert!(!checkpoint_root.exists());
     }
 
     #[test]
@@ -2137,7 +2357,7 @@ mod tests {
             .expect("projected save exposes its logical checkpoint");
         let (handle_resume_plan, handle_evidence) =
             resume_plan_and_evidence_from_cli(&output, temporary.path());
-        let handle_fork_evidence = fork_evidence_from_cli(
+        let (mut handle_fork_plan, handle_fork_evidence) = fork_plan_and_evidence_from_cli(
             &output.display().to_string(),
             temporary.path(),
             &artifact_directory,
@@ -2145,8 +2365,11 @@ mod tests {
         let checkpoint_reference = format_content_hash_ref(checkpoint);
         let (store_resume_plan, store_evidence) =
             resume_plan_and_evidence_from_cli(Path::new(&checkpoint_reference), temporary.path());
-        let store_fork_evidence =
-            fork_evidence_from_cli(&checkpoint_reference, temporary.path(), &artifact_directory);
+        let (mut store_fork_plan, store_fork_evidence) = fork_plan_and_evidence_from_cli(
+            &checkpoint_reference,
+            temporary.path(),
+            &artifact_directory,
+        );
 
         assert_eq!(handle_evidence, handle_fork_evidence);
         assert_eq!(handle_evidence, store_evidence);
@@ -2159,6 +2382,32 @@ mod tests {
         assert!(guarded_campaign_resume_eligible(
             &store_resume_plan,
             &store_evidence
+        ));
+        assert!(!guarded_campaign_fork_eligible(
+            &handle_fork_plan,
+            &handle_fork_evidence
+        ));
+        assert!(!guarded_campaign_fork_eligible(
+            &store_fork_plan,
+            &store_fork_evidence
+        ));
+        let fork_frontier = handle_evidence
+            .checkpoint
+            .virtual_time
+            .ticks
+            .saturating_mul(2);
+        for plan in [&mut handle_fork_plan, &mut store_fork_plan] {
+            plan.terminal_condition = RunTerminalCondition::VirtualTime;
+            plan.max_virtual_time = Some(format!("{fork_frontier}ticks"));
+            plan.max_virtual_time_ticks = Some(fork_frontier);
+        }
+        assert!(guarded_campaign_fork_eligible(
+            &handle_fork_plan,
+            &handle_fork_evidence
+        ));
+        assert!(guarded_campaign_fork_eligible(
+            &store_fork_plan,
+            &store_fork_evidence
         ));
 
         if with_selection {
@@ -2207,15 +2456,17 @@ mod tests {
             assert_eq!(runtime.block_on(client.session_count()), 0);
             assert_eq!(lifecycle_starts.load(Ordering::Relaxed), 0);
 
-            for (reader, mut plan, evidence) in [
+            for (reader, mut plan, mut fork_plan, evidence) in [
                 (
                     "v5 handle",
                     handle_resume_plan.clone(),
+                    handle_fork_plan.clone(),
                     handle_evidence.clone(),
                 ),
                 (
                     "v3 DAG index",
                     store_resume_plan.clone(),
+                    store_fork_plan.clone(),
                     store_evidence.clone(),
                 ),
             ] {
@@ -2225,6 +2476,10 @@ mod tests {
                 plan.max_virtual_time = Some(format!("{terminal_frontier}ticks"));
                 plan.max_virtual_time_ticks = Some(terminal_frontier);
                 assert!(guarded_campaign_resume_eligible(&plan, &evidence));
+                fork_plan.terminal_condition = RunTerminalCondition::VirtualTime;
+                fork_plan.max_virtual_time = Some(format!("{terminal_frontier}ticks"));
+                fork_plan.max_virtual_time_ticks = Some(terminal_frontier);
+                assert!(guarded_campaign_fork_eligible(&fork_plan, &evidence));
 
                 // This modeled lifecycle proves campaign ownership and exact
                 // reply application. Packaged-QEMU acceptance remains a VM gate.
@@ -2257,6 +2512,11 @@ mod tests {
                         *actual_generation == generation as u64 && frontier.ticks == source_frontier
                     }
                 ));
+                assert!(
+                    selection_applications
+                        .iter()
+                        .any(|(generation, _)| { *generation >= 2 })
+                );
                 assert_eq!(
                     source_savepoint.evidence().frontier().ticks,
                     source_frontier
@@ -2293,6 +2553,75 @@ mod tests {
                     .unwrap_or_else(|error| panic!("{reader} projection should pass: {error}"));
                 assert_eq!(report.run.execution_owner, RunExecutionOwner::Campaign);
                 assert_eq!(report.run.final_frontier_ticks, terminal_frontier);
+                let fork_report = campaign_fork_workflow_report(&fork_plan, &evidence, report);
+                let live_artifact = live_qemu_artifact_evidence_from_run(
+                    LiveQemuArtifactRecipe {
+                        producer: "fork",
+                        terminal_condition: fork_plan.terminal_condition,
+                        max_virtual_time_ticks: fork_plan.max_virtual_time_ticks,
+                        max_quanta: None,
+                        coverage: false,
+                        execution_mode: fork_plan.execution_mode,
+                        startup_commands: &fork_plan.startup_commands,
+                        initial_control_commands: &fork_plan.initial_control_commands,
+                        branch: LiveQemuReplayBranch::Resume {
+                            base_decisions: evidence.schedule.len() as u64,
+                            frontier_ticks: source_frontier,
+                        },
+                    },
+                    &evidence.scenario_form,
+                    &fork_report.run,
+                )
+                .unwrap_or_else(|error| {
+                    panic!("{reader} typed fork artifact capture should pass: {error}")
+                });
+                let closure_bytes = live_artifact
+                    .campaign_replay_closure
+                    .as_deref()
+                    .unwrap_or_else(|| panic!("{reader} fork artifact must retain its closure"));
+                let replay_closure =
+                    GuardedCampaignReplayClosure::from_canonical_bytes(closure_bytes)
+                        .unwrap_or_else(|error| {
+                            panic!("{reader} fork closure should decode: {error}")
+                        });
+                replay_closure
+                    .validate_for_schedule(
+                        &evidence.scenario_form,
+                        &fork_report.terminal_configuration.schedule,
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("{reader} fork closure should cover terminal schedule: {error}")
+                    });
+                assert_eq!(
+                    expected_live_qemu_execution_owner(
+                        &live_artifact.contract,
+                        &fork_report.terminal_configuration.schedule,
+                        true,
+                    ),
+                    RunExecutionOwner::Campaign,
+                );
+                let replay_closure = campaign_owner_replay_closure(
+                    "fork",
+                    &fork_report.terminal_configuration.schedule,
+                    Some(replay_closure),
+                )
+                .unwrap_or_else(|error| {
+                    panic!("{reader} fork replay should admit its closure: {error}")
+                });
+                replay_closure
+                    .validate_for_schedule(
+                        &evidence.scenario_form,
+                        &fork_report.terminal_configuration.schedule,
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("{reader} admitted fork closure should remain exact: {error}")
+                    });
+                assert_eq!(fork_report.source_checkpoint, checkpoint);
+                assert_eq!(fork_report.branch_checkpoint, checkpoint);
+                assert_eq!(
+                    fork_report.branch_configuration,
+                    evidence.configuration.id()
+                );
             }
 
             let handle_text = std::fs::read_to_string(&output).expect("read v5 handle");
@@ -2467,11 +2796,11 @@ mod tests {
         (plan, evidence)
     }
 
-    fn fork_evidence_from_cli(
+    fn fork_plan_and_evidence_from_cli(
         savepoint: &str,
         store: &Path,
         artifact_directory: &Path,
-    ) -> ResumeHandleEvidence {
+    ) -> (ForkInvocationPlan, ResumeHandleEvidence) {
         let cli = Cli::parse_from([
             String::from("crucible"),
             String::from("--store"),
@@ -2483,7 +2812,9 @@ mod tests {
             panic!("expected fork command");
         };
         let plan = plan_fork_invocation(args, None, artifact_directory, store).expect("fork plan");
-        fork_handle_evidence(&plan).expect("unchanged fork reader accepts campaign save")
+        let evidence =
+            fork_handle_evidence(&plan).expect("unchanged fork reader accepts campaign save");
+        (plan, evidence)
     }
 
     #[test]
