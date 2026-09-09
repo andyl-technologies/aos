@@ -78,13 +78,12 @@ in
     runtimeDeps = [];
     propagatedDeps = [];
 
-    # Per-output reference check: $out must not reference the unwrapped
-    # compiler or the cc-wrapper. If a substitution in postInstall misses
-    # a path, Nix fails the build with the offending reference. $dev is
-    # exempt — it intentionally keeps the unscrubbed Config files.
+    # Reject compiler references and make's recorded build-search paths in
+    # the runtime output. The development output intentionally preserves
+    # the original configuration for inspection.
     outputChecks = {
       out = {
-        disallowedReferences = [recordedGcc recordedGccUnwrapped recordedCc];
+        disallowedReferences = [recordedGcc recordedGccUnwrapped recordedCc gnumake];
       };
     };
 
@@ -282,25 +281,23 @@ in
               cp "$cfg" "$dev/$rel"
             done
 
-            # ── Scrub $out: rewrite build-time toolchain refs ──────────────
-            # Mirrors nixpkgs perl/interpreter.nix:312-332. After this step
-            # $Config{cc}, $Config{libpth}, etc. resolve to /no-such-path
-            # (or empty). The AOS perl-consumer audit shows no package
-            # reads $Config{cc}, so this breaks nothing — and it cuts the
-            # ~900 MB toolchain cascade that perl drags into every closure.
+            # Runtime Config retains interpreter paths and ABI information,
+            # but build-tool paths must not retain the bootstrap toolchain.
+            # The original configuration remains available in $dev.
 
             # libpth is a parsed Perl list; substituting hash digits inside
             # the string would leave a syntactically-valid but bogus path.
-            # Replace the whole line instead (mirrors interpreter.nix:317-318).
+            # Replace the whole line instead.
             sed "/ *libpth =>/c\\    libpth => ' '," \
               -i "$out"/lib/perl5/*/*/Config.pm
 
-            # Config_heavy.pl entries are inert strings — plain path
-            # substitution is safe. The pattern set covers perl's directly-
-            # recorded cc/gcc and the glibc outputs Configure picks up via
-            # CFLAGS/LIBRARY_PATH; without scrubbing glibc.dev/glibc.static
-            # the closure leak would just shift from gcc to those.
+            # Configure also records search paths for every injected build
+            # tool, including bootstrap xz and gawk. Those references can
+            # retain historical compilers even after GCC itself is scrubbed.
+            # outputChecks enables structured attrs, so nativeBuildInputs is
+            # an array containing both explicit and automatic build inputs.
             for pattern in \
+              "''${nativeBuildInputs[@]}" \
               "${recordedCc}" \
               "${recordedGcc}" \
               "${recordedGccUnwrapped}" \
@@ -310,6 +307,7 @@ in
             ; do
               if [ -n "$pattern" ]; then
                 sed -i "s|$pattern|/no-such-path|g" \
+                  "$out"/lib/perl5/*/*/Config.pm \
                   "$out"/lib/perl5/*/*/Config_heavy.pl
               fi
             done
