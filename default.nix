@@ -1374,6 +1374,13 @@ in {
       linux-hosted-toolchain = import ./tests/build/linux-hosted-toolchain.nix {
         pkgs = buildPackages;
       };
+      linux-hosted-llvm = builtins.listToAttrs (map (version: {
+        name = "llvm-${version}";
+        value = import ./tests/build/linux-hosted-toolchain.nix {
+          pkgs = buildPackages;
+          llvmVersion = version;
+        };
+      }) ["17" "18" "19" "20" "21" "22"]);
       package-platform-support = import ./tests/build/package-platform-support.nix {
         pkgs = buildPackages;
       };
@@ -1388,7 +1395,7 @@ in {
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in
       {
-        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-smoke linux-hosted-toolchain package-platform-support package-root-image structured-attrs-export systemd-verity golden-image-budgets;
+        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm package-platform-support package-root-image structured-attrs-export systemd-verity golden-image-budgets;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
           pname = "aos-build-checks-all";
@@ -1402,6 +1409,7 @@ in {
             )
             ++ [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config linux-hosted-toolchain package-platform-support package-root-image structured-attrs-export systemd-verity]
             ++ builtins.attrValues hardening-probe
+            ++ builtins.attrValues linux-hosted-llvm
             ++ builtins.attrValues golden-image-budgets;
           phases = [
             {
