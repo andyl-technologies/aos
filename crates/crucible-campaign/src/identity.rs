@@ -674,6 +674,12 @@ content_object_id!(
     "crucible.campaign.planner-candidate-budget",
     "Identifies one snapshot-bound candidate budget eligibility projection."
 );
+content_object_id!(
+    PlannerBeamCandidateId,
+    ObjectKind::Projection,
+    "crucible.campaign.planner-beam-candidate",
+    "Identifies one snapshot-bound Beam candidate and survivor-decision binding."
+);
 semantic_id!(
     CreditId,
     "Identifies one idempotent observation-to-branch credit."

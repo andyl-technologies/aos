@@ -34,7 +34,7 @@ use std::time::Duration;
 use crate::supervision::ProcessDeadline;
 
 use crucible_campaign::{
-    CampaignCodecError, CanonicalFrontierPlanner, CanonicalPuctPlanner,
+    CampaignCodecError, CanonicalBeamPlanner, CanonicalFrontierPlanner, CanonicalPuctPlanner,
     MAX_PLANNER_COMPONENT_MESSAGE_BYTES, PlannerEngineOutput, PlannerExecutionSupervisor,
     PlannerRequest, PlannerStepProposal, PurePlannerEngine, SupervisedPlannerExecution,
 };
@@ -267,6 +267,18 @@ impl PlannerExecutionSupervisor<CanonicalPuctPlanner> for CanonicalPlannerProces
     }
 }
 
+impl PlannerExecutionSupervisor<CanonicalBeamPlanner> for CanonicalPlannerProcessSupervisor {
+    type Error = CanonicalPlannerProcessError;
+
+    fn execute(
+        &mut self,
+        _engine: &mut CanonicalBeamPlanner,
+        request: &PlannerRequest,
+    ) -> Result<SupervisedPlannerExecution<CampaignCodecError>, Self::Error> {
+        self.execute_supervised(request)
+    }
+}
+
 /// Failure from canonical planner process configuration or supervision.
 #[derive(Debug, thiserror::Error)]
 pub enum CanonicalPlannerProcessError {
@@ -361,6 +373,10 @@ pub fn serve_canonical_planner_process_once(
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
     {
         CanonicalPuctPlanner.plan(&request)
+    } else if CanonicalBeamPlanner::supports_descriptor(request.engine())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
+    {
+        CanonicalBeamPlanner.plan(&request)
     } else {
         Err(CampaignCodecError::InvalidValue {
             reason: "canonical planner worker received an unsupported engine",

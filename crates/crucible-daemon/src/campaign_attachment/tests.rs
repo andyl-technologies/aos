@@ -10,10 +10,10 @@ use std::time::Duration;
 use crucible_campaign::{
     CampaignCommandId, CampaignControlAction, CampaignHash, CampaignLineage, CampaignMode,
     CampaignPlannerDriverError, CampaignPolicy, CampaignRepositoryError, CampaignSeed,
-    CanonicalFrontierPlanner, CanonicalPuctPlanner, ConfigurationId, ControlRequest, DaemonEpoch,
-    DebuggerAuthorityKey, ExecutorCapabilitySet, ExecutorCompatibilityProfile,
-    ExecutorMaterializationCapability, ExplorerPolicy, FairnessPolicy, ProgressiveWideningPolicy,
-    PuctPolicy, RetentionPolicy, ScenarioDefId,
+    CanonicalBeamPlanner, CanonicalFrontierPlanner, CanonicalPuctPlanner, ConfigurationId,
+    ControlRequest, DaemonEpoch, DebuggerAuthorityKey, ExecutorCapabilitySet,
+    ExecutorCompatibilityProfile, ExecutorMaterializationCapability, ExplorerPolicy,
+    FairnessPolicy, ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy, ScenarioDefId,
 };
 use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
 
@@ -277,7 +277,7 @@ fn exhaustive_campaign_attaches_the_frontier_planner() {
         before + 4
     );
     let expected = CanonicalFrontierPlanner::basis().expect("frontier basis");
-    let (planner, _executor) = prepared.supervisor.into_drivers();
+    let (planner, _executor) = prepared.supervisor.into_inner().into_drivers();
     assert_eq!(planner.engine(), expected.engine());
     assert_eq!(planner.policy_artifact(), expected.artifact());
     assert_eq!(planner.initial_state(), expected.initial_state());
@@ -303,7 +303,7 @@ fn tree_search_campaign_attaches_the_puct_planner() {
     server.join().expect("join executor description server");
 
     let expected = CanonicalPuctPlanner::basis().expect("PUCT basis");
-    let (planner, _executor) = prepared.supervisor.into_drivers();
+    let (planner, _executor) = prepared.supervisor.into_inner().into_drivers();
     assert_eq!(planner.engine(), expected.engine());
     assert_eq!(planner.policy_artifact(), expected.artifact());
     assert_eq!(planner.initial_state(), expected.initial_state());
@@ -314,7 +314,7 @@ fn tree_search_campaign_attaches_the_puct_planner() {
 }
 
 #[test]
-fn beam_campaign_is_rejected_before_planner_basis_publication() {
+fn beam_campaign_attaches_the_beam_planner() {
     let (repository, blobs, planner, lineage) = fixture_with_explorer(ExplorerPolicy::Beam {
         width: 8,
         novelty_reserve: 2,
@@ -328,15 +328,22 @@ fn beam_campaign_is_rejected_before_planner_basis_publication() {
     )
     .expect("runtime config");
 
-    assert!(matches!(
-        prepare_canonical_campaign_runtime(repository, planner, executor, &config),
-        Err(CanonicalCampaignRuntimeError::UnsupportedExplorerPolicy)
-    ));
+    let prepared = prepare_canonical_campaign_runtime(repository, planner, executor, &config)
+        .expect("prepare Beam runtime");
     server.join().expect("join executor description server");
     assert_eq!(
-        blobs.object_count().expect("objects after rejection"),
-        before
+        blobs.object_count().expect("objects after attachment"),
+        before + 4
     );
+    let expected = CanonicalBeamPlanner::basis().expect("Beam basis");
+    let (planner, _executor) = prepared.supervisor.into_inner().into_drivers();
+    assert_eq!(planner.engine(), expected.engine());
+    assert_eq!(planner.policy_artifact(), expected.artifact());
+    assert_eq!(planner.initial_state(), expected.initial_state());
+    assert!(matches!(
+        planner.into_planner().into_inner(),
+        CanonicalPlannerService::Beam(_)
+    ));
 }
 
 #[test]
@@ -404,7 +411,7 @@ fn attached_frontier_planner_rejects_a_later_explorer_change_before_invocation()
         .expect("resume changed campaign");
 
     let before_step = blobs.object_count().expect("objects before planner step");
-    let (mut planner, _executor) = prepared.supervisor.into_drivers();
+    let (mut planner, _executor) = prepared.supervisor.into_inner().into_drivers();
     let outcome = planner.step("attached");
     assert!(
         matches!(

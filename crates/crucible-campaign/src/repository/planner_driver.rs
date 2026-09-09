@@ -26,6 +26,7 @@ pub struct CampaignPlannerDriver<S> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RequiredExplorerPolicy {
     TreeSearch,
+    Beam,
     Exhaustive,
 }
 
@@ -34,6 +35,7 @@ impl RequiredExplorerPolicy {
         matches!(
             (self, explorer),
             (Self::TreeSearch, crate::ExplorerPolicy::TreeSearch { .. })
+                | (Self::Beam, crate::ExplorerPolicy::Beam { .. })
                 | (Self::Exhaustive, crate::ExplorerPolicy::Exhaustive { .. })
         )
     }
@@ -111,6 +113,17 @@ impl<S> CampaignPlannerDriver<S> {
     #[must_use]
     pub fn require_exhaustive_policy(mut self) -> Self {
         self.required_explorer = Some(RequiredExplorerPolicy::Exhaustive);
+        self
+    }
+
+    /// Restricts this driver to Beam policy revisions.
+    ///
+    /// A later active-policy change to another explorer family fails before a
+    /// planner invocation is published. Same-family width, reserve, objective,
+    /// and stop-policy revisions remain policy-bound inputs to a fresh scan.
+    #[must_use]
+    pub fn require_beam_policy(mut self) -> Self {
+        self.required_explorer = Some(RequiredExplorerPolicy::Beam);
         self
     }
 
@@ -243,6 +256,8 @@ impl<S> CampaignPlannerDriver<S> {
             && (CanonicalFrontierPlanner::supports_descriptor(request.engine())
                 .map_err(CampaignRepositoryError::from)?
                 || CanonicalPuctPlanner::supports_descriptor(request.engine())
+                    .map_err(CampaignRepositoryError::from)?
+                || CanonicalBeamPlanner::supports_descriptor(request.engine())
                     .map_err(CampaignRepositoryError::from)?)
         {
             // A complete scan may have passed blocked pages before an empty

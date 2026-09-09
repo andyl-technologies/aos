@@ -118,6 +118,26 @@ impl CampaignRepository {
         unpublished_derived_inputs.extend(
             candidate_inputs
                 .values()
+                .filter_map(|input| input.beam.as_ref())
+                .map(crate::PlannerBeamCandidate::id)
+                .map(|result| result.map(|id| id.content_id()))
+                .collect::<Result<BTreeSet<_>, _>>()?,
+        );
+        for object_id in request.input_bundle().object_ids() {
+            let Some(object) = request.input_bundle().object(object_id)? else {
+                return Err(integrity("planner-request-bundle-object-is-missing"));
+            };
+            if matches!(
+                object.record_kind(),
+                crate::CampaignRecordKind::SurvivorSelection
+                    | crate::CampaignRecordKind::RankingExplanation
+            ) {
+                unpublished_derived_inputs.insert(object_id);
+            }
+        }
+        unpublished_derived_inputs.extend(
+            candidate_inputs
+                .values()
                 .filter_map(|input| input.budget.as_ref())
                 .map(crate::PlannerCandidateBudget::id)
                 .map(|result| result.map(|id| id.content_id()))
@@ -137,6 +157,12 @@ impl CampaignRepository {
             }
         }
         let snapshot = self.read_snapshot(request.expected_snapshot().content_id())?;
+        let beam_projection = request
+            .engine()
+            .capabilities()
+            .contains(crate::CANONICAL_BEAM_SURVIVORS_CAPABILITY)
+            .then(|| self.project_beam_planner(&snapshot, request.policy()))
+            .transpose()?;
         let budget_ledger = request
             .engine()
             .capabilities()
@@ -219,6 +245,15 @@ impl CampaignRepository {
                     return Err(integrity("planner-request-candidate-guidance-mismatch"));
                 }
             }
+            if let Some(beam) = &input.beam {
+                let expected = beam_projection
+                    .as_ref()
+                    .and_then(|projection| projection.candidates.get(&position))
+                    .ok_or_else(|| integrity("planner-request-Beam-projection-is-missing"))?;
+                if expected != beam {
+                    return Err(integrity("planner-request-Beam-projection-mismatch"));
+                }
+            }
         }
         Ok(())
     }
@@ -234,6 +269,10 @@ impl CampaignRepository {
                 .map_err(CampaignRepositoryError::Codec)?
         } else if CanonicalPuctPlanner::supports_descriptor(request.engine())? {
             CanonicalPuctPlanner
+                .plan(request)
+                .map_err(CampaignRepositoryError::Codec)?
+        } else if CanonicalBeamPlanner::supports_descriptor(request.engine())? {
+            CanonicalBeamPlanner
                 .plan(request)
                 .map_err(CampaignRepositoryError::Codec)?
         } else {
@@ -256,6 +295,10 @@ impl CampaignRepository {
                 .map_err(CampaignRepositoryError::Codec)?
         } else if CanonicalPuctPlanner::supports_descriptor(request.engine())? {
             CanonicalPuctPlanner
+                .plan(request)
+                .map_err(CampaignRepositoryError::Codec)?
+        } else if CanonicalBeamPlanner::supports_descriptor(request.engine())? {
+            CanonicalBeamPlanner
                 .plan(request)
                 .map_err(CampaignRepositoryError::Codec)?
         } else {

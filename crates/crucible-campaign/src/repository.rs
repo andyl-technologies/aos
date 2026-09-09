@@ -16,6 +16,7 @@ use crucible_cas::content_store::{
 };
 use thiserror::Error;
 
+use crate::CampaignViewId;
 use crate::{
     ActiveAttemptPolicy, AdmissionOrdinal, Attempt, AttemptAdmission, AttemptAdmissionId,
     AttemptAdmissionRole, AttemptId, AttemptStart, AttemptStartMode, BranchPath, BranchPathId,
@@ -24,10 +25,10 @@ use crate::{
     CampaignLineageId, CampaignMode, CampaignPlanningView, CampaignPolicy, CampaignPolicyId,
     CampaignSnapshot, CampaignSnapshotId, CampaignState, CampaignStoreError,
     CandidateGeneratorAlgorithm, CandidateGeneratorSpec, CandidateGeneratorSpecId, CandidateSource,
-    CanonicalFrontierPlanner, CanonicalPuctPlanner, ChoiceDomain, ChoiceDomainId, ChoiceGroup,
-    ChoiceGroupId, ChoiceOpportunity, ChoiceOpportunityId, ConfigurationArtifact,
-    ConfigurationArtifactId, ConfigurationId, ContinuationProjection, ControlRequest,
-    CoverageProjection, CoverageProjectionId, DaemonEpoch, DebuggerAuthorityKey,
+    CanonicalBeamPlanner, CanonicalFrontierPlanner, CanonicalPuctPlanner, ChoiceDomain,
+    ChoiceDomainId, ChoiceGroup, ChoiceGroupId, ChoiceOpportunity, ChoiceOpportunityId,
+    ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, ContinuationProjection,
+    ControlRequest, CoverageProjection, CoverageProjectionId, DaemonEpoch, DebuggerAuthorityKey,
     DebuggerSubmission, DiscoveryRequest, ExecutorCompatibilityProfile, ExecutorRejection,
     ExpansionCredit, ExpansionState, ExpansionStateId, Finding, FindingCandidateBundle,
     FindingCandidateBundleId, FindingId, FindingMinimizationEvidence, FindingOccurrenceSet,
@@ -1263,6 +1264,10 @@ pub struct CampaignRepository {
     // validated parent through one of the repository's exact owner mutations.
     // The map is optional bounded acceleration state, never campaign truth.
     validated_heads: Mutex<BTreeMap<ContentId, ValidationCheckpoint>>,
+    // Beam projection is immutable for one exact semantic view and policy.
+    // Retaining only the latest entry bounds memory while allowing planner
+    // pages and response preflight to share the expensive root scans.
+    beam_projection_cache: Mutex<Option<projection::BeamProjectionCacheEntry>>,
     planner_authority: Option<PlannerAuthorityKey>,
     debugger_authority: Option<DebuggerAuthorityKey>,
 }
@@ -1344,7 +1349,10 @@ pub use executor_driver::{
     CampaignExecutorDriverConfigError, CampaignExecutorDriverError, CampaignExecutorStepOutcome,
 };
 pub use finding::FindingPublicationResult;
-pub use objective::ObjectiveEvaluationPublicationResult;
+pub use objective::{
+    MAX_OBJECTIVE_EVALUATION_SCAN_PAGE_ITEMS, ObjectiveEvaluationCursor, ObjectiveEvaluationInput,
+    ObjectiveEvaluationPublicationResult, ObjectiveEvaluationScanPage,
+};
 pub use planner_driver::{
     CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignPlannerDriverError,
     CampaignPlannerStepOutcome,

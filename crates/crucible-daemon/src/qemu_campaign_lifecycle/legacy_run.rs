@@ -77,7 +77,7 @@ const DEFAULT_RUN_MAX_SUPERVISOR_STEPS: usize = 1_000_000;
 const DEFAULT_RUN_RECONCILIATION_STEPS: usize = 64;
 
 type DefaultPlannerService =
-    AuthorizedPlannerService<crucible_campaign::CanonicalFrontierPlanner, LocalPlannerMeter>;
+    AuthorizedPlannerService<crucible_campaign::CanonicalBeamPlanner, LocalPlannerMeter>;
 type DefaultPlannerServiceError =
     AuthorizedPlannerServiceError<CampaignCodecError, LocalPlannerMeterError>;
 type DefaultExecutorService<R> = SynchronousCampaignExecutor<CrucibleExecutionModel<R>>;
@@ -437,6 +437,9 @@ where
     /// The campaign repository rejected a durable operation.
     #[error("guarded default campaign repository failed: {0}")]
     Repository(#[source] CampaignRepositoryError),
+    /// Objective evidence replay or publication failed.
+    #[error("guarded default campaign objective evaluation failed: {0}")]
+    Objective(#[source] crate::ObjectiveEvaluationDriverError),
     /// Reserving bounded result storage failed.
     #[error("guarded default campaign result allocation failed: {0}")]
     Allocation(#[source] std::collections::TryReserveError),
@@ -699,10 +702,10 @@ where
         None => executor_service,
     };
     let planner_basis = repository
-        .publish_canonical_frontier_planner_basis()
+        .publish_canonical_beam_planner_basis()
         .map_err(GuardedDefaultCampaignRunError::Repository)?;
     let planner_service = AuthorizedPlannerService::new(
-        crucible_campaign::CanonicalFrontierPlanner,
+        crucible_campaign::CanonicalBeamPlanner,
         LocalPlannerMeter,
         planner_authority.clone(),
     );
@@ -717,7 +720,8 @@ where
         DEFAULT_RUN_PLANNER_SCAN,
         planning_budget,
     )
-    .map_err(GuardedDefaultCampaignRunError::PlannerConfiguration)?;
+    .map_err(GuardedDefaultCampaignRunError::PlannerConfiguration)?
+    .require_beam_policy();
     let executor = CampaignExecutorDriver::new(
         Arc::clone(&repository),
         crucible_campaign::ExecutorClient::new(executor_service),
@@ -985,7 +989,17 @@ where
     let mut observations = Vec::new();
     let mut branch_request_count = 0usize;
     let mut pending_capture: Option<DefaultRunPendingSavepointCapture> = None;
+    let mut objective_evaluation_cursor = None;
     for supervisor_iteration in 0..DEFAULT_RUN_MAX_SUPERVISOR_STEPS {
+        if crate::publish_next_objective_evaluation(
+            context.repository,
+            context.campaign.as_str(),
+            &mut objective_evaluation_cursor,
+        )
+        .map_err(GuardedDefaultCampaignRunError::Objective)?
+        {
+            continue;
+        }
         // crucible-lint: allow host-nondeterminism-state -- the shared supervisor advances only authenticated campaign planner and executor operations.
         let supervisor_result = supervisor.step();
         let outcome = supervisor_result

@@ -13,6 +13,7 @@ impl CampaignRepository {
             merkle,
             mutation_lock: Mutex::new(()),
             validated_heads: Mutex::new(BTreeMap::new()),
+            beam_projection_cache: Mutex::new(None),
             planner_authority: None,
             debugger_authority: None,
         }
@@ -109,6 +110,43 @@ impl CampaignRepository {
         {
             return Err(integrity(
                 "canonical-PUCT-planner-basis-publication-mismatch",
+            ));
+        }
+        self.verify_campaign_closures_anchored_cached(
+            [artifact, state],
+            &BTreeSet::new(),
+            &mut ChoiceValidationCache::default(),
+        )?;
+        Ok(basis)
+    }
+
+    /// Publishes and authenticates the deterministic Beam planner basis.
+    ///
+    /// Publication is idempotent and does not mutate a campaign ref.
+    ///
+    /// # Errors
+    ///
+    /// Returns a codec, store, or integrity error if the closed basis cannot be
+    /// derived, placed, or authenticated as one complete repository closure.
+    pub fn publish_canonical_beam_planner_basis(
+        &self,
+    ) -> Result<crate::CanonicalBeamPlannerBasis, CampaignRepositoryError> {
+        let basis = CanonicalBeamPlanner::basis()?;
+        let dependency = CanonicalBeamPlanner::dependency_lock_id();
+        self.blobs.put_if_absent(
+            dependency,
+            &BlobHandle::from_bytes(CanonicalBeamPlanner::dependency_lock_bytes().to_vec()),
+        )?;
+
+        let engine = self.put_planner_engine(basis.engine())?;
+        let artifact = self.put_policy_artifact(basis.artifact())?;
+        let state = self.put_planner_state(basis.initial_state())?;
+        if engine != basis.engine().id()?.content_id()
+            || artifact != basis.artifact().id()?.content_id()
+            || state != basis.initial_state().id()?.content_id()
+        {
+            return Err(integrity(
+                "canonical-Beam-planner-basis-publication-mismatch",
             ));
         }
         self.verify_campaign_closures_anchored_cached(

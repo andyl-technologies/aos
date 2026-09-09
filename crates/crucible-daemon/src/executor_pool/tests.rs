@@ -13,11 +13,15 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
-use crucible::model::MeasurementTerminalState;
+use crucible::model::{
+    Aggregation, BoundarySelector, CohortPolicy, MeasurementDefinition, MeasurementDefinitions,
+    MeasurementId, MeasurementTerminalState, MetricDefinition, MetricId, MetricSource,
+    MetricValueType, UnitId,
+};
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, MaterializedState, Plan, Properties, ScenarioDef,
-    ScenarioDefForm, SchedulerLivenessScenario, Seed, Shift, SimInstant, SingleScheduler,
-    SingleSchedulerCheckpoint, VirtualTime, World,
+    Checkpoint, CheckpointKind, Configuration, Icount, MaterializedState, Plan, Properties,
+    ScenarioDef, ScenarioDefForm, SchedulerLivenessScenario, Seed, Shift, SimInstant,
+    SingleScheduler, SingleSchedulerCheckpoint, VirtualTime, World,
 };
 use crucible_campaign::{
     AssignmentId, Attempt, AttemptId, AttemptResourceLimits, AttemptStart, BooleanDomain,
@@ -25,18 +29,20 @@ use crucible_campaign::{
     CampaignCommandId, CampaignControlAction, CampaignExecutorDriver, CampaignExecutorStepOutcome,
     CampaignExecutorStore, CampaignFactId, CampaignHash, CampaignLineage, CampaignLineageId,
     CampaignMode, CampaignPolicy, CampaignRepository, CampaignSeed, CancelAttemptExecutionRequest,
-    CancelAttemptExecutionResponse, CandidateSource, CheckpointAttemptExecutionRequest,
-    CheckpointAttemptExecutionResponse, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
-    ChoiceOpportunity, ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationArtifactId,
-    ConfigurationId, ControlRequest, CoverageProjection, DaemonEpoch, ExactCheckpointId,
-    ExactRational, ExecutionId, ExecutionRetentionIntent, ExecutorCapabilitySet, ExecutorClient,
-    ExecutorCompatibilityProfile, ExecutorControlService, ExecutorDescription,
-    ExecutorMaterializationCapability, ExecutorRejection, ExecutorResumeService, ExecutorService,
-    ExecutorStatusService, ExplorerPolicy, FairnessPolicy, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse, MeasurementSet, Observation,
-    ObservationCandidate, ObservationId, ProgressiveWideningPolicy, PropertyVerdictSet, Proposal,
-    PuctPolicy, ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, RetentionPolicy,
-    SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
+    CancelAttemptExecutionResponse, CandidateSource, CanonicalBeamPlanner,
+    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, ChoiceClassContext,
+    ChoiceCoordinate, ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue,
+    ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, ControlRequest,
+    CoverageProjection, DaemonEpoch, ExactCheckpointId, ExactRational, ExecutionId,
+    ExecutionRetentionIntent, ExecutorCapabilitySet, ExecutorClient, ExecutorCompatibilityProfile,
+    ExecutorControlService, ExecutorDescription, ExecutorMaterializationCapability,
+    ExecutorRejection, ExecutorResumeService, ExecutorService, ExecutorStatusService,
+    ExplorerPolicy, FairnessPolicy, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
+    GetAttemptExecutionResponse, MeasurementSet, Objective, ObjectiveGoal, Observation,
+    ObservationCandidate, ObservationId, PlannerProposalDisposition, PlanningBudget,
+    PlanningScanPosition, ProgressiveWideningPolicy, PropertyVerdictSet, Proposal, PuctPolicy,
+    PurePlannerEngine, ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse,
+    RetentionPolicy, SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
     SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse, WorkerSlotId,
 };
 use crucible_cas::content_store::{
@@ -46,6 +52,7 @@ use crucible_cas::content_store::{
 use crucible_qemu::{QemuReplayOracleCheck, QemuReplayOracleValidation, QemuVmSnapshot};
 
 use super::*;
+use crate::executor_worker::publish_prepared_semantic_attempt_result;
 use crate::{
     AllowAllAttemptAdmission, AttemptAdmissionValidator, AttemptExecutionContext,
     AttemptExecutionDisposition, AttemptExecutionInput, AttemptExecutionKey, AttemptExecutionModel,
@@ -61,7 +68,7 @@ use crate::{
     PreparedSemanticAttemptResult, RepositoryAttemptAdmission, RepositoryAttemptWorker,
     RepositoryAttemptWorkerError, UnixPeerExecutorIdentity, encode_crucible_configuration_artifact,
     encode_crucible_scenario_artifact, evaluate_crucible_measurement_publication,
-    recover_published_paused_checkpoint_promotion,
+    publish_next_objective_evaluation, recover_published_paused_checkpoint_promotion,
     resolve_production_paused_checkpoint_promotion_recovery,
     stage_prepared_paused_checkpoint_promotion,
 };
@@ -73,6 +80,7 @@ struct TestDurableBackend {
 struct TransientExecutorReadBackend {
     memory: MemoryBlobBackend,
     fail_executor_read: AtomicBool,
+    fail_content_read: Mutex<Option<ContentId>>,
     injected_failures: AtomicUsize,
 }
 
@@ -81,12 +89,28 @@ impl TransientExecutorReadBackend {
         Self {
             memory: MemoryBlobBackend::new(name, maximum_bytes),
             fail_executor_read: AtomicBool::new(false),
+            fail_content_read: Mutex::new(None),
             injected_failures: AtomicUsize::new(0),
         }
     }
 
     fn fail_next_executor_read(&self) {
         self.fail_executor_read.store(true, Ordering::Release);
+    }
+
+    fn fail_next_read_of(&self, content: ContentId) {
+        *self.fail_content_read.lock().expect("content read failure") = Some(content);
+    }
+
+    fn should_fail_content_read(&self, content: ContentId) -> bool {
+        let mut failure = self.fail_content_read.lock().expect("content read failure");
+        if failure.as_ref() == Some(&content) {
+            *failure = None;
+            self.injected_failures.fetch_add(1, Ordering::AcqRel);
+            true
+        } else {
+            false
+        }
     }
 
     fn should_fail_executor_read(&self) -> bool {
@@ -120,7 +144,7 @@ impl ImmutableBlobBackend for TransientExecutorReadBackend {
     }
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
-        if self.should_fail_executor_read() {
+        if self.should_fail_content_read(id) || self.should_fail_executor_read() {
             return Err(StoreError::Unavailable);
         }
         self.memory.read(id, range)
@@ -1609,6 +1633,217 @@ fn complete_prepared_journal_recovers_without_rerunning_guest_work() {
 }
 
 #[test]
+fn retained_measurement_trace_publishes_the_named_beam_objective() {
+    let blobs = Arc::new(TransientExecutorReadBackend::new(
+        "beam-objective-publication",
+        64 * 1024 * 1024,
+    ));
+    let repository = Arc::new(CampaignRepository::new(
+        blobs.clone(),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let scenario = beam_objective_scenario();
+    let metric = "beam-window.scheduler-events";
+    let (lineage, policy, _request, _admitted, candidate) = campaign_attempt_fixture_with_policy(
+        &repository,
+        "beam-objective-publication",
+        scenario.clone(),
+        ExplorerPolicy::Beam {
+            width: 1,
+            novelty_reserve: 0,
+        },
+        BTreeMap::from([(
+            metric.to_owned(),
+            Objective::new(metric, ObjectiveGoal::Minimize, 1_000_000).expect("Beam objective"),
+        )]),
+        BranchBudget::new(1, 1).expect("single Beam candidate"),
+    );
+    let node = scenario
+        .world()
+        .vm_nodes()
+        .first()
+        .expect("Beam objective VM")
+        .id
+        .clone();
+    let publication = evaluate_crucible_measurement_publication(
+        lineage.scenario(),
+        candidate.child().configuration(),
+        scenario.measurements(),
+        Vec::new(),
+        MeasurementTerminalState {
+            scenario_ready_at: None,
+            at: VirtualTime { ticks: 4 },
+            node_icounts: BTreeMap::from([(node, Icount { retired: 4 })]),
+            scheduler_quiescent: true,
+        },
+        crate::MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
+    )
+    .expect("production measurement publication");
+    let (evidence, _evidence_bytes, measurements) = publication.into_parts();
+    let evaluation = evidence
+        .replay(
+            lineage.scenario(),
+            candidate.child().configuration(),
+            scenario.measurements(),
+        )
+        .expect("replay retained measurement evidence");
+    let retained = candidate.observation();
+    let observation = Observation::new(
+        retained.attempt(),
+        retained.child(),
+        retained.child_content(),
+        retained.path(),
+        retained.stop().clone(),
+        measurements.id().expect("measurement ID"),
+        retained.properties(),
+        retained.coverage(),
+        retained.discovered_choices().clone(),
+    )
+    .expect("observation with retained measurement trace");
+    let expected = crate::evaluate_crucible_objectives(
+        &measurements,
+        &evaluation,
+        &policy,
+        &observation,
+        candidate.properties(),
+    )
+    .expect("expected named objective");
+    let evidence_id = evidence.id().expect("measurement evidence ID");
+    assert_eq!(
+        expected.components()[metric].value(),
+        Some(&crucible_campaign::ObjectiveValue::Unsigned(0))
+    );
+    let observation = ObservationCandidate::new(
+        candidate.child().clone(),
+        measurements,
+        candidate.properties().clone(),
+        candidate.coverage().clone(),
+        candidate.discovered_choices().to_vec(),
+        observation,
+    )
+    .expect("candidate with retained measurement trace");
+    let result = PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
+        observation.clone(),
+        vec![evidence],
+        None,
+    )
+    .expect("prepared semantic observation");
+    let store = CampaignExecutorStore::new(Arc::clone(&repository));
+    publish_prepared_semantic_attempt_result(&store, &result)
+        .expect("publish producer-owned measurement closure");
+    let head = repository
+        .head("beam-objective-publication")
+        .expect("pre-observation head");
+    repository
+        .publish_observation(
+            "beam-objective-publication",
+            head.snapshot_id(),
+            observation.observation(),
+        )
+        .expect("incorporate produced observation");
+
+    let mut cursor = None;
+    blobs.fail_next_read_of(evidence_id);
+    assert!(matches!(
+        publish_next_objective_evaluation(&repository, "beam-objective-publication", &mut cursor,),
+        Err(crate::ObjectiveEvaluationDriverError::Repository(
+            crucible_campaign::CampaignRepositoryError::Store(StoreError::Unavailable)
+        ))
+    ));
+    assert_eq!(
+        blobs.injected_failures.load(Ordering::Acquire),
+        1,
+        "the exact retained trace leaf must fail inside objective evaluation"
+    );
+    assert!(cursor.is_none());
+    assert!(
+        publish_next_objective_evaluation(&repository, "beam-objective-publication", &mut cursor,)
+            .expect("publish objective from retained trace")
+    );
+    let stored = repository
+        .load_objective_evaluation(expected.id().expect("expected objective ID"))
+        .expect("load driver-published objective");
+    assert_eq!(stored, expected);
+
+    let discovery = observation
+        .discovered_choices()
+        .first()
+        .expect("produced deeper choice");
+    let parent = observation.child();
+    let deeper_request = BranchRequest::new(
+        discovery
+            .opportunity()
+            .branch_point_id(parent.configuration()),
+        parent.id().expect("produced child artifact ID"),
+        discovery.opportunity().id().expect("deeper opportunity ID"),
+        discovery.domain().id().expect("deeper domain ID"),
+        CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(false)]))
+            .expect("deeper finite source"),
+        BranchRequestCause::Operator(CampaignCommandId::from_hash(CampaignHash::derive(
+            "crucible.test.beam-objective-publication.deeper.v1",
+            b"deeper",
+        ))),
+        BranchBudget::new(1, 1).expect("deeper request budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("deeper request from retained observation");
+    let head = repository
+        .head("beam-objective-publication")
+        .expect("evaluated Beam head");
+    let requested = repository
+        .submit_operator_branch_request(
+            "beam-objective-publication",
+            head.snapshot_id(),
+            &deeper_request,
+        )
+        .expect("submit retained observation's deeper frontier");
+    let basis = repository
+        .publish_canonical_beam_planner_basis()
+        .expect("publish canonical Beam basis");
+    let invocation = repository
+        .prepare_planner_invocation(
+            "beam-objective-publication",
+            requested.new_snapshot,
+            basis.engine(),
+            basis.artifact(),
+            basis.initial_state(),
+            None,
+            100,
+            PlanningBudget::new(2, 2, 100, 4 * 1024 * 1024, 10_000).expect("Beam planning budget"),
+        )
+        .expect("prepare objective-backed Beam invocation");
+    let planner_request = repository
+        .build_planner_request(
+            requested.new_snapshot,
+            invocation.id().expect("Beam invocation ID"),
+        )
+        .expect("build objective-backed Beam request");
+    let output = CanonicalBeamPlanner
+        .plan(&planner_request)
+        .expect("rank retained objective with canonical Beam planner");
+    let PlannerProposalDisposition::Issue {
+        selected,
+        proposals,
+        ..
+    } = output.proposal().disposition()
+    else {
+        panic!("retained objective must select its deeper frontier")
+    };
+    assert_eq!(
+        *selected,
+        PlanningScanPosition::new(
+            deeper_request.branch_point(),
+            deeper_request.id().expect("deeper request ID"),
+        )
+    );
+    assert_eq!(proposals.len(), 1);
+    assert_eq!(
+        proposals[0].request(),
+        deeper_request.id().expect("deeper request ID")
+    );
+}
+
+#[test]
 fn transient_recovery_input_unavailability_retries_without_guest_work() {
     recover_complete_prepared_journal(false, true);
 }
@@ -2949,6 +3184,42 @@ fn campaign_attempt_fixture(
     ObservationCandidate,
 ) {
     let scenario_form = minimal_campaign_scenario();
+    let widening = ProgressiveWideningPolicy::new(
+        ExactRational::new(1, 1).expect("rational"),
+        ExactRational::new(1, 2).expect("rational"),
+        1,
+        100,
+        1,
+    )
+    .expect("widening");
+
+    campaign_attempt_fixture_with_policy(
+        repository,
+        name,
+        scenario_form,
+        ExplorerPolicy::TreeSearch {
+            widening: Some(widening),
+            puct: PuctPolicy::new(1_000_000, 1, 0),
+        },
+        BTreeMap::new(),
+        BranchBudget::new(2, 2).expect("branch budget"),
+    )
+}
+
+fn campaign_attempt_fixture_with_policy(
+    repository: &CampaignRepository,
+    name: &str,
+    scenario_form: ScenarioDefForm,
+    explorer: ExplorerPolicy,
+    objectives: BTreeMap<String, Objective>,
+    branch_budget: BranchBudget,
+) -> (
+    CampaignLineage,
+    CampaignPolicy,
+    BranchRequest,
+    crucible_campaign::AttemptAdmissionResult,
+    ObservationCandidate,
+) {
     let scenario_artifact =
         encode_crucible_scenario_artifact(&scenario_form).expect("scenario artifact");
     let scenario = scenario_artifact.scenario();
@@ -2985,24 +3256,13 @@ fn campaign_attempt_fixture(
         1,
     )
     .expect("lineage");
-    let widening = ProgressiveWideningPolicy::new(
-        ExactRational::new(1, 1).expect("rational"),
-        ExactRational::new(1, 2).expect("rational"),
-        1,
-        100,
-        1,
-    )
-    .expect("widening");
     let policy = CampaignPolicy::new(
         scenario,
         CampaignSeed::from_bytes([7; 32]),
         CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            widening: Some(widening),
-            puct: PuctPolicy::new(1_000_000, 1, 0),
-        },
+        explorer,
         BTreeMap::new(),
-        BTreeMap::new(),
+        objectives,
         BTreeMap::new(),
         BTreeSet::new(),
         FairnessPolicy::new(0, 0).expect("fairness"),
@@ -3087,7 +3347,7 @@ fn campaign_attempt_fixture(
             "crucible.test.executor-flight.branch.v1",
             b"branch",
         ))),
-        BranchBudget::new(2, 2).expect("branch budget"),
+        branch_budget,
         StopCondition::NextChoice,
     )
     .expect("branch request");
@@ -3192,6 +3452,49 @@ fn minimal_campaign_scenario() -> ScenarioDefForm {
         Seed::from_u64(9),
     )
     .expect("minimal scenario")
+}
+
+fn beam_objective_scenario() -> ScenarioDefForm {
+    let base = crucible::happy_path_scenario()
+        .expect("happy-path scenario")
+        .scenario;
+    let node = base
+        .world()
+        .vm_nodes()
+        .first()
+        .expect("happy-path VM")
+        .id
+        .clone();
+    let measurements = MeasurementDefinitions::new(
+        base.world(),
+        base.plan(),
+        base.properties(),
+        vec![MeasurementDefinition {
+            id: MeasurementId::parse("beam-window").expect("measurement ID"),
+            begin: BoundarySelector::ScenarioGenesis,
+            end: BoundarySelector::SchedulerQuiescence,
+            timeout: None,
+            cohort: CohortPolicy::All(vec![node]),
+            metrics: vec![MetricDefinition {
+                id: MetricId::parse("scheduler-events").expect("metric ID"),
+                value_type: MetricValueType::UnsignedInteger,
+                unit: UnitId::parse("events").expect("unit ID"),
+                source: MetricSource::SchedulerEventCount,
+                aggregation: Aggregation::Count,
+            }],
+        }],
+    )
+    .expect("Beam measurement definitions");
+
+    ScenarioDefForm::from_components_with_measurements_and_app_random_draw_cap(
+        base.world(),
+        base.plan(),
+        base.properties(),
+        &measurements,
+        base.seed(),
+        base.app_random_draw_cap(),
+    )
+    .expect("Beam objective scenario")
 }
 
 fn pool<W>(
