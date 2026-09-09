@@ -45,8 +45,9 @@ pub mod conformance;
 
 pub use admin::{
     BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
-    InventoryGeneration, PlannedDeleteDisposition, RefInventoryFence, RefInventoryGeneration,
-    RefInventoryRecord, RefInventorySummary, RefPublicationGuard, RefStoreAdmin,
+    InventoryGeneration, PhysicalStorageIdentity, PlannedDeleteDisposition, RefInventoryFence,
+    RefInventoryGeneration, RefInventoryRecord, RefInventorySummary, RefPublicationGuard,
+    RefStoreAdmin,
 };
 pub use compressed_directory::CompressedDirectoryBlobBackend;
 pub use directory::{DirectoryBlobBackend, DirectoryRefBackend};
@@ -56,10 +57,11 @@ pub use encrypted_directory::{
 pub use graph::{
     MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS, StoreGraph,
     StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId, StoreGraphPhysicalAdmin,
-    StoreGraphPhysicalVerification, StoreGraphS3MultipartCleanupAdmin, StoreGraphVerificationError,
-    StoreGraphVerificationLimit, StoreGraphVerificationLimits, StoreGraphVerificationLimitsError,
-    StoreGraphVerificationReport, StoreNodeDescription, StoreNodeId, StoreNodeKind,
-    StoreNodeMetrics, StoreNodeMetricsDescription, StoreNodeSpec, StoreWriteBackFlushSummary,
+    StoreGraphPhysicalRetention, StoreGraphPhysicalVerification,
+    StoreGraphS3MultipartCleanupAdmin, StoreGraphVerificationError, StoreGraphVerificationLimit,
+    StoreGraphVerificationLimits, StoreGraphVerificationLimitsError, StoreGraphVerificationReport,
+    StoreNodeDescription, StoreNodeId, StoreNodeKind, StoreNodeMetrics,
+    StoreNodeMetricsDescription, StoreNodeSpec, StoreWriteBackFlushSummary,
 };
 pub use memory::{MemoryBlobBackend, MemoryRefBackend};
 pub use namespace::{

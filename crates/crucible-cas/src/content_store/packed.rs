@@ -36,7 +36,9 @@ use format::{
     write_pack_header,
 };
 
-use super::admin::{InventoryCounter, persistent_inventory_generation};
+use super::admin::{
+    InventoryCounter, persistent_inventory_generation, physical_storage_identity,
+};
 use super::directory::create_dir_all_durable;
 use super::{
     BackendCapabilities, BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary,
@@ -911,7 +913,10 @@ impl BlobInventoryFence for PackedInventoryFence<'_> {
             self.index.instance,
             self.index.generation,
         )?;
-        let mut inventory = InventoryCounter::new(generation);
+        let mut inventory = InventoryCounter::new(
+            physical_storage_identity(self.index.instance),
+            generation,
+        );
         for (id, entry) in &self.index.entries {
             let record = BlobInventoryRecord::new(*id, entry.length);
             visitor(record)?;

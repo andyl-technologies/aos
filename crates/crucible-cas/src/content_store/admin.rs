@@ -33,6 +33,37 @@ impl InventoryGeneration {
     }
 }
 
+/// Opaque identity of one physical blob-storage namespace.
+///
+/// Backend and graph node names do not participate in this identity. Two
+/// administrative capabilities backed by the same inventory instance therefore
+/// compare equal even when they use different operational names. Durable leaves
+/// persist that instance; memory leaves keep it process-local. A copied instance
+/// may compare equal conservatively after the copies diverge, so callers must
+/// treat equality as aliasing rather than independence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PhysicalStorageIdentity([u8; 32]);
+
+impl PhysicalStorageIdentity {
+    /// Builds an identity from exactly 32 canonical bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns the raw identity digest.
+    #[must_use]
+    pub const fn as_bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    /// Renders the identity as canonical lowercase hexadecimal text.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        encode_hex(&self.0)
+    }
+}
+
 /// One logical object observed in a fenced physical inventory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlobInventoryRecord {
@@ -62,6 +93,7 @@ impl BlobInventoryRecord {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlobInventorySummary {
     backend: String,
+    storage_identity: PhysicalStorageIdentity,
     generation: InventoryGeneration,
     objects: u64,
     logical_bytes: u64,
@@ -70,12 +102,14 @@ pub struct BlobInventorySummary {
 impl BlobInventorySummary {
     pub(crate) fn new(
         backend: String,
+        storage_identity: PhysicalStorageIdentity,
         generation: InventoryGeneration,
         objects: u64,
         logical_bytes: u64,
     ) -> Self {
         Self {
             backend,
+            storage_identity,
             generation,
             objects,
             logical_bytes,
@@ -86,6 +120,12 @@ impl BlobInventorySummary {
     #[must_use]
     pub fn backend(&self) -> &str {
         &self.backend
+    }
+
+    /// Returns the physical namespace identity shared by aliased capabilities.
+    #[must_use]
+    pub const fn storage_identity(&self) -> PhysicalStorageIdentity {
+        self.storage_identity
     }
 
     /// Returns the terminal physical-inventory generation.
@@ -275,14 +315,19 @@ pub trait RefStoreAdmin: Send + Sync {
 }
 
 pub(crate) struct InventoryCounter {
+    storage_identity: PhysicalStorageIdentity,
     generation: InventoryGeneration,
     objects: u64,
     logical_bytes: u64,
 }
 
 impl InventoryCounter {
-    pub(crate) const fn new(generation: InventoryGeneration) -> Self {
+    pub(crate) const fn new(
+        storage_identity: PhysicalStorageIdentity,
+        generation: InventoryGeneration,
+    ) -> Self {
         Self {
+            storage_identity,
             generation,
             objects: 0,
             logical_bytes: 0,
@@ -299,8 +344,21 @@ impl InventoryCounter {
     }
 
     pub(crate) fn finish(self, backend: String) -> BlobInventorySummary {
-        BlobInventorySummary::new(backend, self.generation, self.objects, self.logical_bytes)
+        BlobInventorySummary::new(
+            backend,
+            self.storage_identity,
+            self.generation,
+            self.objects,
+            self.logical_bytes,
+        )
     }
+}
+
+pub(crate) fn physical_storage_identity(instance: [u8; 32]) -> PhysicalStorageIdentity {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"crucible.content-store.physical-storage-identity.v1");
+    hasher.update(&instance);
+    PhysicalStorageIdentity(*hasher.finalize().as_bytes())
 }
 
 pub(crate) fn persistent_inventory_generation(

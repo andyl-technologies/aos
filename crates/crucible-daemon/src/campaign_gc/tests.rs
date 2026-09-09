@@ -35,7 +35,7 @@ use crucible_cas::content_store::{
     MemoryRefBackend, MutableRefBackend, ObjectKind, PackedBlobBackend, PlannedDeleteDisposition,
     RefBackendCapabilities, RefCasOutcome, RefName, RefPublicationGuard, RefScanPage,
     StoreEncryptionKey, StoreEncryptionKeyId, StoreError, StoreGraph, StoreGraphConfig,
-    StoreGraphKeyring, StoreNodeId, StoreNodeSpec,
+    StoreGraphKeyring, StoreGraphPhysicalRetention, StoreNodeId, StoreNodeSpec,
 };
 use crucible_cas::content_store::{RefInventoryFence, RefStoreAdmin};
 
@@ -543,7 +543,7 @@ fn plan_with(
 }
 
 #[test]
-fn plan_header_round_trips_and_has_one_frozen_identity() {
+fn plan_header_round_trips_without_changing_frozen_v1_bytes() {
     let plan = plan_with(
         0x21,
         0x31,
@@ -552,6 +552,7 @@ fn plan_header_round_trips_and_has_one_frozen_identity() {
     let bytes = plan.canonical_bytes().expect("canonical plan");
     let decoded = CampaignGcPlan::from_canonical_bytes(&bytes).expect("decode canonical plan");
 
+    assert!(bytes.starts_with(b"crucible.campaign.gc-plan.v1\0"));
     assert_eq!(decoded, plan);
     assert_eq!(decoded.id(), plan.id());
     assert_eq!(plan.candidates().candidates(), 3);
@@ -728,6 +729,7 @@ fn root_and_candidate_manifests_round_trip_with_stable_identity() {
     candidates
         .write_canonical(&mut candidate_bytes)
         .expect("encode candidates");
+    assert!(candidate_bytes.starts_with(b"crucible.campaign.gc-candidate-manifest.v1\0"));
     let decoded_candidates =
         CampaignGcCandidateManifest::from_canonical_reader(&mut Cursor::new(candidate_bytes))
             .expect("decode candidates");
@@ -841,6 +843,389 @@ fn planner_authenticates_roots_and_selects_only_unreachable_placements() {
         prepared.plan().candidates(),
         prepared.candidates().summary()
     );
+}
+
+#[test]
+fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
+    let temp = tempfile::TempDir::new().expect("temporary read-through GC root");
+    let cache_root = temp.path().join("cache");
+    let source_root = temp.path().join("source");
+    let journal_root = temp.path().join("journal");
+    let root = StoreNodeId::new("read-through").expect("root node");
+    let cache_wrapper = StoreNodeId::new("cache-verified").expect("cache wrapper");
+    let cache = StoreNodeId::new("cache-compressed").expect("cache node");
+    let source = StoreNodeId::new("required-source").expect("source node");
+    let config = StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                root,
+                StoreNodeSpec::ReadThrough {
+                    cache: cache_wrapper.clone(),
+                    source: source.clone(),
+                },
+            ),
+            (
+                cache_wrapper,
+                StoreNodeSpec::Verified {
+                    child: cache.clone(),
+                },
+            ),
+            (
+                cache.clone(),
+                StoreNodeSpec::CompressedDirectory {
+                    root: cache_root,
+                    maximum_logical_object_bytes: 1024 * 1024,
+                },
+            ),
+            (
+                source.clone(),
+                StoreNodeSpec::Directory { root: source_root },
+            ),
+        ]),
+    };
+    let (graph, admin) = StoreGraph::build_with_admin(config).expect("read-through graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let live = ContentEnvelope::new(
+        "crucible.test.gc-read-through-live",
+        1,
+        BTreeSet::new(),
+        vec![b'R'; 32 * 1024],
+    )
+    .expect("live envelope");
+    let live_bytes = live.canonical_bytes();
+    let live_id = live.content_id(ObjectKind::Trace);
+    graph
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes.clone()))
+        .expect("store required source");
+    refs.compare_exchange(
+        &RefName::new("retained/read-through-live").expect("retained ref"),
+        None,
+        live_id,
+    )
+    .expect("publish retained root");
+    let mut promoted = Vec::new();
+    graph
+        .read(live_id, None)
+        .expect("read and promote source")
+        .copy_to(&mut promoted)
+        .expect("authenticate promoted read");
+    assert_eq!(promoted, live_bytes);
+
+    let second_live = ContentEnvelope::new(
+        "crucible.test.gc-read-through-live",
+        1,
+        BTreeSet::new(),
+        b"second reachable cache placement".to_vec(),
+    )
+    .expect("second live envelope");
+    let second_live_bytes = second_live.canonical_bytes();
+    let second_live_id = second_live.content_id(ObjectKind::Trace);
+    graph
+        .put_if_absent(
+            second_live_id,
+            &BlobHandle::from_bytes(second_live_bytes.clone()),
+        )
+        .expect("store second required source");
+    refs.compare_exchange(
+        &RefName::new("retained/read-through-live-second").expect("second retained ref"),
+        None,
+        second_live_id,
+    )
+    .expect("publish second retained root");
+    let mut second_promoted = Vec::new();
+    graph
+        .read(second_live_id, None)
+        .expect("read and promote second source")
+        .copy_to(&mut second_promoted)
+        .expect("authenticate second promoted read");
+    assert_eq!(second_promoted, second_live_bytes);
+
+    let mut ledger = MemoryAssignmentLedger::default();
+    let prepared = super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        &admin,
+    )
+    .expect("plan policy-aware GC");
+    assert_eq!(prepared.plan().version(), CampaignGcPlanVersion::V2);
+    assert_eq!(
+        prepared.candidates().version(),
+        CampaignGcCandidateManifestVersion::V2
+    );
+    assert_eq!(prepared.unreachable_candidates(), 0);
+    assert_eq!(prepared.reachable_cache_candidates(), 2);
+    let candidate = prepared
+        .candidates()
+        .iter()
+        .next()
+        .expect("cache candidate");
+    assert_eq!(candidate.backend(), cache.as_str());
+    assert!(matches!(
+        candidate.reason(),
+        CampaignGcCandidateReason::ReachableReadThroughCache { required_backend }
+            if required_backend == source.as_str()
+    ));
+
+    let plan_bytes = prepared.plan().canonical_bytes().expect("encode v2 plan");
+    assert_eq!(
+        CampaignGcPlan::from_canonical_bytes(&plan_bytes).expect("decode v2 plan"),
+        *prepared.plan()
+    );
+    let mut trailing_plan = plan_bytes;
+    trailing_plan.push(0);
+    assert_eq!(
+        CampaignGcPlan::from_canonical_bytes(&trailing_plan),
+        Err(CampaignGcPlanError::InvalidLength)
+    );
+
+    let mut candidate_bytes = Vec::new();
+    prepared
+        .candidates()
+        .write_canonical(&mut candidate_bytes)
+        .expect("encode v2 candidates");
+    assert_eq!(
+        CampaignGcCandidateManifest::from_canonical_reader(&mut Cursor::new(&candidate_bytes))
+            .expect("decode v2 candidates"),
+        *prepared.candidates()
+    );
+    candidate_bytes.push(0);
+    assert!(matches!(
+        CampaignGcCandidateManifest::from_canonical_reader(&mut Cursor::new(candidate_bytes)),
+        Err(CampaignGcManifestError::Noncanonical)
+    ));
+
+    let forged_candidates = CampaignGcCandidateManifest::new_policy_aware(vec![
+        CampaignGcCandidate::new_reachable_read_through_cache(
+            source.as_str(),
+            live_id,
+            live_bytes.len() as u64,
+            cache.as_str(),
+        )
+        .expect("swapped-role candidate"),
+    ])
+    .expect("swapped-role manifest");
+    let forged = prepared
+        .clone()
+        .with_candidate_manifest_for_test(forged_candidates);
+    let (mut forged_journal, _) =
+        DirectoryCampaignGcJournal::create(temp.path().join("forged-journal"), &forged)
+            .expect("create swapped-role journal");
+    let error = super::apply_single_host_campaign_gc(
+        &mut forged_journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        &admin,
+    )
+    .expect_err("reject swapped cache and required-source roles");
+    assert!(matches!(
+        error,
+        CampaignGcApplyError::CandidatePolicyChanged { backend, id }
+            if backend == source.as_str() && id == live_id
+    ));
+    assert_eq!(forged_journal.phase(), CampaignGcJournalPhase::Planned);
+    for physical in admin.physical() {
+        let mut fence = physical
+            .admin()
+            .acquire_inventory_fence()
+            .expect("post-rejection inventory");
+        let summary = fence
+            .visit_inventory(&mut |_record| Ok(()))
+            .expect("complete post-rejection inventory");
+        assert_eq!(summary.objects(), 2);
+    }
+
+    let (journal, _) =
+        DirectoryCampaignGcJournal::create(&journal_root, &prepared).expect("create v2 journal");
+    drop(journal);
+    let mut journal = DirectoryCampaignGcJournal::open(&journal_root).expect("reopen v2 journal");
+    let report = super::apply_single_host_campaign_gc(
+        &mut journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        &admin,
+    )
+    .expect("apply cache eviction");
+    assert_eq!(report.unreachable_candidates(), 0);
+    assert_eq!(report.reachable_cache_candidates(), 2);
+
+    let cache_admin = admin
+        .physical()
+        .into_iter()
+        .find(|physical| physical.node() == &cache)
+        .expect("cache administration");
+    let mut cache_fence = cache_admin
+        .admin()
+        .acquire_inventory_fence()
+        .expect("cache inventory");
+    let cache_summary = cache_fence
+        .visit_inventory(&mut |_record| Ok(()))
+        .expect("complete cache inventory");
+    assert_eq!(cache_summary.objects(), 0);
+    drop(cache_fence);
+
+    let mut retained = Vec::new();
+    graph
+        .read(live_id, None)
+        .expect("read retained source")
+        .copy_to(&mut retained)
+        .expect("authenticate retained source");
+    assert_eq!(retained, live_bytes);
+    let mut second_retained = Vec::new();
+    graph
+        .read(second_live_id, None)
+        .expect("read second retained source")
+        .copy_to(&mut second_retained)
+        .expect("authenticate second retained source");
+    assert_eq!(second_retained, second_live_bytes);
+}
+
+#[test]
+fn policy_aware_gc_refuses_same_path_source_and_cache_aliases() {
+    let temp = tempfile::TempDir::new().expect("temporary alias GC root");
+    let shared = temp.path().join("shared");
+    let root = StoreNodeId::new("aliased-read-through").expect("root node");
+    let cache = StoreNodeId::new("aliased-cache").expect("cache node");
+    let source = StoreNodeId::new("aliased-source").expect("source node");
+    let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                root,
+                StoreNodeSpec::ReadThrough {
+                    cache: cache.clone(),
+                    source: source.clone(),
+                },
+            ),
+            (
+                cache,
+                StoreNodeSpec::Directory {
+                    root: shared.clone(),
+                },
+            ),
+            (source, StoreNodeSpec::Directory { root: shared }),
+        ]),
+    })
+    .expect("aliased graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let live = ContentEnvelope::new(
+        "crucible.test.gc-aliased-live",
+        1,
+        BTreeSet::new(),
+        b"aliased live".to_vec(),
+    )
+    .expect("live envelope");
+    let live_bytes = live.canonical_bytes();
+    let live_id = live.content_id(ObjectKind::Trace);
+    graph
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes))
+        .expect("store shared placement");
+    refs.compare_exchange(
+        &RefName::new("retained/aliased-live").expect("retained ref"),
+        None,
+        live_id,
+    )
+    .expect("publish retained root");
+
+    let identities = admin
+        .physical()
+        .into_iter()
+        .map(|physical| {
+            let mut fence = physical
+                .admin()
+                .acquire_inventory_fence()
+                .expect("alias inventory");
+            fence
+                .visit_inventory(&mut |_record| Ok(()))
+                .expect("complete alias inventory")
+                .storage_identity()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(identities.len(), 2);
+    assert_eq!(identities[0], identities[1]);
+
+    let mut ledger = MemoryAssignmentLedger::default();
+    let prepared = super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        &admin,
+    )
+    .expect("plan aliased graph");
+    assert_eq!(prepared.plan().version(), CampaignGcPlanVersion::V2);
+    assert_eq!(prepared.reachable_cache_candidates(), 0);
+    assert!(prepared.candidates().is_empty());
+}
+
+#[test]
+fn required_graph_path_dominates_a_read_through_cache_role() {
+    let root = StoreNodeId::new("tiered-root").expect("root node");
+    let read_through = StoreNodeId::new("read-through").expect("read-through node");
+    let cache = StoreNodeId::new("shared-cache").expect("cache node");
+    let source = StoreNodeId::new("required-source").expect("source node");
+    let (_, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                root,
+                StoreNodeSpec::Tiered {
+                    tiers: vec![read_through.clone(), cache.clone()],
+                    write_tier: 0,
+                    promote_reads: false,
+                },
+            ),
+            (
+                read_through,
+                StoreNodeSpec::ReadThrough {
+                    cache: cache.clone(),
+                    source: source.clone(),
+                },
+            ),
+            (
+                cache.clone(),
+                StoreNodeSpec::Memory {
+                    max_logical_bytes: 1024,
+                },
+            ),
+            (
+                source.clone(),
+                StoreNodeSpec::Memory {
+                    max_logical_bytes: 1024,
+                },
+            ),
+        ]),
+    })
+    .expect("graph with shared required cache path");
+
+    let physical = admin.physical();
+    let cache_role = physical
+        .iter()
+        .find(|physical| physical.node() == &cache)
+        .and_then(|physical| physical.retention(ObjectKind::Trace));
+    let source_role = physical
+        .iter()
+        .find(|physical| physical.node() == &source)
+        .and_then(|physical| physical.retention(ObjectKind::Trace));
+    assert_eq!(cache_role, Some(StoreGraphPhysicalRetention::Required));
+    assert_eq!(source_role, Some(StoreGraphPhysicalRetention::Required));
 }
 
 #[test]
@@ -1826,6 +2211,22 @@ fn external_journal_reopens_exact_plan_and_durable_phase() {
         Err(CampaignGcJournalError::PlanMismatch)
     ));
     drop(retained_lock_description);
+}
+
+#[test]
+fn external_journal_rejects_mismatched_plan_and_candidate_versions() {
+    let prepared = journal_plan_fixture(0x49);
+    let v2_candidates = CampaignGcCandidateManifest::new_policy_aware(
+        prepared.candidates().iter().cloned().collect(),
+    )
+    .expect("v2 candidate manifest");
+    let mismatched = prepared.with_candidate_manifest_for_test(v2_candidates);
+
+    let temp = tempfile::TempDir::new().expect("temporary mismatched journal");
+    assert!(matches!(
+        DirectoryCampaignGcJournal::create(temp.path().join("journal"), &mismatched),
+        Err(CampaignGcJournalError::CandidateManifestMismatch)
+    ));
 }
 
 #[test]

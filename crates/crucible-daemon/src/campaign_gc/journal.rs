@@ -27,8 +27,9 @@ use thiserror::Error;
 use crate::owned_advisory_lock::OwnedAdvisoryLock;
 
 use super::{
-    CampaignGcCandidateManifest, CampaignGcManifestError, CampaignGcPlan, CampaignGcPlanError,
-    CampaignGcPlanId, CampaignGcPreparedPlan, CampaignGcRootManifest, MAX_CAMPAIGN_GC_PLAN_BYTES,
+    CampaignGcCandidateManifest, CampaignGcCandidateManifestVersion, CampaignGcManifestError,
+    CampaignGcPlan, CampaignGcPlanError, CampaignGcPlanId, CampaignGcPlanVersion,
+    CampaignGcPreparedPlan, CampaignGcRootManifest, MAX_CAMPAIGN_GC_PLAN_BYTES,
 };
 
 const JOURNAL_LOCK_FILE: &str = "lock";
@@ -373,6 +374,19 @@ fn validate_record_binding(
     roots: &CampaignGcRootManifest,
     candidates: &CampaignGcCandidateManifest,
 ) -> Result<(), CampaignGcJournalError> {
+    let versions_match = matches!(
+        (plan.version(), candidates.version()),
+        (
+            CampaignGcPlanVersion::V1,
+            CampaignGcCandidateManifestVersion::V1
+        ) | (
+            CampaignGcPlanVersion::V2,
+            CampaignGcCandidateManifestVersion::V2
+        )
+    );
+    if !versions_match {
+        return Err(CampaignGcJournalError::CandidateManifestMismatch);
+    }
     if plan.root_set() != roots.id() {
         return Err(CampaignGcJournalError::RootManifestMismatch);
     }

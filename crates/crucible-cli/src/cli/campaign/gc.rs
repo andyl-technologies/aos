@@ -8,10 +8,12 @@ use crucible_daemon::campaign_store_composition::{
     BackendCapabilities, ContentId, ImmutableBlobBackend, StoreGraph, StoreNodeKind,
 };
 use crucible_daemon::{
-    CampaignGcApplyStatus, CampaignGcJournalCreateDisposition, CampaignGcJournalPhase,
-    CampaignLocalServiceConfig, CampaignLocalServiceMode, CampaignLoopbackEndpointConfig,
-    CampaignLoopbackServerConfig, DirectoryAssignmentLedger, DirectoryCampaignGcJournal,
-    DirectoryExactPinMaterializationStore, EXACT_PIN_MATERIALIZATION_DIRECTORY,
+    CampaignGcApplyStatus, CampaignGcCandidateManifest, CampaignGcCandidateReason,
+    CampaignGcJournalCreateDisposition, CampaignGcJournalPhase, CampaignGcPlan,
+    CampaignGcPlanVersion, CampaignLocalServiceConfig, CampaignLocalServiceMode,
+    CampaignLoopbackEndpointConfig, CampaignLoopbackServerConfig, DirectoryAssignmentLedger,
+    DirectoryCampaignGcJournal, DirectoryExactPinMaterializationStore,
+    EXACT_PIN_MATERIALIZATION_DIRECTORY,
 };
 use serde::Serialize;
 
@@ -20,7 +22,7 @@ use crate::cli_campaign_store::{
     load_campaign_store_graph, verify_campaign_store_inventory,
 };
 
-const CAMPAIGN_GC_REPORT_SCHEMA: &str = "crucible.cli.campaign-store-gc.v1";
+const CAMPAIGN_GC_REPORT_SCHEMA: &str = "crucible.cli.campaign-store-gc.v2";
 const STORE_STATUS_REPORT_SCHEMA: &str = "crucible.cli.store-status.v1";
 const STORE_ENSURE_REPORT_SCHEMA: &str = "crucible.cli.store-ensure.v1";
 const STORE_VERIFY_REPORT_SCHEMA: &str = "crucible.cli.store-verify.v1";
@@ -31,6 +33,7 @@ const UNUSED_GC_ENDPOINT: &str = "/tmp/crucible-campaign-gc-owner.sock";
 pub(super) struct CampaignStoreGcReport {
     schema: &'static str,
     operation: &'static str,
+    plan_version: &'static str,
     plan: String,
     journal: String,
     journal_disposition: &'static str,
@@ -40,7 +43,10 @@ pub(super) struct CampaignStoreGcReport {
     roots: usize,
     reachable_objects: Option<u64>,
     candidates: u64,
+    unreachable_candidates: u64,
+    reachable_cache_candidates: u64,
     candidate_logical_bytes: u64,
+    cache_required_copies: Vec<CampaignStoreGcRequiredCopyReport>,
     physical: Vec<CampaignStoreGcPhysicalReport>,
 }
 
@@ -125,6 +131,16 @@ struct StoreVerifyPhysicalReport {
     generation: String,
     placements: u64,
     logical_bytes: u64,
+}
+
+#[derive(Serialize)]
+struct CampaignStoreGcRequiredCopyReport {
+    candidate_backend: String,
+    content: String,
+    logical_bytes: u64,
+    required_backend: String,
+    required_storage_identity: String,
+    required_generation: String,
 }
 
 fn run_store_status(args: &StoreStatusArgs, format: OutputFormat) -> Result<String, CliError> {
@@ -291,6 +307,7 @@ pub(super) fn run_campaign_store_gc(
             CampaignStoreGcReport {
                 schema: CAMPAIGN_GC_REPORT_SCHEMA,
                 operation: "plan",
+                plan_version: plan_version(planned.plan()),
                 plan: plan_id.to_hex(),
                 journal: journal.root().display().to_string(),
                 journal_disposition: match disposition {
@@ -302,7 +319,13 @@ pub(super) fn run_campaign_store_gc(
                 roots: planned.roots().len(),
                 reachable_objects: Some(planned.reachable_objects()),
                 candidates: planned.candidates().summary().candidates(),
+                unreachable_candidates: planned.unreachable_candidates(),
+                reachable_cache_candidates: planned.reachable_cache_candidates(),
                 candidate_logical_bytes: planned.candidates().logical_bytes(),
+                cache_required_copies: cache_required_copy_report(
+                    planned.plan(),
+                    planned.candidates(),
+                )?,
                 physical: physical_report(planned.plan()),
             }
         }
@@ -315,12 +338,15 @@ pub(super) fn run_campaign_store_gc(
             })?;
             let roots = journal.roots().len();
             let physical = physical_report(journal.plan());
+            let plan_version = plan_version(journal.plan());
+            let required_copies = cache_required_copy_report(journal.plan(), journal.candidates())?;
             let result = authority
                 .apply(&mut journal, &mut ledger, Some(&mut exact_pins))
                 .map_err(|error| maintenance_error(format!("campaign GC apply failed: {error}")))?;
             CampaignStoreGcReport {
                 schema: CAMPAIGN_GC_REPORT_SCHEMA,
                 operation: "apply",
+                plan_version,
                 plan: plan_id.to_hex(),
                 journal: journal.root().display().to_string(),
                 journal_disposition: "opened",
@@ -332,13 +358,58 @@ pub(super) fn run_campaign_store_gc(
                 roots,
                 reachable_objects: None,
                 candidates: result.candidates(),
+                unreachable_candidates: result.unreachable_candidates(),
+                reachable_cache_candidates: result.reachable_cache_candidates(),
                 candidate_logical_bytes: result.logical_bytes(),
+                cache_required_copies: required_copies,
                 physical,
             }
         }
     };
 
     render_campaign_store_gc(&report, format)
+}
+
+const fn plan_version(plan: &CampaignGcPlan) -> &'static str {
+    match plan.version() {
+        CampaignGcPlanVersion::V1 => "v1",
+        CampaignGcPlanVersion::V2 => "v2",
+    }
+}
+
+fn cache_required_copy_report(
+    plan: &CampaignGcPlan,
+    candidates: &CampaignGcCandidateManifest,
+) -> Result<Vec<CampaignStoreGcRequiredCopyReport>, CliError> {
+    candidates
+        .iter()
+        .filter_map(|candidate| {
+            let CampaignGcCandidateReason::ReachableReadThroughCache { required_backend } =
+                candidate.reason()
+            else {
+                return None;
+            };
+            Some((candidate, required_backend))
+        })
+        .map(|(candidate, required_backend)| {
+            let basis = plan
+                .physical()
+                .iter()
+                .find(|basis| basis.backend() == required_backend)
+                .ok_or_else(|| maintenance_error("campaign GC required-copy basis is absent"))?;
+            let identity = basis.storage_identity().ok_or_else(|| {
+                maintenance_error("campaign GC required-copy physical identity is absent")
+            })?;
+            Ok(CampaignStoreGcRequiredCopyReport {
+                candidate_backend: candidate.backend().to_owned(),
+                content: candidate.id().to_string(),
+                logical_bytes: candidate.logical_length(),
+                required_backend: required_backend.clone(),
+                required_storage_identity: identity.to_hex(),
+                required_generation: basis.generation().to_hex(),
+            })
+        })
+        .collect()
 }
 
 fn physical_report(plan: &crucible_daemon::CampaignGcPlan) -> Vec<CampaignStoreGcPhysicalReport> {
@@ -536,6 +607,7 @@ fn render_campaign_store_gc(
         OutputFormat::Table => {
             let mut lines = vec![
                 format!("{:<24} {}", "operation", report.operation),
+                format!("{:<24} {}", "plan-version", report.plan_version),
                 format!("{:<24} {}", "plan", report.plan),
                 format!("{:<24} {}", "journal", report.journal),
                 format!(
@@ -545,6 +617,14 @@ fn render_campaign_store_gc(
                 format!("{:<24} {}", "phase", report.phase),
                 format!("{:<24} {}", "roots", report.roots),
                 format!("{:<24} {}", "candidates", report.candidates),
+                format!(
+                    "{:<24} {}",
+                    "unreachable-candidates", report.unreachable_candidates
+                ),
+                format!(
+                    "{:<24} {}",
+                    "reachable-cache-candidates", report.reachable_cache_candidates
+                ),
                 format!(
                     "{:<24} {}",
                     "candidate-logical-bytes", report.candidate_logical_bytes
@@ -562,6 +642,18 @@ fn render_campaign_store_gc(
                     "physical", physical.backend, physical.objects, physical.logical_bytes
                 )
             }));
+            lines.extend(report.cache_required_copies.iter().map(|required| {
+                format!(
+                    "{:<24} {}:{} -> {} identity={} generation={} logical-bytes={}",
+                    "cache-required-copy",
+                    required.candidate_backend,
+                    required.content,
+                    required.required_backend,
+                    required.required_storage_identity,
+                    required.required_generation,
+                    required.logical_bytes,
+                )
+            }));
             Ok(lines.join("\n"))
         }
         OutputFormat::Markdown => {
@@ -569,12 +661,21 @@ fn render_campaign_store_gc(
                 String::from("| field | value |"),
                 String::from("|---|---|"),
                 format!("| operation | {} |", report.operation),
+                format!("| plan version | {} |", report.plan_version),
                 format!("| plan | `{}` |", report.plan),
                 format!("| journal | `{}` |", report.journal),
                 format!("| journal disposition | {} |", report.journal_disposition),
                 format!("| phase | {} |", report.phase),
                 format!("| roots | {} |", report.roots),
                 format!("| candidates | {} |", report.candidates),
+                format!(
+                    "| unreachable candidates | {} |",
+                    report.unreachable_candidates
+                ),
+                format!(
+                    "| reachable cache candidates | {} |",
+                    report.reachable_cache_candidates
+                ),
                 format!(
                     "| candidate logical bytes | {} |",
                     report.candidate_logical_bytes
@@ -590,6 +691,17 @@ fn render_campaign_store_gc(
                 format!(
                     "| physical `{}` | {} objects / {} logical bytes |",
                     physical.backend, physical.objects, physical.logical_bytes
+                )
+            }));
+            lines.extend(report.cache_required_copies.iter().map(|required| {
+                format!(
+                    "| cache required copy | `{}` `{}` -> `{}` / identity `{}` / generation `{}` / {} logical bytes |",
+                    required.candidate_backend,
+                    required.content,
+                    required.required_backend,
+                    required.required_storage_identity,
+                    required.required_generation,
+                    required.logical_bytes,
                 )
             }));
             Ok(lines.join("\n"))

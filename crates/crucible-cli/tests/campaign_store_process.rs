@@ -122,11 +122,13 @@ fn public_campaign_store_flight_survives_gc_and_service_restart() -> Result<(), 
     );
 
     let planned = run_json(&mut fixture.gc_command("plan"), "plan stopped-owner GC")?;
-    assert_eq!(planned["schema"], "crucible.cli.campaign-store-gc.v1");
+    assert_eq!(planned["schema"], "crucible.cli.campaign-store-gc.v2");
     assert_eq!(planned["operation"], "plan");
     assert_eq!(planned["phase"], "planned");
     let candidates = json_u64(&planned, "candidates")?;
     assert!(candidates >= 1);
+    assert_eq!(json_u64(&planned, "unreachable_candidates")?, candidates);
+    assert_eq!(json_u64(&planned, "reachable_cache_candidates")?, 0);
     assert!(json_u64(&planned, "candidate_logical_bytes")? >= orphan_bytes.len() as u64);
 
     let applied = run_json(&mut fixture.gc_command("apply"), "apply stopped-owner GC")?;
